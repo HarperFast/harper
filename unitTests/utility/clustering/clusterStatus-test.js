@@ -147,7 +147,7 @@ describe('Test clusterStatus module', () => {
 		const test_error = new Error();
 		test_error.code = '503';
 		request_stub.throws(test_error);
-		const result = await cluster_status();
+		const result = await cluster_status.clusterStatus();
 		expect(result).to.eql(expected_result);
 	});
 
@@ -210,7 +210,7 @@ describe('Test clusterStatus module', () => {
 		};
 		request_stub.onCall(0).resolves(test_reply_node_a);
 		request_stub.onCall(1).resolves(test_reply_node_b);
-		const result = await cluster_status();
+		const result = await cluster_status.clusterStatus();
 		expect(result.connections[0]).to.haveOwnProperty('latency_ms');
 		expect(result.connections[1]).to.haveOwnProperty('latency_ms');
 		// Cant guarantee latency value will be the same when testing so we test for it above then delete when doing a result comparison test
@@ -294,7 +294,7 @@ describe('Test clusterStatus module', () => {
 		};
 		request_stub.onCall(0).resolves(test_reply_node_a);
 		request_stub.onCall(1).resolves(error_test_reply_node_b);
-		const result = await cluster_status();
+		const result = await cluster_status.clusterStatus();
 		expect(result.connections[0]).to.haveOwnProperty('latency_ms');
 		expect(result.connections[1]).to.haveOwnProperty('latency_ms');
 		// Cant guarantee latency value will be the same when testing so we test for it above then delete when doing a result comparison test
@@ -305,7 +305,7 @@ describe('Test clusterStatus module', () => {
 
 	it('Test empty connections returned if no node records in table', async () => {
 		get_all_node_records_stub.resolves([]);
-		const result = await cluster_status();
+		const result = await cluster_status.clusterStatus();
 		expect(result).to.eql({
 			connections: [],
 			is_enabled: true,
@@ -315,7 +315,7 @@ describe('Test clusterStatus module', () => {
 
 	it('Test empty connections returned if clustering not enabled', async () => {
 		cluster_status.__set__('clustering_enabled', false);
-		const result = await cluster_status();
+		const result = await cluster_status.clusterStatus();
 		expect(result).to.eql({
 			connections: [],
 			is_enabled: false,

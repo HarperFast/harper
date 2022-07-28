@@ -27,6 +27,12 @@ const STAT_ATTRIBUTES = [
 ];
 const ENVIRONMENT_CLOSED_ERROR = Error('The environment is already closed.');
 
+function ensureStatAttributes(stats) {
+	for (let attr of STAT_ATTRIBUTES) {
+		assert(stats.hasOwnProperty(attr));
+	}
+}
+
 describe('test cleanLMDBMap module', () => {
 	let logger_error_stub;
 	let close_env_stub;
@@ -72,12 +78,12 @@ describe('test cleanLMDBMap module', () => {
 		let prod_dog_env = await env_utility.createEnvironment(PROD_PATH, 'dog');
 		let prod_txn_dog_env = await env_utility.createEnvironment(PROD_TXN_PATH, 'dog', true);
 
-		assert.deepStrictEqual(Object.keys(dog_env.getStats()), STAT_ATTRIBUTES);
-		assert.deepStrictEqual(Object.keys(breed_env.getStats()), STAT_ATTRIBUTES);
-		assert.deepStrictEqual(Object.keys(txn_dog_env.getStats()), STAT_ATTRIBUTES);
-		assert.deepStrictEqual(Object.keys(txn_breed_env.getStats()), STAT_ATTRIBUTES);
-		assert.deepStrictEqual(Object.keys(prod_dog_env.getStats()), STAT_ATTRIBUTES);
-		assert.deepStrictEqual(Object.keys(prod_txn_dog_env.getStats()), STAT_ATTRIBUTES);
+		ensureStatAttributes(dog_env.getStats());
+		ensureStatAttributes(breed_env.getStats());
+		ensureStatAttributes(txn_dog_env.getStats());
+		ensureStatAttributes(txn_breed_env.getStats());
+		ensureStatAttributes(prod_dog_env.getStats());
+		ensureStatAttributes(prod_txn_dog_env.getStats());
 
 		await clean_lmdb_map({ operation: 'drop_schema', schema: 'dev' });
 
@@ -96,8 +102,8 @@ describe('test cleanLMDBMap module', () => {
 		assert.throws(() => {
 			txn_breed_env.env.stat();
 		}, ENVIRONMENT_CLOSED_ERROR);
-		assert.deepStrictEqual(Object.keys(prod_dog_env.getStats()), STAT_ATTRIBUTES);
-		assert.deepStrictEqual(Object.keys(prod_txn_dog_env.getStats()), STAT_ATTRIBUTES);
+		ensureStatAttributes(prod_dog_env.getStats());
+		ensureStatAttributes(prod_txn_dog_env.getStats());
 
 		assert.deepStrictEqual(global.lmdb_map['dev.dog'], undefined);
 		assert.deepStrictEqual(global.lmdb_map['dev.breed'], undefined);
@@ -116,10 +122,10 @@ describe('test cleanLMDBMap module', () => {
 		let txn_dog_env = await env_utility.createEnvironment(DEV_TXN_PATH, 'dog', true);
 		let txn_breed_env = await env_utility.createEnvironment(DEV_TXN_PATH, 'breed', true);
 
-		assert.deepStrictEqual(Object.keys(dog_env.getStats()), STAT_ATTRIBUTES);
-		assert.deepStrictEqual(Object.keys(breed_env.getStats()), STAT_ATTRIBUTES);
-		assert.deepStrictEqual(Object.keys(txn_dog_env.getStats()), STAT_ATTRIBUTES);
-		assert.deepStrictEqual(Object.keys(txn_breed_env.getStats()), STAT_ATTRIBUTES);
+		ensureStatAttributes(dog_env.getStats());
+		ensureStatAttributes(breed_env.getStats());
+		ensureStatAttributes(txn_dog_env.getStats());
+		ensureStatAttributes(txn_breed_env.getStats());
 
 		await clean_lmdb_map({ operation: 'drop_table', schema: 'dev', table: 'dog' });
 
@@ -132,8 +138,8 @@ describe('test cleanLMDBMap module', () => {
 		assert.throws(() => {
 			txn_dog_env.env.stat();
 		}, ENVIRONMENT_CLOSED_ERROR);
-		assert.deepStrictEqual(Object.keys(breed_env.getStats()), STAT_ATTRIBUTES);
-		assert.deepStrictEqual(Object.keys(txn_breed_env.getStats()), STAT_ATTRIBUTES);
+		ensureStatAttributes(breed_env.getStats());
+		ensureStatAttributes(txn_breed_env.getStats());
 
 		assert.deepStrictEqual(global.lmdb_map['dev.dog'], undefined);
 		assert.notDeepStrictEqual(global.lmdb_map['dev.breed'], undefined);
@@ -147,7 +153,7 @@ describe('test cleanLMDBMap module', () => {
 	it('call drop_attribute, verify the dbi is no longer in memory', async () => {
 		let dog_env = await env_utility.createEnvironment(DEV_PATH, 'dog');
 		env_utility.createDBI(dog_env, 'id', false);
-		assert.deepStrictEqual(Object.keys(dog_env.getStats()), STAT_ATTRIBUTES);
+		ensureStatAttributes(dog_env.getStats());
 		assert.deepStrictEqual(Object.keys(dog_env.dbis).indexOf('id') >= 0, true);
 		await clean_lmdb_map({ operation: 'drop_attribute', schema: 'dev', table: 'dog', attribute: 'id' });
 		assert.deepStrictEqual(Object.keys(dog_env.dbis).indexOf('id') >= 0, false);

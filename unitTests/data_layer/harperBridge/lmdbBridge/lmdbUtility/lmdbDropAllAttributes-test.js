@@ -112,7 +112,6 @@ describe('test lmdbDropAllAttributes module', () => {
 				{ attribute: 'id' },
 				{ attribute: '__updatedtime__' },
 				{ attribute: '__createdtime__' },
-				{ attribute: '__blob__' },
 			];
 
 			await lmdb_create_records(INSERT_OBJECT_TEST);
@@ -128,7 +127,6 @@ describe('test lmdbDropAllAttributes module', () => {
 				{ attribute: 'state' },
 				{ attribute: '__updatedtime__' },
 				{ attribute: '__createdtime__' },
-				{ attribute: '__blob__' },
 			];
 		});
 
@@ -197,7 +195,7 @@ describe('test lmdbDropAllAttributes module', () => {
 				undefined
 			);
 			let dbis = await test_utils.assertErrorAsync(environment_utility.listDBIs, [env], undefined);
-			assert.deepStrictEqual(dbis.length, 1);
+			assert.deepStrictEqual(dbis.length, 0);
 
 			for (let x = 0; x < results.length; x++) {
 				await test_utils.assertErrorAsync(

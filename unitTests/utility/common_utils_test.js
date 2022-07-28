@@ -307,20 +307,8 @@ describe('Test common_utils module', () => {
 			assert.deepStrictEqual(cu.autoCast('0102'), '0102');
 		});
 
-		it(`Pass in string of sigle entry number array, expect real array`, function () {
-			assert.deepEqual(cu.autoCast('[1]'), [1]);
-		});
-
-		it(`Pass in string of number array, expect real array`, function () {
-			assert.deepEqual(cu.autoCast('[1,2,3]'), [1, 2, 3]);
-		});
-
 		it(`Pass in string surrounded by brackets, expect string surrounded by brackets`, function () {
 			assert.equal(cu.autoCast('[1 2 3]'), '[1 2 3]');
-		});
-
-		it(`Pass in string of json object, expect json object`, function () {
-			assert.deepEqual(cu.autoCast('{"id":1, "name":"test"}'), { id: 1, name: 'test' });
 		});
 
 		it(`Pass in false, expect false`, function () {

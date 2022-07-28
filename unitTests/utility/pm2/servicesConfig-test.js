@@ -230,4 +230,23 @@ describe('Test pm2 servicesConfig module', () => {
 		const result = services_config.generateNatsReplyServiceConfig();
 		expect(result).to.eql(expected_result);
 	});
+
+	it('Test result from generateClusteringUpgradeV4ServiceConfig is correct', () => {
+		const expected_result = {
+			name: 'Upgrade-4-0-0',
+			script: path.join(LAUNCH_SCRIPTS_DIR, 'launchUpdateNodes4-0-0.js'),
+			exec_mode: 'fork',
+			env: {
+				PROCESS_NAME: 'Upgrade-4-0-0',
+			},
+			merge_logs: true,
+			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_UPGRADE),
+			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_UPGRADE),
+			instances: 1,
+			cwd: LAUNCH_SCRIPTS_DIR,
+			autorestart: false,
+		};
+		const result = services_config.generateClusteringUpgradeV4ServiceConfig();
+		expect(result).to.eql(expected_result);
+	});
 });

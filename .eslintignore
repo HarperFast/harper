@@ -7,3 +7,5 @@
 /validation/common_validators.js
 /utility/common_utils.js
 /utility/logging/transactionLog.js
+/utility/pm2/utilityFunctions.js
+/utility/clustering/removeNode.js

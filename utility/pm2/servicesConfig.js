@@ -232,6 +232,35 @@ function generateNatsReplyServiceConfig() {
 	return reply_ser_config;
 }
 
+/**
+ * Generates the config used to launch a process that will upgrade pre 4.0.0 instances clustering node connections
+ * @returns {{cwd: string, merge_logs: boolean, out_file: string, instances: number, name: string, env: {}, error_file: string, script: string, exec_mode: string}}
+ */
+function generateClusteringUpgradeV4ServiceConfig() {
+	initLogConfig();
+	env.initSync();
+	const clustering_upgrade_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_UPGRADE);
+	const clustering_upgrade_config = {
+		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_UPGRADE_4_0_0,
+		script: hdb_terms.LAUNCH_SERVICE_SCRIPTS.NODES_UPGRADE_4_0_0,
+		exec_mode: 'fork',
+		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_UPGRADE_4_0_0 },
+		merge_logs: true,
+		out_file: clustering_upgrade_logs,
+		error_file: clustering_upgrade_logs,
+		instances: 1,
+		cwd: LAUNCH_SCRIPTS_DIR,
+		autorestart: false,
+	};
+
+	if (!log_to_file) {
+		clustering_upgrade_config.out_file = DISABLE_FILE_LOG;
+		clustering_upgrade_config.error_file = DISABLE_FILE_LOG;
+	}
+
+	return clustering_upgrade_config;
+}
+
 function generateRestart() {
 	initLogConfig();
 
@@ -267,6 +296,44 @@ function generateRestart() {
 	};
 }
 
+function generateJobConfig(job_id) {
+	initLogConfig();
+	const jobs_log = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.JOBS);
+	const jobs_root_dir = path.resolve(__dirname, '../../server/jobs');
+
+	const job_config = {
+		name: `JOB-${job_id}`,
+		exec_mode: 'fork',
+		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: `JOB-${job_id}` },
+		merge_logs: true,
+		out_file: jobs_log,
+		error_file: jobs_log,
+		instances: 1,
+		cwd: LAUNCH_SCRIPTS_DIR,
+		autorestart: false,
+		// To debug a job uncomment the code below and setup debugging on port (usually 9229)
+		//node_args: ['--inspect-brk'],
+	};
+
+	if (!log_to_file) {
+		job_config.out_file = DISABLE_FILE_LOG;
+		job_config.error_file = DISABLE_FILE_LOG;
+	}
+
+	if (process.env.HDB_COMPILED === 'true') {
+		return {
+			...job_config,
+			script: BYTENODE_MOD_CLI,
+			args: path.join(jobs_root_dir, 'jobProcess.jsc'),
+		};
+	}
+
+	return {
+		...job_config,
+		script: path.resolve(jobs_root_dir, 'jobProcess.js'),
+	};
+}
+
 function generateAllServiceConfigs() {
 	return {
 		apps: [generateIPCServerConfig(), generateHDBServerConfig(), generateCFServerConfig()],
@@ -283,4 +350,6 @@ module.exports = {
 	generateNatsLeafServerConfig,
 	generateNatsIngestServiceConfig,
 	generateNatsReplyServiceConfig,
+	generateClusteringUpgradeV4ServiceConfig,
+	generateJobConfig,
 };

@@ -11,6 +11,7 @@ const services_config = require('./servicesConfig');
 const env_mangr = require('../environment/environmentManager');
 const hdb_logger = require('../../utility/logging/harper_logger');
 const config = require('../../utility/pm2/servicesConfig');
+const clustering_utils = require('../clustering/clusterUtilities');
 const util = require('util');
 const exec = util.promisify(require('child_process').exec);
 const path = require('path');
@@ -341,6 +342,9 @@ async function startService(service_name) {
 				// For security reasons remove the Nats servers config file from disk after service has started.
 				await nats_config.removeNatsConfig(service_name);
 				return;
+			case hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_UPGRADE_4_0_0.toLowerCase():
+				start_config = services_config.generateClusteringUpgradeV4ServiceConfig();
+				break;
 			default:
 				throw new Error(`Start service called with unknown service config: ${service_name}`);
 		}
@@ -602,6 +606,16 @@ async function startClustering() {
 		await startService(service);
 	}
 	await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
+
+	// If any node records are marked as pre 4.0.0 version start process to re-establish node connections.
+	const nodes = await clustering_utils.getAllNodeRecords();
+	for (let i = 0, rec_length = nodes.length; i < rec_length; i++) {
+		if (nodes[i].system_info?.hdb_version === hdb_terms.PRE_4_0_0_VERSION) {
+			hdb_logger.info('Starting clustering upgrade 4.0.0 process');
+			await startService(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_UPGRADE_4_0_0);
+			break;
+		}
+	}
 }
 
 /**

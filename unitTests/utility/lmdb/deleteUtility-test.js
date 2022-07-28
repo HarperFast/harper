@@ -72,7 +72,6 @@ describe('Test deleteUtility', () => {
 		await fs.mkdirp(BASE_TEST_PATH);
 		TEST_ENVIRONMENT_NAME = uuid();
 		env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
-		await environment_utility.createDBI(env, '__blob__', false);
 		let clone_records = test_utils.deepClone(MULTI_RECORD_ARRAY);
 		let rez = await write_utility.insertRecords(
 			env,
@@ -266,9 +265,6 @@ describe('Test deleteUtility', () => {
 			iterate_results = { Fran: [5], Hank: [3], Jerry: [2], Joy: [4], Kyle: [1] };
 			results = iterateIndex(env, 'name');
 			assert.deepStrictEqual(results, iterate_results);
-
-			results = iterateIndex(env, '__blob__');
-			assert.deepStrictEqual(results, {});
 
 			results = iterateIndex(env, '__createdtime__');
 

@@ -6,7 +6,7 @@ const rw_common = rewire('../../../utility/lmdb/commonUtility');
 const assert = require('assert');
 
 const primitive_check = rw_common.__get__('primitiveCheck');
-
+const { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH } = require('../../../utility/lmdb/terms');
 const ONE_RECORD_ARRAY = [
     {id:1, name:'Kyle', age:'46'}
 ];
@@ -276,4 +276,53 @@ describe("Test commonUtility module", ()=>{
             assert.deepStrictEqual(common.convertKeyValueFromSearch(JSON.stringify(arr)), arr);
         });
     });
+
+    describe('test getIndexedValues function', ()=>{
+        it('test int returns int', ()=>{
+            assert.deepStrictEqual(common.getIndexedValues(2), [2]);
+            assert.deepStrictEqual(common.getIndexedValues(-22), [-22]);
+        });
+        it('test double return double', ()=>{
+            assert.deepStrictEqual(common.getIndexedValues(2.22), [2.22]);
+            assert.deepStrictEqual(common.getIndexedValues(-22.67678787), [-22.67678787]);
+        });
+        it('test string returns string', ()=>{
+            assert.deepStrictEqual(common.getIndexedValues(''), ['']);
+            assert.deepStrictEqual(common.getIndexedValues('this is some cool text'), ['this is some cool text']);
+        });
+        it('test long string returns overflowed string', ()=> {
+           let str = '';
+           for (let i = 0; i < 400; i++) {
+               str += 'a';
+           }
+           assert.deepStrictEqual(common.getIndexedValues(str), [str.slice(0, MAX_SEARCH_KEY_LENGTH) + OVERFLOW_MARKER]);
+        });
+        it('test bool returns bool', ()=>{
+            assert.deepStrictEqual(common.getIndexedValues(true), [true]);
+            assert.deepStrictEqual(common.getIndexedValues(false), [false]);
+        });
+        it('test buffer returns nothing', ()=>{
+            assert.deepStrictEqual(common.getIndexedValues(Buffer.from('test')), undefined);
+        });
+        it('test null returns nothing', ()=>{
+            assert.deepStrictEqual(common.getIndexedValues(null), undefined);
+        });
+        it('test object returns nothing', ()=>{
+            assert.deepStrictEqual(common.getIndexedValues({cool:'test'}), undefined);
+            assert.deepStrictEqual(common.getIndexedValues({}), undefined);
+        });
+        it('test array of primitives returns array of primitives', ()=>{
+            let buff = Buffer.from('test');
+            let arr = [2, 'test', 2.22, buff, false, null, Symbol.for('cool')];
+            assert.deepStrictEqual(common.getIndexedValues(arr), [2, 'test', 2.22, false, Symbol.for('cool')]);
+            assert.deepStrictEqual(common.getIndexedValues([]), []);
+        });
+
+        it('test array with non-primitive returns string', ()=>{
+            let arr = [2, {}, {foo: 'bar'}];
+            assert.deepStrictEqual(common.getIndexedValues(arr), [2]);
+        });
+    });
+
+
 });

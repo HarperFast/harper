@@ -61,7 +61,7 @@ async function lmdbDeleteRecordsBefore(delete_obj) {
 
 	if (hdb_utils.isEmptyOrZeroLength(search_result)) {
 		log.trace('No records found to delete');
-		return;
+		return { message: 'No records found to delete' };
 	}
 
 	return await chunkDeletes(delete_obj, search_result, schema_table_hash);

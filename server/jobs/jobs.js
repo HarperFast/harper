@@ -6,27 +6,29 @@
  */
 
 const uuidV4 = require('uuid/v4');
-const insert = require('../data_layer/insert');
-const search = require('../data_layer/search');
-const Search_Object = require('../data_layer/SearchObject');
-const SQL_Search_Object = require('../data_layer/SqlSearchObject');
-const hdb_terms = require('../utility/hdbTerms');
+const insert = require('../../data_layer/insert');
+const search = require('../../data_layer/search');
+const Search_Object = require('../../data_layer/SearchObject');
+const search_by_hash_obj = require('../../data_layer/SearchByHashObject');
+const SQL_Search_Object = require('../../data_layer/SqlSearchObject');
+const hdb_terms = require('../../utility/hdbTerms');
 const JobObject = require('./JobObject');
-const UpdateObject = require('../data_layer/UpdateObject');
-const log = require('../utility/logging/harper_logger');
-const Insert_Object = require('../data_layer/InsertObject');
-const hdb_util = require('../utility/common_utils');
+const UpdateObject = require('../../data_layer/UpdateObject');
+const log = require('../../utility/logging/harper_logger');
+const Insert_Object = require('../../data_layer/InsertObject');
+const hdb_util = require('../../utility/common_utils');
 const { promisify } = require('util');
 const moment = require('moment');
-const hdb_sql = require('../sqlTranslator/index');
-const file_load_validator = require('../validation/fileLoadValidator');
-const bulkDeleteValidator = require('../validation/bulkDeleteValidator');
-const { deleteTransactionLogsBeforeValidator } = require('../validation/transactionLogValidator');
-const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
+const hdb_sql = require('../../sqlTranslator');
+const file_load_validator = require('../../validation/fileLoadValidator');
+const bulkDeleteValidator = require('../../validation/bulkDeleteValidator');
+const { deleteTransactionLogsBeforeValidator } = require('../../validation/transactionLogValidator');
+const { handleHDBError, hdb_errors } = require('../../utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
 
 //Promisified functions
 const p_search_by_value = promisify(search.searchByValue);
+const p_search_search_by_hash = promisify(search.searchByHash);
 const p_insert = insert.insert;
 const p_sql_evaluate = promisify(hdb_sql.evaluateSQL);
 const p_insert_update = insert.update;
@@ -36,25 +38,21 @@ module.exports = {
 	updateJob,
 	handleGetJob,
 	handleGetJobsByStartDate,
+	getJobById,
 };
 
 async function handleGetJob(json_body) {
 	try {
-		let result = await getJobById(json_body);
-		log.trace(`Searching for jobs from ${json_body.from_date} to ${json_body.to_date}`);
-		if (result && result.length > 0) {
-			for (let curr_res of result) {
-				if (curr_res.start_datetime) {
-					curr_res.start_datetime_converted = moment(curr_res.start_datetime);
-				}
-				if (curr_res.end_datetime) {
-					curr_res.end_datetime_converted = moment(curr_res.end_datetime);
-				}
-			}
+		let result = await getJobById(json_body.id);
+		if (!hdb_util.isEmptyOrZeroLength(result)) {
+			if (result[0].request !== undefined) delete result[0].request;
+			delete result[0]['__createdtime__'];
+			delete result[0]['__updatedtime__'];
 		}
+
 		return result;
 	} catch (err) {
-		let message = `There was an error searching jobs by date: ${err}`;
+		let message = `There was an error getting job: ${err}`;
 		log.error(message);
 		throw new Error(message);
 	}
@@ -72,6 +70,10 @@ async function handleGetJobsByStartDate(json_body) {
 				if (curr_res.end_datetime) {
 					curr_res.end_datetime_converted = moment(curr_res.end_datetime);
 				}
+
+				if (curr_res.request !== undefined) delete curr_res.request;
+				delete curr_res['__createdtime__'];
+				delete curr_res['__updatedtime__'];
 			}
 		}
 		return result;
@@ -189,6 +191,10 @@ async function addJob(json_body) {
 		}
 	}
 
+	// We save the request so that the job process can get it and run the operation.
+	// Sending the request via IPC to the job process was causing some messages to be lost under load.
+	new_job.request = json_body;
+
 	let insert_object = new Insert_Object(
 		hdb_terms.SYSTEM_SCHEMA_NAME,
 		hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME,
@@ -250,22 +256,22 @@ async function getJobsInDateRange(json_body) {
  * @param json_body - The inbound message
  * @returns {Promise<*>}
  */
-async function getJobById(json_body) {
-	if (hdb_util.isEmptyOrZeroLength(json_body.id)) {
+async function getJobById(job_id) {
+	if (hdb_util.isEmptyOrZeroLength(job_id)) {
 		return hdb_util.errorizeMessage('Invalid job ID specified.');
 	}
-	let search_obj = new Search_Object(
+
+	const search_obj = new search_by_hash_obj(
 		hdb_terms.SYSTEM_SCHEMA_NAME,
 		hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME,
-		'id',
-		json_body.id,
-		'id',
+		[job_id],
 		['*']
 	);
+
 	try {
-		return await p_search_by_value(search_obj);
+		return await p_search_search_by_hash(search_obj);
 	} catch (e) {
-		let message = `There was an error searching for a job by id: ${json_body.id} ${e}`;
+		let message = `There was an error searching for a job by id: ${job_id} ${e}`;
 		log.error(message);
 		return hdb_util.errorizeMessage(`there was an error searching for jobs.  Please check the log for details.`);
 	}

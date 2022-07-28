@@ -156,13 +156,13 @@
         "attribute":"end_datetime"
       },
       {
-        "attribute":"job_body"
-      },
-      {
         "attribute":"message"
       },
       {
         "attribute": "created_datetime"
+      },
+      {
+        "attribute": "request"
       },
       {
         "attribute":"__createdtime__"

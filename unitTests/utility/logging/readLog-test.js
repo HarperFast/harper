@@ -50,7 +50,7 @@ function createTestLog() {
 	for (let x = 0; x < 5; x++) {
 		logAllLevels(x + 1, write_stream);
 	}
-	write_stream.close();
+	write_stream.end();
 }
 
 describe('Test readLog module', () => {

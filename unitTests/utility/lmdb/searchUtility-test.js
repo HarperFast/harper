@@ -27,13 +27,17 @@ const MULTI_RECORD_ARRAY = [
     {id:4, name:'Joy', age: 44, city:'Denver'}
 ];
 
+let denver_but_longer = 'Denver';
+for (let i = 0; i < 100; i++) {
+    denver_but_longer += ' and more text'
+}
 
 const MULTI_RECORD_ARRAY2 = [
-    {id:1, name:'Kyle', age:46, city:'Denver'},
+    {id:1, name:'Kyle', age:46, city:['Athens', 'Denver']},
     {id:2, name:'Jerry', age:32},
     {id:3, name: 'Hank', age: 57},
     {id:4, name:'Joy', age: 44, city:'Denver'},
-    {id:5, name:'Fran', age: 44, city:'Denvertown'},
+    {id:5, name:'Fran', age: 44, city: denver_but_longer},
     {id:6, city:'Nowhere'},
 ];
 
@@ -452,8 +456,9 @@ describe('Test searchUtility module', ()=>{
         it("test iterate on city", () => {
             let results = test_utils.assertErrorSync(search_util.iterateDBI, [env, 'city'], undefined, 'city iterate');
             assert.deepEqual(results, {
+                'Athens': [1],
                 'Denver': [1, 4],
-                'Denvertown': [5],
+                [denver_but_longer]: [5],
                 'Nowhere': [6],
             });
         });
