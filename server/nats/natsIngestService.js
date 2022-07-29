@@ -2,7 +2,7 @@
 
 const util = require('util');
 const { JSONCodec, toJsMsg, createInbox, ErrorCode, checkJsError } = require('nats');
-
+const { decode } = require('msgpackr');
 const global_schema = require('../../utility/globalSchema');
 const ipc_server_handlers = require('../ipc/serverHandlers');
 const nats_utils = require('./utility/natsUtils');
@@ -125,9 +125,9 @@ async function workQueueListener() {
 				}),
 				{ reply: inbox, headers: undefined }
 			);
-
 			// Flush any pending messages.
 			await nats_connection.flush();
+			await hdb_utils.async_set_timeout(50); // delay for NATS to process published messages
 			// Force the subscription to drain and process any messages.
 			await sub.drain();
 			// Make sure all messages in subscription have been processed.
@@ -150,7 +150,7 @@ async function messageProcessor(msg) {
 	if (!hdb_utils.isEmpty(error)) throw error;
 
 	const js_msg = toJsMsg(msg);
-	const entry = jc.decode(js_msg.data);
+	const entry = decode(js_msg.data);
 
 	harper_logger.trace('processing message:', entry);
 
