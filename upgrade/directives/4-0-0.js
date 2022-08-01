@@ -17,6 +17,7 @@ const p_search_by_value = util.promisify(search.searchByValue);
 const insert = require('../../data_layer/insert');
 const routes = require('../../utility/clustering/routes');
 const nats_terms = require('../../server/nats/utility/natsTerms');
+const reindex_upgrade = require('./upgrade_scripts/4_0_0_reindex_script');
 
 let directive4_0_0 = new UpgradeDirective('4.0.0');
 let directives = [];
@@ -182,6 +183,7 @@ function updateSettingsFile_4_0_0() {
 
 directive4_0_0.sync_functions.push(updateSettingsFile_4_0_0);
 directive4_0_0.async_functions.push(updateNodes);
+directive4_0_0.async_functions.push(reindex_upgrade);
 
 directives.push(directive4_0_0);
 
