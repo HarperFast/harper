@@ -45,14 +45,19 @@ function requireUncached(module) {
 
 function createLogRecord(level, process_name, date_now, args) {
 	let log_msg = '';
-	for (let x = 0, length = args.length; x < length; x++) {
+	let length = args.length;
+	const last_arg = length - 1;
+	for (let x = 0; x < length; x++) {
 		let arg = args[x];
 		if (arg instanceof Error && arg.stack) {
-			log_msg = arg.stack;
+			log_msg += arg.stack;
 		} else if (typeof arg === 'object') {
 			log_msg += JSON.stringify(arg);
 		} else {
 			log_msg += arg;
+		}
+		if (x < last_arg) {
+			log_msg += ' ';
 		}
 	}
 	return `{"process_name": "${process_name}", "level": "${level}", "timestamp": "${date_now}", "message": "${log_msg}"}\n`;
@@ -319,7 +324,10 @@ describe('Test harper_logger module', () => {
 	describe('Test writeToLogFile function', () => {
 		let harper_logger;
 		let writeToLogFile;
-		const test_log = createLogRecord('error', '2021-12-03T15:13:05.823Z', 'unit_tests', 'unit test error message');
+		const test_log = createLogRecord('error', '2021-12-03T15:13:05.823Z', 'unit_tests', [
+			'unit test error message',
+			new Error('something is not right'),
+		]);
 		let open_sync_stub;
 		let ensure_dir_sync_stub;
 		let append_file_sync_stub;
