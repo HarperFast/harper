@@ -151,9 +151,6 @@ async function downloadNATSServer(platform, architecture) {
 
 	//change permisions to nats-server binary so it has execute permissions
 	await fs.chmod(binary_path, 0o777);
-	//test nats-server version
-	let version_str = await runCommand(`${NATS_SERVER_BINARY_PATH} --version`, undefined);
-	console.log(chalk.green(`****Successfully extracted ${version_str}.****`));
 }
 
 /**
@@ -171,6 +168,9 @@ async function installer() {
 	//attempt appropriate download of NATS release
 	try {
 		await downloadNATSServer();
+		//test nats-server version
+		let version_str = await runCommand(`${NATS_SERVER_BINARY_PATH} --version`, undefined);
+		console.log(chalk.green(`****Successfully extracted ${version_str}.****`));
 		return;
 	} catch (e) {
 		console.error(chalk.red(`Error: ${e.message}. Failed to download NATS server.  Building from source`));
