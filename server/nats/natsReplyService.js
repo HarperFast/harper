@@ -13,8 +13,7 @@ const update_remote_source = require('../../utility/clustering/updateRemoteSourc
 const remove_remote_source = require('../../utility/clustering/removeRemoteSource');
 const get_remote_source_config = require('../../utility/clustering/getRemoteSourceConfig');
 const UpdateRemoteResponseObject = require('../../utility/clustering/UpdateRemoteResponseObject');
-const { JSONCodec } = require('nats');
-const jc = JSONCodec();
+const { encode, decode } = require('msgpackr');
 const global_schema = require('../../utility/globalSchema');
 const util = require('util');
 
@@ -63,7 +62,7 @@ async function initialize() {
  */
 async function handleRequest(sub) {
 	for await (const msg of sub) {
-		const msg_data = jc.decode(msg.data);
+		const msg_data = decode(msg.data);
 		harper_logger.trace('Received request:', msg_data);
 		let reply;
 
@@ -85,6 +84,6 @@ async function handleRequest(sub) {
 		}
 
 		harper_logger.trace(reply);
-		msg.respond(jc.encode(reply));
+		msg.respond(encode(reply));
 	}
 }

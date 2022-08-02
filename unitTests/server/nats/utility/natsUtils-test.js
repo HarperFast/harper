@@ -537,7 +537,7 @@ describe('Test natsUtils module', () => {
 				request: fake_request,
 			};
 
-			const decode_rw = nats_utils.__set__('jc.decode', util_sandbox.stub().returns('Test request response'));
+			const decode_rw = nats_utils.__set__('decode', util_sandbox.stub().returns('Test request response'));
 			const fake_nats_ref = util_sandbox.stub().resolves({ connection });
 			const get_nats_ref_rw = nats_utils.__set__('getNATSReferences', fake_nats_ref);
 			const result = await nats_utils.request('request_subject', { operation: 'add_node' }, 3000);

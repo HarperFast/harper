@@ -84,7 +84,7 @@ describe('Test LMDB environmentUtility module', () => {
 			await test_utils.assertErrorAsync(
 				rw_validator,
 				[INVALID_BASE_TEST_PATH, TEST_ENVIRONMENT_NAME],
-				LMDB_TEST_ERRORS.INVALID_ENVIRONMENT,
+				LMDB_TEST_ERRORS.INVALID_BASE_PATH,
 				'invalid base_path'
 			);
 		});

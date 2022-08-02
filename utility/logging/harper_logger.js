@@ -161,7 +161,7 @@ function createLogRecord(level, args) {
 	for (let x = 0; x < length; x++) {
 		let arg = args[x];
 		if (arg instanceof Error && arg.stack) {
-			log_msg = arg.stack;
+			log_msg += arg.stack;
 		} else if (typeof arg === 'object') {
 			log_msg += JSON.stringify(arg);
 		} else {

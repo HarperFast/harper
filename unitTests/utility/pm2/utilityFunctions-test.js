@@ -981,7 +981,7 @@ describe('Test pm2 utilityFunctions module', () => {
 			expect(update_log_rotate_config_stub.called, 'expected update_log_rotate_config_stub to be called ').to.be.true;
 
 			env_rw();
-		}).timeout(20000);
+		}).timeout(60000);
 
 		it('Test that it starts pm2-logrotate if log rotate set to true AND already installed', async () => {
 			env_rw = utility_functions.__set__('env_mangr', {

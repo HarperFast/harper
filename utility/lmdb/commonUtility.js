@@ -152,25 +152,11 @@ function getMicroTime() {
 	return Number(full_micro.slice(0, pos) + '.' + full_micro.slice(pos));
 }
 
-/**
- * checks if a value is a 'blob', meaning a string over 254 bytes
- * @param {any} value
- * @returns {boolean}
- */
-function checkIsBlob(value) {
-	if (typeof value === 'string' && Buffer.byteLength(value) > MAX_BYTE_SIZE) {
-		return true;
-	}
-
-	return typeof value === 'object' && Buffer.byteLength(JSON.stringify(value)) > MAX_BYTE_SIZE;
-}
-
 module.exports = {
 	validateEnv,
 	stringifyData,
 	convertKeyValueToWrite,
 	convertKeyValueFromSearch,
 	getMicroTime,
-	checkIsBlob,
 	getIndexedValues,
 };

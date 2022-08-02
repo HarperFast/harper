@@ -4,8 +4,8 @@ const rewire = require('rewire');
 const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
-const { JSONCodec, toJsMsg } = require('nats');
-const jc = JSONCodec();
+const { toJsMsg } = require('nats');
+const { decode } = require('msgpackr');
 
 const test_utils = require('../../test_utils');
 const nats_utils = require('../../../server/nats/utility/natsUtils');
@@ -36,7 +36,7 @@ async function teardownTestStreamAndSource() {
 
 function decodeJsMsg(msg) {
 	const js_msg = toJsMsg(msg);
-	return jc.decode(js_msg.data);
+	return decode(js_msg.data);
 }
 
 describe('Test natsIngestService module', () => {

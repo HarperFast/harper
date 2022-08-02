@@ -15,8 +15,6 @@ const hdb_terms = require('../hdbTerms');
 const env_mngr = require('../environment/environmentManager');
 env_mngr.initSync();
 
-const LMDB_NOSYNC = env_mngr.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_STORAGE_WRITEASYNC);
-
 //Set initial map size to 1Gb
 // eslint-disable-next-line no-magic-numbers
 const MAP_SIZE = 1024 * 1024 * 1024;
@@ -26,8 +24,10 @@ const MAX_READERS = 1000;
 const INTERNAL_DBIS_NAME = lmdb_terms.INTERNAL_DBIS_NAME;
 const DBI_DEFINITION_NAME = lmdb_terms.DBI_DEFINITION_NAME;
 const MDB_LEGACY_FILE_NAME = 'data.mdb';
+const MDB_LEGACY_LOCK_FILE_NAME = 'lock.mdb';
 const MDB_FILE_EXTENSION = '.mdb';
 const MDB_LOCK_FILE_EXTENSION = '.mdb-lock';
+const MDB_LOCK_FILE_SUFFIX = '-lock';
 
 /**
  * This class is used to create the transaction & cursor objects needed to perform search on a dbi as well as a function to close both objects after use
@@ -81,7 +81,13 @@ function pathEnvNameValidation(base_path, env_name) {
 	}
 }
 
-async function verifyEnvironmentBasePath(base_path) {
+/**
+ * checks the environment file exists and returns its path
+ * @param {String} base_path - top level path the environment folder and the .mdb file live under
+ * @param {String} env_name - name of environment
+ * @returns {Promise<string>}
+ */
+async function validateEnvironmentPath(base_path, env_name, allow_v3 = true) {
 	//verify the base_path is valid
 	try {
 		await fs.access(base_path);
@@ -89,23 +95,24 @@ async function verifyEnvironmentBasePath(base_path) {
 		if (e.code === 'ENOENT') {
 			throw new Error(LMDB_ERRORS.INVALID_BASE_PATH);
 		}
-
 		throw e;
 	}
-}
-
-/**
- * checks the environment file exists
- * @param {String} base_path - top level path the environment folder and the .mdb file live under
- * @param {String} env_name - name of environment
- * @returns {Promise<void>}
- */
-async function validateEnvironmentPath(base_path, env_name) {
 	try {
-		await fs.access(path.join(base_path, env_name + MDB_FILE_EXTENSION), fs.constants.R_OK | fs.constants.F_OK);
+		let standard_path = path.join(base_path, env_name + MDB_FILE_EXTENSION);
+		await fs.access(standard_path, fs.constants.R_OK | fs.constants.F_OK);
+		return standard_path; // success with standard path
 	} catch (e) {
 		if (e.code === 'ENOENT') {
-			throw new Error(LMDB_ERRORS.INVALID_ENVIRONMENT);
+			if (allow_v3) {
+				try {
+					await fs.access(path.join(base_path, env_name, MDB_LEGACY_FILE_NAME), fs.constants.R_OK | fs.constants.F_OK);
+					return path.join(base_path, env_name);
+				} catch (e2) {
+					if (e2.code === 'ENOENT') {
+						throw new Error(LMDB_ERRORS.INVALID_ENVIRONMENT);
+					}
+				}
+			} else throw new Error(LMDB_ERRORS.INVALID_ENVIRONMENT);
 		}
 
 		throw e;
@@ -136,20 +143,21 @@ function validateEnvDBIName(env, dbi_name) {
  */
 async function createEnvironment(base_path, env_name, is_txn = false, is_v3 = false) {
 	pathEnvNameValidation(base_path, env_name);
-	await verifyEnvironmentBasePath(base_path);
 	env_name = env_name.toString();
 	try {
-		await fs.access(
-			is_v3 ? path.join(base_path, env_name, MDB_LEGACY_FILE_NAME) : path.join(base_path, env_name + MDB_FILE_EXTENSION),
-			fs.constants.R_OK | fs.constants.F_OK
-		);
+		await validateEnvironmentPath(base_path, env_name, is_v3);
 		//if no error is thrown the environment already exists so we return the handle to that environment
-		return await openEnvironment(base_path, env_name, is_txn, is_v3);
+		return openEnvironment(base_path, env_name, is_txn);
 	} catch (e) {
-		if (e.code === 'ENOENT') {
+		if (e.message === LMDB_ERRORS.INVALID_ENVIRONMENT) {
 			let environment_path = path.join(base_path, env_name);
-			await fs.mkdirp(base_path);
-			let env_init = new OpenEnvironmentObject(environment_path + MDB_FILE_EXTENSION, MAP_SIZE, MAX_DBS, MAX_READERS, LMDB_NOSYNC);
+			await fs.mkdirp(is_v3 ? environment_path : base_path);
+			let env_init = new OpenEnvironmentObject(
+				is_v3 ? environment_path : environment_path + MDB_FILE_EXTENSION,
+				MAP_SIZE,
+				MAX_DBS,
+				MAX_READERS
+			);
 			let env = lmdb.open(env_init);
 
 			env.dbis = Object.create(null);
@@ -199,7 +207,7 @@ async function copyEnvironment(base_path, env_name, destination_path, compact_en
  * @param {String} env_name -  the name of the environment
  * @param {Boolean} is_txn - defines if is a transactions environemnt
  */
-async function openEnvironment(base_path, env_name, is_txn = false, is_v3 = false) {
+async function openEnvironment(base_path, env_name, is_txn = false) {
 	pathEnvNameValidation(base_path, env_name);
 	env_name = env_name.toString();
 	let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
@@ -211,11 +219,9 @@ async function openEnvironment(base_path, env_name, is_txn = false, is_v3 = fals
 	if (global.lmdb_map[full_name] !== undefined) {
 		return global.lmdb_map[full_name];
 	}
-	await verifyEnvironmentBasePath(base_path);
-	if (!is_v3) await validateEnvironmentPath(base_path, env_name);
+	let env_path = await validateEnvironmentPath(base_path, env_name);
 
-	let env_path = path.join(base_path, env_name + (is_v3 ? '' : MDB_FILE_EXTENSION));
-	let env_init = new OpenEnvironmentObject(env_path, MAP_SIZE, MAX_DBS, MAX_READERS, LMDB_NOSYNC);
+	let env_init = new OpenEnvironmentObject(env_path, MAP_SIZE, MAX_DBS, MAX_READERS);
 	let env = lmdb.open(env_init);
 
 	env.dbis = Object.create(null);
@@ -236,15 +242,18 @@ async function openEnvironment(base_path, env_name, is_txn = false, is_v3 = fals
  * @param {String} env_name - name of environment
  * @param {Boolean} is_txn - defines if is a transactions environemnt
  */
-async function deleteEnvironment(base_path, env_name, is_txn = false, is_v3 = false) {
+async function deleteEnvironment(base_path, env_name, is_txn = false) {
 	pathEnvNameValidation(base_path, env_name);
 	env_name = env_name.toString();
-	await verifyEnvironmentBasePath(base_path);
-	if (!is_v3)
-		await validateEnvironmentPath(base_path, env_name);
+	let standard_path = path.join(base_path, env_name + MDB_FILE_EXTENSION);
+	let data_path = await validateEnvironmentPath(base_path, env_name);
 
-	await fs.remove(path.join(base_path, env_name + (is_v3 ? '' : MDB_FILE_EXTENSION)));
-	await fs.remove(path.join(base_path, env_name + (is_v3 ? '' : MDB_LOCK_FILE_EXTENSION)));
+	await fs.remove(data_path);
+	await fs.remove(
+		data_path === standard_path
+			? data_path + MDB_LOCK_FILE_SUFFIX
+			: path.join(path.dirname(data_path), MDB_LEGACY_LOCK_FILE_NAME)
+	); // I suspect we may have problems with this on Windows
 	if (global.lmdb_map !== undefined) {
 		let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
 		if (global.lmdb_map[full_name]) {
@@ -295,25 +304,21 @@ function getCachedEnvironmentName(base_path, env_name, is_txn = false) {
  * @returns {{String, DBIDefinition}}
  */
 function listDBIDefinitions(env) {
-	try {
-		common.validateEnv(env);
+	common.validateEnv(env);
 
-		let dbis = Object.create(null);
+	let dbis = Object.create(null);
 
-		let dbi = openDBI(env, INTERNAL_DBIS_NAME);
-		for (let { key, value } of dbi.getRange({ start: false })) {
-			if (key !== INTERNAL_DBIS_NAME) {
-				try {
-					dbis[key] = Object.assign(new DBIDefinition(), value);
-				} catch (e) {
-					log.warn(`an internal error occurred: unable to parse DBI Definition for ${key}`);
-				}
+	let dbi = openDBI(env, INTERNAL_DBIS_NAME);
+	for (let { key, value } of dbi.getRange({ start: false })) {
+		if (key !== INTERNAL_DBIS_NAME) {
+			try {
+				dbis[key] = Object.assign(new DBIDefinition(), value);
+			} catch (e) {
+				log.warn(`an internal error occurred: unable to parse DBI Definition for ${key}`);
 			}
 		}
-		return dbis;
-	} catch (e) {
-		throw e;
 	}
+	return dbis;
 }
 
 /**
@@ -322,22 +327,18 @@ function listDBIDefinitions(env) {
  * @returns {[String]}
  */
 function listDBIs(env) {
-	try {
-		common.validateEnv(env);
+	common.validateEnv(env);
 
-		let dbis = [];
+	let dbis = [];
 
-		let dbi = openDBI(env, INTERNAL_DBIS_NAME);
+	let dbi = openDBI(env, INTERNAL_DBIS_NAME);
 
-		for (let { key } of dbi.getRange({ start: false })) {
-			if (key !== INTERNAL_DBIS_NAME) {
-				dbis.push(key);
-			}
+	for (let { key } of dbi.getRange({ start: false })) {
+		if (key !== INTERNAL_DBIS_NAME) {
+			dbis.push(key);
 		}
-		return dbis;
-	} catch (e) {
-		throw e;
 	}
+	return dbis;
 }
 
 /**
@@ -347,26 +348,22 @@ function listDBIs(env) {
  * @returns {undefined|DBIDefinition}
  */
 function getDBIDefinition(env, dbi_name) {
-	try {
-		let dbi = openDBI(env, INTERNAL_DBIS_NAME);
+	let dbi = openDBI(env, INTERNAL_DBIS_NAME);
 
-		let found = dbi.getEntry(dbi_name);
-		let dbi_definition = new DBIDefinition();
+	let found = dbi.getEntry(dbi_name);
+	let dbi_definition = new DBIDefinition();
 
-		if (found === undefined) {
-			return;
-		}
-
-		try {
-			dbi_definition = Object.assign(dbi_definition, found.value);
-		} catch (e) {
-			log.warn(`an internal error occurred: unable to parse DBI Definition for ${found}`);
-		}
-
-		return dbi_definition;
-	} catch (e) {
-		throw e;
+	if (found === undefined) {
+		return;
 	}
+
+	try {
+		dbi_definition = Object.assign(dbi_definition, found.value);
+	} catch (e) {
+		log.warn(`an internal error occurred: unable to parse DBI Definition for ${found}`);
+	}
+
+	return dbi_definition;
 }
 
 /**
