@@ -44,7 +44,11 @@ const BASE_SYSTEM_PATH = path.join(BASE_SCHEMA_PATH, 'system');
 const TEMP_TEST_DIR = path.resolve(__dirname, './server/nats/tempTestDir');
 const TEMP_CLUSTERING_TEST_DIR = path.join(TEMP_TEST_DIR, 'clustering');
 const DEPENDENCIES_PATH = path.resolve(__dirname, '../dependencies');
-const NATS_SERVER_PATH = path.join(DEPENDENCIES_PATH, nats_terms.NATS_SERVER_NAME);
+const NATS_SERVER_PATH = path.join(
+	DEPENDENCIES_PATH,
+	`${process.platform}-${process.arch}`,
+	nats_terms.NATS_BINARY_NAME
+);
 const NATS_TEST_SERVER_VALUES = {
 	CLUSTER_USER: 'unit-Test!Cluster@User',
 	CLUSTER_USER_PASS: 'p@ssWor/@d',

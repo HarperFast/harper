@@ -15,7 +15,7 @@ try {
 
 (async () => {
 	try {
-		await installer();
+		await installer.installer();
 	} catch (err) {
 		console.error(err);
 	}
