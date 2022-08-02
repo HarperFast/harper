@@ -2,6 +2,7 @@
 
 const NATS_SERVER_ZIP = 'nats-server.zip';
 const NATS_SERVER_NAME = 'nats-server';
+const NATS_BINARY_NAME = process.platform === 'win32' ? `${NATS_SERVER_NAME}.exe` : NATS_SERVER_NAME;
 const DELIVER_GROUP = 'HDB';
 
 // Regex used to validate Nats node names
@@ -62,6 +63,7 @@ const CLUSTER_STATUS_STATUSES = {
 module.exports = {
 	NATS_SERVER_ZIP,
 	NATS_SERVER_NAME,
+	NATS_BINARY_NAME,
 	PID_FILES,
 	NATS_CONFIG_FILES,
 	SERVER_SUFFIX,

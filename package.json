@@ -102,7 +102,6 @@
     "passport": "0.5.2",
     "passport-http": "0.3.0",
     "passport-local": "1.0.0",
-    "pino": "6.11.2",
     "pm2": "5.2.0",
     "prompt": "1.2.2",
     "properties-reader": "2.2.0",

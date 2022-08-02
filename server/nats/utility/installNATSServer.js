@@ -19,8 +19,8 @@ let pkg_json = require(pkg_json_path);
 
 const REQUIRED_GO_VERSION = pkg_json.engines['go-lang'];
 const REQUIRED_NATS_SERVER_VERSION = pkg_json.engines[nats_terms.NATS_SERVER_NAME];
-const NATS_SERVER_BINARY = path.join(DEPENDENCIES_PATH, `${nats_terms.NATS_SERVER_NAME}`);
-const NATS_SERVER_PATH = path.join(DEPENDENCIES_PATH, nats_terms.NATS_SERVER_NAME);
+const PLATFORM_ARCHITECTURE = `${process.platform}-${process.arch}`;
+const NATS_SERVER_BINARY_PATH = path.join(DEPENDENCIES_PATH, PLATFORM_ARCHITECTURE, `${nats_terms.NATS_BINARY_NAME}`);
 const NATS_SERVER_DOWNLOAD_URL = `https://github.com/nats-io/nats-server/releases/download/v${REQUIRED_NATS_SERVER_VERSION}/nats-server-v${REQUIRED_NATS_SERVER_VERSION}-`;
 
 const PLATFORM_ARCHITECTURE_MAP = {
@@ -28,7 +28,7 @@ const PLATFORM_ARCHITECTURE_MAP = {
 	'linux-arm64': 'linux-arm64.zip',
 	'darwin-x64': 'darwin-amd64.zip',
 	'darwin-arm64': 'darwin-arm64.zip',
-	'win32-x64': 'windows-amd64',
+	'win32-x64': 'windows-amd64.zip',
 };
 
 /**
@@ -54,13 +54,13 @@ async function runCommand(command, cwd = undefined) {
 async function checkNATSServerInstalled() {
 	try {
 		//check if binary exists
-		await fs.access(NATS_SERVER_PATH);
+		await fs.access(NATS_SERVER_BINARY_PATH);
 	} catch (e) {
 		return false;
 	}
 
 	//if nats-server exists check the version
-	let version_str = await runCommand(`${NATS_SERVER_PATH} --version`, undefined);
+	let version_str = await runCommand(`${NATS_SERVER_BINARY_PATH} --version`, undefined);
 	let version = version_str.substring(version_str.lastIndexOf('v') + 1, version_str.length);
 	return semver.eq(version, REQUIRED_NATS_SERVER_VERSION);
 }
@@ -105,66 +105,77 @@ async function extractNATSServer() {
  * @returns {Promise<void>}
  */
 async function cleanUp(full_nats_source_path) {
-	let nats_server_binary_path = path.join(full_nats_source_path, nats_terms.NATS_SERVER_NAME);
+	let temp_nats_server_binary_path = path.join(full_nats_source_path, nats_terms.NATS_BINARY_NAME);
 	let pkg_path = path.join(DEPENDENCIES_PATH, 'pkg');
-	await fs.move(nats_server_binary_path, NATS_SERVER_BINARY, { overwrite: true });
+	await fs.move(temp_nats_server_binary_path, NATS_SERVER_BINARY_PATH, { overwrite: true });
 	await fs.remove(full_nats_source_path);
 	await fs.remove(pkg_path);
 }
 
-async function downloadNATSServer() {
-	//get os & architecture
-	const platform_arch = `${process.platform}-${process.arch}`;
-
+async function downloadNATSServer(platform, architecture) {
+	let platform_architecture = platform && architecture ? `${platform}-${architecture}` : PLATFORM_ARCHITECTURE;
 	//get the zip name from the map
-	let zip = PLATFORM_ARCHITECTURE_MAP[platform_arch];
-
-	//if there is no matching entry exit so we can build from source
-	if (!zip) {
-		return false;
+	let zip = PLATFORM_ARCHITECTURE_MAP[platform_architecture];
+	if (zip === undefined) {
+		throw Error(`unknown platform - architecture: ${platform_architecture}`);
 	}
 	let url = `${NATS_SERVER_DOWNLOAD_URL}${zip}`;
-	let dependency_platform_arch_path = path.join(DEPENDENCIES_PATH, platform_arch, zip);
-	let response;
-	try {
-		//this creates the path with a dummy file so needle can override
-		await fs.ensureFile(dependency_platform_arch_path);
-		await needle('get', url, { output: dependency_platform_arch_path, follow_max: 5 });
-	} catch (e) {
-		console.error(
-			`Error: ${e.message}, failed to download nats-server dependency: ${url}. Building nats-server from source.`
-		);
-		return false;
-	}
+	let dependency_platform_arch_path = path.join(DEPENDENCIES_PATH, platform_architecture, zip);
+
+	//this creates the path with a dummy file so needle can override
+	await fs.ensureFile(dependency_platform_arch_path);
+	console.log(chalk.green(`****Downloading install of NATS Server: ${url}****`));
+	await needle('get', url, { output: dependency_platform_arch_path, follow_max: 5 });
+	console.log(chalk.green(`Successfully downloaded and saved nats-server zip.`));
+
 	//extract the file
+	console.log(chalk.green(`Extracting nats-server zip.`));
 	const stream_zip = new StreamZip.async({ file: dependency_platform_arch_path });
 	const entries = await stream_zip.entries();
-	for (const entry of Object.values(entries)) {
-		if (!entry.isDirectory && entry.name.endsWith('nats-server')) {
-			await stream_zip.extract(entry.name, NATS_SERVER_BINARY);
-		}
-		/*const desc = entry.isDirectory ? 'directory' : `${entry.size} bytes`;
-		console.log(`Entry ${entry.name}: ${desc}`);*/
-	}
-}
+	//iterate entries
 
-downloadNATSServer().then(d=>{});
+	let nats_binary_name =
+		platform === 'win32' || process.platform === 'win32'
+			? `${nats_terms.NATS_SERVER_NAME}.exe`
+			: nats_terms.NATS_SERVER_NAME;
+	let binary_path = path.join(DEPENDENCIES_PATH, platform_architecture, nats_binary_name);
+	for (const entry of Object.values(entries)) {
+		if (!entry.isDirectory && entry.name.endsWith(nats_binary_name)) {
+			await stream_zip.extract(entry.name, binary_path);
+			console.log(chalk.green(`Successfully extracted nats-server zip.`));
+		}
+	}
+	await stream_zip.close();
+	//delete the zip file
+	await fs.remove(dependency_platform_arch_path);
+
+	//change permisions to nats-server binary so it has execute permissions
+	await fs.chmod(binary_path, 0o777);
+	//test nats-server version
+	let version_str = await runCommand(`${NATS_SERVER_BINARY_PATH} --version`, undefined);
+	console.log(chalk.green(`****Successfully extracted ${version_str}.****`));
+}
 
 /**
  * Orchestrates the install of the NATS server
  * @returns {Promise<void>}
  */
 async function installer() {
-	//attempt appropriate download of NATS release
-	//create ability to download all major architectures
-	//fall back to building from source
-
 	console.log(chalk.green('****Starting install of NATS Server.****'));
 	let installed = await checkNATSServerInstalled();
 	if (installed) {
 		console.log(chalk.green(`****NATS Server v${REQUIRED_NATS_SERVER_VERSION} installed.****`));
 		return;
 	}
+
+	//attempt appropriate download of NATS release
+	try {
+		await downloadNATSServer();
+		return;
+	} catch (e) {
+		console.error(chalk.red(`Error: ${e.message}. Failed to download NATS server.  Building from source`));
+	}
+	//fall back to building from source
 
 	try {
 		await checkGoVersion();
@@ -181,4 +192,4 @@ async function installer() {
 	console.log(chalk.green(`****NATS Server v${REQUIRED_NATS_SERVER_VERSION} is installed.****`));
 }
 
-module.exports = installer;
+module.exports = { installer, downloadNATSServer };

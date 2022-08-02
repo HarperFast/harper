@@ -48,7 +48,7 @@ const jc = JSONCodec();
 const HDB_CLUSTERING_FOLDER = 'clustering';
 const REQUIRED_NATS_SERVER_VERSION = pkg_json.engines[nats_terms.NATS_SERVER_NAME];
 const DEPENDENCIES_PATH = path.resolve(__dirname, '../../../dependencies');
-const NATS_SERVER_PATH = path.join(DEPENDENCIES_PATH, nats_terms.NATS_SERVER_NAME);
+const NATS_SERVER_PATH = path.join(DEPENDENCIES_PATH, `${process.platform}-${process.arch}`, nats_terms.NATS_BINARY_NAME);
 
 let leaf_config;
 let hub_config;

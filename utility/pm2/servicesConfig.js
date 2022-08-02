@@ -12,7 +12,12 @@ const BYTENODE_MOD_CLI = path.resolve(__dirname, '../../node_modules/bytenode/li
 const LAUNCH_SCRIPTS_DIR = path.resolve(__dirname, '../../launchServiceScripts');
 const SCRIPTS_DIR = path.resolve(__dirname, '../scripts');
 const RESTART_SCRIPT = path.join(SCRIPTS_DIR, hdb_terms.HDB_RESTART_SCRIPT);
-const NATS_SERVER_BINARY_PATH = path.resolve(__dirname, '../../dependencies', nats_terms.NATS_SERVER_NAME);
+const NATS_SERVER_BINARY_PATH = path.resolve(
+	__dirname,
+	'../../dependencies',
+	`${process.platform}-${process.arch}`,
+	nats_terms.NATS_BINARY_NAME
+);
 let log_to_file = undefined;
 let log_path = undefined;
 
