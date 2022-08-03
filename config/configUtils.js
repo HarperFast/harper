@@ -188,8 +188,16 @@ function validateConfig(config_doc) {
 	config_doc.setIn(['logging', 'root'], validation.value.logging.root);
 	config_doc.setIn(['operationsApi', 'tls', 'certificate'], validation.value.operationsApi.tls.certificate);
 	config_doc.setIn(['operationsApi', 'tls', 'privateKey'], validation.value.operationsApi.tls.privateKey);
+	config_doc.setIn(
+		['operationsApi', 'tls', 'certificateAuthority'],
+		validation.value.operationsApi.tls.certificateAuthority
+	);
 	config_doc.setIn(['customFunctions', 'tls', 'certificate'], validation.value.customFunctions.tls.certificate);
 	config_doc.setIn(['customFunctions', 'tls', 'privateKey'], validation.value.customFunctions.tls.privateKey);
+	config_doc.setIn(
+		['customFunctions', 'tls', 'certificateAuthority'],
+		validation.value.customFunctions.tls.certificateAuthority
+	);
 
 	if (!hdb_utils.isEmpty(validation.value?.clustering?.tls?.certificate)) {
 		config_doc.setIn(['clustering', 'tls', 'certificate'], validation.value.clustering.tls.certificate);
@@ -376,7 +384,10 @@ function castConfigValue(param, value) {
 
 	//in order to handle json and arrays we test the string to see if it seems minimally like an object or array and perform a JSON.parse on it.
 	//if it fails we assume it is just a regular string
-	if (typeof value === 'string' && ((value.startsWith('{') && value.endsWith('}')) || (value.startsWith('[') && value.endsWith(']')))) {
+	if (
+		typeof value === 'string' &&
+		((value.startsWith('{') && value.endsWith('}')) || (value.startsWith('[') && value.endsWith(']')))
+	) {
 		try {
 			return JSON.parse(value);
 		} catch (e) {

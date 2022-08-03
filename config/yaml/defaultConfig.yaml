@@ -26,6 +26,7 @@ clustering:
     certificate: null
     certificateAuthority: null
     privateKey: null
+    insecure: true
   user: null
 customFunctions:
   enabled: false

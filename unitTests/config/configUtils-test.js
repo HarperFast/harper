@@ -315,6 +315,7 @@ describe('Test configUtils module', () => {
 						certificate: TEST_CERT,
 						certificateAuthority: null,
 						privateKey: TEST_PRIVATE_KEY,
+						insecure: true,
 					},
 					user: 'test_user',
 				},
@@ -407,6 +408,7 @@ describe('Test configUtils module', () => {
 				clustering_tls_certificate: TEST_CERT,
 				clustering_tls_certificateauthority: null,
 				clustering_tls_privatekey: TEST_PRIVATE_KEY,
+				clustering_tls_insecure: true,
 				clustering_user: 'test_user',
 				customfunctions_enabled: true,
 				customfunctions_network_cors: false,
@@ -484,6 +486,7 @@ describe('Test configUtils module', () => {
 			clustering_tls_certificate: null,
 			clustering_tls_certificateauthority: null,
 			clustering_tls_privatekey: null,
+			clustering_tls_insecure: true,
 			clustering_user: null,
 			customfunctions_enabled: false,
 			customfunctions_network_cors: true,
@@ -745,7 +748,7 @@ describe('Test configUtils module', () => {
 						root: '/yaml/custom_functions',
 						tls: {
 							certificate: '/yaml/keys/certificate.pem',
-							certificateAuthority: null,
+							certificateAuthority: '/yaml/keys/ca.pem',
 							privateKey: '/yaml/keys/privateKey.pem',
 						},
 					},
@@ -753,10 +756,11 @@ describe('Test configUtils module', () => {
 						root: '/yaml/log',
 					},
 					operationsApi: {
+						// 23250
 						processes: 12,
 						tls: {
 							certificate: '/yaml/keys/certificate.pem',
-							certificateAuthority: null,
+							certificateAuthority: '/yaml/keys/ca.pem',
 							privateKey: '/yaml/keys/privateKey.pem',
 						},
 					},
@@ -794,16 +798,20 @@ describe('Test configUtils module', () => {
 			expect(set_in_stub.args[4][1]).to.equal(CERT_PEM);
 			expect(set_in_stub.args[5][0]).to.eql(['operationsApi', 'tls', 'privateKey']);
 			expect(set_in_stub.args[5][1]).to.equal(KEY_PEM);
-			expect(set_in_stub.args[6][0]).to.eql(['customFunctions', 'tls', 'certificate']);
-			expect(set_in_stub.args[6][1]).to.equal(CERT_PEM);
-			expect(set_in_stub.args[7][0]).to.eql(['customFunctions', 'tls', 'privateKey']);
-			expect(set_in_stub.args[7][1]).to.equal(KEY_PEM);
-			expect(set_in_stub.args[8][0]).to.eql(['clustering', 'tls', 'certificate']);
-			expect(set_in_stub.args[8][1]).to.equal(CERT_PEM);
-			expect(set_in_stub.args[9][0]).to.eql(['clustering', 'tls', 'privateKey']);
-			expect(set_in_stub.args[9][1]).to.equal(KEY_PEM);
-			expect(set_in_stub.args[10][0]).to.eql(['clustering', 'tls', 'certificateAuthority']);
-			expect(set_in_stub.args[10][1]).to.equal(CA_PEM);
+			expect(set_in_stub.args[6][0]).to.eql(['operationsApi', 'tls', 'certificateAuthority']);
+			expect(set_in_stub.args[6][1]).to.equal(CA_PEM);
+			expect(set_in_stub.args[7][0]).to.eql(['customFunctions', 'tls', 'certificate']);
+			expect(set_in_stub.args[7][1]).to.equal(CERT_PEM);
+			expect(set_in_stub.args[8][0]).to.eql(['customFunctions', 'tls', 'privateKey']);
+			expect(set_in_stub.args[8][1]).to.equal(KEY_PEM);
+			expect(set_in_stub.args[9][0]).to.eql(['customFunctions', 'tls', 'certificateAuthority']);
+			expect(set_in_stub.args[9][1]).to.equal(CA_PEM);
+			expect(set_in_stub.args[10][0]).to.eql(['clustering', 'tls', 'certificate']);
+			expect(set_in_stub.args[10][1]).to.equal(CERT_PEM);
+			expect(set_in_stub.args[11][0]).to.eql(['clustering', 'tls', 'privateKey']);
+			expect(set_in_stub.args[11][1]).to.equal(KEY_PEM);
+			expect(set_in_stub.args[12][0]).to.eql(['clustering', 'tls', 'certificateAuthority']);
+			expect(set_in_stub.args[12][1]).to.equal(CA_PEM);
 		});
 	});
 

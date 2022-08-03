@@ -162,7 +162,8 @@ describe('Test pm2 servicesConfig module', () => {
 		const hub_config_path = path.join(hdb_root, 'clustering', 'hub.json');
 		const expected_result = {
 			name: 'Clustering Hub',
-			script: `${NATS_SERVER_BINARY_PATH} -c ${hub_config_path}`,
+			script: NATS_SERVER_BINARY_PATH,
+			args: `-c ${hub_config_path}`,
 			exec_mode: 'fork',
 			env: {
 				PROCESS_NAME: 'Clustering Hub',
@@ -182,7 +183,8 @@ describe('Test pm2 servicesConfig module', () => {
 		const leaf_config_path = path.join(hdb_root, 'clustering', 'leaf.json');
 		const expected_result = {
 			name: 'Clustering Leaf',
-			script: `${NATS_SERVER_BINARY_PATH} -c ${leaf_config_path}`,
+			script: NATS_SERVER_BINARY_PATH,
+			args: `-c ${leaf_config_path}`,
 			exec_mode: 'fork',
 			env: {
 				PROCESS_NAME: 'Clustering Leaf',

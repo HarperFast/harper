@@ -42,6 +42,10 @@ async function generateNatsConfig(is_restart = false, process_name = undefined) 
 	const LEAF_JS_STORE_DIR = path.join(HDB_ROOT, HDB_CLUSTERING_FOLDER, 'leaf');
 	const HUB_CONFIG_PATH = path.join(HDB_ROOT, HDB_CLUSTERING_FOLDER, nats_terms.NATS_CONFIG_FILES.HUB_SERVER);
 	const LEAF_CONFIG_PATH = path.join(HDB_ROOT, HDB_CLUSTERING_FOLDER, nats_terms.NATS_CONFIG_FILES.LEAF_SERVER);
+	const CERT_FILE = env_manager.get(CONFIG_PARAMS.CLUSTERING_TLS_CERTIFICATE);
+	const KEY_FILE = env_manager.get(CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY);
+	const CA_FILE = env_manager.get(CONFIG_PARAMS.CLUSTERING_TLS_CERT_AUTH);
+	const INSECURE = env_manager.get(CONFIG_PARAMS.CLUSTERING_TLS_INSECURE);
 
 	if (!(await nats_utils.checkNATSServerInstalled())) {
 		generateNatsConfigError("nats-server dependency is either missing or the wrong version. Run 'npm install' to fix");
@@ -77,7 +81,7 @@ async function generateNatsConfig(is_restart = false, process_name = undefined) 
 	if (!hdb_utils.isEmptyOrZeroLength(hub_routes)) {
 		for (const route of hub_routes) {
 			cluster_routes.push(
-				`nats-route://${cluster_user.sys_name_encoded}:${cluster_user.uri_encoded_d_hash}@${route.host}:${route.port}`
+				`tls://${cluster_user.sys_name_encoded}:${cluster_user.uri_encoded_d_hash}@${route.host}:${route.port}`
 			);
 		}
 	}
@@ -87,6 +91,10 @@ async function generateNatsConfig(is_restart = false, process_name = undefined) 
 		env_manager.get(CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT),
 		env_manager.get(CONFIG_PARAMS.CLUSTERING_NODENAME),
 		HUB_PID_FILE_PATH,
+		CERT_FILE,
+		KEY_FILE,
+		CA_FILE,
+		INSECURE,
 		env_manager.get(CONFIG_PARAMS.CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT),
 		env_manager.get(CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NAME),
 		env_manager.get(CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT),
@@ -101,11 +109,11 @@ async function generateNatsConfig(is_restart = false, process_name = undefined) 
 		hdb_logger.trace(`Hub server config written to ${HUB_CONFIG_PATH}`);
 	}
 
-	const leafnode_remotes_url_sys = `nats-leaf://${cluster_user.sys_name_encoded}:${
+	const leafnode_remotes_url_sys = `tls://${cluster_user.sys_name_encoded}:${
 		cluster_user.uri_encoded_d_hash
 	}@0.0.0.0:${env_manager.get(CONFIG_PARAMS.CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT)}`;
 
-	const leafnode_remotes_url_hdb = `nats-leaf://${cluster_user.uri_encoded_name}:${
+	const leafnode_remotes_url_hdb = `tls://${cluster_user.uri_encoded_name}:${
 		cluster_user.uri_encoded_d_hash
 	}@0.0.0.0:${env_manager.get(CONFIG_PARAMS.CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT)}`;
 
@@ -118,7 +126,11 @@ async function generateNatsConfig(is_restart = false, process_name = undefined) 
 		[leafnode_remotes_url_sys],
 		[leafnode_remotes_url_hdb],
 		sys_users,
-		hdb_users
+		hdb_users,
+		CERT_FILE,
+		KEY_FILE,
+		CA_FILE,
+		INSECURE
 	);
 
 	if (process_name === undefined || process_name === hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF.toLowerCase()) {
