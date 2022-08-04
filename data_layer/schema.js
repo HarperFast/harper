@@ -237,13 +237,6 @@ async function dropTable(drop_table_object) {
 		);
 	}
 
-	//we refresh and assign the entire table metadata to global in order to make sure we have the latest
-	let table = await schema_metadata_validator.schema_describe.describeTable({
-		schema: drop_table_object.schema,
-		table: drop_table_object.table,
-	});
-	global.hdb_schema[drop_table_object.schema][drop_table_object.table] = table;
-
 	await harperBridge.dropTable(drop_table_object);
 	signalling.signalSchemaChange(
 		new SchemaEventMsg(process.pid, drop_table_object.operation, drop_table_object.schema, drop_table_object.table)
