@@ -1014,6 +1014,7 @@ describe('Test writeUtility module', () => {
 
 			rando_func = alasql.compile(`SELECT rando + 1 AS [${hdb_terms.FUNC_VAL}] FROM ?`);
 
+			record = Object.assign({}, record); // copy, so we don't modify the record in the cache
 			record.rando = rando_func;
 			result = await test_utils.assertErrorAsync(
 				write_utility.updateRecords,
