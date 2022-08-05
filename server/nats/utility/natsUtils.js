@@ -638,7 +638,7 @@ async function request(subject, data, timeout = 2000, reply = createInbox()) {
  */
 function reloadNATS(pid_file_path) {
 	return new Promise(async (resolve, reject) => {
-		const reload = spawn('nats-server', ['--signal', `reload=${pid_file_path}`]);
+		const reload = spawn(NATS_SERVER_PATH, ['--signal', `reload=${pid_file_path}`], { cwd: __dirname });
 		let proc_err;
 		let proc_data;
 
