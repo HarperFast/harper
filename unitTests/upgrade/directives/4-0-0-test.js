@@ -423,7 +423,8 @@ describe('Test reindexing lmdb', () => {
 		} catch (e) {}
 	});
 	it('reindexes lmdb databases from old databases', async () => {
-		await upgrade_script(false);
+		let result = await upgrade_script(false);
+		assert.strictEqual(result, 'Reindexing for 4.0.0 upgrade complete');
 		let new_env = await environment_utility.openEnvironment(path.join(__dirname, 'upgrade_scripts/reindexTestDir/schema/dev'), 'dog');
 		try {
 			let dbis = environment_utility.listDBIs(new_env);

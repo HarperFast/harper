@@ -221,7 +221,9 @@ async function openEnvironment(base_path, env_name, is_txn = false) {
 	}
 	let env_path = await validateEnvironmentPath(base_path, env_name);
 
-	let env_init = new OpenEnvironmentObject(env_path, MAP_SIZE, MAX_DBS, MAX_READERS);
+	let standard_path = path.join(base_path, env_name + MDB_FILE_EXTENSION);
+	let read_only = env_path != standard_path; // legacy database, only open in read only mode
+	let env_init = new OpenEnvironmentObject(env_path, MAP_SIZE, MAX_DBS, MAX_READERS, read_only);
 	let env = lmdb.open(env_init);
 
 	env.dbis = Object.create(null);

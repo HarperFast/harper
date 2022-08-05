@@ -54,7 +54,7 @@ async function reindexUpgrade(delete_old_db = true) {
 	}
 
 	logger.notify('Reindexing upgrade complete');
-	return 'Reindexing for 4.0.0 upgrade complete';
+	return 'Reindexing for 4.0.0 upgrade complete' + (error_occurred ? ', but errors occurred' : '');
 }
 
 /**
