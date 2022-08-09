@@ -34,7 +34,8 @@ jobs:
         cd ../
         echo "$CI_PRIVATE_KEY" > private_key && chmod 600 private_key
 
-        public_dns_names=${{ inputs.publicDns }}
+        public_dns_names="${{ inputs.publicDns }}"
+        echo ${public_dns_names[@]}
         for public_dns_name in ${public_dns_names[@]}
         do 
             echo "Starting work on: $public_dns_name"
