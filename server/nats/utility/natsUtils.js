@@ -17,6 +17,7 @@ const hdb_terms = require('../../../utility/hdbTerms');
 const hdb_utils = require('../../../utility/common_utils');
 const hdb_logger = require('../../../utility/logging/harper_logger');
 const crypto_hash = require('../../../security/cryptoHash');
+const { encode, decode } = require('msgpackr');
 
 const { isEmpty } = hdb_utils;
 const user = require('../../../security/user');
@@ -48,7 +49,7 @@ const jc = JSONCodec();
 const HDB_CLUSTERING_FOLDER = 'clustering';
 const REQUIRED_NATS_SERVER_VERSION = pkg_json.engines[nats_terms.NATS_SERVER_NAME];
 const DEPENDENCIES_PATH = path.resolve(__dirname, '../../../dependencies');
-const NATS_SERVER_PATH = path.join(DEPENDENCIES_PATH, nats_terms.NATS_SERVER_NAME);
+const NATS_SERVER_PATH = path.join(DEPENDENCIES_PATH, `${process.platform}-${process.arch}`, nats_terms.NATS_BINARY_NAME);
 
 let leaf_config;
 let hub_config;
@@ -138,6 +139,12 @@ async function createConnection(port, username, password, wait_on_first_connect 
 		pass: password,
 		maxReconnectAttempts: -1,
 		waitOnFirstConnect: wait_on_first_connect,
+		tls: {
+			keyFile: env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY),
+			certFile: env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_CERTIFICATE),
+			caFile: env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_CERT_AUTH),
+			insecure: env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_INSECURE),
+		},
 	});
 }
 
@@ -229,6 +236,7 @@ async function getServerList() {
 
 	await connection.publish('$SYS.REQ.SERVER.PING.VARZ', undefined, { reply: subj });
 	await connection.flush();
+	await hdb_utils.async_set_timeout(50); // delay for NATS to process published messages
 	await sub.drain();
 	await connection.close();
 	await get_servers; // make sure we have finished getting the servers
@@ -338,7 +346,7 @@ async function viewStream(stream_name, start_time = undefined, max = undefined) 
 
 		for await (const m of sub) {
 			const jmsg = toJsMsg(m);
-			const obj = jc.decode(jmsg.data);
+			const obj = decode(jmsg.data);
 			let wrapper = {
 				nats_timestamp: jmsg.info.timestampNanos,
 				nats_sequence: jmsg.info.streamSequence,
@@ -400,13 +408,13 @@ async function publishToStream(subject_name, stream_name, entries = [], originat
 		for (let x = 0, length = entries.length; x < length; x++) {
 			try {
 				hdb_logger.trace(`publishToStream publishing to subject: ${subject}, data:`, entries[x]);
-				await js.publish(subject, jc.encode(entries[x]), { headers: h });
+				await js.publish(subject, encode(entries[x]), { headers: h });
 			} catch (err) {
 				// If the stream doesn't exist it is created and published to
 				if (err.code && err.code.toString() === '503') {
 					hdb_logger.trace(`publishToStream creating stream: ${stream_name}`);
 					await createLocalStream(stream_name, [subject]);
-					await js.publish(subject, jc.encode(entries[x]), { headers: h });
+					await js.publish(subject, encode(entries[x]), { headers: h });
 				} else {
 					throw err;
 				}
@@ -607,7 +615,7 @@ async function request(subject, data, timeout = 2000, reply = createInbox()) {
 		throw new Error('data param must be an object');
 	}
 
-	const request_data = jc.encode(data);
+	const request_data = encode(data);
 
 	const { connection } = await getNATSReferences();
 	let options = {
@@ -620,7 +628,7 @@ async function request(subject, data, timeout = 2000, reply = createInbox()) {
 	}
 
 	const response = await connection.request(subject, request_data, options);
-	return jc.decode(response.data);
+	return decode(response.data);
 }
 
 /**
@@ -630,7 +638,7 @@ async function request(subject, data, timeout = 2000, reply = createInbox()) {
  */
 function reloadNATS(pid_file_path) {
 	return new Promise(async (resolve, reject) => {
-		const reload = spawn('nats-server', ['--signal', `reload=${pid_file_path}`]);
+		const reload = spawn(NATS_SERVER_PATH, ['--signal', `reload=${pid_file_path}`], { cwd: __dirname });
 		let proc_err;
 		let proc_data;
 

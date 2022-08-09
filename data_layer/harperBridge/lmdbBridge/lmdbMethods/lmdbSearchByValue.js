@@ -12,7 +12,7 @@ module.exports = lmdbSearchByValue;
  * gets records by value - returns array of Objects
  * @param {SearchObject} search_object
  * @param {hdb_terms.VALUE_SEARCH_COMPARATORS} [comparator]
- * @returns {Array.<Object>}
+ * @returns {Promise<{}|{}[]>}
  */
 async function lmdbSearchByValue(search_object, comparator) {
 	let comparator_search = !common_utils.isEmpty(comparator);

@@ -6,6 +6,13 @@ const chai = require('chai');
 const sinon = require('sinon');
 const { expect } = chai;
 const chalk = require('chalk');
+const test_utils = require('../../../test_utils');
+const path = require('path');
+const fs = require('fs-extra');
+const package_json = require('../../../../package.json');
+const NATS_VERSION = package_json.engines['nats-server'];
+const needle = require('needle');
+const stream_zip = require('node-stream-zip');
 
 describe('test checkGoVersion', () => {
 	const sandbox = sinon.createSandbox();
@@ -204,7 +211,7 @@ describe('test cleanUp function', () => {
 			remove: fs_remove_stub,
 		});
 
-		let nats_server_path_restore = installer.__set__('NATS_SERVER_BINARY', '/tmp/nats-server');
+		let nats_server_path_restore = installer.__set__('NATS_SERVER_BINARY_PATH', '/tmp/nats-server');
 		let deps_path_restore = installer.__set__('DEPENDENCIES_PATH', '/tmp/');
 		let path_join_spy = sandbox.spy(installer.__get__('path'), 'join');
 
@@ -306,18 +313,22 @@ describe('test installer function', () => {
 		let extract_stub = sandbox.stub();
 		let run_cmd_stub = sandbox.stub();
 		let cleanup_stub = sandbox.stub();
+		let download_stub = sandbox.stub().callsFake(async () => {
+			throw Error('bad download');
+		});
 
 		let check_nats_installed_restore = installer.__set__('checkNATSServerInstalled', nats_installed_stub);
 		let check_go_restore = installer.__set__('checkGoVersion', check_go_stub);
 		let extract_restore = installer.__set__('extractNATSServer', extract_stub);
 		let run_cmd_restore = installer.__set__('runCommand', run_cmd_stub);
 		let cleanup_restore = installer.__set__('cleanUp', cleanup_stub);
+		let download_restore = installer.__set__('downloadNATSServer', download_stub);
 
 		await installer_func();
 		expect(console_log_spy.callCount).to.equal(4);
-		expect(console_error_spy.callCount).to.equal(1);
+		expect(console_error_spy.callCount).to.equal(2);
 		expect(console_log_spy.args[0]).to.eql([chalk.green('****Starting install of NATS Server.****')]);
-		expect(console_error_spy.args).to.eql([[chalk.red('no go')]]);
+		expect(console_error_spy.args[1]).to.eql([chalk.red('no go')]);
 		expect(process_exit_stub.called).to.be.true;
 		expect(nats_installed_stub.callCount).to.equal(1);
 		expect(check_go_stub.callCount).to.equal(1);
@@ -327,10 +338,11 @@ describe('test installer function', () => {
 		extract_restore();
 		run_cmd_restore();
 		cleanup_restore();
+		download_restore();
 		process_exit_stub.restore();
 	});
 
-	it('test happy path', async () => {
+	it('test happy path, no download', async () => {
 		let nats_installed_stub = sandbox.stub().callsFake(async () => {
 			return false;
 		});
@@ -342,16 +354,20 @@ describe('test installer function', () => {
 		});
 		let run_cmd_stub = sandbox.stub().callsFake(async (cmd, cwd) => {});
 		let cleanup_stub = sandbox.stub().callsFake(async (folder) => {});
+		let download_stub = sandbox.stub().callsFake(async () => {
+			throw Error('bad download');
+		});
 
 		let check_nats_installed_restore = installer.__set__('checkNATSServerInstalled', nats_installed_stub);
 		let check_go_restore = installer.__set__('checkGoVersion', check_go_stub);
 		let extract_restore = installer.__set__('extractNATSServer', extract_stub);
 		let run_cmd_restore = installer.__set__('runCommand', run_cmd_stub);
 		let cleanup_restore = installer.__set__('cleanUp', cleanup_stub);
+		let download_restore = installer.__set__('downloadNATSServer', download_stub);
 
 		await installer_func();
 		expect(console_log_spy.callCount).to.equal(4);
-		expect(console_error_spy.callCount).to.equal(0);
+		expect(console_error_spy.callCount).to.equal(1);
 		expect(console_log_spy.args).to.eql([
 			[chalk.green('****Starting install of NATS Server.****')],
 			[chalk.green('Building NATS Server binary.')],
@@ -370,6 +386,7 @@ describe('test installer function', () => {
 		extract_restore();
 		run_cmd_restore();
 		cleanup_restore();
+		download_restore();
 	});
 });
 
@@ -582,5 +599,118 @@ describe('test runCommand function', () => {
 
 		exec_restore();
 		run_command_sandbox.restore();
+	});
+});
+
+describe('test downloadNATSServer function', () => {
+	const sandbox = sinon.createSandbox();
+	const dependency_path = path.join(test_utils.getMockTestPath(), 'dependencies');
+	let download_nats = installer.__get__('downloadNATSServer');
+	let deps_path_restore;
+	beforeEach(async () => {
+		await fs.mkdirp(dependency_path);
+		deps_path_restore = installer.__set__('DEPENDENCIES_PATH', dependency_path);
+		sandbox.restore();
+	});
+
+	afterEach(async () => {
+		await fs.remove(dependency_path);
+		deps_path_restore();
+	});
+
+	it('test happy path, simulate linux x64', async () => {
+		// spy fs.ensureFile, fs.remove, fs.chmod
+		let og_platform = process.platform;
+		let og_arch = process.arch;
+		Object.defineProperty(process, 'platform', { value: 'linux' });
+		Object.defineProperty(process, 'arch', { value: 'x64' });
+
+		let fs_ensure_file_spy = sandbox.spy(installer.__get__('fs'), 'ensureFile');
+		let fs_remove_spy = sandbox.spy(installer.__get__('fs'), 'remove');
+		let fs_chmod_spy = sandbox.spy(installer.__get__('fs'), 'chmod');
+
+		let needle_spy = sandbox.spy(needle, 'request');
+
+		let stream_zip_async_spy = sandbox.spy(stream_zip, 'async');
+
+		let err;
+		try {
+			await download_nats();
+		} catch (e) {
+			err = e;
+		}
+		let zip_path = path.join(dependency_path, 'linux-x64', 'linux-amd64.zip');
+		expect(err).to.equal(undefined);
+		expect(fs_ensure_file_spy.callCount).to.equal(1);
+		expect(fs_ensure_file_spy.getCall(0).args).to.eql([zip_path]);
+		expect(fs_remove_spy.callCount).to.equal(1);
+		expect(fs_remove_spy.getCall(0).args).to.eql([zip_path]);
+		expect(needle_spy.callCount).to.equal(1);
+		expect(needle_spy.getCall(0).args[1]).to.eql(
+			`https://github.com/nats-io/nats-server/releases/download/v${NATS_VERSION}/nats-server-v${NATS_VERSION}-linux-amd64.zip`
+		);
+		expect(needle_spy.getCall(0).args[3]).to.eql({ output: zip_path, follow_max: 5 });
+
+		expect(stream_zip_async_spy.callCount).to.equal(1);
+		expect(stream_zip_async_spy.getCall(0).args).to.eql([{ file: zip_path }]);
+		expect(fs_chmod_spy.callCount).to.equal(1);
+		expect(fs_chmod_spy.getCall(0).args).to.eql([path.join(dependency_path, 'linux-x64', 'nats-server'), 0o777]);
+
+		let binary_exists = await fs.pathExists(path.join(dependency_path, 'linux-x64', 'nats-server'));
+		expect(binary_exists).to.equal(true);
+
+		let zip_exists = await fs.pathExists(zip_path);
+		expect(zip_exists).to.equal(false);
+
+		Object.defineProperty(process, 'platform', { value: og_platform });
+		Object.defineProperty(process, 'arch', { value: og_arch });
+	}).timeout(10000);
+
+	it('test happy path, win32 x64', async () => {
+		let fs_ensure_file_spy = sandbox.spy(installer.__get__('fs'), 'ensureFile');
+		let fs_remove_spy = sandbox.spy(installer.__get__('fs'), 'remove');
+		let fs_chmod_spy = sandbox.spy(installer.__get__('fs'), 'chmod');
+		let needle_spy = sandbox.spy(needle, 'request');
+		let stream_zip_async_spy = sandbox.spy(stream_zip, 'async');
+
+		let err;
+		try {
+			await download_nats('win32', 'x64');
+		} catch (e) {
+			err = e;
+		}
+		let zip_path = path.join(dependency_path, 'win32-x64', 'windows-amd64.zip');
+		expect(err).to.equal(undefined);
+		expect(fs_ensure_file_spy.callCount).to.equal(1);
+		expect(fs_ensure_file_spy.getCall(0).args).to.eql([zip_path]);
+		expect(fs_remove_spy.callCount).to.equal(1);
+		expect(fs_remove_spy.getCall(0).args).to.eql([zip_path]);
+		expect(needle_spy.callCount).to.equal(1);
+		expect(needle_spy.getCall(0).args[1]).to.eql(
+			`https://github.com/nats-io/nats-server/releases/download/v${NATS_VERSION}/nats-server-v${NATS_VERSION}-windows-amd64.zip`
+		);
+		expect(needle_spy.getCall(0).args[3]).to.eql({ output: zip_path, follow_max: 5 });
+
+		expect(stream_zip_async_spy.callCount).to.equal(1);
+		expect(stream_zip_async_spy.getCall(0).args).to.eql([{ file: zip_path }]);
+		expect(fs_chmod_spy.callCount).to.equal(1);
+		expect(fs_chmod_spy.getCall(0).args).to.eql([path.join(dependency_path, 'win32-x64', 'nats-server.exe'), 0o777]);
+
+		let binary_exists = await fs.pathExists(path.join(dependency_path, 'win32-x64', 'nats-server.exe'));
+		expect(binary_exists).to.equal(true);
+
+		let zip_exists = await fs.pathExists(zip_path);
+		expect(zip_exists).to.equal(false);
+	}).timeout(10000);
+
+	it('test unknown architecture', async () => {
+		let err;
+		try {
+			await download_nats('blerg', '??');
+		} catch (e) {
+			err = e;
+		}
+
+		expect(err.message).to.equal('unknown platform - architecture: blerg-??');
 	});
 });

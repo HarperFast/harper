@@ -46,7 +46,11 @@ const BASE_SYSTEM_PATH = path.join(BASE_SCHEMA_PATH, 'system');
 const TEMP_TEST_DIR = path.resolve(__dirname, './server/nats/tempTestDir');
 const TEMP_CLUSTERING_TEST_DIR = path.join(TEMP_TEST_DIR, 'clustering');
 const DEPENDENCIES_PATH = path.resolve(__dirname, '../dependencies');
-const NATS_SERVER_PATH = path.join(DEPENDENCIES_PATH, nats_terms.NATS_SERVER_NAME);
+const NATS_SERVER_PATH = path.join(
+	DEPENDENCIES_PATH,
+	`${process.platform}-${process.arch}`,
+	nats_terms.NATS_BINARY_NAME
+);
 const NATS_TEST_SERVER_VALUES = {
 	CLUSTER_USER: 'unit-Test!Cluster@User',
 	CLUSTER_USER_PASS: 'p@ssWor/@d',
@@ -664,13 +668,17 @@ function requireUncached(module) {
  */
 async function launchTestLeafServer(ls_net_port = 9991, node_name = 'testLeafServer', hsln_net_port = 9992) {
 	await fs.mkdirp(TEMP_CLUSTERING_TEST_DIR);
+	await generateTestKeys(TEMP_CLUSTERING_TEST_DIR);
+	const test_ca_path = path.join(TEMP_CLUSTERING_TEST_DIR, 'keys', 'ca.pem');
+	const test_cert_path = path.join(TEMP_CLUSTERING_TEST_DIR, 'keys', 'certificate.pem');
+	const test_private_key_path = path.join(TEMP_CLUSTERING_TEST_DIR, 'keys', 'privateKey.pem');
 	const test_leaf_pid_path = path.join(TEMP_CLUSTERING_TEST_DIR, 'leaf.pid');
 	const test_leaf_js_store_path = path.join(TEMP_CLUSTERING_TEST_DIR, 'leaf');
 	const user1_name_encoded = encodeURIComponent(NATS_TEST_SERVER_VALUES.CLUSTER_USER);
 	const user1_pass_uri = encodeURIComponent(NATS_TEST_SERVER_VALUES.CLUSTER_USER_PASS);
 	const user2_pass = 'passwordAgain';
-	const leafnode_remotes_url_sys = `nats-leaf://${user1_name_encoded}-admin:${user1_pass_uri}@0.0.0.0:${hsln_net_port}`;
-	const leafnode_remotes_url_hdb = `nats-leaf://${user1_name_encoded}:${user1_pass_uri}@0.0.0.0:${hsln_net_port}`;
+	const leafnode_remotes_url_sys = `tls://${user1_name_encoded}-admin:${user1_pass_uri}@0.0.0.0:${hsln_net_port}`;
+	const leafnode_remotes_url_hdb = `tls://${user1_name_encoded}:${user1_pass_uri}@0.0.0.0:${hsln_net_port}`;
 	const sys_users = [
 		new SysUserObject(NATS_TEST_SERVER_VALUES.CLUSTER_USER, NATS_TEST_SERVER_VALUES.CLUSTER_USER_PASS),
 		new SysUserObject('secondaryTestClusterUser', user2_pass),
@@ -689,42 +697,44 @@ async function launchTestLeafServer(ls_net_port = 9991, node_name = 'testLeafSer
 		[leafnode_remotes_url_sys],
 		[leafnode_remotes_url_hdb],
 		sys_users,
-		hdb_users
+		hdb_users,
+		test_cert_path,
+		test_private_key_path,
+		test_ca_path,
+		true
 	);
 
 	const leaf_config_path = path.join(TEMP_CLUSTERING_TEST_DIR, NATS_TEST_CONFIG_FILES.LEAF_SERVER);
 	await fs.writeJson(leaf_config_path, new_leaf_config);
 
-	const env = { [terms.PROCESS_NAME_ENV_PROP]: terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF };
-	if (platform() === 'win32') {
-		// I don't know if you can actually use pm2 to start a non-JS process in windows
-		await new Promise((resolve, reject) => {
-			const nats = spawn(NATS_SERVER_PATH, ['-c', leaf_config_path], { env });
-			nats.stdout.on('data', (data) => {
-				console.log(data);
-			});
-			nats.stderr.on('data', (data) => {
-				// wait until the server says it is ready
-				if (data.toString().includes('Server is ready'))
-					resolve();
-			});
-			nats.on('close', (code) => {
-				console.log(code);
-			});
-		});
-	} else {
-		const pm2_leaf_server_config = {
-			name: 'nats_test_leaf_server',
-			script: `${NATS_SERVER_PATH} -c ${leaf_config_path}`,
-			exec_mode: 'fork',
-			env: { [terms.PROCESS_NAME_ENV_PROP]: terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF },
-			out_file: '/dev/null',
-			error_file: '/dev/null',
-			instances: 1,
-		};
+	const pm2_leaf_server_config = {
+		name: 'nats_test_leaf_server',
+		script: NATS_SERVER_PATH,
+		args: `-c ${leaf_config_path}`,
+		exec_mode: 'fork',
+		env: { [terms.PROCESS_NAME_ENV_PROP]: terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF },
+		out_file: '/dev/null',
+		error_file: '/dev/null',
+		instances: 1,
+	};
 
 		await pm2_utils.start(pm2_leaf_server_config);
 	}
+}
+
+async function generateTestKeys(test_root) {
+	const keys_test_path = path.join(test_root, 'keys');
+	await fs.mkdirp(keys_test_path);
+	const installer = rewire('../utility/install/installer');
+	const generate_keys = installer.__get__('generateKeys');
+	const get_hdb_path_stub = sinon.stub().returns(test_root);
+	const get_hdb_path_rw = installer.__set__('env_manager.getHdbBasePath', get_hdb_path_stub);
+	await generate_keys();
+	env.setProperty(terms.CONFIG_PARAMS.CLUSTERING_TLS_CERT_AUTH, path.join(keys_test_path, 'ca.pem'));
+	env.setProperty(terms.CONFIG_PARAMS.CLUSTERING_TLS_CERTIFICATE, path.join(keys_test_path, 'certificate.pem'));
+	env.setProperty(terms.CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY, path.join(keys_test_path, 'privateKey.pem'));
+	get_hdb_path_rw();
+	rewire('../utility/install/installer');
 }
 
 function setFakeClusterUser() {

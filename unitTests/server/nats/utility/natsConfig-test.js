@@ -109,6 +109,9 @@ const FAKE_ROUTES = {
 	],
 	leaf_routes: [],
 };
+const FAKE_CERT_PATH = path.join(TEMP_TEST_ROOT_DIR, 'keys', 'certificate.pem');
+const FAKE_CA_PATH = path.join(TEMP_TEST_ROOT_DIR, 'keys', 'ca.pem');
+const FAKE_PRIVATE_KEY_PATH = path.join(TEMP_TEST_ROOT_DIR, 'keys', 'privateKey.pem');
 
 describe('Test natsConfig module', () => {
 	const sandbox = sinon.createSandbox();
@@ -140,6 +143,9 @@ describe('Test natsConfig module', () => {
 		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT, 7714);
 		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT, 7715);
 		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_ROUTES, FAKE_ROUTES);
+		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_CERT_AUTH, FAKE_CA_PATH);
+		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_CERTIFICATE, FAKE_CERT_PATH);
+		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY, FAKE_PRIVATE_KEY_PATH);
 	});
 
 	afterEach(() => {
@@ -154,51 +160,73 @@ describe('Test natsConfig module', () => {
 
 	it('Test valid hub.json and leaf.json config files are created', async () => {
 		await natsConfig.generateNatsConfig();
+		const test_cert_file_path = path.join(TEMP_TEST_ROOT_DIR, 'keys', 'certificate.pem');
+		const test_ca_file_path = path.join(TEMP_TEST_ROOT_DIR, 'keys', 'ca.pem');
+		const test_key_file_path = path.join(TEMP_TEST_ROOT_DIR, 'keys', 'privateKey.pem');
 
 		const expected_hub_json = {
-			accounts: {
-				HDB: {
-					users: [
-						{
-							password: 'blahbblah',
-							user: 'clusterUser1',
-						},
-						{
-							password: 'blahash2',
-							user: 'clusterUser2',
-						},
-					],
-				},
-				SYS: {
-					users: [
-						{
-							password: 'blahbblah',
-							user: 'clusterUser1-admin',
-						},
-						{
-							password: 'blahash2',
-							user: 'clusterUser2-admin',
-						},
-					],
+			port: 7711,
+			server_name: 'unitTestNodeName-hub',
+			pid_file: path.join(TEMP_TEST_CLUSTERING_DIR, 'hub.pid'),
+			max_payload: 10000000,
+			jetstream: {
+				enabled: false,
+			},
+			tls: {
+				cert_file: test_cert_file_path,
+				key_file: test_key_file_path,
+				ca_file: test_ca_file_path,
+				insecure: true,
+			},
+			leafnodes: {
+				port: 7714,
+				tls: {
+					cert_file: test_cert_file_path,
+					key_file: test_key_file_path,
+					ca_file: test_ca_file_path,
+					insecure: true,
 				},
 			},
 			cluster: {
 				name: 'harperdb_unit_test',
 				port: 7713,
 				routes: [
-					'nats-route://name%25day-2123ncv%234-admin:how%25day-2123ncv%234@3.3.3.3:7716',
-					'nats-route://name%25day-2123ncv%234-admin:how%25day-2123ncv%234@4.4.4.4:7717',
+					'tls://name%25day-2123ncv%234-admin:how%25day-2123ncv%234@3.3.3.3:7716',
+					'tls://name%25day-2123ncv%234-admin:how%25day-2123ncv%234@4.4.4.4:7717',
 				],
+				tls: {
+					cert_file: test_cert_file_path,
+					key_file: test_key_file_path,
+					ca_file: test_ca_file_path,
+					insecure: true,
+				},
 			},
-			jetstream: {
-				enabled: false,
+			accounts: {
+				SYS: {
+					users: [
+						{
+							user: 'clusterUser1-admin',
+							password: 'blahbblah',
+						},
+						{
+							user: 'clusterUser2-admin',
+							password: 'blahash2',
+						},
+					],
+				},
+				HDB: {
+					users: [
+						{
+							user: 'clusterUser1',
+							password: 'blahbblah',
+						},
+						{
+							user: 'clusterUser2',
+							password: 'blahash2',
+						},
+					],
+				},
 			},
-			leafnodes: {
-				port: 7714,
-			},
-			pid_file: path.join(TEMP_TEST_CLUSTERING_DIR, 'hub.pid'),
-			port: 7711,
-			server_name: 'unitTestNodeName-hub',
 			system_account: 'SYS',
 		};
 
@@ -206,19 +234,34 @@ describe('Test natsConfig module', () => {
 			port: 7715,
 			server_name: 'unitTestNodeName-leaf',
 			pid_file: path.join(TEMP_TEST_CLUSTERING_DIR, 'leaf.pid'),
+			max_payload: 10000000,
 			jetstream: {
 				enabled: true,
 				store_dir: path.join(TEMP_TEST_CLUSTERING_DIR, 'leaf'),
 				domain: 'unitTestNodeName-leaf',
 			},
+			tls: {
+				cert_file: test_cert_file_path,
+				key_file: test_key_file_path,
+				ca_file: test_ca_file_path,
+				insecure: true,
+			},
 			leafnodes: {
 				remotes: [
 					{
-						urls: ['nats-leaf://name%25day-2123ncv%234-admin:how%25day-2123ncv%234@0.0.0.0:7714'],
+						tls: {
+							ca_file: test_ca_file_path,
+							insecure: true,
+						},
+						urls: ['tls://name%25day-2123ncv%234-admin:how%25day-2123ncv%234@0.0.0.0:7714'],
 						account: 'SYS',
 					},
 					{
-						urls: ['nats-leaf://name%25day-2123ncv%234:how%25day-2123ncv%234@0.0.0.0:7714'],
+						tls: {
+							ca_file: test_ca_file_path,
+							insecure: true,
+						},
+						urls: ['tls://name%25day-2123ncv%234:how%25day-2123ncv%234@0.0.0.0:7714'],
 						account: 'HDB',
 					},
 				],

@@ -2,6 +2,8 @@
 
 const sinon = require('sinon');
 const chai = require('chai');
+const assert = require('assert');
+const fg = require('fast-glob');
 const expect = chai.expect;
 const rewire = require('rewire');
 const directive_4_0_0_rw = rewire('../../../upgrade/directives/4-0-0');
@@ -9,11 +11,20 @@ const config_utils = require('../../../config/configUtils');
 const path = require('path');
 const fs = require('fs-extra');
 const env = require('../../../utility/environment/environmentManager');
+const environment_utility = require('../../../utility/lmdb/environmentUtility');
+const lmdbCreateRecords = rewire('../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateRecords.js');
+const InsertObject = require('../../../data_layer/InsertObject');
 const logger = require('../../../utility/logging/harper_logger');
 const test_utils = require('../../../unitTests/test_utils');
 const common_utils = require('../../../utility/common_utils');
 const routes = require('../../../utility/clustering/routes');
 const insert = require('../../../data_layer/insert');
+const person_data = require('../../personData');
+const PERSON_ATTRIBUTES = ['id', 'first_name', 'state', 'age', 'alive', 'birth_month'];
+
+const upgrade_script = rewire('../../../upgrade/directives/upgrade_scripts/4_0_0_reindex_script');
+const { insertRecords } = require('../../../utility/lmdb/writeUtility');
+
 
 const ROOT = 'yourcomputer/hdb';
 
@@ -389,4 +400,45 @@ describe('Test 4-0-0 module', () => {
 			);
 		});
 	});
+});
+
+describe('Test reindexing lmdb', () => {
+	let test_path = path.join(__dirname, 'upgrade_scripts/reindexTestDir');
+	before(async () => {
+		for (let filename of await fg('**/dog.m*', { cwd: test_path })) {
+			await fs.unlink(path.join(test_path, filename));
+		}
+		upgrade_script.__set__('env_mngr', {
+			getHdbBasePath() {
+				return test_path;
+			},
+		});
+	});
+	after(async () => {
+		for (let filename of await fg(['**/dog.m*', '**/lock.mdb'], { cwd: test_path })) {
+			await fs.unlink(path.join(test_path, filename));
+		}
+		try {
+			await fs.rm(path.join(test_path, '4_0_0_upgrade_tmp'), { recursive: true });
+		} catch (e) {}
+	});
+	it('reindexes lmdb databases from old databases', async () => {
+		let result = await upgrade_script(false);
+		assert.strictEqual(result, 'Reindexing for 4.0.0 upgrade complete');
+		let new_env = await environment_utility.openEnvironment(path.join(__dirname, 'upgrade_scripts/reindexTestDir/schema/dev'), 'dog');
+		try {
+			let dbis = environment_utility.listDBIs(new_env);
+			assert.deepStrictEqual(dbis, ['__createdtime__','__updatedtime__','adorable','age','breed_id','dog_name','id','owner_id','weight_lbs']);
+		} finally {
+			await environment_utility.closeEnvironment(new_env);
+		}
+		let txn_env = await environment_utility.openEnvironment(path.join(__dirname, 'upgrade_scripts/reindexTestDir/transactions/dev'), 'dog');
+		try {
+			let dbis = environment_utility.listDBIs(txn_env);
+			assert.deepStrictEqual(dbis, ['hash_value','timestamp','user_name']);
+		} finally {
+			await environment_utility.closeEnvironment(txn_env);
+		}
+	});
+
 });

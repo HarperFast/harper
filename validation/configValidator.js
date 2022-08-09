@@ -13,8 +13,10 @@ const validator = require('./validationWrapper');
 const DEFAULT_KEY_DIR = 'keys';
 const DEFAULT_HDB_CERT = certificates_terms.CERTIFICATE_PEM_NAME;
 const DEFAULT_HDB_PRIVATE_KEY = certificates_terms.PRIVATEKEY_PEM_NAME;
+const DEFAULT_HDB_CERT_AUTH = certificates_terms.CA_PEM_NAME;
 const DEFAULT_CF_CERT = certificates_terms.CERTIFICATE_PEM_NAME;
 const DEFAULT_CF_PRIVATE_KEY = certificates_terms.PRIVATEKEY_PEM_NAME;
+const DEFAULT_CF_CERT_AUTH = certificates_terms.CA_PEM_NAME;
 const DEFAULT_CLUSTERING_CERT = certificates_terms.CERTIFICATE_PEM_NAME;
 const DEFAULT_CLUSTERING_PRIVATE_KEY = certificates_terms.PRIVATEKEY_PEM_NAME;
 const DEFAULT_CLUSTERING_CERT_AUTH = certificates_terms.CA_PEM_NAME;
@@ -107,8 +109,9 @@ function configValidator(config_json) {
 			}).required(),
 			tls: Joi.object({
 				certificate: pem_file_constraints,
-				certificateAuthority: Joi.required(),
+				certificateAuthority: pem_file_constraints,
 				privateKey: pem_file_constraints,
+				insecure: boolean.required(),
 			}),
 			user: Joi.string().required(),
 		}).required();
@@ -136,7 +139,7 @@ function configValidator(config_json) {
 			root: root_constraints,
 			tls: Joi.object({
 				certificate: pem_file_constraints,
-				certificateAuthority: Joi.required(),
+				certificateAuthority: pem_file_constraints,
 				privateKey: pem_file_constraints,
 			}),
 		}).required(),
@@ -189,7 +192,7 @@ function configValidator(config_json) {
 			}).required(),
 			tls: Joi.object({
 				certificate: pem_file_constraints,
-				certificateAuthority: Joi.required(),
+				certificateAuthority: pem_file_constraints,
 				privateKey: pem_file_constraints,
 			}),
 		}).required(),
@@ -276,10 +279,14 @@ function setDefaultRoot(parent, helpers) {
 			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_HDB_CERT);
 		case 'operationsApi.tls.privateKey':
 			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_HDB_PRIVATE_KEY);
+		case 'operationsApi.tls.certificateAuthority':
+			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_HDB_CERT_AUTH);
 		case 'customFunctions.tls.certificate':
 			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CF_CERT);
 		case 'customFunctions.tls.privateKey':
 			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CF_PRIVATE_KEY);
+		case 'customFunctions.tls.certificateAuthority':
+			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CF_CERT_AUTH);
 		case 'clustering.tls.certificate':
 			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CLUSTERING_CERT);
 		case 'clustering.tls.privateKey':

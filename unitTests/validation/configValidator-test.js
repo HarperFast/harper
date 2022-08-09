@@ -18,6 +18,7 @@ const FAKE_CERT = '/fake/pem/cert.pem';
 const FAKE_PRIVATE_KEY = '/fake/pem/key.pem';
 const TEST_CERT = path.join(__dirname, 'carrot/keys/certificate.pem');
 const TEST_PRIVATE_KEY = path.join(__dirname, 'carrot/keys/privateKey.pem');
+const TEST_CA = path.join(__dirname, 'carrot/keys/ca.pem');
 
 const FAKE_CONFIG = {
 	clustering: {
@@ -55,6 +56,7 @@ const FAKE_CONFIG = {
 			certificate: FAKE_CERT,
 			certificateAuthority: null,
 			privateKey: FAKE_PRIVATE_KEY,
+			insecure: true,
 		},
 		user: 'ItsMe',
 	},
@@ -192,8 +194,9 @@ describe('Test configValidator module', () => {
 						},
 						tls: {
 							certificate: TEST_CERT,
-							certificateAuthority: null,
+							certificateAuthority: TEST_CA,
 							privateKey: TEST_PRIVATE_KEY,
+							insecure: true,
 						},
 						user: 'ItsMe',
 					},
@@ -213,7 +216,7 @@ describe('Test configValidator module', () => {
 						root: path.join(__dirname, '/test_custom_functions'),
 						tls: {
 							certificate: TEST_CERT,
-							certificateAuthority: null,
+							certificateAuthority: TEST_CA,
 							privateKey: TEST_PRIVATE_KEY,
 						},
 					},
@@ -265,7 +268,7 @@ describe('Test configValidator module', () => {
 						},
 						tls: {
 							certificate: TEST_CERT,
-							certificateAuthority: null,
+							certificateAuthority: TEST_CA,
 							privateKey: TEST_PRIVATE_KEY,
 						},
 					},
@@ -306,13 +309,12 @@ describe('Test configValidator module', () => {
 		it('Test clustering.replyService/tls/user, with bad values', () => {
 			let bad_config_obj = test_utils.deepClone(FAKE_CONFIG);
 			bad_config_obj.clustering.replyService.processes = 1001;
-			bad_config_obj.clustering.tls.certificateAuthority = undefined;
+			bad_config_obj.clustering.tls.certificateAuthority = true;
 			bad_config_obj.clustering.user = 9999;
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'clustering.replyService.processes' must be less than or equal to 1000. 'clustering.tls.certificateAuthority' is required. 'clustering.user' must be a string";
-
+				"'clustering.replyService.processes' must be less than or equal to 1000. 'clustering.user' must be a string";
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
 

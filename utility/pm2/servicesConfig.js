@@ -12,7 +12,12 @@ const BYTENODE_MOD_CLI = path.resolve(__dirname, '../../node_modules/bytenode/li
 const LAUNCH_SCRIPTS_DIR = path.resolve(__dirname, '../../launchServiceScripts');
 const SCRIPTS_DIR = path.resolve(__dirname, '../scripts');
 const RESTART_SCRIPT = path.join(SCRIPTS_DIR, hdb_terms.HDB_RESTART_SCRIPT);
-const NATS_SERVER_BINARY_PATH = path.resolve(__dirname, '../../dependencies', nats_terms.NATS_SERVER_NAME);
+const NATS_SERVER_BINARY_PATH = path.resolve(
+	__dirname,
+	'../../dependencies',
+	`${process.platform}-${process.arch}`,
+	nats_terms.NATS_BINARY_NAME
+);
 let log_to_file = undefined;
 let log_path = undefined;
 
@@ -138,7 +143,8 @@ function generateNatsHubServerConfig() {
 	const hub_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_HUB);
 	const hs_config = {
 		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB,
-		script: `${NATS_SERVER_BINARY_PATH} -c ${hub_config_path}`,
+		script: NATS_SERVER_BINARY_PATH,
+		args: `-c ${hub_config_path}`,
 		exec_mode: 'fork',
 		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB },
 		merge_logs: true,
@@ -166,7 +172,8 @@ function generateNatsLeafServerConfig() {
 	const leaf_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_LEAF);
 	const ls_config = {
 		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF,
-		script: `${NATS_SERVER_BINARY_PATH} -c ${leaf_config_path}`,
+		script: NATS_SERVER_BINARY_PATH,
+		args: `-c ${leaf_config_path}`,
 		exec_mode: 'fork',
 		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF },
 		merge_logs: true,

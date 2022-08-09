@@ -11,6 +11,7 @@ const { handleHDBError, hdb_errors } = require('./errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
 const env = require('./environment/environmentManager');
 const validator = require('../validation/validationWrapper');
+const harper_logger = require('./logging/harper_logger');
 env.initSync();
 const CF_ROUTES_DIR = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 const NPM_INSTALL_COMMAND = 'npm install --omit=dev --json';
@@ -43,6 +44,7 @@ async function runCommand(command, cwd = undefined) {
  * @returns {Promise<{}>}
  */
 async function installModules(req) {
+	harper_logger.info(`starting installModules for request: ${req}`);
 	const validation = modulesValidator(req);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
@@ -61,20 +63,35 @@ async function installModules(req) {
 		const project_name = projects[x];
 		response_object[project_name] = { npm_output: null, npm_error: null };
 		const PROJECT_PATH = path.join(CF_ROUTES_DIR, project_name);
+
+		let output,
+			error = null;
 		try {
-			let output = await runCommand(command, PROJECT_PATH);
-			response_object[project_name].npm_output = JSON.parse(output);
+			const { stdout, stderr } = await p_exec(command, { cwd: PROJECT_PATH });
+			output = stdout ? stdout.replace('\n', '') : null;
+			error = stderr ? stderr.replace('\n', '') : null;
 		} catch (e) {
-			if (e.stdout) {
-				response_object[project_name].npm_error = JSON.parse(e.stdout);
-			} else if (e.stderr) {
+			if (e.stderr) {
 				response_object[project_name].npm_error = parseNPMStdErr(e.stderr);
 			} else {
 				response_object[project_name].npm_error = e.message;
 			}
+			continue;
+		}
+
+		try {
+			response_object[project_name].npm_output = JSON.parse(output);
+		} catch (e) {
+			response_object[project_name].npm_output = output;
+		}
+
+		try {
+			response_object[project_name].npm_error = JSON.parse(error);
+		} catch (e) {
+			response_object[project_name].npm_error = error;
 		}
 	}
-
+	harper_logger.info(`finished installModules with response ${response_object}`);
 	return response_object;
 }
 
@@ -96,6 +113,7 @@ function parseNPMStdErr(stderr) {
  * @returns {Promise<{}>}
  */
 async function auditModules(req) {
+	harper_logger.info(`starting auditModules for request: ${req}`);
 	const validation = modulesValidator(req);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
@@ -119,7 +137,7 @@ async function auditModules(req) {
 			response_object[project_name].npm_error = parseNPMStdErr(e.stderr);
 		}
 	}
-
+	harper_logger.info(`finished auditModules with response ${response_object}`);
 	return response_object;
 }
 

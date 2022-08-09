@@ -369,3 +369,108 @@ describe('test lmdbDropTable module', () => {
 		});
 	});
 });
+
+describe('test deleteAttributesFromSystem function', () => {
+	let hdb_schema_env;
+	let hdb_table_env;
+	let hdb_attribute_env;
+	let delete_attributes_from_system;
+	before(async () => {
+		delete_attributes_from_system = lmdb_drop_table.__get__('deleteAttributesFromSystem');
+
+		global.lmdb_map = undefined;
+		await fs.remove(test_utils.getMockLMDBPath());
+		await fs.mkdirp(SYSTEM_SCHEMA_PATH);
+		await fs.mkdirp(DEV_SCHEMA_PATH);
+
+		global.hdb_schema = {
+			dev: {
+				test: {
+					attributes: [],
+					hash_attribute: 'id',
+					schema: 'dev',
+					name: 'test',
+				},
+			},
+			system: systemSchema,
+		};
+
+		hdb_schema_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_schema.name);
+		environment_utility.createDBI(hdb_schema_env, systemSchema.hdb_schema.hash_attribute, false);
+
+		hdb_table_env = await environment_utility.createEnvironment(SYSTEM_SCHEMA_PATH, systemSchema.hdb_table.name);
+		environment_utility.createDBI(hdb_table_env, systemSchema.hdb_table.hash_attribute, false);
+
+		hdb_attribute_env = await environment_utility.createEnvironment(
+			SYSTEM_SCHEMA_PATH,
+			systemSchema.hdb_attribute.name
+		);
+		environment_utility.createDBI(hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, false);
+
+		await lmdb_create_schema(CREATE_SCHEMA_DEV);
+
+		await lmdb_create_table(TABLE_SYSTEM_DATA_TEST_A, CREATE_TABLE_OBJ_TEST_A);
+		global.hdb_schema.dev.test.attributes = [
+			{ attribute: 'id' },
+			{ attribute: '__updatedtime__' },
+			{ attribute: '__createdtime__' },
+			{ attribute: '__blob__' },
+		];
+
+		await lmdb_create_records(INSERT_OBJECT_TEST);
+
+		global.hdb_schema.dev.test.attributes = [
+			{ attribute: 'id' },
+			{ attribute: 'temperature' },
+			{ attribute: 'temperature_double' },
+			{ attribute: 'temperature_pos' },
+			{ attribute: 'temperature_neg' },
+			{ attribute: 'temperature_str' },
+			{ attribute: 'city' },
+			{ attribute: 'state' },
+			{ attribute: '__updatedtime__' },
+			{ attribute: '__createdtime__' },
+			{ attribute: '__blob__' },
+		];
+	});
+
+	after(async () => {
+		let env = await environment_utility.openEnvironment(
+			path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_A.schema),
+			CREATE_TABLE_OBJ_TEST_A.table
+		);
+		env.close();
+
+		let txn_env1 = await environment_utility.openEnvironment(
+			path.join(BASE_TXN_PATH, CREATE_TABLE_OBJ_TEST_A.schema),
+			CREATE_TABLE_OBJ_TEST_A.table,
+			true
+		);
+		txn_env1.close();
+
+		hdb_schema_env.close();
+		hdb_table_env.close();
+		hdb_attribute_env.close();
+
+		global.lmdb_map = undefined;
+		await fs.remove(test_utils.getMockLMDBPath());
+	});
+
+	it('test removing all attributes', async () => {
+		sandbox.restore();
+		let search_by_value_spy = sandbox.spy(lmdb_drop_table.__get__('search_by_value'));
+		let delete_records_spy = sandbox.spy(lmdb_drop_table.__get__('delete_records'));
+
+		let search_obj = new SearchObject('system', 'hdb_attribute', 'schema_table', 'dev.test', undefined, ['*']);
+		let results = await test_utils.assertErrorAsync(search_by_value, [search_obj], undefined);
+		assert.notDeepStrictEqual(results.length, 0);
+
+		let drop_obj = {
+			schema: 'dev',
+			table: 'test',
+		};
+		await test_utils.assertErrorAsync(delete_attributes_from_system, [drop_obj], undefined);
+		let new_results = await test_utils.assertErrorAsync(search_by_value, [search_obj], undefined);
+		assert.deepStrictEqual(new_results.length, 0);
+	});
+});

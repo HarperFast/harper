@@ -15,7 +15,9 @@ const BYTENODE_MOD_CLI = path.resolve(__dirname, '../../../node_modules/bytenode
 const LAUNCH_SCRIPTS_DIR = path.resolve(__dirname, '../../../launchServiceScripts');
 const SCRIPTS_DIR = path.resolve(__dirname, '../../../utility/scripts');
 const RESTART_SCRIPT = path.join(SCRIPTS_DIR, hdb_terms.HDB_RESTART_SCRIPT);
-const NATS_SERVER_BINARY_PATH = path.resolve(__dirname, '../../../dependencies', 'nats-server');
+const platform_arch = `${process.platform}-${process.arch}`;
+const binary_name = process.platform === 'win32' ? 'nats-server.exe' : 'nats-server';
+const NATS_SERVER_BINARY_PATH = path.resolve(__dirname, '../../../dependencies', platform_arch, binary_name);
 
 let LOG_PATH;
 
@@ -160,7 +162,8 @@ describe('Test pm2 servicesConfig module', () => {
 		const hub_config_path = path.join(hdb_root, 'clustering', 'hub.json');
 		const expected_result = {
 			name: 'Clustering Hub',
-			script: `${NATS_SERVER_BINARY_PATH} -c ${hub_config_path}`,
+			script: NATS_SERVER_BINARY_PATH,
+			args: `-c ${hub_config_path}`,
 			exec_mode: 'fork',
 			env: {
 				PROCESS_NAME: 'Clustering Hub',
@@ -180,7 +183,8 @@ describe('Test pm2 servicesConfig module', () => {
 		const leaf_config_path = path.join(hdb_root, 'clustering', 'leaf.json');
 		const expected_result = {
 			name: 'Clustering Leaf',
-			script: `${NATS_SERVER_BINARY_PATH} -c ${leaf_config_path}`,
+			script: NATS_SERVER_BINARY_PATH,
+			args: `-c ${leaf_config_path}`,
 			exec_mode: 'fork',
 			env: {
 				PROCESS_NAME: 'Clustering Leaf',

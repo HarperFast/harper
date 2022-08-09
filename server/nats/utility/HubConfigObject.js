@@ -10,6 +10,10 @@ class HubConfigObject {
 		port,
 		node_name,
 		pid_file,
+		cert_file,
+		key_file,
+		ca_file,
+		insecure,
 		leafnodes_port,
 		cluster_name,
 		cluster_port,
@@ -20,16 +24,35 @@ class HubConfigObject {
 		this.port = port;
 		this.server_name = node_name + nats_terms.SERVER_SUFFIX.HUB;
 		this.pid_file = pid_file;
+		this.max_payload = 10000000;
 		this.jetstream = {
 			enabled: false,
 		};
+		this.tls = {
+			cert_file,
+			key_file,
+			ca_file,
+			insecure,
+		};
 		this.leafnodes = {
 			port: leafnodes_port,
+			tls: {
+				cert_file,
+				key_file,
+				ca_file,
+				insecure,
+			},
 		};
 		this.cluster = {
 			name: cluster_name,
 			port: cluster_port,
 			routes: cluster_routes,
+			tls: {
+				cert_file,
+				key_file,
+				ca_file,
+				insecure,
+			},
 		};
 		this.accounts = {
 			SYS: {

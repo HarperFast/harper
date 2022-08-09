@@ -1,0 +1,135 @@
+on:
+  workflow_call:
+    inputs:
+      publicDns:
+        required: true
+        type: string
+      goVersion:
+        required: true
+        type: string
+      harperdbVersion:
+        required: true
+        type: string
+      nodeVersion:
+        required: true
+        type: string
+      installType:
+        type: string
+        default: "buildPackage"
+name: Install and Register HDB on instances
+jobs:
+  installAndRegister:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Install and Register
+      env:
+        HDB_ADMIN_USERNAME: ${{ secrets.HDB_ADMIN_USERNAME }}
+        HDB_ADMIN_PASSWORD: ${{ secrets.HDB_ADMIN_PASSWORD }}
+        CLUSTERING_USERNAME: ${{ secrets.CLUSTERING_USERNAME }}
+        CLUSTERING_PASSWORD: ${{ secrets.CLUSTERING_PASSWORD }}
+        CI_PRIVATE_KEY: ${{ secrets.CI_PRIVATE_KEY }}
+      run: |
+        #!/bin/bash
+        pwd
+        cd ../
+        echo "$CI_PRIVATE_KEY" > private_key && chmod 600 private_key
+
+        public_dns_names="${{ inputs.publicDns }}"
+        echo ${public_dns_names[@]}
+        for public_dns_name in ${public_dns_names[@]}
+        do 
+            echo "Starting work on: $public_dns_name"
+            ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name << HERE
+
+        # Install build-essential
+        echo "Install build-essential..."
+        sudo apt-get update -qq
+        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential
+
+        # Package mirrors sometimes have problems
+        until command -v gcc &> /dev/null
+        do
+          echo "Attempting to install build-essential again..."
+          sleep 1s
+          sudo apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential
+        done
+
+        # Install Go
+        if [ "${{ inputs.goVersion }}" == "null" ]
+        then 
+          echo "package.json go-lang version not defined"
+        else
+          echo "package.json go-lang version is: ${{ inputs.goVersion }}"
+          echo "Installing Go version: ${{ inputs.goVersion }}"
+          wget -c -nv https://golang.org/dl/go${{ inputs.goVersion }}.linux-amd64.tar.gz
+          sudo tar -C /usr/local -xzf go${{ inputs.goVersion }}.linux-amd64.tar.gz
+          export  PATH=$PATH:/usr/local/go/bin
+        fi
+
+        # Install Node Version Manager
+        echo "Install nvm..."
+        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.38.0/install.sh | bash
+        #export NVM_DIR="$HOME/.nvm"
+        #[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        #[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+        . /home/ubuntu/.nvm/nvm.sh
+        . /home/ubuntu/.nvm/bash_completion
+
+        # Install Node.js using Node Version Manager
+        echo "Install Node..."
+        nvm install ${{ inputs.nodeVersion }}
+
+        if [ "${{ inputs.installType }}" == "sourceCode" ];
+        then
+          echo "hdb_install_type paramater set to ${{inputs.installType }}. Installing HarperDB from source code..."
+    
+          echo "npm install..."
+          cd /home/ubuntu/harperdb
+          npm --loglevel=error install --legacy-peer-deps
+
+          # Pull in custom_function_template repo
+          echo "git submodule update..."
+          git submodule update --init --recursive
+
+          echo "HarperDB install..."
+          cd /home/ubuntu/harperdb/bin
+          node harperdb.js --TC_AGREEMENT yes --HDB_ROOT /home/ubuntu/hdb --HDB_ADMIN_USERNAME $HDB_ADMIN_USERNAME --HDB_ADMIN_PASSWORD $HDB_ADMIN_PASSWORD --NODE_NAME $(echo "$public_dns_name" | cut -d '.' -f 1) --CLUSTERING_PORT 12345 --CLUSTERING_USER $CLUSTERING_USERNAME --CLUSTERING_PASSWORD $CLUSTERING_PASSWORD --CLUSTERING true --SERVER_PORT 9925 --CUSTOM_FUNCTIONS true --CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT 12345
+          
+          echo "Register HarperDB..."
+          cd /home/ubuntu/harperdb/utility/devops
+          node register.js --reset_license --ram_allocation=16384
+          cd /home/ubuntu/harperdb/bin/
+          node harperdb.js stop
+          node harperdb.js
+        elif [ "${{ inputs.installType }}" == "buildPackage" ];
+        then
+          echo "hdb_install_type paramater set to ${{ inputs.installType }}. Installing HarperDB from build package..."
+          echo "npm install..."
+          npm --loglevel=error install -g harperdb-${{ inputs.harperdbVersion }}.tgz --legacy-peer-deps
+
+          echo "HarperDB install..."
+          harperdb --TC_AGREEMENT yes --HDB_ROOT /home/ubuntu/hdb --HDB_ADMIN_USERNAME $HDB_ADMIN_USERNAME --HDB_ADMIN_PASSWORD $HDB_ADMIN_PASSWORD --NODE_NAME $(echo "$public_dns_name" | cut -d '.' -f 1) --CLUSTERING_PORT 12345 --CLUSTERING_USER $CLUSTERING_USERNAME --CLUSTERING_PASSWORD $CLUSTERING_PASSWORD --CLUSTERING true --SERVER_PORT 9925 --CUSTOM_FUNCTIONS true --CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT 12345
+          
+          echo "Compile register.js and register HarperDB..."
+          npm install -g bytenode
+          npm install -g minimist
+          mkdir /home/ubuntu/.nvm/versions/node/v${{ inputs.nodeVersion }}/lib/node_modules/harperdb/utility/devops/
+          cp /home/ubuntu/harperdb/utility/devops/register.js /home/ubuntu/.nvm/versions/node/v${{ inputs.nodeVersion }}/lib/node_modules/harperdb/utility/devops/register.js
+          cp /home/ubuntu/harperdb/utility/devops/licenseGenerator.js /home/ubuntu/.nvm/versions/node/v${{ inputs.nodeVersion }}/lib/node_modules/harperdb/utility/devops/licenseGenerator.js
+          cd /home/ubuntu/.nvm/versions/node/v${{ inputs.nodeVersion }}/lib/node_modules/harperdb/utility/devops/
+          bytenode --compile register.js
+          bytenode --compile licenseGenerator.js
+          bytenode register.js --reset_license --ram_allocation=4096
+          harperdb stop
+          harperdb
+        elif [ "${{ inputs.installType }}" == 'none' ];
+        then
+            echo "hdb_install_type paramater set to ${{ inputs.installType }}. Skipping HarperDB install."
+        else
+          echo "hdb_install_type paramater set to an invalid value of: ${{ inputs.installType }}."
+        fi
+        HERE
+            echo "Ending work on: $public_dns_name"
+        done
+      shell: bash
