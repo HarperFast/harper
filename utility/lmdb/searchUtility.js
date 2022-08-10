@@ -321,6 +321,20 @@ function equals(env, hash_attribute, attribute, search_value, reverse = false, l
 }
 
 /**
+ * Counts the number of entries for a key of a named dbi, returning the count
+ * @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} hash_attribute
+ * @param {String} attribute - name of the attribute (dbi) to search
+ * @param search_value - value to search
+*/
+function count(env, attribute, search_value) {
+	validateComparisonFunctions(env, attribute, search_value);
+
+	let dbi = environment_utility.openDBI(env, attribute);
+	return dbi.getValuesCount(search_value);
+}
+
+/**
  * performs an startsWith search on the key of a named dbi, returns a list of ids where their keys begin with the search_value
  * @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
  * @param {String} hash_attribute
@@ -932,12 +946,14 @@ function setGetWholeRowAttributes(env, fetch_attributes) {
 module.exports = {
 	searchAll,
 	searchAllToMap,
+	count,
 	countAll,
 	equals,
 	startsWith,
 	endsWith,
 	contains,
 	searchByHash,
+	setGetWholeRowAttributes,
 	batchSearchByHash,
 	batchSearchByHashToMap,
 	checkHashExists,
