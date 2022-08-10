@@ -1,0 +1,39 @@
+on:
+  workflow_call:
+    inputs:
+      publicDns:
+        required: true
+        type: string
+name: "Download logs from instances"
+jobs:
+  downloadLogs:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Download Logs
+      env:
+          CI_PRIVATE_KEY: ${{ secrets.CI_PRIVATE_KEY }}
+      run: |
+        #!/bin/bash
+        cd ..
+        echo "$CI_PRIVATE_KEY" > private_key && chmod 600 private_key
+        mkdir logs-artifact
+        public_dns_names="${{ inputs.publicDns }}"
+        for public_dns_name in ${public_dns_names[@]}
+        do 
+          echo "Starting work on: $public_dns_name"
+          mkdir logs-artifact/$public_dns_name
+          scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/integrationTests/newman/report.html" "logs-artifact/$public_dns_name/newman_report.html" || (true && echo "Newman report not found")
+          scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/integrationTests/newman/extra_report.html" "logs-artifact/$public_dns_name/newman_extra_report.html" || (true && echo "Newman report not found")
+          scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/hdb/log/" "logs-artifact/$public_dns_name/"
+          scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/hdb/harperdb.conf" "logs-artifact/$public_dns_name/harperdb.conf"
+
+          echo "Ending work on: $public_dns_name"
+        done
+        mv logs-artifact harperdb
+    - name: 'Upload Log Artifact'
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: logs
+        path: logs-artifact/
+        retention-days: 1
