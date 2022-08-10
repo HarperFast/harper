@@ -719,7 +719,6 @@ async function launchTestLeafServer(ls_net_port = 9991, node_name = 'testLeafSer
 	};
 
 		await pm2_utils.start(pm2_leaf_server_config);
-	}
 }
 
 async function generateTestKeys(test_root) {
