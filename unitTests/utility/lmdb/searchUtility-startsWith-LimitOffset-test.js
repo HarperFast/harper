@@ -113,14 +113,6 @@ describe('test startsWith function', ()=> {
         assert.deepStrictEqual(results, undefined);
     });
 
-    it("test search on hash attribute", () => {
-        let expected = [[1],[{"id": 1}]];
-        let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'id','id', '1'], undefined);
-        assert.deepEqual(results[0].length, 1);
-        assert.deepEqual(results[1].length, 1);
-        assert.deepEqual(results, expected);
-    });
-
     it("test search on mush 2", () => {
         let expected = [[211,213,214,215],[{"mush": 2,"id": 211},{"mush": 22,"id": 213},{"mush": 22.2,"id": 214},{"mush": "22flavors","id": 215}]];
 

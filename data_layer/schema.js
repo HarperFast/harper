@@ -92,8 +92,7 @@ async function createTable(create_table_object) {
 }
 
 async function createTableStructure(create_table_object) {
-	let validation_obj = clone(create_table_object);
-	let validation_error = validation.create_table_object(validation_obj);
+	let validation_error = validation.create_table_object(create_table_object);
 	if (validation_error) {
 		throw handleHDBError(
 			validation_error,

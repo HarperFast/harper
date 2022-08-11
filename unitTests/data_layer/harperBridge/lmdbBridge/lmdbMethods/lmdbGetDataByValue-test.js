@@ -203,7 +203,7 @@ describe('test lmdbGetDataByValue module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '10', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 10, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(lmdb_search, [search_object], undefined);
 			assert.deepStrictEqual(results, expected);
 		});
@@ -216,7 +216,7 @@ describe('test lmdbGetDataByValue module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'id', '10', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'id', 10, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(lmdb_search, [search_object], undefined);
 			assert.deepStrictEqual(results, expected);
 		});
@@ -263,7 +263,7 @@ describe('test lmdbGetDataByValue module', () => {
 		it('test endswith on number', async () => {
 			let expected = Object.create(null);
 			test_data.forEach((data) => {
-				if (data.temperature.toString().endsWith('2')) {
+				if (data.temperature.toString().endsWith(2)) {
 					expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
 				}
 			});
@@ -282,19 +282,6 @@ describe('test lmdbGetDataByValue module', () => {
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'city', 'South*', 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(lmdb_search, [search_object], undefined);
-			assert.deepStrictEqual(results, expected);
-		});
-
-		it('test startswith on number', async () => {
-			let expected = Object.create(null);
-			test_data.forEach((data) => {
-				if (data.temperature.toString().startsWith('10')) {
-					expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
-				}
-			});
-
-			let search_object = new SearchObject('dev', 'test', 'temperature', '10%', 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(lmdb_search, [search_object], undefined);
 			assert.deepStrictEqual(results, expected);
 		});
@@ -318,7 +305,7 @@ describe('test lmdbGetDataByValue module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 25, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				lmdb_search,
 				[search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.GREATER],
@@ -335,7 +322,7 @@ describe('test lmdbGetDataByValue module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				lmdb_search,
 				[search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.GREATER_OR_EQ],
@@ -352,7 +339,7 @@ describe('test lmdbGetDataByValue module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 25, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				lmdb_search,
 				[search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS],
@@ -369,7 +356,7 @@ describe('test lmdbGetDataByValue module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				lmdb_search,
 				[search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS_OR_EQ],
@@ -386,7 +373,7 @@ describe('test lmdbGetDataByValue module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*'], '66');
+			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*'], 66);
 			let results = await test_utils.assertErrorAsync(
 				lmdb_search,
 				[search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.BETWEEN],

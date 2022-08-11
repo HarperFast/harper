@@ -159,7 +159,9 @@ async function describeAll(op_obj) {
  * @returns {Promise<{}|*>}
  */
 async function descTable(describe_table_object, attr_perms) {
-	const { schema, table } = describe_table_object;
+	let { schema, table } = describe_table_object;
+	schema = schema.toString();
+	table = table.toString();
 	let table_attr_perms = attr_perms;
 
 	//If the describe_table_object includes a `hdb_user` value, it is being called from the API and we can grab the user's
@@ -173,8 +175,8 @@ async function descTable(describe_table_object, attr_perms) {
 	if (validation) {
 		throw validation;
 	}
-	if (describe_table_object.schema === terms.SYSTEM_SCHEMA_NAME) {
-		return global.hdb_schema[terms.SYSTEM_SCHEMA_NAME][describe_table_object.table];
+	if (schema === terms.SYSTEM_SCHEMA_NAME) {
+		return global.hdb_schema[terms.SYSTEM_SCHEMA_NAME][table];
 	}
 
 	let table_search_obj = {
@@ -182,7 +184,7 @@ async function descTable(describe_table_object, attr_perms) {
 		table: terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME,
 		hash_attribute: terms.SYSTEM_TABLE_HASH_ATTRIBUTES.TABLE_TABLE_HASH_ATTRIBUTE,
 		search_attribute: NAME_ATTRIBUTE_STRING,
-		search_value: describe_table_object.table,
+		search_value: table,
 		hash_values: [],
 		get_attributes: [terms.WILDCARD_SEARCH_VALUE],
 	};
@@ -197,11 +199,9 @@ async function descTable(describe_table_object, attr_perms) {
 		);
 	}
 
-	let describe_table_obj_schema = hdb_utils.autoCast(describe_table_object.schema);
-
 	for await (let table1 of tables) {
 		try {
-			if (table1.schema !== describe_table_obj_schema) {
+			if (table1.schema !== schema) {
 				continue;
 			}
 			table_result = table1;
@@ -215,7 +215,7 @@ async function descTable(describe_table_object, attr_perms) {
 				table: terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME,
 				hash_attribute: terms.SYSTEM_TABLE_HASH_ATTRIBUTES.ATTRIBUTE_TABLE_HASH_ATTRIBUTE,
 				search_attribute: SCHEMA_TABLE_ATTRIBUTE_STRING,
-				search_value: describe_table_object.schema + '.' + describe_table_object.table,
+				search_value: schema + '.' + table,
 				get_attributes: [ATTRIBUTE_NAME_STRING],
 			};
 
@@ -280,13 +280,14 @@ async function describeSchema(describe_schema_object) {
 	if (describe_schema_object.hdb_user && !describe_schema_object.hdb_user.role.permission.super_user) {
 		schema_perms = describe_schema_object.hdb_user.role.permission[describe_schema_object.schema];
 	}
+	const schema_name = describe_schema_object.schema.toString();
 
 	let table_search_obj = {
 		schema: terms.SYSTEM_SCHEMA_NAME,
 		table: terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME,
 		hash_attribute: terms.SYSTEM_TABLE_HASH_ATTRIBUTES.TABLE_TABLE_HASH_ATTRIBUTE,
 		search_attribute: SCHEMA_ATTRIBUTE_STRING,
-		search_value: describe_schema_object.schema,
+		search_value: schema_name,
 		hash_values: [],
 		get_attributes: [HASH_ATTRIBUTE_STRING, terms.ID_ATTRIBUTE_STRING, NAME_ATTRIBUTE_STRING, SCHEMA_ATTRIBUTE_STRING],
 	};
@@ -298,7 +299,7 @@ async function describeSchema(describe_schema_object) {
 			schema: terms.SYSTEM_SCHEMA_NAME,
 			table: terms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME,
 			hash_attribute: terms.SYSTEM_TABLE_HASH_ATTRIBUTES.SCHEMA_TABLE_HASH_ATTRIBUTE,
-			hash_values: [describe_schema_object.schema],
+			hash_values: [schema_name],
 			get_attributes: [NAME_ATTRIBUTE_STRING],
 		};
 

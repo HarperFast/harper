@@ -294,7 +294,7 @@ describe('Test lmdbUpdateRecords module', () => {
 			);
 			let record = test_utils.assertErrorSync(
 				search_utility.searchByHash,
-				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, '10'],
+				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, 10],
 				undefined
 			);
 			assert.deepStrictEqual(record, expected_search);
@@ -392,7 +392,7 @@ describe('Test lmdbUpdateRecords module', () => {
 			);
 			let record = test_utils.assertErrorSync(
 				search_utility.searchByHash,
-				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, '10'],
+				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, 10],
 				undefined
 			);
 			assert.deepStrictEqual(record, expected_search);

@@ -176,26 +176,22 @@ describe("Test commonUtility module", ()=>{
         it('test buffer returns buffer', ()=>{
             assert.deepStrictEqual(common.convertKeyValueToWrite(Buffer.from('test')), Buffer.from('test'));
         });
-        it('test null returns "null"', ()=>{
-            assert.deepStrictEqual(common.convertKeyValueToWrite(null), "null");
+        it('test null returns null', ()=>{
+            assert.deepStrictEqual(common.convertKeyValueToWrite(null), null);
         });
         it('test undefined returns undefined', ()=>{
             assert.deepStrictEqual(common.convertKeyValueToWrite(undefined), undefined);
-        });
-        it('test object returns stringify object', ()=>{
-            assert.deepStrictEqual(common.convertKeyValueToWrite({cool:'test'}), JSON.stringify({cool:'test'}));
-            assert.deepStrictEqual(common.convertKeyValueToWrite({}), JSON.stringify({}));
         });
         it('test array of primitives returns array of primitives', ()=>{
             let buff = Buffer.from('test');
             let arr = [2, 'test', 2.22, buff, false, null, Symbol.for('cool')];
             assert.deepStrictEqual(common.convertKeyValueToWrite(arr), arr);
-            assert.deepStrictEqual(common.convertKeyValueToWrite([]), '[]');
+            assert.deepStrictEqual(common.convertKeyValueToWrite([]), []);
         });
 
         it('test array with non-primitive returns string', ()=>{
             let arr = [2, 'test', 2.22, undefined, false, null, Symbol.for('cool')];
-            assert.deepStrictEqual(common.convertKeyValueToWrite(arr), JSON.stringify(arr));
+            assert.deepStrictEqual(common.convertKeyValueToWrite(arr), arr);
         });
 
         it('test Date returns number', ()=>{
@@ -236,10 +232,6 @@ describe("Test commonUtility module", ()=>{
         });
         it('test undefined returns undefined', ()=>{
             assert.deepStrictEqual(common.convertKeyValueFromSearch(undefined), undefined);
-        });
-        it('test object returns stringify object', ()=>{
-            assert.deepStrictEqual(common.convertKeyValueFromSearch({cool:'test'}), {cool:'test'});
-            assert.deepStrictEqual(common.convertKeyValueFromSearch({}), {});
         });
         it('test array of primitives returns array of primitives', ()=>{
             let buff = Buffer.from('test');

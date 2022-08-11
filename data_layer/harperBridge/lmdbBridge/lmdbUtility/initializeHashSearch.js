@@ -18,11 +18,5 @@ async function initialize(search_object) {
 		throw validation_error;
 	}
 	let env_base_path = path.join(getBaseSchemaPath(), search_object.schema.toString());
-	let environment = await environment_utility.openEnvironment(env_base_path, search_object.table);
-
-	for (let x = 0; x < search_object.hash_values.length; x++) {
-		search_object.hash_values[x] = search_object.hash_values[x].toString();
-	}
-
-	return environment;
+	return environment_utility.openEnvironment(env_base_path, search_object.table);
 }

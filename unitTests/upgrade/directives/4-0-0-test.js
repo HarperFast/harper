@@ -405,7 +405,7 @@ describe('Test 4-0-0 module', () => {
 describe('Test reindexing lmdb', () => {
 	let test_path = path.join(__dirname, 'upgrade_scripts/reindexTestDir');
 	before(async () => {
-		for (let filename of await fg('**/dog.m*', { cwd: test_path })) {
+		for (let filename of await fg(['**/dog.m*', '**/hdb_*.m*'], { cwd: test_path })) {
 			await fs.unlink(path.join(test_path, filename));
 		}
 		upgrade_script.__set__('env_mngr', {
@@ -415,7 +415,7 @@ describe('Test reindexing lmdb', () => {
 		});
 	});
 	after(async () => {
-		for (let filename of await fg(['**/dog.m*', '**/lock.mdb'], { cwd: test_path })) {
+		for (let filename of await fg(['**/dog.m*', '**/hdb_*.m*', '**/lock.mdb'], { cwd: test_path })) {
 			await fs.unlink(path.join(test_path, filename));
 		}
 		try {
@@ -438,6 +438,36 @@ describe('Test reindexing lmdb', () => {
 			assert.deepStrictEqual(dbis, ['hash_value','timestamp','user_name']);
 		} finally {
 			await environment_utility.closeEnvironment(txn_env);
+		}
+		let schema_env = await environment_utility.openEnvironment(path.join(__dirname, 'upgrade_scripts/reindexTestDir/schema/system'), 'hdb_schema');
+		try {
+			let schema_dbi = await environment_utility.openDBI(schema_env, 'name');
+			for (let { key: id, value: record } of schema_dbi.getRange({ start: false })) {
+				assert.strictEqual(typeof record.name, 'string');
+			}
+		} finally {
+			await environment_utility.closeEnvironment(schema_env);
+		}
+		let table_env = await environment_utility.openEnvironment(path.join(__dirname, 'upgrade_scripts/reindexTestDir/schema/system'), 'hdb_table');
+		try {
+			let table_dbi = await environment_utility.openDBI(table_env, 'id');
+			for (let { key: id, value: record } of table_dbi.getRange({ start: false })) {
+				assert.strictEqual(typeof record.name, 'string');
+				assert.strictEqual(typeof record.schema, 'string');
+			}
+		} finally {
+			await environment_utility.closeEnvironment(table_env);
+		}
+		let attribute_env = await environment_utility.openEnvironment(path.join(__dirname, 'upgrade_scripts/reindexTestDir/schema/system'), 'hdb_attribute');
+		try {
+			let attribute_dbi = await environment_utility.openDBI(attribute_env, 'id');
+			for (let { key: id, value: record } of attribute_dbi.getRange({ start: false })) {
+				assert.strictEqual(typeof record.schema, 'string');
+				assert.strictEqual(typeof record.table, 'string');
+				assert.strictEqual(typeof record.attribute, 'string');
+			}
+		} finally {
+			await environment_utility.closeEnvironment(attribute_env);
 		}
 	});
 

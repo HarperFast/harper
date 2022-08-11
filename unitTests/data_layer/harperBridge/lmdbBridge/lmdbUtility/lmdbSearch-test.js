@@ -86,19 +86,19 @@ describe('test lmdbSearch module', () => {
 		});
 
 		it('test for exact search on hash attribute is batch search by hash', () => {
-			let search_object = new SearchObject('dev', 'dog', 'id', '1', 'id', ['id', 'name']);
+			let search_object = new SearchObject('dev', 'dog', 'id', 1, 'id', ['id', 'name']);
 			let search_type = test_utils.assertErrorSync(create_search_type_function, [search_object, 'id'], undefined);
 			assert.deepStrictEqual(search_type, lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH);
 		});
 
 		it('test for exact search on hash attribute with return_map = true is batch search by hash to map', () => {
-			let search_object = new SearchObject('dev', 'dog', 'id', '1', 'id', ['id', 'name']);
+			let search_object = new SearchObject('dev', 'dog', 'id', 1, 'id', ['id', 'name']);
 			let search_type = test_utils.assertErrorSync(create_search_type_function, [search_object, 'id', true], undefined);
 			assert.deepStrictEqual(search_type, lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH_TO_MAP);
 		});
 
 		it('test for exact search on attribute is equals', () => {
-			let search_object = new SearchObject('dev', 'dog', 'age', '1', 'id', ['id', 'name']);
+			let search_object = new SearchObject('dev', 'dog', 'age', 1, 'id', ['id', 'name']);
 			let search_type = test_utils.assertErrorSync(create_search_type_function, [search_object, 'id'], undefined);
 			assert.deepStrictEqual(search_type, lmdb_terms.SEARCH_TYPES.EQUALS);
 		});
@@ -158,7 +158,7 @@ describe('test lmdbSearch module', () => {
 		});
 
 		it('test for > comparator is GREATER_THAN', () => {
-			let search_object = new SearchObject('dev', 'dog', 'age', '1', 'id', ['id', 'name']);
+			let search_object = new SearchObject('dev', 'dog', 'age', 1, 'id', ['id', 'name']);
 			let search_type = test_utils.assertErrorSync(
 				create_search_type_function,
 				[search_object, 'id', false, hdb_terms.VALUE_SEARCH_COMPARATORS.GREATER],
@@ -168,7 +168,7 @@ describe('test lmdbSearch module', () => {
 		});
 
 		it('test for >= comparator is GREATER_THAN_EQUAL', () => {
-			let search_object = new SearchObject('dev', 'dog', 'age', '1', 'id', ['id', 'name']);
+			let search_object = new SearchObject('dev', 'dog', 'age', 1, 'id', ['id', 'name']);
 			let search_type = test_utils.assertErrorSync(
 				create_search_type_function,
 				[search_object, 'id', false, hdb_terms.VALUE_SEARCH_COMPARATORS.GREATER_OR_EQ],
@@ -178,7 +178,7 @@ describe('test lmdbSearch module', () => {
 		});
 
 		it('test for < comparator is LESS_THAN', () => {
-			let search_object = new SearchObject('dev', 'dog', 'age', '1', 'id', ['id', 'name']);
+			let search_object = new SearchObject('dev', 'dog', 'age', 1, 'id', ['id', 'name']);
 			let search_type = test_utils.assertErrorSync(
 				create_search_type_function,
 				[search_object, 'id', false, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS],
@@ -188,7 +188,7 @@ describe('test lmdbSearch module', () => {
 		});
 
 		it('test for <= comparator is LESS_THAN_EQUAL', () => {
-			let search_object = new SearchObject('dev', 'dog', 'age', '1', 'id', ['id', 'name']);
+			let search_object = new SearchObject('dev', 'dog', 'age', 1, 'id', ['id', 'name']);
 			let search_type = test_utils.assertErrorSync(
 				create_search_type_function,
 				[search_object, 'id', false, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS_OR_EQ],
@@ -198,7 +198,7 @@ describe('test lmdbSearch module', () => {
 		});
 
 		it('test for ... comparator is BETWEEN', () => {
-			let search_object = new SearchObject('dev', 'dog', 'age', '1', 'id', ['id', 'name']);
+			let search_object = new SearchObject('dev', 'dog', 'age', 1, 'id', ['id', 'name']);
 			let search_type = test_utils.assertErrorSync(
 				create_search_type_function,
 				[search_object, 'id', false, hdb_terms.VALUE_SEARCH_COMPARATORS.BETWEEN],
@@ -310,7 +310,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '10', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 10, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.EQUALS, HASH_ATTRIBUTE_NAME],
@@ -335,7 +335,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '10', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 10, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.EQUALS, HASH_ATTRIBUTE_NAME, true],
@@ -353,7 +353,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'id', '10', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'id', 10, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH, HASH_ATTRIBUTE_NAME],
@@ -378,7 +378,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'id', '10', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'id', 10, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH_TO_MAP, HASH_ATTRIBUTE_NAME, true],
@@ -439,7 +439,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '0', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 0, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME],
@@ -464,7 +464,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '0', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 0, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME, true],
@@ -520,12 +520,12 @@ describe('test lmdbSearch module', () => {
 		it('test endswith on number', async () => {
 			let expected = [];
 			test_data.forEach((data) => {
-				if (data.temperature.toString().endsWith('2')) {
+				if (data.temperature.toString().endsWith(2)) {
 					expected.push(test_utils.assignObjecttoNullObject(data));
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '2', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 2, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.ENDS_WITH, HASH_ATTRIBUTE_NAME],
@@ -545,12 +545,12 @@ describe('test lmdbSearch module', () => {
 		it('test endswith on number return map', async () => {
 			let expected = Object.create(null);
 			test_data.forEach((data) => {
-				if (data.temperature.toString().endsWith('2')) {
+				if (data.temperature.toString().endsWith(2)) {
 					expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '2', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 2, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.ENDS_WITH, HASH_ATTRIBUTE_NAME, true],
@@ -606,12 +606,12 @@ describe('test lmdbSearch module', () => {
 		it('test startswith on number', async () => {
 			let expected = [];
 			test_data.forEach((data) => {
-				if (data.temperature.toString().startsWith('10')) {
+				if (data.temperature.toString().startsWith(10)) {
 					expected.push(test_utils.assignObjecttoNullObject(data));
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '10', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 10, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.STARTS_WITH, HASH_ATTRIBUTE_NAME],
@@ -631,12 +631,12 @@ describe('test lmdbSearch module', () => {
 		it('test startswith on number return map', async () => {
 			let expected = Object.create(null);
 			test_data.forEach((data) => {
-				if (data.temperature.toString().startsWith('10')) {
+				if (data.temperature.toString().startsWith(10)) {
 					expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '10', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 10, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.STARTS_WITH, HASH_ATTRIBUTE_NAME, true],
@@ -693,7 +693,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 25, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN, HASH_ATTRIBUTE_NAME],
@@ -718,7 +718,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 25, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN, HASH_ATTRIBUTE_NAME, true],
@@ -736,7 +736,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL, HASH_ATTRIBUTE_NAME],
@@ -762,7 +762,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL, HASH_ATTRIBUTE_NAME, true],
@@ -781,7 +781,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 25, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN, HASH_ATTRIBUTE_NAME],
@@ -807,7 +807,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 25, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN, HASH_ATTRIBUTE_NAME, true],
@@ -826,7 +826,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL, HASH_ATTRIBUTE_NAME],
@@ -851,7 +851,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL, HASH_ATTRIBUTE_NAME, true],
@@ -869,7 +869,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*'], '66');
+			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*'], 66);
 			let results = await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.BETWEEN, HASH_ATTRIBUTE_NAME],
@@ -894,7 +894,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*'], '66');
+			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*'], 66);
 			let results = await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.BETWEEN, HASH_ATTRIBUTE_NAME, true],
@@ -1016,7 +1016,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '10', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 10, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				thread_search_function,
 				[search_object, lmdb_terms.SEARCH_TYPES.EQUALS, HASH_ATTRIBUTE_NAME],
@@ -1041,7 +1041,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '10', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 10, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				thread_search_function,
 				[search_object, lmdb_terms.SEARCH_TYPES.EQUALS, HASH_ATTRIBUTE_NAME, true],
@@ -1059,7 +1059,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'id', '10', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'id', 10, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				thread_search_function,
 				[search_object, lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH, HASH_ATTRIBUTE_NAME],
@@ -1084,7 +1084,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'id', '10', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'id', 10, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				thread_search_function,
 				[search_object, lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH_TO_MAP, HASH_ATTRIBUTE_NAME, true],
@@ -1145,7 +1145,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '0', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 0, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				thread_search_function,
 				[search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME],
@@ -1170,7 +1170,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '0', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 0, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				thread_search_function,
 				[search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME, true],
@@ -1226,12 +1226,12 @@ describe('test lmdbSearch module', () => {
 		it('test endswith on number', async () => {
 			let expected = [];
 			test_data.forEach((data) => {
-				if (data.temperature.toString().endsWith('2')) {
+				if (data.temperature.toString().endsWith(2)) {
 					expected.push(data);
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '2', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 2, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				thread_search_function,
 				[search_object, lmdb_terms.SEARCH_TYPES.ENDS_WITH, HASH_ATTRIBUTE_NAME],
@@ -1251,12 +1251,12 @@ describe('test lmdbSearch module', () => {
 		it('test endswith on number return map', async () => {
 			let expected = {};
 			test_data.forEach((data) => {
-				if (data.temperature.toString().endsWith('2')) {
+				if (data.temperature.toString().endsWith(2)) {
 					expected[data.id] = data;
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '2', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 2, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				thread_search_function,
 				[search_object, lmdb_terms.SEARCH_TYPES.ENDS_WITH, HASH_ATTRIBUTE_NAME, true],
@@ -1312,12 +1312,12 @@ describe('test lmdbSearch module', () => {
 		it('test startswith on number', async () => {
 			let expected = [];
 			test_data.forEach((data) => {
-				if (data.temperature.toString().startsWith('10')) {
+				if (data.temperature.toString().startsWith(10)) {
 					expected.push(data);
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '10', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 10, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				thread_search_function,
 				[search_object, lmdb_terms.SEARCH_TYPES.STARTS_WITH, HASH_ATTRIBUTE_NAME],
@@ -1337,12 +1337,12 @@ describe('test lmdbSearch module', () => {
 		it('test startswith on number return map', async () => {
 			let expected = {};
 			test_data.forEach((data) => {
-				if (data.temperature.toString().startsWith('10')) {
+				if (data.temperature.toString().startsWith(10)) {
 					expected[data.id] = data;
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '10', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 10, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				thread_search_function,
 				[search_object, lmdb_terms.SEARCH_TYPES.STARTS_WITH, HASH_ATTRIBUTE_NAME, true],
@@ -1399,7 +1399,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 25, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				thread_search_function,
 				[search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN, HASH_ATTRIBUTE_NAME],
@@ -1424,7 +1424,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 25, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				thread_search_function,
 				[search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN, HASH_ATTRIBUTE_NAME, true],
@@ -1442,7 +1442,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				thread_search_function,
 				[search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL, HASH_ATTRIBUTE_NAME],
@@ -1467,7 +1467,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				thread_search_function,
 				[search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL, HASH_ATTRIBUTE_NAME, true],
@@ -1485,7 +1485,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 25, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				thread_search_function,
 				[search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN, HASH_ATTRIBUTE_NAME],
@@ -1510,7 +1510,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 25, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				thread_search_function,
 				[search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN, HASH_ATTRIBUTE_NAME, true],
@@ -1528,7 +1528,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				thread_search_function,
 				[search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL, HASH_ATTRIBUTE_NAME],
@@ -1553,7 +1553,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*']);
 			let results = await test_utils.assertErrorAsync(
 				thread_search_function,
 				[search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL, HASH_ATTRIBUTE_NAME, true],
@@ -1571,7 +1571,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*'], '66');
+			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*'], 66);
 			let results = await test_utils.assertErrorAsync(
 				thread_search_function,
 				[search_object, lmdb_terms.SEARCH_TYPES.BETWEEN, HASH_ATTRIBUTE_NAME],
@@ -1596,7 +1596,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*'], '66');
+			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*'], 66);
 			let results = await test_utils.assertErrorAsync(
 				thread_search_function,
 				[search_object, lmdb_terms.SEARCH_TYPES.BETWEEN, HASH_ATTRIBUTE_NAME, true],
@@ -1607,7 +1607,7 @@ describe('test lmdbSearch module', () => {
 		});
 
 		it('test multiple searches in flight', async () => {
-			let between_search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*'], '66');
+			let between_search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*'], 66);
 			let between_expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature >= 40 && data.temperature <= 66) {
@@ -1615,7 +1615,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let less_equal_search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
+			let less_equal_search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*']);
 			let less_equal_expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature <= 40) {
@@ -1623,7 +1623,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let less_search_object = new SearchObject('dev', 'test', 'temperature', '25', 'id', ['*']);
+			let less_search_object = new SearchObject('dev', 'test', 'temperature', 25, 'id', ['*']);
 			let less_expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature < 25) {
@@ -1631,7 +1631,7 @@ describe('test lmdbSearch module', () => {
 				}
 			});
 
-			let greaterequal_search_object = new SearchObject('dev', 'test', 'temperature', '40', 'id', ['*']);
+			let greaterequal_search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*']);
 			let greaterequal_expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature >= 40) {

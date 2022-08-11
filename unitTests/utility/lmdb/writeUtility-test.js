@@ -26,7 +26,7 @@ const BASE_TEST_PATH = path.join(test_utils.getMockLMDBPath(), 'lmdbTest');
 let TEST_ENVIRONMENT_NAME = 'test';
 const HASH_ATTRIBUTE_NAME = 'id';
 const ALL_ATTRIBUTES = ['id', 'name', 'age', '__createdtime__', '__updatedtime__'];
-const ONE_RECORD_ARRAY = [{ id: '1', name: 'Kyle', age: '46' }];
+const ONE_RECORD_ARRAY = [{ id: 1, name: 'Kyle', age: 46 }];
 
 const ONE_RECORD_ARRAY_EXPECTED = [
 	{ __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP, id: 1, name: 'Kyle', age: 46 },
@@ -893,7 +893,7 @@ describe('Test writeUtility module', () => {
 
 			results = await test_utils.assertErrorAsync(
 				write_utility.updateRecords,
-				[env, HASH_ATTRIBUTE_NAME, all_attributes_for_update, [{ id: 1, text: undefined }]],
+				[env, HASH_ATTRIBUTE_NAME, all_attributes_for_update, [{ id: 1, text: null }]],
 				undefined
 			);
 			assert.deepStrictEqual(results, expected_update_response);
@@ -965,7 +965,7 @@ describe('Test writeUtility module', () => {
 
 			results = await test_utils.assertErrorAsync(
 				write_utility.updateRecords,
-				[env, HASH_ATTRIBUTE_NAME, all_attributes_for_update, [{ id: 1, json: undefined }]],
+				[env, HASH_ATTRIBUTE_NAME, all_attributes_for_update, [{ id: 1, json: null }]],
 				undefined
 			);
 			assert.deepStrictEqual(results, expected_update_response);
@@ -1332,7 +1332,7 @@ describe('Test writeUtility module', () => {
 
 			results = await test_utils.assertErrorAsync(
 				write_utility.upsertRecords,
-				[env, HASH_ATTRIBUTE_NAME, all_attributes_for_upsert, [{ id: 1, text: undefined }]],
+				[env, HASH_ATTRIBUTE_NAME, all_attributes_for_upsert, [{ id: 1, text: null }]],
 				undefined
 			);
 			assert.deepStrictEqual(results, expected_upsert_response);
@@ -1402,7 +1402,7 @@ describe('Test writeUtility module', () => {
 
 			results = await test_utils.assertErrorAsync(
 				write_utility.upsertRecords,
-				[env, HASH_ATTRIBUTE_NAME, all_attributes_for_upsert, [{ id: 1, json: undefined }]],
+				[env, HASH_ATTRIBUTE_NAME, all_attributes_for_upsert, [{ id: 1, json: null }]],
 				undefined
 			);
 			assert.deepStrictEqual(results, expected_upsert_response);

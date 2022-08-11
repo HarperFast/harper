@@ -278,7 +278,7 @@ describe('Test lmdbCreateRecords module', () => {
 			);
 			let records = test_utils.assertErrorSync(
 				search_utility.batchSearchByHash,
-				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, ['8', '9', '12', '10']],
+				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, [8, 9, 12, 10]],
 				undefined
 			);
 			assert.deepStrictEqual(records, expected_search);
@@ -440,7 +440,7 @@ describe('Test lmdbCreateRecords module', () => {
 			);
 			let records = test_utils.assertErrorSync(
 				search_utility.batchSearchByHash,
-				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, ['8', '9', '123', '1232']],
+				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, [8, 9, 123, 1232]],
 				undefined
 			);
 			assert.deepStrictEqual(records, new_records_excpected);
@@ -565,7 +565,7 @@ describe('Test lmdbCreateRecords module', () => {
 				{
 					name: 'Harper',
 					breed: 'Mutt',
-					id: '89',
+					id: 89,
 					age: 5,
 				},
 				{

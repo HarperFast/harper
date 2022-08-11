@@ -88,11 +88,9 @@ async function validateDropSchema(drop_schema) {
 		throw err;
 	}
 
-	let drop_schema_cast = hdb_utils.autoCast(drop_schema);
-
 	// Data found by the search function should match the drop_schema
 	for (let item in search_result) {
-		if (search_result[item].name === drop_schema_cast) {
+		if (search_result[item].name === drop_schema) {
 			delete_schema = drop_schema;
 		}
 	}

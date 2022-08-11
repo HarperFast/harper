@@ -36,11 +36,11 @@ const assert = require('assert');
 const CREATE_TABLE_OBJ = new CreateTableObject('dev', 'test', 'id');
 const INSERT_RECORDS_1 = [
 	{ id: 1, name: 'Penny' },
-	{ id: 2, name: 'Kato', age: '6' },
+	{ id: 2, name: 'Kato', age: 6 },
 ];
 let INSERT_HASHES_1 = [1, 2];
 
-const INSERT_RECORDS_2 = [{ id: 3, name: 'Riley', age: '7' }];
+const INSERT_RECORDS_2 = [{ id: 3, name: 'Riley', age: 7 }];
 let INSERT_HASHES_2 = [3];
 
 const INSERT_RECORDS_3 = [{ id: 'blerrrrr', name: 'Rosco' }];
