@@ -149,24 +149,30 @@ function initTestEnvironment(test_config_obj = {}) {
 		} = test_config_obj;
 		const props_path = path.join(__dirname, '../../', 'unitTests');
 		install_props[BOOT_PROPS_FILE_PATH] = path.join(props_path, 'hdb_boot_properties.file');
-		setProperty(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, `${props_path}/settings.test`);
+		setProperty(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, path.join(props_path, 'settings.test'));
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER, os.userInfo().username);
-		setProperty(hdb_terms.HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY, `${props_path}/envDir/utility/keys/privateKey.pem`);
-		setProperty(hdb_terms.HDB_SETTINGS_NAMES.CERT_KEY, `${props_path}/envDir/utility/keys/certificate.pem`);
+		setProperty(
+			hdb_terms.HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY,
+			path.join(props_path, 'envDir', 'utility', 'keys', 'privateKey.pem')
+		);
+		setProperty(
+			hdb_terms.HDB_SETTINGS_NAMES.CERT_KEY,
+			path.join(props_path, 'envDir', 'utility', 'keys', 'certificate.pem')
+		);
 		setProperty(
 			hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_PRIVATEKEY,
-			`${props_path}/envDir/utility/keys/privateKey.pem`
+			path.join(props_path, 'envDir', 'utility', 'keys', 'privateKey.pem')
 		);
 		setProperty(
 			hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_CERTIFICATE,
-			`${props_path}/envDir/utility/keys/certificate.pem`
+			path.join(props_path, 'envDir', 'utility', 'keys', 'certificate.pem')
 		);
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY, `debug`);
-		setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY, `${props_path}/envDir/log`);
+		setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY, path.join(props_path, 'envDir', 'log'));
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_DAILY_ROTATE_KEY, false);
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY, true);
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY, '1231412de213');
-		setProperty(hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, `${props_path}/envDir/`);
+		setProperty(hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, path.join(props_path, 'envDir'));
 		setProperty(
 			hdb_terms.HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY,
 			common_utils.isEmpty(https_enabled) ? true : https_enabled

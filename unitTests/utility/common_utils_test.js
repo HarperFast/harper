@@ -16,6 +16,7 @@ const cu_rewire = rewire('../../utility/common_utils');
 const upgrade_directive = require('../../upgrade/UpgradeDirective');
 const { expect } = chai;
 const ALL_SPACES = '     ';
+const SEP = require('path').sep;
 
 const USERS = new Map([
 	[
@@ -176,11 +177,11 @@ describe('Test common_utils module', () => {
 		});
 
 		it(`Pass in values with mixed null and empty string, expect double slashes where empty values would be`, function () {
-			assert.equal(cu.buildFolderPath('opt', null, 'test', '', 'data'), 'opt//test//data');
+			assert.equal(cu.buildFolderPath('opt', null, 'test', '', 'data'), `opt${SEP}${SEP}test${SEP}${SEP}data`);
 		});
 
 		it(`Pass in values mixed with numbers and strings, expect a path`, function () {
-			assert.equal(cu.buildFolderPath('opt', 1, 'test', 45, 'data', '333-55'), 'opt/1/test/45/data/333-55');
+			assert.equal(cu.buildFolderPath('opt', 1, 'test', 45, 'data', '333-55'), `opt${SEP}1${SEP}test${SEP}45${SEP}data${SEP}333-55`);
 		});
 	});
 

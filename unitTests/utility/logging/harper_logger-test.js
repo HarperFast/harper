@@ -226,7 +226,7 @@ describe('Test harper_logger module', () => {
 		let open_sync_stub;
 
 		beforeEach(() => {
-			open_sync_stub = sandbox.stub(fs, 'openSync').returns(123);
+			open_sync_stub = sandbox.stub(fs, 'ensureFileSync').returns(123);
 		});
 
 		afterEach(() => {
@@ -419,11 +419,17 @@ describe('Test harper_logger module', () => {
 		});
 
 		after(() => {
-			fs.removeSync(TEST_LOG_DIR);
+			try {
+				fs.removeSync(TEST_LOG_DIR);
+			} catch(e){}
 		});
 
 		afterEach(() => {
-			fs.emptyDirSync(TEST_LOG_DIR);
+			try {
+				fs.emptyDirSync(TEST_LOG_DIR);
+			} catch (e) {
+				//do nothing here windows doesn't like emptying an already empty folder
+			}
 			harper_logger.__set__('NON_PM2_PROCESS', true);
 			sandbox.restore();
 		});
@@ -666,11 +672,19 @@ describe('Test harper_logger module', () => {
 		});
 
 		after(() => {
-			fs.removeSync(TEST_LOG_DIR);
+			try {
+				fs.removeSync(TEST_LOG_DIR);
+			} catch (e) {
+				
+			}
 		});
 
 		afterEach(() => {
-			fs.emptyDirSync(TEST_LOG_DIR);
+			try {
+				fs.emptyDirSync(TEST_LOG_DIR);
+			} catch (e) {
+				
+			}
 			sandbox.restore();
 		});
 

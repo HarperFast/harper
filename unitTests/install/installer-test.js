@@ -170,9 +170,9 @@ describe('Test installer module', () => {
 		const set_prop_stub = sandbox.stub(env_manager, 'setProperty');
 		const createBootPropertiesFile = installer.__get__('createBootPropertiesFile');
 		await createBootPropertiesFile();
-		expect(mk_dir_stub.getCall(0).args[0]).to.equal('homedir/test/.harperdb');
-		expect(mk_dir_stub.getCall(1).args[0]).to.equal('homedir/test/.harperdb/keys');
-		expect(write_file_stub.args[0][0]).to.equal('homedir/test/.harperdb/hdb_boot_properties.file');
+		expect(mk_dir_stub.getCall(0).args[0]).to.equal(path.join('homedir', 'test', '.harperdb'));
+		expect(mk_dir_stub.getCall(1).args[0]).to.equal(path.join('homedir', 'test', '.harperdb', 'keys'));
+		expect(write_file_stub.args[0][0]).to.equal(path.join('homedir', 'test', '.harperdb', 'hdb_boot_properties.file'));
 		expect(set_prop_stub.getCall(0).args[0]).to.equal('install_user');
 		expect(set_prop_stub.getCall(1).args[0]).to.equal('settings_path');
 		expect(set_prop_stub.getCall(2).args[0]).to.equal('BOOT_PROPS_FILE_PATH');

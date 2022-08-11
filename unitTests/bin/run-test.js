@@ -554,8 +554,8 @@ describe('Test run module', () => {
 			const result = await isHdbInstalled();
 
 			expect(result).to.be.true;
-			expect(fs_stat_stub.getCall(0).args[0]).to.include('.harperdb/hdb_boot_properties.file');
-			expect(fs_stat_stub.getCall(1).args[0]).to.include('harperdb/unitTests/settings.test');
+			expect(fs_stat_stub.getCall(0).args[0]).to.include(`.harperdb${path.sep}hdb_boot_properties.file`);
+			expect(fs_stat_stub.getCall(1).args[0]).to.include(`harperdb${path.sep}unitTests${path.sep}settings.test`);
 		});
 
 		it('Test ENOENT err code returns false', async () => {

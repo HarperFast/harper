@@ -195,26 +195,18 @@ describe('test systemInformation module', ()=>{
     it('test getSystemInformation function', async()=>{
         let results = await system_information.getSystemInformation();
 
-        Object.keys(results).forEach(key=>{
-            assert(EXPECTED_PROPERTIES.system.indexOf(key) >= 0);
-        });
-
         EXPECTED_PROPERTIES.system.forEach(property=>{
             assert(results.hasOwnProperty(property));
         });
-    });
+    }).timeout(5000);
 
     it('call getSystemInformation 2nd time to test cache', async()=>{
         let results = await system_information.getSystemInformation();
 
-        Object.keys(results).forEach(key=>{
-            assert(EXPECTED_PROPERTIES.system.indexOf(key) >= 0);
-        });
-
         EXPECTED_PROPERTIES.system.forEach(property=>{
             assert(results.hasOwnProperty(property));
         });
-    });
+    }).timeout(5000);
 
     it('test getTimeInfo function', ()=>{
         let results = system_information.getTimeInfo();
@@ -230,10 +222,6 @@ describe('test systemInformation module', ()=>{
 
     it('test getCPUInfo function', async ()=>{
         let results = await system_information.getCPUInfo();
-
-        Object.keys(results).forEach(key=>{
-            assert(EXPECTED_PROPERTIES.cpu.indexOf(key) >= 0);
-        });
 
         EXPECTED_PROPERTIES.cpu.forEach(property=>{
             assert(results.hasOwnProperty(property));
@@ -264,7 +252,7 @@ describe('test systemInformation module', ()=>{
         EXPECTED_PROPERTIES.cpu_current_load_cpus.forEach(property=>{
             assert(results.current_load.cpus[0].hasOwnProperty(property));
         });
-    });
+    }).timeout(5000);
 
     it('test getMemoryInfo function', async ()=>{
         let results = await system_information.getMemoryInfo();
@@ -280,40 +268,42 @@ describe('test systemInformation module', ()=>{
 
     it('test getDiskInfo function', async ()=>{
         let results = await system_information.getDiskInfo();
+        if(process.platform !== 'win32')
+        {
+            Object.keys(results).forEach(key => {
+                assert(EXPECTED_PROPERTIES.disk.indexOf(key) >= 0);
+            });
 
-        Object.keys(results).forEach(key=>{
-            assert(EXPECTED_PROPERTIES.disk.indexOf(key) >= 0);
-        });
+            EXPECTED_PROPERTIES.disk.forEach(property => {
+                assert(results.hasOwnProperty(property));
+            });
 
-        EXPECTED_PROPERTIES.disk.forEach(property=>{
-            assert(results.hasOwnProperty(property));
-        });
+            Object.keys(results.io).forEach(key => {
+                assert(EXPECTED_PROPERTIES.disk_io.indexOf(key) >= 0);
+            });
 
-        Object.keys(results.io).forEach(key=>{
-            assert(EXPECTED_PROPERTIES.disk_io.indexOf(key) >= 0);
-        });
+            EXPECTED_PROPERTIES.disk_io.forEach(property => {
+                assert(results.io.hasOwnProperty(property));
+            });
 
-        EXPECTED_PROPERTIES.disk_io.forEach(property=>{
-            assert(results.io.hasOwnProperty(property));
-        });
+            Object.keys(results.read_write).forEach(key => {
+                assert(EXPECTED_PROPERTIES.disk_read_write.indexOf(key) >= 0);
+            });
 
-        Object.keys(results.read_write).forEach(key=>{
-            assert(EXPECTED_PROPERTIES.disk_read_write.indexOf(key) >= 0);
-        });
+            EXPECTED_PROPERTIES.disk_read_write.forEach(property => {
+                assert(results.read_write.hasOwnProperty(property));
+            });
 
-        EXPECTED_PROPERTIES.disk_read_write.forEach(property=>{
-            assert(results.read_write.hasOwnProperty(property));
-        });
+            assert(Array.isArray(results.size));
 
-        assert(Array.isArray(results.size));
+            Object.keys(results.size[0]).forEach(key => {
+                assert(EXPECTED_PROPERTIES.disk_size.indexOf(key) >= 0);
+            });
 
-        Object.keys(results.size[0]).forEach(key=>{
-            assert(EXPECTED_PROPERTIES.disk_size.indexOf(key) >= 0);
-        });
-
-        EXPECTED_PROPERTIES.disk_size.forEach(property=>{
-            assert(results.size[0].hasOwnProperty(property));
-        });
+            EXPECTED_PROPERTIES.disk_size.forEach(property => {
+                assert(results.size[0].hasOwnProperty(property));
+            });
+        }
     });
 
     it('test getNetworkInfo function', async ()=>{
@@ -336,10 +326,6 @@ describe('test systemInformation module', ()=>{
         });
 
         assert(Array.isArray(results.interfaces));
-
-        Object.keys(results.interfaces[0]).forEach(key=>{
-            assert(EXPECTED_PROPERTIES.network_interfaces.indexOf(key) >= 0);
-        });
 
         EXPECTED_PROPERTIES.network_interfaces.forEach(property=>{
             assert(results.interfaces[0].hasOwnProperty(property));
@@ -385,7 +371,7 @@ describe('test systemInformation module', ()=>{
         EXPECTED_PROPERTIES.all.forEach(property=>{
             assert(results.hasOwnProperty(property) && results[property] !== undefined);
         });
-    });
+    }).timeout(10000);
 
     it('test systemInformation function fetch some attributes', async ()=>{
         let expected_attributes = ['time', 'memory'];
@@ -411,7 +397,7 @@ describe('test systemInformation module', ()=>{
         EXPECTED_PROPERTIES.all.forEach(property=>{
             assert(results.hasOwnProperty(property) && results[property] !== undefined);
         });
-    });
+    }).timeout(10000);
 });
 
 describe('test getTableSize function', ()=>{

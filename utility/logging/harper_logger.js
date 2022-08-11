@@ -139,7 +139,7 @@ function createLogFile(log_name, log_process_name) {
 
 	if (log_to_file) {
 		// Create or open a log file
-		non_pm2_log_file = fs.openSync(path.join(log_dir, log_name), 'a');
+		non_pm2_log_file = fs.ensureFileSync(path.join(log_dir, log_name));
 	}
 }
 
