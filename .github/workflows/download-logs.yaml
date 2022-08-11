@@ -8,6 +8,7 @@ name: "Download logs from instances"
 jobs:
   downloadLogs:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
     - name: Download Logs
       env:

@@ -49,6 +49,7 @@ jobs:
     secrets: inherit
   runUnitTests:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs:
       - createInstances
       - registerInstances
@@ -88,6 +89,7 @@ jobs:
       shell: bash
   runSonarScans:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs:
       - runUnitTests
       - createInstances
@@ -111,6 +113,7 @@ jobs:
         SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
   runIntegrationTests:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs:
       - runUnitTests
       - createInstances

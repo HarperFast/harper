@@ -20,6 +20,7 @@ name: Install and Register HDB on instances
 jobs:
   installAndRegister:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
     - name: Install and Register
       env:

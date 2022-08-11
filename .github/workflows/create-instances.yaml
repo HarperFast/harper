@@ -28,6 +28,7 @@ jobs:
       publicDnsNames: ${{ steps.createInstances.outputs.PUBLIC_DNS_NAMES}}
       publicIps: ${{ steps.createInstances.outputs.PUBLIC_IPS}}
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
     - uses: actions/checkout@v2
     - name: Setup Terraform
