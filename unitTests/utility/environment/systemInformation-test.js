@@ -278,10 +278,6 @@ describe('test systemInformation module', ()=>{
                 assert(results.hasOwnProperty(property));
             });
 
-            Object.keys(results.io).forEach(key => {
-                assert(EXPECTED_PROPERTIES.disk_io.indexOf(key) >= 0);
-            });
-
             EXPECTED_PROPERTIES.disk_io.forEach(property => {
                 assert(results.io.hasOwnProperty(property));
             });

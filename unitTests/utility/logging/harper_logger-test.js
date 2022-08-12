@@ -335,7 +335,7 @@ describe('Test harper_logger module', () => {
 		beforeEach(() => {
 			harper_logger = requireUncached(HARPER_LOGGER_MODULE);
 			writeToLogFile = harper_logger.__get__('writeToLogFile');
-			open_sync_stub = sandbox.stub(fs, 'openSync').returns(321);
+			open_sync_stub = sandbox.stub(fs, 'ensureFileSync').returns(321);
 			ensure_dir_sync_stub = sandbox.stub(fs, 'ensureDirSync');
 			append_file_sync_stub = sandbox.stub(fs, 'appendFileSync');
 		});
@@ -351,7 +351,6 @@ describe('Test harper_logger module', () => {
 			harper_logger.__set__('non_pm2_log_file', undefined);
 			writeToLogFile(test_log);
 			expect(open_sync_stub.firstCall.args[0]).to.include('install.log');
-			expect(append_file_sync_stub.args[0][0]).to.equal(321);
 			expect(append_file_sync_stub.args[0][1]).to.eql(test_log);
 		});
 
@@ -421,7 +420,7 @@ describe('Test harper_logger module', () => {
 		after(() => {
 			try {
 				fs.removeSync(TEST_LOG_DIR);
-			} catch(e){}
+			} catch (e) {}
 		});
 
 		afterEach(() => {
@@ -674,17 +673,13 @@ describe('Test harper_logger module', () => {
 		after(() => {
 			try {
 				fs.removeSync(TEST_LOG_DIR);
-			} catch (e) {
-				
-			}
+			} catch (e) {}
 		});
 
 		afterEach(() => {
 			try {
 				fs.emptyDirSync(TEST_LOG_DIR);
-			} catch (e) {
-				
-			}
+			} catch (e) {}
 			sandbox.restore();
 		});
 

@@ -316,10 +316,7 @@ async function packageCustomFunctionProject(req) {
 		throw err_string;
 	}
 
-	// ensure /tmp exists
-	if (!fs.existsSync(TMP_PATH)) {
-		fs.mkdirSync(TMP_PATH);
-	}
+	fs.ensureDirSync(TMP_PATH);
 
 	const file = path.join(TMP_PATH, `${project_hash}.tar`);
 
