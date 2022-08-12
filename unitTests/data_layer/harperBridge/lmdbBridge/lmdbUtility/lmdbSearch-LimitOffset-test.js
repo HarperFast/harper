@@ -36,7 +36,6 @@ const TIMESTAMP_OBJECT = {
 };
 
 const HASH_ATTRIBUTE_NAME = 'id';
-const thread_search_function = lmdb_search.__get__('threadSearch');
 
 const ATTRIBUTES = ['id', 'temperature', 'temperature_str', 'state', 'city'];
 
