@@ -4037,7 +4037,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"insert\",\n    \"schema\": \"dev\",\n    \"table\": \"dog\",\n    \"records\": [\n        {\n            \"name\": \"Harper\",\n            \"breed\": \"Pog\",\n            \"id\": \"1\",\n            \"age\": 5\n        }\n    ]\n}"
+							"raw": "{\n    \"operation\": \"insert\",\n    \"schema\": \"dev\",\n    \"table\": \"dog\",\n    \"records\": [\n        {\n            \"name\": \"Harper\",\n            \"breed\": \"Pog\",\n            \"id\": 1,\n            \"age\": 5\n        }\n    ]\n}"
 						},
 						"url": {
 							"raw": "http://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
@@ -4593,7 +4593,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"upsert\",\n    \"schema\": \"dev\",\n    \"table\": \"dog\",\n    \"records\": [\n        {\n            \"nickname\": \"Hey you...\",\n            \"id\": \"1\"\n        },\n        {\n            \"name\":\"Jimmy\",\n            \"breed\":\"Mix\",\n            \"age\": \"?\",\n            \"gender\": \"female\"\n        }\n    ]\n}"
+							"raw": "{\n    \"operation\": \"upsert\",\n    \"schema\": \"dev\",\n    \"table\": \"dog\",\n    \"records\": [\n        {\n            \"nickname\": \"Hey you...\",\n            \"id\": 1\n        },\n        {\n            \"name\":\"Jimmy\",\n            \"breed\":\"Mix\",\n            \"age\": \"?\",\n            \"gender\": \"female\"\n        }\n    ]\n}"
 						},
 						"url": {
 							"raw": "http://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
@@ -5306,7 +5306,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"dev\",\n\"table\":\"dog\",\n\"records\": [\n  {\n    \"name\":\"Harper\",\n    \"breed\":\"Pog\",\n    \"id\":\"1\",\n    \"age\":5\n    \n  },\n  {\n    \"name\":\"Penny\",\n    \"breed\":\"Pit Bull\",\n    \"id\":\"2\",\n    \"age\":20\n  }\n]\n\n}"
+							"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"dev\",\n\"table\":\"dog\",\n\"records\": [\n  {\n    \"name\":\"Harper\",\n    \"breed\":\"Pog\",\n    \"id\":1,\n    \"age\":5\n    \n  },\n  {\n    \"name\":\"Penny\",\n    \"breed\":\"Pit Bull\",\n    \"id\":2,\n    \"age\":20\n  }\n]\n\n}"
 						},
 						"url": {
 							"raw": "http://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
