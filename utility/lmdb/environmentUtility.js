@@ -249,12 +249,6 @@ async function deleteEnvironment(base_path, env_name, is_txn = false) {
 	let standard_path = path.join(base_path, env_name + MDB_FILE_EXTENSION);
 	let data_path = await validateEnvironmentPath(base_path, env_name);
 
-	await fs.remove(data_path);
-	await fs.remove(
-		data_path === standard_path
-			? data_path + MDB_LOCK_FILE_SUFFIX
-			: path.join(path.dirname(data_path), MDB_LEGACY_LOCK_FILE_NAME)
-	); // I suspect we may have problems with this on Windows
 	if (global.lmdb_map !== undefined) {
 		let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
 		if (global.lmdb_map[full_name]) {
@@ -263,6 +257,12 @@ async function deleteEnvironment(base_path, env_name, is_txn = false) {
 			delete global.lmdb_map[full_name];
 		}
 	}
+	await fs.remove(data_path);
+	await fs.remove(
+		data_path === standard_path
+			? data_path + MDB_LOCK_FILE_SUFFIX
+			: path.join(path.dirname(data_path), MDB_LEGACY_LOCK_FILE_NAME)
+	); // I suspect we may have problems with this on Windows
 }
 
 /**
