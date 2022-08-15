@@ -217,7 +217,10 @@ describe('test cleanUp function', () => {
 
 		await cleanup('/tmp/nats-server-src/');
 		expect(path_join_spy.callCount).to.equal(2);
-		expect(path_join_spy.firstCall.args).to.eql(['/tmp/nats-server-src/', 'nats-server']);
+		expect(path_join_spy.firstCall.args).to.eql([
+			'/tmp/nats-server-src/',
+			`nats-server${process.platform === 'win32' ? '.exe' : ''}`,
+		]);
 		expect(path_join_spy.secondCall.args).to.eql(['/tmp/', 'pkg']);
 
 		expect(fs_move_stub.callCount).to.equal(1);
