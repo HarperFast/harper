@@ -41,9 +41,9 @@ async function insertRecords(env, hash_attribute, write_attributes, records, gen
 		setTimestamps(record, true, generate_timestamps);
 
 		let promise = insertRecord(env, hash_attribute, write_attributes, record);
-		let cast_hash_value = record[hash_attribute];
+		let hash_value = record[hash_attribute];
 		puts.push(promise);
-		keys.push(cast_hash_value);
+		keys.push(hash_value);
 	}
 
 	return finalizeWrite(puts, keys, records, result);
@@ -58,9 +58,8 @@ async function insertRecords(env, hash_attribute, write_attributes, records, gen
  * @returns {Promise<boolean>}
  */
 function insertRecord(env, hash_attribute, write_attributes, record) {
-	let cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
-	record[hash_attribute] = cast_hash_value;
-	return env.dbis[hash_attribute].ifNoExists(cast_hash_value, () => {
+	let hash_value = record[hash_attribute];
+	return env.dbis[hash_attribute].ifNoExists(hash_value, () => {
 		for (let x = 0; x < write_attributes.length; x++) {
 			let attribute = write_attributes[x];
 
@@ -78,17 +77,14 @@ function insertRecord(env, hash_attribute, write_attributes, record) {
 				}
 			}
 
-			value = hdb_utils.autoCast(value);
-			value = value === undefined ? null : value;
-			record[attribute] = value;
 			let values = common.getIndexedValues(value);
 			if (values) {
 				for (let i = 0, l = values.length; i < l; i++) {
-					env.dbis[attribute].put(values[i], cast_hash_value);
+					env.dbis[attribute].put(values[i], hash_value);
 				}
 			}
 		}
-		env.dbis[hash_attribute].put(cast_hash_value, record, record[UPDATED_TIME_ATTRIBUTE_NAME]);
+		env.dbis[hash_attribute].put(hash_value, record, record[UPDATED_TIME_ATTRIBUTE_NAME]);
 	});
 }
 
@@ -173,18 +169,18 @@ async function updateRecords(env, hash_attribute, write_attributes, records, gen
 	let keys = [];
 	for (let index = 0; index < records.length; index++) {
 		let record = records[index];
-		let cast_hash_value = hdb_utils.autoCast(record[hash_attribute]);
+		let hash_value = record[hash_attribute];
 
 		let promise;
 		try {
-			promise = updateUpsertRecord(env, hash_attribute, record, cast_hash_value, result, true, generate_timestamps);
+			promise = updateUpsertRecord(env, hash_attribute, record, hash_value, result, true, generate_timestamps);
 		} catch (e) {
-			result.skipped_hashes.push(cast_hash_value);
+			result.skipped_hashes.push(hash_value);
 			remove_indices.push(index);
 			continue;
 		}
 		puts.push(promise);
-		keys.push(cast_hash_value);
+		keys.push(hash_value);
 	}
 
 	return finalizeWrite(puts, keys, records, result, remove_indices);
@@ -221,7 +217,7 @@ async function upsertRecords(env, hash_attribute, write_attributes, records, gen
 			hash_value = uuid.v4();
 			record[hash_attribute] = hash_value;
 		} else {
-			hash_value = hdb_utils.autoCast(record[hash_attribute]);
+			hash_value = record[hash_attribute];
 		}
 
 		// do an upsert without requiring the record to previously existed
@@ -255,7 +251,7 @@ async function finalizeWrite(puts, keys, records, result, remove_indices = []) {
  * @param {lmdb.RootDatabase} env
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {{}} record - the record to process
- * @param {string|number} cast_hash_value - the hash attribute value cast to it's data type
+ * @param {string|number} hash_value - the hash attribute value
  * @param {UpdateRecordsResponseObject|UpsertRecordsResponseObject} result
  * @param {boolean} Require existing record
  * @param {boolean} Generate timestamps
@@ -264,16 +260,16 @@ function updateUpsertRecord(
 	env,
 	hash_attribute,
 	record,
-	cast_hash_value,
+	hash_value,
 	result,
 	must_exist = false,
 	generate_timestamps = true
 ) {
 	let primary_dbi = env.dbis[hash_attribute];
 	// we prefetch the value to ensure we don't have any page faults inside the write transaction
-	return primary_dbi.prefetch(cast_hash_value).then(() =>
+	return primary_dbi.prefetch(hash_value).then(() =>
 		primary_dbi.transaction(() => {
-			let existing_record = primary_dbi.get(cast_hash_value);
+			let existing_record = primary_dbi.get(hash_value);
 			let had_existing = existing_record;
 			if (!existing_record) {
 				if (must_exist) return false;
@@ -315,10 +311,6 @@ function updateUpsertRecord(
 						record[key] = value;
 					}
 				}
-				value = hdb_utils.autoCast(value);
-				value = value === undefined ? null : value;
-				record[key] = value;
-				existing_value = hdb_utils.autoCast(existing_value);
 				if (value === existing_value) {
 					continue;
 				}
@@ -327,19 +319,19 @@ function updateUpsertRecord(
 				let values = common.getIndexedValues(existing_value);
 				if (values) {
 					for (let i = 0, l = values.length; i < l; i++) {
-						dbi.remove(values[i], cast_hash_value);
+						dbi.remove(values[i], hash_value);
 					}
 				}
 				values = common.getIndexedValues(value);
 				if (values) {
 					for (let i = 0, l = values.length; i < l; i++) {
-						dbi.put(values[i], cast_hash_value);
+						dbi.put(values[i], hash_value);
 					}
 				}
 			}
 
 			let merged_record = Object.assign({}, existing_record, record);
-			primary_dbi.put(cast_hash_value, merged_record, merged_record[UPDATED_TIME_ATTRIBUTE_NAME]);
+			primary_dbi.put(hash_value, merged_record, merged_record[UPDATED_TIME_ATTRIBUTE_NAME]);
 			return true;
 		})
 	);

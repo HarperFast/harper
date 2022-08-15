@@ -46,22 +46,22 @@ const CREATE_TABLE_OBJ = new CreateTableObject('dev', 'test', 'id');
 
 const INSERT_RECORDS = [
 	{ id: 1, name: 'Penny' },
-	{ id: 2, name: 'Kato', age: '6' },
-	{ id: 3, name: 'Riley', age: '7' },
+	{ id: 2, name: 'Kato', age: 6 },
+	{ id: 3, name: 'Riley', age: 7 },
 	{ id: 'blerrrrr', name: 'Rosco' },
 ];
 
 const UPDATE_RECORDS = [
 	{ id: 1, name: 'Penny B' },
-	{ id: 2, name: 'Kato B', age: '6' },
-	{ id: 3, name: 'Riley S', age: '7' },
+	{ id: 2, name: 'Kato B', age: 6 },
+	{ id: 3, name: 'Riley S', age: 7 },
 	{ id: 'blerrrrr', name: 'Rosco ?' },
 ];
 
 const UPSERT_RECORDS = [
-	{ id: 1, name: 'Penny B', age: '10' },
-	{ id: 2, name: 'Kato B', age: '7' },
-	{ id: 3, name: 'Riley S', age: '8' },
+	{ id: 1, name: 'Penny B', age: 10 },
+	{ id: 2, name: 'Kato B', age: 7 },
+	{ id: 3, name: 'Riley S', age: 8 },
 	{ id: 'blerrrrr', name: 'Rosco ?' },
 ];
 

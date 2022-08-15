@@ -37,7 +37,7 @@ async function lmdbDeleteRecordsBefore(delete_obj) {
 
 	// Timestamps are originally created using Date.now() which is a millisecond string, passed dates are ISO format and
 	// must be converted to milliseconds so that they can be compared with stored values.
-	let parsed_search_date = Date.parse(delete_obj.date).toString();
+	let parsed_search_date = Date.parse(delete_obj.date);
 	let search_result;
 
 	// Uses lmdb to search for values in a scheme.tables timestamp column that are less than passed date.

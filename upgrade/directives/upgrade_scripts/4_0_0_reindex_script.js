@@ -198,6 +198,23 @@ async function processTable(schema, table, the_schema_path, is_transaction_reind
 	try {
 		for (let entry of primary_dbi.getRange({ start: false })) {
 			entries.push(entry);
+			if (schema === 'system') {
+				if (table === 'hdb_schema') {
+					entry.key = entry.key.toString();
+					entry.value.name = entry.value.name.toString();
+				}
+				if (table === 'hdb_table') {
+					entry.key = entry.key.toString();
+					entry.value.schema = entry.value.schema.toString();
+					entry.value.name = entry.value.name.toString();
+				}
+				if (table === 'hdb_attribute') {
+					entry.key = entry.key.toString();
+					entry.value.schema = entry.value.schema.toString();
+					entry.value.table = entry.value.table.toString();
+					entry.value.attribute = entry.value.attribute.toString();
+				}
+			}
 			if (entries.length > BATCH_LEVEL) {
 				await finishOutstanding();
 			}

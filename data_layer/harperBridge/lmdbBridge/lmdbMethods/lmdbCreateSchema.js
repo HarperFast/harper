@@ -17,7 +17,7 @@ async function lmdbCreateSchema(create_schema_obj) {
 	let records = [
 		{
 			name: create_schema_obj.schema,
-			createddate: '' + Date.now(),
+			createddate: Date.now(),
 		},
 	];
 	let insert_object = new InsertObject(

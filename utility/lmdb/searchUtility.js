@@ -4,7 +4,6 @@ const environment_utility = require('./environmentUtility');
 
 const log = require('../logging/harper_logger');
 const common = require('./commonUtility');
-const auto_cast = require('../common_utils').autoCast;
 const lmdb_terms = require('./terms');
 const LMDB_ERRORS = require('../errors/commonErrors').LMDB_ERRORS_ENUM;
 const hdb_utils = require('../common_utils');
@@ -134,9 +133,6 @@ function iterateRangeBetween(
 	if (attr_dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
 		hash_attribute = attribute;
 	}
-
-	lower_value = auto_cast(lower_value);
-	upper_value = auto_cast(upper_value);
 
 	let end = reverse === true ? lower_value : upper_value;
 	let start = reverse === true ? upper_value : lower_value;
@@ -302,7 +298,6 @@ function equals(env, hash_attribute, attribute, search_value, reverse = false, l
 
 	let dbi = environment_utility.openDBI(env, attribute);
 
-	search_value = auto_cast(search_value);
 	search_value = common.convertKeyValueToWrite(search_value);
 
 	let results = [[], []];
@@ -318,6 +313,20 @@ function equals(env, hash_attribute, attribute, search_value, reverse = false, l
 		}
 	}
 	return results;
+}
+
+/**
+ * Counts the number of entries for a key of a named dbi, returning the count
+ * @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
+ * @param {String} hash_attribute
+ * @param {String} attribute - name of the attribute (dbi) to search
+ * @param search_value - value to search
+*/
+function count(env, attribute, search_value) {
+	validateComparisonFunctions(env, attribute, search_value);
+
+	let dbi = environment_utility.openDBI(env, attribute);
+	return dbi.getValuesCount(search_value);
 }
 
 /**
@@ -351,7 +360,6 @@ function startsWith(
 	}
 
 	//if the search is numeric we need to scan the entire index, if string we can just do a range
-	search_value = auto_cast(search_value);
 	search_value = common.convertKeyValueToWrite(search_value);
 	let string_search = true;
 	if (typeof search_value === 'number') {
@@ -521,7 +529,6 @@ function greaterThan(
 	offset = undefined
 ) {
 	validateComparisonFunctions(env, attribute, search_value);
-	search_value = auto_cast(search_value);
 
 	let type = typeof search_value;
 	let upper_value;
@@ -566,7 +573,6 @@ function greaterThanEqual(
 	offset = undefined
 ) {
 	validateComparisonFunctions(env, attribute, search_value);
-	search_value = auto_cast(search_value);
 
 	let type = typeof search_value;
 	let upper_value;
@@ -611,7 +617,6 @@ function lessThan(
 	offset = undefined
 ) {
 	validateComparisonFunctions(env, attribute, search_value);
-	search_value = auto_cast(search_value);
 	let type = typeof search_value;
 	let lower_value;
 	if (type === 'string')
@@ -655,7 +660,6 @@ function lessThanEqual(
 	offset = undefined
 ) {
 	validateComparisonFunctions(env, attribute, search_value);
-	search_value = auto_cast(search_value);
 	let type = typeof search_value;
 	let lower_value;
 	if (type === 'string')
@@ -714,9 +718,7 @@ function between(
 		throw new Error(LMDB_ERRORS.END_VALUE_REQUIRED);
 	}
 
-	start_value = hdb_utils.autoCast(start_value);
 	start_value = common.convertKeyValueToWrite(start_value);
-	end_value = hdb_utils.autoCast(end_value);
 	end_value = common.convertKeyValueToWrite(end_value);
 	if (start_value > end_value) {
 		throw new Error(LMDB_ERRORS.END_VALUE_MUST_BE_GREATER_THAN_START_VALUE);
@@ -746,8 +748,6 @@ function searchByHash(env, hash_attribute, fetch_attributes, id) {
 		throw new Error(LMDB_ERRORS.ID_REQUIRED);
 	}
 
-	id = auto_cast(id);
-
 	let obj = null;
 	let object = env.dbis[hash_attribute].get(id);
 
@@ -775,7 +775,6 @@ function checkHashExists(env, hash_attribute, id) {
 		throw new Error(LMDB_ERRORS.ID_REQUIRED);
 	}
 
-	id = auto_cast(id);
 	let found_key = true;
 
 	let value = env.dbis[hash_attribute].get(id);
@@ -833,7 +832,7 @@ function batchHashSearch(env, hash_attribute, fetch_attributes, ids, not_found =
 	let results = Object.create(null);
 
 	for (let x = 0; x < ids.length; x++) {
-		let id = auto_cast(ids[x]);
+		let id = ids[x];
 		try {
 			let object = env.dbis[hash_attribute].get(id);
 			if (object) {
@@ -932,12 +931,14 @@ function setGetWholeRowAttributes(env, fetch_attributes) {
 module.exports = {
 	searchAll,
 	searchAllToMap,
+	count,
 	countAll,
 	equals,
 	startsWith,
 	endsWith,
 	contains,
 	searchByHash,
+	setGetWholeRowAttributes,
 	batchSearchByHash,
 	batchSearchByHashToMap,
 	checkHashExists,

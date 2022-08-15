@@ -253,7 +253,7 @@ describe('Test lmdbDeleteRecords module', () => {
 			);
 			let record = test_utils.assertErrorSync(
 				search_utility.searchByHash,
-				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, '8'],
+				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, 8],
 				undefined
 			);
 			assert.deepStrictEqual(record, null);
@@ -262,7 +262,7 @@ describe('Test lmdbDeleteRecords module', () => {
 				if (attribute !== HASH_ATTRIBUTE_NAME) {
 					let attr_results = test_utils.assertErrorSync(search_utility.iterateDBI, [dog_env, 'height'], undefined);
 					Object.keys(attr_results).forEach((result) => {
-						assert(result !== '8');
+						assert(result !== 8);
 					});
 				}
 			});
@@ -326,7 +326,7 @@ describe('Test lmdbDeleteRecords module', () => {
 			);
 			let record = test_utils.assertErrorSync(
 				search_utility.searchByHash,
-				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, '8'],
+				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, 8],
 				undefined
 			);
 			assert.deepStrictEqual(record, null);
@@ -335,7 +335,7 @@ describe('Test lmdbDeleteRecords module', () => {
 				if (attribute !== HASH_ATTRIBUTE_NAME) {
 					let attr_results = test_utils.assertErrorSync(search_utility.iterateDBI, [dog_env, 'height'], undefined);
 					Object.keys(attr_results).forEach((result) => {
-						assert(result !== '8');
+						assert(result !== 8);
 					});
 				}
 			});
@@ -438,7 +438,7 @@ describe('Test lmdbDeleteRecords module', () => {
 			);
 			let record = test_utils.assertErrorSync(
 				search_utility.batchSearchByHash,
-				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, ['12', '10']],
+				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, [12, 10]],
 				undefined
 			);
 			assert.deepStrictEqual(record, []);

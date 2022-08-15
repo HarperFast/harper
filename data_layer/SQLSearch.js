@@ -228,12 +228,12 @@ class SQLSearch {
 				if (!found_column) {
 					continue;
 				}
-				//buildFolderPath returns the needed key for FS (attribute dir key)
-				let attribute_key = common_utils.buildFolderPath(
+				//Specifically a slash delimited string for consistency
+				let attribute_key = [
 					found_column.table.databaseid,
 					found_column.table.tableid,
-					found_column.attribute
-				);
+					found_column.attribute,
+				].join('/');
 
 				// Check for value range search first
 				if (!common_utils.isEmpty(hdbTerms.VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[node.op])) {
@@ -257,7 +257,7 @@ class SQLSearch {
 						this.comparator_search_values[attribute_key].comparators.push({
 							attribute: node.left.columnid,
 							operation: node.op,
-							search_value: `${node.right.value}`,
+							search_value: node.right.value,
 						});
 					}
 					continue;
@@ -277,7 +277,7 @@ class SQLSearch {
 						case '=':
 							if (!common_utils.isEmpty(node.right.value) || !common_utils.isEmpty(node.left.value)) {
 								values.add(
-									!common_utils.isEmpty(node.right.value) ? node.right.value.toString() : node.left.value.toString()
+									!common_utils.isEmpty(node.right.value) ? node.right.value : node.left.value
 								);
 							} else {
 								ignore = true;
@@ -288,7 +288,7 @@ class SQLSearch {
 
 							for (let x = 0; x < in_array.length; x++) {
 								if (in_array[x].value) {
-									values.add(in_array[x].value.toString());
+									values.add(in_array[x].value);
 								} else {
 									ignore = true;
 									break;
@@ -603,11 +603,12 @@ class SQLSearch {
 				get_attributes: [attribute.attribute],
 			};
 			let is_hash = false;
-			let object_path = common_utils.buildFolderPath(
+			//Specifically a slash delimited string for consistency
+			let object_path = [
 				attribute.table.databaseid,
 				attribute.table.tableid,
-				attribute.attribute
-			);
+				attribute.attribute,
+			].join('/');
 
 			//check if this attribute is the hash attribute for a table, if it is we need to read the files from the __hdh_hash
 			// folder, otherwise pull from the value index
@@ -628,10 +629,10 @@ class SQLSearch {
 						search_object.hash_values = Array.from(this.exact_search_values[object_path].values);
 						const attribute_values = await harperBridge.getDataByHash(search_object);
 
-						for (const hash_val in attribute_values) {
-							if (!this.data[schema_table].__merged_data[hash_val]) {
+						for (const hash_val of search_object.hash_values) {
+							if (hash_val in attribute_values && !this.data[schema_table].__merged_data[hash_val]) {
 								this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
-								this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
+								this._setMergedHashAttribute(schema_table, hash_val);
 							}
 						}
 					} catch (err) {
@@ -1011,14 +1012,14 @@ class SQLSearch {
 				const row = joined[i];
 				hash_attributes.forEach((hash) => {
 					if (row[hash.key] !== null && row[hash.key] !== undefined) {
-						hash.keys.add(row[hash.key].toString());
+						hash.keys.add(row[hash.key]);
 					}
 				});
 			}
 
 			hash_attributes.forEach((hash) => {
 				let keys = Object.keys(this.data[`${hash.schema}_${hash.table}`].__merged_data);
-				let delete_keys = _.difference(keys, [...hash.keys]);
+				let delete_keys = _.difference(keys, [...hash.keys].map(key => key.toString()));
 				for (let i = 0, len = delete_keys.length; i < len; i++) {
 					const key = delete_keys[i];
 					delete this.data[`${hash.schema}_${hash.table}`].__merged_data[key];
@@ -1097,7 +1098,11 @@ class SQLSearch {
 
 			for (const schema_table in table_searches) {
 				const table = table_searches[schema_table];
-				const merged_hash_keys = Object.keys(this.data[schema_table].__merged_data);
+				const merged_data = this.data[schema_table].__merged_data;
+				const merged_hash_keys = [];
+				for (let key in merged_data) {
+					merged_hash_keys.push(merged_data[key][0]);
+				}
 				//we do not need to update the merged_attr_map values here b/c we will use the index value from
 				// __merged_attributes when do the final translation of the SQL statement
 				this.data[schema_table].__merged_attributes.push(...table.columns);

@@ -6,12 +6,14 @@ const search_validator = require('../../../../validation/searchValidator');
 const search_utility = require('../../../../utility/lmdb/searchUtility');
 const lmdb_terms = require('../../../../utility/lmdb/terms');
 const lmdb_search = require('../lmdbUtility/lmdbSearch');
+const cursor_functions = require('../../../../utility/lmdb/searchCursorFunctions');
 const _ = require('lodash');
 const { getBaseSchemaPath } = require('../lmdbUtility/initializePaths');
 const path = require('path');
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
 const { handleHDBError, hdb_errors } = require('../../../../utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
+const RANGE_ESTIMATE = 100000000;
 
 module.exports = lmdbSearchByConditions;
 
@@ -44,30 +46,67 @@ async function lmdbSearchByConditions(search_object) {
 
 		const table_info = global.hdb_schema[search_object.schema][search_object.table];
 
-		let results = await executeConditionSearches(env, search_object, table_info.hash_attribute);
+		// Sort the conditions by narrowest to broadest. Note that we want to do this both for intersection where
+		// it allows us to do minimal filtering, and for union where we can return the fastest results first
+		// in an iterator/stream.
+		let sorted_conditions = _.sortBy(search_object.conditions, (condition) => {
+			if (condition.estimated_count === undefined) { // skip if it is cached
+				let search_type = condition.search_type;
+				if (search_type === lmdb_terms.SEARCH_TYPES.EQUALS)
+					// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
+					condition.estimated_count = search_utility.count(env, condition.search_attribute, condition.search_value);
+				else if (search_type === lmdb_terms.SEARCH_TYPES.CONTAINS || search_type === lmdb_terms.SEARCH_TYPES.ENDS_WITH)
+					condition.estimated_count = Infinity; // this search types can't/doesn't use indices, so try do them last
+				else
+					// for range queries (betweens, starts-with, greater, etc.), just arbitrarily guess
+					condition.estimated_count = RANGE_ESTIMATE;
+			}
+			return condition.estimated_count; // use cached count
+		});
 
-		//get the intersection/union of ids from all condition searches
-		let merged_ids = [];
-		let ids = [];
-		for (let x = 0, length = results.length; x < length; x++) {
-			ids.push(results[x][0]);
-		}
 		if (!search_object.operator || search_object.operator.toLowerCase() === 'and') {
-			merged_ids = _.intersection(...ids);
+			// get the intersection of condition searches by first doing an indexed query for the first condition
+			// and then filtering by all subsequent conditions
+			let [ids] = await executeConditionSearch(env, search_object, sorted_conditions[0], table_info.hash_attribute);
+			let primary_dbi = env.dbis[table_info.hash_attribute];
+			let filters = sorted_conditions.slice(1).map(lmdb_search.filterByType);
+			let filters_length = filters.length;
+			let results = []; // will eventually pass through the iterator
+			let fetch_attributes = search_utility.setGetWholeRowAttributes(env, search_object.get_attributes);
+			let offset = search_object.offset > -1 ? search_object.offset : 0;
+			let limit = search_object.limit > -1 ? search_object.limit : Infinity;
+			next_id: for (let id of ids) {
+				// need the original record to leverage deferred/random access property retrieval
+				let record = primary_dbi.get(id);
+				for (let i = 0; i < filters_length; i++) {
+					if (!filters[i](record)) continue next_id; // didn't match filters
+				}
+				if (offset > 0) {
+					offset--;
+					continue;
+				}
+				if (limit <= 0) break;
+				limit--;
+				// matched all filters and range, we already have the record, so just finish by copying all appropriate attributes
+				results.push(cursor_functions.parseRow(record, fetch_attributes));
+			}
+			return results;
 		} else {
+			//get the union of ids from all condition searches
+			let merged_ids = [];
+			let ids = [];
+			for (let condition of sorted_conditions) {
+				let [ids_for_condition] = await executeConditionSearch(env, search_object, condition, table_info.hash_attribute);
+				ids.push(ids_for_condition);
+			}
 			merged_ids = _.union(...ids);
+			// if limit or offset are gt 0 we execute the slice, note i confirmed null & undefined values for offset/limit will not evaluate to true as expected
+			if (search_object.limit > 0 || search_object.offset > 0) {
+				let limit = Number.isInteger(search_object.limit) ? search_object.limit : merged_ids.length;
+				merged_ids = merged_ids.splice(search_object.offset, limit);
+			}
+			return search_utility.batchSearchByHash(env, table_info.hash_attribute, search_object.get_attributes, merged_ids);
 		}
-		//sort the ids to get the records in correct order
-		merged_ids = merged_ids.sort(sorter);
-
-		// if limit or offset are gt 0 we execute the slice, note i confirmed null & undefined values for offset/limit will not evaluate to true as expected
-		if (search_object.limit > 0 || search_object.offset > 0) {
-			let limit = Number.isInteger(search_object.limit) ? search_object.limit : merged_ids.length;
-			merged_ids = merged_ids.splice(search_object.offset, limit);
-		}
-
-		//perform records search by id
-		return search_utility.batchSearchByHash(env, table_info.hash_attribute, search_object.get_attributes, merged_ids);
 	} catch (e) {
 		throw handleHDBError(e);
 	}
@@ -100,9 +139,9 @@ function sorter(a, b) {
  * @returns {Promise<unknown[]>}
  */
 // eslint-disable-next-line require-await
-async function executeConditionSearches(env, search_object, hash_attribute) {
+async function executeConditionSearch(env, search_object, condition, hash_attribute) {
 	//build a prototype object for search
-	let proto_search = new SearchObject(
+	let search = new SearchObject(
 		search_object.schema,
 		search_object.table,
 		undefined,
@@ -111,25 +150,15 @@ async function executeConditionSearches(env, search_object, hash_attribute) {
 		search_object.get_attributes
 	);
 
-	//execute conditional searches
-	let promises = [];
-	for (let x = 0, length = search_object.conditions.length; x < length; x++) {
-		let search = Object.assign(new SearchObject(), proto_search);
+	//execute conditional search
+	let search_type = condition.search_type;
+	search.search_attribute = condition.search_attribute;
 
-		let condition = search_object.conditions[x];
-		let search_type = condition.search_type;
-		search.search_attribute = condition.search_attribute;
-
-		if (search_type === lmdb_terms.SEARCH_TYPES.BETWEEN) {
-			search.search_value = condition.search_value[0];
-			search.end_value = condition.search_value[1];
-		} else {
-			search.search_value = condition.search_value;
-		}
-		let promise = lmdb_search.searchByType(env, search, search_type, hash_attribute);
-		promises.push(promise);
+	if (search_type === lmdb_terms.SEARCH_TYPES.BETWEEN) {
+		search.search_value = condition.search_value[0];
+		search.end_value = condition.search_value[1];
+	} else {
+		search.search_value = condition.search_value;
 	}
-	//get all promise results, this intentionally has no await as node always wraps a return in await
-
-	return Promise.all(promises);
+	return lmdb_search.searchByType(env, search, search_type, hash_attribute);
 }

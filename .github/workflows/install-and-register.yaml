@@ -20,6 +20,7 @@ name: Install and Register HDB on instances
 jobs:
   installAndRegister:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
     - name: Install and Register
       env:
@@ -54,18 +55,6 @@ jobs:
           sudo apt-get update -qq
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential
         done
-
-        # Install Go
-        if [ "${{ inputs.goVersion }}" == "null" ]
-        then 
-          echo "package.json go-lang version not defined"
-        else
-          echo "package.json go-lang version is: ${{ inputs.goVersion }}"
-          echo "Installing Go version: ${{ inputs.goVersion }}"
-          wget -c -nv https://golang.org/dl/go${{ inputs.goVersion }}.linux-amd64.tar.gz
-          sudo tar -C /usr/local -xzf go${{ inputs.goVersion }}.linux-amd64.tar.gz
-          export  PATH=$PATH:/usr/local/go/bin
-        fi
 
         # Install Node Version Manager
         echo "Install nvm..."
@@ -109,20 +98,8 @@ jobs:
           npm --loglevel=error install -g harperdb-${{ inputs.harperdbVersion }}.tgz --legacy-peer-deps
 
           echo "HarperDB install..."
-          harperdb --TC_AGREEMENT yes --HDB_ROOT /home/ubuntu/hdb --HDB_ADMIN_USERNAME $HDB_ADMIN_USERNAME --HDB_ADMIN_PASSWORD $HDB_ADMIN_PASSWORD --NODE_NAME $(echo "$public_dns_name" | cut -d '.' -f 1) --CLUSTERING_PORT 12345 --CLUSTERING_USER $CLUSTERING_USERNAME --CLUSTERING_PASSWORD $CLUSTERING_PASSWORD --CLUSTERING true --SERVER_PORT 9925 --CUSTOM_FUNCTIONS true --CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT 12345
-          
-          echo "Compile register.js and register HarperDB..."
-          npm install -g bytenode
-          npm install -g minimist
-          mkdir /home/ubuntu/.nvm/versions/node/v${{ inputs.nodeVersion }}/lib/node_modules/harperdb/utility/devops/
-          cp /home/ubuntu/harperdb/utility/devops/register.js /home/ubuntu/.nvm/versions/node/v${{ inputs.nodeVersion }}/lib/node_modules/harperdb/utility/devops/register.js
-          cp /home/ubuntu/harperdb/utility/devops/licenseGenerator.js /home/ubuntu/.nvm/versions/node/v${{ inputs.nodeVersion }}/lib/node_modules/harperdb/utility/devops/licenseGenerator.js
-          cd /home/ubuntu/.nvm/versions/node/v${{ inputs.nodeVersion }}/lib/node_modules/harperdb/utility/devops/
-          bytenode --compile register.js
-          bytenode --compile licenseGenerator.js
-          bytenode register.js --reset_license --ram_allocation=4096
-          harperdb stop
-          harperdb
+          harperdb --TC_AGREEMENT yes --HDB_ROOT /home/ubuntu/hdb --HDB_ADMIN_USERNAME $HDB_ADMIN_USERNAME --HDB_ADMIN_PASSWORD $HDB_ADMIN_PASSWORD --NODE_NAME $(echo "$public_dns_name" | cut -d '.' -f 1) --CLUSTERING_PORT 12345 --CLUSTERING_USER $CLUSTERING_USERNAME --CLUSTERING_PASSWORD $CLUSTERING_PASSWORD --CLUSTERING true --SERVER_PORT 9925 --CUSTOM_FUNCTIONS true --CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT 12345 --HARPERDB_FINGERPRINT '${{ secrets.HDB_FINGERPRINT }}' --HARPERDB_LICENSE '${{ secrets.HDB_LICENSE }}'
+        
         elif [ "${{ inputs.installType }}" == 'none' ];
         then
             echo "hdb_install_type paramater set to ${{ inputs.installType }}. Skipping HarperDB install."

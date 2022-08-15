@@ -41,24 +41,24 @@ async function deleteRecords(env, hash_attribute, ids) {
 		let deleted = new DeleteRecordsResponseObject();
 
 		//iterate records and process deletes
-		let cast_hash_value;
+		let hash_value;
 		let puts = [];
 		let keys = [];
 		for (let x = 0, length = ids.length; x < length; x++) {
 			try {
-				cast_hash_value = hdb_utils.autoCast(ids[x]);
+				hash_value = ids[x];
 
 				//attempt to fetch the hash attribute value, this is the row.
-				let record = env.dbis[hash_attribute].get(cast_hash_value);
+				let record = env.dbis[hash_attribute].get(hash_value);
 				//if it doesn't exist we skip & move to the next id
 				if (!record) {
-					deleted.skipped.push(cast_hash_value);
+					deleted.skipped.push(hash_value);
 					continue;
 				}
 
-				let promise = env.dbis[hash_attribute].ifVersion(cast_hash_value, lmdb.IF_EXISTS, () => {
+				let promise = env.dbis[hash_attribute].ifVersion(hash_value, lmdb.IF_EXISTS, () => {
 					//always just delete the hash_attribute entry upfront
-					env.dbis[hash_attribute].remove(cast_hash_value);
+					env.dbis[hash_attribute].remove(hash_value);
 
 					//iterate & delete the non-hash attribute entries
 					for (let y = 0; y < all_dbis.length; y++) {
@@ -77,21 +77,21 @@ async function deleteRecords(env, hash_attribute, ids) {
 								let values = common.getIndexedValues(value);
 								if (values) {
 									for (let i = 0, l = values.length; i < l; i++) {
-										dbi.remove(values[i], cast_hash_value);
+										dbi.remove(values[i], hash_value);
 									}
 								}
 							} catch (e) {
-								log.warn(`cannot delete from attribute: ${attribute}, ${value}:${cast_hash_value}`);
+								log.warn(`cannot delete from attribute: ${attribute}, ${value}:${hash_value}`);
 							}
 						}
 					}
 				});
 				puts.push(promise);
-				keys.push(cast_hash_value);
+				keys.push(hash_value);
 				deleted.original_records.push(record);
 			} catch (e) {
 				log.warn(e);
-				deleted.skipped.push(cast_hash_value);
+				deleted.skipped.push(hash_value);
 			}
 		}
 

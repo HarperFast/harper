@@ -90,35 +90,35 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test select all attributes *", ()=>{
-            let record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, ['*'], "3"],
+            let record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, ['*'], 3],
                 undefined, 'all arguments sent');
             let expected = test_utils.assignObjecttoNullObject({"age": 57, city: null, "id": 3, "name": "Hank", __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP});
             assert.deepStrictEqual(record, expected);
         });
 
         it("test select some attributes", ()=>{
-            let record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, "3"],
+            let record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, 3],
                 undefined, 'all arguments sent');
 
             assert.deepStrictEqual(record, test_utils.assignObjecttoNullObject({"age": 57, "id": 3, "name": "Hank"}));
         });
 
         it("test select record no exist", ()=>{
-            let record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, "33"],
+            let record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, 33],
                 undefined, 'all arguments sent');
 
             assert.deepStrictEqual(record, null);
         });
 
         it("test select record only id & name", ()=>{
-            let record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, ["id", "name"], "2"],
+            let record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, ["id", "name"], 2],
                 undefined, 'all arguments sent');
 
             assert.deepStrictEqual(record, test_utils.assignObjecttoNullObject({id:2, name:"Jerry"}));
         });
 
         it("test select record only id & name and non-exsitent attribute", ()=>{
-            let record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, ["id", "name", "dob"], "2"],
+            let record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, ["id", "name", "dob"], 2],
                 undefined, 'all arguments sent');
 
             assert.deepStrictEqual(record, test_utils.assignObjecttoNullObject({id:2, name:"Jerry", dob:null}));
@@ -150,15 +150,15 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_REQUIRED, 'no fetch_attributes');
             test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_MUST_BE_ARRAY, 'invalid fetch_attributes');
             test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES], LMDB_TEST_ERRORS.IDS_REQUIRED, 'no id');
-            test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, "1"],
+            test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, 1],
                 LMDB_TEST_ERRORS.IDS_MUST_BE_ARRAY, 'invalid ids');
-            test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, ["1", "3", "2"]],
+            test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, [1, 3, 2]],
                 undefined, 'all correct arguments');
         });
 
         it("test fetch single record", ()=>{
             let expected = {id:1, name:'Kyle', age:46};
-            let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, ["1"]],
+            let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, [1]],
                 undefined, 'fetch single row');
 
             assert.deepEqual(row, [expected]);
@@ -169,7 +169,7 @@ describe('Test searchUtility module', ()=>{
                 {id:2, name:'Jerry', age:32},
                 {id:4, name:'Joy', age: 44}
                 ];
-            let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, ["1", "4", "2"]],
+            let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, [1, 4, 2]],
                 undefined, 'fetch multi rows');
 
             assert.deepEqual(row, expected);
@@ -180,7 +180,7 @@ describe('Test searchUtility module', ()=>{
                 {id:2, name:'Jerry', age:32, city: null, __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP},
                 {id:4, name:'Joy', age: 44, city: "Denver", __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP}
             ];
-            let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, ['*'], ["1", "4", "2"]],
+            let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, ['*'], [1, 4, 2]],
                 undefined, 'fetch multi rows');
 
             assert.deepEqual(row, expected);
@@ -191,7 +191,7 @@ describe('Test searchUtility module', ()=>{
                 {id:2, name:'Jerry', age:32},
                 {id:4, name:'Joy', age: 44}];
 
-            let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, ["1","fake", "4", "55", "2"]],
+            let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, [1,"fake", 4, 55, 2]],
                 undefined, 'fetch single row');
 
             assert.deepEqual(row, expected);
@@ -224,21 +224,21 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [env, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_REQUIRED, 'no fetch_attributes');
             test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [env, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_MUST_BE_ARRAY, 'invalid fetch_attributes');
             test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES], LMDB_TEST_ERRORS.IDS_REQUIRED, 'no id');
-            test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, "1"],
+            test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, 1],
                 LMDB_TEST_ERRORS.IDS_MUST_BE_ARRAY, 'invalid ids');
-            test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, ["1", "3", "2"]],
+            test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, [1, 3, 2]],
                 undefined, 'all correct arguments');
         });
 
         it("test fetch single record", ()=>{
-            let row = test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, ["1"]],
+            let row = test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, [1]],
                 undefined, 'fetch single row');
 
             assert.deepStrictEqual(row, test_utils.assignObjecttoNullObject({1: test_utils.assignObjecttoNullObject({id:1, name:'Kyle', age:46})}));
         });
 
         it("test fetch multiple records", ()=>{
-            let row = test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, ["1", "4", "2"]],
+            let row = test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, [1, 4, 2]],
                 undefined, 'fetch multi rows');
 
             let expected = test_utils.assignObjecttoNullObject({1: test_utils.assignObjecttoNullObject({id:1, name:'Kyle', age:46}),
@@ -250,7 +250,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test fetch multiple records some don't exist", ()=>{
-            let row = test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, ["1","fake", "4", "55", "2"]],
+            let row = test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, [1,"fake", 4, 55, 2]],
                 undefined, 'fetch single row');
             let expected = test_utils.assignObjecttoNullObject( {1: test_utils.assignObjecttoNullObject( {id:1, name:'Kyle', age:46}),
                 2: test_utils.assignObjecttoNullObject( {id:2, name:'Jerry', age:32}),
@@ -284,19 +284,19 @@ describe('Test searchUtility module', ()=>{
             test_utils.assertErrorSync(search_util.checkHashExists, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
             test_utils.assertErrorSync(search_util.checkHashExists, [env], LMDB_TEST_ERRORS.HASH_ATTRIBUTE_REQUIRED, 'no hash attribute');
             test_utils.assertErrorSync(search_util.checkHashExists, [env, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.ID_REQUIRED, 'no id');
-            test_utils.assertErrorSync(search_util.checkHashExists, [env, HASH_ATTRIBUTE_NAME, "1"],
+            test_utils.assertErrorSync(search_util.checkHashExists, [env, HASH_ATTRIBUTE_NAME, 1],
                 undefined, 'all correct arguments');
         });
 
         it("test key exists", ()=>{
-            let exists = test_utils.assertErrorSync(search_util.checkHashExists, [env, HASH_ATTRIBUTE_NAME, "1"],
+            let exists = test_utils.assertErrorSync(search_util.checkHashExists, [env, HASH_ATTRIBUTE_NAME, 1],
                 undefined, 'all correct arguments');
 
             assert.deepStrictEqual(exists, true, "hash exists");
         });
 
         it("test key does not exists", ()=>{
-            let exists = test_utils.assertErrorSync(search_util.checkHashExists, [env, HASH_ATTRIBUTE_NAME, "111"],
+            let exists = test_utils.assertErrorSync(search_util.checkHashExists, [env, HASH_ATTRIBUTE_NAME, 111],
                 undefined, 'all correct arguments');
 
             assert.deepStrictEqual(exists, false, "hash exists");

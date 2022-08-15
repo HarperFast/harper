@@ -49,25 +49,25 @@ const INSERT_OBJECT_TEST = {
 		{
 			name: 'Harper',
 			breed: 'Mutt',
-			id: '108',
+			id: 108,
 			age: 5,
 		},
 		{
 			name: 'Penny',
 			breed: 'Mutt',
-			id: '109',
+			id: 109,
 			age: 5,
 			height: 145,
 		},
 		{
 			name: 'David',
 			breed: 'Mutt',
-			id: '112',
+			id: 112,
 		},
 		{
 			name: 'Rob',
 			breed: 'Mutt',
-			id: '110',
+			id: 110,
 			age: 5,
 			height: 145,
 		},
@@ -268,7 +268,7 @@ describe('Test lmdbUpsertRecords module', () => {
 			);
 			let record = test_utils.assertErrorSync(
 				search_utility.searchByHash,
-				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, '110'],
+				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, 110],
 				undefined
 			);
 			assert.deepStrictEqual(record, expected_search);
@@ -324,7 +324,7 @@ describe('Test lmdbUpsertRecords module', () => {
 			);
 			let record = test_utils.assertErrorSync(
 				search_utility.searchByHash,
-				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, '1'],
+				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, 1],
 				undefined
 			);
 			assert.deepStrictEqual(record, expected_search);
@@ -373,7 +373,7 @@ describe('Test lmdbUpsertRecords module', () => {
 			);
 			let record = test_utils.assertErrorSync(
 				search_utility.searchByHash,
-				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, `${NEW_HASH_VALUE}`],
+				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, NEW_HASH_VALUE],
 				undefined
 			);
 			assert.deepStrictEqual(record, expected_search);
@@ -446,21 +446,21 @@ describe('Test lmdbUpsertRecords module', () => {
 
 			let record1 = test_utils.assertErrorSync(
 				search_utility.searchByHash,
-				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, '110'],
+				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, 110],
 				undefined
 			);
 			assert.deepStrictEqual(record1, expected_search1);
 
 			let record2 = test_utils.assertErrorSync(
 				search_utility.searchByHash,
-				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, '1'],
+				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, 1],
 				undefined
 			);
 			assert.deepStrictEqual(record2, expected_search2);
 
 			let record3 = test_utils.assertErrorSync(
 				search_utility.searchByHash,
-				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, `${NEW_HASH_VALUE}`],
+				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, NEW_HASH_VALUE],
 				undefined
 			);
 			assert.deepStrictEqual(record3, expected_search3);
@@ -522,7 +522,7 @@ describe('Test lmdbUpsertRecords module', () => {
 				table: 'dog',
 				records: [
 					{
-						id: '1',
+						id: 1,
 						name: 'Mozart',
 						breed: 'Chihuahua',
 						height: undefined,

@@ -934,7 +934,7 @@ describe('Test FileSystem Class', function () {
 		});
 
 		it('should set exact_search_values property with data from WHERE clause', function () {
-			const test_hash_val = '1';
+			const test_hash_val = 1;
 			const test_sql_statement = sql_basic_dog_select + ` WHERE ${HASH_ATTRIBUTE} = ${test_hash_val}`;
 			setupTestInstance(test_sql_statement);
 			test_instance.exact_search_values = {};
@@ -965,7 +965,7 @@ describe('Test FileSystem Class', function () {
 			expect(test_result[test_attr_path]).to.be.a('object');
 			expect(test_result[test_attr_path].ignore).to.equal(false);
 			test_result[test_attr_path].values.forEach((val) => {
-				expect(val).to.equal('0');
+				expect(val).to.equal(0);
 			});
 		});
 
@@ -983,12 +983,12 @@ describe('Test FileSystem Class', function () {
 			expect(test_result[test_attr_path]).to.be.a('object');
 			expect(test_result[test_attr_path].ignore).to.equal(false);
 			test_result[test_attr_path].values.forEach((val) => {
-				expect(['1', '2'].includes(val)).to.equal(true);
+				expect([1, 2].includes(val)).to.equal(true);
 			});
 		});
 
 		it('should set comparator_search_values property with < comparator logic from WHERE clause', function () {
-			const test_hash_val = '5';
+			const test_hash_val = 5;
 			const test_sql_statement = sql_basic_dog_select + ` WHERE ${HASH_ATTRIBUTE} < ${test_hash_val}`;
 			setupTestInstance(test_sql_statement);
 			test_instance.comparator_search_values = {};
@@ -1009,7 +1009,7 @@ describe('Test FileSystem Class', function () {
 		});
 
 		it('should set comparator_search_values property with <= comparator logic from WHERE clause', function () {
-			const test_hash_val = '5';
+			const test_hash_val = 5;
 			const test_sql_statement = sql_basic_dog_select + ` WHERE ${HASH_ATTRIBUTE} <= ${test_hash_val}`;
 			setupTestInstance(test_sql_statement);
 			test_instance.comparator_search_values = {};
@@ -1030,7 +1030,7 @@ describe('Test FileSystem Class', function () {
 		});
 
 		it('should set comparator_search_values property with > comparator logic from WHERE clause', function () {
-			const test_hash_val = '5';
+			const test_hash_val = 5;
 			const test_sql_statement = sql_basic_dog_select + ` WHERE ${HASH_ATTRIBUTE} > ${test_hash_val}`;
 			setupTestInstance(test_sql_statement);
 			test_instance.comparator_search_values = {};
@@ -1051,7 +1051,7 @@ describe('Test FileSystem Class', function () {
 		});
 
 		it('should set comparator_search_values property with >= comparator logic from WHERE clause', function () {
-			const test_hash_val = '5';
+			const test_hash_val = 5;
 			const test_sql_statement = sql_basic_dog_select + ` WHERE ${HASH_ATTRIBUTE} >= ${test_hash_val}`;
 			setupTestInstance(test_sql_statement);
 			test_instance.comparator_search_values = {};
@@ -1072,7 +1072,7 @@ describe('Test FileSystem Class', function () {
 		});
 
 		it('should not set comparator_search_values if the expression.left is null', function () {
-			const test_hash_val = '5';
+			const test_hash_val = 5;
 			const test_sql_statement = sql_basic_dog_select + ` WHERE ${HASH_ATTRIBUTE} >= ${test_hash_val}`;
 			setupTestInstance(test_sql_statement);
 			test_instance.comparator_search_values = {};
@@ -1088,7 +1088,7 @@ describe('Test FileSystem Class', function () {
 		});
 
 		it('should not set comparator_search_values if the expression.right is null', function () {
-			const test_hash_val = '5';
+			const test_hash_val = 5;
 			const test_sql_statement = sql_basic_dog_select + ` WHERE ${HASH_ATTRIBUTE} >= ${test_hash_val}`;
 			setupTestInstance(test_sql_statement);
 			test_instance.comparator_search_values = {};
@@ -1105,8 +1105,8 @@ describe('Test FileSystem Class', function () {
 
 		it('should set multiple comparator_search_values if the WHERE clause has multiple different attr conditions', function () {
 			const age_attr_key = 'age';
-			const test_hash_val = '5';
-			const test_age_val = '10';
+			const test_hash_val = 5;
+			const test_age_val = 10;
 			const test_sql_statement =
 				sql_basic_dog_select + ` WHERE ${HASH_ATTRIBUTE} >= ${test_hash_val} AND ${age_attr_key} > ${test_age_val}`;
 			setupTestInstance(test_sql_statement);
@@ -1124,8 +1124,8 @@ describe('Test FileSystem Class', function () {
 		it('should set multiple comparator_search_values.comparators values if the WHERE clause has multiple same attr conditions', function () {
 			const test_age_key = `dev${path.sep}dog${path.sep}age`;
 			const age_attr_key = 'age';
-			const test_age_val1 = '5';
-			const test_age_val2 = '10';
+			const test_age_val1 = 5;
+			const test_age_val2 = 10;
 			const test_sql_statement =
 				sql_basic_dog_select + ` WHERE ${age_attr_key} >= ${test_age_val1} AND ${age_attr_key} < ${test_age_val2}`;
 			setupTestInstance(test_sql_statement);

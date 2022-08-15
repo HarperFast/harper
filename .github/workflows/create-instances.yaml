@@ -1,0 +1,84 @@
+on:
+  workflow_call:
+    inputs:
+      instanceCount:
+        required: true
+        type: string
+      instanceType:
+        type: string
+        default: "c5.2xlarge"
+      volumeSize:
+        type: string
+        default: "32"
+      harperdbVersion:
+        required: true
+        type: string
+      installType:
+        type: string
+        default: "buildPackage"
+    outputs: 
+      publicDnsNames:
+        value: ${{jobs.createInstances.outputs.publicDnsNames}}
+      publicIps:
+        value: ${{jobs.createInstances.outputs.publicIps}}
+name: Create Ec2 Instances
+jobs:
+  createInstances:
+    outputs:
+      publicDnsNames: ${{ steps.createInstances.outputs.PUBLIC_DNS_NAMES}}
+      publicIps: ${{ steps.createInstances.outputs.PUBLIC_IPS}}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+    - uses: actions/checkout@v2
+    - name: Setup Terraform
+      with:
+        terraform_wrapper: false
+      uses: hashicorp/setup-terraform@v1
+    - uses: actions/download-artifact@v3
+      if: inputs.installType == 'buildPackage'
+      with:
+        name: harperdb-${{ inputs.harperdbVersion }}.tgz
+        path: ../artifact/
+    - name: Create Instances
+      id: createInstances
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        CI_PRIVATE_KEY: ${{ secrets.CI_PRIVATE_KEY }}
+      run: |
+        #!/bin/bash
+        set -x
+        cd ../
+        mkdir terraform
+        cd terraform
+        echo "$CI_PRIVATE_KEY" > private_key && chmod 600 private_key
+        mkdir upload
+        cp ../harperdb/utility/devops/terraform/instance.tf .
+        mv ../harperdb/utility/devops/scripts/user_data.sh .
+
+        if [ "${{ inputs.installType }}" == "buildPackage" ];
+        then
+          mv ../artifact/harperdb-${{ inputs.harperdbVersion }}.tgz ./upload/
+        fi
+        
+        cp -r ../harperdb/ ./upload/
+
+        terraform init
+        terraform apply -var='private_key=./private_key' -var='region=us-east-2' -var='instance_count=${{ inputs.instanceCount }}' -var='instance_name_prefix=GitHub-${{github.run_number}}' -var='instance_type=${{ inputs.instanceType }}' -var='teamcity_buildconf_name=GitHub-${{github.run_number}}' -var='teamcity_build_number=GitHub-${{github.run_number}}' -var='volume_size=${{ inputs.volumeSize }}' -auto-approve
+        mapfile -t public_dns_names <<< $(terraform output -json | jq -r '.public_dns_names.value[]')
+        mapfile -t public_ips <<< $(terraform output -json | jq -r '.public_ips.value[]')
+
+        echo "::set-output name=PUBLIC_DNS_NAMES::${public_dns_names[@]}"
+        echo "::set-output name=PUBLIC_IPS::${public_ips[@]}"
+
+        mkdir ../harperdb/tfstate/
+        mv terraform.tfstate ../harperdb/tfstate/
+        mv .terraform.lock.hcl ../harperdb/tfstate/
+        mv instance.tf ../harperdb/tfstate/
+    - name: 'Upload TFState'
+      uses: actions/upload-artifact@v3
+      with:
+        name: tfstate
+        path: tfstate/
+        retention-days: 1

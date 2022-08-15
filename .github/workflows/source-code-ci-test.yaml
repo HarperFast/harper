@@ -5,7 +5,7 @@ on:
     branches:
       - master
   pull_request:
-      types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened]
 name: Run Source Code CI Tests
 jobs:
   getNodeVersion:
@@ -27,50 +27,14 @@ jobs:
         echo "::set-output name=HARPERDB_VERSION::$HARPERDB_VERSION"
         echo "::set-output name=GO_VERSION::$GO_VERSION"
   createInstances:
-    outputs:
-      publicDnsNames: ${{ steps.createInstances.outputs.PUBLIC_DNS_NAMES }}
-    runs-on: ubuntu-latest
-    needs: getNodeVersion
-    steps:
-    - uses: actions/checkout@v2
-    - name: Setup Terraform
-      with:
-        terraform_wrapper: false
-      uses: hashicorp/setup-terraform@v1
-    - id: createInstances
-      name: Create Instances
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        CI_PRIVATE_KEY: ${{ secrets.CI_PRIVATE_KEY }}
-      run: |
-        #!/bin/bash
-        set -x
-        cd ../
-        mkdir terraform
-        cd terraform
-        echo "$CI_PRIVATE_KEY" > private_key && chmod 600 private_key
-        mkdir upload
-        cp ../harperdb/utility/devops/terraform/instance.tf .
-        mv ../harperdb/utility/devops/scripts/user_data.sh .
-        cp -r ../harperdb/ ./upload/
-
-        terraform init
-        terraform apply -var='private_key=./private_key' -var='region=us-east-2' -var='instance_count=1' -var='instance_name_prefix=GitHub-${{github.run_number}}' -var='instance_type=c5.2xlarge' -var='teamcity_buildconf_name=GitHub-${{github.run_number}}' -var='teamcity_build_number=GitHub-${{github.run_number}}' -var='volume_size=32' -auto-approve
-        mapfile -t public_dns_names <<< $(terraform output -json | jq -r '.public_dns_names.value[]')
-       
-        echo "::set-output name=PUBLIC_DNS_NAMES::$public_dns_names"
-
-        mkdir ../harperdb/tfstate/
-        mv terraform.tfstate ../harperdb/tfstate/
-        mv .terraform.lock.hcl ../harperdb/tfstate/
-        mv instance.tf ../harperdb/tfstate/
-    - name: 'Upload TFState'
-      uses: actions/upload-artifact@v3
-      with:
-        name: tfstate
-        path: tfstate/
-        retention-days: 1
+    needs:
+      - getNodeVersion
+    uses: ./.github/workflows/create-instances.yaml
+    with:
+      instanceCount: "1"
+      harperdbVersion: ${{ needs.getNodeVersion.outputs.harperdbVersion }}
+      installType: "sourceCode"
+    secrets: inherit
   registerInstances:
     needs: 
       - createInstances
@@ -83,14 +47,14 @@ jobs:
       nodeVersion: ${{ needs.getNodeVersion.outputs.nodeVersion }}
       installType: "sourceCode"
     secrets: inherit
-  runTests:
+  runUnitTests:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs:
       - createInstances
       - registerInstances
       - getNodeVersion
     steps:
-    - uses: actions/checkout@v2
     - name: Run Unit Tests on Instances
       env:
         CI_PRIVATE_KEY: ${{ secrets.CI_PRIVATE_KEY }}
@@ -123,10 +87,44 @@ jobs:
         echo "Ending work on: $public_dns_name"
         done
       shell: bash
+  runSonarScans:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs:
+      - runUnitTests
+      - createInstances
+    steps:
+    - uses: actions/checkout@v2
+    - name: 'Download coverage file'
+      env: 
+        CI_PRIVATE_KEY: ${{ secrets.CI_PRIVATE_KEY }}
+      run: |
+        #!/bin/bash
+        mkdir coverage
+        cd ../
+        echo "$CI_PRIVATE_KEY" > private_key && chmod 600 private_key
+        public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
+        public_dns_name="${public_dns_names[0]}"
+        scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/coverage/lcov.info" "harperdb/coverage/lcov.info"
+    - name: SonarCloud Scan
+      uses: sonarsource/sonarcloud-github-action@master
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+  runIntegrationTests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs:
+      - runUnitTests
+      - createInstances
+    steps: 
     - name: Run Integration Tests on Instances
+      env:
+        CI_PRIVATE_KEY: ${{ secrets.CI_PRIVATE_KEY }}
       run: |
         #!/bin/bash
         cd ../
+        echo "$CI_PRIVATE_KEY" > private_key && chmod 600 private_key
         public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
 
         for public_dns_name in ${public_dns_names[@]}
@@ -151,75 +149,19 @@ jobs:
         HERE
         echo "Ending work on: $public_dns_name"
         done
-      shell: bash
-    - name: 'Download coverage file'
-      run: |
-        #!/bin/bash
-        mkdir coverage
-        cd ../
-        public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
-        public_dns_name="${public_dns_names[0]}"
-        scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/coverage/lcov.info" "harperdb/coverage/lcov.info"
-    - name: SonarCloud Scan
-      uses: sonarsource/sonarcloud-github-action@master
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-      continue-on-error: true
-    - name: Download Logs
-      if: always()
-      run: |
-        #!/bin/bash
-        cd ../
-        mkdir logs-artifact
-        public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
-        for public_dns_name in ${public_dns_names[@]}
-        do 
-          echo "Starting work on: $public_dns_name"
-          mkdir logs-artifact/$public_dns_name
-          scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/integrationTests/newman/report.html" "logs-artifact/$public_dns_name/newman_report.html"
-          scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/integrationTests/newman/extra_report.html" "logs-artifact/$public_dns_name/newman_extra_report.html"
-          scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/hdb/log/" "logs-artifact/$public_dns_name/"
-          # 3.x
-          if [[ "${{ needs.getNodeVersion.outputs.harperdbVersion }}" == 3* ]];
-          then
-            scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/hdb/config" "logs-artifact/$public_dns_name/"
-          else
-            # 4.x
-            scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/hdb/harperdb.conf" "logs-artifact/$public_dns_name/harperdb.conf"
-          fi
-          echo "Ending work on: $public_dns_name"
-        done
-        mv logs-artifact harperdb
-      shell: bash
-    - name: 'Upload Log Artifact'
-      if: always()
-      uses: actions/upload-artifact@v3
-      with:
-        name: logs
-        path: logs-artifact/
-        retention-days: 1
-    - uses: actions/download-artifact@v3
-      if: always()
-      with:
-        name: tfstate
-        path: ../tfstate/
-    - name: Setup Terraform
-      if: always()
-      with:
-        terraform_wrapper: false
-      uses: hashicorp/setup-terraform@v1
-    - name: Destroy Instances
-      if: always()
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      run: |
-        #!/bin/bash
-        cd ../tfstate
-        terraform init
-        # Terraform needs to validate this but doesn't need them to have real data to destroy
-        mkdir upload
-        touch user_data.sh
-        terraform destroy -var='private_key=./private_key' -var='region=us-east-2' -var='instance_count=1' -var='instance_name_prefix=GitHub-${{github.run_number}}' -var='instance_type=c5.2xlarge' -var='teamcity_buildconf_name=GitHub-${{github.run_number}}' -var='teamcity_build_number=GitHub-${{github.run_number}}' -var='volume_size=32' -auto-approve
-    
+  downloadLogs:
+    if: always()
+    needs: 
+      - runIntegrationTests
+      - createInstances
+    uses: ./.github/workflows/download-logs.yaml
+    with:
+      publicDns: ${{ needs.createInstances.outputs.publicDnsNames }}
+    secrets: inherit
+  destroyInstances:
+    if: always()
+    needs: downloadLogs
+    uses: ./.github/workflows/destroy-instances.yaml
+    with:
+      instanceCount: "1"
+    secrets: inherit   
