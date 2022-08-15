@@ -1,0 +1,113 @@
+on:
+  workflow_dispatch:
+name: Run Source Code Cluster Test B
+jobs:
+  getNodeVersion:
+    runs-on: ubuntu-latest
+    outputs:
+      nodeVersion: ${{ steps.getNode.outputs.NODE_VERSION }}
+      harperdbVersion: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
+      goVersion: ${{ steps.getNode.outputs.GO_VERSION }}
+    steps:
+    - uses: actions/checkout@v2
+    - id: getNode
+      name: Get node version
+      run: |
+        pwd
+        NODE_VERSION="$(cat package.json | jq -r '.engines.node')"
+        HARPERDB_VERSION=$(cat package.json | jq -r '.version')
+        GO_VERSION=$(cat package.json | jq -r '.engines."go-lang"')
+        echo "::set-output name=NODE_VERSION::$NODE_VERSION"
+        echo "::set-output name=HARPERDB_VERSION::$HARPERDB_VERSION"
+        echo "::set-output name=GO_VERSION::$GO_VERSION"
+  createInstances:
+    needs:
+      - getNodeVersion
+    uses: ./.github/workflows/create-instances.yaml
+    with:
+      instanceCount: "4"
+      harperdbVersion: ${{ needs.getNodeVersion.outputs.harperdbVersion }}
+      installType: "sourceCode"
+    secrets: inherit
+  registerInstances:
+    needs: 
+      - createInstances
+      - getNodeVersion
+    uses: ./.github/workflows/install-and-register.yaml
+    with:
+      publicDns: ${{ needs.createInstances.outputs.publicDnsNames }}
+      harperdbVersion: ${{ needs.getNodeVersion.outputs.harperdbVersion }}
+      goVersion: ${{ needs.getNodeVersion.outputs.goVersion }}
+      nodeVersion: ${{ needs.getNodeVersion.outputs.nodeVersion }}
+      installType: "sourceCode"
+    secrets: inherit
+  runTests:
+    runs-on: ubuntu-latest
+    needs:
+      - createInstances
+      - registerInstances
+    steps:
+    - name: Run Cluster Test B on Instances
+      env:
+        CI_PRIVATE_KEY: ${{ secrets.CI_PRIVATE_KEY }}
+      run: |
+        #!/bin/bash
+
+        cd ../
+        echo "$CI_PRIVATE_KEY" > private_key && chmod 600 private_key
+
+        public_dns_names="${{ needs.createInstances.outputs.publicDnsNames }}"
+        public_ips="${{ needs.createInstances.outputs.publicIps }}"
+        public_dns_names=($public_dns_names)
+        public_ips=($public_ips)
+        # Run the cluster tests from the first test VM
+        public_dns_name="${public_dns_names[0]}"
+
+        echo "Starting work on: $public_dns_name"
+
+        ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name << HERE
+          . /home/ubuntu/.nvm/nvm.sh
+          . /home/ubuntu/.nvm/bash_completion
+
+          npm --loglevel=error install -g newman
+          npm --loglevel=error install -g newman-reporter-teamcity
+          npm --loglevel=error install -g newman-reporter-html
+          npm --loglevel=error install -g newman-reporter-htmlextra
+
+          cd /home/ubuntu/harperdb/integrationTests/
+
+          # Set node host names in postman env vars file
+          sed -in "s/ClstrTestB1/${public_ips[0]}/" clusterTests/clusterTestB/Four_Node_Cluster_Tests_Env_vars.postman_environment.json
+          sed -in "s/ClstrTestB2/${public_ips[1]}/" clusterTests/clusterTestB/Four_Node_Cluster_Tests_Env_vars.postman_environment.json
+          sed -in "s/ClstrTestB3/${public_ips[2]}/" clusterTests/clusterTestB/Four_Node_Cluster_Tests_Env_vars.postman_environment.json
+          sed -in "s/ClstrTestB4/${public_ips[3]}/" clusterTests/clusterTestB/Four_Node_Cluster_Tests_Env_vars.postman_environment.json
+
+          # Set node names in postman env vars file 4 percent signs escapes for trimming string
+          sed -in "s/ClstrTestBNode1/${public_dns_names[0]%%.*}/" clusterTests/clusterTestB/Four_Node_Cluster_Tests_Env_vars.postman_environment.json
+          sed -in "s/ClstrTestBNode2/${public_dns_names[1]%%.*}/" clusterTests/clusterTestB/Four_Node_Cluster_Tests_Env_vars.postman_environment.json
+          sed -in "s/ClstrTestBNode3/${public_dns_names[2]%%.*}/" clusterTests/clusterTestB/Four_Node_Cluster_Tests_Env_vars.postman_environment.json
+          sed -in "s/ClstrTestBNode4/${public_dns_names[3]%%.*}/" clusterTests/clusterTestB/Four_Node_Cluster_Tests_Env_vars.postman_environment.json
+
+          # Increase retry limit
+          #sed -in 's/"value": "7",/"value": "100",/' clusterTests/Four_Node_Cluster_Tests_Env_vars.postman_environment.json
+          cat clusterTests/clusterTestB/Four_Node_Cluster_Tests_Env_vars.postman_environment.json
+          newman run clusterTests/clusterTestB/Four_Node_Cluster_Tests.postman_collection.json -e clusterTests/clusterTestB/Four_Node_Cluster_Tests_Env_vars.postman_environment.json --reporters teamcity,cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html  --delay-request 100 --insecure
+        HERE
+
+        echo "Ending work on: $public_dns_name"
+  downloadLogs:
+    if: always()
+    needs: 
+      - runTests
+      - createInstances
+    uses: ./.github/workflows/download-logs.yaml
+    with:
+      publicDns: ${{ needs.createInstances.outputs.publicDnsNames }}
+    secrets: inherit
+  destroyInstances:
+    if: always()
+    needs: downloadLogs
+    uses: ./.github/workflows/destroy-instances.yaml
+    with:
+      instanceCount: "1"
+    secrets: inherit   

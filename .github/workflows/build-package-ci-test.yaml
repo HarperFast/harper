@@ -3,7 +3,8 @@ on:
     branches:
       - master
   pull_request:
-      types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
 name: Run Build Package CI Tests
 jobs:
   build:
