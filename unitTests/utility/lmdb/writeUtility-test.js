@@ -208,6 +208,10 @@ describe('Test writeUtility module', () => {
 		beforeEach(async () => {
 			date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
 			global.lmdb_map = undefined;
+			try {
+				if (env)
+					await lmdb_env_util.closeEnvironment(env);
+			} catch (e) {}
 			await fs.remove(test_utils.getMockLMDBPath());
 			await fs.mkdirp(BASE_TEST_PATH);
 			TEST_ENVIRONMENT_NAME = uuid();
@@ -556,6 +560,10 @@ describe('Test writeUtility module', () => {
 		beforeEach(async () => {
 			date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
 			global.lmdb_map = undefined;
+			try {
+				if (env)
+					await lmdb_env_util.closeEnvironment(env);
+			} catch (e) {}
 			await fs.remove(test_utils.getMockLMDBPath());
 			await fs.mkdirp(BASE_TEST_PATH);
 			TEST_ENVIRONMENT_NAME = uuid();
@@ -1051,6 +1059,10 @@ describe('Test writeUtility module', () => {
 		beforeEach(async () => {
 			date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
 			global.lmdb_map = undefined;
+			try {
+				if (env)
+					await lmdb_env_util.closeEnvironment(env);
+			} catch (e) {}
 			await fs.remove(test_utils.getMockLMDBPath());
 			await fs.mkdirp(BASE_TEST_PATH);
 			TEST_ENVIRONMENT_NAME = uuid();

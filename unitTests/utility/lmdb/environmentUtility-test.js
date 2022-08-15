@@ -711,6 +711,10 @@ describe('Test LMDB environmentUtility module', () => {
 		let env;
 		beforeEach(async () => {
 			global.lmdb_map = undefined;
+			try {
+				if (env)
+					await lmdb_env_util.closeEnvironment(env);
+			} catch (e) {}
 			await fs.remove(test_utils.getMockLMDBPath());
 			await fs.mkdirp(BASE_TEST_PATH);
 
@@ -719,6 +723,9 @@ describe('Test LMDB environmentUtility module', () => {
 
 		after(async () => {
 			global.lmdb_map = undefined;
+			try {
+				await lmdb_env_util.closeEnvironment(env);
+			} catch (e) {}
 			await fs.remove(test_utils.getMockLMDBPath());
 		});
 
