@@ -48,6 +48,9 @@ const NEW_LIC_FILE_PATH = path.join(NEW_KEYS_PATH, '.license');
 
 describe('Test 3.1.0 Upgrade Directive', () => {
 	const sandbox = sinon.createSandbox();
+	if (os.platform() === 'win32') {
+		return; // version 3.x didn't support windows, so no reason to test this upgrade.
+	}
 
 	before(() => {
 		buildFile();
@@ -250,7 +253,7 @@ describe('Test 3.1.0 Upgrade Directive', () => {
 				console.log(e);
 				open_err = e;
 			}
-console.log('fd:', fd);
+
 			expect(fd).to.be.an.integer();
 			expect(open_err).to.equal(undefined);
 
