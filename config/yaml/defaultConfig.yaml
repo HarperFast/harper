@@ -29,7 +29,7 @@ clustering:
     insecure: true
   user: null
 customFunctions:
-  enabled: false
+  enabled: true
   network:
     cors: true
     corsWhitelist:

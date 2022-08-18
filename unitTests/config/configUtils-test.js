@@ -488,7 +488,7 @@ describe('Test configUtils module', () => {
 			clustering_tls_privatekey: null,
 			clustering_tls_insecure: true,
 			clustering_user: null,
-			customfunctions_enabled: false,
+			customfunctions_enabled: true,
 			customfunctions_network_cors: true,
 			customfunctions_network_corswhitelist: [null],
 			customfunctions_network_headerstimeout: 60000,
