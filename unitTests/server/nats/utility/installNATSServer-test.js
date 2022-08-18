@@ -666,6 +666,54 @@ describe('test downloadNATSServer function', () => {
 		Object.defineProperty(process, 'arch', { value: og_arch });
 	}).timeout(10000);
 
+	it('test happy path, simulate darwin arm64', async () => {
+		// spy fs.ensureFile, fs.remove, fs.chmod
+		let og_platform = process.platform;
+		let og_arch = process.arch;
+		Object.defineProperty(process, 'platform', { value: 'darwin' });
+		Object.defineProperty(process, 'arch', { value: 'arm64' });
+
+		let fs_ensure_file_spy = sandbox.spy(installer.__get__('fs'), 'ensureFile');
+		let fs_remove_spy = sandbox.spy(installer.__get__('fs'), 'remove');
+		let fs_chmod_spy = sandbox.spy(installer.__get__('fs'), 'chmod');
+
+		let needle_spy = sandbox.spy(needle, 'request');
+
+		let stream_zip_async_spy = sandbox.spy(stream_zip, 'async');
+
+		let err;
+		try {
+			await download_nats();
+		} catch (e) {
+			err = e;
+		}
+		let zip_path = path.join(dependency_path, 'darwin-arm64', 'darwin-arm64.zip');
+		expect(err).to.equal(undefined);
+		expect(fs_ensure_file_spy.callCount).to.equal(1);
+		expect(fs_ensure_file_spy.getCall(0).args).to.eql([zip_path]);
+		expect(fs_remove_spy.callCount).to.equal(1);
+		expect(fs_remove_spy.getCall(0).args).to.eql([zip_path]);
+		expect(needle_spy.callCount).to.equal(1);
+		expect(needle_spy.getCall(0).args[1]).to.eql(
+			`https://github.com/nats-io/nats-server/releases/download/v${NATS_VERSION}/nats-server-v${NATS_VERSION}-darwin-arm64.zip`
+		);
+		expect(needle_spy.getCall(0).args[3]).to.eql({ output: zip_path, follow_max: 5 });
+
+		expect(stream_zip_async_spy.callCount).to.equal(1);
+		expect(stream_zip_async_spy.getCall(0).args).to.eql([{ file: zip_path }]);
+		expect(fs_chmod_spy.callCount).to.equal(1);
+		expect(fs_chmod_spy.getCall(0).args).to.eql([path.join(dependency_path, 'darwin-arm64', 'nats-server'), 0o777]);
+
+		let binary_exists = await fs.pathExists(path.join(dependency_path, 'darwin-arm64', 'nats-server'));
+		expect(binary_exists).to.equal(true);
+
+		let zip_exists = await fs.pathExists(zip_path);
+		expect(zip_exists).to.equal(false);
+
+		Object.defineProperty(process, 'platform', { value: og_platform });
+		Object.defineProperty(process, 'arch', { value: og_arch });
+	}).timeout(10000);
+
 	it('test happy path, win32 x64', async () => {
 		let fs_ensure_file_spy = sandbox.spy(installer.__get__('fs'), 'ensureFile');
 		let fs_remove_spy = sandbox.spy(installer.__get__('fs'), 'remove');

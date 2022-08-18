@@ -113,7 +113,8 @@ async function cleanUp(full_nats_source_path) {
 }
 
 async function downloadNATSServer(platform, architecture) {
-	let platform_architecture = platform && architecture ? `${platform}-${architecture}` : PLATFORM_ARCHITECTURE;
+	let platform_architecture =
+		platform && architecture ? `${platform}-${architecture}` : `${process.platform}-${process.arch}`;
 	//get the zip name from the map
 	let zip = PLATFORM_ARCHITECTURE_MAP[platform_architecture];
 	if (zip === undefined) {
