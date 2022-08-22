@@ -6,7 +6,7 @@ const environment_utility = require('../../../../utility/lmdb/environmentUtility
 
 module.exports = {
 	writeTransaction,
-}
+};
 
 /**
  * This is wrapper for write transactions, ensuring that all reads and writes within the callback occur atomically

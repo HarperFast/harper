@@ -17,6 +17,7 @@ const global_schema = require('../../utility/globalSchema');
 const user_schema = require('../../security/user');
 const IPCClient = require('../ipc/IPCClient');
 const ipc_server_handlers = require('../ipc/serverHandlers');
+const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
 
 const getServerOptions = require('./helpers/getServerOptions');
 const getCORSOptions = require('./helpers/getCORSOptions');
@@ -127,20 +128,8 @@ async function buildRoutes(cf_server) {
 	try {
 		harper_logger.info('Custom Functions starting buildRoutes');
 
-		cf_server
-			.register(autoload, {
-				dir: path.join(__dirname, 'plugins'),
-			})
-			.after((err, instance, next) => {
-				if (err && err.message) {
-					harper_logger.error(err.message);
-				} else if (err) {
-					harper_logger.error(err);
-				}
-
-				next();
-			});
-
+		await cf_server.register(require('./plugins/hdbCore'))
+		await cf_server.after()
 		const project_folders = fg.sync(`${CF_ROUTES_DIR}/*`, { onlyDirectories: true });
 
 		// loop through all the projects

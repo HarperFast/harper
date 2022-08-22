@@ -6,18 +6,19 @@ const hdb_license = require('../../utility/registration/hdb_license');
 const hdb_terms = require('../hdbTerms');
 const nats_terms = require('../../server/nats/utility/natsTerms');
 const path = require('path');
+const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
 
 const DISABLE_FILE_LOG = '/dev/null';
-const BYTENODE_MOD_CLI = path.resolve(__dirname, '../../node_modules/bytenode/lib/cli.js');
-const LAUNCH_SCRIPTS_DIR = path.resolve(__dirname, '../../launchServiceScripts');
-const SCRIPTS_DIR = path.resolve(__dirname, '../scripts');
+const LAUNCH_SCRIPTS_DIR = path.join(PACKAGE_ROOT, 'launchServiceScripts');
+const SCRIPTS_DIR = path.join(PACKAGE_ROOT, 'utility/scripts');
 const RESTART_SCRIPT = path.join(SCRIPTS_DIR, hdb_terms.HDB_RESTART_SCRIPT);
 const NATS_SERVER_BINARY_PATH = path.resolve(
-	__dirname,
-	'../../dependencies',
+	PACKAGE_ROOT,
+	'dependencies',
 	`${process.platform}-${process.arch}`,
 	nats_terms.NATS_BINARY_NAME
 );
+
 let log_to_file = undefined;
 let log_path = undefined;
 
@@ -47,14 +48,6 @@ function generateIPCServerConfig() {
 	if (!log_to_file) {
 		ipc_config.out_file = DISABLE_FILE_LOG;
 		ipc_config.error_file = DISABLE_FILE_LOG;
-	}
-
-	if (process.env.HDB_COMPILED === 'true') {
-		return {
-			...ipc_config,
-			script: BYTENODE_MOD_CLI,
-			args: hdb_terms.SERVICE_SERVERS.IPC,
-		};
 	}
 
 	return {
@@ -151,7 +144,6 @@ function generateNatsHubServerConfig() {
 		out_file: hub_logs,
 		error_file: hub_logs,
 		instances: 1,
-		cwd: hdb_terms.SERVICE_SERVERS_CWD.CLUSTERING_HUB,
 	};
 
 	if (!log_to_file) {
@@ -180,7 +172,6 @@ function generateNatsLeafServerConfig() {
 		out_file: leaf_logs,
 		error_file: leaf_logs,
 		instances: 1,
-		cwd: hdb_terms.SERVICE_SERVERS_CWD.CLUSTERING_LEAF,
 	};
 
 	if (!log_to_file) {
@@ -289,14 +280,6 @@ function generateRestart() {
 		restart_config.error_file = DISABLE_FILE_LOG;
 	}
 
-	if (process.env.HDB_COMPILED === 'true') {
-		return {
-			...restart_config,
-			script: BYTENODE_MOD_CLI,
-			args: RESTART_SCRIPT,
-		};
-	}
-
 	return {
 		...restart_config,
 		script: RESTART_SCRIPT,
@@ -306,7 +289,7 @@ function generateRestart() {
 function generateJobConfig(job_id) {
 	initLogConfig();
 	const jobs_log = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.JOBS);
-	const jobs_root_dir = path.resolve(__dirname, '../../server/jobs');
+	const jobs_root_dir = path.join(PACKAGE_ROOT, 'server/jobs');
 
 	const job_config = {
 		name: `JOB-${job_id}`,
@@ -327,17 +310,9 @@ function generateJobConfig(job_id) {
 		job_config.error_file = DISABLE_FILE_LOG;
 	}
 
-	if (process.env.HDB_COMPILED === 'true') {
-		return {
-			...job_config,
-			script: BYTENODE_MOD_CLI,
-			args: path.join(jobs_root_dir, 'jobProcess.jsc'),
-		};
-	}
-
 	return {
 		...job_config,
-		script: path.resolve(jobs_root_dir, 'jobProcess.js'),
+		script: path.join(jobs_root_dir, 'jobProcess.js'),
 	};
 }
 

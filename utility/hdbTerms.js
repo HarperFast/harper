@@ -1,15 +1,30 @@
 'use strict';
 
 const path = require('path');
+const fs = require('fs');
+/**
+ * Finds and returns the package root directory
+ * @returns {string}
+ */
+function getHDBPackageRoot() {
+	let dir = __dirname;
+	while (!fs.existsSync(path.join(dir, 'package.json'))) {
+		let parent = path.dirname(dir);
+		if (parent === dir)
+			throw new Error('Could not find package root');
+		dir = parent;
+	}
+	return dir;
+}
+const PACKAGE_ROOT = getHDBPackageRoot();
 
 /**
  * This module should contain common variables/values that will be used across the project.  This should avoid
  * duplicate values making refactoring a little easier.
  */
 
-const COMPILED_EXTENSION = 'jsc';
 const JAVASCRIPT_EXTENSION = 'js';
-const CODE_EXTENSION = process.env.HDB_COMPILED === 'true' ? COMPILED_EXTENSION : JAVASCRIPT_EXTENSION;
+const CODE_EXTENSION = JAVASCRIPT_EXTENSION;
 
 const HDB_CONFIG_FILE = 'harperdb.conf';
 const HDB_DEFAULT_CONFIG_FILE = 'defaultConfig.yaml';
@@ -98,11 +113,11 @@ const CLUSTERING_PROCESSES = {
 };
 
 const SERVICE_SERVERS_CWD = {
-	HDB: path.resolve(__dirname, `../server/harperdb`),
-	IPC: path.resolve(__dirname, `../server/ipc`),
-	CUSTOM_FUNCTIONS: path.resolve(__dirname, `../server/customFunctions`),
-	CLUSTERING_HUB: path.resolve(__dirname, '../server/nats'),
-	CLUSTERING_LEAF: path.resolve(__dirname, '../server/nats'),
+	HDB: path.join(PACKAGE_ROOT, `server/harperdb`),
+	IPC: path.join(PACKAGE_ROOT, `server/ipc`),
+	CUSTOM_FUNCTIONS: path.join(PACKAGE_ROOT, `server/customFunctions`),
+	CLUSTERING_HUB: path.join(PACKAGE_ROOT, 'server/nats'),
+	CLUSTERING_LEAF: path.join(PACKAGE_ROOT, 'server/nats'),
 };
 
 const SERVICE_SERVERS = {
@@ -112,11 +127,11 @@ const SERVICE_SERVERS = {
 };
 
 const LAUNCH_SERVICE_SCRIPTS = {
-	HDB: path.resolve(__dirname, '../launchServiceScripts/launchHarperDB.js'),
-	CUSTOM_FUNCTIONS: path.resolve(__dirname, '../launchServiceScripts/launchCustomFunctions.js'),
-	NATS_INGEST_SERVICE: path.resolve(__dirname, '../launchServiceScripts/launchNatsIngestService.js'),
-	NATS_REPLY_SERVICE: path.resolve(__dirname, '../launchServiceScripts/launchNatsReplyService.js'),
-	NODES_UPGRADE_4_0_0: path.resolve(__dirname, '../launchServiceScripts/launchUpdateNodes4-0-0.js'),
+	HDB: path.join(PACKAGE_ROOT, 'launchServiceScripts/launchHarperDB.js'),
+	CUSTOM_FUNCTIONS: path.join(PACKAGE_ROOT, 'launchServiceScripts/launchCustomFunctions.js'),
+	NATS_INGEST_SERVICE: path.join(PACKAGE_ROOT, 'launchServiceScripts/launchNatsIngestService.js'),
+	NATS_REPLY_SERVICE: path.join(PACKAGE_ROOT, 'launchServiceScripts/launchNatsReplyService.js'),
+	NODES_UPGRADE_4_0_0: path.resolve(PACKAGE_ROOT, 'launchServiceScripts/launchUpdateNodes4-0-0.js'),
 };
 
 const ROLE_TYPES_ENUM = {
@@ -970,7 +985,6 @@ module.exports = {
 	API_TURNOVER_SEC,
 	LOOPBACK,
 	CODE_EXTENSION,
-	COMPILED_EXTENSION,
 	WILDCARD_SEARCH_VALUE,
 	NODE_ERROR_CODES,
 	JAVASCRIPT_EXTENSION,
@@ -1011,5 +1025,6 @@ module.exports = {
 	HDB_ROOT_DIR_NAME,
 	CLUSTERING_PROCESSES,
 	FOREGROUND_PID_FILE,
+	PACKAGE_ROOT,
 	PRE_4_0_0_VERSION,
 };

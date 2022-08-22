@@ -7,12 +7,13 @@ const hdb_terms = require('../utility/hdbTerms');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { PACKAGE_ROOT } = require('../utility/hdbTerms');
 const check_node = require('../launchServiceScripts/utility/checkNodeVersion');
 
 harperDBService();
 
 function checkCallingUserSync() {
-	let hdb_exe_path = path.join(__dirname, `harperdb.${hdb_terms.CODE_EXTENSION}`);
+	let hdb_exe_path = path.join(PACKAGE_ROOT, 'bin', `harperdb.${hdb_terms.CODE_EXTENSION}`);
 	let stats = undefined;
 	try {
 		stats = fs.statSync(hdb_exe_path);
@@ -41,7 +42,7 @@ function harperDBService() {
 
 	let service;
 
-	fs.readdir(__dirname, (err) => {
+	fs.readdir(path.join(PACKAGE_ROOT, 'bin'), (err) => {
 		if (err) {
 			return logger.error(err);
 		}

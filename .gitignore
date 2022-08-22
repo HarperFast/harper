@@ -3,7 +3,8 @@
 
 /node_modules/*
 hdb/*
-logs/*.log
+logs/*
+!logs/README.md
 .nyc_output/*
 .vs_code/*
 /bin/coverage/*
@@ -13,7 +14,9 @@ hdb_boot_properties.file
 /unitTests/envDir/*
 /unitTests/server/nats/tempTestDir/*
 coverage.json
-dependencies/nats-server
+dependencies/*
+!dependencies/nats-server.zip
+yarn.lock
 
 /npm_pack/*
 *.jsc

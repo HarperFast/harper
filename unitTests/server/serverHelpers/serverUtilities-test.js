@@ -194,7 +194,7 @@ describe('Test serverUtilities_rw.js module ', () => {
 		it('test DELETE', () => {
 			let result = serverUtilities_rw.getOperationFunction({ operation: 'delete' });
 
-			assert.deepStrictEqual(result.operation_function.name, 'deleteRecordCallbackified');
+			assert.deepStrictEqual(result.operation_function.name, 'deleteRecord');
 			assert.deepStrictEqual(result.job_operation_function, undefined);
 		});
 

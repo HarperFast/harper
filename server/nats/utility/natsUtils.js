@@ -41,14 +41,14 @@ const {
 	JetStreamOptions,
 	ErrorCode,
 } = require('nats');
+const { PACKAGE_ROOT } = require('../../../utility/hdbTerms');
 
-const pkg_json_path = path.resolve(__dirname, '../../../package.json');
-const pkg_json = require(pkg_json_path);
+const pkg_json = require('../../../package.json');
 
 const jc = JSONCodec();
 const HDB_CLUSTERING_FOLDER = 'clustering';
 const REQUIRED_NATS_SERVER_VERSION = pkg_json.engines[nats_terms.NATS_SERVER_NAME];
-const DEPENDENCIES_PATH = path.resolve(__dirname, '../../../dependencies');
+const DEPENDENCIES_PATH = path.join(PACKAGE_ROOT, 'dependencies');
 const NATS_SERVER_PATH = path.join(DEPENDENCIES_PATH, `${process.platform}-${process.arch}`, nats_terms.NATS_BINARY_NAME);
 
 let leaf_config;
