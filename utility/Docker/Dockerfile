@@ -1,7 +1,3 @@
-ARG GO_VERSION
-
-FROM golang:$GO_VERSION AS gobinary
-
 FROM ubuntu:20.04
 ARG NVM_VERSION
 ARG NODE_VERSION
@@ -11,7 +7,7 @@ ARG HARPERDB_TARBALL
 EXPOSE 9925
 
 #Install prerequisites
-RUN apt-get update  && apt-get install -y curl g++ make python3 tini
+RUN apt-get update && apt-get install -y curl tini
 
 #Create non-root user
 RUN adduser --home /home/ubuntu --gecos "" --shell /bin/bash --disabled-password ubuntu
@@ -24,9 +20,6 @@ RUN mkdir -p /opt/harperdb/hdb && chown -R ubuntu:ubuntu /opt/harperdb/hdb && \
   mkdir /home/ubuntu/.harperdb && touch /home/ubuntu/.harperdb/hdb_boot_properties.file && \
   echo 'settings_path = /opt/harperdb/hdb/harperdb.conf\ninstall_user = ubuntu' > /home/ubuntu/.harperdb/hdb_boot_properties.file && \
   chown -R ubuntu:ubuntu /home/ubuntu/.harperdb
-
-COPY --from=gobinary /usr/local/go/ /home/ubuntu/go/
-RUN chown -R ubuntu:ubuntu /home/ubuntu/go
 
 #Set the user for the below instructions
 USER ubuntu
@@ -43,9 +36,7 @@ ENV OPERATIONSAPI_FOREGROUND=true
 #Install nvm, Node.js, and HarperDB
 ENV NVM_DIR=/home/ubuntu/.nvm
 ENV PATH=/home/ubuntu/.nvm/versions/node/v$NODE_VERSION/bin:$PATH
-RUN export PATH=$PATH:/home/ubuntu/go/bin \
-    && echo 'export PATH=$PATH:/home/ubuntu/go/bin' >> ~/.bashrc \
-    && curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v$NVM_VERSION/install.sh | bash \
+RUN curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v$NVM_VERSION/install.sh | bash \
     && . $NVM_DIR/nvm.sh \
     && nvm install $NODE_VERSION \
     && cd /home/ubuntu/ \
