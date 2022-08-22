@@ -73,18 +73,16 @@ async function checkNATSServerInstalled() {
 async function checkGoVersion() {
 	console.log(chalk.green(`Verifying go v${REQUIRED_GO_VERSION} is on system.`));
 	let version;
-	if (platform() != 'win32') {
-		// need a Windows version of this check
-		try {
-			version = await runCommand('go version | { read _ _ v _; echo ${v#go}; }', undefined);
-		} catch (e) {
-			throw Error('go does not appear to be installed or is not in the PATH, cannot install clustering dependencies.');
-		}
-		if (!semver.gte(version, REQUIRED_GO_VERSION)) {
-			throw Error(`go version ${REQUIRED_GO_VERSION} or higher must be installed.`);
-		}
-		console.log(chalk.green(`go v${REQUIRED_GO_VERSION} is on the system.`));
+	try {
+		let output = await runCommand('go version', undefined);
+		version = output.match(/[\d.]+/)[0];
+	} catch (e) {
+		throw Error('go does not appear to be installed or is not in the PATH, cannot install clustering dependencies.');
 	}
+	if (!semver.gte(version, REQUIRED_GO_VERSION)) {
+		throw Error(`go version ${REQUIRED_GO_VERSION} or higher must be installed.`);
+	}
+	console.log(chalk.green(`go v${REQUIRED_GO_VERSION} is on the system.`));
 }
 
 /**
