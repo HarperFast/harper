@@ -21,6 +21,7 @@ const lmdbDeleteAuditLogsBefore = require('./lmdbMethods/lmdbDeleteAuditLogsBefo
 const lmdbDropTable = require('./lmdbMethods/lmdbDropTable');
 const lmdbDropAttribute = require('./lmdbMethods/lmdbDropAttribute');
 const lmdbReadAuditLog = require('./lmdbMethods/lmdbReadAuditLog');
+const lmdbTransaction = require('./lmdbMethods/lmdbTransaction');
 
 class LMDBBridge extends BridgeMethods {
 	async searchByConditions(search_object) {
@@ -185,6 +186,10 @@ class LMDBBridge extends BridgeMethods {
 			log.error(err);
 			throw err;
 		}
+	}
+
+	writeTransaction(schema, table, callback) {
+		return lmdbTransaction.writeTransaction(schema, table, callback);
 	}
 }
 
