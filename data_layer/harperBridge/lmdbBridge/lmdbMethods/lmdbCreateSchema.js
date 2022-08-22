@@ -27,10 +27,6 @@ async function lmdbCreateSchema(create_schema_obj) {
 		records
 	);
 
-	try {
-		let results = await lmdb_create_records(insert_object);
-		await fs.mkdirp(path.join(getBaseSchemaPath(), create_schema_obj.schema.toString()));
-	} catch (err) {
-		throw err;
-	}
+	await lmdb_create_records(insert_object);
+	await fs.mkdirp(path.join(getBaseSchemaPath(), create_schema_obj.schema.toString()));
 }
