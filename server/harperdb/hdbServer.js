@@ -15,6 +15,8 @@ const fastify_cors = require('@fastify/cors');
 const fastify_compress = require('@fastify/compress');
 const fastify_static = require('@fastify/static');
 const fastify_helmet = require('@fastify/helmet');
+const fastify_serializer = require('@fastify/accepts-serializer');
+const { pack, unpack } = require('msgpackr');
 const request_time_plugin = require('../serverHelpers/requestTimePlugin');
 const guidePath = require('path');
 
@@ -169,6 +171,15 @@ function buildServer(is_https) {
 	// This handles all get requests for the studio
 	app.register(fastify_compress);
 	app.register(fastify_static, { root: guidePath.join(__dirname, '../../docs') });
+	app.register(fastify_serializer);
+	app.addContentTypeParser('application/x-msgpack', { parseAs: 'buffer' }, (req, body, done) => {
+		try {
+			done(null, unpack(body));
+		} catch (error) {
+			error.statusCode = 400;
+			done(error);
+		}
+	});
 
 	let studio_on = env.get(terms.HDB_SETTINGS_NAMES.LOCAL_STUDIO_ON);
 	app.get('/', function (req, res) {
@@ -184,6 +195,14 @@ function buildServer(is_https) {
 		'/',
 		{
 			preValidation: [reqBodyValidationHandler, authHandler],
+			config: {
+				serializers: [
+					{
+						regex: /^application\/(x-)?msgpack$/,
+						serializer: pack,
+					},
+				],
+			},
 		},
 		async function (req, res) {
 			//if no error is thrown below, the response 'data' returned from the handler will be returned with 200/OK code

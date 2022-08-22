@@ -5,6 +5,7 @@ const test_utils = require('../../test_utils');
 const rewire = require('rewire');
 const fs = require('fs-extra');
 const path = require('path');
+const { pack, unpack } = require('msgpackr');
 require('events').EventEmitter.defaultMaxListeners = 60;
 
 const chai = require('chai');
@@ -46,6 +47,8 @@ const DEFAULT_FASTIFY_PLUGIN_ARR = [
 	'hdb-request-time',
 	'@fastify/compress',
 	'@fastify/static',
+	'@fastify/accepts-serializer',
+	'@fastify/accepts',
 ];
 
 let setUsersToGlobal_stub;
@@ -207,7 +210,7 @@ describe('Test hdbServer module', () => {
 			server.close();
 		});
 
-		it('should register 3 fastify plugins by default - @fastify/helmet, @fastify/compress, @fastify/static', async () => {
+		it('should register 4 fastify plugins by default - @fastify/helmet, @fastify/compress, @fastify/static, @fastify/accepts-serializer', async () => {
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
@@ -310,14 +313,8 @@ describe('Test hdbServer module', () => {
 				(s) => String(s) === 'Symbol(fastify.pluginNameChain)'
 			);
 
-			expect(server[plugin_key].length).to.equal(5);
-			expect(server[plugin_key]).to.deep.equal([
-				'fastify',
-				'@fastify/helmet',
-				'hdb-request-time',
-				'@fastify/compress',
-				'@fastify/static',
-			]);
+			expect(server[plugin_key].length).to.equal(7);
+			expect(server[plugin_key]).to.deep.equal(DEFAULT_FASTIFY_PLUGIN_ARR);
 
 			server.close();
 		});
@@ -334,7 +331,7 @@ describe('Test hdbServer module', () => {
 				(s) => String(s) === 'Symbol(fastify.pluginNameChain)'
 			);
 
-			expect(server[plugin_key].length).to.equal(6);
+			expect(server[plugin_key].length).to.equal(8);
 			expect(server[plugin_key].sort()).to.deep.equal(['@fastify/cors', ...DEFAULT_FASTIFY_PLUGIN_ARR].sort());
 
 			server.close();
@@ -352,7 +349,7 @@ describe('Test hdbServer module', () => {
 				(s) => String(s) === 'Symbol(fastify.pluginNameChain)'
 			);
 
-			expect(server[plugin_key].length).to.equal(6);
+			expect(server[plugin_key].length).to.equal(8);
 			expect(server[plugin_key].sort()).to.deep.equal(['@fastify/cors', ...DEFAULT_FASTIFY_PLUGIN_ARR].sort());
 
 			server.close();
@@ -369,6 +366,58 @@ describe('Test hdbServer module', () => {
 			await server.inject({ method: 'POST', url: '/', headers: test_req_options.headers, body: test_req_options.body });
 
 			expect(handlePostRequest_spy.calledOnce).to.be.true;
+
+			server.close();
+		});
+
+		it('should return MessagePack when HTTP request include Accept: application/x-msgpack', async () => {
+			const test_config_settings = { https_on: false };
+			test_utils.preTestPrep(test_config_settings);
+
+			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const server = hdbServer_rw.__get__('server');
+
+			const test_response = await server.inject({
+				method: 'POST',
+				url: '/',
+				headers: Object.assign(
+					{
+						Accept: 'application/x-msgpack',
+					},
+					test_req_options.headers
+				),
+				body: test_req_options.body,
+			});
+
+			expect(test_response.statusCode).to.equal(200);
+			const expectedResponse = pack({ message: test_op_resp });
+			expect(test_response.body).to.equal(expectedResponse.toString());
+
+			server.close();
+		});
+
+		it('should parse MessagePack when HTTP request include Content-Type: application/x-msgpack', async () => {
+			const test_config_settings = { https_on: false };
+			test_utils.preTestPrep(test_config_settings);
+
+			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const server = hdbServer_rw.__get__('server');
+
+			const body = pack(test_req_options.body);
+			const test_response = await server.inject({
+				method: 'POST',
+				url: '/',
+				headers: Object.assign({}, test_req_options.headers, {
+					'Content-Type': 'application/x-msgpack',
+					'Content-Length': body.length,
+				}),
+				body,
+			});
+
+			expect(test_response.statusCode).to.equal(200);
+			expect(test_response.body).to.equal(JSON.stringify({ message: test_op_resp }));
 
 			server.close();
 		});
