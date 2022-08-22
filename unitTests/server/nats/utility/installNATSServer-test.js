@@ -652,7 +652,7 @@ describe('test downloadNATSServer function', () => {
 		expect(fs_ensure_file_spy.getCall(0).args).to.eql([zip_path]);
 		expect(fs_remove_spy.callCount).to.equal(1);
 		expect(fs_remove_spy.getCall(0).args).to.eql([zip_path]);
-		expect(needle_spy.callCount).to.equal(1);*
+		expect(needle_spy.callCount).to.equal(1);
 		expect(needle_spy.getCall(0).args[1]).to.eql(
 			`https://github.com/nats-io/nats-server/releases/download/v${NATS_VERSION}/nats-server-v${NATS_VERSION}-linux-amd64.zip`
 		);
