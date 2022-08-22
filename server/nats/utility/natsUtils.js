@@ -483,7 +483,7 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 		await jsm.streams.add({
 			name: CONSUMER_NAMES.stream_name,
 			storage: StorageType.File,
-			retention: RetentionPolicy.Limits,
+			retention: RetentionPolicy.Workqueue,
 			subjects: [`${CONSUMER_NAMES.stream_name}.${env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME)}`],
 		});
 	} catch (err) {
@@ -504,8 +504,7 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 				durable_name: CONSUMER_NAMES.durable_name,
 				deliver_policy: DeliverPolicy.All,
 				max_ack_pending: 10000,
-				flow_control: true,
-				idle_heartbeat: nanos(5000),
+				deliver_group: CONSUMER_NAMES.deliver_group
 			});
 		} else {
 			throw e;
