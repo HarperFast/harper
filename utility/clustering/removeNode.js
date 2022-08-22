@@ -48,18 +48,15 @@ async function removeNode(req) {
 	record = record[0];
 	const remote_payload = new RemotePayloadObject(hdb_terms.OPERATIONS_ENUM.REMOVE_NODE, node_name, []);
 	let reply;
+	let remote_node_error = false;
 	try {
 		// Send remove node request to remote node.
 		reply = await nats_utils.request(`${remote_node_name}.${nats_terms.REQUEST_SUFFIX}`, remote_payload);
+		hdb_logger.trace('Remove node reply from remote node:', remote_node_name, reply);
 	} catch (req_err) {
 		hdb_logger.error('removeNode received error from request:', req_err);
+		remote_node_error = true;
 	}
-
-	// If an error is received from the remote node abort remove node and throw error
-	if (reply?.status === nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.ERROR) {
-		hdb_logger.error('Error returned from remote node:', remote_node_name, reply?.message);
-	}
-	hdb_logger.trace(reply?.message);
 
 	for (let i = 0, sub_length = record.subscriptions.length; i < sub_length; i++) {
 		const subscription = record.subscriptions[i];
@@ -77,6 +74,12 @@ async function removeNode(req) {
 		remote_node_name,
 	]);
 	await _delete.deleteRecord(delete_qry);
+
+	// If an error is received from the remote node let user know.
+	if (reply?.status === nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.ERROR || remote_node_error) {
+		hdb_logger.error('Error returned from remote node:', remote_node_name, reply?.message);
+		return `Successfully removed '${remote_node_name}' from local manifest, however there was an error reaching remote node. Check the logs for more details.`;
+	}
 
 	return `Successfully removed '${remote_node_name}' from manifest`;
 }

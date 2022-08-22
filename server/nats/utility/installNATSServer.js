@@ -11,12 +11,12 @@ const util = require('util');
 const child_process = require('child_process');
 const { platform } = require('os');
 const exec = util.promisify(child_process.exec);
+const { PACKAGE_ROOT } = require('../../../utility/hdbTerms');
 
-const DEPENDENCIES_PATH = path.resolve(__dirname, '../../../dependencies');
+const DEPENDENCIES_PATH = path.join(PACKAGE_ROOT, 'dependencies');
 const ZIP_PATH = path.join(DEPENDENCIES_PATH, nats_terms.NATS_SERVER_ZIP);
 
-let pkg_json_path = path.resolve(__dirname, '../../../package.json');
-let pkg_json = require(pkg_json_path);
+let pkg_json = require('../../../package.json');
 
 const REQUIRED_GO_VERSION = pkg_json.engines['go-lang'];
 const REQUIRED_NATS_SERVER_VERSION = pkg_json.engines[nats_terms.NATS_SERVER_NAME];
@@ -31,6 +31,9 @@ const PLATFORM_ARCHITECTURE_MAP = {
 	'darwin-arm64': 'darwin-arm64.zip',
 	'win32-x64': 'windows-amd64.zip',
 };
+const ALL_SUPPORTED_PLATFORM_ARCHITECTURES = Object.keys(PLATFORM_ARCHITECTURE_MAP).map((platform_arch) =>
+	platform_arch.split('-')
+);
 
 /**
  * Runs a bash script in a new shell
@@ -115,7 +118,8 @@ async function cleanUp(full_nats_source_path) {
 }
 
 async function downloadNATSServer(platform, architecture) {
-	let platform_architecture = platform && architecture ? `${platform}-${architecture}` : PLATFORM_ARCHITECTURE;
+	let platform_architecture =
+		platform && architecture ? `${platform}-${architecture}` : `${process.platform}-${process.arch}`;
 	//get the zip name from the map
 	let zip = PLATFORM_ARCHITECTURE_MAP[platform_architecture];
 	if (zip === undefined) {
@@ -196,4 +200,4 @@ async function installer() {
 	console.log(chalk.green(`****NATS Server v${REQUIRED_NATS_SERVER_VERSION} is installed.****`));
 }
 
-module.exports = { installer, downloadNATSServer };
+module.exports = { installer, downloadNATSServer, ALL_SUPPORTED_PLATFORM_ARCHITECTURES };

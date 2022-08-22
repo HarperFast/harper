@@ -6,6 +6,7 @@ on:
       - master
   pull_request:
     types: [opened, synchronize, reopened]
+  workflow_dispatch:
 name: Run Source Code CI Tests
 jobs:
   getNodeVersion:
@@ -67,24 +68,10 @@ jobs:
 
         for public_dns_name in ${public_dns_names[@]}
         do 
-        echo "Starting work on: $public_dns_name"
-        ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name << HERE
-          . /home/ubuntu/.nvm/nvm.sh
-          . /home/ubuntu/.nvm/bash_completion
-
-          npm --loglevel=error install mocha -g
-          cd /home/ubuntu/harperdb/bin/
-          node harperdb.js stop
-          npm test
-
-          # Re-register HarperDB after unit tests
-          cd /home/ubuntu/harperdb/utility/devops
-          node register.js --reset_license --ram_allocation=16384
-
-          cd /home/ubuntu/harperdb/bin/
-          node harperdb.js
-        HERE
-        echo "Ending work on: $public_dns_name"
+          echo "Starting work on: $public_dns_name"
+          ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
+            "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/source-code-unit-tests.sh && /home/ubuntu/harperdb/test/ci-tests/source-code-unit-tests.sh"
+          echo "Ending work on: $public_dns_name"
         done
       shell: bash
   runSonarScans:
@@ -129,25 +116,10 @@ jobs:
 
         for public_dns_name in ${public_dns_names[@]}
         do 
-        echo "Starting work on: $public_dns_name"
-        ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name << HERE
-          . /home/ubuntu/.nvm/nvm.sh
-          . /home/ubuntu/.nvm/bash_completion
-          
-          npm --loglevel=error install -g newman
-          npm --loglevel=error install -g newman-reporter-teamcity
-          npm --loglevel=error install -g newman-reporter-html
-          npm --loglevel=error install -g newman-reporter-htmlextra
-
-          cd /home/ubuntu/harperdb/integrationTests
-
-          # Correct path to CSV files for integration tests
-          sed -i 's/\/usr\/csv\//\/home\/ubuntu\/harperdb\/test\/data\/integrationTestsCsvs\//g' Int_test_env_var.json
-          cat Int_test_env_var.json | grep "integrationTestsCsvs"
-
-          newman run HarperDB_Integration_Tests.json -e Int_test_env_var.json --reporters teamcity,cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html --insecure
-        HERE
-        echo "Ending work on: $public_dns_name"
+          echo "Starting work on: $public_dns_name"
+          ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
+              "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/ci-tests.sh && /home/ubuntu/harperdb/test/ci-tests/ci-tests.sh"
+          echo "Ending work on: $public_dns_name"
         done
   downloadLogs:
     if: always()

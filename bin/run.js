@@ -10,7 +10,7 @@ const path = require('path');
 const check_jwt_tokens = require('../utility/install/checkJWTTokensExist');
 const install = require('../utility/install/installer');
 const chalk = require('chalk');
-const pjson = require(`${__dirname}/../package.json`);
+const pjson = require('../package.json');
 const install_user_permission = require('../utility/install_user_permission');
 const hdb_utils = require('../utility/common_utils');
 const config_utils = require('../config/configUtils');
@@ -21,6 +21,7 @@ const stop = require('./stop');
 const upgrade = require('./upgrade');
 const minimist = require('minimist');
 const spawn = require('child_process').spawn;
+const { PACKAGE_ROOT } = require('../utility/hdbTerms');
 
 const hdbInfoController = require('../data_layer/hdbInfoController');
 
@@ -181,7 +182,7 @@ async function run(called_by_install = false) {
 		}
 
 		// Console log Harper dog logo
-		console.log(chalk.magenta('' + fs.readFileSync(path.join(__dirname, '../utility/install/ascii_logo.txt'))));
+		console.log(chalk.magenta('' + fs.readFileSync(path.join(PACKAGE_ROOT, 'utility/install/ascii_logo.txt'))));
 		console.log(chalk.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
 
 		hdb_logger.notify(HDB_STARTED);
@@ -301,7 +302,7 @@ function foregroundHandler() {
  * Its main purpose is to direct all accumulate all the logs in one process
  */
 function spawnLogProcess() {
-	const proc = spawn('node', [path.resolve(__dirname, '../node_modules/pm2/bin/pm2'), 'logs']);
+	const proc = spawn('node', [path.join(PACKAGE_ROOT, 'node_modules/pm2/bin/pm2'), 'logs']);
 
 	// We track the process pid so that stop can use it to kill the process.
 	fs.writeFileSync(

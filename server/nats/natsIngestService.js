@@ -84,14 +84,15 @@ async function workQueueListener() {
 			// Creates a subscription on the connection (leaf server), the name of that subscription is the unique inbox ID.
 			// This ID is used below when we ask the consumer to publish to it
 			const sub = nats_connection.subscribe(inbox);
-			let processed_records = 0;
 
 			const process_sub = (async () => {
+				let promises = [];
 				for await (const message of sub) {
 					try {
 						// Process each message in the subscription.
-						await messageProcessor(message);
-						processed_records++;
+						const error = checkJsError(message);
+						if (!hdb_utils.isEmpty(error)) throw error;
+						promises.push(messageProcessor(message));
 					} catch (e) {
 						// 404 & 408 errors will happen if there are no messages or batch is smaller than our batch setting.
 						// They are expected and for this reason ignored.
@@ -104,11 +105,19 @@ async function workQueueListener() {
 					}
 				}
 
-				// If there are messages being processed we keep the expire low to ensure messages are quickly processed.
-				// When there are no messages we back off to preserve CPU usage.
-				if (processed_records > 0) {
+				//process the transactions outside the subscription loop so that the subscription does not time out
+				if (promises.length > 0) {
+					let results = await Promise.allSettled(promises);
+					//iterate the results, log any rejected reasons.
+					results.forEach((result) => {
+						if (result.status === 'rejected') {
+							harper_logger.error(result.reason);
+						}
+					});
+					// If there are messages being processed we keep the expiration low to ensure messages are quickly processed.
 					expire = MIN_EXPIRE;
 				} else {
+					// When there are no messages we back off to preserve CPU usage.
 					expire = expire * 2 > MAX_EXPIRE ? MAX_EXPIRE : expire * 2;
 				}
 			})();
@@ -127,7 +136,6 @@ async function workQueueListener() {
 			);
 			// Flush any pending messages.
 			await nats_connection.flush();
-			await hdb_utils.async_set_timeout(50); // delay for NATS to process published messages
 			// Force the subscription to drain and process any messages.
 			await sub.drain();
 			// Make sure all messages in subscription have been processed.
@@ -143,12 +151,9 @@ async function workQueueListener() {
 /**
  * receives a message & processes it as an HDB operation
  * @param msg
- * @returns {Promise<void>}
+ * @returns {Promise<{}>}
  */
 async function messageProcessor(msg) {
-	const error = checkJsError(msg);
-	if (!hdb_utils.isEmpty(error)) throw error;
-
 	const js_msg = toJsMsg(msg);
 	const entry = decode(js_msg.data);
 
@@ -164,7 +169,7 @@ async function messageProcessor(msg) {
 			originators = orig;
 		}
 	}
-
+	let result;
 	harper_logger.trace(`messageProcessor originators: ${originators} on server: ${server_name}`);
 	if (originators.indexOf(server_name) < 0) {
 		let operation_function = undefined;
@@ -175,25 +180,26 @@ async function messageProcessor(msg) {
 
 		// Run the HDB transaction.
 		// csv loading and other jobs need to use a different postOp handler
-		if (found_operation.job_operation_function) {
-			let result = await operation_function(entry, originators);
-			harper_logger.debug(result);
-		} else {
-			entry[hdb_terms.CLUSTERING_FLAG] = true;
-			try {
-				let result = await operation_function_caller.callOperationFunctionAsAwait(
+		try {
+			if (found_operation.job_operation_function) {
+				result = await operation_function(entry, originators);
+			} else {
+				entry[hdb_terms.CLUSTERING_FLAG] = true;
+
+				result = await operation_function_caller.callOperationFunctionAsAwait(
 					operation_function,
 					entry,
 					transact_to_cluster_utilities.postOperationHandler,
 					originators
 				);
-				harper_logger.debug(result);
-			} catch (e) {
-				harper_logger.error(e);
 			}
+			harper_logger.debug(result);
+		} catch (e) {
+			harper_logger.error(e);
 		}
 	}
 
 	// Delete the message from the work queue stream once we have transacted it.
 	await js_manager.streams.deleteMessage(js_msg.info.stream, js_msg.info.streamSequence);
+	return result;
 }

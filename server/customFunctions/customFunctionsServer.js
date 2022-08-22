@@ -17,6 +17,7 @@ const global_schema = require('../../utility/globalSchema');
 const user_schema = require('../../security/user');
 const IPCClient = require('../ipc/IPCClient');
 const ipc_server_handlers = require('../ipc/serverHandlers');
+const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
 
 const getServerOptions = require('./helpers/getServerOptions');
 const getCORSOptions = require('./helpers/getCORSOptions');
@@ -141,6 +142,8 @@ async function buildRoutes(cf_server) {
 				next();
 			});
 
+		await cf_server.register(require('./plugins/hdbCore'))
+		await cf_server.after()
 		const project_folders = fs.readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
 
 		// loop through all the projects

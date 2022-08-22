@@ -4,9 +4,8 @@ const test_utils = require('../test_utils');
 test_utils.preTestPrep();
 
 const sql_test_utils = require('../sqlTestUtils');
-const { createMockDB, deepClone, mochaAsyncWrapper, tearDownMockDB, sortAsc, sortDesc } = test_utils;
-
-const generateMockAST = sql_test_utils.generateMockAST;
+const { createMockDB, deepClone, mochaAsyncWrapper, sortAsc, sortDesc } = test_utils;
+const { setupCSVSqlData, generateMockAST, cleanupCSVData, sqlIntegrationData } = sql_test_utils;
 
 const chai = require('chai');
 const { expect } = chai;
@@ -37,7 +36,6 @@ const sql_basic_cat_select = `SELECT * FROM ${TEST_SCHEMA}.${TEST_TABLE_CAT}`;
 const sql_basic_calc = '2 * 4';
 const sql_basic_calc_result = eval(sql_basic_calc);
 const sql_basic_op = `SELECT ${sql_basic_calc}`;
-const sql_integration_data = {};
 const sql_where_in_ids = [1, 2, 3];
 
 let test_instance;
@@ -91,18 +89,6 @@ async function setupBasicTestData() {
 	test_env.push(...(await createMockDB('all', 'call', 'aggr', deepClone(TEST_DATA_AGGR))));
 }
 
-async function setupCSVSqlData() {
-	const sql_csv_data = getFormattedIntegrationTestCsvData();
-
-	for (const { hash, schema, table, data } of sql_csv_data) {
-		const csv_data = deepClone(data);
-		const attrs = Object.keys(data[0]);
-		const test_attr = attrs[0] === hash ? attrs[1] : attrs[0];
-		sql_integration_data[table] = { hash, schema, table, attrs, test_attr, data: csv_data };
-		test_env.push(...(await createMockDB(hash, schema, table, data)));
-	}
-}
-
 function setupTestInstance(sql_statement, set_null_attr) {
 	const statement = sql_statement ? sql_statement : sql_basic_dog_select;
 	const test_sql = generateMockAST(statement);
@@ -137,8 +123,7 @@ describe('Test FileSystem Class', function () {
 	});
 
 	after(async function () {
-		await tearDownMockDB(test_env);
-		test_env = [];
+		await cleanupCSVData();
 		sandbox.restore();
 	});
 
@@ -326,7 +311,7 @@ describe('Test FileSystem Class', function () {
 		it(
 			'Basic select by hash returns requested attribute values for hash',
 			mochaAsyncWrapper(async function () {
-				const { attrs, data, hash } = sql_integration_data.customers;
+				const { attrs, data, hash } = sqlIntegrationData.customers;
 				const test_row = data[5];
 				const test_sql_statement = `SELECT ${attrs.toString()} FROM ${TEST_SCHEMA_NORTHWND}.customers WHERE ${hash} = '${
 					test_row[hash]
@@ -344,7 +329,7 @@ describe('Test FileSystem Class', function () {
 		it(
 			'Basic select by hash with wildcard returns requested attribute values for matching hashes',
 			mochaAsyncWrapper(async function () {
-				const { attrs, data, hash } = sql_integration_data.customers;
+				const { attrs, data, hash } = sqlIntegrationData.customers;
 				const test_search_val = 'A';
 				const expected_search_results = data.filter((row) => row[hash].startsWith(test_search_val));
 				const sorted_attrs = attrs.sort();
@@ -363,7 +348,7 @@ describe('Test FileSystem Class', function () {
 		it(
 			'Basic select by value returns requested attributes for matching rows',
 			mochaAsyncWrapper(async function () {
-				const { data, attrs, test_attr } = sql_integration_data.customers;
+				const { data, attrs, test_attr } = sqlIntegrationData.customers;
 				const test_row = data[5];
 				const test_sql_statement = `SELECT ${attrs.toString()} FROM ${TEST_SCHEMA_NORTHWND}.customers WHERE ${test_attr} = '${
 					test_row[test_attr]
@@ -382,7 +367,7 @@ describe('Test FileSystem Class', function () {
 		it(
 			'Basic select by value with wildcard returns requested attributes for matching rows',
 			mochaAsyncWrapper(async function () {
-				const { data } = sql_integration_data.customers;
+				const { data } = sqlIntegrationData.customers;
 				const test_search_val = 'A';
 				const attr_key = 'companyname';
 				const expected_search_results = data.filter((row) => row[attr_key].startsWith(test_search_val));
@@ -399,7 +384,7 @@ describe('Test FileSystem Class', function () {
 		it(
 			'should sort employees by hash in asc order',
 			mochaAsyncWrapper(async function () {
-				const { data, hash } = sql_integration_data.employees;
+				const { data, hash } = sqlIntegrationData.employees;
 				const sorted_data = sortTestRows(data);
 				const sorted_hashes = sortAsc(sorted_data, hash);
 				const test_sql_statement = `SELECT ${hash}, * from ${TEST_SCHEMA_NORTHWND}.employees ORDER BY ${hash} ASC`;
@@ -453,7 +438,7 @@ describe('Test FileSystem Class', function () {
 		it(
 			'should return orders sorted by orderid in desc order',
 			mochaAsyncWrapper(async function () {
-				const { data, hash } = sql_integration_data.orders;
+				const { data, hash } = sqlIntegrationData.orders;
 				const sorted_hashes = sortDesc(data, hash).map((row) => row[hash]);
 				const test_sql_statement = `SELECT ${hash}, * from ${TEST_SCHEMA_NORTHWND}.orders ORDER BY ${hash} DESC`;
 				setupTestInstance(test_sql_statement);
@@ -470,7 +455,7 @@ describe('Test FileSystem Class', function () {
 			'should return orders ordered by attribute not included in select statement',
 			mochaAsyncWrapper(async function () {
 				const select_attr = 'customerid';
-				const { data, hash } = sql_integration_data.orders;
+				const { data, hash } = sqlIntegrationData.orders;
 				const sorted_hashes = sortDesc(data, hash);
 				const test_sql_statement = `SELECT ${select_attr} from ${TEST_SCHEMA_NORTHWND}.orders ORDER BY ${hash} DESC`;
 				setupTestInstance(test_sql_statement);
@@ -487,7 +472,7 @@ describe('Test FileSystem Class', function () {
 			'should return orders ordered by attribute not included in select statement - without table alias',
 			mochaAsyncWrapper(async function () {
 				const select_attr = 'customerid';
-				const { data, hash } = sql_integration_data.orders;
+				const { data, hash } = sqlIntegrationData.orders;
 				const sorted_hashes = sortDesc(data, hash);
 				const test_sql_statement = `SELECT orders.${select_attr} from ${TEST_SCHEMA_NORTHWND}.orders AS orders ORDER BY ${hash} DESC`;
 				setupTestInstance(test_sql_statement);
@@ -504,7 +489,7 @@ describe('Test FileSystem Class', function () {
 			'should return orders ordered by attribute with inconsistent table alias',
 			mochaAsyncWrapper(async function () {
 				const select_attr = 'customerid';
-				const { data, hash } = sql_integration_data.orders;
+				const { data, hash } = sqlIntegrationData.orders;
 				const sorted_hashes = sortDesc(data, hash);
 				const test_sql_statement = `SELECT ${hash}, orders.${select_attr} from ${TEST_SCHEMA_NORTHWND}.orders AS orders ORDER BY orders.${hash} DESC`;
 				setupTestInstance(test_sql_statement);
@@ -521,7 +506,7 @@ describe('Test FileSystem Class', function () {
 			'should return all orders data ordered by attribute with inconsistent table alias',
 			mochaAsyncWrapper(async function () {
 				const select_attr = 'customerid';
-				const { data, hash } = sql_integration_data.orders;
+				const { data, hash } = sqlIntegrationData.orders;
 				const sorted_hashes = sortDesc(data, hash);
 				const test_sql_statement = `SELECT ${hash}, orders.${select_attr}, * from ${TEST_SCHEMA_NORTHWND}.orders AS orders ORDER BY orders.${hash} DESC`;
 				setupTestInstance(test_sql_statement);
@@ -538,7 +523,7 @@ describe('Test FileSystem Class', function () {
 		it(
 			'should return count of records with attr value equal to null',
 			mochaAsyncWrapper(async function () {
-				const { data } = sql_integration_data.orders;
+				const { data } = sqlIntegrationData.orders;
 				const expected_result = data.filter((row) => row.shipregion === null).length;
 				const test_sql_statement =
 					'SELECT COUNT(*) AS `count` FROM ' + `${TEST_SCHEMA_NORTHWND}.orders WHERE shipregion IS NULL`;
@@ -553,7 +538,7 @@ describe('Test FileSystem Class', function () {
 		it(
 			'should return count of records with attr value NOT equal to null',
 			mochaAsyncWrapper(async function () {
-				const { data } = sql_integration_data.orders;
+				const { data } = sqlIntegrationData.orders;
 				const expected_result = data.filter((row) => row.shipregion !== null).length;
 				const test_sql_statement =
 					'SELECT COUNT(*) AS `count` FROM ' + `${TEST_SCHEMA_NORTHWND}.orders WHERE shipregion IS NOT NULL`;
@@ -568,7 +553,7 @@ describe('Test FileSystem Class', function () {
 		it(
 			'should return complex join sorted by summed attribute value and joined company name in desc order',
 			mochaAsyncWrapper(async function () {
-				const { data } = sql_integration_data.orderdetails;
+				const { data } = sqlIntegrationData.orderdetails;
 				const expected_results_sorted = sortDesc(data, 'unitprice');
 				const test_sql_statement = `SELECT a.orderid, a.productid, d.companyname, d.contactmame, b.productname, SUM(a.unitprice) AS unitprice, SUM(a.quantity), SUM(a.discount) FROM ${TEST_SCHEMA_NORTHWND}.orderdetails a JOIN ${TEST_SCHEMA_NORTHWND}.products b ON a.productid = b.productid JOIN ${TEST_SCHEMA_NORTHWND}.orders c ON a.orderid = c.orderid JOIN ${TEST_SCHEMA_NORTHWND}.customers d ON c.customerid = d.customerid GROUP BY a.orderid, a.productid, d.companyname, d.contactmame, b.productname ORDER BY unitprice DESC, d.companyname`;
 				setupTestInstance(test_sql_statement);
@@ -586,7 +571,7 @@ describe('Test FileSystem Class', function () {
 			'should return requested attributes from 5 table join statement for specified companyname',
 			mochaAsyncWrapper(async function () {
 				const test_companyname = 'Alfreds Futterkiste';
-				const expected_customer_data = sql_integration_data.customers.data.filter(
+				const expected_customer_data = sqlIntegrationData.customers.data.filter(
 					(row) => row.companyname === test_companyname
 				)[0];
 				const test_sql_statement = `SELECT a.customerid, a.companyname, a.contactmame, b.orderid, b.shipname, d.productid, d.productname, d.unitprice, c.quantity, c.discount, e.employeeid, e.firstname, e.lastname FROM ${TEST_SCHEMA_NORTHWND}.customers a JOIN ${TEST_SCHEMA_NORTHWND}.orders b ON a.customerid = b.customerid JOIN ${TEST_SCHEMA_NORTHWND}.orderdetails c ON b.orderid = c.orderid JOIN ${TEST_SCHEMA_NORTHWND}.products d ON c.productid = d.productid JOIN ${TEST_SCHEMA_NORTHWND}.employees e ON b.employeeid = e.employeeid WHERE a.companyname = '${test_companyname}'`;
@@ -604,7 +589,7 @@ describe('Test FileSystem Class', function () {
 		it(
 			'should count customers and group by country attribute',
 			mochaAsyncWrapper(async function () {
-				const { data } = sql_integration_data.customers;
+				const { data } = sqlIntegrationData.customers;
 				const expected_results = data.reduce((acc, row) => {
 					const { country } = row;
 					if (!acc[country]) {
@@ -631,7 +616,7 @@ describe('Test FileSystem Class', function () {
 			'should return the top 10 products by unitprice based on limit and order by',
 			mochaAsyncWrapper(async function () {
 				const test_limit = 10;
-				const test_data = [...sql_integration_data.products.data];
+				const test_data = [...sqlIntegrationData.products.data];
 				const expected_results = sortDesc(test_data, 'unitprice');
 				expected_results.splice(test_limit);
 				const test_sql_statement = `SELECT categoryid, productname, quantityperunit, unitprice, * from ${TEST_SCHEMA_NORTHWND}.products ORDER BY unitprice DESC LIMIT ${test_limit}`;
@@ -648,7 +633,7 @@ describe('Test FileSystem Class', function () {
 			'should return the top 10 products by ROUND(unitprice) based on limit and order by',
 			mochaAsyncWrapper(async function () {
 				const test_limit = 5;
-				const test_data = sql_integration_data.products.data.slice();
+				const test_data = sqlIntegrationData.products.data.slice();
 				let expected_results = sortDesc(test_data, 'unitprice');
 				expected_results.splice(test_limit);
 				expected_results = expected_results.map((row) => {
@@ -667,7 +652,7 @@ describe('Test FileSystem Class', function () {
 		it(
 			'should return count min max avg sum price of products',
 			mochaAsyncWrapper(async function () {
-				const data = sql_integration_data.products.data.slice();
+				const data = sqlIntegrationData.products.data.slice();
 				const expected_results = data.reduce(
 					(acc, row) => {
 						const { unitprice } = row;
@@ -700,7 +685,7 @@ describe('Test FileSystem Class', function () {
 			'should return rounded unit price and group by calculated value',
 			mochaAsyncWrapper(async function () {
 				const test_alias = 'Price';
-				const data = sql_integration_data.products.data.slice();
+				const data = sqlIntegrationData.products.data.slice();
 				const expected_result = data.reduce((acc, row) => {
 					const { unitprice } = row;
 					const rounded_val = Math.round(unitprice);
@@ -728,7 +713,7 @@ describe('Test FileSystem Class', function () {
 			mochaAsyncWrapper(async function () {
 				const test_search_string = 'T';
 				const test_search_min = 100;
-				const data = sql_integration_data.products.data.slice();
+				const data = sqlIntegrationData.products.data.slice();
 				const expected_results = data.filter(
 					(row) => row.productname.startsWith(test_search_string) && row.unitprice > test_search_min
 				);
@@ -1762,58 +1747,4 @@ describe('Test FileSystem Class', function () {
 	});
 });
 
-// Methods for parsing and organizing data from SQL csv test data for tests above
-const integration_test_data_hash_values = {
-	Customers: 'customerid',
-	Employees: 'employeeid',
-	InvalidAttributes: 'id',
-	Orderdetails: 'orderdetailid',
-	Orders: 'orderid',
-	Products: 'productid',
-};
 
-function parseCsvFilesToObjArr(file_paths) {
-	const result = [];
-	file_paths.forEach((file) => {
-		const file_name = path.basename(file, '.csv');
-		if (integration_test_data_hash_values[file_name]) {
-			const content = fs.readFileSync(file, 'utf8');
-			Papa.parse(content, {
-				header: true,
-				dynamicTyping: true,
-				skipEmptyLines: true,
-				complete: (obj) => {
-					result.push({
-						name: file_name,
-						data: obj.data,
-					});
-				},
-			});
-		}
-	});
-	return result;
-}
-
-function getDirFilePaths(dir_path) {
-	const file_names = fs.readdirSync(dir_path);
-	return file_names.map((file) => path.join(dir_path, file));
-}
-
-function getFormattedIntegrationTestCsvData() {
-	const csv_dir = path.join(process.cwd(), '../test/data/integrationTestsCsvs');
-	const csv_paths = getDirFilePaths(csv_dir);
-	const parsed_data = parseCsvFilesToObjArr(csv_paths).filter((obj) => obj.name !== 'InvalidAttributes');
-
-	return parsed_data.map((obj) => {
-		obj.data.forEach((data) => {
-			if (data.__parsed_extra) {
-				delete data.__parsed_extra;
-			}
-		});
-		obj.hash = integration_test_data_hash_values[obj.name];
-		obj.schema = TEST_SCHEMA_NORTHWND;
-		obj.name = obj.name.toLowerCase();
-		delete Object.assign(obj, { ['table']: obj['name'] })['name'];
-		return obj;
-	});
-}

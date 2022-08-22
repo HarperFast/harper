@@ -57,7 +57,7 @@ const DESCRIBE_SCHEMA_KEY = schema_describe.describeSchema.name;
 const DESCRIBE_TABLE_KEY = schema_describe.describeTable.name;
 const FORBIDDEN_SYSTEM_OPS_ENUM = {
 	delete: true,
-	deleteRecordCallbackified: true,
+	deleteRecord: true,
 	update: true,
 	updateData: true,
 	dropAttribute: true,
@@ -104,7 +104,7 @@ required_permissions.set(schema.dropTable.name, new permission(true, []));
 required_permissions.set(schema.dropAttribute.name, new permission(true, []));
 required_permissions.set(schema_describe.describeSchema.name, new permission(false, [READ_PERM]));
 required_permissions.set(schema_describe.describeTable.name, new permission(false, [READ_PERM]));
-required_permissions.set(delete_.delete.name, new permission(false, [DELETE_PERM]));
+required_permissions.set(delete_.deleteRecord.name, new permission(false, [DELETE_PERM]));
 required_permissions.set(user.addUser.name, new permission(true, []));
 required_permissions.set(user.alterUser.name, new permission(true, []));
 required_permissions.set(user.dropUser.name, new permission(true, []));

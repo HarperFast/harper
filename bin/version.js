@@ -9,14 +9,7 @@ module.exports = {
 	nodeVersion,
 };
 
-let jsonData = undefined;
-
-try {
-	jsonData = JSON.parse(fs.readFileSync(`${__dirname}/../package.json`, 'utf-8'));
-} catch (err) {
-	logger.error(`There was a problem loading the package.json file.`);
-	logger.error(err);
-}
+let jsonData = require('../package.json');
 
 function version() {
 	if (jsonData) {

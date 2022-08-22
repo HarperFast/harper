@@ -43,7 +43,6 @@ const p_search_search_by_hash = util.promisify(search.searchByHash);
 const p_search_search_by_value = util.promisify(search.searchByValue);
 const p_search_search = util.promisify(search.search);
 const p_sql_evaluate_sql = util.promisify(sql.evaluateSQL);
-const p_delete = util.promisify(delete_.delete);
 
 const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
 	[terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE]: true,
@@ -268,7 +267,7 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.DESCRIBE_SCHEMA, new OperationFunctionObject(schema_describe.describeSchema));
 	op_func_map.set(terms.OPERATIONS_ENUM.DESCRIBE_TABLE, new OperationFunctionObject(schema_describe.describeTable));
 	op_func_map.set(terms.OPERATIONS_ENUM.DESCRIBE_ALL, new OperationFunctionObject(schema_describe.describeAll));
-	op_func_map.set(terms.OPERATIONS_ENUM.DELETE, new OperationFunctionObject(p_delete));
+	op_func_map.set(terms.OPERATIONS_ENUM.DELETE, new OperationFunctionObject(delete_.deleteRecord));
 	op_func_map.set(terms.OPERATIONS_ENUM.ADD_USER, new OperationFunctionObject(user.addUser));
 	op_func_map.set(terms.OPERATIONS_ENUM.ALTER_USER, new OperationFunctionObject(user.alterUser));
 	op_func_map.set(terms.OPERATIONS_ENUM.DROP_USER, new OperationFunctionObject(user.dropUser));

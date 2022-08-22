@@ -8,6 +8,7 @@ const PropertiesReader = require('properties-reader');
 const hdb_terms = require('../hdbTerms');
 const assignCMDENVVariables = require('../assignCmdEnvVariables');
 const os = require('os');
+const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
 
 const LOG_LEVEL_HIERARCHY = {
 	notify: 7,
@@ -20,13 +21,13 @@ const LOG_LEVEL_HIERARCHY = {
 };
 
 // Install log is created in harperdb/logs because the hdb folder doesn't exist initially during the install process.
-const INSTALL_LOG_LOCATION = path.resolve(__dirname, `../../logs`);
+const INSTALL_LOG_LOCATION = path.join(PACKAGE_ROOT, `logs`);
 
 // If harper_logger is called by a non-pm2 managed process it will not have a pm id.
 const NON_PM2_PROCESS = process.env.pm_id === undefined;
 
 // Location of default config YAML.
-const DEFAULT_CONFIG_FILE = path.resolve(__dirname, '../../config/yaml/', hdb_terms.HDB_DEFAULT_CONFIG_FILE);
+const DEFAULT_CONFIG_FILE = path.join(PACKAGE_ROOT, 'config/yaml/', hdb_terms.HDB_DEFAULT_CONFIG_FILE);
 
 let process_name =
 	process.env.PROCESS_NAME === undefined ? hdb_terms.PROCESS_DESCRIPTORS.INSTALL : process.env.PROCESS_NAME;
@@ -348,7 +349,7 @@ function getPropsFilePath() {
 	let _boot_props_file_path = path.join(home_dir, hdb_terms.HDB_HOME_DIR_NAME, hdb_terms.BOOT_PROPS_FILE_NAME);
 	// this checks how we used to store the boot props file for older installations.
 	if (!fs.existsSync(_boot_props_file_path)) {
-		_boot_props_file_path = path.join(__dirname, '../', 'hdb_boot_properties.file');
+		_boot_props_file_path = path.join(PACKAGE_ROOT, 'utility/hdb_boot_properties.file');
 	}
 	return _boot_props_file_path;
 }

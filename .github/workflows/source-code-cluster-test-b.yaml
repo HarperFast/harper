@@ -1,41 +1,51 @@
 on:
-  push:
-    branches:
-      - master
-  schedule:
-    - cron:  '0 12 * * 1-5'
   workflow_dispatch:
-name: Run Build Package Cluster Test B
+name: Run Source Code Cluster Test B
 jobs:
-  build:
-    uses: ./.github/workflows/build.yaml
+  getNodeVersion:
+    runs-on: ubuntu-latest
+    outputs:
+      nodeVersion: ${{ steps.getNode.outputs.NODE_VERSION }}
+      harperdbVersion: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
+      goVersion: ${{ steps.getNode.outputs.GO_VERSION }}
+    steps:
+    - uses: actions/checkout@v2
+    - id: getNode
+      name: Get node version
+      run: |
+        pwd
+        NODE_VERSION="$(cat package.json | jq -r '.engines.node')"
+        HARPERDB_VERSION=$(cat package.json | jq -r '.version')
+        GO_VERSION=$(cat package.json | jq -r '.engines."go-lang"')
+        echo "::set-output name=NODE_VERSION::$NODE_VERSION"
+        echo "::set-output name=HARPERDB_VERSION::$HARPERDB_VERSION"
+        echo "::set-output name=GO_VERSION::$GO_VERSION"
   createInstances:
     needs:
-      - build
+      - getNodeVersion
     uses: ./.github/workflows/create-instances.yaml
     with:
       instanceCount: "4"
-      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      harperdbVersion: ${{ needs.getNodeVersion.outputs.harperdbVersion }}
+      installType: "sourceCode"
     secrets: inherit
   registerInstances:
     needs: 
       - createInstances
-      - build
+      - getNodeVersion
     uses: ./.github/workflows/install-and-register.yaml
     with:
       publicDns: ${{ needs.createInstances.outputs.publicDnsNames }}
-      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-      goVersion: ${{ needs.build.outputs.goVersion }}
-      nodeVersion: ${{ needs.build.outputs.nodeVersion }}
+      harperdbVersion: ${{ needs.getNodeVersion.outputs.harperdbVersion }}
+      goVersion: ${{ needs.getNodeVersion.outputs.goVersion }}
+      nodeVersion: ${{ needs.getNodeVersion.outputs.nodeVersion }}
       installType: "sourceCode"
     secrets: inherit
   runTests:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     needs:
       - createInstances
       - registerInstances
-      - build
     steps:
     - name: Run Cluster Test B on Instances
       env:
@@ -72,5 +82,5 @@ jobs:
     needs: downloadLogs
     uses: ./.github/workflows/destroy-instances.yaml
     with:
-      instanceCount: "4"
+      instanceCount: "1"
     secrets: inherit   
