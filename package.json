@@ -50,7 +50,7 @@
     "integrationtests:package": "node utility/devops/register.js --reset_license --storage_type=lmdb && cd ./npm_pack/bin && node harperdb restart && sleep 2 && cd ../../integrationTests && ../node_modules/newman/bin/newman.js run HarperDB_Integration_Tests.json -e ./Int_test_env_var.json --reporters teamcity,cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html --insecure"
   },
   "dependencies": {
-    "@fastify/accepts-serializer": "^5.1.0",
+    "@fastify/accepts-serializer": "5.1.0",
     "@fastify/autoload": "5.1.0",
     "@fastify/compress": "6.1.0",
     "@fastify/cors": "8.0.0",
