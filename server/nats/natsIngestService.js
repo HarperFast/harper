@@ -1,7 +1,7 @@
 'use strict';
 
 const util = require('util');
-const { JSONCodec, toJsMsg, createInbox, ErrorCode, checkJsError } = require('nats');
+const { JSONCodec, toJsMsg, createInbox, ErrorCode, checkJsError, isFlowControlMsg, isHeartbeatMsg } = require('nats');
 const { decode } = require('msgpackr');
 const global_schema = require('../../utility/globalSchema');
 const ipc_server_handlers = require('../ipc/serverHandlers');
@@ -70,6 +70,23 @@ async function initialize() {
  * @returns {Promise<void>}
  */
 async function workQueueListener() {
+	nats_connection.subscribe(nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_subject, {
+		durable: nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name,
+		queue: nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_group,
+		callback: async (err, msg) => {
+			if (isFlowControlMsg(msg)) {
+				msg.respond();
+				return;
+			}
+
+			if (isHeartbeatMsg(msg)) {
+				return;
+			}
+
+			await messageProcessor(msg);
+		},
+	});
+
 	// Creates a unique ID that can be used as an inbox name for the connection/consumer to publish to.
 	const inbox = createInbox();
 	let expire = MIN_EXPIRE;
@@ -155,6 +172,7 @@ async function workQueueListener() {
  */
 async function messageProcessor(msg) {
 	const js_msg = toJsMsg(msg);
+	js_msg.working();
 	const entry = decode(js_msg.data);
 
 	harper_logger.trace('processing message:', entry);

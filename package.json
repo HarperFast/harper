@@ -17,7 +17,7 @@
     "harperdb": "./bin/harperdb.js"
   },
   "engines": {
-    "node": "16.16.0",
+    "node": "16.17.0",
     "go-lang": "1.17.10",
     "nats-server": "2.8.4"
   },

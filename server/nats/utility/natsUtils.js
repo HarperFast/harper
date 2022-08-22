@@ -40,6 +40,7 @@ const {
 	nuid,
 	JetStreamOptions,
 	ErrorCode,
+	nanos
 } = require('nats');
 
 const pkg_json_path = path.resolve(__dirname, '../../../package.json');
@@ -499,9 +500,12 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 		if (e.code.toString() === '404') {
 			await jsm.consumers.add(CONSUMER_NAMES.stream_name, {
 				ack_policy: AckPolicy.Explicit,
+				deliver_subject: CONSUMER_NAMES.deliver_subject,
 				durable_name: CONSUMER_NAMES.durable_name,
 				deliver_policy: DeliverPolicy.All,
-				max_ack_pending: 100000000,
+				max_ack_pending: 10000,
+				flow_control: true,
+				idle_heartbeat: nanos(5000),
 			});
 		} else {
 			throw e;
