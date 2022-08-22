@@ -1,6 +1,4 @@
 'use strict';
-process.chdir(__dirname);
-
 const fetch = require('node-fetch');
 const StreamZip = require('node-stream-zip');
 const util = require('util');
@@ -10,6 +8,8 @@ const child_process = require('child_process');
 const streamPipeline = util.promisify(require('stream').pipeline);
 const exec = util.promisify(child_process.exec);
 const package_json = require('../../../package.json');
+const { PACKAGE_ROOT } = require('../utility/hdbTerms');
+process.chdir(PACKAGE_ROOT);
 
 const TMP_FOLDER_NAME = 'tmp';
 const PKG_FOLDER_NAME = 'pkg';
@@ -17,12 +17,12 @@ const NATS_SERVER_NAME = 'nats-server';
 const NATS_SERVER_SRC_NAME = NATS_SERVER_NAME + '-src';
 const NATS_SERVER_ZIP_NAME = NATS_SERVER_NAME + '.zip';
 
-const TMP_FOLDER_PATH = path.join(__dirname, TMP_FOLDER_NAME);
-const PKG_FOLDER_PATH = path.join(__dirname, PKG_FOLDER_NAME);
-const NATS_SERVER_ZIP_PATH = path.join(__dirname, NATS_SERVER_ZIP_NAME);
-const NATS_SOURCE_PATH = path.join(__dirname, NATS_SERVER_SRC_NAME);
+const TMP_FOLDER_PATH = path.join(PACKAGE_ROOT, TMP_FOLDER_NAME);
+const PKG_FOLDER_PATH = path.join(PACKAGE_ROOT, PKG_FOLDER_NAME);
+const NATS_SERVER_ZIP_PATH = path.join(PACKAGE_ROOT, NATS_SERVER_ZIP_NAME);
+const NATS_SOURCE_PATH = path.join(PACKAGE_ROOT, NATS_SERVER_SRC_NAME);
 const BUILT_NATS_SERVER_PATH = path.join(NATS_SOURCE_PATH, NATS_SERVER_NAME);
-const DEPENDENCIES_PATH = path.resolve(__dirname, '../../../dependencies');
+const DEPENDENCIES_PATH = path.resolve(PACKAGE_ROOT, 'dependencies');
 const DEPENDENCIES_NATS_SERVER_ZIP_PATH = path.join(DEPENDENCIES_PATH, NATS_SERVER_ZIP_NAME);
 
 //YOU MUST make sure the nats-server version in package json matches the  new version you want.
@@ -46,7 +46,7 @@ const NATS_SERVER_VERSION = package_json.engines[NATS_SERVER_NAME];
 	console.log('moving source out of tmp');
 	await fs.promises.rename(tmp_source_path, NATS_SOURCE_PATH);
 	console.log('building nats server which also downloads dependencies');
-	await exec(`export GOPATH=${__dirname} && go build`, { cwd: NATS_SOURCE_PATH });
+	await exec(`export GOPATH=${PACKAGE_ROOT} && go build`, { cwd: NATS_SOURCE_PATH });
 
 	console.log('remove the built nats-server binary');
 	await fs.promises.rm(BUILT_NATS_SERVER_PATH);
@@ -55,7 +55,7 @@ const NATS_SERVER_VERSION = package_json.engines[NATS_SERVER_NAME];
 	await exec(`sudo chmod -R 777 ./pkg`);
 
 	console.log('create zip of nats-server & pkg folders');
-	await exec(`zip -r ${NATS_SERVER_ZIP_PATH} ./${NATS_SERVER_SRC_NAME} ./${PKG_FOLDER_NAME}`, { cwd: __dirname });
+	await exec(`zip -r ${NATS_SERVER_ZIP_PATH} ./${NATS_SERVER_SRC_NAME} ./${PKG_FOLDER_NAME}`, { cwd: PACKAGE_ROOT });
 
 	console.log('move nats-server.zip to dependencies folder');
 	await fs.promises.copyFile(NATS_SERVER_ZIP_PATH, DEPENDENCIES_NATS_SERVER_ZIP_PATH);

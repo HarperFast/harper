@@ -1,13 +1,6 @@
 'use strict';
 
-const is_compiled = process.env.HDB_COMPILED === 'true';
-let nats_reply_service;
-if (is_compiled) {
-	require('bytenode');
-	nats_reply_service = require('../server/nats/natsReplyService.jsc');
-} else {
-	nats_reply_service = require('../server/nats/natsReplyService');
-}
+const nats_reply_service = require('../server/nats/natsReplyService');
 
 (async () => {
 	try {

@@ -10,7 +10,7 @@ const harper_logger = require('../../utility/logging/harper_logger');
 const fs = require('fs');
 const fastify = require('fastify');
 
-const pjson = require(`${__dirname}/../../package.json`);
+const pjson = require('../../package.json');
 const fastify_cors = require('@fastify/cors');
 const fastify_compress = require('@fastify/compress');
 const fastify_static = require('@fastify/static');
@@ -19,7 +19,7 @@ const fastify_serializer = require('@fastify/accepts-serializer');
 const { pack, unpack } = require('msgpackr');
 const request_time_plugin = require('../serverHelpers/requestTimePlugin');
 const guidePath = require('path');
-
+const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
 const global_schema = require('../../utility/globalSchema');
 const common_utils = require('../../utility/common_utils');
 const user_schema = require('../../security/user');

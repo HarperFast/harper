@@ -266,75 +266,85 @@ function updateUpsertRecord(
 	generate_timestamps = true
 ) {
 	let primary_dbi = env.dbis[hash_attribute];
-	// we prefetch the value to ensure we don't have any page faults inside the write transaction
-	return primary_dbi.prefetch(hash_value).then(() =>
-		primary_dbi.transaction(() => {
-			let existing_record = primary_dbi.get(hash_value);
-			let had_existing = existing_record;
-			if (!existing_record) {
-				if (must_exist) return false;
-				existing_record = {};
+	let existing_entry = primary_dbi.getEntry(hash_value);
+	let existing_record = existing_entry?.value;
+	let had_existing = existing_record;
+	if (!existing_record) {
+		if (must_exist) return false;
+		existing_record = {};
+	}
+	setTimestamps(record, !had_existing, generate_timestamps);
+	if (
+		Number.isInteger(record[UPDATED_TIME_ATTRIBUTE_NAME]) &&
+		existing_record[UPDATED_TIME_ATTRIBUTE_NAME] > record[UPDATED_TIME_ATTRIBUTE_NAME]
+	) {
+		// This is not an error condition in our world of last-record-wins
+		// replication. If the existing record is newer than it just means the provided record
+		// is, well... older. And newer records are supposed to "win" over older records, and that
+		// is normal, non-error behavior.
+		return false;
+	}
+	if (had_existing) result.original_records.push(existing_record);
+	let completion;
+	const do_put = () => {
+	// iterate the entries from the record
+	// for-in is about 5x as fast as for-of Object.entries, and this is extremely time sensitive since it is
+	// inside a write transaction
+		for (let key in record) {
+			if (!record.hasOwnProperty(key) || key === hash_attribute) {
+				continue;
 			}
-			setTimestamps(record, !had_existing, generate_timestamps);
-			if (
-				Number.isInteger(record[UPDATED_TIME_ATTRIBUTE_NAME]) &&
-				existing_record[UPDATED_TIME_ATTRIBUTE_NAME] > record[UPDATED_TIME_ATTRIBUTE_NAME]
-			) {
-				// This is not an error condition in our world of last-record-wins
-				// replication. If the existing record is newer than it just means the provided record
-				// is, well... older. And newer records are supposed to "win" over older records, and that
-				// is normal, non-error behavior.
-				return false;
-			}
-			if (had_existing) result.original_records.push(existing_record);
-
-			// iterate the entries from the record
-			// for-in is about 5x as fast as for-of Object.entries, and this is extremely time sensitive since it is
-			// inside a write transaction
-			for (let key in record) {
-				if (!record.hasOwnProperty(key) || key === hash_attribute) {
-					continue;
-				}
-				let value = record[key];
-				let dbi = env.dbis[key];
-				if (dbi === undefined) {
-					continue;
-				}
-
-				let existing_value = existing_record[key];
-
-				//
-				if (typeof value === 'function') {
-					let value_results = value([[existing_record]]);
-					if (Array.isArray(value_results)) {
-						value = value_results[0][hdb_terms.FUNC_VAL];
-						record[key] = value;
-					}
-				}
-				if (value === existing_value) {
-					continue;
-				}
-
-				//if the update cleared out the attribute value we need to delete it from the index
-				let values = common.getIndexedValues(existing_value);
-				if (values) {
-					for (let i = 0, l = values.length; i < l; i++) {
-						dbi.remove(values[i], hash_value);
-					}
-				}
-				values = common.getIndexedValues(value);
-				if (values) {
-					for (let i = 0, l = values.length; i < l; i++) {
-						dbi.put(values[i], hash_value);
-					}
-				}
+			let value = record[key];
+			let dbi = env.dbis[key];
+			if (dbi === undefined) {
+				continue;
 			}
 
-			let merged_record = Object.assign({}, existing_record, record);
-			primary_dbi.put(hash_value, merged_record, merged_record[UPDATED_TIME_ATTRIBUTE_NAME]);
-			return true;
-		})
-	);
+			let existing_value = existing_record[key];
+
+			if (typeof value === 'function') {
+				let value_results = value([[existing_record]]);
+				if (Array.isArray(value_results)) {
+					value = value_results[0][hdb_terms.FUNC_VAL];
+					record[key] = value;
+				}
+			}
+			if (value === existing_value) {
+				continue;
+			}
+
+			//if the update cleared out the attribute value we need to delete it from the index
+			let values = common.getIndexedValues(existing_value);
+			if (values) {
+				for (let i = 0, l = values.length; i < l; i++) {
+					dbi.remove(values[i], hash_value);
+				}
+			}
+			values = common.getIndexedValues(value);
+			if (values) {
+				for (let i = 0, l = values.length; i < l; i++) {
+					dbi.put(values[i], hash_value);
+				}
+			}
+		}
+
+		let merged_record = Object.assign({}, existing_record, record);
+		primary_dbi.put(hash_value, merged_record, merged_record[UPDATED_TIME_ATTRIBUTE_NAME]);
+	};
+	// use optimistic locking to only commit if the existing record state still holds true.
+	// this is superior to using an async transaction since it doesn't require JS execution
+	// during the write transaction.
+	if (existing_entry)
+		completion = primary_dbi.ifVersion(hash_value, existing_entry.version, do_put);
+	else
+		completion = primary_dbi.ifNoExists(hash_value, do_put);
+	return completion.then((success) => {
+		if (!success) {
+			// try again
+			return updateUpsertRecord(env, hash_attribute, record, hash_value, result, must_exist, generate_timestamps);
+		}
+		return true;
+	});
 }
 
 /**

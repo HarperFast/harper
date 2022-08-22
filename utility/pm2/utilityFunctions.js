@@ -41,9 +41,10 @@ module.exports = {
 	stopClustering,
 	reloadClustering,
 };
+const { PACKAGE_ROOT } = require('../hdbTerms');
 
 const PM2_LOGROTATE_VERSION = '2.7.0';
-const PM2_MODULE_LOCATION = path.resolve(__dirname, '../../node_modules/pm2/bin/pm2');
+const PM2_MODULE_LOCATION = path.join(PACKAGE_ROOT, 'node_modules/pm2/bin/pm2');
 const LOG_ROTATE_INSTALLED = 'Log rotate installed.';
 const LOG_ROTATE_INSTALL_ERR = 'Error installing log rotate.';
 const LOG_ROTATE_UPDATE = 'Log rotate updated.';

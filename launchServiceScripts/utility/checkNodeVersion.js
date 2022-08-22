@@ -3,7 +3,7 @@
 const semver_neq = require('semver/functions/neq');
 const fs = require('fs');
 
-const jsonData = JSON.parse(fs.readFileSync(`${__dirname}/../../package.json`, 'utf-8'));
+const jsonData = require('../../package.json');
 
 module.exports = checkNodeVersion;
 
