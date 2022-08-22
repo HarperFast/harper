@@ -1,16 +1,17 @@
 {
   "name": "harperdb",
   "version": "4.0.0",
-  "description": "HarperDB no-SQL SQL database written in node.js",
+  "description": "HarperDB is a distributed SQL & NoSQL data platform focused on speed, flexibility, and ease of use.",
   "keywords": [
-    "database",
-    "no-sql",
-    "nosql",
-    "SQL",
-    "sequel",
-    "node.js",
-    "datastore",
-    "documentstore"
+    "database", 
+    "sql", 
+    "nosql", 
+    "api", 
+    "distributed", 
+    "cloud", 
+    "enterprise", 
+    "Fastify", 
+    "NATS"
   ],
   "main": "harperdb.js",
   "bin": {
@@ -42,12 +43,11 @@
     "cover:upgrade": "cd bin/ && nyc --no-clean --reporter=lcovonly ../node_modules/mocha/bin/_mocha '../unitTests/upgrade/**/*.js' --config '../unitTests/.mocharc.json'",
     "test:ci": " cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/**/*.js' --retries 3 --config '../unitTests/.mocharc-main.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/data_layer/harperBridge/lmdbBridge/**/*.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/utility/lmdb/**/*.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/server/harperdb/hdbServer-test.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/server/customFunctions/customFunctionsServer-test.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/upgrade/**/*.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/server/nats/**/*.js' --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter",
     "hdb-check": "./utility/devops/hdb-check.sh",
+    "download-prebuilds": "node ./utility/devops/build/download-prebuilds.js",
     "prebuild": "date",
     "postinstall": "node ./launchServiceScripts/launchInstallNATSServer.js",
     "build_nats_dependency": "node ./utility/devops/nats/builder.js",
-    "coverage": "nyc --reporter=lcov npm test",
-    "integrationtests:source": "node utility/devops/register.js --reset_license --storage_type=lmdb && cd ./bin && node harperdb restart && sleep 10 && cd ../integrationTests && ../node_modules/newman/bin/newman.js run HarperDB_Integration_Tests.json -e ./Int_test_env_var.json --reporters teamcity,cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html --insecure",
-    "integrationtests:package": "node utility/devops/register.js --reset_license --storage_type=lmdb && cd ./npm_pack/bin && node harperdb restart && sleep 2 && cd ../../integrationTests && ../node_modules/newman/bin/newman.js run HarperDB_Integration_Tests.json -e ./Int_test_env_var.json --reporters teamcity,cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html --insecure"
+    "coverage": "nyc --reporter=lcov npm test"
   },
   "dependencies": {
     "@fastify/autoload": "5.1.0",
@@ -67,10 +67,10 @@
     "alasql": "1.7.3",
     "async": "3.2.3",
     "aws-sdk": "2.1096.0",
-    "bytenode": "1.3.4",
     "chalk": "4.1.2",
     "cli-progress": "3.10.0",
     "clone": "2.1.2",
+    "esbuild": "^0.14.49",
     "fast-glob": "3.2.11",
     "fastify": "4.2.1",
     "fastify-plugin": "4.0.0",
@@ -83,7 +83,7 @@
     "json2csv": "5.0.7",
     "jsonata": "1.8.6",
     "jsonwebtoken": "8.5.1",
-    "lmdb": "2.6.0-alpha4",
+    "lmdb": "2.6.0-alpha6",
     "lodash": "4.17.21",
     "mathjs": "10.4.0",
     "microtime": "3.0.0",

@@ -10,10 +10,11 @@ const validator = require('./operationsValidation');
 const log = require('../../utility/logging/harper_logger');
 const terms = require('../../utility/hdbTerms');
 const env = require('../../utility/environment/environmentManager');
+const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
 const { handleHDBError, hdb_errors } = require('../../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
-const CUSTOM_FUNCTION_TEMPLATE = path.resolve(__dirname, '../../custom_function_template');
+const CUSTOM_FUNCTION_TEMPLATE = path.join(PACKAGE_ROOT, 'custom_function_template');
 
 function isCFEnabled() {
 	const custom_functions_enabled = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY);

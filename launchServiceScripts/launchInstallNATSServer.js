@@ -2,16 +2,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const compiled_nats_install_script = path.resolve(__dirname, '../server/nats/utility/installNATSServer.jsc');
-let installer;
-try {
-	fs.accessSync(compiled_nats_install_script);
-	require('bytenode');
-	installer = require(compiled_nats_install_script);
-} catch (e) {
-	const nats_install_script = path.resolve(__dirname, '../server/nats/utility/installNATSServer');
-	installer = require(nats_install_script);
-}
+const installer = require('../server/nats/utility/installNATSServer');
 
 (async () => {
 	try {

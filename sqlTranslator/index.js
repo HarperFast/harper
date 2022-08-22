@@ -163,7 +163,6 @@ function processAST(json_message, parsed_sql_object, callback) {
 			default:
 				throw new Error(`unsupported SQL type ${parsed_sql_object.variant} in SQL: ${json_message}`);
 		}
-
 		sql_function(statement, (err, data) => {
 			if (err) {
 				callback(err);

@@ -4,6 +4,7 @@ const search = require('../data_layer/search');
 const global_schema = require('../utility/globalSchema');
 const logger = require('../utility/logging/harper_logger');
 const write = require('./insert');
+const transaction = require('./transaction');
 const clone = require('clone');
 const alasql = require('alasql');
 const alasql_function_importer = require('../sqlTranslator/alasqlFunctionImporter');
@@ -34,26 +35,23 @@ const SQL_UPDATE_ERROR_MSG = 'There was a problem performing this update. Please
  * @return
  */
 async function update({ statement, hdb_user }) {
-	try {
-		let table_info = await p_get_table_schema(statement.table.databaseid, statement.table.tableid);
-		let update_record = createUpdateRecord(statement.columns);
+	let table_info = await p_get_table_schema(statement.table.databaseid, statement.table.tableid);
+	let update_record = createUpdateRecord(statement.columns);
 
-		//convert this update statement to a SQL search capable statement
-		hdb_utils.backtickASTSchemaItems(statement);
-		let { table: from, where } = statement;
-		let table_clone = clone(from);
+	//convert this update statement to a SQL search capable statement
+	hdb_utils.backtickASTSchemaItems(statement);
+	let { table: from, where } = statement;
+	let table_clone = clone(from);
 
-		let where_string = hdb_utils.isEmpty(where) ? '' : ` WHERE ${where.toString()}`;
+	let where_string = hdb_utils.isEmpty(where) ? '' : ` WHERE ${where.toString()}`;
 
-		let select_string = `SELECT ${table_info.hash_attribute} FROM ${from.toString()} ${where_string}`;
-		let search_statement = alasql.parse(select_string).statements[0];
-
+	let select_string = `SELECT ${table_info.hash_attribute} FROM ${from.toString()} ${where_string}`;
+	let search_statement = alasql.parse(select_string).statements[0];
+	return transaction.writeTransaction(table_info.schema, table_info.name, async () => {
 		let records = await p_search(search_statement);
 		let new_records = buildUpdateRecords(update_record, records);
-		return await updateRecords(table_clone, new_records, hdb_user);
-	} catch (e) {
-		throw e;
-	}
+		return updateRecords(table_clone, new_records, hdb_user);
+	});
 }
 
 /**

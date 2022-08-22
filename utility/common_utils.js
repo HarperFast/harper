@@ -32,7 +32,6 @@ const AUTOCAST_COMMON_STRINGS = {
 	null: null,
 	NaN: NaN,
 };
-
 module.exports = {
 	isEmpty: isEmpty,
 	isEmptyOrZeroLength: isEmptyOrZeroLength,
@@ -80,6 +79,7 @@ module.exports = {
 	doesTableExist,
 	stringifyObj,
 	ms_to_time,
+	PACKAGE_ROOT: terms.PACKAGE_ROOT,
 };
 
 /**
@@ -792,12 +792,7 @@ async function stopProcess(module) {
  * @returns {*[]}
  */
 function createForkArgs(module_path) {
-	let args = [];
-	if (terms.CODE_EXTENSION === terms.COMPILED_EXTENSION) {
-		args.push(path.resolve(__dirname, '../', 'node_modules', 'bytenode', 'lib', 'cli.js'));
-	}
-	args.push(module_path);
-	return args;
+	return [module_path];
 }
 
 /**
