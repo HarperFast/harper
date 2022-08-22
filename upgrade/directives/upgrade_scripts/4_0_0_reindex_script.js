@@ -368,6 +368,7 @@ function validateIndex(env, key, value, hash_value) {
 	try {
 		let found = false;
 		let indexed_values = lmdb_common.getIndexedValues(value);
+		if (!indexed_values) return;
 		for (let find_value of indexed_values) {
 			found = env.dbis[key].doesExist(find_value, hash_value);
 			if (!found) {

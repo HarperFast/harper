@@ -118,6 +118,13 @@ function configValidator(config_json) {
 	} else {
 		clustering_validation_schema = Joi.object({
 			enabled: enabled_constraints,
+			// tls needs to be here to set defaults if clustering disabled
+			tls: Joi.object({
+				certificate: pem_file_constraints,
+				certificateAuthority: pem_file_constraints,
+				privateKey: pem_file_constraints,
+				insecure: boolean.required(),
+			}),
 		}).required();
 	}
 
@@ -265,6 +272,12 @@ function setDefaultProcesses(parent, helpers) {
  * @returns {string}
  */
 function setDefaultRoot(parent, helpers) {
+	// For some reason Joi is still calling set default when value is not null.
+	// For that reason we do this check.
+	if (!hdb_utils.isEmpty(helpers.original)) {
+		return helpers.original;
+	}
+
 	const config_param = helpers.state.path.join('.');
 	if (hdb_utils.isEmpty(hdb_root)) {
 		throw new Error(`Error setting default root for: ${config_param}. HDB root is not defined`);

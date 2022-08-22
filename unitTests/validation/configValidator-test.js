@@ -53,9 +53,9 @@ const FAKE_CONFIG = {
 			processes: 3,
 		},
 		tls: {
-			certificate: FAKE_CERT,
+			certificate: 'clustering/cert/unit_test.pem',
 			certificateAuthority: null,
-			privateKey: FAKE_PRIVATE_KEY,
+			privateKey: 'clustering/test/key.pem',
 			insecure: true,
 		},
 		user: 'ItsMe',
@@ -73,11 +73,11 @@ const FAKE_CONFIG = {
 		},
 		nodeEnv: 'development',
 		processes: 2,
-		root: path.join(__dirname, '/test_custom_functions'),
+		root: '/test_custom_functions',
 		tls: {
-			certificate: FAKE_CERT,
-			certificateAuthority: null,
-			privateKey: FAKE_PRIVATE_KEY,
+			certificate: null,
+			certificateAuthority: 'cf/test/ca.pem',
+			privateKey: null,
 		},
 	},
 	ipc: {
@@ -103,7 +103,7 @@ const FAKE_CONFIG = {
 			timezone: 'CST',
 			workerInterval: 20,
 		},
-		root: path.join(__dirname, '/testlogging'),
+		root: null,
 		stdStreams: true,
 	},
 	operationsApi: {
@@ -128,9 +128,9 @@ const FAKE_CONFIG = {
 			writeAsync: true,
 		},
 		tls: {
-			certificate: TEST_CERT,
+			certificate: 'op_api/cert.pem',
 			certificateAuthority: null,
-			privateKey: TEST_PRIVATE_KEY,
+			privateKey: null,
 		},
 	},
 };
@@ -193,9 +193,9 @@ describe('Test configValidator module', () => {
 							processes: 3,
 						},
 						tls: {
-							certificate: TEST_CERT,
+							certificate: 'clustering/cert/unit_test.pem',
 							certificateAuthority: TEST_CA,
-							privateKey: TEST_PRIVATE_KEY,
+							privateKey: 'clustering/test/key.pem',
 							insecure: true,
 						},
 						user: 'ItsMe',
@@ -213,10 +213,10 @@ describe('Test configValidator module', () => {
 						},
 						nodeEnv: 'development',
 						processes: 2,
-						root: path.join(__dirname, '/test_custom_functions'),
+						root: '/test_custom_functions',
 						tls: {
 							certificate: TEST_CERT,
-							certificateAuthority: TEST_CA,
+							certificateAuthority: 'cf/test/ca.pem',
 							privateKey: TEST_PRIVATE_KEY,
 						},
 					},
@@ -242,7 +242,7 @@ describe('Test configValidator module', () => {
 							timezone: 'CST',
 							workerInterval: 20,
 						},
-						root: path.join(__dirname, '/testlogging'),
+						root: path.join(HDB_ROOT, 'log'),
 						stdStreams: true,
 					},
 					operationsApi: {
@@ -267,7 +267,7 @@ describe('Test configValidator module', () => {
 							writeAsync: true,
 						},
 						tls: {
-							certificate: TEST_CERT,
+							certificate: 'op_api/cert.pem',
 							certificateAuthority: TEST_CA,
 							privateKey: TEST_PRIVATE_KEY,
 						},

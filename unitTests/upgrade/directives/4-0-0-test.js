@@ -25,15 +25,18 @@ const PERSON_ATTRIBUTES = ['id', 'first_name', 'state', 'age', 'alive', 'birth_m
 const upgrade_script = rewire('../../../upgrade/directives/upgrade_scripts/4_0_0_reindex_script');
 const { insertRecords } = require('../../../utility/lmdb/writeUtility');
 
-
 const ROOT = 'yourcomputer/hdb';
 
 describe('Test 4-0-0 module', () => {
 	const sandbox = sinon.createSandbox();
 	const TEST_ERROR = 'Unit test error';
+	const generate_keys_stub = sandbox.stub();
+	let generate_new_keys;
 
 	before(() => {
 		test_utils.restoreInitStub();
+		directive_4_0_0_rw.__set__('generate_keys', generate_keys_stub);
+		generate_new_keys = directive_4_0_0_rw.__get__('generateNewKeys');
 	});
 
 	after(() => {
@@ -116,45 +119,45 @@ describe('Test 4-0-0 module', () => {
 			sandbox.resetHistory();
 		});
 
-		it('Test correct params are being passed to createConfigFile', () => {
+		it('Test correct params are being passed to createConfigFile', async () => {
 			init_old_config_stub.returns(old_config_obj);
-			updateSettingsFile_4_0_0();
+			await updateSettingsFile_4_0_0();
 
 			expect(create_config_file_stub.args[0][0]).to.eql(old_config_obj);
 		});
 
-		it('Test correct params are being passed to copySync', () => {
-			updateSettingsFile_4_0_0();
+		it('Test correct params are being passed to copySync', async () => {
+			await updateSettingsFile_4_0_0();
 			expect(copy_sync_stub.args[0][0]).to.eql(expected_settings_path);
 			expect(copy_sync_stub.args[0][1]).to.eql(expected_backup_path);
 		});
 
-		it('Test correct params are being passed to initOldConfig', () => {
-			updateSettingsFile_4_0_0();
+		it('Test correct params are being passed to initOldConfig', async () => {
+			await updateSettingsFile_4_0_0();
 			expect(init_old_config_stub.args[0][0]).to.eql(old_settings_path);
 		});
 
-		it('Test correct params are being passed to writeFileSync', () => {
-			updateSettingsFile_4_0_0();
+		it('Test correct params are being passed to writeFileSync', async () => {
+			await updateSettingsFile_4_0_0();
 			expect(write_file_stub.args[0][0]).to.eql(expected_boot_props_path);
 		});
 
-		it('Test initSync is called with force = true', () => {
-			updateSettingsFile_4_0_0();
+		it('Test initSync is called with force = true', async () => {
+			await updateSettingsFile_4_0_0();
 			expect(init_sync_stub.args[0][0]).to.be.true;
 		});
 
-		it('Test correct params are being passed to removeSync', () => {
-			updateSettingsFile_4_0_0();
+		it('Test correct params are being passed to removeSync', async () => {
+			await updateSettingsFile_4_0_0();
 			expect(remove_sync_stub.called).to.be.true;
 			expect(remove_sync_stub.args[0][0]).to.eql(path.join(ROOT, '/config'));
 		});
 
-		it('Test error is logged and thrown if backup fails', () => {
+		it('Test error is logged and thrown if backup fails', async () => {
 			copy_sync_stub.throws(TEST_ERROR);
 			let error;
 			try {
-				updateSettingsFile_4_0_0();
+				await updateSettingsFile_4_0_0();
 			} catch (err) {
 				error = err;
 			}
@@ -164,33 +167,33 @@ describe('Test 4-0-0 module', () => {
 			);
 		});
 
-		it('Test error is thrown if initOldConfig fails', () => {
+		it('Test error is thrown if initOldConfig fails', async () => {
 			init_old_config_stub.throws(TEST_ERROR);
 			let error;
 			try {
-				updateSettingsFile_4_0_0();
+				await updateSettingsFile_4_0_0();
 			} catch (err) {
 				error = err;
 			}
 			expect(error.name).to.equal(TEST_ERROR);
 		});
 
-		it('Test error is thrown if createConfigFile fails', () => {
+		it('Test error is thrown if createConfigFile fails', async () => {
 			create_config_file_stub.throws(TEST_ERROR);
 			let error;
 			try {
-				updateSettingsFile_4_0_0();
+				await updateSettingsFile_4_0_0();
 			} catch (err) {
 				error = err;
 			}
 			expect(error.name).to.equal(TEST_ERROR);
 		});
 
-		it('Test error is logged and thrown if writing boot props file fails', () => {
+		it('Test error is logged and thrown if writing boot props file fails', async () => {
 			write_file_stub.throws(TEST_ERROR);
 			let error;
 			try {
-				updateSettingsFile_4_0_0();
+				await updateSettingsFile_4_0_0();
 			} catch (err) {
 				error = err;
 			}
@@ -200,11 +203,11 @@ describe('Test 4-0-0 module', () => {
 			);
 		});
 
-		it('Test error is logged and thrown if initSync fails', () => {
+		it('Test error is logged and thrown if initSync fails', async () => {
 			init_sync_stub.throws(TEST_ERROR);
 			let error;
 			try {
-				updateSettingsFile_4_0_0();
+				await updateSettingsFile_4_0_0();
 			} catch (err) {
 				error = err;
 			}
@@ -214,11 +217,11 @@ describe('Test 4-0-0 module', () => {
 			);
 		});
 
-		it('Test error is logged and thrown if deleting old config dir fails', () => {
+		it('Test error is logged and thrown if deleting old config dir fails', async () => {
 			remove_sync_stub.throws(TEST_ERROR);
 			let error;
 			try {
-				updateSettingsFile_4_0_0();
+				await updateSettingsFile_4_0_0();
 			} catch (err) {
 				error = err;
 			}
@@ -400,6 +403,23 @@ describe('Test 4-0-0 module', () => {
 			);
 		});
 	});
+
+	it('Test generateNewKeys function calls generate_keys', async () => {
+		await generate_new_keys();
+		expect(generate_keys_stub.called).to.be.true;
+	});
+
+	it('Test generateNewKeys function error is correctly handled', async () => {
+		generate_keys_stub.throws(new Error('Test error generate keys'));
+		let error;
+		try {
+			await generate_new_keys();
+		} catch (err) {
+			error = err;
+		}
+
+		expect(error.message).to.equal('Test error generate keys');
+	});
 });
 
 describe('Test reindexing lmdb', () => {
@@ -425,21 +445,40 @@ describe('Test reindexing lmdb', () => {
 	it('reindexes lmdb databases from old databases', async () => {
 		let result = await upgrade_script(false);
 		assert.strictEqual(result, 'Reindexing for 4.0.0 upgrade complete');
-		let new_env = await environment_utility.openEnvironment(path.join(__dirname, 'upgrade_scripts/reindexTestDir/schema/dev'), 'dog');
+		let new_env = await environment_utility.openEnvironment(
+			path.join(__dirname, 'upgrade_scripts/reindexTestDir/schema/dev'),
+			'dog'
+		);
 		try {
 			let dbis = environment_utility.listDBIs(new_env);
-			assert.deepStrictEqual(dbis, ['__createdtime__','__updatedtime__','adorable','age','breed_id','dog_name','id','owner_id','weight_lbs']);
+			assert.deepStrictEqual(dbis, [
+				'__createdtime__',
+				'__updatedtime__',
+				'adorable',
+				'age',
+				'breed_id',
+				'dog_name',
+				'id',
+				'owner_id',
+				'weight_lbs',
+			]);
 		} finally {
 			await environment_utility.closeEnvironment(new_env);
 		}
-		let txn_env = await environment_utility.openEnvironment(path.join(__dirname, 'upgrade_scripts/reindexTestDir/transactions/dev'), 'dog');
+		let txn_env = await environment_utility.openEnvironment(
+			path.join(__dirname, 'upgrade_scripts/reindexTestDir/transactions/dev'),
+			'dog'
+		);
 		try {
 			let dbis = environment_utility.listDBIs(txn_env);
-			assert.deepStrictEqual(dbis, ['hash_value','timestamp','user_name']);
+			assert.deepStrictEqual(dbis, ['hash_value', 'timestamp', 'user_name']);
 		} finally {
 			await environment_utility.closeEnvironment(txn_env);
 		}
-		let schema_env = await environment_utility.openEnvironment(path.join(__dirname, 'upgrade_scripts/reindexTestDir/schema/system'), 'hdb_schema');
+		let schema_env = await environment_utility.openEnvironment(
+			path.join(__dirname, 'upgrade_scripts/reindexTestDir/schema/system'),
+			'hdb_schema'
+		);
 		try {
 			let schema_dbi = await environment_utility.openDBI(schema_env, 'name');
 			for (let { key: id, value: record } of schema_dbi.getRange({ start: false })) {
@@ -448,7 +487,10 @@ describe('Test reindexing lmdb', () => {
 		} finally {
 			await environment_utility.closeEnvironment(schema_env);
 		}
-		let table_env = await environment_utility.openEnvironment(path.join(__dirname, 'upgrade_scripts/reindexTestDir/schema/system'), 'hdb_table');
+		let table_env = await environment_utility.openEnvironment(
+			path.join(__dirname, 'upgrade_scripts/reindexTestDir/schema/system'),
+			'hdb_table'
+		);
 		try {
 			let table_dbi = await environment_utility.openDBI(table_env, 'id');
 			for (let { key: id, value: record } of table_dbi.getRange({ start: false })) {
@@ -458,7 +500,10 @@ describe('Test reindexing lmdb', () => {
 		} finally {
 			await environment_utility.closeEnvironment(table_env);
 		}
-		let attribute_env = await environment_utility.openEnvironment(path.join(__dirname, 'upgrade_scripts/reindexTestDir/schema/system'), 'hdb_attribute');
+		let attribute_env = await environment_utility.openEnvironment(
+			path.join(__dirname, 'upgrade_scripts/reindexTestDir/schema/system'),
+			'hdb_attribute'
+		);
 		try {
 			let attribute_dbi = await environment_utility.openDBI(attribute_env, 'id');
 			for (let { key: id, value: record } of attribute_dbi.getRange({ start: false })) {
@@ -470,5 +515,4 @@ describe('Test reindexing lmdb', () => {
 			await environment_utility.closeEnvironment(attribute_env);
 		}
 	});
-
 });
