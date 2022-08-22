@@ -6,7 +6,7 @@ HarperDB is a turn-key solution for the collection, distribution, and analysis o
 
 HarperDB provides unmatched flexibility, security, and value for just about every use case, and we do it all with a single installation that can run in the cloud, on-premise, and at the edge.
 
-[Learn more about HarperDB](https://harperdb.io/?utm_source=docker&utm_medium=hub)
+[Learn more about HarperDB](https://harperdb.io/?utm_source=repo&utm_medium=dockerhub)
 
 ## HarperDB Studio
 
@@ -57,7 +57,7 @@ docker run -d \
   harperdb/harperdb
 ```
 
-Enable HarperDB Custom Functions and expose the HarperDB Custom Functions on the container host:
+Enable HarperDB Custom Functions and expose the HarperDB Custom Functions port on the container host:
 ```
 docker run -d \
   -v /host/directory:/opt/harperdb/hdb \
