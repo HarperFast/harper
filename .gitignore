@@ -17,6 +17,7 @@ coverage.json
 dependencies/*
 !dependencies/nats-server.zip
 yarn.lock
+package-lock.json
 
 /npm_pack/*
 *.jsc
