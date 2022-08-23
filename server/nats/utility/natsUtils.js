@@ -477,7 +477,7 @@ function getServerConfig(process_name) {
  * @returns {Promise<void>}
  */
 async function createWorkQueueStream(CONSUMER_NAMES) {
-	const { jsm } = await getNATSReferences();
+	const { jsm, connection } = await getNATSReferences();
 	try {
 		// create the stream
 		await jsm.streams.add({
@@ -500,7 +500,7 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 		if (e.code.toString() === '404') {
 			await jsm.consumers.add(CONSUMER_NAMES.stream_name, {
 				ack_policy: AckPolicy.Explicit,
-				deliver_subject: `${CONSUMER_NAMES.deliver_subject}.${env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME)}`,
+				deliver_subject: `${CONSUMER_NAMES.deliver_subject}.${connection.info.server_name}`,
 				durable_name: CONSUMER_NAMES.durable_name,
 				deliver_policy: DeliverPolicy.All,
 				max_ack_pending: 10000,
