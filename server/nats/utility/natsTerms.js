@@ -31,7 +31,7 @@ const WORK_QUEUE_CONSUMER_NAMES = {
 	stream_name: '__HARPERDB_WORK_QUEUE__',
 	durable_name: 'HDB_WORK_QUEUE',
 	deliver_group: DELIVER_GROUP,
-	deliver_subject: 'HDB.WORKQUEUE',
+	deliver_subject: '__HDB__.WORKQUEUE',
 };
 
 const SCHEMA_QUEUE_CONSUMER_NAMES = {
