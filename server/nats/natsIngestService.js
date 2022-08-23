@@ -62,7 +62,7 @@ async function initialize() {
  * @returns {Promise<void>}
  */
 async function workQueueListener() {
-	const sub = nats_connection.subscribe(nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_subject, {
+	const sub = nats_connection.subscribe(`${nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_subject}.${server_name}`, {
 		durable: nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name,
 		queue: nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_group,
 	});
