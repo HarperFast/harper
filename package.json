@@ -50,6 +50,7 @@
     "coverage": "nyc --reporter=lcov npm test"
   },
   "dependencies": {
+    "@fastify/accepts-serializer": "5.1.0",
     "@fastify/autoload": "5.1.0",
     "@fastify/compress": "6.1.0",
     "@fastify/cors": "8.0.0",
