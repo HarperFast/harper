@@ -15,6 +15,11 @@ const operation_function_caller = require('../../utility/OperationFunctionCaller
 const transact_to_cluster_utilities = require('../../utility/clustering/transactToClusteringUtilities');
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
+const SUBSCRIPTION_OPTIONS = {
+	durable: nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name,
+	queue: nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_group,
+};
+
 let nats_connection;
 let server_name;
 let js_manager;
@@ -62,10 +67,10 @@ async function initialize() {
  * @returns {Promise<void>}
  */
 async function workQueueListener() {
-	const sub = nats_connection.subscribe(`${nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_subject}.${server_name}`, {
-		durable: nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name,
-		queue: nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_group,
-	});
+	const sub = nats_connection.subscribe(
+		`${nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_subject}.${nats_connection.info.server_name}`,
+		SUBSCRIPTION_OPTIONS
+	);
 	const process_sub = async () => {
 		for await (const message of sub) {
 			try {
