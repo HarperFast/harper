@@ -395,6 +395,9 @@ describe('test installModules function', () => {
 			error = e;
 		}
 		expect(error).is.equal(undefined);
+		// if you are getting an error here on Windows due to a warning about --local --global flags,
+		// you may need to run this:
+		// https://www.npmjs.com/package/npm-windows-upgrade
 		expect(result['cool project'].npm_error).is.equal(null);
 		expect(result['cool project'].npm_output).is.not.equal(null);
 		expect(result['bad project'].npm_output).is.equal(null);

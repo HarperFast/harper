@@ -4,7 +4,7 @@ const test_utils = require('../test_utils');
 test_utils.preTestPrep();
 
 const sql_test_utils = require('../sqlTestUtils');
-const { createMockDB, deepClone, mochaAsyncWrapper, sortAsc, sortDesc } = test_utils;
+const { createMockDB, tearDownMockDB, deepClone, mochaAsyncWrapper, sortAsc, sortDesc } = test_utils;
 const { setupCSVSqlData, generateMockAST, cleanupCSVData, sqlIntegrationData } = sql_test_utils;
 
 const chai = require('chai');
@@ -123,8 +123,9 @@ describe('Test FileSystem Class', function () {
 	});
 
 	after(async function () {
-		await cleanupCSVData();
 		sandbox.restore();
+		await tearDownMockDB(test_env, true);
+		await cleanupCSVData();
 	});
 
 	describe('constructor()', function () {
