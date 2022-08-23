@@ -49,10 +49,17 @@ const jc = JSONCodec();
 const HDB_CLUSTERING_FOLDER = 'clustering';
 const REQUIRED_NATS_SERVER_VERSION = pkg_json.engines[nats_terms.NATS_SERVER_NAME];
 const DEPENDENCIES_PATH = path.join(PACKAGE_ROOT, 'dependencies');
-const NATS_SERVER_PATH = path.join(DEPENDENCIES_PATH, `${process.platform}-${process.arch}`, nats_terms.NATS_BINARY_NAME);
+const NATS_SERVER_PATH = path.join(
+	DEPENDENCIES_PATH,
+	`${process.platform}-${process.arch}`,
+	nats_terms.NATS_BINARY_NAME
+);
 
 let leaf_config;
 let hub_config;
+
+// Nats connection it cached here.
+let nats_connection;
 
 module.exports = {
 	runCommand,
@@ -153,17 +160,17 @@ async function createConnection(port, username, password, wait_on_first_connect 
  * @returns {Promise<NatsConnection>}
  */
 async function getConnection() {
-	if (!global.NATSConnection) {
+	if (!nats_connection) {
 		const cluster_user = await user.getClusterUser();
 		if (isEmpty(cluster_user)) {
 			throw new Error('Unable to get nats connection. Cluster user is undefined.');
 		}
 
 		const leaf_port = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT);
-		global.NATSConnection = await createConnection(leaf_port, cluster_user.username, cluster_user.decrypt_hash);
+		nats_connection = await createConnection(leaf_port, cluster_user.username, cluster_user.decrypt_hash);
 	}
 
-	return global.NATSConnection;
+	return nats_connection;
 }
 
 /**
@@ -171,8 +178,8 @@ async function getConnection() {
  * @returns {Promise<JetStreamManager>}
  */
 async function getJetStreamManager() {
-	if (isEmpty(global.NATSConnection)) {
-		throw new Error('NATSConnection global var is undefined. Unable to get JetStream manager.');
+	if (isEmpty(nats_connection)) {
+		await getConnection();
 	}
 
 	const { domain } = getServerConfig(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
@@ -180,7 +187,7 @@ async function getJetStreamManager() {
 		throw new Error('Error getting JetStream domain. Unable to get JetStream manager.');
 	}
 
-	return global.NATSConnection.jetstreamManager({ domain });
+	return nats_connection.jetstreamManager({ domain });
 }
 
 /**
@@ -188,8 +195,8 @@ async function getJetStreamManager() {
  * @returns {Promise<JetStreamClient>}
  */
 async function getJetStream() {
-	if (isEmpty(global.NATSConnection)) {
-		throw new Error('NATSConnection global var is undefined. Unable to get JetStream manager.');
+	if (isEmpty(nats_connection)) {
+		await getConnection();
 	}
 
 	const { domain } = getServerConfig(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
@@ -197,7 +204,7 @@ async function getJetStream() {
 		throw new Error('Error getting JetStream domain. Unable to get JetStream manager.');
 	}
 
-	return global.NATSConnection.jetstream({ domain });
+	return nats_connection.jetstream({ domain });
 }
 
 /**

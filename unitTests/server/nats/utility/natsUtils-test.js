@@ -18,11 +18,6 @@ const TEST_STREAM_NAME = crypto_hash.createNatsTableStreamName('devTest', 'Chick
 const TEST_SUBJECT_NAME_2 = 'devTest.capybara.testLeafServer-leaf';
 const TEST_STREAM_NAME_2 = crypto_hash.createNatsTableStreamName('devTest', 'capybara');
 
-async function closeDeleteNatsCon() {
-	await global.NATSConnection.close();
-	delete global.NATSConnection;
-}
-
 describe('Test natsUtils module', () => {
 	const sandbox = sinon.createSandbox();
 	let hdb_warn_log_stub;
@@ -259,8 +254,8 @@ describe('Test natsUtils module', () => {
 		});
 
 		after(async () => {
-			test_utils.unsetFakeClusterUser();
 			await test_utils.stopTestLeafServer();
+			test_utils.unsetFakeClusterUser();
 		});
 
 		it('Test createConnection connects to a leaf server', async () => {
@@ -272,16 +267,15 @@ describe('Test natsUtils module', () => {
 			await connection.close();
 		}).timeout(TEST_TIMEOUT);
 
-		it('Test getConnection creates a connection and sets it to global', async () => {
-			global.NATSConnection = undefined;
+		it('Test getConnection creates a connection and sets it to var', async () => {
 			env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT, 9991);
 			await nats_utils.getConnection();
+			const nats_connection = nats_utils.__get__('nats_connection');
 
-			expect(global.NATSConnection).to.haveOwnProperty('options');
-			expect(global.NATSConnection).to.haveOwnProperty('protocol');
-			expect(global.NATSConnection).to.haveOwnProperty('listeners');
-			expect(global.NATSConnection.protocol.connected).to.be.true;
-			await closeDeleteNatsCon();
+			expect(nats_connection).to.haveOwnProperty('options');
+			expect(nats_connection).to.haveOwnProperty('protocol');
+			expect(nats_connection).to.haveOwnProperty('listeners');
+			expect(nats_connection.protocol.connected).to.be.true;
 		}).timeout(TEST_TIMEOUT);
 
 		it('Test getJetStreamManager returns JetStream manager', async () => {
@@ -292,16 +286,7 @@ describe('Test natsUtils module', () => {
 			expect(result).to.haveOwnProperty('jc');
 			expect(result).to.haveOwnProperty('streams');
 			expect(result).to.haveOwnProperty('consumers');
-			await closeDeleteNatsCon();
 		}).timeout(TEST_TIMEOUT);
-
-		it('Test getJetStreamManager throws error if nats connection undefined', async () => {
-			await test_utils.assertErrorAsync(
-				nats_utils.getJetStreamManager,
-				[],
-				new Error('NATSConnection global var is undefined. Unable to get JetStream manager.')
-			);
-		});
 
 		it('Test getJetStream returns JetStream client', async () => {
 			await nats_utils.getConnection();
@@ -310,7 +295,6 @@ describe('Test natsUtils module', () => {
 			expect(result).to.haveOwnProperty('opts');
 			expect(result).to.haveOwnProperty('jc');
 			expect(result).to.haveOwnProperty('api');
-			await closeDeleteNatsCon();
 		}).timeout(TEST_TIMEOUT);
 
 		it('Test getNATSReferences calls getConnection and the JetStream functions', async () => {
@@ -318,7 +302,6 @@ describe('Test natsUtils module', () => {
 			expect(result.connection.constructor.name).to.equal('NatsConnectionImpl');
 			expect(result.jsm.constructor.name).to.equal('JetStreamManagerImpl');
 			expect(result.js.constructor.name).to.equal('JetStreamClientImpl');
-			await closeDeleteNatsCon();
 		}).timeout(TEST_TIMEOUT);
 
 		it('Test getServerList returns a list with the test server in it', async () => {

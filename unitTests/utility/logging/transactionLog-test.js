@@ -15,13 +15,6 @@ const TEST_TABLE = 'panda';
 const TEST_STREAM_NAME = crypto_hash.createNatsTableStreamName(TEST_SCHEMA, TEST_TABLE);
 const TEST_TIMEOUT = 10000;
 
-async function closeDeleteNatsCon() {
-	try {
-		await global.NATSConnection.close();
-		delete global.NATSConnection;
-	} catch (e) {}
-}
-
 /**
  * Create a test stream and publishes 100 messages to it.
  * @returns {Promise<void>}
@@ -114,7 +107,6 @@ describe('Test transactionLog module', () => {
 		await nats_utils.deleteLocalStream(TEST_STREAM_NAME);
 		test_utils.unsetFakeClusterUser();
 		await test_utils.stopTestLeafServer();
-		await closeDeleteNatsCon();
 		sandbox.restore();
 	});
 
