@@ -8,7 +8,7 @@ EXPOSE 9925
 #Install prerequisites
 RUN apt-get update && apt-get install -y tini=0.19.0-1
 
-# Change node user and group to harperdb
+#Change node user and group to harperdb
 RUN usermod -d /home/harperdb -l harperdb node && \
     groupmod -n harperdb node && \
     rm -rf /home/node
@@ -39,9 +39,6 @@ ENV HDB_ADMIN_USERNAME=HDB_ADMIN
 ENV HDB_ADMIN_PASSWORD=password
 ENV LOGGING_STDSTREAMS=true
 ENV OPERATIONSAPI_FOREGROUND=true
-
-#Create mount point
-VOLUME /home/harperdb/hdb
 
 #Set the user for the below instructions (respected by RUN, CMD, ENTRYPOINT only)
 USER harperdb
