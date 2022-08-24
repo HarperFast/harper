@@ -40,6 +40,7 @@ const {
 	nuid,
 	JetStreamOptions,
 	ErrorCode,
+	nanos
 } = require('nats');
 const { PACKAGE_ROOT } = require('../../../utility/hdbTerms');
 
@@ -477,13 +478,14 @@ function getServerConfig(process_name) {
  */
 async function createWorkQueueStream(CONSUMER_NAMES) {
 	const { jsm } = await getNATSReferences();
+	const server_name = jsm?.nc?.info?.server_name;
 	try {
 		// create the stream
 		await jsm.streams.add({
 			name: CONSUMER_NAMES.stream_name,
 			storage: StorageType.File,
-			retention: RetentionPolicy.Limits,
-			subjects: [`${CONSUMER_NAMES.stream_name}.${env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME)}`],
+			retention: RetentionPolicy.Workqueue,
+			subjects: [`${CONSUMER_NAMES.stream_name}.${server_name}`],
 		});
 	} catch (err) {
 		// If the stream already exists ignore error that is thrown.
@@ -499,9 +501,11 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 		if (e.code.toString() === '404') {
 			await jsm.consumers.add(CONSUMER_NAMES.stream_name, {
 				ack_policy: AckPolicy.Explicit,
+				deliver_subject: `${CONSUMER_NAMES.deliver_subject}.${server_name}`,
 				durable_name: CONSUMER_NAMES.durable_name,
 				deliver_policy: DeliverPolicy.All,
-				max_ack_pending: 100000000,
+				max_ack_pending: 10000,
+				deliver_group: CONSUMER_NAMES.deliver_group
 			});
 		} else {
 			throw e;

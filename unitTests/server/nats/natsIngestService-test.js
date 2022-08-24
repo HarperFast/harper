@@ -53,7 +53,6 @@ describe('Test natsIngestService module', () => {
 		call_operation_function_as_await_stub = sandbox.stub(operation_function_caller, 'callOperationFunctionAsAwait');
 		await test_utils.launchTestLeafServer();
 		test_utils.setFakeClusterUser();
-		nats_ingest_service.__set__('QUEUE_FETCH_LOOP_CONDITION', false);
 	});
 
 	after(async function () {
@@ -99,6 +98,9 @@ describe('Test natsIngestService module', () => {
 		});
 
 		it('Test workQueueListener processes one message in work queue stream', async () => {
+			let opts = nats_ingest_service.__get__('SUBSCRIPTION_OPTIONS');
+			opts.max = 1;
+			let opts_restore = nats_ingest_service.__set__('SUBSCRIPTION_OPTIONS', opts);
 			const test_operation = { operation: 'create_table', schema: 'dev', table: 'hippopotamus', hash_attribute: 'id' };
 			await setupTestStreamAndSource();
 			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, [test_operation]);
@@ -108,9 +110,13 @@ describe('Test natsIngestService module', () => {
 			expect(decodeJsMsg(message_processor_stub.args[0][0])).to.eql(test_operation);
 
 			await teardownTestStreamAndSource();
+			opts_restore();
 		}).timeout(TEST_TIMEOUT);
 
 		it('Test workQueueListener processes multiple message in work queue stream', async () => {
+			let opts = nats_ingest_service.__get__('SUBSCRIPTION_OPTIONS');
+			opts.max = 3;
+			let opts_restore = nats_ingest_service.__set__('SUBSCRIPTION_OPTIONS', opts);
 			const test_operation_1 = {
 				operation: 'insert',
 				schema: 'dev',
@@ -145,10 +151,14 @@ describe('Test natsIngestService module', () => {
 			expect(decodeJsMsg(message_processor_stub.getCall(2).args[0])).to.eql(test_operation_3);
 
 			await teardownTestStreamAndSource();
+			opts_restore();
 		}).timeout(TEST_TIMEOUT);
 	});
 
 	it('Test messageProcessor processes non job operation happy path', async () => {
+		let opts = nats_ingest_service.__get__('SUBSCRIPTION_OPTIONS');
+		opts.max = 1;
+		let opts_restore = nats_ingest_service.__set__('SUBSCRIPTION_OPTIONS', opts);
 		const test_operation = { operation: 'create_table', schema: 'dev', table: 'hippopotamus', hash_attribute: 'id' };
 		await setupTestStreamAndSource();
 		await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, [test_operation]);
@@ -162,9 +172,13 @@ describe('Test natsIngestService module', () => {
 		expect(call_operation_function_as_await_stub.args[0][1]).to.eql(test_operation);
 		expect(call_operation_function_as_await_stub.args[0][2].name).to.equal('postOperationHandler');
 		expect(call_operation_function_as_await_stub.args[0][3]).to.eql(['testLeafServer-leaf']);
+		opts_restore();
 	}).timeout(TEST_TIMEOUT);
 
 	it('Test messageProcessor processes job operation happy path', async () => {
+		let opts = nats_ingest_service.__get__('SUBSCRIPTION_OPTIONS');
+		opts.max = 1;
+		let opts_restore = nats_ingest_service.__set__('SUBSCRIPTION_OPTIONS', opts);
 		const test_operation = {
 			operation: 'csv_file_load',
 			schema: 'dev',
@@ -179,5 +193,6 @@ describe('Test natsIngestService module', () => {
 
 		expect(get_operation_function_spy.args[0][0]).to.eql(test_operation);
 		expect(call_operation_function_as_await_stub.notCalled).to.be.true;
+		opts_restore();
 	}).timeout(TEST_TIMEOUT);
 });

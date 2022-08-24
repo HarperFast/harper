@@ -18,7 +18,7 @@
     "harperdb": "./bin/harperdb.js"
   },
   "engines": {
-    "node": "16.16.0",
+    "node": "16.17.0",
     "go-lang": "1.17.10",
     "nats-server": "2.8.4"
   },
@@ -50,6 +50,7 @@
     "coverage": "nyc --reporter=lcov npm test"
   },
   "dependencies": {
+    "@fastify/accepts-serializer": "5.1.0",
     "@fastify/autoload": "5.1.0",
     "@fastify/compress": "6.1.0",
     "@fastify/cors": "8.0.0",

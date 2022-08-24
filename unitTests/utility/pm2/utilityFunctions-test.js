@@ -1043,7 +1043,7 @@ describe('Test pm2 utilityFunctions module', () => {
 			stream_name: '__HARPERDB_WORK_QUEUE__',
 			durable_name: 'HDB_WORK_QUEUE',
 			deliver_group: 'HDB',
-			deliver_subject: 'HDB.WORKQUEUE',
+			deliver_subject: '__HDB__.WORKQUEUE',
 		});
 		start_service_rw();
 		create_queue_rw();
