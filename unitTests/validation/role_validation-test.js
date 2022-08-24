@@ -10,7 +10,7 @@ const sinon = require('sinon');
 const rewire = require('rewire');
 const role_validation_rw = rewire('../../validation/role_validation');
 let customValidate_rw = role_validation_rw.__get__('customValidate');
-const { TEST_ROLE_PERMS_ERROR } = require('../commonTestErrors');
+const { TEST_ROLE_PERMS_ERROR, TEST_SCHEMA_OP_ERROR } = require('../commonTestErrors');
 
 let sandbox;
 let customValidate_stub;
@@ -208,6 +208,42 @@ describe('Test role_validation module ', () => {
         it('NOMINAL - should return null for valid SU ADD_ROLE object',() => {
             const test_role_json = TEST_ADD_ROLE_OBJECT();
             test_role_json.permission = { super_user: true };
+            const test_result = customValidate_rw(test_role_json, getAddRoleConstraints());
+
+            expect(test_result).to.equal(null);
+        })
+
+        it('NOMINAL - should return null for valid structure_user = true ADD_ROLE object',() => {
+            const test_role_json = TEST_ADD_ROLE_OBJECT();
+            test_role_json.permission = { structure_user: true };
+            const test_result = customValidate_rw(test_role_json, getAddRoleConstraints());
+
+            expect(test_result).to.equal(null);
+        })
+
+        it('NOMINAL - should return error for invalid structure_user = ["dev", "blah"] ADD_ROLE object',() => {
+            const test_role_json = TEST_ADD_ROLE_OBJECT();
+            test_role_json.permission = { structure_user: ['dev', 'blah'] };
+            const test_result = customValidate_rw(test_role_json, getAddRoleConstraints());
+
+            expect(test_result.http_resp_code).to.equal(400);
+            expect(test_result.http_resp_msg.main_permissions.length).to.equal(1);
+            expect(test_result.http_resp_msg.main_permissions).to.include(TEST_SCHEMA_OP_ERROR.SCHEMA_NOT_FOUND('blah'));
+        })
+
+        it('NOMINAL - should return error for invalid structure_user = "wut" ADD_ROLE object',() => {
+            const test_role_json = TEST_ADD_ROLE_OBJECT();
+            test_role_json.permission = { structure_user: 'wut' };
+            const test_result = customValidate_rw(test_role_json, getAddRoleConstraints());
+
+            expect(test_result.http_resp_code).to.equal(400);
+            expect(test_result.http_resp_msg.main_permissions.length).to.equal(1);
+            expect(test_result.http_resp_msg.main_permissions).to.eql([TEST_ROLE_PERMS_ERROR.STRUCTURE_USER_ROLE_TYPE_ERROR('structure_user')]);
+        })
+
+        it('NOMINAL - should return null for valid structure_user = ["dev"] ADD_ROLE object',() => {
+            const test_role_json = TEST_ADD_ROLE_OBJECT();
+            test_role_json.permission = { structure_user: ['dev'] };
             const test_result = customValidate_rw(test_role_json, getAddRoleConstraints());
 
             expect(test_result).to.equal(null);

@@ -77,6 +77,15 @@ const BULK_OPS = {
 	IMPORT_FROM_S3: 'importFromS3',
 };
 
+const STRUCTURE_USER_OPS = [
+	schema.createSchema.name,
+	schema.createTable.name,
+	schema.createAttribute.name,
+	schema.dropSchema.name,
+	schema.dropTable.name,
+	schema.dropAttribute.name,
+];
+
 const DATA_EXPORT = {
 	EXPORT_TO_S3: 'export_to_s3',
 	EXPORT_LOCAL: 'export_local',
@@ -319,6 +328,7 @@ function verifyPerms(request_json, operation) {
 	}
 
 	const is_super_user = !!request_json.hdb_user.role.permission.super_user;
+	const structure_user = request_json.hdb_user.role.permission.structure_user;
 	// set to true if this operation affects a system table.  Only su can read from system tables, but can't update/delete.
 	let is_su_system_operation =
 		schema_table_map.has(terms.SYSTEM_SCHEMA_NAME) || operation_schema === terms.SYSTEM_SCHEMA_NAME;
@@ -328,8 +338,26 @@ function verifyPerms(request_json, operation) {
 	}
 
 	if (is_super_user && !is_su_system_operation) {
-		//admins can do (almost) anything through the hole in sheet!
+		//admins can do (almost) anything
 		return null;
+	}
+
+	//check if this is a structure_user & trying to perform a structure user op
+	if (STRUCTURE_USER_OPS.indexOf(op) >= 0 && (structure_user === true || Array.isArray(structure_user))) {
+		//if true can perform op all schemas
+		if (structure_user === true) {
+			return null;
+		}
+
+		//if the structure_user value is an array and contains the operation schema, all good
+		if (structure_user.indexOf(operation_schema) >= 0) {
+			return null;
+		}
+
+		//if we get here then error out
+		return permsResponse.handleUnauthorizedItem(
+			`User does not have access to perform '${request_json.operation}' against schema '${operation_schema}'`
+		);
 	}
 
 	const full_role_perms = permsTranslator.getRolePermissions(request_json.hdb_user.role);

@@ -101,7 +101,8 @@ const TEST_ROLE_PERMS_ERROR = {
     SU_CU_ROLE_NO_PERMS_ALLOWED: (role) => `Roles with '${role}' set to true cannot have other permissions set.`,
     SU_CU_ROLE_COMBINED_ERROR: "Roles cannot have both 'super_user' and 'cluster_user' values included in their permissions set.",
     TABLE_PERM_MISSING: (perm) => `Missing table ${perm.toUpperCase()} permission`,
-    TABLE_PERM_NOT_BOOLEAN: (perm) => `Table ${perm.toUpperCase()} permission must be a boolean`
+    TABLE_PERM_NOT_BOOLEAN: (perm) => `Table ${perm.toUpperCase()} permission must be a boolean`,
+    STRUCTURE_USER_ROLE_TYPE_ERROR: (role) => `Value for '${role}' permission must be a boolean or Array`,
 };
 
 const CHECK_LOGS_WRAPPER = (err) => `${err} Check logs and try again.`;

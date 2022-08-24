@@ -16,6 +16,7 @@ const alasql = require('alasql');
 const search = require('../../data_layer/search');
 const jobs = require('../../server/jobs/jobs');
 const terms = require('../../utility/hdbTerms');
+const schema = require('../../data_layer/schema');
 const PermissionResponseObject = require('../../security/data_objects/PermissionResponseObject');
 const PermissionTableResponseObject = require('../../security/data_objects/PermissionTableResponseObject');
 const PermissionAttributeResponseObject = require('../../security/data_objects/PermissionAttributeResponseObject');
@@ -122,6 +123,36 @@ let TEST_JSON = {
 			role: 'no_perms',
 		},
 		username: 'user_1',
+	},
+};
+
+const STRUCTURE_USER_OP = {
+	operation: null,
+	hdb_user: {
+		active: true,
+		role: {
+			id: '12345',
+			permission: {
+				structure_user: true,
+			},
+			role: 'structure',
+		},
+		username: 'cool_guy',
+	},
+};
+
+const STRUCTURE_USER_OP2 = {
+	operation: null,
+	hdb_user: {
+		active: true,
+		role: {
+			id: '123456',
+			permission: {
+				structure_user: ['dev'],
+			},
+			role: 'structure',
+		},
+		username: 'cool_guy',
 	},
 };
 
@@ -782,6 +813,185 @@ describe('Test operation_authorization', function () {
 				403
 			);
 			test_utils.assertErrorSync(op_auth_rewire.verifyPerms, [req_json, 'dropAttribute'], expected_error);
+		});
+
+		it('Test create_schema with structure_user = true', () => {
+			let req_json = getRequestJson(STRUCTURE_USER_OP);
+			req_json.operation = 'create_schema';
+			req_json.schema = 'dev';
+			let result = op_auth_rewire.verifyPerms(req_json, schema.createSchema);
+			assert.equal(result, null);
+		});
+
+		it('Test create_schema with structure_user = ["dev"]', () => {
+			let req_json = getRequestJson(STRUCTURE_USER_OP2);
+			req_json.operation = 'create_schema';
+			req_json.schema = 'dev';
+			let result = op_auth_rewire.verifyPerms(req_json, schema.createSchema);
+			assert.equal(result, null);
+		});
+
+		it('Test create_schema with structure_user = ["dev"], no access to schema "nope"', () => {
+			let req_json = getRequestJson(STRUCTURE_USER_OP2);
+			req_json.operation = 'create_schema';
+			req_json.schema = 'nope';
+			let result = op_auth_rewire.verifyPerms(req_json, schema.createSchema);
+			assert.equal(result.unauthorized_access.length, 1);
+			assert.equal(
+				result.unauthorized_access[0],
+				"User does not have access to perform 'create_schema' against schema 'nope'"
+			);
+		});
+
+		it('Test create_table with structure_user = true', () => {
+			let req_json = getRequestJson(STRUCTURE_USER_OP);
+			req_json.operation = 'create_table';
+			req_json.schema = 'dev';
+			req_json.table = 'dog';
+			let result = op_auth_rewire.verifyPerms(req_json, schema.createTable);
+			assert.equal(result, null);
+		});
+
+		it('Test create_table with structure_user = ["dev"]', () => {
+			let req_json = getRequestJson(STRUCTURE_USER_OP2);
+			req_json.operation = 'create_table';
+			req_json.schema = 'dev';
+			req_json.table = 'dog';
+			let result = op_auth_rewire.verifyPerms(req_json, schema.createTable);
+			assert.equal(result, null);
+		});
+
+		it('Test create_table with structure_user = ["dev"], no access to schema "nope"', () => {
+			let req_json = getRequestJson(STRUCTURE_USER_OP2);
+			req_json.operation = 'create_table';
+			req_json.schema = 'nope';
+			req_json.table = 'dog';
+			let result = op_auth_rewire.verifyPerms(req_json, schema.createTable);
+			assert.equal(result.unauthorized_access.length, 1);
+			assert.equal(
+				result.unauthorized_access[0],
+				"User does not have access to perform 'create_table' against schema 'nope'"
+			);
+		});
+
+		it('Test create_attribute with structure_user = true', () => {
+			let req_json = getRequestJson(STRUCTURE_USER_OP);
+			req_json.operation = 'create_attribute';
+			req_json.schema = 'dev';
+			let result = op_auth_rewire.verifyPerms(req_json, schema.createAttribute);
+			assert.equal(result, null);
+		});
+
+		it('Test create_attribute with structure_user = ["dev"]', () => {
+			let req_json = getRequestJson(STRUCTURE_USER_OP2);
+			req_json.operation = 'create_attribute';
+			req_json.schema = 'dev';
+			req_json.table = 'dog';
+			let result = op_auth_rewire.verifyPerms(req_json, schema.createAttribute);
+			assert.equal(result, null);
+		});
+
+		it('Test create_attribute with structure_user = ["dev"], no access to schema "nope"', () => {
+			let req_json = getRequestJson(STRUCTURE_USER_OP2);
+			req_json.operation = 'create_attribute';
+			req_json.schema = 'nope';
+			req_json.table = 'dog';
+			let result = op_auth_rewire.verifyPerms(req_json, schema.createAttribute);
+			assert.equal(result.unauthorized_access.length, 1);
+			assert.equal(
+				result.unauthorized_access[0],
+				"User does not have access to perform 'create_attribute' against schema 'nope'"
+			);
+		});
+
+		it('Test drop_attribute with structure_user = true', () => {
+			let req_json = getRequestJson(STRUCTURE_USER_OP);
+			req_json.operation = 'drop_attribute';
+			req_json.schema = 'dev';
+			let result = op_auth_rewire.verifyPerms(req_json, schema.dropAttribute);
+			assert.equal(result, null);
+		});
+
+		it('Test drop_attribute with structure_user = ["dev"]', () => {
+			let req_json = getRequestJson(STRUCTURE_USER_OP2);
+			req_json.operation = 'drop_attribute';
+			req_json.schema = 'dev';
+			req_json.table = 'dog';
+			let result = op_auth_rewire.verifyPerms(req_json, schema.dropAttribute);
+			assert.equal(result, null);
+		});
+
+		it('Test drop_attribute with structure_user = ["dev"], no access to schema "nope"', () => {
+			let req_json = getRequestJson(STRUCTURE_USER_OP2);
+			req_json.operation = 'drop_attribute';
+			req_json.schema = 'nope';
+			req_json.table = 'dog';
+			let result = op_auth_rewire.verifyPerms(req_json, schema.dropAttribute);
+			assert.equal(result.unauthorized_access.length, 1);
+			assert.equal(
+				result.unauthorized_access[0],
+				"User does not have access to perform 'drop_attribute' against schema 'nope'"
+			);
+		});
+
+		it('Test drop_schema with structure_user = true', () => {
+			let req_json = getRequestJson(STRUCTURE_USER_OP);
+			req_json.operation = 'drop_schema';
+			req_json.schema = 'dev';
+			let result = op_auth_rewire.verifyPerms(req_json, schema.dropSchema);
+			assert.equal(result, null);
+		});
+
+		it('Test drop_schema with structure_user = ["dev"]', () => {
+			let req_json = getRequestJson(STRUCTURE_USER_OP2);
+			req_json.operation = 'drop_schema';
+			req_json.schema = 'dev';
+			req_json.table = 'dog';
+			let result = op_auth_rewire.verifyPerms(req_json, schema.dropSchema);
+			assert.equal(result, null);
+		});
+
+		it('Test drop_schema with structure_user = ["dev"], no access to schema "nope"', () => {
+			let req_json = getRequestJson(STRUCTURE_USER_OP2);
+			req_json.operation = 'drop_schema';
+			req_json.schema = 'nope';
+			req_json.table = 'dog';
+			let result = op_auth_rewire.verifyPerms(req_json, schema.dropSchema);
+			assert.equal(result.unauthorized_access.length, 1);
+			assert.equal(
+				result.unauthorized_access[0],
+				"User does not have access to perform 'drop_schema' against schema 'nope'"
+			);
+		});
+
+		it('Test drop_table with structure_user = true', () => {
+			let req_json = getRequestJson(STRUCTURE_USER_OP);
+			req_json.operation = 'drop_table';
+			req_json.schema = 'dev';
+			let result = op_auth_rewire.verifyPerms(req_json, schema.dropTable);
+			assert.equal(result, null);
+		});
+
+		it('Test drop_table with structure_user = ["dev"]', () => {
+			let req_json = getRequestJson(STRUCTURE_USER_OP2);
+			req_json.operation = 'drop_table';
+			req_json.schema = 'dev';
+			req_json.table = 'dog';
+			let result = op_auth_rewire.verifyPerms(req_json, schema.dropTable);
+			assert.equal(result, null);
+		});
+
+		it('Test drop_table with structure_user = ["dev"], no access to schema "nope"', () => {
+			let req_json = getRequestJson(STRUCTURE_USER_OP2);
+			req_json.operation = 'drop_table';
+			req_json.schema = 'nope';
+			req_json.table = 'dog';
+			let result = op_auth_rewire.verifyPerms(req_json, schema.dropTable);
+			assert.equal(result.unauthorized_access.length, 1);
+			assert.equal(
+				result.unauthorized_access[0],
+				"User does not have access to perform 'drop_table' against schema 'nope'"
+			);
 		});
 	});
 
