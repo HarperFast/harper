@@ -23,6 +23,7 @@ const lmdb_create_schema = require('../data_layer/harperBridge/lmdbBridge/lmdbMe
 const lmdb_create_table = require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
 const lmdb_create_records = require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateRecords');
 const pm2_utils = require('../utility/pm2/utilityFunctions');
+const nats_utils = require('../server/nats/utility/natsUtils');
 const user = require('../security/user');
 let lmdb_schema_env = undefined;
 let lmdb_table_env = undefined;
@@ -772,10 +773,10 @@ function unsetFakeClusterUser() {
  * @returns {Promise<void>}
  */
 async function stopTestLeafServer() {
-	if (global.NATSConnection) {
+	const nats_connection = await nats_utils.getConnection();
+	if (nats_connection) {
 		try {
-			await global.NATSConnection.close();
-			delete global.NATSConnection;
+			await nats_connection.close();
 			// eslint-disable-next-line no-empty
 		} catch (err) {}
 	}
