@@ -177,6 +177,17 @@ function validateLicense(license_key, company) {
 		license_validation_object.valid_license = false;
 		license_validation_object.valid_machine = false;
 	}
+
+	if (
+		!(
+			license_validation_object.valid_license &&
+			license_validation_object.valid_machine &&
+			license_validation_object.valid_date
+		)
+	) {
+		log.error('Invalid licence');
+	}
+
 	return license_validation_object;
 }
 
