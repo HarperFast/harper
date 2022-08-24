@@ -848,7 +848,7 @@ describe('Test operation_authorization', function () {
 			req_json.operation = 'create_table';
 			req_json.schema = 'dev';
 			req_json.table = 'dog';
-			let result = op_auth_rewire.verifyPerms(req_json, schema.createTable);
+			let result = op_auth_rewire.verifyPerms(req_json, 'createTable');
 			assert.equal(result, null);
 		});
 
@@ -857,7 +857,7 @@ describe('Test operation_authorization', function () {
 			req_json.operation = 'create_table';
 			req_json.schema = 'dev';
 			req_json.table = 'dog';
-			let result = op_auth_rewire.verifyPerms(req_json, schema.createTable);
+			let result = op_auth_rewire.verifyPerms(req_json, 'createTable');
 			assert.equal(result, null);
 		});
 
@@ -866,7 +866,7 @@ describe('Test operation_authorization', function () {
 			req_json.operation = 'create_table';
 			req_json.schema = 'nope';
 			req_json.table = 'dog';
-			let result = op_auth_rewire.verifyPerms(req_json, schema.createTable);
+			let result = op_auth_rewire.verifyPerms(req_json, 'createTable');
 			assert.equal(result.unauthorized_access.length, 1);
 			assert.equal(
 				result.unauthorized_access[0],
