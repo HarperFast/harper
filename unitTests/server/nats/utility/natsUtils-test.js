@@ -288,8 +288,27 @@ describe('Test natsUtils module', () => {
 			expect(result).to.haveOwnProperty('consumers');
 		}).timeout(TEST_TIMEOUT);
 
+		it('Test getJetStreamManager calls getConnection if a connection does not exist', async () => {
+			nats_utils.__set__('nats_connection', undefined);
+			const result = await nats_utils.getJetStreamManager();
+			expect(result).to.haveOwnProperty('nc');
+			expect(result).to.haveOwnProperty('opts');
+			expect(result).to.haveOwnProperty('jc');
+			expect(result).to.haveOwnProperty('streams');
+			expect(result).to.haveOwnProperty('consumers');
+		}).timeout(TEST_TIMEOUT);
+
 		it('Test getJetStream returns JetStream client', async () => {
 			await nats_utils.getConnection();
+			const result = await nats_utils.getJetStream();
+			expect(result).to.haveOwnProperty('nc');
+			expect(result).to.haveOwnProperty('opts');
+			expect(result).to.haveOwnProperty('jc');
+			expect(result).to.haveOwnProperty('api');
+		}).timeout(TEST_TIMEOUT);
+
+		it('Test getJetStream returns JetStream client if if a connection does not exist', async () => {
+			nats_utils.__set__('nats_connection', undefined);
 			const result = await nats_utils.getJetStream();
 			expect(result).to.haveOwnProperty('nc');
 			expect(result).to.haveOwnProperty('opts');
