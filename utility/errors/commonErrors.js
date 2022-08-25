@@ -162,6 +162,7 @@ const ROLE_PERMS_ERROR_MSGS = {
 		`Your role does not have permission to view schema.table metadata for '${schema_name}.${table_name}'`,
 	SU_ROLE_MISSING_ERROR: "Missing 'super_user' key/value in permission set",
 	SU_CU_ROLE_BOOLEAN_ERROR: (role) => `Value for '${role}' permission must be a boolean`,
+	STRUCTURE_USER_ROLE_TYPE_ERROR: (role) => `Value for '${role}' permission must be a boolean or Array`,
 	SU_CU_ROLE_NO_PERMS_ALLOWED: (role) => `Roles with '${role}' set to true cannot have other permissions set.`,
 	SU_CU_ROLE_COMBINED_ERROR:
 		"Roles cannot have both 'super_user' and 'cluster_user' values included in their permissions set.",
@@ -227,7 +228,8 @@ const CUSTOM_FUNCTIONS_ERROR_MSGS = {
 	ADD_FUNCTION: 'Error adding custom function project, check the log for more details',
 	DROP_FUNCTION_PROJECT: 'Error dropping custom function project, check the log for more details',
 	BAD_FILE_PATH: 'Filepath must be valid, and contain the name of the tarball you wish to write',
-	NOT_ENABLED: 'Custom functions is not enabled, to enable set customFunctions enabled to true in hdb/harperdb.conf file.',
+	NOT_ENABLED:
+		'Custom functions is not enabled, to enable set customFunctions enabled to true in hdb/harperdb.conf file.',
 };
 
 const CLUSTERING_ERROR_MSGS = {
