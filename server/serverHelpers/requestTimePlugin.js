@@ -8,7 +8,9 @@ module.exports = fp(
 		});
 		// eslint-disable-next-line require-await
 		fastify.addHook('onSend', async (request, reply) => {
-			reply.header('HDB-Response-Time', reply.getResponseTime());
+			let responseTime = reply.getResponseTime().toFixed(3);
+			reply.header('HDB-Response-Time', responseTime);
+			reply.header('Server-Timing', `db;dur=${responseTime}`);
 		});
 		done();
 	},
