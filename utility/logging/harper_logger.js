@@ -125,7 +125,7 @@ function initLogSettings() {
  */
 function createLogFile(log_name, log_process_name) {
 	if (!NON_PM2_PROCESS) {
-		error('createLogFile should only be used if the process is not being managed by pm2');
+		trace('createLogFile should only be used if the process is not being managed by pm2');
 		return;
 	}
 
