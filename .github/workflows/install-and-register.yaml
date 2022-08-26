@@ -4,9 +4,6 @@ on:
       publicDns:
         required: true
         type: string
-      goVersion:
-        required: true
-        type: string
       harperdbVersion:
         required: true
         type: string
