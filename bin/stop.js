@@ -32,6 +32,8 @@ module.exports = {
  * @returns {Promise<>}
  */
 async function restartProcesses() {
+	// This is here to accommodate requests from the CLI. Stop can also be called
+	// from the API, in that case logging will be handled by pm2.
 	hdb_logger.createLogFile(hdb_terms.PROCESS_LOG_NAMES.CLI, hdb_terms.PROCESS_DESCRIPTORS.STOP);
 
 	try {

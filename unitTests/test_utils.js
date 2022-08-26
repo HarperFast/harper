@@ -25,6 +25,7 @@ const lmdb_create_schema = require('../data_layer/harperBridge/lmdbBridge/lmdbMe
 const lmdb_create_table = require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
 const lmdb_create_records = require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateRecords');
 const pm2_utils = require('../utility/pm2/utilityFunctions');
+const nats_utils = require('../server/nats/utility/natsUtils');
 const user = require('../security/user');
 let lmdb_schema_env = undefined;
 let lmdb_table_env = undefined;
@@ -725,10 +726,9 @@ async function launchTestLeafServer(ls_net_port = 9991, node_name = 'testLeafSer
 async function generateTestKeys(test_root) {
 	const keys_test_path = path.join(test_root, 'keys');
 	await fs.mkdirp(keys_test_path);
-	const installer = rewire('../utility/install/installer');
-	const generate_keys = installer.__get__('generateKeys');
+	const generate_keys = rewire('../security/keys');
 	const get_hdb_path_stub = sinon.stub().returns(test_root);
-	const get_hdb_path_rw = installer.__set__('env_manager.getHdbBasePath', get_hdb_path_stub);
+	const get_hdb_path_rw = generate_keys.__set__('env_manager.getHdbBasePath', get_hdb_path_stub);
 	await generate_keys();
 	env.setProperty(terms.CONFIG_PARAMS.CLUSTERING_TLS_CERT_AUTH, path.join(keys_test_path, 'ca.pem'));
 	env.setProperty(terms.CONFIG_PARAMS.CLUSTERING_TLS_CERTIFICATE, path.join(keys_test_path, 'certificate.pem'));
@@ -776,10 +776,10 @@ function unsetFakeClusterUser() {
  * @returns {Promise<void>}
  */
 async function stopTestLeafServer() {
-	if (global.NATSConnection) {
+	const nats_connection = await nats_utils.getConnection();
+	if (nats_connection) {
 		try {
-			await global.NATSConnection.close();
-			delete global.NATSConnection;
+			await nats_connection.close();
 			// eslint-disable-next-line no-empty
 		} catch (err) {}
 	}

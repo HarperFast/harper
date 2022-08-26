@@ -199,21 +199,9 @@ function validateConfig(config_doc) {
 		['customFunctions', 'tls', 'certificateAuthority'],
 		validation.value.customFunctions.tls.certificateAuthority
 	);
-
-	if (!hdb_utils.isEmpty(validation.value?.clustering?.tls?.certificate)) {
-		config_doc.setIn(['clustering', 'tls', 'certificate'], validation.value.clustering.tls.certificate);
-	}
-
-	if (!hdb_utils.isEmpty(validation.value?.clustering?.tls?.privateKey)) {
-		config_doc.setIn(['clustering', 'tls', 'privateKey'], validation.value.clustering.tls.privateKey);
-	}
-
-	if (!hdb_utils.isEmpty(validation.value?.clustering?.tls?.certificateAuthority)) {
-		config_doc.setIn(
-			['clustering', 'tls', 'certificateAuthority'],
-			validation.value.clustering.tls.certificateAuthority
-		);
-	}
+	config_doc.setIn(['clustering', 'tls', 'certificate'], validation.value.clustering.tls.certificate);
+	config_doc.setIn(['clustering', 'tls', 'privateKey'], validation.value.clustering.tls.privateKey);
+	config_doc.setIn(['clustering', 'tls', 'certificateAuthority'], validation.value.clustering.tls.certificateAuthority);
 }
 
 /**

@@ -1,14 +1,13 @@
 'use strict';
 
 const util = require('util');
-const { JSONCodec, toJsMsg, createInbox, ErrorCode, checkJsError } = require('nats');
+const { toJsMsg } = require('nats');
 const { decode } = require('msgpackr');
 const global_schema = require('../../utility/globalSchema');
 const ipc_server_handlers = require('../ipc/serverHandlers');
 const nats_utils = require('./utility/natsUtils');
 const nats_terms = require('./utility/natsTerms');
 const hdb_terms = require('../../utility/hdbTerms');
-const hdb_utils = require('../../utility/common_utils');
 const harper_logger = require('../../utility/logging/harper_logger');
 const server_utilities = require('../serverHelpers/serverUtilities');
 const IPCClient = require('../ipc/IPCClient');
@@ -16,12 +15,10 @@ const operation_function_caller = require('../../utility/OperationFunctionCaller
 const transact_to_cluster_utilities = require('../../utility/clustering/transactToClusteringUtilities');
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
-const jc = JSONCodec();
-const MIN_EXPIRE = 1;
-const MAX_EXPIRE = 100;
-const MESSAGE_BATCH_SIZE = 1000;
-const QUEUE_FETCH_LOOP_CONDITION = true;
-const JS_CONSUMER_SUBJECT = `$JS.API.CONSUMER.MSG.NEXT.${nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name}.${nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name}`;
+const SUBSCRIPTION_OPTIONS = {
+	durable: nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name,
+	queue: nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_group,
+};
 
 let nats_connection;
 let server_name;
@@ -66,86 +63,25 @@ async function initialize() {
 }
 
 /**
- * Uses an internal Nats consumer to get batches of messages from the work queue and process each one.
+ * Uses an internal Nats consumer to subscribe to the  of messages from the work queue and process each one.
  * @returns {Promise<void>}
  */
 async function workQueueListener() {
-	// Creates a unique ID that can be used as an inbox name for the connection/consumer to publish to.
-	const inbox = createInbox();
-	let expire = MIN_EXPIRE;
-
-	do {
-		try {
-			// We use a timeout to slow the loop down and preserve CPU if there are no messages.
-			if (expire > MIN_EXPIRE) {
-				await hdb_utils.async_set_timeout(expire);
+	const sub = nats_connection.subscribe(
+		`${nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_subject}.${nats_connection.info.server_name}`,
+		SUBSCRIPTION_OPTIONS
+	);
+	const process_sub = async () => {
+		for await (const message of sub) {
+			try {
+				await messageProcessor(message);
+			} catch (e) {
+				harper_logger.error(e);
 			}
-
-			// Creates a subscription on the connection (leaf server), the name of that subscription is the unique inbox ID.
-			// This ID is used below when we ask the consumer to publish to it
-			const sub = nats_connection.subscribe(inbox);
-
-			const process_sub = (async () => {
-				let promises = [];
-				for await (const message of sub) {
-					try {
-						// Process each message in the subscription.
-						const error = checkJsError(message);
-						if (!hdb_utils.isEmpty(error)) throw error;
-						promises.push(messageProcessor(message));
-					} catch (e) {
-						// 404 & 408 errors will happen if there are no messages or batch is smaller than our batch setting.
-						// They are expected and for this reason ignored.
-						if (
-							e.code &&
-							!(e.code === ErrorCode.JetStream404NoMessages || e.code === ErrorCode.JetStream408RequestTimeout)
-						) {
-							harper_logger.error(e);
-						}
-					}
-				}
-
-				//process the transactions outside the subscription loop so that the subscription does not time out
-				if (promises.length > 0) {
-					let results = await Promise.allSettled(promises);
-					//iterate the results, log any rejected reasons.
-					results.forEach((result) => {
-						if (result.status === 'rejected') {
-							harper_logger.error(result.reason);
-						}
-					});
-					// If there are messages being processed we keep the expiration low to ensure messages are quickly processed.
-					expire = MIN_EXPIRE;
-				} else {
-					// When there are no messages we back off to preserve CPU usage.
-					expire = expire * 2 > MAX_EXPIRE ? MAX_EXPIRE : expire * 2;
-				}
-			})();
-
-			// We publish to the connection with a consumer name which is part nats internal api and part hdb work queue/consumer name.
-			// This tells the internal Nats consumer to gives us what's next on the work queue.
-			// The consumer will reply to a subject, the name of that subject is the inbox ID.
-			await nats_connection.publish(
-				JS_CONSUMER_SUBJECT,
-				jc.encode({
-					batch: MESSAGE_BATCH_SIZE,
-					no_wait: true,
-					expires: 0,
-				}),
-				{ reply: inbox, headers: undefined }
-			);
-			// Flush any pending messages.
-			await nats_connection.flush();
-			// Force the subscription to drain and process any messages.
-			await sub.drain();
-			// Make sure all messages in subscription have been processed.
-			await process_sub;
-		} catch (e) {
-			harper_logger.error(e);
 		}
+	};
 
-		// eslint-disable-next-line
-	} while (QUEUE_FETCH_LOOP_CONDITION);
+	await process_sub();
 }
 
 /**
@@ -155,6 +91,8 @@ async function workQueueListener() {
  */
 async function messageProcessor(msg) {
 	const js_msg = toJsMsg(msg);
+	//tell NATS we are working on the message and not to redeliver
+	js_msg.working();
 	const entry = decode(js_msg.data);
 
 	harper_logger.trace('processing message:', entry);
@@ -199,7 +137,7 @@ async function messageProcessor(msg) {
 		}
 	}
 
-	// Delete the message from the work queue stream once we have transacted it.
-	await js_manager.streams.deleteMessage(js_msg.info.stream, js_msg.info.streamSequence);
+	//Ack to NATS (because the stream is a workqueue) will delete the message from the work queue stream once we have transacted it.
+	js_msg.ack();
 	return result;
 }

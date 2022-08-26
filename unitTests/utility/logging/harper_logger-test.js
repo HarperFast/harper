@@ -234,17 +234,17 @@ describe('Test harper_logger module', () => {
 			sandbox.restore();
 		});
 
-		it('Test error is logged and function returns if called by pm2 process', () => {
+		it('Test trace is logged and function returns if called by pm2 process', () => {
 			process.env.pm_id = 1;
 			const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
 			const log_name_test = 'unit_test.log';
 			const log_process_name_test = 'unit_tests';
-			const error_stub = sandbox.stub();
-			const error_rw = harper_logger.__set__('error', error_stub);
+			const trace_stub = sandbox.stub();
+			const error_rw = harper_logger.__set__('trace', trace_stub);
 
 			harper_logger.createLogFile(log_name_test, log_process_name_test);
 
-			expect(error_stub.firstCall.args[0]).to.equal(
+			expect(trace_stub.firstCall.args[0]).to.equal(
 				'createLogFile should only be used if the process is not being managed by pm2'
 			);
 			error_rw();

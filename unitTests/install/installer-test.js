@@ -69,7 +69,7 @@ describe('Test installer module', () => {
 			installer.__set__('createConfigFile', create_config_stub);
 			installer.__set__('createSuperUser', create_super_user_stub);
 			installer.__set__('createClusterUser', create_cluster_user_stub);
-			installer.__set__('generateKeys', generate_keys_stub);
+			installer.__set__('generate_keys', generate_keys_stub);
 			installer.__set__('insertHdbVersionInfo', insert_ver_stub);
 			installer.__set__('check_jwt_tokens', check_jwt_stub);
 		});
@@ -338,18 +338,6 @@ describe('Test installer module', () => {
 			active: true,
 		});
 		create_admin_user_rw();
-	});
-
-	it('Test generateKeys calls write file with correct params', async () => {
-		const write_file_stub = sandbox.stub(fs, 'writeFile');
-		const generateKeys = installer.__get__('generateKeys');
-		await generateKeys();
-		expect(write_file_stub.getCall(0).args[0]).to.include('certificate.pem');
-		expect(write_file_stub.getCall(0).args[1]).to.include('BEGIN CERTIFICATE');
-		expect(write_file_stub.getCall(1).args[0]).to.include('privateKey.pem');
-		expect(write_file_stub.getCall(1).args[1]).to.include('BEGIN RSA PRIVATE KEY');
-		expect(write_file_stub.getCall(2).args[0]).to.include('ca.pem');
-		expect(write_file_stub.getCall(2).args[1]).to.include('BEGIN CERTIFICATE');
 	});
 
 	it('Test insertHdbVersionInfo calls insert with correct param', async () => {

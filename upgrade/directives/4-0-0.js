@@ -18,9 +18,20 @@ const insert = require('../../data_layer/insert');
 const routes = require('../../utility/clustering/routes');
 const nats_terms = require('../../server/nats/utility/natsTerms');
 const reindex_upgrade = require('./upgrade_scripts/4_0_0_reindex_script');
+const generate_keys = require('../../security/keys');
 
 let directive4_0_0 = new UpgradeDirective('4.0.0');
 let directives = [];
+
+async function generateNewKeys() {
+	console.log(`Generating new keys.`);
+	try {
+		await generate_keys();
+	} catch (err) {
+		console.error('There was a problem generating new keys. Please check the log for details.');
+		throw err;
+	}
+}
 
 /**
  * For each node in hdb_nodes table creates a route in harperdb.conf, splits
@@ -102,7 +113,7 @@ async function updateNodes() {
 	}
 }
 
-function updateSettingsFile_4_0_0() {
+async function updateSettingsFile_4_0_0() {
 	const settings_path = env.get(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
 	// If the pre 4.0.0 settings file doesn't exist skip settings file update
 	if (!settings_path.includes(path.join('config', 'settings.js'))) {
@@ -181,7 +192,8 @@ function updateSettingsFile_4_0_0() {
 	}
 }
 
-directive4_0_0.sync_functions.push(updateSettingsFile_4_0_0);
+directive4_0_0.async_functions.push(generateNewKeys);
+directive4_0_0.async_functions.push(updateSettingsFile_4_0_0);
 directive4_0_0.async_functions.push(updateNodes);
 directive4_0_0.async_functions.push(reindex_upgrade);
 

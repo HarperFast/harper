@@ -6,7 +6,6 @@ const fs = require('fs-extra');
 const PropertiesReader = require('properties-reader');
 const chalk = require('chalk');
 const path = require('path');
-const mkcert = require('mkcert');
 const hri = require('human-readable-ids').hri;
 const ora = require('ora');
 
@@ -17,7 +16,6 @@ const assignCMDENVVariables = require('../../utility/assignCmdEnvVariables');
 const hdb_info_controller = require('../../data_layer/hdbInfoController');
 const version = require('../../bin/version');
 const hdb_terms = require('../hdbTerms');
-const certificates_terms = require('../../utility/terms/certificates');
 const install_validator = require('../../validation/installValidator');
 const mount_hdb = require('../mount_hdb');
 const config_utils = require('../../config/configUtils');
@@ -27,6 +25,7 @@ const check_jwt_tokens = require('./checkJWTTokensExist');
 const global_schema = require('../../utility/globalSchema');
 const promisify = require('util').promisify;
 const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
+const generate_keys = require('../../security/keys');
 
 // Removes the color formatting that was being applied to the prompt answer.
 const PROMPT_ANSWER_TRANSFORMER = (answer) => answer;
@@ -117,6 +116,9 @@ async function install() {
 	}
 	env_manager.setHdbBasePath(hdb_root);
 
+	// Set where the pm2.log file is created. This has to be done before pm2 is imported.
+	process.env.PM2_LOG_FILE_PATH = path.join(hdb_root, 'log', 'pm2.log');
+
 	// Creates the HarperDB project folder structure and the LMDB environments/dbis.
 	await mount_hdb(hdb_root);
 
@@ -133,7 +135,7 @@ async function install() {
 	await createClusterUser(install_params);
 
 	// Create cert and private keys and write to file.
-	await generateKeys();
+	await generate_keys();
 
 	// Insert current version of HarperDB into versions table.
 	await insertHdbVersionInfo();
@@ -544,11 +546,13 @@ async function createAdminUser(role, admin_user) {
 		throw new Error(`Error creating role - ${err}`);
 	}
 
-	try {
-		admin_user.role = role_response.role;
-		await user_ops.addUser(admin_user);
-	} catch (err) {
-		throw new Error(`Error creating user - ${err}`);
+	if (admin_user) {
+		try {
+			admin_user.role = role_response.role;
+			await user_ops.addUser(admin_user);
+		} catch (err) {
+			throw new Error(`Error creating user - ${err}`);
+		}
 	}
 }
 
@@ -578,76 +582,35 @@ async function createSuperUser(install_params) {
 }
 
 /**
- * Creates cluster user if input from user.
+ * Creates the cluster_user role and if a cluster user is passed to install it
+ * will add that user with the cluster_user role.
  * @param install_params
  * @returns {Promise<void>}
  */
 async function createClusterUser(install_params) {
+	hdb_logger.trace('Creating Cluster user.');
+	let user = undefined;
 	if (
 		install_params[hdb_terms.INSTALL_PROMPTS.CLUSTERING_USER] &&
 		install_params[hdb_terms.INSTALL_PROMPTS.CLUSTERING_PASSWORD]
 	) {
-		hdb_logger.trace('Creating Cluster user.');
-		const role = {
-			role: 'cluster_user',
-			permission: {
-				cluster_user: true,
-			},
-		};
-
-		const user = {
+		user = {
 			username: install_params[hdb_terms.INSTALL_PROMPTS.CLUSTERING_USER].toString(),
 			password: install_params[hdb_terms.INSTALL_PROMPTS.CLUSTERING_PASSWORD].toString(),
 			active: true,
 		};
-
-		await createAdminUser(role, user);
-		delete install_params[hdb_terms.INSTALL_PROMPTS.CLUSTERING_USER];
-		delete install_params[hdb_terms.INSTALL_PROMPTS.CLUSTERING_PASSWORD];
-	}
-}
-
-async function generateKeys() {
-	hdb_root = env_manager.getHdbBasePath();
-	const keys_path = path.join(hdb_root, hdb_terms.LICENSE_KEY_DIR_NAME);
-
-	let cert = await mkcert.createCert({
-		domains: ['127.0.0.1', 'localhost', '::1'],
-		validityDays: 365,
-		caKey: certificates_terms.CERTIFICATE_VALUES.key,
-		caCert: certificates_terms.CERTIFICATE_VALUES.cert,
-	});
-	//write certificate
-	try {
-		await fs.writeFile(path.join(keys_path, certificates_terms.CERTIFICATE_PEM_NAME), cert.cert);
-	} catch (e) {
-		hdb_logger.error(e);
-		console.error('There was a problem creating the certificate file.  Please check the install log for details.');
-		throw e;
 	}
 
-	//write private key
-	try {
-		await fs.writeFile(path.join(keys_path, certificates_terms.PRIVATEKEY_PEM_NAME), cert.key);
-	} catch (e) {
-		hdb_logger.error(e);
-		console.error('There was a problem creating the private key file.  Please check the install log for details.');
-		throw e;
-	}
+	const role = {
+		role: 'cluster_user',
+		permission: {
+			cluster_user: true,
+		},
+	};
 
-	//write certificate authority key
-	try {
-		await fs.writeFile(
-			path.join(keys_path, certificates_terms.CA_PEM_NAME),
-			certificates_terms.CERTIFICATE_VALUES.cert
-		);
-	} catch (e) {
-		hdb_logger.error(e);
-		console.error(
-			'There was a problem creating the certificate authority file.  Please check the install log for details.'
-		);
-		throw e;
-	}
+	await createAdminUser(role, user);
+	delete install_params[hdb_terms.INSTALL_PROMPTS.CLUSTERING_USER];
+	delete install_params[hdb_terms.INSTALL_PROMPTS.CLUSTERING_PASSWORD];
 }
 
 /**

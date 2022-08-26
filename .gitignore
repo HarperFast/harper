@@ -18,6 +18,7 @@ unitTests/server/nats/tempTestDir/*
 dependencies/*
 !dependencies/nats-server.zip
 yarn.lock
+package-lock.json
 
 /npm_pack/*
 *.jsc
