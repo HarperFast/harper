@@ -14,7 +14,6 @@ jobs:
     outputs:
       nodeVersion: ${{ steps.getNode.outputs.NODE_VERSION }}
       harperdbVersion: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
-      goVersion: ${{ steps.getNode.outputs.GO_VERSION }}
     steps:
     - uses: actions/checkout@v2
     - id: getNode
@@ -26,7 +25,6 @@ jobs:
         GO_VERSION=$(cat package.json | jq -r '.engines."go-lang"')
         echo "::set-output name=NODE_VERSION::$NODE_VERSION"
         echo "::set-output name=HARPERDB_VERSION::$HARPERDB_VERSION"
-        echo "::set-output name=GO_VERSION::$GO_VERSION"
   createInstances:
     needs:
       - getNodeVersion
@@ -44,7 +42,6 @@ jobs:
     with:
       publicDns: ${{ needs.createInstances.outputs.publicDnsNames }}
       harperdbVersion: ${{ needs.getNodeVersion.outputs.harperdbVersion }}
-      goVersion: ${{ needs.getNodeVersion.outputs.goVersion }}
       nodeVersion: ${{ needs.getNodeVersion.outputs.nodeVersion }}
       installType: "sourceCode"
     secrets: inherit
@@ -69,7 +66,7 @@ jobs:
         for public_dns_name in ${public_dns_names[@]}
         do 
           echo "Starting work on: $public_dns_name"
-          ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
+          ssh -i private_key -o ConnectTimeout=10 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
             "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/source-code-unit-tests.sh && /home/ubuntu/harperdb/test/ci-tests/source-code-unit-tests.sh"
           echo "Ending work on: $public_dns_name"
         done

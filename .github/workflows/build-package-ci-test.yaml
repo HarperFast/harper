@@ -25,7 +25,6 @@ jobs:
     with:
       publicDns: ${{ needs.createInstances.outputs.publicDnsNames }}
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-      goVersion: ${{ needs.build.outputs.goVersion }}
       nodeVersion: ${{ needs.build.outputs.nodeVersion }}
     secrets: inherit
   runIntegrationTests:
@@ -47,7 +46,7 @@ jobs:
         for public_dns_name in ${public_dns_names[@]}
         do 
           echo "Starting work on: $public_dns_name"
-          ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
+          ssh -i private_key -o ConnectTimeout=10 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
                 "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/ci-tests.sh && /home/ubuntu/harperdb/test/ci-tests/ci-tests.sh"
           echo "Ending work on: $public_dns_name"
         done
