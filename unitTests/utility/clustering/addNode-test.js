@@ -35,12 +35,14 @@ describe('Test addNode module', () => {
 				table: 'beagle',
 				subscribe: true,
 				publish: true,
+				start_time: '2022-08-26T18:26:58.514Z',
 			},
 			{
 				schema: 'country',
 				table: 'england',
 				subscribe: true,
 				publish: false,
+				start_time: '2022-08-26T18:26:58.514Z',
 			},
 			{
 				schema: 'dog',
@@ -86,6 +88,7 @@ describe('Test addNode module', () => {
 					schema: 'breed',
 					subscribe: true,
 					table: 'beagle',
+					start_time: '2022-08-26T18:26:58.514Z',
 				},
 				{
 					hash_attribute: 'id',
@@ -93,6 +96,7 @@ describe('Test addNode module', () => {
 					schema: 'country',
 					subscribe: false,
 					table: 'england',
+					start_time: '2022-08-26T18:26:58.514Z',
 				},
 				{
 					hash_attribute: 'number',
@@ -100,6 +104,7 @@ describe('Test addNode module', () => {
 					schema: 'dog',
 					subscribe: true,
 					table: 'poodle',
+					start_time: undefined,
 				},
 			],
 			system_info: {
@@ -141,9 +146,21 @@ describe('Test addNode module', () => {
 		expect(create_table_streams_stub.called).to.be.true;
 		expect(request_stub.args[0][0]).to.eql('remote_node.__request__');
 		expect(request_stub.args[0][1]).to.eql(expected_payload);
-		expect(update_work_stream_stub.getCall(0).args[0]).to.eql(expected_node_record.subscriptions[0]);
+		expect(update_work_stream_stub.getCall(0).args[0]).to.eql({
+			schema: 'breed',
+			table: 'beagle',
+			subscribe: true,
+			publish: true,
+			start_time: '2022-08-26T18:26:58.514Z',
+		});
 		expect(update_work_stream_stub.getCall(0).args[1]).to.eql('remote_node');
-		expect(update_work_stream_stub.getCall(1).args[0]).to.eql(expected_node_record.subscriptions[1]);
+		expect(update_work_stream_stub.getCall(1).args[0]).to.eql({
+			schema: 'country',
+			table: 'england',
+			subscribe: true,
+			publish: false,
+			start_time: '2022-08-26T18:26:58.514Z',
+		});
 		expect(update_work_stream_stub.getCall(1).args[1]).to.eql('remote_node');
 		expect(update_work_stream_stub.getCall(2).args[0]).to.eql(expected_node_record.subscriptions[2]);
 		expect(update_work_stream_stub.getCall(2).args[1]).to.eql('remote_node');
