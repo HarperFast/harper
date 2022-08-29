@@ -506,7 +506,7 @@ describe('Test natsUtils module', () => {
 			await nats_utils.deleteLocalStream('__HARPERDB_WORK_QUEUE__');
 		}).timeout(TEST_TIMEOUT);
 
-		it('Test addSourceToWorkStream where start_time is before message in source', async () => {
+		it('Test addSourceToWorkStream where start_time is before one message in source', async () => {
 			// Create local stream
 			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
 			// Publish a message to stream
@@ -535,6 +535,31 @@ describe('Test natsUtils module', () => {
 				seq: wq_stream.state.first_seq,
 			});
 			expect(decodeJsMsg(msg).id).to.equal(2);
+
+			await jsm.consumers.delete(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, 'HDB_WORK_QUEUE');
+			await nats_utils.deleteLocalStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
+			await nats_utils.deleteLocalStream(TEST_STREAM_NAME_2);
+		}).timeout(TEST_TIMEOUT);
+
+		it('Test addSourceToWorkStream using default start_time', async () => {
+			// Create local stream
+			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
+			// Publish a message to stream
+			await nats_utils.publishToStream('devTest.capybara', TEST_STREAM_NAME_2, [{ id: 1 }]);
+			// Publish another message to the stream
+			await nats_utils.publishToStream('devTest.capybara', TEST_STREAM_NAME_2, [{ id: 2 }]);
+			// Create a work queue stream
+			await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
+			// Add the test local stream as a source to the work queue stream, pass the start date that was generated between the two inserts.
+			await nats_utils.addSourceToWorkStream(
+				'testLeafServer-leaf',
+				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+				TEST_STREAM_NAME_2
+			);
+			const { jsm } = await nats_utils.getNATSReferences();
+			// Get the work queue stream info and make sure there are no messaged in there.
+			const wq_stream = await jsm.streams.info(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
+			expect(wq_stream.state.messages).to.equal(0);
 
 			await jsm.consumers.delete(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, 'HDB_WORK_QUEUE');
 			await nats_utils.deleteLocalStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
@@ -644,6 +669,7 @@ describe('Test natsUtils module', () => {
 				table: 'poodle',
 				publish: false,
 				subscribe: true,
+				start_time: '2022-08-26T18:26:58.514Z',
 			},
 			'node_i_am'
 		);
@@ -651,6 +677,7 @@ describe('Test natsUtils module', () => {
 			'node_i_am-leaf',
 			'__HARPERDB_WORK_QUEUE__',
 			'd17550f31ac493889f2df5963586d31a',
+			'2022-08-26T18:26:58.514Z',
 		]);
 		add_source_rw();
 	});
