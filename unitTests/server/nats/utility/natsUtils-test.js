@@ -4,6 +4,9 @@ const rewire = require('rewire');
 const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
+const { toJsMsg } = require('nats');
+const { decode } = require('msgpackr');
+
 const test_utils = require('../../../test_utils');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const nats_terms = require('../../../../server/nats/utility/natsTerms');
@@ -11,12 +14,18 @@ const env_manager = require('../../../../utility/environment/environmentManager'
 const nats_utils = rewire('../../../../server/nats/utility/natsUtils');
 const hdb_logger = require('../../../../utility/logging/harper_logger');
 const crypto_hash = require('../../../../security/cryptoHash');
+const hdb_utils = require('../../../../utility/common_utils');
 
 const TEST_TIMEOUT = 30000;
 const TEST_SUBJECT_NAME = 'devTest.Chicken1.testLeafServer-leaf';
 const TEST_STREAM_NAME = crypto_hash.createNatsTableStreamName('devTest', 'Chicken1');
 const TEST_SUBJECT_NAME_2 = 'devTest.capybara.testLeafServer-leaf';
 const TEST_STREAM_NAME_2 = crypto_hash.createNatsTableStreamName('devTest', 'capybara');
+
+function decodeJsMsg(msg) {
+	const js_msg = toJsMsg(msg);
+	return decode(js_msg.data);
+}
 
 describe('Test natsUtils module', () => {
 	const sandbox = sinon.createSandbox();
@@ -491,9 +500,70 @@ describe('Test natsUtils module', () => {
 			expect(wq_stream.config.sources[0].name).to.equal(TEST_STREAM_NAME);
 			expect(wq_stream.config.sources[0].external.api).to.equal('$JS.unit_test_node.API');
 			expect(wq_stream.config.sources[0].external.deliver).to.equal('');
+			expect(wq_stream.config.sources[0].opt_start_time).to.not.be.undefined;
 
 			await jsm.consumers.delete('__HARPERDB_WORK_QUEUE__', 'HDB_WORK_QUEUE');
 			await nats_utils.deleteLocalStream('__HARPERDB_WORK_QUEUE__');
+		}).timeout(TEST_TIMEOUT);
+
+		it('Test addSourceToWorkStream where start_time is before one message in source', async () => {
+			// Create local stream
+			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
+			// Publish a message to stream
+			await nats_utils.publishToStream('devTest.capybara', TEST_STREAM_NAME_2, [{ id: 1 }]);
+			// Wait half a second
+			await hdb_utils.async_set_timeout(500);
+			// Get the time now
+			const test_start_date = new Date(Date.now()).toISOString();
+			// Publish another message to the stream
+			await nats_utils.publishToStream('devTest.capybara', TEST_STREAM_NAME_2, [{ id: 2 }]);
+			// Create a work queue stream
+			await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
+			// Add the test local stream as a source to the work queue stream, pass the start date that was generated between the two inserts.
+			await nats_utils.addSourceToWorkStream(
+				'testLeafServer-leaf',
+				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+				TEST_STREAM_NAME_2,
+				test_start_date
+			);
+			const { jsm } = await nats_utils.getNATSReferences();
+			// Get the work queue stream info and make sure there is just one message in the stream to prove that start date filter is working.
+			const wq_stream = await jsm.streams.info(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
+			expect(wq_stream.state.messages).to.equal(1);
+			// Get the one message from the work queue and make sure it is the one that was published after the start date
+			const msg = await jsm.streams.getMessage(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, {
+				seq: wq_stream.state.first_seq,
+			});
+			expect(decodeJsMsg(msg).id).to.equal(2);
+
+			await jsm.consumers.delete(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, 'HDB_WORK_QUEUE');
+			await nats_utils.deleteLocalStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
+			await nats_utils.deleteLocalStream(TEST_STREAM_NAME_2);
+		}).timeout(TEST_TIMEOUT);
+
+		it('Test addSourceToWorkStream using default start_time', async () => {
+			// Create local stream
+			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
+			// Publish a message to stream
+			await nats_utils.publishToStream('devTest.capybara', TEST_STREAM_NAME_2, [{ id: 1 }]);
+			// Publish another message to the stream
+			await nats_utils.publishToStream('devTest.capybara', TEST_STREAM_NAME_2, [{ id: 2 }]);
+			// Create a work queue stream
+			await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
+			// Add the test local stream as a source to the work queue stream, pass the start date that was generated between the two inserts.
+			await nats_utils.addSourceToWorkStream(
+				'testLeafServer-leaf',
+				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+				TEST_STREAM_NAME_2
+			);
+			const { jsm } = await nats_utils.getNATSReferences();
+			// Get the work queue stream info and make sure there are no messaged in there.
+			const wq_stream = await jsm.streams.info(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
+			expect(wq_stream.state.messages).to.equal(0);
+
+			await jsm.consumers.delete(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, 'HDB_WORK_QUEUE');
+			await nats_utils.deleteLocalStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
+			await nats_utils.deleteLocalStream(TEST_STREAM_NAME_2);
 		}).timeout(TEST_TIMEOUT);
 
 		it('Test removeSourceFromWorkStream removes a node from work stream', async () => {
@@ -599,6 +669,7 @@ describe('Test natsUtils module', () => {
 				table: 'poodle',
 				publish: false,
 				subscribe: true,
+				start_time: '2022-08-26T18:26:58.514Z',
 			},
 			'node_i_am'
 		);
@@ -606,6 +677,7 @@ describe('Test natsUtils module', () => {
 			'node_i_am-leaf',
 			'__HARPERDB_WORK_QUEUE__',
 			'd17550f31ac493889f2df5963586d31a',
+			'2022-08-26T18:26:58.514Z',
 		]);
 		add_source_rw();
 	});
