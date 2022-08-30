@@ -6,6 +6,8 @@ const { expect } = chai;
 const sinon = require('sinon');
 const { toJsMsg } = require('nats');
 const { decode } = require('msgpackr');
+const path = require('path');
+const fs = require('fs-extra');
 
 const test_utils = require('../../../test_utils');
 const hdb_terms = require('../../../../utility/hdbTerms');
@@ -588,8 +590,42 @@ describe('Test natsUtils module', () => {
 
 			const jsm = await nats_utils.getJetStreamManager();
 			const wq_stream = await jsm.streams.info(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
+			await nats_utils.removeSourceFromWorkStream(
+				'unit_test_node',
+				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+				'dev_horse'
+			);
+
 			expect(wq_stream.config.sources.length).to.equal(1);
 			expect(wq_stream.config.sources[0].name).to.equal('dev_horse');
+		}).timeout(TEST_TIMEOUT);
+
+		it('Test removeSourceFromWorkStream removes last node from work stream', async () => {
+			const jsm = await nats_utils.getJetStreamManager();
+			await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
+			await jsm.streams.purge(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
+			await nats_utils.addSourceToWorkStream(
+				'unit_test_node',
+				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+				TEST_STREAM_NAME
+			);
+
+			await nats_utils.removeSourceFromWorkStream(
+				'unit_test_node',
+				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+				TEST_STREAM_NAME
+			);
+
+			const wq_stream = await jsm.streams.info(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
+			expect(wq_stream.config.sources).to.be.undefined;
+
+			const work_queue_inf_file = path.resolve(
+				__dirname,
+				'../tempTestDir/clustering/leaf/jetstream/HDB/streams/__HARPERDB_WORK_QUEUE__/meta.inf'
+			);
+
+			const inf_json = await fs.readJson(work_queue_inf_file);
+			expect(inf_json.sources).to.be.undefined;
 		}).timeout(TEST_TIMEOUT);
 	});
 

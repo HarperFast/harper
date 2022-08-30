@@ -613,12 +613,7 @@ async function removeSourceFromWorkStream(node, work_queue_name, stream_name) {
 		}
 	}
 
-	if (w_q_stream.config.sources.length === 0) {
-		delete w_q_stream.config.sources;
-	}
-
 	await jsm.streams.update(work_queue_name, w_q_stream.config);
-	const wq_stream = await jsm.streams.info(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
 }
 
 /**
