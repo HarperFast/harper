@@ -613,10 +613,6 @@ async function removeSourceFromWorkStream(node, work_queue_name, stream_name) {
 		}
 	}
 
-	if (w_q_stream.config.sources.length === 0) {
-		w_q_stream.config.sources = [];
-	}
-
 	await jsm.streams.update(work_queue_name, w_q_stream.config);
 }
 
