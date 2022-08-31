@@ -491,7 +491,7 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 		await jsm.streams.add({
 			name: CONSUMER_NAMES.stream_name,
 			storage: StorageType.File,
-			retention: RetentionPolicy.Workqueue,
+			retention: RetentionPolicy.Limits,
 			subjects: [`${CONSUMER_NAMES.stream_name}.${server_name}`],
 		});
 	} catch (err) {
