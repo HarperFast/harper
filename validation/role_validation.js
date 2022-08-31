@@ -19,6 +19,10 @@ const constraintsTemplate = () => ({
 	},
 });
 
+const STRUCTURE_USER_ENUM = {
+	STRUCTURE_USER: 'structure_user',
+};
+
 const ROLE_TYPES = Object.values(terms.ROLE_TYPES_ENUM);
 const ATTR_PERMS_KEY = 'attribute_permissions';
 const ATTR_NAME_KEY = 'attribute_name';
@@ -96,6 +100,31 @@ function customValidate(object, constraints) {
 
 	for (let item in object.permission) {
 		if (ROLE_TYPES.indexOf(item) < 0) {
+			//validate the user type 'structure_user'.  acceptable data type is boolean or array of strings (this would be array of accepted schemas to interact with)
+			if (item === STRUCTURE_USER_ENUM.STRUCTURE_USER) {
+				let structure_user_perm = object.permission[item];
+
+				//boolean is valid, move on
+				if (typeof structure_user_perm === 'boolean') {
+					continue;
+				}
+
+				//array is valid check to make sure each entry is actually a schema.
+				if (Array.isArray(structure_user_perm)) {
+					for (let k = 0, length = structure_user_perm.length; k < length; k++) {
+						let schema_perm = structure_user_perm[k];
+						if (!global.hdb_schema[schema_perm]) {
+							addPermError(HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schema_perm), validationErrors);
+						}
+					}
+					continue;
+				}
+
+				//if we end up here then this is an invalid data type
+				addPermError(HDB_ERROR_MSGS.STRUCTURE_USER_ROLE_TYPE_ERROR(item), validationErrors);
+				continue;
+			}
+
 			let schema = object.permission[item];
 			//validate that schema exists
 			if (!item || !global.hdb_schema[item]) {

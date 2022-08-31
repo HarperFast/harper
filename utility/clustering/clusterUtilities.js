@@ -163,7 +163,14 @@ function buildNodePayloads(
 		// the reverse pub/sub of the local node.
 		// We only include subs that are changing in the payload
 		const { subscribe, publish } = reverseSubscription(subscription);
-		const remote_payload_sub = new RemotePayloadSubscription(schema, table, hash_attribute, publish, subscribe);
+		const remote_payload_sub = new RemotePayloadSubscription(
+			schema,
+			table,
+			hash_attribute,
+			publish,
+			subscribe,
+			subscription.start_time
+		);
 		remote_node_subs.push(remote_payload_sub);
 	}
 

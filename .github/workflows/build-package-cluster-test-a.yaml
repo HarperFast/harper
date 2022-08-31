@@ -5,7 +5,7 @@ on:
   schedule:
     - cron:  '0 12 * * 1-5'
   workflow_dispatch:
-name: Run Build Package Cluster Test B
+name: Run Build Package Cluster Test A
 jobs:
   build:
     uses: ./.github/workflows/build.yaml
@@ -14,7 +14,7 @@ jobs:
       - build
     uses: ./.github/workflows/create-instances.yaml
     with:
-      instanceCount: "4"
+      instanceCount: "5"
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
     secrets: inherit
   registerInstances:
@@ -35,7 +35,7 @@ jobs:
       - registerInstances
       - build
     steps:
-    - name: Run Cluster Test B on Instances
+    - name: Run Cluster Test A on Instances
       env:
         CI_PRIVATE_KEY: ${{ secrets.CI_PRIVATE_KEY }}
       run: |
@@ -54,7 +54,7 @@ jobs:
         echo "Starting work on: $public_dns_name"
 
         ssh -i private_key -o ConnectTimeout=10 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
-          "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/cluster-test-b.sh && /home/ubuntu/harperdb/test/ci-tests/cluster-test-b.sh ${public_ips[@]} ${public_dns_names[@]}"
+          "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/cluster-test-a.sh && /home/ubuntu/harperdb/test/ci-tests/cluster-test-a.sh ${public_ips[@]} ${public_dns_names[@]}"
         echo "Ending work on: $public_dns_name"
   downloadLogs:
     if: always()
@@ -70,5 +70,5 @@ jobs:
     needs: downloadLogs
     uses: ./.github/workflows/destroy-instances.yaml
     with:
-      instanceCount: "4"
+      instanceCount: "5"
     secrets: inherit   

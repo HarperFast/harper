@@ -125,6 +125,7 @@ describe('Test clusterUtilities', () => {
 				table: 'beagle',
 				publish: true,
 				subscribe: true,
+				start_time: '2022-08-26T18:26:58.514Z',
 			},
 			{
 				schema: 'country',
@@ -137,6 +138,7 @@ describe('Test clusterUtilities', () => {
 				table: 'poodle',
 				publish: true,
 				subscribe: false,
+				start_time: '2022-08-24T18:26:58.514Z',
 			},
 		];
 
@@ -175,6 +177,7 @@ describe('Test clusterUtilities', () => {
 					schema: 'breed',
 					subscribe: true,
 					table: 'beagle',
+					start_time: '2022-08-26T18:26:58.514Z',
 				},
 				{
 					hash_attribute: 'id',
@@ -182,6 +185,7 @@ describe('Test clusterUtilities', () => {
 					schema: 'country',
 					subscribe: false,
 					table: 'england',
+					start_time: undefined,
 				},
 				{
 					hash_attribute: 'number',
@@ -189,6 +193,7 @@ describe('Test clusterUtilities', () => {
 					schema: 'dog',
 					subscribe: true,
 					table: 'poodle',
+					start_time: '2022-08-24T18:26:58.514Z',
 				},
 			],
 			system_info: {

@@ -40,7 +40,7 @@ const {
 	nuid,
 	JetStreamOptions,
 	ErrorCode,
-	nanos
+	nanos,
 } = require('nats');
 const { PACKAGE_ROOT } = require('../../../utility/hdbTerms');
 
@@ -512,7 +512,7 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 				durable_name: CONSUMER_NAMES.durable_name,
 				deliver_policy: DeliverPolicy.All,
 				max_ack_pending: 10000,
-				deliver_group: CONSUMER_NAMES.deliver_group
+				deliver_group: CONSUMER_NAMES.deliver_group,
 			});
 		} else {
 			throw e;
@@ -525,9 +525,16 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
  * @param {String} node - name of node to derive source from
  * @param {String} work_queue_name - name of local stream to add source to
  * @param {String} stream_name - name of remote stream to source from
+ * @param {String} start_time - when (how far back) to start sourcing transaction from the source being added to stream in format YYYY-MM-DDTHH:mm:ss.sssZ
  * @returns {Promise<void>}
  */
-async function addSourceToWorkStream(node, work_queue_name, stream_name) {
+
+async function addSourceToWorkStream(
+	node,
+	work_queue_name,
+	stream_name,
+	start_time = new Date(Date.now()).toISOString()
+) {
 	const { jsm } = await getNATSReferences();
 	const w_q_stream = await jsm.streams.info(work_queue_name);
 	const server_name = extractServerName(jsm.prefix);
@@ -560,6 +567,7 @@ async function addSourceToWorkStream(node, work_queue_name, stream_name) {
 
 	let new_source = {
 		name: stream_name,
+		opt_start_time: start_time,
 	};
 
 	if (!is_local_stream) {
@@ -605,12 +613,7 @@ async function removeSourceFromWorkStream(node, work_queue_name, stream_name) {
 		}
 	}
 
-	if (w_q_stream.config.sources.length === 0) {
-		delete w_q_stream.config.sources;
-	}
-
 	await jsm.streams.update(work_queue_name, w_q_stream.config);
-	const wq_stream = await jsm.streams.info(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
 }
 
 /**
@@ -730,7 +733,12 @@ async function updateWorkStream(subscription, node_name) {
 	// The connection between nodes can only be a "pull" relationship. This means we only care about the subscribe param.
 	// If a node is publishing to another node that publishing relationship is setup by have the opposite node subscribe to the node that is publishing.
 	if (subscription.subscribe === true) {
-		await addSourceToWorkStream(node_domain_name, nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, stream_name);
+		await addSourceToWorkStream(
+			node_domain_name,
+			nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+			stream_name,
+			subscription.start_time
+		);
 	} else {
 		await removeSourceFromWorkStream(node_domain_name, nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, stream_name);
 	}

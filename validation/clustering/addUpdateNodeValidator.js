@@ -1,7 +1,7 @@
 'use strict';
 
 const Joi = require('joi');
-const { string, boolean } = Joi.types();
+const { string, boolean, date } = Joi.types();
 const validator = require('../validationWrapper');
 const { validateSchemaExists, validateTableExists, validateSchemaName } = require('../common_validators');
 const hdb_terms = require('../../utility/hdbTerms');
@@ -27,6 +27,7 @@ const validation_schema = {
 			schema: string.custom(validateSchemaExists).custom(validateSchemaName).required(),
 			subscribe: boolean.required(),
 			publish: boolean.required().custom(checkForFalsy),
+			start_time: date.iso(),
 		})
 		.min(1)
 		.required(),

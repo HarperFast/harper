@@ -29,6 +29,7 @@ describe('Test updateNode module', () => {
 				table: 'england',
 				subscribe: true,
 				publish: false,
+				start_time: '2022-08-26T18:26:58.514Z',
 			},
 			{
 				schema: 'dog',
@@ -106,6 +107,7 @@ describe('Test updateNode module', () => {
 					schema: 'country',
 					subscribe: false,
 					table: 'england',
+					start_time: '2022-08-26T18:26:58.514Z',
 				},
 				{
 					hash_attribute: 'number',
@@ -113,6 +115,7 @@ describe('Test updateNode module', () => {
 					schema: 'dog',
 					subscribe: true,
 					table: 'poodle',
+					start_time: undefined,
 				},
 			],
 			system_info: {
