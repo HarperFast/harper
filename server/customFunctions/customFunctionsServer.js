@@ -142,16 +142,15 @@ async function buildRoutes(cf_server) {
 				next();
 			});
 
-		await cf_server.register(require('./plugins/hdbCore'))
 		await cf_server.after()
 		const project_folders = fs.readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
 
 		// loop through all the projects
 		project_folders.forEach((project_entry) => {
 			if (!project_entry.isDirectory()) return;
-			harper_logger.trace('Loading project folder ' + project_folder);
 			const project_name = project_entry.name;
 			const project_folder = path.join(CF_ROUTES_DIR, project_name);
+			harper_logger.trace('Loading project folder ' + project_folder);
 			const routes_directory = `${project_folder}/routes`;
 			const static_directory = `${project_folder}/static`;
 			const static_index = `${project_folder}/static/index.html`;
