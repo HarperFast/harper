@@ -491,7 +491,7 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 		await jsm.streams.add({
 			name: CONSUMER_NAMES.stream_name,
 			storage: StorageType.File,
-			retention: RetentionPolicy.Workqueue,
+			retention: RetentionPolicy.Limits,
 			subjects: [`${CONSUMER_NAMES.stream_name}.${server_name}`],
 		});
 	} catch (err) {
@@ -542,12 +542,13 @@ async function addSourceToWorkStream(
 	// Check to see if the source is being added to a local stream. Local streams require a slightly different config.
 	const is_local_stream = server_name === node;
 
+	let source;
 	let found = false;
 	if (!Array.isArray(w_q_stream.config.sources) || w_q_stream.config.sources.length === 0) {
 		w_q_stream.config.sources = [];
 	} else {
 		for (let x = 0, length = w_q_stream.config.sources.length; x < length; x++) {
-			let source = w_q_stream.config.sources[x];
+			source = w_q_stream.config.sources[x];
 			if (
 				(is_local_stream && source.name === stream_name) ||
 				(!is_local_stream &&
@@ -562,7 +563,10 @@ async function addSourceToWorkStream(
 	}
 
 	if (found === true) {
-		return;
+		// If the source already exists in the work stream and there is no change to the start time, do nothing.
+		if (source.opt_start_time === start_time) return;
+
+		//jsm.streams.purge(work_queue_name, { filter: })
 	}
 
 	let new_source = {

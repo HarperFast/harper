@@ -24,6 +24,7 @@ let nats_connection;
 let server_name;
 let js_manager;
 let js_client;
+let sequence_map = new Map();
 
 module.exports = {
 	initialize,
@@ -137,7 +138,22 @@ async function messageProcessor(msg) {
 		}
 	}
 
+	// To stop the work stream from receiving all messages from a source on restart we must keep the most recent
+	// message for each source in the work stream. To do this we track the message sequence in a map and delete
+	// it when the next message come through.
+	const subject = js_msg.subject;
+	if (sequence_map.get(subject) !== undefined) {
+		try {
+			await js_manager.streams.deleteMessage(js_msg.info.stream, sequence_map.get(subject));
+		} catch (err) {
+			harper_logger.warn(err);
+		}
+	}
+
+	sequence_map.set(subject, js_msg.info.streamSequence);
+
 	//Ack to NATS (because the stream is a workqueue) will delete the message from the work queue stream once we have transacted it.
 	js_msg.ack();
+
 	return result;
 }
