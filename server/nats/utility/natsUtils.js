@@ -542,12 +542,14 @@ async function addSourceToWorkStream(node, work_queue_name, subscription) {
 	const is_local_stream = server_name === node;
 
 	let source;
+	let source_index;
 	let found = false;
 	if (!Array.isArray(w_q_stream.config.sources) || w_q_stream.config.sources.length === 0) {
 		w_q_stream.config.sources = [];
 	} else {
 		for (let x = 0, length = w_q_stream.config.sources.length; x < length; x++) {
 			source = w_q_stream.config.sources[x];
+			source_index = x;
 			if (
 				(is_local_stream && source.name === stream_name) ||
 				(!is_local_stream &&
@@ -568,10 +570,8 @@ async function addSourceToWorkStream(node, work_queue_name, subscription) {
 		// Purge any msgs from source in work stream. This ensures new start time is honoured
 		await purgeSourceFromWorkStream(schema, table, source, work_queue_name);
 
-		// Update existing source config with new start time
-		source.opt_start_time = start_time;
+		w_q_stream.config.sources.splice(source_index, 1);
 		await jsm.streams.update(work_queue_name, w_q_stream.config);
-		return;
 	}
 
 	let new_source = {
