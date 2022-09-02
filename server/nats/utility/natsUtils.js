@@ -564,7 +564,14 @@ async function addSourceToWorkStream(node, work_queue_name, subscription) {
 	if (found === true) {
 		// If the source already exists in the work stream and there is no change to the start time, do nothing.
 		if (source.opt_start_time === start_time) return;
+
+		// Purge any msgs from source in work stream. This ensures new start time is honoured
 		await purgeSourceFromWorkStream(schema, table, source, work_queue_name);
+
+		// Update existing source config with new start time
+		source.opt_start_time = start_time;
+		await jsm.streams.update(work_queue_name, w_q_stream.config);
+		return;
 	}
 
 	let new_source = {
