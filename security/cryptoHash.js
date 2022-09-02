@@ -58,15 +58,7 @@ function createNatsTableStreamName(schema, table) {
 	if (!hash) {
 		hash = crypto.createHash('md5').update(`${schema}.${table}`).digest('hex');
 		hash_cache.set(full_name, hash);
-		// This is here so that we can easily get the unhashed full name from the map
-		hash_cache.set(hash, full_name);
 	}
 
 	return hash;
-}
-
-function getTableStreamName(stream_hash) {
-	if (hash_cache.get(stream_hash)) {
-		return hash_cache.get(stream_hash);
-	}
 }
