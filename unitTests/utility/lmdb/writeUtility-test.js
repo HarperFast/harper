@@ -307,7 +307,7 @@ describe('Test writeUtility module', () => {
 				records.push(value);
 			}
 			let expected = [ONE_RECORD_ARRAY_EXPECTED[0]];
-			assert.deepStrictEqual(records, expected);
+			assert.deepStrictEqual(copyRecords(records), expected);
 			assert.deepStrictEqual(keys, [1]);
 
 			keys = [];
@@ -436,7 +436,7 @@ describe('Test writeUtility module', () => {
 				records.push(value);
 			}
 			let expected = [ONE_RECORD_ARRAY_EXPECTED[0]];
-			assert.deepStrictEqual(records, expected);
+			assert.deepStrictEqual(copyRecords(records), expected);
 			assert.deepStrictEqual(keys, [1]);
 
 			keys = [];
@@ -536,7 +536,7 @@ describe('Test writeUtility module', () => {
 				values.push(value);
 			}
 			assert.deepStrictEqual(keys, [2000]);
-			assert.deepStrictEqual(values, [record]);
+			assert.deepStrictEqual(copyRecords(values), [record]);
 		});
 	});
 
@@ -629,6 +629,7 @@ describe('Test writeUtility module', () => {
 			}
 
 			let expected = [ONE_RECORD_ARRAY_EXPECTED[0]];
+			records = copyRecords(records);
 			assert.deepStrictEqual(records, expected);
 
 			let expected_update_response = new UpdateRecordsResponseObject([1], [], TXN_TIMESTAMP, records);
@@ -650,7 +651,7 @@ describe('Test writeUtility module', () => {
 				records.push(value);
 			}
 			let expected2 = [UPDATE_ONE_RECORD_ARRAY_EXPECTED[0]];
-			assert.deepStrictEqual(records, expected2);
+			assert.deepStrictEqual(copyRecords(records), expected2);
 		});
 
 		it('test update one existing row with row whose timestamp is older than row in database', async () => {
@@ -662,6 +663,7 @@ describe('Test writeUtility module', () => {
 			}
 
 			let expected = [ONE_RECORD_ARRAY_EXPECTED[0]];
+			records = copyRecords(records);
 			assert.deepStrictEqual(records, expected);
 
 			let expected_update_response = new UpdateRecordsResponseObject([], [1], TXN_TIMESTAMP, []);
@@ -682,7 +684,7 @@ describe('Test writeUtility module', () => {
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
 				records.push(value);
 			}
-			assert.deepStrictEqual(records, expected);
+			assert.deepStrictEqual(copyRecords(records), expected);
 		});
 
 		it('test update one existing row, generate timestamps = false, but no updatedtimestamp', async () => {
@@ -694,9 +696,9 @@ describe('Test writeUtility module', () => {
 			}
 
 			let expected = [ONE_RECORD_ARRAY_EXPECTED[0]];
-			assert.deepStrictEqual(records, expected);
+			assert.deepStrictEqual(copyRecords(records), expected);
 
-			let expected_update_response = new UpdateRecordsResponseObject([1], [], TXN_TIMESTAMP, records);
+			let expected_update_response = new UpdateRecordsResponseObject([1], [], TXN_TIMESTAMP, copyRecords(records));
 
 			let update_records = test_utils.deepClone(UPDATE_ONE_RECORD_ARRAY);
 			update_records[0]['__createdtime__'] = 'bad value';
@@ -715,7 +717,7 @@ describe('Test writeUtility module', () => {
 				records.push(value);
 			}
 			let expected2 = [UPDATE_ONE_RECORD_ARRAY_EXPECTED[0]];
-			assert.deepStrictEqual(records, expected2);
+			assert.deepStrictEqual(copyRecords(records), expected2);
 		});
 
 		it('test update one existing row, generate timestamps = false, updated timestamp is newer the one in db', async () => {
@@ -725,7 +727,7 @@ describe('Test writeUtility module', () => {
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
 				records.push(value);
 			}
-
+			records = copyRecords(records);
 			let expected = [ONE_RECORD_ARRAY_EXPECTED[0]];
 			assert.deepStrictEqual(records, expected);
 
@@ -751,7 +753,7 @@ describe('Test writeUtility module', () => {
 			}
 			let expected2 = test_utils.deepClone([UPDATE_ONE_RECORD_ARRAY_EXPECTED[0]]);
 			expected2[0].__updatedtime__ = updated_time;
-			assert.deepStrictEqual(records, expected2);
+			assert.deepStrictEqual(copyRecords(records), expected2);
 		});
 
 		it('test update one existing row & one non-existing row', async () => {
@@ -761,7 +763,8 @@ describe('Test writeUtility module', () => {
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
 				records.push(value);
 			}
-			assert.deepStrictEqual(records, ONE_RECORD_ARRAY_EXPECTED);
+			let orig_records = copyRecords(records);
+			assert.deepStrictEqual(orig_records, ONE_RECORD_ARRAY_EXPECTED);
 
 			let update_records = test_utils.deepClone(UPDATE_ONE_RECORD_ARRAY.concat(UPDATE_ONE_FAKE_RECORD));
 			let results = await test_utils.assertErrorAsync(
@@ -770,11 +773,6 @@ describe('Test writeUtility module', () => {
 				undefined
 			);
 
-			let orig_records = [];
-			records.forEach((rec) => {
-				let record = Object.assign({}, rec);
-				orig_records.push(record);
-			});
 			let expected_update_response = new UpdateRecordsResponseObject([1], [111], TXN_TIMESTAMP, orig_records);
 
 			let expected_update_records = test_utils.deepClone(UPDATE_ONE_RECORD_ARRAY);
@@ -789,7 +787,7 @@ describe('Test writeUtility module', () => {
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
 				records.push(value);
 			}
-			assert.deepStrictEqual(records, UPDATE_ONE_RECORD_ARRAY_EXPECTED);
+			assert.deepStrictEqual(copyRecords(records), UPDATE_ONE_RECORD_ARRAY_EXPECTED);
 		});
 
 		it('test partially updating row & make sure other attributes are untouched', async () => {
@@ -807,13 +805,9 @@ describe('Test writeUtility module', () => {
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
 				records.push(value);
 			}
-			assert.deepStrictEqual(records, ONE_RECORD_ARRAY_EXPECTED);
+			assert.deepStrictEqual(copyRecords(records), ONE_RECORD_ARRAY_EXPECTED);
 
-			let orig_records = [];
-			records.forEach((rec) => {
-				let record = Object.assign({}, rec);
-				orig_records.push(record);
-			});
+			let orig_records = copyRecords(records);
 			let expected_update_response = new UpdateRecordsResponseObject([1], [], TXN_TIMESTAMP, orig_records);
 
 			let results = await test_utils.assertErrorAsync(
@@ -834,7 +828,7 @@ describe('Test writeUtility module', () => {
 			let expected2 = [
 				{ id: 1, name: 'Kyle', city: 'Denver', age: 46, __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP },
 			];
-			assert.deepStrictEqual(records, expected2);
+			assert.deepStrictEqual(copyRecords(records), expected2);
 		});
 
 		it('test partially updating row to have long text, then change the long text', async () => {
@@ -857,13 +851,9 @@ describe('Test writeUtility module', () => {
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
 				records.push(value);
 			}
-			assert.deepStrictEqual(records, ONE_RECORD_ARRAY_EXPECTED);
+			assert.deepStrictEqual(copyRecords(records), ONE_RECORD_ARRAY_EXPECTED);
 
-			let orig_records = [];
-			records.forEach((rec) => {
-				let record = Object.assign({}, rec);
-				orig_records.push(record);
-			});
+			let orig_records = copyRecords(records);
 			let expected_update_response = new UpdateRecordsResponseObject([1], [], TXN_TIMESTAMP, orig_records);
 
 			let results = await test_utils.assertErrorAsync(
@@ -880,15 +870,11 @@ describe('Test writeUtility module', () => {
 			let expected2 = [
 				{ id: 1, name: 'Kyle', age: 46, text: record.text, __updatedtime__: TIMESTAMP, __createdtime__: TIMESTAMP },
 			];
-			assert.deepStrictEqual(records, expected2);
+			assert.deepStrictEqual(copyRecords(records), expected2);
 
 			//set text to undefined & verify it's gone
 
-			orig_records = [];
-			records.forEach((rec) => {
-				let record = Object.assign({}, rec);
-				orig_records.push(record);
-			});
+			orig_records = copyRecords(records);
 			expected_update_response = new UpdateRecordsResponseObject([1], [], TXN_TIMESTAMP, orig_records);
 
 			results = await test_utils.assertErrorAsync(
@@ -906,7 +892,8 @@ describe('Test writeUtility module', () => {
 			expected2 = [
 				{ id: 1, name: 'Kyle', age: 46, text: null, __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP },
 			];
-			assert.deepStrictEqual(records, expected2);
+			let copy_records = copyRecords(records);
+			assert.deepStrictEqual(copy_records, expected2);
 		});
 
 		it('test partially updating row to have long text which is json, then remove the json', async () => {
@@ -932,13 +919,9 @@ describe('Test writeUtility module', () => {
 				records.push(value);
 			}
 
-			assert.deepEqual(records, ONE_RECORD_ARRAY_EXPECTED);
+			assert.deepEqual(copyRecords(records), ONE_RECORD_ARRAY_EXPECTED);
 
-			let orig_records = [];
-			records.forEach((rec) => {
-				let record = Object.assign({}, rec);
-				orig_records.push(record);
-			});
+			let orig_records = copyRecords(records);
 			let expected_update_response = new UpdateRecordsResponseObject([1], [], TXN_TIMESTAMP, orig_records);
 
 			let results = await test_utils.assertErrorAsync(
@@ -955,12 +938,11 @@ describe('Test writeUtility module', () => {
 			let expected2 = [
 				{ id: 1, name: 'Kyle', age: 46, json: record.json, __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP },
 			];
-			assert.deepStrictEqual(records, expected2);
+			orig_records = copyRecords(records);
+			assert.deepStrictEqual(orig_records, expected2);
 
 			//set json to undefined & verify it's gone
 
-			orig_records = [];
-			orig_records.push(Object.assign({}, records[0]));
 			expected_update_response = new UpdateRecordsResponseObject([1], [], TXN_TIMESTAMP, orig_records);
 
 			results = await test_utils.assertErrorAsync(
@@ -977,7 +959,7 @@ describe('Test writeUtility module', () => {
 			expected2 = [
 				{ id: 1, name: 'Kyle', age: 46, json: null, __updatedtime__: TIMESTAMP, __createdtime__: TIMESTAMP },
 			];
-			assert.deepStrictEqual(records, expected2);
+			assert.deepStrictEqual(copyRecords(records), expected2);
 		});
 
 		it('test update with alasql function', async () => {
@@ -1163,7 +1145,7 @@ describe('Test writeUtility module', () => {
 
 			let records = [];
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
-				records.push(value);
+				records.push(copyRecord(value));
 			}
 			let expected = [ONE_RECORD_ARRAY_EXPECTED[0]];
 			assert.deepStrictEqual(records, expected);
@@ -1189,7 +1171,7 @@ describe('Test writeUtility module', () => {
 
 			records = [];
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
-				records.push(value);
+				records.push(copyRecord(value));
 			}
 			assert.deepStrictEqual(records, [UPDATE_ONE_RECORD_ARRAY_EXPECTED[0]]);
 		});
@@ -1199,7 +1181,7 @@ describe('Test writeUtility module', () => {
 
 			let records = [];
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
-				records.push(value);
+				records.push(copyRecord(value));
 			}
 			let expected = [ONE_RECORD_ARRAY_EXPECTED[0]];
 			assert.deepStrictEqual(records, expected);
@@ -1229,7 +1211,7 @@ describe('Test writeUtility module', () => {
 
 			records = [];
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
-				records.push(value);
+				records.push(copyRecord(value));
 			}
 			let expected2 = [UPDATE_ONE_RECORD_ARRAY_EXPECTED[0], UPDATE_ONE_FAKE_RECORD_EXPECTED];
 			assert.deepStrictEqual(records, expected2);
@@ -1248,7 +1230,7 @@ describe('Test writeUtility module', () => {
 
 			let records = [];
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
-				records.push(value);
+				records.push(copyRecord(value));
 			}
 			assert.deepStrictEqual(records, ONE_RECORD_ARRAY_EXPECTED);
 
@@ -1268,7 +1250,7 @@ describe('Test writeUtility module', () => {
 
 			records = [];
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
-				records.push(value);
+				records.push(copyRecord(value));
 			}
 			let expected2 = [
 				{ id: 1, name: 'Kyle', city: 'Denver', age: 46, __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP },
@@ -1294,7 +1276,7 @@ describe('Test writeUtility module', () => {
 
 			let records = [];
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
-				records.push(value);
+				records.push(copyRecord(value));
 			}
 			assert.deepStrictEqual(records, ONE_RECORD_ARRAY_EXPECTED);
 
@@ -1314,7 +1296,7 @@ describe('Test writeUtility module', () => {
 
 			records = [];
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
-				records.push(value);
+				records.push(copyRecord(value));
 			}
 			let expected2 = [
 				{ id: 1, name: 'Kyle', age: 46, text: record.text, __updatedtime__: TIMESTAMP, __createdtime__: TIMESTAMP },
@@ -1325,8 +1307,7 @@ describe('Test writeUtility module', () => {
 
 			orig_records = [];
 			records.forEach((rec) => {
-				let record = Object.assign({}, rec);
-				orig_records.push(record);
+				orig_records.push(copyRecord(rec));
 			});
 			expected_upsert_response = new UpsertRecordsResponseObject([1], TXN_TIMESTAMP, orig_records);
 
@@ -1339,7 +1320,7 @@ describe('Test writeUtility module', () => {
 
 			records = [];
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
-				records.push(value);
+				records.push(copyRecord(value));
 			}
 			expected2 = [
 				{ id: 1, name: 'Kyle', age: 46, text: null, __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP },
@@ -1367,14 +1348,13 @@ describe('Test writeUtility module', () => {
 
 			let records = [];
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
-				records.push(value);
+				records.push(copyRecord(value));
 			}
 			assert.deepEqual(records, ONE_RECORD_ARRAY_EXPECTED);
 
 			let orig_records = [];
 			records.forEach((rec) => {
-				let record = Object.assign({}, rec);
-				orig_records.push(record);
+				orig_records.push(copyRecord(rec));
 			});
 			let expected_upsert_response = new UpsertRecordsResponseObject([1], TXN_TIMESTAMP, orig_records);
 
@@ -1387,7 +1367,7 @@ describe('Test writeUtility module', () => {
 
 			records = [];
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
-				records.push(value);
+				records.push(copyRecord(value));
 			}
 			let expected2 = [
 				{ id: 1, name: 'Kyle', age: 46, json: record.json, __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP },
@@ -1409,7 +1389,7 @@ describe('Test writeUtility module', () => {
 
 			records = [];
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
-				records.push(value);
+				records.push(copyRecord(value));
 			}
 			expected2 = [
 				{ id: 1, name: 'Kyle', age: 46, json: null, __updatedtime__: TIMESTAMP, __createdtime__: TIMESTAMP },
@@ -1478,4 +1458,15 @@ function iterateIndex(env, attribute) {
 		records[key].push(value);
 	}
 	return records;
+}
+
+function copyRecord(record) {
+	let copied = {};
+	for (let key in record) {
+		copied[key] = record[key];
+	}
+	return copied;
+}
+function copyRecords(records) {
+	return records.map(copyRecord);
 }

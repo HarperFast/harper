@@ -15,6 +15,7 @@ class OpenDBIObject {
 		this.sharedStructuresKey = Symbol.for('structures');
 		if (is_primary) {
 			this.cache = { validated: true };
+			this.randomAccessStructure = true;
 		}
 	}
 }

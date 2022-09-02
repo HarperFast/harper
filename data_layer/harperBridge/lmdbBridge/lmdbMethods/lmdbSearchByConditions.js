@@ -14,6 +14,7 @@ const environment_utility = require('../../../../utility/lmdb/environmentUtility
 const { handleHDBError, hdb_errors } = require('../../../../utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
 const RANGE_ESTIMATE = 100000000;
+const LAZY_PROPERTY_ACCESS = { lazy: true };
 
 module.exports = lmdbSearchByConditions;
 
@@ -77,7 +78,7 @@ async function lmdbSearchByConditions(search_object) {
 			let limit = search_object.limit > -1 ? search_object.limit : Infinity;
 			next_id: for (let id of ids) {
 				// need the original record to leverage deferred/random access property retrieval
-				let record = primary_dbi.get(id);
+				let record = primary_dbi.get(id, LAZY_PROPERTY_ACCESS);
 				for (let i = 0; i < filters_length; i++) {
 					if (!filters[i](record)) continue next_id; // didn't match filters
 				}
