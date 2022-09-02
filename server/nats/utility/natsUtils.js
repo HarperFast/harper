@@ -58,6 +58,7 @@ const NATS_SERVER_PATH = path.join(
 
 let leaf_config;
 let hub_config;
+let jsm_server_name;
 
 // Nats connection it cached here.
 let nats_connection;
@@ -406,8 +407,8 @@ async function publishToStream(subject_name, stream_name, entries = [], originat
 		`originators:`,
 		originators
 	);
-	const { connection, js, jsm } = await getNATSReferences();
-	const nats_server = jsm?.nc?.info?.server_name;
+	const { connection, js } = await getNATSReferences();
+	const nats_server = await getJsmServerName();
 	const subject = `${subject_name}.${nats_server}`;
 	try {
 		const h = headers();
@@ -485,7 +486,7 @@ function getServerConfig(process_name) {
  */
 async function createWorkQueueStream(CONSUMER_NAMES) {
 	const { jsm } = await getNATSReferences();
-	const server_name = jsm?.nc?.info?.server_name;
+	const server_name = await getJsmServerName();
 	try {
 		// create the stream
 		await jsm.streams.add({
@@ -524,20 +525,18 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
  * sources the message from remote node's stream to a local stream
  * @param {String} node - name of node to derive source from
  * @param {String} work_queue_name - name of local stream to add source to
- * @param {String} stream_name - name of remote stream to source from
- * @param {String} start_time - when (how far back) to start sourcing transaction from the source being added to stream in format YYYY-MM-DDTHH:mm:ss.sssZ
+ * @param {object} subscription - an object that contains the schema/table and pub/sub relationship between source and work stream
  * @returns {Promise<void>}
  */
-
-async function addSourceToWorkStream(
-	node,
-	work_queue_name,
-	stream_name,
-	start_time = new Date(Date.now()).toISOString()
-) {
+async function addSourceToWorkStream(node, work_queue_name, subscription) {
 	const { jsm } = await getNATSReferences();
 	const w_q_stream = await jsm.streams.info(work_queue_name);
 	const server_name = extractServerName(jsm.prefix);
+	// When (how far back) to start sourcing transaction from the source being added to stream in format YYYY-MM-DDTHH:mm:ss.sssZ
+	const start_time = subscription.start_time ? subscription.start_time : new Date(Date.now()).toISOString();
+	const { schema, table } = subscription;
+	// Name of remote stream to source from
+	const stream_name = crypto_hash.createNatsTableStreamName(schema, table);
 
 	// Check to see if the source is being added to a local stream. Local streams require a slightly different config.
 	const is_local_stream = server_name === node;
@@ -565,8 +564,7 @@ async function addSourceToWorkStream(
 	if (found === true) {
 		// If the source already exists in the work stream and there is no change to the start time, do nothing.
 		if (source.opt_start_time === start_time) return;
-
-		//jsm.streams.purge(work_queue_name, { filter: })
+		await purgeSourceFromWorkStream(schema, table, source, work_queue_name);
 	}
 
 	let new_source = {
@@ -602,7 +600,10 @@ function extractServerName(api_prefix) {
  * @param stream_name - name of remote stream to no longer source from
  * @returns {Promise<void>}
  */
-async function removeSourceFromWorkStream(node, work_queue_name, stream_name) {
+async function removeSourceFromWorkStream(node, work_queue_name, subscription) {
+	const { schema, table } = subscription;
+	// Name of remote stream to no longer source from
+	const stream_name = crypto_hash.createNatsTableStreamName(schema, table);
 	const { jsm } = await getNATSReferences();
 	const w_q_stream = await jsm.streams.info(work_queue_name);
 	if (!Array.isArray(w_q_stream.config.sources) || w_q_stream.config.sources.length === 0) {
@@ -610,14 +611,30 @@ async function removeSourceFromWorkStream(node, work_queue_name, stream_name) {
 	}
 
 	let i = w_q_stream.config.sources.length;
+	let source;
 	while (i--) {
-		const source = w_q_stream.config.sources[i];
+		source = w_q_stream.config.sources[i];
 		if (source.name === stream_name && source.external.api === `$JS.${node}.API`) {
 			w_q_stream.config.sources.splice(i, 1);
+			break;
 		}
 	}
 
 	await jsm.streams.update(work_queue_name, w_q_stream.config);
+
+	await purgeSourceFromWorkStream(schema, table, source, work_queue_name);
+}
+
+async function purgeSourceFromWorkStream(schema, table, source, wq_name) {
+	const jsm = await getJetStreamManager();
+	let source_subject_name;
+	try {
+		// Purge any messaged from source in the work stream
+		source_subject_name = createSubjectName(schema, table, source.external.api.split('.')[1]);
+		await jsm.streams.purge(wq_name, { filter: source_subject_name });
+	} catch (err) {
+		hdb_logger.error('Error purging source subject', source_subject_name, 'from work stream', wq_name);
+	}
 }
 
 /**
@@ -731,20 +748,14 @@ function requestErrorHandler(err, operation, remote_node) {
  * @returns {Promise<void>}
  */
 async function updateWorkStream(subscription, node_name) {
-	const stream_name = crypto_hash.createNatsTableStreamName(subscription.schema, subscription.table);
 	const node_domain_name = node_name + nats_terms.SERVER_SUFFIX.LEAF;
 
 	// The connection between nodes can only be a "pull" relationship. This means we only care about the subscribe param.
 	// If a node is publishing to another node that publishing relationship is setup by have the opposite node subscribe to the node that is publishing.
 	if (subscription.subscribe === true) {
-		await addSourceToWorkStream(
-			node_domain_name,
-			nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-			stream_name,
-			subscription.start_time
-		);
+		await addSourceToWorkStream(node_domain_name, nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, subscription);
 	} else {
-		await removeSourceFromWorkStream(node_domain_name, nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, stream_name);
+		await removeSourceFromWorkStream(node_domain_name, nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, subscription);
 	}
 }
 
@@ -755,11 +766,9 @@ async function updateWorkStream(subscription, node_name) {
  * @returns {Promise<void>}
  */
 async function createLocalTableStream(schema, table) {
-	const subject_name = `${schema}.${table}`;
 	const stream_name = crypto_hash.createNatsTableStreamName(schema, table);
-	const { jsm } = await getNATSReferences();
-	const nats_server = jsm?.nc?.info?.server_name;
-	const subject = `${subject_name}.${nats_server}`;
+	const nats_server = await getJsmServerName();
+	const subject = createSubjectName(schema, table, nats_server);
 	await createLocalStream(stream_name, [subject]);
 }
 
@@ -822,4 +831,27 @@ async function purgeSchemaTableStreams(schema, tables) {
 async function getStreamInfo(stream_name) {
 	const jsm = await getJetStreamManager();
 	return jsm.streams.info(stream_name);
+}
+
+/**
+ * Creates a subject name used for a table when publishing to a stream
+ * @param schema
+ * @param table
+ * @param server
+ * @returns {string}
+ */
+function createSubjectName(schema, table, server) {
+	return `${schema}.${table}.${server}`;
+}
+
+/**
+ * Get the name of the server running the jetstream manager - most likely the leaf
+ * @returns {Promise<*>}
+ */
+async function getJsmServerName() {
+	if (jsm_server_name) return jsm_server_name;
+	const jsm = await getJetStreamManager();
+	jsm_server_name = jsm?.nc?.info?.server_name;
+	if (jsm_server_name === undefined) throw new Error('Unable to get jetstream manager server name');
+	return jsm_server_name;
 }
