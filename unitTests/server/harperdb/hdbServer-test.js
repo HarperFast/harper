@@ -43,7 +43,6 @@ const test_req_options = {
 const REQ_MAX_BODY_SIZE = 1024 * 1024 * 1024; //this is 1GB in bytes
 const DEFAULT_FASTIFY_PLUGIN_ARR = [
 	'fastify',
-	'@fastify/helmet',
 	'hdb-request-time',
 	'@fastify/compress',
 	'@fastify/static',
@@ -210,7 +209,7 @@ describe('Test hdbServer module', () => {
 			server.close();
 		});
 
-		it('should register 4 fastify plugins by default - @fastify/helmet, @fastify/compress, @fastify/static, @fastify/accepts-serializer', async () => {
+		it('should register 4 fastify plugins by default - @fastify/compress, @fastify/static, @fastify/accepts-serializer', async () => {
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
@@ -313,7 +312,7 @@ describe('Test hdbServer module', () => {
 				(s) => String(s) === 'Symbol(fastify.pluginNameChain)'
 			);
 
-			expect(server[plugin_key].length).to.equal(7);
+			expect(server[plugin_key].length).to.equal(6);
 			expect(server[plugin_key]).to.deep.equal(DEFAULT_FASTIFY_PLUGIN_ARR);
 
 			server.close();
@@ -331,7 +330,7 @@ describe('Test hdbServer module', () => {
 				(s) => String(s) === 'Symbol(fastify.pluginNameChain)'
 			);
 
-			expect(server[plugin_key].length).to.equal(8);
+			expect(server[plugin_key].length).to.equal(7);
 			expect(server[plugin_key].sort()).to.deep.equal(['@fastify/cors', ...DEFAULT_FASTIFY_PLUGIN_ARR].sort());
 
 			server.close();
@@ -349,7 +348,7 @@ describe('Test hdbServer module', () => {
 				(s) => String(s) === 'Symbol(fastify.pluginNameChain)'
 			);
 
-			expect(server[plugin_key].length).to.equal(8);
+			expect(server[plugin_key].length).to.equal(7);
 			expect(server[plugin_key].sort()).to.deep.equal(['@fastify/cors', ...DEFAULT_FASTIFY_PLUGIN_ARR].sort());
 
 			server.close();

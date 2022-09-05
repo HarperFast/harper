@@ -18,13 +18,22 @@ function build(opts={}) {
 let app = build();
 
 describe('test requestTimePlugin', ()=>{
-    it('test happy path', async()=>{
+    it('test HDB-Response-Time header', async()=>{
         const response = await app.inject({
             method: 'GET',
             url: '/'
         });
 
         expect(response.headers).to.have.property('hdb-response-time');
-        expect(response.headers['hdb-response-time']).to.be.gt(0);
+        expect(+response.headers['hdb-response-time']).to.be.gt(0);
+    });
+    it('test Server-Timing header', async()=>{
+        const response = await app.inject({
+            method: 'GET',
+            url: '/'
+        });
+
+        expect(response.headers).to.have.property('server-timing');
+        expect(+response.headers['server-timing'].match(/dur=([\d.]+)/)[1]).to.be.gt(0);
     });
 });
