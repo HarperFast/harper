@@ -128,21 +128,8 @@ async function buildRoutes(cf_server) {
 	try {
 		harper_logger.info('Custom Functions starting buildRoutes');
 
-		cf_server
-			.register(autoload, {
-				dir: path.join(__dirname, 'plugins'),
-			})
-			.after((err, instance, next) => {
-				if (err && err.message) {
-					harper_logger.error(err.message);
-				} else if (err) {
-					harper_logger.error(err);
-				}
-
-				next();
-			});
-
-		await cf_server.after()
+		await cf_server.register(require('./plugins/hdbCore'));
+		await cf_server.after();
 		const project_folders = fs.readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
 
 		// loop through all the projects
