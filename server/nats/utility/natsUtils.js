@@ -570,6 +570,7 @@ async function addSourceToWorkStream(node, work_queue_name, subscription) {
 		// Purge any msgs from source in work stream. This ensures new start time is honoured
 		await purgeSourceFromWorkStream(schema, table, source, work_queue_name);
 
+		// When updating an exising source that source first needs to be removed from the work stream.
 		w_q_stream.config.sources.splice(source_index, 1);
 		await jsm.streams.update(work_queue_name, w_q_stream.config);
 	}
