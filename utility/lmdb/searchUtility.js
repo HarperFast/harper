@@ -12,6 +12,7 @@ const cursor_functions = require('./searchCursorFunctions');
 // eslint-disable-next-line no-unused-vars
 const lmdb = require('lmdb');
 const { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH } = lmdb_terms;
+const LAZY_PROPERTY_ACCESS = { lazy: true };
 
 /** UTILITY CURSOR FUNCTIONS **/
 
@@ -173,7 +174,7 @@ function getOverflowCheck(env, hash_attribute, attribute) {
 					}
 				}
 			}
-			let record = primary_dbi.get(value);
+			let record = primary_dbi.get(value, LAZY_PROPERTY_ACCESS);
 			key = record[attribute];
 		}
 		return key;
@@ -303,7 +304,7 @@ function equals(env, hash_attribute, attribute, search_value, reverse = false, l
 	let results = [[], []];
 	if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
 		hash_attribute = attribute;
-		let value = dbi.get(search_value);
+		let value = dbi.get(search_value, LAZY_PROPERTY_ACCESS);
 		if (value !== undefined) {
 			cursor_functions.pushResults(search_value, value, results, hash_attribute, attribute);
 		}
@@ -749,7 +750,7 @@ function searchByHash(env, hash_attribute, fetch_attributes, id) {
 	}
 
 	let obj = null;
-	let object = env.dbis[hash_attribute].get(id);
+	let object = env.dbis[hash_attribute].get(id, fetch_attributes.length < 3 ? LAZY_PROPERTY_ACCESS : undefined);
 
 	if (object) {
 		obj = cursor_functions.parseRow(object, fetch_attributes);
@@ -777,7 +778,7 @@ function checkHashExists(env, hash_attribute, id) {
 
 	let found_key = true;
 
-	let value = env.dbis[hash_attribute].get(id);
+	let value = env.dbis[hash_attribute].get(id, LAZY_PROPERTY_ACCESS);
 
 	if (value === undefined) {
 		found_key = false;
@@ -830,11 +831,12 @@ function batchHashSearch(env, hash_attribute, fetch_attributes, ids, not_found =
 	fetch_attributes = setGetWholeRowAttributes(env, fetch_attributes);
 
 	let results = Object.create(null);
+	let get_options = fetch_attributes.length < 3 ? LAZY_PROPERTY_ACCESS : undefined;
 
 	for (let x = 0; x < ids.length; x++) {
 		let id = ids[x];
 		try {
-			let object = env.dbis[hash_attribute].get(id);
+			let object = env.dbis[hash_attribute].get(id, get_options);
 			if (object) {
 				let obj = cursor_functions.parseRow(object, fetch_attributes);
 				results[id] = obj;
@@ -843,6 +845,7 @@ function batchHashSearch(env, hash_attribute, fetch_attributes, ids, not_found =
 			}
 		} catch (e) {
 			log.warn(e);
+			throw e;
 		}
 	}
 

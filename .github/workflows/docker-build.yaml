@@ -1,0 +1,40 @@
+on:
+  workflow_call:
+    inputs:
+      harperdbVersion:
+        required: true
+        type: string
+      nodeVersion:
+        required: true
+        type: string
+name: Docker Build
+jobs:
+  dockerBuild:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+    - uses: actions/checkout@v2
+    - name: "Setup Docker buildx"
+      uses: docker/setup-buildx-action@v2
+    - uses: actions/download-artifact@v3
+      with:
+        name: harperdb-${{ inputs.harperdbVersion }}.tgz
+        path: utility/Docker
+    - name: "Build Docker Image"
+      run: |
+        cd utility/Docker
+        docker buildx build \
+          --build-arg NODE_VERSION=${{ inputs.nodeVersion }} \
+          --build-arg HARPERDB_TARBALL=harperdb-${{ inputs.harperdbVersion }}.tgz \
+          --platform linux/amd64 \
+          --no-cache \
+          -o type=docker,dest=docker-harperdb_${{ inputs.harperdbVersion }}.tar \
+          --tag harperdb/harperdb:${{ inputs.harperdbVersion }} .
+
+          ls
+    - name: 'Upload Artifact'
+      uses: actions/upload-artifact@v3
+      with:
+        name: docker-harperdb_${{ inputs.harperdbVersion }}.tar
+        path: utility/Docker/docker-harperdb_${{ inputs.harperdbVersion }}.tar
+        retention-days: 1
