@@ -94,25 +94,6 @@ function getIndexedValues(value) {
 }
 
 /**
- * takes a key from LMDB and if not of type string returns the key, otherwise it does a nominal check if the string has aspects of an object/array and attempts to JSON parse it
- * @param raw_value
- * @returns {*}
- */
-function convertKeyValueFromSearch(raw_value) {
-	if (
-		typeof raw_value === 'string' &&
-		((raw_value.startsWith('{') && raw_value.endsWith('}')) || (raw_value.startsWith('[') && raw_value.endsWith(']')))
-	) {
-		try {
-			raw_value = JSON.parse(raw_value);
-		} catch (e) {
-			//no-op
-		}
-	}
-	return raw_value;
-}
-
-/**
  * Gets the time in sub milliseconds & converts it to a decimal number where the milliseconds from epoch are on the left of decimal & sub-millisecond time is on the right
  * @returns {number}
  */
@@ -126,7 +107,6 @@ module.exports = {
 	validateEnv,
 	stringifyData,
 	convertKeyValueToWrite,
-	convertKeyValueFromSearch,
 	getMicroTime,
 	getIndexedValues,
 };
