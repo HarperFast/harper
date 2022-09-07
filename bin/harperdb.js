@@ -23,7 +23,7 @@ function checkCallingUserSync() {
 		return;
 	}
 	let curr_user = os.userInfo();
-	if (stats && stats.uid !== curr_user.uid) {
+	if (stats && curr_user.uid >= 0 && stats.uid !== curr_user.uid) {
 		let err_msg = `You are not the owner of the HarperDB process.  Please log in as the owner and try the command again.`;
 		logger.error(err_msg);
 		console.log(err_msg);

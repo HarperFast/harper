@@ -8,7 +8,7 @@ class OpenEnvironmentObject {
 		this.maxReaders = max_readers;
 		this.sharedStructuresKey = Symbol.for('structures');
 		this.readOnly = read_only;
-		this.overlappingSync = true;
+		// overlappingSync uses lmdb-js default, which is enabled on linux/mac, disabled on windows
 	}
 }
 

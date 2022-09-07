@@ -12,7 +12,7 @@ const fs = require('fs-extra');
 const path = require('path');
 const {promisify} = require('util');
 const AWSConnector = require('../../utility/AWS/AWSConnector');
-
+const {EOL} = require('os');
 const chai = require('chai');
 const { expect } = chai;
 const sinon_chai = require('sinon-chai');
@@ -35,8 +35,12 @@ describe('Test export.js', () => {
     after(async () => {
         rewire('../../data_layer/export');
         sandbox.restore();
-        await fs.remove(TMP_TEST_DIR);
-    });
+        try {
+            await fs.remove(TMP_TEST_DIR);
+        }catch(e){
+            //empty catch for a weird issue on windows when removing a folder that does not exist
+}       }
+    );
 
     describe('Test export_local', function() {
         let search_stub = undefined;
@@ -292,8 +296,8 @@ describe('Test export.js', () => {
         }));
 
         it('Nominal case of saveToLocal with csv', test_util.mochaAsyncWrapper(async function() {
-            let expected_csv = '"__createdtime__","only_one","object","array","id","__updatedtime__","address","object_array"\n' +
-                '1617990184839,"this record is only in one",,,"4469b900-8ccb-4d21-9581-c7ca535bfbba",1617990184839,"1 North Street",\n' +
+            let expected_csv = '"__createdtime__","only_one","object","array","id","__updatedtime__","address","object_array"' + EOL +
+                '1617990184839,"this record is only in one",,,"4469b900-8ccb-4d21-9581-c7ca535bfbba",1617990184839,"1 North Street",'  + EOL +
                 '1617990184838,,"{""dog"":""tuck"",""owner"":""david"",""foods"":[1,""chicken""]}","[""tuck"",""ball"",123]","e2e7e30c-2ec6-445c-b73d-9a1cae61c372",1617990184838,"1 North Street","[{""dog"":""tuck""},{""dog"":123,""breed"":""fur ball""}]"';
             file_name = path.join(TMP_TEST_DIR, 'test_file.csv');
             let wrote_data = await saveToLocal(file_name, 'csv', data_object);
@@ -473,7 +477,10 @@ describe('Test export.js', () => {
         });
 
         it('Nominal call export CSV to S3', async () => {
-            const expected_body = "\"lastname\",\"object\",\"array\",\"firstname\",\"__createdtime__\",\"object_array\",\"__updatedtime__\",\"address\",\"id\",\"one\"\n\"Dog\",,,\"Harper\",1618335194929,,1618335194929,\"1 North Street\",\"8d9cd1b2-3e38-40cb-a340-c5d33e66dbb7\",\"only one\"\n,\"{\"\"name\"\":\"\"object\"\",\"\"number\"\":1,\"\"array\"\":[1,\"\"two\"\"]}\",\"[1,2,\"\"three\"\"]\",\"Harper\",1618335194930,,1618335194930,,\"bc56cf62-5ad1-4519-b1c6-26742b02e9d5\",\n,,,,1618335194930,\"[{\"\"number\"\":1},{\"\"number\"\":\"\"two\"\",\"\"count\"\":2}]\",1618335194930,,\"dce07e2f-fa32-4ceb-b4a4-4270fefe51cf\",";
+            const expected_body = "\"lastname\",\"object\",\"array\",\"firstname\",\"__createdtime__\",\"object_array\",\"__updatedtime__\",\"address\",\"id\",\"one\""  + EOL +
+                "\"Dog\",,,\"Harper\",1618335194929,,1618335194929,\"1 North Street\",\"8d9cd1b2-3e38-40cb-a340-c5d33e66dbb7\",\"only one\"" + EOL +
+                ",\"{\"\"name\"\":\"\"object\"\",\"\"number\"\":1,\"\"array\"\":[1,\"\"two\"\"]}\",\"[1,2,\"\"three\"\"]\",\"Harper\",1618335194930,,1618335194930,,\"bc56cf62-5ad1-4519-b1c6-26742b02e9d5\"," + EOL +
+                ",,,,1618335194930,\"[{\"\"number\"\":1},{\"\"number\"\":\"\"two\"\",\"\"count\"\":2}]\",1618335194930,,\"dce07e2f-fa32-4ceb-b4a4-4270fefe51cf\",";
             const result = await hdb_export.export_to_s3(export_obj_test);
 
             // Get the stream passed to the S3 upload method.

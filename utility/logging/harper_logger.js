@@ -140,7 +140,8 @@ function createLogFile(log_name, log_process_name) {
 
 	if (log_to_file) {
 		// Create or open a log file
-		non_pm2_log_file = fs.openSync(path.join(log_dir, log_name), 'a');
+		non_pm2_log_file = path.join(log_dir, log_name);
+		fs.ensureFileSync(non_pm2_log_file);
 	}
 }
 
@@ -184,7 +185,8 @@ function writeToLogFile(log) {
 	if (non_pm2_log_file === undefined) {
 		process_name = hdb_terms.PROCESS_DESCRIPTORS.INSTALL;
 		fs.ensureDirSync(INSTALL_LOG_LOCATION);
-		non_pm2_log_file = fs.openSync(path.join(INSTALL_LOG_LOCATION, hdb_terms.PROCESS_LOG_NAMES.INSTALL), 'a');
+		non_pm2_log_file = path.join(INSTALL_LOG_LOCATION, hdb_terms.PROCESS_LOG_NAMES.INSTALL);
+		fs.ensureFileSync(non_pm2_log_file);
 	}
 
 	fs.appendFileSync(non_pm2_log_file, log);

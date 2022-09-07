@@ -395,6 +395,9 @@ describe('test installModules function', () => {
 			error = e;
 		}
 		expect(error).is.equal(undefined);
+		// if you are getting an error here on Windows due to a warning about --local --global flags,
+		// you may need to run this:
+		// https://www.npmjs.com/package/npm-windows-upgrade
 		expect(result['cool project'].npm_error).is.equal(null);
 		expect(result['cool project'].npm_output).is.not.equal(null);
 		expect(result['bad project'].npm_output).is.equal(null);
@@ -422,7 +425,7 @@ describe('test installModules function', () => {
 		check_npm_installed_restore();
 		check_project_paths_restore();
 		cf_routes_dir_restore();
-	}).timeout(20000);
+	}).timeout(60000);
 
 	it('test mock happy path, with dry run', async () => {
 		let cf_routes_dir_restore = npm_utils.__set__('CF_ROUTES_DIR', MOCK_CF_DIR_PATH);
@@ -622,5 +625,5 @@ describe('test auditModules', () => {
 		check_npm_installed_restore();
 		check_project_paths_restore();
 		cf_routes_dir_restore();
-	}).timeout(20000);
+	}).timeout(60000);
 });

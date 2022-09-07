@@ -515,7 +515,7 @@ function stopLogrotate() {
  * @returns {Promise<void>}
  */
 async function installLogRotate() {
-	const { stdout, stderr } = await exec(`${PM2_MODULE_LOCATION} install pm2-logrotate@${PM2_LOGROTATE_VERSION}`);
+	const { stdout, stderr } = await exec(`${process.platform === 'win32' ? 'node' : ''} ${PM2_MODULE_LOCATION} install pm2-logrotate@${PM2_LOGROTATE_VERSION}`);
 	hdb_logger.debug(`loadLogRotate stdout: ${stdout}`);
 
 	if (stderr) {
@@ -545,7 +545,7 @@ async function updateLogRotateConfig() {
 	// Loop through all the rotate config params and build a command that is executed in a child process.
 	let update_command = '';
 	for (const param in log_rotate_config) {
-		update_command += `${PM2_MODULE_LOCATION} set pm2-logrotate:${param} ${log_rotate_config[param]}`;
+		update_command += `${process.platform === 'win32' ? 'node' : ''} ${PM2_MODULE_LOCATION} set pm2-logrotate:${param} ${log_rotate_config[param]}`;
 		if (param !== 'TZ') update_command += ' && ';
 	}
 

@@ -15,7 +15,7 @@ const assert = require('assert');
 const rewire = require('rewire');
 const sinon = require('sinon');
 const rw_mount = rewire('../../utility/mount_hdb');
-
+const SEP = path.sep;
 const create_lmdb_tables = rw_mount.__get__('createLMDBTables');
 
 const BASE_BATH = env_mngr.getHdbBasePath();
@@ -30,29 +30,31 @@ describe('test mount_hdb module', () => {
 	});
 
 	after(async () => {
-		await fs_extra.remove(BASE_BATH);
+		try {
+			await fs_extra.remove(BASE_BATH);
+		}catch(e){}
 		sandbox.restore();
 	});
 
 	it('Test mountHdb function calls makeDirectory with correct params', async () => {
-		const test_hdb_path = 'mount/test/hdb';
+		const test_hdb_path = `mount${SEP}test${SEP}hdb`;
 		const make_dir_stub = sandbox.stub();
 		const create_lmdb_tables_stub = sandbox.stub();
 		const mk_dir_rw = rw_mount.__set__('makeDirectory', make_dir_stub);
 		const create_lmdb_table_rw = rw_mount.__set__('createLMDBTables', create_lmdb_tables_stub);
 		await rw_mount(test_hdb_path);
-		expect(make_dir_stub.getCall(0).args[0]).to.equal('mount/test/hdb');
-		expect(make_dir_stub.getCall(1).args[0]).to.equal('mount/test/hdb/backup');
-		expect(make_dir_stub.getCall(2).args[0]).to.equal('mount/test/hdb/trash');
-		expect(make_dir_stub.getCall(3).args[0]).to.equal('mount/test/hdb/keys');
-		expect(make_dir_stub.getCall(4).args[0]).to.equal('mount/test/hdb/keys/.license');
-		expect(make_dir_stub.getCall(5).args[0]).to.equal('mount/test/hdb/log');
-		expect(make_dir_stub.getCall(6).args[0]).to.equal('mount/test/hdb/doc');
-		expect(make_dir_stub.getCall(7).args[0]).to.equal('mount/test/hdb/schema');
-		expect(make_dir_stub.getCall(8).args[0]).to.equal('mount/test/hdb/schema/system');
-		expect(make_dir_stub.getCall(9).args[0]).to.equal('mount/test/hdb/transactions');
-		expect(make_dir_stub.getCall(10).args[0]).to.equal('mount/test/hdb/clustering');
-		expect(create_lmdb_tables_stub.args[0][0]).to.equal('mount/test/hdb/schema/system');
+		expect(make_dir_stub.getCall(0).args[0]).to.equal(`mount${SEP}test${SEP}hdb`);
+		expect(make_dir_stub.getCall(1).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}backup`);
+		expect(make_dir_stub.getCall(2).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}trash`);
+		expect(make_dir_stub.getCall(3).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}keys`);
+		expect(make_dir_stub.getCall(4).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}keys${SEP}.license`);
+		expect(make_dir_stub.getCall(5).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}log`);
+		expect(make_dir_stub.getCall(6).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}doc`);
+		expect(make_dir_stub.getCall(7).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}schema`);
+		expect(make_dir_stub.getCall(8).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}schema${SEP}system`);
+		expect(make_dir_stub.getCall(9).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}transactions`);
+		expect(make_dir_stub.getCall(10).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}clustering`);
+		expect(create_lmdb_tables_stub.args[0][0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}schema${SEP}system`);
 		mk_dir_rw();
 		create_lmdb_table_rw();
 	});
@@ -60,7 +62,7 @@ describe('test mount_hdb module', () => {
 	it('Test makeDirectory function call mkdirSync as expected', () => {
 		const mkdir_sync_stub = sandbox.stub(fs, 'mkdirSync');
 		const makeDirectory = rw_mount.__get__('makeDirectory');
-		makeDirectory('mount/test/hdb');
+		makeDirectory(`mount${SEP}test${SEP}hdb`);
 		expect(mkdir_sync_stub.called).to.be.true;
 		mkdir_sync_stub.restore();
 	});
@@ -71,7 +73,9 @@ describe('test mount_hdb module', () => {
 		});
 
 		after(async () => {
-			await fs_extra.remove(BASE_SCHEMA_PATH);
+			try {
+				await fs_extra.remove(BASE_SCHEMA_PATH);
+			}catch(e){}
 		});
 
 		it('happy path', async () => {

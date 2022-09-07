@@ -162,10 +162,9 @@ async function saveToLocal(file_path, source_data_format, data) {
 		);
 	}
 
-	// Create a write stream to the local export file.
-	let write_stream = fs.createWriteStream(file_path);
-
 	if (source_data_format === JSON_TEXT) {
+		// Create a write stream to the local export file.
+		let write_stream = fs.createWriteStream(file_path);
 		let data_length = data.length;
 		// Start writing values to the write stream.
 		write_stream.write('[');
@@ -197,6 +196,8 @@ async function saveToLocal(file_path, source_data_format, data) {
 
 		return LOCAL_JSON_EXPORT_MSG;
 	} else if (source_data_format === CSV) {
+		// Create a write stream to the local export file.
+		let write_stream = fs.createWriteStream(file_path);
 		// Create a read stream with the data.
 		let readable_stream = stream.Readable.from(data);
 		let options = {};

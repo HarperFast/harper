@@ -7,7 +7,9 @@ const assert = require('assert');
 const rewire = require('rewire');
 const util = require('util');
 const exec = util.promisify(require('child_process').exec);
+const { spawn } = require('child_process');
 const COMMON_TEST_TERMS = require('./commonTestTerms');
+const { platform } = require('os');
 
 const LeafConfigObject = require('../server/nats/utility/LeafConfigObject');
 const SysUserObject = require('../server/nats/utility/SysUserObject');
@@ -305,7 +307,7 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
  * @param envs
  * @returns {Promise<void>}
  */
-async function tearDownMockDB(envs = undefined) {
+async function tearDownMockDB(envs = undefined, partial_teardown = false) {
 	try {
 		if (envs !== undefined) {
 			for (const environment of envs) {
@@ -334,7 +336,8 @@ async function tearDownMockDB(envs = undefined) {
 
 		delete global.hdb_schema;
 		global.lmdb_map = undefined;
-		await fs.remove(ENV_DIR_PATH);
+		if (!partial_teardown)
+			await fs.remove(ENV_DIR_PATH);
 	} catch (err) {
 		console.error('Error tearing down mock DB used for unit tests');
 		console.error(err);
@@ -782,7 +785,12 @@ async function stopTestLeafServer() {
 	}
 
 	try {
+		// I don't
 		await runCommand(`${NATS_SERVER_PATH} --signal stop`, undefined);
+	} catch (err) {
+		console.error(err);
+	}
+	try {
 		await pm2_utils.stop('nats_test_leaf_server');
 		await pm2_utils.kill();
 		await fs.remove(TEMP_TEST_DIR);

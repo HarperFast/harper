@@ -14,6 +14,7 @@ hdb_boot_properties.file
 /unitTests/envDir/*
 /unitTests/server/nats/tempTestDir/*
 coverage.json
+unitTests/server/nats/tempTestDir/*
 dependencies/*
 !dependencies/nats-server.zip
 yarn.lock
