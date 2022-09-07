@@ -605,7 +605,7 @@ function extractServerName(api_prefix) {
  * Removes a remote node's stream from the source on the local stream
  * @param node - name of node
  * @param work_queue_name - name of local stream to remove source from
- * @param stream_name - name of remote stream to no longer source from
+ * @param subscription - the subscription that makes up the source
  * @returns {Promise<void>}
  */
 async function removeSourceFromWorkStream(node, work_queue_name, subscription) {
@@ -630,9 +630,20 @@ async function removeSourceFromWorkStream(node, work_queue_name, subscription) {
 
 	await jsm.streams.update(work_queue_name, w_q_stream.config);
 
+	// Remove any messages from source that may be in work stream.
+	// Note - when a source is used in a work stream we always keep the most recent message in the stream for tracking.
+	// For this reason purge is called.
 	await purgeSourceFromWorkStream(schema, table, source, work_queue_name);
 }
 
+/**
+ * Purge all messages from work stream that match the source subject name.
+ * @param schema - schema the table (source) is in.
+ * @param table - the table which is the source.
+ * @param source - unique node name where the sourcing from.
+ * @param wq_name - name of work queue.
+ * @returns {Promise<void>}
+ */
 async function purgeSourceFromWorkStream(schema, table, source, wq_name) {
 	const jsm = await getJetStreamManager();
 	let source_subject_name;
