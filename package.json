@@ -18,7 +18,8 @@
     "harperdb": "./bin/harperdb.js"
   },
   "engines": {
-    "node": "16.17.0",
+    "node": ">=14.0.0",
+    "preferred-node": "16.17.0",
     "go-lang": "1.17.10",
     "nats-server": "2.8.4"
   },

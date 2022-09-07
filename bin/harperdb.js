@@ -34,10 +34,15 @@ function checkCallingUserSync() {
 function harperDBService() {
 	let node_results = check_node();
 
-	if (node_results && node_results.error) {
-		console.error(node_results.error);
-		logger.error(node_results.error);
-		return;
+	if (node_results) {
+		if (node_results.error) {
+			console.error(node_results.error);
+			logger.error(node_results.error);
+			return;
+		} else if (node_results.warn) {
+			console.warn(node_results.warn);
+			logger.warn(node_results.warn);
+		}
 	}
 
 	let service;

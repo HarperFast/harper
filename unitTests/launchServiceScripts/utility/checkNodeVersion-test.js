@@ -16,15 +16,24 @@ describe('test checkNodeVersion', () => {
 		rw_json();
 	});
 
-	it('test node versions do not match', () => {
-		let rw_json = check_node.__set__('jsonData', { engines: { node: '3.0.0' } });
-
+	it('test node version is not in range', () => {
+		let node_version_rw = check_node.__set__('INSTALLED_NODE_VERSION', '13.2.3');
 		let result = check_node();
+
 		expect(result).to.eql({
 			error:
-				'This version of HarperDB is designed to run on Node 3.0.0, the currently installed Node.js version is: 16.17.0.  Please change to version of Node.js 3.0.0 to proceed.',
+				'This version of HarperDB supports Node.js versions: >=14.0.0, the currently installed Node.js version is: 13.2.3. Please install a version of Node.js that is withing the defined range.',
 		});
+		node_version_rw();
+	});
 
-		rw_json();
+	it('test node version is in range, not preferred version', () => {
+		let node_version_rw = check_node.__set__('INSTALLED_NODE_VERSION', '18.6.0');
+		let result = check_node();
+
+		expect(result).to.eql({
+			warn: 'This version of HarperDB is tested against Node.js version 16.17.0, the currently installed Node.js version is: 18.6.0. Some issues may occur with untested versions of Node.js.',
+		});
+		node_version_rw();
 	});
 });

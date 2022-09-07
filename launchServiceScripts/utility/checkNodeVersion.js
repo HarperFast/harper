@@ -1,21 +1,26 @@
 'use strict';
 
 const semver_neq = require('semver/functions/neq');
-const fs = require('fs');
+const semver_satisfies = require('semver/functions/satisfies');
 
 const jsonData = require('../../package.json');
+const INSTALLED_NODE_VERSION = process.versions && process.versions.node ? process.versions.node : undefined;
 
 module.exports = checkNodeVersion;
 
 function checkNodeVersion() {
-	const current_hdb_node_version = jsonData.engines.node;
-	if (
-		process.versions &&
-		process.versions.node &&
-		current_hdb_node_version &&
-		semver_neq(process.versions.node, current_hdb_node_version)
-	) {
-		const version_error = `This version of HarperDB is designed to run on Node ${current_hdb_node_version}, the currently installed Node.js version is: ${process.versions.node}.  Please change to version of Node.js ${current_hdb_node_version} to proceed.`;
-		return { error: version_error };
+	const node_version = jsonData.engines.node;
+
+	const preferred_hdb_node_version = jsonData.engines['preferred-node'];
+	if (INSTALLED_NODE_VERSION) {
+		if (node_version && !semver_satisfies(INSTALLED_NODE_VERSION, node_version)) {
+			const version_error = `This version of HarperDB supports Node.js versions: ${node_version}, the currently installed Node.js version is: ${INSTALLED_NODE_VERSION}. Please install a version of Node.js that is withing the defined range.`;
+			return { error: version_error };
+		}
+
+		if (preferred_hdb_node_version && semver_neq(INSTALLED_NODE_VERSION, preferred_hdb_node_version)) {
+			const version_error = `This version of HarperDB is tested against Node.js version ${preferred_hdb_node_version}, the currently installed Node.js version is: ${INSTALLED_NODE_VERSION}. Some issues may occur with untested versions of Node.js.`;
+			return { warn: version_error };
+		}
 	}
 }

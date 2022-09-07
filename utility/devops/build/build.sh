@@ -1,23 +1,24 @@
 #!/bin/bash
 
 node_version_installed="$(node -v)"
-node_version="v$(npm run env | grep npm_package_engines_node | cut -d '=' -f 2)"
-
-if ! [ "$node_version_installed" = "$node_version" ]; then
-    echo "Node.js $node_version must be installed"
-    exit
-fi
 
 if ! command -v jq &> /dev/null
 then
   echo "jq must be installed, install jq using your OS package manager"
-  exit
+  exit 1
+fi
+
+node_version="v$(jq -r '.engines."preferred-node"' package.json)"
+
+if ! [ "$node_version_installed" = "$node_version" ]; then
+    echo "Node.js $node_version must be installed"
+    exit 1
 fi
 
 if ! command -v dot-json &> /dev/null
 then
   echo "dot-json must be installed, run command 'npm install dot-json -g'"
-  exit
+  exit 1
 fi
 
 #remove existing node_modules
