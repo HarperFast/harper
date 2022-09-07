@@ -160,7 +160,6 @@ describe('Test searchUtility module', ()=>{
             let expected = {id:1, name:'Kyle', age:46};
             let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, [1]],
                 undefined, 'fetch single row');
-
             assert.deepEqual(row, [expected]);
         });
 
@@ -426,8 +425,7 @@ describe('Test searchUtility module', ()=>{
             assert.deepStrictEqual(count, 4);
         });
     });
-
-    describe('test iterateDBI function', () => {
+    describe('test iterateDBI and freeze function', () => {
         let env;
         before(async () => {
             global.lmdb_map = undefined;
@@ -466,6 +464,15 @@ describe('Test searchUtility module', ()=>{
         it("test search on attribute no exist", () => {
             let results = test_utils.assertErrorSync(search_util.iterateDBI, [env, 'fake'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
             assert.deepStrictEqual(results, undefined);
+        });
+        it("test nested object in searchByHash is frozen", () => {
+            env.dbis.id.cache.clear(); // reload to ensure read data is frozen
+            let results = search_util.searchByHash(env, 'id', ['id', 'city'], 1);
+            assert(Object.isFrozen(results.city));
+        });
+        it("test nested object in equals is frozen", () => {
+            let results = search_util.equals(env, 'id', 'id', 1);
+            assert(Object.isFrozen(results[0].city));
         });
     });
 });

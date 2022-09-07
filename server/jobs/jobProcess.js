@@ -12,7 +12,7 @@ const server_utils = require('../serverHelpers/serverUtilities');
 const IPCClient = require('../ipc/IPCClient');
 const moment = require('moment');
 const jobs = require('./jobs');
-
+const { cloneDeep } = require('lodash');
 const JOB_NAME = process.env[hdb_terms.PROCESS_NAME_ENV_PROP];
 const JOB_ID = JOB_NAME.substring(4);
 
@@ -38,10 +38,11 @@ const JOB_ID = JOB_NAME.substring(4);
 			throw new Error(`Unable to find a record in hdb_job for job: ${JOB_ID}`);
 		}
 
-		const { request } = job_record[0];
+		let { request } = job_record[0];
 		if (hdb_utils.isEmptyOrZeroLength(request)) {
 			throw new Error('Did not find job request in hdb_job table, unable to proceed');
 		}
+		request = cloneDeep(request);
 
 		const operation = server_utils.getOperationFunction(request);
 		harper_logger.trace('Running operation:', request.operation, 'for job', JOB_ID);

@@ -16,6 +16,7 @@ class OpenDBIObject {
 		if (is_primary) {
 			this.cache = { validated: true };
 			this.randomAccessStructure = true;
+			this.freezeData = true;
 		}
 	}
 }
