@@ -55,7 +55,7 @@ function configValidator(config_json) {
 	const node_env_constraints = Joi.valid('production', 'development').required();
 	const processes_constraints = number.min(1).max(1000).empty(null).default(setDefaultProcesses);
 	const root_constraints = string
-		.pattern(/^\/$|(\/[a-zA-Z_0-9-]+)+$/, 'unix directory path')
+		.pattern(/^[\\\/]$|([\\\/][a-zA-Z_0-9\:-]+)+$/, 'directory path')
 		.empty(null)
 		.default(setDefaultRoot);
 	const pem_file_constraints = Joi.custom(validatePemFile)
@@ -193,7 +193,7 @@ function configValidator(config_json) {
 			}).required(),
 			nodeEnv: node_env_constraints,
 			processes: processes_constraints,
-			root: string.pattern(/^\/$|(\/[a-zA-Z_0-9-]+)+$/, 'unix directory path').required(),
+			root: string.pattern(/^[\\\/]$|([\\\/][a-zA-Z_0-9\:-]+)+$/, 'directory path').required(),
 			storage: Joi.object({
 				writeAsync: boolean.required(),
 			}).required(),
@@ -228,8 +228,8 @@ function validatePemFile(value, helpers) {
 	Joi.assert(
 		value,
 		string
-			.pattern(/^((?!.*\/\/.*)(?!.*\/ .*)\/([^\\(){}:<>])+\.(pem))$/)
-			.messages({ 'string.pattern.base': 'must be a valid unix directory path and specify a .pem file' })
+			.pattern(/^[\\\/]$|([\\\/][a-zA-Z_0-9\:-]+)+\.pem+$/)
+			.messages({ 'string.pattern.base': 'must be a valid directory path and specify a .pem file' })
 	);
 
 	const does_exist_msg = doesPathExist(value);

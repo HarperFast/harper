@@ -226,7 +226,7 @@ describe('Test harper_logger module', () => {
 		let open_sync_stub;
 
 		beforeEach(() => {
-			open_sync_stub = sandbox.stub(fs, 'openSync').returns(123);
+			open_sync_stub = sandbox.stub(fs, 'ensureFileSync').returns(123);
 		});
 
 		afterEach(() => {
@@ -335,7 +335,7 @@ describe('Test harper_logger module', () => {
 		beforeEach(() => {
 			harper_logger = requireUncached(HARPER_LOGGER_MODULE);
 			writeToLogFile = harper_logger.__get__('writeToLogFile');
-			open_sync_stub = sandbox.stub(fs, 'openSync').returns(321);
+			open_sync_stub = sandbox.stub(fs, 'ensureFileSync').returns(321);
 			ensure_dir_sync_stub = sandbox.stub(fs, 'ensureDirSync');
 			append_file_sync_stub = sandbox.stub(fs, 'appendFileSync');
 		});
@@ -351,7 +351,6 @@ describe('Test harper_logger module', () => {
 			harper_logger.__set__('non_pm2_log_file', undefined);
 			writeToLogFile(test_log);
 			expect(open_sync_stub.firstCall.args[0]).to.include('install.log');
-			expect(append_file_sync_stub.args[0][0]).to.equal(321);
 			expect(append_file_sync_stub.args[0][1]).to.eql(test_log);
 		});
 
@@ -419,11 +418,17 @@ describe('Test harper_logger module', () => {
 		});
 
 		after(() => {
-			fs.removeSync(TEST_LOG_DIR);
+			try {
+				fs.removeSync(TEST_LOG_DIR);
+			} catch (e) {}
 		});
 
 		afterEach(() => {
-			fs.emptyDirSync(TEST_LOG_DIR);
+			try {
+				fs.emptyDirSync(TEST_LOG_DIR);
+			} catch (e) {
+				//do nothing here windows doesn't like emptying an already empty folder
+			}
 			harper_logger.__set__('NON_PM2_PROCESS', true);
 			sandbox.restore();
 		});
@@ -643,7 +648,7 @@ describe('Test harper_logger module', () => {
 			const homedir_stub = sandbox.stub(os, 'homedir').throws(new Error('error'));
 			const exists_sync_stub = sandbox.stub(fs, 'existsSync').returns(true);
 			const result = getPropsFilePath();
-			expect(result.includes('.harperdb/hdb_boot_properties.file')).to.be.true;
+			expect(result.includes(`.harperdb${path.sep}hdb_boot_properties.file`)).to.be.true;
 			homedir_stub.restore();
 			exists_sync_stub.restore();
 		});
@@ -651,7 +656,7 @@ describe('Test harper_logger module', () => {
 		it('Test root dir used if home dir undefined', () => {
 			const homedir_stub = sandbox.stub(os, 'homedir').returns(undefined);
 			const result = getPropsFilePath();
-			expect(result.includes('harperdb/utility/hdb_boot_properties.file')).to.be.true;
+			expect(result.includes(`harperdb${path.sep}utility${path.sep}hdb_boot_properties.file`)).to.be.true;
 			homedir_stub.restore();
 		});
 	});
@@ -666,11 +671,15 @@ describe('Test harper_logger module', () => {
 		});
 
 		after(() => {
-			fs.removeSync(TEST_LOG_DIR);
+			try {
+				fs.removeSync(TEST_LOG_DIR);
+			} catch (e) {}
 		});
 
 		afterEach(() => {
-			fs.emptyDirSync(TEST_LOG_DIR);
+			try {
+				fs.emptyDirSync(TEST_LOG_DIR);
+			} catch (e) {}
 			sandbox.restore();
 		});
 

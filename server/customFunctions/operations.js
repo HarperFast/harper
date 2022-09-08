@@ -5,6 +5,7 @@ const fg = require('fast-glob');
 const path = require('path');
 const tar = require('tar-fs');
 const uuidV4 = require('uuid/v4');
+const normalize = require('normalize-path');
 
 const validator = require('./operationsValidation');
 const log = require('../../utility/logging/harper_logger');
@@ -15,6 +16,7 @@ const { handleHDBError, hdb_errors } = require('../../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 const CUSTOM_FUNCTION_TEMPLATE = path.join(PACKAGE_ROOT, 'custom_function_template');
+const TMP_PATH = path.join(env.get(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY), 'tmp');
 
 function isCFEnabled() {
 	const custom_functions_enabled = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY);
@@ -69,14 +71,20 @@ function getCustomFunctions() {
 	const dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 
 	try {
-		const project_folders = fg.sync(`${dir}/*`, { onlyDirectories: true });
+		const project_folders = fg.sync(normalize(`${dir}/*`), { onlyDirectories: true });
 
 		project_folders.forEach((project_folder) => {
 			const folderName = project_folder.split('/').pop();
 			response[folderName] = {
-				routes: fg.sync(`${project_folder}/routes/*.js`).map((filepath) => filepath.split('/').pop().split('.js')[0]),
-				helpers: fg.sync(`${project_folder}/helpers/*.js`).map((filepath) => filepath.split('/').pop().split('.js')[0]),
-				static: fs.existsSync(`${project_folder}/static`) && fg.sync(`${project_folder}/static/**/*`).length,
+				routes: fg
+					.sync(normalize(`${project_folder}/routes/*.js`))
+					.map((filepath) => filepath.split('/').pop().split('.js')[0]),
+				helpers: fg
+					.sync(normalize(`${project_folder}/helpers/*.js`))
+					.map((filepath) => filepath.split('/').pop().split('.js')[0]),
+				static:
+					fs.existsSync(normalize(`${project_folder}/static`)) &&
+					fg.sync(normalize(`${project_folder}/static/**/*`)).length,
 			};
 		});
 	} catch (err) {
@@ -265,7 +273,7 @@ function dropCustomFunctionProject(req) {
 
 	try {
 		const project_dir = path.join(cf_dir, project);
-		fs.rmdirSync(project_dir, { recursive: true });
+		fs.rmSync(project_dir, { recursive: true });
 		return `Successfully deleted project: ${project}`;
 	} catch (err) {
 		throw handleHDBError(
@@ -309,12 +317,9 @@ async function packageCustomFunctionProject(req) {
 		throw err_string;
 	}
 
-	// ensure /tmp exists
-	if (!fs.existsSync('/tmp')) {
-		fs.mkdirSync('/tmp');
-	}
+	fs.ensureDirSync(TMP_PATH);
 
-	const file = `/tmp/${project_hash}.tar`;
+	const file = path.join(TMP_PATH, `${project_hash}.tar`);
 
 	let tar_opts = {};
 	if (req.skip_node_modules === true || req.skip_node_modules === 'true') {
@@ -373,8 +378,8 @@ async function deployCustomFunctionProject(req) {
 	}
 
 	// ensure /tmp exists
-	if (!fs.existsSync('/tmp')) {
-		fs.mkdirSync('/tmp');
+	if (!fs.existsSync(TMP_PATH)) {
+		fs.mkdirSync(TMP_PATH);
 	}
 
 	// pack the directory

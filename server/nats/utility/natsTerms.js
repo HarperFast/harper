@@ -1,4 +1,5 @@
 'use strict';
+const { platform } = require('os')
 
 const NATS_SERVER_ZIP = 'nats-server.zip';
 const NATS_SERVER_NAME = 'nats-server';

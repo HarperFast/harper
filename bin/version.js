@@ -18,8 +18,8 @@ function version() {
 }
 
 function nodeVersion() {
-	if (jsonData && jsonData.engines && jsonData.engines.node) {
-		return jsonData.engines.node;
+	if (jsonData && jsonData.engines && jsonData.engines['preferred-node']) {
+		return jsonData.engines['preferred-node'];
 	}
 
 	return undefined;

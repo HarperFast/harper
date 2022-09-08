@@ -45,7 +45,7 @@ const HDB_PORT_REGEX = new RegExp(
 );
 const KEY_PAIR_BITS = 2048;
 const NODE_NAME_REGEX = new RegExp(/^[^\s.,*>]+$/);
-const PROCESS_HOME = process.env['HOME'];
+const PROCESS_HOME = os.homedir();
 const DEFAULT_HDB_ROOT = path.join(PROCESS_HOME, hdb_terms.HDB_ROOT_DIR_NAME);
 const DEFAULT_HDB_PORT = 9925;
 const DEFAULT_ADMIN_USERNAME = 'HDB_ADMIN';

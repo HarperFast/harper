@@ -43,6 +43,7 @@ const systemSchema = require('../json/systemSchema');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdb_errors;
 const { UserEventMsg } = require('../server/ipc/utility/ipcUtils');
+const _ = require('lodash');
 
 const USER_ATTRIBUTE_WHITELIST = {
 	username: true,
@@ -425,7 +426,7 @@ async function listUsers() {
 
 		let roles;
 		try {
-			roles = await p_search_search_by_value(role_search_obj);
+			roles = _.cloneDeep(await p_search_search_by_value(role_search_obj));
 		} catch (err) {
 			logger.error(`Got an error searching for roles.`);
 			logger.error(err);
@@ -448,7 +449,7 @@ async function listUsers() {
 
 			let users;
 			try {
-				users = await p_search_search_by_value(user_search_obj);
+				users = _.cloneDeep(await p_search_search_by_value(user_search_obj));
 			} catch (err) {
 				logger.error('Got an error searching for users.');
 				logger.error(err);

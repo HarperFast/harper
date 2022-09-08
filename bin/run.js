@@ -355,7 +355,7 @@ async function isHdbInstalled() {
 		await fs.stat(hdb_utils.getPropsFilePath());
 		await fs.stat(env.get(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
 	} catch (err) {
-		if (err.errno === ENOENT_ERR_CODE) {
+		if (err.code === 'ENOENT') {
 			// boot props not found, hdb not installed
 			return false;
 		}

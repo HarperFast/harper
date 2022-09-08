@@ -48,6 +48,9 @@ const NEW_LIC_FILE_PATH = path.join(NEW_KEYS_PATH, '.license');
 
 describe('Test 3.1.0 Upgrade Directive', () => {
 	const sandbox = sinon.createSandbox();
+	if (os.platform() === 'win32') {
+		return; // version 3.x didn't support windows, so no reason to test this upgrade.
+	}
 
 	before(() => {
 		buildFile();
@@ -148,7 +151,9 @@ describe('Test 3.1.0 Upgrade Directive', () => {
 		});
 
 		beforeEach(() => {
-			fs.removeSync(test_util.getMockTestPath());
+			try {
+				fs.removeSync(test_util.getMockTestPath());
+			} catch (e) {}
 			fs.mkdirpSync(OLD_KEYS_PATH);
 			fs.mkdirpSync(NEW_KEYS_PATH);
 			fs.writeFileSync(OLD_REG_FILE_PATH, '');
@@ -156,7 +161,9 @@ describe('Test 3.1.0 Upgrade Directive', () => {
 		});
 
 		afterEach(() => {
-			fs.removeSync(test_util.getMockTestPath());
+			try {
+				fs.removeSync(test_util.getMockTestPath());
+			} catch (e) {}
 
 			fs.unlinkSync(OLD_REG_FILE_PATH);
 			fs.unlinkSync(OLD_LIC_FILE_PATH);
@@ -243,8 +250,10 @@ describe('Test 3.1.0 Upgrade Directive', () => {
 			try {
 				fd = fs.openSync(NEW_REG_FILE_PATH, 'r');
 			} catch (e) {
+				console.log(e);
 				open_err = e;
 			}
+
 			expect(fd).to.be.an.integer();
 			expect(open_err).to.equal(undefined);
 

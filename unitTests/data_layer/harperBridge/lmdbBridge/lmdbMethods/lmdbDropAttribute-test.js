@@ -245,7 +245,6 @@ describe('test lmdbDropAttribute module', () => {
 				assert.notDeepStrictEqual(result.id, null);
 				assert.deepStrictEqual(result.temperature_str, null);
 				let entry = tbl_env.dbis['id'].getEntry(result.id);
-				assert.deepStrictEqual(entry.version, 1);
 			});
 		});
 	});

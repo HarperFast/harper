@@ -5,6 +5,7 @@ const hdb_utils = require('../../utility/common_utils');
 const hdb_terms = require('../../utility/hdbTerms');
 const hdb_logger = require('../../utility/logging/harper_logger');
 const { IPC_ERRORS } = require('../../utility/errors/commonErrors');
+const os = require('os');
 
 /**
  * This class defines an IPC client. A client will emit event to the IPC server.
@@ -13,7 +14,7 @@ class IPCClient {
 	constructor(id, event_handlers) {
 		this.ipc = new raw_ipc();
 		this.server_name = hdb_terms.HDB_IPC_SERVER;
-		this.ipc.config.retry = 100;
+		this.ipc.config.retry = os.platform() == 'win32' ? 600000 : 100; // Windows can have problems, don't constantly reconnect
 		this.ipc.config.id = hdb_terms.HDB_IPC_CLIENT_PREFIX + id;
 		this.ipc.config.silent = true;
 		this.event_handlers = event_handlers;

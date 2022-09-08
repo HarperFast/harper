@@ -40,6 +40,11 @@ jobs:
       with:
         name: harperdb-${{ inputs.harperdbVersion }}.tgz
         path: ../artifact/
+    - uses: actions/download-artifact@v3
+      if: inputs.installType == 'docker'
+      with:
+        name: docker-harperdb_${{ inputs.harperdbVersion }}.tar
+        path: ../artifact/
     - name: Create Instances
       id: createInstances
       env:
@@ -60,6 +65,11 @@ jobs:
         if [ "${{ inputs.installType }}" == "buildPackage" ];
         then
           mv ../artifact/harperdb-${{ inputs.harperdbVersion }}.tgz ./upload/
+        fi
+
+        if [ "${{ inputs.installType }}" == "docker" ];
+        then
+          mv ../artifact/docker-harperdb_${{ inputs.harperdbVersion }}.tar ./upload/
         fi
         
         cp -r ../harperdb/ ./upload/

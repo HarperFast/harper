@@ -40,7 +40,7 @@ describe('test checkGoVersion', () => {
 		);
 
 		expect(cmd_stub.callCount).to.equal(1);
-		expect(cmd_stub.firstCall.args).to.eql(['go version | { read _ _ v _; echo ${v#go}; }', undefined]);
+		expect(cmd_stub.firstCall.args).to.eql(['go version', undefined]);
 		let cmd_err;
 		try {
 			await cmd_stub.firstCall.returnValue;
@@ -78,7 +78,7 @@ describe('test checkGoVersion', () => {
 		expect(error.message).to.equal(`go version 1.17.6 or higher must be installed.`);
 
 		expect(cmd_stub.callCount).to.equal(1);
-		expect(cmd_stub.firstCall.args).to.eql(['go version | { read _ _ v _; echo ${v#go}; }', undefined]);
+		expect(cmd_stub.firstCall.args).to.eql(['go version', undefined]);
 		let cmd_result = await cmd_stub.firstCall.returnValue;
 		expect(cmd_result).to.equal('1.0.0');
 
@@ -112,7 +112,7 @@ describe('test checkGoVersion', () => {
 		expect(error).is.equal(undefined);
 
 		expect(cmd_stub.callCount).to.equal(1);
-		expect(cmd_stub.firstCall.args).to.eql(['go version | { read _ _ v _; echo ${v#go}; }', undefined]);
+		expect(cmd_stub.firstCall.args).to.eql(['go version', undefined]);
 		let cmd_result = await cmd_stub.firstCall.returnValue;
 		expect(cmd_result).to.equal('1.17.6');
 
@@ -146,7 +146,7 @@ describe('test checkGoVersion', () => {
 		expect(error).is.equal(undefined);
 
 		expect(cmd_stub.callCount).to.equal(1);
-		expect(cmd_stub.firstCall.args).to.eql(['go version | { read _ _ v _; echo ${v#go}; }', undefined]);
+		expect(cmd_stub.firstCall.args).to.eql(['go version', undefined]);
 		let cmd_result = await cmd_stub.firstCall.returnValue;
 		expect(cmd_result).to.equal('2.0.0');
 
@@ -186,7 +186,7 @@ describe('test extractNATSServer function', () => {
 		let path_join_spy = sandbox.spy(installer.__get__('path'), 'join');
 
 		let result = await extract();
-		expect(result).to.equal('/tmp/nats-server-src');
+		expect(result).to.equal(`${path.sep}tmp${path.sep}nats-server-src`);
 		expect(console_log_spy.callCount).to.equal(2);
 		expect(console_log_spy.firstCall.args).to.eql([chalk.green('Extracting NATS Server source code.')]);
 		expect(console_log_spy.secondCall.args).to.eql([chalk.green('Extracted 321 entries.')]);
@@ -217,19 +217,24 @@ describe('test cleanUp function', () => {
 
 		await cleanup('/tmp/nats-server-src/');
 		expect(path_join_spy.callCount).to.equal(2);
-		expect(path_join_spy.firstCall.args).to.eql(['/tmp/nats-server-src/', 'nats-server']);
+		expect(path_join_spy.firstCall.args).to.eql([
+			'/tmp/nats-server-src/',
+			`nats-server${process.platform === 'win32' ? '.exe' : ''}`,
+		]);
 		expect(path_join_spy.secondCall.args).to.eql(['/tmp/', 'pkg']);
 
 		expect(fs_move_stub.callCount).to.equal(1);
+		let args = fs_move_stub.firstCall.args;
+		if (args[0].endsWith('.exe')) args[0] = args[0].slice(0,-4); // normalize windows
 		expect(fs_move_stub.firstCall.args).to.eql([
-			'/tmp/nats-server-src/nats-server',
+			`${path.sep}tmp${path.sep}nats-server-src${path.sep}nats-server`,
 			'/tmp/nats-server',
 			{ overwrite: true },
 		]);
 
 		expect(fs_remove_stub.callCount).to.equal(2);
 		expect(fs_remove_stub.firstCall.args).to.eql(['/tmp/nats-server-src/']);
-		expect(fs_remove_stub.secondCall.args).to.eql(['/tmp/pkg']);
+		expect(fs_remove_stub.secondCall.args).to.eql([`${path.sep}tmp${path.sep}pkg`]);
 
 		nats_server_path_restore();
 		fs_restore();
@@ -622,6 +627,8 @@ describe('test downloadNATSServer function', () => {
 		// spy fs.ensureFile, fs.remove, fs.chmod
 		let og_platform = process.platform;
 		let og_arch = process.arch;
+		if (og_platform == 'win32')
+			return;
 		Object.defineProperty(process, 'platform', { value: 'linux' });
 		Object.defineProperty(process, 'arch', { value: 'x64' });
 

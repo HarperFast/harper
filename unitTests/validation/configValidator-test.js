@@ -413,7 +413,7 @@ describe('Test configValidator module', () => {
 
 			const schema = configValidator(bad_config_obj);
 			const expected_error_message =
-				"'customFunctions.nodeEnv' must be one of [production, development]. 'customFunctions.processes' must be a number. 'customFunctions.root' with value '/!' fails to match the unix directory path pattern";
+				"'customFunctions.nodeEnv' must be one of [production, development]. 'customFunctions.processes' must be a number. 'customFunctions.root' with value '/!' fails to match the directory path pattern";
 
 			expect(schema.error.message).to.eql(expected_error_message);
 		});
@@ -448,7 +448,7 @@ describe('Test configValidator module', () => {
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'logging.file' must be a boolean. 'logging.level' must be one of [notify, fatal, error, warn, info, debug, trace]. 'logging.rotation.compress' must be a boolean. 'logging.rotation.dateFormat' must be a string. Invalid logging.rotation.maxSize unit. Available units are G, M or K. 'logging.rotation.retain' must be a number. 'logging.rotation.rotate' must be a boolean. 'logging.rotation.rotateInterval' must be a string. 'logging.rotation.rotateModule' must be a boolean. 'logging.rotation.timezone' must be a string. 'logging.rotation.workerInterval' must be greater than or equal to 1. 'logging.root' with value '/???' fails to match the unix directory path pattern. 'logging.stdStreams' must be a boolean. 'logging.auditLog' must be a boolean";
+				"'logging.file' must be a boolean. 'logging.level' must be one of [notify, fatal, error, warn, info, debug, trace]. 'logging.rotation.compress' must be a boolean. 'logging.rotation.dateFormat' must be a string. Invalid logging.rotation.maxSize unit. Available units are G, M or K. 'logging.rotation.retain' must be a number. 'logging.rotation.rotate' must be a boolean. 'logging.rotation.rotateInterval' must be a string. 'logging.rotation.rotateModule' must be a boolean. 'logging.rotation.timezone' must be a string. 'logging.rotation.workerInterval' must be greater than or equal to 1. 'logging.root' with value '/???' fails to match the directory path pattern. 'logging.stdStreams' must be a boolean. 'logging.auditLog' must be a boolean";
 
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
@@ -472,7 +472,7 @@ describe('Test configValidator module', () => {
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'operationsApi.authentication.operationTokenTimeout' is required. 'operationsApi.authentication.refreshTokenTimeout' is required. 'operationsApi.foreground' must be a boolean. 'operationsApi.network.cors' must be a boolean. 'operationsApi.network.headersTimeout' must be greater than or equal to 1. 'operationsApi.network.https' must be a boolean. 'operationsApi.network.keepAliveTimeout' must be a number. 'operationsApi.network.port' must be a number. 'operationsApi.network.timeout' must be a number. 'operationsApi.nodeEnv' must be one of [production, development]. 'operationsApi.processes' must be a number. 'operationsApi.root' with value '/@@@' fails to match the unix directory path pattern. 'operationsApi.storage.writeAsync' is required";
+				"'operationsApi.authentication.operationTokenTimeout' is required. 'operationsApi.authentication.refreshTokenTimeout' is required. 'operationsApi.foreground' must be a boolean. 'operationsApi.network.cors' must be a boolean. 'operationsApi.network.headersTimeout' must be greater than or equal to 1. 'operationsApi.network.https' must be a boolean. 'operationsApi.network.keepAliveTimeout' must be a number. 'operationsApi.network.port' must be a number. 'operationsApi.network.timeout' must be a number. 'operationsApi.nodeEnv' must be one of [production, development]. 'operationsApi.processes' must be a number. 'operationsApi.root' with value '/@@@' fails to match the directory path pattern. 'operationsApi.storage.writeAsync' is required";
 
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
@@ -535,7 +535,7 @@ describe('Test configValidator module', () => {
 			} catch (err) {
 				error = err;
 			}
-			const expected_error_message = 'must be a valid unix directory path and specify a .pem file';
+			const expected_error_message = 'must be a valid directory path and specify a .pem file';
 
 			expect(error.message).to.equal(expected_error_message);
 		});

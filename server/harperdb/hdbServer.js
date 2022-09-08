@@ -14,7 +14,6 @@ const pjson = require('../../package.json');
 const fastify_cors = require('@fastify/cors');
 const fastify_compress = require('@fastify/compress');
 const fastify_static = require('@fastify/static');
-const fastify_helmet = require('@fastify/helmet');
 const fastify_serializer = require('@fastify/accepts-serializer');
 const { pack, unpack } = require('msgpackr');
 const request_time_plugin = require('../serverHelpers/requestTimePlugin');
@@ -155,9 +154,6 @@ function buildServer(is_https) {
 	if (cors_options) {
 		app.register(fastify_cors, cors_options);
 	}
-
-	//Register security headers for Fastify instance - https://helmetjs.github.io/
-	app.register(fastify_helmet);
 
 	app.register(function (instance, options, done) {
 		instance.setNotFoundHandler(function (request, reply) {

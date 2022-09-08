@@ -22,7 +22,7 @@ jobs:
       name: Get node version
       run: |
         pwd
-        NODE_VERSION="$(cat package.json | jq -r '.engines.node')"
+        NODE_VERSION="$(cat package.json | jq -r '.engines."preferred-node"')"
         HARPERDB_VERSION=$(cat package.json | jq -r '.version')
         GO_VERSION=$(cat package.json | jq -r '.engines."go-lang"')
         echo "::set-output name=NODE_VERSION::$NODE_VERSION"

@@ -60,7 +60,9 @@ fake_cluster_user.sys_name_encoded = fake_cluster_user.uri_encoded_name + '-admi
  * @returns {Promise<void>}
  */
 async function uninstallLogRotate() {
-	const { stdout, stderr } = await exec(`${PM2_MODULE_LOCATION} uninstall pm2-logrotate`);
+	const { stdout, stderr } = await exec(
+		`${process.platform === 'win32' ? 'node' : ''} ${PM2_MODULE_LOCATION} uninstall pm2-logrotate`
+	);
 	hdb_logger.debug(`loadLogRotate stdout: ${stdout}`);
 
 	if (stderr) {
@@ -199,7 +201,7 @@ describe('Test pm2 utilityFunctions module', () => {
 		}).timeout(10000);
 
 		it('Test error is handled as expected', async () => {
-			const test_script_path = `${__dirname}/imnothere.js`;
+			const test_script_path = path.join(__dirname, 'imnothere.js');
 			let test_options = {
 				name: 'unit test',
 				script: test_script_path,
@@ -706,13 +708,13 @@ describe('Test pm2 utilityFunctions module', () => {
 			await utility_functions.kill();
 			const result = await utility_functions.list();
 			expect(result).to.eql([]);
-		}).timeout(20000);
+		}).timeout(60000);
 
 		it('Test error from connect causes promise to reject', async () => {
 			const connect_rw = utility_functions.__set__('connect', sandbox.stub().throws(new Error(test_err)));
 			await test_utils.assertErrorAsync(utility_functions.kill, [], new Error(test_err));
 			connect_rw();
-		});
+		}).timeout(60000);
 	});
 
 	describe('Test restartHdb function', () => {
@@ -838,7 +840,7 @@ describe('Test pm2 utilityFunctions module', () => {
 			const process_meta = await utility_functions.list(PM2_LOGROTATE);
 			expect(process_meta[0].name).to.equal(PM2_LOGROTATE);
 			expect(process_meta[0].pm2_env.status).to.equal('online');
-		}).timeout(20000);
+		}).timeout(60000);
 
 		it('Test logger throws error', async () => {
 			module_location_rw = utility_functions.__set__('PM2_MODULE_LOCATION', '/fakelocation');
@@ -851,9 +853,11 @@ describe('Test pm2 utilityFunctions module', () => {
 			}
 
 			expect(error).to.be.instanceof(Error);
-			expect(error.message).to.contain.oneOf([FAKE_LOCATION_ERROR_MSG, FAKE_LOCATION_ERROR_MSG2]);
+			if (process.platform !== 'win32') {
+				expect(error.message).to.contain.oneOf([FAKE_LOCATION_ERROR_MSG, FAKE_LOCATION_ERROR_MSG2]);
+			}
 			module_location_rw();
-		}).timeout(20000);
+		}).timeout(60000);
 	});
 
 	describe('Test updateLogRotateConfig function', () => {
@@ -1004,7 +1008,7 @@ describe('Test pm2 utilityFunctions module', () => {
 			expect(update_log_rotate_config_stub.called).to.be.true;
 
 			env_rw();
-		}).timeout(20000);
+		}).timeout(120000);
 
 		it('Test that it stops pm2-logrotate if LOG_ROTATE is false, and logrotate is online', async () => {
 			env_rw = utility_functions.__set__('env_mangr', {
@@ -1024,7 +1028,7 @@ describe('Test pm2 utilityFunctions module', () => {
 			expect(stop_log_rotate_stub.called).to.be.true;
 
 			env_rw();
-		}).timeout(20000);
+		}).timeout(120000);
 	});
 
 	it('Test startClustering functions calls startService for all the clustering services', async () => {
