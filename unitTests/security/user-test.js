@@ -1047,18 +1047,11 @@ describe('Test user.js', () => {
 	});
 
 	describe('Test findAndValidateUser function', () => {
-		let password_stub;
-
-		before(() => {
-			password_stub = sandbox.stub(password, 'validate');
-		});
 
 		it('Nominal test, expect user returned', async () => {
 			let test_user_copy = test_utils.deepClone(TEST_USER);
-			test_user_copy.password = 'pass123';
-			test_user_copy.hash = 'qwer123';
+			test_user_copy.password = 'some-salt8b268af38be8279caefa5d014a1241db';
 			global.hdb_users = new Map([[TEST_USER.username, test_user_copy]]);
-			password_stub.returns(true);
 			const expected_result = {
 				active: true,
 				username: 'test_user',
@@ -1077,10 +1070,8 @@ describe('Test user.js', () => {
 
 		it('Test error thrown on invalid password', async () => {
 			let test_user_copy = test_utils.deepClone(TEST_USER);
-			test_user_copy.password = 'pass123';
-			test_user_copy.hash = 'qwer123';
+			test_user_copy.password = 'this is not the right password';
 			global.hdb_users = new Map([[TEST_USER.username, test_user_copy]]);
-			password_stub.returns(false);
 			const expected_err = test_utils.generateHDBError('Login failed', 401);
 			await test_utils.assertErrorAsync(user.findAndValidateUser, ['test_user', 'test1234!'], expected_err);
 		});

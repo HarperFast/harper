@@ -45,19 +45,19 @@ const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdb_err
 const { UserEventMsg } = require('../server/ipc/utility/ipcUtils');
 const _ = require('lodash');
 
-const USER_ATTRIBUTE_WHITELIST = {
+const USER_ATTRIBUTE_ALLOWLIST = {
 	username: true,
 	active: true,
 	role: true,
 	password: true,
 };
-
+const password_hash_cache = new Map();
 const p_search_search_by_value = promisify(search.searchByValue);
 const p_search_search_by_hash = promisify(search.searchByHash);
 const p_delete_delete = promisify(delete_.delete);
 
 async function addUser(user) {
-	let clean_user = validate.cleanAttributes(user, USER_ATTRIBUTE_WHITELIST);
+	let clean_user = validate.cleanAttributes(user, USER_ATTRIBUTE_ALLOWLIST);
 
 	let validation_resp = validation.addUserValidation(clean_user);
 	if (validation_resp) {
@@ -169,7 +169,7 @@ async function addUser(user) {
 }
 
 async function alterUser(json_message) {
-	let clean_user = validate.cleanAttributes(json_message, USER_ATTRIBUTE_WHITELIST);
+	let clean_user = validate.cleanAttributes(json_message, USER_ATTRIBUTE_ALLOWLIST);
 
 	if (hdb_utility.isEmptyOrZeroLength(clean_user.username)) {
 		throw new Error(USERNAME_REQUIRED);
@@ -606,20 +606,28 @@ async function findAndValidateUser(username, pw, validate_password = true) {
 			true
 		);
 	}
-	let user = Object.assign({}, user_tmp);
-	if (validate_password === true && !password.validate(user.password, pw)) {
-		throw handleHDBError(
-			new Error(),
-			AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL,
-			HTTP_STATUS_CODES.UNAUTHORIZED,
-			undefined,
-			undefined,
-			true
-		);
-	}
+	let user = {
+		active: user_tmp.active,
+		username: user_tmp.username,
+	};
+	if (user_tmp.refresh_token) user.refresh_token = user_tmp.refresh_token;
+	if (user_tmp.role) user.role = user_tmp.role;
 
-	delete user.password;
-	delete user.hash;
+	if (validate_password === true) {
+		// if matches the cached hash immediately return (the fast path)
+		if (password_hash_cache.get(pw) === user_tmp.password) return user;
+		// if validates, cache the password
+		else if (password.validate(user_tmp.password, pw)) password_hash_cache.set(pw, user_tmp.password);
+		else
+			throw handleHDBError(
+				new Error(),
+				AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL,
+				HTTP_STATUS_CODES.UNAUTHORIZED,
+				undefined,
+				undefined,
+				true
+			);
+	}
 	return user;
 }
 
