@@ -17,16 +17,15 @@ const nats_ingest_service = rewire('../../../server/nats/natsIngestService');
 
 const TEST_TIMEOUT = 30000;
 const SUBJECT_NAME = 'dev.hippopotamus';
-const STREAM_NAME = 'dev_hippopotamus';
+const STREAM_NAME = '9edbde5c46cbe3b97ce08a2d8a033b2b';
 
 async function setupTestStreamAndSource() {
 	await nats_utils.createLocalStream(STREAM_NAME, ['dev.hippopotamus.testLeafServer-leaf']);
 	await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
-	await nats_utils.addSourceToWorkStream(
-		'testLeafServer-leaf',
-		nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-		STREAM_NAME
-	);
+	await nats_utils.addSourceToWorkStream('testLeafServer-leaf', nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, {
+		schema: 'dev',
+		table: 'hippopotamus',
+	});
 }
 
 async function teardownTestStreamAndSource() {

@@ -20,9 +20,12 @@ const hdb_utils = require('../../../../utility/common_utils');
 
 const TEST_TIMEOUT = 30000;
 const TEST_SUBJECT_NAME = 'devTest.Chicken1.testLeafServer-leaf';
-const TEST_STREAM_NAME = crypto_hash.createNatsTableStreamName('devTest', 'Chicken1');
+const TEST_SCHEMA = 'devTest';
+const TEST_TABLE1 = 'Chicken1';
+const TEST_TABLE2 = 'capybara';
+const TEST_STREAM_NAME = crypto_hash.createNatsTableStreamName(TEST_SCHEMA, TEST_TABLE1);
 const TEST_SUBJECT_NAME_2 = 'devTest.capybara.testLeafServer-leaf';
-const TEST_STREAM_NAME_2 = crypto_hash.createNatsTableStreamName('devTest', 'capybara');
+const TEST_STREAM_NAME_2 = crypto_hash.createNatsTableStreamName(TEST_SCHEMA, TEST_TABLE2);
 
 function decodeJsMsg(msg) {
 	const js_msg = toJsMsg(msg);
@@ -489,11 +492,17 @@ describe('Test natsUtils module', () => {
 		}).timeout(TEST_TIMEOUT);
 
 		it('Test addSourceToWorkStream adds a node to work queue', async () => {
+			const test_sub = {
+				schema: TEST_SCHEMA,
+				table: TEST_TABLE1,
+				publish: true,
+				subscribe: true,
+			};
 			await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
 			await nats_utils.addSourceToWorkStream(
 				'unit_test_node',
 				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				TEST_STREAM_NAME
+				test_sub
 			);
 
 			const { jsm } = await nats_utils.getNATSReferences();
@@ -521,12 +530,20 @@ describe('Test natsUtils module', () => {
 			await nats_utils.publishToStream('devTest.capybara', TEST_STREAM_NAME_2, [{ id: 2 }]);
 			// Create a work queue stream
 			await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
+
+			const test_sub = {
+				schema: TEST_SCHEMA,
+				table: TEST_TABLE2,
+				publish: true,
+				subscribe: true,
+				start_time: test_start_date,
+			};
+
 			// Add the test local stream as a source to the work queue stream, pass the start date that was generated between the two inserts.
 			await nats_utils.addSourceToWorkStream(
 				'testLeafServer-leaf',
 				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				TEST_STREAM_NAME_2,
-				test_start_date
+				test_sub
 			);
 			const { jsm } = await nats_utils.getNATSReferences();
 			// Get the work queue stream info and make sure there is just one message in the stream to prove that start date filter is working.
@@ -544,6 +561,13 @@ describe('Test natsUtils module', () => {
 		}).timeout(TEST_TIMEOUT);
 
 		it('Test addSourceToWorkStream using default start_time', async () => {
+			const test_sub = {
+				schema: TEST_SCHEMA,
+				table: TEST_TABLE2,
+				publish: true,
+				subscribe: true,
+			};
+
 			// Create local stream
 			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
 			// Publish a message to stream
@@ -556,7 +580,7 @@ describe('Test natsUtils module', () => {
 			await nats_utils.addSourceToWorkStream(
 				'testLeafServer-leaf',
 				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				TEST_STREAM_NAME_2
+				test_sub
 			);
 			const { jsm } = await nats_utils.getNATSReferences();
 			// Get the work queue stream info and make sure there are no messaged in there.
@@ -568,24 +592,75 @@ describe('Test natsUtils module', () => {
 			await nats_utils.deleteLocalStream(TEST_STREAM_NAME_2);
 		}).timeout(TEST_TIMEOUT);
 
-		it('Test removeSourceFromWorkStream removes a node from work stream', async () => {
+		it('Test addSourceToWorkStream that already exists in work stream', async () => {
+			const test_sub = {
+				schema: TEST_SCHEMA,
+				table: TEST_TABLE1,
+				publish: true,
+				subscribe: true,
+			};
 			await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
 			await nats_utils.addSourceToWorkStream(
 				'unit_test_node',
 				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				TEST_STREAM_NAME
+				test_sub
+			);
+
+			const { jsm } = await nats_utils.getNATSReferences();
+			let wq_stream = await jsm.streams.info('__HARPERDB_WORK_QUEUE__');
+
+			expect(wq_stream.config.sources[0].name).to.equal(TEST_STREAM_NAME);
+			expect(wq_stream.config.sources[0].external.api).to.equal('$JS.unit_test_node.API');
+			expect(wq_stream.config.sources[0].external.deliver).to.equal('');
+			expect(wq_stream.config.sources[0].opt_start_time).to.not.be.undefined;
+
+			test_sub.start_time = '2022-09-02T20:06:35.993Z';
+
+			await nats_utils.addSourceToWorkStream(
+				'unit_test_node',
+				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+				test_sub
+			);
+
+			wq_stream = await jsm.streams.info('__HARPERDB_WORK_QUEUE__');
+			expect(wq_stream.config.sources[0].name).to.equal(TEST_STREAM_NAME);
+			expect(wq_stream.config.sources[0].external.api).to.equal('$JS.unit_test_node.API');
+			expect(wq_stream.config.sources[0].external.deliver).to.equal('');
+			expect(wq_stream.config.sources[0].opt_start_time).to.equal('2022-09-02T20:06:35.993Z');
+		}).timeout(TEST_TIMEOUT);
+
+		it('Test removeSourceFromWorkStream removes a node from work stream', async () => {
+			const test_sub = {
+				schema: TEST_SCHEMA,
+				table: TEST_TABLE1,
+				publish: true,
+				subscribe: true,
+			};
+
+			const test_sub2 = {
+				schema: 'dev',
+				table: 'horse',
+				publish: true,
+				subscribe: true,
+			};
+
+			await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
+			await nats_utils.addSourceToWorkStream(
+				'unit_test_node',
+				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+				test_sub
 			);
 
 			await nats_utils.addSourceToWorkStream(
 				'unit_test_node',
 				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				'dev_horse'
+				test_sub2
 			);
 
 			await nats_utils.removeSourceFromWorkStream(
 				'unit_test_node',
 				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				TEST_STREAM_NAME
+				test_sub
 			);
 
 			const jsm = await nats_utils.getJetStreamManager();
@@ -593,27 +668,34 @@ describe('Test natsUtils module', () => {
 			await nats_utils.removeSourceFromWorkStream(
 				'unit_test_node',
 				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				'dev_horse'
+				test_sub2
 			);
 
 			expect(wq_stream.config.sources.length).to.equal(1);
-			expect(wq_stream.config.sources[0].name).to.equal('dev_horse');
+			expect(wq_stream.config.sources[0].name).to.equal('7016c5a324d59667522d62b145fd2e54');
 		}).timeout(TEST_TIMEOUT);
 
 		it('Test removeSourceFromWorkStream removes last node from work stream', async () => {
+			const test_sub = {
+				schema: TEST_SCHEMA,
+				table: TEST_TABLE1,
+				publish: true,
+				subscribe: true,
+			};
+
 			const jsm = await nats_utils.getJetStreamManager();
 			await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
 			await jsm.streams.purge(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
 			await nats_utils.addSourceToWorkStream(
 				'unit_test_node',
 				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				TEST_STREAM_NAME
+				test_sub
 			);
 
 			await nats_utils.removeSourceFromWorkStream(
 				'unit_test_node',
 				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				TEST_STREAM_NAME
+				test_sub
 			);
 
 			const wq_stream = await jsm.streams.info(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
@@ -627,6 +709,61 @@ describe('Test natsUtils module', () => {
 			const inf_json = await fs.readJson(work_queue_inf_file);
 			expect(inf_json.sources).to.be.undefined;
 		}).timeout(TEST_TIMEOUT);
+
+		it('Test purgeSourceFromWorkStream removes all a sources msgs from work stream ', async () => {
+			// Create local stream
+			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
+			// Create a work queue stream
+			await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
+
+			const test_sub = {
+				schema: TEST_SCHEMA,
+				table: TEST_TABLE2,
+				publish: true,
+				subscribe: true,
+			};
+
+			// Add the test local stream as a source to the work queue stream.
+			await nats_utils.addSourceToWorkStream(
+				'testLeafServer-leaf',
+				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+				test_sub
+			);
+
+			// Publish a messages to stream
+			await nats_utils.publishToStream('devTest.capybara', TEST_STREAM_NAME_2, [{ id: 1 }]);
+			await nats_utils.publishToStream('devTest.capybara', TEST_STREAM_NAME_2, [{ id: 2 }]);
+
+			const { jsm } = await nats_utils.getNATSReferences();
+			// Get the work queue stream info and check that there are messages there.
+			let wq_stream = await jsm.streams.info(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
+			expect(wq_stream.state.messages).to.equal(2);
+
+			// Call purge
+			const purgeSourceFromWorkStream = nats_utils.__get__('purgeSourceFromWorkStream');
+			await purgeSourceFromWorkStream(
+				TEST_SCHEMA,
+				TEST_TABLE2,
+				{ external: { api: 'API.testLeafServer-leaf' } },
+				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name
+			);
+
+			// After purge there should be no messages in work stream
+			wq_stream = await jsm.streams.info(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
+			expect(wq_stream.state.messages).to.equal(0);
+		}).timeout(TEST_TIMEOUT);
+
+		it('Test getJsmServerName returns correct name', async () => {
+			const getJsmServerName = nats_utils.__get__('getJsmServerName');
+			const res = await getJsmServerName();
+			expect(res).to.equal('testLeafServer-leaf');
+		});
+
+		it('Test createSubjectName returns correct name', async () => {
+			const createSubjectName = nats_utils.__get__('createSubjectName');
+			const res = createSubjectName('unit', 'test', 'nats');
+			expect(res).to.equal('unit.test.nats');
+		});
 	});
 
 	describe('Test natUtils with stubs', () => {
@@ -712,8 +849,13 @@ describe('Test natsUtils module', () => {
 		expect(add_source_to_work_stream_stub.args[0]).to.eql([
 			'node_i_am-leaf',
 			'__HARPERDB_WORK_QUEUE__',
-			'd17550f31ac493889f2df5963586d31a',
-			'2022-08-26T18:26:58.514Z',
+			{
+				publish: false,
+				schema: 'dog',
+				start_time: '2022-08-26T18:26:58.514Z',
+				subscribe: true,
+				table: 'poodle',
+			},
 		]);
 		add_source_rw();
 	});
@@ -733,7 +875,12 @@ describe('Test natsUtils module', () => {
 		expect(remove_source_from_work_stream_stub.args[0]).to.eql([
 			'node_i_am-leaf',
 			'__HARPERDB_WORK_QUEUE__',
-			'd17550f31ac493889f2df5963586d31a',
+			{
+				publish: false,
+				schema: 'dog',
+				subscribe: false,
+				table: 'poodle',
+			},
 		]);
 		remove_source_rw();
 	});
@@ -743,6 +890,8 @@ describe('Test natsUtils module', () => {
 		const jsm = { nc: { info: { server_name: test_server_name } } };
 		const get_nats_ref_stub = sandbox.stub().resolves({ jsm });
 		const create_local_stream_stub = sandbox.stub();
+		const get_jsm_server_name_stub = sandbox.stub().resolves('unit_test-leaf');
+		const get_jsm_server_name_rw = nats_utils.__set__('getJsmServerName', get_jsm_server_name_stub);
 		const create_local_stream_rw = nats_utils.__set__('createLocalStream', create_local_stream_stub);
 		const get_nats_ref_rw = nats_utils.__set__('getNATSReferences', get_nats_ref_stub);
 		await nats_utils.createLocalTableStream('dev', 'chicken');
@@ -750,6 +899,7 @@ describe('Test natsUtils module', () => {
 		expect(create_local_stream_stub.args[0][1][0]).to.equal('dev.chicken.unit_test-leaf');
 		create_local_stream_rw();
 		get_nats_ref_rw();
+		get_jsm_server_name_rw();
 	});
 
 	it('Test createTableStreams calls create local table for each sub', async () => {
