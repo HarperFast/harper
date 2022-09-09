@@ -152,7 +152,7 @@ async function messageProcessor(msg) {
 
 	sequence_map.set(subject, js_msg.info.streamSequence);
 
-	//Ack to NATS (because the stream is a workqueue) will delete the message from the work queue stream once we have transacted it.
+	// Ack to NATS to acknowledge the message has been processed
 	js_msg.ack();
 
 	return result;
