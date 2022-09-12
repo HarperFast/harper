@@ -8,7 +8,7 @@ const child_process = require('child_process');
 const streamPipeline = util.promisify(require('stream').pipeline);
 const exec = util.promisify(child_process.exec);
 const package_json = require('../../../package.json');
-const { PACKAGE_ROOT } = require('../utility/hdbTerms');
+const { PACKAGE_ROOT } = require('../../hdbTerms');
 process.chdir(PACKAGE_ROOT);
 
 const TMP_FOLDER_NAME = 'tmp';
