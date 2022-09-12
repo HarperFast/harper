@@ -230,7 +230,7 @@ async function descTable(describe_table_object, attr_perms) {
 
 			// Nats/clustering stream names are hashed to ensure constant length alphanumeric values.
 			// String will always hash to the same value.
-			table_result.clustering_stream_name = crypto_hash.createNatsTableStreamName(table1.schema, table1.schema);
+			table_result.clustering_stream_name = crypto_hash.createNatsTableStreamName(table1.schema, table1.name);
 
 			try {
 				let schema_path = path.join(lmdb_init_paths.getBaseSchemaPath(), table_result.schema.toString());

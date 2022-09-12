@@ -2772,7 +2772,7 @@
 									"",
 									"    pm.expect(json_data.schema).to.equal(\"123\");",
 									"    pm.expect(json_data.name).to.equal(\"4\");",
-									"    pm.expect(json_data.clustering_stream_name).to.equal('46ddc40585caa8abc07c460b3485781e');",
+									"    pm.expect(json_data.clustering_stream_name).to.equal('e7074b29890bbf5443325df5572bff0e');",
 									"});"
 								],
 								"type": "text/javascript"
