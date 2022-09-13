@@ -1,17 +1,17 @@
 variable "region" {}
 variable "instance_count" {}
 variable "instance_name_prefix" {}
-variable "teamcity_buildconf_name" {}
-variable "teamcity_build_number" {}
+variable "github_workflow_name" {}
+variable "github_run_number" {}
 variable "instance_type" {}
 variable "volume_size" {}
 variable "private_key" {
-    default = "~/.ssh/teamcity_rsa"
+  default = "~/.ssh/github_rsa"
 }
 
 provider "aws" {
   version = "~> 3.0"
-  region = var.region
+  region  = var.region
 }
 
 data "aws_ami" "ubuntu" {
@@ -27,12 +27,12 @@ data "aws_ami" "ubuntu" {
   owners = ["099720109477"] # Canonical
 }
 
-resource "aws_instance" "teamcity" {
-  count                       = var.instance_count
+resource "aws_instance" "github" {
+  count = var.instance_count
   tags = {
-    Name                      = "${var.instance_name_prefix}-${count.index + 1}"
-    teamcity_buildconf_name   = var.teamcity_buildconf_name
-    teamcity_build_number     = var.teamcity_build_number
+    Name                  = "${var.instance_name_prefix}-${count.index + 1}"
+    github_workflow_name = var.github_workflow_name
+    github_run_number   = var.github_run_number
   }
   ami                         = data.aws_ami.ubuntu.id
   instance_type               = var.instance_type
@@ -42,18 +42,18 @@ resource "aws_instance" "teamcity" {
   iam_instance_profile        = "AmazonSSMRoleForInstancesQuickSetup"
   key_name                    = "teamcity-agent"
   user_data                   = templatefile("${path.module}/user_data.sh", {})
-  placement_group			  = "teamcity"
+  placement_group             = "teamcity"
   root_block_device {
-      volume_type             = "gp3"
-      volume_size             = var.volume_size
-      iops					  = 6000
-      throughput			  = 250
+    volume_type = "gp3"
+    volume_size = var.volume_size
+    iops        = 6000
+    throughput  = 250
   }
   connection {
     type        = "ssh"
     user        = "ubuntu"
-    private_key = "${file("${var.private_key}")}"
-    host        = "${self.public_dns}"
+    private_key = file("${var.private_key}")
+    host        = self.public_dns
   }
   # Copy all files and folders in ./upload dir to /home/ubuntu
   provisioner "file" {
@@ -63,13 +63,13 @@ resource "aws_instance" "teamcity" {
 }
 
 output "public_dns_names" {
-  value = aws_instance.teamcity.*.public_dns
+  value = aws_instance.github.*.public_dns
 }
 
 output "public_ips" {
-  value = aws_instance.teamcity.*.public_ip
+  value = aws_instance.github.*.public_ip
 }
 
 output "instance_ids" {
-  value = aws_instance.teamcity.*.id
+  value = aws_instance.github.*.id
 }

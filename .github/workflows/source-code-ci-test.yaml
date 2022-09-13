@@ -6,6 +6,8 @@ on:
       - master
   pull_request:
     types: [opened, synchronize, reopened]
+  schedule:
+    - cron:  '0 8 * * 1-5'
   workflow_dispatch:
 name: Run Source Code CI Tests
 jobs:
@@ -33,6 +35,7 @@ jobs:
       instanceCount: "1"
       harperdbVersion: ${{ needs.getNodeVersion.outputs.harperdbVersion }}
       installType: "sourceCode"
+      callingWorkflow: ${{ github.workflow }}
     secrets: inherit
   registerInstances:
     needs: 
@@ -133,4 +136,5 @@ jobs:
     uses: ./.github/workflows/destroy-instances.yaml
     with:
       instanceCount: "1"
+      callingWorkflow: ${{ github.workflow }}
     secrets: inherit   

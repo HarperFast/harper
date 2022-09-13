@@ -1,4 +1,10 @@
 on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'utility/Docker/Dockerfile'
+  schedule:
+    - cron:  '0 8 * * 1-5'
   workflow_dispatch:
 name: "Run Docker CI Tests"
 jobs:

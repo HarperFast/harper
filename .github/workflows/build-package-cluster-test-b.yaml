@@ -2,8 +2,13 @@ on:
   push:
     branches:
       - master
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'utility/clustering/**'
+      - 'server/nats/**'
   schedule:
-    - cron:  '0 12 * * 1-5'
+    - cron:  '0 8 * * 1-5'
   workflow_dispatch:
 name: Run Build Package Cluster Test B
 jobs:
@@ -16,6 +21,7 @@ jobs:
     with:
       instanceCount: "4"
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      callingWorkflow: ${{ github.workflow }}
     secrets: inherit
   registerInstances:
     needs: 
@@ -71,4 +77,5 @@ jobs:
     uses: ./.github/workflows/destroy-instances.yaml
     with:
       instanceCount: "4"
+      callingWorkflow: ${{ github.workflow }}
     secrets: inherit   

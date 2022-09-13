@@ -25,6 +25,7 @@ jobs:
       instanceCount: "5"
       harperdbVersion: ${{ needs.getNodeVersion.outputs.harperdbVersion }}
       installType: "sourceCode"
+      callingWorkflow: ${{ github.workflow }}
     secrets: inherit
   registerInstances:
     needs: 
@@ -79,4 +80,5 @@ jobs:
     uses: ./.github/workflows/destroy-instances.yaml
     with:
       instanceCount: "5"
+      callingWorkflow: ${{ github.workflow }}
     secrets: inherit   

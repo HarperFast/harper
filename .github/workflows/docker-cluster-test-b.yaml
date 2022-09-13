@@ -1,4 +1,10 @@
 on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'utility/Docker/Dockerfile'
+  schedule:
+    - cron:  '0 8 * * 1-5'
   workflow_dispatch:
 name: "Run Docker Cluster Tests B"
 jobs:
@@ -20,6 +26,7 @@ jobs:
       instanceCount: "1"
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       installType: "docker"
+      callingWorkflow: ${{ github.workflow }}
     secrets: inherit
   runTests:
     runs-on: ubuntu-latest
@@ -63,4 +70,5 @@ jobs:
     uses: ./.github/workflows/destroy-instances.yaml
     with:
       instanceCount: "1"
+      callingWorkflow: ${{ github.workflow }}
     secrets: inherit   

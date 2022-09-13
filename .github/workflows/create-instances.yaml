@@ -16,6 +16,9 @@ on:
       installType:
         type: string
         default: "buildPackage"
+      callingWorkflow:
+        required: true
+        type: string
     outputs: 
       publicDnsNames:
         value: ${{jobs.createInstances.outputs.publicDnsNames}}
@@ -74,8 +77,11 @@ jobs:
         
         cp -r ../harperdb/ ./upload/
 
+        workflow_name="${{ inputs.callingWorkflow }}"
+        # Replace spaces with dashes
+        workflow_name="${workflow_name// /-}"
         terraform init
-        terraform apply -var='private_key=./private_key' -var='region=us-east-2' -var='instance_count=${{ inputs.instanceCount }}' -var='instance_name_prefix=GitHub-${{github.run_number}}' -var='instance_type=${{ inputs.instanceType }}' -var='teamcity_buildconf_name=GitHub-${{github.run_number}}' -var='teamcity_build_number=GitHub-${{github.run_number}}' -var='volume_size=${{ inputs.volumeSize }}' -auto-approve
+        terraform apply -var='private_key=./private_key' -var='region=us-east-2' -var='instance_count=${{ inputs.instanceCount }}' -var='instance_name_prefix=GitHub-'"${workflow_name}"'-${{github.run_number}}' -var='instance_type=${{ inputs.instanceType }}' -var='github_workflow_name='"${workflow_name}"'' -var='github_run_number=${{github.run_number}}' -var='volume_size=${{ inputs.volumeSize }}' -auto-approve
         mapfile -t public_dns_names <<< $(terraform output -json | jq -r '.public_dns_names.value[]')
         mapfile -t public_ips <<< $(terraform output -json | jq -r '.public_ips.value[]')
 
