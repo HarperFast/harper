@@ -10,6 +10,7 @@ const hdb_utils = require('../common_utils');
 const nats_utils = require('../../server/nats/utility/natsUtils');
 const clustering_utils = require('./clusterUtilities');
 const env_manager = require('../environment/environmentManager');
+const { cloneDeep } = require('lodash');
 
 const local_node_name = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 
@@ -29,7 +30,7 @@ async function updateNode(req) {
 	}
 
 	const remote_node_name = req.node_name;
-	const record = await clustering_utils.getNodeRecord(remote_node_name);
+	const record = cloneDeep(await clustering_utils.getNodeRecord(remote_node_name));
 	if (hdb_utils.isEmptyOrZeroLength(record)) {
 		throw handleHDBError(
 			new Error(),

@@ -12,6 +12,7 @@ const { Node, NodeSubscription } = require('./NodeObject');
 const UpdateRemoteResponseObject = require('./UpdateRemoteResponseObject');
 const hdb_utils = require('../common_utils');
 const env_manager = require('../environment/environmentManager');
+const { cloneDeep } = require('lodash');
 
 module.exports = updateRemoteSource;
 
@@ -33,7 +34,7 @@ async function updateRemoteSource(request) {
 
 		const { subscriptions, node_name, system_info } = request;
 		let new_subs_array = [];
-		let node_record = await cluster_utils.getNodeRecord(node_name);
+		let node_record = cloneDeep(await cluster_utils.getNodeRecord(node_name));
 		const update_record = !hdb_utils.isEmptyOrZeroLength(node_record);
 		node_record = update_record ? node_record[0] : node_record;
 		if (update_record) hdb_logger.trace(`Existing record found for ${node_name}, updating records subscriptions`);
