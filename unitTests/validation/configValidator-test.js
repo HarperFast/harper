@@ -571,6 +571,8 @@ describe('Test configValidator module', () => {
 
 	describe('Test setDefaultProcesses function', () => {
 		const set_default_processes = config_val.__get__('setDefaultProcesses');
+		const physical_cores_stub = sandbox.stub();
+		const get_physical_cores_rw = config_val.__set__('getPhysicalCpuCount', physical_cores_stub);
 		const parent = {
 			enabled: true,
 			network: {
@@ -591,37 +593,32 @@ describe('Test configValidator module', () => {
 			},
 		};
 		const helpers = { state: { path: ['customFunctions', 'processes'] } };
-		let os_cpus_stub;
 		let logger_info_stub;
 
 		beforeEach(() => {
-			os_cpus_stub = sandbox.stub(os, 'cpus');
 			logger_info_stub = sandbox.stub(logger, 'info');
 		});
 
 		afterEach(() => {
-			os_cpus_stub.restore();
 			logger_info_stub.restore();
 		});
 
 		it('Test happy path, correct info message is logged and correct number of processes returned', () => {
-			os_cpus_stub.returns([1, 2, 3, 4, 5, 6]);
+
+			physical_cores_stub.returns(14);
 			const result = set_default_processes(parent, helpers);
 
-			expect(result).to.equal(6);
+			expect(result).to.equal(14);
 			expect(logger_info_stub.firstCall.args[0]).to.equal(
 				`Detected ${result} cores on this machine, defaulting customFunctions.processes to this value`
 			);
 		});
 
 		it('Test os.cpus returns undefined, default cores message error returned and message logged', () => {
-			os_cpus_stub.returns(undefined);
+			physical_cores_stub.throws(new Error('Unable to get physical cores'));
 			const result = set_default_processes(parent, helpers);
 
-			expect(result).to.equal(4);
-			expect(logger_info_stub.firstCall.args[0]).to.equal(
-				`Error detecting number of cores on machine for customFunctions.processes, defaulting to 4`
-			);
+			expect(result).to.equal(os.cpus().length);
 		});
 	});
 
