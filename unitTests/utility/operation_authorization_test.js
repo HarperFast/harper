@@ -2,6 +2,8 @@
 /**
  * Test the operation_authorization module.
  */
+const chai = require('chai');
+const { expect } = chai;
 const test_utils = require('../test_utils');
 test_utils.preTestPrep();
 const assert = require('assert');
@@ -828,19 +830,11 @@ describe('Test operation_authorization', function () {
 			req_json.operation = 'create_schema';
 			req_json.schema = 'dev';
 			let result = op_auth_rewire.verifyPerms(req_json, schema.createSchema);
-			assert.equal(result, null);
-		});
-
-		it('Test create_schema with structure_user = ["dev"], no access to schema "nope"', () => {
-			let req_json = getRequestJson(STRUCTURE_USER_OP2);
-			req_json.operation = 'create_schema';
-			req_json.schema = 'nope';
-			let result = op_auth_rewire.verifyPerms(req_json, schema.createSchema);
-			assert.equal(result.unauthorized_access.length, 1);
-			assert.equal(
-				result.unauthorized_access[0],
-				"User does not have access to perform 'create_schema' against schema 'nope'"
-			);
+			expect(result).to.eql({
+				error: 'This operation is not authorized due to role restrictions and/or invalid schema items',
+				invalid_schema_items: [],
+				unauthorized_access: ["Operation 'createSchema' is restricted to 'super_user' roles"],
+			});
 		});
 
 		it('Test create_table with structure_user = true', () => {
@@ -948,20 +942,11 @@ describe('Test operation_authorization', function () {
 			req_json.schema = 'dev';
 			req_json.table = 'dog';
 			let result = op_auth_rewire.verifyPerms(req_json, schema.dropSchema);
-			assert.equal(result, null);
-		});
-
-		it('Test drop_schema with structure_user = ["dev"], no access to schema "nope"', () => {
-			let req_json = getRequestJson(STRUCTURE_USER_OP2);
-			req_json.operation = 'drop_schema';
-			req_json.schema = 'nope';
-			req_json.table = 'dog';
-			let result = op_auth_rewire.verifyPerms(req_json, schema.dropSchema);
-			assert.equal(result.unauthorized_access.length, 1);
-			assert.equal(
-				result.unauthorized_access[0],
-				"User does not have access to perform 'drop_schema' against schema 'nope'"
-			);
+			expect(result).to.eql({
+				error: 'This operation is not authorized due to role restrictions and/or invalid schema items',
+				invalid_schema_items: [],
+				unauthorized_access: ["Operation 'dropSchema' is restricted to 'super_user' roles"],
+			});
 		});
 
 		it('Test drop_table with structure_user = true', () => {

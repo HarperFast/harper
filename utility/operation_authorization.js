@@ -78,10 +78,8 @@ const BULK_OPS = {
 };
 
 const STRUCTURE_USER_OPS = [
-	schema.createSchema.name,
 	schema.createTable.name,
 	schema.createAttribute.name,
-	schema.dropSchema.name,
 	schema.dropTable.name,
 	schema.dropAttribute.name,
 ];
@@ -339,6 +337,11 @@ function verifyPerms(request_json, operation) {
 
 	if (is_super_user && !is_su_system_operation) {
 		//admins can do (almost) anything
+		return null;
+	}
+
+	//structure_users can create/drop schemas if they are not locked down to specific schemas.
+	if (structure_user === true && (op === schema.createSchema.name || op === schema.dropSchema.name)) {
 		return null;
 	}
 

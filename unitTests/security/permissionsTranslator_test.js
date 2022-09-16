@@ -7,7 +7,7 @@ const { expect } = chai;
 const rewire = require('rewire');
 const clonedeep = require('lodash.clonedeep');
 const permissionsTranslator_rw = rewire('../../security/permissionsTranslator');
-const { TEST_NON_SU_ROLE, TEST_SCHEMA_DOG_BREED } = require('../test_data');
+const { TEST_NON_SU_ROLE, TEST_SCHEMA_DOG_BREED, TEST_TWO_SCHEMAS } = require('../test_data');
 const terms = require('../../utility/hdbTerms');
 const { TEST_ROLE_PERMS_ERROR, HTTP_STATUS_CODES, TEST_DEFAULT_ERROR_RESP } = require('../commonTestErrors');
 
@@ -20,6 +20,17 @@ const TEST_PERMS_ENUM = {
 };
 
 const test_attr_perm_keys = [TEST_PERMS_ENUM.READ, TEST_PERMS_ENUM.INSERT, TEST_PERMS_ENUM.UPDATE];
+
+const SUPER_STRUCTURE_USER_ROLE = {
+	__createdtime__: 1593546681121,
+	__updatedtime__: Date.now(),
+	id: '12345',
+	permission: {
+		super_user: false,
+		structure_user: true,
+	},
+	role: 'test_role',
+};
 
 const createTablePermsObj = (read_perm = true, insert_perm = true, update_perm = true, delete_perm = true) => ({
 	read: read_perm,
@@ -279,22 +290,111 @@ const test_table_schema = {
 let sandbox;
 let translateRolePerms_rw;
 let translateRolePerms_spy;
+let createStructureUserPermissions_rw;
+let createStructureUserPermissions_spy;
 
 describe('Test permissionsTranslator module', function () {
 	before(() => {
 		sandbox = sinon.createSandbox();
-		translateRolePerms_rw = permissionsTranslator_rw.__get__('translateRolePermissions');
-		translateRolePerms_spy = sandbox.spy(translateRolePerms_rw);
-		permissionsTranslator_rw.__set__('translateRolePermissions', translateRolePerms_spy);
+		translateRolePerms_spy = sandbox.spy(permissionsTranslator_rw.__get__('translateRolePermissions'));
+		translateRolePerms_rw = permissionsTranslator_rw.__set__('translateRolePermissions', translateRolePerms_spy);
+		createStructureUserPermissions_spy = sandbox.spy(
+			permissionsTranslator_rw.__get__('createStructureUserPermissions')
+		);
+		createStructureUserPermissions_rw = permissionsTranslator_rw.__set__(
+			'createStructureUserPermissions',
+			createStructureUserPermissions_spy
+		);
 		global.hdb_schema = clonedeep(TEST_SCHEMA_DOG_BREED);
 	});
 	afterEach(() => {
 		sandbox.resetHistory();
-		permissionsTranslator_rw.__set__('translateRolePermissions', translateRolePerms_spy);
 	});
 	after(() => {
 		global.hdb_schema = null;
-		rewire('../../security/permissionsTranslator');
+		translateRolePerms_rw();
+		createStructureUserPermissions_rw();
+		sandbox.restore();
+	});
+
+	describe('test structure_user scenarios', () => {
+		const true_schema_perms = {
+			describe: true,
+			tables: {
+				breed: {
+					attribute_permissions: [],
+					describe: true,
+					read: true,
+					insert: true,
+					update: true,
+					delete: true,
+				},
+				dog: {
+					attribute_permissions: [],
+					describe: true,
+					read: true,
+					insert: true,
+					update: true,
+					delete: true,
+				},
+			},
+		};
+
+		const false_schema_perms = {
+			describe: false,
+			tables: {
+				breed: {
+					attribute_permissions: [],
+					describe: false,
+					read: false,
+					insert: false,
+					update: false,
+					delete: false,
+				},
+				dog: {
+					attribute_permissions: [],
+					describe: false,
+					read: false,
+					insert: false,
+					update: false,
+					delete: false,
+				},
+			},
+		};
+
+		before(() => {
+			global.hdb_schema = clonedeep(TEST_TWO_SCHEMAS);
+		});
+
+		afterEach(() => {
+			sandbox.resetHistory();
+			permissionsTranslator_rw.__set__('translateRolePermissions', translateRolePerms_spy);
+		});
+
+		after(() => {
+			global.hdb_schema = clonedeep(TEST_SCHEMA_DOG_BREED);
+		});
+
+		it('test structure_user = true', () => {
+			const test_result = permissionsTranslator_rw.getRolePermissions(SUPER_STRUCTURE_USER_ROLE);
+			expect(test_result['dev']).to.eql(true_schema_perms);
+			expect(test_result['prod']).to.eql(true_schema_perms);
+			expect(test_result.super_user).to.equal(false);
+			expect(translateRolePerms_spy.calledOnce).to.be.true;
+			expect(createStructureUserPermissions_spy.calledTwice).to.be.true;
+		});
+
+		it('test structure_user = ["dev"]', () => {
+			let role = clonedeep(SUPER_STRUCTURE_USER_ROLE);
+			role.permission.structure_user = ['dev'];
+			role.__updatedtime__ = Date.now();
+			const test_result = permissionsTranslator_rw.getRolePermissions(role);
+			expect(test_result['dev']).to.eql(true_schema_perms);
+			expect(test_result['prod']).to.eql(false_schema_perms);
+			expect(test_result.super_user).to.equal(false);
+			expect(translateRolePerms_spy.calledOnce).to.be.true;
+			expect(createStructureUserPermissions_spy.calledOnce).to.be.true;
+		});
 	});
 
 	describe('Test getRolePermissions method - translation cases', () => {

@@ -13,8 +13,8 @@ module.exports = {
 const role_perms_map = Object.create(null);
 const perms_template_obj = (perms_key) => ({ key: perms_key, perms: {} });
 
-const schema_perms_template = () => ({
-	describe: false,
+const schema_perms_template = (describe_perm = false) => ({
+	describe: describe_perm,
 	tables: {},
 });
 
@@ -25,10 +25,16 @@ const permissions_template = (read_perm = false, insert_perm = false, update_per
 	[terms.PERMS_CRUD_ENUM.DELETE]: delete_perm,
 });
 
-const table_perms_template = () => ({
+const table_perms_template = (
+	describe_perm = false,
+	read_perm = false,
+	insert_perm = false,
+	update_perm = false,
+	delete_perm = false
+) => ({
 	attribute_permissions: [],
-	describe: false,
-	...permissions_template(),
+	describe: describe_perm,
+	...permissions_template(read_perm, insert_perm, update_perm, delete_perm),
 });
 
 const attr_perms_template = (attr_name, perms = permissions_template()) => ({
@@ -122,10 +128,20 @@ function getRolePermissions(role) {
 function translateRolePermissions(role, schema) {
 	const final_permissions = Object.create(null);
 	final_permissions.super_user = false;
+
 	const perms = role.permission;
 	final_permissions[terms.SYSTEM_SCHEMA_NAME] = perms[terms.SYSTEM_SCHEMA_NAME];
+	final_permissions.structure_user = perms.structure_user;
+	const structure_user =
+		Array.isArray(role.permission.structure_user) || role.permission.structure_user === true
+			? role.permission.structure_user
+			: [];
 
 	Object.keys(schema).forEach((s) => {
+		if (structure_user === true || structure_user.indexOf(s) > -1) {
+			final_permissions[s] = createStructureUserPermissions(schema[s]);
+			return;
+		}
 		final_permissions[s] = schema_perms_template();
 		if (perms[s]) {
 			//translate schema.tables to permissions
@@ -157,6 +173,20 @@ function translateRolePermissions(role, schema) {
 				final_permissions[s].tables[t] = table_perms_template();
 			});
 		}
+	});
+
+	return final_permissions;
+}
+
+/**
+ * build out full access to describe & CRUD for all tables under a schema (used for structure_user)
+ * @param {Object} schema - The schema metadata
+ * @returns {{tables: {}, describe: boolean}}
+ */
+function createStructureUserPermissions(schema) {
+	let final_permissions = schema_perms_template(true);
+	Object.keys(schema).forEach((t) => {
+		final_permissions.tables[t] = table_perms_template(true, true, true, true, true);
 	});
 
 	return final_permissions;

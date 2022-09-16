@@ -330,6 +330,109 @@ const TEST_SCHEMA_DOG_BREED = {
     }
 };
 
+const TEST_TWO_SCHEMAS = {
+	"dev": {
+		"breed": {
+			"hash_attribute": "id",
+			"id": "18af086e-1cc4-4634-b985-cd4bf43c0f35",
+			"name": "breed",
+			"schema": "dev",
+			"attributes": [
+				{
+					"attribute": "image"
+				},
+				{
+					"attribute": "name"
+				},
+				{
+					"attribute": "__createdtime__"
+				},
+				{
+					"attribute": "__updatedtime__"
+				}
+			],
+			"record_count": 350
+		},
+		"dog": {
+			"hash_attribute": "id",
+			"id": "5895f31d-5f45-43d7-b1f2-838f90c03909",
+			"name": "dog",
+			"schema": "dev",
+			"attributes": [
+				{
+					"attribute": "__createdtime__"
+				},
+				{
+					"attribute": "id"
+				},
+				{
+					"attribute": "breed_id"
+				},
+				{
+					"attribute": "__updatedtime__"
+				},
+				{
+					"attribute": "dog_name"
+				},
+				{
+					"attribute": "age"
+				}
+			],
+			"record_count": 9
+		},
+	},
+	"prod": {
+		"breed": {
+			"hash_attribute": "id",
+			"id": "12345",
+			"name": "breed",
+			"schema": "dev",
+			"attributes": [
+				{
+					"attribute": "image"
+				},
+				{
+					"attribute": "name"
+				},
+				{
+					"attribute": "__createdtime__"
+				},
+				{
+					"attribute": "__updatedtime__"
+				}
+			],
+			"record_count": 350
+		},
+		"dog": {
+			"hash_attribute": "id",
+			"id": "6789",
+			"name": "dog",
+			"schema": "dev",
+			"attributes": [
+				{
+					"attribute": "__createdtime__"
+				},
+				{
+					"attribute": "id"
+				},
+				{
+					"attribute": "breed_id"
+				},
+				{
+					"attribute": "__updatedtime__"
+				},
+				{
+					"attribute": "dog_name"
+				},
+				{
+					"attribute": "age"
+				}
+			],
+			"record_count": 9
+		},
+	},
+};
+
 const TEST_NON_SU_ROLE = {
     "__createdtime__": 1593546681121,
     "__updatedtime__": 1593546681121,
@@ -529,4 +632,5 @@ module.exports = {
     TEST_NON_SU_ROLE,
     TEST_SCHEMA_DOG_BREED,
     TEST_DATA_BASE64_CF_PROJECT,
+	TEST_TWO_SCHEMAS,
 };
