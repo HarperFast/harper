@@ -283,6 +283,7 @@ describe('Test customFunctionsServer module', () => {
 			fs.removeSync(CF_DIR_ROOT);
 			fs.ensureDirSync(CF_DIR_ROOT);
 			await operations.addCustomFunctionProject({ project: 'test' });
+			fs.createSymlinkSync(path.join(CF_DIR_ROOT, 'test'), path.join(CF_DIR_ROOT, 'test-linked'));
 		});
 
 		after(() => {
@@ -338,11 +339,16 @@ describe('Test customFunctionsServer module', () => {
 			const route_files = Object.getOwnPropertySymbols(server[plugin_key][0][children][0]).find(
 				(s) => String(s) === 'Symbol(fastify.pluginNameChain)'
 			);
+			const route_prefix = Object.getOwnPropertySymbols(server[plugin_key][0]).find(
+				(s) => String(s) === 'Symbol(fastify.routePrefix)'
+			);
 			const test_result = server[plugin_key][0][children][0][route_files];
 
 			expect(test_result).to.be.instanceOf(Array);
 			expect(test_result).to.have.length(1);
 			expect(test_result[0]).to.equal(path.resolve(__dirname, 'custom_functions', 'test', 'routes', 'examples.js'));
+			const linked_prefix = server[plugin_key][0][children][1][route_prefix];
+			expect(linked_prefix).to.equal('/test-linked');
 
 			server.close();
 		});

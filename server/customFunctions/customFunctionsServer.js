@@ -134,7 +134,7 @@ async function buildRoutes(cf_server) {
 
 		// loop through all the projects
 		project_folders.forEach((project_entry) => {
-			if (!project_entry.isDirectory()) return;
+			if (!project_entry.isDirectory() && !project_entry.isSymbolicLink()) return;
 			const project_name = project_entry.name;
 			const project_folder = path.join(CF_ROUTES_DIR, project_name);
 			harper_logger.trace('Loading project folder ' + project_folder);
