@@ -144,7 +144,7 @@ function initTestEnvironment(test_config_obj = {}) {
 			server_timeout,
 			https_enabled,
 			cors_enabled,
-			cors_whitelist,
+			cors_accesslist,
 			local_studio_on,
 		} = test_config_obj;
 		const props_path = path.join(__dirname, '../../', 'unitTests');
@@ -203,9 +203,9 @@ function initTestEnvironment(test_config_obj = {}) {
 			hdb_terms.HDB_SETTINGS_NAMES.LOCAL_STUDIO_ON,
 			common_utils.isEmpty(local_studio_on) ? false : local_studio_on
 		);
-		if (cors_whitelist) {
-			setProperty(hdb_terms.HDB_SETTINGS_NAMES.CORS_WHITELIST_KEY, cors_whitelist);
-			setProperty(hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORSWHITELIST, cors_whitelist);
+		if (cors_accesslist) {
+			setProperty('CORS_ACCESSLIST', cors_accesslist);
+			setProperty(hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORSACCESSLIST, cors_accesslist);
 		}
 		if (server_timeout) {
 			setProperty(hdb_terms.HDB_SETTINGS_NAMES.SERVER_TIMEOUT_KEY, server_timeout);

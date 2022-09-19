@@ -64,7 +64,7 @@ const FAKE_CONFIG = {
 		enabled: true,
 		network: {
 			cors: false,
-			corsWhitelist: ['test1', 'test2'],
+			corsAccessList: ['test1', 'test2'],
 			headersTimeout: 59999,
 			https: true,
 			keepAliveTimeout: 4999,
@@ -114,7 +114,7 @@ const FAKE_CONFIG = {
 		foreground: true,
 		network: {
 			cors: false,
-			corsWhitelist: ['test1', 'test2'],
+			corsAccessList: ['test1', 'test2'],
 			headersTimeout: 60001,
 			https: true,
 			keepAliveTimeout: 5001,
@@ -204,7 +204,7 @@ describe('Test configValidator module', () => {
 						enabled: true,
 						network: {
 							cors: false,
-							corsWhitelist: ['test1', 'test2'],
+							corsAccessList: ['test1', 'test2'],
 							headersTimeout: 59999,
 							https: true,
 							keepAliveTimeout: 4999,
@@ -253,7 +253,7 @@ describe('Test configValidator module', () => {
 						foreground: true,
 						network: {
 							cors: false,
-							corsWhitelist: ['test1', 'test2'],
+							corsAccessList: ['test1', 'test2'],
 							headersTimeout: 60001,
 							https: true,
 							keepAliveTimeout: 5001,
@@ -391,7 +391,7 @@ describe('Test configValidator module', () => {
 			let bad_config_obj = test_utils.deepClone(FAKE_CONFIG);
 			bad_config_obj.customFunctions.enabled = 'tree';
 			bad_config_obj.customFunctions.network.cors = 5;
-			bad_config_obj.customFunctions.network.corsWhitelist = 'not_array';
+			bad_config_obj.customFunctions.network.corsAccessList = 'not_array';
 			bad_config_obj.customFunctions.network.headersTimeout = 0;
 			bad_config_obj.customFunctions.network.https = { isBoolean: 'not_boolean' };
 			bad_config_obj.customFunctions.network.keepAliveTimeout = [13];
@@ -400,7 +400,7 @@ describe('Test configValidator module', () => {
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'customFunctions.enabled' must be a boolean. 'customFunctions.network.cors' must be a boolean. 'customFunctions.network.corsWhitelist' must be an array. 'customFunctions.network.headersTimeout' must be greater than or equal to 1. 'customFunctions.network.https' must be a boolean. 'customFunctions.network.keepAliveTimeout' must be a number. 'customFunctions.network.port' must be a number. 'customFunctions.network.timeout' must be a number";
+				"'customFunctions.enabled' must be a boolean. 'customFunctions.network.cors' must be a boolean. 'customFunctions.network.corsAccessList' must be an array. 'customFunctions.network.headersTimeout' must be greater than or equal to 1. 'customFunctions.network.https' must be a boolean. 'customFunctions.network.keepAliveTimeout' must be a number. 'customFunctions.network.port' must be a number. 'customFunctions.network.timeout' must be a number";
 
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
@@ -459,7 +459,7 @@ describe('Test configValidator module', () => {
 			bad_config_obj.operationsApi.authentication.refreshTokenTimeout = undefined;
 			bad_config_obj.operationsApi.foreground = 222;
 			bad_config_obj.operationsApi.network.cors = [false];
-			bad_config_obj.operationsApi.network.corsWhitelist = [true];
+			bad_config_obj.operationsApi.network.corsAccessList = [true];
 			bad_config_obj.operationsApi.network.headersTimeout = 0;
 			bad_config_obj.operationsApi.network.https = 74;
 			bad_config_obj.operationsApi.network.keepAliveTimeout = false;
@@ -577,7 +577,7 @@ describe('Test configValidator module', () => {
 			enabled: true,
 			network: {
 				cors: false,
-				corsWhitelist: ['test1', 'test2'],
+				corsAccessList: ['test1', 'test2'],
 				headersTimeout: 59999,
 				https: true,
 				keepAliveTimeout: 4999,

@@ -171,7 +171,7 @@ describe('Test environmentManager module', () => {
 
 		it('Test properties are set with test config obj', () => {
 			const test_config_obj = {
-				cors_whitelist: [],
+				cors_accesslist: [],
 				server_timeout: 120000,
 				keep_alive_timeout: 5000,
 				headers_timeout: 60000,

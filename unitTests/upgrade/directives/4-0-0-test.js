@@ -56,6 +56,7 @@ describe('Test 4-0-0 module', () => {
 			operationsapi_nodeenv: 'production',
 			clustering_enabled: false,
 			operationsapi_processes: 12,
+			operationsapi_network_corswhitelist: 'test',
 			operationsapi_network_timeout: 120000,
 			operationsapi_network_keepalivetimeout: 5000,
 			operationsapi_network_headerstimeout: 60000,

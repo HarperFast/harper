@@ -46,7 +46,7 @@ const TRUE_COMPARE_VAL = 'TRUE';
 
 const { HDB_SETTINGS_NAMES } = terms;
 const PROPS_CORS_KEY = HDB_SETTINGS_NAMES.CORS_ENABLED_KEY;
-const PROPS_CORS_WHITELIST_KEY = HDB_SETTINGS_NAMES.CORS_WHITELIST_KEY;
+const PROPS_CORS_ACCESSLIST_KEY = 'CORS_ACCESSLIST';
 const PROPS_SERVER_TIMEOUT_KEY = HDB_SETTINGS_NAMES.SERVER_TIMEOUT_KEY;
 const PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY = HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY;
 const PROPS_HEADER_TIMEOUT_KEY = HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY;
@@ -243,7 +243,7 @@ function getServerOptions(is_https) {
  */
 function getCORSOpts() {
 	let props_cors = env.get(PROPS_CORS_KEY);
-	let props_cors_whitelist = env.get(PROPS_CORS_WHITELIST_KEY);
+	let props_cors_accesslist = env.get(PROPS_CORS_ACCESSLIST_KEY);
 	let cors_options;
 
 	if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {
@@ -252,13 +252,13 @@ function getCORSOpts() {
 			allowedHeaders: ['Content-Type', 'Authorization'],
 			credentials: false,
 		};
-		if (props_cors_whitelist && props_cors_whitelist.length > 0 && props_cors_whitelist[0] !== null) {
-			let whitelist = props_cors_whitelist.split(',');
+		if (props_cors_accesslist && props_cors_accesslist.length > 0 && props_cors_accesslist[0] !== null) {
+			let access_list = props_cors_accesslist.split(',');
 			cors_options.origin = (origin, callback) => {
-				if (whitelist.indexOf(origin) !== -1) {
+				if (access_list.indexOf(origin) !== -1) {
 					return callback(null, true);
 				}
-				return callback(new Error(`domain ${origin} is not whitelisted`));
+				return callback(new Error(`domain ${origin} is not on access list`));
 			};
 		}
 	}

@@ -26,7 +26,7 @@ const SETTINGS = (settings_values = {}) =>
 	'CORS_ON=TRUE\n' +
 	'\t;Allows for setting allowable domains with CORS\n' +
 	'Comma separated list=\n' +
-	'CORS_WHITELIST=\n' +
+	'CORS_ACCESSLIST=\n' +
 	'\t;Length of time in milliseconds after which a request will timeout\n' +
 	'Defaults to 120,000 ms (2 minutes)=\n' +
 	'SERVER_TIMEOUT_MS=120000\n' +

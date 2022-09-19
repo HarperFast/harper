@@ -32,12 +32,12 @@ describe('Test export.js', () => {
         await fs.ensureDir(TMP_TEST_DIR);
     });
 
-    after(async () => {
+    after(() => {
         rewire('../../data_layer/export');
         sandbox.restore();
         try {
-            await fs.remove(TMP_TEST_DIR);
-        }catch(e){
+            fs.removeSync(TMP_TEST_DIR);
+        } catch(e){
             //empty catch for a weird issue on windows when removing a folder that does not exist
 }       }
     );

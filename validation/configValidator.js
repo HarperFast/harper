@@ -134,7 +134,7 @@ function configValidator(config_json) {
 			enabled: enabled_constraints,
 			network: Joi.object({
 				cors: boolean.required(),
-				corsWhitelist: array.required(),
+				corsAccessList: array.required(),
 				headersTimeout: number.min(1).required(),
 				https: boolean.required(),
 				keepAliveTimeout: number.min(1).required(),
@@ -184,7 +184,7 @@ function configValidator(config_json) {
 			foreground: boolean.required(),
 			network: Joi.object({
 				cors: boolean.required(),
-				corsWhitelist: array.required(),
+				corsAccessList: array.required(),
 				headersTimeout: number.min(1).required(),
 				https: boolean.required(),
 				keepAliveTimeout: number.min(1).required(),

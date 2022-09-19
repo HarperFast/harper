@@ -10,7 +10,7 @@ const { CONFIG_PARAMS } = require('../../../utility/hdbTerms');
  * @returns {{credentials: boolean, origin: boolean, allowedHeaders: [string, string]}}
  */
 function getCORSOptions() {
-	let props_cors_whitelist = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORSWHITELIST);
+	let props_cors_accesslist = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORSACCESSLIST);
 	let props_cors = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORS);
 	let cors_options;
 	if (props_cors) {
@@ -19,13 +19,13 @@ function getCORSOptions() {
 			allowedHeaders: ['Content-Type', 'Authorization'],
 			credentials: false,
 		};
-		if (props_cors_whitelist && props_cors_whitelist.length > 0 && props_cors_whitelist[0] !== null) {
-			let whitelist = props_cors_whitelist.split(',');
+		if (props_cors_accesslist && props_cors_accesslist.length > 0 && props_cors_accesslist[0] !== null) {
+			let accesslist = props_cors_accesslist.split(',');
 			cors_options.origin = (origin, callback) => {
-				if (whitelist.indexOf(origin) !== -1) {
+				if (accesslist.indexOf(origin) !== -1) {
 					return callback(null, true);
 				}
-				return callback(new Error(`domain ${origin} is not whitelisted`));
+				return callback(new Error(`domain ${origin} is not on access list`));
 			};
 		}
 	}

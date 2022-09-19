@@ -167,7 +167,7 @@ describe('Test customFunctionsServer module', () => {
 		});
 
 		it('should register @fastify/cors if cors is enabled', async () => {
-			const test_config_settings = { cors_enabled: true, cors_whitelist: 'harperdb.io, sam-johnson.io' };
+			const test_config_settings = { cors_enabled: true, cors_accesslist: 'harperdb.io, sam-johnson.io' };
 			test_utils.preTestPrep(test_config_settings);
 
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
@@ -185,7 +185,7 @@ describe('Test customFunctionsServer module', () => {
 		});
 
 		it('should return 500 error for request from origin not included in CORS whitelist', async () => {
-			const test_config_settings = { cors_enabled: true, cors_whitelist: 'https://harperdb.io' };
+			const test_config_settings = { cors_enabled: true, cors_accesslist: 'https://harperdb.io' };
 
 			test_utils.preTestPrep(test_config_settings);
 
@@ -202,13 +202,13 @@ describe('Test customFunctionsServer module', () => {
 			});
 
 			expect(test_response.statusCode).to.equal(500);
-			expect(test_response.json().error).to.equal('domain https://google.com is not whitelisted');
+			expect(test_response.json().error).to.equal('domain https://google.com is not on access list');
 
 			server.close();
 		});
 
 		it('should return resp with 200 for request from origin included in CORS whitelist', async () => {
-			const test_config_settings = { cors_enabled: true, cors_whitelist: 'https://harperdb.io' };
+			const test_config_settings = { cors_enabled: true, cors_accesslist: 'https://harperdb.io' };
 
 			test_utils.preTestPrep(test_config_settings);
 

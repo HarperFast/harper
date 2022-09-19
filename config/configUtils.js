@@ -490,7 +490,7 @@ function initOldConfig(old_config_path) {
 		if (hdb_utils.isEmpty(value) || (typeof value === 'string' && value.trim().length === 0)) {
 			continue;
 		}
-		const param_key = hdb_terms.CONFIG_PARAM_MAP[config_param].toLowerCase();
+		let param_key = hdb_terms.CONFIG_PARAM_MAP[config_param].toLowerCase();
 		if (param_key === hdb_terms.CONFIG_PARAMS.LOGGING_ROOT) {
 			flat_config_obj[param_key] = path.dirname(value);
 		} else {

@@ -32,7 +32,7 @@ customFunctions:
   enabled: true
   network:
     cors: true
-    corsWhitelist:
+    corsAccessList:
       - null
     headersTimeout: 60000
     https: false
@@ -74,7 +74,7 @@ operationsApi:
   foreground: false
   network:
     cors: true
-    corsWhitelist:
+    corsAccessList:
       - null
     headersTimeout: 60000
     https: false
