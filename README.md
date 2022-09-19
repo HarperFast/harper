@@ -33,7 +33,7 @@ Reduce or eliminate complexity by using HarperDB’s built-in API. Create and ma
 [Support](https://harperdb.io/docs/support/)
 
 ## Prerequisites
-Node.js 16.16.0
+Node.js v14.0.0 or higher. Our tested & fully supported Node.js version is 16.17.0
 
 HarperDB has been tested on the following platforms
 - Linux on AMD64
@@ -46,7 +46,9 @@ Other UNIX-like operating systems and other CPU architectures may be able to run
 - Make
 - Python v3.7, v3.8, v3.9, or v3.10
 - Xcode (macOS)
-- Go 1.17.10
+- Go 1.19.1
+
+HarperDB can run natively on Windows 10 & 11. HarperDB running on Windows is only intended for evaluation or development purposes.
 
 ## Installing HarperDB
 ```
