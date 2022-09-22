@@ -194,8 +194,8 @@ async function updateSettingsFile_4_0_0() {
 
 directive4_0_0.async_functions.push(generateNewKeys);
 directive4_0_0.async_functions.push(updateSettingsFile_4_0_0);
-directive4_0_0.async_functions.push(updateNodes);
 directive4_0_0.async_functions.push(reindex_upgrade);
+directive4_0_0.async_functions.push(updateNodes);
 
 directives.push(directive4_0_0);
 

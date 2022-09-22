@@ -199,21 +199,23 @@ async function processTable(schema, table, the_schema_path, is_transaction_reind
 		for (let entry of primary_dbi.getRange({ start: false })) {
 			entry.value = Object.assign({}, entry.value); // copy if it is frozen
 			entries.push(entry);
-			if (schema === 'system') {
-				if (table === 'hdb_schema') {
-					entry.key = entry.key.toString();
-					entry.value.name = entry.value.name.toString();
-				}
-				if (table === 'hdb_table') {
-					entry.key = entry.key.toString();
-					entry.value.schema = entry.value.schema.toString();
-					entry.value.name = entry.value.name.toString();
-				}
-				if (table === 'hdb_attribute') {
-					entry.key = entry.key.toString();
-					entry.value.schema = entry.value.schema.toString();
-					entry.value.table = entry.value.table.toString();
-					entry.value.attribute = entry.value.attribute.toString();
+			if (!is_transaction_reindex) {
+				if (schema === 'system') {
+					if (table === 'hdb_schema') {
+						entry.key = entry.key.toString();
+						entry.value.name = entry.value.name.toString();
+					}
+					if (table === 'hdb_table') {
+						entry.key = entry.key.toString();
+						entry.value.schema = entry.value.schema.toString();
+						entry.value.name = entry.value.name.toString();
+					}
+					if (table === 'hdb_attribute') {
+						entry.key = entry.key.toString();
+						entry.value.schema = entry.value.schema.toString();
+						entry.value.table = entry.value.table.toString();
+						entry.value.attribute = entry.value.attribute.toString();
+					}
 				}
 			}
 			if (entries.length > BATCH_LEVEL) {
@@ -278,10 +280,12 @@ async function processTable(schema, table, the_schema_path, is_transaction_reind
 
 	if (delete_old_db) {
 		//delete old environment
-		let old_table_path = path.join(the_schema_path, table, 'data.mdb');
-		let old_lock_path = path.join(the_schema_path, table, 'lock.mdb');
+		let old_table_dir = path.join(the_schema_path, table);
+		let old_table_path = path.join(old_table_dir, 'data.mdb');
+		let old_lock_path = path.join(old_table_dir, 'lock.mdb');
 		await fs.unlink(old_table_path);
 		await fs.unlink(old_lock_path);
+		await fs.rmdir(old_table_dir);
 		pino_logger.info(`Deleted old environment files from schema folder: ${old_table_path}, ${old_lock_path}`);
 	}
 	//stat the moved env & make sure stats match from before
