@@ -10,8 +10,7 @@ function getHDBPackageRoot() {
 	let dir = __dirname;
 	while (!fs.existsSync(path.join(dir, 'package.json'))) {
 		let parent = path.dirname(dir);
-		if (parent === dir)
-			throw new Error('Could not find package root');
+		if (parent === dir) throw new Error('Could not find package root');
 		dir = parent;
 	}
 	return dir;
@@ -534,8 +533,6 @@ const CONFIG_PARAMS = {
 	CLUSTERING_LEAFSERVER_NETWORK_PORT: 'clustering_leafServer_network_port',
 	CLUSTERING_LEAFSERVER_NETWORK_ROUTES: 'clustering_leafServer_network_routes',
 	CLUSTERING_NODENAME: 'clustering_nodeName',
-	CLUSTERING_INGEST_SERVICE_PROCESSES: 'clustering_ingestService_processes',
-	CLUSTERING_REPLY_SERVICE_PROCESSES: 'clustering_replyService_processes',
 	CLUSTERING_TLS_CERTIFICATE: 'clustering_tls_certificate',
 	CLUSTERING_TLS_PRIVATEKEY: 'clustering_tls_privateKey',
 	CLUSTERING_TLS_CERT_AUTH: 'clustering_tls_certificateAuthority',
@@ -668,8 +665,6 @@ const CONFIG_PARAM_MAP = {
 	clustering_tls_privatekey: CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY,
 	clustering_tls_certificateauthority: CONFIG_PARAMS.CLUSTERING_TLS_CERT_AUTH,
 	clustering_tls_insecure: CONFIG_PARAMS.CLUSTERING_TLS_INSECURE,
-	clustering_ingestservice_processes: CONFIG_PARAMS.CLUSTERING_INGEST_SERVICE_PROCESSES,
-	clustering_replyservice_processes: CONFIG_PARAMS.CLUSTERING_REPLY_SERVICE_PROCESSES,
 	customfunctions_enabled: CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED,
 	customfunctions_network_port: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT,
 	customfunctions_tls_certificate: CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_CERTIFICATE,

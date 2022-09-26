@@ -13,15 +13,11 @@ clustering:
         port: 9931
     network:
       port: 9930
-  ingestService:
-    processes: 1
   leafServer:
     network:
       port: 9940
       routes:
   nodeName: null
-  replyService:
-    processes: 1
   tls:
     certificate: null
     certificateAuthority: null

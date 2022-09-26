@@ -94,9 +94,6 @@ function configValidator(config_json) {
 					port: port_constraints,
 				}).required(),
 			}).required(),
-			ingestService: Joi.object({
-				processes: number.min(1).max(1000),
-			}).required(),
 			leafServer: Joi.object({
 				network: Joi.object({
 					port: port_constraints,
@@ -104,9 +101,6 @@ function configValidator(config_json) {
 				}).required(),
 			}).required(),
 			nodeName: nats_term_constraints,
-			replyService: Joi.object({
-				processes: number.min(1).max(1000),
-			}).required(),
 			tls: Joi.object({
 				certificate: pem_file_constraints,
 				certificateAuthority: pem_file_constraints,

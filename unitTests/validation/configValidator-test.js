@@ -295,26 +295,23 @@ describe('Test configValidator module', () => {
 
 		it('Test clustering.ingestService/leafServer/nodeName, with bad values', () => {
 			let bad_config_obj = test_utils.deepClone(FAKE_CONFIG);
-			bad_config_obj.clustering.ingestService.processes = 0;
 			bad_config_obj.clustering.leafServer.network.port = undefined;
 			bad_config_obj.clustering.nodeName = 'wowee*nodename';
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'clustering.ingestService.processes' must be greater than or equal to 1. 'clustering.leafServer.network.port' is required. 'clustering.nodeName' invalid, must not contain ., * or >";
+				"'clustering.leafServer.network.port' is required. 'clustering.nodeName' invalid, must not contain ., * or >";
 
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
 
 		it('Test clustering.replyService/tls/user, with bad values', () => {
 			let bad_config_obj = test_utils.deepClone(FAKE_CONFIG);
-			bad_config_obj.clustering.replyService.processes = 1001;
 			bad_config_obj.clustering.tls.certificateAuthority = true;
 			bad_config_obj.clustering.user = 9999;
 
 			const schema = configValidator(bad_config_obj);
-			const expected_schema_message =
-				"'clustering.replyService.processes' must be less than or equal to 1000. 'clustering.user' must be a string";
+			const expected_schema_message = "'clustering.user' must be a string";
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
 
@@ -604,7 +601,6 @@ describe('Test configValidator module', () => {
 		});
 
 		it('Test happy path, correct info message is logged and correct number of processes returned', () => {
-
 			physical_cores_stub.returns(14);
 			const result = set_default_processes(parent, helpers);
 

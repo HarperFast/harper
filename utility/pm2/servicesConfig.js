@@ -194,7 +194,7 @@ function generateNatsIngestServiceConfig() {
 		merge_logs: true,
 		out_file: ingest_service_logs,
 		error_file: ingest_service_logs,
-		instances: env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_INGEST_SERVICE_PROCESSES),
+		instances: 1,
 		cwd: LAUNCH_SCRIPTS_DIR,
 	};
 
@@ -218,7 +218,7 @@ function generateNatsReplyServiceConfig() {
 		merge_logs: true,
 		out_file: reply_service_logs,
 		error_file: reply_service_logs,
-		instances: env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_REPLY_SERVICE_PROCESSES),
+		instances: 1,
 		cwd: LAUNCH_SCRIPTS_DIR,
 	};
 
