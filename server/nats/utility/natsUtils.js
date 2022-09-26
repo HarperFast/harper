@@ -17,10 +17,15 @@ const hdb_terms = require('../../../utility/hdbTerms');
 const hdb_utils = require('../../../utility/common_utils');
 const hdb_logger = require('../../../utility/logging/harper_logger');
 const crypto_hash = require('../../../security/cryptoHash');
+const transaction = require('../../../data_layer/transaction');
 const { encode, decode } = require('msgpackr');
 
 const { isEmpty } = hdb_utils;
 const user = require('../../../security/user');
+
+const SearchByHashObject = require('../../../data_layer/SearchByHashObject');
+const search = require('../../../data_layer/search');
+const p_search_by_hash = util.promisify(search.searchByHash);
 
 const {
 	connect,
@@ -761,7 +766,7 @@ function requestErrorHandler(err, operation, remote_node) {
 }
 
 /**
- * Adds or removes a remote stream from the work queue stream.
+ * Adds or removes a remote stream sourcing from the work queue stream.
  * @param subscription - a node subscription object
  * @param node_name - name of remote node being added to the work stream
  * @returns {Promise<void>}
@@ -769,13 +774,25 @@ function requestErrorHandler(err, operation, remote_node) {
 async function updateWorkStream(subscription, node_name) {
 	const node_domain_name = node_name + nats_terms.SERVER_SUFFIX.LEAF;
 
-	// The connection between nodes can only be a "pull" relationship. This means we only care about the subscribe param.
-	// If a node is publishing to another node that publishing relationship is setup by have the opposite node subscribe to the node that is publishing.
-	if (subscription.subscribe === true) {
-		await addSourceToWorkStream(node_domain_name, nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, subscription);
-	} else {
-		await removeSourceFromWorkStream(node_domain_name, nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, subscription);
-	}
+	// Nats has trouble concurrently updating a work stream. This code uses transaction locking to ensure that
+	// all updateWorkStream calls run synchronously.
+	await transaction.writeTransaction(
+		hdb_terms.SYSTEM_SCHEMA_NAME,
+		hdb_terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME,
+		async () => {
+			// The connection between nodes can only be a "pull" relationship. This means we only care about the subscribe param.
+			// If a node is publishing to another node that publishing relationship is setup by have the opposite node subscribe to the node that is publishing.
+			if (subscription.subscribe === true) {
+				await addSourceToWorkStream(node_domain_name, nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, subscription);
+			} else {
+				await removeSourceFromWorkStream(
+					node_domain_name,
+					nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+					subscription
+				);
+			}
+		}
+	);
 }
 
 /**

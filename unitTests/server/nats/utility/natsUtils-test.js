@@ -517,6 +517,106 @@ describe('Test natsUtils module', () => {
 			await nats_utils.deleteLocalStream('__HARPERDB_WORK_QUEUE__');
 		}).timeout(TEST_TIMEOUT);
 
+		it('Test concurrently calling updateWorkStream', async () => {
+			const test_schema = 'tx_lock_test_schema';
+			const test_table = 'tx_lock_test_table';
+			const { jsm } = await nats_utils.getNATSReferences();
+			env_manager.setHdbBasePath(test_utils.getMockTestPath());
+
+			const test_env = await test_utils.createMockDB('name', test_schema, test_table, []);
+			await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
+
+			const schema_rw = nats_utils.__set__('hdb_terms.SYSTEM_SCHEMA_NAME', test_schema);
+			const table_rw = nats_utils.__set__('hdb_terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME', test_table);
+
+			let add_source_promises = [];
+			for (let x = 0; x < 3; x++) {
+				const test_sub = {
+					schema: TEST_SCHEMA,
+					table: x,
+					publish: true,
+					subscribe: true,
+				};
+
+				add_source_promises.push(nats_utils.updateWorkStream(test_sub, 'unit_test_node'));
+			}
+
+			await Promise.all(add_source_promises);
+
+			const wq_stream = await jsm.streams.info('__HARPERDB_WORK_QUEUE__');
+			expect(wq_stream.config.sources.length).to.equal(3);
+
+			let remove_source_promises = [];
+			for (let x = 0; x < 3; x++) {
+				const test_sub = {
+					schema: TEST_SCHEMA,
+					table: x,
+					publish: false,
+					subscribe: false,
+				};
+
+				remove_source_promises.push(nats_utils.updateWorkStream(test_sub, 'unit_test_node'));
+			}
+
+			await Promise.all(remove_source_promises);
+			schema_rw();
+			table_rw();
+
+			const wq_stream_remove = await jsm.streams.info('__HARPERDB_WORK_QUEUE__');
+			expect(wq_stream_remove.config.sources).to.be.undefined;
+
+			await jsm.consumers.delete('__HARPERDB_WORK_QUEUE__', 'HDB_WORK_QUEUE');
+			await nats_utils.deleteLocalStream('__HARPERDB_WORK_QUEUE__');
+			await test_utils.tearDownMockDB(test_env);
+		}).timeout(TEST_TIMEOUT);
+
+		it('Test concurrently adding removing updateWorkStream', async () => {
+			const test_schema = 'tx_lock_test_schema';
+			const test_table = 'tx_lock_test_table';
+			const { jsm } = await nats_utils.getNATSReferences();
+			env_manager.setHdbBasePath(test_utils.getMockTestPath());
+
+			const test_env = await test_utils.createMockDB('name', test_schema, test_table, []);
+			await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
+
+			const schema_rw = nats_utils.__set__('hdb_terms.SYSTEM_SCHEMA_NAME', test_schema);
+			const table_rw = nats_utils.__set__('hdb_terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME', test_table);
+
+			let update_source_promises = [];
+			for (let x = 0; x < 3; x++) {
+				const test_sub = {
+					schema: TEST_SCHEMA,
+					table: x,
+					publish: true,
+					subscribe: true,
+				};
+
+				update_source_promises.push(nats_utils.updateWorkStream(test_sub, 'unit_test_node'));
+			}
+
+			for (let x = 0; x < 3; x++) {
+				const test_sub = {
+					schema: TEST_SCHEMA,
+					table: x,
+					publish: false,
+					subscribe: false,
+				};
+
+				update_source_promises.push(nats_utils.updateWorkStream(test_sub, 'unit_test_node'));
+			}
+
+			await Promise.all(update_source_promises);
+			schema_rw();
+			table_rw();
+
+			const wq_stream_remove = await jsm.streams.info('__HARPERDB_WORK_QUEUE__');
+			expect(wq_stream_remove.config.sources).to.be.undefined;
+
+			await jsm.consumers.delete('__HARPERDB_WORK_QUEUE__', 'HDB_WORK_QUEUE');
+			await nats_utils.deleteLocalStream('__HARPERDB_WORK_QUEUE__');
+			await test_utils.tearDownMockDB(test_env);
+		}).timeout(TEST_TIMEOUT);
+
 		it('Test addSourceToWorkStream where start_time is before one message in source', async () => {
 			// Create local stream
 			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
@@ -831,58 +931,6 @@ describe('Test natsUtils module', () => {
 	it('Test requestErrorHandler returns timeout error', () => {
 		const result = nats_utils.requestErrorHandler({ code: 'TIMEOUT' }, 'add_node', 'im_remote');
 		expect(result).to.equal("Unable to add_node, node 'im_remote' is listening but did not respond.");
-	});
-
-	it('Test updateWorkStream calls add source once happy path', async () => {
-		let add_source_to_work_stream_stub = sandbox.stub();
-		let add_source_rw = nats_utils.__set__('addSourceToWorkStream', add_source_to_work_stream_stub);
-		await nats_utils.updateWorkStream(
-			{
-				schema: 'dog',
-				table: 'poodle',
-				publish: false,
-				subscribe: true,
-				start_time: '2022-08-26T18:26:58.514Z',
-			},
-			'node_i_am'
-		);
-		expect(add_source_to_work_stream_stub.args[0]).to.eql([
-			'node_i_am-leaf',
-			'__HARPERDB_WORK_QUEUE__',
-			{
-				publish: false,
-				schema: 'dog',
-				start_time: '2022-08-26T18:26:58.514Z',
-				subscribe: true,
-				table: 'poodle',
-			},
-		]);
-		add_source_rw();
-	});
-
-	it('Test updateWorkStream calls remove source once happy path', async () => {
-		let remove_source_from_work_stream_stub = sandbox.stub();
-		let remove_source_rw = nats_utils.__set__('removeSourceFromWorkStream', remove_source_from_work_stream_stub);
-		await nats_utils.updateWorkStream(
-			{
-				schema: 'dog',
-				table: 'poodle',
-				publish: false,
-				subscribe: false,
-			},
-			'node_i_am'
-		);
-		expect(remove_source_from_work_stream_stub.args[0]).to.eql([
-			'node_i_am-leaf',
-			'__HARPERDB_WORK_QUEUE__',
-			{
-				publish: false,
-				schema: 'dog',
-				subscribe: false,
-				table: 'poodle',
-			},
-		]);
-		remove_source_rw();
 	});
 
 	it('Test createLocalTableStream create correct stream and subject name and calls create stream', async () => {
