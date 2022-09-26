@@ -84,9 +84,9 @@ operationsApi:
   nodeEnv: production
   processes: null
   root: null
-  storage:
-    writeAsync: false
   tls:
     certificate: null
     certificateAuthority: null
     privateKey: null
+storage:
+  writeAsync: false

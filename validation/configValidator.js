@@ -194,14 +194,15 @@ function configValidator(config_json) {
 			nodeEnv: node_env_constraints,
 			processes: processes_constraints,
 			root: string.pattern(/^[\\\/]$|([\\\/][a-zA-Z_0-9\:-]+)+$/, 'directory path').required(),
-			storage: Joi.object({
-				writeAsync: boolean.required(),
-			}).required(),
 			tls: Joi.object({
 				certificate: pem_file_constraints,
 				certificateAuthority: pem_file_constraints,
 				privateKey: pem_file_constraints,
 			}),
+		}).required(),
+		storage: Joi.object({
+			writeAsync: boolean.required(),
+			overlappingSync: boolean.optional(),
 		}).required(),
 	});
 

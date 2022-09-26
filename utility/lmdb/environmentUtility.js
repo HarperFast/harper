@@ -15,6 +15,14 @@ const hdb_terms = require('../hdbTerms');
 const env_mngr = require('../environment/environmentManager');
 env_mngr.initSync();
 
+const LMDB_NOSYNC =
+	env_mngr.get('STORAGE_WRITEASYNC') === true ||
+	env_mngr.get('STORAGE_WRITEASYNC') === 'true' ||
+	env_mngr.get('STORAGE_WRITEASYNC') === 'TRUE';
+
+const LMDB_OVERLAPPING_SYNC = env_mngr.get('STORAGE_OVERLAPPINGSYNC');
+
+
 //Set initial map size to 1Gb
 // eslint-disable-next-line no-magic-numbers
 const MAP_SIZE = 1024 * 1024 * 1024;
@@ -156,7 +164,10 @@ async function createEnvironment(base_path, env_name, is_txn = false, is_v3 = fa
 				is_v3 ? environment_path : environment_path + MDB_FILE_EXTENSION,
 				MAP_SIZE,
 				MAX_DBS,
-				MAX_READERS
+				MAX_READERS,
+				false,
+				LMDB_NOSYNC,
+				LMDB_OVERLAPPING_SYNC
 			);
 			let env = lmdb.open(env_init);
 
@@ -222,7 +233,7 @@ async function openEnvironment(base_path, env_name, is_txn = false) {
 	let env_path = await validateEnvironmentPath(base_path, env_name);
 	let standard_path = path.join(base_path, env_name + MDB_FILE_EXTENSION);
 	let read_only = env_path != standard_path; // legacy database, only open in read only mode
-	let env_init = new OpenEnvironmentObject(env_path, MAP_SIZE, MAX_DBS, MAX_READERS, read_only);
+	let env_init = new OpenEnvironmentObject(env_path, MAP_SIZE, MAX_DBS, MAX_READERS, read_only, LMDB_NOSYNC, LMDB_OVERLAPPING_SYNC);
 	let env = lmdb.open(env_init);
 
 	env.dbis = Object.create(null);

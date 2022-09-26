@@ -292,7 +292,7 @@ async function processTable(schema, table, the_schema_path, is_transaction_reind
 	let env = await environment_utility.openEnvironment(the_schema_path, table);
 	let stat = environment_utility.statDBI(env, hash_attribute);
 	pino_logger.info(`New stats: ${JSON.stringify(new_stats)}. New stats after move: ${JSON.stringify(stat)}`);
-	assert.deepStrictEqual(stat, new_stats);
+	assert.deepStrictEqual(stat.entryCount, new_stats.entryCount);
 	await environment_utility.closeEnvironment(env);
 	delete global.lmdb_map[`${schema}.${table}`];
 }

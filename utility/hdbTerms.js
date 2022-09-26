@@ -586,7 +586,8 @@ const CONFIG_PARAMS = {
 	OPERATIONSAPI_NODEENV: 'operationsApi_nodeEnv',
 	OPERATIONSAPI_PROCESSES: 'operationsApi_processes',
 	OPERATIONSAPI_ROOT: 'operationsApi_root',
-	OPERATIONSAPI_STORAGE_WRITEASYNC: 'operationsApi_storage_writeAsync',
+	STORAGE_WRITEASYNC: 'storage_writeAsync',
+	STORAGE_OVERLAPPINGSYNC: 'storage_overlappingSync',
 };
 
 // If a param is added to the config file it needs to be added here also. Keep all keys lowercase.
@@ -714,7 +715,8 @@ const CONFIG_PARAM_MAP = {
 	operationsapi_nodeenv: CONFIG_PARAMS.OPERATIONSAPI_NODEENV,
 	operationsapi_processes: CONFIG_PARAMS.OPERATIONSAPI_PROCESSES,
 	operationsapi_root: CONFIG_PARAMS.OPERATIONSAPI_ROOT,
-	operationsapi_storage_writeasync: CONFIG_PARAMS.OPERATIONSAPI_STORAGE_WRITEASYNC,
+	storage_writeasync: CONFIG_PARAMS.STORAGE_WRITEASYNC,
+	storage_overlappingsync: CONFIG_PARAMS.STORAGE_OVERLAPPINGSYNC,
 };
 
 // Describes all available job types
