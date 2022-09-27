@@ -32,7 +32,7 @@ describe('test checkNodeVersion', () => {
 		let result = check_node();
 
 		expect(result).to.eql({
-			warn: 'This version of HarperDB is tested against Node.js version 16.17.0, the currently installed Node.js version is: 18.6.0. Some issues may occur with untested versions of Node.js.',
+			warn: 'This version of HarperDB is tested against Node.js version 16.17.1, the currently installed Node.js version is: 18.6.0. Some issues may occur with untested versions of Node.js.',
 		});
 		node_version_rw();
 	});
