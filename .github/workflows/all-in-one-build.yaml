@@ -1,4 +1,7 @@
 on:
+  push:
+    branches:
+      - "CORE-1771"
   workflow_call:
     outputs:
       nodeVersion: 
@@ -40,7 +43,8 @@ jobs:
     - name: Build artifact
       run: |
         #!/bin/bash
-        ./utility/devops/build/build.sh
+        whoami
+        ./utility/devops/build/all-in-one-build.sh
     - name: 'Upload Artifact'
       uses: actions/upload-artifact@v3
       with:

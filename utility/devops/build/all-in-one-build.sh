@@ -3,6 +3,7 @@
 apt-get update && apt-get install -y jq rsync
 
 npm install -g dot-json
+npm install -g bundle-dependencies
 
 node_version_installed="$(node -v)"
 
@@ -29,6 +30,10 @@ fi
 rm -rf ./node_modules/
 rm -rf ./npm_pack/
 
+mkdir ~/.npm-global
+npm config set prefix '~/.npm-global'
+export PATH=~/.npm-global/bin:$PATH
+
 # npm install from source
 # we need to install because we have build.js that run that need to be installed
 # --silent sets npm log level to silent
@@ -36,8 +41,15 @@ rm -rf ./npm_pack/
 npm --silent install --production --legacy-peer-deps
 sleep 2
 
-# Remove architecture specific binaries from dependencies
-rm -rf dependencies/*/
+ls -lah
+supported_architectures=("darwin-arm64" "darwin-x64" "linux-arm64" "linux-x64" "win32-x64")
+for sa in ${supported_architectures[@]}
+do
+  mkdir dependencies/$sa
+done
+ls -lah dependencies
+
+npm run download-prebuilds
 
 # Obfuscate code
 node ./utility/devops/build/build.js
@@ -59,11 +71,16 @@ dot-json ./npm_pack/package.json scripts --delete
 cd ./npm_pack/
 # Add the postinstall script back
 npm set-script postinstall "$post_install"
+
+bundle-dependencies update
+
 cd ../
 
 # Move LICENSE file to ./license dir
 mkdir ./npm_pack/license
-mv LICENSE ./npm_pack/license
+cp LICENSE ./npm_pack/license
+ls
+cp --preserve --recursive ./node_modules/ ./npm_pack/
 
 # Append README with commit ID
 git rev-parse HEAD >> ./npm_pack/README.md

@@ -43,7 +43,7 @@ for (let entry_module of entry_modules) {
 		'utility/install/ascii_logo.txt',
 		'utility/install/harperdb.conf',
 		'config/yaml/*',
-		'dependencies/*',
+		'dependencies/**',
 		'README.md',
 		'docs/**',
 		'logs/*'
