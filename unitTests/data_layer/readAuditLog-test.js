@@ -4,6 +4,8 @@ const rewire = require('rewire');
 const read_audit_log = require('../../data_layer/readAuditLog');
 const rw_read_audit_log = rewire('../../data_layer/readAuditLog');
 const ReadAuditLogObject = require('../../data_layer/ReadAuditLogObject');
+const env_mgr = require('../../utility/environment/environmentManager');
+const hdb_terms = require('../../utility/hdbTerms');
 
 const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
@@ -12,6 +14,7 @@ const TEST_ERROR_MSGS = require('../commonTestErrors');
 
 describe('test readAuditLog module', () => {
 	before(() => {
+		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_AUDITLOG, true);
 		global.hdb_schema = {
 			dev: {
 				test: {
