@@ -86,4 +86,27 @@ describe('test readAuditLog module', () => {
 
 		rw_stub();
 	});
+
+	it('Test table validation error returned', async () => {
+		let error = undefined;
+		try {
+			await rw_read_audit_log(new ReadAuditLogObject('dev', 'test_me', 'timestamp'));
+		} catch (e) {
+			error = e;
+		}
+
+		assert.deepStrictEqual(error.message, "Table 'dev.test_me' does not exist");
+	});
+
+	it('Test auditLog not set in config err', async () => {
+		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_AUDITLOG, false);
+		let error = undefined;
+		try {
+			await rw_read_audit_log(new ReadAuditLogObject('dev', 'test_me', 'timestamp'));
+		} catch (e) {
+			error = e;
+		}
+
+		assert.deepStrictEqual(error.message, 'To use this operation audit log must be enabled in harperdb.conf');
+	});
 });
