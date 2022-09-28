@@ -1,0 +1,45 @@
+on:
+  workflow_dispatch:
+    inputs:
+      dryrun:
+        type: boolean
+        default: true
+        description: "Add the --dry-run flag to npm publish"
+name: npm Publish Public
+jobs:
+  build:
+    uses: ./.github/workflows/build.yaml
+  npmPublish:
+    needs:
+      - build
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+    - uses: actions/download-artifact@v3
+      with:
+        name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
+        path: utility/Docker
+    - uses: actions/setup-node@v3
+      with:
+        node-version: '${{needs.build.outputs.nodeVersion}}'
+        registry-url: 'https://registry.npmjs.org'
+    - name: "npm Publish"
+      env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_ACCESS_TOKEN }}
+      run: |
+        #!/bin/bash
+        # Unpack package tarball artifact from build job
+        tar -xf harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
+
+        # On line 2 of package.json, change the package name to @harperdb/harperdb
+        sed -i '2 s/harperdb/@harperdb\/harperdb/' ./package/package.json
+
+        echo "cat edited package.json:"
+        cat ./package/package.json
+
+        if [[ ${{ inputs.dryrun }} == "true" ]]
+        then
+          npm publish ./package/ --access public --dry-run
+        else
+          npm publish ./package/ --access public
+        fi
