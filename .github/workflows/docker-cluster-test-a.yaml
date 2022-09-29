@@ -55,7 +55,13 @@ jobs:
 
         ssh -i private_key -o ConnectTimeout=10 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
           "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/docker-cluster-test-a.sh && /home/ubuntu/harperdb/test/ci-tests/docker-cluster-test-a.sh ${{ needs.build.outputs.harperdbVersion }}"
-
+    - name: 'Download Logs'
+      if: always()
+      run: |
+        #!/bin/bash
+        public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
+        public_dns_names=($public_dns_names)
+        public_dns_name="${public_dns_names[0]}"
         scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/artifact" "logs-artifact/"
     - name: 'Upload Artifact'
       uses: actions/upload-artifact@v3

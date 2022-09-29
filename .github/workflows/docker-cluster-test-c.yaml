@@ -1,4 +1,7 @@
 on:
+  push:
+    branches:
+      - "CORE-1759"
   pull_request:
     types: [opened, synchronize, reopened]
     paths:
@@ -6,7 +9,7 @@ on:
   schedule:
     - cron:  '0 8 * * 1-5'
   workflow_dispatch:
-name: "Run Docker Cluster Tests B"
+name: "Run Docker Cluster Tests C"
 jobs:
   build:
     uses: ./.github/workflows/build.yaml
@@ -54,7 +57,7 @@ jobs:
         mkdir logs-artifact
 
         ssh -i private_key -o ConnectTimeout=10 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
-          "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/docker-cluster-test-b.sh && /home/ubuntu/harperdb/test/ci-tests/docker-cluster-test-b.sh ${{ needs.build.outputs.harperdbVersion }}"
+          "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/docker-cluster-test-c.sh && /home/ubuntu/harperdb/test/ci-tests/docker-cluster-test-c.sh ${{ needs.build.outputs.harperdbVersion }}"
     - name: 'Download Logs'
       if: always()
       run: |
