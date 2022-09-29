@@ -1,4 +1,4 @@
-<img src="https://hdb-marketing.s3.amazonaws.com/large_purple_horiz_new.png" width="562" height="161">
+<img src="https://hdb-marketing.s3.amazonaws.com/GRYHORIZ_HDB_Drk_Gry.png" width="692" height="156">
 
 ## Contents
 1. [HarperDB Overview](#harperdb-overview)
@@ -33,13 +33,13 @@ Reduce or eliminate complexity by using HarperDB’s built-in API. Create and ma
 [Support](https://harperdb.io/docs/support/)
 
 ## Prerequisites
-Node.js v14.0.0 or higher. Our tested & fully supported Node.js version is 16.17.0
+Node.js 14.0.0 or higher. Our tested & fully supported Node.js version is 16.17.1
 
 HarperDB has been tested on the following platforms
 - Linux on AMD64
 - Linux on ARM64
 - MacOS on Intel
-- MacOS on Apple silicon
+- MacOS on Apple silicon (Rosetta AMD64 emulation required for Node.js versions older than Node.js 16)
 
 Other UNIX-like operating systems and other CPU architectures may be able to run HarperDB, but these have not been tested and may require the following
 - GCC

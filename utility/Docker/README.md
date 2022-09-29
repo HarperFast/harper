@@ -1,4 +1,4 @@
-<img src="https://hdb-marketing.s3.amazonaws.com/large_purple_horiz_new.png" width="562" height="161" alt="HarperDB Logo">
+<img src="https://hdb-marketing.s3.amazonaws.com/GRYHORIZ_HDB_Drk_Gry.png" width="692" height="156">
 
 ## HarperDB Overview
 
@@ -35,7 +35,7 @@ Reduce or eliminate complexity by using HarperDB’s built-in API. Create and ma
 [HarperDB configuration settings](https://harperdb.io/docs/reference/configuration-file/) can be passed as `docker run` environment variables.
 
 If no environment variables are passed to `docker run`, HarperDB will run with default configuration settings, except for the following:
-- `OPERATIONSAPI_ROOT=/opt/harperdb/hdb`
+- `ROOTPATH=/home/harperdb/hdb`
 - `OPERATIONSAPI_NETWORK_PORT=9925`
 - `HDB_ADMIN_USERNAME=HDB_ADMIN`
 - `HDB_ADMIN_PASSWORD=password`
@@ -43,48 +43,36 @@ If no environment variables are passed to `docker run`, HarperDB will run with d
 - `OPERATIONSAPI_FOREGROUND=true`
 
 ### Persisting Data
-Containers created from this image will store all data and HarperDB configuration at `/opt/harperdb/hdb`. To persist this data beyond the lifecycle of a container, use a Docker volume to mount this directory to the container host.
+Containers created from this image will store all data and HarperDB configuration at `/home/harperdb/hdb`. To persist this data beyond the lifecycle of a container, use a Docker volume to mount this directory to the container host.
 
 ### Examples
 
-Run a HarperDB container in the background, with the HDB_ROOT directory mounted to the container host, and expose the HarperDB API port on the container host:
+Run a HarperDB container in the background, with the ROOTPATH directory mounted to the container host, and expose the HarperDB API and Custom Functions ports on the container host:
 ```
 docker run -d \
-  -v /host/directory:/opt/harperdb/hdb \
+  -v <host directory>:/home/harperdb/hdb \
   -e HDB_ADMIN_USERNAME=HDB_ADMIN \
   -e HDB_ADMIN_PASSWORD=password \
-  -p 9925:9925 \
-  harperdb/harperdb
-```
-
-Enable HarperDB Custom Functions and expose the HarperDB Custom Functions port on the container host:
-```
-docker run -d \
-  -v /host/directory:/opt/harperdb/hdb \
-  -e HDB_ADMIN_USERNAME=HDB_ADMIN \
-  -e HDB_ADMIN_PASSWORD=password \
-  -e CUSTOMFUNCTIONS_ENABLED=true \
   -p 9925:9925 \
   -p 9926:9926 \
   harperdb/harperdb
 ```
 
-Enable HTTPS for the HarperDB API, enable HarperDB clustering, and expose the HarperDB clustering port on the container host:
+Enable HTTPS for the HarperDB API and Custom Functions, enable HarperDB clustering, and expose the HarperDB clustering port on the container host:
 ```
 docker run -d \
-  -v /host/directory:/opt/harperdb/hdb \
+  -v <host directory>:/home/harperdb/hdb \
   -e HDB_ADMIN_USERNAME=HDB_ADMIN \
   -e HDB_ADMIN_PASSWORD=password \
-  -e CUSTOMFUNCTIONS_ENABLED=true \
   -e OPERATIONSAPI_NETWORK_HTTPS=true \
+  -e CUSTOMFUNCTIONS_NETWORK_HTTPS=true \
   -e CLUSTERING_ENABLED=true \
   -e CLUSTERING_USER=cluster_user \
   -e CLUSTERING_PASSWORD=password \
-  -e CLUSTERING_HUBSERVER_NETWORK_PORT=12345 \
   -e CLUSTERING_NODENAME=hdb1 \
   -p 9925:9925 \
   -p 9926:9926 \
-  -p 12345:12345 \
+  -p 9932:9932 \
   harperdb/harperdb
 ```
 

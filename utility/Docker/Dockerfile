@@ -33,7 +33,7 @@ ENV PATH=/home/harperdb/.npm-global/bin:$PATH
 
 #Set HarperDB installation parameters
 ENV TC_AGREEMENT=yes
-ENV OPERATIONSAPI_ROOT=/home/harperdb/hdb
+ENV ROOTPATH=/home/harperdb/hdb
 ENV OPERATIONSAPI_NETWORK_PORT=9925
 ENV HDB_ADMIN_USERNAME=HDB_ADMIN
 ENV HDB_ADMIN_PASSWORD=password

@@ -41,14 +41,12 @@ export PATH=~/.npm-global/bin:$PATH
 npm --silent install --production --legacy-peer-deps
 sleep 2
 
-ls -lah
+# Download binaries for common platforms
 supported_architectures=("darwin-arm64" "darwin-x64" "linux-arm64" "linux-x64" "win32-x64")
 for sa in ${supported_architectures[@]}
 do
   mkdir dependencies/$sa
 done
-ls -lah dependencies
-
 npm run download-prebuilds
 
 # Obfuscate code
@@ -57,7 +55,7 @@ node ./utility/devops/build/build.js
 # Pull in custom_function_template repo
 git submodule update --init --recursive
 
-# # Copy code to package creation directory
+# Copy code to package creation directory
 rsync --exclude=".*" --recursive ./custom_function_template ./npm_pack/
 
 # Grab the postinstall script commands
@@ -67,19 +65,19 @@ post_install="$(jq -r '.scripts."postinstall"' package.json)"
 dot-json ./npm_pack/package.json devDependencies --delete
 dot-json ./npm_pack/package.json dependencies.esbuild --delete
 dot-json ./npm_pack/package.json scripts --delete
+dot-json ./npm_pack/package.json overrides --delete
 
 cd ./npm_pack/
 # Add the postinstall script back
 npm set-script postinstall "$post_install"
-
+# Create bundleDependencies section of package.json
 bundle-dependencies update
-
 cd ../
 
-# Move LICENSE file to ./license dir
-mkdir ./npm_pack/license
-cp LICENSE ./npm_pack/license
-ls
+# Copy LICENSE file
+cp LICENSE ./npm_pack/
+
+# Copy node_modules
 cp --preserve --recursive ./node_modules/ ./npm_pack/
 
 # Append README with commit ID

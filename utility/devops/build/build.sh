@@ -55,15 +55,15 @@ post_install="$(jq -r '.scripts."postinstall"' package.json)"
 dot-json ./npm_pack/package.json devDependencies --delete
 dot-json ./npm_pack/package.json dependencies.esbuild --delete
 dot-json ./npm_pack/package.json scripts --delete
+dot-json ./npm_pack/package.json overrides --delete
 
 cd ./npm_pack/
 # Add the postinstall script back
 npm set-script postinstall "$post_install"
 cd ../
 
-# Move LICENSE file to ./license dir
-mkdir ./npm_pack/license
-mv LICENSE ./npm_pack/license
+# Copy LICENSE file
+cp LICENSE ./npm_pack/
 
 # Append README with commit ID
 git rev-parse HEAD >> ./npm_pack/README.md
