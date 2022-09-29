@@ -45,7 +45,7 @@ describe('Test 4-0-0 module', () => {
 	describe('Test updateSettingsFile_4_0_0 function', () => {
 		let updateSettingsFile_4_0_0;
 		const old_config_obj = {
-			operationsapi_root: 'yourcomputer/hdb',
+			rootpath: 'yourcomputer/hdb',
 			operationsapi_network_port: 9900,
 			operationsapi_tls_certificate: 'yourcomputer/keys/certificate.pem',
 			operationsapi_tls_privatekey: 'yourcomputer/keys/privateKey.pem',

@@ -123,13 +123,13 @@ const FAKE_CONFIG = {
 		},
 		nodeEnv: 'development',
 		processes: 4,
-		root: HDB_ROOT,
 		tls: {
 			certificate: 'op_api/cert.pem',
 			certificateAuthority: null,
 			privateKey: null,
 		},
 	},
+	rootPath: HDB_ROOT,
 	storage: {
 		writeAsync: true,
 	},
@@ -262,13 +262,13 @@ describe('Test configValidator module', () => {
 						},
 						nodeEnv: 'development',
 						processes: 4,
-						root: path.join(__dirname, '/carrot'),
 						tls: {
 							certificate: 'op_api/cert.pem',
 							certificateAuthority: TEST_CA,
 							privateKey: TEST_PRIVATE_KEY,
 						},
 					},
+					rootPath: path.join(__dirname, '/carrot'),
 					storage: {
 						writeAsync: true,
 					},
@@ -358,7 +358,7 @@ describe('Test configValidator module', () => {
 
 		it('Test error thrown if hdb root is undefined', () => {
 			let bad_config_obj = test_utils.deepClone(FAKE_CONFIG);
-			bad_config_obj.operationsApi.root = null;
+			bad_config_obj.rootPath = null;
 
 			let error;
 			try {
@@ -367,7 +367,7 @@ describe('Test configValidator module', () => {
 				error = err;
 			}
 
-			expect(error).to.eql('operationsApi.root config parameter is undefined');
+			expect(error).to.eql('rootPath config parameter is undefined');
 		});
 	});
 
@@ -464,12 +464,12 @@ describe('Test configValidator module', () => {
 			bad_config_obj.operationsApi.network.timeout = false;
 			bad_config_obj.operationsApi.nodeEnv = true;
 			bad_config_obj.operationsApi.processes = true;
-			bad_config_obj.operationsApi.root = '/@@@';
+			bad_config_obj.rootPath = '/@@@';
 			bad_config_obj.storage.writeAsync = undefined;
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'operationsApi.authentication.operationTokenTimeout' is required. 'operationsApi.authentication.refreshTokenTimeout' is required. 'operationsApi.foreground' must be a boolean. 'operationsApi.network.cors' must be a boolean. 'operationsApi.network.headersTimeout' must be greater than or equal to 1. 'operationsApi.network.https' must be a boolean. 'operationsApi.network.keepAliveTimeout' must be a number. 'operationsApi.network.port' must be a number. 'operationsApi.network.timeout' must be a number. 'operationsApi.nodeEnv' must be one of [production, development]. 'operationsApi.processes' must be a number. 'operationsApi.root' with value '/@@@' fails to match the directory path pattern. 'storage.writeAsync' is required";
+				"'operationsApi.authentication.operationTokenTimeout' is required. 'operationsApi.authentication.refreshTokenTimeout' is required. 'operationsApi.foreground' must be a boolean. 'operationsApi.network.cors' must be a boolean. 'operationsApi.network.headersTimeout' must be greater than or equal to 1. 'operationsApi.network.https' must be a boolean. 'operationsApi.network.keepAliveTimeout' must be a number. 'operationsApi.network.port' must be a number. 'operationsApi.network.timeout' must be a number. 'operationsApi.nodeEnv' must be one of [production, development]. 'operationsApi.processes' must be a number. 'rootPath' with value '/@@@' fails to match the directory path pattern. 'storage.writeAsync' is required";
 
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});

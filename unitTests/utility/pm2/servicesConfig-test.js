@@ -111,7 +111,7 @@ describe('Test pm2 servicesConfig module', () => {
 	});
 
 	it('Test result from generateNatsHubServerConfig function is correct', () => {
-		const hdb_root = env.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_ROOT);
+		const hdb_root = env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
 		const hub_config_path = path.join(hdb_root, 'clustering', 'hub.json');
 		const expected_result = {
 			name: 'Clustering Hub',
@@ -124,14 +124,14 @@ describe('Test pm2 servicesConfig module', () => {
 			merge_logs: true,
 			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_HUB),
 			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_HUB),
-			instances: 1
+			instances: 1,
 		};
 		const result = services_config.generateNatsHubServerConfig();
 		expect(result).to.eql(expected_result);
 	});
 
 	it('Test result from generateNatsLeafServerConfig function is correct', () => {
-		const hdb_root = env.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_ROOT);
+		const hdb_root = env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
 		const leaf_config_path = path.join(hdb_root, 'clustering', 'leaf.json');
 		const expected_result = {
 			name: 'Clustering Leaf',
@@ -144,7 +144,7 @@ describe('Test pm2 servicesConfig module', () => {
 			merge_logs: true,
 			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_LEAF),
 			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_LEAF),
-			instances: 1
+			instances: 1,
 		};
 		const result = services_config.generateNatsLeafServerConfig();
 		expect(result).to.eql(expected_result);

@@ -110,7 +110,7 @@ async function install() {
 	spinner.start();
 
 	// HDB root is the one of the first params we need for install.
-	hdb_root = install_params[hdb_terms.INSTALL_PROMPTS.OPERATIONSAPI_ROOT];
+	hdb_root = install_params[hdb_terms.INSTALL_PROMPTS.ROOTPATH];
 	if (hdb_utils.isEmpty(hdb_root)) {
 		throw new Error('Installer should have the HDB root param at the stage it is in but it does not.');
 	}
@@ -163,11 +163,8 @@ async function installPrompts(prompt_override) {
 		{
 			type: 'input',
 			transformer: PROMPT_ANSWER_TRANSFORMER,
-			when: displayCmdEnvVar(
-				prompt_override[hdb_terms.INSTALL_PROMPTS.OPERATIONSAPI_ROOT],
-				INSTALL_PROMPTS.DESTINATION
-			),
-			name: hdb_terms.INSTALL_PROMPTS.OPERATIONSAPI_ROOT,
+			when: displayCmdEnvVar(prompt_override[hdb_terms.INSTALL_PROMPTS.ROOTPATH], INSTALL_PROMPTS.DESTINATION),
+			name: hdb_terms.INSTALL_PROMPTS.ROOTPATH,
 			prefix: PROMPT_PREFIX,
 			default: DEFAULT_HDB_ROOT,
 			validate: async (value) => {

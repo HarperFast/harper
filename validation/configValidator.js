@@ -26,7 +26,7 @@ const DEFAULT_CUSTOM_FUNCTIONS_FOLDER = 'custom_functions';
 const INVALID_SIZE_UNIT_MSG = 'Invalid logging.rotation.maxSize unit. Available units are G, M or K';
 const INVALID_MAX_SIZE_VALUE_MSG =
 	"Invalid logging.rotation.maxSize value. Value should be a number followed by unit e.g. '10M'";
-const UNDEFINED_OPS_API = 'operationsApi.root config parameter is undefined';
+const UNDEFINED_OPS_API = 'rootPath config parameter is undefined';
 const UNDEFINED_NATS_ENABLED = 'clustering.enabled config parameter is undefined';
 
 const port_constraints = number.min(0).required();
@@ -46,7 +46,7 @@ module.exports = {
 };
 
 function configValidator(config_json) {
-	hdb_root = config_json.operationsApi?.root;
+	hdb_root = config_json.rootPath;
 	if (hdb_utils.isEmpty(hdb_root)) {
 		throw UNDEFINED_OPS_API;
 	}
@@ -187,13 +187,13 @@ function configValidator(config_json) {
 			}).required(),
 			nodeEnv: node_env_constraints,
 			processes: processes_constraints,
-			root: string.pattern(/^[\\\/]$|([\\\/][a-zA-Z_0-9\:-]+)+$/, 'directory path').required(),
 			tls: Joi.object({
 				certificate: pem_file_constraints,
 				certificateAuthority: pem_file_constraints,
 				privateKey: pem_file_constraints,
 			}),
 		}).required(),
+		rootPath: string.pattern(/^[\\\/]$|([\\\/][a-zA-Z_0-9\:-]+)+$/, 'directory path').required(),
 		storage: Joi.object({
 			writeAsync: boolean.required(),
 			overlappingSync: boolean.optional(),

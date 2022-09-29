@@ -79,10 +79,10 @@ operationsApi:
     timeout: 120000
   nodeEnv: production
   processes: null
-  root: null
   tls:
     certificate: null
     certificateAuthority: null
     privateKey: null
+rootPath: null
 storage:
   writeAsync: false

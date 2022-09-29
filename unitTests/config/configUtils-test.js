@@ -79,7 +79,7 @@ const TEST_ARGS = {
 	OPERATIONSAPI_NETWORK_TIMEOUT: '120001',
 	OPERATIONSAPI_NODEENV: 'development',
 	OPERATIONSAPI_PROCESSES: '4',
-	OPERATIONSAPI_ROOT: HDB_ROOT,
+	ROOTPATH: HDB_ROOT,
 	STORAGE_WRITEASYNC: true,
 	STORAGE_OVERLAPPINGSYNC: false,
 	OPERATIONSAPI_TLS_CERTIFICATE: TEST_CERT,
@@ -89,10 +89,10 @@ const TEST_ARGS = {
 const TEST_ARGS_2 = {
 	CLUSTERING_ENABLED: true,
 	CUSTOMFUNCTIONS_ENABLED: true,
-	OPERATIONSAPI_ROOT: HDB_ROOT,
+	ROOTPATH: HDB_ROOT,
 };
 let TEST_ARGS_3 = {
-	OPERATIONSAPI_ROOT: HDB_ROOT,
+	ROOTPATH: HDB_ROOT,
 };
 const FLAT_CONFIG_OBJ = {
 	clustering_enabled: false,
@@ -156,7 +156,7 @@ const FLAT_CONFIG_OBJ = {
 	operationsapi_network_timeout: 120000,
 	operationsapi_nodeenv: 'production',
 	operationsapi_processes: null,
-	operationsapi_root: null,
+	rootpath: null,
 	storage_writeasync: true,
 	storage_overlappingsync: false,
 	operationsapi_tls_certificate: null,
@@ -378,13 +378,13 @@ describe('Test configUtils module', () => {
 					},
 					nodeEnv: 'development',
 					processes: 4,
-					root: path.join(DIRNAME, '/yaml'),
 					tls: {
 						certificate: TEST_CERT,
 						certificateAuthority: null,
 						privateKey: TEST_PRIVATE_KEY,
 					},
 				},
+				rootPath: path.join(DIRNAME, '/yaml'),
 				storage: {
 					writeAsync: true,
 					overlappingSync: false,
@@ -447,7 +447,7 @@ describe('Test configUtils module', () => {
 				operationsapi_network_timeout: 120001,
 				operationsapi_nodeenv: 'development',
 				operationsapi_processes: 4,
-				operationsapi_root: path.join(DIRNAME, '/yaml'),
+				rootpath: path.join(DIRNAME, '/yaml'),
 				storage_writeasync: true,
 				storage_overlappingsync: false,
 				operationsapi_tls_certificate: TEST_CERT,
@@ -524,7 +524,7 @@ describe('Test configUtils module', () => {
 			operationsapi_network_timeout: 120000,
 			operationsapi_nodeenv: 'production',
 			operationsapi_processes: null,
-			operationsapi_root: null,
+			rootpath: null,
 			storage_writeasync: false,
 			operationsapi_tls_certificate: null,
 			operationsapi_tls_certificateauthority: null,
@@ -703,7 +703,7 @@ describe('Test configUtils module', () => {
 			};
 
 			config_utils_rw.createConfigFile(TEST_ARGS_3);
-			TEST_ARGS_3['OPERATIONSAPI_ROOT'] = '';
+			TEST_ARGS_3['ROOTPATH'] = '';
 
 			const test_config_doc = YAML.parseDocument(fs.readFileSync(CONFIG_FILE_PATH, 'utf8'));
 			const test_config_json = test_config_doc.toJSON();
@@ -944,7 +944,7 @@ describe('Test configUtils module', () => {
 				operationsapi_network_timeout: 120000,
 				operationsapi_nodeenv: 'production',
 				operationsapi_processes: null,
-				operationsapi_root: HDB_ROOT,
+				rootpath: HDB_ROOT,
 				storage_writeasync: true,
 				storage_overlappingsync: false,
 				operationsapi_tls_certificate: null,
@@ -1346,7 +1346,7 @@ describe('Test configUtils module', () => {
 			';Settings for the HarperDB process.': '',
 		};
 		const EXPECTED_CONFIG_OBJ = {
-			operationsapi_root: path.join(__dirname, '../../'),
+			rootpath: path.join(__dirname, '../../'),
 			operationsapi_network_port: 9925,
 			operationsapi_tls_certificate: path.join(__dirname, '../../keys/certificate.pem'),
 			operationsapi_tls_privatekey: path.join(__dirname, '../../keys/privateKey.pem'),

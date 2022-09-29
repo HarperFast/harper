@@ -36,7 +36,7 @@ module.exports = {
  */
 async function generateNatsConfig(is_restart = false, process_name = undefined) {
 	env_manager.initSync();
-	const HDB_ROOT = env_manager.get(CONFIG_PARAMS.OPERATIONSAPI_ROOT);
+	const HDB_ROOT = env_manager.get(CONFIG_PARAMS.ROOTPATH);
 	const HUB_PID_FILE_PATH = path.join(HDB_ROOT, HDB_CLUSTERING_FOLDER, nats_terms.PID_FILES.HUB);
 	const LEAF_PID_FILE_PATH = path.join(HDB_ROOT, HDB_CLUSTERING_FOLDER, nats_terms.PID_FILES.LEAF);
 	const LEAF_JS_STORE_DIR = path.join(HDB_ROOT, HDB_CLUSTERING_FOLDER, 'leaf');
@@ -192,11 +192,7 @@ async function removeNatsConfig(process_name) {
 
 	// We write a bunch of zeros over the existing config file so that any trace of the previous config is completely removed from disk.
 	const string_of_zeros = '0'.repeat(ZERO_WRITE_COUNT);
-	const config_file_path = path.join(
-		env_manager.get(CONFIG_PARAMS.OPERATIONSAPI_ROOT),
-		HDB_CLUSTERING_FOLDER,
-		config_file
-	);
+	const config_file_path = path.join(env_manager.get(CONFIG_PARAMS.ROOTPATH), HDB_CLUSTERING_FOLDER, config_file);
 	await fs.writeFile(config_file_path, string_of_zeros);
 	await fs.remove(config_file_path);
 }

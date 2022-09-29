@@ -449,7 +449,7 @@ async function publishToStream(subject_name, stream_name, entries = [], originat
  */
 function getServerConfig(process_name) {
 	process_name = process_name.toLowerCase();
-	const hdb_nats_path = path.join(env_manager.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_ROOT), HDB_CLUSTERING_FOLDER);
+	const hdb_nats_path = path.join(env_manager.get(hdb_terms.CONFIG_PARAMS.ROOTPATH), HDB_CLUSTERING_FOLDER);
 
 	if (process_name === hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB.toLowerCase()) {
 		if (isEmpty(hub_config)) {

@@ -336,8 +336,7 @@ async function tearDownMockDB(envs = undefined, partial_teardown = false) {
 
 		delete global.hdb_schema;
 		global.lmdb_map = undefined;
-		if (!partial_teardown)
-			await fs.remove(ENV_DIR_PATH);
+		if (!partial_teardown) await fs.remove(ENV_DIR_PATH);
 	} catch (err) {
 		console.error('Error tearing down mock DB used for unit tests');
 		console.error(err);
@@ -759,7 +758,7 @@ function setFakeClusterUser() {
 
 	sandbox = sinon.createSandbox();
 	sandbox.stub(user, 'getClusterUser').resolves(fake_cluster_user);
-	env.setProperty(terms.CONFIG_PARAMS.OPERATIONSAPI_ROOT, TEMP_CLUSTERING_TEST_DIR);
+	env.setProperty(terms.CONFIG_PARAMS.ROOTPATH, TEMP_CLUSTERING_TEST_DIR);
 	env.setProperty(terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT, 9991);
 	env.setProperty(terms.CONFIG_PARAMS.CLUSTERING_USER, 'test_cluster_user');
 	env.setProperty(terms.CONFIG_PARAMS.CLUSTERING_NODENAME, 'testLeafServer');

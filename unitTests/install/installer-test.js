@@ -46,7 +46,7 @@ describe('Test installer module', () => {
 		const validator_stub = sandbox.stub();
 		const check_for_existing_stub = sandbox.stub().resolves();
 		const terms_stub = sandbox.stub().resolves();
-		const install_prompts_stub = sandbox.stub().resolves({ OPERATIONSAPI_ROOT: 'users/hdb/test' });
+		const install_prompts_stub = sandbox.stub().resolves({ ROOTPATH: 'users/hdb/test' });
 		const set_hdb_base_stub = sandbox.stub();
 		const mount_stub = sandbox.stub().resolves();
 		const create_boot_file_stub = sandbox.stub().resolves();
@@ -100,21 +100,21 @@ describe('Test installer module', () => {
 	it('Test checkForPromptOverride gets prompts and config vars', () => {
 		process.env.OPERATIONSAPI_NETWORK_PORT = '7890';
 		process.env.OPERATIONSAPI_FOREGROUND = 'true';
-		process.env.OPERATIONSAPI_ROOT = 'user/unit/test';
+		process.env.ROOTPATH = 'user/unit/test';
 		process.env.TC_AGREEMENT = 'yes';
 		process.env.CLUSTERING = 'true';
 		process.env.NODE_NAME = 'dog1';
 		const checkForPromptOverride = installer.__get__('checkForPromptOverride');
 		const result = checkForPromptOverride();
 		expect(result.OPERATIONSAPI_NETWORK_PORT).to.equal('7890');
-		expect(result.OPERATIONSAPI_ROOT).to.equal('user/unit/test');
+		expect(result.ROOTPATH).to.equal('user/unit/test');
 		expect(result.TC_AGREEMENT).to.equal('yes');
 		expect(result.CLUSTERING_ENABLED).to.equal('true');
 		expect(result.CLUSTERING_NODENAME).to.equal('dog1');
 
 		delete process.env.OPERATIONSAPI_NETWORK_PORT;
 		delete process.env.OPERATIONSAPI_FOREGROUND;
-		delete process.env.OPERATIONSAPI_ROOT;
+		delete process.env.ROOTPATH;
 		delete process.env.TC_AGREEMENT;
 		delete process.env.CLUSTERING;
 		delete process.env.NODE_NAME;
@@ -184,7 +184,7 @@ describe('Test installer module', () => {
 			node_name: 'dog1',
 			clustering: 'true',
 			operationsapi_foreground: 'true',
-			OPERATIONSAPI_ROOT: 'user/unit/test',
+			ROOTPATH: 'user/unit/test',
 			OPERATIONSAPI_NETWORK_PORT: '8888',
 		};
 		const create_config_file_stub = sandbox.stub(config_utils, 'createConfigFile');
@@ -193,7 +193,7 @@ describe('Test installer module', () => {
 		process.env.CLUSTERING = 'true';
 		process.env.NODE_NAME = 'dog1';
 		const fake_install_params = {
-			OPERATIONSAPI_ROOT: 'user/unit/test',
+			ROOTPATH: 'user/unit/test',
 			OPERATIONSAPI_NETWORK_PORT: '8888',
 		};
 		const createConfigFile = installer.__get__('createConfigFile');
@@ -213,7 +213,7 @@ describe('Test installer module', () => {
 		const rollback_rw = installer.__set__('rollbackInstall', rollback_stub);
 		sandbox.stub(config_utils, 'createConfigFile').throws('Error creating config file');
 		const fake_install_params = {
-			OPERATIONSAPI_ROOT: 'user/unit/test',
+			ROOTPATH: 'user/unit/test',
 			OPERATIONSAPI_NETWORK_PORT: '8888',
 		};
 		const createConfigFile = installer.__get__('createConfigFile');
@@ -259,7 +259,7 @@ describe('Test installer module', () => {
 		};
 
 		const answers_fake_result = {
-			OPERATIONSAPI_ROOT: 'i/am/root/',
+			ROOTPATH: 'i/am/root/',
 			HDB_ADMIN_USERNAME: 'test_user',
 			HDB_ADMIN_PASSWORD: 'testing_rulz',
 		};
@@ -268,7 +268,7 @@ describe('Test installer module', () => {
 			OPERATIONSAPI_NETWORK_PORT: '8888',
 			CLUSTERING_ENABLED: true,
 			CLUSTERING_NODENAME: 'im_a_node',
-			OPERATIONSAPI_ROOT: 'i/am/root/',
+			ROOTPATH: 'i/am/root/',
 			HDB_ADMIN_USERNAME: 'test_user',
 			HDB_ADMIN_PASSWORD: 'testing_rulz',
 		};
@@ -278,7 +278,7 @@ describe('Test installer module', () => {
 		expect(result).to.eql(expected_result);
 		const prompts_schema = prompt_stub.args[0][0];
 		expect(prompts_schema.length).to.equal(7);
-		expect(prompts_schema[0].name).to.equal('OPERATIONSAPI_ROOT');
+		expect(prompts_schema[0].name).to.equal('ROOTPATH');
 		expect(prompts_schema[0].when).to.be.true;
 		expect(prompts_schema[1].name).to.equal('OPERATIONSAPI_NETWORK_PORT');
 		expect(prompts_schema[1].when).to.be.false;

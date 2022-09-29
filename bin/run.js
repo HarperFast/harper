@@ -309,10 +309,7 @@ function spawnLogProcess() {
 	const proc = spawn('node', [path.join(PACKAGE_ROOT, 'node_modules/pm2/bin/pm2'), 'logs']);
 
 	// We track the process pid so that stop can use it to kill the process.
-	fs.writeFileSync(
-		path.join(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_ROOT), terms.FOREGROUND_PID_FILE),
-		proc.pid.toString()
-	);
+	fs.writeFileSync(path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), terms.FOREGROUND_PID_FILE), proc.pid.toString());
 
 	proc.on('error', (err) => {
 		console.log(err);

@@ -133,7 +133,7 @@ describe('Test natsConfig module', () => {
 		sandbox.stub(nats_utils, 'getServerConfig').returns(FAKE_SERVER_CONFIG);
 		create_connection_stub = sandbox.stub(nats_utils, 'createConnection').onCall(0).throws('Connection error');
 		create_connection_stub.onCall(1).resolves(FAKE_CONNECTION_RESPONSE);
-		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_ROOT, TEMP_TEST_ROOT_DIR);
+		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.ROOTPATH, TEMP_TEST_ROOT_DIR);
 		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_USER, FAKE_CLUSTER_USER1);
 		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT, 7711);
 		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME, 'unitTestNodeName');

@@ -67,7 +67,7 @@ function createConfigFile(args) {
 	flat_config_obj = flattenConfig(config_obj);
 
 	// Create new config file and write config doc to it.
-	const hdb_root = config_doc.getIn(['operationsApi', 'root']);
+	const hdb_root = config_doc.getIn(['rootPath']);
 	const config_file_path = path.join(hdb_root, hdb_terms.HDB_CONFIG_FILE);
 	fs.createFileSync(config_file_path);
 	fs.writeFileSync(config_file_path, String(config_doc));
@@ -270,7 +270,7 @@ function updateConfigValue(param, value, parsed_args = undefined, create_backup 
 
 	// Validates config doc and if required sets default values for some parameters.
 	validateConfig(config_doc);
-	const hdb_root = config_doc.getIn(['operationsApi', 'root']);
+	const hdb_root = config_doc.getIn(['rootPath']);
 	const config_file_location = path.join(hdb_root, hdb_terms.HDB_CONFIG_FILE);
 
 	// Creates a backup of config before new config is written to disk.

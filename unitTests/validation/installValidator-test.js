@@ -20,7 +20,7 @@ describe('Test installValidator module', () => {
 
 	it('Test validation error returned all values bad', () => {
 		const test_params = {
-			OPERATIONSAPI_ROOT: 'i/am/root',
+			ROOTPATH: 'i/am/root',
 			OPERATIONSAPI_NETWORK_PORT: '1a',
 			TC_AGREEMENT: 'no',
 			CLUSTERING_NODENAME: 'dev.dog',
@@ -35,7 +35,7 @@ describe('Test installValidator module', () => {
 
 	it('Test validation error returned some values bad', () => {
 		const test_params = {
-			OPERATIONSAPI_ROOT: 'i/am/root',
+			ROOTPATH: 'i/am/root',
 			OPERATIONSAPI_NETWORK_PORT: 1234,
 			TC_AGREEMENT: 'yes',
 			CLUSTERING_NODENAME: 'dev.dog',
