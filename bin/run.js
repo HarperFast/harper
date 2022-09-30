@@ -296,6 +296,7 @@ function foregroundHandler() {
 	// catches "kill pid"
 	process.on('SIGUSR1', processExitHandler);
 	process.on('SIGUSR2', processExitHandler);
+	process.on('SIGTERM', processExitHandler);
 
 	spawnLogProcess();
 }
@@ -330,13 +331,12 @@ function spawnLogProcess() {
  * @returns {Promise<void>}
  */
 async function processExitHandler() {
-	if (getRunInForeground()) {
-		try {
-			await stop.stop();
-		} catch (err) {
-			console.error(err);
-		}
+	try {
+		await stop.stop();
+	} catch (err) {
+		console.error(err);
 	}
+	process.exit(143);
 }
 
 module.exports = {
