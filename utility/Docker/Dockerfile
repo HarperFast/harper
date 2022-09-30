@@ -2,11 +2,9 @@ ARG NODE_VERSION
 FROM node:$NODE_VERSION-bullseye-slim
 ARG HARPERDB_TARBALL
 
-#Expose HarperDB port
+#Expose HarperDB ports
 EXPOSE 9925
-
-#Install prerequisites
-RUN apt-get update && apt-get install -y tini=0.19.0-1
+EXPOSE 9926
 
 #Change node user and group to harperdb
 RUN usermod -d /home/harperdb -l harperdb node && \
@@ -46,13 +44,10 @@ USER harperdb
 #Set the  working directory for the below instructions
 WORKDIR /home/harperdb/
 
-#Install HarperDB and clean up
+#Install HarperDB package and clean up tarball
 RUN npm install -g $HARPERDB_TARBALL && \
     npm cache clean --force && \
     rm -f $HARPERDB_TARBALL
 
-#Execute Tini when container starts
-ENTRYPOINT ["tini","--"]
-
-#If no arguments are passed to docker run, Tini will execute HarperDB
+#If no arguments are passed to docker run, execute HarperDB
 CMD ["harperdb"]
