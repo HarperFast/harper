@@ -9,7 +9,6 @@ const hdb_logger = require('../utility/logging/harper_logger');
 const hdb_utils = require('../utility/common_utils');
 const certificates_terms = require('../utility/terms/certificates');
 const validator = require('./validationWrapper');
-const si = require('systeminformation');
 
 const DEFAULT_KEY_DIR = 'keys';
 const DEFAULT_HDB_CERT = certificates_terms.CERTIFICATE_PEM_NAME;
@@ -23,6 +22,7 @@ const DEFAULT_CLUSTERING_PRIVATE_KEY = certificates_terms.PRIVATEKEY_PEM_NAME;
 const DEFAULT_CLUSTERING_CERT_AUTH = certificates_terms.CA_PEM_NAME;
 const DEFAULT_LOG_FOLDER = 'log';
 const DEFAULT_CUSTOM_FUNCTIONS_FOLDER = 'custom_functions';
+const DEFAULT_CORES_IF_ERR = 4;
 const INVALID_SIZE_UNIT_MSG = 'Invalid logging.rotation.maxSize unit. Available units are G, M or K';
 const INVALID_MAX_SIZE_VALUE_MSG =
 	"Invalid logging.rotation.maxSize value. Value should be a number followed by unit e.g. '10M'";
@@ -245,30 +245,16 @@ function validateRotationMaxSize(value, helpers) {
 	}
 }
 
-function getPhysicalCpuCount() {
-	return require('physical-cpu-count');
-}
 function setDefaultProcesses(parent, helpers) {
 	const config_param = helpers.state.path.join('.');
-	try {
-		// note that the systeminformation package also provides a count of physical cores, but we don't use it for a
-		// couple reasons:
-		// minor: it is async, which makes a little more difficult to use
-		// major: it is wrong. It divides the total cpus by the threads per core, even though not all the core may have
-		// hyperthreading, so on my 14 core computer (with 20 logical processors), it reports 10. physical-cpu-count
-		// provides the correct answer
-		const num_processes = getPhysicalCpuCount();
-		hdb_logger.info(`Detected ${num_processes} cores on this machine, defaulting ${config_param} to this value`);
-
-		return num_processes;
-	} catch (err) {
-		// fall back to logical processor count, if physical count is not available
-		let logical_processors = os.cpus().length;
-		hdb_logger.info(
-			`Error detecting number of cores on machine for ${config_param}, defaulting to ${logical_processors}`
-		);
-		return logical_processors;
-	}
+	let processors = os.cpus().length;
+	// default to one less than the number of logical CPU/processors so we can have good concurrency with the
+	// ingest process and any extra processes (jobs, reply, etc.).
+	let num_processes = processors - 1;
+	// But if only two processors, keep two processes so we have some level of concurrency fairness
+	if (num_processes === 1 && processors === 2) num_processes = processors;
+	hdb_logger.info(`Detected ${processors} cores on this machine, defaulting ${config_param} to ${num_processes}`);
+	return num_processes;
 }
 
 /**
