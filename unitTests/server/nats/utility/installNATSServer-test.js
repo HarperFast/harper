@@ -671,7 +671,7 @@ describe('test downloadNATSServer function', () => {
 
 		Object.defineProperty(process, 'platform', { value: og_platform });
 		Object.defineProperty(process, 'arch', { value: og_arch });
-	}).timeout(10000);
+	}).timeout(20000);
 
 	it('test happy path, simulate darwin arm64', async () => {
 		// spy fs.ensureFile, fs.remove, fs.chmod
@@ -719,7 +719,7 @@ describe('test downloadNATSServer function', () => {
 
 		Object.defineProperty(process, 'platform', { value: og_platform });
 		Object.defineProperty(process, 'arch', { value: og_arch });
-	}).timeout(10000);
+	}).timeout(20000);
 
 	it('test happy path, win32 x64', async () => {
 		let fs_ensure_file_spy = sandbox.spy(installer.__get__('fs'), 'ensureFile');
@@ -756,7 +756,7 @@ describe('test downloadNATSServer function', () => {
 
 		let zip_exists = await fs.pathExists(zip_path);
 		expect(zip_exists).to.equal(false);
-	}).timeout(10000);
+	}).timeout(20000);
 
 	it('test unknown architecture', async () => {
 		let err;
