@@ -78,12 +78,15 @@ function insertRecord(env, hash_attribute, write_attributes, record) {
 			}
 
 			let values = common.getIndexedValues(value);
+			let dbi = env.dbis[attribute];
 			if (values) {
+				dbi.prefetch(values.map(v => ({ key: v, value: hash_value })), noop);
 				for (let i = 0, l = values.length; i < l; i++) {
-					env.dbis[attribute].put(values[i], hash_value);
+					dbi.put(values[i], hash_value);
 				}
 			}
 		}
+		env.dbis[hash_attribute].prefetch([hash_value], noop);
 		env.dbis[hash_attribute].put(hash_value, record, record[UPDATED_TIME_ATTRIBUTE_NAME]);
 	});
 }
@@ -316,18 +319,20 @@ function updateUpsertRecord(
 			//if the update cleared out the attribute value we need to delete it from the index
 			let values = common.getIndexedValues(existing_value);
 			if (values) {
+				dbi.prefetch(values.map(v => ({ key: v, value: hash_value })), noop);
 				for (let i = 0, l = values.length; i < l; i++) {
 					dbi.remove(values[i], hash_value);
 				}
 			}
 			values = common.getIndexedValues(value);
 			if (values) {
+				dbi.prefetch(values.map(v => ({ key: v, value: hash_value })), noop);
 				for (let i = 0, l = values.length; i < l; i++) {
 					dbi.put(values[i], hash_value);
 				}
 			}
 		}
-
+		// there is no point in prefetching the main record since it was already retrieved for the merge
 		let merged_record = Object.assign({}, existing_record, record);
 		primary_dbi.put(hash_value, merged_record, merged_record[UPDATED_TIME_ATTRIBUTE_NAME]);
 	};
@@ -386,6 +391,10 @@ function validateWrite(env, hash_attribute, write_attributes, records) {
 
 		throw new Error(LMDB_ERRORS.RECORDS_MUST_BE_ARRAY);
 	}
+}
+
+function noop() {
+	// prefetch callback
 }
 
 module.exports = {
