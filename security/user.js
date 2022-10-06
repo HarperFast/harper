@@ -207,11 +207,6 @@ async function alterUser(json_message) {
 	}
 	// Invalid roles will be found in the role search
 	if (clean_user.role) {
-		//if this is a cluster_user you cannot change it's role
-		if (is_cluster_user) {
-			throw new Error('cannot change the role of a cluster_user');
-		}
-
 		// Make sure assigned role exists.
 		let role_search_obj = {
 			schema: 'system',
