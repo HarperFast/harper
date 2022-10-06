@@ -5,7 +5,7 @@
  * exposed method to simplify the interaction.
  */
 
-const uuidV4 = require('uuid/v4');
+const uuidV4 = require('uuid').v4;
 const insert = require('../../data_layer/insert');
 const search = require('../../data_layer/search');
 const Search_Object = require('../../data_layer/SearchObject');

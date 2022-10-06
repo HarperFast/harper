@@ -16,7 +16,7 @@ const BASE_TEST_PATH = path.join(test_utils.getMockLMDBPath(), 'lmdbTest');
 let TEST_ENVIRONMENT_NAME = 'test';
 const HASH_ATTRIBUTE_NAME = 'id';
 const LMDB_TEST_ERRORS = require('../../commonTestErrors').LMDB_ERRORS_ENUM;
-const uuid = require('uuid/v4');
+const uuid = require('uuid').v4;
 
 const PERSON_ATTRIBUTES = ['id', 'first_name', 'state', 'age', 'alive', 'birth_month'];
 

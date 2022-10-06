@@ -6,7 +6,7 @@ const fs = require('fs-extra');
 const path = require('path');
 const terms = require('../../utility/hdbTerms');
 const crypto = require('crypto');
-const uuid = require('uuid/v4');
+const uuid = require('uuid').v4;
 
 module.exports = checkJWTTokenExist;
 /**
