@@ -2,7 +2,7 @@
 
 const hdb_term = require('../../utility/hdbTerms');
 const moment = require('moment');
-const uuidV4 = require('uuid/v4');
+const uuidV4 = require('uuid').v4;
 
 /**
  * This class represents a Job as it resides in the jobs table.

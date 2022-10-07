@@ -75,11 +75,11 @@ describe('Test lmdbProcessRows module', ()=>{
     let uuid_stub;
 
     before(()=>{
-        uuid_stub = sandbox.stub(uuid, 'v4').returns(MOCK_UUID_VALUE);
+        uuid_stub = lmdb_process_rows.__set__('uuid', {v4: ()=>{return MOCK_UUID_VALUE;}});
     });
 
     after(()=>{
-        uuid_stub.restore();
+        uuid_stub();
     });
     describe('Test validateHash function', ()=>{
         it('test record with no hash attribute value entry when updating', ()=>{

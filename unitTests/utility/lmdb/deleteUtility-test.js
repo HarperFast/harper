@@ -12,7 +12,7 @@ const test_utils = require('../../test_utils');
 const path = require('path');
 const assert = require('assert');
 const sinon = require('sinon');
-const uuid = require('uuid/v4');
+const uuid = require('uuid').v4;
 const LMDB_TEST_ERRORS = require('../../commonTestErrors').LMDB_ERRORS_ENUM;
 
 const BASE_TEST_PATH = path.join(test_utils.getMockLMDBPath(), 'lmdbTest');

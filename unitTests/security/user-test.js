@@ -455,16 +455,6 @@ describe('Test user.js', () => {
 			assert.equal(signal_spy.called, true);
 		});
 
-		it('Test cannot change cluster use role msg is returned', async function () {
-			is_cluster_user_stub.returns(true);
-			await test_utils.assertErrorAsync(
-				user.alterUser,
-				[TEST_ALTER_USER_JSON],
-				new Error('cannot change the role of a cluster_user')
-			);
-			is_cluster_user_stub.returns(false);
-		});
-
 		it('Nominal path, user role updated with id value before being passed to update', async function () {
 			await user.alterUser(TEST_ALTER_USER_JSON);
 
@@ -1047,7 +1037,6 @@ describe('Test user.js', () => {
 	});
 
 	describe('Test findAndValidateUser function', () => {
-
 		it('Nominal test, expect user returned', async () => {
 			let test_user_copy = test_utils.deepClone(TEST_USER);
 			test_user_copy.password = 'some-salt8b268af38be8279caefa5d014a1241db';

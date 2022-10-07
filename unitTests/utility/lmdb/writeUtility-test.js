@@ -13,7 +13,7 @@ const fs = require('fs-extra');
 const LMDB_TEST_ERRORS = require('../../commonTestErrors').LMDB_ERRORS_ENUM;
 const sinon = require('sinon');
 const alasql = require('alasql');
-const uuid = require('uuid');
+const uuid = require('uuid').v4;
 const hdb_terms = require('../../../utility/hdbTerms');
 const InsertRecordsResponseObject = require('../../../utility/lmdb/InsertRecordsResponseObject');
 const UpdateRecordsResponseObject = require('../../../utility/lmdb/UpdateRecordsResponseObject');
@@ -1030,12 +1030,17 @@ describe('Test writeUtility module', () => {
 		before(() => {
 			date_stub.restore();
 			get_micro_time_stub = sandbox.stub(common, 'getMicroTime').returns(TXN_TIMESTAMP);
-			uuid_stub = sandbox.stub(uuid, 'v4').returns(UUID_VALUE);
+			uuid_stub = write_utility.__set__('uuid', {
+				v4: () => {
+					return UUID_VALUE;
+				},
+			});
 		});
 
 		after(() => {
 			date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
 			get_micro_time_stub.restore();
+			uuid_stub();
 		});
 
 		beforeEach(async () => {

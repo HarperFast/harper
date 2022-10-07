@@ -4,7 +4,7 @@ const fs = require('fs-extra');
 const fg = require('fast-glob');
 const path = require('path');
 const tar = require('tar-fs');
-const uuidV4 = require('uuid/v4');
+const uuidV4 = require('uuid').v4;
 const normalize = require('normalize-path');
 
 const validator = require('./operationsValidation');
