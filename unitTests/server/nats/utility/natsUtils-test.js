@@ -864,6 +864,49 @@ describe('Test natsUtils module', () => {
 			const res = createSubjectName('unit', 'test', 'nats');
 			expect(res).to.equal('unit.test.nats');
 		});
+
+		it('Test updateNodeNameLocalStreams updates subject name', async () => {
+			// Create local stream
+			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
+			// Create a work queue stream
+			await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
+
+			const get_jsm_server_name_rw = nats_utils.__set__(
+				'getJsmServerName',
+				sandbox.stub().resolves('chicken_leg-leaf')
+			);
+
+			await nats_utils.updateNodeNameLocalStreams();
+
+			const { jsm } = await nats_utils.getNATSReferences();
+
+			// Test that the work queue stream subject is updated
+			const wq_stream = await jsm.streams.info(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
+			expect(wq_stream.config.subjects[0]).to.equal('__HARPERDB_WORK_QUEUE__.chicken_leg-leaf');
+
+			// Test that the consumer of the work queue is updated
+			const wq_consumer = await jsm.consumers.info(
+				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+				nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name
+			);
+			expect(wq_consumer.config.deliver_subject).to.equal('__HDB__.WORKQUEUE.chicken_leg-leaf');
+
+			// Test that the regular good old stream is updated
+			const test_stream = await jsm.streams.info(TEST_STREAM_NAME_2);
+			expect(test_stream.config.subjects[0]).to.equal('devTest.capybara.chicken_leg-leaf');
+
+			get_jsm_server_name_rw();
+			await jsm.consumers.delete(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, 'HDB_WORK_QUEUE');
+			await nats_utils.deleteLocalStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
+			await nats_utils.deleteLocalStream(TEST_STREAM_NAME_2);
+		}).timeout(TEST_TIMEOUT);
+
+		it('Test closeConnection closes a connection', async () => {
+			await nats_utils.getConnection();
+			await nats_utils.closeConnection();
+			const nats_connection = nats_utils.__get__('nats_connection');
+			expect(nats_connection).to.be.undefined;
+		});
 	});
 
 	describe('Test natUtils with stubs', () => {

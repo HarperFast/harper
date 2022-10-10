@@ -125,6 +125,7 @@ describe('Test pm2 utilityFunctions module', () => {
 	let create_work_stream_stub;
 	let remove_nats_config_stub;
 	let get_all_node_records_stub;
+	let update_node_name_stub;
 
 	before(() => {
 		fs.mkdirpSync(path.resolve(__dirname, '../../envDir/clustering'));
@@ -135,6 +136,7 @@ describe('Test pm2 utilityFunctions module', () => {
 		sandbox.stub(user, 'getClusterUser').resolves(fake_cluster_user);
 		remove_nats_config_stub = sandbox.stub(nats_config, 'removeNatsConfig');
 		get_all_node_records_stub = sandbox.stub(clustering_utils, 'getAllNodeRecords').resolves([]);
+		update_node_name_stub = sandbox.stub(nats_utils, 'updateNodeNameLocalStreams');
 		env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_USER, FAKE_CLUSTER_USER1);
 		env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT, 7711);
 		env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME, 'unitTestNodeName');

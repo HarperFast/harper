@@ -14,6 +14,7 @@ const hdb_terms = require('../../utility/hdbTerms');
 const nats_config = require('../../server/nats/utility/natsConfig');
 const rewire = require('rewire');
 const config_utils = require('../../config/configUtils');
+const nats_utils = require('../../server/nats/utility/natsUtils');
 
 let stop;
 
@@ -39,6 +40,8 @@ describe('Test stop.js', () => {
 	let is_hdb_restart_running_stub;
 	let start_clustering_stub;
 	let stop_clustering_stub;
+	let update_node_name_stub;
+	let close_connection_stub;
 
 	afterEach(() => {
 		sandbox.resetHistory();
@@ -54,6 +57,8 @@ describe('Test stop.js', () => {
 		is_hdb_restart_running_stub = sandbox.stub(pm2_utils, 'isHdbRestartRunning');
 		start_clustering_stub = sandbox.stub(pm2_utils, 'startClustering').resolves();
 		stop_clustering_stub = sandbox.stub(pm2_utils, 'stopClustering');
+		update_node_name_stub = sandbox.stub(nats_utils, 'updateNodeNameLocalStreams');
+		close_connection_stub = sandbox.stub(nats_utils, 'closeConnection');
 	});
 
 	after(() => {
