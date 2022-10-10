@@ -23,6 +23,7 @@ const lmdbDropAttribute = require('./lmdbMethods/lmdbDropAttribute');
 const lmdbReadAuditLog = require('./lmdbMethods/lmdbReadAuditLog');
 const lmdbTransaction = require('./lmdbMethods/lmdbTransaction');
 const lmdbFlush = require('./lmdbMethods/lmdbFlush');
+const lmdbGetBackup = require('./lmdbMethods/lmdbGetBackup');
 
 class LMDBBridge extends BridgeMethods {
 	async searchByConditions(search_object) {
@@ -114,6 +115,9 @@ class LMDBBridge extends BridgeMethods {
 
 	resetReadTxn(schema, table) {
 		return lmdbFlush.resetReadTxn(schema, table);
+	}
+	getBackup(get_backup_obj) {
+		return lmdbGetBackup(get_backup_obj);
 	}
 }
 

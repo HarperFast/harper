@@ -374,6 +374,7 @@ function initializeOperationFunctionMap() {
 		new OperationFunctionObject(npm_utilities.installModules)
 	);
 	op_func_map.set(terms.OPERATIONS_ENUM.AUDIT_NODE_MODULES, new OperationFunctionObject(npm_utilities.auditModules));
+	op_func_map.set(terms.OPERATIONS_ENUM.GET_BACKUP, new OperationFunctionObject(schema.getBackup));
 
 	return op_func_map;
 }
