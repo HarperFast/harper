@@ -14,6 +14,10 @@ const uuid = require('uuid');
 const lmdb = require('lmdb');
 const { handleHDBError, hdb_errors } = require('../errors/hdbError');
 const { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH } = lmdb_terms;
+const env_mngr = require('../environment/environmentManager');
+env_mngr.initSync();
+
+const LMDB_PREFETCH_WRITES = env_mngr.get(hdb_terms.CONFIG_PARAM_MAP.STORAGE_PREFETCHWRITES);
 
 const CREATED_TIME_ATTRIBUTE_NAME = hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME;
 const UPDATED_TIME_ATTRIBUTE_NAME = hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME;
@@ -80,13 +84,13 @@ function insertRecord(env, hash_attribute, write_attributes, record) {
 			let values = common.getIndexedValues(value);
 			let dbi = env.dbis[attribute];
 			if (values) {
-				dbi.prefetch(values.map(v => ({ key: v, value: hash_value })), noop);
+				if (LMDB_PREFETCH_WRITES) dbi.prefetch(values.map(v => ({ key: v, value: hash_value })), noop);
 				for (let i = 0, l = values.length; i < l; i++) {
 					dbi.put(values[i], hash_value);
 				}
 			}
 		}
-		env.dbis[hash_attribute].prefetch([hash_value], noop);
+		if (LMDB_PREFETCH_WRITES) env.dbis[hash_attribute].prefetch([hash_value], noop);
 		env.dbis[hash_attribute].put(hash_value, record, record[UPDATED_TIME_ATTRIBUTE_NAME]);
 	});
 }
@@ -319,14 +323,14 @@ function updateUpsertRecord(
 			//if the update cleared out the attribute value we need to delete it from the index
 			let values = common.getIndexedValues(existing_value);
 			if (values) {
-				dbi.prefetch(values.map(v => ({ key: v, value: hash_value })), noop);
+				if (LMDB_PREFETCH_WRITES) dbi.prefetch(values.map(v => ({ key: v, value: hash_value })), noop);
 				for (let i = 0, l = values.length; i < l; i++) {
 					dbi.remove(values[i], hash_value);
 				}
 			}
 			values = common.getIndexedValues(value);
 			if (values) {
-				dbi.prefetch(values.map(v => ({ key: v, value: hash_value })), noop);
+				if (LMDB_PREFETCH_WRITES) dbi.prefetch(values.map(v => ({ key: v, value: hash_value })), noop);
 				for (let i = 0, l = values.length; i < l; i++) {
 					dbi.put(values[i], hash_value);
 				}

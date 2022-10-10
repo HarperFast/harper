@@ -586,6 +586,10 @@ const CONFIG_PARAMS = {
 	ROOTPATH: 'rootPath',
 	STORAGE_WRITEASYNC: 'storage_writeAsync',
 	STORAGE_OVERLAPPINGSYNC: 'storage_overlappingSync',
+	STORAGE_CACHING: 'storage_caching',
+	STORAGE_COMPRESSION: 'storage_compression',
+	STORAGE_NOREADAHEAD: 'storage_noReadAhead',
+	STORAGE_PREFETCHWRITES: 'storage_prefetchWrites',
 };
 
 // If a param is added to the config file it needs to be added here also. Keep all keys lowercase.
@@ -714,6 +718,10 @@ const CONFIG_PARAM_MAP = {
 	rootpath: CONFIG_PARAMS.ROOTPATH,
 	storage_writeasync: CONFIG_PARAMS.STORAGE_WRITEASYNC,
 	storage_overlappingsync: CONFIG_PARAMS.STORAGE_OVERLAPPINGSYNC,
+	storage_noreadahead: CONFIG_PARAMS.STORAGE_NOREADAHEAD,
+	storage_caching: CONFIG_PARAMS.STORAGE_CACHING,
+	storage_compression: CONFIG_PARAMS.STORAGE_COMPRESSION,
+	storage_prefetchwrites: CONFIG_PARAMS.STORAGE_PREFETCHWRITES,
 };
 
 // Describes all available job types

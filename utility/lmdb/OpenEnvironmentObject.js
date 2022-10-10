@@ -6,14 +6,16 @@ const MAP_SIZE = 1024 * 1024 * 1024;
 const MAX_DBS = 10000;
 const MAX_READERS = 1000;
 const env_mngr = require('../environment/environmentManager');
+const terms = require('../../utility/hdbTerms');
 env_mngr.initSync();
 
 const LMDB_NOSYNC =
-	env_mngr.get('STORAGE_WRITEASYNC') === true ||
-	env_mngr.get('STORAGE_WRITEASYNC') === 'true' ||
-	env_mngr.get('STORAGE_WRITEASYNC') === 'TRUE';
+	env_mngr.get(terms.CONFIG_PARAM_MAP.STORAGE_WRITEASYNC) === true ||
+	env_mngr.get(terms.CONFIG_PARAM_MAP.STORAGE_WRITEASYNC) === 'true' ||
+	env_mngr.get(terms.CONFIG_PARAM_MAP.STORAGE_WRITEASYNC) === 'TRUE';
 
-const LMDB_OVERLAPPING_SYNC = env_mngr.get('STORAGE_OVERLAPPINGSYNC');
+const LMDB_OVERLAPPING_SYNC = env_mngr.get(terms.CONFIG_PARAM_MAP.STORAGE_OVERLAPPINGSYNC);
+const LMDB_NOREADAHEAD = env_mngr.get(terms.CONFIG_PARAM_MAP.STORAGE_NOREADAHEAD);
 
 
 class OpenEnvironmentObject {
@@ -26,9 +28,9 @@ class OpenEnvironmentObject {
 		this.readOnly = read_only;
 		this.trackMetrics = true;
 		this.noSync = LMDB_NOSYNC;
-		if (LMDB_OVERLAPPING_SYNC !== undefined)
-			this.overlappingSync = LMDB_OVERLAPPING_SYNC;
 		// otherwise overlappingSync uses lmdb-js default, which is enabled on linux/mac, disabled on windows
+		if (LMDB_OVERLAPPING_SYNC !== undefined) this.overlappingSync = LMDB_OVERLAPPING_SYNC;
+		this.noReadAhead = LMDB_NOREADAHEAD;
 	}
 }
 
