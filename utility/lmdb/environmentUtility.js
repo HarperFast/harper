@@ -10,31 +10,12 @@ const DBIDefinition = require('./DBIDefinition');
 const OpenDBIObject = require('./OpenDBIObject');
 const OpenEnvironmentObject = require('./OpenEnvironmentObject');
 const lmdb_terms = require('./terms');
-const hdb_terms = require('../hdbTerms');
 
-const env_mngr = require('../environment/environmentManager');
-env_mngr.initSync();
-
-const LMDB_NOSYNC =
-	env_mngr.get('STORAGE_WRITEASYNC') === true ||
-	env_mngr.get('STORAGE_WRITEASYNC') === 'true' ||
-	env_mngr.get('STORAGE_WRITEASYNC') === 'TRUE';
-
-const LMDB_OVERLAPPING_SYNC = env_mngr.get('STORAGE_OVERLAPPINGSYNC');
-
-
-//Set initial map size to 1Gb
-// eslint-disable-next-line no-magic-numbers
-const MAP_SIZE = 1024 * 1024 * 1024;
-//allow up to 1,000 named data bases in an environment
-const MAX_DBS = 10000;
-const MAX_READERS = 1000;
 const INTERNAL_DBIS_NAME = lmdb_terms.INTERNAL_DBIS_NAME;
 const DBI_DEFINITION_NAME = lmdb_terms.DBI_DEFINITION_NAME;
 const MDB_LEGACY_FILE_NAME = 'data.mdb';
 const MDB_LEGACY_LOCK_FILE_NAME = 'lock.mdb';
 const MDB_FILE_EXTENSION = '.mdb';
-const MDB_LOCK_FILE_EXTENSION = '.mdb-lock';
 const MDB_LOCK_FILE_SUFFIX = '-lock';
 
 /**
@@ -162,12 +143,7 @@ async function createEnvironment(base_path, env_name, is_txn = false, is_v3 = fa
 			await fs.mkdirp(is_v3 ? environment_path : base_path);
 			let env_init = new OpenEnvironmentObject(
 				is_v3 ? environment_path : environment_path + MDB_FILE_EXTENSION,
-				MAP_SIZE,
-				MAX_DBS,
-				MAX_READERS,
-				false,
-				LMDB_NOSYNC,
-				LMDB_OVERLAPPING_SYNC
+				false
 			);
 			let env = lmdb.open(env_init);
 
@@ -233,7 +209,7 @@ async function openEnvironment(base_path, env_name, is_txn = false) {
 	let env_path = await validateEnvironmentPath(base_path, env_name);
 	let standard_path = path.join(base_path, env_name + MDB_FILE_EXTENSION);
 	let read_only = env_path != standard_path; // legacy database, only open in read only mode
-	let env_init = new OpenEnvironmentObject(env_path, MAP_SIZE, MAX_DBS, MAX_READERS, read_only, LMDB_NOSYNC, LMDB_OVERLAPPING_SYNC);
+	let env_init = new OpenEnvironmentObject(env_path, read_only);
 	let env = lmdb.open(env_init);
 
 	env.dbis = Object.create(null);

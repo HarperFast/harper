@@ -889,6 +889,8 @@ const IPC_EVENT_TYPES = {
 	USER: 'user',
 	CLUSTER_STATUS_RESPONSE: 'cluster_status_response',
 	CLUSTER_STATUS_REQUEST: 'cluster_status_request',
+	METRICS: 'metrics',
+	GET_METRICS: 'get_metrics',
 };
 
 const SERVICES = {
