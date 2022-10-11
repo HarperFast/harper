@@ -41,12 +41,12 @@ for (let entry_module of entry_modules) {
 		'package.json',
 		'json/*.json',
 		'utility/install/ascii_logo.txt',
-		'utility/install/harperdb.conf',
+		'utility/install/harperdb-config.yaml',
 		'config/yaml/*',
 		'dependencies/**',
 		'README.md',
 		'docs/**',
-		'logs/*'
+		'logs/*',
 	])) {
 		let target = path.join('npm_pack', filename);
 		await fs.copy(filename, target);

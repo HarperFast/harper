@@ -439,7 +439,7 @@ function parseYamlDoc(file_path) {
 }
 
 /**
- * Gets and validates the clustering hub and leaf routes from harperdb conf file.
+ * Gets and validates the clustering hub and leaf routes from harperdb-config file.
  * @returns {{leaf_routes: (*[]|any), hub_routes: (*[]|any)}}
  */
 function getClusteringRoutes() {

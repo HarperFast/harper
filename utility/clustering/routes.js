@@ -73,7 +73,7 @@ function setRoutes(req) {
 }
 
 /**
- * Gets all the hun and leaf servers routes from the harperdb.conf file.
+ * Gets all the hun and leaf servers routes from the harperdb-config.yaml file.
  * @returns {{hub: (*[]|*), leaf: (*[]|*)}}
  */
 function getRoutes() {
@@ -85,7 +85,7 @@ function getRoutes() {
 }
 
 /**
- * Removes route/routes from hub and/or leaf server routes array in harperdb.conf
+ * Removes route/routes from hub and/or leaf server routes array in harperdb-config.yaml
  * @param req
  * @returns {{deleted: *[], message: string, skipped: *[]}}
  */

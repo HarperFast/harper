@@ -24,7 +24,7 @@ sudo docker run -d --restart no --network ClstrTestB --name ClstrTestB4 -e HDB_A
 sleep 30s
 
 # Install newman and newman reporters on first container
-sudo docker exec ClstrTestB1 /bin/bash -c 'cat /home/harperdb/hdb/harperdb.conf| grep nodeName'
+sudo docker exec ClstrTestB1 /bin/bash -c 'cat /home/harperdb/hdb/harperdb-config.yaml| grep nodeName'
 sudo docker exec ClstrTestB1 /bin/bash -c 'npm install -g newman newman-reporter-teamcity newman-reporter-html newman-reporter-htmlextra'
 
 # Copy integrationTests folder to first container
@@ -58,10 +58,10 @@ mkdir -p $artifact_dir/ClstrTestB3/
 mkdir -p $artifact_dir/ClstrTestB4/
 
 # Copy log and config files from containers
-sudo docker cp ClstrTestB1:/home/harperdb/hdb/harperdb.conf $artifact_dir/ClstrTestB1/
-sudo docker cp ClstrTestB2:/home/harperdb/hdb/harperdb.conf $artifact_dir/ClstrTestB2/
-sudo docker cp ClstrTestB3:/home/harperdb/hdb/harperdb.conf $artifact_dir/ClstrTestB3/
-sudo docker cp ClstrTestB4:/home/harperdb/hdb/harperdb.conf $artifact_dir/ClstrTestB4/
+sudo docker cp ClstrTestB1:/home/harperdb/hdb/harperdb-config.yaml $artifact_dir/ClstrTestB1/
+sudo docker cp ClstrTestB2:/home/harperdb/hdb/harperdb-config.yaml $artifact_dir/ClstrTestB2/
+sudo docker cp ClstrTestB3:/home/harperdb/hdb/harperdb-config.yaml $artifact_dir/ClstrTestB3/
+sudo docker cp ClstrTestB4:/home/harperdb/hdb/harperdb-config.yaml $artifact_dir/ClstrTestB4/
 sudo docker cp ClstrTestB1:/home/harperdb/hdb/log/ $artifact_dir/ClstrTestB1/
 sudo docker cp ClstrTestB2:/home/harperdb/hdb/log/ $artifact_dir/ClstrTestB2/
 sudo docker cp ClstrTestB3:/home/harperdb/hdb/log/ $artifact_dir/ClstrTestB3/

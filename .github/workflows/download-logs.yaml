@@ -26,7 +26,7 @@ jobs:
           scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/integrationTests/newman/report.html" "logs-artifact/$public_dns_name/newman_report.html" || (true && echo "Newman report not found")
           scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/integrationTests/newman/extra_report.html" "logs-artifact/$public_dns_name/newman_extra_report.html" || (true && echo "Newman report not found")
           scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/hdb/log/" "logs-artifact/$public_dns_name/"
-          scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/hdb/harperdb.conf" "logs-artifact/$public_dns_name/harperdb.conf"
+          scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/hdb/harperdb-config.yaml" "logs-artifact/$public_dns_name/harperdb-config.yaml"
 
           echo "Ending work on: $public_dns_name"
         done

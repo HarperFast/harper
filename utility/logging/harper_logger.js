@@ -368,7 +368,7 @@ function autoCastBoolean(boolean) {
 }
 
 /**
- * Reads the harperdb.conf file for log settings.
+ * Reads the harperdb-config.yaml file for log settings.
  * @param hdb_config_path
  * @returns {{config_log_path: any, rotate: any, level: any, to_file: any, root: any, to_stream: any}}
  */
@@ -408,7 +408,7 @@ function getLogConfig(hdb_config_path) {
 
 /**
  * Read the default harperdb yaml file for default log settings.
- * Used in early install stages before harperdb.conf exists
+ * Used in early install stages before harperdb-config.yaml exists
  * @returns {{default_to_file: any, default_level: any, default_to_stream: any}}
  */
 function getDefaultConfig() {

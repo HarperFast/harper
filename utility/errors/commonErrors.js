@@ -229,7 +229,7 @@ const CUSTOM_FUNCTIONS_ERROR_MSGS = {
 	DROP_FUNCTION_PROJECT: 'Error dropping custom function project, check the log for more details',
 	BAD_FILE_PATH: 'Filepath must be valid, and contain the name of the tarball you wish to write',
 	NOT_ENABLED:
-		'Custom functions is not enabled, to enable set customFunctions enabled to true in hdb/harperdb.conf file.',
+		'Custom functions is not enabled, to enable set customFunctions enabled to true in hdb/harperdb-config.yaml file.',
 };
 
 const CLUSTERING_ERROR_MSGS = {

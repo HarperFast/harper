@@ -10,7 +10,7 @@ const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 const SEARCH_TYPES = Object.values(hdb_terms.READ_AUDIT_LOG_SEARCH_TYPES_ENUM);
-const LOG_NOT_ENABLED_ERR = 'To use this operation audit log must be enabled in harperdb.conf';
+const LOG_NOT_ENABLED_ERR = 'To use this operation audit log must be enabled in harperdb-config.yaml';
 
 module.exports = readAuditLog;
 
