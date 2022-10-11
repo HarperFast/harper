@@ -6,6 +6,7 @@ const hdb_utils = require('../utility/common_utils');
 const assignCMDENVVariables = require('../utility/assignCmdEnvVariables');
 const env_mngr = require('../utility/environment/environmentManager');
 const nats_config = require('../server/nats/utility/natsConfig');
+const nats_utils = require('../server/nats/utility/natsUtils');
 const minimist = require('minimist');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const config_utils = require('../config/configUtils');
@@ -299,6 +300,10 @@ async function restartAllClusteringServices() {
 	await restartClustering(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
 	await restartClustering(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_INGEST_SERVICE);
 	await restartClustering(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE);
+
+	await nats_utils.updateNodeNameLocalStreams();
+	// Close the connection to the nats-server so that if stop/restart called from CLI process will exit.
+	await nats_utils.closeConnection();
 }
 
 async function restartClustering(service) {

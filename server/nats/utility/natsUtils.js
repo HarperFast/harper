@@ -99,6 +99,8 @@ module.exports = {
 	purgeTableStream,
 	purgeSchemaTableStreams,
 	getStreamInfo,
+	updateNodeNameLocalStreams,
+	closeConnection,
 };
 
 /**
@@ -160,6 +162,17 @@ async function createConnection(port, username, password, wait_on_first_connect 
 			insecure: env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_INSECURE),
 		},
 	});
+}
+
+/**
+ * Disconnect from nats-server
+ * @returns {Promise<void>}
+ */
+async function closeConnection() {
+	if (nats_connection) {
+		await nats_connection.close();
+		nats_connection = undefined;
+	}
 }
 
 /**
@@ -890,4 +903,52 @@ async function getJsmServerName() {
 	jsm_server_name = jsm?.nc?.info?.server_name;
 	if (jsm_server_name === undefined) throw new Error('Unable to get jetstream manager server name');
 	return jsm_server_name;
+}
+
+/**
+ * Updates the node name part of the subject of all local streams, if it needs updating.
+ * @returns {Promise<void>}
+ */
+async function updateNodeNameLocalStreams() {
+	const jsm = await getJetStreamManager();
+	// Server name is the node name with `-leaf` appended to the end of it.
+	const server_name = await getJsmServerName();
+
+	const streams = await listStreams();
+	for (const stream of streams) {
+		const stream_config = stream.config;
+		const stream_subject = stream_config.subjects[0];
+		if (!stream_subject) continue;
+
+		// Dots are not allowed in node name so spilt on dot, get last item in array which gives us server name (node name with -leaf on the end).
+		const stream_subject_array = stream_subject.split('.');
+		const subject_server_name = stream_subject_array[stream_subject_array.length - 1];
+		if (subject_server_name === server_name) continue;
+
+		// Build the new subject name and replace existing one with it.
+		if (stream_config.name === nats_terms.SCHEMA_QUEUE_CONSUMER_NAMES.stream_name) {
+			const new_subject_name = `${nats_terms.SCHEMA_QUEUE_CONSUMER_NAMES.deliver_subject}.${server_name}`;
+			hdb_logger.trace(`Updating stream subject name from: ${stream_subject} to: ${new_subject_name}`);
+			stream_config.subjects[0] = new_subject_name;
+		} else if (stream_config.name === nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name) {
+			const new_subject_name = `${nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name}.${server_name}`;
+			hdb_logger.trace(`Updating stream subject name from: ${stream_subject} to: ${new_subject_name}`);
+			stream_config.subjects[0] = new_subject_name;
+
+			// Work queue uses a consumer to consume messages in stream. This needs to be updated also.
+			await jsm.consumers.update(
+				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+				nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name,
+				{ deliver_subject: `${nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_subject}.${server_name}` }
+			);
+		} else {
+			const subject_array = stream_subject.split('.');
+			subject_array[subject_array.length - 1] = server_name;
+			const new_subject_name = subject_array.join('.');
+			hdb_logger.trace(`Updating stream subject name from: ${stream_subject} to: ${new_subject_name}`);
+			stream_config.subjects[0] = new_subject_name;
+		}
+
+		await jsm.streams.update(stream_config.name, stream_config);
+	}
 }
