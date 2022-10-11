@@ -197,6 +197,10 @@ function configValidator(config_json) {
 		storage: Joi.object({
 			writeAsync: boolean.required(),
 			overlappingSync: boolean.optional(),
+			caching: boolean.optional(),
+			compression: boolean.optional(),
+			noReadAhead: boolean.optional(),
+			prefetchWrites: boolean.optional(),
 		}).required(),
 	});
 

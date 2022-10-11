@@ -9,6 +9,7 @@ const rewire = require('rewire');
 const hdb_export = rewire('../../data_layer/export');
 const sinon = require('sinon');
 const fs = require('fs-extra');
+const { rm } = require('fs/promises')
 const path = require('path');
 const {promisify} = require('util');
 const AWSConnector = require('../../utility/AWS/AWSConnector');
@@ -47,10 +48,13 @@ describe('Test export.js', () => {
         let export_local = hdb_export.__get__('export_local');
         let file_name = undefined;
 
-        afterEach(function () {
+        afterEach(async function () {
             sandbox.restore();
             try {
-                fs.unlinkSync(file_name);
+                if (file_name) {
+                    await rm(file_name, { force: true });
+                    file_name = undefined;
+                }
             } catch(e) {
                 //no-op, this is ok.
             }
@@ -112,7 +116,6 @@ describe('Test export.js', () => {
 
         it('Call to export_local with bad path', async function() {
             search_stub = sandbox.stub().returns(SEARCH_RESPONSE);
-            file_name = path.join(TMP_TEST_DIR, 'test_file.json');
             hdb_export.__set__('p_sql', search_stub);
             let export_object = {};
             export_object.operation = 'export_local';
@@ -134,7 +137,6 @@ describe('Test export.js', () => {
 
         it('Call to export_local with search exception thrown', async function() {
             search_stub = sandbox.stub().throws(new Error('bah'));
-            file_name = path.join(TMP_TEST_DIR, 'test_file.json');
             hdb_export.__set__('p_sql', search_stub);
             let export_object = {};
             export_object.operation = 'export_local';
@@ -274,10 +276,13 @@ describe('Test export.js', () => {
             }
         ];
 
-        afterEach(function () {
+        afterEach(async function () {
             sandbox.restore();
             try {
-                fs.unlinkSync(file_name);
+                if (file_name) {
+                    await rm(file_name, { force: true });
+                    file_name = undefined;
+                }
             } catch(e) {
                 //no-op, this is ok.
             }

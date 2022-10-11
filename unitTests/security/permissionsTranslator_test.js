@@ -54,7 +54,7 @@ const createAttrPermsObj = (read_perm, insert_perm, update_perm) => ({
 const getUpdatedRoleObj = () => {
 	const test_role = clonedeep(TEST_NON_SU_ROLE);
 	test_role.__createdtime__ = terms.PERMS_UPDATE_RELEASE_TIMESTAMP;
-	test_role.__updatedtime__ = terms.PERMS_UPDATE_RELEASE_TIMESTAMP + Math.round(Math.random() * 100);
+	test_role.__updatedtime__ = terms.PERMS_UPDATE_RELEASE_TIMESTAMP + Math.round(Math.random() * 1000000);
 	return test_role;
 };
 
@@ -87,6 +87,7 @@ const isSystemTimestampAttr = (attr_name) => {
 
 const validateAttrPerms = (final_perms, initial_perms, hash_key = 'id') => {
 	let is_valid = true;
+	console.log(final_perms, initial_perms)
 	if (!initial_perms || initial_perms.attribute_permissions.length === 0) {
 		if (final_perms.length !== 0) {
 			return false;

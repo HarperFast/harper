@@ -50,7 +50,7 @@ function createTestLog() {
 	for (let x = 0; x < 5; x++) {
 		logAllLevels(x + 1, write_stream);
 	}
-	write_stream.end();
+	return new Promise(resolve => write_stream.end('', resolve));
 }
 
 describe('Test readLog module', () => {
@@ -64,8 +64,8 @@ describe('Test readLog module', () => {
 		const validator_stub = sandbox.stub().returns(null);
 		let validator_rw;
 
-		before(() => {
-			createTestLog();
+		before(async () => {
+			await createTestLog();
 			env_mangr.setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY, TEST_LOG_DIR);
 		});
 

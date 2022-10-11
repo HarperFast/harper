@@ -1,16 +1,22 @@
 'use strict';
 
+const path = require('path');
 const si = require('systeminformation');
 const log = require('../logging/harper_logger');
 const terms = require('../hdbTerms');
 const lmdb_get_table_size = require('../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbGetTableSize');
 const schema_describe = require('../../data_layer/schemaDescribe');
+const { sendIpcEvent } = require('../../server/ipc/utility/ipcUtils');
 const env = require('./environmentManager');
 env.initSync();
 
 // eslint-disable-next-line no-unused-vars
 const SystemInformationOperation = require('./SystemInformationOperation');
 const SystemInformationObject = require('./SystemInformationObject');
+const IPCEventObject = require("../../server/ipc/utility/IPCEventObject");
+const hdb_terms = require("../hdbTerms");
+const { getBaseSchemaPath } = require("../../data_layer/harperBridge/lmdbBridge/lmdbUtility/initializePaths");
+const { openEnvironment } = require("../lmdb/environmentUtility");
 
 //this will hold the system_information which is static to improve performance
 let system_information_cache = undefined;
@@ -25,6 +31,7 @@ module.exports = {
 	getSystemInformation,
 	systemInformation,
 	getTableSize,
+	getMetrics,
 };
 
 /**
@@ -216,6 +223,61 @@ async function getTableSize() {
 
 	return table_sizes;
 }
+async function getMetrics() {
+	let schemas = await schema_describe.describeAll();
+	let schema_stats = {};
+	for (let schema_name in schemas) {
+		let table_stats = schema_stats[schema_name] = {};
+		for (let table_name in schemas[schema_name]) {
+			try {
+				let schema_path = path.join(getBaseSchemaPath(), schema_name);
+				let env = await openEnvironment(schema_path, table_name);
+				let stats = env.getStats();
+				table_stats[table_name] = {
+					puts: stats.puts,
+					deletes: stats.deletes,
+					txns: stats.txns,
+					pageFlushes: stats.pageFlushes,
+					writes: stats.writes,
+					pagesWritten: stats.pagesWritten,
+					timeDuringTxns: stats.timeDuringTxns,
+					timeStartTxns: stats.timeStartTxns,
+					timePageFlushes: stats.timePageFlushes,
+					timeSync: stats.timeSync,
+				};
+			} catch(error) {
+				// if a schema no longer exists, don't want to throw an error
+				log.notify(`Error getting stats for table ${table_name}: ${error}`);
+			}
+		}
+	}
+	schema_stats.pid = process.pid;
+	if (global.metrics) global.metrics[process.pid] = schema_stats;
+	return schema_stats;
+}
+async function getMetricsFromAllProcesses() {
+	// send a request for performance metrics from all processes
+	sendIpcEvent(new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.GET_METRICS, {}));
+	// wait one second for a response
+	await new Promise(resolve => setTimeout(resolve, 1000));
+	await getMetrics();
+	let totals = {};
+	for (let process_id in global.metrics) {
+		let process_metrics = global.metrics[process_id];
+		for (let schema_name in process_metrics) {
+			let schema = process_metrics[schema_name];
+			let schema_stats = totals[schema_name] || (totals[schema_name] = {});
+			for (let table_name in schema) {
+				let table = schema[table_name];
+				let table_stats = schema_stats[table_name] || (schema_stats[table_name] = {});
+				for (let stat_name in table) {
+					table_stats[stat_name] = (table_stats[stat_name] || 0) + table[stat_name];
+				}
+			}
+		}
+	}
+	return totals;
+}
 
 /**
  *
@@ -224,6 +286,7 @@ async function getTableSize() {
  */
 async function systemInformation(system_info_op) {
 	let response = new SystemInformationObject();
+	let metrics = getMetricsFromAllProcesses();
 	if (!Array.isArray(system_info_op.attributes) || system_info_op.attributes.length === 0) {
 		response.system = await getSystemInformation();
 		response.time = getTimeInfo();
@@ -233,7 +296,7 @@ async function systemInformation(system_info_op) {
 		response.network = await getNetworkInfo();
 		response.harperdb_processes = await getHDBProcessInfo();
 		response.table_size = await getTableSize();
-
+		response.metrics = await metrics;
 		return response;
 	}
 

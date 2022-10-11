@@ -7,6 +7,10 @@ const global_schema = require('../../utility/globalSchema');
 const schema_describe = require('../../data_layer/schemaDescribe');
 const user_schema = require('../../security/user');
 const { validateEvent } = require('../../server/ipc/utility/ipcUtils');
+const { getMetrics } = require('../../utility/environment/systemInformation');
+const {sendIpcEvent} = require("./utility/ipcUtils");
+const IPCEventObject = require("./utility/IPCEventObject");
+const process = require('process');
 
 /**
  * This object/functions are passed to the IPC client instance and dynamically added as event handlers.
@@ -15,6 +19,8 @@ const { validateEvent } = require('../../server/ipc/utility/ipcUtils');
 const server_ipc_handlers = {
 	[hdb_terms.IPC_EVENT_TYPES.SCHEMA]: schemaHandler,
 	[hdb_terms.IPC_EVENT_TYPES.USER]: userHandler,
+	[hdb_terms.IPC_EVENT_TYPES.METRICS]: metricsHandler,
+	[hdb_terms.IPC_EVENT_TYPES.GET_METRICS]: getMetricsHandler,
 };
 
 /**
@@ -105,6 +111,15 @@ async function userHandler(event) {
 	} catch (err) {
 		hdb_logger.error(err);
 	}
+}
+
+async function getMetricsHandler() {
+	sendIpcEvent(new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.METRICS, await getMetrics()));
+}
+
+global.metrics = {};
+function metricsHandler({ message }) {
+	global.metrics[message.pid] = message;
 }
 
 module.exports = server_ipc_handlers;

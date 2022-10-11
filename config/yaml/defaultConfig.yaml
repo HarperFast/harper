@@ -86,3 +86,6 @@ operationsApi:
 rootPath: null
 storage:
   writeAsync: false
+  caching: true
+  noReadAhead: true
+  prefetchWrites: true

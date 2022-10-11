@@ -1,4 +1,9 @@
 'use strict';
+const env_mngr = require('../environment/environmentManager');
+const terms = require('../../utility/hdbTerms');
+env_mngr.initSync();
+const LMDB_COMPRESSION = env_mngr.get(terms.CONFIG_PARAM_MAP.STORAGE_COMPRESSION);
+const LMDB_CACHING = env_mngr.get(terms.CONFIG_PARAM_MAP.STORAGE_CACHING) !== false;
 
 /**
  * Defines how a DBI will be created/opened
@@ -12,9 +17,10 @@ class OpenDBIObject {
 		this.dupSort = dup_sort === true;
 		this.encoding = dup_sort ? 'ordered-binary' : 'msgpack';
 		this.useVersions = is_primary;
+		this.compression = LMDB_COMPRESSION && is_primary;
 		this.sharedStructuresKey = Symbol.for('structures');
 		if (is_primary) {
-			this.cache = { validated: true };
+			this.cache = LMDB_CACHING && { validated: true };
 			this.randomAccessStructure = true;
 			this.freezeData = true;
 		}
