@@ -627,7 +627,7 @@ async function findAndValidateUser(username, pw, validate_password = true) {
 }
 
 /**
- * Gets the cluster user provided in harperdb.conf from the map of all user.
+ * Gets the cluster user provided in harperdb-config.yaml from the map of all user.
  * Nats requires plain test passwords, this is why we pass decrypt_hash.
  * The Nats routes require the decrypt_hash to be uri encoded.
  * @returns {Promise<Object>}

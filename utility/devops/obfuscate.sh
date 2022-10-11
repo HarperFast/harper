@@ -7,7 +7,7 @@ ADD_PROD="json/ .eslintbuild .eslintrc.json"
 
 #ADD2_DIR is path for ADD2 misc files for running harperdb.
 ADD2_DIR="utility/install"
-ADD2="$ADD2_DIR/ascii_logo.txt $ADD2_DIR/harperdb.conf $ADD2_DIR/harperdb.service"
+ADD2="$ADD2_DIR/ascii_logo.txt $ADD2_DIR/harperdb-config.yaml $ADD2_DIR/harperdb.service"
 
 #mirrored dir for obfucation output
 if [[ ! "$HDB_PROD" || -z "$HDB_PROD" ]]; 

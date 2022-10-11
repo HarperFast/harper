@@ -239,10 +239,10 @@ const CF_ROOT = '/yaml/custom_functions';
 const LOG_ROOT = '/yaml/log';
 
 const TEST_DIR = HDB_ROOT;
-const CONFIG_FILE_PATH = path.join(DIRNAME, 'yaml', 'harperdb.conf');
+const CONFIG_FILE_PATH = path.join(DIRNAME, 'yaml', 'harperdb-config.yaml');
 const OLD_CONFIG_PATH = 'test-config/settings.js';
 const BAD_CONFIG_FILE_PATH = path.join(DIRNAME, 'yaml', 'harperdb.doesntexist');
-const BACKUP_FILE_PATH = path.join(DIRNAME, 'yaml/backup', 'harperdb.conf.bak');
+const BACKUP_FILE_PATH = path.join(DIRNAME, 'yaml/backup', 'harperdb-config.yaml.bak');
 const BACKUP_FOLDER_PATH = path.join(DIRNAME, 'yaml/backup');
 const EMPTY_GET_VALUE = 'Empty parameter sent to getConfigValue';
 const UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is uninitialized';

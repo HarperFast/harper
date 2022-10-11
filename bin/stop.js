@@ -100,7 +100,7 @@ async function restartProcesses() {
 						await pm2_utils.startService(service);
 						hdb_logger.trace(`Starting ${service}`);
 					} else {
-						const cf_err_msg = `${service} is not enabled in harperdb.conf and cannot be restarted.`;
+						const cf_err_msg = `${service} is not enabled in harperdb-config.yaml and cannot be restarted.`;
 						hdb_logger.error(cf_err_msg);
 						console.log(cf_err_msg);
 					}
@@ -217,7 +217,7 @@ async function restartService(json_message) {
 			await pm2_utils.stop(service);
 			hdb_logger.trace(`Stopping ${service}`);
 		} else {
-			const cf_err_msg = `${service} is not enabled in harperdb.conf and cannot be restarted.`;
+			const cf_err_msg = `${service} is not enabled in harperdb-config.yaml and cannot be restarted.`;
 			hdb_logger.error(cf_err_msg);
 			throw handleHDBError(new Error(), cf_err_msg, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 		}
@@ -340,7 +340,7 @@ async function restartClustering(service) {
 			break;
 		// If service is 'clustering' and clustering is running and enabled, restart all the clustering processes.
 		case restarting_clustering && !clustering_running && !clustering_enabled:
-			hdb_logger.error(`${service} is not enabled in harperdb.conf and cannot be restarted.`);
+			hdb_logger.error(`${service} is not enabled in harperdb-config.yaml and cannot be restarted.`);
 			break;
 		// If the service is running but clustering has been disabled, stop the service.
 		case is_currently_running && !clustering_enabled:
@@ -361,7 +361,7 @@ async function restartClustering(service) {
 			break;
 		// If the service is not running and not clustering is not enable throw error.
 		case !is_currently_running && !clustering_enabled:
-			hdb_logger.error(`${service} is not enabled in harperdb.conf and cannot be restarted.`);
+			hdb_logger.error(`${service} is not enabled in harperdb-config.yaml and cannot be restarted.`);
 			break;
 		// If service is running and is enabled, restart it.
 		case is_currently_running && clustering_enabled:

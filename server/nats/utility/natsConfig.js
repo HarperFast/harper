@@ -28,7 +28,7 @@ module.exports = {
 
 /**
  * Generates and writes to file Nats config for hub and leaf servers.
- * Config params come from harperdb.conf and users table.
+ * Config params come from harperdb-config.yaml and users table.
  * Some validation is done on users and ports.
  * @param is_restart - if calling from restart skip port checks
  * @param process_name - if restarting one server we only want to create config for that one
