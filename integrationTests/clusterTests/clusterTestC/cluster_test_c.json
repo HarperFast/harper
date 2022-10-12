@@ -5066,7 +5066,10 @@
 									"pm.test('Node 1 is restarted', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal('Restarting HarperDB. This may take up to 60 seconds.');",
-									"});"
+									"});",
+									"",
+									"// Give HDB time to restart.",
+									"setTimeout(()=> {}, 30000)"
 								],
 								"type": "text/javascript"
 							}
@@ -6511,7 +6514,10 @@
 									"pm.test('Node 2 is restarted', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal('Restarting HarperDB. This may take up to 60 seconds.');",
-									"});"
+									"});",
+									"",
+									"// Give HDB time to restart.",
+									"setTimeout(()=> {}, 30000)"
 								],
 								"type": "text/javascript"
 							}
@@ -7843,6 +7849,9 @@
 									"pm.test('Status code is 200', () => {",
 									"    pm.response.to.have.status(200);",
 									"});",
+									"",
+									"// Give HDB time to restart.",
+									"setTimeout(()=> {}, 30000)",
 									""
 								],
 								"type": "text/javascript"
@@ -8075,6 +8084,9 @@
 									"pm.test('Status code is 200', () => {",
 									"    pm.response.to.have.status(200);",
 									"});",
+									"",
+									"// Give HDB time to restart.",
+									"setTimeout(()=> {}, 30000)",
 									""
 								],
 								"type": "text/javascript"
@@ -10154,7 +10166,11 @@
 									"pm.test('Node 1 is restarted', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal('Restarting HarperDB. This may take up to 60 seconds.');",
-									"});"
+									"});",
+									"",
+									"// Give HDB time to restart.",
+									"setTimeout(()=> {}, 30000)",
+									""
 								],
 								"type": "text/javascript"
 							}
@@ -11048,6 +11064,9 @@
 									"pm.test('Status code is 200', () => {",
 									"    pm.response.to.have.status(200);",
 									"});",
+									"",
+									"// Give HDB time to restart.",
+									"setTimeout(()=> {}, 30000)",
 									""
 								],
 								"type": "text/javascript"
@@ -14655,6 +14674,9 @@
 									"pm.test('Status code is 200', () => {",
 									"    pm.response.to.have.status(200);",
 									"});",
+									"",
+									"// Give HDB time to restart.",
+									"setTimeout(()=> {}, 30000)",
 									""
 								],
 								"type": "text/javascript"
