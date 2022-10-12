@@ -8,7 +8,7 @@ jobs:
       nodeVersion: ${{ steps.getNode.outputs.NODE_VERSION }}
       harperdbVersion: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
     - id: getNode
       name: Get node version
       run: |
