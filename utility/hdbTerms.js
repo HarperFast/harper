@@ -25,7 +25,7 @@ const PACKAGE_ROOT = getHDBPackageRoot();
 const JAVASCRIPT_EXTENSION = 'js';
 const CODE_EXTENSION = JAVASCRIPT_EXTENSION;
 
-const HDB_CONFIG_FILE = 'harperdb.conf';
+const HDB_CONFIG_FILE = 'harperdb-config.yaml';
 const HDB_DEFAULT_CONFIG_FILE = 'defaultConfig.yaml';
 const HDB_ROOT_DIR_NAME = 'hdb';
 

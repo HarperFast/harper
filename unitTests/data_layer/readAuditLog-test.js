@@ -107,6 +107,6 @@ describe('test readAuditLog module', () => {
 			error = e;
 		}
 
-		assert.deepStrictEqual(error.message, 'To use this operation audit log must be enabled in harperdb.conf');
+		assert.deepStrictEqual(error.message, 'To use this operation audit log must be enabled in harperdb-config.yaml');
 	});
 });

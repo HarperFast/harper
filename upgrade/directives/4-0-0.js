@@ -34,7 +34,7 @@ async function generateNewKeys() {
 }
 
 /**
- * For each node in hdb_nodes table creates a route in harperdb.conf, splits
+ * For each node in hdb_nodes table creates a route in harperdb-config.yaml, splits
  * channel subscription param to schema & table and adds system_info param.
  * @returns {Promise<void>}
  */

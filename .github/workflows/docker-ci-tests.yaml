@@ -63,8 +63,8 @@ jobs:
         # Capture hdb_log.log from container
         docker cp $containerId:/home/harperdb/hdb/log/ artifact
 
-        # Capture harperdb.conf
-        docker cp $containerId:/home/harperdb/hdb/harperdb.conf artifact
+        # Capture harperdb-config.yaml
+        docker cp $containerId:/home/harperdb/hdb/harperdb-config.yaml artifact
 
         # Capture docker log
         docker logs $containerId > artifact/docker_log.log

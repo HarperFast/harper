@@ -125,7 +125,7 @@ async function install() {
 	// Creates the boot prop file in user home dir. Boot prop file contains location of hdb config.
 	await createBootPropertiesFile();
 
-	// Create the harperdb.conf file
+	// Create the harperdb-config.yaml file
 	await createConfigFile(install_params);
 
 	// Create the super user.
