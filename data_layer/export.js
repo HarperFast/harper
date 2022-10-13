@@ -34,6 +34,7 @@ const stream_finished = promisify(stream.finished);
 module.exports = {
 	export_to_s3: export_to_s3,
 	export_local: export_local,
+	toCsvStream,
 };
 
 /**
@@ -267,16 +268,14 @@ async function export_to_s3(export_object) {
 	if (export_object.format === CSV) {
 		s3_name = export_object.s3.key + '.csv';
 		// Create a read stream with the data.
-		let read_stream = stream.Readable.from(data);
-		let options = {};
-		let transform_options = { objectMode: true };
+
 		// Create a json2csv stream transform.
-		const json2csv = new Transform(options, transform_options);
-		json2csv.on('error', (err) => {
+		const csv_stream = toCsvStream(data);
+		csv_stream.on('error', (err) => {
 			throw err;
 		});
 		// Pipe the data read stream through json2csv which converts it and then pipes it to a pass through which sends it to S3 upload method.
-		read_stream.pipe(json2csv).pipe(pass_through);
+		csv_stream.pipe(pass_through);
 	} else if (export_object.format === JSON_TEXT) {
 		s3_name = export_object.s3.key + '.json';
 		// Initialize an empty read stream.
@@ -325,6 +324,22 @@ async function export_to_s3(export_object) {
 		throw err;
 	}
 	return s3_upload_results;
+}
+
+/**
+ * Converts JS objects/arrays/iterators to a CSV stream. Should support iterators with full backpressure handling
+ * @param data
+ * @returns stream
+ */
+function toCsvStream(data) {
+	// ensure that we pass it an iterable
+	let read_stream = stream.Readable.from(data?.[Symbol.iterator] ? data : [data]);
+	let options = {};
+	let transform_options = { objectMode: true };
+	// Create a json2csv stream transform.
+	const json2csv = new Transform(options, transform_options);
+	// Pipe the data read stream through json2csv which converts it to CSV
+	return read_stream.pipe(json2csv);
 }
 
 /**

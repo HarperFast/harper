@@ -25,6 +25,7 @@ const user_schema = require('../../security/user');
 const hdb_license = require('../../utility/registration/hdb_license');
 const ipc_server_handlers = require('../ipc/serverHandlers');
 const IPCClient = require('../ipc/IPCClient');
+const { toCsvStream } = require('../../data_layer/export');
 
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
@@ -196,6 +197,13 @@ function buildServer(is_https) {
 					{
 						regex: /^application\/(x-)?msgpack$/,
 						serializer: pack,
+					},
+					{
+						regex: /^text\/csv$/,
+						serializer: function(data) {
+							this.header('Content-Disposition', 'attachment; filename="data.csv"');
+							return toCsvStream(data);
+						},
 					},
 				],
 			},

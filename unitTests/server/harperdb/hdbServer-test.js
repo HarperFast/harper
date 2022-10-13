@@ -444,6 +444,33 @@ describe('Test hdbServer module', () => {
 
 			server.close();
 		});
+		it('should return CSV when HTTP request include Accept: text/csv', async () => {
+			const test_config_settings = { https_on: false };
+			test_utils.preTestPrep(test_config_settings);
+
+			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const server = hdbServer_rw.__get__('server');
+
+			const test_response = await server.inject({
+				method: 'POST',
+				url: '/',
+				headers: Object.assign(
+					{
+						Accept: 'text/csv',
+					},
+					test_req_options.headers
+				),
+				body: test_req_options.body,
+			});
+
+			expect(test_response.statusCode).to.equal(200);
+			const expectedResponse = '"message"\n"table \'dev.dogz\' successfully created."';
+			expect(test_response.body).to.equal(expectedResponse);
+
+			server.close();
+		});
+
 
 		it('should return docs html static file result w/ status 200 for valid HTTP get request', async () => {
 			const test_config_settings = { https_on: false, local_studio_on: true };
