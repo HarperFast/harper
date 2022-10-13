@@ -103,7 +103,7 @@ describe('Test hdbServer module', () => {
 	});
 
 	describe('Test hdbServer function', () => {
-		it('should build HTTPS server when HTTPS_ON set to true', async () => {
+		it('should build HTTPS server when https_enabled set to true', async () => {
 			const test_config_settings = { https_enabled: true };
 			test_utils.preTestPrep(test_config_settings);
 
@@ -112,10 +112,10 @@ describe('Test hdbServer module', () => {
 			const server = hdbServer_rw.__get__('server');
 
 			expect(server).to.not.be.undefined;
-			expect(server.server.constructor.name).to.equal('Server');
+			expect(server.server.constructor.name).to.contains('Server');
 			expect(server.server.key).to.be.instanceOf(Buffer);
 			expect(server.server.cert).to.be.instanceOf(Buffer);
-			expect(server.initialConfig.https).to.be.true;
+			expect(!!server.initialConfig.https).to.be.true;
 
 			// Check to see that server handler event listeners are added to process
 			const before_exit_listeners = process.listeners('beforeExit').map((func) => func.name);
@@ -132,7 +132,7 @@ describe('Test hdbServer module', () => {
 			server.close();
 		});
 
-		it('should build HTTP server when HTTPS_ON set to false', async () => {
+		it('should build HTTP server when https_enabled set to false', async () => {
 			const test_config_settings = { https_enabled: false };
 			test_utils.preTestPrep(test_config_settings);
 
@@ -186,10 +186,10 @@ describe('Test hdbServer module', () => {
 			const server = hdbServer_rw.__get__('server');
 
 			expect(server).to.not.be.undefined;
-			expect(server.server.constructor.name).to.equal('Server');
+			expect(server.server.constructor.name).to.contain('Server');
 			expect(server.server.key).to.be.instanceOf(Buffer);
 			expect(server.server.cert).to.be.instanceOf(Buffer);
-			expect(server.initialConfig.https).to.be.true;
+			expect(!!server.initialConfig.https).to.be.true;
 
 			server.close();
 		});
@@ -263,9 +263,8 @@ describe('Test hdbServer module', () => {
 
 		it('should build HTTPS server instances with provided config settings', async () => {
 			const test_config_settings = {
-				https_on: true,
+				https_enabled: true,
 				server_timeout: 3333,
-				keep_alive_timeout: 2222,
 				headers_timeout: 1111,
 			};
 			test_utils.preTestPrep(test_config_settings);
@@ -275,7 +274,6 @@ describe('Test hdbServer module', () => {
 			const server = hdbServer_rw.__get__('server');
 
 			expect(server.server.timeout).to.equal(test_config_settings.server_timeout);
-			expect(server.server.keepAliveTimeout).to.equal(test_config_settings.keep_alive_timeout);
 			expect(server.server.headersTimeout).to.equal(test_config_settings.headers_timeout);
 
 			server.close();
@@ -283,7 +281,7 @@ describe('Test hdbServer module', () => {
 
 		it('should build HTTP server instances with provided config settings', async () => {
 			const test_config_settings = {
-				https_on: false,
+				https_enabled: false,
 				server_timeout: 3333,
 				keep_alive_timeout: 2222,
 				headers_timeout: 1111,
@@ -355,7 +353,7 @@ describe('Test hdbServer module', () => {
 		});
 
 		it('should call handlePostRequest on HTTP post request', async () => {
-			const test_config_settings = { https_on: false };
+			const test_config_settings = { https_enabled: false };
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
@@ -370,7 +368,7 @@ describe('Test hdbServer module', () => {
 		});
 
 		it('should return MessagePack when HTTP request include Accept: application/x-msgpack', async () => {
-			const test_config_settings = { https_on: false };
+			const test_config_settings = { https_enabled: false };
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
@@ -397,7 +395,7 @@ describe('Test hdbServer module', () => {
 		});
 
 		it('should parse MessagePack when HTTP request include Content-Type: application/x-msgpack', async () => {
-			const test_config_settings = { https_on: false };
+			const test_config_settings = { https_enabled: false };
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
@@ -422,7 +420,7 @@ describe('Test hdbServer module', () => {
 		});
 
 		it('should 400 with invalid MessagePack', async () => {
-			const test_config_settings = { https_on: false };
+			const test_config_settings = { https_enabled: false };
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
@@ -473,7 +471,7 @@ describe('Test hdbServer module', () => {
 
 
 		it('should return docs html static file result w/ status 200 for valid HTTP get request', async () => {
-			const test_config_settings = { https_on: false, local_studio_on: true };
+			const test_config_settings = { https_enabled: false, local_studio_on: true };
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
@@ -489,7 +487,7 @@ describe('Test hdbServer module', () => {
 		});
 
 		it('should return docs html static file result w/ status 200 for valid HTTPS get request', async () => {
-			const test_config_settings = { https_on: true, local_studio_on: true };
+			const test_config_settings = { https_enabled: true, local_studio_on: true };
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
@@ -505,7 +503,7 @@ describe('Test hdbServer module', () => {
 		});
 
 		it('should not return docs html static file result w/ status 404 for valid HTTP get request when local studio is turned off', async () => {
-			const test_config_settings = { https_on: false, local_studio_on: false };
+			const test_config_settings = { https_enabled: false, local_studio_on: false };
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
@@ -521,7 +519,7 @@ describe('Test hdbServer module', () => {
 		});
 
 		it('should not return docs html static file result w/ status 404 for valid HTTPS get request when local studio is turned off', async () => {
-			const test_config_settings = { https_on: true, local_studio_on: false };
+			const test_config_settings = { https_enabled: true, local_studio_on: false };
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
@@ -537,7 +535,7 @@ describe('Test hdbServer module', () => {
 		});
 
 		it('should return op result w/ status 200 for valid HTTP post request', async () => {
-			const test_config_settings = { https_on: false };
+			const test_config_settings = { https_enabled: false };
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
@@ -670,8 +668,8 @@ describe('Test hdbServer module', () => {
 			const test_is_https = true;
 			const test_result = await buildServer_rw(test_is_https);
 
-			expect(test_result.server.constructor.name).to.equal('Server');
-			expect(test_result.initialConfig.https).to.be.true;
+			expect(test_result.server.constructor.name).to.contains('Server');
+			expect(!!test_result.initialConfig.https).to.be.true;
 
 			server.close();
 		});
