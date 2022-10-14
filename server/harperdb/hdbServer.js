@@ -18,13 +18,14 @@ const fastify_serializer = require('@fastify/accepts-serializer');
 const { pack, unpack } = require('msgpackr');
 const request_time_plugin = require('../serverHelpers/requestTimePlugin');
 const guidePath = require('path');
-const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
 const global_schema = require('../../utility/globalSchema');
 const common_utils = require('../../utility/common_utils');
 const user_schema = require('../../security/user');
 const hdb_license = require('../../utility/registration/hdb_license');
 const ipc_server_handlers = require('../ipc/serverHandlers');
 const IPCClient = require('../ipc/IPCClient');
+const { isMainThread, parentPort } = require('worker_threads');
+const { Socket } = require('net');
 
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
@@ -40,6 +41,7 @@ const {
 	handleSigquit,
 	handleSigterm,
 } = require('../serverHelpers/serverHandlers');
+const net = require("net");
 
 const REQ_MAX_BODY_SIZE = 1024 * 1024 * 1024; //this is 1GB in bytes
 const TRUE_COMPARE_VAL = 'TRUE';
@@ -102,8 +104,22 @@ async function hdbServer() {
 
 		const server_type = is_https ? 'HTTPS' : 'HTTP';
 		try {
-			//now that server is fully loaded/ready, start listening on port provided in config settings
-			await server.listen({ port: props_server_port, host: '::' });
+			// now that server is fully loaded/ready, start listening on port provided in config settings or just use
+			// zero to wait for sockets from the main thread
+			await server.listen({ port: isMainThread ? props_server_port : 0, host: '::' });
+			if (!isMainThread) {
+				let real_server = server.server;
+				parentPort.on('message', (message) => {
+					const { fd } = message;
+					if (fd) {
+						// Create a socket from the file descriptor for the socket that was routed to us. HTTP server likes to
+						// allow half open sockets
+						let socket = new Socket({ fd, readable: true, writable: true, allowHalfOpen: true });
+						// for each socket, deliver the connection to the HTTP server handler/parser
+						real_server.emit('connection', socket);
+					}
+				});
+			}
 			harper_logger.info(`HarperDB ${pjson.version} ${server_type} Server running on port ${props_server_port}`);
 		} catch (err) {
 			server.close();
