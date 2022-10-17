@@ -5,6 +5,10 @@ on:
         default: "c5.large"
       instanceCount:
         default: "1"
+      installType:
+        type: string
+        default: "sourceCode"
+        description: "Options: sourceCode, buildPackage, none"
 name: Create Test Instances
 jobs:
   build:
@@ -18,6 +22,7 @@ jobs:
       instanceType: ${{ inputs.instanceType }}
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       callingWorkflow: ${{ github.workflow }}
+      installType: ${{ inputs.installType }}
     secrets: inherit
   registerInstances:
     needs: 
