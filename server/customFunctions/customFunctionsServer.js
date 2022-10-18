@@ -18,7 +18,8 @@ const user_schema = require('../../security/user');
 const IPCClient = require('../ipc/IPCClient');
 const ipc_server_handlers = require('../ipc/serverHandlers');
 const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
-
+const { isMainThread } = require("worker_threads");
+const { registerServer } = require('../thread-http-server');
 const getServerOptions = require('./helpers/getServerOptions');
 const getCORSOptions = require('./helpers/getCORSOptions');
 const getHeaderTimeoutConfig = require('./helpers/getHeaderTimeoutConfig');
@@ -94,7 +95,8 @@ async function customFunctionsServer() {
 		try {
 			//now that server is fully loaded/ready, start listening on port provided in config settings
 			harper_logger.info(`Custom Functions process starting on port ${props_server_port}`);
-			await server.listen({ port: props_server_port, host: '::' });
+			await server.listen({ port: isMainThread ? props_server_port : 0, host: '::' });
+			registerServer(terms.SERVICES.CUSTOM_FUNCTIONS, server.server);
 			harper_logger.info(`Custom Functions process running on port ${props_server_port}`);
 		} catch (err) {
 			server.close();

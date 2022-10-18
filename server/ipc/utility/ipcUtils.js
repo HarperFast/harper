@@ -4,6 +4,7 @@ const hdb_logger = require('../../../utility/logging/harper_logger');
 const hdb_utils = require('../../../utility/common_utils');
 const hdb_terms = require('../../../utility/hdbTerms');
 const { IPC_ERRORS } = require('../../../utility/errors/commonErrors');
+const { parentPort, threadId, isMainThread } = require('worker_threads');
 
 module.exports = {
 	sendIpcEvent,
@@ -11,12 +12,29 @@ module.exports = {
 	SchemaEventMsg,
 	UserEventMsg,
 };
+const thread_ports = [];
+if (parentPort) {
+	parentPort.on('message', parent_message => {
+		const server_ipc_handlers = require('../serverHandlers');
+		if (parent_message.type === 'add-port') {
+			thread_ports.push(parent_message.port);
+			parent_message.port.on('message', (event) => {
+				validateEvent(event);
+				server_ipc_handlers[event.type](event);
+			});
+		}
+	});
+}
 
 /**
  * Emits an IPC event to the IPC server.
  * @param event
  */
 function sendIpcEvent(event) {
+	if (!isMainThread) event.message.originator = threadId;
+	for (let port of thread_ports) {
+		port.postMessage(event);
+	}
 	if (global.hdb_ipc) {
 		global.hdb_ipc.emitToServer(event);
 	} else {

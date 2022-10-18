@@ -22,6 +22,7 @@ const upgrade = require('./upgrade');
 const minimist = require('minimist');
 const spawn = require('child_process').spawn;
 const { PACKAGE_ROOT } = require('../utility/hdbTerms');
+const { startHTTPThreads, startSocketServer } = require('../server/socket-router');
 
 const hdbInfoController = require('../data_layer/hdbInfoController');
 
@@ -130,6 +131,12 @@ async function run(called_by_install = false) {
 
 		await pm2_utils.configureLogRotate();
 
+		startHTTPThreads();
+		startSocketServer(terms.SERVICES.HDB_CORE, parseInt(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT), 10));
+		if (custom_func_enabled)
+			startSocketServer(terms.SERVICES.CUSTOM_FUNCTIONS, parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10));
+		if (false){
+
 		// Run can be called with a --service argument which allows designated services to be started.
 		const cmd_args = minimist(process.argv);
 		if (!hdb_utils.isEmpty(cmd_args.service)) {
@@ -184,7 +191,7 @@ async function run(called_by_install = false) {
 		} else {
 			await startHdbIpc();
 		}
-
+			}
 		// Console log Harper dog logo
 		console.log(chalk.magenta('' + fs.readFileSync(path.join(PACKAGE_ROOT, 'utility/install/ascii_logo.txt'))));
 		console.log(chalk.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
@@ -281,24 +288,23 @@ async function openCreateAuditEnvironment(schema, table_name) {
  * also if foreground is passed we setup the processExitHandler to call the stop handler which kills the hdb processes
  */
 function foregroundHandler() {
-	if (!getRunInForeground()) {
+	if (getRunInForeground()) {
 		// Exit run process with success code.
-		process.exit(0);
+
+		hdb_logger.trace('Running in foreground');
+
+		process.on('exit', processExitHandler);
+
+		//catches ctrl+c event
+		process.on('SIGINT', processExitHandler);
+
+		// catches "kill pid"
+		process.on('SIGUSR1', processExitHandler);
+		process.on('SIGUSR2', processExitHandler);
+		process.on('SIGTERM', processExitHandler);
+
+		spawnLogProcess();
 	}
-
-	hdb_logger.trace('Running in foreground');
-
-	process.on('exit', processExitHandler);
-
-	//catches ctrl+c event
-	process.on('SIGINT', processExitHandler);
-
-	// catches "kill pid"
-	process.on('SIGUSR1', processExitHandler);
-	process.on('SIGUSR2', processExitHandler);
-	process.on('SIGTERM', processExitHandler);
-
-	spawnLogProcess();
 }
 
 /**
@@ -315,7 +321,7 @@ function spawnLogProcess() {
 	proc.on('error', (err) => {
 		console.log(err);
 		console.error('Failed to start subprocess.');
-	});
+	});m
 
 	proc.stdout.on('data', (data) => {
 		console.log(data.toString());

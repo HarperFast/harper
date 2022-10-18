@@ -24,8 +24,8 @@ const user_schema = require('../../security/user');
 const hdb_license = require('../../utility/registration/hdb_license');
 const ipc_server_handlers = require('../ipc/serverHandlers');
 const IPCClient = require('../ipc/IPCClient');
-const { isMainThread, parentPort } = require('worker_threads');
-const { Socket } = require('net');
+const { isMainThread, threadId } = require("worker_threads");
+const { registerServer } = require('../thread-http-server');
 
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
@@ -83,8 +83,7 @@ async function hdbServer() {
 
 		process.on('uncaughtException', handleServerUncaughtException);
 		process.on('beforeExit', handleBeforeExit);
-		process.on('exit', handleExit);
-		process.on('SIGINT', handleSigint);
+		process.on('exit', handleExit);		process.on('SIGINT', handleSigint);
 		process.on('SIGQUIT', handleSigquit);
 		process.on('SIGTERM', handleSigterm);
 
@@ -107,19 +106,8 @@ async function hdbServer() {
 			// now that server is fully loaded/ready, start listening on port provided in config settings or just use
 			// zero to wait for sockets from the main thread
 			await server.listen({ port: isMainThread ? props_server_port : 0, host: '::' });
-			if (!isMainThread) {
-				let real_server = server.server;
-				parentPort.on('message', (message) => {
-					const { fd } = message;
-					if (fd) {
-						// Create a socket from the file descriptor for the socket that was routed to us. HTTP server likes to
-						// allow half open sockets
-						let socket = new Socket({ fd, readable: true, writable: true, allowHalfOpen: true });
-						// for each socket, deliver the connection to the HTTP server handler/parser
-						real_server.emit('connection', socket);
-					}
-				});
-			}
+			console.log('register hdb server for', threadId);
+			registerServer(terms.SERVICES.HDB_CORE, server.server);
 			harper_logger.info(`HarperDB ${pjson.version} ${server_type} Server running on port ${props_server_port}`);
 		} catch (err) {
 			server.close();

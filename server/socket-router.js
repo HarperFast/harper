@@ -1,4 +1,6 @@
-const { Worker } = require('worker_threads');
+'use strict';
+
+const { Worker, MessageChannel } = require('worker_threads');
 const { PACKAGE_ROOT } = require('../utility/hdbTerms');
 const path = require('path');
 const { createServer } = require('net');
@@ -6,34 +8,54 @@ const env = require('../utility/environment/environmentManager');
 env.initSync();
 const hdb_terms = require('../utility/hdbTerms');
 // at some point we may want to actually read from the https connections
-
+module.exports = {
+	startHTTPThreads,
+	startSocketServer,
+};
 const workers = [];
-const THREAD_COUNT = env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES);
+const THREAD_COUNT = Math.max(env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES),
+	env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES));
 const SERVER_PORT = env.get(hdb_terms.HDB_SETTINGS_NAMES.SERVER_PORT_KEY);
-for (let i = 0; i < THREAD_COUNT; i++) {
-	console.log('starting worker')
-	let worker = new Worker(path.join(PACKAGE_ROOT, 'server/harperdb/hdbServer.js'));
-	worker.on('error', (error) => {
-		console.error('error', error);
-	});
-	worker.on('exit', (code, message) => {
-		if (code !== 0)
-			console.error(`Worker stopped with exit code ${code}` + message);
-	});
-	workers.push(worker);
+function startHTTPThreads() {
+	for (let i = 0; i < THREAD_COUNT; i++) {
+		console.log('starting worker')
+		let worker = new Worker(path.join(PACKAGE_ROOT, 'server/thread-http-server.js'));
+		worker.on('error', (error) => {
+			console.error('error', error);
+		});
+		worker.on('exit', (code, message) => {
+			if (code !== 0)
+				console.error(`Worker stopped with exit code ${code}` + message);
+		});
+		for (let prevWorker of workers) {
+			let { port1, port2 } = new MessageChannel();
+			prevWorker.postMessage({
+				type: 'add-port',
+				port: port1,
+			}, [port1]);
+			worker.postMessage({
+				type: 'add-port',
+				port: port2,
+			}, [port2]);
+		}
+		workers.push(worker);
+	}
 }
-createServer({
-	allowHalfOpen: true,
-	pauseOnConnect: true,
-}, (socket) => {
-	/*socket.on('data', onData)
-	socket.on('error', (error) => {
-		console.info('Error occurred in socket', error)
-	})*/
-	workers[0].postMessage({fd: socket._handle.fd});
-	console.log('sent message')
-}).listen(SERVER_PORT);
-console.log('listening');
+function startSocketServer(type, port) {
+	createServer({
+		allowHalfOpen: true,
+		pauseOnConnect: true,
+	}, (socket) => {
+		/*socket.on('data', onData)
+		socket.on('error', (error) => {
+			console.info('Error occurred in socket', error)
+		})*/
+		workers[0].postMessage({type, fd: socket._handle.fd});
+		console.log('sent message')
+	}).listen(port);
+	console.log('listening');
+}
+
 /*} if (!isMainThread) {
 	console.log('starting')
 	const server = createServer({
