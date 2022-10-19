@@ -4,7 +4,7 @@ on:
     paths:
       - 'utility/Docker/Dockerfile'
   schedule:
-    - cron:  '0 8 * * 1-5'
+    - cron: '0 13 * * 1-5'
   workflow_dispatch:
 name: "Run Docker CI Tests"
 jobs:
@@ -78,3 +78,19 @@ jobs:
         name: logs
         path: artifact
         retention-days: 1
+  sendSlackMessage:
+    runs-on: ubuntu-latest
+    if: ${{ failure() && github.event_name == 'schedule' }}
+    needs:
+      - runTests
+      - dockerBuild
+      - build
+    steps:
+    - name: Post to a Slack channel
+      id: slack
+      uses: slackapi/slack-github-action@v1.23.0
+      with:
+        channel-id: 'development'
+        slack-message: "${{ github.workflow }} Failed.\nSee logs here: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      env:
+        SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}

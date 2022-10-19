@@ -98,3 +98,10 @@ jobs:
         name: tfstate
         path: tfstate/
         retention-days: 1
+    - name: 'Destroy Instances'
+      if: ${{ failure() }}
+      run: |
+        #!/bin/bash
+        cd ../terraform
+        
+        terraform destroy -var='private_key=./private_key' -var='region=us-east-2' -var='instance_count=${{inputs.instanceCount}}' -var='instance_name_prefix=GitHub-'"${workflow_name}"'-${{github.run_number}}' -var='instance_type=${{inputs.instanceType}}' -var='github_workflow_name='"${workflow_name}"'' -var='github_run_number=${{github.run_number}}' -var='volume_size=${{inputs.volumeSize}}' -auto-approve
