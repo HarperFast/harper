@@ -36,7 +36,7 @@ jobs:
       - createInstances
     timeout-minutes: 20
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
     - uses: actions/download-artifact@v3
       with:
         name: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}.tar
