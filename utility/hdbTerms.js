@@ -112,9 +112,9 @@ const CLUSTERING_PROCESSES = {
 };
 
 const SERVICE_SERVERS_CWD = {
-	HDB: path.join(PACKAGE_ROOT, `server/harperdb`),
-	IPC: path.join(PACKAGE_ROOT, `server/ipc`),
-	CUSTOM_FUNCTIONS: path.join(PACKAGE_ROOT, `server/customFunctions`),
+	HDB: `server/harperdb`,
+	IPC: `server/ipc`,
+	CUSTOM_FUNCTIONS: `server/customFunctions`,
 	CLUSTERING_HUB: path.join(PACKAGE_ROOT, 'server/nats'),
 	CLUSTERING_LEAF: path.join(PACKAGE_ROOT, 'server/nats'),
 };
@@ -126,11 +126,12 @@ const SERVICE_SERVERS = {
 };
 
 const LAUNCH_SERVICE_SCRIPTS = {
-	HDB: path.join(PACKAGE_ROOT, 'launchServiceScripts/launchHarperDB.js'),
-	CUSTOM_FUNCTIONS: path.join(PACKAGE_ROOT, 'launchServiceScripts/launchCustomFunctions.js'),
-	NATS_INGEST_SERVICE: path.join(PACKAGE_ROOT, 'launchServiceScripts/launchNatsIngestService.js'),
-	NATS_REPLY_SERVICE: path.join(PACKAGE_ROOT, 'launchServiceScripts/launchNatsReplyService.js'),
-	NODES_UPGRADE_4_0_0: path.resolve(PACKAGE_ROOT, 'launchServiceScripts/launchUpdateNodes4-0-0.js'),
+	MAIN: 'bin/harperdb.js',
+	HDB: 'launchServiceScripts/launchHarperDB.js',
+	CUSTOM_FUNCTIONS: 'launchServiceScripts/launchCustomFunctions.js',
+	NATS_INGEST_SERVICE: 'launchServiceScripts/launchNatsIngestService.js',
+	NATS_REPLY_SERVICE: 'launchServiceScripts/launchNatsReplyService.js',
+	NODES_UPGRADE_4_0_0: 'launchServiceScripts/launchUpdateNodes4-0-0.js',
 };
 
 const ROLE_TYPES_ENUM = {
@@ -513,6 +514,7 @@ const HDB_SETTINGS_NAMES = {
 	RUN_IN_FOREGROUND: 'RUN_IN_FOREGROUND',
 	LOCAL_STUDIO_ON: 'LOCAL_STUDIO_ON',
 	STORAGE_WRITE_ASYNC: 'STORAGE_WRITE_ASYNC',
+	REMOTE_ADDRESS_AFFINITY: 'REMOTE_ADDRESS_AFFINITY',
 };
 
 /**

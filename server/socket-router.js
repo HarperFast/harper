@@ -1,9 +1,6 @@
 'use strict';
-
-const { Worker, MessageChannel } = require('worker_threads');
-const { PACKAGE_ROOT } = require('../utility/hdbTerms');
-const path = require('path');
-const { createServer } = require('net');
+const {startWorker} = require('../utility/threads');
+const {createServer} = require('net');
 const env = require('../utility/environment/environmentManager');
 env.initSync();
 const hdb_terms = require('../utility/hdbTerms');
@@ -15,33 +12,20 @@ module.exports = {
 const workers = [];
 const THREAD_COUNT = Math.max(env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES),
 	env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES));
-const SERVER_PORT = env.get(hdb_terms.HDB_SETTINGS_NAMES.SERVER_PORT_KEY);
+const REMOTE_ADDRESS_AFFINITY = env.get(hdb_terms.HDB_SETTINGS_NAMES.REMOTE_ADDRESS_AFFINITY);
+
 function startHTTPThreads() {
 	for (let i = 0; i < THREAD_COUNT; i++) {
-		console.log('starting worker')
-		let worker = new Worker(path.join(PACKAGE_ROOT, 'server/thread-http-server.js'));
-		worker.on('error', (error) => {
-			console.error('error', error);
-		});
-		worker.on('exit', (code, message) => {
-			if (code !== 0)
-				console.error(`Worker stopped with exit code ${code}` + message);
-		});
-		for (let prevWorker of workers) {
-			let { port1, port2 } = new MessageChannel();
-			prevWorker.postMessage({
-				type: 'add-port',
-				port: port1,
-			}, [port1]);
-			worker.postMessage({
-				type: 'add-port',
-				port: port2,
-			}, [port2]);
-		}
+		let worker = startWorker('server/thread-http-server.js');
+		worker.expectedIdle = 1;
+		worker.requests = 1;
 		workers.push(worker);
 	}
 }
+
 function startSocketServer(type, port) {
+	let workerStrategy = REMOTE_ADDRESS_AFFINITY ? findByRemoteAddressAffinity : findMostIdleWorker;
+	console.log('workerStrategy', workerStrategy.name);
 	createServer({
 		allowHalfOpen: true,
 		pauseOnConnect: true,
@@ -50,38 +34,84 @@ function startSocketServer(type, port) {
 		socket.on('error', (error) => {
 			console.info('Error occurred in socket', error)
 		})*/
-		workers[0].postMessage({type, fd: socket._handle.fd});
-		console.log('sent message')
+		const worker = workerStrategy(socket);
+		worker.requests++;
+		worker.postMessage({type, fd: socket._handle.fd});
+		//console.log('sent request to', worker.threadId);
 	}).listen(port);
 	console.log('listening');
 }
 
-/*} if (!isMainThread) {
-	console.log('starting')
-	const server = createServer({
-		maxHeaderSize: 1000000,
-	}, (req, res) => {
-		res.writeHead(200, {'Content-Type': 'text/plain'});
-		res.end('okay');
-	}).listen(+process.env.HTTP_PORT || 0)
-	console.log('listening on ', +process.env.HTTP_PORT || 0)
-	// const server = createServer({}, app.callback()).listen(0) // random port
-	const requestSockets = new Map()
-	server.setTimeout(3600000) // set timeout at one hour
-	parentPort.on('message', (message) => {
-		console.log('got message')
-		const { fd } = message;
-		if (fd) {
-			// HTTP server likes to allow half open sockets
-			let socket = new net.Socket({fd, readable: true, writable: true, allowHalfOpen: true });
-			// for each socket, deliver the connection to the HTTP server handler/parser
-			server.emit('connection', socket);
-			//socket.resume();
-			console.log('emitted socket and resumed', fd, );
-			// socket contents are encoded in latin1
-			//const bufferToEmit = Buffer.from(message.data, 'latin1')
-			// and then route the data that was read from the master from the socket, through this socket
-			// socket.emit('data', bufferToEmit)
+let second_best_availability = 0;
+
+/**
+ * Delegate to workers based on what worker is likely to be most idle/available.
+ * @returns Worker
+ */
+function findMostIdleWorker() {
+	// fast algorithm for delegating work to workers based on last idleness check (without constantly checking idleness)
+	let selected_worker;
+	let last_availability = 0;
+	for (let worker of workers) {
+		let availability = worker.expectedIdle / worker.requests;
+		if (availability > last_availability) {
+			selected_worker = worker;
+		} else if (last_availability >= second_best_availability) {
+			second_best_availability = availability;
+			return selected_worker;
 		}
+		last_availability = availability;
+	}
+	second_best_availability = 0;
+	return selected_worker;
+}
+
+const AFFINITY_TIMEOUT = 3600000; // an hour timeout
+const remoteAddresses = new Map();
+
+/**
+ * Delegate to workers using session affinity based on remote address. This will send all requests
+ * from the same remote address to the same worker.
+ * @returns Worker
+ */
+function findByRemoteAddressAffinity(socket) {
+	let address = socket.remoteAddress;
+	let entry = remoteAddresses.get(address);
+	const now = Date.now();
+	if (entry) {
+		entry.lastUsed = now;
+		return entry.worker;
+	}
+	const worker = findMostIdleWorker();
+	remoteAddresses.set(address, {
+		worker,
+		lastUsed: now,
 	});
-}*/
+	return worker;
+}
+
+setInterval(() => {
+	// clear out expired entries
+	const now = Date.now();
+	for (let [address, entry] of remoteAddresses) {
+		if (entry.lastUsed + AFFINITY_TIMEOUT < now) remoteAddresses.delete(address);
+	}
+}, AFFINITY_TIMEOUT).unref();
+
+const EXPECTED_IDLE_DECAY = 1000;
+
+/**
+ * Updates the idleness statistics for each worker
+ */
+function updateWorkerIdleness() {
+	second_best_availability = 0;
+	for (let worker of workers) {
+		let idle = worker.performance.eventLoopUtilization().idle;
+		worker.expectedIdle = idle - (worker.lastIdle || 0) + EXPECTED_IDLE_DECAY;
+		worker.lastIdle = idle;
+		worker.requests = 1;
+	}
+	workers.sort((a, b) => a.expectedIdle > b.expectedIdle ? -1 : 1);
+}
+
+setInterval(updateWorkerIdleness, 1000).unref();

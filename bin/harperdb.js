@@ -71,15 +71,14 @@ function harperDBService() {
 			case hdb_terms.SERVICE_ACTIONS_ENUM.RUN:
 				// The require is here to better control the flow of imports when this module is called.
 				const run = require('./run');
-				result = run.run();
+				result = run.launch();
 				break;
 			case hdb_terms.SERVICE_ACTIONS_ENUM.INSTALL:
 				const install = require('./install');
 				install()
 					.then(() => {
 						// The require is here to better control the flow of imports when this module is called.
-						const install_run = require('./run');
-						install_run.run(true);
+						return require('./run').main(true);
 					})
 					.catch((install_err) => {
 						console.error(install_err);
@@ -142,8 +141,7 @@ function harperDBService() {
 				break;
 			default:
 				// The require is here to better control the flow of imports when this module is called.
-				const run_default = require('./run');
-				run_default.run();
+				require('./run').main();
 				break;
 		}
 	});

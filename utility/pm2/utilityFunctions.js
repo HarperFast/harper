@@ -12,6 +12,7 @@ const env_mangr = require('../environment/environmentManager');
 const hdb_logger = require('../../utility/logging/harper_logger');
 const config = require('../../utility/pm2/servicesConfig');
 const clustering_utils = require('../clustering/clusterUtilities');
+const { startWorker } = require('../../utility/threads');
 const util = require('util');
 const exec = util.promisify(require('child_process').exec);
 const path = require('path');
@@ -320,7 +321,7 @@ async function startService(service_name) {
 				start_config = services_config.generateIPCServerConfig();
 				break;
 			case hdb_terms.PROCESS_DESCRIPTORS.HDB.toLowerCase():
-				start_config = services_config.generateHDBServerConfig();
+				start_config = services_config.generateMainServerConfig();
 				break;
 			case hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS.toLowerCase():
 				start_config = services_config.generateCFServerConfig();
@@ -603,14 +604,22 @@ async function configureLogRotate() {
 	}
 }
 
-/**
+let ingestWorker;
+let replyWorker;
+	/**
  * Starts all the services that make up clustering
  * @returns {Promise<void>}
  */
 async function startClustering() {
 	for (const proc in hdb_terms.CLUSTERING_PROCESSES) {
-		const service = hdb_terms.CLUSTERING_PROCESSES[proc];
-		await startService(service);
+		if (proc === hdb_terms.CLUSTERING_PROCESSES.CLUSTERING_INGEST_PROC_DESCRIPTOR) {
+			ingestWorker = startWorker(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_INGEST_SERVICE);
+		} else if (proc === hdb_terms.CLUSTERING_PROCESSES.CLUSTERING_REPLY_SERVICE_DESCRIPTOR) {
+			replyWorker = startWorker(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_REPLY_SERVICE);
+		} else {
+			const service = hdb_terms.CLUSTERING_PROCESSES[proc];
+			await startService(service);
+		}
 	}
 	await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
 
@@ -622,7 +631,7 @@ async function startClustering() {
 	for (let i = 0, rec_length = nodes.length; i < rec_length; i++) {
 		if (nodes[i].system_info?.hdb_version === hdb_terms.PRE_4_0_0_VERSION) {
 			hdb_logger.info('Starting clustering upgrade 4.0.0 process');
-			await startService(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_UPGRADE_4_0_0);
+			startWorker(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NODES_UPGRADE_4_0_0);
 			break;
 		}
 	}
@@ -633,8 +642,14 @@ async function startClustering() {
  */
 async function stopClustering() {
 	for (const proc in hdb_terms.CLUSTERING_PROCESSES) {
-		const service = hdb_terms.CLUSTERING_PROCESSES[proc];
-		await stop(service);
+		if (proc === hdb_terms.CLUSTERING_PROCESSES.CLUSTERING_INGEST_PROC_DESCRIPTOR) {
+			await ingestWorker.terminate();
+		} else if (proc === hdb_terms.CLUSTERING_PROCESSES.CLUSTERING_REPLY_SERVICE_DESCRIPTOR) {
+			await replyWorker.terminate();
+		} else {
+			const service = hdb_terms.CLUSTERING_PROCESSES[proc];
+			await stop(service);
+		}
 	}
 }
 

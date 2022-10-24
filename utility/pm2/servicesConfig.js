@@ -56,7 +56,7 @@ function generateIPCServerConfig() {
 	};
 }
 
-function generateHDBServerConfig() {
+function generateMainServerConfig() {
 	initLogConfig();
 	env.initSync();
 	log_to_file = env.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_TO_FILE);
@@ -72,15 +72,14 @@ function generateHDBServerConfig() {
 	// losing reference to the pm2 process and not being logged. It seems to only happen with clustered processes.
 	const hdb_config = {
 		name: hdb_terms.PROCESS_DESCRIPTORS.HDB,
-		script: hdb_terms.LAUNCH_SERVICE_SCRIPTS.HDB,
-		exec_mode: 'cluster',
+		script: hdb_terms.LAUNCH_SERVICE_SCRIPTS.MAIN,
+		exec_mode: 'fork',
 		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.HDB },
 		merge_logs: true,
 		out_file: hdb_log,
 		error_file: hdb_log,
-		instances: env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES),
 		node_args: mem_value,
-		cwd: LAUNCH_SCRIPTS_DIR,
+		cwd: PACKAGE_ROOT,
 	};
 
 	if (!log_to_file) {
@@ -318,14 +317,14 @@ function generateJobConfig(job_id) {
 
 function generateAllServiceConfigs() {
 	return {
-		apps: [generateIPCServerConfig(), generateHDBServerConfig(), generateCFServerConfig()],
+		apps: [generateIPCServerConfig(), generateMainServerConfig(), generateCFServerConfig()],
 	};
 }
 
 module.exports = {
 	generateAllServiceConfigs,
 	generateIPCServerConfig,
-	generateHDBServerConfig,
+	generateMainServerConfig,
 	generateCFServerConfig,
 	generateRestart,
 	generateNatsHubServerConfig,
