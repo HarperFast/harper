@@ -1,5 +1,6 @@
 on:
   workflow_dispatch:
+  workflow_call:
 name: Run Source Code Cluster Test B
 jobs:
   getNodeVersion:

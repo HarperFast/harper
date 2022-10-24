@@ -6,6 +6,7 @@ on:
   schedule:
     - cron: '0 13 * * 1-5'
   workflow_dispatch:
+  workflow_call:
 name: "Run Docker Cluster Tests B"
 jobs:
   build:

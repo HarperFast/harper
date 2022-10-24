@@ -1,0 +1,10 @@
+on:
+  workflow_dispatch:
+name: Run All Docker Cluster Tests
+jobs:
+  runDockerClusterTestA:
+    uses: ./.github/workflows/docker-cluster-test-a.yaml
+  runDockerClusterTestB:
+    uses: ./.github/workflows/docker-cluster-test-b.yaml
+  runDockerClusterTestC:
+    uses: ./.github/workflows/docker-cluster-test-c.yaml

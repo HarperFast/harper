@@ -10,6 +10,7 @@ on:
   schedule:
     - cron: '0 13 * * 1-5'
   workflow_dispatch:
+  workflow_call:
 name: Run Build Package Cluster Test B
 jobs:
   build:
