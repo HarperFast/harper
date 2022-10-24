@@ -17,7 +17,7 @@ const { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH } = lmdb_terms;
 const env_mngr = require('../environment/environmentManager');
 env_mngr.initSync();
 
-const LMDB_PREFETCH_WRITES = env_mngr.get(hdb_terms.CONFIG_PARAM_MAP.STORAGE_PREFETCHWRITES);
+const LMDB_PREFETCH_WRITES = env_mngr.get(hdb_terms.CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 
 const CREATED_TIME_ATTRIBUTE_NAME = hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME;
 const UPDATED_TIME_ATTRIBUTE_NAME = hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME;
@@ -84,7 +84,11 @@ function insertRecord(env, hash_attribute, write_attributes, record) {
 			let values = common.getIndexedValues(value);
 			let dbi = env.dbis[attribute];
 			if (values) {
-				if (LMDB_PREFETCH_WRITES) dbi.prefetch(values.map(v => ({ key: v, value: hash_value })), noop);
+				if (LMDB_PREFETCH_WRITES)
+					dbi.prefetch(
+						values.map((v) => ({ key: v, value: hash_value })),
+						noop
+					);
 				for (let i = 0, l = values.length; i < l; i++) {
 					dbi.put(values[i], hash_value);
 				}
@@ -294,9 +298,9 @@ function updateUpsertRecord(
 	if (had_existing) result.original_records.push(existing_record);
 	let completion;
 	const do_put = () => {
-	// iterate the entries from the record
-	// for-in is about 5x as fast as for-of Object.entries, and this is extremely time sensitive since it is
-	// inside a write transaction
+		// iterate the entries from the record
+		// for-in is about 5x as fast as for-of Object.entries, and this is extremely time sensitive since it is
+		// inside a write transaction
 		for (let key in record) {
 			if (!record.hasOwnProperty(key) || key === hash_attribute) {
 				continue;
@@ -323,14 +327,22 @@ function updateUpsertRecord(
 			//if the update cleared out the attribute value we need to delete it from the index
 			let values = common.getIndexedValues(existing_value);
 			if (values) {
-				if (LMDB_PREFETCH_WRITES) dbi.prefetch(values.map(v => ({ key: v, value: hash_value })), noop);
+				if (LMDB_PREFETCH_WRITES)
+					dbi.prefetch(
+						values.map((v) => ({ key: v, value: hash_value })),
+						noop
+					);
 				for (let i = 0, l = values.length; i < l; i++) {
 					dbi.remove(values[i], hash_value);
 				}
 			}
 			values = common.getIndexedValues(value);
 			if (values) {
-				if (LMDB_PREFETCH_WRITES) dbi.prefetch(values.map(v => ({ key: v, value: hash_value })), noop);
+				if (LMDB_PREFETCH_WRITES)
+					dbi.prefetch(
+						values.map((v) => ({ key: v, value: hash_value })),
+						noop
+					);
 				for (let i = 0, l = values.length; i < l; i++) {
 					dbi.put(values[i], hash_value);
 				}
@@ -343,10 +355,8 @@ function updateUpsertRecord(
 	// use optimistic locking to only commit if the existing record state still holds true.
 	// this is superior to using an async transaction since it doesn't require JS execution
 	// during the write transaction.
-	if (existing_entry)
-		completion = primary_dbi.ifVersion(hash_value, existing_entry.version, do_put);
-	else
-		completion = primary_dbi.ifNoExists(hash_value, do_put);
+	if (existing_entry) completion = primary_dbi.ifVersion(hash_value, existing_entry.version, do_put);
+	else completion = primary_dbi.ifNoExists(hash_value, do_put);
 	return completion.then((success) => {
 		if (!success) {
 			// try again

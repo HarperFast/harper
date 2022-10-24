@@ -10,13 +10,12 @@ const terms = require('../../utility/hdbTerms');
 env_mngr.initSync();
 
 const LMDB_NOSYNC =
-	env_mngr.get(terms.CONFIG_PARAM_MAP.STORAGE_WRITEASYNC) === true ||
-	env_mngr.get(terms.CONFIG_PARAM_MAP.STORAGE_WRITEASYNC) === 'true' ||
-	env_mngr.get(terms.CONFIG_PARAM_MAP.STORAGE_WRITEASYNC) === 'TRUE';
+	env_mngr.get(terms.CONFIG_PARAMS.STORAGE_WRITEASYNC) === true ||
+	env_mngr.get(terms.CONFIG_PARAMS.STORAGE_WRITEASYNC) === 'true' ||
+	env_mngr.get(terms.CONFIG_PARAMS.STORAGE_WRITEASYNC) === 'TRUE';
 
-const LMDB_OVERLAPPING_SYNC = env_mngr.get(terms.CONFIG_PARAM_MAP.STORAGE_OVERLAPPINGSYNC);
-const LMDB_NOREADAHEAD = env_mngr.get(terms.CONFIG_PARAM_MAP.STORAGE_NOREADAHEAD);
-
+const LMDB_OVERLAPPING_SYNC = env_mngr.get(terms.CONFIG_PARAMS.STORAGE_OVERLAPPINGSYNC);
+const LMDB_NOREADAHEAD = env_mngr.get(terms.CONFIG_PARAMS.STORAGE_NOREADAHEAD);
 
 class OpenEnvironmentObject {
 	constructor(path, read_only = false) {

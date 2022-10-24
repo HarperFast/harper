@@ -539,6 +539,7 @@ describe('Test configUtils module', () => {
 			rootpath: null,
 			storage_writeasync: false,
 			storage_caching: true,
+			storage_compression: false,
 			storage_noreadahead: true,
 			storage_prefetchwrites: true,
 			operationsapi_tls_certificate: null,

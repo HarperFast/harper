@@ -2,8 +2,8 @@
 const env_mngr = require('../environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 env_mngr.initSync();
-const LMDB_COMPRESSION = env_mngr.get(terms.CONFIG_PARAM_MAP.STORAGE_COMPRESSION);
-const LMDB_CACHING = env_mngr.get(terms.CONFIG_PARAM_MAP.STORAGE_CACHING) !== false;
+const LMDB_COMPRESSION = env_mngr.get(terms.CONFIG_PARAMS.STORAGE_COMPRESSION);
+const LMDB_CACHING = env_mngr.get(terms.CONFIG_PARAMS.STORAGE_CACHING) !== false;
 
 /**
  * Defines how a DBI will be created/opened
