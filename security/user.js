@@ -42,7 +42,7 @@ const license = require('../utility/registration/hdb_license');
 const systemSchema = require('../json/systemSchema');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdb_errors;
-const { UserEventMsg } = require('../server/ipc/utility/ipcUtils');
+const { UserEventMsg } = require('../server/threads/itc');
 const _ = require('lodash');
 
 const USER_ATTRIBUTE_ALLOWLIST = {

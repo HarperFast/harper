@@ -23,7 +23,7 @@ function handleBeforeExit() {
 	harper_logger.info('beforeExit caught');
 	process.exit(0);
 }
-
+/**/
 function handleExit() {
 	harper_logger.info('exit caught');
 	process.exit(0);

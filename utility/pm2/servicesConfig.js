@@ -64,9 +64,8 @@ function generateMainServerConfig() {
 
 	const hdb_log = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.HDB);
 	const license = hdb_license.licenseSearch();
-	const mem_value = license.ram_allocation
-		? hdb_terms.MEM_SETTING_KEY + license.ram_allocation
-		: hdb_terms.MEM_SETTING_KEY + hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT;
+	const max_memory = license.ram_allocation || hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT;
+	const mem_value = hdb_terms.MEM_SETTING_KEY + max_memory;
 
 	// We are using launch scripts here because something was happening with the build where stdout/err was
 	// losing reference to the pm2 process and not being logged. It seems to only happen with clustered processes.

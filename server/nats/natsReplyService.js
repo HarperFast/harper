@@ -33,14 +33,6 @@ async function initialize() {
 		harper_logger.notify('Starting reply service.');
 		await p_schema_to_global();
 
-		// Instantiate new instance of HDB IPC client and assign it to global.
-		try {
-			global.hdb_ipc = new IPCClient(process.pid, ipc_server_handlers);
-		} catch (err) {
-			harper_logger.error('Error instantiating new instance of IPC client in natsReplyService');
-			throw err;
-		}
-
 		const connection = await nats_utils.getConnection();
 		const subject_name = `${node_name}.__request__`;
 

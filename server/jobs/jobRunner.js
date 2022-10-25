@@ -8,8 +8,7 @@ const log = require('../../utility/logging/harper_logger');
 const jobs = require('./jobs');
 const hdb_export = require('../../data_layer/export');
 const hdb_delete = require('../../data_layer/delete');
-const pm2_config = require('../../utility/pm2/servicesConfig');
-const pm2_utils = require('../../utility/pm2/utilityFunctions');
+const { startWorker } = require('../../server/threads/start');
 const transaction_log = require('../../utility/logging/transactionLog');
 
 class RunnerMessage {
@@ -89,7 +88,7 @@ async function runJob(runner_message, operation) {
 		// Update with "IN PROGRESS"
 		await jobs.updateJob(runner_message.job);
 		// Run the operation.
-		await launchJobProcess(runner_message.job.id);
+		await launchJobThread(runner_message.job.id);
 	} catch (e) {
 		let err_message = e.message !== undefined ? e.message : e;
 		if (typeof err_message === 'string') {
@@ -119,10 +118,11 @@ async function runJob(runner_message, operation) {
  * @param job_id
  * @returns {Promise<void>}
  */
-async function launchJobProcess(job_id) {
-	const config = pm2_config.generateJobConfig(job_id);
-	log.trace('launching job process:', job_id);
-	await pm2_utils.start(config);
+async function launchJobThread(job_id) {
+	log.trace('launching job thread:', job_id);
+	startWorker('server/jobs/jobProcess.js', {
+		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: `JOB-${job_id}` },
+	});
 }
 
 module.exports = {

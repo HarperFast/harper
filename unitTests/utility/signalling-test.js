@@ -22,7 +22,7 @@ describe('Test signalling module', () => {
 		log_error_stub = sandbox.stub(hdb_logger, 'error');
 		sandbox.stub(hdb_logger, 'trace');
 		test_utils = require('../test_utils');
-		ipc_utils = require('../../server/ipc/utility/ipcUtils');
+		ipc_utils = require('../../server/threads/itc');
 		send_ipc_event_stub = sandbox.stub(ipc_utils, 'sendIpcEvent');
 		signalling = rewire('../../utility/signalling');
 	});

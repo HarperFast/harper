@@ -1,22 +1,23 @@
 'use strict';
-const {startWorker} = require('../utility/threads');
+const {startWorker} = require('./start');
 const {createServer} = require('net');
-const env = require('../utility/environment/environmentManager');
-env.initSync();
-const hdb_terms = require('../utility/hdbTerms');
-// at some point we may want to actually read from the https connections
+const env = require('../../utility/environment/environmentManager');
+const hdb_terms = require('../../utility/hdbTerms');
+const harper_logger = require("../../utility/logging/harper_logger");
+const pjson = require("../../package.json");
 module.exports = {
 	startHTTPThreads,
 	startSocketServer,
 };
 const workers = [];
+env.initSync();
 const THREAD_COUNT = Math.max(env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES),
 	env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES));
 const REMOTE_ADDRESS_AFFINITY = env.get(hdb_terms.HDB_SETTINGS_NAMES.REMOTE_ADDRESS_AFFINITY);
 
 function startHTTPThreads() {
 	for (let i = 0; i < THREAD_COUNT; i++) {
-		let worker = startWorker('server/thread-http-server.js');
+		let worker = startWorker('server/threads/thread-http-server.js');
 		worker.expectedIdle = 1;
 		worker.requests = 1;
 		workers.push(worker);
@@ -25,7 +26,7 @@ function startHTTPThreads() {
 
 function startSocketServer(type, port) {
 	let workerStrategy = REMOTE_ADDRESS_AFFINITY ? findByRemoteAddressAffinity : findMostIdleWorker;
-	console.log('workerStrategy', workerStrategy.name);
+	// at some point we may want to actually read from the https connections
 	createServer({
 		allowHalfOpen: true,
 		pauseOnConnect: true,
@@ -39,7 +40,7 @@ function startSocketServer(type, port) {
 		worker.postMessage({type, fd: socket._handle.fd});
 		//console.log('sent request to', worker.threadId);
 	}).listen(port);
-	console.log('listening');
+	harper_logger.info(`HarperDB ${pjson.version} Server running on port ${port}`);
 }
 
 let second_best_availability = 0;

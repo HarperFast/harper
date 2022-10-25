@@ -15,11 +15,8 @@ const terms = require('../../utility/hdbTerms');
 const harper_logger = require('../../utility/logging/harper_logger');
 const global_schema = require('../../utility/globalSchema');
 const user_schema = require('../../security/user');
-const IPCClient = require('../ipc/IPCClient');
-const ipc_server_handlers = require('../ipc/serverHandlers');
-const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
 const { isMainThread } = require("worker_threads");
-const { registerServer } = require('../thread-http-server');
+const { registerServer } = require('../threads/thread-http-server');
 const getServerOptions = require('./helpers/getServerOptions');
 const getCORSOptions = require('./helpers/getCORSOptions');
 const getHeaderTimeoutConfig = require('./helpers/getHeaderTimeoutConfig');
@@ -49,13 +46,6 @@ let CF_ROUTES_DIR = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_
 async function customFunctionsServer() {
 	try {
 		// Instantiate new instance of HDB IPC client and assign it to global.
-		try {
-			global.hdb_ipc = new IPCClient(process.pid, ipc_server_handlers);
-		} catch (err) {
-			harper_logger.error('Error instantiating new instance of IPC client in Custom Functions server');
-			harper_logger.error(err);
-			throw err;
-		}
 
 		harper_logger.info('In Custom Functions Fastify server' + process.cwd());
 		harper_logger.info(`Custom Functions Running with NODE_ENV set as: ${process.env.NODE_ENV}`);

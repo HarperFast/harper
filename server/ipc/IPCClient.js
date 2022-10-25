@@ -6,7 +6,6 @@ const hdb_terms = require('../../utility/hdbTerms');
 const hdb_logger = require('../../utility/logging/harper_logger');
 const { IPC_ERRORS } = require('../../utility/errors/commonErrors');
 const os = require('os');
-const {parentPort} = require("worker_threads");
 
 /**
  * This class defines an IPC client. A client will emit event to the IPC server.

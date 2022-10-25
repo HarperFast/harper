@@ -13,7 +13,7 @@ const user_functions = require('./user');
 const update = require('../data_layer/insert').update;
 const UpdateObject = require('../data_layer/UpdateObject');
 const signalling = require('../utility/signalling');
-const { UserEventMsg } = require('../server/ipc/utility/ipcUtils');
+const { UserEventMsg } = require('../server/threads/itc');
 const env = require('../utility/environment/environmentManager');
 env.initSync();
 

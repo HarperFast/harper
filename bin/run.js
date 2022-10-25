@@ -21,9 +21,9 @@ const stop = require('./stop');
 const upgrade = require('./upgrade');
 const minimist = require('minimist');
 const spawn = require('child_process').spawn;
-const { startWorker } = require('../utility/threads');
+const { startWorker } = require('../server/threads/start');
 const { PACKAGE_ROOT } = require('../utility/hdbTerms');
-const { startHTTPThreads, startSocketServer } = require('../server/socket-router');
+const { startHTTPThreads, startSocketServer } = require('../server/threads/socket-router');
 
 const hdbInfoController = require('../data_layer/hdbInfoController');
 
@@ -190,18 +190,20 @@ async function main(called_by_install = false) {
 			}
 			if (clustering_enabled) await pm2_utils.startClustering();
 		}
-		// Console log Harper dog logo
-		console.log(chalk.magenta('' + fs.readFileSync(path.join(PACKAGE_ROOT, 'utility/install/ascii_logo.txt'))));
-		console.log(chalk.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
-
-		hdb_logger.notify(HDB_STARTED);
+		started();
 	} catch (err) {
 		console.error(err);
 		hdb_logger.error(err);
 		process.exit(1);
 	}
 }
+function started() {
+	// Console log Harper dog logo
+	console.log(chalk.magenta('' + fs.readFileSync(path.join(PACKAGE_ROOT, 'utility/install/ascii_logo.txt'))));
+	console.log(chalk.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
 
+	hdb_logger.notify(HDB_STARTED);
+}
 /**
  * Launches a separate process for HarperDB and then exits. This is an unusual practice and is anathema
  * to the way processes are typically handled, both in terminal and for services (systemd), but this functionality
@@ -215,6 +217,7 @@ async function launch() {
 	}
 	await initialize();
 	await pm2_utils.startService(terms.PROCESS_DESCRIPTORS.HDB);
+	started();
 	process.exit(0);
 }
 

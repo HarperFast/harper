@@ -9,7 +9,6 @@ const user = require('../../security/user');
 const promisify = require('util').promisify;
 const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 const server_utils = require('../serverHelpers/serverUtilities');
-const IPCClient = require('../ipc/IPCClient');
 const moment = require('moment');
 const jobs = require('./jobs');
 const { cloneDeep } = require('lodash');
@@ -29,7 +28,6 @@ const JOB_ID = JOB_NAME.substring(4);
 
 		await p_schema_to_global();
 		await user.setUsersToGlobal();
-		global.hdb_ipc = new IPCClient(process.pid, {});
 
 		// When the job record is first inserted in hdb_job table by HDB, the incoming API request is included, this is
 		// how we pass the request to the job process. IPC was initially used but messages were getting lost under heavy load.

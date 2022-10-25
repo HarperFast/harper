@@ -6,7 +6,7 @@ const log = require('../logging/harper_logger');
 const terms = require('../hdbTerms');
 const lmdb_get_table_size = require('../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbGetTableSize');
 const schema_describe = require('../../data_layer/schemaDescribe');
-const { sendIpcEvent } = require('../../server/ipc/utility/ipcUtils');
+const { sendItcEvent } = require('../../server/threads/itc');
 const env = require('./environmentManager');
 env.initSync();
 
@@ -257,7 +257,7 @@ async function getMetrics() {
 }
 async function getMetricsFromAllProcesses() {
 	// send a request for performance metrics from all processes
-	sendIpcEvent(new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.GET_METRICS, {}));
+	sendItcEvent(new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.GET_METRICS, {}));
 	// wait one second for a response
 	await new Promise(resolve => setTimeout(resolve, 1000));
 	await getMetrics();

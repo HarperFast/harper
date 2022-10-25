@@ -22,10 +22,8 @@ const global_schema = require('../../utility/globalSchema');
 const common_utils = require('../../utility/common_utils');
 const user_schema = require('../../security/user');
 const hdb_license = require('../../utility/registration/hdb_license');
-const ipc_server_handlers = require('../ipc/serverHandlers');
-const IPCClient = require('../ipc/IPCClient');
-const { isMainThread, threadId } = require("worker_threads");
-const { registerServer } = require('../thread-http-server');
+const { isMainThread } = require('worker_threads');
+const { registerServer } = require('../threads/thread-http-server');
 
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
@@ -72,15 +70,6 @@ async function hdbServer() {
 		global.clustering_on = false;
 		global.isMaster = cluster.isMaster;
 
-		// Instantiate new instance of HDB IPC client and assign it to global.
-		try {
-			global.hdb_ipc = new IPCClient(process.pid, ipc_server_handlers);
-		} catch (err) {
-			harper_logger.error('Error instantiating new instance of IPC client in HDB server');
-			harper_logger.error(err);
-			throw err;
-		}
-
 		process.on('uncaughtException', handleServerUncaughtException);
 		process.on('beforeExit', handleBeforeExit);
 		process.on('exit', handleExit);		process.on('SIGINT', handleSigint);
@@ -106,9 +95,9 @@ async function hdbServer() {
 			// now that server is fully loaded/ready, start listening on port provided in config settings or just use
 			// zero to wait for sockets from the main thread
 			await server.listen({ port: isMainThread ? props_server_port : 0, host: '::' });
-			console.log('register hdb server for', threadId);
 			registerServer(terms.SERVICES.HDB_CORE, server.server);
-			harper_logger.info(`HarperDB ${pjson.version} ${server_type} Server running on port ${props_server_port}`);
+			if (isMainThread)
+				harper_logger.info(`HarperDB ${pjson.version} ${server_type} Server running on port ${props_server_port}`);
 		} catch (err) {
 			server.close();
 			harper_logger.error(err);

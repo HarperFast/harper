@@ -6,9 +6,9 @@ const clean_lmdb_map = require('../../utility/lmdb/cleanLMDBMap');
 const global_schema = require('../../utility/globalSchema');
 const schema_describe = require('../../data_layer/schemaDescribe');
 const user_schema = require('../../security/user');
-const { validateEvent } = require('../../server/ipc/utility/ipcUtils');
+const { validateEvent } = require('../threads/itc');
 const { getMetrics } = require('../../utility/environment/systemInformation');
-const {sendIpcEvent} = require("./utility/ipcUtils");
+const {sendItcEvent} = require("../threads/itc");
 const IPCEventObject = require("./utility/IPCEventObject");
 const process = require('process');
 
@@ -114,7 +114,7 @@ async function userHandler(event) {
 }
 
 async function getMetricsHandler() {
-	sendIpcEvent(new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.METRICS, await getMetrics()));
+	sendItcEvent(new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.METRICS, await getMetrics()));
 }
 
 global.metrics = {};

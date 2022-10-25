@@ -1,22 +1,22 @@
 'use strict';
 
-const hdb_logger = require('../../../utility/logging/harper_logger');
-const hdb_utils = require('../../../utility/common_utils');
-const hdb_terms = require('../../../utility/hdbTerms');
-const { IPC_ERRORS } = require('../../../utility/errors/commonErrors');
+const hdb_logger = require('../../utility/logging/harper_logger');
+const hdb_utils = require('../../utility/common_utils');
+const hdb_terms = require('../../utility/hdbTerms');
+const { IPC_ERRORS } = require('../../utility/errors/commonErrors');
 const { parentPort, threadId, isMainThread } = require('worker_threads');
 
 module.exports = {
-	sendIpcEvent,
+	sendItcEvent,
 	validateEvent,
 	SchemaEventMsg,
 	UserEventMsg,
 };
 const thread_ports = [];
 if (parentPort) {
-	parentPort.on('message', parent_message => {
-		const server_ipc_handlers = require('../serverHandlers');
-		if (parent_message.type === 'add-port') {
+	parentPort.on('message', (parent_message) => {
+		const server_ipc_handlers = require('../ipc/serverHandlers');
+		if (parent_message.type === hdb_terms.IPC_EVENT_TYPES.ADD_PORT) {
 			thread_ports.push(parent_message.port);
 			parent_message.port.on('message', (event) => {
 				validateEvent(event);
@@ -30,7 +30,7 @@ if (parentPort) {
  * Emits an IPC event to the IPC server.
  * @param event
  */
-function sendIpcEvent(event) {
+function sendItcEvent(event) {
 	if (!isMainThread) event.message.originator = threadId;
 	for (let port of thread_ports) {
 		port.postMessage(event);

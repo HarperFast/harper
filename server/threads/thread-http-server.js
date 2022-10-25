@@ -2,10 +2,10 @@
 
 const {isMainThread, parentPort} = require("worker_threads");
 const {Socket} = require("net");
-const harper_logger = require('../utility/logging/harper_logger');
-const hdb_utils = require("../utility/common_utils");
-const env = require("../utility/environment/environmentManager");
-const terms = require("../utility/hdbTerms");
+const harper_logger = require('../../utility/logging/harper_logger');
+const hdb_utils = require("../../utility/common_utils");
+const env = require("../../utility/environment/environmentManager");
+const terms = require("../../utility/hdbTerms");
 // log all threads as HarperDB
 harper_logger.createLogFile(terms.PROCESS_LOG_NAMES.HDB, terms.HDB_PROC_DESCRIPTOR);
 env.initSync();
@@ -13,10 +13,10 @@ const SERVERS = {};
 module.exports = {
 	registerServer,
 };
-require('./harperdb/hdbServer');
+require('../harperdb/hdbServer');
 if (!isMainThread) {
 	const custom_func_enabled = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY);
-	if (custom_func_enabled) require('./customFunctions/customFunctionsServer');
+	if (custom_func_enabled) require('../customFunctions/customFunctionsServer');
 
 	parentPort.on('message', (message) => {
 		const {type, fd} = message;

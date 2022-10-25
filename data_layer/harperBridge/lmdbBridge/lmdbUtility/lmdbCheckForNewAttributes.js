@@ -6,7 +6,7 @@ const logger = require('../../../../utility/logging/harper_logger');
 const lmdbCreateAttribute = require('../lmdbMethods/lmdbCreateAttribute');
 const LMDBCreateAttributeObject = require('./LMDBCreateAttributeObject');
 const signalling = require('../../../../utility/signalling');
-const { SchemaEventMsg } = require('../../../../server/ipc/utility/ipcUtils');
+const { SchemaEventMsg } = require('../../../../server/threads/itc');
 
 const ATTRIBUTE_ALREADY_EXISTS = 'already exists in';
 
