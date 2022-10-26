@@ -33,7 +33,7 @@ Reduce or eliminate complexity by using HarperDB’s built-in API. Create and ma
 [Support](https://harperdb.io/docs/support/)
 
 ## Prerequisites
-Node.js 14.0.0 or higher. Our tested & fully supported Node.js version is 16.17.1
+Node.js 14 or higher. Our tested & fully supported Node.js version is 18.12
 
 HarperDB has been tested on the following platforms
 - Linux on AMD64
