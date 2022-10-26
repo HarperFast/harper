@@ -62,6 +62,7 @@ jobs:
         cd terraform
         echo "$CI_PRIVATE_KEY" > private_key && chmod 600 private_key
         mkdir upload
+
         cp ../harperdb/utility/devops/terraform/instance.tf .
         mv ../harperdb/utility/devops/scripts/user_data.sh .
 
