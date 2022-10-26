@@ -36,13 +36,13 @@ const OLD_VERSION_ERR =
 const INFO_SEARCH_RESULT = [
 	{
 		info_id: 1,
-		data_version_num: '3.0.0',
-		hdb_version_num: '3.0.0',
+		data_version_num: '4.0.0',
+		hdb_version_num: '4.0.0',
 	},
 	{
 		info_id: 2,
-		data_version_num: '3.1.0',
-		hdb_version_num: '3.1.0',
+		data_version_num: '4.1.0',
+		hdb_version_num: '4.1.0',
 	},
 ];
 let p_setSchemaDataToGlobal = util.promisify(global_schema.setSchemaDataToGlobal);
@@ -217,17 +217,18 @@ describe('Test hdbInfoController module ', function () {
 		beforeEach(() => {
 			getLatestHdbInfoRecord_stub = sandbox.stub().resolves(INFO_SEARCH_RESULT[1]);
 			hdb_info_controller_rw.__set__('getLatestHdbInfoRecord', getLatestHdbInfoRecord_stub);
+			insert_stub.resolves();
 		});
 
 		before(() => {
-			version_stub = sandbox.stub(version, 'version').returns('3.2.0');
+			version_stub = sandbox.stub(version, 'version').returns('4.0.0');
 			hasUpgradesRequired_stub = sandbox.stub(directiveManager, 'hasUpgradesRequired').returns(true);
 			checkIfInstallIsSupported_stub = sandbox.stub().returns();
+			process.argv.push('--CONFIRM_DOWNGRADE', 'yes');
 		});
 
 		it('getVersionUpdateInfo nominal test', async () => {
-			const expected_result = { data_version: '3.1.0', upgrade_version: '3.2.0' };
-
+			const expected_result = { data_version: '4.1.0', upgrade_version: '4.0.0' };
 			let result;
 			try {
 				result = await hdb_info_controller_rw.getVersionUpdateInfo();
@@ -236,6 +237,7 @@ describe('Test hdbInfoController module ', function () {
 			}
 
 			assert.deepEqual(result, expected_result, 'Expected UpgradeObject result not returned');
+			assert.equal(insert_stub.called, true, 'expected insert to be called');
 		});
 
 		it('getVersionUpdateInfo - no result returned if versions are the same', async () => {
@@ -252,9 +254,15 @@ describe('Test hdbInfoController module ', function () {
 			assert.deepEqual(result, expected_result, 'Expected null result not returned');
 		});
 
-		it('getVersionUpdateInfo - pre-upgrade version newer than upgrade version', async () => {
-			const expected_err_msg = 'Trying to downgrade HDB versions is not supported.';
+		it('getVersionUpdateInfo - pre-upgrade version newer than upgrade version, but only minor difference', async () => {
 			version_stub.returns(INFO_SEARCH_RESULT[0].hdb_version_num);
+			await hdb_info_controller_rw.getVersionUpdateInfo();
+			// expect no error to be thrown
+		});
+
+		it('getVersionUpdateInfo - error thrown if downgrading major version', async () => {
+			const test_error = 'Trying to downgrade major HDB versions is not supported.';
+			version_stub.returns(OLD_VERSION_NUM);
 
 			let result;
 			try {
@@ -264,7 +272,7 @@ describe('Test hdbInfoController module ', function () {
 			}
 
 			assert.ok(result instanceof Error, 'Expected error to be thrown');
-			assert.equal(result.message, expected_err_msg, 'Expected error message result not returned');
+			assert.equal(result.message, test_error, 'Expected error message to be thrown');
 			assert.ok(consoleLog_stub.calledOnce, 'Data version message was not logged to console');
 			assert.equal(
 				consoleLog_stub.args[0][0],
@@ -279,21 +287,6 @@ describe('Test hdbInfoController module ', function () {
 				),
 				'Console message not correct'
 			);
-		});
-
-		it('getVersionUpdateInfo - error thrown if downgrading version', async () => {
-			const test_error = 'Trying to downgrade HDB versions is not supported.';
-			version_stub.returns(OLD_VERSION_NUM);
-
-			let result;
-			try {
-				await hdb_info_controller_rw.getVersionUpdateInfo();
-			} catch (err) {
-				result = err;
-			}
-
-			assert.ok(result instanceof Error, 'Expected error to be thrown');
-			assert.equal(result.message, test_error, 'Expected error message to be thrown');
 		});
 
 		it('getVersionUpdateInfo - error thrown if version is too old', async () => {
