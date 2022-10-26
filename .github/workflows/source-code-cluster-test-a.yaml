@@ -16,8 +16,8 @@ jobs:
         pwd
         NODE_VERSION="$(cat package.json | jq -r '.engines."preferred-node"')"
         HARPERDB_VERSION=$(cat package.json | jq -r '.version')
-        echo "::set-output name=NODE_VERSION::$NODE_VERSION"
-        echo "::set-output name=HARPERDB_VERSION::$HARPERDB_VERSION"
+        echo "NODE_VERSION=$NODE_VERSION" >> $GITHUB_OUTPUT
+        echo "HARPERDB_VERSION=$HARPERDB_VERSION" >> $GITHUB_OUTPUT
   createInstances:
     needs:
       - getNodeVersion

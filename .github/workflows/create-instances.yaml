@@ -37,7 +37,7 @@ jobs:
     - name: Setup Terraform
       with:
         terraform_wrapper: false
-      uses: hashicorp/setup-terraform@v1
+      uses: hashicorp/setup-terraform@v2
     - uses: actions/download-artifact@v3
       if: inputs.installType == 'buildPackage'
       with:
@@ -85,8 +85,8 @@ jobs:
         mapfile -t public_dns_names <<< $(terraform output -json | jq -r '.public_dns_names.value[]')
         mapfile -t public_ips <<< $(terraform output -json | jq -r '.public_ips.value[]')
 
-        echo "::set-output name=PUBLIC_DNS_NAMES::${public_dns_names[@]}"
-        echo "::set-output name=PUBLIC_IPS::${public_ips[@]}"
+        echo "PUBLIC_DNS_NAMES=${public_dns_names[@]}" >> $GITHUB_OUTPUT
+        echo "PUBLIC_IPS=${public_ips[@]}" >> $GITHUB_OUTPUT
 
         mkdir ../harperdb/tfstate/
         mv terraform.tfstate ../harperdb/tfstate/
