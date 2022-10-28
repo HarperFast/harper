@@ -45,6 +45,7 @@ module.exports = {
 	autoCastJSONDeep,
 	removeDir: removeDir,
 	compareVersions,
+	isCompatibleDataVersion,
 	escapeRawValue: escapeRawValue,
 	unescapeValue: unescapeValue,
 	stringifyProps: stringifyProps,
@@ -328,6 +329,19 @@ function compareVersions(old_version, new_version) {
 		}
 	}
 	return segmentsA.length - segmentsB.length;
+}
+
+/**
+ * Check to see if the data from one version is compatible with another. Per semver, this is only major version changes
+ * @param old_version
+ * @param new_version
+ * @returns {boolean}
+ */
+function isCompatibleDataVersion(old_version, new_version, check_minor = false) {
+	let old_parts = old_version.toString().split('.');
+	let new_parts = new_version.toString().split('.');
+	return old_parts[0] === new_parts[0] &&
+		(!check_minor || old_parts[1] === new_parts[1]);
 }
 
 /**

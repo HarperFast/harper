@@ -15,6 +15,7 @@ const hdb_terms = require('../utility/hdbTerms');
 const BinObjects = require('../bin/BinObjects');
 const DataLayerObjects = require('./DataLayerObjects');
 const { UpgradeObject } = require('../upgrade/UpgradeObjects');
+const { forceDowngradePrompt } = require('../upgrade/upgradePrompt');
 const version = require('../bin/version');
 const log = require('../utility/logging/harper_logger');
 const hdb_utils = require('../utility/common_utils');
@@ -171,13 +172,25 @@ async function getVersionUpdateInfo() {
 		} else {
 			data_version = latest_info_record.data_version_num;
 			if (hdb_utils.compareVersions(data_version.toString(), upgrade_version.toString()) > 0) {
-				console.log(chalk.yellow(`This instance's data was last run on version ${data_version}`));
-				console.error(
-					chalk.red(
-						`You have installed a version lower than the version that your data was created on or was upgraded to. This may cause issues and is currently not supported.${os.EOL}${hdb_terms.SUPPORT_HELP_MSG}`
-					)
-				);
-				throw new Error('Trying to downgrade HDB versions is not supported.');
+				if (!hdb_utils.isCompatibleDataVersion(data_version.toString(), upgrade_version.toString())) {
+					console.log(chalk.yellow(`This instance's data was last run on version ${data_version}`));
+					console.error(
+						chalk.red(
+							`You have installed a version lower than the version that your data was created on or was upgraded to. This may cause issues and is currently not supported.${os.EOL}${hdb_terms.SUPPORT_HELP_MSG}`
+						)
+					);
+					throw new Error('Trying to downgrade major HDB versions is not supported.');
+				}
+				if (!hdb_utils.isCompatibleDataVersion(data_version.toString(), upgrade_version.toString(), true)) {
+					console.log(chalk.yellow(`This instance's data was last run on version ${data_version}`));
+
+					if (await forceDowngradePrompt(new UpgradeObject(data_version, upgrade_version))) {
+						await insertHdbUpgradeInfo(upgrade_version.toString());
+					} else {
+						console.log('Cancelled downgrade, closing HarperDB');
+						process.exit(0);
+					}
+				}
 			}
 		}
 

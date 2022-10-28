@@ -15,7 +15,8 @@ describe('Test version module', () => {
 
 	it('Test correct node version is returned', () => {
 		const result = version.nodeVersion();
-		expect(result).to.equal('16.17.1');
+		const package_json = require('../../package.json');
+		expect(result).to.equal(package_json.engines['preferred-node']);
 	});
 
 	it('Test undefined returned if no json data', () => {
