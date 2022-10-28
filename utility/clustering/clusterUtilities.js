@@ -32,6 +32,7 @@ module.exports = {
 	checkClusteringEnabled,
 	getAllNodeRecords,
 	getSystemInfo,
+	reverseSubscription,
 };
 
 async function authHeaderToUser(json_body) {
@@ -86,82 +87,43 @@ function reverseSubscription(subscription) {
 		throw new Error('Received invalid subscription object');
 	}
 
+	const { schema, table, hash_attribute } = subscription;
+
+	const result = {
+		schema,
+		table,
+		hash_attribute,
+	};
+
 	if (subscription.subscribe === true && subscription.publish === false) {
-		return {
-			subscribe: false,
-			publish: true,
-		};
+		result.subscribe = false;
+		result.publish = true;
 	} else if (subscription.subscribe === false && subscription.publish === true) {
-		return {
-			subscribe: true,
-			publish: false,
-		};
+		result.subscribe = true;
+		result.publish = false;
 	} else {
-		return {
-			subscribe: subscription.subscribe,
-			publish: subscription.publish,
-		};
+		result.subscribe = subscription.subscribe;
+		result.publish = subscription.publish;
 	}
+
+	return result;
 }
 
 /**
- * Builds two objects. One is what will be inserted into the local hdb_nodes table.
- * The other is what is sent to the remote node when adding or updating a node.
- * @param subscriptions - array of nodes new/updated subscriptions
+ * Build that payload that is required by remote node to add/update a node/subscriptions
+ * @param subscriptions
  * @param local_node_name
- * @param remote_node_name
  * @param operation
  * @param system_info
- * @param existing_subs - array of nodes existing subscriptions if they exist.
- * @returns {{remote_payload: RemotePayloadObject, node_record: Node}}
+ * @returns {RemotePayloadObject}
  */
-function buildNodePayloads(
-	subscriptions,
-	local_node_name,
-	remote_node_name,
-	operation,
-	system_info,
-	existing_subs = undefined
-) {
-	let local_node_subs = [];
+function buildNodePayloads(subscriptions, local_node_name, operation, system_info) {
 	let remote_node_subs = [];
-	const update_record = !hdb_utils.isEmptyOrZeroLength(existing_subs);
 	for (let i = 0, sub_length = subscriptions.length; i < sub_length; i++) {
 		const subscription = subscriptions[i];
-		const schema = subscription.schema;
-		const table = subscription.table;
+		const { schema, table } = subscription;
 		const hash_attribute = hdb_utils.getTableHashAttribute(schema, table);
-		if (hash_attribute === undefined) {
-			throw new Error(`Undefined hash_attribute for ${schema}.${table}`);
-		}
 
-		// If there is already a record for the node we update that nodes subscription array.
-		if (update_record) {
-			let match_found = false;
-			for (let j = 0, e_sub_length = existing_subs.length; j < e_sub_length; j++) {
-				const existing_sub = existing_subs[j];
-				// If there is an existing matching subscription in the hdb_nodes table update it.
-				if (existing_sub.schema === schema && existing_sub.table === table) {
-					existing_sub.publish = subscription.publish;
-					existing_sub.subscribe = subscription.subscribe;
-					match_found = true;
-					break;
-				}
-			}
-
-			// If no matching subscription is found but there is are existing sub add new sub to existing.
-			if (!match_found) {
-				existing_subs.push(new NodeSubscription(schema, table, subscription.publish, subscription.subscribe));
-			}
-		} else {
-			// If there is no existing record for node create a new sub and push to sub array.
-			const node_table_sub = new NodeSubscription(schema, table, subscription.publish, subscription.subscribe);
-			local_node_subs.push(node_table_sub);
-		}
-
-		// This payload is being sent to the the remote node which means it will have
-		// the reverse pub/sub of the local node.
-		// We only include subs that are changing in the payload
 		const { subscribe, publish } = reverseSubscription(subscription);
 		const remote_payload_sub = new RemotePayloadSubscription(
 			schema,
@@ -174,15 +136,7 @@ function buildNodePayloads(
 		remote_node_subs.push(remote_payload_sub);
 	}
 
-	const node_subs = update_record ? existing_subs : local_node_subs;
-	// system info is undefined here because we have nto yet received it from the remote node
-	const node_record = new Node(remote_node_name, node_subs, undefined);
-	const remote_payload = new RemotePayloadObject(operation, local_node_name, remote_node_subs, system_info);
-
-	return {
-		node_record,
-		remote_payload,
-	};
+	return new RemotePayloadObject(operation, local_node_name, remote_node_subs, system_info);
 }
 
 /**

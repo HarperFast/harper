@@ -110,16 +110,29 @@ describe('Test configureCluster module', () => {
 		expect(add_node_stub.callCount).to.equal(2);
 		expect(add_node_stub.getCall(0).args[0]).to.eql(test_req.connections[0]);
 		expect(add_node_stub.getCall(1).args[0]).to.eql(test_req.connections[1]);
-		expect(result).to.equal('Cluster successfully configured.');
+		expect(result).to.eql({
+			connections: [
+				{
+					node_name: 'remote_node_test',
+					subscriptions: 'Successfully added node',
+				},
+				{
+					node_name: 'mr_node',
+					subscriptions: 'Successfully added node',
+				},
+			],
+			message: 'Configure cluster complete.',
+		});
 	});
 
 	it('Test error from both calls to add node is returned in result', async () => {
 		add_node_stub.rejects(new Error('Error adding node'));
 		const result = await configure_cluster(test_req);
 		expect(result).to.eql({
+			connections: [],
+			failed_nodes: ['remote_node_test', 'mr_node'],
 			message:
 				'Configure cluster was partially successful. Errors occurred when attempting to configure the following nodes. Check the logs for more details.',
-			failed_nodes: ['remote_node_test', 'mr_node'],
 		});
 
 		add_node_stub.resolves();
@@ -129,9 +142,19 @@ describe('Test configureCluster module', () => {
 		remove_node_stub.onCall(1).rejects(new Error('Error removing node'));
 		const result = await configure_cluster(test_req);
 		expect(result).to.eql({
+			connections: [
+				{
+					node_name: 'remote_node_test',
+					subscriptions: undefined,
+				},
+				{
+					node_name: 'mr_node',
+					subscriptions: undefined,
+				},
+			],
+			failed_nodes: ['even_remoter_node_test'],
 			message:
 				'Configure cluster was partially successful. Errors occurred when attempting to configure the following nodes. Check the logs for more details.',
-			failed_nodes: ['even_remoter_node_test'],
 		});
 	});
 
