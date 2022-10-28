@@ -78,7 +78,7 @@ function generateHDBServerConfig() {
 		merge_logs: true,
 		out_file: hdb_log,
 		error_file: hdb_log,
-		instances: env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES),
+		instances: env.get(hdb_terms.CONFIG_PARAMS.HTTP_THREADS),
 		node_args: mem_value,
 		cwd: LAUNCH_SCRIPTS_DIR,
 	};
@@ -113,7 +113,7 @@ function generateCFServerConfig() {
 		merge_logs: true,
 		out_file: cf_logs,
 		error_file: cf_logs,
-		instances: env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES),
+		instances: env.get(hdb_terms.CONFIG_PARAMS.HTTP_THREADS),
 		node_args: mem_value,
 		cwd: LAUNCH_SCRIPTS_DIR,
 	};

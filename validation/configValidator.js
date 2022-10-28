@@ -53,7 +53,7 @@ function configValidator(config_json) {
 
 	const enabled_constraints = boolean.required();
 	const node_env_constraints = Joi.valid('production', 'development').required();
-	const processes_constraints = number.min(1).max(1000).empty(null).default(setDefaultProcesses);
+	const threads_constraints = number.min(1).max(1000).empty(null).default(setDefaultThreads);
 	const root_constraints = string
 		.pattern(/^[\\\/]$|([\\\/][a-zA-Z_0-9\:-]+)+$/, 'directory path')
 		.empty(null)
@@ -136,7 +136,6 @@ function configValidator(config_json) {
 				timeout: number.min(1).required(),
 			}),
 			nodeEnv: node_env_constraints,
-			processes: processes_constraints,
 			root: root_constraints,
 			tls: Joi.object({
 				certificate: pem_file_constraints,
@@ -186,7 +185,6 @@ function configValidator(config_json) {
 				timeout: number.min(1).required(),
 			}).required(),
 			nodeEnv: node_env_constraints,
-			processes: processes_constraints,
 			tls: Joi.object({
 				certificate: pem_file_constraints,
 				certificateAuthority: pem_file_constraints,
@@ -194,6 +192,9 @@ function configValidator(config_json) {
 			}),
 		}).required(),
 		rootPath: string.pattern(/^[\\\/]$|([\\\/][a-zA-Z_0-9\:-]+)+$/, 'directory path').required(),
+		http: Joi.object({
+			threads: threads_constraints,
+		}).required(),
 		storage: Joi.object({
 			writeAsync: boolean.required(),
 			overlappingSync: boolean.optional(),
@@ -245,7 +246,7 @@ function validateRotationMaxSize(value, helpers) {
 	}
 }
 
-function setDefaultProcesses(parent, helpers) {
+function setDefaultThreads(parent, helpers) {
 	const config_param = helpers.state.path.join('.');
 	let processors = os.cpus().length;
 	// default to one less than the number of logical CPU/processors so we can have good concurrency with the
