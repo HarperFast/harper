@@ -53,22 +53,21 @@ describe('Test pm2 servicesConfig module', () => {
 		expect(result).to.eql(expected_result);
 	});
 
-	it('Test result from generateHDBServerConfig function is correct non compiled', () => {
+	it('Test result from generateMainServerConfig function is correct non compiled', () => {
 		const expected_result = {
-			exec_mode: 'cluster',
-			instances: 4,
+			exec_mode: 'fork',
 			name: 'HarperDB',
 			node_args: '--max-old-space-size=512',
 			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.HDB),
 			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.HDB),
-			script: path.join(LAUNCH_SCRIPTS_DIR, 'launchHarperDB.js'),
-			cwd: LAUNCH_SCRIPTS_DIR,
+			script: 'bin/harperdb.js',
+			cwd: process.cwd(),
 			merge_logs: true,
 			env: {
 				PROCESS_NAME: hdb_terms.PROCESS_DESCRIPTORS.HDB,
 			},
 		};
-		const result = services_config.generateHDBServerConfig();
+		const result = services_config.generateMainServerConfig();
 		expect(result).to.eql(expected_result);
 	});
 

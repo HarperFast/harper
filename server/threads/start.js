@@ -2,10 +2,11 @@
 
 const { Worker, MessageChannel } = require('worker_threads');
 const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
-const { join } = require('path');
+const { join, isAbsolute } = require('path');
 const { totalmem } = require('os');
 const hdb_terms = require("../../utility/hdbTerms");
 const env = require("../../utility/environment/environmentManager");
+const hdb_license = require("../../utility/registration/hdb_license");
 const THREAD_COUNT = Math.max(env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES),
 	env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES));
 const MB = 1024 * 1024;
@@ -16,6 +17,8 @@ module.exports = {
 };
 
 function startWorker(path, options = {}) {
+	const license = hdb_license.licenseSearch();
+	const licensed_memory = license.ram_allocation
 	// Take a percentage of total memory to determine the max memory for each thread. The percentage is based
 	// on the thread count. Generally, it is unrealistic to efficiently use the majority of total memory for a single
 	// NodeJS worker since it would lead to massive swap space usage with other processes and there is significant
@@ -25,7 +28,8 @@ function startWorker(path, options = {}) {
 	// 4 threads: 50% of total memory per thread
 	// 16 threads: 20% of total memory per thread
 	// 64 threads: 11% of total memory per thread
-	const max_memory = Math.max(Math.floor(totalmem() / MB / (1 + THREAD_COUNT / 4)), 512);
+	// (and then limit to their license limit, if they have one)
+	const max_memory = Math.min(Math.max(Math.floor(totalmem() / MB / (1 + THREAD_COUNT / 4)), 512), licensed_memory || Infinity);
 	// Max young memory space (semi-space for scavenger) is 1/128 of max memory. For most of our m5 machines this will be
 	// 64MB (less for t3's). This is based on recommendations from:
 	// https://www.alibabacloud.com/blog/node-js-application-troubleshooting-manual---comprehensive-gc-problems-and-optimization_594965
@@ -33,7 +37,7 @@ function startWorker(path, options = {}) {
 	// https://plaid.com/blog/how-we-parallelized-our-node-service-by-30x/
 	const max_young_memory = Math.min(Math.max(max_memory >> 7, 16), 64);
 
-	const worker = new Worker(join(PACKAGE_ROOT, path), Object.assign({
+	const worker = new Worker(isAbsolute(path) ? path : join(PACKAGE_ROOT, path), Object.assign({
 		maxOldGenerationSizeMb: max_memory,
 		maxYoungGenerationSizeMb: max_young_memory,
 	}, options));

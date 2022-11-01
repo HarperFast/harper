@@ -1035,16 +1035,18 @@ describe('Test pm2 utilityFunctions module', () => {
 
 	it('Test startClustering functions calls startService for all the clustering services', async () => {
 		const start_service_stub = sandbox.stub();
+		const start_worker_stub = sandbox.stub();
 		const create_queue_stub = sandbox.stub();
 		const start_service_rw = utility_functions.__set__('startService', start_service_stub);
+		const start_worker_rw = utility_functions.__set__('startWorker', start_worker_stub);
 		const create_queue_rw = utility_functions.__set__('nats_utils.createWorkQueueStream', create_queue_stub);
 		get_all_node_records_stub.resolves([{ system_info: { hdb_version: '3.x.x' } }]);
 		await utility_functions.startClustering();
 		expect(start_service_stub.getCall(0).args[0]).to.equal('Clustering Hub');
 		expect(start_service_stub.getCall(1).args[0]).to.equal('Clustering Leaf');
-		expect(start_service_stub.getCall(2).args[0]).to.equal('Clustering Ingest Service');
-		expect(start_service_stub.getCall(3).args[0]).to.equal('Clustering Reply Service');
-		expect(start_service_stub.getCall(4).args[0]).to.equal('Upgrade-4-0-0');
+		expect(start_worker_stub.getCall(0).args[1].name).to.equal('Clustering Ingest Service');
+		expect(start_worker_stub.getCall(1).args[1].name).to.equal('Clustering Reply Service');
+		expect(start_worker_stub.getCall(2).args[1].name).to.equal('Upgrade-4-0-0');
 		expect(create_queue_stub.args[0][0]).to.eql({
 			stream_name: '__HARPERDB_WORK_QUEUE__',
 			durable_name: 'HDB_WORK_QUEUE',

@@ -112,7 +112,7 @@ describe('Test run module', () => {
 			install_rw = run_rw.__set__('install', install_stub);
 			get_ver_update_info_stub = sandbox.stub(hdbInfoController, 'getVersionUpdateInfo');
 			upgrade_stub = sandbox.stub(upgrade, 'upgrade');
-			run = run_rw.__get__('run');
+			run = run_rw.__get__('launch');
 		});
 
 		beforeEach(() => {
@@ -137,45 +137,6 @@ describe('Test run module', () => {
 			await run();
 
 			expect(check_trans_log_env_exists_stub).to.have.been.called;
-			expect(start_all_services_stub).to.have.been.called;
-		});
-
-		it('Test run happy path all services started just custom functions enabled', async () => {
-			is_hdb_installed_stub.resolves(true);
-			get_ver_update_info_stub.resolves(undefined);
-			get_prob_stub.withArgs('CLUSTERING').returns(false);
-			get_prob_stub.withArgs('CUSTOM_FUNCTIONS').returns(true);
-			await run();
-
-			expect(start_service_stub.getCall(0).args[0]).to.equal('IPC');
-			expect(start_service_stub.getCall(1).args[0]).to.equal('HarperDB');
-			expect(start_service_stub.getCall(2).args[0]).to.equal('Custom Functions');
-		});
-
-		it('Test run happy path select services are run when args passed', async () => {
-			let test_args = ['--service', 'not service,harperdb,ipc,custom functions'];
-			process.argv.push(...test_args);
-			is_hdb_installed_stub.resolves(true);
-			get_ver_update_info_stub.resolves(undefined);
-			await run();
-			expect(start_service_stub.getCall(0).args[0]).to.equal('HarperDB');
-			expect(start_service_stub.getCall(1).args[0]).to.equal('IPC');
-			expect(start_service_stub.getCall(2).args[0]).to.equal('Custom Functions');
-		});
-
-		it('Test clustering hub and leaf servers are started if clustering enabled', async () => {
-			const service_index = process.argv.indexOf('--service');
-			if (service_index > -1) process.argv.splice(service_index, 1);
-			const names_index = process.argv.indexOf('not service,harperdb,ipc,custom functions');
-			if (names_index > -1) process.argv.splice(names_index, 1);
-
-			get_prob_stub.withArgs('CLUSTERING').returns(true);
-			get_prob_stub.withArgs('CUSTOM_FUNCTIONS').returns(false);
-			await run();
-
-			expect(start_service_stub.getCall(0).args[0]).to.equal('IPC');
-			expect(start_service_stub.getCall(1).args[0]).to.equal('HarperDB');
-			expect(start_clustering_stub.called).to.be.true;
 		});
 
 		it('Test upgrade is called if upgrade version permits', async () => {
@@ -471,41 +432,6 @@ describe('Test run module', () => {
 		});
 	});
 
-	describe('Test foregroundHandler and isForegroundProcess functions', () => {
-		const process_exit_handler_stub = sandbox.stub();
-		let process_exit_handler_rw;
-		let foregroundHandler;
-		let spawn_log_process_stub = sandbox.stub();
-		let spawn_log_process_rw;
-
-		before(() => {
-			process_exit_handler_rw = run_rw.__set__('processExitHandler', process_exit_handler_stub);
-			foregroundHandler = run_rw.__get__('foregroundHandler');
-			spawn_log_process_rw = run_rw.__set__('spawnLogProcess', spawn_log_process_stub);
-		});
-
-		beforeEach(() => {
-			sandbox.resetHistory();
-		});
-
-		after(() => {
-			process_exit_handler_rw();
-			spawn_log_process_rw();
-		});
-
-		it('Test happy path non foreground', () => {
-			foregroundHandler();
-			expect(process_exit_stub.getCall(0).firstArg).to.equal(0);
-		});
-
-		it('Test happy path foreground', () => {
-			run_rw.__set__('getRunInForeground', () => true);
-			foregroundHandler();
-			expect(spawn_log_process_stub.called).to.be.true;
-			run_rw.__set__('getRunInForeground', () => false);
-		});
-	});
-
 	describe('Test processExitHandler function', () => {
 		let stop_stub;
 		let processExitHandler;
@@ -514,6 +440,10 @@ describe('Test run module', () => {
 			run_rw.__set__('getRunInForeground', () => true);
 			stop_stub = sandbox.stub(stop, 'stop');
 			processExitHandler = run_rw.__get__('processExitHandler');
+		});
+
+		beforeEach(() => {
+			sandbox.resetHistory();
 		});
 
 		after(() => {
@@ -573,19 +503,6 @@ describe('Test run module', () => {
 			expect(log_error_stub.getCall(0).firstArg).to.equal(
 				'Error checking for HDB install - Error: I am a unit test error test'
 			);
-		});
-	});
-
-	describe('Test spawnLogProcess function', () => {
-		it('Test spawn is called with correct arguments', () => {
-			const write_file_stub = sandbox.stub();
-			run_rw.__set__('fs.writeFileSync', write_file_stub);
-			const spawnLogProcess = run_rw.__get__('spawnLogProcess');
-			spawnLogProcess();
-			expect(spawn_stub.getCall(0).args[0]).to.equal('node');
-			expect(spawn_stub.getCall(0).args[1][0]).to.equal(path.resolve(__dirname, '../../node_modules/pm2/bin/pm2'));
-			expect(spawn_stub.getCall(0).args[1][1]).to.equal('logs');
-			expect(write_file_stub.called).to.be.true;
 		});
 	});
 });

@@ -612,12 +612,12 @@ let replyWorker;
  */
 async function startClustering() {
 	for (const proc in hdb_terms.CLUSTERING_PROCESSES) {
-		if (proc === hdb_terms.CLUSTERING_PROCESSES.CLUSTERING_INGEST_PROC_DESCRIPTOR) {
-			ingestWorker = startWorker(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_INGEST_SERVICE);
-		} else if (proc === hdb_terms.CLUSTERING_PROCESSES.CLUSTERING_REPLY_SERVICE_DESCRIPTOR) {
-			replyWorker = startWorker(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_REPLY_SERVICE);
+		const service = hdb_terms.CLUSTERING_PROCESSES[proc];
+		if (service === hdb_terms.CLUSTERING_PROCESSES.CLUSTERING_INGEST_PROC_DESCRIPTOR) {
+			ingestWorker = startWorker(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_INGEST_SERVICE, { name : service });
+		} else if (service === hdb_terms.CLUSTERING_PROCESSES.CLUSTERING_REPLY_SERVICE_DESCRIPTOR) {
+			replyWorker = startWorker(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_REPLY_SERVICE, { name : service });
 		} else {
-			const service = hdb_terms.CLUSTERING_PROCESSES[proc];
 			await startService(service);
 		}
 	}
@@ -631,7 +631,7 @@ async function startClustering() {
 	for (let i = 0, rec_length = nodes.length; i < rec_length; i++) {
 		if (nodes[i].system_info?.hdb_version === hdb_terms.PRE_4_0_0_VERSION) {
 			hdb_logger.info('Starting clustering upgrade 4.0.0 process');
-			startWorker(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NODES_UPGRADE_4_0_0);
+			startWorker(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NODES_UPGRADE_4_0_0, { name: 'Upgrade-4-0-0' });
 			break;
 		}
 	}

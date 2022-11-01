@@ -215,10 +215,16 @@ async function launch() {
 	if (getRunInForeground()) {
 		return main();
 	}
-	await initialize();
-	await pm2_utils.startService(terms.PROCESS_DESCRIPTORS.HDB);
-	started();
-	process.exit(0);
+	try {
+		await initialize();
+		await pm2_utils.startService(terms.PROCESS_DESCRIPTORS.HDB);
+		started();
+		process.exit(0);
+	} catch (err) {
+		console.error(err);
+		hdb_logger.error(err);
+		process.exit(1);
+	}
 }
 
 /**
