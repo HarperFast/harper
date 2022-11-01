@@ -17,6 +17,10 @@ clustering:
     network:
       port: 9940
       routes:
+    streams:
+      maxAge: null
+      maxBytes: null
+      maxMsgs: null
   nodeName: null
   tls:
     certificate: null

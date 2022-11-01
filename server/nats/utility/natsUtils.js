@@ -33,6 +33,7 @@ const {
 	RetentionPolicy,
 	AckPolicy,
 	DeliverPolicy,
+	DiscardPolicy,
 	NatsConnection,
 	JetStreamManager,
 	JetStreamClient,
@@ -279,11 +280,18 @@ async function getServerList() {
  */
 async function createLocalStream(stream_name, subjects) {
 	const { jsm } = await getNATSReferences();
+	const max_age = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXAGE);
+	const max_msgs = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXMSGS);
+	const max_bytes = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXBYTES);
 	await jsm.streams.add({
 		name: stream_name,
 		storage: StorageType.File,
 		retention: RetentionPolicy.Limits,
 		subjects: subjects,
+		discard: DiscardPolicy.Old,
+		max_age: max_age === null ? 0 : max_age, // 0 is unlimited
+		max_msgs: max_msgs === null ? -1 : max_msgs, // -1 is unlimited
+		max_bytes: max_bytes === null ? -1 : max_bytes, // -1 is unlimited
 	});
 }
 

@@ -99,6 +99,11 @@ function configValidator(config_json) {
 					port: port_constraints,
 					routes: route_constraints,
 				}).required(),
+				streams: Joi.object({
+					maxAge: number.min(1).allow(null).required(),
+					maxBytes: number.min(1).allow(null).required(),
+					maxMsgs: number.min(1).allow(null).required(),
+				}).required(),
 			}).required(),
 			nodeName: nats_term_constraints,
 			tls: Joi.object({

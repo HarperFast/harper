@@ -521,7 +521,6 @@ const HDB_SETTINGS_NAMES = {
 
 const HDB_SETTINGS_NAMES_REVERSE_LOOKUP = _.invert(HDB_SETTINGS_NAMES);
 
-// Config parameters flattened.
 // If a param is added to config it must also be added here.
 const CONFIG_PARAMS = {
 	CLUSTERING_USER: 'clustering_user',
@@ -533,6 +532,9 @@ const CONFIG_PARAMS = {
 	CLUSTERING_HUBSERVER_NETWORK_PORT: 'clustering_hubServer_network_port',
 	CLUSTERING_LEAFSERVER_NETWORK_PORT: 'clustering_leafServer_network_port',
 	CLUSTERING_LEAFSERVER_NETWORK_ROUTES: 'clustering_leafServer_network_routes',
+	CLUSTERING_LEAFSERVER_STREAMS_MAXAGE: 'clustering_leafServer_streams_maxAge',
+	CLUSTERING_LEAFSERVER_STREAMS_MAXBYTES: 'clustering_leafServer_streams_maxBytes',
+	CLUSTERING_LEAFSERVER_STREAMS_MAXMSGS: 'clustering_leafServer_streams_maxMsgs',
 	CLUSTERING_NODENAME: 'clustering_nodeName',
 	CLUSTERING_TLS_CERTIFICATE: 'clustering_tls_certificate',
 	CLUSTERING_TLS_PRIVATEKEY: 'clustering_tls_privateKey',
@@ -665,6 +667,9 @@ const CONFIG_PARAM_MAP = {
 	clustering_hubserver_network_port: CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT,
 	clustering_leafserver_network_port: CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT,
 	clustering_leafserver_network_routes: CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_ROUTES,
+	clustering_leafserver_streams_maxage: CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXAGE,
+	clustering_leafserver_streams_maxbytes: CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXBYTES,
+	clustering_leafserver_streams_maxmsgs: CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXMSGS,
 	clustering_nodename: CONFIG_PARAMS.CLUSTERING_NODENAME,
 	clustering_tls_certificate: CONFIG_PARAMS.CLUSTERING_TLS_CERTIFICATE,
 	clustering_tls_privatekey: CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY,
