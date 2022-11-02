@@ -2710,6 +2710,83 @@
 					"response": []
 				},
 				{
+					"name": "Add node 2 to node 1 no schema and tables",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Add node not successful', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.message).to.eql(\"Unable to create subscriptions due to schema and/or tables not existing on the local or remote node\");",
+									"    pm.expect(response.skipped).to.eql([",
+									"        {",
+									"            \"schema\": \"radio\",",
+									"            \"table\": \"genre\",",
+									"            \"publish\": false,",
+									"            \"subscribe\": true",
+									"        },",
+									"        {",
+									"            \"schema\": \"radio\",",
+									"            \"table\": \"head\",",
+									"            \"subscribe\": true,",
+									"            \"publish\": true",
+									"        }",
+									"    ]);",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"add_node\",\n    \"node_name\": \"{{NODE2_NAME}}\",\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"publish\": false,\n            \"subscribe\": true\n        },\n        {\n            \"schema\": \"radio\",\n            \"table\": \"head\",\n            \"subscribe\": true,\n            \"publish\": true\n        }\n    ]\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "Create schema 'radio' node 1",
 					"event": [
 						{
@@ -2774,7 +2851,7 @@
 					"response": []
 				},
 				{
-					"name": "Create schema 'listeners' node 1",
+					"name": "Create schema 'listeners' node 2",
 					"event": [
 						{
 							"listen": "test",
@@ -2827,10 +2904,10 @@
 							}
 						},
 						"url": {
-							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
 							"protocol": "http",
 							"host": [
-								"{{NODE1_HOST}}"
+								"{{NODE2_HOST}}"
 							],
 							"port": "{{HDB_PORT}}"
 						}
@@ -2965,7 +3042,7 @@
 					"response": []
 				},
 				{
-					"name": "Create table 'listeners.address' node 1",
+					"name": "Create table 'listeners.address' node 2",
 					"event": [
 						{
 							"listen": "test",
@@ -3017,10 +3094,10 @@
 							}
 						},
 						"url": {
-							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
 							"protocol": "http",
 							"host": [
-								"{{NODE1_HOST}}"
+								"{{NODE2_HOST}}"
 							],
 							"port": "{{HDB_PORT}}"
 						}
@@ -3028,7 +3105,7 @@
 					"response": []
 				},
 				{
-					"name": "Insert records into listeners.address node 1",
+					"name": "Insert records into listeners.address node 2",
 					"event": [
 						{
 							"listen": "test",
@@ -3080,10 +3157,10 @@
 							}
 						},
 						"url": {
-							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
 							"protocol": "http",
 							"host": [
-								"{{NODE1_HOST}}"
+								"{{NODE2_HOST}}"
 							],
 							"port": "{{HDB_PORT}}"
 						}
@@ -3104,7 +3181,30 @@
 									"pm.test('Add node successful messaged returned', () => {",
 									"    const response = pm.response.json();",
 									"    const node_name = pm.environment.get(\"NODE2_NAME\");",
-									"    pm.expect(response.message).to.eql(`Successfully added '${node_name}' to manifest`);",
+									"    pm.expect(response.message).to.eql(\"Some subscriptions were unsuccessful due to schema and/or tables not existing on the local or remote node\");",
+									"    pm.expect(response.added).to.eql([",
+									"        {",
+									"            \"schema\": \"radio\",",
+									"            \"table\": \"genre\",",
+									"            \"subscribe\": true,",
+									"            \"publish\": false",
+									"        },",
+									"        {",
+									"            \"schema\": \"listeners\",",
+									"            \"table\": \"address\",",
+									"            \"subscribe\": false,",
+									"            \"publish\": true,",
+									"            \"start_time\": \"2022-09-02T20:06:35.993Z\"",
+									"        }",
+									"    ]);",
+									"    pm.expect(response.skipped).to.eql([",
+									"        {",
+									"            \"schema\": \"radio\",",
+									"            \"table\": \"head\",",
+									"            \"subscribe\": true,",
+									"            \"publish\": true",
+									"        }",
+									"    ]);",
 									"});"
 								],
 								"type": "text/javascript"
@@ -3136,7 +3236,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"add_node\",\n    \"node_name\": \"{{NODE2_NAME}}\",\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"publish\": false,\n            \"subscribe\": true\n        },\n        {\n            \"schema\": \"listeners\",\n            \"table\": \"address\",\n            \"publish\": true,\n            \"subscribe\": false,\n            \"start_time\": \"2022-09-02T20:06:35.993Z\"\n        }\n    ]\n}",
+							"raw": "{\n    \"operation\": \"add_node\",\n    \"node_name\": \"{{NODE2_NAME}}\",\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"publish\": false,\n            \"subscribe\": true\n        },\n        {\n            \"schema\": \"listeners\",\n            \"table\": \"address\",\n            \"publish\": true,\n            \"subscribe\": false,\n            \"start_time\": \"2022-09-02T20:06:35.993Z\"\n        },\n        {\n            \"schema\": \"radio\",\n            \"table\": \"head\",\n            \"subscribe\": true,\n            \"publish\": true\n        }\n    ]\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -5069,7 +5169,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 30000)"
+									"setTimeout(()=> {}, 40000)"
 								],
 								"type": "text/javascript"
 							}
@@ -5748,7 +5848,9 @@
 									"    const node_name = pm.environment.get(\"NODE1_NAME\");",
 									"    pm.expect(response.message).to.eql(`Successfully updated '${node_name}'`);",
 									"});",
-									""
+									"",
+									"// Give time for update to do its thing.",
+									"setTimeout(()=>{}, 45000)"
 								],
 								"type": "text/javascript"
 							}
@@ -6517,7 +6619,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 30000)"
+									"setTimeout(()=> {}, 40000)"
 								],
 								"type": "text/javascript"
 							}
@@ -7851,7 +7953,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 30000)",
+									"setTimeout(()=> {}, 40000)",
 									""
 								],
 								"type": "text/javascript"
@@ -8086,7 +8188,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 30000)",
+									"setTimeout(()=> {}, 40000)",
 									""
 								],
 								"type": "text/javascript"
@@ -8382,13 +8484,23 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test('Status code is 400', () => {",
-									"    pm.response.to.have.status(400);",
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
 									"});",
 									"",
 									"pm.test('No schema msessage returned', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.error).to.equal(\"Table 'fish' does not exist. Schema 'dev' does not exist\");",
+									"    pm.expect(response.message).to.equal(\"Unable to create subscriptions due to schema and/or tables not existing on the local or remote node\");",
+									"    pm.expect(response.added.length).to.equal(0);",
+									"    pm.expect(response.skipped).to.eql([",
+									"        {",
+									"            \"schema\": \"dev\",",
+									"            \"table\": \"fish\",",
+									"            \"publish\": true,",
+									"            \"subscribe\": true",
+									"        }",
+									"    ]);",
+									"",
 									"});"
 								],
 								"type": "text/javascript"
@@ -10169,7 +10281,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 30000)",
+									"setTimeout(()=> {}, 40000)",
 									""
 								],
 								"type": "text/javascript"
@@ -11066,7 +11178,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 30000)",
+									"setTimeout(()=> {}, 40000)",
 									""
 								],
 								"type": "text/javascript"
@@ -12511,7 +12623,7 @@
 									"",
 									"pm.test('Configure cluster success message', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"Cluster successfully configured.\");",
+									"    pm.expect(response.message).to.equal(\"Configure cluster complete.\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -13965,7 +14077,7 @@
 									"",
 									"pm.test('Configure cluster success message', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"Cluster successfully configured.\");",
+									"    pm.expect(response.message).to.equal(\"Configure cluster complete.\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -14282,7 +14394,7 @@
 									"",
 									"pm.test('Configure cluster success message', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"Cluster successfully configured.\");",
+									"    pm.expect(response.message).to.equal(\"Configure cluster complete.\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -14550,7 +14662,7 @@
 									"",
 									"pm.test('Configure cluster success message', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"Cluster successfully configured.\");",
+									"    pm.expect(response.message).to.equal(\"Configure cluster complete.\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -14676,7 +14788,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 30000)",
+									"setTimeout(()=> {}, 40000)",
 									""
 								],
 								"type": "text/javascript"
@@ -15563,7 +15675,73 @@
 									"",
 									"pm.test('Configure cluster success message', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"Cluster successfully configured.\");",
+									"    const node1_name = pm.environment.get('NODE1_NAME');",
+									"    const node3_name = pm.environment.get('NODE3_NAME');",
+									"    const node4_name = pm.environment.get('NODE4_NAME');",
+									"",
+									"    const expected_result = {",
+									"    \"message\": \"Configure cluster complete.\",",
+									"    \"connections\": [",
+									"        {",
+									"            \"node_name\": node1_name,",
+									"            \"subscriptions\": {",
+									"                \"message\": `Successfully added '${node1_name}' to manifest`,",
+									"                \"added\": [",
+									"                    {",
+									"                        \"schema\": \"four\",",
+									"                        \"table\": \"frog\",",
+									"                        \"publish\": true,",
+									"                        \"subscribe\": true",
+									"                    },",
+									"                    {",
+									"                        \"schema\": \"four\",",
+									"                        \"table\": \"bird\",",
+									"                        \"publish\": true,",
+									"                        \"subscribe\": true",
+									"                    }",
+									"                ],",
+									"                \"skipped\": []",
+									"            }",
+									"        },",
+									"        {",
+									"            \"node_name\": node3_name,",
+									"            \"subscriptions\": {",
+									"                \"message\": `Successfully added '${node3_name}' to manifest`,",
+									"                \"added\": [",
+									"                    {",
+									"                        \"schema\": \"four\",",
+									"                        \"table\": \"frog\",",
+									"                        \"publish\": false,",
+									"                        \"subscribe\": true",
+									"                    },",
+									"                    {",
+									"                        \"schema\": \"four\",",
+									"                        \"table\": \"bird\",",
+									"                        \"publish\": true,",
+									"                        \"subscribe\": true",
+									"                    }",
+									"                ],",
+									"                \"skipped\": []",
+									"            }",
+									"        },",
+									"        {",
+									"            \"node_name\": node4_name,",
+									"            \"subscriptions\": {",
+									"                \"message\": `Successfully added '${node4_name}' to manifest`,",
+									"                \"added\": [",
+									"                    {",
+									"                        \"schema\": \"four\",",
+									"                        \"table\": \"frog\",",
+									"                        \"publish\": true,",
+									"                        \"subscribe\": false",
+									"                    }",
+									"                ],",
+									"                \"skipped\": []",
+									"            }",
+									"        }",
+									"    ]",
+									"    }",
+									"    pm.expect(response).to.eql(expected_result);",
 									"});",
 									""
 								],
@@ -15597,6 +15775,139 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n    \"operation\": \"configure_cluster\",\n    \"connections\": [\n         {\n            \"node_name\": \"{{NODE1_NAME}}\",\n            \"subscriptions\": [\n                {\n                    \"schema\": \"four\",\n                    \"table\": \"frog\",\n                    \"publish\": true,\n                    \"subscribe\": true\n                },\n                {\n                    \"schema\": \"four\",\n                    \"table\": \"bird\",\n                    \"publish\": true,\n                    \"subscribe\": true\n                }\n            ]\n        },\n        {\n            \"node_name\": \"{{NODE3_NAME}}\",\n            \"subscriptions\": [\n                {\n                    \"schema\": \"four\",\n                    \"table\": \"frog\",\n                    \"publish\": false,\n                    \"subscribe\": true\n                },\n                {\n                    \"schema\": \"four\",\n                    \"table\": \"bird\",\n                    \"publish\": true,\n                    \"subscribe\": true\n                }\n            ]\n        },\n        {\n            \"node_name\": \"{{NODE4_NAME}}\",\n            \"subscriptions\": [\n                {\n                    \"schema\": \"four\",\n                    \"table\": \"frog\",\n                    \"publish\": true,\n                    \"subscribe\": false\n                }\n            ]\n        }\n    ]\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Configure cluster node 2 bad node",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Configure cluster success message', () => {",
+									"    const response = pm.response.json();",
+									"    const node1_name = pm.environment.get('NODE1_NAME');",
+									"    const node3_name = pm.environment.get('NODE3_NAME');",
+									"    const node4_name = pm.environment.get('NODE4_NAME');",
+									"",
+									"    const expected_result = {",
+									"    \"message\": \"Configure cluster was partially successful. Errors occurred when attempting to configure the following nodes. Check the logs for more details.\",",
+									"    \"failed_nodes\": [",
+									"        \"badNode\"",
+									"    ],",
+									"    \"connections\": [",
+									"        {",
+									"            \"node_name\": node1_name,",
+									"            \"subscriptions\": {",
+									"                \"message\": `Successfully added '${node1_name}' to manifest`,",
+									"                \"added\": [",
+									"                    {",
+									"                        \"schema\": \"four\",",
+									"                        \"table\": \"frog\",",
+									"                        \"publish\": true,",
+									"                        \"subscribe\": true",
+									"                    },",
+									"                    {",
+									"                        \"schema\": \"four\",",
+									"                        \"table\": \"bird\",",
+									"                        \"publish\": true,",
+									"                        \"subscribe\": true",
+									"                    }",
+									"                ],",
+									"                \"skipped\": []",
+									"            }",
+									"        },",
+									"        {",
+									"            \"node_name\": node3_name,",
+									"            \"subscriptions\": {",
+									"                \"message\": `Successfully added '${node3_name}' to manifest`,",
+									"                \"added\": [",
+									"                    {",
+									"                        \"schema\": \"four\",",
+									"                        \"table\": \"frog\",",
+									"                        \"publish\": false,",
+									"                        \"subscribe\": true",
+									"                    },",
+									"                    {",
+									"                        \"schema\": \"four\",",
+									"                        \"table\": \"bird\",",
+									"                        \"publish\": true,",
+									"                        \"subscribe\": true",
+									"                    }",
+									"                ],",
+									"                \"skipped\": []",
+									"            }",
+									"        },",
+									"        {",
+									"            \"node_name\": node4_name,",
+									"            \"subscriptions\": {",
+									"                \"message\": `Successfully added '${node4_name}' to manifest`,",
+									"                \"added\": [",
+									"                    {",
+									"                        \"schema\": \"four\",",
+									"                        \"table\": \"frog\",",
+									"                        \"publish\": true,",
+									"                        \"subscribe\": false",
+									"                    }",
+									"                ],",
+									"                \"skipped\": []",
+									"            }",
+									"        }",
+									"    ]",
+									"    }",
+									"    pm.expect(response).to.eql(expected_result);",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"configure_cluster\",\n    \"connections\": [\n         {\n            \"node_name\": \"{{NODE1_NAME}}\",\n            \"subscriptions\": [\n                {\n                    \"schema\": \"four\",\n                    \"table\": \"frog\",\n                    \"publish\": true,\n                    \"subscribe\": true\n                },\n                {\n                    \"schema\": \"four\",\n                    \"table\": \"bird\",\n                    \"publish\": true,\n                    \"subscribe\": true\n                }\n            ]\n        },\n        {\n            \"node_name\": \"{{NODE3_NAME}}\",\n            \"subscriptions\": [\n                {\n                    \"schema\": \"four\",\n                    \"table\": \"frog\",\n                    \"publish\": false,\n                    \"subscribe\": true\n                },\n                {\n                    \"schema\": \"four\",\n                    \"table\": \"bird\",\n                    \"publish\": true,\n                    \"subscribe\": true\n                }\n            ]\n        },\n        {\n            \"node_name\": \"{{NODE4_NAME}}\",\n            \"subscriptions\": [\n                {\n                    \"schema\": \"four\",\n                    \"table\": \"frog\",\n                    \"publish\": true,\n                    \"subscribe\": false\n                }\n            ]\n        },\n        {\n            \"node_name\": \"badNode\",\n            \"subscriptions\": [\n                {\n                    \"schema\": \"four\",\n                    \"table\": \"frog\",\n                    \"publish\": true,\n                    \"subscribe\": false\n                }\n            ]\n        }\n    ]\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -17971,7 +18282,7 @@
 									"",
 									"pm.test('Configure cluster success message', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"Cluster successfully configured.\");",
+									"    pm.expect(response.message).to.equal(\"Configure cluster complete.\");",
 									"});"
 								],
 								"type": "text/javascript"

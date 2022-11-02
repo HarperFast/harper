@@ -23,8 +23,8 @@ const validation_schema = {
 	node_name: node_name_constraint,
 	subscriptions: Joi.array()
 		.items({
-			table: string.custom(validateTableExists).required(),
-			schema: string.custom(validateSchemaExists).custom(validateSchemaName).required(),
+			table: string.required(),
+			schema: string.custom(validateSchemaName).required(),
 			subscribe: boolean.required(),
 			publish: boolean.required().custom(checkForFalsy),
 			start_time: date.iso(),

@@ -75,7 +75,7 @@ describe('Test pm2 servicesConfig module', () => {
 	it('Test result from generateCFServerConfig function is correct non compiled', () => {
 		const expected_result = {
 			exec_mode: 'cluster',
-			instances: 2,
+			instances: 4,
 			name: 'Custom Functions',
 			node_args: '--max-old-space-size=512',
 			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CUSTOM_FUNCTIONS),

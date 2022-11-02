@@ -183,8 +183,7 @@ function validateConfig(config_doc) {
 
 	// These parameters can be set by the validator if they arent provided by user,
 	// for this reason we need to update the config yaml doc after the validator has run.
-	config_doc.setIn(['customFunctions', 'processes'], validation.value.customFunctions.processes);
-	config_doc.setIn(['operationsApi', 'processes'], validation.value.operationsApi.processes);
+	config_doc.setIn(['http', 'threads'], validation.value.http.threads);
 	config_doc.setIn(['customFunctions', 'root'], validation.value.customFunctions.root);
 	config_doc.setIn(['logging', 'root'], validation.value.logging.root);
 	config_doc.setIn(['operationsApi', 'tls', 'certificate'], validation.value.operationsApi.tls.certificate);

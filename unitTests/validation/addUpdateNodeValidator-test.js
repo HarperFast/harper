@@ -35,7 +35,7 @@ describe('Test addUpdateNodeValidator module', () => {
 
 		const result = addUpdateNodeValidator(test_req);
 		expect(result.message).to.equal(
-			"'operation' must be one of [add_node, update_node]. 'node_name' invalid, must not contain ., * or >. Table 'test_table' does not exist. Schema 'test_schema' does not exist. 'subscriptions[0].subscribe' must be a boolean. 'subscriptions[0].publish' must be a boolean. Table 'test_table2' does not exist. Schema 'test_schema2' does not exist"
+			"'operation' must be one of [add_node, update_node]. 'node_name' invalid, must not contain ., * or >. 'subscriptions[0].subscribe' must be a boolean. 'subscriptions[0].publish' must be a boolean"
 		);
 	});
 
@@ -55,7 +55,7 @@ describe('Test addUpdateNodeValidator module', () => {
 
 		const result = addUpdateNodeValidator(test_req);
 		expect(result.message).to.equal(
-			"Table 'test_table' does not exist. 'subscriptions[0]' invalid schema name, 'system' name is reserved. 'subscriptions[0].publish' is required"
+			"'subscriptions[0]' invalid schema name, 'system' name is reserved. 'subscriptions[0].publish' is required"
 		);
 	});
 

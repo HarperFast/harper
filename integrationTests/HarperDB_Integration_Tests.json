@@ -58090,7 +58090,7 @@
 									"    pm.expect(jsonData.localStudio).to.not.be.undefined;",
 									"    pm.expect(jsonData.operationsApi).to.not.be.undefined;",
 									"    pm.expect(jsonData.operationsApi.network.port).to.not.be.undefined;",
-									"    pm.expect(jsonData.operationsApi.processes).to.not.be.undefined;",
+									"    pm.expect(jsonData.http.threads).to.not.be.undefined;",
 									"",
 									"});"
 								],

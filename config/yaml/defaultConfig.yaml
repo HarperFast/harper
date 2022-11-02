@@ -36,7 +36,6 @@ customFunctions:
     port: 9926
     timeout: 120000
   nodeEnv: production
-  processes: null
   root: null
   tls:
     certificate: null
@@ -78,11 +77,12 @@ operationsApi:
     port: 9925
     timeout: 120000
   nodeEnv: production
-  processes: null
   tls:
     certificate: null
     certificateAuthority: null
     privateKey: null
+http:
+  threads: null
 rootPath: null
 storage:
   writeAsync: false

@@ -10,7 +10,7 @@ const config_cluster_validator = require('../../validation/clustering/configureC
 const { handleHDBError, hdb_errors } = require('../errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
 
-const SUCCESS_MSG = 'Cluster successfully configured.';
+const SUCCESS_MSG = 'Configure cluster complete.';
 const FAILED_MSG = 'Failed to configure the cluster. Check the logs for more details.';
 const PARTIALLY_MSG =
 	'Configure cluster was partially successful. Errors occurred when attempting to configure the following nodes. Check the logs for more details.';
@@ -22,7 +22,7 @@ module.exports = configureCluster;
  * Each call supersedes any existing clustering setup.
  * @param request - contains 'connections' param,
  * an object array with each object containing node_name and subscriptions for that node.
- * @returns {Promise<string>}
+ * @returns {Promise<{message: string, connections: *[]}|{message: string, failed_nodes: *[], connections: *[]}>}
  */
 async function configureCluster(request) {
 	hdb_logger.trace('configure cluster called with:', request);
@@ -62,6 +62,7 @@ async function configureCluster(request) {
 	// We loop through that array to find if any operations have errored, if they have we log and track them
 	// so that we can return the failed node names to api.
 	let failed_nodes = [];
+	let connection_results = [];
 	let success = false;
 	const results = remove_result.concat(add_result);
 	for (let j = 0, res_length = results.length; j < res_length; j++) {
@@ -75,16 +76,30 @@ async function configureCluster(request) {
 
 		// If at lease one of the results was successful track it so we use partial success msg
 		if (result.status === 'fulfilled') success = true;
+		const config_result = result?.value?.result;
+
+		// results array can include remove node results, do not include those results in response
+		if (
+			(typeof config_result === 'string' && config_result.includes('Successfully removed')) ||
+			result.status === 'rejected'
+		)
+			continue;
+
+		connection_results.push({
+			node_name: result?.value?.node_name,
+			subscriptions: result?.value?.result,
+		});
 	}
 
 	if (hdb_utils.isEmptyOrZeroLength(failed_nodes)) {
 		// If no fails return just success message
-		return SUCCESS_MSG;
+		return { message: SUCCESS_MSG, connections: connection_results };
 	} else if (success) {
 		// If there was at least one fulfilled promise return the failed nodes
 		return {
 			message: PARTIALLY_MSG,
 			failed_nodes,
+			connections: connection_results,
 		};
 	} else {
 		// If none of the add node & remove node operations were successful throw error message
@@ -101,7 +116,10 @@ async function configureCluster(request) {
  */
 async function functionWrapper(func, param, node_name) {
 	try {
-		return await func(param);
+		return {
+			node_name,
+			result: await func(param),
+		};
 	} catch (error) {
 		throw { node_name, error };
 	}

@@ -15,7 +15,7 @@ function updateRemoteSourceValidator(req) {
 			.items({
 				schema: string.required(),
 				table: string.required(),
-				hash_attribute: string.required(),
+				hash_attribute: string.optional(),
 				subscribe: boolean.required(),
 				publish: boolean.required(),
 			})

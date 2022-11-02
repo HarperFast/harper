@@ -9,3 +9,4 @@
 /utility/logging/transactionLog.js
 /utility/pm2/utilityFunctions.js
 /utility/clustering/removeNode.js
+/utility/clustering/configureCluster.js

@@ -10,7 +10,13 @@ const hdb_utils = require('../common_utils');
 const nats_utils = require('../../server/nats/utility/natsUtils');
 const clustering_utils = require('./clusterUtilities');
 const env_manager = require('../environment/environmentManager');
+const review_subscriptions = require('./reviewSubscriptions');
+const { Node, NodeSubscription } = require('./NodeObject');
 
+const UNSUCCESSFUL_MSG =
+	'Unable to create subscriptions due to schema and/or tables not existing on the local or remote node';
+const PART_SUCCESS_MSG =
+	'Some subscriptions were unsuccessful due to schema and/or tables not existing on the local or remote node';
 const local_node_name = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 
 module.exports = addNode;
@@ -18,15 +24,9 @@ module.exports = addNode;
 /**
  * Adds a node to the cluster.
  * @param req - request from API. An object containing a node_name and an array of subscriptions.
- * @returns {Promise<*>}
- */
-
-/**
- * Adds a node to the cluster.
- * @param req - request from API. An object containing a node_name and an array of subscriptions.
  * @param skip_validation - if true will skip check for existing record. This is here to accommodate
  * upgrades to HDB 4.0.0, this upgrade had to force an addNode when record already exists in hdb nodes.
- * @returns {Promise<string>}
+ * @returns {Promise<{added: (undefined|*), skipped}>}
  */
 async function addNode(req, skip_validation = false) {
 	hdb_logger.trace('addNode called with:', req);
@@ -52,20 +52,30 @@ async function addNode(req, skip_validation = false) {
 		}
 	}
 
-	// Sanitize the input from API and build two objects, one that will be inserted into the hdb_nodes table
-	// the other that will be sent to the remote node. The remote node subscriptions have the reverse of the local node subs.
-	const { node_record, remote_payload } = clustering_utils.buildNodePayloads(
-		req.subscriptions,
+	// This function requests a describe all from remote node, from the response it will decide if it should/can create
+	// schema/tables for each subscription in the request. A schema/table needs to exist on at least the local or remote node
+	// to be able to be created and a subscription added.
+	const { added, skipped } = await review_subscriptions(req.subscriptions, remote_node_name);
+
+	const response = {
+		message: undefined,
+		added,
+		skipped,
+	};
+
+	// If there are no subs to be added there is no point messaging remote node.
+	if (added.length === 0) {
+		response.message = UNSUCCESSFUL_MSG;
+		return response;
+	}
+
+	// Build payload that will be sent to remote node
+	const remote_payload = clustering_utils.buildNodePayloads(
+		added,
 		local_node_name,
-		remote_node_name,
 		hdb_terms.OPERATIONS_ENUM.ADD_NODE,
 		await clustering_utils.getSystemInfo()
 	);
-
-	// Create local streams for all the tables in the subscriptions array.
-	// This needs to happen before any streams are added to the work queue on either nodes.
-	// If the stream has already been created nothing will happen.
-	await nats_utils.createTableStreams(req.subscriptions);
 
 	hdb_logger.trace('addNode sending remote payload:', remote_payload);
 	let reply;
@@ -84,25 +94,30 @@ async function addNode(req, skip_validation = false) {
 		throw handleHDBError(new Error(), err_msg, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, 'error', err_msg);
 	}
 
-	hdb_logger.trace(reply.message);
+	hdb_logger.trace(reply);
 
 	// The request above is sent before the stream update and upsert in case an error occurs and request is rejected.
 	// Update the work queue stream with the new subscriptions.
-	for (let i = 0, sub_length = req.subscriptions.length; i < sub_length; i++) {
-		hdb_logger.trace(
-			'Add node updating work stream for node:',
-			remote_node_name,
-			'subscriptions:',
-			req.subscriptions[i]
+	let subs_for_record = [];
+	for (let i = 0, sub_length = added.length; i < sub_length; i++) {
+		const added_sub = added[i];
+		hdb_logger.trace('Add node updating work stream for node:', remote_node_name, 'subscriptions:', added_sub);
+		await nats_utils.updateWorkStream(added_sub, remote_node_name);
+		if (added[i].start_time === undefined) delete added[i].start_time;
+		subs_for_record.push(
+			new NodeSubscription(added_sub.schema, added_sub.table, added_sub.publish, added_sub.subscribe)
 		);
-		await nats_utils.updateWorkStream(req.subscriptions[i], remote_node_name);
 	}
 
-	// The node being added will respond with its system info, add this to its record.
-	node_record.system_info = reply.system_info;
-
 	// Add new node record to hdb_nodes table.
+	const node_record = new Node(remote_node_name, subs_for_record, reply.system_info);
 	await clustering_utils.upsertNodeRecord(node_record);
 
-	return `Successfully added '${remote_node_name}' to manifest`;
+	if (skipped.length > 0) {
+		response.message = PART_SUCCESS_MSG;
+	} else {
+		response.message = `Successfully added '${remote_node_name}' to manifest`;
+	}
+
+	return response;
 }
