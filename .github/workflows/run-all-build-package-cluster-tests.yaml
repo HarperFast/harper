@@ -1,0 +1,11 @@
+on:
+  workflow_dispatch:
+name: Run All Build Package Cluster Tests
+jobs:
+  runBuildPackageClusterTestA:
+    uses: ./.github/workflows/build-package-cluster-test-a.yaml
+  runBuildPackageClusterTestB:
+    uses: ./.github/workflows/build-package-cluster-test-b.yaml
+  runBuildPackageClusterTestC:
+    uses: ./.github/workflows/build-package-cluster-test-c.yaml
+

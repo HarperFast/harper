@@ -7,7 +7,7 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
   schedule:
-    - cron:  '0 8 * * 1-5'
+    - cron: '0 13 * * 1-5'
   workflow_dispatch:
 name: Run Source Code CI Tests
 jobs:
@@ -17,16 +17,15 @@ jobs:
       nodeVersion: ${{ steps.getNode.outputs.NODE_VERSION }}
       harperdbVersion: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
     - id: getNode
       name: Get node version
       run: |
         pwd
         NODE_VERSION="$(cat package.json | jq -r '.engines."preferred-node"')"
         HARPERDB_VERSION=$(cat package.json | jq -r '.version')
-        GO_VERSION=$(cat package.json | jq -r '.engines."go-lang"')
-        echo "::set-output name=NODE_VERSION::$NODE_VERSION"
-        echo "::set-output name=HARPERDB_VERSION::$HARPERDB_VERSION"
+        echo "NODE_VERSION=$NODE_VERSION" >> $GITHUB_OUTPUT
+        echo "HARPERDB_VERSION=$HARPERDB_VERSION" >> $GITHUB_OUTPUT
   createInstances:
     needs:
       - getNodeVersion
@@ -81,7 +80,7 @@ jobs:
       - runUnitTests
       - createInstances
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
     - name: 'Download coverage file'
       env: 
         CI_PRIVATE_KEY: ${{ secrets.CI_PRIVATE_KEY }}
@@ -137,4 +136,24 @@ jobs:
     with:
       instanceCount: "1"
       callingWorkflow: ${{ github.workflow }}
-    secrets: inherit   
+    secrets: inherit
+  sendSlackMessage:
+    runs-on: ubuntu-latest
+    if: ${{ failure() && github.event_name == 'schedule' }}
+    needs:
+      - destroyInstances
+      - downloadLogs
+      - runUnitTests
+      - runIntegrationTests
+      - registerInstances
+      - createInstances
+      - getNodeVersion
+    steps:
+    - name: Post to a Slack channel
+      id: slack
+      uses: slackapi/slack-github-action@v1.23.0
+      with:
+        channel-id: 'development'
+        slack-message: "${{ github.workflow }} Failed.\nSee logs here: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      env:
+        SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}

@@ -28,7 +28,7 @@ jobs:
       if: always()
       with:
         terraform_wrapper: false
-      uses: hashicorp/setup-terraform@v1
+      uses: hashicorp/setup-terraform@v2
     - name: Destroy Instances
       if: always()
       env:
