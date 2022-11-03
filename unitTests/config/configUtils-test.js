@@ -308,6 +308,11 @@ describe('Test configUtils module', () => {
 							port: 9944,
 							routes: [],
 						},
+						streams: {
+							maxAge: null,
+							maxBytes: null,
+							maxMsgs: null,
+						},
 					},
 					nodeName: 'test_node_name',
 					tls: {
@@ -407,6 +412,9 @@ describe('Test configUtils module', () => {
 				clustering_hubserver_network_port: 9900,
 				clustering_leafserver_network_port: 9944,
 				clustering_leafserver_network_routes: [],
+				clustering_leafserver_streams_maxage: null,
+				clustering_leafserver_streams_maxbytes: null,
+				clustering_leafserver_streams_maxmsgs: null,
 				clustering_nodename: 'test_node_name',
 				clustering_tls_certificate: TEST_CERT,
 				clustering_tls_certificateauthority: null,
@@ -487,6 +495,9 @@ describe('Test configUtils module', () => {
 			clustering_hubserver_network_port: 9930,
 			clustering_leafserver_network_port: 9940,
 			clustering_leafserver_network_routes: null,
+			clustering_leafserver_streams_maxage: null,
+			clustering_leafserver_streams_maxbytes: null,
+			clustering_leafserver_streams_maxmsgs: null,
 			clustering_nodename: null,
 			clustering_tls_certificate: null,
 			clustering_tls_certificateauthority: null,
@@ -772,7 +783,7 @@ describe('Test configUtils module', () => {
 					},
 					http: {
 						threads: 12,
-					}
+					},
 				},
 			};
 

@@ -1050,9 +1050,9 @@ describe('Test natsUtils module', () => {
 	});
 
 	it('Test updateStreamLimits updates age and bytes but not msgs', async () => {
-		env_manager.setProperty('maxAge', 12345000);
-		env_manager.setProperty('maxBytes', 10000);
-		env_manager.setProperty('maxMsgs', null);
+		// env_manager.setProperty('maxAge', 12345000);
+		// env_manager.setProperty('maxBytes', 10000);
+		// env_manager.setProperty('maxMsgs', null);
 		const updateStreamLimits = nats_utils.__get__('updateStreamLimits');
 		const fake_stream = {
 			config: {
