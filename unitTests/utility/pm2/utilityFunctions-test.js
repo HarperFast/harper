@@ -414,7 +414,7 @@ describe('Test pm2 utilityFunctions module', () => {
 				if (proc.name === 'Clustering Reply Service') reply_name_found = true;
 			});
 
-			expect(list.length).to.equal(11);
+			expect(list.length).to.equal(13);
 			expect(hdb_name_found).to.be.true;
 			expect(ipc_name_found).to.be.true;
 			expect(cf_name_found).to.be.true;
@@ -468,7 +468,7 @@ describe('Test pm2 utilityFunctions module', () => {
 		it('Test starts custom function service', async () => {
 			await utility_functions.startService('custom FUNCTIONS');
 			const process_meta = await utility_functions.describe('Custom Functions');
-			expect(process_meta.length).to.equal(2);
+			expect(process_meta.length).to.equal(4);
 			expect(process_meta[0].name).to.equal('Custom Functions');
 			expect(process_meta[1].name).to.equal('Custom Functions');
 			expect(process_meta[0].pm2_env.status).to.equal('online');
@@ -667,7 +667,7 @@ describe('Test pm2 utilityFunctions module', () => {
 		it('Test service is stopped and started if there is a change in max process setting', async () => {
 			const env_stub = sandbox.stub();
 			const env_rw = utility_functions.__set__('env_mangr.initSync', env_stub);
-			env_mngr.setProperty('MAX_HDB_PROCESSES', 2);
+			env_mngr.setProperty('HTTP_THREADS', 2);
 			await utility_functions.reloadStopStart('Custom Functions');
 			env_rw();
 			env_mngr.initTestEnvironment();
@@ -679,7 +679,7 @@ describe('Test pm2 utilityFunctions module', () => {
 			const env_stub = sandbox.stub();
 			const env_rw = utility_functions.__set__('env_mangr.initSync', env_stub);
 			describe_stub.resolves([1, 2]);
-			env_mngr.setProperty('MAX_HDB_PROCESSES', 2);
+			env_mngr.setProperty('HTTP_THREADS', 2);
 			await utility_functions.reloadStopStart('Custom Functions');
 			env_rw();
 			env_mngr.initTestEnvironment();
@@ -690,7 +690,7 @@ describe('Test pm2 utilityFunctions module', () => {
 			const env_stub = sandbox.stub();
 			const env_rw = utility_functions.__set__('env_mangr.initSync', env_stub);
 			describe_stub.resolves([1, 2]);
-			env_mngr.setProperty('MAX_HDB_PROCESSES', 2);
+			env_mngr.setProperty('HTTP_THREADS', 2);
 			await utility_functions.reloadStopStart('HarperDB');
 			env_rw();
 			env_mngr.initTestEnvironment();

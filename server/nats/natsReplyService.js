@@ -15,6 +15,7 @@ const get_remote_source_config = require('../../utility/clustering/getRemoteSour
 const UpdateRemoteResponseObject = require('../../utility/clustering/UpdateRemoteResponseObject');
 const { encode, decode } = require('msgpackr');
 const global_schema = require('../../utility/globalSchema');
+const schema_describe = require('../../data_layer/schemaDescribe');
 const util = require('util');
 
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
@@ -77,6 +78,9 @@ async function handleRequest(sub) {
 			case hdb_terms.OPERATIONS_ENUM.CLUSTER_STATUS:
 				reply = await get_remote_source_config(msg_data);
 				break;
+			case hdb_terms.OPERATIONS_ENUM.DESCRIBE_ALL:
+				reply = await getRemoteDescribeAll();
+				break;
 			default:
 				const err_msg = `node '${node_name}' reply service received unrecognized request operation`;
 				harper_logger.error(err_msg);
@@ -85,5 +89,21 @@ async function handleRequest(sub) {
 
 		harper_logger.trace(reply);
 		msg.respond(encode(reply));
+	}
+}
+
+async function getRemoteDescribeAll() {
+	try {
+		return {
+			status: nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.SUCCESS,
+			message: await schema_describe.describeAll(),
+		};
+	} catch (err) {
+		harper_logger.error(err);
+
+		return {
+			status: nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.ERROR,
+			message: err.message,
+		};
 	}
 }

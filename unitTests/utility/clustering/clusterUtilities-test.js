@@ -64,25 +64,37 @@ describe('Test clusterUtilities', () => {
 
 	it('Test reverseSubscription subscribe true publish false', () => {
 		const sub = {
+			schema: 'cat',
+			table: 'dog',
 			subscribe: true,
 			publish: false,
+			hash_attribute: 'id',
 		};
 
 		const result = reverseSubscription(sub);
 		expect(result).to.eql({
-			subscribe: false,
+			hash_attribute: 'id',
 			publish: true,
+			schema: 'cat',
+			subscribe: false,
+			table: 'dog',
 		});
 	});
 
 	it('Test reverseSubscription subscribe false publish true', () => {
 		const sub = {
+			schema: 'cat',
+			table: 'dog',
+			hash_attribute: 'id',
 			subscribe: false,
 			publish: true,
 		};
 
 		const result = reverseSubscription(sub);
 		expect(result).to.eql({
+			schema: 'cat',
+			table: 'dog',
+			hash_attribute: 'id',
 			subscribe: true,
 			publish: false,
 		});
@@ -90,12 +102,18 @@ describe('Test clusterUtilities', () => {
 
 	it('Test reverseSubscription subscribe false publish false', () => {
 		const sub = {
+			schema: 'cat',
+			table: 'dog',
+			hash_attribute: 'id',
 			subscribe: false,
 			publish: false,
 		};
 
 		const result = reverseSubscription(sub);
 		expect(result).to.eql({
+			schema: 'cat',
+			table: 'dog',
+			hash_attribute: 'id',
 			subscribe: false,
 			publish: false,
 		});
@@ -103,12 +121,18 @@ describe('Test clusterUtilities', () => {
 
 	it('Test reverseSubscription subscribe true publish true', () => {
 		const sub = {
+			schema: 'cat',
+			table: 'dog',
+			hash_attribute: 'id',
 			subscribe: true,
 			publish: true,
 		};
 
 		const result = reverseSubscription(sub);
 		expect(result).to.eql({
+			schema: 'cat',
+			table: 'dog',
+			hash_attribute: 'id',
 			subscribe: true,
 			publish: true,
 		});
@@ -141,31 +165,6 @@ describe('Test clusterUtilities', () => {
 				start_time: '2022-08-24T18:26:58.514Z',
 			},
 		];
-
-		const expected_node_record = {
-			name: 'remote_node',
-			subscriptions: [
-				{
-					schema: 'breed',
-					table: 'beagle',
-					publish: true,
-					subscribe: true,
-				},
-				{
-					schema: 'country',
-					table: 'england',
-					publish: false,
-					subscribe: true,
-				},
-				{
-					schema: 'dog',
-					table: 'poodle',
-					publish: true,
-					subscribe: false,
-				},
-			],
-			system_info: undefined,
-		};
 
 		const expected_remote_payload = {
 			node_name: 'im_the_local_node',
@@ -202,15 +201,8 @@ describe('Test clusterUtilities', () => {
 				platform: 'test platform',
 			},
 		};
-		const result = cluster_utils.buildNodePayloads(
-			test_subs,
-			'im_the_local_node',
-			'remote_node',
-			'add_node',
-			test_sys_info
-		);
-		expect(result.node_record).to.eql(expected_node_record);
-		expect(result.remote_payload).to.eql(expected_remote_payload);
+		const result = cluster_utils.buildNodePayloads(test_subs, 'im_the_local_node', 'add_node', test_sys_info);
+		expect(result).to.eql(expected_remote_payload);
 	});
 
 	it('Test getSystemInfo gets system info', async () => {

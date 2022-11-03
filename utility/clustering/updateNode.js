@@ -11,7 +11,13 @@ const nats_utils = require('../../server/nats/utility/natsUtils');
 const clustering_utils = require('./clusterUtilities');
 const env_manager = require('../environment/environmentManager');
 const { cloneDeep } = require('lodash');
+const review_subscriptions = require('./reviewSubscriptions');
+const { NodeSubscription } = require('./NodeObject');
 
+const UNSUCCESSFUL_MSG =
+	'Unable to update subscriptions due to schema and/or tables not existing on the local or remote node';
+const PART_SUCCESS_MSG =
+	'Some subscriptions were unsuccessful due to schema and/or tables not existing on the local or remote node';
 const local_node_name = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 
 module.exports = updateNode;
@@ -19,7 +25,7 @@ module.exports = updateNode;
 /**
  * Updates subscriptions between nodes
  * @param req - request from API. An object containing a node_name and an array of subscriptions.
- * @returns {Promise<string>}
+ * @returns {Promise<{message: undefined, updated: [], skipped: []}>}
  */
 async function updateNode(req) {
 	hdb_logger.trace('updateNode called with:', req);
@@ -42,21 +48,30 @@ async function updateNode(req) {
 		);
 	}
 
-	// Sanitize the input from API and build two objects, one that will be used to update hdb_nodes table
-	// the other that will be sent to the remote node. The remote node subscriptions have the reverse of the local node subs.
-	const { node_record, remote_payload } = clustering_utils.buildNodePayloads(
-		req.subscriptions,
-		local_node_name,
-		remote_node_name,
-		hdb_terms.OPERATIONS_ENUM.UPDATE_NODE,
-		await clustering_utils.getSystemInfo(),
-		record[0].subscriptions
-	);
+	// This function requests a describe all from remote node, from the response it will decide if it should/can create
+	// schema/tables for each subscription in the request. A schema/table needs to exist on at least the local or remote node
+	// to be able to be created and a subscription added.
+	const { added, skipped } = await review_subscriptions(req.subscriptions, remote_node_name);
 
-	// Create local streams for all the tables in the subscriptions array.
-	// This needs to happen before any streams are added to the work queue on either nodes.
-	// If the stream has already been created nothing will happen.
-	await nats_utils.createTableStreams(req.subscriptions);
+	const response = {
+		message: undefined,
+		updated: added,
+		skipped,
+	};
+
+	// If there are no subs to be added there is no point messaging remote node.
+	if (added.length === 0) {
+		response.message = UNSUCCESSFUL_MSG;
+		return response;
+	}
+
+	// Build payload that will be sent to remote node
+	const remote_payload = clustering_utils.buildNodePayloads(
+		added,
+		local_node_name,
+		hdb_terms.OPERATIONS_ENUM.UPDATE_NODE,
+		await clustering_utils.getSystemInfo()
+	);
 
 	hdb_logger.trace('updateNode sending remote payload:', remote_payload);
 	let reply;
@@ -75,23 +90,63 @@ async function updateNode(req) {
 		throw handleHDBError(new Error(), err_msg, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, 'error', err_msg);
 	}
 
-	hdb_logger.trace(reply.message);
+	hdb_logger.trace(reply);
 
 	// The request above is sent before the stream update and upsert in case an error occurs and request is rejected.
 	// Update the work queue stream with the new subscriptions.
-	for (let i = 0, sub_length = req.subscriptions.length; i < sub_length; i++) {
-		hdb_logger.trace(
-			`update node updating work stream for node: ${remote_node_name} subscription:`,
-			req.subscriptions[i]
-		);
-		await nats_utils.updateWorkStream(req.subscriptions[i], remote_node_name);
+	for (let i = 0, sub_length = added.length; i < sub_length; i++) {
+		// The remote node reply has an array called 'successful' that contains all the subs its was able to establish.
+		const sub = added[i];
+		hdb_logger.trace(`updateNode updating work stream for node: ${remote_node_name} subscription:`, sub);
+		await nats_utils.updateWorkStream(sub, remote_node_name);
+		if (added[i].start_time === undefined) delete added[i].start_time;
 	}
 
-	// The node being updated will respond with its system info, add this to its record.
-	node_record.system_info = reply.system_info;
+	await updateNodeTable(record[0], added, reply.system_info);
 
-	// Update record in hdb_nodes table.
-	await clustering_utils.upsertNodeRecord(node_record);
+	if (skipped.length > 0) {
+		response.message = PART_SUCCESS_MSG;
+	} else {
+		response.message = `Successfully updated '${remote_node_name}'`;
+	}
 
-	return `Successfully updated '${remote_node_name}'`;
+	return response;
+}
+
+/**
+ * Takes the existing hdb_nodes record and the updated subs and combines them then
+ * updates the table.
+ * @param existing_record
+ * @param updated_subs
+ * @param system_info
+ * @returns {Promise<void>}
+ */
+async function updateNodeTable(existing_record, updated_subs, system_info) {
+	let updated_record = existing_record;
+	for (let i = 0, sub_length = updated_subs.length; i < sub_length; i++) {
+		const update_sub = updated_subs[i];
+
+		// Search existing subs for node and update and matching one
+		let match_found = false;
+		for (let j = 0, e_sub_length = existing_record.subscriptions.length; j < e_sub_length; j++) {
+			const existing_sub = updated_record.subscriptions[j];
+			// If there is an existing matching subscription in the hdb_nodes table update it.
+			if (existing_sub.schema === update_sub.schema && existing_sub.table === update_sub.table) {
+				existing_sub.publish = update_sub.publish;
+				existing_sub.subscribe = update_sub.subscribe;
+				match_found = true;
+				break;
+			}
+		}
+
+		// If no matching subscription is found add subscription to new sub array
+		if (!match_found) {
+			updated_record.subscriptions.push(
+				new NodeSubscription(update_sub.schema, update_sub.table, update_sub.publish, update_sub.subscribe)
+			);
+		}
+	}
+
+	updated_record.system_info = system_info;
+	await clustering_utils.upsertNodeRecord(updated_record);
 }

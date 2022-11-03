@@ -72,13 +72,15 @@ const FAKE_CONFIG = {
 			timeout: 119999,
 		},
 		nodeEnv: 'development',
-		processes: 2,
 		root: '/test_custom_functions',
 		tls: {
 			certificate: null,
 			certificateAuthority: 'cf/test/ca.pem',
 			privateKey: null,
 		},
+	},
+	http: {
+		threads: 2,
 	},
 	ipc: {
 		network: {
@@ -122,7 +124,6 @@ const FAKE_CONFIG = {
 			timeout: 120001,
 		},
 		nodeEnv: 'development',
-		processes: 4,
 		tls: {
 			certificate: 'op_api/cert.pem',
 			certificateAuthority: null,
@@ -212,7 +213,6 @@ describe('Test configValidator module', () => {
 							timeout: 119999,
 						},
 						nodeEnv: 'development',
-						processes: 2,
 						root: '/test_custom_functions',
 						tls: {
 							certificate: TEST_CERT,
@@ -261,12 +261,14 @@ describe('Test configValidator module', () => {
 							timeout: 120001,
 						},
 						nodeEnv: 'development',
-						processes: 4,
 						tls: {
 							certificate: 'op_api/cert.pem',
 							certificateAuthority: TEST_CA,
 							privateKey: TEST_PRIVATE_KEY,
 						},
+					},
+					http: {
+						threads: 2,
 					},
 					rootPath: path.join(__dirname, '/carrot'),
 					storage: {
@@ -405,12 +407,13 @@ describe('Test configValidator module', () => {
 		it('Test customFunctions.nodeEnv/processes/root in config_schema with bad values', () => {
 			let bad_config_obj = test_utils.deepClone(FAKE_CONFIG);
 			bad_config_obj.customFunctions.nodeEnv = 'testing';
-			bad_config_obj.customFunctions.processes = [2];
+			bad_config_obj.http.threads = [2];
 			bad_config_obj.customFunctions.root = '/!';
 
 			const schema = configValidator(bad_config_obj);
 			const expected_error_message =
-				"'customFunctions.nodeEnv' must be one of [production, development]. 'customFunctions.processes' must be a number. 'customFunctions.root' with value '/!' fails to match the directory path pattern";
+				"'customFunctions.nodeEnv' must be one of [production, development]." +
+				" 'customFunctions.root' with value '/!' fails to match the directory path pattern. 'http.threads' must be a number";
 
 			expect(schema.error.message).to.eql(expected_error_message);
 		});
@@ -463,13 +466,20 @@ describe('Test configValidator module', () => {
 			bad_config_obj.operationsApi.network.port = 'possum';
 			bad_config_obj.operationsApi.network.timeout = false;
 			bad_config_obj.operationsApi.nodeEnv = true;
-			bad_config_obj.operationsApi.processes = true;
+			bad_config_obj.http.threads = true;
 			bad_config_obj.rootPath = '/@@@';
 			bad_config_obj.storage.writeAsync = undefined;
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'operationsApi.authentication.operationTokenTimeout' is required. 'operationsApi.authentication.refreshTokenTimeout' is required. 'operationsApi.foreground' must be a boolean. 'operationsApi.network.cors' must be a boolean. 'operationsApi.network.headersTimeout' must be greater than or equal to 1. 'operationsApi.network.https' must be a boolean. 'operationsApi.network.keepAliveTimeout' must be a number. 'operationsApi.network.port' must be a number. 'operationsApi.network.timeout' must be a number. 'operationsApi.nodeEnv' must be one of [production, development]. 'operationsApi.processes' must be a number. 'rootPath' with value '/@@@' fails to match the directory path pattern. 'storage.writeAsync' is required";
+				"'operationsApi.authentication.operationTokenTimeout' is required." +
+				" 'operationsApi.authentication.refreshTokenTimeout' is required. 'operationsApi.foreground' must be a" +
+				" boolean. 'operationsApi.network.cors' must be a boolean. 'operationsApi.network.headersTimeout' must" +
+				" be greater than or equal to 1. 'operationsApi.network.https' must be a boolean." +
+				" 'operationsApi.network.keepAliveTimeout' must be a number. 'operationsApi.network.port' must be a" +
+				" number. 'operationsApi.network.timeout' must be a number. 'operationsApi.nodeEnv' must be one of" +
+				" [production, development]. 'rootPath' with value '/@@@' fails to match" +
+				" the directory path pattern. 'http.threads' must be a number. 'storage.writeAsync' is required";
 
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
@@ -566,8 +576,8 @@ describe('Test configValidator module', () => {
 		});
 	});
 
-	describe('Test setDefaultProcesses function', () => {
-		const set_default_processes = config_val.__get__('setDefaultProcesses');
+	describe('Test setDefaultThreads function', () => {
+		const set_default_processes = config_val.__get__('setDefaultThreads');
 		const parent = {
 			enabled: true,
 			network: {
