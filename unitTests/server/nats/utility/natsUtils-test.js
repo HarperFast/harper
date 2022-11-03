@@ -1050,9 +1050,9 @@ describe('Test natsUtils module', () => {
 	});
 
 	it('Test updateStreamLimits updates age and bytes but not msgs', async () => {
-		// env_manager.setProperty('maxAge', 12345000);
-		// env_manager.setProperty('maxBytes', 10000);
-		// env_manager.setProperty('maxMsgs', null);
+		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXAGE, 3600);
+		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXBYTES, 10000);
+		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXMSGS, null);
 		const updateStreamLimits = nats_utils.__get__('updateStreamLimits');
 		const fake_stream = {
 			config: {
@@ -1069,6 +1069,41 @@ describe('Test natsUtils module', () => {
 			},
 		};
 
+		//const fake_stream_clone = test_utils.deepClone(fake_stream);
 		const result = await updateStreamLimits(fake_stream);
+
+		expect(result).to.be.true;
+		expect(fake_stream.config.max_age).to.equal(3600000000000);
+		expect(fake_stream.config.max_bytes).to.equal(10000);
+		expect(fake_stream.config.max_msgs).to.equal(-1);
+	});
+
+	it('Test updateStreamLimits does not update if values null', async () => {
+		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXAGE, null);
+		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXBYTES, null);
+		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXMSGS, null);
+		const updateStreamLimits = nats_utils.__get__('updateStreamLimits');
+		const fake_stream = {
+			config: {
+				name: '9a771e7de733e54216e6ae98d794be01',
+				subjects: ['radio.genre.david_local-leaf'],
+				retention: 'limits',
+				max_consumers: -1,
+				max_msgs: -1,
+				max_bytes: -1,
+				max_age: 0,
+				max_msgs_per_subject: -1,
+				max_msg_size: -1,
+				discard: 'old',
+			},
+		};
+
+		//const fake_stream_clone = test_utils.deepClone(fake_stream);
+		const result = await updateStreamLimits(fake_stream);
+
+		expect(result).to.be.false;
+		expect(fake_stream.config.max_age).to.equal(0);
+		expect(fake_stream.config.max_bytes).to.equal(-1);
+		expect(fake_stream.config.max_msgs).to.equal(-1);
 	});
 });
