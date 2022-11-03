@@ -100,7 +100,7 @@ module.exports = {
 	purgeTableStream,
 	purgeSchemaTableStreams,
 	getStreamInfo,
-	updateNodeNameLocalStreams,
+	updateLocalStreams,
 	closeConnection,
 };
 
@@ -280,7 +280,9 @@ async function getServerList() {
  */
 async function createLocalStream(stream_name, subjects) {
 	const { jsm } = await getNATSReferences();
-	const max_age = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXAGE);
+	let max_age = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXAGE);
+	// If no max age in hdb config set to 0 which is unlimited. If config exists convert second to nanosecond
+	max_age = max_age === null ? 0 : max_age * 1000000000;
 	const max_msgs = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXMSGS);
 	const max_bytes = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXBYTES);
 	await jsm.streams.add({
@@ -289,9 +291,9 @@ async function createLocalStream(stream_name, subjects) {
 		retention: RetentionPolicy.Limits,
 		subjects: subjects,
 		discard: DiscardPolicy.Old,
-		max_age: max_age === null ? 0 : max_age, // 0 is unlimited
 		max_msgs: max_msgs === null ? -1 : max_msgs, // -1 is unlimited
 		max_bytes: max_bytes === null ? -1 : max_bytes, // -1 is unlimited
+		max_age,
 	});
 }
 
@@ -914,10 +916,10 @@ async function getJsmServerName() {
 }
 
 /**
- * Updates the node name part of the subject of all local streams, if it needs updating.
+ * Updates the node name part of the subject of all local streams or stream limits, if it needs updating.
  * @returns {Promise<void>}
  */
-async function updateNodeNameLocalStreams() {
+async function updateLocalStreams() {
 	const jsm = await getJetStreamManager();
 	// Server name is the node name with `-leaf` appended to the end of it.
 	const server_name = await getJsmServerName();
@@ -928,10 +930,12 @@ async function updateNodeNameLocalStreams() {
 		const stream_subject = stream_config.subjects[0];
 		if (!stream_subject) continue;
 
+		const limit_updated = updateStreamLimits(stream);
+
 		// Dots are not allowed in node name so spilt on dot, get last item in array which gives us server name (node name with -leaf on the end).
 		const stream_subject_array = stream_subject.split('.');
 		const subject_server_name = stream_subject_array[stream_subject_array.length - 1];
-		if (subject_server_name === server_name) continue;
+		if (subject_server_name === server_name && !limit_updated) continue;
 
 		// Build the new subject name and replace existing one with it.
 		if (stream_config.name === nats_terms.SCHEMA_QUEUE_CONSUMER_NAMES.stream_name) {
@@ -959,4 +963,46 @@ async function updateNodeNameLocalStreams() {
 
 		await jsm.streams.update(stream_config.name, stream_config);
 	}
+}
+
+/**
+ * Will compare the stream limit config vs what's in harperdb config.
+ * If values are different it will update the stream config so it matches harperdb config.
+ * @param stream
+ * @returns {boolean}
+ */
+function updateStreamLimits(stream) {
+	const { config } = stream;
+	let update = false;
+	if (
+		config.name === nats_terms.SCHEMA_QUEUE_CONSUMER_NAMES.stream_name ||
+		config.name === nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name
+	)
+		return update;
+
+	let max_age = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXAGE);
+	// We don't store the default (unlimited) values in our config, so we must update for comparison to work.
+	// We use seconds for max age, nats uses nanoseconds. This is why we are doing the conversion.
+	max_age = max_age === null ? 0 : max_age * 1000000000; // 0 is unlimited
+	let max_bytes = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXBYTES);
+	max_bytes = max_bytes === null ? -1 : max_bytes; // -1 is unlimited
+	let max_msgs = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXMSGS);
+	max_msgs = max_msgs === null ? -1 : max_msgs; // -1 is unlimited
+
+	if (max_age !== config.max_age) {
+		config.max_age = max_age;
+		update = true;
+	}
+
+	if (max_bytes !== config.max_bytes) {
+		config.max_bytes = max_bytes;
+		update = true;
+	}
+
+	if (max_msgs !== config.max_msgs) {
+		config.max_msgs = max_msgs;
+		update = true;
+	}
+
+	return update;
 }

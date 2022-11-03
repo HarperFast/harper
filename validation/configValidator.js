@@ -100,7 +100,8 @@ function configValidator(config_json) {
 					routes: route_constraints,
 				}).required(),
 				streams: Joi.object({
-					maxAge: number.min(1).allow(null).required(),
+					// Max age must be above duplicate_window stream setting
+					maxAge: number.min(120).allow(null).required(),
 					maxBytes: number.min(1).allow(null).required(),
 					maxMsgs: number.min(1).allow(null).required(),
 				}).required(),
