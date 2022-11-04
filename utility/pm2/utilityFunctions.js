@@ -614,7 +614,8 @@ async function startClustering() {
 	}
 	await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
 
-	// Check to see if the node name has been updated, if it has we need to change config on any local streams.
+	// Check to see if the node name or purge config has been updated,
+	// if it has we need to change config on any local streams.
 	await nats_utils.updateLocalStreams();
 
 	// If any node records are marked as pre 4.0.0 version start process to re-establish node connections.

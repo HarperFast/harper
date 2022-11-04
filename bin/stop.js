@@ -300,7 +300,8 @@ async function restartAllClusteringServices() {
 	await restartClustering(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
 	await restartClustering(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_INGEST_SERVICE);
 	await restartClustering(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE);
-
+	// Check to see if the node name or purge config has been updated,
+	// if it has we need to change config on any local streams.
 	await nats_utils.updateLocalStreams();
 	// Close the connection to the nats-server so that if stop/restart called from CLI process will exit.
 	await nats_utils.closeConnection();
