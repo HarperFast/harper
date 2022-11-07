@@ -13,10 +13,10 @@ const SERVERS = {};
 module.exports = {
 	registerServer,
 };
-require('../harperdb/hdbServer');
 if (!isMainThread) {
+	require('../harperdb/hdbServer').hdbServer();
 	const custom_func_enabled = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY);
-	if (custom_func_enabled) require('../customFunctions/customFunctionsServer');
+	if (custom_func_enabled) require('../customFunctions/customFunctionsServer').customFunctionsServer();
 
 	parentPort.on('message', (message) => {
 		const {type, fd} = message;

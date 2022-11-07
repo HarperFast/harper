@@ -1,3 +1,3 @@
 'use strict';
 
-require('../server/customFunctions/customFunctionsServer');
+require('../server/customFunctions/customFunctionsServer').customFunctionsServer();

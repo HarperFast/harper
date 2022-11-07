@@ -83,6 +83,7 @@ operationsApi:
     privateKey: null
 http:
   threads: null
+  remoteAddressAffinity: false
 rootPath: null
 storage:
   writeAsync: false

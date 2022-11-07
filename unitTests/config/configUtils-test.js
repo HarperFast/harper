@@ -51,6 +51,7 @@ const TEST_ARGS = {
 	CUSTOMFUNCTIONS_NODEENV: 'development',
 	CUSTOMFUNCTIONS_ROOT: path.join(DIRNAME, 'test_custom_functions'),
 	HTTP_THREADS: '4',
+	HTTP_REMOTE_ADDRESS_AFFINITY: false,
 	IPC_NETWORK_PORT: '1234',
 	LOCALSTUDIO_ENABLED: true,
 	LOGGING_FILE: false,
@@ -339,6 +340,7 @@ describe('Test configUtils module', () => {
 				},
 				http: {
 					threads: 4,
+					remoteAddressAffinity: false,
 				},
 				ipc: {
 					network: {
@@ -427,6 +429,7 @@ describe('Test configUtils module', () => {
 				customfunctions_tls_certificateauthority: null,
 				customfunctions_tls_privatekey: TEST_PRIVATE_KEY,
 				http_threads: 4,
+				http_remoteaddressaffinity: false,
 				ipc_network_port: 1234,
 				localstudio_enabled: true,
 				logging_auditlog: true,
@@ -507,6 +510,7 @@ describe('Test configUtils module', () => {
 			customfunctions_tls_certificateauthority: null,
 			customfunctions_tls_privatekey: null,
 			http_threads: null,
+			http_remoteaddressaffinity: false,
 			ipc_network_port: 9383,
 			localstudio_enabled: false,
 			logging_auditlog: false,
@@ -772,6 +776,7 @@ describe('Test configUtils module', () => {
 					},
 					http: {
 						threads: 12,
+						remoteAddressAffinity: false
 					}
 				},
 			};

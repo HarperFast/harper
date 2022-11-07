@@ -33,6 +33,9 @@ const {
 	handleSigterm,
 } = require('../serverHelpers/serverHandlers');
 
+module.exports = {
+	customFunctionsServer,
+};
 const TRUE_COMPARE_VAL = 'TRUE';
 let server = undefined;
 let CF_ROUTES_DIR = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
@@ -223,7 +226,3 @@ function buildServer(is_https) {
 		process.exit(1);
 	}
 }
-
-(async () => {
-	await customFunctionsServer();
-})();

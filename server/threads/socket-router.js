@@ -13,7 +13,7 @@ const workers = [];
 env.initSync();
 const THREAD_COUNT = Math.max(env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES),
 	env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES));
-const REMOTE_ADDRESS_AFFINITY = env.get(hdb_terms.HDB_SETTINGS_NAMES.REMOTE_ADDRESS_AFFINITY);
+const REMOTE_ADDRESS_AFFINITY = env.get(hdb_terms.HDB_SETTINGS_NAMES.HTTP_REMOTE_ADDRESS_AFFINITY);
 
 function startHTTPThreads() {
 	for (let i = 0; i < THREAD_COUNT; i++) {
@@ -31,14 +31,9 @@ function startSocketServer(type, port) {
 		allowHalfOpen: true,
 		pauseOnConnect: true,
 	}, (socket) => {
-		/*socket.on('data', onData)
-		socket.on('error', (error) => {
-			console.info('Error occurred in socket', error)
-		})*/
 		const worker = workerStrategy(socket);
 		worker.requests++;
 		worker.postMessage({type, fd: socket._handle.fd});
-		//console.log('sent request to', worker.threadId);
 	}).listen(port);
 	harper_logger.info(`HarperDB ${pjson.version} Server running on port ${port}`);
 }

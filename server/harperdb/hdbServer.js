@@ -59,6 +59,9 @@ const PROPS_SERVER_PORT_KEY = HDB_SETTINGS_NAMES.SERVER_PORT_KEY;
 
 let server = undefined;
 
+module.exports = {
+	hdbServer,
+};
 /**
  * Builds a HarperDB server.
  * @returns {Promise<void>}
@@ -282,7 +285,3 @@ function getCORSOpts() {
 function getHeaderTimeoutConfig() {
 	return env.get(PROPS_HEADER_TIMEOUT_KEY);
 }
-
-(async () => {
-	await hdbServer();
-})();
