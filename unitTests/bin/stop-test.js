@@ -57,7 +57,7 @@ describe('Test stop.js', () => {
 		is_hdb_restart_running_stub = sandbox.stub(pm2_utils, 'isHdbRestartRunning');
 		start_clustering_stub = sandbox.stub(pm2_utils, 'startClustering').resolves();
 		stop_clustering_stub = sandbox.stub(pm2_utils, 'stopClustering');
-		update_node_name_stub = sandbox.stub(nats_utils, 'updateNodeNameLocalStreams');
+		update_node_name_stub = sandbox.stub(nats_utils, 'updateLocalStreams');
 		close_connection_stub = sandbox.stub(nats_utils, 'closeConnection');
 	});
 

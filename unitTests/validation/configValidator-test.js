@@ -47,6 +47,11 @@ const FAKE_CONFIG = {
 			network: {
 				port: 6666,
 			},
+			streams: {
+				maxAge: 3600,
+				maxBytes: 10000,
+				maxMsgs: 100,
+			},
 		},
 		nodeName: 'test_name',
 		replyService: {
@@ -188,6 +193,11 @@ describe('Test configValidator module', () => {
 							network: {
 								port: 6666,
 							},
+							streams: {
+								maxAge: 3600,
+								maxBytes: 10000,
+								maxMsgs: 100,
+							},
 						},
 						nodeName: 'test_name',
 						replyService: {
@@ -299,10 +309,11 @@ describe('Test configValidator module', () => {
 			let bad_config_obj = test_utils.deepClone(FAKE_CONFIG);
 			bad_config_obj.clustering.leafServer.network.port = undefined;
 			bad_config_obj.clustering.nodeName = 'wowee*nodename';
+			bad_config_obj.clustering.leafServer.streams.maxAge = 10;
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'clustering.leafServer.network.port' is required. 'clustering.nodeName' invalid, must not contain ., * or >";
+				"'clustering.leafServer.network.port' is required. 'clustering.leafServer.streams.maxAge' must be greater than or equal to 120. 'clustering.nodeName' invalid, must not contain ., * or >";
 
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
