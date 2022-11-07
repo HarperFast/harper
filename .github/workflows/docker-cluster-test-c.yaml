@@ -7,8 +7,9 @@ on:
     paths:
       - 'utility/Docker/Dockerfile'
   schedule:
-    - cron:  '0 8 * * 1-5'
+    - cron: '0 13 * * 1-5'
   workflow_dispatch:
+  workflow_call:
 name: "Run Docker Cluster Tests C"
 jobs:
   build:
@@ -39,7 +40,7 @@ jobs:
       - createInstances
     timeout-minutes: 20
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
     - uses: actions/download-artifact@v3
       with:
         name: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}.tar
@@ -80,4 +81,22 @@ jobs:
     with:
       instanceCount: "1"
       callingWorkflow: ${{ github.workflow }}
-    secrets: inherit   
+    secrets: inherit
+  sendSlackMessage:
+    runs-on: ubuntu-latest
+    if: ${{ failure() && github.event_name == 'schedule' }}
+    needs:
+      - destroyInstances
+      - runTests
+      - createInstances
+      - dockerBuild
+      - build
+    steps:
+    - name: Post to a Slack channel
+      id: slack
+      uses: slackapi/slack-github-action@v1.23.0
+      with:
+        channel-id: 'development'
+        slack-message: "${{ github.workflow }} Failed.\nSee logs here: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      env:
+        SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}

@@ -49,8 +49,8 @@ const TEST_ARGS = {
 	CUSTOMFUNCTIONS_TLS_PRIVATEKEY: TEST_PRIVATE_KEY,
 	CUSTOMFUNCTIONS_NETWORK_TIMEOUT: '119999',
 	CUSTOMFUNCTIONS_NODEENV: 'development',
-	CUSTOMFUNCTIONS_PROCESSES: '2',
 	CUSTOMFUNCTIONS_ROOT: path.join(DIRNAME, 'test_custom_functions'),
+	HTTP_THREADS: '4',
 	IPC_NETWORK_PORT: '1234',
 	LOCALSTUDIO_ENABLED: true,
 	LOGGING_FILE: false,
@@ -78,7 +78,6 @@ const TEST_ARGS = {
 	OPERATIONSAPI_NETWORK_PORT: '2599',
 	OPERATIONSAPI_NETWORK_TIMEOUT: '120001',
 	OPERATIONSAPI_NODEENV: 'development',
-	OPERATIONSAPI_PROCESSES: '4',
 	ROOTPATH: HDB_ROOT,
 	STORAGE_WRITEASYNC: true,
 	STORAGE_OVERLAPPINGSYNC: false,
@@ -331,13 +330,15 @@ describe('Test configUtils module', () => {
 						timeout: 119999,
 					},
 					nodeEnv: 'development',
-					processes: 2,
 					root: path.join(DIRNAME, '/test_custom_functions'),
 					tls: {
 						certificate: TEST_CERT,
 						certificateAuthority: null,
 						privateKey: TEST_PRIVATE_KEY,
 					},
+				},
+				http: {
+					threads: 4,
 				},
 				ipc: {
 					network: {
@@ -381,7 +382,6 @@ describe('Test configUtils module', () => {
 						timeout: 120001,
 					},
 					nodeEnv: 'development',
-					processes: 4,
 					tls: {
 						certificate: TEST_CERT,
 						certificateAuthority: null,
@@ -422,11 +422,11 @@ describe('Test configUtils module', () => {
 				customfunctions_network_port: 9936,
 				customfunctions_network_timeout: 119999,
 				customfunctions_nodeenv: 'development',
-				customfunctions_processes: 2,
 				customfunctions_root: path.join(DIRNAME, '/test_custom_functions'),
 				customfunctions_tls_certificate: TEST_CERT,
 				customfunctions_tls_certificateauthority: null,
 				customfunctions_tls_privatekey: TEST_PRIVATE_KEY,
+				http_threads: 4,
 				ipc_network_port: 1234,
 				localstudio_enabled: true,
 				logging_auditlog: true,
@@ -454,7 +454,6 @@ describe('Test configUtils module', () => {
 				operationsapi_network_port: 2599,
 				operationsapi_network_timeout: 120001,
 				operationsapi_nodeenv: 'development',
-				operationsapi_processes: 4,
 				rootpath: path.join(DIRNAME, '/yaml'),
 				storage_writeasync: true,
 				storage_overlappingsync: false,
@@ -503,11 +502,11 @@ describe('Test configUtils module', () => {
 			customfunctions_network_port: 9926,
 			customfunctions_network_timeout: 120000,
 			customfunctions_nodeenv: 'production',
-			customfunctions_processes: null,
 			customfunctions_root: null,
 			customfunctions_tls_certificate: null,
 			customfunctions_tls_certificateauthority: null,
 			customfunctions_tls_privatekey: null,
+			http_threads: null,
 			ipc_network_port: 9383,
 			localstudio_enabled: false,
 			logging_auditlog: false,
@@ -535,10 +534,10 @@ describe('Test configUtils module', () => {
 			operationsapi_network_port: 9925,
 			operationsapi_network_timeout: 120000,
 			operationsapi_nodeenv: 'production',
-			operationsapi_processes: null,
 			rootpath: null,
 			storage_writeasync: false,
 			storage_caching: true,
+			storage_compression: false,
 			storage_noreadahead: true,
 			storage_prefetchwrites: true,
 			operationsapi_tls_certificate: null,
@@ -753,7 +752,6 @@ describe('Test configUtils module', () => {
 					},
 					customFunctions: {
 						enabled: false,
-						processes: 12,
 						root: '/yaml/custom_functions',
 						tls: {
 							certificate: '/yaml/keys/certificate.pem',
@@ -766,13 +764,15 @@ describe('Test configUtils module', () => {
 					},
 					operationsApi: {
 						// 23250
-						processes: 12,
 						tls: {
 							certificate: '/yaml/keys/certificate.pem',
 							certificateAuthority: '/yaml/keys/ca.pem',
 							privateKey: '/yaml/keys/privateKey.pem',
 						},
 					},
+					http: {
+						threads: 12,
+					}
 				},
 			};
 
@@ -795,32 +795,30 @@ describe('Test configUtils module', () => {
 
 			expect(error).to.not.exist;
 			expect(config_validator_stub.called).to.be.true;
-			expect(set_in_stub.firstCall.args[0]).to.eql(['customFunctions', 'processes']);
+			expect(set_in_stub.firstCall.args[0]).to.eql(['http', 'threads']);
 			expect(set_in_stub.firstCall.args[1]).to.equal(12);
-			expect(set_in_stub.secondCall.args[0]).to.eql(['operationsApi', 'processes']);
-			expect(set_in_stub.secondCall.args[1]).to.equal(12);
-			expect(set_in_stub.thirdCall.args[0]).to.eql(['customFunctions', 'root']);
-			expect(set_in_stub.thirdCall.args[1]).to.equal(CF_ROOT);
-			expect(set_in_stub.args[3][0]).to.eql(['logging', 'root']);
-			expect(set_in_stub.args[3][1]).to.equal(LOG_ROOT);
-			expect(set_in_stub.args[4][0]).to.eql(['operationsApi', 'tls', 'certificate']);
-			expect(set_in_stub.args[4][1]).to.equal(CERT_PEM);
-			expect(set_in_stub.args[5][0]).to.eql(['operationsApi', 'tls', 'privateKey']);
-			expect(set_in_stub.args[5][1]).to.equal(KEY_PEM);
-			expect(set_in_stub.args[6][0]).to.eql(['operationsApi', 'tls', 'certificateAuthority']);
-			expect(set_in_stub.args[6][1]).to.equal(CA_PEM);
-			expect(set_in_stub.args[7][0]).to.eql(['customFunctions', 'tls', 'certificate']);
-			expect(set_in_stub.args[7][1]).to.equal(CERT_PEM);
-			expect(set_in_stub.args[8][0]).to.eql(['customFunctions', 'tls', 'privateKey']);
-			expect(set_in_stub.args[8][1]).to.equal(KEY_PEM);
-			expect(set_in_stub.args[9][0]).to.eql(['customFunctions', 'tls', 'certificateAuthority']);
-			expect(set_in_stub.args[9][1]).to.equal(CA_PEM);
-			expect(set_in_stub.args[10][0]).to.eql(['clustering', 'tls', 'certificate']);
-			expect(set_in_stub.args[10][1]).to.equal(CERT_PEM);
-			expect(set_in_stub.args[11][0]).to.eql(['clustering', 'tls', 'privateKey']);
-			expect(set_in_stub.args[11][1]).to.equal(KEY_PEM);
-			expect(set_in_stub.args[12][0]).to.eql(['clustering', 'tls', 'certificateAuthority']);
-			expect(set_in_stub.args[12][1]).to.equal(CA_PEM);
+			expect(set_in_stub.secondCall.args[0]).to.eql(['customFunctions', 'root']);
+			expect(set_in_stub.secondCall.args[1]).to.equal(CF_ROOT);
+			expect(set_in_stub.args[2][0]).to.eql(['logging', 'root']);
+			expect(set_in_stub.args[2][1]).to.equal(LOG_ROOT);
+			expect(set_in_stub.args[3][0]).to.eql(['operationsApi', 'tls', 'certificate']);
+			expect(set_in_stub.args[3][1]).to.equal(CERT_PEM);
+			expect(set_in_stub.args[4][0]).to.eql(['operationsApi', 'tls', 'privateKey']);
+			expect(set_in_stub.args[4][1]).to.equal(KEY_PEM);
+			expect(set_in_stub.args[5][0]).to.eql(['operationsApi', 'tls', 'certificateAuthority']);
+			expect(set_in_stub.args[5][1]).to.equal(CA_PEM);
+			expect(set_in_stub.args[6][0]).to.eql(['customFunctions', 'tls', 'certificate']);
+			expect(set_in_stub.args[6][1]).to.equal(CERT_PEM);
+			expect(set_in_stub.args[7][0]).to.eql(['customFunctions', 'tls', 'privateKey']);
+			expect(set_in_stub.args[7][1]).to.equal(KEY_PEM);
+			expect(set_in_stub.args[8][0]).to.eql(['customFunctions', 'tls', 'certificateAuthority']);
+			expect(set_in_stub.args[8][1]).to.equal(CA_PEM);
+			expect(set_in_stub.args[9][0]).to.eql(['clustering', 'tls', 'certificate']);
+			expect(set_in_stub.args[9][1]).to.equal(CERT_PEM);
+			expect(set_in_stub.args[10][0]).to.eql(['clustering', 'tls', 'privateKey']);
+			expect(set_in_stub.args[10][1]).to.equal(KEY_PEM);
+			expect(set_in_stub.args[11][0]).to.eql(['clustering', 'tls', 'certificateAuthority']);
+			expect(set_in_stub.args[11][1]).to.equal(CA_PEM);
 		});
 	});
 
@@ -1374,7 +1372,7 @@ describe('Test configUtils module', () => {
 			logging_root: path.join(__dirname, '../../log'),
 			operationsapi_nodeenv: [],
 			clustering_enabled: false,
-			operationsapi_processes: 12,
+			http_threads: 12,
 			operationsapi_network_timeout: 120000,
 			operationsapi_network_keepalivetimeout: 5000,
 			operationsapi_network_headerstimeout: 60000,
@@ -1385,7 +1383,6 @@ describe('Test configUtils module', () => {
 			customfunctions_enabled: false,
 			customfunctions_network_port: 9926,
 			customfunctions_root: path.join(__dirname, '../../custom_functions'),
-			customfunctions_processes: 12,
 			logging_file: true,
 			logging_stdstreams: false,
 			operationsapi_foreground: false,

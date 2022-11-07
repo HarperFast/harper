@@ -33,11 +33,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-    - uses: actions/checkout@v2
+    - uses: actions/checkout@v3
     - name: Setup Terraform
       with:
         terraform_wrapper: false
-      uses: hashicorp/setup-terraform@v1
+      uses: hashicorp/setup-terraform@v2
     - uses: actions/download-artifact@v3
       if: inputs.installType == 'buildPackage'
       with:
@@ -85,8 +85,8 @@ jobs:
         mapfile -t public_dns_names <<< $(terraform output -json | jq -r '.public_dns_names.value[]')
         mapfile -t public_ips <<< $(terraform output -json | jq -r '.public_ips.value[]')
 
-        echo "::set-output name=PUBLIC_DNS_NAMES::${public_dns_names[@]}"
-        echo "::set-output name=PUBLIC_IPS::${public_ips[@]}"
+        echo "PUBLIC_DNS_NAMES=${public_dns_names[@]}" >> $GITHUB_OUTPUT
+        echo "PUBLIC_IPS=${public_ips[@]}" >> $GITHUB_OUTPUT
 
         mkdir ../harperdb/tfstate/
         mv terraform.tfstate ../harperdb/tfstate/
@@ -98,3 +98,10 @@ jobs:
         name: tfstate
         path: tfstate/
         retention-days: 1
+    - name: 'Destroy Instances'
+      if: ${{ failure() }}
+      run: |
+        #!/bin/bash
+        cd ../terraform
+        
+        terraform destroy -var='private_key=./private_key' -var='region=us-east-2' -var='instance_count=${{inputs.instanceCount}}' -var='instance_name_prefix=GitHub-'"${workflow_name}"'-${{github.run_number}}' -var='instance_type=${{inputs.instanceType}}' -var='github_workflow_name='"${workflow_name}"'' -var='github_run_number=${{github.run_number}}' -var='volume_size=${{inputs.volumeSize}}' -auto-approve

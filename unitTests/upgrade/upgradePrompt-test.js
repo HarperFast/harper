@@ -10,8 +10,12 @@ const prompt = require('prompt');
 const os = require('os');
 const upgradePrompt = require('../../upgrade/upgradePrompt');
 
-function buildProcessArgs(yes_or_no) {
+function buildProcessUpgradeArgs(yes_or_no) {
     return ['--CONFIRM_UPGRADE', yes_or_no]
+}
+
+function buildProcessDowngradeArgs(yes_or_no) {
+    return ['--CONFIRM_DOWNGRADE', yes_or_no]
 }
 
 describe('Test upgradePrompt module', () => {
@@ -47,14 +51,43 @@ describe('Test upgradePrompt module', () => {
     })
 
     it('Should return true if "yes" passed as process arg',async() => {
-        process.argv.push(...buildProcessArgs('yes'))
+        process.argv.push(...buildProcessUpgradeArgs('yes'))
         const result = await upgradePrompt.forceUpdatePrompt({});
         expect(result).to.be.true;
     })
 
     it('Should return false if "no" passed as process arg',async() => {
-        process.argv.push(...buildProcessArgs('no'))
+        process.argv.push(...buildProcessUpgradeArgs('no'))
         const result = await upgradePrompt.forceUpdatePrompt({});
         expect(result).to.be.false;
     })
+
+    it('Downgrade should return true if user enters "yes"',async() => {
+        process.nextTick(() => {
+            stdin_stubber.send(`yes${os.EOL}`);
+        })
+        const result = await upgradePrompt.forceDowngradePrompt({});
+        expect(result).to.be.true;
+    })
+
+    it('Downgrade should return false if user enters "no"',async() => {
+        process.nextTick(() => {
+            stdin_stubber.send(`no${os.EOL}`);
+        })
+        const result = await upgradePrompt.forceDowngradePrompt({});
+        expect(result).to.be.false;
+    })
+
+    it('Downgrade should return true if "yes" passed as process arg',async() => {
+        process.argv.push(...buildProcessDowngradeArgs('yes'))
+        const result = await upgradePrompt.forceDowngradePrompt({});
+        expect(result).to.be.true;
+    })
+
+    it('Downgrade should return false if "no" passed as process arg',async() => {
+        process.argv.push(...buildProcessDowngradeArgs('no'))
+        const result = await upgradePrompt.forceDowngradePrompt({});
+        expect(result).to.be.false;
+    })
+
 })

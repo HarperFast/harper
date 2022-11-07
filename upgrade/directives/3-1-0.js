@@ -164,7 +164,7 @@ function updateSettingsFile_3_1_0() {
 		)}\n` +
 		`   ;Set the max number of processes HarperDB will start for the Custom Functions server\n` +
 		`${HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES} = ${config_utils.getDefaultConfig(
-			CONFIG_PARAMS.CUSTOMFUNCTIONS_PROCESSES
+			CONFIG_PARAMS.HTTP_THREADS
 		)}\n`;
 	const settings_path = env.get('settings_path');
 	const settings_dir = path.dirname(settings_path);

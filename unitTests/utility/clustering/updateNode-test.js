@@ -20,6 +20,7 @@ describe('Test updateNode module', () => {
 	let hdb_log_error_stub;
 	let update_work_stream_stub;
 	let create_table_streams_stub;
+	let review_subs_stub = sandbox.stub();
 	const test_request = {
 		operation: 'update_node',
 		node_name: 'remote_node_test',
@@ -75,6 +76,7 @@ describe('Test updateNode module', () => {
 	before(() => {
 		sandbox.stub(clustering_utils, 'getSystemInfo').resolves(test_sys_info);
 		updateNode.__set__('local_node_name', 'local_node');
+		updateNode.__set__('review_subscriptions', review_subs_stub);
 		delete global.hdb_schema;
 		test_utils.setGlobalSchema('name', 'reptile', 'crocodilia', ['name', 'age']);
 		test_utils.setGlobalSchema('id', 'country', 'england', ['id', 'county']);
@@ -97,6 +99,25 @@ describe('Test updateNode module', () => {
 	});
 
 	it('Test updateNode calls all the things correctly happy path', async () => {
+		const review_subs_response = {
+			added: [
+				{
+					schema: 'country',
+					table: 'england',
+					subscribe: true,
+					publish: false,
+					start_time: '2022-08-26T18:26:58.514Z',
+				},
+				{
+					schema: 'dog',
+					table: 'poodle',
+					subscribe: true,
+					publish: true,
+				},
+			],
+			skipped: [],
+		};
+		review_subs_stub.resolves(review_subs_response);
 		const expected_payload = {
 			node_name: 'local_node',
 			operation: 'update_node',
@@ -153,7 +174,6 @@ describe('Test updateNode module', () => {
 			},
 		};
 		const result = await updateNode(test_request);
-		expect(create_table_streams_stub.called).to.be.true;
 		expect(request_stub.args[0][0]).to.eql('remote_node_test.__request__');
 		expect(request_stub.args[0][1]).to.eql(expected_payload);
 		expect(update_work_stream_stub.getCall(0).args[0]).to.eql(test_request.subscriptions[0]);
@@ -162,7 +182,25 @@ describe('Test updateNode module', () => {
 		expect(update_work_stream_stub.getCall(1).args[1]).to.eql('remote_node_test');
 		expect(update_work_stream_stub.callCount).to.equal(2);
 		expect(upsert_node_record_stub.args[0][0]).to.eql(expected_node_record);
-		expect(result).to.equal("Successfully updated 'remote_node_test'");
+		expect(result).to.eql({
+			message: "Successfully updated 'remote_node_test'",
+			skipped: [],
+			updated: [
+				{
+					publish: false,
+					schema: 'country',
+					start_time: '2022-08-26T18:26:58.514Z',
+					subscribe: true,
+					table: 'england',
+				},
+				{
+					publish: true,
+					schema: 'dog',
+					subscribe: true,
+					table: 'poodle',
+				},
+			],
+		});
 	});
 
 	it('Test error thrown and record not inserted if error reply from remote node', async () => {

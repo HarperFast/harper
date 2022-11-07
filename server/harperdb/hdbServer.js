@@ -15,15 +15,17 @@ const fastify_cors = require('@fastify/cors');
 const fastify_compress = require('@fastify/compress');
 const fastify_static = require('@fastify/static');
 const fastify_serializer = require('@fastify/accepts-serializer');
-const { pack, unpack } = require('msgpackr');
+const {pack, unpack} = require('msgpackr');
 const request_time_plugin = require('../serverHelpers/requestTimePlugin');
 const guidePath = require('path');
+const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
 const global_schema = require('../../utility/globalSchema');
 const common_utils = require('../../utility/common_utils');
 const user_schema = require('../../security/user');
 const hdb_license = require('../../utility/registration/hdb_license');
 const { isMainThread } = require('worker_threads');
 const { registerServer } = require('../threads/thread-http-server');
+const { toCsvStream } = require('../../data_layer/export');
 
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
@@ -44,7 +46,7 @@ const net = require("net");
 const REQ_MAX_BODY_SIZE = 1024 * 1024 * 1024; //this is 1GB in bytes
 const TRUE_COMPARE_VAL = 'TRUE';
 
-const { HDB_SETTINGS_NAMES } = terms;
+const {HDB_SETTINGS_NAMES} = terms;
 const PROPS_CORS_KEY = HDB_SETTINGS_NAMES.CORS_ENABLED_KEY;
 const PROPS_CORS_ACCESSLIST_KEY = 'CORS_ACCESSLIST';
 const PROPS_SERVER_TIMEOUT_KEY = HDB_SETTINGS_NAMES.SERVER_TIMEOUT_KEY;
@@ -150,7 +152,7 @@ function buildServer(is_https) {
 
 	app.register(function (instance, options, done) {
 		instance.setNotFoundHandler(function (request, reply) {
-			reply.code(404).send({ error: 'Not Found', statusCode: 404 });
+			reply.code(404).send({error: 'Not Found', statusCode: 404});
 		});
 		done();
 	});
@@ -159,9 +161,9 @@ function buildServer(is_https) {
 
 	// This handles all get requests for the studio
 	app.register(fastify_compress);
-	app.register(fastify_static, { root: guidePath.join(__dirname, '../../docs') });
+	app.register(fastify_static, {root: guidePath.join(__dirname, '../../docs')});
 	app.register(fastify_serializer);
-	app.addContentTypeParser('application/x-msgpack', { parseAs: 'buffer' }, (req, body, done) => {
+	app.addContentTypeParser('application/x-msgpack', {parseAs: 'buffer'}, (req, body, done) => {
 		try {
 			done(null, unpack(body));
 		} catch (error) {
@@ -189,6 +191,13 @@ function buildServer(is_https) {
 					{
 						regex: /^application\/(x-)?msgpack$/,
 						serializer: pack,
+					},
+					{
+						regex: /^text\/csv$/,
+						serializer: function(data) {
+							this.header('Content-Disposition', 'attachment; filename="data.csv"');
+							return toCsvStream(data);
+						},
 					},
 				],
 			},
@@ -222,7 +231,14 @@ function getServerOptions(is_https) {
 	if (is_https) {
 		const privateKey = env.get(PROPS_PRIVATE_KEY);
 		const certificate = env.get(PROPS_CERT_KEY);
-		const credentials = { key: fs.readFileSync(`${privateKey}`), cert: fs.readFileSync(`${certificate}`) };
+		const credentials = {
+			allowHTTP1: true, // Support both HTTPS/1 and /2
+			key: fs.readFileSync(`${privateKey}`),
+			cert: fs.readFileSync(`${certificate}`)
+		};
+		// ALPN negotiation will not upgrade non-TLS HTTP/1, so we only turn on HTTP/2 when we have secure HTTPS,
+		// plus browsers do not support unsecured HTTP/2, so there isn't a lot of value in trying to use insecure HTTP/2.
+		server_opts.http2 = true;
 		server_opts.https = credentials;
 	}
 

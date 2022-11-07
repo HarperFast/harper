@@ -27,9 +27,13 @@ function getServerOptions(is_https) {
 		const privateKey = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_PRIVATEKEY);
 		const certificate = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_CERTIFICATE);
 		server_opts.https = {
+			allowHTTP1: true, // Support both HTTPS/1 and /2
 			key: fs.readFileSync(`${privateKey}`),
 			cert: fs.readFileSync(`${certificate}`),
 		};
+		// ALPN negotiation will not upgrade non-TLS HTTP/1, so we only turn on HTTP/2 when we have secure HTTPS,
+		// plus browsers do not support unsecured HTTP/2, so there isn't a lot of value in trying to use insecure HTTP/2.
+		server_opts.http2 = true;
 	}
 
 	return server_opts;

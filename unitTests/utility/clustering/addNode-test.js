@@ -21,6 +21,7 @@ describe('Test addNode module', () => {
 	let update_work_stream_stub;
 	let create_table_streams_stub;
 	let get_sys_info_sub;
+	let review_subs_stub = sandbox.stub();
 	const test_sys_info = {
 		hdb_version: '4.0.0test',
 		node_version: '16.15.0',
@@ -57,6 +58,7 @@ describe('Test addNode module', () => {
 	before(() => {
 		get_sys_info_sub = sandbox.stub(clustering_utils, 'getSystemInfo').resolves(test_sys_info);
 		addNode.__set__('local_node_name', 'local_node');
+		addNode.__set__('review_subscriptions', review_subs_stub);
 		test_utils.setGlobalSchema('name', 'breed', 'beagle', ['name', 'age']);
 		test_utils.setGlobalSchema('id', 'country', 'england', ['id', 'county']);
 		test_utils.setGlobalSchema('number', 'dog', 'poodle', ['number']);
@@ -78,6 +80,33 @@ describe('Test addNode module', () => {
 	});
 
 	it('Test addNode happy path', async () => {
+		const review_subs_response = {
+			added: [
+				{
+					schema: 'breed',
+					table: 'beagle',
+					subscribe: true,
+					publish: true,
+					start_time: '2022-08-26T18:26:58.514Z',
+				},
+				{
+					schema: 'country',
+					table: 'england',
+					subscribe: true,
+					publish: false,
+					start_time: '2022-08-26T18:26:58.514Z',
+				},
+				{
+					schema: 'dog',
+					table: 'poodle',
+					subscribe: false,
+					publish: true,
+				},
+			],
+			skipped: [],
+		};
+
+		review_subs_stub.resolves(review_subs_response);
 		const expected_payload = {
 			node_name: 'local_node',
 			operation: 'add_node',
@@ -143,7 +172,6 @@ describe('Test addNode module', () => {
 			},
 		};
 		const result = await addNode(test_request);
-		expect(create_table_streams_stub.called).to.be.true;
 		expect(request_stub.args[0][0]).to.eql('remote_node.__request__');
 		expect(request_stub.args[0][1]).to.eql(expected_payload);
 		expect(update_work_stream_stub.getCall(0).args[0]).to.eql({
@@ -165,7 +193,32 @@ describe('Test addNode module', () => {
 		expect(update_work_stream_stub.getCall(2).args[0]).to.eql(expected_node_record.subscriptions[2]);
 		expect(update_work_stream_stub.getCall(2).args[1]).to.eql('remote_node');
 		expect(upsert_node_record_stub.args[0][0]).to.eql(expected_node_record);
-		expect(result).to.equal("Successfully added 'remote_node' to manifest");
+		expect(result).to.eql({
+			message: "Successfully added 'remote_node' to manifest",
+			added: [
+				{
+					schema: 'breed',
+					table: 'beagle',
+					subscribe: true,
+					publish: true,
+					start_time: '2022-08-26T18:26:58.514Z',
+				},
+				{
+					schema: 'country',
+					table: 'england',
+					subscribe: true,
+					publish: false,
+					start_time: '2022-08-26T18:26:58.514Z',
+				},
+				{
+					schema: 'dog',
+					table: 'poodle',
+					subscribe: false,
+					publish: true,
+				},
+			],
+			skipped: [],
+		});
 	});
 
 	it('Test error thrown and record not inserted if error reply from remote node', async () => {
