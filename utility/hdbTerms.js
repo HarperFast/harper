@@ -112,9 +112,9 @@ const CLUSTERING_PROCESSES = {
 };
 
 const SERVICE_SERVERS_CWD = {
-	HDB: `server/harperdb`,
-	IPC: `server/ipc`,
-	CUSTOM_FUNCTIONS: `server/customFunctions`,
+	HDB: path.join(PACKAGE_ROOT, `server/harperdb`),
+	IPC: path.join(PACKAGE_ROOT, `server/ipc`),
+	CUSTOM_FUNCTIONS: path.join(PACKAGE_ROOT, `server/customFunctions`),
 	CLUSTERING_HUB: path.join(PACKAGE_ROOT, 'server/nats'),
 	CLUSTERING_LEAF: path.join(PACKAGE_ROOT, 'server/nats'),
 };

@@ -12,6 +12,7 @@ const hdb_term = require('../../../utility/hdbTerms');
 const bulk_load = require('../../../data_layer/bulkLoad');
 const JobObject = require('../../../server/jobs/JobObject');
 const pm2_utils = require('../../../utility/pm2/utilityFunctions');
+const threads_start = require('../../../server/threads/start');
 
 const DATA_LOAD_MESSAGE = {
 	operation: 'csv_data_load',
@@ -37,7 +38,7 @@ describe('Test parseMessage', function () {
 
 	beforeEach(function () {
 		sandbox = sinon.createSandbox();
-		start_stub = sandbox.stub(pm2_utils, 'start');
+		start_stub = sandbox.stub(threads_start, 'startWorker');
 	});
 
 	afterEach(function () {
@@ -200,15 +201,15 @@ describe('Test runJob', function () {
 	let update_stub = undefined;
 	let bulk_load_stub = undefined;
 	let launch_job_process_stub = sandbox.stub();
-	let launch_job_process_rw;
+	let launch_job_thread_rw;
 	let runJob = jobs_runner.__get__('runJob');
 
 	before(() => {
-		launch_job_process_rw = jobs_runner.__set__('launchJobProcess', launch_job_process_stub);
+		launch_job_thread_rw = jobs_runner.__set__('launchJobThread', launch_job_process_stub);
 	});
 
 	after(() => {
-		launch_job_process_rw();
+		launch_job_thread_rw();
 	});
 
 	beforeEach(function () {

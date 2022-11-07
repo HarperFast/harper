@@ -11,6 +11,7 @@ const env_mangr = require('../../../utility/environment/environmentManager');
 const services_config = rewire('../../../utility/pm2/servicesConfig');
 const hdb_terms = require('../../../utility/hdbTerms');
 const env = require('../../../utility/environment/environmentManager');
+const { PACKAGE_ROOT } = require('../../../utility/hdbTerms');
 const LAUNCH_SCRIPTS_DIR = path.resolve(__dirname, '../../../launchServiceScripts');
 const SCRIPTS_DIR = path.resolve(__dirname, '../../../utility/scripts');
 const RESTART_SCRIPT = path.join(SCRIPTS_DIR, hdb_terms.HDB_RESTART_SCRIPT);
@@ -61,7 +62,7 @@ describe('Test pm2 servicesConfig module', () => {
 			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.HDB),
 			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.HDB),
 			script: 'bin/harperdb.js',
-			cwd: process.cwd(),
+			cwd: PACKAGE_ROOT,
 			merge_logs: true,
 			env: {
 				PROCESS_NAME: hdb_terms.PROCESS_DESCRIPTORS.HDB,

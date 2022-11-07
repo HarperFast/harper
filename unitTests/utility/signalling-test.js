@@ -7,14 +7,14 @@ const { expect } = chai;
 const sinon_chai = require('sinon-chai');
 chai.use(sinon_chai);
 let test_utils;
-let ipc_utils;
+let itc_utils;
 let hdb_logger;
 let signalling;
 
 describe('Test signalling module', () => {
 	const sandbox = sinon.createSandbox();
 	const TEST_ERROR = 'oh no an error';
-	let send_ipc_event_stub;
+	let send_itc_event_stub;
 	let log_error_stub;
 
 	before(() => {
@@ -22,13 +22,13 @@ describe('Test signalling module', () => {
 		log_error_stub = sandbox.stub(hdb_logger, 'error');
 		sandbox.stub(hdb_logger, 'trace');
 		test_utils = require('../test_utils');
-		ipc_utils = require('../../server/threads/itc');
-		send_ipc_event_stub = sandbox.stub(ipc_utils, 'sendIpcEvent');
+		itc_utils = require('../../server/threads/itc');
+		send_itc_event_stub = sandbox.stub(itc_utils, 'sendItcEvent');
 		signalling = rewire('../../utility/signalling');
 	});
 
 	afterEach(() => {
-		send_ipc_event_stub.returns();
+		send_itc_event_stub.returns();
 		sandbox.resetHistory();
 	});
 
@@ -50,11 +50,11 @@ describe('Test signalling module', () => {
 			},
 		};
 		signalling.signalSchemaChange(message);
-		expect(send_ipc_event_stub).to.have.been.calledWith(sinon.match(expected_event));
+		expect(send_itc_event_stub).to.have.been.calledWith(sinon.match(expected_event));
 	});
 
 	it('Test signalSchemaChange sad path', () => {
-		send_ipc_event_stub.throws(TEST_ERROR);
+		send_itc_event_stub.throws(TEST_ERROR);
 		signalling.signalSchemaChange('message');
 		expect(log_error_stub.args[0][0].name).to.equal(TEST_ERROR);
 	});
@@ -66,11 +66,11 @@ describe('Test signalling module', () => {
 			message: 'user',
 		};
 		signalling.signalUserChange(message);
-		expect(send_ipc_event_stub).to.have.been.calledWith(sinon.match(expected_event));
+		expect(send_itc_event_stub).to.have.been.calledWith(sinon.match(expected_event));
 	});
 
 	it('Test signalUserChange sad path', () => {
-		send_ipc_event_stub.throws(TEST_ERROR);
+		send_itc_event_stub.throws(TEST_ERROR);
 		signalling.signalUserChange('message');
 		expect(log_error_stub.args[0][0].name).to.equal(TEST_ERROR);
 	});

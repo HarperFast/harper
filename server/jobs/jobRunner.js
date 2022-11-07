@@ -8,7 +8,7 @@ const log = require('../../utility/logging/harper_logger');
 const jobs = require('./jobs');
 const hdb_export = require('../../data_layer/export');
 const hdb_delete = require('../../data_layer/delete');
-const { startWorker } = require('../../server/threads/start');
+const threads_start = require('../../server/threads/start');
 const transaction_log = require('../../utility/logging/transactionLog');
 
 class RunnerMessage {
@@ -120,7 +120,7 @@ async function runJob(runner_message, operation) {
  */
 async function launchJobThread(job_id) {
 	log.trace('launching job thread:', job_id);
-	startWorker('server/jobs/jobProcess.js', {
+	threads_start.startWorker('server/jobs/jobProcess.js', {
 		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: `JOB-${job_id}` },
 	});
 }

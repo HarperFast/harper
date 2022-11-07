@@ -181,25 +181,13 @@ describe('Test pm2 utilityFunctions module', () => {
 		}).timeout(10000);
 
 		it('Test the HarperDB server is started on multiple processes', async () => {
-			await utility_functions.start(services_config.generateHDBServerConfig());
+			await utility_functions.start(services_config.generateMainServerConfig());
 			const process_meta = await utility_functions.describe('HarperDB');
-			expect(process_meta.length).to.equal(4);
+			expect(process_meta.length).to.equal(1);
 			expect(process_meta[0].name).to.equal('HarperDB');
-			expect(process_meta[1].name).to.equal('HarperDB');
-			expect(process_meta[2].name).to.equal('HarperDB');
-			expect(process_meta[3].name).to.equal('HarperDB');
 			expect(process_meta[0].pm2_env.status).to.equal('online');
-			expect(process_meta[1].pm2_env.status).to.equal('online');
-			expect(process_meta[2].pm2_env.status).to.equal('online');
-			expect(process_meta[3].pm2_env.status).to.equal('online');
-			expect(process_meta[0].pm2_env.exec_mode).to.equal('cluster_mode');
-			expect(process_meta[1].pm2_env.exec_mode).to.equal('cluster_mode');
-			expect(process_meta[2].pm2_env.exec_mode).to.equal('cluster_mode');
-			expect(process_meta[3].pm2_env.exec_mode).to.equal('cluster_mode');
+			expect(process_meta[0].pm2_env.exec_mode).to.equal('fork_mode');
 			expect(process_meta[0].pm2_env.node_args[0]).includes('--max-old-space-size=');
-			expect(process_meta[1].pm2_env.node_args[0]).includes('--max-old-space-size=');
-			expect(process_meta[2].pm2_env.node_args[0]).includes('--max-old-space-size=');
-			expect(process_meta[3].pm2_env.node_args[0]).includes('--max-old-space-size=');
 		}).timeout(10000);
 
 		it('Test error is handled as expected', async () => {
@@ -238,7 +226,7 @@ describe('Test pm2 utilityFunctions module', () => {
 		}).timeout(20000);
 
 		it('Test that multiple processes are stopped', async () => {
-			await utility_functions.start(services_config.generateHDBServerConfig());
+			await utility_functions.start(services_config.generateMainServerConfig());
 			await utility_functions.stop('HarperDB');
 			const process_meta = await utility_functions.list('HarperDB');
 			expect(process_meta.length).to.equal(0);
@@ -266,17 +254,11 @@ describe('Test pm2 utilityFunctions module', () => {
 		});
 
 		it('Test clustered processes are reloaded', async () => {
-			await utility_functions.start(services_config.generateHDBServerConfig());
+			await utility_functions.start(services_config.generateMainServerConfig());
 			await utility_functions.reload('HarperDB');
 			const process_meta = await utility_functions.describe('HarperDB');
 			expect(process_meta[0].name).to.equal('HarperDB');
-			expect(process_meta[1].name).to.equal('HarperDB');
-			expect(process_meta[2].name).to.equal('HarperDB');
-			expect(process_meta[3].name).to.equal('HarperDB');
 			expect(process_meta[0].pm2_env.status).to.equal('online');
-			expect(process_meta[1].pm2_env.status).to.equal('online');
-			expect(process_meta[2].pm2_env.status).to.equal('online');
-			expect(process_meta[3].pm2_env.status).to.equal('online');
 		}).timeout(30000);
 
 		it('Test error is handled as expected', async () => {
@@ -288,7 +270,7 @@ describe('Test pm2 utilityFunctions module', () => {
 		});
 
 		it('Test error from connect causes promise to reject', async () => {
-			await utility_functions.start(services_config.generateHDBServerConfig());
+			await utility_functions.start(services_config.generateMainServerConfig());
 			const connect_rw = utility_functions.__set__('connect', sandbox.stub().throws(new Error(test_err)));
 			await test_utils.assertErrorAsync(utility_functions.reload, ['Test'], new Error(test_err));
 			connect_rw();
@@ -302,17 +284,11 @@ describe('Test pm2 utilityFunctions module', () => {
 		});
 
 		it('Test clustered processes are restarted', async () => {
-			await utility_functions.start(services_config.generateHDBServerConfig());
+			await utility_functions.start(services_config.generateMainServerConfig());
 			await utility_functions.restart('HarperDB');
 			const process_meta = await utility_functions.describe('HarperDB');
 			expect(process_meta[0].name).to.equal('HarperDB');
-			expect(process_meta[1].name).to.equal('HarperDB');
-			expect(process_meta[2].name).to.equal('HarperDB');
-			expect(process_meta[3].name).to.equal('HarperDB');
 			expect(process_meta[0].pm2_env.status).to.equal('online');
-			expect(process_meta[1].pm2_env.status).to.equal('online');
-			expect(process_meta[2].pm2_env.status).to.equal('online');
-			expect(process_meta[3].pm2_env.status).to.equal('online');
 		}).timeout(30000);
 
 		it('Test error is handled as expected', async () => {
@@ -337,7 +313,7 @@ describe('Test pm2 utilityFunctions module', () => {
 		});
 
 		it('Test all pm2 managed processes are listed', async () => {
-			await utility_functions.start(services_config.generateHDBServerConfig());
+			await utility_functions.start(services_config.generateMainServerConfig());
 			await utility_functions.start(services_config.generateIPCServerConfig());
 			const list = await utility_functions.list();
 			let hdb_name_found = false;
@@ -347,7 +323,7 @@ describe('Test pm2 utilityFunctions module', () => {
 				if (proc.name === 'IPC') ipc_name_found = true;
 			});
 
-			expect(list.length).to.equal(5);
+			expect(list.length).to.equal(2);
 			expect(hdb_name_found).to.be.true;
 			expect(ipc_name_found).to.be.true;
 		});
@@ -398,30 +374,18 @@ describe('Test pm2 utilityFunctions module', () => {
 			await utility_functions.startAllServices();
 			const list = await utility_functions.list();
 			let hdb_name_found = false;
-			let ipc_name_found = false;
-			let cf_name_found = false;
 			let hub_name_found = false;
 			let leaf_name_found = false;
-			let ingest_name_found = false;
-			let reply_name_found = false;
 			list.forEach((proc) => {
 				if (proc.name === 'HarperDB') hdb_name_found = true;
-				if (proc.name === 'IPC') ipc_name_found = true;
-				if (proc.name === 'Custom Functions') cf_name_found = true;
 				if (proc.name === 'Clustering Hub') hub_name_found = true;
 				if (proc.name === 'Clustering Leaf') leaf_name_found = true;
-				if (proc.name === 'Clustering Ingest Service') ingest_name_found = true;
-				if (proc.name === 'Clustering Reply Service') reply_name_found = true;
 			});
 
-			expect(list.length).to.equal(11);
+			expect(list.length).to.equal(3);
 			expect(hdb_name_found).to.be.true;
-			expect(ipc_name_found).to.be.true;
-			expect(cf_name_found).to.be.true;
 			expect(hub_name_found).to.be.true;
 			expect(leaf_name_found).to.be.true;
-			expect(ingest_name_found).to.be.true;
-			expect(reply_name_found).to.be.true;
 		}).timeout(20000);
 	});
 
@@ -454,15 +418,9 @@ describe('Test pm2 utilityFunctions module', () => {
 
 			await utility_functions.startService('harperdb');
 			const process_meta = await utility_functions.describe('HarperDB');
-			expect(process_meta.length).to.equal(4);
+			expect(process_meta.length).to.equal(1);
 			expect(process_meta[0].name).to.equal('HarperDB');
-			expect(process_meta[1].name).to.equal('HarperDB');
-			expect(process_meta[2].name).to.equal('HarperDB');
-			expect(process_meta[3].name).to.equal('HarperDB');
 			expect(process_meta[0].pm2_env.status).to.equal('online');
-			expect(process_meta[1].pm2_env.status).to.equal('online');
-			expect(process_meta[2].pm2_env.status).to.equal('online');
-			expect(process_meta[3].pm2_env.status).to.equal('online');
 		}).timeout(20000);
 
 		it('Test starts custom function service', async () => {
@@ -510,25 +468,9 @@ describe('Test pm2 utilityFunctions module', () => {
 					exec_mode: 'fork_mode',
 					name: 'Clustering Leaf',
 				},
-				'Clustering Ingest Service': {
-					exec_mode: 'cluster_mode',
-					name: 'Clustering Ingest Service',
-				},
-				'Clustering Reply Service': {
-					exec_mode: 'cluster_mode',
-					name: 'Clustering Reply Service',
-				},
-				'IPC': {
-					name: 'IPC',
-					exec_mode: 'fork_mode',
-				},
 				'HarperDB': {
 					name: 'HarperDB',
-					exec_mode: 'cluster_mode',
-				},
-				'Custom Functions': {
-					name: 'Custom Functions',
-					exec_mode: 'cluster_mode',
+					exec_mode: 'fork_mode',
 				},
 			};
 			await nats_config.generateNatsConfig();
@@ -619,20 +561,13 @@ describe('Test pm2 utilityFunctions module', () => {
 			await utility_functions.restartAllServices();
 			const reload_calls = [
 				...reload_stub.args[0],
-				...reload_stub.args[1],
-				...reload_stub.args[2],
-				...reload_stub.args[3],
 			];
-			const restart_calls = [...restart_stub.args[0], ...restart_stub.args[1], ...restart_stub.args[2]];
+			const restart_calls = [...restart_stub.args[0], ...restart_stub.args[1]];
 			expect(reload_calls).to.include('HarperDB');
-			expect(reload_calls).to.include('Custom Functions');
-			expect(reload_calls).to.include('Clustering Ingest Service');
-			expect(reload_calls).to.include('Clustering Reply Service');
-			expect(reload_calls.length).to.equal(4);
+			expect(reload_calls.length).to.equal(1);
 			expect(restart_calls).to.include('Clustering Hub');
 			expect(restart_calls).to.include('Clustering Leaf');
-			expect(restart_calls).to.include('IPC');
-			expect(restart_calls.length).to.equal(3);
+			expect(restart_calls.length).to.equal(2);
 		}).timeout(20000);
 	});
 

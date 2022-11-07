@@ -316,7 +316,7 @@ function generateJobConfig(job_id) {
 
 function generateAllServiceConfigs() {
 	return {
-		apps: [generateIPCServerConfig(), generateMainServerConfig(), generateCFServerConfig()],
+		apps: [generateMainServerConfig()],
 	};
 }
 

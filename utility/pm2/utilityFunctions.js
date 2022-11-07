@@ -395,12 +395,8 @@ async function restartAllServices(excluding = []) {
 			const service_name = service.name;
 			if (excluding.includes(service_name)) continue;
 			//if a service is run in cluster mode we want to reload (rolling restart), non-cluster processes must use restart
-			if (service.exec_mode === 'cluster_mode') {
-				if (service_name === hdb_terms.PROCESS_DESCRIPTORS.HDB) {
-					restart_hdb = true;
-				} else {
-					await reloadStopStart(service_name);
-				}
+			if (service_name === hdb_terms.PROCESS_DESCRIPTORS.HDB) {
+				restart_hdb = true;
 			} else {
 				await restart(service_name);
 			}
