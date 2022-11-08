@@ -4,7 +4,10 @@ name: Run All Source Code Cluster Tests
 jobs:
   runSourceCodeClusterTestA:
     uses: ./.github/workflows/source-code-cluster-test-a.yaml
+    secrets: inherit
   runSourceCodeClusterTestB:
     uses: ./.github/workflows/source-code-cluster-test-b.yaml
+    secrets: inherit
   runSourceCodeClusterTestC:
     uses: ./.github/workflows/source-code-cluster-test-c.yaml
+    secrets: inherit

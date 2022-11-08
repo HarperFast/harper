@@ -4,8 +4,11 @@ name: Run All Build Package Cluster Tests
 jobs:
   runBuildPackageClusterTestA:
     uses: ./.github/workflows/build-package-cluster-test-a.yaml
+    secrets: inherit
   runBuildPackageClusterTestB:
     uses: ./.github/workflows/build-package-cluster-test-b.yaml
+    secrets: inherit
   runBuildPackageClusterTestC:
     uses: ./.github/workflows/build-package-cluster-test-c.yaml
+    secrets: inherit
 
