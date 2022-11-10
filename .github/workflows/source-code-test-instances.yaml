@@ -5,6 +5,10 @@ on:
         default: "c5.large"
       instanceCount:
         default: "1"
+      instanceNamePrefix:
+        default: ""
+        description: "Instance name in AWS will be GitHub-<workflow-name>-<run number>-<THIS VALUE>-<incrementing number>"
+        type: string
 name: Create Test Instances from Source Code
 jobs:
   getNodeVersion:
@@ -32,6 +36,7 @@ jobs:
       harperdbVersion: ${{ needs.getNodeVersion.outputs.harperdbVersion }}
       installType: "sourceCode"
       callingWorkflow: ${{ github.workflow }}
+      instanceNamePrefix: ${{ inputs.instanceNamePrefix }}
     secrets: inherit
   registerInstances:
     needs: 
