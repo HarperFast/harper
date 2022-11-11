@@ -29,16 +29,16 @@ function startWorker(path, options = {}) {
 	// 16 threads: 20% of total memory per thread
 	// 64 threads: 11% of total memory per thread
 	// (and then limit to their license limit, if they have one)
-	const max_memory = Math.min(Math.max(Math.floor(totalmem() / MB / (1 + THREAD_COUNT / 4)), 512), licensed_memory || Infinity);
+	const max_old_memory = Math.min(Math.max(Math.floor(totalmem() / MB / (1 + THREAD_COUNT / 4)), 512), licensed_memory || Infinity);
 	// Max young memory space (semi-space for scavenger) is 1/128 of max memory. For most of our m5 machines this will be
 	// 64MB (less for t3's). This is based on recommendations from:
 	// https://www.alibabacloud.com/blog/node-js-application-troubleshooting-manual---comprehensive-gc-problems-and-optimization_594965
 	// https://github.com/nodejs/node/issues/42511
 	// https://plaid.com/blog/how-we-parallelized-our-node-service-by-30x/
-	const max_young_memory = Math.min(Math.max(max_memory >> 7, 16), 64);
+	const max_young_memory = Math.min(Math.max(max_old_memory >> 7, 16), 64);
 
 	const worker = new Worker(isAbsolute(path) ? path : join(PACKAGE_ROOT, path), Object.assign({
-		maxOldGenerationSizeMb: max_memory,
+		maxOldGenerationSizeMb: max_old_memory,
 		maxYoungGenerationSizeMb: max_young_memory,
 	}, options));
 	worker.on('error', (error) => {
