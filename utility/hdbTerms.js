@@ -376,6 +376,7 @@ const OPERATIONS_ENUM = {
 	DELETE_TRANSACTION_LOGS_BEFORE: 'delete_transaction_logs_before',
 	INSTALL_NODE_MODULES: 'install_node_modules',
 	AUDIT_NODE_MODULES: 'audit_node_modules',
+	PURGE_STREAM: 'purge_stream',
 };
 
 // Defines valid file types that we are able to handle in 'import_from_s3' ops
