@@ -18,7 +18,7 @@ module.exports = {
 
 function startWorker(path, options = {}) {
 	const license = hdb_license.licenseSearch();
-	const licensed_memory = license.ram_allocation
+	const licensed_memory = license.ram_allocation;
 	// Take a percentage of total memory to determine the max memory for each thread. The percentage is based
 	// on the thread count. Generally, it is unrealistic to efficiently use the majority of total memory for a single
 	// NodeJS worker since it would lead to massive swap space usage with other processes and there is significant
@@ -38,14 +38,16 @@ function startWorker(path, options = {}) {
 	const max_young_memory = Math.min(Math.max(max_old_memory >> 7, 16), 64);
 
 	const worker = new Worker(isAbsolute(path) ? path : join(PACKAGE_ROOT, path), Object.assign({
-		maxOldGenerationSizeMb: max_old_memory,
-		maxYoungGenerationSizeMb: max_young_memory,
+		resourceLimits: {
+			maxOldGenerationSizeMb: max_old_memory,
+			maxYoungGenerationSizeMb: max_young_memory,
+		},
 	}, options));
 	worker.on('error', (error) => {
 		console.error('error', error);
 	});
-	worker.on('exit', (code, message) => {
-		if (code !== 0) console.error(`Worker stopped with exit code ${code}` + message);
+	worker.on('exit', () => {
+		workers.splice(workers.indexOf(worker), 1);
 	});
 	for (let prevWorker of workers) {
 		let { port1, port2 } = new MessageChannel();

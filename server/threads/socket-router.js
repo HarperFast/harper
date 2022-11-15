@@ -10,6 +10,7 @@ module.exports = {
 	startSocketServer,
 };
 const workers = [];
+const MAX_RESTARTS = 50;
 env.initSync();
 const THREAD_COUNT = Math.max(env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES),
 	env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES));
@@ -17,11 +18,19 @@ const REMOTE_ADDRESS_AFFINITY = env.get(hdb_terms.HDB_SETTINGS_NAMES.HTTP_REMOTE
 
 function startHTTPThreads() {
 	for (let i = 0; i < THREAD_COUNT; i++) {
-		let worker = startWorker('server/threads/thread-http-server.js');
-		worker.expectedIdle = 1;
-		worker.requests = 1;
-		workers.push(worker);
+		startHTTPWorker(i, 0);
 	}
+}
+function startHTTPWorker(i, restarts) {
+	let worker = startWorker('server/threads/thread-http-server.js');
+	worker.on('exit', () => {
+		// restart worker if it crashes
+		if (restarts < MAX_RESTARTS) startHTTPWorker(i, restarts + 1);
+		else harper_logger.error(`Thread has been restarted ${restarts} times and will not be restarted`);
+	});
+	worker.expectedIdle = 1;
+	worker.requests = 1;
+	workers[i] = worker;
 }
 
 function startSocketServer(type, port) {
