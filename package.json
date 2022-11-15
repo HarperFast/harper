@@ -84,7 +84,7 @@
     "json2csv": "5.0.7",
     "jsonata": "1.8.6",
     "jsonwebtoken": "8.5.1",
-    "lmdb": "2.6.7",
+    "lmdb": "2.6.9",
     "lodash": "4.17.21",
     "mathjs": "10.4.0",
     "microtime": "3.1.1",
