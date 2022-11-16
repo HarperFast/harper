@@ -47,7 +47,7 @@ async function restartProcesses() {
 			config_utils.updateConfigValue(undefined, undefined, parsed_args, true, true);
 		}
 
-		const { custom_func_enabled } = checkEnvSettings();
+		const { custom_func_enabled, clustering_enabled } = checkEnvSettings();
 		// Restart can be called with a --service argument which allows designated services to be restarted.
 		const cmd_args = minimist(process.argv);
 		if (!hdb_utils.isEmpty(cmd_args.service)) {
@@ -122,7 +122,7 @@ async function restartProcesses() {
 
 		console.log(RESTART_RESPONSE);
 
-		if (env_mngr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+		if (clustering_enabled) {
 			await restartAllClusteringServices();
 		}
 
@@ -308,7 +308,7 @@ async function restartAllClusteringServices() {
 
 async function restartClustering(service) {
 	service = hdb_terms.PROCESS_DESCRIPTORS_VALIDATE[service.toLowerCase()];
-	const clustering_enabled = env_mngr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED);
+	const { clustering_enabled } = checkEnvSettings();
 	const restarting_clustering = service === 'clustering';
 	const reloading_clustering = service === 'clustering config';
 	const is_currently_running = !restarting_clustering ? await pm2_utils.isServiceRegistered(service) : undefined;
