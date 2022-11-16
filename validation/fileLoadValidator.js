@@ -4,6 +4,8 @@ const common_utils = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
 const log = require('../utility/logging/harper_logger');
 const fs = require('fs');
+const joi = require('joi');
+const { string } = joi.types();
 const { hdb_errors, handleHDBError } = require('../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
@@ -38,6 +40,13 @@ const constraints = {
 		},
 	},
 	data: {},
+	passthrough_headers: {},
+};
+
+const base_joi_schema = {
+	schema: string.required(),
+	table: string.required(),
+	action: string.valid('insert', 'update', 'upsert').required(),
 };
 
 const { AWS_ACCESS_KEY, AWS_SECRET, AWS_BUCKET, AWS_FILE_KEY } = hdb_terms.S3_BUCKET_AUTH_KEYS;
@@ -77,10 +86,9 @@ file_constraints.file_path.presence = {
 
 const s3_file_constraints = Object.assign(clone(constraints), s3_constraints);
 
-const url_constraints = clone(constraints);
-url_constraints.csv_url.presence = {
-	message: is_required_string,
-};
+const url_schema = clone(base_joi_schema);
+url_schema.csv_url = string.uri().messages({ 'string.uri': "'csv_url' must be a valid url" }).required();
+url_schema.passthrough_headers = joi.object();
 
 function dataObject(object) {
 	let validate_res = validator.validateObject(object, data_constraints);
@@ -88,7 +96,7 @@ function dataObject(object) {
 }
 
 function urlObject(object) {
-	let validate_res = validator.validateObject(object, url_constraints);
+	let validate_res = validator.validateBySchema(object, joi.object(url_schema));
 	return postValidateChecks(object, validate_res);
 }
 

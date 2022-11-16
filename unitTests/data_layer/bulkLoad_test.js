@@ -325,7 +325,7 @@ describe('Test bulkLoad.js', () => {
 			CSV_URL_MESSAGE.csv_url = 'breeds.csv';
 			await test_utils.testHDBError(
 				bulkLoad_rewire.csvURLLoad(CSV_URL_MESSAGE),
-				test_utils.generateHDBError('Csv url is not a valid url', 400)
+				test_utils.generateHDBError("'csv_url' must be a valid url", 400)
 			);
 		});
 
@@ -364,7 +364,9 @@ describe('Test bulkLoad.js', () => {
 		it('Test error is handled from request promise module', async () => {
 			let error;
 			try {
-				await downloadCSVFile_rw('http://the-internet.herokuapp.com/status_codes/404');
+				await downloadCSVFile_rw({
+					csv_url: 'http://the-internet.herokuapp.com/status_codes/404',
+				});
 			} catch (err) {
 				error = err;
 			}
@@ -377,17 +379,32 @@ describe('Test bulkLoad.js', () => {
 		it('Test for nominal behaviour, stubs are called as expected', async () => {
 			bulkLoad_rewire.__set__('needle', request_response_stub);
 			let csv_file_name = `${Date.now()}.csv`;
-			await downloadCSVFile_rw('www.csv.com', csv_file_name);
+			const test_req = {
+				csv_url: 'www.csv.com',
+				passthrough_headers: { authentication: 'Basic YWRtaW46QWJjMTIzNCE=' },
+			};
+			await downloadCSVFile_rw(test_req, csv_file_name);
 
 			expect(mk_dir_stub).to.have.been.calledWith(CSV_URL_TEMP_DIR);
 			expect(write_file_stub).to.have.been.calledWith(`${CSV_URL_TEMP_DIR}/${csv_file_name}`, response_fake.raw);
+			expect(request_response_stub.args).to.eql([
+				[
+					'get',
+					'www.csv.com',
+					{
+						headers: {
+							authentication: 'Basic YWRtaW46QWJjMTIzNCE=',
+						},
+					},
+				],
+			]);
 		});
 
 		it('Test that error from mkdirSync is handled correctly', async () => {
 			bulkLoad_rewire.__set__('needle', request_response_stub);
 			let error_msg = 'Error creating directory';
 			mk_dir_stub.throws(new Error(error_msg));
-			let test_err_result = await test_utils.testError(downloadCSVFile_rw('www.csv.com'), error_msg);
+			let test_err_result = await test_utils.testError(downloadCSVFile_rw({ csv_url: 'www.csv.com' }), error_msg);
 
 			expect(test_err_result).to.be.true;
 		});

@@ -146,7 +146,7 @@ async function csvURLLoad(json_message) {
 	const temp_file_path = `${TEMP_DOWNLOAD_DIR}/${csv_file_name}`;
 
 	try {
-		await downloadCSVFile(json_message.csv_url, csv_file_name);
+		await downloadCSVFile(json_message, csv_file_name);
 	} catch (err) {
 		logger.error(HDB_ERROR_MSGS.DOWNLOAD_FILE_ERR(csv_file_name) + ' - ' + err);
 		throw handleHDBError(err, CHECK_LOGS_WRAPPER(HDB_ERROR_MSGS.DOWNLOAD_FILE_ERR(csv_file_name)));
@@ -263,16 +263,17 @@ async function importFromS3(json_message) {
 
 /**
  * Gets a file via URL, then creates a temporary directory in hdb root and writes file to disk.
- * @param url
+ * @param req
  * @param csv_file_name
  * @returns {Promise<void>}
  */
-async function downloadCSVFile(url, csv_file_name) {
+async function downloadCSVFile(req, csv_file_name) {
 	let response;
 	try {
-		response = await needle('get', url);
+		const options = req.passthrough_headers ? { headers: req.passthrough_headers } : undefined;
+		response = await needle('get', req.csv_url, options);
 	} catch (err) {
-		const err_msg = `Error downloading CSV file from ${url}, status code: ${err.statusCode}. Check the log for more information.`;
+		const err_msg = `Error downloading CSV file from ${req.csv_url}, status code: ${err.statusCode}. Check the log for more information.`;
 		throw handleHDBError(
 			err,
 			err_msg,
@@ -282,7 +283,7 @@ async function downloadCSVFile(url, csv_file_name) {
 		);
 	}
 
-	validateURLResponse(response, url);
+	validateURLResponse(response, req.csv_url);
 
 	await writeFileToTempFolder(csv_file_name, response.raw);
 }
