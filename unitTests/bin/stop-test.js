@@ -383,6 +383,7 @@ describe('Test stop.js', () => {
 		const stop_clustering_stub = sandbox.stub();
 		const restart_all_stub = sandbox.stub();
 		const reload_clustering_stub = sandbox.stub();
+		const check_env_stub = sandbox.stub();
 		let restartClustering;
 
 		before(() => {
@@ -390,6 +391,7 @@ describe('Test stop.js', () => {
 			stop.__set__('pm2_utils.isClusteringRunning', is_clustering_running_stub);
 			stop.__set__('pm2_utils.stopClustering', stop_clustering_stub);
 			stop.__set__('pm2_utils.reloadClustering', reload_clustering_stub);
+			stop.__set__('checkEnvSettings', check_env_stub);
 		});
 
 		after(() => {
@@ -398,14 +400,14 @@ describe('Test stop.js', () => {
 
 		it('Test clustering stopped if running but not enabled', async () => {
 			is_clustering_running_stub.resolves(true);
-			env_manager.setProperty('clustering_enabled', false);
+			check_env_stub.returns({ clustering_enabled: false });
 			await restartClustering('clustering');
 			expect(stop_clustering_stub.called).to.be.true;
 		});
 
 		it('Test clustering started if not running but enabled', async () => {
 			is_clustering_running_stub.resolves(false);
-			env_manager.setProperty('clustering_enabled', true);
+			check_env_stub.returns({ clustering_enabled: true });
 			await restartClustering('clustering');
 			expect(start_clustering_stub.called).to.be.true;
 		});
