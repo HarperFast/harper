@@ -208,8 +208,14 @@ async function getVersionUpdateInfo() {
 		const upgradeRequired = directiveManager.hasUpgradesRequired(newUpgradeObj);
 		if (upgradeRequired) {
 			return newUpgradeObj;
-		} else {
-			return;
+		}
+
+		// If we get here they are running on upgrade version that doesn't require any upgrade directives
+		if (newUpgradeObj.upgrade_version) {
+			await insertHdbUpgradeInfo(newUpgradeObj.upgrade_version);
+			const upgrade_msg = `HarperDB running on upgraded version: ${newUpgradeObj.upgrade_version}`;
+			log.notify(upgrade_msg);
+			console.log(upgrade_msg);
 		}
 	} catch (err) {
 		log.fatal('Error while trying to evaluate the state of hdb data and the installed hdb version');
