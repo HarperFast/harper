@@ -46,7 +46,7 @@ const constraints = {
 const base_joi_schema = {
 	schema: string.required(),
 	table: string.required(),
-	action: string.valid('insert', 'update', 'upsert').required(),
+	action: string.valid('insert', 'update', 'upsert'),
 };
 
 const { AWS_ACCESS_KEY, AWS_SECRET, AWS_BUCKET, AWS_FILE_KEY } = hdb_terms.S3_BUCKET_AUTH_KEYS;
