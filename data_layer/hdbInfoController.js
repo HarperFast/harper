@@ -210,8 +210,10 @@ async function getVersionUpdateInfo() {
 			return newUpgradeObj;
 		}
 
-		// If we get here they are running on upgrade version that doesn't require any upgrade directives
-		if (newUpgradeObj.upgrade_version) {
+		// If we get here they are running on an upgraded version that doesn't require any upgrade directives
+		if (
+			hdb_utils.compareVersions(newUpgradeObj.data_version.toString(), newUpgradeObj.upgrade_version.toString()) < 0
+		) {
 			await insertHdbUpgradeInfo(newUpgradeObj.upgrade_version);
 			const upgrade_msg = `HarperDB running on upgraded version: ${newUpgradeObj.upgrade_version}`;
 			log.notify(upgrade_msg);

@@ -260,6 +260,13 @@ describe('Test hdbInfoController module ', function () {
 			// expect no error to be thrown
 		});
 
+		it('getVersionUpdateInfo nominal test, upgrade that does not require a directive', async () => {
+			version_stub.returns('4.2.0');
+			hasUpgradesRequired_stub.returns(false);
+			await hdb_info_controller_rw.getVersionUpdateInfo();
+			assert.equal(insert_stub.called, true, 'expected insert to be called');
+		});
+
 		it('getVersionUpdateInfo - error thrown if downgrading major version', async () => {
 			const test_error = 'Trying to downgrade major HDB versions is not supported.';
 			version_stub.returns(OLD_VERSION_NUM);
