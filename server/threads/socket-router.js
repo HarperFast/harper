@@ -3,14 +3,13 @@ const {startWorker} = require('./start');
 const {createServer} = require('net');
 const env = require('../../utility/environment/environmentManager');
 const hdb_terms = require('../../utility/hdbTerms');
-const harper_logger = require("../../utility/logging/harper_logger");
+const harper_logger = require('../../utility/logging/harper_logger');
 const pjson = require("../../package.json");
 module.exports = {
 	startHTTPThreads,
 	startSocketServer,
 };
 const workers = [];
-const MAX_RESTARTS = 50;
 env.initSync();
 const THREAD_COUNT = Math.max(env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES),
 	env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES));
@@ -18,19 +17,16 @@ const REMOTE_ADDRESS_AFFINITY = env.get(hdb_terms.HDB_SETTINGS_NAMES.HTTP_REMOTE
 
 function startHTTPThreads() {
 	for (let i = 0; i < THREAD_COUNT; i++) {
-		startHTTPWorker(i, 0);
+		startWorker('server/threads/thread-http-server.js', {
+			type: 'http',
+			onStarted(worker) {
+				// note that this can be called multiple times, once when started, and again when threads are restarted
+				workers[i] = worker;
+				worker.expectedIdle = 1;
+				worker.requests = 1;
+			}, // when we implement dynamic thread counts, will also have an onFinished
+		});
 	}
-}
-function startHTTPWorker(i, restarts) {
-	let worker = startWorker('server/threads/thread-http-server.js');
-	worker.on('exit', () => {
-		// restart worker if it crashes
-		if (restarts < MAX_RESTARTS) startHTTPWorker(i, restarts + 1);
-		else harper_logger.error(`Thread has been restarted ${restarts} times and will not be restarted`);
-	});
-	worker.expectedIdle = 1;
-	worker.requests = 1;
-	workers[i] = worker;
 }
 
 function startSocketServer(type, port) {
@@ -42,7 +38,7 @@ function startSocketServer(type, port) {
 	}, (socket) => {
 		const worker = workerStrategy(socket);
 		worker.requests++;
-		worker.postMessage({type, fd: socket._handle.fd});
+		worker.postMessage({ type, fd: socket._handle.fd });
 	}).listen(port);
 	harper_logger.info(`HarperDB ${pjson.version} Server running on port ${port}`);
 }

@@ -899,7 +899,7 @@ const HDB_IPC_SERVER = 'hdb_ipc_server';
 const HDB_IPC_CLIENT_PREFIX = 'hdb_ipc_client_';
 const IPC_EVENT_TYPES = {
 	ADD_PORT: 'add-port',
-	RESTART: 'restart',
+	SHUTDOWN: 'shutdown',
 	CHILD_STARTED: 'child_started',
 	CHILD_STOPPED: 'child_stopped',
 	SCHEMA: 'schema',

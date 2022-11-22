@@ -21,9 +21,9 @@ if (parentPort) {
 			parent_message.port.on('message', (event) => {
 				validateEvent(event);
 				server_ipc_handlers[event.type](event);
-			});
+			}).unref();
 		}
-	});
+	}).unref();
 }
 
 /**

@@ -134,7 +134,7 @@ required_permissions.set(reg.getFingerprint.name, new permission(true, []));
 required_permissions.set(reg.setLicense.name, new permission(true, []));
 required_permissions.set(delete_.deleteFilesBefore.name, new permission(true, []));
 required_permissions.set(delete_.deleteAuditLogsBefore.name, new permission(true, []));
-required_permissions.set(stop.restartProcesses.name, new permission(true, []));
+required_permissions.set(stop.restart.name, new permission(true, []));
 required_permissions.set(stop.restartService.name, new permission(true, []));
 required_permissions.set(read_audit_log.name, new permission(true, []));
 required_permissions.set(system_information.systemInformation.name, new permission(true, []));

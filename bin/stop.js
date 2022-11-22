@@ -10,6 +10,7 @@ const nats_utils = require('../server/nats/utility/natsUtils');
 const minimist = require('minimist');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const config_utils = require('../config/configUtils');
+const {restartWorkers} = require('../server/threads/start');
 const { HTTP_STATUS_CODES } = hdb_errors;
 
 let pm2_utils;
@@ -26,15 +27,15 @@ module.exports = {
 	stop,
 	restartProcesses,
 	restartService,
+	restart,
 };
 
 /**
- * Restart all services or designated services.
+ * Restart the HDB process or any services that are running as a (separate) process, intended for use from the CLI
  * @returns {Promise<>}
  */
 async function restartProcesses() {
-	// This is here to accommodate requests from the CLI. Stop can also be called
-	// from the API, in that case logging will be handled by pm2.
+	// This is here to accommodate requests from the CLI. S
 	hdb_logger.createLogFile(hdb_terms.PROCESS_LOG_NAMES.CLI, hdb_terms.PROCESS_DESCRIPTORS.STOP);
 
 	try {
@@ -164,6 +165,17 @@ async function restartProcesses() {
 }
 
 /**
+ * Restarts all services/threads (doesn't require restarting any processes)
+ * @returns {Promise<void>}
+ */
+async function restart(json_message) {
+	restartWorkers();
+}
+
+const SERVICE_TO_WORKER_TYPE = {
+	'Custom Functions': 'http',
+}
+/**
  * Restarts servers for a specific service.
  * @param json_message
  * @returns {Promise<string>}
@@ -204,14 +216,7 @@ async function restartService(json_message) {
 	) {
 		const is_cf_reg = await pm2_utils.isServiceRegistered(service);
 		if (custom_func_enabled) {
-			// If the service is registered to pm2 it can be restarted, if it isn't it must me started.
-			if (is_cf_reg) {
-				await pm2_utils.reloadStopStart(service);
-				hdb_logger.trace(`Reloading ${service}`);
-			} else {
-				await pm2_utils.startService(service);
-				hdb_logger.trace(`Starting ${service}`);
-			}
+			restartWorkers('http');
 		} else if (!custom_func_enabled && is_cf_reg) {
 			// If the service is registered but not enabled in settings, stop service.
 			await pm2_utils.stop(service);

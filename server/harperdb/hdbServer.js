@@ -26,7 +26,6 @@ const hdb_license = require('../../utility/registration/hdb_license');
 const { isMainThread } = require('worker_threads');
 const { registerServer } = require('../threads/thread-http-server');
 const { toCsvStream } = require('../../data_layer/export');
-
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
 const {
@@ -99,10 +98,15 @@ async function hdbServer() {
 		try {
 			// now that server is fully loaded/ready, start listening on port provided in config settings or just use
 			// zero to wait for sockets from the main thread
-			await server.listen({ port: isMainThread ? props_server_port : 0, host: '::' });
-			registerServer(terms.SERVICES.HDB_CORE, server.server);
-			if (isMainThread)
+			registerServer(terms.SERVICES.HDB_CORE, server);
+			if (isMainThread) {
+				await server.listen({ port: props_server_port, host: '::' });
 				harper_logger.info(`HarperDB ${pjson.version} ${server_type} Server running on port ${props_server_port}`);
+			} else if (!server.server.closeIdleConnections) {
+				// before Node v18, closeIdleConnections is not available, and we have to setup a listener for fastify
+				// to handle closing by setting up the dynamic port
+				await server.listen({ port: 0, host: '::' });
+			}
 		} catch (err) {
 			server.close();
 			harper_logger.error(err);
@@ -144,8 +148,8 @@ function buildServer(is_https) {
 	//Fastify does not set this property in the initial app construction
 	app.server.headersTimeout = getHeaderTimeoutConfig();
 
-	//set top-level error handler for server - all errors caught/thrown within the API will bubble up to this handler so they
-	// can be handled in a coordinated way
+	// set top-level error handler for server - all errors caught/thrown within the API will bubble up to this
+	// handler so they can be handled in a coordinated way
 	app.setErrorHandler(serverErrorHandler);
 
 	const cors_options = getCORSOpts();

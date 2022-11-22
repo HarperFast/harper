@@ -32,6 +32,7 @@ const {
 	handleSigquit,
 	handleSigterm,
 } = require('../serverHelpers/serverHandlers');
+const pjson = require('../../package.json');
 
 module.exports = {
 	customFunctionsServer,
@@ -88,9 +89,15 @@ async function customFunctionsServer() {
 		try {
 			//now that server is fully loaded/ready, start listening on port provided in config settings
 			harper_logger.info(`Custom Functions process starting on port ${props_server_port}`);
-			await server.listen({ port: isMainThread ? props_server_port : 0, host: '::' });
-			registerServer(terms.SERVICES.CUSTOM_FUNCTIONS, server.server);
-			harper_logger.info(`Custom Functions process running on port ${props_server_port}`);
+			registerServer(terms.SERVICES.CUSTOM_FUNCTIONS, server);
+			if (isMainThread) {
+				await server.listen({ port: props_server_port, host: '::' });
+				harper_logger.info(`Custom Functions process running on port ${props_server_port}`);
+			} else if (!server.server.closeIdleConnections) {
+				// before Node v18, closeIdleConnections is not available, and we have to setup a listener for fastify
+				// to handle closing by setting up the dynamic port
+				await server.listen({ port: 0, host: '::' });
+			}
 		} catch (err) {
 			server.close();
 			harper_logger.error(`Custom Functions server.listen() error: ${err}`);
