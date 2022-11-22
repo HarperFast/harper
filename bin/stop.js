@@ -4,7 +4,6 @@ const hdb_terms = require('../utility/hdbTerms');
 const hdb_logger = require('../utility/logging/harper_logger');
 const hdb_utils = require('../utility/common_utils');
 const assignCMDENVVariables = require('../utility/assignCmdEnvVariables');
-const env_mngr = require('../utility/environment/environmentManager');
 const nats_config = require('../server/nats/utility/natsConfig');
 const nats_utils = require('../server/nats/utility/natsUtils');
 const minimist = require('minimist');
@@ -47,7 +46,8 @@ async function restartProcesses() {
 			config_utils.updateConfigValue(undefined, undefined, parsed_args, true, true);
 		}
 
-		const { custom_func_enabled, clustering_enabled } = checkEnvSettings();
+		const clustering_enabled = config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED);
+		const custom_func_enabled = config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED);
 		// Restart can be called with a --service argument which allows designated services to be restarted.
 		const cmd_args = minimist(process.argv);
 		if (!hdb_utils.isEmpty(cmd_args.service)) {
@@ -182,7 +182,7 @@ async function restartService(json_message) {
 		throw handleHDBError(new Error(), INVALID_SERVICE_ERR, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 
-	const { custom_func_enabled } = checkEnvSettings();
+	const custom_func_enabled = config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED);
 	const service = hdb_terms.PROCESS_DESCRIPTORS_VALIDATE[service_req];
 
 	// For clustered services a rolling restart is available.
@@ -280,21 +280,6 @@ async function stop() {
 	}
 }
 
-/**
- * Gets the current setting value for clustering and custom functions
- * @returns {{clustering_enabled: boolean, custom_func_enabled: boolean}}
- */
-function checkEnvSettings() {
-	const config_file = config_utils.readConfigFile();
-	const clustering_enabled = config_file.clustering.enabled;
-	const custom_func_enabled = config_file.customFunctions.enabled;
-
-	return {
-		clustering_enabled,
-		custom_func_enabled,
-	};
-}
-
 async function restartAllClusteringServices() {
 	await restartClustering(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB);
 	await restartClustering(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
@@ -309,7 +294,7 @@ async function restartAllClusteringServices() {
 
 async function restartClustering(service) {
 	service = hdb_terms.PROCESS_DESCRIPTORS_VALIDATE[service.toLowerCase()];
-	const { clustering_enabled } = checkEnvSettings();
+	const clustering_enabled = config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED);
 	const restarting_clustering = service === 'clustering';
 	const reloading_clustering = service === 'clustering config';
 	const is_currently_running = !restarting_clustering ? await pm2_utils.isServiceRegistered(service) : undefined;
