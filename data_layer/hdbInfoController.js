@@ -215,9 +215,7 @@ async function getVersionUpdateInfo() {
 			hdb_utils.compareVersions(newUpgradeObj.data_version.toString(), newUpgradeObj.upgrade_version.toString()) < 0
 		) {
 			await insertHdbUpgradeInfo(newUpgradeObj.upgrade_version);
-			const upgrade_msg = `HarperDB running on upgraded version: ${newUpgradeObj.upgrade_version}`;
-			log.notify(upgrade_msg);
-			console.log(upgrade_msg);
+			log.notify(`HarperDB running on upgraded version: ${newUpgradeObj.upgrade_version}`);
 		}
 	} catch (err) {
 		log.fatal('Error while trying to evaluate the state of hdb data and the installed hdb version');
