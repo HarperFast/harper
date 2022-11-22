@@ -52,7 +52,7 @@ async function generateNatsConfig(is_restart = false, process_name = undefined) 
 	}
 
 	const users = await user.listUsers();
-	const cluster_username = env_manager.get(CONFIG_PARAMS.CLUSTERING_USER);
+	const cluster_username = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_USER);
 	const cluster_user = await user.getClusterUser();
 	if (hdb_utils.isEmpty(cluster_user) || cluster_user.active !== true) {
 		generateNatsConfigError(`invalid cluster user '${cluster_username}'`);

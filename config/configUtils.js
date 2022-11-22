@@ -9,6 +9,7 @@ const YAML = require('yaml');
 const path = require('path');
 const is_number = require('is-number');
 const PropertiesReader = require('properties-reader');
+const _ = require('lodash');
 const { handleHDBError } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES, HDB_ERROR_MSGS } = require('../utility/errors/commonErrors');
 const { PACKAGE_ROOT } = require('../utility/hdbTerms');
@@ -37,6 +38,7 @@ module.exports = {
 	readConfigFile,
 	getClusteringRoutes,
 	initOldConfig,
+	getConfigFromFile,
 };
 
 /**
@@ -497,4 +499,14 @@ function initOldConfig(old_config_path) {
 		}
 	}
 	return flat_config_obj;
+}
+
+/**
+ * Gets a config value directly from harperdb-config.yaml
+ * @param param
+ * @returns {undefined}
+ */
+function getConfigFromFile(param) {
+	const config_file = readConfigFile();
+	return _.get(config_file, param.replaceAll('_', '.'));
 }
