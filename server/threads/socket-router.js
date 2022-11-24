@@ -18,7 +18,7 @@ const REMOTE_ADDRESS_AFFINITY = env.get(hdb_terms.HDB_SETTINGS_NAMES.HTTP_REMOTE
 function startHTTPThreads() {
 	for (let i = 0; i < THREAD_COUNT; i++) {
 		startWorker('server/threads/thread-http-server.js', {
-			type: 'http',
+			name: 'http',
 			onStarted(worker) {
 				// note that this can be called multiple times, once when started, and again when threads are restarted
 				workers[i] = worker;

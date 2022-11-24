@@ -35,12 +35,12 @@ module.exports = {
  * @returns {Promise<>}
  */
 async function restartProcesses() {
-	// This is here to accommodate requests from the CLI. S
+	// This is here to accommodate requests from the CLI.
 	hdb_logger.createLogFile(hdb_terms.PROCESS_LOG_NAMES.CLI, hdb_terms.PROCESS_DESCRIPTORS.STOP);
-
 	try {
 		// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
 		if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
+		pm2_utils.enterScriptingMode();
 
 		// If restart is called with cmd/env vars we create a backup of config and update config file.
 		const parsed_args = assignCMDENVVariables(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
@@ -127,13 +127,6 @@ async function restartProcesses() {
 			await restartAllClusteringServices();
 		}
 
-		const is_cf_reg = await pm2_utils.isServiceRegistered(hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS);
-		// If custom functions is enabled in setting.js but is not registered to pm2, start service.
-		if (custom_func_enabled && !is_cf_reg) {
-			await pm2_utils.startService(hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS);
-			hdb_logger.trace(`Starting ${hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS}`);
-		}
-
 		// The clustering processes are here because they are handled by the restartAllClusteringServices function above and dont need to be restarted again.
 		let exclude_from_restart = [
 			hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB,
@@ -142,19 +135,10 @@ async function restartProcesses() {
 			hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE,
 		];
 
-		// If custom functions is disabled in setting.js and is registered to pm2, stop service.
-		if (!custom_func_enabled && is_cf_reg) {
-			exclude_from_restart.push(hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS);
-			await pm2_utils.stop(hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS);
-			hdb_logger.trace(`Stopping ${hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS}`);
-		}
-
-		// Start, restart or stop log rotate
-		await pm2_utils.configureLogRotate();
 
 		// If no service argument is passed all services are restarted.
 		hdb_logger.notify(RESTART_MSG);
-		await pm2_utils.restartAllServices(exclude_from_restart);
+		await pm2_utils.reload(hdb_terms.PROCESS_DESCRIPTORS.HDB);
 
 		return RESTART_RESPONSE;
 	} catch (err) {
@@ -245,6 +229,7 @@ async function stop() {
 	try {
 		// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
 		if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
+		pm2_utils.enterScriptingMode();
 
 		// Stop can be called with a --service argument which allows designated services to be stopped.
 		const cmd_args = minimist(process.argv);
@@ -303,8 +288,6 @@ function checkEnvSettings() {
 async function restartAllClusteringServices() {
 	await restartClustering(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB);
 	await restartClustering(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
-	await restartClustering(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_INGEST_SERVICE);
-	await restartClustering(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE);
 	// Check to see if the node name or purge config has been updated,
 	// if it has we need to change config on any local streams.
 	await nats_utils.updateLocalStreams();

@@ -78,8 +78,9 @@ function startWorker(path, options = {}) {
 		}, [port2]);
 	}
 	workers.push(worker);
-	options.onStarted(worker); // notify that it is ready
-	worker.type = options.type;
+	if (options.onStarted)
+		options.onStarted(worker); // notify that it is ready
+	worker.name = options.name;
 	return worker;
 }
 
@@ -91,7 +92,7 @@ let restartWorkers;
  * @returns {Promise<void>}
  */
 if (isMainThread) {
-	restartWorkers = async function (type, max_workers_down = 2) {
+	restartWorkers = async function (name, max_workers_down = 2) {
 		if (max_workers_down < 1) {
 			// we accept a ratio of workers, and compute absolute maximum being down at a time from the total number of
 			// threads
@@ -101,7 +102,7 @@ if (isMainThread) {
 		// make a copy of the workers before iterating them, as the workers
 		// array will be mutating a lot during this
 		for (let worker of workers.slice(0)) {
-			if (type && worker.type !== type) continue; // filter by type, if specified
+			if (name && worker.name !== name) continue; // filter by type, if specified
 			worker.postMessage({
 				type: hdb_terms.IPC_EVENT_TYPES.SHUTDOWN,
 			});

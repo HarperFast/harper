@@ -49,7 +49,7 @@ const HDB_STARTED = 'HarperDB successfully started.';
  * @param called_by_install
  * @returns {Promise<void>}
  */
-async function initialize(called_by_install = false) {
+async function initialize(called_by_install = false, called_by_main = false) {
 	// Check to see if HDB is installed, if it isn't we call install.
 	console.log(chalk.magenta('Starting HarperDB...'));
 
@@ -120,7 +120,7 @@ async function initialize(called_by_install = false) {
 
 	const clustering_enabled = hdb_utils.autoCastBoolean(env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY));
 	if (clustering_enabled) {
-		await nats_config.generateNatsConfig();
+		await nats_config.generateNatsConfig(called_by_main);
 	}
 
 	await pm2_utils.configureLogRotate();
@@ -134,14 +134,19 @@ async function initialize(called_by_install = false) {
  */
 async function main(called_by_install = false) {
 	try {
-		await initialize(called_by_install);
+		const cmd_args = minimist(process.argv);
+		if (cmd_args.ROOTPATH) {
+			config_utils.updateConfigObject('settings_path', path.join(cmd_args.ROOTPATH, terms.HDB_CONFIG_FILE));
+		}
+		await initialize(called_by_install, true);
 		const clustering_enabled = hdb_utils.autoCastBoolean(env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY));
+		const is_scripted = process.env.IS_SCRIPTED_SERVICE && !cmd_args.service;
+		const start_clustering = clustering_enabled && !is_scripted;
 		const custom_func_enabled = hdb_utils.autoCastBoolean(
 			env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY)
 		);
 
 		// Run can be called with a --service argument which allows designated services to be started.
-		const cmd_args = minimist(process.argv);
 		if (!hdb_utils.isEmpty(cmd_args.service)) {
 			if (typeof cmd_args.service !== 'string') {
 				const service_err_msg = `Run service argument expected a string but received: ${cmd_args.service}`;
@@ -188,9 +193,9 @@ async function main(called_by_install = false) {
 			if (custom_func_enabled) {
 				startSocketServer(terms.SERVICES.CUSTOM_FUNCTIONS, parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10));
 			}
-			if (clustering_enabled) await pm2_utils.startClustering();
+			if (start_clustering) await pm2_utils.startClustering();
 		}
-		started();
+		if (!is_scripted) started();
 	} catch (err) {
 		console.error(err);
 		hdb_logger.error(err);
@@ -210,13 +215,16 @@ function started() {
  * is retained for legacy purposes.
  * @returns {Promise<void>} // ha ha, it doesn't!
  */
-
 async function launch() {
 	if (getRunInForeground()) {
 		return main();
 	}
 	try {
+		if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
+		pm2_utils.enterScriptingMode();
 		await initialize();
+		const clustering_enabled = hdb_utils.autoCastBoolean(env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY));
+		if (clustering_enabled) await pm2_utils.startClustering();
 		await pm2_utils.startService(terms.PROCESS_DESCRIPTORS.HDB);
 		started();
 		process.exit(0);

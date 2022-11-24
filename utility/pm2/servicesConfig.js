@@ -7,6 +7,7 @@ const hdb_terms = require('../hdbTerms');
 const nats_terms = require('../../server/nats/utility/natsTerms');
 const path = require('path');
 const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
+const env_manager = require('../environment/environmentManager');
 
 const DISABLE_FILE_LOG = '/dev/null';
 const LAUNCH_SCRIPTS_DIR = path.join(PACKAGE_ROOT, 'launchServiceScripts');
@@ -73,7 +74,7 @@ function generateMainServerConfig() {
 		name: hdb_terms.PROCESS_DESCRIPTORS.HDB,
 		script: hdb_terms.LAUNCH_SERVICE_SCRIPTS.MAIN,
 		exec_mode: 'fork',
-		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.HDB },
+		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.HDB, IS_SCRIPTED_SERVICE: true },
 		merge_logs: true,
 		out_file: hdb_log,
 		error_file: hdb_log,
@@ -133,7 +134,7 @@ function generateNatsHubServerConfig() {
 	const hub_config_path = path.join(hdb_root, 'clustering', nats_terms.NATS_CONFIG_FILES.HUB_SERVER);
 	const hub_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_HUB);
 	const hs_config = {
-		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB,
+		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB + '-' + env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT),
 		script: NATS_SERVER_BINARY_PATH,
 		args: `-c ${hub_config_path}`,
 		exec_mode: 'fork',
@@ -161,7 +162,7 @@ function generateNatsLeafServerConfig() {
 	const leaf_config_path = path.join(hdb_root, 'clustering', nats_terms.NATS_CONFIG_FILES.LEAF_SERVER);
 	const leaf_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_LEAF);
 	const ls_config = {
-		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF,
+		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF + '-' + env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT),
 		script: NATS_SERVER_BINARY_PATH,
 		args: `-c ${leaf_config_path}`,
 		exec_mode: 'fork',

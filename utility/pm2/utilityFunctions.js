@@ -18,6 +18,7 @@ const exec = util.promisify(require('child_process').exec);
 const path = require('path');
 
 module.exports = {
+	enterScriptingMode,
 	start,
 	stop,
 	reload,
@@ -54,13 +55,23 @@ const RELOAD_HDB_ERR =
 	'The number of HarperDB processes running is different from the settings value. ' +
 	'To restart and update the number HarperDB processes running you must stop and then start HarperDB';
 
+// This indicates when we are running as a CLI scripting command (kind of taking the place of pm2's CLI), and so we
+// are generally starting and stopping processes through PM2.
+let scripting_mode = false;
+
+/**
+ * Enable scripting mode where we act as the PM2 CLI to start and stop other processes and then exit
+ */
+function enterScriptingMode() {
+	scripting_mode = true;
+}
 /**
  * Either connects to a running pm2 daemon or launches one.
  * @returns {Promise<unknown>}
  */
 function connect() {
 	return new Promise((resolve, reject) => {
-		pm2.connect((err, res) => {
+		pm2.connect(!scripting_mode, (err, res) => {
 			if (err) {
 				reject(err);
 			}
@@ -87,7 +98,16 @@ function start(proc_config) {
 				pm2.disconnect();
 				reject(err);
 			}
-
+			if (!scripting_mode) {
+				// if we are running in standard mode, then we want to clean up our child processes when we exit
+				const kill_child = async () => {
+					await stop(proc_config.name);
+					process.exit(0);
+				};
+				process.on('exit', kill_child);
+				process.on('SIGINT', kill_child);
+				process.on('SIGQUIT', kill_child);
+			}
 			pm2.disconnect();
 			resolve(res);
 		});
@@ -461,27 +481,7 @@ async function isServiceRegistered(service) {
  * @returns {Promise<void>}
  */
 async function reloadStopStart(service_name) {
-	// Check to see if there has been an update to the max process setting value. If there has been we need to stop the service and start it again.
-	const setting_process_count =
-		service_name === hdb_terms.PROCESS_DESCRIPTORS.HDB
-			? env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES)
-			: env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES);
-	const current_process = await describe(service_name);
-	const current_process_count = hdb_utils.isEmptyOrZeroLength(current_process) ? 0 : current_process.length;
-	if (setting_process_count !== current_process_count) {
-		if (service_name === hdb_terms.PROCESS_DESCRIPTORS.HDB) {
-			hdb_logger.error(RELOAD_HDB_ERR);
-		} else {
-			await stop(service_name);
-			await startService(service_name);
-		}
-	} else if (service_name === hdb_terms.PROCESS_DESCRIPTORS.HDB) {
-		// To restart HDB we need to fork a temp process which calls restart.
-		await restartHdb();
-	} else {
-		// If no change to the max process values just call reload.
-		await reload(service_name);
-	}
+	await reload(service_name);
 }
 
 /**

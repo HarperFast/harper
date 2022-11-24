@@ -597,6 +597,7 @@ const CONFIG_PARAMS = {
 
 // If a param is added to the config file it needs to be added here also. Keep all keys lowercase.
 const CONFIG_PARAM_MAP = {
+	settings_path: BOOT_PROP_PARAMS.SETTINGS_PATH_KEY,
 	hdb_root_key: CONFIG_PARAMS.ROOTPATH,
 	hdb_root: CONFIG_PARAMS.ROOTPATH,
 	server_port_key: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT,
