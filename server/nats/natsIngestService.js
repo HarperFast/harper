@@ -62,7 +62,9 @@ async function initialize() {
 	js_manager = jsm;
 	js_client = js;
 }
-
+const MAX_CONCURRENCY = 100;
+const outstanding_operations = new Array(MAX_CONCURRENCY);
+let operation_index = 0;
 /**
  * Uses an internal Nats consumer to subscribe to the  of messages from the work queue and process each one.
  * @returns {Promise<void>}
@@ -72,17 +74,14 @@ async function workQueueListener() {
 		`${nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_subject}.${nats_connection.info.server_name}`,
 		SUBSCRIPTION_OPTIONS
 	);
-	const process_sub = async () => {
-		for await (const message of sub) {
-			try {
-				await messageProcessor(message);
-			} catch (e) {
-				harper_logger.error(e);
-			}
-		}
-	};
-
-	await process_sub();
+	for await (const message of sub) {
+		// ring style queue for awaiting operations for concurrency. await the entry from 100 operations ago:
+		await outstanding_operations[operation_index];
+		outstanding_operations[operation_index] = messageProcessor(message).catch((error) => {
+			harper_logger.error(error);
+		});
+		if (++operation_index >= MAX_CONCURRENCY) operation_index = 0;
+	}
 }
 
 /**
