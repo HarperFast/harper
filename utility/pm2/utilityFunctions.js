@@ -81,6 +81,8 @@ function connect() {
 	});
 }
 
+let processes_to_kill;
+
 /**
  * Starts a service
  * @param proc_config
@@ -98,18 +100,27 @@ function start(proc_config) {
 				pm2.disconnect();
 				reject(err);
 			}
-			console.log('started service', proc_config.name, scripting_mode)
 			if (!scripting_mode) {
 				// if we are running in standard mode, then we want to clean up our child processes when we exit
-				const kill_child = async () => {
-					console.log('trying to kill', proc_config.name, 'from',process.pid)
-					await pm2.stop(proc_config.name);
-					console.log('finished killing')
-					process.exit(0);
-				};
-				process.on('exit', kill_child);
-				process.on('SIGINT', kill_child);
-				process.on('SIGQUIT', kill_child);
+				if (!processes_to_kill) {
+					processes_to_kill = [];
+					const kill_child = async () => {
+						if (!processes_to_kill) return;
+						let finished = processes_to_kill.map(proc_name => new Promise(resolve => {
+							pm2.stop(proc_name, (error) => {
+								if (error) hdb_logger.warn(`Error terminating process: ${error}`);
+								resolve();
+							});
+						}));
+						processes_to_kill = null;
+						await Promise.all(finished);
+						process.exit(0);
+					};
+					process.on('exit', kill_child);
+					process.on('SIGINT', kill_child);
+					process.on('SIGQUIT', kill_child);
+				}
+				processes_to_kill.push(proc_config.name);
 			}
 			pm2.disconnect();
 			resolve(res);
