@@ -125,6 +125,7 @@ function generateCFServerConfig() {
 	return cf_config;
 }
 
+const ELIDED_HUB_PORT = 9930;
 function generateNatsHubServerConfig() {
 	initLogConfig();
 	env.initSync();
@@ -133,8 +134,9 @@ function generateNatsHubServerConfig() {
 	const hdb_root = env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
 	const hub_config_path = path.join(hdb_root, 'clustering', nats_terms.NATS_CONFIG_FILES.HUB_SERVER);
 	const hub_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_HUB);
+	const hub_port = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT);
 	const hs_config = {
-		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB + '-' + env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT),
+		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB + (hub_port !== ELIDED_HUB_PORT ? '-' + hub_port : ''),
 		script: NATS_SERVER_BINARY_PATH,
 		args: `-c ${hub_config_path}`,
 		exec_mode: 'fork',
@@ -153,6 +155,7 @@ function generateNatsHubServerConfig() {
 	return hs_config;
 }
 
+const ELIDED_LEAF_PORT = 9940;
 function generateNatsLeafServerConfig() {
 	initLogConfig();
 	env.initSync();
@@ -161,8 +164,11 @@ function generateNatsLeafServerConfig() {
 	const hdb_root = env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
 	const leaf_config_path = path.join(hdb_root, 'clustering', nats_terms.NATS_CONFIG_FILES.LEAF_SERVER);
 	const leaf_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_LEAF);
+	const leaf_port = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT);
 	const ls_config = {
-		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF + '-' + env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT),
+		// we assign a unique name per port if it is not the default, so we can run multiple NATS instances for
+		// multiple HDB instances
+		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF + (leaf_port !== ELIDED_LEAF_PORT ? '-' + leaf_port : ''),
 		script: NATS_SERVER_BINARY_PATH,
 		args: `-c ${leaf_config_path}`,
 		exec_mode: 'fork',

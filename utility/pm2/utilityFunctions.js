@@ -98,10 +98,13 @@ function start(proc_config) {
 				pm2.disconnect();
 				reject(err);
 			}
+			console.log('started service', proc_config.name, scripting_mode)
 			if (!scripting_mode) {
 				// if we are running in standard mode, then we want to clean up our child processes when we exit
 				const kill_child = async () => {
-					await stop(proc_config.name);
+					console.log('trying to kill', proc_config.name, 'from',process.pid)
+					await pm2.stop(proc_config.name);
+					console.log('finished killing')
 					process.exit(0);
 				};
 				process.on('exit', kill_child);

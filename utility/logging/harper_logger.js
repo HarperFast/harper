@@ -65,12 +65,13 @@ function initLogSettings() {
 		if (hdb_properties === undefined) {
 			const boot_props_file_path = getPropsFilePath();
 			hdb_properties = PropertiesReader(boot_props_file_path);
+			let properties = assignCMDENVVariables(['ROOTPATH']);
 			({
 				level: log_level,
 				config_log_path: log_path,
 				to_file: log_to_file,
 				to_stream: log_to_stdstreams,
-			} = getLogConfig(hdb_properties.get('settings_path')));
+			} = getLogConfig(properties.ROOTPATH ? path.join(properties.ROOTPATH, hdb_terms.HDB_CONFIG_FILE) : hdb_properties.get('settings_path')));
 		}
 	} catch (err) {
 		hdb_properties = undefined;

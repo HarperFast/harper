@@ -41,6 +41,7 @@ function startWorker(path, options = {}) {
 			maxOldGenerationSizeMb: max_old_memory,
 			maxYoungGenerationSizeMb: max_young_memory,
 		},
+		argv: process.argv.slice(2),
 	}, options));
 	worker.unexpectedRestarts = options.unexpectedRestarts || 0;
 	worker.on('requested-shutdown', () => {
