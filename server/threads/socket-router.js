@@ -1,46 +1,50 @@
 'use strict';
-const {startWorker} = require('./start');
-const {createServer} = require('net');
+const { startWorker } = require('./start');
+const { createServer } = require('net');
 const env = require('../../utility/environment/environmentManager');
 const hdb_terms = require('../../utility/hdbTerms');
 const harper_logger = require('../../utility/logging/harper_logger');
 const pjson = require("../../package.json");
+const workers = [];
 module.exports = {
 	startHTTPThreads,
 	startSocketServer,
+	updateWorkerIdleness,
+	mostIdleRouting: findMostIdleWorker,
+	remoteAffinityRouting: findByRemoteAddressAffinity,
 };
-const workers = [];
 env.initSync();
-const THREAD_COUNT = Math.max(env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES),
-	env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES));
-const REMOTE_ADDRESS_AFFINITY = env.get(hdb_terms.HDB_SETTINGS_NAMES.HTTP_REMOTE_ADDRESS_AFFINITY);
 
-function startHTTPThreads() {
-	for (let i = 0; i < THREAD_COUNT; i++) {
+function startHTTPThreads(thread_count = 2) {
+	for (let i = 0; i < thread_count; i++) {
 		startWorker('server/threads/thread-http-server.js', {
 			name: 'http',
 			onStarted(worker) {
 				// note that this can be called multiple times, once when started, and again when threads are restarted
 				workers[i] = worker;
 				worker.expectedIdle = 1;
+				worker.lastIdle = 0;
 				worker.requests = 1;
 			}, // when we implement dynamic thread counts, will also have an onFinished
 		});
 	}
+	return workers;
 }
 
-function startSocketServer(type, port) {
-	let workerStrategy = REMOTE_ADDRESS_AFFINITY ? findByRemoteAddressAffinity : findMostIdleWorker;
+function startSocketServer(type, port = 9925, workerStrategy = findMostIdleWorker) {
 	// at some point we may want to actually read from the https connections
-	createServer({
+	let server = createServer({
 		allowHalfOpen: true,
 		pauseOnConnect: true,
 	}, (socket) => {
 		const worker = workerStrategy(socket);
+		if (!worker)
+			return harper_logger.error(`No HTTP workers found`);
 		worker.requests++;
 		worker.postMessage({ type, fd: socket._handle.fd });
 	}).listen(port);
 	harper_logger.info(`HarperDB ${pjson.version} Server running on port ${port}`);
+	return server;
 }
 
 let second_best_availability = 0;
@@ -108,7 +112,7 @@ function updateWorkerIdleness() {
 	second_best_availability = 0;
 	for (let worker of workers) {
 		let idle = worker.performance.eventLoopUtilization().idle;
-		worker.expectedIdle = idle - (worker.lastIdle || 0) + EXPECTED_IDLE_DECAY;
+		worker.expectedIdle = idle - worker.lastIdle + EXPECTED_IDLE_DECAY;
 		worker.lastIdle = idle;
 		worker.requests = 1;
 	}

@@ -15,6 +15,12 @@ const workers = [];
 const MAX_UNEXPECTED_RESTARTS = 50;
 const RESTART_TYPE = 'restart';
 
+module.exports = {
+	startWorker,
+	restartWorkers,
+	shutdownWorkers
+};
+
 function startWorker(path, options = {}) {
 	const license = hdb_license.licenseSearch();
 	const licensed_memory = license.ram_allocation;
@@ -47,11 +53,12 @@ function startWorker(path, options = {}) {
 	worker.on('requested-shutdown', () => {
 		// in a shutdown sequence we use overlapping restarts, starting the new thread while waiting for the old thread
 		// to die, to ensure there is no loss of service and maximum availability.
-		startWorker(path, options);
+		if (worker.restart !== false) startWorker(path, options);
 	});
 	worker.on('error', (error) => {
 		// log errors, and it also important that we catch errors so we can recover if a thread dies (in a recoverable
 		// way)
+		console.error(error);
 		harper_logger.error(error);
 	});
 	worker.on('exit', (code) => {
@@ -85,15 +92,19 @@ function startWorker(path, options = {}) {
 	return worker;
 }
 
-let restartWorkers;
 /**
  * Restart all the worker threads
- * @param max_workers_starting The maximum number of worker threads to restart at once. This allows for "rolling
- * restarts" where we can throttle the restarts to minimize load from thread startups.
+ * @param name If there is a specific set of threads that need to be restarted, they can be specified with this
+ * parameter
+ * @param max_workers_down The maximum number of worker threads to restart at once. In restarts, we start new
+ * threads at the same time we shutdown new ones. However, we usually want to limit how many we do at once to avoid
+ * excessive load and to keep things responsive. This parameter throttles the restarts to minimize load from
+ * thread startups.
  * @returns {Promise<void>}
  */
-if (isMainThread) {
-	restartWorkers = async function (name, max_workers_down = 2) {
+
+async function restartWorkers(name, max_workers_down = 2, start_replacement_threads = true) {
+	if (isMainThread) {
 		if (max_workers_down < 1) {
 			// we accept a ratio of workers, and compute absolute maximum being down at a time from the total number of
 			// threads
@@ -108,6 +119,7 @@ if (isMainThread) {
 				type: hdb_terms.IPC_EVENT_TYPES.SHUTDOWN,
 			});
 			worker.wasShutdown = true;
+			worker.restart = start_replacement_threads;
 			let when_done = new Promise((resolve) => {
 				worker.on('exit', () => {
 					waiting_to_finish.splice(waiting_to_finish.indexOf(when_done));
@@ -124,17 +136,14 @@ if (isMainThread) {
 		// seems appropriate to wait for this to finish, but the API doesn't actually wait for this function
 		// to finish, so not that important
 		await Promise.all(waiting_to_finish);
-	};
-} else {
-	restartWorkers = async function (type) {
+	} else {
 		parentPort.postMessage({
 			type: RESTART_TYPE,
-			workerType: type,
+			workerType: name,
 		});
 	};
 }
-module.exports = {
-	startWorker,
-	restartWorkers,
-};
 
+function shutdownWorkers(name) {
+	return restartWorkers(name, Infinity, false);
+}

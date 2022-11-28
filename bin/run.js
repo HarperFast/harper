@@ -21,9 +21,8 @@ const stop = require('./stop');
 const upgrade = require('./upgrade');
 const minimist = require('minimist');
 const spawn = require('child_process').spawn;
-const { startWorker } = require('../server/threads/start');
 const { PACKAGE_ROOT } = require('../utility/hdbTerms');
-const { startHTTPThreads, startSocketServer } = require('../server/threads/socket-router');
+const { startHTTPThreads, startSocketServer, mostIdleRouting, remoteAffinityRouting } = require('../server/threads/socket-router');
 
 const hdbInfoController = require('../data_layer/hdbInfoController');
 
@@ -34,6 +33,7 @@ const lmdb_create_txn_environment = require('../data_layer/harperBridge/lmdbBrid
 let pm2_utils;
 
 const CreateTableObject = require('../data_layer/CreateTableObject');
+const hdb_terms = require('../utility/hdbTerms');
 
 // These may change to match unix return codes (i.e. 0, 1)
 const ENOENT_ERR_CODE = -2;
@@ -188,8 +188,11 @@ async function main(called_by_install = false) {
 			}
 
 		} else {
-			startHTTPThreads();
-			startSocketServer(terms.SERVICES.HDB_CORE, parseInt(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT), 10));
+			startHTTPThreads(env.get(hdb_terms.CONFIG_PARAMS.HTTP_THREADS));
+			const REMOTE_ADDRESS_AFFINITY = env.get(hdb_terms.CONFIG_PARAMS.HTTP_REMOTE_ADDRESS_AFFINITY);
+			startSocketServer(terms.SERVICES.HDB_CORE,
+				parseInt(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT), 10),
+				REMOTE_ADDRESS_AFFINITY ? remoteAffinityRouting : mostIdleRouting);
 			if (custom_func_enabled) {
 				startSocketServer(terms.SERVICES.CUSTOM_FUNCTIONS, parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10));
 			}
