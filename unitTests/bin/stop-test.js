@@ -41,6 +41,7 @@ describe('Test stop.js', () => {
 	let update_node_name_stub;
 	let close_connection_stub;
 	let get_config_from_file_stub;
+	let create_work_queue_stream_stub;
 
 	afterEach(() => {
 		sandbox.resetHistory();
@@ -58,6 +59,7 @@ describe('Test stop.js', () => {
 		stop_clustering_stub = sandbox.stub(pm2_utils, 'stopClustering');
 		update_node_name_stub = sandbox.stub(nats_utils, 'updateNodeNameLocalStreams');
 		close_connection_stub = sandbox.stub(nats_utils, 'closeConnection');
+		create_work_queue_stream_stub = sandbox.stub(nats_utils, 'createWorkQueueStream');
 	});
 
 	after(() => {
