@@ -18,6 +18,7 @@ const hdb_utils = require('../../../utility/common_utils');
 const hdb_logger = require('../../../utility/logging/harper_logger');
 const crypto_hash = require('../../../security/cryptoHash');
 const transaction = require('../../../data_layer/transaction');
+const config_utils = require('../../../config/configUtils');
 const { encode, decode } = require('msgpackr');
 
 const { isEmpty } = hdb_utils;
@@ -480,8 +481,9 @@ function getServerConfig(process_name) {
 	if (process_name === hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB.toLowerCase()) {
 		if (isEmpty(hub_config)) {
 			hub_config = {
-				port: env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT),
-				server_name: env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME) + nats_terms.SERVER_SUFFIX.HUB,
+				port: config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT),
+				server_name:
+					config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME) + nats_terms.SERVER_SUFFIX.HUB,
 				config_file: nats_terms.NATS_CONFIG_FILES.HUB_SERVER,
 				pid_file_path: path.join(hdb_nats_path, nats_terms.PID_FILES.HUB),
 				hdb_nats_path,
@@ -494,10 +496,12 @@ function getServerConfig(process_name) {
 	if (process_name === hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF.toLowerCase()) {
 		if (isEmpty(leaf_config)) {
 			leaf_config = {
-				port: env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT),
-				server_name: env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME) + nats_terms.SERVER_SUFFIX.LEAF,
+				port: config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT),
+				server_name:
+					config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME) + nats_terms.SERVER_SUFFIX.LEAF,
 				config_file: nats_terms.NATS_CONFIG_FILES.LEAF_SERVER,
-				domain: env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME) + nats_terms.SERVER_SUFFIX.LEAF,
+				domain:
+					config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME) + nats_terms.SERVER_SUFFIX.LEAF,
 				pid_file_path: path.join(hdb_nats_path, nats_terms.PID_FILES.LEAF),
 				hdb_nats_path,
 			};

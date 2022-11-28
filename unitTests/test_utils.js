@@ -26,6 +26,7 @@ const lmdb_create_table = require('../data_layer/harperBridge/lmdbBridge/lmdbMet
 const lmdb_create_records = require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateRecords');
 const pm2_utils = require('../utility/pm2/utilityFunctions');
 const nats_utils = require('../server/nats/utility/natsUtils');
+const config_utils = require('../config/configUtils');
 const user = require('../security/user');
 let lmdb_schema_env = undefined;
 let lmdb_table_env = undefined;
@@ -763,6 +764,12 @@ function setFakeClusterUser() {
 	env.setProperty(terms.CONFIG_PARAMS.CLUSTERING_USER, 'test_cluster_user');
 	env.setProperty(terms.CONFIG_PARAMS.CLUSTERING_NODENAME, 'testLeafServer');
 	leaf_server_term_rw = nats_terms.__set__('NATS_CONFIG_FILES', NATS_TEST_CONFIG_FILES);
+
+	const get_config_from_file_stub = sandbox.stub(config_utils, 'getConfigFromFile');
+	get_config_from_file_stub.withArgs(terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT).returns(9991);
+	get_config_from_file_stub.withArgs(terms.CONFIG_PARAMS.CLUSTERING_USER).returns('test_cluster_user');
+	get_config_from_file_stub.withArgs(terms.CONFIG_PARAMS.CLUSTERING_NODENAME).returns('testLeafServer');
+	get_config_from_file_stub.withArgs(terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT).returns(7788);
 }
 
 function unsetFakeClusterUser() {

@@ -6,6 +6,7 @@ const hdb_utils = require('../utility/common_utils');
 const assignCMDENVVariables = require('../utility/assignCmdEnvVariables');
 const nats_config = require('../server/nats/utility/natsConfig');
 const nats_utils = require('../server/nats/utility/natsUtils');
+const nats_terms = require('../server/nats/utility/natsTerms');
 const minimist = require('minimist');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const config_utils = require('../config/configUtils');
@@ -344,6 +345,12 @@ async function restartClustering(service) {
 
 			await pm2_utils.startService(service);
 			hdb_logger.trace(`Starting ${service}`);
+
+			if (service === hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF) {
+				// If clustering has not already been run there is a chance this wont exist.
+				await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
+			}
+
 			break;
 		// If the service is not running and not clustering is not enable throw error.
 		case !is_currently_running && !clustering_enabled:
