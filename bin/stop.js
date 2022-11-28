@@ -10,7 +10,7 @@ const nats_utils = require('../server/nats/utility/natsUtils');
 const minimist = require('minimist');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const config_utils = require('../config/configUtils');
-const {restartWorkers} = require('../server/threads/start');
+const {restartWorkers} = require('../server/threads/start-threads');
 const { HTTP_STATUS_CODES } = hdb_errors;
 
 let pm2_utils;

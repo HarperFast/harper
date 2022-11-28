@@ -1,5 +1,5 @@
 'use strict';
-const { startWorker } = require('./start');
+const { startWorker } = require('./start-threads');
 const { createServer } = require('net');
 const env = require('../../utility/environment/environmentManager');
 const hdb_terms = require('../../utility/hdbTerms');
@@ -31,7 +31,7 @@ function startHTTPThreads(thread_count = 2) {
 	return workers;
 }
 
-function startSocketServer(type, port = 9925, workerStrategy = findMostIdleWorker) {
+function startSocketServer(type, port = 0, workerStrategy = findMostIdleWorker) {
 	// at some point we may want to actually read from the https connections
 	let server = createServer({
 		allowHalfOpen: true,

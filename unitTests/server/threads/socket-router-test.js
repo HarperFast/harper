@@ -1,4 +1,5 @@
 const { startHTTPThreads, startSocketServer, updateWorkerIdleness, remoteAffinityRouting, mostIdleRouting } = require('../../../server/threads/socket-router');
+const { shutdownWorkers } = require('../../../server/threads/start-threads');
 const terms = require('../../../utility/hdbTerms');
 const assert = require('assert');
 
@@ -7,11 +8,8 @@ describe('Socket Router', () => {
 	before(function() {
 		workers = startHTTPThreads(4);
 	});
-	afterEach(function(done) {
-		server.close(done);
-	});
 	it('Start HTTP threads and delegate evenly by most idle', function () {
-		server = startSocketServer(terms.SERVICES.HDB_CORE, 19925, mostIdleRouting);
+		server = startSocketServer(terms.SERVICES.HDB_CORE, 0, mostIdleRouting);
 
 		for (let worker of workers) {
 			worker.socketsRouted = 0;
@@ -46,7 +44,7 @@ describe('Socket Router', () => {
 	});
 
 	it('Start HTTP threads and delegate by remote address', function () {
-		server = startSocketServer(terms.SERVICES.HDB_CORE, 19926, remoteAffinityRouting);
+		server = startSocketServer(terms.SERVICES.HDB_CORE, 0, remoteAffinityRouting);
 
 		for (let worker of workers) {
 			worker.socketsRouted = 0;
@@ -76,5 +74,11 @@ describe('Socket Router', () => {
 		assert.equal(sortedWorkers[1].socketsRouted, 50, 'Received correct connections');
 		assert.equal(sortedWorkers[2].socketsRouted, 0, 'Received correct connections');
 		assert.equal(sortedWorkers[3].socketsRouted, 0, 'Received correct connections');
+	});
+	afterEach(function(done) {
+		server.close(done);
+	});
+	after(function() {
+		shutdownWorkers(terms.SERVICES.HDB_CORE);
 	});
 });
