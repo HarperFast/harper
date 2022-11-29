@@ -42,17 +42,21 @@ async function generateNatsConfig(is_restart = false, process_name = undefined) 
 	const LEAF_JS_STORE_DIR = path.join(HDB_ROOT, HDB_CLUSTERING_FOLDER, 'leaf');
 	const HUB_CONFIG_PATH = path.join(HDB_ROOT, HDB_CLUSTERING_FOLDER, nats_terms.NATS_CONFIG_FILES.HUB_SERVER);
 	const LEAF_CONFIG_PATH = path.join(HDB_ROOT, HDB_CLUSTERING_FOLDER, nats_terms.NATS_CONFIG_FILES.LEAF_SERVER);
-	const CERT_FILE = env_manager.get(CONFIG_PARAMS.CLUSTERING_TLS_CERTIFICATE);
-	const KEY_FILE = env_manager.get(CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY);
-	const CA_FILE = env_manager.get(CONFIG_PARAMS.CLUSTERING_TLS_CERT_AUTH);
-	const INSECURE = env_manager.get(CONFIG_PARAMS.CLUSTERING_TLS_INSECURE);
+	const CERT_FILE = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_TLS_CERTIFICATE);
+	const KEY_FILE = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY);
+	const CA_FILE = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_TLS_CERT_AUTH);
+	const INSECURE = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_TLS_INSECURE);
+	const CLUSTERING_NODENAME = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_NODENAME);
+	const CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT = config_utils.getConfigFromFile(
+		CONFIG_PARAMS.CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT
+	);
 
 	if (!(await nats_utils.checkNATSServerInstalled())) {
 		generateNatsConfigError("nats-server dependency is either missing or the wrong version. Run 'npm install' to fix");
 	}
 
 	const users = await user.listUsers();
-	const cluster_username = env_manager.get(CONFIG_PARAMS.CLUSTERING_USER);
+	const cluster_username = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_USER);
 	const cluster_user = await user.getClusterUser();
 	if (hdb_utils.isEmpty(cluster_user) || cluster_user.active !== true) {
 		generateNatsConfigError(`invalid cluster user '${cluster_username}'`);
@@ -77,7 +81,7 @@ async function generateNatsConfig(is_restart = false, process_name = undefined) 
 
 	// Build hub server cluster routes from cluster user and ip/ports
 	let cluster_routes = [];
-	const { hub_routes, leaf_routes } = config_utils.getClusteringRoutes();
+	const { hub_routes } = config_utils.getClusteringRoutes();
 	if (!hdb_utils.isEmptyOrZeroLength(hub_routes)) {
 		for (const route of hub_routes) {
 			cluster_routes.push(
@@ -88,16 +92,16 @@ async function generateNatsConfig(is_restart = false, process_name = undefined) 
 
 	// Create hub server json and write to file
 	const hub_config = new HubConfigObject(
-		env_manager.get(CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT),
-		env_manager.get(CONFIG_PARAMS.CLUSTERING_NODENAME),
+		config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT),
+		CLUSTERING_NODENAME,
 		HUB_PID_FILE_PATH,
 		CERT_FILE,
 		KEY_FILE,
 		CA_FILE,
 		INSECURE,
-		env_manager.get(CONFIG_PARAMS.CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT),
-		env_manager.get(CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NAME),
-		env_manager.get(CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT),
+		CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT,
+		config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NAME),
+		config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT),
 		cluster_routes,
 		sys_users,
 		hdb_users
@@ -109,18 +113,14 @@ async function generateNatsConfig(is_restart = false, process_name = undefined) 
 		hdb_logger.trace(`Hub server config written to ${HUB_CONFIG_PATH}`);
 	}
 
-	const leafnode_remotes_url_sys = `tls://${cluster_user.sys_name_encoded}:${
-		cluster_user.uri_encoded_d_hash
-	}@0.0.0.0:${env_manager.get(CONFIG_PARAMS.CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT)}`;
+	const leafnode_remotes_url_sys = `tls://${cluster_user.sys_name_encoded}:${cluster_user.uri_encoded_d_hash}@0.0.0.0:${CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT}`;
 
-	const leafnode_remotes_url_hdb = `tls://${cluster_user.uri_encoded_name}:${
-		cluster_user.uri_encoded_d_hash
-	}@0.0.0.0:${env_manager.get(CONFIG_PARAMS.CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT)}`;
+	const leafnode_remotes_url_hdb = `tls://${cluster_user.uri_encoded_name}:${cluster_user.uri_encoded_d_hash}@0.0.0.0:${CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT}`;
 
 	// Create leaf server config and write to file
 	const leaf_config = new LeafConfigObject(
-		env_manager.get(CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT),
-		env_manager.get(CONFIG_PARAMS.CLUSTERING_NODENAME),
+		config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT),
+		CLUSTERING_NODENAME,
 		LEAF_PID_FILE_PATH,
 		LEAF_JS_STORE_DIR,
 		[leafnode_remotes_url_sys],

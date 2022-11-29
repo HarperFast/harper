@@ -120,6 +120,7 @@ describe('Test natsConfig module', () => {
 	let port_taken_stub;
 	let create_connection_stub;
 	let get_clustering_routes_stub;
+	let get_config_from_file_stub;
 
 	before(() => {
 		fs.mkdirpSync(TEMP_TEST_ROOT_DIR);
@@ -131,21 +132,33 @@ describe('Test natsConfig module', () => {
 		sandbox.stub(user, 'getClusterUser').resolves(fake_cluster_user);
 		sandbox.stub(nats_utils, 'checkNATSServerInstalled').resolves(true);
 		sandbox.stub(nats_utils, 'getServerConfig').returns(FAKE_SERVER_CONFIG);
+		get_config_from_file_stub = sandbox.stub(config_utils, 'getConfigFromFile');
+		get_config_from_file_stub.withArgs(hdb_terms.CONFIG_PARAMS.CLUSTERING_USER).returns(FAKE_CLUSTER_USER1);
 		create_connection_stub = sandbox.stub(nats_utils, 'createConnection').onCall(0).throws('Connection error');
 		create_connection_stub.onCall(1).resolves(FAKE_CONNECTION_RESPONSE);
 		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.ROOTPATH, TEMP_TEST_ROOT_DIR);
-		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_USER, FAKE_CLUSTER_USER1);
-		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT, 7711);
-		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME, 'unitTestNodeName');
-		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT, 7712);
-		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NAME, 'harperdb_unit_test');
-		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT, 7713);
-		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT, 7714);
-		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT, 7715);
-		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_ROUTES, FAKE_ROUTES);
-		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_CERT_AUTH, FAKE_CA_PATH);
-		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_CERTIFICATE, FAKE_CERT_PATH);
-		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY, FAKE_PRIVATE_KEY_PATH);
+		get_config_from_file_stub.withArgs(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT).returns(7711);
+		get_config_from_file_stub.withArgs(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME).returns('unitTestNodeName');
+		get_config_from_file_stub
+			.withArgs(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT)
+			.returns(7712);
+		get_config_from_file_stub
+			.withArgs(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NAME)
+			.returns('harperdb_unit_test');
+		get_config_from_file_stub.withArgs(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT).returns(7713);
+		get_config_from_file_stub
+			.withArgs(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT)
+			.returns(7714);
+		get_config_from_file_stub.withArgs(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT).returns(7715);
+		get_config_from_file_stub
+			.withArgs(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_ROUTES)
+			.returns(FAKE_ROUTES);
+		get_config_from_file_stub.withArgs(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_CERT_AUTH).returns(FAKE_CA_PATH);
+		get_config_from_file_stub.withArgs(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_CERTIFICATE).returns(FAKE_CERT_PATH);
+		get_config_from_file_stub
+			.withArgs(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY)
+			.returns(FAKE_PRIVATE_KEY_PATH);
+		get_config_from_file_stub.withArgs(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_INSECURE).returns(true);
 	});
 
 	afterEach(() => {

@@ -37,6 +37,7 @@ const { promisify } = require('util');
 const crypto_hash = require('./cryptoHash');
 const terms = require('../utility/hdbTerms');
 const nats_terms = require('../server/nats/utility/natsTerms');
+const config_utils = require('../config/configUtils');
 const env = require('../utility/environment/environmentManager');
 const license = require('../utility/registration/hdb_license');
 const systemSchema = require('../json/systemSchema');
@@ -634,7 +635,7 @@ async function findAndValidateUser(username, pw, validate_password = true) {
  */
 async function getClusterUser() {
 	const users = await listUsers();
-	const cluster_username = env.get(terms.CONFIG_PARAMS.CLUSTERING_USER);
+	const cluster_username = config_utils.getConfigFromFile(terms.CONFIG_PARAMS.CLUSTERING_USER);
 	const cluster_user = users.get(cluster_username);
 	if (hdb_utility.isEmpty(cluster_user)) {
 		return undefined;

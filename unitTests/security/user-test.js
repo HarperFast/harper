@@ -12,10 +12,10 @@ const crypto_hash = require('../../security/cryptoHash');
 const user = rewire('../../security/user');
 const insert = require('../../data_layer/insert');
 const validation = require('../../validation/user_validation');
-const password = require('../../utility/password');
 const signalling = require('../../utility/signalling');
 const logger = require('../../utility/logging/harper_logger');
 const env_manager = require('../../utility/environment/environmentManager');
+const config_utils = require('../../config/configUtils');
 let license = require('../../utility/registration/hdb_license');
 const { TEST_USER_ERROR_MSGS } = require('../commonTestErrors');
 
@@ -1104,7 +1104,7 @@ describe('Test user.js', () => {
 			const list_users_stub = sandbox.stub().resolves(USER_SEARCH_RESULT);
 			sandbox.stub(crypto_hash, 'decrypt').returns('a_password@123/!');
 			const list_user_rw = user.__set__('listUsers', list_users_stub);
-			env_manager.setProperty('clustering_user', 'cluster_user');
+			sandbox.stub(config_utils, 'getConfigFromFile').returns('cluster_user');
 			const result = await user.getClusterUser();
 			expect(result).to.eql(expected_result);
 			list_user_rw();
