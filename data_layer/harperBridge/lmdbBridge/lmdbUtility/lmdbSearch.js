@@ -45,6 +45,7 @@ async function executeSearch(search_object, search_type, hash_attribute, return_
 	let schema_path = path.join(getBaseSchemaPath(), search_object.schema.toString());
 	let env = await environment_utility.openEnvironment(schema_path, search_object.table);
 	let search_results = searchByType(env, search_object, search_type, hash_attribute);
+	let transaction = search_results.transaction || env;
 
 	//if we execute a search all / search by hash type call there is no need to perform further evaluation as the records have been fetched
 	if (
@@ -61,27 +62,40 @@ async function executeSearch(search_object, search_type, hash_attribute, return_
 	let fetch_more = checkToFetchMore(search_object, hash_attribute);
 
 	if (fetch_more === false) {
-		return return_map === true ? createMapFromArrays(search_results) : search_results[1];
+		let attribute = search_object.search_attribute;
+		if (attribute === hash_attribute) {
+			if (return_map)
+				return createMapFromIterable(search_results, () => true);
+			return search_results.map(entry => ({ [hash_attribute]: entry.key }));
+		}
+		let toObject = (entry) => ({
+			[hash_attribute]: entry.value,
+			[attribute]: entry.key,
+		});
+		if (return_map)
+			return createMapFromIterable(search_results, toObject);
+		return search_results.map(toObject);
 	}
 
-	let ids = search_results[0];
+	let ids = search_object.search_attribute === hash_attribute ?
+		search_results.map(entry => entry.key) : search_results.map(entry => entry.value);
 	if (return_map === true) {
-		return search_utility.batchSearchByHashToMap(env, hash_attribute, search_object.get_attributes, ids);
+		return search_utility.batchSearchByHashToMap(transaction, hash_attribute, search_object.get_attributes, ids);
 	}
 
-	return search_utility.batchSearchByHash(env, hash_attribute, search_object.get_attributes, ids);
+	return search_utility.batchSearchByHash(transaction, hash_attribute, search_object.get_attributes, ids);
 
 }
 
 /**
  *
- * @param {lmdb.RootDatabase} env
+ * @param {lmdb.Transaction} transactionOrEnv
  * @param {SearchObject} search_object
  * @param {lmdb_terms.SEARCH_TYPES} search_type
  * @param {String} hash_attribute
  * @returns {null|Array<Object>|Number|Object|*[]|{}}
  */
-function searchByType(env, search_object, search_type, hash_attribute) {
+function searchByType(transactionOrEnv, search_object, search_type, hash_attribute) {
 	let search_results;
 
 	//this is to conditionally not create the hash_attribute as part of the returned objects if it is not selected
@@ -98,7 +112,7 @@ function searchByType(env, search_object, search_type, hash_attribute) {
 	switch (search_type) {
 		case lmdb_terms.SEARCH_TYPES.EQUALS:
 			search_results = search_utility.equals(
-				env,
+				transactionOrEnv,
 				hash_attribute_name,
 				search_object.search_attribute,
 				search_object.search_value,
@@ -109,7 +123,7 @@ function searchByType(env, search_object, search_type, hash_attribute) {
 			break;
 		case lmdb_terms.SEARCH_TYPES.CONTAINS:
 			search_results = search_utility.contains(
-				env,
+				transactionOrEnv,
 				hash_attribute_name,
 				search_object.search_attribute,
 				search_object.search_value,
@@ -121,7 +135,7 @@ function searchByType(env, search_object, search_type, hash_attribute) {
 		case lmdb_terms.SEARCH_TYPES.ENDS_WITH:
 		case lmdb_terms.SEARCH_TYPES._ENDS_WITH:
 			search_results = search_utility.endsWith(
-				env,
+				transactionOrEnv,
 				hash_attribute_name,
 				search_object.search_attribute,
 				search_object.search_value,
@@ -133,7 +147,7 @@ function searchByType(env, search_object, search_type, hash_attribute) {
 		case lmdb_terms.SEARCH_TYPES.STARTS_WITH:
 		case lmdb_terms.SEARCH_TYPES._STARTS_WITH:
 			search_results = search_utility.startsWith(
-				env,
+				transactionOrEnv,
 				hash_attribute_name,
 				search_object.search_attribute,
 				search_object.search_value,
@@ -143,20 +157,20 @@ function searchByType(env, search_object, search_type, hash_attribute) {
 			);
 			break;
 		case lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH:
-			return search_utility.batchSearchByHash(env, search_object.search_attribute, search_object.get_attributes, [
+			return search_utility.batchSearchByHash(transactionOrEnv, search_object.search_attribute, search_object.get_attributes, [
 				search_object.search_value,
 			]);
 		case lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH_TO_MAP:
-			return search_utility.batchSearchByHashToMap(env, search_object.search_attribute, search_object.get_attributes, [
+			return search_utility.batchSearchByHashToMap(transactionOrEnv, search_object.search_attribute, search_object.get_attributes, [
 				search_object.search_value,
 			]);
 		case lmdb_terms.SEARCH_TYPES.SEARCH_ALL:
-			return search_utility.searchAll(env, hash_attribute, search_object.get_attributes, reverse, limit, offset);
+			return search_utility.searchAll(transactionOrEnv, hash_attribute, search_object.get_attributes, reverse, limit, offset);
 		case lmdb_terms.SEARCH_TYPES.SEARCH_ALL_TO_MAP:
-			return search_utility.searchAllToMap(env, hash_attribute, search_object.get_attributes, reverse, limit, offset);
+			return search_utility.searchAllToMap(transactionOrEnv, hash_attribute, search_object.get_attributes, reverse, limit, offset);
 		case lmdb_terms.SEARCH_TYPES.BETWEEN:
 			search_results = search_utility.between(
-				env,
+				transactionOrEnv,
 				hash_attribute_name,
 				search_object.search_attribute,
 				search_object.search_value,
@@ -169,7 +183,7 @@ function searchByType(env, search_object, search_type, hash_attribute) {
 		case lmdb_terms.SEARCH_TYPES.GREATER_THAN:
 		case lmdb_terms.SEARCH_TYPES._GREATER_THAN:
 			search_results = search_utility.greaterThan(
-				env,
+				transactionOrEnv,
 				hash_attribute_name,
 				search_object.search_attribute,
 				search_object.search_value,
@@ -181,7 +195,7 @@ function searchByType(env, search_object, search_type, hash_attribute) {
 		case lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL:
 		case lmdb_terms.SEARCH_TYPES._GREATER_THAN_EQUAL:
 			search_results = search_utility.greaterThanEqual(
-				env,
+				transactionOrEnv,
 				hash_attribute_name,
 				search_object.search_attribute,
 				search_object.search_value,
@@ -193,7 +207,7 @@ function searchByType(env, search_object, search_type, hash_attribute) {
 		case lmdb_terms.SEARCH_TYPES.LESS_THAN:
 		case lmdb_terms.SEARCH_TYPES._LESS_THAN:
 			search_results = search_utility.lessThan(
-				env,
+				transactionOrEnv,
 				hash_attribute_name,
 				search_object.search_attribute,
 				search_object.search_value,
@@ -205,7 +219,7 @@ function searchByType(env, search_object, search_type, hash_attribute) {
 		case lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL:
 		case lmdb_terms.SEARCH_TYPES._LESS_THAN_EQUAL:
 			search_results = search_utility.lessThanEqual(
-				env,
+				transactionOrEnv,
 				hash_attribute_name,
 				search_object.search_attribute,
 				search_object.search_value,
@@ -269,13 +283,12 @@ function filterByType(search_object) {
 
 /**
  *
- * @param {[[],[]]}arrays
+ * @param {Iterable}
  */
-function createMapFromArrays(arrays) {
-	let results = Object.create(null);
-
-	for (let x = 0, length = arrays[0].length; x < length; x++) {
-		results[arrays[0][x]] = arrays[1][x];
+function createMapFromIterable(iterable, toValue) {
+	let results = new Map();
+	for (let entry of iterable) {
+		results.set(entry.value, toValue(entry));
 	}
 	return results;
 }

@@ -14,7 +14,7 @@ module.exports = lmdbGetDataByValue;
  * @param {hdb_terms.VALUE_SEARCH_COMPARATORS} [comparator]
  * @returns {{String|Number, Object}}
  */
-async function lmdbGetDataByValue(search_object, comparator) {
+function lmdbGetDataByValue(search_object, comparator) {
 	let comparator_search = !common_utils.isEmpty(comparator);
 	if (comparator_search && hdb_terms.VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[comparator] === undefined) {
 		throw new Error(`Value search comparator - ${comparator} - is not valid`);
@@ -26,9 +26,5 @@ async function lmdbGetDataByValue(search_object, comparator) {
 	}
 
 	let return_map = true;
-	try {
-		return await lmdb_search.prepSearch(search_object, comparator, return_map);
-	} catch (e) {
-		throw e;
-	}
+	return lmdb_search.prepSearch(search_object, comparator, return_map);
 }

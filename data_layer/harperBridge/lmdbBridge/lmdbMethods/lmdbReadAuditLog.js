@@ -56,28 +56,19 @@ function searchTransactionsByTimestamp(env, timestamps = [0, lmdb_utils.getMicro
 		timestamps[1] = lmdb_utils.getMicroTime();
 	}
 
-	let results = [];
-	try {
-		let timestamp_dbi = env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP];
+	let timestamp_dbi = env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP];
 
-		//advance the end_value by 1 key
-		let next_value;
-		for (let key of timestamp_dbi.getKeys({ start: timestamps[1] })) {
-			if (key !== timestamps[1]) {
-				next_value = key;
-				break;
-			}
+	//advance the end_value by 1 key
+	let next_value;
+	for (let key of timestamp_dbi.getKeys({ start: timestamps[1] })) {
+		if (key !== timestamps[1]) {
+			next_value = key;
+			break;
 		}
-
-		for (let { value } of timestamp_dbi.getRange({ start: timestamps[0], end: next_value })) {
-			let txn_record = Object.assign(new LMDBTransactionObject(), value);
-			results.push(txn_record);
-		}
-
-		return results;
-	} catch (e) {
-		throw e;
 	}
+
+	return timestamp_dbi.getRange({ start: timestamps[0], end: next_value }).map(({ value }) =>
+		Object.assign(new LMDBTransactionObject(), value));
 }
 
 /**
@@ -118,9 +109,8 @@ function searchTransactionsByHashValues(env, hash_values, hash_attribute) {
 			hash_value
 		);
 
-		for (let y = 0, hr_length = hash_results[0].length; y < hr_length; y++) {
-			let key = hash_results[0][y];
-			let number_key = Number(key);
+		for (let { value } of hash_results) {
+			let number_key = Number(value);
 			if (timestamp_hash_map.has(number_key)) {
 				let entry = timestamp_hash_map.get(number_key);
 				entry.push(hash_value.toString());

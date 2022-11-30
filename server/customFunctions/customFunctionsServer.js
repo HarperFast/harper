@@ -2,7 +2,6 @@
 
 const util = require('util');
 const path = require('path');
-const fg = require('fast-glob');
 const fs = require('fs');
 
 const fastify = require('fastify');
@@ -17,7 +16,6 @@ const global_schema = require('../../utility/globalSchema');
 const user_schema = require('../../security/user');
 const IPCClient = require('../ipc/IPCClient');
 const ipc_server_handlers = require('../ipc/serverHandlers');
-const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
 
 const getServerOptions = require('./helpers/getServerOptions');
 const getCORSOptions = require('./helpers/getCORSOptions');
@@ -34,6 +32,7 @@ const {
 	handleSigquit,
 	handleSigterm,
 } = require('../serverHelpers/serverHandlers');
+const { registerContentHandlers } = require('../serverHelpers/contentTypes');
 
 const TRUE_COMPARE_VAL = 'TRUE';
 let server = undefined;
@@ -130,6 +129,7 @@ async function buildRoutes(cf_server) {
 
 		await cf_server.register(require('./plugins/hdbCore'));
 		await cf_server.after();
+		registerContentHandlers(cf_server);
 		const project_folders = fs.readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
 
 		// loop through all the projects

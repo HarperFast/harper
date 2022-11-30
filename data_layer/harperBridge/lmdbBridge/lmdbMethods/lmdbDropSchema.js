@@ -11,9 +11,9 @@ const search_data_by_value = require('./lmdbSearchByValue');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const hdb_utils = require('../../../../utility/common_utils');
 const path = require('path');
-const { getBaseSchemaPath } = require('../lmdbUtility/initializePaths');
-const { handleHDBError, hdb_errors } = require('../../../../utility/errors/hdbError');
-const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
+const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
+const {handleHDBError, hdb_errors} = require('../../../../utility/errors/hdbError');
+const {HDB_ERROR_MSGS, HTTP_STATUS_CODES} = hdb_errors;
 
 module.exports = lmdbDropSchema;
 
@@ -37,7 +37,7 @@ async function lmdbDropSchema(drop_schema_obj) {
 			[hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_NAME_KEY]
 		);
 
-		let tables = await search_data_by_value(table_search_obj);
+		let tables = Array.from(await search_data_by_value(table_search_obj));
 
 		for (let x = 0; x < tables.length; x++) {
 			const delete_table_obj = {
@@ -83,14 +83,14 @@ async function validateDropSchema(drop_schema) {
 	let delete_schema;
 
 	try {
-		search_result = await get_data_by_hash(search_obj);
+		search_result = Array.from(await get_data_by_hash(search_obj));
 	} catch (err) {
 		throw err;
 	}
 
 	// Data found by the search function should match the drop_schema
-	for (let item in search_result) {
-		if (search_result[item].name === drop_schema) {
+	for (let [, schema] of search_result) {
+		if (schema.name === drop_schema) {
 			delete_schema = drop_schema;
 		}
 	}

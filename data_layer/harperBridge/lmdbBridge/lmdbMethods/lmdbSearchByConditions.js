@@ -47,67 +47,83 @@ async function lmdbSearchByConditions(search_object) {
 
 		const table_info = global.hdb_schema[search_object.schema][search_object.table];
 
+		// make sure the dbis have been opened prior to the read transaction starting
+		for (let condition of search_object.conditions) {
+			environment_utility.openDBI(env, condition.search_attribute);
+		}
 		// Sort the conditions by narrowest to broadest. Note that we want to do this both for intersection where
 		// it allows us to do minimal filtering, and for union where we can return the fastest results first
 		// in an iterator/stream.
 		let sorted_conditions = _.sortBy(search_object.conditions, (condition) => {
-			if (condition.estimated_count === undefined) { // skip if it is cached
+			if (condition.estimated_count === undefined) {
+				// skip if it is cached
 				let search_type = condition.search_type;
 				if (search_type === lmdb_terms.SEARCH_TYPES.EQUALS)
 					// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
 					condition.estimated_count = search_utility.count(env, condition.search_attribute, condition.search_value);
 				else if (search_type === lmdb_terms.SEARCH_TYPES.CONTAINS || search_type === lmdb_terms.SEARCH_TYPES.ENDS_WITH)
-					condition.estimated_count = Infinity; // this search types can't/doesn't use indices, so try do them last
-				else
-					// for range queries (betweens, starts-with, greater, etc.), just arbitrarily guess
-					condition.estimated_count = RANGE_ESTIMATE;
+					condition.estimated_count = Infinity;
+				// this search types can't/doesn't use indices, so try do them last
+				// for range queries (betweens, starts-with, greater, etc.), just arbitrarily guess
+				else condition.estimated_count = RANGE_ESTIMATE;
 			}
 			return condition.estimated_count; // use cached count
 		});
-
+		// we create the read transaction after ensuring that the dbis have been opened (necessary for a stable read
+		// transaction, and we really don't care if the
+		// counts are done in the same read transaction because they are just estimates.
+		let transaction = env.useReadTransaction();
+		transaction.database = env;
+		// both AND and OR start by getting an iterator for the ids for first condition
+		let ids = await executeConditionSearch(transaction, search_object, sorted_conditions[0], table_info.hash_attribute);
+		// and then things diverge...
+		let records;
 		if (!search_object.operator || search_object.operator.toLowerCase() === 'and') {
-			// get the intersection of condition searches by first doing an indexed query for the first condition
+			// get the intersection of condition searches by using the indexed query for the first condition
 			// and then filtering by all subsequent conditions
-			let [ids] = await executeConditionSearch(env, search_object, sorted_conditions[0], table_info.hash_attribute);
 			let primary_dbi = env.dbis[table_info.hash_attribute];
 			let filters = sorted_conditions.slice(1).map(lmdb_search.filterByType);
 			let filters_length = filters.length;
-			let results = []; // will eventually pass through the iterator
 			let fetch_attributes = search_utility.setGetWholeRowAttributes(env, search_object.get_attributes);
-			let offset = search_object.offset > -1 ? search_object.offset : 0;
-			let limit = search_object.limit > -1 ? search_object.limit : Infinity;
-			next_id: for (let id of ids) {
-				// need the original record to leverage deferred/random access property retrieval
-				let record = primary_dbi.get(id, LAZY_PROPERTY_ACCESS);
-				for (let i = 0; i < filters_length; i++) {
-					if (!filters[i](record)) continue next_id; // didn't match filters
-				}
-				if (offset > 0) {
-					offset--;
-					continue;
-				}
-				if (limit <= 0) break;
-				limit--;
-				// matched all filters and range, we already have the record, so just finish by copying all appropriate attributes
-				results.push(cursor_functions.parseRow(record, fetch_attributes));
-			}
-			return results;
+			records = ids.map((id) => primary_dbi.get(id, { transaction, lazy: true }));
+			if (filters_length > 0)
+				records = records.filter((record) => {
+					for (let i = 0; i < filters_length; i++) {
+						if (!filters[i](record)) return false; // didn't match filters
+					}
+					return true;
+				});
+			if (search_object.offset || search_object.limit !== undefined)
+				records = records.slice(
+					search_object.offset,
+					search_object.limit !== undefined ? (search_object.offset || 0) + search_object.limit : undefined
+				);
+			records = records.map((record) => cursor_functions.parseRow(record, fetch_attributes));
 		} else {
 			//get the union of ids from all condition searches
-			let merged_ids = [];
-			let ids = [];
-			for (let condition of sorted_conditions) {
-				let [ids_for_condition] = await executeConditionSearch(env, search_object, condition, table_info.hash_attribute);
-				ids.push(ids_for_condition);
+			for (let i = 1; i < sorted_conditions.length; i++) {
+				let condition = sorted_conditions[i];
+				// might want to lazily execute this after getting to this point in the iteration
+				let next_ids = await executeConditionSearch(transaction, search_object, condition, table_info.hash_attribute);
+				ids = ids.concat(next_ids);
 			}
-			merged_ids = _.union(...ids);
-			// if limit or offset are gt 0 we execute the slice, note i confirmed null & undefined values for offset/limit will not evaluate to true as expected
-			if (search_object.limit > 0 || search_object.offset > 0) {
-				let limit = Number.isInteger(search_object.limit) ? search_object.limit : merged_ids.length;
-				merged_ids = merged_ids.splice(search_object.offset, limit);
-			}
-			return search_utility.batchSearchByHash(env, table_info.hash_attribute, search_object.get_attributes, merged_ids);
+			let returned_ids = new Set();
+			let offset = search_object.offset || 0;
+			ids = ids
+				.filter((id) => {
+					if (returned_ids.has(id))
+						// skip duplicates
+						return false;
+					returned_ids.add(id);
+					return true;
+				})
+				.slice(offset, search_object.limit && search_object.limit + offset);
+			records = search_utility.batchSearchByHash(transaction, table_info.hash_attribute, search_object.get_attributes, ids);
 		}
+		records.onDone = () => {
+			transaction.done();// need to complete the transaction once iteration is complete
+		};
+		return records;
 	} catch (e) {
 		throw handleHDBError(e);
 	}
@@ -134,13 +150,13 @@ function sorter(a, b) {
 }
 /**
  *
- * @param env
+ * @param transaction
  * @param {SearchByConditionsObject} search_object
  * @param {String} hash_attribute
  * @returns {Promise<unknown[]>}
  */
 // eslint-disable-next-line require-await
-async function executeConditionSearch(env, search_object, condition, hash_attribute) {
+async function executeConditionSearch(transaction, search_object, condition, hash_attribute) {
 	//build a prototype object for search
 	let search = new SearchObject(
 		search_object.schema,
@@ -161,5 +177,5 @@ async function executeConditionSearch(env, search_object, condition, hash_attrib
 	} else {
 		search.search_value = condition.search_value;
 	}
-	return lmdb_search.searchByType(env, search, search_type, hash_attribute);
+	return lmdb_search.searchByType(transaction, search, search_type, hash_attribute).map(e => e.value);
 }

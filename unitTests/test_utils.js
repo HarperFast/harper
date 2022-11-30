@@ -632,6 +632,10 @@ function assertErrorSync(test_func, args, error_object, message) {
 	return result;
 }
 
+function asKeyValueArray(iterable) {
+	let values = Array.from(iterable);
+	return [values.map(v => v.key), values.map(v => v.value)];
+}
 /**
  * assigns objects to an null object, which is how we create objects in lmdb
  * @returns {*[]}
@@ -640,6 +644,33 @@ function assertErrorSync(test_func, args, error_object, message) {
 function assignObjectToNullObject(...objects) {
 	objects.unshift(Object.create(null));
 	return Object.assign.apply(null, objects);
+}
+
+/**
+ * assigns objects to an null object, which is how we create objects in lmdb
+ * @returns {Map}
+ * @param objects
+ */
+function assignObjectToMap(object) {
+	let results = new Map();
+	for (let key in object) {
+		results.set(isNaN(key) ? key : +key, object[key]);
+	}
+	return results;
+}
+
+/**
+ * Return ordered array
+ * @param iterator
+ * @returns {unknown[]}
+ */
+function orderedArray(iterator) {
+	let array = Array.from(iterator);
+	if (Array.isArray(array[0]))
+		return array.sort((a, b) => a[0] > b[0] ? 1 : -1);
+	if (array[0]?.id)
+		return array.sort((a, b) => a.id > b.id ? 1 : -1);
+	return array;
 }
 
 /**
@@ -827,7 +858,12 @@ function restoreInitStub() {
 	}
 }
 
+function arrayOfValues(iterator) {
+	return Array.from(iterator.map(e => e.value));
+}
+
 module.exports = {
+	arrayOfValues,
 	restoreInitStub,
 	changeProcessToBinDir,
 	deepClone,
@@ -852,6 +888,9 @@ module.exports = {
 	assertErrorAsync,
 	generateUpgradeObj,
 	assignObjecttoNullObject: assignObjectToNullObject,
+	assignObjectToMap,
+	orderedArray,
+	asKeyValueArray,
 	requireUncached,
 	stopTestLeafServer,
 	launchTestLeafServer,

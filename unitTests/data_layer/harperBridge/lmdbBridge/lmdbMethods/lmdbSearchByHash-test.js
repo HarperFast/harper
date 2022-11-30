@@ -203,13 +203,6 @@ describe('Test lmdbSearchDataByHash module', () => {
 				new Error("'get_attributes' must be an array")
 			);
 
-			search_obj = new SearchByHashObject('dev', 'dog', [], ALL_FETCH_ATTRIBUTES);
-			await test_utils.assertErrorAsync(
-				lmdb_search_by_hash,
-				[search_obj],
-				new Error("'hash_values' must contain at least 1 items")
-			);
-
 			search_obj = new SearchByHashObject('dev', 'dog', [8], []);
 			await test_utils.assertErrorAsync(
 				lmdb_search_by_hash,
@@ -244,8 +237,8 @@ describe('Test lmdbSearchDataByHash module', () => {
 
 		it('test finding multiple rows row, some attributes', async () => {
 			let expected_result = [
-				test_utils.assignObjecttoNullObject({ id: 8, height: null }),
 				test_utils.assignObjecttoNullObject({ id: 10, height: 145 }),
+				test_utils.assignObjecttoNullObject({ id: 8, height: null }),
 			];
 
 			let search_obj = new SearchByHashObject('dev', 'dog', [10, 8], ['id', 'height']);

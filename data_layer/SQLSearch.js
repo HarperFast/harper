@@ -630,7 +630,7 @@ class SQLSearch {
 						const attribute_values = await harperBridge.getDataByHash(search_object);
 
 						for (const hash_val of search_object.hash_values) {
-							if (hash_val in attribute_values && !this.data[schema_table].__merged_data[hash_val]) {
+							if (attribute_values.get(hash_val) && !this.data[schema_table].__merged_data[hash_val]) {
 								this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
 								this._setMergedHashAttribute(schema_table, hash_val);
 							}
@@ -640,6 +640,7 @@ class SQLSearch {
 							'Error thrown from getDataByHash function in SQLSearch class method getFetchAttributeValues exact match.'
 						);
 						log.error(err);
+						throw new Error(SEARCH_ERROR_MSG);
 					}
 				} else {
 					try {
@@ -650,14 +651,14 @@ class SQLSearch {
 								exact_search_object.search_value = value;
 								const attribute_values = await harperBridge.getDataByValue(exact_search_object);
 
-								for (const hash_val in attribute_values) {
+								for (const [ hash_val, record ] of attribute_values) {
 									if (!this.data[schema_table].__merged_data[hash_val]) {
 										this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
 										this._updateMergedAttribute(
 											schema_table,
 											hash_val,
 											attribute.attribute,
-											attribute_values[hash_val][attribute.attribute]
+											record[attribute.attribute]
 										);
 										this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
 									} else {
@@ -665,7 +666,7 @@ class SQLSearch {
 											schema_table,
 											hash_val,
 											attribute.attribute,
-											attribute_values[hash_val][attribute.attribute]
+											record[attribute.attribute]
 										);
 									}
 								}
@@ -676,6 +677,7 @@ class SQLSearch {
 							'Error thrown from getDataByValue function in SQLSearch class method getFetchAttributeValues exact match.'
 						);
 						log.error(err);
+						throw new Error(SEARCH_ERROR_MSG);
 					}
 				}
 			} else {
@@ -693,21 +695,21 @@ class SQLSearch {
 							const matching_data = await harperBridge.getDataByValue(search_object, comp.operation);
 
 							if (is_hash) {
-								for (const hash_val in matching_data) {
+								for (const [ hash_val ] of matching_data) {
 									if (!this.data[schema_table].__merged_data[hash_val]) {
 										this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
 										this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
 									}
 								}
 							} else {
-								for (const hash_val in matching_data) {
+								for (const [ hash_val, record ] of matching_data) {
 									if (!this.data[schema_table].__merged_data[hash_val]) {
 										this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
 										this._updateMergedAttribute(
 											schema_table,
 											hash_val,
 											attribute.attribute,
-											matching_data[hash_val][attribute.attribute]
+											record[attribute.attribute]
 										);
 										this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
 									} else {
@@ -715,7 +717,7 @@ class SQLSearch {
 											schema_table,
 											hash_val,
 											attribute.attribute,
-											matching_data[hash_val][attribute.attribute]
+											record[attribute.attribute]
 										);
 									}
 								}
@@ -726,6 +728,7 @@ class SQLSearch {
 							'Error thrown from getDataByValue function in SQLSearch class method getFetchAttributeValues comparator search values.'
 						);
 						log.error(err);
+						throw new Error(SEARCH_ERROR_MSG);
 					}
 				} else {
 					try {
@@ -734,21 +737,21 @@ class SQLSearch {
 						const matching_data = await harperBridge.getDataByValue(search_object);
 
 						if (is_hash) {
-							for (const hash_val in matching_data) {
+							for (const [ hash_val ] of matching_data) {
 								if (!this.data[schema_table].__merged_data[hash_val]) {
 									this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
 									this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
 								}
 							}
 						} else {
-							for (const hash_val in matching_data) {
+							for (const [ hash_val, record ] of matching_data) {
 								if (!this.data[schema_table].__merged_data[hash_val]) {
 									this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
 									this._updateMergedAttribute(
 										schema_table,
 										hash_val,
 										attribute.attribute,
-										matching_data[hash_val][attribute.attribute]
+										record[attribute.attribute]
 									);
 									this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
 								} else {
@@ -756,7 +759,7 @@ class SQLSearch {
 										schema_table,
 										hash_val,
 										attribute.attribute,
-										matching_data[hash_val][attribute.attribute]
+										record[attribute.attribute]
 									);
 								}
 							}
@@ -766,6 +769,7 @@ class SQLSearch {
 							'Error thrown from getDataByValue function in SQLSearch class method getFetchAttributeValues no comparator search values.'
 						);
 						log.error(err);
+						throw new Error(SEARCH_ERROR_MSG);
 					}
 				}
 			}
@@ -1071,6 +1075,7 @@ class SQLSearch {
 		} catch (e) {
 			log.error('Error thrown from getData in SQLSearch class method getFinalAttributeData.');
 			log.error(e);
+			throw new Error(SEARCH_ERROR_MSG);
 		}
 	}
 
@@ -1119,7 +1124,7 @@ class SQLSearch {
 
 				for (let i = 0, len = merged_hash_keys.length; i < len; i++) {
 					const the_id = merged_hash_keys[i];
-					const the_row = search_result[the_id];
+					const the_row = search_result.get(the_id);
 					for (let j = 0; j < table_cols_length; j++) {
 						const val = table.columns[j];
 						const attr_val = the_row[val] === undefined ? null : the_row[val];
@@ -1355,16 +1360,17 @@ class SQLSearch {
 				search_object.search_value = '*';
 				const matching_data = await harperBridge.getDataByValue(search_object);
 
-				for (const hash_val in matching_data) {
+				for (const [ hash_val, record ] of matching_data) {
 					if (!this.data[schema_table].__merged_data[hash_val]) {
 						this.data[schema_table].__merged_data[hash_val] = Object.assign({}, fetch_attributes_objs[schema_table]);
 					}
 					this.data[schema_table].__merged_data[hash_val][alias_map[attribute.attribute]] =
-						matching_data[hash_val][attribute.attribute];
+						record[attribute.attribute];
 				}
 			} catch (err) {
 				log.error('There was an error when processing this SQL operation.  Check your logs');
 				log.error(err);
+				throw new Error(SEARCH_ERROR_MSG);
 			}
 		}
 		return Object.values(Object.values(this.data)[0].__merged_data);

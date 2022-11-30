@@ -85,7 +85,8 @@ async function addRole(role) {
 
 	let search_role;
 	try {
-		search_role = await p_search_search_by_value(search_obj);
+		// here, and for other interactions, need convert to real array
+		search_role = Array.from((await p_search_search_by_value(search_obj) )|| []);
 	} catch (err) {
 		throw handleHDBError(err);
 	}
@@ -171,7 +172,7 @@ async function dropRole(role) {
 		[role.id],
 		['role']
 	);
-	let role_name = await p_search_search_by_hash(role_id_search);
+	let role_name = Array.from(await p_search_search_by_hash(role_id_search));
 
 	if (role_name.length === 0) {
 		throw handleHDBError(
@@ -192,7 +193,7 @@ async function dropRole(role) {
 		undefined,
 		['username', 'active']
 	);
-	let found_users = await p_search_search_by_value(search_user_by_roleid);
+	let found_users = Array.from(await p_search_search_by_value(search_user_by_roleid));
 	let active_users = false;
 	if (hdb_utils.isEmptyOrZeroLength(found_users) === false) {
 		for (let k = 0; k < found_users.length; k++) {

@@ -25,10 +25,5 @@ async function lmdbSearchByValue(search_object, comparator) {
 		throw validation_error;
 	}
 
-	let return_map = false;
-	try {
-		return await lmdb_search.prepSearch(search_object, comparator, return_map);
-	} catch (e) {
-		throw e;
-	}
+	return lmdb_search.prepSearch(search_object, comparator, false);
 }

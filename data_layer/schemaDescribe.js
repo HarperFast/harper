@@ -60,16 +60,12 @@ async function describeAll(op_obj) {
 
 		let schemas = await p_search_search_by_value(schema_search);
 
-		if (hdb_utils.isEmptyOrZeroLength(schemas)) {
-			return {};
-		}
-
 		let schema_list = {};
 		let schema_perms = {};
-		for (let s in schemas) {
-			schema_list[schemas[s].name] = true;
+		for (let schema of schemas) {
+			schema_list[schema.name] = true;
 			if (!sys_call && !is_su) {
-				schema_perms[schemas[s].name] = role_perms[schemas[s].name].describe;
+				schema_perms[schema.name] = role_perms[schema.name].describe;
 			}
 		}
 
@@ -189,7 +185,7 @@ async function descTable(describe_table_object, attr_perms) {
 		get_attributes: [terms.WILDCARD_SEARCH_VALUE],
 	};
 
-	let tables = await p_search_search_by_value(table_search_obj);
+	let tables = Array.from(await p_search_search_by_value(table_search_obj));
 
 	if (!tables || tables.length === 0) {
 		throw handleHDBError(
@@ -219,7 +215,7 @@ async function descTable(describe_table_object, attr_perms) {
 				get_attributes: [ATTRIBUTE_NAME_STRING],
 			};
 
-			let attributes = await p_search_search_by_value(attribute_search_obj);
+			let attributes = Array.from(await p_search_search_by_value(attribute_search_obj));
 			attributes = _.uniqBy(attributes, (attribute) => attribute.attribute);
 
 			if (table_attr_perms && table_attr_perms.length > 0) {
@@ -292,7 +288,7 @@ async function describeSchema(describe_schema_object) {
 		get_attributes: [HASH_ATTRIBUTE_STRING, terms.ID_ATTRIBUTE_STRING, NAME_ATTRIBUTE_STRING, SCHEMA_ATTRIBUTE_STRING],
 	};
 
-	let tables = await p_search_search_by_value(table_search_obj);
+	let tables = Array.from(await p_search_search_by_value(table_search_obj));
 
 	if (tables && tables.length < 1) {
 		let schema_search_obj = {
@@ -303,7 +299,7 @@ async function describeSchema(describe_schema_object) {
 			get_attributes: [NAME_ATTRIBUTE_STRING],
 		};
 
-		let schema = await p_search_search_by_hash(schema_search_obj);
+		let schema = Array.from(await p_search_search_by_hash(schema_search_obj));
 		if (schema && schema.length < 1) {
 			throw handleHDBError(
 				new Error(),

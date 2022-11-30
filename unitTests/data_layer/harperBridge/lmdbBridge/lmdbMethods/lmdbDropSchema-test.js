@@ -214,7 +214,7 @@ describe('test validateDropSchema module', () => {
 
 		it('test delete schema', async () => {
 			let search_obj = new SearchObject('system', 'hdb_table', 'schema', 'dev', undefined, ['schema', 'name']);
-			let search_table_results = await search_by_value(search_obj);
+			let search_table_results = Array.from(await search_by_value(search_obj));
 			assert.deepEqual(search_table_results, [
 				{ schema: 'dev', name: 'test' },
 				{ schema: 'dev', name: 'test2' },
@@ -223,7 +223,7 @@ describe('test validateDropSchema module', () => {
 			let search_attr_obj = new SearchObject('system', 'hdb_attribute', 'schema_table', 'dev.test', undefined, [
 				'attribute',
 			]);
-			let search_attr_results = await search_by_value(search_attr_obj);
+			let search_attr_results = Array.from(await search_by_value(search_attr_obj));
 			assert.deepStrictEqual(search_attr_results.length, global.hdb_schema.dev.test.attributes.length);
 
 			for (let x = 0; x < search_attr_results.length; x++) {
@@ -240,7 +240,7 @@ describe('test validateDropSchema module', () => {
 			let search_attr_obj2 = new SearchObject('system', 'hdb_attribute', 'schema_table', 'dev.test2', undefined, [
 				'attribute',
 			]);
-			let search_attr_results2 = await search_by_value(search_attr_obj2);
+			let search_attr_results2 = Array.from(await search_by_value(search_attr_obj2));
 			assert.deepStrictEqual(search_attr_results2.length, global.hdb_schema.dev.test2.attributes.length);
 
 			for (let x = 0; x < search_attr_results2.length; x++) {
@@ -261,13 +261,13 @@ describe('test validateDropSchema module', () => {
 			let drop_object = new DropAttributeObject('dev');
 			await test_utils.assertErrorAsync(lmdb_drop_schema, [drop_object], undefined);
 
-			search_table_results = await search_by_value(search_obj);
+			search_table_results = Array.from(await search_by_value(search_obj));
 			assert.deepStrictEqual(search_table_results, []);
 
-			search_attr_results = await search_by_value(search_attr_obj);
+			search_attr_results = Array.from(await search_by_value(search_attr_obj));
 			assert.deepStrictEqual(search_attr_results, []);
 
-			search_attr_results2 = await search_by_value(search_attr_obj2);
+			search_attr_results2 = Array.from(await search_by_value(search_attr_obj2));
 			assert.deepStrictEqual(search_attr_results2, []);
 
 			let error;

@@ -9,7 +9,7 @@ const { HTTP_STATUS_CODES } = hdb_errors;
 const search_by_hashes_schema = Joi.object({
 	schema: hdb_schema_table,
 	table: hdb_schema_table,
-	hash_values: Joi.array().min(1).items(Joi.alternatives(Joi.string(), Joi.number())).required(),
+	hash_values: Joi.array().min(0).items(Joi.alternatives(Joi.string(), Joi.number())).required(),
 	get_attributes: Joi.array().min(1).items(hdb_schema_table).required(),
 });
 

@@ -235,15 +235,15 @@ describe('test validateDropSchema module', () => {
 			assert.deepStrictEqual(results.deleted_hashes.sort(), expected.deleted_hashes.sort());
 
 			let search_obj = new SearchObject('dev', 'test', '__createdtime__', timestamps[0], undefined, ['id']);
-			let search_result = await search_by_value(search_obj, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS);
+			let search_result = Array.from(await search_by_value(search_obj, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS));
 			assert.deepStrictEqual(search_result, []);
 
 			search_obj = new SearchObject('dev', 'test', '__createdtime__', timestamps[2], undefined, ['id']);
-			search_result = await search_by_value(search_obj, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS);
+			search_result = Array.from(await search_by_value(search_obj, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS));
 			assert.deepStrictEqual(search_result.length, 200);
 
 			//test no delete entry in txn log
-			let txn_results = await lmdb_read_audit_log(new ReadAuditLogObject('dev', 'test'));
+			let txn_results = Array.from(await lmdb_read_audit_log(new ReadAuditLogObject('dev', 'test')));
 			for (let x = 0, length = txn_results.length; x < length; x++) {
 				assert(txn_results[x].operation !== 'delete');
 			}

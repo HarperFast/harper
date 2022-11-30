@@ -12,16 +12,12 @@ module.exports = lmdbSearchByHash;
  * @param {SearchByHashObject} search_object
  */
 async function lmdbSearchByHash(search_object) {
-	try {
-		let environment = await hash_search_init(search_object);
-		const table_info = global.hdb_schema[search_object.schema][search_object.table];
-		return search_utility.batchSearchByHash(
-			environment,
-			table_info.hash_attribute,
-			search_object.get_attributes,
-			search_object.hash_values
-		);
-	} catch (err) {
-		throw err;
-	}
+	let environment = await hash_search_init(search_object);
+	const table_info = global.hdb_schema[search_object.schema][search_object.table];
+	return search_utility.batchSearchByHash(
+		environment,
+		table_info.hash_attribute,
+		search_object.get_attributes,
+		search_object.hash_values
+	);
 }

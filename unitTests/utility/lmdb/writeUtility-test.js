@@ -67,7 +67,7 @@ describe('Test writeUtility module', () => {
 	});
 
 	describe('Test validateInsert function', () => {
-		let env;
+		let env, transaction;
 		before(async () => {
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
@@ -204,7 +204,7 @@ describe('Test writeUtility module', () => {
 			get_micro_time_stub.restore();
 			date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
 		});
-		let env;
+		let env, transaction;
 		beforeEach(async () => {
 			date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
 			global.lmdb_map = undefined;
@@ -545,7 +545,7 @@ describe('Test writeUtility module', () => {
 	});
 
 	describe('Test updateRecords function', () => {
-		let env;
+		let env, transaction;
 		let get_micro_time_stub;
 		before(() => {
 			date_stub.restore();
@@ -1024,7 +1024,7 @@ describe('Test writeUtility module', () => {
 	});
 
 	describe('Test upsertRecords function', () => {
-		let env;
+		let env, transaction;
 		let get_micro_time_stub;
 		let uuid_stub;
 		before(() => {

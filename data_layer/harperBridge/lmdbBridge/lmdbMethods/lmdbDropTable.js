@@ -74,7 +74,7 @@ async function deleteAttributesFromSystem(drop_table_obj) {
 		[hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ID_KEY]
 	);
 
-	let search_result = await search_by_value(search_obj);
+	let search_result = Array.from(await search_by_value(search_obj));
 
 	let delete_ids = [];
 	for (let x = 0; x < search_result.length; x++) {
@@ -115,7 +115,7 @@ async function dropTableFromSystem(drop_table_obj) {
 	let search_result;
 	let delete_table;
 	try {
-		search_result = await search_by_value(search_obj);
+		search_result = Array.from(await search_by_value(search_obj));
 	} catch (err) {
 		throw err;
 	}
