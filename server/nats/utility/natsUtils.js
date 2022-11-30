@@ -356,7 +356,6 @@ async function viewStream(stream_name, start_time = undefined, max = undefined) 
 		durable_name: consumer_name,
 		deliver_subject: consumer_name,
 		deliver_policy: DeliverPolicy.All,
-		filter_subject: '',
 	};
 
 	// If a start time is passed add a policy that will receive msgs from that time onward.
