@@ -169,7 +169,7 @@ async function getAllNodeRecords() {
 		['*']
 	);
 
-	return p_search_by_value(search_obj);
+	return Array.from(await p_search_by_value(search_obj));
 }
 
 /**

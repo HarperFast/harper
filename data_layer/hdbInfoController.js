@@ -111,7 +111,7 @@ async function getAllHdbInfoRecords() {
 	// Using a NoSql search and filter to get the largest info_id, as running SQL searches internally is difficult.
 	let version_data = [];
 	try {
-		version_data = await p_search_search_by_value(search_obj);
+		version_data = Array.from(await p_search_search_by_value(search_obj));
 	} catch (err) {
 		// search may fail during a new install as the table doesn't exist yet or initial upgrade for 3.0.  This is ok,
 		// we will assume an id of 0 below.
