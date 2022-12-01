@@ -55,6 +55,13 @@ const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
 
 const OperationFunctionObject = require('./OperationFunctionObject');
 
+function postWrite(request_body, result, originators) {
+	return Promise.all([
+		transact_to_clustering_utils.postOperationHandler(request_body, result, originators),
+		// wait for flush (some operations like create_schema don't specify a table)
+		request_body.table ? insert.flush(request_body) : null,
+	]);
+}
 /**
  * This will process a command message on this receiving node rather than sending it to a remote node.  NOTE: this function
  * handles the response to the sender.
@@ -84,9 +91,7 @@ async function processLocalTransaction(req, operation_function) {
 
 	let post_op_function =
 		terms.CLUSTER_OPERATIONS[req.body.operation] === undefined
-			? null
-			: transact_to_clustering_utils.postOperationHandler;
-
+			? null : postWrite;
 	try {
 		let data = await operation_function_caller.callOperationFunctionAsAwait(
 			operation_function,
