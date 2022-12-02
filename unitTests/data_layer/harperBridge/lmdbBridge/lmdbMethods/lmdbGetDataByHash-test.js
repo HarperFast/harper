@@ -212,7 +212,7 @@ describe('Test lmdbGetDataByHash module', () => {
 				lmdb_get_data_by_hash,
 				[search_obj],
 				new Error(
-					"'get_attributes' does not contain 1 required value(s). 'get_attributes' must contain at least 1 items"
+					"'get_attributes' must contain at least 1 item"
 				)
 			);
 		});

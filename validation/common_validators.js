@@ -26,6 +26,14 @@ const hdb_schema_table = Joi.alternatives(
 	Joi.number()
 ).required();
 
+function checkValidTable(property_name, value) {
+	if (!value) return `'${property_name}' is required`;
+	if (typeof value !== 'string') return `'${property_name}' must be a string`;
+	if (!value.length) return `'${property_name}' must be at least one character`;
+	if (value.length > common_validators.schema_length.maximum) return `'${property_name}' maximum of 250 characters`;
+	if (!schema_regex.test(value)) return `'${property_name}' has illegal characters`;
+	return '';
+}
 function validateSchemaExists(value, helpers) {
 	if (!hdb_utils.doesSchemaExist(value)) {
 		return helpers.message(`Schema '${value}' does not exist`);
@@ -60,4 +68,5 @@ module.exports = {
 	validateSchemaExists,
 	validateTableExists,
 	validateSchemaName,
+	checkValidTable,
 };

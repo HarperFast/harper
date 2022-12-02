@@ -66,6 +66,8 @@ const NATS_SERVER_PATH = path.join(
 let leaf_config;
 let hub_config;
 let jsm_server_name;
+let jetstream_manager;
+let jetstream;
 
 // Nats connection it cached here.
 let nats_connection;
@@ -200,6 +202,7 @@ async function getConnection() {
  * @returns {Promise<JetStreamManager>}
  */
 async function getJetStreamManager() {
+	if (jetstream_manager) return jetstream_manager;
 	if (isEmpty(nats_connection)) {
 		await getConnection();
 	}
@@ -209,7 +212,8 @@ async function getJetStreamManager() {
 		throw new Error('Error getting JetStream domain. Unable to get JetStream manager.');
 	}
 
-	return nats_connection.jetstreamManager({ domain });
+	jetstream_manager = await nats_connection.jetstreamManager({ domain });
+	return jetstream_manager;
 }
 
 /**
@@ -217,6 +221,7 @@ async function getJetStreamManager() {
  * @returns {Promise<JetStreamClient>}
  */
 async function getJetStream() {
+	if (jetstream) return jetstream;
 	if (isEmpty(nats_connection)) {
 		await getConnection();
 	}
@@ -226,7 +231,8 @@ async function getJetStream() {
 		throw new Error('Error getting JetStream domain. Unable to get JetStream manager.');
 	}
 
-	return nats_connection.jetstream({ domain });
+	jetstream = nats_connection.jetstream({ domain });
+	return jetstream;
 }
 
 /**
@@ -234,9 +240,9 @@ async function getJetStream() {
  * @returns {Promise<{jsm: JetStreamManager, js: JetStreamClient, connection: NatsConnection}>}
  */
 async function getNATSReferences() {
-	const connection = await getConnection();
-	const jsm = await getJetStreamManager();
-	const js = await getJetStream();
+	const connection = nats_connection || await getConnection();
+	const jsm = jetstream_manager || await getJetStreamManager();
+	const js = jetstream || await getJetStream();
 
 	return {
 		connection,
@@ -369,7 +375,6 @@ async function viewStream(stream_name, start_time = undefined, max = undefined) 
 		durable_name: consumer_name,
 		deliver_subject: consumer_name,
 		deliver_policy: DeliverPolicy.All,
-		filter_subject: '',
 	};
 
 	// If a start time is passed add a policy that will receive msgs from that time onward.
@@ -442,30 +447,23 @@ async function publishToStream(subject_name, stream_name, entries = [], originat
 	const { connection, js } = await getNATSReferences();
 	const nats_server = await getJsmServerName();
 	const subject = `${subject_name}.${nats_server}`;
-	try {
-		const h = headers();
-		originators.push(nats_server);
-		h.append('originators', originators.join());
-		for (let x = 0, length = entries.length; x < length; x++) {
-			try {
-				hdb_logger.trace(`publishToStream publishing to subject: ${subject}, data:`, entries[x]);
+	const h = headers();
+	originators.push(nats_server);
+	h.append('originators', originators.join());
+	for (let x = 0, length = entries.length; x < length; x++) {
+		try {
+			hdb_logger.trace(`publishToStream publishing to subject: ${subject}, data:`, entries[x]);
+			await js.publish(subject, encode(entries[x]), { headers: h });
+		} catch (err) {
+			// If the stream doesn't exist it is created and published to
+			if (err.code && err.code.toString() === '503') {
+				hdb_logger.trace(`publishToStream creating stream: ${stream_name}`);
+				await createLocalStream(stream_name, [subject]);
 				await js.publish(subject, encode(entries[x]), { headers: h });
-			} catch (err) {
-				// If the stream doesn't exist it is created and published to
-				if (err.code && err.code.toString() === '503') {
-					hdb_logger.trace(`publishToStream creating stream: ${stream_name}`);
-					await createLocalStream(stream_name, [subject]);
-					await js.publish(subject, encode(entries[x]), { headers: h });
-				} else {
-					throw err;
-				}
+			} else {
+				throw err;
 			}
 		}
-
-		await connection.flush();
-	} catch (e) {
-		await connection.flush();
-		throw e;
 	}
 }
 
