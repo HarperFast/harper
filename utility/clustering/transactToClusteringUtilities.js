@@ -127,10 +127,6 @@ async function postOperationHandler(request_body, result, originators = []) {
 		`postOperationHandler called for operation ${request_body.operation} on schema.table: ${request_body.schema}.${request_body.table}`
 	);
 	const username = request_body.hdb_user?.username;
-	if (common_utils.isEmpty(username)) {
-		harper_logger.error('postOperationHandler username undefined');
-	}
-
 	const this_node_name = env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 	const origin = new ClusteringOriginObject(result.txn_time, username, this_node_name);
 

@@ -239,9 +239,9 @@ async function getJetStream() {
  * @returns {Promise<{jsm: JetStreamManager, js: JetStreamClient, connection: NatsConnection}>}
  */
 async function getNATSReferences() {
-	const connection = nats_connection || await getConnection();
-	const jsm = jetstream_manager || await getJetStreamManager();
-	const js = jetstream || await getJetStream();
+	const connection = nats_connection || (await getConnection());
+	const jsm = jetstream_manager || (await getJetStreamManager());
+	const js = jetstream || (await getJetStream());
 
 	return {
 		connection,
@@ -512,7 +512,7 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 		await jsm.streams.add({
 			name: CONSUMER_NAMES.stream_name,
 			storage: StorageType.File,
-			retention: RetentionPolicy.Limits,
+			retention: RetentionPolicy.Workqueue,
 			subjects: [`${CONSUMER_NAMES.stream_name}.${server_name}`],
 		});
 	} catch (err) {

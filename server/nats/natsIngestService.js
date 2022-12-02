@@ -139,8 +139,5 @@ async function messageProcessor(msg) {
 	// Ack to NATS to acknowledge the message has been processed
 	js_msg.ack();
 
-	// Delete the message from the work queue stream once we have transacted it.
-	await js_manager.streams.deleteMessage(js_msg.info.stream, js_msg.info.streamSequence);
-
 	return result;
 }
