@@ -126,6 +126,7 @@ describe('Test pm2 utilityFunctions module', () => {
 	let remove_nats_config_stub;
 	let get_all_node_records_stub;
 	let update_node_name_stub;
+	utility_functions.enterScriptingMode();
 
 	before(() => {
 		fs.mkdirpSync(path.resolve(__dirname, '../../envDir/clustering'));
@@ -219,9 +220,9 @@ describe('Test pm2 utilityFunctions module', () => {
 
 	describe('Test stop function', () => {
 		it('Test that a single online process is stopped', async () => {
-			await utility_functions.start(services_config.generateIPCServerConfig());
-			await utility_functions.stop('IPC');
-			const process_meta = await utility_functions.list('IPC');
+			await utility_functions.start(services_config.generateNatsLeafServerConfig());
+			await utility_functions.stop('Clustering Leaf-7715');
+			const process_meta = await utility_functions.list('Clustering Leaf-7715');
 			expect(process_meta.length).to.equal(0);
 		}).timeout(20000);
 
@@ -378,8 +379,8 @@ describe('Test pm2 utilityFunctions module', () => {
 			let leaf_name_found = false;
 			list.forEach((proc) => {
 				if (proc.name === 'HarperDB') hdb_name_found = true;
-				if (proc.name === 'Clustering Hub') hub_name_found = true;
-				if (proc.name === 'Clustering Leaf') leaf_name_found = true;
+				if (proc.name === 'Clustering Hub-7711') hub_name_found = true;
+				if (proc.name === 'Clustering Leaf-7715') leaf_name_found = true;
 			});
 
 			expect(list.length).to.equal(3);
@@ -460,13 +461,13 @@ describe('Test pm2 utilityFunctions module', () => {
 
 		it('Test a unique set of services is returned', async () => {
 			const expected_obj = {
-				'Clustering Hub': {
+				'Clustering Hub-7711': {
 					exec_mode: 'fork_mode',
-					name: 'Clustering Hub',
+					name: 'Clustering Hub-7711',
 				},
-				'Clustering Leaf': {
+				'Clustering Leaf-7715': {
 					exec_mode: 'fork_mode',
-					name: 'Clustering Leaf',
+					name: 'Clustering Leaf-7715',
 				},
 				'HarperDB': {
 					name: 'HarperDB',
@@ -565,8 +566,8 @@ describe('Test pm2 utilityFunctions module', () => {
 			const restart_calls = [...restart_stub.args[0], ...restart_stub.args[1]];
 			expect(reload_calls).to.include('HarperDB');
 			expect(reload_calls.length).to.equal(1);
-			expect(restart_calls).to.include('Clustering Hub');
-			expect(restart_calls).to.include('Clustering Leaf');
+			expect(restart_calls).to.include('Clustering Hub-7711');
+			expect(restart_calls).to.include('Clustering Leaf-7715');
 			expect(restart_calls.length).to.equal(2);
 		}).timeout(20000);
 	});
@@ -603,11 +604,11 @@ describe('Test pm2 utilityFunctions module', () => {
 			const env_stub = sandbox.stub();
 			const env_rw = utility_functions.__set__('env_mangr.initSync', env_stub);
 			env_mngr.setProperty('HTTP_THREADS', 2);
-			await utility_functions.reloadStopStart('Custom Functions');
+			await utility_functions.reloadStopStart('HarperDB');
 			env_rw();
 			env_mngr.initTestEnvironment();
-			expect(stop_stub.getCall(0).args[0]).to.equal('Custom Functions');
-			expect(start_service_stub.getCall(0).args[0]).to.equal('Custom Functions');
+			expect(stop_stub.getCall(0).args[0]).to.equal('HarperDB');
+			expect(start_service_stub.getCall(0).args[0]).to.equal('HarperDB');
 		});
 
 		it('Test service is reloaded if no change in process setting', async () => {
@@ -615,10 +616,10 @@ describe('Test pm2 utilityFunctions module', () => {
 			const env_rw = utility_functions.__set__('env_mangr.initSync', env_stub);
 			describe_stub.resolves([1, 2]);
 			env_mngr.setProperty('HTTP_THREADS', 2);
-			await utility_functions.reloadStopStart('Custom Functions');
+			await utility_functions.reloadStopStart('Clustering Leaf-7715');
 			env_rw();
 			env_mngr.initTestEnvironment();
-			expect(reload_stub.getCall(0).args[0]).to.equal('Custom Functions');
+			expect(reload_stub.getCall(0).args[0]).to.equal('Clustering Leaf-7715');
 		});
 
 		it('Test restartHdb is called if service is HarperDB', async () => {

@@ -18,7 +18,7 @@ const RESTART_TYPE = 'restart';
 module.exports = {
 	startWorker,
 	restartWorkers,
-	shutdownWorkers
+	shutdownWorkers,
 };
 
 function startWorker(path, options = {}) {

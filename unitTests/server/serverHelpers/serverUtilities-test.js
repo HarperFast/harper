@@ -369,7 +369,7 @@ describe('Test serverUtilities_rw.js module ', () => {
 		it('test RESTART', () => {
 			let result = serverUtilities_rw.getOperationFunction({ operation: 'restart' });
 
-			assert.deepStrictEqual(result.operation_function.name, 'restartProcesses');
+			assert.deepStrictEqual(result.operation_function.name, 'restart');
 			assert.deepStrictEqual(result.job_operation_function, undefined);
 		});
 

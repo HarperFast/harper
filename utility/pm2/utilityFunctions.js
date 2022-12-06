@@ -495,9 +495,24 @@ async function isServiceRegistered(service) {
  * @returns {Promise<void>}
  */
 async function reloadStopStart(service_name) {
-	await reload(service_name);
+	// Check to see if there has been an update to the max process setting value. If there has been we need to stop the service and start it again.
+	const setting_process_count =
+		service_name === hdb_terms.PROCESS_DESCRIPTORS.HDB
+			? env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES)
+			: env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES);
+	const current_process = await describe(service_name);
+	const current_process_count = hdb_utils.isEmptyOrZeroLength(current_process) ? 0 : current_process.length;
+	if (setting_process_count !== current_process_count) {
+		await stop(service_name);
+		await startService(service_name);
+	} else if (service_name === hdb_terms.PROCESS_DESCRIPTORS.HDB) {
+		// To restart HDB we need to fork a temp process which calls restart.
+		await restartHdb();
+	} else {
+		// If no change to the max process values just call reload.
+		await reload(service_name);
+	}
 }
-
 /**
  * Stops the pm2-logrotate module but does not delete it like the other stop function does.
  * @returns {Promise<unknown>}

@@ -79,10 +79,12 @@ describe('Test stop.js', () => {
 		let pm2_stop_stub;
 		let start_service_stub;
 		let log_notify_stub;
+		let reload_stub;
 
 		before(() => {
 			restart_service_rw = stop.__set__('restartService', restart_service_stub);
 			restart_all_services_stub = sandbox.stub(pm2_utils, 'restartAllServices').resolves();
+			reload_stub = sandbox.stub(pm2_utils, 'reload');
 			pm2_stop_stub = sandbox.stub(pm2_utils, 'stop').resolves();
 			start_service_stub = sandbox.stub(pm2_utils, 'startService').resolves();
 			log_notify_stub = sandbox.stub(logger, 'notify');
@@ -106,26 +108,7 @@ describe('Test stop.js', () => {
 		it('Test restart all services is called if no service args passed', async () => {
 			const response = await stop.restartProcesses();
 			expect(response).to.equal('Restarting HarperDB. This may take up to 60 seconds.');
-			expect(restart_all_services_stub.called).to.be.true;
-		});
-
-		it('Test restart all services custom functions started', async () => {
-			is_service_reg_stub.withArgs('Custom Functions').resolves(false);
-			const response = await stop.restartProcesses();
-
-			expect(response).to.equal('Restarting HarperDB. This may take up to 60 seconds.');
-			expect(restart_all_services_stub.called).to.be.true;
-			expect(start_service_stub.getCall(4).args[0]).to.equal('Custom Functions');
-		});
-
-		it('Test restart all services custom functions stopped', async () => {
-			get_config_from_file_stub.returns(false);
-			is_service_reg_stub.withArgs('Custom Functions').resolves(true);
-			const response = await stop.restartProcesses();
-
-			expect(response).to.equal('Restarting HarperDB. This may take up to 60 seconds.');
-			expect(restart_all_services_stub.called).to.be.true;
-			expect(pm2_stop_stub.getCall(0).args[0]).to.equal('Custom Functions');
+			expect(reload_stub.called).to.be.true;
 		});
 
 		it('Test restart service is called for each service if args are passed', async () => {
@@ -265,30 +248,6 @@ describe('Test stop.js', () => {
 			expect(result).to.equal('Restarting IPC');
 			expect(reload_stub.called).to.be.false;
 			expect(restart_stub.called).to.be.true;
-		});
-
-		it('Test custom functions is started if not registered', async () => {
-			get_config_from_file_stub.returns(true);
-			is_service_reg_stub.withArgs('Custom Functions').resolves(false);
-			const result = await stop.restartService({ service: 'Custom Functions' });
-			expect(start_service_stub.called).to.be.true;
-			expect(result).to.equal('Restarting Custom Functions');
-		});
-
-		it('Test custom functions is stopped if registered', async () => {
-			get_config_from_file_stub.returns(false);
-			is_service_reg_stub.withArgs('Custom Functions').resolves(true);
-			const result = await stop.restartService({ service: 'Custom Functions' });
-			expect(pm2_stop_stub.called).to.be.true;
-			expect(result).to.equal('Restarting Custom Functions');
-		});
-
-		it('Test custom functions is reloaded if registered', async () => {
-			get_config_from_file_stub.returns(true);
-			is_service_reg_stub.withArgs('Custom Functions').resolves(true);
-			const result = await stop.restartService({ service: 'Custom Functions' });
-			expect(reload_stub.called).to.be.true;
-			expect(result).to.equal('Restarting Custom Functions');
 		});
 
 		// TODO: These should be addressed as part of CORE-1493

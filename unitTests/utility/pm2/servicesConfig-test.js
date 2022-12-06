@@ -65,6 +65,7 @@ describe('Test pm2 servicesConfig module', () => {
 			cwd: PACKAGE_ROOT,
 			merge_logs: true,
 			env: {
+				IS_SCRIPTED_SERVICE: true,
 				PROCESS_NAME: hdb_terms.PROCESS_DESCRIPTORS.HDB,
 			},
 		};
