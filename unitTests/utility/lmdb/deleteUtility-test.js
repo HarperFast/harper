@@ -51,7 +51,7 @@ const TXN_TIMESTAMP = common.getMicroTime();
 const sandbox = sinon.createSandbox();
 
 describe('Test deleteUtility', () => {
-	let env;
+	let env, transaction;
 
 	let get_micro_time_stub;
 	let date_stub;
@@ -104,7 +104,7 @@ describe('Test deleteUtility', () => {
 			await test_utils.assertErrorAsync(
 				delete_utility.deleteRecords,
 				[env, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME],
-				LMDB_TEST_ERRORS.IDS_MUST_BE_ARRAY
+				LMDB_TEST_ERRORS.IDS_MUST_BE_ITERABLE
 			);
 			await test_utils.assertErrorAsync(delete_utility.deleteRecords, [env, HASH_ATTRIBUTE_NAME, []], undefined);
 		});

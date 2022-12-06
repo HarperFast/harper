@@ -1,0 +1,225 @@
+{"level":"info","timestamp":"2022-11-28T19:46:24.396Z","message":"starting install"}
+{"level":"info","timestamp":"2022-11-28T19:46:24.396Z","message":"Checking for previous installation."}
+{"level":"info","timestamp":"2022-11-28T19:46:24.396Z","message":"Asking for terms agreement."}
+{"level":"info","timestamp":"2022-11-28T19:46:25.994Z","message":"Starting install wizard"}
+{"level":"info","timestamp":"2022-11-28T19:46:33.302Z","message":"Directory /home/kzyp/hdb created"}
+{"level":"info","timestamp":"2022-11-28T19:46:33.302Z","message":"Directory /home/kzyp/hdb/backup created"}
+{"level":"info","timestamp":"2022-11-28T19:46:33.303Z","message":"Directory /home/kzyp/hdb/trash created"}
+{"level":"info","timestamp":"2022-11-28T19:46:33.303Z","message":"Directory /home/kzyp/hdb/keys created"}
+{"level":"info","timestamp":"2022-11-28T19:46:33.303Z","message":"Directory /home/kzyp/hdb/keys/.license created"}
+{"level":"info","timestamp":"2022-11-28T19:46:33.303Z","message":"Directory /home/kzyp/hdb/log created"}
+{"level":"info","timestamp":"2022-11-28T19:46:33.304Z","message":"Directory /home/kzyp/hdb/config created"}
+{"level":"info","timestamp":"2022-11-28T19:46:33.304Z","message":"Directory /home/kzyp/hdb/doc created"}
+{"level":"info","timestamp":"2022-11-28T19:46:33.304Z","message":"Directory /home/kzyp/hdb/schema created"}
+{"level":"info","timestamp":"2022-11-28T19:46:33.304Z","message":"Directory /home/kzyp/hdb/schema/system created"}
+{"level":"info","timestamp":"2022-11-28T19:46:33.305Z","message":"Directory /home/kzyp/hdb/transactions created"}
+{"level":"info","timestamp":"2022-11-28T19:46:33.305Z","message":"Directory /home/kzyp/hdb/clustering created"}
+{"level":"info","timestamp":"2022-11-28T19:46:33.305Z","message":"Directory /home/kzyp/hdb/clustering/transaction_log created"}
+{"level":"info","timestamp":"2022-11-28T19:46:33.305Z","message":"Directory /home/kzyp/hdb/clustering/connections created"}
+{"level":"info","timestamp":"2022-11-28T19:46:33.548Z","message":"Creating settings file."}
+{"level":"info","timestamp":"2022-11-28T19:46:33.549Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T19:46:33.550Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T19:46:33.550Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T19:46:33.551Z","message":"Detected 20 on this machine, defaulting MAX_HDB_PROCESSES to that.  This can be changed later in the settings.js file."}
+{"level":"info","timestamp":"2022-11-28T19:46:33.552Z","message":"Detected 20 on this machine, defaulting MAX_CUSTOM_FUNCTION_PROCESSES to that.  This can be changed later in the settings.js file."}
+{"level":"info","timestamp":"2022-11-28T19:46:33.552Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T19:46:33.552Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T19:46:33.555Z","message":"Creating Super user."}
+{"level":"info","timestamp":"2022-11-28T19:46:33.555Z","message":"Creating admin user."}
+{"level":"info","timestamp":"2022-11-28T19:46:33.577Z","message":"Creating Cluster user."}
+{"level":"info","timestamp":"2022-11-28T19:46:33.578Z","message":"Creating admin user."}
+{"level":"info","timestamp":"2022-11-28T19:46:33.584Z","message":"Generating keys files."}
+{"level":"info","timestamp":"2022-11-28T19:46:33.728Z","message":"Product version info was properly inserted"}
+{"level":"info","timestamp":"2022-11-28T19:46:33.858Z","message":"Installation Successful"}
+{"level":"info","timestamp":"2022-11-28T20:00:47.614Z","message":"starting install"}
+{"level":"info","timestamp":"2022-11-28T20:00:47.615Z","message":"Checking for previous installation."}
+{"level":"info","timestamp":"2022-11-28T20:00:47.615Z","message":"Asking for terms agreement."}
+{"level":"info","timestamp":"2022-11-28T20:00:47.616Z","message":"Starting install wizard"}
+{"level":"info","timestamp":"2022-11-28T20:01:31.002Z","message":"Directory /home/kzyp/hdb2 created"}
+{"level":"info","timestamp":"2022-11-28T20:01:31.003Z","message":"Directory /home/kzyp/hdb2/backup created"}
+{"level":"info","timestamp":"2022-11-28T20:01:31.003Z","message":"Directory /home/kzyp/hdb2/trash created"}
+{"level":"info","timestamp":"2022-11-28T20:01:31.003Z","message":"Directory /home/kzyp/hdb2/keys created"}
+{"level":"info","timestamp":"2022-11-28T20:01:31.003Z","message":"Directory /home/kzyp/hdb2/keys/.license created"}
+{"level":"info","timestamp":"2022-11-28T20:01:31.004Z","message":"Directory /home/kzyp/hdb2/log created"}
+{"level":"info","timestamp":"2022-11-28T20:01:31.004Z","message":"Directory /home/kzyp/hdb2/config created"}
+{"level":"info","timestamp":"2022-11-28T20:01:31.004Z","message":"Directory /home/kzyp/hdb2/doc created"}
+{"level":"info","timestamp":"2022-11-28T20:01:31.004Z","message":"Directory /home/kzyp/hdb2/schema created"}
+{"level":"info","timestamp":"2022-11-28T20:01:31.005Z","message":"Directory /home/kzyp/hdb2/schema/system created"}
+{"level":"info","timestamp":"2022-11-28T20:01:31.005Z","message":"Directory /home/kzyp/hdb2/transactions created"}
+{"level":"info","timestamp":"2022-11-28T20:01:31.005Z","message":"Directory /home/kzyp/hdb2/clustering created"}
+{"level":"info","timestamp":"2022-11-28T20:01:31.006Z","message":"Directory /home/kzyp/hdb2/clustering/transaction_log created"}
+{"level":"info","timestamp":"2022-11-28T20:01:31.007Z","message":"Directory /home/kzyp/hdb2/clustering/connections created"}
+{"level":"info","timestamp":"2022-11-28T20:01:31.391Z","message":"Creating settings file."}
+{"level":"info","timestamp":"2022-11-28T20:01:31.392Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T20:01:31.394Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T20:01:31.395Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T20:01:31.395Z","message":"Detected undefined on this machine, defaulting MAX_CUSTOM_FUNCTION_PROCESSES to that.  This can be changed later in the settings.js file."}
+{"level":"info","timestamp":"2022-11-28T20:01:31.396Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T20:01:31.396Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T20:01:31.398Z","message":"Creating Super user."}
+{"level":"info","timestamp":"2022-11-28T20:01:31.398Z","message":"Creating admin user."}
+{"level":"info","timestamp":"2022-11-28T20:01:31.424Z","message":"Creating Cluster user."}
+{"level":"info","timestamp":"2022-11-28T20:01:31.425Z","message":"Creating admin user."}
+{"level":"info","timestamp":"2022-11-28T20:01:31.442Z","message":"Generating keys files."}
+{"level":"info","timestamp":"2022-11-28T20:01:31.513Z","message":"Product version info was properly inserted"}
+{"level":"info","timestamp":"2022-11-28T20:01:31.785Z","message":"Installation Successful"}
+{"level":"info","timestamp":"2022-11-28T20:02:40.991Z","message":"starting install"}
+{"level":"info","timestamp":"2022-11-28T20:02:40.992Z","message":"Checking for previous installation."}
+{"level":"info","timestamp":"2022-11-28T20:02:40.992Z","message":"Asking for terms agreement."}
+{"level":"info","timestamp":"2022-11-28T20:02:40.993Z","message":"Starting install wizard"}
+{"level":"info","timestamp":"2022-11-28T20:02:40.995Z","message":"Directory /home/kzyp/hdb created"}
+{"level":"info","timestamp":"2022-11-28T20:02:40.995Z","message":"Directory /home/kzyp/hdb/backup created"}
+{"level":"info","timestamp":"2022-11-28T20:02:40.995Z","message":"Directory /home/kzyp/hdb/trash created"}
+{"level":"info","timestamp":"2022-11-28T20:02:40.996Z","message":"Directory /home/kzyp/hdb/keys created"}
+{"level":"info","timestamp":"2022-11-28T20:02:40.996Z","message":"Directory /home/kzyp/hdb/keys/.license created"}
+{"level":"info","timestamp":"2022-11-28T20:02:40.996Z","message":"Directory /home/kzyp/hdb/log created"}
+{"level":"info","timestamp":"2022-11-28T20:02:40.996Z","message":"Directory /home/kzyp/hdb/config created"}
+{"level":"info","timestamp":"2022-11-28T20:02:40.996Z","message":"Directory /home/kzyp/hdb/doc created"}
+{"level":"info","timestamp":"2022-11-28T20:02:40.996Z","message":"Directory /home/kzyp/hdb/schema created"}
+{"level":"info","timestamp":"2022-11-28T20:02:40.997Z","message":"Directory /home/kzyp/hdb/schema/system created"}
+{"level":"info","timestamp":"2022-11-28T20:02:40.999Z","message":"Directory /home/kzyp/hdb/transactions created"}
+{"level":"info","timestamp":"2022-11-28T20:02:40.999Z","message":"Directory /home/kzyp/hdb/clustering created"}
+{"level":"info","timestamp":"2022-11-28T20:02:40.999Z","message":"Directory /home/kzyp/hdb/clustering/transaction_log created"}
+{"level":"info","timestamp":"2022-11-28T20:02:40.999Z","message":"Directory /home/kzyp/hdb/clustering/connections created"}
+{"level":"info","timestamp":"2022-11-28T20:02:41.295Z","message":"Creating settings file."}
+{"level":"info","timestamp":"2022-11-28T20:02:41.296Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T20:02:41.298Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T20:02:41.299Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T20:02:41.302Z","message":"Detected undefined on this machine, defaulting MAX_CUSTOM_FUNCTION_PROCESSES to that.  This can be changed later in the settings.js file."}
+{"level":"info","timestamp":"2022-11-28T20:02:41.302Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T20:02:41.302Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T20:02:41.306Z","message":"Creating Super user."}
+{"level":"info","timestamp":"2022-11-28T20:02:41.306Z","message":"Creating admin user."}
+{"level":"info","timestamp":"2022-11-28T20:02:41.332Z","message":"Creating Cluster user."}
+{"level":"info","timestamp":"2022-11-28T20:02:41.332Z","message":"Creating admin user."}
+{"level":"info","timestamp":"2022-11-28T20:02:41.347Z","message":"Generating keys files."}
+{"level":"info","timestamp":"2022-11-28T20:02:41.486Z","message":"Product version info was properly inserted"}
+{"level":"info","timestamp":"2022-11-28T20:02:41.619Z","message":"Installation Successful"}
+{"level":"info","timestamp":"2022-11-28T20:14:18.420Z","message":"starting install"}
+{"level":"info","timestamp":"2022-11-28T20:14:18.420Z","message":"Checking for previous installation."}
+{"level":"info","timestamp":"2022-11-28T20:14:18.421Z","message":"Asking for terms agreement."}
+{"level":"info","timestamp":"2022-11-28T20:14:18.421Z","message":"Starting install wizard"}
+{"level":"info","timestamp":"2022-11-28T20:14:18.423Z","message":"Directory /home/kzyp/hdb created"}
+{"level":"info","timestamp":"2022-11-28T20:14:18.424Z","message":"Directory /home/kzyp/hdb/backup created"}
+{"level":"info","timestamp":"2022-11-28T20:14:18.424Z","message":"Directory /home/kzyp/hdb/trash created"}
+{"level":"info","timestamp":"2022-11-28T20:14:18.424Z","message":"Directory /home/kzyp/hdb/keys created"}
+{"level":"info","timestamp":"2022-11-28T20:14:18.424Z","message":"Directory /home/kzyp/hdb/keys/.license created"}
+{"level":"info","timestamp":"2022-11-28T20:14:18.424Z","message":"Directory /home/kzyp/hdb/log created"}
+{"level":"info","timestamp":"2022-11-28T20:14:18.425Z","message":"Directory /home/kzyp/hdb/config created"}
+{"level":"info","timestamp":"2022-11-28T20:14:18.425Z","message":"Directory /home/kzyp/hdb/doc created"}
+{"level":"info","timestamp":"2022-11-28T20:14:18.425Z","message":"Directory /home/kzyp/hdb/schema created"}
+{"level":"info","timestamp":"2022-11-28T20:14:18.425Z","message":"Directory /home/kzyp/hdb/schema/system created"}
+{"level":"info","timestamp":"2022-11-28T20:14:18.426Z","message":"Directory /home/kzyp/hdb/transactions created"}
+{"level":"info","timestamp":"2022-11-28T20:14:18.426Z","message":"Directory /home/kzyp/hdb/clustering created"}
+{"level":"info","timestamp":"2022-11-28T20:14:18.428Z","message":"Directory /home/kzyp/hdb/clustering/transaction_log created"}
+{"level":"info","timestamp":"2022-11-28T20:14:18.428Z","message":"Directory /home/kzyp/hdb/clustering/connections created"}
+{"level":"info","timestamp":"2022-11-28T20:14:18.736Z","message":"Creating settings file."}
+{"level":"info","timestamp":"2022-11-28T20:14:18.737Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T20:14:18.738Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T20:14:18.739Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T20:14:18.740Z","message":"Detected undefined on this machine, defaulting MAX_CUSTOM_FUNCTION_PROCESSES to that.  This can be changed later in the settings.js file."}
+{"level":"info","timestamp":"2022-11-28T20:14:18.740Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T20:14:18.740Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T20:14:18.742Z","message":"Creating Super user."}
+{"level":"info","timestamp":"2022-11-28T20:14:18.742Z","message":"Creating admin user."}
+{"level":"info","timestamp":"2022-11-28T20:14:18.770Z","message":"Creating Cluster user."}
+{"level":"info","timestamp":"2022-11-28T20:14:18.770Z","message":"Creating admin user."}
+{"level":"info","timestamp":"2022-11-28T20:14:18.788Z","message":"Generating keys files."}
+{"level":"info","timestamp":"2022-11-28T20:14:18.864Z","message":"Product version info was properly inserted"}
+{"level":"info","timestamp":"2022-11-28T20:14:18.969Z","message":"Installation Successful"}
+{"level":"info","timestamp":"2022-11-28T20:15:18.006Z","message":"starting install"}
+{"level":"info","timestamp":"2022-11-28T20:15:18.006Z","message":"Checking for previous installation."}
+{"level":"info","timestamp":"2022-11-28T20:15:18.007Z","message":"Asking for terms agreement."}
+{"level":"info","timestamp":"2022-11-28T20:15:18.008Z","message":"Starting install wizard"}
+{"level":"info","timestamp":"2022-11-28T20:15:18.010Z","message":"Directory /home/kzyp/hdb2 created"}
+{"level":"info","timestamp":"2022-11-28T20:15:18.010Z","message":"Directory /home/kzyp/hdb2/backup created"}
+{"level":"info","timestamp":"2022-11-28T20:15:18.010Z","message":"Directory /home/kzyp/hdb2/trash created"}
+{"level":"info","timestamp":"2022-11-28T20:15:18.010Z","message":"Directory /home/kzyp/hdb2/keys created"}
+{"level":"info","timestamp":"2022-11-28T20:15:18.010Z","message":"Directory /home/kzyp/hdb2/keys/.license created"}
+{"level":"info","timestamp":"2022-11-28T20:15:18.011Z","message":"Directory /home/kzyp/hdb2/log created"}
+{"level":"info","timestamp":"2022-11-28T20:15:18.011Z","message":"Directory /home/kzyp/hdb2/config created"}
+{"level":"info","timestamp":"2022-11-28T20:15:18.011Z","message":"Directory /home/kzyp/hdb2/doc created"}
+{"level":"info","timestamp":"2022-11-28T20:15:18.011Z","message":"Directory /home/kzyp/hdb2/schema created"}
+{"level":"info","timestamp":"2022-11-28T20:15:18.011Z","message":"Directory /home/kzyp/hdb2/schema/system created"}
+{"level":"info","timestamp":"2022-11-28T20:15:18.011Z","message":"Directory /home/kzyp/hdb2/transactions created"}
+{"level":"info","timestamp":"2022-11-28T20:15:18.012Z","message":"Directory /home/kzyp/hdb2/clustering created"}
+{"level":"info","timestamp":"2022-11-28T20:15:18.012Z","message":"Directory /home/kzyp/hdb2/clustering/transaction_log created"}
+{"level":"info","timestamp":"2022-11-28T20:15:18.012Z","message":"Directory /home/kzyp/hdb2/clustering/connections created"}
+{"level":"info","timestamp":"2022-11-28T20:15:18.261Z","message":"Creating settings file."}
+{"level":"info","timestamp":"2022-11-28T20:15:18.261Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T20:15:18.262Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T20:15:18.263Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T20:15:18.263Z","message":"Detected undefined on this machine, defaulting MAX_CUSTOM_FUNCTION_PROCESSES to that.  This can be changed later in the settings.js file."}
+{"level":"info","timestamp":"2022-11-28T20:15:18.264Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T20:15:18.264Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T20:15:18.266Z","message":"Creating Super user."}
+{"level":"info","timestamp":"2022-11-28T20:15:18.266Z","message":"Creating admin user."}
+{"level":"info","timestamp":"2022-11-28T20:15:18.290Z","message":"Creating Cluster user."}
+{"level":"info","timestamp":"2022-11-28T20:15:18.290Z","message":"Creating admin user."}
+{"level":"info","timestamp":"2022-11-28T20:15:18.304Z","message":"Generating keys files."}
+{"level":"info","timestamp":"2022-11-28T20:15:18.402Z","message":"Product version info was properly inserted"}
+{"level":"info","timestamp":"2022-11-28T20:15:18.671Z","message":"Installation Successful"}
+{"level":"info","timestamp":"2022-11-28T20:15:33.693Z","message":"starting install"}
+{"level":"info","timestamp":"2022-11-28T20:15:33.694Z","message":"Checking for previous installation."}
+{"level":"info","timestamp":"2022-11-28T20:15:33.694Z","message":"Asking for terms agreement."}
+{"level":"info","timestamp":"2022-11-28T20:15:33.695Z","message":"Starting install wizard"}
+{"level":"info","timestamp":"2022-11-28T20:15:33.697Z","message":"Directory /home/kzyp/hdb3 created"}
+{"level":"info","timestamp":"2022-11-28T20:15:33.697Z","message":"Directory /home/kzyp/hdb3/backup created"}
+{"level":"info","timestamp":"2022-11-28T20:15:33.697Z","message":"Directory /home/kzyp/hdb3/trash created"}
+{"level":"info","timestamp":"2022-11-28T20:15:33.698Z","message":"Directory /home/kzyp/hdb3/keys created"}
+{"level":"info","timestamp":"2022-11-28T20:15:33.698Z","message":"Directory /home/kzyp/hdb3/keys/.license created"}
+{"level":"info","timestamp":"2022-11-28T20:15:33.698Z","message":"Directory /home/kzyp/hdb3/log created"}
+{"level":"info","timestamp":"2022-11-28T20:15:33.698Z","message":"Directory /home/kzyp/hdb3/config created"}
+{"level":"info","timestamp":"2022-11-28T20:15:33.698Z","message":"Directory /home/kzyp/hdb3/doc created"}
+{"level":"info","timestamp":"2022-11-28T20:15:33.698Z","message":"Directory /home/kzyp/hdb3/schema created"}
+{"level":"info","timestamp":"2022-11-28T20:15:33.701Z","message":"Directory /home/kzyp/hdb3/schema/system created"}
+{"level":"info","timestamp":"2022-11-28T20:15:33.701Z","message":"Directory /home/kzyp/hdb3/transactions created"}
+{"level":"info","timestamp":"2022-11-28T20:15:33.701Z","message":"Directory /home/kzyp/hdb3/clustering created"}
+{"level":"info","timestamp":"2022-11-28T20:15:33.701Z","message":"Directory /home/kzyp/hdb3/clustering/transaction_log created"}
+{"level":"info","timestamp":"2022-11-28T20:15:33.701Z","message":"Directory /home/kzyp/hdb3/clustering/connections created"}
+{"level":"info","timestamp":"2022-11-28T20:15:34.035Z","message":"Creating settings file."}
+{"level":"info","timestamp":"2022-11-28T20:15:34.035Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T20:15:34.037Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T20:15:34.037Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T20:15:34.038Z","message":"Detected undefined on this machine, defaulting MAX_CUSTOM_FUNCTION_PROCESSES to that.  This can be changed later in the settings.js file."}
+{"level":"info","timestamp":"2022-11-28T20:15:34.038Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T20:15:34.038Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T20:15:34.040Z","message":"Creating Super user."}
+{"level":"info","timestamp":"2022-11-28T20:15:34.040Z","message":"Creating admin user."}
+{"level":"info","timestamp":"2022-11-28T20:15:34.063Z","message":"Creating Cluster user."}
+{"level":"info","timestamp":"2022-11-28T20:15:34.063Z","message":"Creating admin user."}
+{"level":"info","timestamp":"2022-11-28T20:15:34.075Z","message":"Generating keys files."}
+{"level":"info","timestamp":"2022-11-28T20:15:34.172Z","message":"Product version info was properly inserted"}
+{"level":"info","timestamp":"2022-11-28T20:15:34.553Z","message":"Installation Successful"}
+{"level":"info","timestamp":"2022-11-28T22:11:49.531Z","message":"starting install"}
+{"level":"info","timestamp":"2022-11-28T22:11:49.557Z","message":"Checking for previous installation."}
+{"level":"info","timestamp":"2022-11-28T22:11:49.557Z","message":"Asking for terms agreement."}
+{"level":"info","timestamp":"2022-11-28T22:11:49.558Z","message":"Starting install wizard"}
+{"level":"info","timestamp":"2022-11-28T22:11:49.561Z","message":"Directory /home/kzyp/hdb created"}
+{"level":"info","timestamp":"2022-11-28T22:11:49.561Z","message":"Directory /home/kzyp/hdb/backup created"}
+{"level":"info","timestamp":"2022-11-28T22:11:49.562Z","message":"Directory /home/kzyp/hdb/trash created"}
+{"level":"info","timestamp":"2022-11-28T22:11:49.563Z","message":"Directory /home/kzyp/hdb/keys created"}
+{"level":"info","timestamp":"2022-11-28T22:11:49.563Z","message":"Directory /home/kzyp/hdb/keys/.license created"}
+{"level":"info","timestamp":"2022-11-28T22:11:49.564Z","message":"Directory /home/kzyp/hdb/log created"}
+{"level":"info","timestamp":"2022-11-28T22:11:49.564Z","message":"Directory /home/kzyp/hdb/config created"}
+{"level":"info","timestamp":"2022-11-28T22:11:49.565Z","message":"Directory /home/kzyp/hdb/doc created"}
+{"level":"info","timestamp":"2022-11-28T22:11:49.565Z","message":"Directory /home/kzyp/hdb/schema created"}
+{"level":"info","timestamp":"2022-11-28T22:11:49.565Z","message":"Directory /home/kzyp/hdb/schema/system created"}
+{"level":"info","timestamp":"2022-11-28T22:11:49.565Z","message":"Directory /home/kzyp/hdb/transactions created"}
+{"level":"info","timestamp":"2022-11-28T22:11:49.566Z","message":"Directory /home/kzyp/hdb/clustering created"}
+{"level":"info","timestamp":"2022-11-28T22:11:49.566Z","message":"Directory /home/kzyp/hdb/clustering/transaction_log created"}
+{"level":"info","timestamp":"2022-11-28T22:11:49.566Z","message":"Directory /home/kzyp/hdb/clustering/connections created"}
+{"level":"info","timestamp":"2022-11-28T22:11:49.853Z","message":"Creating settings file."}
+{"level":"info","timestamp":"2022-11-28T22:11:49.853Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T22:11:49.854Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T22:11:49.855Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T22:11:49.855Z","message":"Detected undefined on this machine, defaulting MAX_CUSTOM_FUNCTION_PROCESSES to that.  This can be changed later in the settings.js file."}
+{"level":"info","timestamp":"2022-11-28T22:11:49.855Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T22:11:49.856Z","message":"info"}
+{"level":"info","timestamp":"2022-11-28T22:11:49.857Z","message":"Creating Super user."}
+{"level":"info","timestamp":"2022-11-28T22:11:49.857Z","message":"Creating admin user."}
+{"level":"info","timestamp":"2022-11-28T22:11:49.878Z","message":"Creating Cluster user."}
+{"level":"info","timestamp":"2022-11-28T22:11:49.878Z","message":"Creating admin user."}
+{"level":"info","timestamp":"2022-11-28T22:11:49.884Z","message":"Generating keys files."}
+{"level":"info","timestamp":"2022-11-28T22:11:49.966Z","message":"Product version info was properly inserted"}
+{"level":"info","timestamp":"2022-11-28T22:11:50.119Z","message":"Installation Successful"}

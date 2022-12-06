@@ -2,7 +2,6 @@
 
 const util = require('util');
 const path = require('path');
-const fg = require('fast-glob');
 const fs = require('fs');
 
 const fastify = require('fastify');
@@ -33,6 +32,7 @@ const {
 	handleSigterm,
 } = require('../serverHelpers/serverHandlers');
 const pjson = require('../../package.json');
+const { registerContentHandlers } = require('../serverHelpers/contentTypes');
 
 module.exports = {
 	customFunctionsServer,
@@ -132,6 +132,7 @@ async function buildRoutes(cf_server) {
 
 		await cf_server.register(require('./plugins/hdbCore'));
 		await cf_server.after();
+		registerContentHandlers(cf_server);
 		const project_folders = fs.readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
 
 		// loop through all the projects

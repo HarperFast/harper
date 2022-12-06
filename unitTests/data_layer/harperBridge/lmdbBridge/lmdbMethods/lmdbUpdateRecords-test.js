@@ -292,15 +292,18 @@ describe('Test lmdbUpdateRecords module', () => {
 				[path.join(BASE_SCHEMA_PATH, INSERT_OBJECT_TEST.schema), INSERT_OBJECT_TEST.table],
 				undefined
 			);
+			let transaction = dog_env.useReadTransaction();
+			transaction.database = dog_env;
+
 			let record = test_utils.assertErrorSync(
 				search_utility.searchByHash,
-				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, 10],
+				[transaction, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, 10],
 				undefined
 			);
 			assert.deepStrictEqual(record, expected_search);
 
 			//make sure the height index does not have an entry for id 10
-			let height_results = test_utils.assertErrorSync(search_utility.iterateDBI, [dog_env, 'height'], undefined);
+			let height_results = test_utils.assertErrorSync(search_utility.iterateDBI, [transaction, 'height'], undefined);
 			Object.keys(height_results).forEach((result) => {
 				assert(result.indexOf(10) < 0);
 			});
@@ -390,15 +393,18 @@ describe('Test lmdbUpdateRecords module', () => {
 				[path.join(BASE_SCHEMA_PATH, INSERT_OBJECT_TEST.schema), INSERT_OBJECT_TEST.table],
 				undefined
 			);
+			let transaction = dog_env.useReadTransaction();
+			transaction.database = dog_env;
+
 			let record = test_utils.assertErrorSync(
 				search_utility.searchByHash,
-				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, 10],
+				[transaction, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, 10],
 				undefined
 			);
 			assert.deepStrictEqual(record, expected_search);
 
 			//make sure the height index does not have an entry for id 10
-			let height_results = test_utils.assertErrorSync(search_utility.iterateDBI, [dog_env, 'height'], undefined);
+			let height_results = test_utils.assertErrorSync(search_utility.iterateDBI, [transaction, 'height'], undefined);
 			Object.keys(height_results).forEach((result) => {
 				assert(result.indexOf(10) < 0);
 			});

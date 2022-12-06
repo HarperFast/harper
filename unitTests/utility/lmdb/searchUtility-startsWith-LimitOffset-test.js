@@ -10,6 +10,7 @@ const path = require('path');
 const assert = require('assert');
 const test_data = require('../../personData.json');
 const sinon = require('sinon');
+const arrayOfValues = test_utils.arrayOfValues;
 const uuid = require('uuid').v4;
 const sandbox = sinon.createSandbox();
 const BASE_TEST_PATH = path.join(test_utils.getMockLMDBPath(), 'lmdbTest');
@@ -30,7 +31,7 @@ const MULTI_RECORD_ARRAY2 = [
 ];
 
 describe('test startsWith function', ()=> {
-    let env;
+    let env, transaction;
     before(async () => {
         global.lmdb_map = undefined;
         await fs.remove(test_utils.getMockLMDBPath());
@@ -52,6 +53,8 @@ describe('test startsWith function', ()=> {
         ];
 
         await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, ['id', 'mush'], more_rows);
+        transaction = env.useReadTransaction();
+        transaction.database = env;
     });
 
     after(async () => {
@@ -64,67 +67,62 @@ describe('test startsWith function', ()=> {
     it("test validation", () => {
         test_utils.assertErrorSync(search_util.startsWith, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
         test_utils.assertErrorSync(search_util.startsWith, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
-        test_utils.assertErrorSync(search_util.startsWith, [env], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no hash attribute');
-        test_utils.assertErrorSync(search_util.startsWith, [env, 'id', 'city'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
-        test_utils.assertErrorSync(search_util.startsWith, [env, 'id', 'city', 'D'], undefined, 'all arguments');
+        test_utils.assertErrorSync(search_util.startsWith, [transaction], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no hash attribute');
+        test_utils.assertErrorSync(search_util.startsWith, [transaction, 'id', 'city'], LMDB_TEST_ERRORS.SEARCH_VALUE_REQUIRED, 'no search_value');
+        test_utils.assertErrorSync(search_util.startsWith, [transaction, 'id', 'city', 'D'], undefined, 'all arguments');
     });
 
     it("test search on city", () => {
-        let expected = [[1,4,5],[{"city": "Denver","id": 1},{"city": "Denver","id": 4},{"city": "Denvertown","id": 5}]];
+        let expected = [1,4,5];
 
-        let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'id', 'city', 'Den'], undefined, 'all arguments');
-        assert.deepEqual(results[0].length, 3);
-        assert.deepEqual(results[1].length, 3);
+        let results = arrayOfValues(search_util.startsWith(transaction, 'id', 'city', 'Den'));
+        assert.deepEqual(results.length, 3);
         assert.deepEqual(results, expected);
     });
 
     it("test search on city, no hash", () => {
-        let expected = [[1,4,5],[{"city": "Denver"},{"city": "Denver"},{"city": "Denvertown"}]];
+        let expected = [1,4,5];
 
-        let results = test_utils.assertErrorSync(search_util.startsWith, [env, undefined, 'city', 'Den'], undefined, 'all arguments');
-        assert.deepEqual(results[0].length, 3);
-        assert.deepEqual(results[1].length, 3);
+        let results = arrayOfValues(search_util.startsWith(transaction, undefined, 'city', 'Den'));
+        assert.deepEqual(results.length, 3);
         assert.deepEqual(results, expected);
     });
 
     it("test search on city with Denver", () => {
-        let expected = [[1,4,5],[{"city": "Denver","id": 1},{"city": "Denver","id": 4},{"city": "Denvertown","id": 5}]];
-        let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'id', 'city', 'Denver'], undefined, 'all arguments');
-        assert.deepEqual(results[0].length, 3);
-        assert.deepEqual(results[1].length, 3);
+        let expected = [1,4,5];
+        let results = arrayOfValues(search_util.startsWith(transaction, 'id', 'city', 'Denver'));
+        assert.deepEqual(results.length, 3);
         assert.deepEqual(results, expected);
     });
 
     it("test search on city with Denvert", () => {
-        let expected = [[5],[{"city": "Denvertown","id": 5}]];
-        let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'id', 'city', 'Denvert'], undefined, 'all arguments');
-        assert.deepEqual(results[0].length, 1);
-        assert.deepEqual(results[1].length, 1);
+        let expected = [5];
+        let results = arrayOfValues(search_util.startsWith(transaction, 'id', 'city', 'Denvert'));
+        assert.deepEqual(results.length, 1);
         assert.deepEqual(results, expected);
     });
 
     it("test search on city with non-existent value", () => {
-        let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'id', 'city', 'FoCo'], undefined, 'all arguments');
-        assert.deepStrictEqual(results, [[],[]]);
+        let results = arrayOfValues(search_util.startsWith(transaction, 'id', 'city', 'FoCo'));
+            assert.deepStrictEqual(results, []);
     });
 
     it("test search on attribute no exist", () => {
-        let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'id','fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
+        let results = test_utils.assertErrorSync(search_util.startsWith, [transaction, 'id','fake', 'bad'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
         assert.deepStrictEqual(results, undefined);
     });
 
     it("test search on mush 2", () => {
-        let expected = [[211,213,214,215],[{"mush": 2,"id": 211},{"mush": 22,"id": 213},{"mush": 22.2,"id": 214},{"mush": "22flavors","id": 215}]];
+        let expected = [211,213,214,215];
 
-        let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'id','mush', 2], undefined);
-        assert.deepEqual(results[0].length, 4);
-        assert.deepEqual(results[1].length, 4);
+        let results = arrayOfValues(search_util.startsWith(transaction, 'id','mush', 2));
+        assert.deepEqual(results.length, 4);
         assert.deepEqual(results, expected);
     });
 });
 
 describe('test startsWith function reverse offset limit', ()=> {
-    let env;
+    let env, transaction;
     let date_stub;
     before(async () => {
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
@@ -135,6 +133,8 @@ describe('test startsWith function reverse offset limit', ()=> {
         env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
         await environment_utility.createDBI(env, 'id', false, true);
         await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(PERSON_ATTRIBUTES), test_utils.deepClone(test_data));
+        transaction = env.useReadTransaction();
+        transaction.database = env;
     });
 
     after(async () => {
@@ -146,65 +146,58 @@ describe('test startsWith function reverse offset limit', ()=> {
     });
 
     it("test search on first_name limit 20", () => {
-        let expected = [[966,884,586,936,880,278,764,17,265,805,62,877,145,739,555,86,777,650,500,882],[{"first_name": "Mara","id": 966},{"first_name": "Marc","id": 884},{"first_name": "Marcellus","id": 586},{"first_name": "Marcia","id": 936},{"first_name": "Marco","id": 880},{"first_name": "Marcus","id": 278},{"first_name": "Margaret","id": 764},{"first_name": "Margarita","id": 17},{"first_name": "Margarita","id": 265},{"first_name": "Margot","id": 805},{"first_name": "Maria","id": 62},{"first_name": "Mariah","id": 877},{"first_name": "Mariano","id": 145},{"first_name": "Maribel","id": 739},{"first_name": "Mariela","id": 555},{"first_name": "Marisol","id": 86},{"first_name": "Marjolaine","id": 777},{"first_name": "Mark","id": 650},{"first_name": "Marlee","id": 500},{"first_name": "Marlin","id": 882}]];
+        let expected = [966,884,586,936,880,278,764,17,265,805,62,877,145,739,555,86,777,650,500,882];
 
-        let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'id', 'first_name', 'Mar', false, 20], undefined, 'all arguments');
-        assert.deepEqual(results[0].length, 20);
-        assert.deepEqual(results[1].length, 20);
+        let results = arrayOfValues(search_util.startsWith(transaction, 'id', 'first_name', 'Mar', false, 20));
+        assert.deepEqual(results.length, 20);
         assert.deepEqual(results, expected);
     });
 
     it("test search on first_name offset 20", () => {
-        let expected = [[738,563,106,770,156],[{"first_name": "Marques","id": 738},{"first_name": "Marquis","id": 563},{"first_name": "Marquise","id": 106},{"first_name": "Marty","id": 770},{"first_name": "Maryse","id": 156}]];
+        let expected = [738,563,106,770,156];
 
-        let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'id', 'first_name', 'Mar', false, undefined, 20], undefined, 'all arguments');
-        assert.deepEqual(results[0].length, 5);
-        assert.deepEqual(results[1].length, 5);
+        let results = arrayOfValues(search_util.startsWith(transaction, 'id', 'first_name', 'Mar', false, undefined, 20));
+        assert.deepEqual(results.length, 5);
         assert.deepEqual(results, expected);
     });
 
     it("test search on first_name offset 10 limit 20", () => {
-        let expected = [[62,877,145,739,555,86,777,650,500,882,738,563,106,770,156],[{"first_name": "Maria","id": 62},{"first_name": "Mariah","id": 877},{"first_name": "Mariano","id": 145},{"first_name": "Maribel","id": 739},{"first_name": "Mariela","id": 555},{"first_name": "Marisol","id": 86},{"first_name": "Marjolaine","id": 777},{"first_name": "Mark","id": 650},{"first_name": "Marlee","id": 500},{"first_name": "Marlin","id": 882},{"first_name": "Marques","id": 738},{"first_name": "Marquis","id": 563},{"first_name": "Marquise","id": 106},{"first_name": "Marty","id": 770},{"first_name": "Maryse","id": 156}]];
+        let expected = [62,877,145,739,555,86,777,650,500,882,738,563,106,770,156];
 
-        let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'id', 'first_name', 'Mar', false, 20, 10], undefined, 'all arguments');
-        assert.deepEqual(results[0].length, 15);
-        assert.deepEqual(results[1].length, 15);
+        let results = arrayOfValues(search_util.startsWith(transaction, 'id', 'first_name', 'Mar', false, 20, 10));
+        assert.deepEqual(results.length, 15);
         assert.deepEqual(results, expected);
     });
 
     it("test search on first_name reverse", () => {
-        let expected = [[156,770,106,563,738,882,500,650,777,86,555,739,145,877,62,805,265,17,764,278,880,936,586,884,966],[{"first_name": "Maryse","id": 156},{"first_name": "Marty","id": 770},{"first_name": "Marquise","id": 106},{"first_name": "Marquis","id": 563},{"first_name": "Marques","id": 738},{"first_name": "Marlin","id": 882},{"first_name": "Marlee","id": 500},{"first_name": "Mark","id": 650},{"first_name": "Marjolaine","id": 777},{"first_name": "Marisol","id": 86},{"first_name": "Mariela","id": 555},{"first_name": "Maribel","id": 739},{"first_name": "Mariano","id": 145},{"first_name": "Mariah","id": 877},{"first_name": "Maria","id": 62},{"first_name": "Margot","id": 805},{"first_name": "Margarita","id": 265},{"first_name": "Margarita","id": 17},{"first_name": "Margaret","id": 764},{"first_name": "Marcus","id": 278},{"first_name": "Marco","id": 880},{"first_name": "Marcia","id": 936},{"first_name": "Marcellus","id": 586},{"first_name": "Marc","id": 884},{"first_name": "Mara","id": 966}]];
+        let expected = [156,770,106,563,738,882,500,650,777,86,555,739,145,877,62,805,265,17,764,278,880,936,586,884,966];
 
-        let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'id', 'first_name', 'Mar', true], undefined, 'all arguments');
-        assert.deepEqual(results[0].length, 25);
-        assert.deepEqual(results[1].length, 25);
+        let results = arrayOfValues(search_util.startsWith(transaction, 'id', 'first_name', 'Mar', true));
+        assert.deepEqual(results.length, 25);
         assert.deepEqual(results, expected);
     });
 
     it("test search on first_name reverse limit 15", () => {
-        let expected = [[156,770,106,563,738,882,500,650,777,86,555,739,145,877,62],[{"first_name": "Maryse","id": 156},{"first_name": "Marty","id": 770},{"first_name": "Marquise","id": 106},{"first_name": "Marquis","id": 563},{"first_name": "Marques","id": 738},{"first_name": "Marlin","id": 882},{"first_name": "Marlee","id": 500},{"first_name": "Mark","id": 650},{"first_name": "Marjolaine","id": 777},{"first_name": "Marisol","id": 86},{"first_name": "Mariela","id": 555},{"first_name": "Maribel","id": 739},{"first_name": "Mariano","id": 145},{"first_name": "Mariah","id": 877},{"first_name": "Maria","id": 62}]];
+        let expected = [156,770,106,563,738,882,500,650,777,86,555,739,145,877,62];
 
-        let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'id', 'first_name', 'Mar', true, 15], undefined, 'all arguments');
-        assert.deepEqual(results[0].length, 15);
-        assert.deepEqual(results[1].length, 15);
+        let results = arrayOfValues(search_util.startsWith(transaction, 'id', 'first_name', 'Mar', true, 15));
+        assert.deepEqual(results.length, 15);
         assert.deepEqual(results, expected);
     });
 
     it("test search on first_name reverse offset 20", () => {
-        let expected = [[880,936,586,884,966],[{"first_name": "Marco","id": 880},{"first_name": "Marcia","id": 936},{"first_name": "Marcellus","id": 586},{"first_name": "Marc","id": 884},{"first_name": "Mara","id": 966}]];
+        let expected = [880,936,586,884,966];
 
-        let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'id', 'first_name', 'Mar', true, undefined, 20], undefined, 'all arguments');
-        assert.deepEqual(results[0].length, 5);
-        assert.deepEqual(results[1].length, 5);
+        let results = arrayOfValues(search_util.startsWith(transaction, 'id', 'first_name', 'Mar', true, undefined, 20));
+        assert.deepEqual(results.length, 5);
         assert.deepEqual(results, expected);
     });
 
     it("test search on first_name reverse offset 10 limit 20", () => {
-        let expected = [[555,739,145,877,62,805,265,17,764,278,880,936,586,884,966],[{"first_name": "Mariela","id": 555},{"first_name": "Maribel","id": 739},{"first_name": "Mariano","id": 145},{"first_name": "Mariah","id": 877},{"first_name": "Maria","id": 62},{"first_name": "Margot","id": 805},{"first_name": "Margarita","id": 265},{"first_name": "Margarita","id": 17},{"first_name": "Margaret","id": 764},{"first_name": "Marcus","id": 278},{"first_name": "Marco","id": 880},{"first_name": "Marcia","id": 936},{"first_name": "Marcellus","id": 586},{"first_name": "Marc","id": 884},{"first_name": "Mara","id": 966}]];
+        let expected = [555,739,145,877,62,805,265,17,764,278,880,936,586,884,966];
 
-        let results = test_utils.assertErrorSync(search_util.startsWith, [env, 'id', 'first_name', 'Mar', true, 20, 10], undefined, 'all arguments');
-        assert.deepEqual(results[0].length, 15);
-        assert.deepEqual(results[1].length, 15);
+        let results = arrayOfValues(search_util.startsWith(transaction, 'id', 'first_name', 'Mar', true, 20, 10));
+        assert.deepEqual(results.length, 15);
         assert.deepEqual(results, expected);
     });
 });

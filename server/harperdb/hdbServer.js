@@ -6,7 +6,7 @@ env.initSync();
 const terms = require('../../utility/hdbTerms');
 const util = require('util');
 const harper_logger = require('../../utility/logging/harper_logger');
-
+const { streamAsJSON } = require('../serverHelpers/JSONStream');
 const fs = require('fs');
 const fastify = require('fastify');
 
@@ -14,8 +14,6 @@ const pjson = require('../../package.json');
 const fastify_cors = require('@fastify/cors');
 const fastify_compress = require('@fastify/compress');
 const fastify_static = require('@fastify/static');
-const fastify_serializer = require('@fastify/accepts-serializer');
-const {pack, unpack} = require('msgpackr');
 const request_time_plugin = require('../serverHelpers/requestTimePlugin');
 const guidePath = require('path');
 const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
@@ -41,6 +39,7 @@ const {
 	handleSigterm,
 } = require('../serverHelpers/serverHandlers');
 const net = require("net");
+const {registerContentHandlers} = require('../serverHelpers/contentTypes');
 
 const REQ_MAX_BODY_SIZE = 1024 * 1024 * 1024; //this is 1GB in bytes
 const TRUE_COMPARE_VAL = 'TRUE';
@@ -168,16 +167,8 @@ function buildServer(is_https) {
 
 	// This handles all get requests for the studio
 	app.register(fastify_compress);
-	app.register(fastify_static, {root: guidePath.join(__dirname, '../../docs')});
-	app.register(fastify_serializer);
-	app.addContentTypeParser('application/x-msgpack', {parseAs: 'buffer'}, (req, body, done) => {
-		try {
-			done(null, unpack(body));
-		} catch (error) {
-			error.statusCode = 400;
-			done(error);
-		}
-	});
+	app.register(fastify_static, { root: guidePath.join(__dirname, '../../docs') });
+	registerContentHandlers(app);
 
 	let studio_on = env.get(terms.HDB_SETTINGS_NAMES.LOCAL_STUDIO_ON);
 	app.get('/', function (req, res) {
@@ -193,21 +184,6 @@ function buildServer(is_https) {
 		'/',
 		{
 			preValidation: [reqBodyValidationHandler, authHandler],
-			config: {
-				serializers: [
-					{
-						regex: /^application\/(x-)?msgpack$/,
-						serializer: pack,
-					},
-					{
-						regex: /^text\/csv$/,
-						serializer: function(data) {
-							this.header('Content-Disposition', 'attachment; filename="data.csv"');
-							return toCsvStream(data);
-						},
-					},
-				],
-			},
 		},
 		async function (req, res) {
 			//if no error is thrown below, the response 'data' returned from the handler will be returned with 200/OK code

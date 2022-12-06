@@ -12,7 +12,7 @@ module.exports = initialize;
  * @param search_object
  * @returns {*}
  */
-async function initialize(search_object) {
+function initialize(search_object) {
 	const validation_error = search_validator(search_object, 'hashes');
 	if (validation_error) {
 		throw validation_error;

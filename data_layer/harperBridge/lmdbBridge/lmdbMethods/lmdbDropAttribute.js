@@ -87,7 +87,7 @@ async function dropAttributeFromSystem(drop_attribute_obj) {
 		[hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ID_KEY, hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ATTRIBUTE_KEY]
 	);
 
-	let table_attributes = await search_by_value(search_obj);
+	let table_attributes = Array.from(await search_by_value(search_obj));
 	let attribute = table_attributes.filter(
 		(attr) => attr[hdb_terms.SYSTEM_DEFAULT_ATTRIBUTE_NAMES.ATTR_ATTRIBUTE_KEY] === drop_attribute_obj.attribute
 	);

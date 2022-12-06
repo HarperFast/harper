@@ -20,7 +20,7 @@ const LMDB_ERRORS_ENUM = {
     HASH_ATTRIBUTE_REQUIRED: new Error('hash_attribute is required'),
     ID_REQUIRED: new Error('id is required'),
     IDS_REQUIRED: new Error('ids is required'),
-    IDS_MUST_BE_ARRAY: new Error('ids must be an array'),
+    IDS_MUST_BE_ITERABLE: new Error('ids must be iterable'),
     FETCH_ATTRIBUTES_REQUIRED: new Error('fetch_attributes is required'),
     FETCH_ATTRIBUTES_MUST_BE_ARRAY: new Error('fetch_attributes must be an array'),
     ATTRIBUTE_REQUIRED: new Error('attribute is required'),

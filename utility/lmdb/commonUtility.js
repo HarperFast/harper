@@ -11,9 +11,11 @@ const { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH } = lmdb_terms;
 const PRIMITIVES = ['number', 'string', 'symbol', 'boolean', 'bigint'];
 /**
  * validates the env argument
- * @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
+ * @param {lmdb.Transaction|lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an
+ * environment
  */
 function validateEnv(env) {
+	env = env?.database || env;
 	if (!env) {
 		throw new Error(LMDB_ERRORS.ENV_REQUIRED);
 	}

@@ -31,7 +31,7 @@ async function deleteRecords(env, hash_attribute, ids) {
 			throw new Error(LMDB_ERRORS.IDS_REQUIRED);
 		}
 
-		throw new Error(LMDB_ERRORS.IDS_MUST_BE_ARRAY);
+		throw new Error(LMDB_ERRORS.IDS_MUST_BE_ITERABLE);
 	}
 
 	try {

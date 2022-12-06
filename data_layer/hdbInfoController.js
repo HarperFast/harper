@@ -111,7 +111,7 @@ async function getAllHdbInfoRecords() {
 	// Using a NoSql search and filter to get the largest info_id, as running SQL searches internally is difficult.
 	let version_data = [];
 	try {
-		version_data = await p_search_search_by_value(search_obj);
+		version_data = Array.from(await p_search_search_by_value(search_obj));
 	} catch (err) {
 		// search may fail during a new install as the table doesn't exist yet or initial upgrade for 3.0.  This is ok,
 		// we will assume an id of 0 below.
@@ -208,8 +208,14 @@ async function getVersionUpdateInfo() {
 		const upgradeRequired = directiveManager.hasUpgradesRequired(newUpgradeObj);
 		if (upgradeRequired) {
 			return newUpgradeObj;
-		} else {
-			return;
+		}
+
+		// If we get here they are running on an upgraded version that doesn't require any upgrade directives
+		if (
+			hdb_utils.compareVersions(newUpgradeObj.data_version.toString(), newUpgradeObj.upgrade_version.toString()) < 0
+		) {
+			await insertHdbUpgradeInfo(newUpgradeObj.upgrade_version);
+			log.notify(`HarperDB running on upgraded version: ${newUpgradeObj.upgrade_version}`);
 		}
 	} catch (err) {
 		log.fatal('Error while trying to evaluate the state of hdb data and the installed hdb version');

@@ -272,41 +272,41 @@ describe('Test lmdbReadAuditLog module', () => {
 		it('test reading with no timestamps, should return all', async () => {
 			let txns = await createTransactions();
 			let results = search_txn_by_timestamp_func(txn_env);
-
+			results = Array.from(results);
 			assert.deepEqual(results, txns);
 		});
 
 		it('test reading by timestamp when no txns', async () => {
 			let results = search_txn_by_timestamp_func(txn_env);
-
+			results = Array.from(results);
 			assert.deepEqual(results, []);
 		});
 
 		it('test reading by timestamp with timestamp newer than newest entry', async () => {
 			await createTransactions();
 			let results = search_txn_by_timestamp_func(txn_env, [common.getMicroTime(), common.getMicroTime() + 1]);
-
+			results = Array.from(results);
 			assert.deepEqual(results, []);
 		});
 
 		it('test reading by timestamp with timestamp older than oldest entry', async () => {
 			let txns = await createTransactions();
 			let results = search_txn_by_timestamp_func(txn_env, [txns[0].timestamp - 1, txns[4].timestamp]);
-
+			results = Array.from(results);
 			assert.deepEqual(results, [txns[0], txns[1], txns[2], txns[3], txns[4]]);
 		});
 
 		it('test reading by timestamp get some txns', async () => {
 			let txns = await createTransactions();
 			let results = search_txn_by_timestamp_func(txn_env, [txns[5].timestamp]);
-
+			results = Array.from(results);
 			assert.deepEqual(results, [txns[5], txns[6]]);
 		});
 
 		it('test reading by timestamp get some other txns', async () => {
 			let txns = await createTransactions();
 			let results = search_txn_by_timestamp_func(txn_env, [txns[3].timestamp, txns[5].timestamp]);
-
+			results = Array.from(results);
 			assert.deepEqual(results, [txns[3], txns[4], txns[5]]);
 		});
 	});
@@ -341,7 +341,7 @@ describe('Test lmdbReadAuditLog module', () => {
 
 			let txns = await createTransactions();
 			let results = await read_audit_log(read_txn_obj);
-
+			results = Array.from(results);
 			assert.deepEqual(results, txns);
 		});
 
@@ -350,7 +350,7 @@ describe('Test lmdbReadAuditLog module', () => {
 
 			let txns = await createTransactions();
 			let results = await read_audit_log(read_txn_obj);
-
+			results = Array.from(results);
 			assert.deepEqual(results, txns);
 		});
 

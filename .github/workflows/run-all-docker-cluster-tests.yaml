@@ -4,7 +4,10 @@ name: Run All Docker Cluster Tests
 jobs:
   runDockerClusterTestA:
     uses: ./.github/workflows/docker-cluster-test-a.yaml
+    secrets: inherit
   runDockerClusterTestB:
     uses: ./.github/workflows/docker-cluster-test-b.yaml
+    secrets: inherit
   runDockerClusterTestC:
     uses: ./.github/workflows/docker-cluster-test-c.yaml
+    secrets: inherit

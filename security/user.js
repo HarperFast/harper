@@ -37,6 +37,7 @@ const { promisify } = require('util');
 const crypto_hash = require('./cryptoHash');
 const terms = require('../utility/hdbTerms');
 const nats_terms = require('../server/nats/utility/natsTerms');
+const config_utils = require('../config/configUtils');
 const env = require('../utility/environment/environmentManager');
 const license = require('../utility/registration/hdb_license');
 const systemSchema = require('../json/systemSchema');
@@ -82,6 +83,7 @@ async function addUser(user) {
 	let search_role;
 	try {
 		search_role = await p_search_search_by_value(search_obj);
+		search_role = search_role && Array.from(search_role);
 	} catch (err) {
 		logger.error('There was an error searching for a role in add user');
 		logger.error(err);
@@ -218,7 +220,7 @@ async function alterUser(json_message) {
 
 		let role_data;
 		try {
-			role_data = await p_search_search_by_value(role_search_obj);
+			role_data = Array.from((await p_search_search_by_value(role_search_obj)) || []);
 		} catch (err) {
 			logger.error('Got an error searching for a role.');
 			logger.error(err);
@@ -421,50 +423,50 @@ async function listUsers() {
 
 		let roles;
 		try {
-			roles = _.cloneDeep(await p_search_search_by_value(role_search_obj));
+			roles = await p_search_search_by_value(role_search_obj);
 		} catch (err) {
 			logger.error(`Got an error searching for roles.`);
 			logger.error(err);
 			throw err;
 		}
 
-		if (!hdb_utility.isEmptyOrZeroLength(roles)) {
-			let roleMapObj = {};
-			for (let r in roles) {
-				roleMapObj[roles[r].id] = roles[r];
-			}
-
-			let user_search_obj = {
-				schema: 'system',
-				table: 'hdb_user',
-				search_value: '*',
-				search_attribute: 'username',
-				get_attributes: ['*'],
-			};
-
-			let users;
-			try {
-				users = _.cloneDeep(await p_search_search_by_value(user_search_obj));
-			} catch (err) {
-				logger.error('Got an error searching for users.');
-				logger.error(err);
-				throw err;
-			}
-
-			const user_obj = new Map();
-			for (let u in users) {
-				const user = users[u];
-				user.role = roleMapObj[users[u].role];
-				appendSystemTablesToRole(user.role);
-				user_obj.set(user.username, user);
-			}
-			// No enterprise license limits roles to 2 (1 su, 1 cu).  If a license has expired, we need to allow the cluster role
-			// and the role with the most users.
-			if (!(await license.getLicense()).enterprise) {
-				return nonEnterpriseFilter(user_obj);
-			}
-			return user_obj;
+		let roleMapObj = {};
+		for (let role of roles) {
+			roleMapObj[role.id] = _.cloneDeep(role);
 		}
+		if (Object.keys(roleMapObj).length === 0)
+			return null;
+
+		let user_search_obj = {
+			schema: 'system',
+			table: 'hdb_user',
+			search_value: '*',
+			search_attribute: 'username',
+			get_attributes: ['*'],
+		};
+
+		let users;
+		try {
+			users = await p_search_search_by_value(user_search_obj);
+		} catch (err) {
+			logger.error('Got an error searching for users.');
+			logger.error(err);
+			throw err;
+		}
+
+		const user_map = new Map();
+		for (let user of users) {
+			user = _.cloneDeep(user);
+			user.role = roleMapObj[user.role];
+			appendSystemTablesToRole(user.role);
+			user_map.set(user.username, user);
+		}
+		// No enterprise license limits roles to 2 (1 su, 1 cu).  If a license has expired, we need to allow the cluster role
+		// and the role with the most users.
+		if (!(await license.getLicense()).enterprise) {
+			return nonEnterpriseFilter(Array.from(user_map.values()));
+		}
+		return user_map;
 	} catch (err) {
 		logger.error('got an error listing users');
 		logger.error(err);
@@ -521,16 +523,16 @@ function nonEnterpriseFilter(search_results) {
 		let found_users = new Map();
 		// bucket users by role.  We will pick the role with the most users to enable
 		search_results.forEach((user, username) => {
-			if (user.role.permission.cluster_user === undefined || user.role.permission.cluster_user === false) {
+			if (user.role && (user.role.permission.cluster_user === undefined || user.role.permission.cluster_user === false)) {
 				// only add super users
 				if (user.role.permission.super_user === true) {
 					if (!user_obj[user.role.id]) {
 						user_obj[user.role.id] = new Map();
 					}
-					user_obj[user.role.id].set(username, user);
+					user_obj[user.role.id].set(user.username, user);
 				}
 			} else {
-				found_users.set(username, user);
+				found_users.set(user.username, user);
 			}
 		});
 
@@ -634,7 +636,7 @@ async function findAndValidateUser(username, pw, validate_password = true) {
  */
 async function getClusterUser() {
 	const users = await listUsers();
-	const cluster_username = env.get(terms.CONFIG_PARAMS.CLUSTERING_USER);
+	const cluster_username = config_utils.getConfigFromFile(terms.CONFIG_PARAMS.CLUSTERING_USER);
 	const cluster_user = users.get(cluster_username);
 	if (hdb_utility.isEmpty(cluster_user)) {
 		return undefined;

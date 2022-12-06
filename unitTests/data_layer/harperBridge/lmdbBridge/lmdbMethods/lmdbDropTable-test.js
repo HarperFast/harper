@@ -172,7 +172,7 @@ describe('test lmdbDropTable module', () => {
 
 		it('test delete table metadata', async () => {
 			let search_obj = new SearchObject('system', 'hdb_table', 'name', 'test', undefined, ['*']);
-			let search_table_results = await search_by_value(search_obj);
+			let search_table_results = Array.from(await search_by_value(search_obj));
 			let found_tbl;
 			for (let x = 0; x < search_table_results.length; x++) {
 				if (search_table_results[x].schema === 'dev' && search_table_results[x].name === 'test') {
@@ -184,7 +184,7 @@ describe('test lmdbDropTable module', () => {
 			let drop_object = new DropAttributeObject('dev', 'test');
 			await test_utils.assertErrorAsync(drop_table_from_system, [drop_object], undefined);
 
-			search_table_results = await search_by_value(search_obj);
+			search_table_results = Array.from(await search_by_value(search_obj));
 			found_tbl = undefined;
 			for (let x = 0; x < search_table_results.length; x++) {
 				if (search_table_results[x].schema === 'dev' && search_table_results[x].name === 'test') {
@@ -278,7 +278,7 @@ describe('test lmdbDropTable module', () => {
 
 		it('test delete table', async () => {
 			let search_obj = new SearchObject('system', 'hdb_table', 'name', 'test', undefined, ['*']);
-			let search_table_results = await search_by_value(search_obj);
+			let search_table_results = Array.from(await search_by_value(search_obj));
 			let found_tbl;
 			for (let x = 0; x < search_table_results.length; x++) {
 				if (search_table_results[x].schema === 'dev' && search_table_results[x].name === 'test') {
@@ -290,7 +290,7 @@ describe('test lmdbDropTable module', () => {
 			let search_attr_obj = new SearchObject('system', 'hdb_attribute', 'schema_table', 'dev.test', undefined, [
 				'attribute',
 			]);
-			let search_attr_results = await search_by_value(search_attr_obj);
+			let search_attr_results = Array.from(await search_by_value(search_attr_obj));
 			assert.deepStrictEqual(search_attr_results.length, global.hdb_schema.dev.test.attributes.length);
 
 			for (let x = 0; x < search_attr_results.length; x++) {
@@ -323,7 +323,7 @@ describe('test lmdbDropTable module', () => {
 			let drop_object = new DropAttributeObject('dev', 'test');
 			await test_utils.assertErrorAsync(lmdb_drop_table, [drop_object], undefined);
 
-			search_table_results = await search_by_value(search_obj);
+			search_table_results = Array.from(await search_by_value(search_obj));
 			found_tbl = undefined;
 			for (let x = 0; x < search_table_results.length; x++) {
 				if (search_table_results[x].schema === 'dev' && search_table_results[x].name === 'test') {
@@ -335,13 +335,13 @@ describe('test lmdbDropTable module', () => {
 
 			//search for the table by id
 			let hash_search = new SearchByHashObject('system', 'hdb_attribute', [TABLE_SYSTEM_DATA_TEST_A.id], ['*']);
-			search_table_results = await search_by_hash(hash_search);
+			search_table_results = Array.from(await search_by_hash(hash_search));
 			assert.deepStrictEqual(search_table_results, []);
 
 			search_attr_obj = new SearchObject('system', 'hdb_attribute', 'schema_table', 'dev.test', undefined, [
 				'attribute',
 			]);
-			search_attr_results = await search_by_value(search_attr_obj);
+			search_attr_results = Array.from(await search_by_value(search_attr_obj));
 			assert.deepStrictEqual(search_attr_results, []);
 
 			let error = undefined;
@@ -470,7 +470,7 @@ describe('test deleteAttributesFromSystem function', () => {
 			table: 'test',
 		};
 		await test_utils.assertErrorAsync(delete_attributes_from_system, [drop_obj], undefined);
-		let new_results = await test_utils.assertErrorAsync(search_by_value, [search_obj], undefined);
+		let new_results = Array.from(await test_utils.assertErrorAsync(search_by_value, [search_obj], undefined));
 		assert.deepStrictEqual(new_results.length, 0);
 	});
 });

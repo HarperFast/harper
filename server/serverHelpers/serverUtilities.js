@@ -16,6 +16,7 @@ const add_node = require('../../utility/clustering/addNode');
 const update_node = require('../../utility/clustering/updateNode');
 const remove_node = require('../../utility/clustering/removeNode');
 const configure_cluster = require('../../utility/clustering/configureCluster');
+const purge_stream = require('../../utility/clustering/purgeStream');
 const cluster_status = require('../../utility/clustering/clusterStatus');
 const routes = require('../../utility/clustering/routes');
 const export_ = require('../../data_layer/export');
@@ -282,6 +283,7 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.UPDATE_NODE, new OperationFunctionObject(update_node));
 	op_func_map.set(terms.OPERATIONS_ENUM.REMOVE_NODE, new OperationFunctionObject(remove_node));
 	op_func_map.set(terms.OPERATIONS_ENUM.CONFIGURE_CLUSTER, new OperationFunctionObject(configure_cluster));
+	op_func_map.set(terms.OPERATIONS_ENUM.PURGE_STREAM, new OperationFunctionObject(purge_stream));
 	op_func_map.set(terms.OPERATIONS_ENUM.SET_CONFIGURATION, new OperationFunctionObject(config_utils.setConfiguration));
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_STATUS, new OperationFunctionObject(cluster_status.clusterStatus));
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_SET_ROUTES, new OperationFunctionObject(routes.setRoutes));

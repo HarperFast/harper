@@ -186,7 +186,7 @@ describe('test lmdbDropAllAttributes module', () => {
 				table: 'test',
 			};
 			await test_utils.assertErrorAsync(lmdb_drop_attribute, [drop_obj], undefined);
-			let new_results = await test_utils.assertErrorAsync(search_by_value, [search_obj], undefined);
+			let new_results = Array.from(await test_utils.assertErrorAsync(search_by_value, [search_obj], undefined));
 			assert.deepStrictEqual(new_results.length, 0);
 
 			let env = await test_utils.assertErrorAsync(

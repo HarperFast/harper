@@ -51,7 +51,7 @@ async function lmdbDeleteRecordsBefore(delete_obj) {
 			undefined,
 			[schema_table_hash]
 		);
-		search_result = await search_by_value(search_obj, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS);
+		search_result = Array.from(await search_by_value(search_obj, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS));
 	} catch (err) {
 		log.error(
 			`Error searching for date: ${delete_obj.date} in schema: ${delete_obj.schema} table: ${delete_obj.table}`

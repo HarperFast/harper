@@ -281,6 +281,7 @@ describe('Test lmdbCreateRecords module', () => {
 				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, [8, 9, 12, 10]],
 				undefined
 			);
+			records.sort((a, b) => a.id > b.id ? 1 : -1);
 			assert.deepStrictEqual(records, expected_search);
 
 			//verify txn created

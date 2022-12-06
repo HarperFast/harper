@@ -61,7 +61,7 @@ describe('Test searchUtility module', ()=>{
     });
 
     describe('test searchByHash function', ()=>{
-        let env;
+        let env, transaction;
         before(async ()=>{
             global.lmdb_map = undefined;
             await fs.remove(test_utils.getMockLMDBPath());
@@ -70,6 +70,8 @@ describe('Test searchUtility module', ()=>{
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id', false, true);
             await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY);
+            transaction = env.useReadTransaction();
+            transaction.database = env;
         });
 
         after(async ()=>{
@@ -81,44 +83,44 @@ describe('Test searchUtility module', ()=>{
         it("test validation", ()=>{
             test_utils.assertErrorSync(search_util.searchByHash, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
             test_utils.assertErrorSync(search_util.searchByHash, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
-            test_utils.assertErrorSync(search_util.searchByHash, [env], LMDB_TEST_ERRORS.HASH_ATTRIBUTE_REQUIRED, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_REQUIRED, 'no fetch_attributes');
-            test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_MUST_BE_ARRAY, 'invalid fetch_attributes');
-            test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES], LMDB_TEST_ERRORS.ID_REQUIRED, 'no id');
-            test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, MULTI_RECORD_ARRAY[0][HASH_ATTRIBUTE_NAME].toString()],
+            test_utils.assertErrorSync(search_util.searchByHash, [transaction], LMDB_TEST_ERRORS.HASH_ATTRIBUTE_REQUIRED, 'no hash attribute');
+            test_utils.assertErrorSync(search_util.searchByHash, [transaction, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_REQUIRED, 'no fetch_attributes');
+            test_utils.assertErrorSync(search_util.searchByHash, [transaction, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_MUST_BE_ARRAY, 'invalid fetch_attributes');
+            test_utils.assertErrorSync(search_util.searchByHash, [transaction, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES], LMDB_TEST_ERRORS.ID_REQUIRED, 'no id');
+            test_utils.assertErrorSync(search_util.searchByHash, [transaction, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, MULTI_RECORD_ARRAY[0][HASH_ATTRIBUTE_NAME].toString()],
                 undefined, 'all arguments sent');
         });
 
         it("test select all attributes *", ()=>{
-            let record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, ['*'], 3],
+            let record = test_utils.assertErrorSync(search_util.searchByHash, [transaction, HASH_ATTRIBUTE_NAME, ['*'], 3],
                 undefined, 'all arguments sent');
             let expected = test_utils.assignObjecttoNullObject({"age": 57, city: null, "id": 3, "name": "Hank", __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP});
             assert.deepStrictEqual(record, expected);
         });
 
         it("test select some attributes", ()=>{
-            let record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, 3],
+            let record = test_utils.assertErrorSync(search_util.searchByHash, [transaction, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, 3],
                 undefined, 'all arguments sent');
 
             assert.deepStrictEqual(record, test_utils.assignObjecttoNullObject({"age": 57, "id": 3, "name": "Hank"}));
         });
 
         it("test select record no exist", ()=>{
-            let record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, 33],
+            let record = test_utils.assertErrorSync(search_util.searchByHash, [transaction, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, 33],
                 undefined, 'all arguments sent');
 
             assert.deepStrictEqual(record, null);
         });
 
         it("test select record only id & name", ()=>{
-            let record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, ["id", "name"], 2],
+            let record = test_utils.assertErrorSync(search_util.searchByHash, [transaction, HASH_ATTRIBUTE_NAME, ["id", "name"], 2],
                 undefined, 'all arguments sent');
 
             assert.deepStrictEqual(record, test_utils.assignObjecttoNullObject({id:2, name:"Jerry"}));
         });
 
         it("test select record only id & name and non-exsitent attribute", ()=>{
-            let record = test_utils.assertErrorSync(search_util.searchByHash, [env, HASH_ATTRIBUTE_NAME, ["id", "name", "dob"], 2],
+            let record = test_utils.assertErrorSync(search_util.searchByHash, [transaction, HASH_ATTRIBUTE_NAME, ["id", "name", "dob"], 2],
                 undefined, 'all arguments sent');
 
             assert.deepStrictEqual(record, test_utils.assignObjecttoNullObject({id:2, name:"Jerry", dob:null}));
@@ -126,7 +128,7 @@ describe('Test searchUtility module', ()=>{
     });
 
     describe("Test batchSearchByHash", ()=>{
-        let env;
+        let env, transaction;
         before(async ()=>{
             global.lmdb_map = undefined;
             await fs.remove(test_utils.getMockLMDBPath());
@@ -135,6 +137,8 @@ describe('Test searchUtility module', ()=>{
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
             await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY);
+            transaction = env.useReadTransaction();
+            transaction.database = env;
         });
 
         after(async ()=>{
@@ -146,29 +150,29 @@ describe('Test searchUtility module', ()=>{
         it("test validation", ()=>{
             test_utils.assertErrorSync(search_util.batchSearchByHash, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
             test_utils.assertErrorSync(search_util.batchSearchByHash, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
-            test_utils.assertErrorSync(search_util.batchSearchByHash, [env], LMDB_TEST_ERRORS.HASH_ATTRIBUTE_REQUIRED, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_REQUIRED, 'no fetch_attributes');
-            test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_MUST_BE_ARRAY, 'invalid fetch_attributes');
-            test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES], LMDB_TEST_ERRORS.IDS_REQUIRED, 'no id');
-            test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, 1],
-                LMDB_TEST_ERRORS.IDS_MUST_BE_ARRAY, 'invalid ids');
-            test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, [1, 3, 2]],
+            test_utils.assertErrorSync(search_util.batchSearchByHash, [transaction], LMDB_TEST_ERRORS.HASH_ATTRIBUTE_REQUIRED, 'no hash attribute');
+            test_utils.assertErrorSync(search_util.batchSearchByHash, [transaction, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_REQUIRED, 'no fetch_attributes');
+            test_utils.assertErrorSync(search_util.batchSearchByHash, [transaction, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_MUST_BE_ARRAY, 'invalid fetch_attributes');
+            test_utils.assertErrorSync(search_util.batchSearchByHash, [transaction, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES], LMDB_TEST_ERRORS.IDS_REQUIRED, 'no id');
+            test_utils.assertErrorSync(search_util.batchSearchByHash, [transaction, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, 1],
+                LMDB_TEST_ERRORS.IDS_MUST_BE_ITERABLE, 'invalid ids');
+            test_utils.assertErrorSync(search_util.batchSearchByHash, [transaction, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, [1, 3, 2]],
                 undefined, 'all correct arguments');
         });
 
         it("test fetch single record", ()=>{
             let expected = {id:1, name:'Kyle', age:46};
-            let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, [1]],
+            let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [transaction, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, [1]],
                 undefined, 'fetch single row');
             assert.deepEqual(row, [expected]);
         });
 
         it("test fetch multiple records", ()=>{
             let expected = [{id:1, name:'Kyle', age:46},
+                {id:4, name:'Joy', age: 44},
                 {id:2, name:'Jerry', age:32},
-                {id:4, name:'Joy', age: 44}
                 ];
-            let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, [1, 4, 2]],
+            let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [transaction, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, [1, 4, 2]],
                 undefined, 'fetch multi rows');
 
             assert.deepEqual(row, expected);
@@ -176,10 +180,10 @@ describe('Test searchUtility module', ()=>{
 
         it("test fetch multiple records, all attributes", ()=>{
             let expected = [{id:1, name:'Kyle', age:46, city: "Denver", __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP},
+                {id:4, name:'Joy', age: 44, city: "Denver", __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP},
                 {id:2, name:'Jerry', age:32, city: null, __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP},
-                {id:4, name:'Joy', age: 44, city: "Denver", __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP}
             ];
-            let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, ['*'], [1, 4, 2]],
+            let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [transaction, HASH_ATTRIBUTE_NAME, ['*'], [1, 4, 2]],
                 undefined, 'fetch multi rows');
 
             assert.deepEqual(row, expected);
@@ -187,10 +191,11 @@ describe('Test searchUtility module', ()=>{
 
         it("test fetch multiple records some don't exist", ()=>{
             let expected = [{id:1, name:'Kyle', age:46},
+                {id:4, name:'Joy', age: 44},
                 {id:2, name:'Jerry', age:32},
-                {id:4, name:'Joy', age: 44}];
+            ];
 
-            let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, [1,"fake", 4, 55, 2]],
+            let row = test_utils.assertErrorSync(search_util.batchSearchByHash, [transaction, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, [1,"fake", 4, 55, 2]],
                 undefined, 'fetch single row');
 
             assert.deepEqual(row, expected);
@@ -198,7 +203,7 @@ describe('Test searchUtility module', ()=>{
     });
 
     describe("Test batchSearchByHashToMap", ()=>{
-        let env;
+        let env, transaction;
         before(async ()=>{
             global.lmdb_map = undefined;
             await fs.remove(test_utils.getMockLMDBPath());
@@ -207,6 +212,8 @@ describe('Test searchUtility module', ()=>{
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
             await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
+            transaction = env.useReadTransaction();
+            transaction.database = env;
         });
 
         after(async ()=>{
@@ -219,28 +226,28 @@ describe('Test searchUtility module', ()=>{
         it("test validation", ()=>{
             test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
             test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
-            test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [env], LMDB_TEST_ERRORS.HASH_ATTRIBUTE_REQUIRED, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [env, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_REQUIRED, 'no fetch_attributes');
-            test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [env, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_MUST_BE_ARRAY, 'invalid fetch_attributes');
-            test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES], LMDB_TEST_ERRORS.IDS_REQUIRED, 'no id');
-            test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, 1],
-                LMDB_TEST_ERRORS.IDS_MUST_BE_ARRAY, 'invalid ids');
-            test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, [1, 3, 2]],
+            test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [transaction], LMDB_TEST_ERRORS.HASH_ATTRIBUTE_REQUIRED, 'no hash attribute');
+            test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [transaction, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_REQUIRED, 'no fetch_attributes');
+            test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [transaction, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_MUST_BE_ARRAY, 'invalid fetch_attributes');
+            test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [transaction, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES], LMDB_TEST_ERRORS.IDS_REQUIRED, 'no id');
+            test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [transaction, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, 1],
+                LMDB_TEST_ERRORS.IDS_MUST_BE_ITERABLE, 'invalid ids');
+            test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [transaction, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, [1, 3, 2]],
                 undefined, 'all correct arguments');
         });
 
         it("test fetch single record", ()=>{
-            let row = test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, [1]],
+            let row = test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [transaction, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, [1]],
                 undefined, 'fetch single row');
 
-            assert.deepStrictEqual(row, test_utils.assignObjecttoNullObject({1: test_utils.assignObjecttoNullObject({id:1, name:'Kyle', age:46})}));
+            assert.deepStrictEqual(row, test_utils.assignObjectToMap({1: test_utils.assignObjecttoNullObject({id:1, name:'Kyle', age:46})}));
         });
 
         it("test fetch multiple records", ()=>{
-            let row = test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, [1, 4, 2]],
+            let row = test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [transaction, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, [1, 4, 2]],
                 undefined, 'fetch multi rows');
 
-            let expected = test_utils.assignObjecttoNullObject({1: test_utils.assignObjecttoNullObject({id:1, name:'Kyle', age:46}),
+            let expected = test_utils.assignObjectToMap({1: test_utils.assignObjecttoNullObject({id:1, name:'Kyle', age:46}),
                 2: test_utils.assignObjecttoNullObject({id:2, name:'Jerry', age:32}),
                 4: test_utils.assignObjecttoNullObject({id:4, name:'Joy', age: 44})
             });
@@ -249,9 +256,9 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test fetch multiple records some don't exist", ()=>{
-            let row = test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, [1,"fake", 4, 55, 2]],
+            let row = test_utils.assertErrorSync(search_util.batchSearchByHashToMap, [transaction, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES, [1,"fake", 4, 55, 2]],
                 undefined, 'fetch single row');
-            let expected = test_utils.assignObjecttoNullObject( {1: test_utils.assignObjecttoNullObject( {id:1, name:'Kyle', age:46}),
+            let expected = test_utils.assignObjectToMap( {1: test_utils.assignObjecttoNullObject( {id:1, name:'Kyle', age:46}),
                 2: test_utils.assignObjecttoNullObject( {id:2, name:'Jerry', age:32}),
                 4: test_utils.assignObjecttoNullObject( {id:4, name:'Joy', age: 44})
             });
@@ -260,7 +267,7 @@ describe('Test searchUtility module', ()=>{
     });
 
     describe("Test checkHashExists", ()=> {
-        let env;
+        let env, transaction;
         before(async () => {
             global.lmdb_map = undefined;
             await fs.remove(test_utils.getMockLMDBPath());
@@ -269,6 +276,8 @@ describe('Test searchUtility module', ()=>{
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
             await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
+            transaction = env.useReadTransaction();
+            transaction.database = env;
         });
 
         after(async () => {
@@ -281,21 +290,21 @@ describe('Test searchUtility module', ()=>{
         it("test validation", () => {
             test_utils.assertErrorSync(search_util.checkHashExists, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
             test_utils.assertErrorSync(search_util.checkHashExists, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
-            test_utils.assertErrorSync(search_util.checkHashExists, [env], LMDB_TEST_ERRORS.HASH_ATTRIBUTE_REQUIRED, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.checkHashExists, [env, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.ID_REQUIRED, 'no id');
-            test_utils.assertErrorSync(search_util.checkHashExists, [env, HASH_ATTRIBUTE_NAME, 1],
+            test_utils.assertErrorSync(search_util.checkHashExists, [transaction], LMDB_TEST_ERRORS.HASH_ATTRIBUTE_REQUIRED, 'no hash attribute');
+            test_utils.assertErrorSync(search_util.checkHashExists, [transaction, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.ID_REQUIRED, 'no id');
+            test_utils.assertErrorSync(search_util.checkHashExists, [transaction, HASH_ATTRIBUTE_NAME, 1],
                 undefined, 'all correct arguments');
         });
 
         it("test key exists", ()=>{
-            let exists = test_utils.assertErrorSync(search_util.checkHashExists, [env, HASH_ATTRIBUTE_NAME, 1],
+            let exists = test_utils.assertErrorSync(search_util.checkHashExists, [transaction, HASH_ATTRIBUTE_NAME, 1],
                 undefined, 'all correct arguments');
 
             assert.deepStrictEqual(exists, true, "hash exists");
         });
 
         it("test key does not exists", ()=>{
-            let exists = test_utils.assertErrorSync(search_util.checkHashExists, [env, HASH_ATTRIBUTE_NAME, 111],
+            let exists = test_utils.assertErrorSync(search_util.checkHashExists, [transaction, HASH_ATTRIBUTE_NAME, 111],
                 undefined, 'all correct arguments');
 
             assert.deepStrictEqual(exists, false, "hash exists");
@@ -303,7 +312,7 @@ describe('Test searchUtility module', ()=>{
     });
 
     describe('test searchAll function', ()=> {
-        let env;
+        let env, transaction;
         before(async () => {
             global.lmdb_map = undefined;
             await fs.remove(test_utils.getMockLMDBPath());
@@ -312,6 +321,8 @@ describe('Test searchUtility module', ()=>{
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
             await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY);
+            transaction = env.useReadTransaction();
+            transaction.database = env;
         });
 
         after(async () => {
@@ -324,14 +335,14 @@ describe('Test searchUtility module', ()=>{
         it("test validation", () => {
             test_utils.assertErrorSync(search_util.searchAll, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
             test_utils.assertErrorSync(search_util.searchAll, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
-            test_utils.assertErrorSync(search_util.searchAll, [env], LMDB_TEST_ERRORS.HASH_ATTRIBUTE_REQUIRED, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_REQUIRED, 'no fetch_attributes');
-            test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_MUST_BE_ARRAY, 'invalid fetch_attributes');
-            test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES], undefined, 'all arguments sent');
+            test_utils.assertErrorSync(search_util.searchAll, [transaction], LMDB_TEST_ERRORS.HASH_ATTRIBUTE_REQUIRED, 'no hash attribute');
+            test_utils.assertErrorSync(search_util.searchAll, [transaction, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_REQUIRED, 'no fetch_attributes');
+            test_utils.assertErrorSync(search_util.searchAll, [transaction, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_MUST_BE_ARRAY, 'invalid fetch_attributes');
+            test_utils.assertErrorSync(search_util.searchAll, [transaction, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES], undefined, 'all arguments sent');
         });
 
         it("searchAll rows", ()=>{
-            let rows = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES], undefined, 'search');
+            let rows = Array.from(search_util.searchAll(transaction, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES));
 
             let expected = [
                 {id: 1, name: 'Kyle', age: 46, city: 'Denver'},
@@ -342,7 +353,7 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("searchAll rows, attributes ['*']", ()=>{
-            let rows = test_utils.assertErrorSync(search_util.searchAll, [env, HASH_ATTRIBUTE_NAME, ['*']], undefined, 'search');
+            let rows = Array.from(search_util.searchAll(transaction, HASH_ATTRIBUTE_NAME, ['*']));
 
             let expected = [
                 {id: 1, name: 'Kyle', age: 46, city: 'Denver', __createdtime__: TIMESTAMP, __updatedtime__: TIMESTAMP},
@@ -354,7 +365,7 @@ describe('Test searchUtility module', ()=>{
     });
 
     describe('test searchAllToMap function', ()=> {
-        let env;
+        let env, transaction;
         before(async () => {
             global.lmdb_map = undefined;
             await fs.remove(test_utils.getMockLMDBPath());
@@ -363,6 +374,8 @@ describe('Test searchUtility module', ()=>{
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id');
             await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(SOME_ATTRIBUTES), MULTI_RECORD_ARRAY);
+            transaction = env.useReadTransaction();
+            transaction.database = env;
         });
 
         after(async () => {
@@ -375,21 +388,21 @@ describe('Test searchUtility module', ()=>{
         it("test validation", () => {
             test_utils.assertErrorSync(search_util.searchAllToMap, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
             test_utils.assertErrorSync(search_util.searchAllToMap, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
-            test_utils.assertErrorSync(search_util.searchAllToMap, [env], LMDB_TEST_ERRORS.HASH_ATTRIBUTE_REQUIRED, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.searchAllToMap, [env, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_REQUIRED, 'no fetch_attributes');
-            test_utils.assertErrorSync(search_util.searchAllToMap, [env, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_MUST_BE_ARRAY, 'invalid fetch_attributes');
-            test_utils.assertErrorSync(search_util.searchAllToMap, [env, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES], undefined, 'all arguments sent');
+            test_utils.assertErrorSync(search_util.searchAllToMap, [transaction], LMDB_TEST_ERRORS.HASH_ATTRIBUTE_REQUIRED, 'no hash attribute');
+            test_utils.assertErrorSync(search_util.searchAllToMap, [transaction, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_REQUIRED, 'no fetch_attributes');
+            test_utils.assertErrorSync(search_util.searchAllToMap, [transaction, HASH_ATTRIBUTE_NAME, HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.FETCH_ATTRIBUTES_MUST_BE_ARRAY, 'invalid fetch_attributes');
+            test_utils.assertErrorSync(search_util.searchAllToMap, [transaction, HASH_ATTRIBUTE_NAME, SOME_ATTRIBUTES], undefined, 'all arguments sent');
         });
 
         it("searchAllToMap rows", ()=>{
 
-            let rows = test_utils.assertErrorSync(search_util.searchAllToMap, [env, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES], undefined, 'search');
+            let rows = search_util.searchAllToMap(transaction, HASH_ATTRIBUTE_NAME, All_ATTRIBUTES);
 
-            let expected = Object.create(null);
-            expected['1'] = test_utils.assignObjecttoNullObject({id:1, name:'Kyle', age:46, city:'Denver'});
-            expected['2'] = test_utils.assignObjecttoNullObject({id:2, name:'Jerry', age:32, city:null});
-            expected['3'] = test_utils.assignObjecttoNullObject({id:3, name: 'Hank', age: 57, city:null});
-            expected['4'] = test_utils.assignObjecttoNullObject({id:4, name:'Joy', age: 44, city:'Denver'});
+            let expected = new Map();
+            expected.set(1, test_utils.assignObjecttoNullObject({id:1, name:'Kyle', age:46, city:'Denver'}));
+            expected.set(2, test_utils.assignObjecttoNullObject({id:2, name:'Jerry', age:32, city:null}));
+            expected.set(3, test_utils.assignObjecttoNullObject({id:3, name: 'Hank', age: 57, city:null}));
+            expected.set(4, test_utils.assignObjecttoNullObject({id:4, name:'Joy', age: 44, city:'Denver'}));
             assert.deepStrictEqual(rows, expected);
         });
     });
@@ -416,7 +429,8 @@ describe('Test searchUtility module', ()=>{
         it("test validation", () => {
             test_utils.assertErrorSync(search_util.countAll, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
             test_utils.assertErrorSync(search_util.countAll, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
-            test_utils.assertErrorSync(search_util.countAll, [env], LMDB_TEST_ERRORS.HASH_ATTRIBUTE_REQUIRED, 'no hash attribute');
+            test_utils.assertErrorSync(search_util.countAll, [env], LMDB_TEST_ERRORS.HASH_ATTRIBUTE_REQUIRED, 'no' +
+               ' hash attribute');
             test_utils.assertErrorSync(search_util.countAll, [env, HASH_ATTRIBUTE_NAME], undefined, 'all arguments');
         });
 
@@ -426,7 +440,7 @@ describe('Test searchUtility module', ()=>{
         });
     });
     describe('test iterateDBI and freeze function', () => {
-        let env;
+        let env, transaction;
         before(async () => {
             global.lmdb_map = undefined;
             await fs.remove(test_utils.getMockLMDBPath());
@@ -435,6 +449,8 @@ describe('Test searchUtility module', ()=>{
             env = await environment_utility.createEnvironment(BASE_TEST_PATH, TEST_ENVIRONMENT_NAME);
             await environment_utility.createDBI(env, 'id', false, true);
             await write_utility.insertRecords(env, HASH_ATTRIBUTE_NAME, test_utils.deepClone(All_ATTRIBUTES), MULTI_RECORD_ARRAY2);
+            transaction = env.useReadTransaction();
+            transaction.database = env;
         });
 
         after(async () => {
@@ -447,12 +463,12 @@ describe('Test searchUtility module', ()=>{
         it("test validation", () => {
             test_utils.assertErrorSync(search_util.iterateDBI, [], LMDB_TEST_ERRORS.ENV_REQUIRED, 'test no args');
             test_utils.assertErrorSync(search_util.iterateDBI, [HASH_ATTRIBUTE_NAME], LMDB_TEST_ERRORS.INVALID_ENVIRONMENT, 'invalid env variable');
-            test_utils.assertErrorSync(search_util.iterateDBI, [env], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no hash attribute');
-            test_utils.assertErrorSync(search_util.iterateDBI, [env,'city'], undefined, 'no search_value');
+            test_utils.assertErrorSync(search_util.iterateDBI, [transaction], LMDB_TEST_ERRORS.ATTRIBUTE_REQUIRED, 'no hash attribute');
+            test_utils.assertErrorSync(search_util.iterateDBI, [transaction,'city'], undefined, 'no search_value');
         });
 
         it("test iterate on city", () => {
-            let results = test_utils.assertErrorSync(search_util.iterateDBI, [env, 'city'], undefined, 'city iterate');
+            let results = test_utils.assertErrorSync(search_util.iterateDBI, [transaction, 'city'], undefined, 'city iterate');
             assert.deepEqual(results, {
                 'Athens': [1],
                 'Denver': [1, 4],
@@ -462,16 +478,16 @@ describe('Test searchUtility module', ()=>{
         });
 
         it("test search on attribute no exist", () => {
-            let results = test_utils.assertErrorSync(search_util.iterateDBI, [env, 'fake'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
+            let results = test_utils.assertErrorSync(search_util.iterateDBI, [transaction, 'fake'], LMDB_TEST_ERRORS.DBI_DOES_NOT_EXIST);
             assert.deepStrictEqual(results, undefined);
         });
         it("test nested object in searchByHash is frozen", () => {
             env.dbis.id.cache.clear(); // reload to ensure read data is frozen
-            let results = search_util.searchByHash(env, 'id', ['id', 'city'], 1);
+            let results = search_util.searchByHash(transaction, 'id', ['id', 'city'], 1);
             assert(Object.isFrozen(results.city));
         });
         it("test nested object in equals is frozen", () => {
-            let results = search_util.equals(env, 'id', 'id', 1);
+            let results = search_util.equals(transaction, 'id', 'id', 1);
             assert(Object.isFrozen(results[0].city));
         });
     });

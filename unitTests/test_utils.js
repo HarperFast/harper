@@ -26,6 +26,7 @@ const lmdb_create_table = require('../data_layer/harperBridge/lmdbBridge/lmdbMet
 const lmdb_create_records = require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateRecords');
 const pm2_utils = require('../utility/pm2/utilityFunctions');
 const nats_utils = require('../server/nats/utility/natsUtils');
+const config_utils = require('../config/configUtils');
 const user = require('../security/user');
 let lmdb_schema_env = undefined;
 let lmdb_table_env = undefined;
@@ -631,6 +632,10 @@ function assertErrorSync(test_func, args, error_object, message) {
 	return result;
 }
 
+function asKeyValueArray(iterable) {
+	let values = Array.from(iterable);
+	return [values.map(v => v.key), values.map(v => v.value)];
+}
 /**
  * assigns objects to an null object, which is how we create objects in lmdb
  * @returns {*[]}
@@ -639,6 +644,33 @@ function assertErrorSync(test_func, args, error_object, message) {
 function assignObjectToNullObject(...objects) {
 	objects.unshift(Object.create(null));
 	return Object.assign.apply(null, objects);
+}
+
+/**
+ * assigns objects to an null object, which is how we create objects in lmdb
+ * @returns {Map}
+ * @param objects
+ */
+function assignObjectToMap(object) {
+	let results = new Map();
+	for (let key in object) {
+		results.set(isNaN(key) ? key : +key, object[key]);
+	}
+	return results;
+}
+
+/**
+ * Return ordered array
+ * @param iterator
+ * @returns {unknown[]}
+ */
+function orderedArray(iterator) {
+	let array = Array.from(iterator);
+	if (Array.isArray(array[0]))
+		return array.sort((a, b) => a[0] > b[0] ? 1 : -1);
+	if (array[0]?.id)
+		return array.sort((a, b) => a.id > b.id ? 1 : -1);
+	return array;
 }
 
 /**
@@ -763,6 +795,12 @@ function setFakeClusterUser() {
 	env.setProperty(terms.CONFIG_PARAMS.CLUSTERING_USER, 'test_cluster_user');
 	env.setProperty(terms.CONFIG_PARAMS.CLUSTERING_NODENAME, 'testLeafServer');
 	leaf_server_term_rw = nats_terms.__set__('NATS_CONFIG_FILES', NATS_TEST_CONFIG_FILES);
+
+	const get_config_from_file_stub = sandbox.stub(config_utils, 'getConfigFromFile');
+	get_config_from_file_stub.withArgs(terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT).returns(9991);
+	get_config_from_file_stub.withArgs(terms.CONFIG_PARAMS.CLUSTERING_USER).returns('test_cluster_user');
+	get_config_from_file_stub.withArgs(terms.CONFIG_PARAMS.CLUSTERING_NODENAME).returns('testLeafServer');
+	get_config_from_file_stub.withArgs(terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT).returns(7788);
 }
 
 function unsetFakeClusterUser() {
@@ -820,7 +858,12 @@ function restoreInitStub() {
 	}
 }
 
+function arrayOfValues(iterator) {
+	return Array.from(iterator.map(e => e.value));
+}
+
 module.exports = {
+	arrayOfValues,
 	restoreInitStub,
 	changeProcessToBinDir,
 	deepClone,
@@ -845,6 +888,9 @@ module.exports = {
 	assertErrorAsync,
 	generateUpgradeObj,
 	assignObjecttoNullObject: assignObjectToNullObject,
+	assignObjectToMap,
+	orderedArray,
+	asKeyValueArray,
 	requireUncached,
 	stopTestLeafServer,
 	launchTestLeafServer,

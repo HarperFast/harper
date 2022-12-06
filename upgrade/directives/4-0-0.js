@@ -53,7 +53,7 @@ async function updateNodes() {
 			['*']
 		);
 
-		const all_nodes = await p_search_by_value(get_all_nodes_qry);
+		const all_nodes = Array.from(await p_search_by_value(get_all_nodes_qry));
 		let updated_nodes = [];
 		for (let x = 0, all_length = all_nodes.length; x < all_length; x++) {
 			const node_record = all_nodes[x];

@@ -25,7 +25,7 @@ const fs = require('fs-extra');
 const sinon = require('sinon');
 const systemSchema = require('../../../../../json/systemSchema');
 const common_utils = require('../../../../../utility/common_utils');
-
+const { orderedArray } = test_utils;
 const TIMESTAMP = Date.now();
 
 const sandbox = sinon.createSandbox();
@@ -267,11 +267,11 @@ describe('test lmdbSearch module', () => {
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'state', 'CO', 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = Array.from(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.EQUALS, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, expected.length);
 
 			results.forEach((result) => {
@@ -283,20 +283,20 @@ describe('test lmdbSearch module', () => {
 			});
 		});
 
-		it('test equals on string return map', async () => {
-			let expected = Object.create(null);
+		it('test equals on string return pairs', async () => {
+			let expected = [];
 			test_data.forEach((data) => {
 				if (data.state === 'CO') {
-					expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
+					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
 				}
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'state', 'CO', 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = Array.from(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.EQUALS, HASH_ATTRIBUTE_NAME, true],
 				undefined
-			);
+			));
 			assert(Object.keys(results).length > 0);
 			assert.deepStrictEqual(results, expected);
 		});
@@ -310,11 +310,11 @@ describe('test lmdbSearch module', () => {
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 10, 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = Array.from(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.EQUALS, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, expected.length);
 
 			results.forEach((result) => {
@@ -326,20 +326,20 @@ describe('test lmdbSearch module', () => {
 			});
 		});
 
-		it('test equals on number return map', async () => {
-			let expected = Object.create(null);
+		it('test equals on number return pairs', async () => {
+			let expected = [];
 			test_data.forEach((data) => {
 				if (parseInt(data.temperature) === 10) {
-					expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
+					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
 				}
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 10, 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = Array.from(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.EQUALS, HASH_ATTRIBUTE_NAME, true],
 				undefined
-			);
+			));
 			assert(Object.keys(results).length > 0);
 			assert.deepStrictEqual(results, expected);
 		});
@@ -369,20 +369,20 @@ describe('test lmdbSearch module', () => {
 			});
 		});
 
-		it('test  equals on hash attribute return map', async () => {
-			let expected = Object.create(null);
+		it('test  equals on hash attribute return pairs', async () => {
+			let expected = [];
 			test_data.forEach((data) => {
 				if (parseInt(data.id) === 10) {
-					expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
+					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
 				}
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'id', 10, 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = Array.from(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH_TO_MAP, HASH_ATTRIBUTE_NAME, true],
 				undefined
-			);
+			));
 			assert(Object.keys(results).length > 0);
 			assert.deepStrictEqual(results, expected);
 		});
@@ -396,11 +396,11 @@ describe('test lmdbSearch module', () => {
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'city', 'bert', 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = Array.from(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, expected.length);
 
 			results.forEach((result) => {
@@ -412,20 +412,20 @@ describe('test lmdbSearch module', () => {
 			});
 		});
 
-		it('test  contains on string return map', async () => {
-			let expected = Object.create(null);
+		it('test  contains on string return pairs', async () => {
+			let expected = [];
 			test_data.forEach((data) => {
 				if (data.city.includes('bert') === true) {
-					expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
+					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
 				}
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'city', 'bert', 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME, true],
 				undefined
-			);
+			));
 			assert(Object.keys(results).length > 0);
 			assert.deepStrictEqual(results, expected);
 		});
@@ -439,11 +439,11 @@ describe('test lmdbSearch module', () => {
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 0, 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, expected.length);
 
 			results.forEach((result) => {
@@ -455,20 +455,20 @@ describe('test lmdbSearch module', () => {
 			});
 		});
 
-		it('test  contains on number return map', async () => {
-			let expected = Object.create(null);
+		it('test  contains on number return pairs', async () => {
+			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature.toString().includes(0)) {
-					expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
+					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
 				}
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 0, 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME, true],
 				undefined
-			);
+			));
 			assert(Object.keys(results).length > 0);
 			assert.deepStrictEqual(results, expected);
 		});
@@ -482,11 +482,11 @@ describe('test lmdbSearch module', () => {
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'city', 'land', 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.ENDS_WITH, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, expected.length);
 
 			results.forEach((result) => {
@@ -498,20 +498,20 @@ describe('test lmdbSearch module', () => {
 			});
 		});
 
-		it('test  endswith on string return map', async () => {
-			let expected = Object.create(null);
+		it('test  endswith on string return pairs', async () => {
+			let expected = [];
 			test_data.forEach((data) => {
 				if (data.city.endsWith('land')) {
-					expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
+					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
 				}
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'city', 'land', 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.ENDS_WITH, HASH_ATTRIBUTE_NAME, true],
 				undefined
-			);
+			));
 			assert(Object.keys(results).length > 0);
 			assert.deepStrictEqual(results, expected);
 		});
@@ -525,11 +525,11 @@ describe('test lmdbSearch module', () => {
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 2, 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.ENDS_WITH, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, expected.length);
 
 			results.forEach((result) => {
@@ -541,20 +541,20 @@ describe('test lmdbSearch module', () => {
 			});
 		});
 
-		it('test endswith on number return map', async () => {
-			let expected = Object.create(null);
+		it('test endswith on number return pairs', async () => {
+			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature.toString().endsWith(2)) {
-					expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
+					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
 				}
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 2, 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.ENDS_WITH, HASH_ATTRIBUTE_NAME, true],
 				undefined
-			);
+			));
 			assert(Object.keys(results).length > 0);
 			assert.deepStrictEqual(results, expected);
 		});
@@ -568,11 +568,11 @@ describe('test lmdbSearch module', () => {
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'city', 'South', 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.STARTS_WITH, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, expected.length);
 
 			results.forEach((result) => {
@@ -584,20 +584,20 @@ describe('test lmdbSearch module', () => {
 			});
 		});
 
-		it('test startswith on string return map', async () => {
-			let expected = Object.create(null);
+		it('test startswith on string return pairs', async () => {
+			let expected = [];
 			test_data.forEach((data) => {
 				if (data.city.startsWith('South')) {
-					expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
+					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
 				}
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'city', 'South', 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.STARTS_WITH, HASH_ATTRIBUTE_NAME, true],
 				undefined
-			);
+			));
 			assert(Object.keys(results).length > 0);
 			assert.deepStrictEqual(results, expected);
 		});
@@ -611,11 +611,11 @@ describe('test lmdbSearch module', () => {
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 10, 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.STARTS_WITH, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, expected.length);
 
 			results.forEach((result) => {
@@ -627,20 +627,20 @@ describe('test lmdbSearch module', () => {
 			});
 		});
 
-		it('test startswith on number return map', async () => {
-			let expected = Object.create(null);
+		it('test startswith on number return pairs', async () => {
+			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature.toString().startsWith(10)) {
-					expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
+					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
 				}
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 10, 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.STARTS_WITH, HASH_ATTRIBUTE_NAME, true],
 				undefined
-			);
+			));
 			assert(Object.keys(results).length > 0);
 			assert.deepStrictEqual(results, expected);
 		});
@@ -652,11 +652,11 @@ describe('test lmdbSearch module', () => {
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', '*', 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.SEARCH_ALL, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, expected.length);
 
 			results.forEach((result) => {
@@ -669,17 +669,17 @@ describe('test lmdbSearch module', () => {
 		});
 
 		it('test searchall to map', async () => {
-			let expected = Object.create(null);
+			let expected = [];
 			test_data.forEach((data) => {
-				expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
+				expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', '10%', 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.SEARCH_ALL_TO_MAP, HASH_ATTRIBUTE_NAME, true],
 				undefined
-			);
+			));
 			assert(Object.keys(results).length > 0);
 			assert.deepStrictEqual(results, expected);
 		});
@@ -693,11 +693,11 @@ describe('test lmdbSearch module', () => {
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 25, 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, expected.length);
 
 			results.forEach((result) => {
@@ -710,19 +710,19 @@ describe('test lmdbSearch module', () => {
 		});
 
 		it('test greaterthan to map', async () => {
-			let expected = Object.create(null);
+			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature > 25) {
-					expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
+					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
 				}
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 25, 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN, HASH_ATTRIBUTE_NAME, true],
 				undefined
-			);
+			));
 			assert(Object.keys(results).length > 0);
 			assert.deepStrictEqual(results, expected);
 		});
@@ -736,11 +736,11 @@ describe('test lmdbSearch module', () => {
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, expected.length);
 
 			results.forEach((result) => {
@@ -753,20 +753,20 @@ describe('test lmdbSearch module', () => {
 		});
 
 		it('test greaterthanequal to map', async () => {
-			let expected = Object.create(null);
+			let expected = [];
 			test_data.forEach((data) => {
 				// eslint-disable-next-line no-magic-numbers
 				if (data.temperature >= 40) {
-					expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
+					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
 				}
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL, HASH_ATTRIBUTE_NAME, true],
 				undefined
-			);
+			));
 			assert(Object.keys(results).length > 0);
 			assert.deepStrictEqual(results, expected);
 		});
@@ -781,11 +781,11 @@ describe('test lmdbSearch module', () => {
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 25, 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, expected.length);
 
 			results.forEach((result) => {
@@ -798,20 +798,20 @@ describe('test lmdbSearch module', () => {
 		});
 
 		it('test lessthan to map', async () => {
-			let expected = Object.create(null);
+			let expected = [];
 			test_data.forEach((data) => {
 				// eslint-disable-next-line no-magic-numbers
 				if (data.temperature < 25) {
-					expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
+					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
 				}
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 25, 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN, HASH_ATTRIBUTE_NAME, true],
 				undefined
-			);
+			));
 			assert(Object.keys(results).length > 0);
 			assert.deepStrictEqual(results, expected);
 		});
@@ -826,11 +826,11 @@ describe('test lmdbSearch module', () => {
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, expected.length);
 
 			results.forEach((result) => {
@@ -843,19 +843,19 @@ describe('test lmdbSearch module', () => {
 		});
 
 		it('test lessthanequal to map', async () => {
-			let expected = Object.create(null);
+			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature <= 40) {
-					expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
+					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
 				}
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*']);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL, HASH_ATTRIBUTE_NAME, true],
 				undefined
-			);
+			));
 			assert(Object.keys(results).length > 0);
 			assert.deepStrictEqual(results, expected);
 		});
@@ -869,11 +869,11 @@ describe('test lmdbSearch module', () => {
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*'], 66);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.BETWEEN, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, expected.length);
 
 			results.forEach((result) => {
@@ -886,19 +886,19 @@ describe('test lmdbSearch module', () => {
 		});
 
 		it('test between to map', async () => {
-			let expected = Object.create(null);
+			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature >= 40 && data.temperature <= 66) {
-					expected[data.id] = test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT);
+					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
 				}
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*'], 66);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.BETWEEN, HASH_ATTRIBUTE_NAME, true],
 				undefined
-			);
+			));
 			assert(Object.keys(results).length > 0);
 			assert.deepStrictEqual(results, expected);
 		});

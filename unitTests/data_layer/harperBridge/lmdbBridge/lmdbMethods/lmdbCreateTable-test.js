@@ -128,11 +128,11 @@ describe("test lmdbCreateTable module", ()=>{
         let all_dbis = test_utils.assertErrorSync(environment_utility.listDBIs, [new_env], undefined);
 
         assert.deepStrictEqual(all_dbis, expected_dbis);
-        let attribute_ids = test_utils.assertErrorSync(search_utility.equals,
-            [hdb_attribute_env, 'id','schema_table', `${TABLE_SYSTEM_DATA_TEST_A.schema}.${TABLE_SYSTEM_DATA_TEST_A.name}`], undefined);
+        let attribute_ids = Array.from(test_utils.assertErrorSync(search_utility.equals,
+            [hdb_attribute_env, 'id','schema_table', `${TABLE_SYSTEM_DATA_TEST_A.schema}.${TABLE_SYSTEM_DATA_TEST_A.name}`], undefined));
 
         let attribute_records = test_utils.assertErrorSync(search_utility.batchSearchByHash,
-            [hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, HDB_ATTRIBUTE_ATTRIBUTES, attribute_ids[0]], undefined);
+            [hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, HDB_ATTRIBUTE_ATTRIBUTES, attribute_ids.map(r => r.value)], undefined);
         assert.deepStrictEqual(attribute_records.length, 3);
         attribute_records.forEach(record=>{
             assert(expected_attributes.indexOf(record.attribute) > -1);
@@ -173,11 +173,11 @@ describe("test lmdbCreateTable module", ()=>{
         let all_dbis = await test_utils.assertErrorAsync(environment_utility.listDBIs, [new_env], undefined);
 
         assert.deepStrictEqual(all_dbis, expected_attributes);
-        let attribute_ids = await test_utils.assertErrorAsync(search_utility.equals,
-            [hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, 'schema_table', `${TABLE_SYSTEM_DATA_TEST_B.schema}.${TABLE_SYSTEM_DATA_TEST_B.name}`], undefined);
+        let attribute_ids = Array.from(await test_utils.assertErrorAsync(search_utility.equals,
+            [hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, 'schema_table', `${TABLE_SYSTEM_DATA_TEST_B.schema}.${TABLE_SYSTEM_DATA_TEST_B.name}`], undefined));
 
         let attribute_records = await test_utils.assertErrorAsync(search_utility.batchSearchByHash,
-            [hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, HDB_ATTRIBUTE_ATTRIBUTES, attribute_ids[0]], undefined);
+            [hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, HDB_ATTRIBUTE_ATTRIBUTES, attribute_ids.map(r => r.value)], undefined);
         assert.deepStrictEqual(attribute_records.length, 3);
         attribute_records.forEach(record=>{
             assert(expected_attributes.indexOf(record.attribute) > -1);

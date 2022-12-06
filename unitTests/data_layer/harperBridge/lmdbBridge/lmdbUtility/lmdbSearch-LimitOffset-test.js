@@ -25,7 +25,7 @@ const fs = require('fs-extra');
 const sinon = require('sinon');
 const systemSchema = require('../../../../../json/systemSchema');
 const common_utils = require('../../../../../utility/common_utils');
-
+const { orderedArray } = test_utils;
 const TIMESTAMP = Date.now();
 
 const sandbox = sinon.createSandbox();
@@ -126,11 +126,11 @@ describe('test lmdbSearch module', () => {
 			];
 
 			let search_object = new SearchObject('dev', 'test', 'state', 'CO', 'id', ATTRIBUTES, undefined, false, 20);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.EQUALS, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepStrictEqual(results.length, 20);
 			assert.deepEqual(results, expected);
 		});
@@ -143,11 +143,11 @@ describe('test lmdbSearch module', () => {
 			];
 
 			let search_object = new SearchObject('dev', 'test', 'state', 'CO', 'id', ATTRIBUTES, undefined, false, 20, 20);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.EQUALS, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepStrictEqual(results.length, 3);
 			assert.deepEqual(results, expected);
 		});
@@ -160,45 +160,45 @@ describe('test lmdbSearch module', () => {
 			];
 
 			let search_object = new SearchObject('dev', 'test', 'state', 'CO', 'id', ATTRIBUTES, undefined, true, 20, 20);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.EQUALS, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepStrictEqual(results.length, 3);
 			assert.deepEqual(results, expected);
 		});
 
 		it('test equals on string return map limit 20', async () => {
-			let expected = {
-				7: { id: 7, temperature: -3, temperature_str: -3, state: 'CO', city: 'Quitzonside' },
-				23: { id: 23, temperature: 61, temperature_str: 61, state: 'CO', city: 'Kaitlynfort' },
-				84: { id: 84, temperature: -6, temperature_str: -6, state: 'CO', city: 'West Yvonneberg' },
-				93: { id: 93, temperature: 107, temperature_str: 107, state: 'CO', city: 'Jackyland' },
-				122: { id: 122, temperature: 24, temperature_str: 24, state: 'CO', city: 'Adelberthaven' },
-				134: { id: 134, temperature: 24, temperature_str: 24, state: 'CO', city: 'Gilbertstad' },
-				144: { id: 144, temperature: 84, temperature_str: 84, state: 'CO', city: 'McGlynnbury' },
-				217: { id: 217, temperature: 91, temperature_str: 91, state: 'CO', city: 'Chelseyfurt' },
-				294: { id: 294, temperature: 78, temperature_str: 78, state: 'CO', city: 'Thomasshire' },
-				375: { id: 375, temperature: 73, temperature_str: 73, state: 'CO', city: 'Wolfbury' },
-				382: { id: 382, temperature: 46, temperature_str: 46, state: 'CO', city: 'South Katrina' },
-				512: { id: 512, temperature: 78, temperature_str: 78, state: 'CO', city: 'Curtiston' },
-				537: { id: 537, temperature: 32, temperature_str: 32, state: 'CO', city: 'North Danaview' },
-				572: { id: 572, temperature: 3, temperature_str: 3, state: 'CO', city: 'East Cesarfort' },
-				622: { id: 622, temperature: 27, temperature_str: 27, state: 'CO', city: 'Kalimouth' },
-				682: { id: 682, temperature: 24, temperature_str: 24, state: 'CO', city: 'Lake Webster' },
-				698: { id: 698, temperature: 98, temperature_str: 98, state: 'CO', city: 'Lake Cassidy' },
-				781: { id: 781, temperature: 103, temperature_str: 103, state: 'CO', city: 'Port Brooke' },
-				809: { id: 809, temperature: 51, temperature_str: 51, state: 'CO', city: 'Lake Chanceton' },
-				855: { id: 855, temperature: 1, temperature_str: 1, state: 'CO', city: 'Hannahborough' },
-			};
+			let expected = [
+				[7, { id: 7, temperature: -3, temperature_str: -3, state: 'CO', city: 'Quitzonside' }],
+				[23, { id: 23, temperature: 61, temperature_str: 61, state: 'CO', city: 'Kaitlynfort' }],
+				[84, { id: 84, temperature: -6, temperature_str: -6, state: 'CO', city: 'West Yvonneberg' }],
+				[93, { id: 93, temperature: 107, temperature_str: 107, state: 'CO', city: 'Jackyland' }],
+				[122, { id: 122, temperature: 24, temperature_str: 24, state: 'CO', city: 'Adelberthaven' }],
+				[134, { id: 134, temperature: 24, temperature_str: 24, state: 'CO', city: 'Gilbertstad' }],
+				[144, { id: 144, temperature: 84, temperature_str: 84, state: 'CO', city: 'McGlynnbury' }],
+				[217, { id: 217, temperature: 91, temperature_str: 91, state: 'CO', city: 'Chelseyfurt' }],
+				[294, { id: 294, temperature: 78, temperature_str: 78, state: 'CO', city: 'Thomasshire' }],
+				[375, { id: 375, temperature: 73, temperature_str: 73, state: 'CO', city: 'Wolfbury' }],
+				[382, { id: 382, temperature: 46, temperature_str: 46, state: 'CO', city: 'South Katrina' }],
+				[512, { id: 512, temperature: 78, temperature_str: 78, state: 'CO', city: 'Curtiston' }],
+				[537, { id: 537, temperature: 32, temperature_str: 32, state: 'CO', city: 'North Danaview' }],
+				[572, { id: 572, temperature: 3, temperature_str: 3, state: 'CO', city: 'East Cesarfort' }],
+				[622, { id: 622, temperature: 27, temperature_str: 27, state: 'CO', city: 'Kalimouth' }],
+				[682, { id: 682, temperature: 24, temperature_str: 24, state: 'CO', city: 'Lake Webster' }],
+				[698, { id: 698, temperature: 98, temperature_str: 98, state: 'CO', city: 'Lake Cassidy' }],
+				[781, { id: 781, temperature: 103, temperature_str: 103, state: 'CO', city: 'Port Brooke' }],
+				[809, { id: 809, temperature: 51, temperature_str: 51, state: 'CO', city: 'Lake Chanceton' }],
+				[855, { id: 855, temperature: 1, temperature_str: 1, state: 'CO', city: 'Hannahborough' }],
+			];
 
 			let search_object = new SearchObject('dev', 'test', 'state', 'CO', 'id', ATTRIBUTES, undefined, false, 20);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.EQUALS, HASH_ATTRIBUTE_NAME, true],
 				undefined
-			);
+			));
 			assert.deepStrictEqual(Object.keys(results).length, 20);
 			assert.deepEqual(results, expected);
 		});
@@ -220,11 +220,11 @@ describe('test lmdbSearch module', () => {
 			];
 
 			let search_object = new SearchObject('dev', 'test', 'city', 'bert', 'id', ATTRIBUTES, undefined, false, 20);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, 12);
 			assert.deepEqual(results, expected);
 		});
@@ -233,11 +233,11 @@ describe('test lmdbSearch module', () => {
 			let expected = [{ id: 966, temperature: 38, temperature_str: 38, state: 'AL', city: 'Albertostad' }];
 
 			let search_object = new SearchObject('dev', 'test', 'city', 'bert', 'id', ATTRIBUTES, undefined, false, 1, 1);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, 1);
 			assert.deepEqual(results, expected);
 		});
@@ -246,11 +246,11 @@ describe('test lmdbSearch module', () => {
 			let expected = [];
 
 			let search_object = new SearchObject('dev', 'test', 'city', 'bert', 'id', ATTRIBUTES, undefined, false, 1, 20);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, 0);
 			assert.deepEqual(results, expected);
 		});
@@ -259,68 +259,68 @@ describe('test lmdbSearch module', () => {
 			let expected = [{ id: 741, temperature: 89, temperature_str: 89, state: 'VT', city: 'South Wilbertfort' }];
 
 			let search_object = new SearchObject('dev', 'test', 'city', 'bert', 'id', ATTRIBUTES, undefined, true, 1, 1);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, 1);
 			assert.deepEqual(results, expected);
 		});
 
 		it('test  contains on string return map limit 5', async () => {
-			let expected = {
-				107: { id: 107, temperature: 33, temperature_str: 33, state: 'DE', city: 'Albertville' },
-				122: { id: 122, temperature: 24, temperature_str: 24, state: 'CO', city: 'Adelberthaven' },
-				239: { id: 239, temperature: -1, temperature_str: -1, state: 'NJ', city: 'Dibbertview' },
-				728: { id: 728, temperature: 88, temperature_str: 88, state: 'NC', city: 'Dibberthaven' },
-				966: { id: 966, temperature: 38, temperature_str: 38, state: 'AL', city: 'Albertostad' },
-			};
+			let expected = [
+				[107, { id: 107, temperature: 33, temperature_str: 33, state: 'DE', city: 'Albertville' }],
+				[122, { id: 122, temperature: 24, temperature_str: 24, state: 'CO', city: 'Adelberthaven' }],
+				[239, { id: 239, temperature: -1, temperature_str: -1, state: 'NJ', city: 'Dibbertview' }],
+				[728, { id: 728, temperature: 88, temperature_str: 88, state: 'NC', city: 'Dibberthaven' }],
+				[966, { id: 966, temperature: 38, temperature_str: 38, state: 'AL', city: 'Albertostad' }],
+			];
 
 			let search_object = new SearchObject('dev', 'test', 'city', 'bert', 'id', ATTRIBUTES, undefined, false, 5);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME, true],
 				undefined
-			);
+			));
 			assert.deepEqual(Object.keys(results).length, 5);
 			assert.deepEqual(results, expected);
 		});
 
 		it('test  contains on string return map limit 5 offset 5', async () => {
-			let expected = {
-				102: { id: 102, temperature: 98, temperature_str: 98, state: 'NM', city: 'South Gilbert' },
-				134: { id: 134, temperature: 24, temperature_str: 24, state: 'CO', city: 'Gilbertstad' },
-				190: { id: 190, temperature: 50, temperature_str: 50, state: 'OH', city: 'Gilbertview' },
-				765: { id: 765, temperature: -4, temperature_str: -4, state: 'AZ', city: 'Lake Gilbertchester' },
-				923: { id: 923, temperature: 34, temperature_str: 34, state: 'SD', city: 'North Filibertoland' },
-			};
+			let expected = [
+				[102, { id: 102, temperature: 98, temperature_str: 98, state: 'NM', city: 'South Gilbert' }],
+				[134, { id: 134, temperature: 24, temperature_str: 24, state: 'CO', city: 'Gilbertstad' }],
+				[190, { id: 190, temperature: 50, temperature_str: 50, state: 'OH', city: 'Gilbertview' }],
+				[765, { id: 765, temperature: -4, temperature_str: -4, state: 'AZ', city: 'Lake Gilbertchester' }],
+				[923, { id: 923, temperature: 34, temperature_str: 34, state: 'SD', city: 'North Filibertoland' }],
+			];
 
 			let search_object = new SearchObject('dev', 'test', 'city', 'bert', 'id', ATTRIBUTES, undefined, false, 5, 5);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME, true],
 				undefined
-			);
+			));
 			assert.deepEqual(Object.keys(results).length, 5);
 			assert.deepEqual(results, expected);
 		});
 
 		it('test  contains on string return map reverse limit 5 offset 5', async () => {
-			let expected = {
-				107: { id: 107, temperature: 33, temperature_str: 33, state: 'DE', city: 'Albertville' },
-				134: { id: 134, temperature: 24, temperature_str: 24, state: 'CO', city: 'Gilbertstad' },
-				190: { id: 190, temperature: 50, temperature_str: 50, state: 'OH', city: 'Gilbertview' },
-				239: { id: 239, temperature: -1, temperature_str: -1, state: 'NJ', city: 'Dibbertview' },
-				728: { id: 728, temperature: 88, temperature_str: 88, state: 'NC', city: 'Dibberthaven' },
-			};
+			let expected = [
+				[107, { id: 107, temperature: 33, temperature_str: 33, state: 'DE', city: 'Albertville' }],
+				[134, { id: 134, temperature: 24, temperature_str: 24, state: 'CO', city: 'Gilbertstad' }],
+				[190, { id: 190, temperature: 50, temperature_str: 50, state: 'OH', city: 'Gilbertview' }],
+				[239, { id: 239, temperature: -1, temperature_str: -1, state: 'NJ', city: 'Dibbertview' }],
+				[728, { id: 728, temperature: 88, temperature_str: 88, state: 'NC', city: 'Dibberthaven' }],
+			];
 
 			let search_object = new SearchObject('dev', 'test', 'city', 'bert', 'id', ATTRIBUTES, undefined, true, 5, 5);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.CONTAINS, HASH_ATTRIBUTE_NAME, true],
 				undefined
-			);
+			));
 			assert.deepEqual(Object.keys(results).length, 5);
 			assert.deepEqual(results, expected);
 		});
@@ -340,11 +340,11 @@ describe('test lmdbSearch module', () => {
 			];
 
 			let search_object = new SearchObject('dev', 'test', 'city', 'land', 'id', ATTRIBUTES, undefined, false, 10);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.ENDS_WITH, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(Object.keys(results).length, 10);
 			assert.deepEqual(results, expected);
 		});
@@ -364,11 +364,11 @@ describe('test lmdbSearch module', () => {
 			];
 
 			let search_object = new SearchObject('dev', 'test', 'city', 'land', 'id', ATTRIBUTES, undefined, false, 10, 10);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.ENDS_WITH, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(Object.keys(results).length, 10);
 			assert.deepEqual(results, expected);
 		});
@@ -388,11 +388,11 @@ describe('test lmdbSearch module', () => {
 			];
 
 			let search_object = new SearchObject('dev', 'test', 'city', 'land', 'id', ATTRIBUTES, undefined, true, 10, 10);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.ENDS_WITH, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(Object.keys(results).length, 10);
 			assert.deepEqual(results, expected);
 		});
@@ -412,11 +412,11 @@ describe('test lmdbSearch module', () => {
 			];
 
 			let search_object = new SearchObject('dev', 'test', 'city', 'South', 'id', ATTRIBUTES, undefined, false, 10);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.STARTS_WITH, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, 10);
 			assert.deepEqual(results, expected);
 		});
@@ -436,11 +436,11 @@ describe('test lmdbSearch module', () => {
 			];
 
 			let search_object = new SearchObject('dev', 'test', 'city', 'South', 'id', ATTRIBUTES, undefined, false, 10, 10);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.STARTS_WITH, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, 10);
 			assert.deepEqual(results, expected);
 		});
@@ -460,11 +460,11 @@ describe('test lmdbSearch module', () => {
 			];
 
 			let search_object = new SearchObject('dev', 'test', 'city', 'South', 'id', ATTRIBUTES, undefined, true, 10);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.STARTS_WITH, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, 10);
 			assert.deepEqual(results, expected);
 		});
@@ -484,11 +484,11 @@ describe('test lmdbSearch module', () => {
 			];
 
 			let search_object = new SearchObject('dev', 'test', 'city', 'South', 'id', ATTRIBUTES, undefined, true, 10, 10);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.STARTS_WITH, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, 10);
 			assert.deepEqual(results, expected);
 		});
@@ -508,11 +508,11 @@ describe('test lmdbSearch module', () => {
 			];
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 25, 'id', ATTRIBUTES, undefined, false, 10);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, 10);
 			assert.deepEqual(results, expected);
 		});
@@ -543,11 +543,11 @@ describe('test lmdbSearch module', () => {
 				10,
 				10
 			);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, 10);
 			assert.deepEqual(results, expected);
 		});
@@ -567,11 +567,11 @@ describe('test lmdbSearch module', () => {
 			];
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ATTRIBUTES, undefined, false, 10);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, 10);
 			assert.deepEqual(results, expected);
 		});
@@ -602,11 +602,11 @@ describe('test lmdbSearch module', () => {
 				10,
 				10
 			);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, 10);
 			assert.deepEqual(results, expected);
 		});
@@ -625,11 +625,11 @@ describe('test lmdbSearch module', () => {
 				{ id: 989, temperature: -10, temperature_str: -10, state: 'OR', city: 'Greenport' },
 			];
 			let search_object = new SearchObject('dev', 'test', 'temperature', 25, 'id', ATTRIBUTES, undefined, false, 10);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, 10);
 			assert.deepEqual(results, expected);
 		});
@@ -659,11 +659,11 @@ describe('test lmdbSearch module', () => {
 				10,
 				10
 			);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, 10);
 			assert.deepEqual(results, expected);
 		});
@@ -682,11 +682,11 @@ describe('test lmdbSearch module', () => {
 				{ id: 989, temperature: -10, temperature_str: -10, state: 'OR', city: 'Greenport' },
 			];
 			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ATTRIBUTES, undefined, false, 10);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, 10);
 			assert.deepEqual(results, expected);
 		});
@@ -716,11 +716,11 @@ describe('test lmdbSearch module', () => {
 				10,
 				10
 			);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, 10);
 			assert.deepEqual(results, expected);
 		});
@@ -740,11 +740,11 @@ describe('test lmdbSearch module', () => {
 			];
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ATTRIBUTES, 66, false, 10);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.BETWEEN, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, 10);
 			assert.deepEqual(results, expected);
 		});
@@ -764,11 +764,11 @@ describe('test lmdbSearch module', () => {
 			];
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ATTRIBUTES, 66, false, 10, 10);
-			let results = await test_utils.assertErrorAsync(
+			let results = orderedArray(await test_utils.assertErrorAsync(
 				lmdb_search.executeSearch,
 				[search_object, lmdb_terms.SEARCH_TYPES.BETWEEN, HASH_ATTRIBUTE_NAME],
 				undefined
-			);
+			));
 			assert.deepEqual(results.length, 10);
 			assert.deepEqual(results, expected);
 		});
