@@ -19,6 +19,7 @@ module.exports = {
 	startWorker,
 	restartWorkers,
 	shutdownWorkers,
+	workers,
 };
 
 function startWorker(path, options = {}) {

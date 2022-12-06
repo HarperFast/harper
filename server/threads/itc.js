@@ -20,7 +20,8 @@ if (parentPort) {
 			thread_ports.push(parent_message.port);
 			parent_message.port.on('message', (event) => {
 				validateEvent(event);
-				server_ipc_handlers[event.type](event);
+				if (server_ipc_handlers[event.type])
+					server_ipc_handlers[event.type](event);
 			}).unref();
 		}
 	}).unref();
@@ -31,7 +32,7 @@ if (parentPort) {
  * @param event
  */
 function sendItcEvent(event) {
-	if (!isMainThread) event.message.originator = threadId;
+	if (!isMainThread && event.message) event.message.originator = threadId;
 	for (let port of thread_ports) {
 		port.postMessage(event);
 	}

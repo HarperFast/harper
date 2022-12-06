@@ -8,8 +8,8 @@ const schema_describe = require('../../data_layer/schemaDescribe');
 const user_schema = require('../../security/user');
 const { validateEvent } = require('../threads/itc');
 const { getMetrics } = require('../../utility/environment/systemInformation');
-const {sendItcEvent} = require("../threads/itc");
-const IPCEventObject = require("./utility/IPCEventObject");
+const { sendItcEvent } = require('../threads/itc');
+const IPCEventObject = require('./utility/IPCEventObject');
 const process = require('process');
 
 /**
