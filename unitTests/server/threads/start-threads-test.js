@@ -4,9 +4,6 @@ const assert = require('assert');
 
 describe('(Re)start workers', () => {
 	let workers = [];
-	before(function() {
-		//workers = startHTTPThreads(4);
-	});
 	it('Start worker and handle errors/restarts', async function () {
 		let worker1StartedCount = 0;
 		let worker2StartedCount = 0;
@@ -25,7 +22,7 @@ describe('(Re)start workers', () => {
 					worker1Started();
 			},
 		});
-		let worker2 = startWorker('unitTests/server/threads/thread-for-tests', {
+		startWorker('unitTests/server/threads/thread-for-tests', {
 			name: 'test',
 			onStarted() {
 				worker2StartedCount++;
@@ -59,8 +56,7 @@ describe('(Re)start workers', () => {
 		let worker2 = startWorker('unitTests/server/threads/thread-for-tests', { name: 'test'});
 		await shutdownWorkers('test');
 		assert.equal(workers.length, initial_workers_num);
-	})
-
+	});
 
 	afterEach(function() {
 		shutdownWorkers(terms.SERVICES.HDB_CORE);

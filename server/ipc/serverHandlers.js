@@ -19,8 +19,6 @@ const process = require('process');
 const server_ipc_handlers = {
 	[hdb_terms.IPC_EVENT_TYPES.SCHEMA]: schemaHandler,
 	[hdb_terms.IPC_EVENT_TYPES.USER]: userHandler,
-	[hdb_terms.IPC_EVENT_TYPES.METRICS]: metricsHandler,
-	[hdb_terms.IPC_EVENT_TYPES.GET_METRICS]: getMetricsHandler,
 };
 
 /**
@@ -111,15 +109,6 @@ async function userHandler(event) {
 	} catch (err) {
 		hdb_logger.error(err);
 	}
-}
-
-async function getMetricsHandler() {
-	sendItcEvent(new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.METRICS, await getMetrics()));
-}
-
-global.metrics = {};
-function metricsHandler({ message }) {
-	global.metrics[message.pid] = message;
 }
 
 module.exports = server_ipc_handlers;
