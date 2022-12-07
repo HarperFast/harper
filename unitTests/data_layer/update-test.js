@@ -31,12 +31,16 @@ describe('Test update module', () => {
 		const transaction_stub = {
 			writeTransaction: (schema, table, callback) => callback(),
 		};
+		const write_stub = {
+			flush: () => {}
+		};
 		const update_records_stub = sandbox.stub().resolves();
 		let p_get_table_schema_rw;
 		let p_search_rw;
 		let update_records_rw;
 		let alasql_parse_spy;
 		let transaction_rw;
+		let write_rw;
 
 		const fake_table_info = {
 			hash_attribute: 'id',
@@ -81,6 +85,7 @@ describe('Test update module', () => {
 			p_get_table_schema_rw = update.__set__('p_get_table_schema', p_get_table_schema_stub);
 			p_search_rw = update.__set__('p_search', p_search_stub);
 			update_records_rw = update.__set__('updateRecords', update_records_stub);
+			write_rw = update.__set__('write', write_stub);
 			alasql_parse_spy = sandbox.spy(alasql, 'parse');
 		});
 
@@ -88,6 +93,7 @@ describe('Test update module', () => {
 			p_get_table_schema_rw();
 			p_search_rw();
 			update_records_rw();
+			write_rw();
 			transaction_rw();
 		});
 

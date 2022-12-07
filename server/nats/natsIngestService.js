@@ -18,6 +18,7 @@ const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 const SUBSCRIPTION_OPTIONS = {
 	durable: nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name,
 	queue: nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_group,
+	filterSubject: `${nats_terms.SUBJECT_PREFIXES.TXN}.>`,
 };
 
 let nats_connection;

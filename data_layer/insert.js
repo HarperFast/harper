@@ -27,6 +27,7 @@ module.exports = {
 	update: updateData,
 	upsert: upsertData,
 	validation,
+	flush,
 };
 
 //IMPORTANT - This validation function is the async version of the code in harperBridge/bridgeUtility/insertUpdateValidate.js
@@ -264,4 +265,8 @@ function returnObject(action, written_hashes, object, skipped, new_attributes, t
 	return_object.update_hashes = written_hashes;
 	return_object.skipped_hashes = skipped;
 	return return_object;
+}
+
+function flush(object) {
+	return harperBridge.flush(object.schema, object.table);
 }

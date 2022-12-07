@@ -116,7 +116,7 @@ describe('Test transactToClusteringUtilities module', () => {
 		];
 		const sendOperationTransaction = transactToClusteringUtilities.__get__('sendOperationTransaction');
 		await sendOperationTransaction(UPSERT_OP, [1, 2, 3], 'node1');
-		expect(publish_to_stream_stub.getCall(0).args[0]).to.equal('dev.dog');
+		expect(publish_to_stream_stub.getCall(0).args[0]).to.equal('txn.dev.dog');
 		expect(publish_to_stream_stub.getCall(0).args[1]).to.equal('9d2969dfab3c9b5daa6f8d3d0b3ad347');
 		expect(publish_to_stream_stub.getCall(0).args[2]).to.eql(expected_transaction);
 		expect(publish_to_stream_stub.getCall(0).args[3]).to.eql([]);

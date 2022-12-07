@@ -16,11 +16,11 @@ const operation_function_caller = require('../../../utility/OperationFunctionCal
 const nats_ingest_service = rewire('../../../server/nats/natsIngestService');
 
 const TEST_TIMEOUT = 30000;
-const SUBJECT_NAME = 'dev.hippopotamus';
+const SUBJECT_NAME = 'txn.dev.hippopotamus';
 const STREAM_NAME = '9edbde5c46cbe3b97ce08a2d8a033b2b';
 
 async function setupTestStreamAndSource() {
-	await nats_utils.createLocalStream(STREAM_NAME, ['dev.hippopotamus.testLeafServer-leaf']);
+	await nats_utils.createLocalStream(STREAM_NAME, ['txn.dev.hippopotamus.testLeafServer-leaf']);
 	await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
 	await nats_utils.addSourceToWorkStream('testLeafServer-leaf', nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, {
 		schema: 'dev',
@@ -79,7 +79,7 @@ describe('Test natsIngestService module', () => {
 	}).timeout(10000);
 
 	describe('Test workQueueListener function', () => {
-		const SUBJECT_NAME = 'dev.hippopotamus';
+		const SUBJECT_NAME = 'txn.dev.hippopotamus';
 		const STREAM_NAME = 'dev_hippopotamus';
 		let message_processor_stub = sandbox.stub().resolves();
 		let message_processor_rw;
@@ -138,6 +138,8 @@ describe('Test natsIngestService module', () => {
 			};
 
 			await setupTestStreamAndSource();
+			// This first publish should not show up in queue because of the filterSubject on the sub
+			await nats_utils.publishToStream('msgid.dev.hippopotamus', STREAM_NAME, [test_operation_3]);
 			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, [test_operation_1]);
 			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, [test_operation_2]);
 			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, [test_operation_3]);
