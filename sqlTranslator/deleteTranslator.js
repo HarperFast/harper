@@ -9,6 +9,7 @@ const global_schema = require('../utility/globalSchema');
 const transaction = require('../data_layer/transaction');
 
 const transact_to_clustering_utilities = require('../utility/clustering/transactToClusteringUtilities');
+const write = require('../data_layer/insert');
 
 const RECORD = 'record';
 const SUCCESS = 'successfully deleted';
@@ -51,6 +52,7 @@ async function convertDelete({ statement, hdb_user }) {
 			delete_obj.records = await p_search_search(search_statement);
 			return harperBridge.deleteRecords(delete_obj);
 		});
+		await write.flush({ schema: table_info.schema, table: table_info.name });
 
 		// With non SQL CUD actions, the `post` operation passed into OperationFunctionCaller would send the transaction to the cluster.
 		// Since we don`t send Most SQL options to the cluster, we need to explicitly send it.

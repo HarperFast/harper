@@ -13,7 +13,10 @@ const serverUtilities_rw = rewire('../../../server/serverHelpers/serverUtilities
 const operation_function_caller = require('../../../utility/OperationFunctionCaller');
 const logger = require('../../../utility/logging/harper_logger');
 const terms = require('../../../utility/hdbTerms');
-
+const insert_stub = {
+	flush: () => {},
+};
+serverUtilities_rw.__set__('insert', insert_stub);
 const test_func_data = { data: 'this is data', more_data: 'this is more data' };
 const test_error = 'This is bad!';
 

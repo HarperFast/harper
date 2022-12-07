@@ -11,3 +11,7 @@ jobs:
   runDockerClusterTestC:
     uses: ./.github/workflows/docker-cluster-test-c.yaml
     secrets: inherit
+  runDockerClusterTestB:
+    uses: ./.github/workflows/docker-cluster-test-b.yaml
+  runDockerClusterTestC:
+    uses: ./.github/workflows/docker-cluster-test-c.yaml

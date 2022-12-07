@@ -22,6 +22,7 @@ const lmdbDropTable = require('./lmdbMethods/lmdbDropTable');
 const lmdbDropAttribute = require('./lmdbMethods/lmdbDropAttribute');
 const lmdbReadAuditLog = require('./lmdbMethods/lmdbReadAuditLog');
 const lmdbTransaction = require('./lmdbMethods/lmdbTransaction');
+const lmdbFlush = require('./lmdbMethods/lmdbFlush');
 
 class LMDBBridge extends BridgeMethods {
 	async searchByConditions(search_object) {
@@ -190,6 +191,10 @@ class LMDBBridge extends BridgeMethods {
 
 	writeTransaction(schema, table, callback) {
 		return lmdbTransaction.writeTransaction(schema, table, callback);
+	}
+
+	flush(schema, table) {
+		return lmdbFlush.flush(schema, table);
 	}
 }
 

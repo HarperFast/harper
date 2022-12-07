@@ -23,7 +23,14 @@ const terms = require('../utility/hdbTerms');
 const { hdb_errors, handleHDBError } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
 const transact_to_clustering_utilities = require('../utility/clustering/transactToClusteringUtilities');
-const cb_post_operation_handler = util.callbackify(transact_to_clustering_utilities.postOperationHandler);
+
+function postWrite(request_body, result, originators) {
+	return Promise.all([
+		transact_to_clustering_utilities.postOperationHandler(request_body, result, originators),
+		insert.flush(request_body),
+	]);
+}
+const cb_post_operation_handler = util.callbackify(postWrite);
 
 //here we call to define and import custom functions to alasql
 alasql_function_importer(alasql);

@@ -1,0 +1,45 @@
+on:
+  workflow_dispatch:
+    inputs:
+      instanceType:
+        default: "c5.large"
+      instanceCount:
+        default: "1"
+      installType:
+        type: string
+        default: "sourceCode"
+        description: "Options: sourceCode, buildPackage, none"
+name: Create Test Instances
+jobs:
+  build:
+    uses: ./.github/workflows/build.yaml
+  createInstances:
+    needs:
+      - build
+    uses: ./.github/workflows/create-instances.yaml
+    with:
+      instanceCount: ${{ inputs.instanceCount }}
+      instanceType: ${{ inputs.instanceType }}
+      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      callingWorkflow: ${{ github.workflow }}
+      installType: ${{ inputs.installType }}
+    secrets: inherit
+  registerInstances:
+    needs: 
+      - createInstances
+    uses: ./.github/workflows/install-and-register.yaml
+    with:
+      publicDns: ${{ needs.createInstances.outputs.publicDnsNames }}
+      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      nodeVersion: ${{ needs.build.outputs.nodeVersion }}
+    secrets: inherit
+  destroyInstances:
+    if: ${{ failure() }}
+    needs: createInstances
+    uses: ./.github/workflows/destroy-instances.yaml
+    with:
+      instanceCount: "${{ inputs.instanceCount }}"
+      instanceType: ${{ inputs.instanceType }}
+      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      callingWorkflow: ${{ github.workflow }}
+    secrets: inherit
