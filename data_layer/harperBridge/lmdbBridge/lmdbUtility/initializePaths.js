@@ -19,7 +19,8 @@ function getBaseSchemaPath() {
 	}
 
 	if (env.getHdbBasePath() !== undefined) {
-		BASE_SCHEMA_PATH = path.join(env.getHdbBasePath(), hdb_terms.SCHEMA_DIR_NAME);
+		BASE_SCHEMA_PATH = env.get(hdb_terms.CONFIG_PARAMS.STORAGE_PATH) ||
+			path.join(env.getHdbBasePath(), hdb_terms.SCHEMA_DIR_NAME);
 		return BASE_SCHEMA_PATH;
 	}
 }
@@ -34,24 +35,38 @@ function getSystemSchemaPath() {
 	}
 
 	if (env.getHdbBasePath() !== undefined) {
-		SYSTEM_SCHEMA_PATH = path.join(getBaseSchemaPath(), hdb_terms.SYSTEM_SCHEMA_NAME);
+		SYSTEM_SCHEMA_PATH = getSchemaPath(hdb_terms.SYSTEM_SCHEMA_NAME);
 		return SYSTEM_SCHEMA_PATH;
 	}
 }
 
-function getTransactionAuditStorePath() {
+function getTransactionAuditStoreBasePath() {
 	if (TRANSACTION_STORE_PATH !== undefined) {
 		return TRANSACTION_STORE_PATH;
 	}
 
 	if (env.getHdbBasePath() !== undefined) {
-		TRANSACTION_STORE_PATH = path.join(env.getHdbBasePath(), hdb_terms.TRANSACTIONS_DIR_NAME);
+		TRANSACTION_STORE_PATH = env.get(hdb_terms.CONFIG_PARAMS.STORAGE_AUDIT_PATH) ||
+			path.join(env.getHdbBasePath(), hdb_terms.TRANSACTIONS_DIR_NAME);
 		return TRANSACTION_STORE_PATH;
 	}
+}
+
+function getTransactionAuditStorePath(schema, table) {
+	let schema_config = env.get(hdb_terms.CONFIG_PARAMS.SCHEMAS)?.[schema];
+	return (table && schema_config?.tables?.[table]?.auditPath) || schema_config?.auditPath ||
+		path.join(getTransactionAuditStoreBasePath(), schema.toString());
+}
+
+function getSchemaPath(schema, table) {
+	let schema_config = env.get(hdb_terms.CONFIG_PARAMS.SCHEMAS)?.[schema];
+	return (table && schema_config?.tables?.[table]?.path) || schema_config?.path ||
+		path.join(getBaseSchemaPath(), schema.toString());
 }
 
 module.exports = {
 	getBaseSchemaPath,
 	getSystemSchemaPath,
 	getTransactionAuditStorePath,
+	getSchemaPath,
 };

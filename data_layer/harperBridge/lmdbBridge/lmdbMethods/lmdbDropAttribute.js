@@ -9,8 +9,7 @@ const environment_utility = require('../../../../utility/lmdb/environmentUtility
 const system_schema = require('../../../../json/systemSchema.json');
 const search_by_value = require('./lmdbSearchByValue');
 const delete_records = require('./lmdbDeleteRecords');
-const { getBaseSchemaPath } = require('../lmdbUtility/initializePaths');
-const path = require('path');
+const { getSchemaPath } = require('../lmdbUtility/initializePaths');
 
 module.exports = lmdbDropAttribute;
 
@@ -31,7 +30,7 @@ async function lmdbDropAttribute(drop_attribute_obj, remove_data = true) {
 	//remove meta data
 	let delete_results = await dropAttributeFromSystem(drop_attribute_obj);
 	//drop dbi
-	let schema_path = path.join(getBaseSchemaPath(), drop_attribute_obj.schema.toString());
+	let schema_path = getSchemaPath(drop_attribute_obj.schema, drop_attribute_obj.table);
 	let env = await environment_utility.openEnvironment(schema_path, drop_attribute_obj.table);
 
 	//in the scenario of drop table / schema we don't need to remove individual elements since we are removing entire environments

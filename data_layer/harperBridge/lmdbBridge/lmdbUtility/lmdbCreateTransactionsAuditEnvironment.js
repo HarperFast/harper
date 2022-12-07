@@ -1,6 +1,5 @@
 'use strict';
 
-const path = require('path');
 const fs = require('fs-extra');
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
 const { getTransactionAuditStorePath } = require('../lmdbUtility/initializePaths');
@@ -19,7 +18,7 @@ async function createTransactionsAuditEnvironment(table_create_obj) {
 	let env;
 	try {
 		//create transactions environment for table
-		let transaction_path = path.join(getTransactionAuditStorePath(), table_create_obj.schema.toString());
+		let transaction_path = getTransactionAuditStorePath(table_create_obj.schema, table_create_obj.table);
 		await fs.mkdirp(transaction_path);
 		env = await environment_utility.createEnvironment(transaction_path, table_create_obj.table, true);
 	} catch (e) {

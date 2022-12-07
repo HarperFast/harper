@@ -9,11 +9,9 @@ const delete_records = require('./lmdbDeleteRecords');
 const get_data_by_hash = require('./lmdbGetDataByHash');
 const search_data_by_value = require('./lmdbSearchByValue');
 const hdb_terms = require('../../../../utility/hdbTerms');
-const hdb_utils = require('../../../../utility/common_utils');
-const path = require('path');
-const {getBaseSchemaPath} = require('../lmdbUtility/initializePaths');
-const {handleHDBError, hdb_errors} = require('../../../../utility/errors/hdbError');
-const {HDB_ERROR_MSGS, HTTP_STATUS_CODES} = hdb_errors;
+const { getSchemaPath } = require('../lmdbUtility/initializePaths');
+const { handleHDBError, hdb_errors } = require('../../../../utility/errors/hdbError');
+const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 module.exports = lmdbDropSchema;
 
@@ -63,8 +61,7 @@ async function lmdbDropSchema(drop_schema_obj) {
 
 		// Delete the schema from the system > hdb_schema datastore
 		await delete_records(delete_schema_obj);
-
-		let schema_path = path.join(getBaseSchemaPath(), delete_schema.toString());
+		let schema_path = getSchemaPath(delete_schema.schema);
 		await fs.remove(schema_path);
 	} catch (err) {
 		throw err;

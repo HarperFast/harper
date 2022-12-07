@@ -306,6 +306,7 @@ function updateConfigValue(param, value, parsed_args = undefined, create_backup 
 	logger.trace(`Config parameter: ${param} updated with value: ${value}`);
 }
 
+const PRESERVED_PROPERTIES = ['schemas'];
 /**
  * Flattens the JSON version of HarperDB config with underscores separating each parent/child key.
  * @param obj
@@ -317,7 +318,7 @@ function flattenConfig(obj) {
 	for (const i in obj) {
 		if (!obj.hasOwnProperty(i)) continue;
 
-		if (typeof obj[i] == 'object' && obj[i] !== null && !Array.isArray(obj[i])) {
+		if (typeof obj[i] == 'object' && obj[i] !== null && !Array.isArray(obj[i]) && !PRESERVED_PROPERTIES.includes(i)) {
 			const flat_obj = flattenConfig(obj[i]);
 			for (const x in flat_obj) {
 				if (!flat_obj.hasOwnProperty(x)) continue;

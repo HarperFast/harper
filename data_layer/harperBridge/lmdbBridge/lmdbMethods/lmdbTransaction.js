@@ -1,7 +1,6 @@
 'use strict';
 
-const path = require('path');
-const { getBaseSchemaPath } = require('../lmdbUtility/initializePaths');
+const { getSchemaPath } = require('../lmdbUtility/initializePaths');
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
 
 module.exports = {
@@ -16,7 +15,7 @@ module.exports = {
  * @returns {Promise<any>}
  */
 async function writeTransaction(schema, table, callback) {
-	let env_base_path = path.join(getBaseSchemaPath(), schema);
+	let env_base_path = getSchemaPath(schema, table);
 	let environment = await environment_utility.openEnvironment(env_base_path, table);
 	return environment.transaction(callback);
 }

@@ -2,8 +2,7 @@
 
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
 const search_validator = require('../../../../validation/searchValidator');
-const path = require('path');
-const { getBaseSchemaPath } = require('./initializePaths');
+const { getSchemaPath } = require('./initializePaths');
 
 module.exports = initialize;
 
@@ -17,6 +16,6 @@ function initialize(search_object) {
 	if (validation_error) {
 		throw validation_error;
 	}
-	let env_base_path = path.join(getBaseSchemaPath(), search_object.schema.toString());
+	let env_base_path = getSchemaPath(search_object.schema, search_object.table);
 	return environment_utility.openEnvironment(env_base_path, search_object.table);
 }
