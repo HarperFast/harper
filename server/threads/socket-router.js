@@ -18,7 +18,7 @@ env.initSync();
 function startHTTPThreads(thread_count = 2) {
 	for (let i = 0; i < thread_count; i++) {
 		startWorker('server/threads/thread-http-server.js', {
-			name: 'http',
+			name: hdb_terms.THREAD_TYPES.HTTP,
 			onStarted(worker) {
 				// note that this can be called multiple times, once when started, and again when threads are restarted
 				workers[i] = worker;

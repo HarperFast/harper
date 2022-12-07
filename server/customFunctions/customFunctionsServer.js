@@ -157,7 +157,7 @@ async function buildRoutes(cf_server) {
 						dirNameRoutePrefix: false,
 						options: {
 							hdbCore: parent.hdbCore,
-							logger: harper_logger,
+							logger: harper_logger.loggerWithTag('custom-function'),
 							prefix: `/${project_name}`,
 						},
 					}))

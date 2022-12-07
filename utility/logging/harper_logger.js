@@ -53,6 +53,7 @@ module.exports = {
 	trace,
 	setLogLevel,
 	log_level,
+	loggerWithTag,
 };
 
 /**
@@ -117,8 +118,40 @@ function initLogSettings() {
 		error(err);
 		throw err;
 	}
+	logConsole('error', error);
+	logConsole('warn', warn);
+	logConsole('log', info);
+	logConsole('info', info);
+	logConsole('debug', debug);
+	logConsole('trace', trace);
 }
 
+function logConsole(level, logger) {
+	let original_logger = console[level];
+	original_logger = original_logger.original || original_logger;
+	console[level] = function(...args) {
+		logger(...args);
+		return original_logger.apply(console, args);
+	};
+	console[level].original = original_logger;
+}
+
+function loggerWithTag(tag) {
+	return {
+		notify: logWithTag(notify),
+		fatal: logWithTag(fatal),
+		error: logWithTag(error),
+		warn: logWithTag(warn),
+		info: logWithTag(info),
+		debug: logWithTag(debug),
+		trace: logWithTag(trace),
+	};
+	function logWithTag(logger) {
+		return function(...args) {
+			return logger(tag, ...args);
+		};
+	}
+}
 /**
  * If a process is not run by pm2 (like the bin modules) create a log file
  * @param log_name

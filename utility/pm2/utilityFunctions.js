@@ -305,6 +305,7 @@ function describe(service_name) {
 }
 
 function kill() {
+	if (!scripting_mode) return Promise.resolve();
 	return new Promise(async (resolve, reject) => {
 		try {
 			await connect();

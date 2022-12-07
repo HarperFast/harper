@@ -46,7 +46,7 @@ function handleSigterm() {
 }
 
 function serverErrorHandler(error, req, resp) {
-	harper_logger.error(error);
+	harper_logger[error.logLevel || 'error'](error);
 	if (error.http_resp_code) {
 		if (typeof error.http_resp_msg === 'string') {
 			return resp.code(error.http_resp_code).send({ error: error.http_resp_msg });
