@@ -195,7 +195,13 @@ function createLogRecord(level, args) {
 	let log_msg = '';
 	let length = args.length;
 	const last_arg = length - 1;
-	for (let x = 0; x < length; x++) {
+	let tags = level === 'info' ? '' : '[' + level + ']';
+	let x = 0;
+	if (typeof args[0] === 'string' && /\[\w+]/.test(args[0])) {
+		tags = tags ? tags.slice(0, -1) + ' ' + args[0].slice(1) : args[0];
+		x++;
+	}
+	for (; x < length; x++) {
 		let arg = args[x];
 		if (arg instanceof Error && arg.stack) {
 			log_msg += arg.stack;
@@ -208,7 +214,8 @@ function createLogRecord(level, args) {
 			log_msg += ' ';
 		}
 	}
-	return `{"level": "${level}", "tid": ${threadId}, "timestamp": "${date_now}", "message": "${log_msg}"}\n`;
+
+	return `${date_now}${tags ? ' ' + tags : tags}: ${log_msg}\n`;
 }
 
 /**
