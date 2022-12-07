@@ -135,7 +135,7 @@ describe('Test pm2 servicesConfig module', () => {
 		const hdb_root = env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
 		const leaf_config_path = path.join(hdb_root, 'clustering', 'leaf.json');
 		const expected_result = {
-			name: 'Clustering Leaf',
+			name: 'Clustering Leaf-9991',
 			script: NATS_SERVER_BINARY_PATH,
 			args: `-c ${leaf_config_path}`,
 			exec_mode: 'fork',

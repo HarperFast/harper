@@ -3,7 +3,9 @@ const terms = require('../../../utility/hdbTerms');
 const assert = require('assert');
 
 describe('(Re)start workers', () => {
-	let workers = [];
+	before(async function() {
+		await shutdownWorkers();
+	});
 	it('Start worker and handle errors/restarts', async function () {
 		let worker1StartedCount = 0;
 		let worker2StartedCount = 0;
@@ -58,7 +60,7 @@ describe('(Re)start workers', () => {
 		assert.equal(workers.length, initial_workers_num);
 	});
 
-	afterEach(function() {
-		shutdownWorkers(terms.SERVICES.HDB_CORE);
+	afterEach(async function() {
+		await shutdownWorkers('test');
 	});
 });

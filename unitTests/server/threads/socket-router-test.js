@@ -76,9 +76,12 @@ describe('Socket Router', () => {
 		assert.equal(sortedWorkers[3].socketsRouted, 0, 'Received correct connections');
 	});
 	afterEach(function(done) {
+		for (let worker of workers) {
+			delete worker.postMessage; // restore prototype method
+		}
 		server.close(done);
 	});
-	after(function() {
-		shutdownWorkers(terms.SERVICES.HDB_CORE);
+	after(async function() {
+		await shutdownWorkers(terms.THREAD_TYPES.HTTP);
 	});
 });
