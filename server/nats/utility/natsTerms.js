@@ -1,5 +1,5 @@
 'use strict';
-const { platform } = require('os')
+const { platform } = require('os');
 
 const NATS_SERVER_ZIP = 'nats-server.zip';
 const NATS_SERVER_NAME = 'nats-server';
@@ -61,6 +61,11 @@ const CLUSTER_STATUS_STATUSES = {
 	TIMEOUT: 'Timeout',
 };
 
+const SUBJECT_PREFIXES = {
+	TXN: 'txn',
+	MSGID: 'msgid',
+};
+
 module.exports = {
 	NATS_SERVER_ZIP,
 	NATS_SERVER_NAME,
@@ -76,4 +81,5 @@ module.exports = {
 	UPDATE_REMOTE_RESPONSE_STATUSES,
 	CLUSTER_STATUS_STATUSES,
 	REQUEST_SUBJECT,
+	SUBJECT_PREFIXES,
 };

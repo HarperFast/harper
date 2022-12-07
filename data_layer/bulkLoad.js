@@ -4,6 +4,7 @@ const insert = require('./insert');
 const validator = require('../validation/fileLoadValidator');
 const needle = require('needle');
 const hdb_terms = require('../utility/hdbTerms');
+const nats_terms = require('../server/nats/utility/natsTerms');
 const hdb_utils = require('../utility/common_utils');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES, HDB_ERROR_MSGS, CHECK_LOGS_WRAPPER } = hdb_errors;
@@ -808,7 +809,7 @@ async function postCSVLoadFunction(fields, orig_bulk_msg, result, originators = 
 		};
 
 		await nats_utils.publishToStream(
-			`${orig_bulk_msg.schema}.${orig_bulk_msg.table}`,
+			`${nats_terms.SUBJECT_PREFIXES.TXN}.${orig_bulk_msg.schema}.${orig_bulk_msg.table}`,
 			crypto_hash.createNatsTableStreamName(orig_bulk_msg.schema, orig_bulk_msg.table),
 			[transaction],
 			originators

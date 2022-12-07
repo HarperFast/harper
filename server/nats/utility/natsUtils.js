@@ -513,7 +513,11 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 			name: CONSUMER_NAMES.stream_name,
 			storage: StorageType.File,
 			retention: RetentionPolicy.Workqueue,
-			subjects: [`${CONSUMER_NAMES.stream_name}.${server_name}`],
+			// txn subject is here because filter_subject in the consumer wouldn't work without it. No message will be published to it.
+			subjects: [
+				`${nats_terms.SUBJECT_PREFIXES.MSGID}.${server_name}`,
+				`${nats_terms.SUBJECT_PREFIXES.TXN}.${CONSUMER_NAMES.stream_name}.${server_name}`,
+			],
 		});
 	} catch (err) {
 		// If the stream already exists ignore error that is thrown.
@@ -534,6 +538,7 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 				deliver_policy: DeliverPolicy.All,
 				max_ack_pending: 10000,
 				deliver_group: CONSUMER_NAMES.deliver_group,
+				filter_subject: `${nats_terms.SUBJECT_PREFIXES.TXN}.>`,
 			});
 		} else {
 			throw e;
@@ -598,6 +603,7 @@ async function addSourceToWorkStream(node, work_queue_name, subscription) {
 	let new_source = {
 		name: stream_name,
 		opt_start_time: start_time,
+		filter_subject: `${nats_terms.SUBJECT_PREFIXES.TXN}.>`,
 	};
 
 	if (!is_local_stream) {
@@ -892,7 +898,7 @@ async function getStreamInfo(stream_name) {
  * @returns {string}
  */
 function createSubjectName(schema, table, server) {
-	return `${schema}.${table}.${server}`;
+	return `${nats_terms.SUBJECT_PREFIXES.TXN}.${schema}.${table}.${server}`;
 }
 
 /**

@@ -34,10 +34,6 @@ async function sendAttributeTransaction(result, request_body, originators = []) 
 		request_body.schema !== hdb_terms.SYSTEM_SCHEMA_NAME
 	) {
 		const username = request_body.hdb_user?.username;
-		if (common_utils.isEmpty(username)) {
-			harper_logger.error('sendAttributeTransaction username undefined');
-		}
-
 		const this_node_name = env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 
 		for (const attribute of result.new_attributes) {
@@ -75,7 +71,7 @@ async function sendOperationTransaction(request_body, hashes_to_send, origin, or
 			transaction_msg
 		);
 		await nats_utils.publishToStream(
-			`${request_body.schema}.${request_body.table}`,
+			`${nats_terms.SUBJECT_PREFIXES.TXN}.${request_body.schema}.${request_body.table}`,
 			crypto_hash.createNatsTableStreamName(request_body.schema, request_body.table),
 			[transaction_msg],
 			originators
