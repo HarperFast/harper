@@ -14,4 +14,4 @@ cd /home/ubuntu/harperdb/utility/devops
 node register.js --reset_license --ram_allocation=16384
 
 cd /home/ubuntu/harperdb/bin/
-node harperdb.js &
+node harperdb.js run
