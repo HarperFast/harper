@@ -41,6 +41,7 @@ async function createTestStream() {
 		];
 
 		await nats_utils.publishToStream('unit_test.panda', TEST_STREAM_NAME, entry);
+		await new Promise(resolve => setTimeout(resolve, 2)); // ensure that each entry has a unique timestamp
 	}
 
 	const del_entry = [
