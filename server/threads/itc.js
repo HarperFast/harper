@@ -4,7 +4,8 @@ const hdb_logger = require('../../utility/logging/harper_logger');
 const hdb_utils = require('../../utility/common_utils');
 const hdb_terms = require('../../utility/hdbTerms');
 const { IPC_ERRORS } = require('../../utility/errors/commonErrors');
-const { parentPort, threadId, isMainThread } = require('worker_threads');
+const { parentPort, threadId, isMainThread, workerData } = require('worker_threads');
+const { onMessageFromWorkers, broadcast } = require('./manage-threads');
 
 module.exports = {
 	sendItcEvent,
@@ -12,20 +13,14 @@ module.exports = {
 	SchemaEventMsg,
 	UserEventMsg,
 };
-const thread_ports = [];
-if (parentPort) {
-	parentPort.on('message', (parent_message) => {
-		if (parent_message.type === hdb_terms.IPC_EVENT_TYPES.ADD_PORT) {
-			thread_ports.push(parent_message.port);
-			const server_ipc_handlers = require('../ipc/serverHandlers');
-			parent_message.port.on('message', (event) => {
-				validateEvent(event);
-				if (server_ipc_handlers[event.type])
-					server_ipc_handlers[event.type](event);
-			}).unref();
-		}
-	}).unref();
-}
+let server_ipc_handlers;
+onMessageFromWorkers((event) => {
+	server_ipc_handlers = server_ipc_handlers || require('../ipc/serverHandlers');
+	validateEvent(event);
+	if (server_ipc_handlers[event.type])
+		server_ipc_handlers[event.type](event);
+});
+
 
 /**
  * Emits an IPC event to the IPC server.
@@ -33,14 +28,7 @@ if (parentPort) {
  */
 function sendItcEvent(event) {
 	if (!isMainThread && event.message) event.message.originator = threadId;
-	for (let port of thread_ports) {
-		port.postMessage(event);
-	}
-	if (global.hdb_ipc) {
-		global.hdb_ipc.emitToServer(event);
-	} else {
-		hdb_logger.warn(`Tried to send event:`, event, `to HDB IPC client but it does not exist`);
-	}
+	broadcast(event);
 }
 
 /**

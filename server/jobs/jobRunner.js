@@ -8,7 +8,7 @@ const log = require('../../utility/logging/harper_logger');
 const jobs = require('./jobs');
 const hdb_export = require('../../data_layer/export');
 const hdb_delete = require('../../data_layer/delete');
-const threads_start = require('../threads/start-threads');
+const threads_start = require('../threads/manage-threads');
 const transaction_log = require('../../utility/logging/transactionLog');
 
 class RunnerMessage {

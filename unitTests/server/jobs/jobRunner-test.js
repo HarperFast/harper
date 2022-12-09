@@ -12,7 +12,7 @@ const hdb_term = require('../../../utility/hdbTerms');
 const bulk_load = require('../../../data_layer/bulkLoad');
 const JobObject = require('../../../server/jobs/JobObject');
 const pm2_utils = require('../../../utility/pm2/utilityFunctions');
-const threads_start = require('../../../server/threads/start-threads');
+const threads_start = require('../../../server/threads/manage-threads');
 
 const DATA_LOAD_MESSAGE = {
 	operation: 'csv_data_load',

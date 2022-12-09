@@ -1,6 +1,6 @@
 'use strict';
 
-const { Worker, MessageChannel, parentPort, isMainThread } = require('worker_threads');
+const { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } = require('worker_threads');
 const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
 const { join, isAbsolute } = require('path');
 const { totalmem } = require('os');
@@ -11,15 +11,19 @@ const harper_logger = require('../../utility/logging/harper_logger');
 const THREAD_COUNT = Math.max(env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES),
 	env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES));
 const MB = 1024 * 1024;
-const workers = [];
+const workers = []; // these are our child workers that we are managing
+const connected_ports = []; // these are all known connected worker ports (siblings, children, parents)
 const MAX_UNEXPECTED_RESTARTS = 50;
 const RESTART_TYPE = 'restart';
+const ADDED_PORT = 'added-port';
 
 module.exports = {
 	startWorker,
 	restartWorkers,
 	shutdownWorkers,
 	workers,
+	onMessageFromWorkers,
+	broadcast,
 };
 
 function startWorker(path, options = {}) {
@@ -36,12 +40,22 @@ function startWorker(path, options = {}) {
 	// 64 threads: 11% of total memory per thread
 	// (and then limit to their license limit, if they have one)
 	const max_old_memory = Math.min(Math.max(Math.floor(totalmem() / MB / (1 + THREAD_COUNT / 4)), 512), licensed_memory || Infinity);
-	// Max young memory space (semi-space for scavenger) is 1/128 of max memory. For most of our m5 machines this will be
-	// 64MB (less for t3's). This is based on recommendations from:
+	// Max young memory space (semi-space for scavenger) is 1/128 of max memory (limited to 16-64). For most of our m5
+	// machines this will be 64MB (less for t3's). This is based on recommendations from:
 	// https://www.alibabacloud.com/blog/node-js-application-troubleshooting-manual---comprehensive-gc-problems-and-optimization_594965
 	// https://github.com/nodejs/node/issues/42511
 	// https://plaid.com/blog/how-we-parallelized-our-node-service-by-30x/
 	const max_young_memory = Math.min(Math.max(max_old_memory >> 7, 16), 64);
+
+	let ports_to_send = [];
+	for (let existing_port of connected_ports) {
+		let { port1, port2 } = new MessageChannel();
+		existing_port.postMessage({
+			type: ADDED_PORT,
+			port: port1,
+		}, [port1]);
+		ports_to_send.push(port2);
+	}
 
 	const worker = new Worker(isAbsolute(path) ? path : join(PACKAGE_ROOT, path), Object.assign({
 		resourceLimits: {
@@ -49,7 +63,10 @@ function startWorker(path, options = {}) {
 			maxYoungGenerationSizeMb: max_young_memory,
 		},
 		argv: process.argv.slice(2),
+		workerData: { addPorts: ports_to_send }, // pass these in synchronously to the worker so it has them on startup
+		transferList: ports_to_send,
 	}, options));
+	addPort(worker);
 	worker.unexpectedRestarts = options.unexpectedRestarts || 0;
 	worker.on('requested-shutdown', () => {
 		// in a shutdown sequence we use overlapping restarts, starting the new thread while waiting for the old thread
@@ -75,17 +92,6 @@ function startWorker(path, options = {}) {
 	worker.on('message', (message) => {
 		if (message.type === RESTART_TYPE) restartWorkers(message.workerType);
 	});
-	for (let prevWorker of workers) {
-		let { port1, port2 } = new MessageChannel();
-		prevWorker.postMessage({
-			type: hdb_terms.IPC_EVENT_TYPES.ADD_PORT,
-			port: port1,
-		}, [port1]);
-		worker.postMessage({
-			type: hdb_terms.IPC_EVENT_TYPES.ADD_PORT,
-			port: port2,
-		}, [port2]);
-	}
 	workers.push(worker);
 	if (options.onStarted)
 		options.onStarted(worker); // notify that it is ready
@@ -147,4 +153,41 @@ async function restartWorkers(name, max_workers_down = 2, start_replacement_thre
 
 function shutdownWorkers(name) {
 	return restartWorkers(name, Infinity, false);
+}
+
+const message_listeners = [];
+function onMessageFromWorkers(listener) {
+	message_listeners.push(listener);
+}
+function broadcast(message) {
+	for (let port of connected_ports) {
+		try {
+			port.postMessage(message);
+		} catch(error) {
+			harper_logger.error(`Unable to send message to worker`, error);
+		}
+	}
+}
+
+if (parentPort) {
+	addPort(parentPort);
+	for (let port of workerData.addPorts) {
+		addPort(port);
+	}
+}
+function addPort(port) {
+	connected_ports.push(port);
+	port.on('message', (message) => {
+		if (message.type === ADDED_PORT) {
+			addPort(message.port);
+		} else {
+			for (let listener of message_listeners) {
+				listener(message);
+			}
+		}
+	}).on('close', () => {
+		connected_ports.splice(connected_ports.indexOf(port), 1);
+	}).on('exit', () => {
+		connected_ports.splice(connected_ports.indexOf(port), 1);
+	}).unref();
 }

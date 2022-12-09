@@ -1,4 +1,4 @@
-const { startWorker, restartWorkers, shutdownWorkers, workers } = require('../../../server/threads/start-threads');
+const { startWorker, restartWorkers, shutdownWorkers, workers } = require('../../../server/threads/manage-threads');
 const terms = require('../../../utility/hdbTerms');
 const assert = require('assert');
 

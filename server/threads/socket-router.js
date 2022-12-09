@@ -1,5 +1,5 @@
 'use strict';
-const { startWorker } = require('./start-threads');
+const { startWorker } = require('./manage-threads');
 const { createServer } = require('net');
 const env = require('../../utility/environment/environmentManager');
 const hdb_terms = require('../../utility/hdbTerms');

@@ -1,5 +1,5 @@
 const { startHTTPThreads, startSocketServer, updateWorkerIdleness, remoteAffinityRouting, mostIdleRouting } = require('../../../server/threads/socket-router');
-const { shutdownWorkers } = require('../../../server/threads/start-threads');
+const { shutdownWorkers } = require('../../../server/threads/manage-threads');
 const terms = require('../../../utility/hdbTerms');
 const assert = require('assert');
 
