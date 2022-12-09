@@ -151,10 +151,11 @@ async function restartProcesses() {
 
 /**
  * Restarts all services/threads (doesn't require restarting any processes)
- * @returns {Promise<void>}
+ * @returns {Promise<{}>}
  */
 async function restart(json_message) {
-	restartWorkers();
+	await restartWorkers();
+	return RESTART_RESPONSE;
 }
 
 const SERVICE_TO_WORKER_TYPE = {

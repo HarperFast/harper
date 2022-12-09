@@ -110,7 +110,7 @@ function startWorker(path, options = {}) {
  * @returns {Promise<void>}
  */
 
-async function restartWorkers(name, max_workers_down = 2, start_replacement_threads = true) {
+async function restartWorkers(name = null, max_workers_down = 2, start_replacement_threads = true) {
 	if (isMainThread) {
 		if (max_workers_down < 1) {
 			// we accept a ratio of workers, and compute absolute maximum being down at a time from the total number of
@@ -148,7 +148,7 @@ async function restartWorkers(name, max_workers_down = 2, start_replacement_thre
 			type: RESTART_TYPE,
 			workerType: name,
 		});
-	};
+	}
 }
 
 function shutdownWorkers(name) {
