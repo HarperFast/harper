@@ -25,4 +25,4 @@ sed -in "s/TEST_C_NODE2_NAME/${public_dns_names[1]%%.*}/" clusterTests/clusterTe
 sed -in "s/TEST_C_NODE3_NAME/${public_dns_names[2]%%.*}/" clusterTests/clusterTestC/cluster_test_c_env.json
 sed -in "s/TEST_C_NODE4_NAME/${public_dns_names[3]%%.*}/" clusterTests/clusterTestC/cluster_test_c_env.json
 
-newman run clusterTests/clusterTestC/cluster_test_c.json -e clusterTests/clusterTestC/cluster_test_c_env.json --reporters cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html  --delay-request 100 --insecure
+newman run clusterTests/clusterTestC/cluster_test_c.json -e clusterTests/clusterTestC/cluster_test_c_env.json --reporters cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html  --delay-request 500 --insecure

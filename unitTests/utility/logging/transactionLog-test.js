@@ -6,6 +6,7 @@ const sinon = require('sinon');
 const env_mgr = require('../../../utility/environment/environmentManager');
 const test_utils = require('../../test_utils');
 const nats_utils = require('../../../server/nats/utility/natsUtils');
+const hdb_utils = require('../../../utility/common_utils');
 const crypto_hash = require('../../../security/cryptoHash');
 const hdb_terms = require('../../../utility/hdbTerms');
 const transaction_log = require('../../../utility/logging/transactionLog');
@@ -41,7 +42,8 @@ async function createTestStream() {
 		];
 
 		await nats_utils.publishToStream('unit_test.panda', TEST_STREAM_NAME, entry);
-		await new Promise(resolve => setTimeout(resolve, 2)); // ensure that each entry has a unique timestamp
+		// Make sure there is gap to ensure that each entry has a unique timestamp
+		await hdb_utils.async_set_timeout(2);
 	}
 
 	const del_entry = [
@@ -339,6 +341,6 @@ describe('Test transactionLog module', () => {
 
 			expect(result_b).to.equal('Logs successfully deleted from transaction log.');
 			expect(stream_b.length).to.equal(70);
-		});
+		}).timeout(TEST_TIMEOUT);
 	});
 });
