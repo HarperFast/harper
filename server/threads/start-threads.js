@@ -64,7 +64,7 @@ function startWorker(path, options = {}) {
 	});
 	worker.on('exit', (code) => {
 		workers.splice(workers.indexOf(worker), 1);
-		if (!worker.wasShutdown) {
+		if (!worker.wasShutdown && options.autoRestart !== false) {
 			// if this wasn't an intentional shutdown, restart now (unless we have tried too many times)
 			if (worker.unexpectedRestarts < MAX_UNEXPECTED_RESTARTS) {
 				options.unexpectedRestarts = worker.unexpectedRestarts + 1;

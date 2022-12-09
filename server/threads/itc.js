@@ -15,9 +15,9 @@ module.exports = {
 const thread_ports = [];
 if (parentPort) {
 	parentPort.on('message', (parent_message) => {
-		const server_ipc_handlers = require('../ipc/serverHandlers');
 		if (parent_message.type === hdb_terms.IPC_EVENT_TYPES.ADD_PORT) {
 			thread_ports.push(parent_message.port);
+			const server_ipc_handlers = require('../ipc/serverHandlers');
 			parent_message.port.on('message', (event) => {
 				validateEvent(event);
 				if (server_ipc_handlers[event.type])

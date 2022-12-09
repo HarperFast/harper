@@ -7,9 +7,7 @@ const global_schema = require('../../utility/globalSchema');
 const schema_describe = require('../../data_layer/schemaDescribe');
 const user_schema = require('../../security/user');
 const { validateEvent } = require('../threads/itc');
-const { getMetrics } = require('../../utility/environment/systemInformation');
-const { sendItcEvent } = require('../threads/itc');
-const IPCEventObject = require('./utility/IPCEventObject');
+const harperBridge = require('../../data_layer/harperBridge/harperBridge');
 const process = require('process');
 
 /**
@@ -47,6 +45,10 @@ async function schemaHandler(event) {
  */
 async function syncSchemaMetadata(msg) {
 	try {
+		// reset current read transactions to ensure that we are getting the very latest data
+		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME);
+		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME);
+		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME);
 		if (global.hdb_schema !== undefined && typeof global.hdb_schema === 'object' && msg.operation !== undefined) {
 			switch (msg.operation) {
 				case 'drop_schema':
@@ -98,6 +100,8 @@ function handleErrorCallback(err) {
  */
 async function userHandler(event) {
 	try {
+		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.USER_TABLE_NAME);
+		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME);
 		const validate = validateEvent(event);
 		if (validate) {
 			hdb_logger.error(validate);

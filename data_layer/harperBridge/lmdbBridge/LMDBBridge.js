@@ -111,6 +111,10 @@ class LMDBBridge extends BridgeMethods {
 	flush(schema, table) {
 		return lmdbFlush.flush(schema, table);
 	}
+
+	resetReadTxn(schema, table) {
+		return lmdbFlush.resetReadTxn(schema, table);
+	}
 }
 
 module.exports = LMDBBridge;
