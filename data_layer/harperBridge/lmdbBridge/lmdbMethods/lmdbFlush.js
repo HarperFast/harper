@@ -30,6 +30,10 @@ async function flush(schema, table) {
  */
 async function resetReadTxn(schema, table) {
 	let env_base_path = path.join(getBaseSchemaPath(), schema.toString());
-	let environment = await environment_utility.openEnvironment(env_base_path, table.toString());
-	environment.resetReadTxn();
+	try {
+		let environment = await environment_utility.openEnvironment(env_base_path, table.toString());
+		environment.resetReadTxn();
+	} catch(error) {
+		// if no environment, then the read txn can't be out of date!
+	}
 }
