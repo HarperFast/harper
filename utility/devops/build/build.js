@@ -14,13 +14,11 @@ for (let i = 97; i < 123; i++) {
 }
 let entry_modules = [
 	'bin/harperdb.js',
-	'launchServiceScripts/launchHarperDB.js',
-	'launchServiceScripts/launchCustomFunctions.js',
 	'launchServiceScripts/launchInstallNATSServer.js',
 	'launchServiceScripts/launchNatsIngestService.js',
 	'launchServiceScripts/launchNatsReplyService.js',
 	'server/jobs/jobProcess.js',
-	'server/ipc/hdbIpcServer.js',
+	'server/threads/thread-http-server.js',
 	'utility/scripts/restartHdb.js',
 ];
 for (let entry_module of entry_modules) {

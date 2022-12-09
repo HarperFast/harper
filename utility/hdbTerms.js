@@ -127,8 +127,6 @@ const SERVICE_SERVERS = {
 
 const LAUNCH_SERVICE_SCRIPTS = {
 	MAIN: 'bin/harperdb.js',
-	HDB: path.join(PACKAGE_ROOT, 'launchServiceScripts/launchHarperDB.js'),
-	CUSTOM_FUNCTIONS: path.join(PACKAGE_ROOT, 'launchServiceScripts/launchCustomFunctions.js'),
 	NATS_INGEST_SERVICE: path.join(PACKAGE_ROOT, 'launchServiceScripts/launchNatsIngestService.js'),
 	NATS_REPLY_SERVICE: path.join(PACKAGE_ROOT, 'launchServiceScripts/launchNatsReplyService.js'),
 	NODES_UPGRADE_4_0_0: path.join(PACKAGE_ROOT, 'launchServiceScripts/launchUpdateNodes4-0-0.js'),

@@ -352,14 +352,8 @@ async function startService(service_name) {
 		let start_config;
 		service_name = service_name.toLowerCase();
 		switch (service_name) {
-			case hdb_terms.PROCESS_DESCRIPTORS.IPC.toLowerCase():
-				start_config = services_config.generateIPCServerConfig();
-				break;
 			case hdb_terms.PROCESS_DESCRIPTORS.HDB.toLowerCase():
 				start_config = services_config.generateMainServerConfig();
-				break;
-			case hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS.toLowerCase():
-				start_config = services_config.generateCFServerConfig();
 				break;
 			case hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_INGEST_SERVICE.toLowerCase():
 				start_config = services_config.generateNatsIngestServiceConfig();
