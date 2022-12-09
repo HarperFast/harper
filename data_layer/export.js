@@ -14,6 +14,7 @@ const { promisify } = require('util');
 const hdb_common = require('../utility/common_utils');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
+const { streamAsJSON } = require('../server/serverHelpers/JSONStream');
 
 const VALID_SEARCH_OPERATIONS = ['search_by_value', 'search_by_hash', 'sql'];
 const VALID_EXPORT_FORMATS = ['json', 'csv'];
@@ -166,36 +167,14 @@ async function saveToLocal(file_path, source_data_format, data) {
 	if (source_data_format === JSON_TEXT) {
 		// Create a write stream to the local export file.
 		let write_stream = fs.createWriteStream(file_path);
-		let data_length = data.length;
-		// Start writing values to the write stream.
-		write_stream.write('[');
-		let chunk = '';
-		for await (const [index, record] of data.entries()) {
-			let string_chunk = index === data_length - 1 ? JSON.stringify(record) : JSON.stringify(record) + ',';
-			chunk += string_chunk;
-
-			if (index !== 0 && index % LOCAL_JSON_EXPORT_SIZE === 0) {
-				if (!write_stream.write(chunk)) {
-					// Handle backpressure
-					await events.once(write_stream, 'drain');
-				}
-
-				// Once the chunk has been written we no longer need that data. Clear it out for the next lot.
-				chunk = '';
-			}
-		}
-
-		// If the loop is finished and there are still items in the chunk var write it to stream.
-		if (chunk.length !== 0) {
-			write_stream.write(chunk);
-		}
-
-		write_stream.write(']');
-		write_stream.end();
+		streamAsJSON(data).pipe(write_stream);
 		// Wait until done. Throws if there are errors.
 		await stream_finished(write_stream);
 
-		return LOCAL_JSON_EXPORT_MSG;
+		return {
+			message: LOCAL_JSON_EXPORT_MSG,
+			path: file_path,
+		};
 	} else if (source_data_format === CSV) {
 		// Create a write stream to the local export file.
 		let write_stream = fs.createWriteStream(file_path);
@@ -208,7 +187,10 @@ async function saveToLocal(file_path, source_data_format, data) {
 		let parsing_processor = async_parser.fromInput(readable_stream).toOutput(write_stream);
 		await parsing_processor.promise(false);
 
-		return LOCAL_CSV_EXPORT_MSG;
+		return {
+			message: LOCAL_CSV_EXPORT_MSG,
+			path: file_path,
+		};
 	}
 
 	throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_VALUE('format'), HTTP_STATUS_CODES.BAD_REQUEST);

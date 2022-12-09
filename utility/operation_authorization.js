@@ -175,8 +175,8 @@ required_permissions.set(BULK_OPS.CSV_DATA_LOAD, new permission(false, [INSERT_P
 required_permissions.set(BULK_OPS.CSV_URL_LOAD, new permission(false, [INSERT_PERM, UPDATE_PERM]));
 required_permissions.set(BULK_OPS.CSV_FILE_LOAD, new permission(false, [INSERT_PERM, UPDATE_PERM]));
 required_permissions.set(BULK_OPS.IMPORT_FROM_S3, new permission(false, [INSERT_PERM, UPDATE_PERM]));
-required_permissions.set(DATA_EXPORT.EXPORT_TO_S3, new permission(false, [READ_PERM]));
-required_permissions.set(DATA_EXPORT.EXPORT_LOCAL, new permission(false, [READ_PERM]));
+required_permissions.set(DATA_EXPORT.EXPORT_TO_S3, new permission(true, []));
+required_permissions.set(DATA_EXPORT.EXPORT_LOCAL, new permission(true, []));
 
 //NOTE: 'registration_info' and 'user_info' operations are intentionally left off here since both should be accessible
 // for all roles/users no matter what their permissions are
