@@ -60,6 +60,5 @@ const JOB_ID = JOB_NAME.substring(4);
 		job_obj.end_datetime = moment().valueOf();
 	} finally {
 		await jobs.updateJob(job_obj);
-		await pm2_utils.deleteProcess(JOB_NAME);
 	}
 })();

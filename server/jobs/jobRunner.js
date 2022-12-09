@@ -121,7 +121,8 @@ async function runJob(runner_message, operation) {
 async function launchJobThread(job_id) {
 	log.trace('launching job thread:', job_id);
 	threads_start.startWorker('server/jobs/jobProcess.js', {
-		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: `JOB-${job_id}` },
+		autoRestart: false,
+		env: Object.assign({ [hdb_terms.PROCESS_NAME_ENV_PROP]: `JOB-${job_id}` }, process.env),
 	});
 }
 
