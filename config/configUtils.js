@@ -436,8 +436,7 @@ function readConfigFile() {
 		throw new Error(`HarperDB properties file at path ${boot_props_file_path} does not exist`);
 	}
 
-	const hdb_properties = PropertiesReader(boot_props_file_path);
-	const config_file_path = hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
+	const config_file_path = getConfigFilePath(boot_props_file_path);
 	const config_doc = parseYamlDoc(config_file_path);
 
 	return config_doc.toJSON();
