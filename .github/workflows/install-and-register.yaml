@@ -39,20 +39,6 @@ jobs:
             echo "Starting work on: $public_dns_name"
             ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name << HERE
 
-        # Install build-essential
-        echo "Install build-essential..."
-        sudo apt-get update -qq
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential
-
-        # Package mirrors sometimes have problems
-        until command -v gcc &> /dev/null
-        do
-          echo "Attempting to install build-essential again..."
-          sleep 1s
-          sudo apt-get update -qq
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq build-essential
-        done
-
         # Install Node Version Manager
         echo "Install nvm..."
         curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.38.0/install.sh | bash
