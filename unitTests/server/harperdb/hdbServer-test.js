@@ -119,18 +119,6 @@ describe('Test hdbServer module', () => {
 			expect(server.server.cert).to.be.instanceOf(Buffer);
 			expect(!!server.initialConfig.https).to.be.true;
 
-			// Check to see that server handler event listeners are added to process
-			const before_exit_listeners = process.listeners('beforeExit').map((func) => func.name);
-			expect(before_exit_listeners).to.include('handleBeforeExit');
-			const exit_listeners = process.listeners('exit').map((func) => func.name);
-			expect(exit_listeners).to.include('handleExit');
-			const signit_listeners = process.listeners('SIGINT').map((func) => func.name);
-			expect(signit_listeners).to.include('handleSigint');
-			const sigquit_listeners = process.listeners('SIGQUIT').map((func) => func.name);
-			expect(sigquit_listeners).to.include('handleSigquit');
-			const sigterm_listeners = process.listeners('SIGTERM').map((func) => func.name);
-			expect(sigterm_listeners).to.include('handleSigterm');
-
 			server.close();
 		});
 

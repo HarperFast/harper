@@ -32,11 +32,6 @@ const {
 	handleServerUncaughtException,
 	serverErrorHandler,
 	reqBodyValidationHandler,
-	handleBeforeExit,
-	handleExit,
-	handleSigint,
-	handleSigquit,
-	handleSigterm,
 } = require('../serverHelpers/serverHandlers');
 const net = require("net");
 const {registerContentHandlers} = require('../serverHelpers/contentTypes');
