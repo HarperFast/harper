@@ -167,8 +167,7 @@ const SERVICE_TO_WORKER_TYPE = {
  * @returns {Promise<string>}
  */
 async function restartService(json_message) {
-	hdb_logger.createLogFile(hdb_terms.PROCESS_LOG_NAMES.CLI, hdb_terms.PROCESS_DESCRIPTORS.STOP);
-
+	hdb_logger.error('restartService');
 	// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
 	if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
 
@@ -202,7 +201,8 @@ async function restartService(json_message) {
 	) {
 		const is_cf_reg = await pm2_utils.isServiceRegistered(service);
 		if (custom_func_enabled) {
-			restartWorkers('http');
+			hdb_logger.error('restartWorkers http');
+			restartWorkers('http'); // can't await this because it would deadlock on waiting for itself to finish
 		} else if (!custom_func_enabled && is_cf_reg) {
 			// If the service is registered but not enabled in settings, stop service.
 			await pm2_utils.stop(service);

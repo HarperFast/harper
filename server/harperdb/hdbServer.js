@@ -74,10 +74,6 @@ async function hdbServer() {
 		global.isMaster = cluster.isMaster;
 
 		process.on('uncaughtException', handleServerUncaughtException);
-		process.on('beforeExit', handleBeforeExit);
-		process.on('exit', handleExit);		process.on('SIGINT', handleSigint);
-		process.on('SIGQUIT', handleSigquit);
-		process.on('SIGTERM', handleSigterm);
 
 		await setUp();
 

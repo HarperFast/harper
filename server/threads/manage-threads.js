@@ -8,6 +8,7 @@ const hdb_terms = require("../../utility/hdbTerms");
 const env = require("../../utility/environment/environmentManager");
 const hdb_license = require("../../utility/registration/hdb_license");
 const harper_logger = require('../../utility/logging/harper_logger');
+const hdb_logger = require('../../utility/logging/harper_logger');
 const THREAD_COUNT = Math.max(env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES),
 	env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES));
 const MB = 1024 * 1024;
@@ -112,6 +113,7 @@ function startWorker(path, options = {}) {
 
 async function restartWorkers(name = null, max_workers_down = 2, start_replacement_threads = true) {
 	if (isMainThread) {
+		hdb_logger.error('restartWorkers from main thread');
 		if (max_workers_down < 1) {
 			// we accept a ratio of workers, and compute absolute maximum being down at a time from the total number of
 			// threads
@@ -144,6 +146,7 @@ async function restartWorkers(name = null, max_workers_down = 2, start_replaceme
 		// to finish, so not that important
 		await Promise.all(waiting_to_finish);
 	} else {
+		hdb_logger.error('restartWorkers sending to main thread');
 		parentPort.postMessage({
 			type: RESTART_TYPE,
 			workerType: name,

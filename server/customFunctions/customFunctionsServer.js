@@ -56,11 +56,6 @@ async function customFunctionsServer() {
 		harper_logger.debug(`Custom Functions server process ${process.pid} starting up.`);
 
 		process.on('uncaughtException', handleServerUncaughtException);
-		process.on('beforeExit', handleBeforeExit);
-		process.on('exit', handleExit);
-		process.on('SIGINT', handleSigint);
-		process.on('SIGQUIT', handleSigquit);
-		process.on('SIGTERM', handleSigterm);
 
 		await setUp();
 

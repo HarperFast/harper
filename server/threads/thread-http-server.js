@@ -18,6 +18,7 @@ if (!isMainThread) {
 	require('../harperdb/hdbServer').hdbServer();
 	const custom_func_enabled = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY);
 	if (custom_func_enabled) require('../customFunctions/customFunctionsServer').customFunctionsServer();
+	harper_logger.error('started http thread', threadId);
 	parentPort.on('message', (message) => {
 		const { type, fd } = message;
 		if (fd) {
@@ -26,7 +27,19 @@ if (!isMainThread) {
 			let socket = new Socket({fd, readable: true, writable: true, allowHalfOpen: true});
 			// for each socket, deliver the connection to the HTTP server handler/parser
 			if (SERVERS[type]) SERVERS[type].server.emit('connection', socket);
-			else harper_logger.error(`Server ${type} was not registered`);
+			else {
+				const retry = (retries) => {
+					setTimeout(() => {
+						if (SERVERS[type]) SERVERS[type].server.emit('connection', socket);
+						else if (retries < 5) retry(retries + 1);
+						else {
+							harper_logger.error(`Server ${type} was not registered`);
+							socket.close();
+						}
+					}, 1000);
+				};
+				retry(1);
+			}
 		} else if (type === terms.IPC_EVENT_TYPES.SHUTDOWN) {
 			// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
 			// then let the event loop complete

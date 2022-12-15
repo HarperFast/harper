@@ -39,6 +39,7 @@ function isCFEnabled() {
  * @return Object.<String>
  */
 function customFunctionsStatus() {
+	console.log(`getting custom api status`)
 	log.trace(`getting custom api status`);
 	let response = {};
 
