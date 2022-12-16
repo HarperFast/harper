@@ -175,6 +175,7 @@ async function restartService(json_message) {
 		throw handleHDBError(new Error(), MISSING_SERVICE, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 	const service_req = json_message.service.toLowerCase();
+
 	if (hdb_terms.PROCESS_DESCRIPTORS_VALIDATE[service_req] === undefined) {
 		throw handleHDBError(new Error(), INVALID_SERVICE_ERR, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
@@ -287,7 +288,7 @@ async function restartClustering(service) {
 	const clustering_enabled = config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED);
 	const restarting_clustering = service === 'clustering';
 	const reloading_clustering = service === 'clustering config';
-	const is_currently_running = !restarting_clustering ? await pm2_utils.isServiceRegistered(service) : undefined;
+	const is_currently_running = !restarting_clustering ? await pm2_utils.isServiceRegistered(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB) : undefined;
 
 	// If 'clustering' is passed to restart we are restarting all processes that make up clustering
 	const clustering_running =
