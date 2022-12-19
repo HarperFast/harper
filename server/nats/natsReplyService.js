@@ -4,8 +4,6 @@ const env_manager = require('../../utility/environment/environmentManager');
 env_manager.initSync();
 
 const nats_utils = require('./utility/natsUtils');
-const ipc_server_handlers = require('../ipc/serverHandlers');
-const IPCClient = require('../ipc/IPCClient');
 const harper_logger = require('../../utility/logging/harper_logger');
 const hdb_terms = require('../../utility/hdbTerms');
 const nats_terms = require('./utility/natsTerms');

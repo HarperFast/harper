@@ -11,7 +11,6 @@ const natsReplyService = rewire('../../../server/nats/natsReplyService');
 
 describe('Test natsReplyService Module', () => {
 	const sandbox = sinon.createSandbox();
-	const ipc_client_stub = sandbox.stub();
 	const fake_respond = sandbox.stub().callsFake(() => {});
 	const fake_msg = { operation: 'add_node' };
 	const fake_subscribe = sandbox.stub().callsFake(() => {
@@ -28,7 +27,6 @@ describe('Test natsReplyService Module', () => {
 	const update_remote_source_stub = sandbox.stub().resolves(fake_response);
 
 	before(() => {
-		natsReplyService.__set__('IPCClient', ipc_client_stub);
 		natsReplyService.__set__('decode', sandbox.stub().returns(fake_msg));
 		natsReplyService.__set__('update_remote_source', update_remote_source_stub);
 		sandbox.stub(nats_utils, 'getConnection').resolves(fake_connection);

@@ -10,7 +10,6 @@ const nats_terms = require('./utility/natsTerms');
 const hdb_terms = require('../../utility/hdbTerms');
 const harper_logger = require('../../utility/logging/harper_logger');
 const server_utilities = require('../serverHelpers/serverUtilities');
-const IPCClient = require('../ipc/IPCClient');
 const operation_function_caller = require('../../utility/OperationFunctionCaller');
 const transact_to_cluster_utilities = require('../../utility/clustering/transactToClusteringUtilities');
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
@@ -47,14 +46,6 @@ module.exports = {
 async function initialize() {
 	harper_logger.notify('Starting clustering ingest service.');
 	await p_schema_to_global();
-
-	// Instantiate new instance of HDB IPC client and assign it to global.
-	try {
-		global.hdb_ipc = new IPCClient(process.pid, ipc_server_handlers);
-	} catch (err) {
-		harper_logger.error('Error instantiating new instance of IPC client in natsIngestService');
-		throw err;
-	}
 
 	const { connection, jsm, js } = await nats_utils.getNATSReferences();
 	nats_connection = connection;

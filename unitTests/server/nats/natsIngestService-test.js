@@ -40,13 +40,11 @@ function decodeJsMsg(msg) {
 
 describe('Test natsIngestService module', () => {
 	const sandbox = sinon.createSandbox();
-	const ipc_client_stub = sandbox.stub();
 	let get_operation_function_spy;
 	let call_operation_function_as_await_stub;
 	let log_stub;
 
 	before(async () => {
-		nats_ingest_service.__set__('IPCClient', ipc_client_stub);
 		log_stub = sandbox.stub(hdb_logger, 'notify');
 		get_operation_function_spy = sandbox.spy(server_utilities, 'getOperationFunction');
 		call_operation_function_as_await_stub = sandbox.stub(operation_function_caller, 'callOperationFunctionAsAwait');

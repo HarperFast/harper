@@ -31,7 +31,7 @@ async function schemaHandler(event) {
 		return;
 	}
 
-	hdb_logger.trace(`IPC schemaHandler ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received schema event:`, event);
+	hdb_logger.trace(`ITC schemaHandler received schema event:`, event);
 	await clean_lmdb_map(event.message);
 	await syncSchemaMetadata(event.message);
 }
