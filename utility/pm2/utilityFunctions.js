@@ -633,14 +633,10 @@ let replyWorker;
 async function startClustering() {
 	for (const proc in hdb_terms.CLUSTERING_PROCESSES) {
 		const service = hdb_terms.CLUSTERING_PROCESSES[proc];
-		if (service === hdb_terms.CLUSTERING_PROCESSES.CLUSTERING_INGEST_PROC_DESCRIPTOR) {
-			ingestWorker = startWorker(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_INGEST_SERVICE, { name : service });
-		} else if (service === hdb_terms.CLUSTERING_PROCESSES.CLUSTERING_REPLY_SERVICE_DESCRIPTOR) {
-			replyWorker = startWorker(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_REPLY_SERVICE, { name : service });
-		} else {
-			await startService(service);
-		}
+		await startService(service);
 	}
+	ingestWorker = startWorker(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_INGEST_SERVICE, { name : hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_INGEST_SERVICE });
+	replyWorker = startWorker(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_REPLY_SERVICE, { name : hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE });
 	await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
 
 	// Check to see if the node name or purge config has been updated,
