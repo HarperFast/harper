@@ -37,7 +37,8 @@ module.exports = {
 	restartHdb,
 	deleteProcess,
 	configureLogRotate,
-	startClustering,
+	startClusteringProcesses,
+	startClusteringThreads,
 	isHdbRestartRunning,
 	isClusteringRunning,
 	stopClustering,
@@ -626,15 +627,21 @@ async function configureLogRotate() {
 
 let ingestWorker;
 let replyWorker;
-	/**
- * Starts all the services that make up clustering
+/**
+ * Starts all the processes that make up clustering
  * @returns {Promise<void>}
  */
-async function startClustering() {
+async function startClusteringProcesses() {
 	for (const proc in hdb_terms.CLUSTERING_PROCESSES) {
 		const service = hdb_terms.CLUSTERING_PROCESSES[proc];
 		await startService(service);
 	}
+}
+/**
+ * Starts all the threads that make up clustering
+ * @returns {Promise<void>}
+ */
+async function startClusteringThreads() {
 	ingestWorker = startWorker(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_INGEST_SERVICE, { name : hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_INGEST_SERVICE });
 	replyWorker = startWorker(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_REPLY_SERVICE, { name : hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE });
 	await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);

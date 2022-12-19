@@ -141,7 +141,7 @@ async function main(called_by_install = false) {
 		await initialize(called_by_install, true);
 		const clustering_enabled = hdb_utils.autoCastBoolean(env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY));
 		const is_scripted = process.env.IS_SCRIPTED_SERVICE && !cmd_args.service;
-		const start_clustering = clustering_enabled && !is_scripted;
+		const start_clustering = clustering_enabled;
 		const custom_func_enabled = hdb_utils.autoCastBoolean(
 			env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY)
 		);
@@ -177,7 +177,7 @@ async function main(called_by_install = false) {
 
 				if (service === 'clustering') {
 					// Start all services that are required for clustering
-					await pm2_utils.startClustering();
+					await pm2_utils.startClusteringProcesses();
 				} else {
 					await pm2_utils.startService(terms.PROCESS_DESCRIPTORS_VALIDATE[service]);
 				}
@@ -196,7 +196,10 @@ async function main(called_by_install = false) {
 			if (custom_func_enabled) {
 				startSocketServer(terms.SERVICES.CUSTOM_FUNCTIONS, parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10));
 			}
-			if (start_clustering) await pm2_utils.startClustering();
+			if (start_clustering) {
+				if (!is_scripted) await pm2_utils.startClusteringProcesses();
+				await pm2_utils.startClusteringThreads();
+			}
 		}
 		if (!is_scripted) started();
 	} catch (err) {
@@ -227,7 +230,7 @@ async function launch() {
 		pm2_utils.enterScriptingMode();
 		await initialize();
 		const clustering_enabled = hdb_utils.autoCastBoolean(env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY));
-		if (clustering_enabled) await pm2_utils.startClustering();
+		if (clustering_enabled) await pm2_utils.startClusteringProcesses();
 		await pm2_utils.startService(terms.PROCESS_DESCRIPTORS.HDB);
 		started();
 		process.exit(0);
