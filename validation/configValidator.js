@@ -149,11 +149,6 @@ function configValidator(config_json) {
 				privateKey: pem_file_constraints,
 			}),
 		}).required(),
-		ipc: Joi.object({
-			network: Joi.object({
-				port: port_constraints,
-			}),
-		}).required(),
 		localStudio: Joi.object({
 			enabled: enabled_constraints,
 		}).required(),

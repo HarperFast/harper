@@ -190,7 +190,6 @@ function initTestEnvironment(test_config_obj = {}) {
 			hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORS,
 			common_utils.isEmpty(cors_enabled) ? false : cors_enabled
 		);
-		setProperty(hdb_terms.HDB_SETTINGS_NAMES.IPC_SERVER_PORT, 9383);
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES, 2);
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES, 4);
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY, 9926);

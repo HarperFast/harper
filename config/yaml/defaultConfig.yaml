@@ -45,9 +45,6 @@ customFunctions:
     certificate: null
     certificateAuthority: null
     privateKey: null
-ipc:
-  network:
-    port: 9383
 localStudio:
   enabled: false
 logging:
