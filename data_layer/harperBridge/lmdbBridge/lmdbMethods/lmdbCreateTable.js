@@ -66,6 +66,9 @@ async function lmdbCreateTable(table_system_data, table_create_obj) {
 				table_system_data,
 			]);
 			//create attributes for hash attribute created/updated time stamps
+			created_time_attr.skip_table_check = true;
+			updated_time_attr.skip_table_check = true;
+			hash_attr.skip_table_check = true;
 
 			await createAttribute(created_time_attr);
 			await createAttribute(updated_time_attr);

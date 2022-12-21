@@ -1,7 +1,7 @@
 const _ = require('lodash'),
 	validator = require('./validationWrapper');
 const Joi = require('joi');
-const hdb_terms = require('../utility/common_utils');
+const hdb_utils = require('../utility/common_utils');
 const { hdb_schema_table, checkValidTable} = require('./common_validators');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
@@ -107,7 +107,7 @@ module.exports = function (search_object, type) {
 	if (!validation_error && search_object.schema !== 'system') {
 		// skip validation for system schema
 		//check if schema.table does not exist throw error
-		let check_schema_table = hdb_terms.checkGlobalSchemaTable(search_object.schema, search_object.table);
+		let check_schema_table = hdb_utils.checkGlobalSchemaTable(search_object.schema, search_object.table);
 		if (check_schema_table) {
 			return handleHDBError(new Error(), check_schema_table, HTTP_STATUS_CODES.NOT_FOUND);
 		}
