@@ -156,8 +156,8 @@ async function describeAll(op_obj) {
  */
 async function descTable(describe_table_object, attr_perms) {
 	let { schema, table } = describe_table_object;
-	schema = schema.toString();
-	table = table.toString();
+	schema = schema?.toString();
+	table = table?.toString();
 	let table_attr_perms = attr_perms;
 
 	//If the describe_table_object includes a `hdb_user` value, it is being called from the API and we can grab the user's

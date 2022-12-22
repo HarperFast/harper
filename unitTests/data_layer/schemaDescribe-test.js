@@ -141,6 +141,17 @@ describe('Test describeSchema', function() {
         assert.strictEqual(Object.keys(desc_schema).length, 1, 'expected schema not found');
     });
 
+    it('describeSchema, test nominal case', async function () {
+        let error;
+        try {
+            let desc_schema = await schema_describe.describeSchema({});
+        } catch(err) {
+            error = err;
+        }
+        assert.strictEqual(error.message, 'Schema is required');
+    });
+
+
     it('describeSchema, test search exception', async function () {
         let search_stub_throw = sandbox.stub().throws(new Error('search error'));
         schema_describe.__set__('p_search_search_by_value', search_stub_throw);
@@ -215,6 +226,12 @@ describe('Test describeTable', function() {
             result = err;
         }
         assert.deepStrictEqual((result instanceof Error), true, 'expected validation failure');
+        try {
+            result = await schema_describe.describeTable({});
+        } catch(err) {
+            result = err;
+        }
+        assert.deepStrictEqual(result.message, 'Schema is required,Table is required');
     });
 
     it('describeTable, test search exception case', async function () {
