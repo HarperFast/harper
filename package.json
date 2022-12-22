@@ -68,6 +68,7 @@
     "alasql": "1.7.4",
     "async": "3.2.3",
     "aws-sdk": "2.1096.0",
+    "cbor-x": "1.5.0",
     "chalk": "4.1.2",
     "cli-progress": "3.10.0",
     "clone": "2.1.2",
