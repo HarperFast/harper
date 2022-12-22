@@ -68,7 +68,7 @@ function harperDBService() {
 
 		let result = undefined;
 		switch (service) {
-			case hdb_terms.SERVICE_ACTIONS_ENUM.RUN:
+			case hdb_terms.SERVICE_ACTIONS_ENUM.RUN: case hdb_terms.SERVICE_ACTIONS_ENUM.START:
 				// The require is here to better control the flow of imports when this module is called.
 				const run = require('./run');
 				result = run.launch();
