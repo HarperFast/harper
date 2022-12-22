@@ -1,0 +1,7 @@
+{
+  "protocol": "http",
+  "host": "localhost",
+  "port": "9925",
+  "username": "HDB_ADMIN",
+  "password": "1400"
+}

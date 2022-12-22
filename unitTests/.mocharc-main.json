@@ -12,6 +12,7 @@
         "../unitTests/server/harperdb/hdbServer-test.js",
         "../unitTests/server/customFunctions/customFunctionsServer-test.js",
         "../unitTests/server/nats/**/*.js",
-        "../unitTests/upgrade/**/*.js"
+        "../unitTests/upgrade/**/*.js",
+        "../unitTests/apiTests/**/*.js"
     ]
 }
