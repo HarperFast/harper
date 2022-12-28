@@ -23,13 +23,7 @@ const getHeaderTimeoutConfig = require('./helpers/getHeaderTimeoutConfig');
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
 const {
-	handleServerUncaughtException,
 	serverErrorHandler,
-	handleBeforeExit,
-	handleExit,
-	handleSigint,
-	handleSigquit,
-	handleSigterm,
 } = require('../serverHelpers/serverHandlers');
 const pjson = require('../../package.json');
 const { registerContentHandlers } = require('../serverHelpers/contentTypes');
@@ -54,8 +48,6 @@ async function customFunctionsServer() {
 		harper_logger.info('In Custom Functions Fastify server' + process.cwd());
 		harper_logger.info(`Custom Functions Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
 		harper_logger.debug(`Custom Functions server process ${process.pid} starting up.`);
-
-		process.on('uncaughtException', handleServerUncaughtException);
 
 		await setUp();
 

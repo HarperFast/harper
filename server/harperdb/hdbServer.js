@@ -29,7 +29,6 @@ const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 const {
 	authHandler,
 	handlePostRequest,
-	handleServerUncaughtException,
 	serverErrorHandler,
 	reqBodyValidationHandler,
 } = require('../serverHelpers/serverHandlers');
@@ -67,8 +66,6 @@ async function hdbServer() {
 
 		global.clustering_on = false;
 		global.isMaster = cluster.isMaster;
-
-		process.on('uncaughtException', handleServerUncaughtException);
 
 		await setUp();
 

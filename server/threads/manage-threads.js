@@ -77,12 +77,14 @@ function startWorker(path, options = {}) {
 	worker.on('error', (error) => {
 		// log errors, and it also important that we catch errors so we can recover if a thread dies (in a recoverable
 		// way)
-		console.error(error);
+		console.error(error, error.stack);
+		if (error.diagnosticCodes)
+			worker.wasShutdown = true;
 		harper_logger.error(error);
 	});
 	worker.on('exit', (code) => {
 		workers.splice(workers.indexOf(worker), 1);
-		if (!worker.wasShutdown && options.autoRestart !== false) {
+		if (!worker.wasShutdown && options.autoRestart !== false && code !== 100) {
 			// if this wasn't an intentional shutdown, restart now (unless we have tried too many times)
 			if (worker.unexpectedRestarts < MAX_UNEXPECTED_RESTARTS) {
 				options.unexpectedRestarts = worker.unexpectedRestarts + 1;

@@ -111,6 +111,8 @@
     "stream-json": "1.7.4",
     "systeminformation": "5.12.4",
     "tar-fs": "2.1.1",
+    "ts-node": "^10.9.1",
+    "typescript": "^4.9.4",
     "ulidx": "0.3.0",
     "uuid": "9.0.0",
     "validate.js": "0.11.1",

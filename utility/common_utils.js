@@ -3,7 +3,6 @@ const path = require('path');
 const fs = require('fs-extra');
 const log = require('./logging/harper_logger');
 const fs_extra = require('fs-extra');
-const truncate = require('truncate-utf8-bytes');
 const os = require('os');
 const net = require('net');
 const RecursiveIterator = require('recursive-iterator');

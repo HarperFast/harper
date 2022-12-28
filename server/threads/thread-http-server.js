@@ -1,11 +1,17 @@
 'use strict';
 
-const { isMainThread, parentPort, threadId } = require("worker_threads");
-const { Socket } = require("net");
+const { isMainThread, parentPort, threadId } = require('worker_threads');
+const { Socket } = require('net');
 const harper_logger = require('../../utility/logging/harper_logger');
-const hdb_utils = require("../../utility/common_utils");
-const env = require("../../utility/environment/environmentManager");
-const terms = require("../../utility/hdbTerms");
+const hdb_utils = require('../../utility/common_utils');
+const env = require('../../utility/environment/environmentManager');
+const terms = require('../../utility/hdbTerms');
+process.on('uncaughtException', (error) => {
+	console.error('uncaughtException', error)
+	process.exit(100);
+});
+require('ts-node').register({});
+const { startDefaultServer } = require('./default-server');
 // log all threads as HarperDB
 harper_logger.createLogFile(terms.PROCESS_LOG_NAMES.HDB, terms.HDB_PROC_DESCRIPTOR);
 env.initSync();
@@ -15,9 +21,9 @@ module.exports = {
 	registerServer,
 };
 if (!isMainThread) {
-	require('../harperdb/hdbServer').hdbServer();
-	const custom_func_enabled = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY);
-	if (custom_func_enabled) require('../customFunctions/customFunctionsServer').customFunctionsServer();
+	console.log('starting from console')
+	harper_logger.error('starting http thread', threadId);
+	startDefaultServer();
 	harper_logger.error('started http thread', threadId);
 	parentPort.on('message', (message) => {
 		const { type, fd } = message;
@@ -26,7 +32,7 @@ if (!isMainThread) {
 			// allow half open sockets
 			let socket = new Socket({fd, readable: true, writable: true, allowHalfOpen: true});
 			// for each socket, deliver the connection to the HTTP server handler/parser
-			if (SERVERS[type]) SERVERS[type].server.emit('connection', socket);
+			if (SERVERS[type]) SERVERS[type].emit('connection', socket);
 			else {
 				const retry = (retries) => {
 					setTimeout(() => {
