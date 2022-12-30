@@ -1,30 +1,34 @@
-import { parser } from 'graphql';
-import { database } from './database';
-import { Resource } from './Resource';
+import { parse, Source, Kind, NamedTypeNode } from 'graphql';
 import { Transaction } from './Transaction';
+import { registerRESTHandler } from './resource-server';
 
-module.exports = {
-	createHandler(gql_content) {
-		let ast = parser(gql_content);
-		let definition = ast.definitions[0];
-		let table_name;
-		let table = database[table_name];
-		// the resource that is generated for this query and instantiated for each request:
-		class GraphQLResource extends Transaction/* Implements Resource */ {
-			get(id) {
-				let record = this.database[table_name].get(id);
-				return record;
+export function registerGraphQL() {
+	registerRESTHandler('graphql', createHandler);
+	registerRESTHandler('gql', createHandler);
+	function createHandler(gql_content) {
+		let ast = parse(new Source(gql_content, 'somewhere'));
+		let handlers = new Map();
+		for (let definition of ast.definitions) {
+			switch (definition.kind) {
+				case Kind.OBJECT_TYPE_DEFINITION:
+					let type_name = definition.name.value;
+					if (type_name === 'Query') {
+						for (let field of definition.fields) {
+							let query_name = field.name.value;
+							let type_name = (field.type as NamedTypeNode).name.value;
+							// the resource that is generated for this query and instantiated for each request:
+							class GraphQLResource extends Transaction {
+								get(id) {
+									let record = this.getTable(type_name)?.get(id);
+									return record;
+								}
+							}
+							handlers.set(query_name, GraphQLResource);
+						}
+					}
 			}
+
 		}
-		function handleGraphQL(path, request, response) {
-			let resolution = new GraphQLResource(path);
-			if (path) {
-				let entry = resolution.getEntry(request);
-				if (entry.version === request.headers['if-modified-since'])
-					response.writeHead('304');
-				// TODO: Generic way to handle REST headers
-			}
-		}
-		return handleGraphQL;
+		return handlers;
 	}
 }

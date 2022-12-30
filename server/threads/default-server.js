@@ -5,7 +5,10 @@ module.exports = {
 }
 function startDefaultServer() {
 	require('../harperdb/hdbServer').hdbServer();
-	require('../../resources/resource-server').startServer();
+	require('../../resources/resource-server').startServer({
+		path: '/home/kzyp/dev/hdapp-template',
+	});
+	require('../../resources/graphql').registerGraphQL();
 /*	const custom_func_enabled = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY);
 	if (custom_func_enabled) require('../customFunctions/customFunctionsServer').customFunctionsServer();*/
 }

@@ -1,22 +1,27 @@
 import hdb_terms from '../utility/hdbTerms';
+import { open, Database } from 'lmdb';
 import common from '../utility/lmdb/commonUtility';
+import { randomUUID } from 'crypto';
 import { Resource } from './Resource';
-import {}
 
 const INVALIDATED = 1;
 
 
-class Table implements Resource {
-	constructor(lmdb_db, options) {
-		this.primaryStore = open(options.schema, options.table);
+export class Table implements Resource {
+	primaryDbi: Database
+	indices: Database[]
+	primaryKey: string
+	lastAccessTime: number
+	Source: { new(): Resource }
+
+	constructor(primaryDbi, options) {
+		this.primaryDbi = primaryDbi;
 		this.indices = [];
 		this.primaryKey = 'id';
-		this.lmdb_db = lmdb_db;
 	}
-	primaryKey: string
 	get(key, options) {
 		// TODO: determine if we use lazy access properties
-		let entry = this.primaryStore.getEntry(key);
+		let entry = this.primaryDbi.getEntry(key);
 		let record = entry?.value;
 		if (record) {
 			let availability = record.__availability__;
@@ -35,27 +40,26 @@ class Table implements Resource {
 					if (updated) {
 						updated_record.__updated__ = updated;
 					}
-					updated_record.__availability__ = { residence: [here], cached: true };
+					updated_record.__availability__ = { residence: [/*here*/], cached: true };
 					updated_record[this.primaryKey] = key;
 					this.put(record, { ifVersion: updated });
 				}
 			}
 		}
 	}
-	put(record, options) {
+	markAsResolving(){}
+	put(record, options): Promise<any> {
 		let id = record[this.primaryKey];
 		if (!id) {
-			id = record[this.primaryKey] = uuid.v4();
+			id = record[this.primaryKey] = randomUUID();//uuid.v4();
 		}
-		let primary_dbi = env.dbis[hash_attribute];
-		let existing_entry = this.primaryStore.getEntry(id);
+		let existing_entry = this.primaryDbi.getEntry(id);
 		let existing_record = existing_entry?.value;
 		let had_existing = existing_record;
 		if (!existing_record) {
-			if (must_exist) return false;
 			existing_record = {};
-		}
-		setTimestamps(record, !had_existing, generate_timestamps);
+		}/*
+		//setTimestamps(record, !had_existing, generate_timestamps);
 		if (
 			Number.isInteger(record[UPDATED_TIME_ATTRIBUTE_NAME]) &&
 			existing_record[UPDATED_TIME_ATTRIBUTE_NAME] > record[UPDATED_TIME_ATTRIBUTE_NAME]
@@ -117,31 +121,20 @@ class Table implements Resource {
 				return this.put(record, options);
 			}
 			return true;
-		});
+		});*/
+		return Promise.resolve();
 	}
-	delete(key, options) {
-
+	delete(key, options): Promise<any> {
+		return Promise.resolve();
 	}
-	search(query, options) {
-
+	search(query, options): Iterable<any> {
+		return [];
 	}
 	subscribe(query, options) {
-
+		return {};
 	}
 	sourcedFrom(Resource) {
 		// define a source for retrieving invalidated entries for caching purposes
 		this.Source = Resource;
-	}
-}
-module.exports = { Table };
-function findTables() {
-
-}
-function syncSchemaMetadata() {
-	let table_table = global.hdb_table || (global.hdb_table = open());
-	for (let { table, schema } of table_table.search()) {
-		let schema_object = schema === 'default' ? global : global[schema];
-		let table_object = schema_object[table] || schema_object[table] = open();
-
 	}
 }
