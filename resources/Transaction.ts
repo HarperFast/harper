@@ -33,7 +33,8 @@ export class Transaction implements Resource {
 		return {};
 	}
 	getTable(table_name: string, schema_name?: string): TransactionalTable {
-		let table = tables[table_name];
+		let schema_object = schema_name ? tables[schema_name] : tables;
+		let table = schema_object?.[table_name];
 		return table && new TransactionalTable(table, this);
 	}
 }

@@ -60,7 +60,7 @@ export function startServer(options: ServerOptions & { path: string } = { path: 
 		}
 	}
 }
-export function registerRESTHandler(extension, create_resource) {
+export function registerResourceType(extension, create_resource) {
 	handler_creator_by_type.set(extension, (content) => {
 		let resources = create_resource(content);
 		let handler_map = new Map();

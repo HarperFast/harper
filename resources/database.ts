@@ -36,7 +36,7 @@ function readMetaDb(path: string, default_table?: string, default_schema: string
 		let env = open(env_init);
 		let dbi_init = new OpenDBIObject(false);
 		let dbis_db = env.openDB(INTERNAL_DBIS_NAME, dbi_init);
-		for (let {key, value} of dbis_db.getRange({start: false})) {
+		for (let {key, value} of dbis_db.getRange({ start: false })) {
 			let [schema_name, table_name, attribute] = key.toString().split('.');
 			if (!attribute) {
 				attribute = table_name;
@@ -48,7 +48,8 @@ function readMetaDb(path: string, default_table?: string, default_schema: string
 				table_name = default_table;
 			}
 			let schema_object = default_schema === 'default' ? tables : (tables[default_schema] || (tables[default_schema] = {}));
-			schema_object[table_name] = new Table(env.openDB(table_name, dbi_init), {});
+			if (value.is_hash_attribute)
+				schema_object[table_name] = new Table(env.openDB(attribute, dbi_init), {});
 		}
 	} catch (error) {
 		// @ts-ignore
