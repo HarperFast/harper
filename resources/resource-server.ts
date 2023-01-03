@@ -3,6 +3,7 @@ import { createServer, ClientRequest, ServerOptions } from 'http';
 import { readdir, readFile } from 'fs/promises';
 import { join } from 'path';
 import { SERVICES } from '../utility/hdbTerms';
+import { restHandler } from './REST-handler';
 
 const handler_creator_by_type = new Map();
 const custom_apps = [];
@@ -65,51 +66,7 @@ export function registerResourceType(extension, create_resource) {
 		let resources = create_resource(content);
 		let handler_map = new Map();
 		for (let [ sub_path, Resource ] of resources) {
-			handler_map.set(sub_path, (next_path, request, response) => {
-				let method = request.method;
-				let full_isolation = method === 'POST';
-				try {
-					let resource_snapshot = new Resource(request, full_isolation);
-					let response_data;
-					switch (method) {
-						case 'GET':
-							if (next_path) {
-								let typed_key = +next_path;
-								if (!(typed_key >= 0)) {
-									typed_key = next_path;
-								}
-								response_data = resource_snapshot.get(typed_key);
-								if (resource_snapshot.lastAccessTime === request.headers['if-modified-since']) {
-									response.writeHead(304);
-									response.end();
-								}
-								response.setHeader('last-modified', new Date(resource_snapshot.lastAccessTime).toUTCString());
-								// TODO: Generic way to handle REST headers
-
-							}
-							break;
-						case 'PUT':
-							resource_snapshot.put(request);
-							break;
-					}
-					if (response_data) {
-						response.writeHead(200);
-						// do content negotiation
-						response.end(JSON.stringify(response_data));
-					} else if (method === 'GET' || method === 'HEAD') {
-						response.writeHead(404);
-						response.end('Not found');
-					} else {
-						response.writeHead(204);
-						response.end();
-					}
-				} catch(error) {
-					response.writeHead(400);
-					// do content negotiation
-					console.error(error);
-					response.end(JSON.stringify(error.toString()));
-				}
-			});
+			handler_map.set(sub_path, restHandler(Resource));
 		}
 		return handler_map;
 	});
