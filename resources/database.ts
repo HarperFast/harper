@@ -37,7 +37,7 @@ function readMetaDb(path: string, default_table?: string, default_schema: string
 		let dbi_init = new OpenDBIObject(false);
 		let dbis_db = env.openDB(INTERNAL_DBIS_NAME, dbi_init);
 		for (let {key, value} of dbis_db.getRange({ start: false })) {
-			let [schema_name, table_name, attribute] = key.toString().split('.');
+			let [ schema_name, table_name, attribute ] = key.toString().split('.');
 			if (!attribute) {
 				attribute = table_name;
 				table_name = schema_name;

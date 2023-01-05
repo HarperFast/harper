@@ -2,8 +2,9 @@
 
 const { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } = require('worker_threads');
 const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
-const { join, isAbsolute } = require('path');
+const { join, isAbsolute, extname } = require('path');
 const { totalmem } = require('os');
+const { watch, readdir } = require('fs/promises');
 const hdb_terms = require("../../utility/hdbTerms");
 const env = require("../../utility/environment/environmentManager");
 const hdb_license = require("../../utility/registration/hdb_license");
@@ -69,28 +70,29 @@ function startWorker(path, options = {}) {
 	}, options));
 	addPort(worker);
 	worker.unexpectedRestarts = options.unexpectedRestarts || 0;
-	worker.on('requested-shutdown', () => {
+	worker.restart = () => {
 		// in a shutdown sequence we use overlapping restarts, starting the new thread while waiting for the old thread
 		// to die, to ensure there is no loss of service and maximum availability.
-		if (worker.restart !== false) startWorker(path, options);
-	});
+		console.log('restarting', path, threadId);
+		startWorker(path, options);
+	};
 	worker.on('error', (error) => {
 		// log errors, and it also important that we catch errors so we can recover if a thread dies (in a recoverable
 		// way)
 		console.error(error, error.stack);
-		if (error.diagnosticCodes)
-			worker.wasShutdown = true;
 		harper_logger.error(error);
 	});
 	worker.on('exit', (code) => {
-		workers.splice(workers.indexOf(worker), 1);
-		if (!worker.wasShutdown && options.autoRestart !== false && code !== 100) {
-			// if this wasn't an intentional shutdown, restart now (unless we have tried too many times)
-			if (worker.unexpectedRestarts < MAX_UNEXPECTED_RESTARTS) {
+		worker.isExited = true;
+		if (code === 100) { } // typescript error
+		else if (worker.unexpectedRestarts < MAX_UNEXPECTED_RESTARTS) {
+			workers.splice(workers.indexOf(worker), 1);
+			if (!worker.wasShutdown && options.autoRestart !== false) {
+				// if this wasn't an intentional shutdown, restart now (unless we have tried too many times)
 				options.unexpectedRestarts = worker.unexpectedRestarts + 1;
 				startWorker(path, options);
-			} else harper_logger.error(`Thread has been restarted ${worker.restarts} times and will not be restarted`);
-		}
+			}
+		} else harper_logger.error(`Thread has been restarted ${worker.restarts} times and will not be restarted`);
 	});
 	worker.on('message', (message) => {
 		if (message.type === RESTART_TYPE) restartWorkers(message.workerType);
@@ -130,15 +132,16 @@ async function restartWorkers(name = null, max_workers_down = 2, start_replaceme
 				type: hdb_terms.IPC_EVENT_TYPES.SHUTDOWN,
 			});
 			worker.wasShutdown = true;
-			worker.restart = start_replacement_threads;
-			let when_done = new Promise((resolve) => {
-				worker.on('exit', () => {
-					waiting_to_finish.splice(waiting_to_finish.indexOf(when_done));
-					resolve();
+			if (!worker.isExited) {
+				let when_done = new Promise((resolve) => {
+					worker.on('exit', () => {
+						waiting_to_finish.splice(waiting_to_finish.indexOf(when_done));
+						resolve();
+					});
 				});
-			});
-			waiting_to_finish.push(when_done);
-			worker.emit('requested-shutdown', {});
+				waiting_to_finish.push(when_done);
+			}
+			if (start_replacement_threads) worker.restart();
 			if (waiting_to_finish.length >= max_workers_down) {
 				// wait for one to finish before continuing to restart more
 				await Promise.race(waiting_to_finish);
@@ -195,4 +198,17 @@ function addPort(port) {
 	}).on('exit', () => {
 		connected_ports.splice(connected_ports.indexOf(port), 1);
 	}).unref();
+}
+if (isMainThread && process.env.WATCH_DIR) {
+	const watch_dir = async (dir) => {
+		for (let entry of await readdir(dir, { withFileTypes: true })) {
+			if (entry.isDirectory()) watch_dir(join(dir, entry.name));
+		}
+		for await (let { eventType, filename } of watch(dir)) {
+			if (extname(filename) === '.ts' || extname(filename) === '.js') {
+				restartWorkers();
+			}
+		}
+	};
+	watch_dir(process.env.WATCH_DIR);
 }

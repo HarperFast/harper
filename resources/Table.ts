@@ -4,9 +4,18 @@ import common from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
 import { randomUUID } from 'crypto';
 import { Resource } from './Resource';
-import { Transaction } from './Transaction';
-const lmdb_terms = require('../../../../utility/lmdb/terms');
+import { EnvTransaction, Transaction } from './Transaction';
+import { compareKeys } from 'ordered-binary';
+
+import * as lmdb_terms from '../utility/lmdb/terms';
+import * as env_mngr from '../utility/environment/environmentManager';
 const RANGE_ESTIMATE = 100000000;
+env_mngr.initSync();
+
+const LMDB_PREFETCH_WRITES = env_mngr.get(hdb_terms.CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
+
+const CREATED_TIME_ATTRIBUTE_NAME = hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME;
+const UPDATED_TIME_ATTRIBUTE_NAME = hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME;
 const LAZY_PROPERTY_ACCESS = { lazy: true };
 
 const INVALIDATED = 1;
@@ -18,14 +27,13 @@ export class Table {
 	attributes: {}[]
 	primaryKey: string
 	Source: { new(): Resource }
-	Transaction: { new(settings): Transaction, Source: { new(): Resource } }
+	Transaction = makeTransactionClass(this);
 
 	constructor(primaryDbi, options) {
 		this.primaryDbi = primaryDbi;
 		this.indices = [];
 		this.primaryKey = 'id';
 		this.envPath = primaryDbi.env.path;
-		this.Transaction = makeTransactionClass(this);
 	}
 	sourcedFrom(Resource) {
 		// define a source for retrieving invalidated entries for caching purposes
@@ -33,8 +41,8 @@ export class Table {
 		this.Transaction.Source = Resource;
 	}
 
-	transaction(envTransaction) {
-		return new this.Transaction(envTransaction);
+	transaction(env_transaction, lmdb_txn, parent_transaction) {
+		return new this.Transaction(env_transaction, lmdb_txn, parent_transaction, {});
 	}
 }
 function makeTransactionClass({ primaryKey: primary_key, indices, attributes, primaryDbi: primary_dbi }: {
@@ -44,14 +52,17 @@ function makeTransactionClass({ primaryKey: primary_key, indices, attributes, pr
 		primaryKey: string }) {
 	return class TableTransaction extends Transaction {
 		table: any
- 		envTxn: Transaction
+ 		envTxn: EnvTransaction
+		parent: Transaction
 		lmdbTxn: any
 		lastAccessTime: number = 0
 		static Source: { new(): Resource }
 
-		constructor(env_txn, settings) {
+		constructor(env_txn, lmdb_txn, parent, settings) {
 			super(settings, false);
 			this.envTxn = env_txn;
+			this.lmdbTxn = lmdb_txn;
+			this.parent = parent;
 			if (settings.readOnly)
 				this.lmdbTxn = primary_dbi.useReadTransaction();
 
@@ -59,16 +70,16 @@ function makeTransactionClass({ primaryKey: primary_key, indices, attributes, pr
 		updateAccessTime(latest) {
 			if (latest > this.lastAccessTime) {
 				this.lastAccessTime = latest;
-				if (this.parent.updateAccessTime)
+				if (this.parent?.updateAccessTime)
 					this.parent.updateAccessTime(latest);
 			}
 		}
-		async get(key) {
+		async get(id) {
 			// TODO: determine if we use lazy access properties
 			let env_txn = this.envTxn;
-			let entry = primary_dbi.getEntry(key, { transaction: env_txn.getReadTxn() });
+			let entry = primary_dbi.getEntry(id, { transaction: env_txn.getReadTxn() });
 			if (env_txn.fullIsolation) {
-				env_txn.recordRead(primary_dbi, key, entry.version);
+				env_txn.recordRead(primary_dbi, id, entry.version, true);
 			}
 			if (entry.version > this.lastAccessTime) {
 				this.updateAccessTime(entry.version);
@@ -89,25 +100,27 @@ function makeTransactionClass({ primaryKey: primary_key, indices, attributes, pr
 						let previousUpdated = record.__updated__;
 						this.markAsResolving();
 						let source = new TableTransaction.Source();
-						let updated_record = source.get(key, options);
+						let updated_record = await source.get(id);
 						let updated = source.lastAccessTime;
 						if (updated) {
 							updated_record.__updated__ = updated;
 						}
 						updated_record.__availability__ = {residence: [/*here*/], cached: true};
-						updated_record[this.primaryKey] = key;
-						this.put(record, {ifVersion: updated});
+						updated_record[primary_key] = id;
+						this.put(id, record, {ifVersion: updated});
 					}
 				}
 			}
 		}
 
+		/**
+		 * This will be used to record that a record is being resolved
+		 */
 		markAsResolving() {
 		}
 
-		put(record, options): Promise<any> {
+		put(id, record, options): void {
 			let env_txn = this.envTxn;
-			let id = record[primary_key];
 			if (!id) {
 				id = record[primary_key] = randomUUID();//uuid.v4();
 			}
@@ -133,7 +146,6 @@ function makeTransactionClass({ primaryKey: primary_key, indices, attributes, pr
 					throw new Error(validation_errors.join('. '));
 				}
 			}
-			let batch = this.primaryBatch || (this.primaryBatch = primary_dbi.batch());
 
 			//setTimestamps(record, !had_existing, generate_timestamps);
 			if (
@@ -144,19 +156,18 @@ function makeTransactionClass({ primaryKey: primary_key, indices, attributes, pr
 				// replication. If the existing record is newer than it just means the provided record
 				// is, well... older. And newer records are supposed to "win" over older records, and that
 				// is normal, non-error behavior.
-				return false;
+				return;
 			}
-			if (had_existing) result.original_records.push(existing_record);
 			let completion;
 
 			let writes = [];
 			// iterate the entries from the record
 			// for-in is about 5x as fast as for-of Object.entries, and this is extremely time sensitive since it can be
 			// inside a write transaction
-			for (let i = 0, l = this.indices.length; i < l; i++) {
-				let index = this.indices[i];
-				let value = record[key];
-				let existing_value = existing_record[key];
+			for (let i = 0, l = indices.length; i < l; i++) {
+				let index = indices[i];
+				let value = record[primary_key];
+				let existing_value = existing_record[primary_key];
 				if (value === existing_value) {
 					continue;
 				}
@@ -189,20 +200,36 @@ function makeTransactionClass({ primaryKey: primary_key, indices, attributes, pr
 			// use optimistic locking to only commit if the existing record state still holds true.
 			// this is superior to using an async transaction since it doesn't require JS execution
 			// during the write transaction.
-			env_txn.operations.push({
-				ifId: id,
-				ifVersion: existing_entry ? existing_entry.version : null,
-				writes,
-			});
-
-			return Promise.resolve();
+			env_txn.recordRead(primary_dbi, id, existing_entry ? existing_entry.version : null, false);
+			env_txn.writes.push(...writes);
 		}
 
-		delete(key, options): Promise<any> {
-			return Promise.resolve();
+		delete(id, options): boolean {
+			let env_txn = this.envTxn;
+			let existing_entry = primary_dbi.getEntry(id);
+			let existing_record = existing_entry?.value;
+			if (!existing_record) return false;
+			env_txn.recordRead(primary_dbi, id, existing_entry.version, false);
+			for (let i = 0, l = this.indices.length; i < l; i++) {
+				let index = this.indices[i];
+				let existing_value = existing_record[id];
+
+				//if the update cleared out the attribute value we need to delete it from the index
+				let values = common.getIndexedValues(existing_value);
+				if (values) {
+					if (LMDB_PREFETCH_WRITES)
+						index.prefetch(
+							values.map((v) => ({key: v, value: id})),
+							noop
+						);
+					for (let i = 0, l = values.length; i < l; i++) {
+						env_txn.writes.push({db: index, operations: 'remove', key: values[i], value: id});
+					}
+				}
+			}
 		}
 
-		search(query, options): AsyncIterable<any> {
+		async* search(query, options): AsyncIterable<any> {
 			query.offset = Number.isInteger(query.offset) ? query.offset : 0;
 
 			// Sort the conditions by narrowest to broadest. Note that we want to do this both for intersection where
@@ -224,18 +251,19 @@ function makeTransactionClass({ primaryKey: primary_key, indices, attributes, pr
 				}
 				return condition.estimated_count; // use cached count
 			});
+			let search_type = sorted_conditions[0].search_type;
+
 			// both AND and OR start by getting an iterator for the ids for first condition
-			let ids = await executeConditionSearch(transaction, query, sorted_conditions[0], table_info.hash_attribute);
+			let first_search = sorted_conditions[0];
+			let ids = idsForCondition(first_search);
 			// and then things diverge...
 			let records;
 			if (!query.operator || query.operator.toLowerCase() === 'and') {
 				// get the intersection of condition searches by using the indexed query for the first condition
 				// and then filtering by all subsequent conditions
-				let primary_dbi = env.dbis[table_info.hash_attribute];
-				let filters = sorted_conditions.slice(1).map(lmdb_search.filterByType);
+				let filters = sorted_conditions.slice(1).map(filterByType);
 				let filters_length = filters.length;
-				let fetch_attributes = search_utility.setGetWholeRowAttributes(env, query.get_attributes);
-				records = ids.map((id) => primary_dbi.get(id, { transaction, lazy: true }));
+				records = ids.map((id) => primary_dbi.get(id, { transaction: this.lmdbTxn, lazy: true }));
 				if (filters_length > 0)
 					records = records.filter((record) => {
 						for (let i = 0; i < filters_length; i++) {
@@ -248,13 +276,12 @@ function makeTransactionClass({ primaryKey: primary_key, indices, attributes, pr
 						query.offset,
 						query.limit !== undefined ? (query.offset || 0) + query.limit : undefined
 					);
-				records = records.map((record) => cursor_functions.parseRow(record, fetch_attributes));
 			} else {
 				//get the union of ids from all condition searches
 				for (let i = 1; i < sorted_conditions.length; i++) {
 					let condition = sorted_conditions[i];
 					// might want to lazily execute this after getting to this point in the iteration
-					let next_ids = await executeConditionSearch(transaction, query, condition, table_info.hash_attribute);
+					let next_ids = idsForCondition(condition);
 					ids = ids.concat(next_ids);
 				}
 				let returned_ids = new Set();
@@ -268,7 +295,7 @@ function makeTransactionClass({ primaryKey: primary_key, indices, attributes, pr
 						return true;
 					})
 					.slice(offset, query.limit && query.limit + offset);
-				records = search_utility.batchSearchByHash(transaction, table_info.hash_attribute, query.get_attributes, ids);
+				records = ids.map((id) => primary_dbi.get(id, { transaction: this.lmdbTxn, lazy: true }));
 			}
 			records.onDone = () => {
 				transaction.done();// need to complete the transaction once iteration is complete
@@ -281,4 +308,69 @@ function makeTransactionClass({ primaryKey: primary_key, indices, attributes, pr
 		}
 
 	}
+	function idsForCondition(search_condition) {
+		let start = search_condition.value;
+		let end, inclusiveEnd, inclusiveStart, filter;
+		switch (search_condition.type) {
+			case lmdb_terms.SEARCH_TYPES.EQUALS: case undefined:
+				end = search_condition.value;
+				inclusiveEnd = true;
+		}
+		let index = indices[search_condition.attribute];
+		let is_primary_key = search_condition.attribute === primary_key;
+		let range_options = { start, end, inclusiveEnd, values: !is_primary_key};
+		if (is_primary_key) {
+			return index.getRange(range_options);
+		} else {
+			return index.getRange(range_options).map(({ value }) => value);
+		}
+	}
+}
+
+/**
+ *
+ * @param {SearchObject} search_object
+ * @returns {({}) => boolean}
+ */
+export function filterByType(search_object) {
+	const search_type = search_object.search_type;
+	const attribute = search_object.search_attribute;
+	const search_value = search_object.search_value;
+
+	switch (search_type) {
+		case lmdb_terms.SEARCH_TYPES.EQUALS:
+			return (record) => record[attribute] === search_value;
+		case lmdb_terms.SEARCH_TYPES.CONTAINS:
+			return (record) => typeof record[attribute] === 'string' && record[attribute].includes(search_value);
+		case lmdb_terms.SEARCH_TYPES.ENDS_WITH:
+		case lmdb_terms.SEARCH_TYPES._ENDS_WITH:
+			return (record) => typeof record[attribute] === 'string' && record[attribute].endsWith(search_value);
+		case lmdb_terms.SEARCH_TYPES.STARTS_WITH:
+		case lmdb_terms.SEARCH_TYPES._STARTS_WITH:
+			return (record) => typeof record[attribute] === 'string' && record[attribute].startsWith(search_value);
+		case lmdb_terms.SEARCH_TYPES.BETWEEN:
+			return (record) => {
+				let value = record[attribute];
+				return compareKeys(value, search_value[0]) >= 0 && compareKeys(value, search_value[1]) <= 0;
+			};
+		case lmdb_terms.SEARCH_TYPES.GREATER_THAN:
+		case lmdb_terms.SEARCH_TYPES._GREATER_THAN:
+			return (record) => compareKeys(record[attribute], search_value) > 0;
+		case lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL:
+		case lmdb_terms.SEARCH_TYPES._GREATER_THAN_EQUAL:
+			return (record) => compareKeys(record[attribute], search_value) >= 0;
+		case lmdb_terms.SEARCH_TYPES.LESS_THAN:
+		case lmdb_terms.SEARCH_TYPES._LESS_THAN:
+			return (record) => compareKeys(record[attribute], search_value) < 0;
+		case lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL:
+		case lmdb_terms.SEARCH_TYPES._LESS_THAN_EQUAL:
+			return (record) => compareKeys(record[attribute], search_value) <= 0;
+		default:
+			return Object.create(null);
+	}
+}
+
+
+function noop() {
+	// prefetch callback
 }

@@ -9,7 +9,6 @@ const hdb_terms = require('../../../../utility/hdbTerms');
 const { getBaseSchemaPath } = require('../lmdbUtility/initializePaths');
 const system_schema = require('../../../../json/systemSchema.json');
 const LMDB_ERRORS = require('../../../../utility/errors/commonErrors').LMDB_ERRORS_ENUM;
-const { compareKeys } = require('ordered-binary');
 
 const WILDCARDS = hdb_terms.SEARCH_WILDCARDS;
 
@@ -237,52 +236,6 @@ function searchByType(transactionOrEnv, search_object, search_type, hash_attribu
 
 /**
  *
- * @param {SearchObject} search_object
- * @returns {({}) => boolean}
- */
-function filterByType(search_object) {
-	const search_type = search_object.search_type;
-	const attribute = search_object.search_attribute;
-	const search_value = search_object.search_value;
-
-	switch (search_type) {
-		case lmdb_terms.SEARCH_TYPES.EQUALS:
-			return (record) => record[attribute] === search_value;
-		case lmdb_terms.SEARCH_TYPES.CONTAINS:
-			return (record) => typeof record[attribute] === 'string' && record[attribute].includes(search_value);
-		case lmdb_terms.SEARCH_TYPES.ENDS_WITH:
-		case lmdb_terms.SEARCH_TYPES._ENDS_WITH:
-			return (record) => typeof record[attribute] === 'string' && record[attribute].endsWith(search_value);
-		case lmdb_terms.SEARCH_TYPES.STARTS_WITH:
-		case lmdb_terms.SEARCH_TYPES._STARTS_WITH:
-			return (record) => typeof record[attribute] === 'string' && record[attribute].startsWith(search_value);
-		case lmdb_terms.SEARCH_TYPES.BETWEEN:
-			return (record) => {
-				let value = record[attribute];
-				return compareKeys(value, search_value[0]) >= 0 && compareKeys(value, search_value[1]) <= 0;
-			};
-		case lmdb_terms.SEARCH_TYPES.GREATER_THAN:
-		case lmdb_terms.SEARCH_TYPES._GREATER_THAN:
-			return (record) => compareKeys(record[attribute], search_value) > 0;
-		case lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL:
-		case lmdb_terms.SEARCH_TYPES._GREATER_THAN_EQUAL:
-			return (record) => compareKeys(record[attribute], search_value) >= 0;
-		case lmdb_terms.SEARCH_TYPES.LESS_THAN:
-		case lmdb_terms.SEARCH_TYPES._LESS_THAN:
-			return (record) => compareKeys(record[attribute], search_value) < 0;
-		case lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL:
-		case lmdb_terms.SEARCH_TYPES._LESS_THAN_EQUAL:
-			return (record) => compareKeys(record[attribute], search_value) <= 0;
-		default:
-			return Object.create(null);
-	}
-}
-
-
-
-
-/**
- *
  * @param {Iterable}
  */
 function createMapFromIterable(iterable, toValue) {
@@ -400,5 +353,5 @@ module.exports = {
 	createSearchTypeFromSearchObject,
 	prepSearch,
 	searchByType,
-	filterByType,
+//	filterByType,
 };
