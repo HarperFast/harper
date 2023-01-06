@@ -70,15 +70,15 @@ async function createTestStream() {
 let timestamps;
 async function getTimeStamps() {
 	timestamps = [];
-	const result = await transaction_log.readTransactionLog({
+	const transactions = await transaction_log.readTransactionLog({
 		operation: 'read_transaction_log',
 		schema: TEST_SCHEMA,
 		table: TEST_TABLE,
 	});
 
-	result.forEach((tx) => {
+	for await (const tx of transactions) {
 		timestamps.push(tx.timestamp);
-	});
+	}
 }
 
 /**
@@ -91,6 +91,22 @@ async function resetStream() {
 	await createTestStream();
 	await getTimeStamps();
 }
+
+/**
+ * Accumulates transaction log messages into an array
+ * @param req
+ * @returns {Promise<*[]>}
+ */
+async function transactionLogArray(req) {
+	const transactions = await transaction_log.readTransactionLog(req);
+	let result = [];
+	for await (const tx of transactions) {
+		result.push(tx);
+	}
+
+	return result;
+}
+
 describe('Test transactionLog module', () => {
 	const sandbox = sinon.createSandbox();
 
@@ -120,11 +136,11 @@ describe('Test transactionLog module', () => {
 				schema: TEST_SCHEMA,
 				table: TEST_TABLE,
 			};
-			const result = await transaction_log.readTransactionLog(test_req);
+			const transactions = await transaction_log.readTransactionLog(test_req);
 
-			expect(result.length).to.equal(100);
-			for (let x = 0; x < result.length; x++) {
-				const tx = result[x];
+			const result = [];
+			let x = 0;
+			for await (const tx of transactions) {
 				if (x < 99) {
 					expect(tx.operation).to.equal('insert');
 					expect(tx.user).to.equal('admin');
@@ -136,7 +152,11 @@ describe('Test transactionLog module', () => {
 					expect(tx).to.haveOwnProperty('timestamp');
 					expect(tx.hash_values).to.eql([1, 4, 6]);
 				}
+				x++;
+				result.push(tx);
 			}
+
+			expect(result.length).to.equal(100);
 		}).timeout(TEST_TIMEOUT);
 
 		it('Test limit filter works', async () => {
@@ -146,7 +166,8 @@ describe('Test transactionLog module', () => {
 				table: TEST_TABLE,
 				limit: 50,
 			};
-			const result = await transaction_log.readTransactionLog(test_req);
+
+			const result = await transactionLogArray(test_req);
 
 			expect(result.length).to.equal(50);
 			expect(result[0].timestamp).to.equal(timestamps[0]);
@@ -161,7 +182,7 @@ describe('Test transactionLog module', () => {
 				table: TEST_TABLE,
 				to: timestamps[20],
 			};
-			const result = await transaction_log.readTransactionLog(test_req);
+			const result = await transactionLogArray(test_req);
 
 			expect(result[result.length - 1].records[0]).to.eql({ record: 20 });
 			expect(result[result.length - 1].timestamp).to.equal(timestamps[20]);
@@ -175,7 +196,7 @@ describe('Test transactionLog module', () => {
 				table: TEST_TABLE,
 				from: timestamps[90],
 			};
-			const result = await transaction_log.readTransactionLog(test_req);
+			const result = await transactionLogArray(test_req);
 
 			expect(result[0].timestamp).to.equal(timestamps[90]);
 			expect(result[result.length - 1].timestamp).to.equal(timestamps[99]);
@@ -189,7 +210,7 @@ describe('Test transactionLog module', () => {
 				to: timestamps[55],
 				from: timestamps[40],
 			};
-			const result = await transaction_log.readTransactionLog(test_req);
+			const result = await transactionLogArray(test_req);
 
 			expect(result[0].timestamp).to.equal(timestamps[40]);
 			expect(result[0].records[0]).to.eql({ record: 40 });
@@ -205,7 +226,7 @@ describe('Test transactionLog module', () => {
 				limit: 20,
 				from: timestamps[40],
 			};
-			const result = await transaction_log.readTransactionLog(test_req);
+			const result = await transactionLogArray(test_req);
 
 			expect(result.length).to.equal(20);
 			expect(result[0].timestamp).to.equal(timestamps[40]);
@@ -222,7 +243,7 @@ describe('Test transactionLog module', () => {
 				limit: 20,
 				from: timestamps[90],
 			};
-			const result = await transaction_log.readTransactionLog(test_req);
+			const result = await transactionLogArray(test_req);
 
 			expect(result.length).to.equal(10);
 			expect(result[0].timestamp).to.equal(timestamps[90]);
@@ -240,7 +261,8 @@ describe('Test transactionLog module', () => {
 				from: timestamps[0],
 				to: timestamps[12],
 			};
-			const result = await transaction_log.readTransactionLog(test_req);
+			const result = await transactionLogArray(test_req);
+
 			expect(result[0].records[0]).to.eql({ record: 0 });
 			expect(result[0].timestamp).to.equal(timestamps[0]);
 			expect(result[result.length - 1].timestamp).to.equal(timestamps[12]);
@@ -254,7 +276,8 @@ describe('Test transactionLog module', () => {
 				limit: 23,
 				to: timestamps[50],
 			};
-			const result = await transaction_log.readTransactionLog(test_req);
+			const result = await transactionLogArray(test_req);
+
 			expect(result.length).to.equal(23);
 		}).timeout(TEST_TIMEOUT);
 	});

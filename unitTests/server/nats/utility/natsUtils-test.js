@@ -443,6 +443,37 @@ describe('Test natsUtils module', () => {
 			expect(result.length).to.equal(0);
 		}).timeout(TEST_TIMEOUT);
 
+		it('Test viewStreamIterator returns three entries from a stream', async () => {
+			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
+			await nats_utils.publishToStream('devTest.capybara', TEST_STREAM_NAME_2, [{ id: 2 }, { id: 3 }, { id: 4 }]);
+			const transactions = await nats_utils.viewStreamIterator(TEST_STREAM_NAME_2);
+
+			const result = [];
+			for await (const tx of transactions) {
+				result.push(tx);
+			}
+
+			expect(result.length).to.equal(3);
+			expect(result[0].originators[0]).to.equal('testLeafServer-leaf');
+			expect(result[0].entry).to.eql({ id: 2 });
+			expect(result[1].originators[0]).to.equal('testLeafServer-leaf');
+			expect(result[1].entry).to.eql({ id: 3 });
+			expect(result[2].originators[0]).to.equal('testLeafServer-leaf');
+			expect(result[2].entry).to.eql({ id: 4 });
+
+			await nats_utils.deleteLocalStream(TEST_STREAM_NAME_2);
+		}).timeout(TEST_TIMEOUT);
+
+		it('Test viewStreamIterator returns zero entries ', async () => {
+			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
+			const transactions = await nats_utils.viewStreamIterator(TEST_STREAM_NAME_2);
+			const result = [];
+			for await (const tx of transactions) {
+				result.push(tx);
+			}
+			expect(result.length).to.equal(0);
+		}).timeout(TEST_TIMEOUT);
+
 		it('Test publishToStream if the stream exists', async () => {
 			const test_entry = [
 				{ id: 2, name: 'big bird' },

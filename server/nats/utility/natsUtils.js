@@ -24,10 +24,6 @@ const { encode, decode } = require('msgpackr');
 const { isEmpty } = hdb_utils;
 const user = require('../../../security/user');
 
-const SearchByHashObject = require('../../../data_layer/SearchByHashObject');
-const search = require('../../../data_layer/search');
-const p_search_by_hash = util.promisify(search.searchByHash);
-
 const {
 	connect,
 	StorageType,
@@ -87,6 +83,7 @@ module.exports = {
 	getServerConfig,
 	listRemoteStreams,
 	viewStream,
+	viewStreamIterator,
 	publishToStream,
 	createWorkQueueStream,
 	addSourceToWorkStream,
@@ -423,6 +420,75 @@ async function viewStream(stream_name, start_time = undefined, max = undefined) 
 		// If the stream has no entries function will timeout. This is handled here.
 		if (err.code === 'TIMEOUT') {
 			return entries;
+		}
+
+		throw err;
+	}
+}
+
+/**
+ * Returns view of stream via an iterator.
+ * @param stream_name
+ * @param start_time
+ * @param max
+ * @returns {AsyncGenerator<{entry: any, nats_timestamp: number, nats_sequence: number, originators: *[]}, *[], *>}
+ */
+async function* viewStreamIterator(stream_name, start_time = undefined, max = undefined) {
+	const { jsm, connection } = await getNATSReferences();
+	const consumer_name = ulid();
+
+	const consumer_config = {
+		ack_policy: AckPolicy.None,
+		durable_name: consumer_name,
+		deliver_subject: consumer_name,
+		deliver_policy: DeliverPolicy.All,
+		filter_subject: '',
+	};
+
+	// If a start time is passed add a policy that will receive msgs from that time onward.
+	if (start_time) {
+		consumer_config.deliver_policy = DeliverPolicy.StartTime;
+		consumer_config.opt_start_time = new Date(start_time).toISOString();
+	}
+
+	try {
+		await jsm.consumers.add(stream_name, consumer_config);
+		const sub_config = { timeout: 2000 };
+		if (max) sub_config.max = max;
+		const sub = await connection.subscribe(consumer_name, sub_config);
+		for await (const m of sub) {
+			const jmsg = toJsMsg(m);
+			const obj = decode(jmsg.data);
+			let wrapper = {
+				nats_timestamp: jmsg.info.timestampNanos,
+				nats_sequence: jmsg.info.streamSequence,
+				entry: obj,
+				originators: [],
+			};
+
+			let orig = [];
+			if (jmsg.headers) {
+				let orig_raw = jmsg.headers.get('originators');
+				if (orig_raw) {
+					orig = orig_raw.split(',');
+					wrapper.originators = orig;
+				}
+			}
+
+			yield wrapper;
+
+			if (sub.getPending() === 1 && jmsg.info.pending === 0) {
+				sub.stop();
+			}
+		}
+
+		await jsm.consumers.delete(stream_name, consumer_name);
+	} catch (err) {
+		await jsm.consumers.delete(stream_name, consumer_name);
+
+		// If the stream has no entries function will timeout. This is handled here.
+		if (err.code === 'TIMEOUT') {
+			return [];
 		}
 
 		throw err;
