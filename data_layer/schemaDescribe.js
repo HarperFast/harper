@@ -16,6 +16,7 @@ const env_mngr = require('../utility/environment/environmentManager');
 env_mngr.initSync();
 
 const lmdb_environment_utility = require('../utility/lmdb/environmentUtility');
+const search_utility = require('../utility/lmdb/searchUtility');
 const lmdb_init_paths = require('../data_layer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
 
 // Promisified functions
@@ -233,6 +234,11 @@ async function descTable(describe_table_object, attr_perms) {
 				let env = await lmdb_environment_utility.openEnvironment(schema_path, table_result.name);
 				let dbi_stat = lmdb_environment_utility.statDBI(env, table_result.hash_attribute);
 				table_result.record_count = dbi_stat.entryCount;
+				// do a reverse search of the updated timestamp index to find the very latest entry, and record that
+				// timestamp:
+				for (let { key } of search_utility.lessThan(env, table_result.hash_attribute, terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME, Infinity, true, 1, 0)) {
+					table_result.last_updated_record = key;
+				}
 			} catch (e) {
 				logger.warn(`unable to stat table dbi due to ${e}`);
 			}
