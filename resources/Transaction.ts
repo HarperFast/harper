@@ -5,6 +5,7 @@ import { Table } from './Table';
 
 export class Transaction implements Resource {
 	request: any
+	user: any
 	fullIsolation: boolean
 	restartable: boolean
 	lastAccessTime = 0;
@@ -12,6 +13,7 @@ export class Transaction implements Resource {
 	inUseEnvs = {}
 	constructor(request, full_isolation: boolean) {
 		this.request = request;
+		this.user = request.user;
 		this.fullIsolation = full_isolation;
 		this.restartable = true; // if not restartable and full-isolation is required, need an async-transaction
 	}

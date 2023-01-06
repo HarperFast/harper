@@ -4,6 +4,7 @@ import { readdir, readFile } from 'fs/promises';
 import { join } from 'path';
 import { SERVICES } from '../utility/hdbTerms';
 import { restHandler } from './REST-handler';
+import { findAndValidateUser } from '../security/user';
 
 const handler_creator_by_type = new Map();
 const custom_apps = [];
@@ -39,8 +40,9 @@ export function startServer(options: ServerOptions & { path: string } = { path: 
 	}
 	loadDirectory(options.path, '');
 
-	let server = createServer(options, (request, response) => {
+	let server = createServer(options, async (request, response) => {
 		let path = request.url;
+		await authentication(request);
 		do {
 			let handler = handlers.get(path);
 			if (handler) return handler(request.url.slice(path.length + 1), request, response);
@@ -70,4 +72,16 @@ export function registerResourceType(extension, create_resource) {
 		}
 		return handler_map;
 	});
+}
+
+async function authentication(request) {
+	let authorization = request.headers.authorization;
+	if (authorization) {
+		let [ strategy, credentials ] = authorization.split(' ');
+		switch (strategy) {
+			case 'Basic':
+				let [ username, password ] = atob(credentials).split(':');
+				request.user = await findAndValidateUser(username, password);
+		}
+	}
 }

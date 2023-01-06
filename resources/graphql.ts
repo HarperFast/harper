@@ -28,11 +28,25 @@ export function registerGraphQL() {
 							let query_name = field.name.value;
 							let type_name = (field.type as NamedTypeNode).name.value;
 							let type_def = types.get(type_name);
+							let authorized_roles = [];
+							for (let directive of definition.directives) {
+								if (directive.name.value === 'allow') {
+									for (let arg of directive.arguments) {
+										if (arg.name.value === 'role') {
+											authorized_roles.push((arg.value as StringValueNode).value);
+										}
+									}
+								}
+							}
 							// the resource that is generated for this query and instantiated for each request:
 							class GraphQLResource extends Transaction {
 								get(id) {
-									let record = this.getTable(type_def.table, type_def.schema)?.get(id);
-									return record;
+									let role = this.user?.role;
+									if (role && authorized_roles.indexOf(role.name) > -1 ||
+											role?.permission?.super_user) {
+										let record = this.getTable(type_def.table, type_def.schema)?.get(id);
+										return record;
+									} else throw new Error('Unauthorized');
 								}
 							}
 							handlers.set(query_name, GraphQLResource);
