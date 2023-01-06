@@ -54,7 +54,7 @@ if (!isMainThread) {
 				// closing idle connections was added in v18, and is a better way to shutdown HTTP servers
 				SERVERS[server_type].close();
 				// in Node v18+ this is preferable way to gracefully shutdown connections
-				if (SERVERS[server_type].server.closeIdleConnections()) SERVERS[server_type].server.closeIdleConnections();
+				if (SERVERS[server_type].closeIdleConnections()) SERVERS[server_type].server.closeIdleConnections();
 			}
 			setTimeout(() => {
 				harper_logger.warn('Thread did not voluntarily terminate', threadId);

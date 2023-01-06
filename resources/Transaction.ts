@@ -3,8 +3,6 @@ import { tables, initTables } from './database';
 import { RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
 import { Table } from './Table';
 
-initTables();
-
 export class Transaction implements Resource {
 	request: any
 	fullIsolation: boolean
@@ -33,6 +31,7 @@ export class Transaction implements Resource {
 		let commits = [];
 		for (let env_path in this.inUseEnvs) { // TODO: maintain this array ourselves so we don't need to key-ify
 			let env_txn = this.inUseEnvs[env_path];
+			env_txn.doneReading(); // done with the read snapshot txn
 			if (env_txn.writes.length > 0) {
 				if (env_txn.conditions.length > 0)
 					txns_with_read_and_writes.push(env_txn);
@@ -65,6 +64,12 @@ export class Transaction implements Resource {
 		}
 		return (await Promise.all(commits)).indexOf(false) === -1;
 	}
+	abort() {
+		for (let env_path in this.inUseEnvs) { // TODO: maintain this array ourselves so we don't need to key-ify
+			let env_txn = this.inUseEnvs[env_path];
+			env_txn.abort(); // done with the read snapshot txn
+		}
+	}
 
 	subscribe(query: any, options: any) {
 		// subscriptionByPrimaryKey.set(id, () => {});
@@ -79,7 +84,7 @@ export class Transaction implements Resource {
 		if (!table) return;
 		let key = schema_name ? (schema_name + '/' + table_name) : table_name;
 		let env_path = table.envPath;
-		let env_txn = this.inUseEnvs[env_path] || (this.inUseEnvs[env_path] = new EnvTransaction());
+		let env_txn = this.inUseEnvs[env_path] || (this.inUseEnvs[env_path] = new EnvTransaction(table.primaryDbi));
 		return this.inUseTables[key] || (this.inUseTables[key] = table.transaction(env_txn, env_txn.getReadTxn(), this));
 	}
 }
@@ -89,10 +94,19 @@ export class EnvTransaction {
 	writes = [] // the set of writes to commit if the conditions are met
 	fullIsolation = false
 	inTwoPhase?: boolean
-	env: RootDatabase
+	lmdbDb: RootDatabase
 	readTxn: LMDBTransaction
+	constructor(lmdb_db) {
+		this.lmdbDb = lmdb_db;
+	}
 	getReadTxn() {// used optimistically
-		return this.readTxn || (this.readTxn = this.env.useReadTransaction());
+		return this.readTxn || (this.readTxn = this.lmdbDb.useReadTransaction());
+	}
+	doneReading() {
+		if (this.readTxn) {
+			this.readTxn.done();
+			this.readTxn = null;
+		}
 	}
 
 	recordRead(store, key, version, lock) {
@@ -126,6 +140,7 @@ export class EnvTransaction {
 	 * Resolves to true if the commit succeeded, resolves to false if the commit needs to be retried
 	 */
 	commit(): Promise<boolean> {
+		this.doneReading();
 		let remaining_conditions = this.inTwoPhase ? [] : this.conditions.slice(0).reverse();
 		let resolution;
 		const nextCondition = () => {
@@ -142,9 +157,21 @@ export class EnvTransaction {
 		// TODO: This is where we write to the SharedArrayBuffer so that subscribers from other threads can
 		// listen... And then we can use it determine when the commit has been delivered to at least one other
 		// node
+
+		// now reset transactions tracking; this transaction be reused and committed again
+		this.conditions = [];
+		this.writes = [];
 		return resolution;
 	}
+	abort(): void {
+		this.doneReading();
+		// reset the transaction
+		this.conditions = [];
+		this.writes = [];
+	}
 }
+
+initTables();
 
 /*
 function example() {
@@ -157,6 +184,11 @@ function example() {
 			let user = this.userTable.get(id);
 			user.entitlements = user.entitlementIds.map(id => this.entitlements.get(id));
 			return user;
+		}
+		put(id, userAccount) {
+			let userAccount = this.userTable.get(id);
+			userAccount.entitlements.push(newGame)
+			this.userTable.put(userAccount);
 		}
 	}
 	MyEndpoint.authorization({

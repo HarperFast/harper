@@ -1,4 +1,4 @@
-import hdb_terms from '../utility/hdbTerms';
+import { CONFIG_PARAMS, TIME_STAMP_NAMES_ENUM } from '../utility/hdbTerms';
 import { open, Database } from 'lmdb';
 import common from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
@@ -12,10 +12,10 @@ import * as env_mngr from '../utility/environment/environmentManager';
 const RANGE_ESTIMATE = 100000000;
 env_mngr.initSync();
 
-const LMDB_PREFETCH_WRITES = env_mngr.get(hdb_terms.CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
+const LMDB_PREFETCH_WRITES = env_mngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 
-const CREATED_TIME_ATTRIBUTE_NAME = hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME;
-const UPDATED_TIME_ATTRIBUTE_NAME = hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME;
+const CREATED_TIME_ATTRIBUTE_NAME = TIME_STAMP_NAMES_ENUM.CREATED_TIME;
+const UPDATED_TIME_ATTRIBUTE_NAME = TIME_STAMP_NAMES_ENUM.UPDATED_TIME;
 const LAZY_PROPERTY_ACCESS = { lazy: true };
 
 const INVALIDATED = 1;
@@ -24,16 +24,17 @@ export class Table {
 	primaryDbi: Database
 	indices: Database[]
 	envPath: string
-	attributes: {}[]
+	attributes: any[]
 	primaryKey: string
 	Source: { new(): Resource }
-	Transaction = makeTransactionClass(this);
+	Transaction: ReturnType<typeof makeTransactionClass>
 
 	constructor(primaryDbi, options) {
 		this.primaryDbi = primaryDbi;
 		this.indices = [];
 		this.primaryKey = 'id';
 		this.envPath = primaryDbi.env.path;
+		this.Transaction = makeTransactionClass(this);
 	}
 	sourcedFrom(Resource) {
 		// define a source for retrieving invalidated entries for caching purposes
@@ -45,11 +46,8 @@ export class Table {
 		return new this.Transaction(env_transaction, lmdb_txn, parent_transaction, {});
 	}
 }
-function makeTransactionClass({ primaryKey: primary_key, indices, attributes, primaryDbi: primary_dbi }: {
-		primaryDbi: Database
-		indices: Database[],
-		attributes: {}[],
-		primaryKey: string }) {
+function makeTransactionClass(table: Table) {
+	const { primaryKey: primary_key, indices, attributes, primaryDbi: primary_dbi } = table;
 	return class TableTransaction extends Transaction {
 		table: any
  		envTxn: EnvTransaction
@@ -78,6 +76,7 @@ function makeTransactionClass({ primaryKey: primary_key, indices, attributes, pr
 			// TODO: determine if we use lazy access properties
 			let env_txn = this.envTxn;
 			let entry = primary_dbi.getEntry(id, { transaction: env_txn.getReadTxn() });
+			if (!entry) return;
 			if (env_txn.fullIsolation) {
 				env_txn.recordRead(primary_dbi, id, entry.version, true);
 			}
@@ -110,6 +109,7 @@ function makeTransactionClass({ primaryKey: primary_key, indices, attributes, pr
 						this.put(id, record, {ifVersion: updated});
 					}
 				}
+				return record;
 			}
 		}
 
@@ -210,8 +210,8 @@ function makeTransactionClass({ primaryKey: primary_key, indices, attributes, pr
 			let existing_record = existing_entry?.value;
 			if (!existing_record) return false;
 			env_txn.recordRead(primary_dbi, id, existing_entry.version, false);
-			for (let i = 0, l = this.indices.length; i < l; i++) {
-				let index = this.indices[i];
+			for (let i = 0, l = indices.length; i < l; i++) {
+				let index = indices[i];
 				let existing_value = existing_record[id];
 
 				//if the update cleared out the attribute value we need to delete it from the index
@@ -297,9 +297,6 @@ function makeTransactionClass({ primaryKey: primary_key, indices, attributes, pr
 					.slice(offset, query.limit && query.limit + offset);
 				records = ids.map((id) => primary_dbi.get(id, { transaction: this.lmdbTxn, lazy: true }));
 			}
-			records.onDone = () => {
-				transaction.done();// need to complete the transaction once iteration is complete
-			};
 			return records;
 		}
 
