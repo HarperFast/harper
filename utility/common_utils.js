@@ -42,6 +42,7 @@ module.exports = {
 	errorizeMessage: errorizeMessage,
 	stripFileExtension: stripFileExtension,
 	autoCast,
+	autoCastJSON,
 	autoCastJSONDeep,
 	removeDir: removeDir,
 	compareVersions,

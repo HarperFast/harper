@@ -46,7 +46,7 @@ function geoArea(geoJSON) {
 	}
 
 	if (typeof geoJSON === 'string') {
-		geoJSON = common_utils.autoCast(geoJSON);
+		geoJSON = common_utils.autoCastJSON(geoJSON);
 	}
 
 	return turf_area.default(geoJSON);
@@ -64,7 +64,7 @@ function geoLength(geoJSON, units) {
 	}
 
 	if (typeof geoJSON === 'string') {
-		geoJSON = common_utils.autoCast(geoJSON);
+		geoJSON = common_utils.autoCastJSON(geoJSON);
 	}
 
 	return turf_length.default(geoJSON, { units: units ? units : 'kilometers' });
@@ -87,7 +87,7 @@ function geoCircle(point, radius, units) {
 	}
 
 	if (typeof point === 'string') {
-		point = common_utils.autoCast(point);
+		point = common_utils.autoCastJSON(point);
 	}
 
 	return turf_circle.default(point, radius, { units: units ? units : 'kilometers' });
@@ -109,11 +109,11 @@ function geoDifference(poly1, poly2) {
 	}
 
 	if (typeof poly1 === 'string') {
-		poly1 = common_utils.autoCast(poly1);
+		poly1 = common_utils.autoCastJSON(poly1);
 	}
 
 	if (typeof poly2 === 'string') {
-		poly2 = common_utils.autoCast(poly2);
+		poly2 = common_utils.autoCastJSON(poly2);
 	}
 
 	return turf_difference(poly1, poly2);
@@ -136,10 +136,10 @@ function geoDistance(point1, point2, units) {
 	}
 
 	if (typeof point1 === 'string') {
-		point1 = common_utils.autoCast(point1);
+		point1 = common_utils.autoCastJSON(point1);
 	}
 	if (typeof point2 === 'string') {
-		point2 = common_utils.autoCast(point2);
+		point2 = common_utils.autoCastJSON(point2);
 	}
 
 	return turf_distance.default(point1, point2, { units: units ? units : 'kilometers' });
@@ -167,10 +167,10 @@ function geoNear(point1, point2, distance, units) {
 	}
 
 	if (typeof point1 === 'string') {
-		point1 = common_utils.autoCast(point1);
+		point1 = common_utils.autoCastJSON(point1);
 	}
 	if (typeof point2 === 'string') {
-		point2 = common_utils.autoCast(point2);
+		point2 = common_utils.autoCastJSON(point2);
 	}
 
 	if (isNaN(distance)) {
@@ -197,10 +197,10 @@ function geoContains(geo1, geo2) {
 	}
 
 	if (typeof geo1 === 'string') {
-		geo1 = common_utils.autoCast(geo1);
+		geo1 = common_utils.autoCastJSON(geo1);
 	}
 	if (typeof geo2 === 'string') {
-		geo2 = common_utils.autoCast(geo2);
+		geo2 = common_utils.autoCastJSON(geo2);
 	}
 
 	return turf_booleanContains.default(geo1, geo2);
@@ -222,10 +222,10 @@ function geoEqual(geo1, geo2) {
 	}
 
 	if (typeof geo1 === 'string') {
-		geo1 = common_utils.autoCast(geo1);
+		geo1 = common_utils.autoCastJSON(geo1);
 	}
 	if (typeof geo2 === 'string') {
-		geo2 = common_utils.autoCast(geo2);
+		geo2 = common_utils.autoCastJSON(geo2);
 	}
 
 	return turf_booleanEqual.default(geo1, geo2);
@@ -247,10 +247,10 @@ function geoCrosses(geo1, geo2) {
 	}
 
 	if (typeof geo1 === 'string') {
-		geo1 = common_utils.autoCast(geo1);
+		geo1 = common_utils.autoCastJSON(geo1);
 	}
 	if (typeof geo2 === 'string') {
-		geo2 = common_utils.autoCast(geo2);
+		geo2 = common_utils.autoCastJSON(geo2);
 	}
 
 	//need to do ! as this checks for non-intersections of geometries

@@ -844,6 +844,12 @@ describe(`Test geoDistance`, function () {
 	it('Pass in 2 points, no units, expect 1.359089002130181', function () {
 		assert.equal(geo.geoDistance(GEO_JSON_POINT2, GEO_JSON_POINT_ENTERPRISE_COWORKING), 1.359089002130181);
 	});
+	it('Pass in 2 points, second as array, expect 1.359089002130181', function () {
+		assert.equal(geo.geoDistance(GEO_JSON_POINT2, GEO_JSON_POINT_ENTERPRISE_COWORKING.geometry.coordinates), 1.359089002130181);
+	});
+	it('Pass in 2 points, second as array as string, expect 1.359089002130181', function () {
+		assert.equal(geo.geoDistance(GEO_JSON_POINT2, JSON.stringify(GEO_JSON_POINT_ENTERPRISE_COWORKING.geometry.coordinates)), 1.359089002130181);
+	});
 	it('Pass in 2 points, miles, expect 0.8444987536102792', function () {
 		assert.equal(geo.geoDistance(GEO_JSON_POINT2, GEO_JSON_POINT_ENTERPRISE_COWORKING, 'miles'), 0.8444987536102792);
 	});
@@ -882,6 +888,9 @@ describe(`Test geoNear`, function () {
 	});
 	it('Pass in 2 points, distance of 1, no units expect false', function () {
 		assert.equal(geo.geoNear(GEO_JSON_POINT2, GEO_JSON_POINT_ENTERPRISE_COWORKING, 1), false);
+	});
+	it('Pass in 2 points, distance of 1, no units, second as string expect false', function () {
+		assert.equal(geo.geoNear(GEO_JSON_POINT2, JSON.stringify(GEO_JSON_POINT_ENTERPRISE_COWORKING.geometry.coordinates), 1), false);
 	});
 	it('Pass in 2 points,distance of 1, units of miles, expect true', function () {
 		assert.equal(geo.geoNear(GEO_JSON_POINT2, GEO_JSON_POINT_ENTERPRISE_COWORKING, 1, 'miles'), true);
@@ -956,6 +965,9 @@ describe(`Test geoEqual`, function () {
 	});
 	it('Pass in 2 matching points, expect true', function () {
 		assert.equal(geo.geoEqual(GEO_JSON_POINT_ENTERPRISE_COWORKING2, GEO_JSON_POINT_ENTERPRISE_COWORKING), true);
+	});
+	it('Pass in 2 matching points, second as string, expect true', function () {
+		assert.equal(geo.geoEqual(GEO_JSON_POINT_ENTERPRISE_COWORKING2, JSON.stringify(GEO_JSON_POINT_ENTERPRISE_COWORKING)), true);
 	});
 });
 
