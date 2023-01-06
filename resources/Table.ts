@@ -76,7 +76,10 @@ function makeTransactionClass(table: Table) {
 			// TODO: determine if we use lazy access properties
 			let env_txn = this.envTxn;
 			let entry = primary_dbi.getEntry(id, { transaction: env_txn.getReadTxn() });
-			if (!entry) return;
+			if (!entry) {
+				if (TableTransaction.Source) return this.getFromSource(id);
+				return;
+			}
 			if (env_txn.fullIsolation) {
 				env_txn.recordRead(primary_dbi, id, entry.version, true);
 			}
@@ -95,19 +98,7 @@ function makeTransactionClass(table: Table) {
 
 					}
 					// TODO: retrieve it
-					if (TableTransaction.Source) {
-						let previousUpdated = record.__updated__;
-						this.markAsResolving();
-						let source = new TableTransaction.Source();
-						let updated_record = await source.get(id);
-						let updated = source.lastAccessTime;
-						if (updated) {
-							updated_record.__updated__ = updated;
-						}
-						updated_record.__availability__ = {residence: [/*here*/], cached: true};
-						updated_record[primary_key] = id;
-						this.put(id, record, {ifVersion: updated});
-					}
+					if (TableTransaction.Source) return this.getFromSource(id, record);
 				}
 				return record;
 			}
@@ -116,7 +107,18 @@ function makeTransactionClass(table: Table) {
 		/**
 		 * This will be used to record that a record is being resolved
 		 */
-		markAsResolving() {
+		async getFromSource(id, record?: any) {
+			let previousUpdated = record?.__updated__;
+			// TODO: mark as resolving
+			let source = new TableTransaction.Source();
+			let updated_record = await source.get(id);
+			let updated = source.lastAccessTime;
+			if (updated) {
+				updated_record.__updated__ = updated;
+			}
+			updated_record.__availability__ = {residence: [/*here*/], cached: true};
+			updated_record[primary_key] = id;
+			this.put(id, updated_record, {ifVersion: updated});
 		}
 
 		put(id, record, options): void {

@@ -21,7 +21,8 @@ export function startServer(options: ServerOptions & { path: string } = { path: 
 				let create_handler = handler_creator_by_type.get(extension);
 				try {
 					if (create_handler) {
-						let path_handlers = create_handler(await readFile(join(directory, name), {encoding: 'utf8'}));
+						let file_path = join(directory, name);
+						let path_handlers = await create_handler(await readFile(file_path, {encoding: 'utf8'}), file_path);
 						if (path_handlers instanceof Map) {
 							for (let [ key, handler ] of path_handlers)
 								handlers.set(web_path + (key !== 'default' ? '/' + key : ''), handler);
@@ -64,8 +65,8 @@ export function startServer(options: ServerOptions & { path: string } = { path: 
 	}
 }
 export function registerResourceType(extension, create_resource) {
-	handler_creator_by_type.set(extension, (content) => {
-		let resources = create_resource(content);
+	handler_creator_by_type.set(extension, async (content, file_path) => {
+		let resources = await create_resource(content, file_path);
 		let handler_map = new Map();
 		for (let [ sub_path, Resource ] of resources) {
 			handler_map.set(sub_path, restHandler(Resource));

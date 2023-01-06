@@ -51,6 +51,7 @@
     "coverage": "nyc --reporter=lcov npm test"
   },
   "dependencies": {
+    "@endo/static-module-record": "^0.7.16",
     "@fastify/accepts-serializer": "5.1.0",
     "@fastify/autoload": "5.4.0",
     "@fastify/compress": "6.1.1",
@@ -108,6 +109,7 @@
     "properties-reader": "2.2.0",
     "recursive-iterator": "3.3.0",
     "semver": "7.3.5",
+    "ses": "^0.18.1",
     "stream-chain": "2.2.5",
     "stream-json": "1.7.4",
     "systeminformation": "5.12.4",
