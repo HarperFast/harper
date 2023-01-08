@@ -17,11 +17,13 @@ const lmdb_create_table = rewire('../../../../../data_layer/harperBridge/lmdbBri
 const environment_utility = rewire('../../../../../utility/lmdb/environmentUtility');
 const search_utility = require('../../../../../utility/lmdb/searchUtility');
 const systemSchema = require('../../../../../json/systemSchema');
+const env = require('../../../../../utility/environment/environmentManager');
 
 const assert = require('assert');
 const fs = require('fs-extra');
 
 const sinon = require('sinon');
+const hdb_terms = require('../../../../../utility/hdbTerms');
 
 const sandbox = sinon.createSandbox();
 const TIMESTAMP = Date.now();
@@ -58,11 +60,26 @@ const CREATE_TABLE_OBJ_TEST_B = {
     hash_attribute: 'name',
 };
 
+const CREATE_TABLE_OBJ_TEST_C = {
+    operation: 'create_table',
+    schema: 'prod',
+    table: 'coolCatNames',
+    hash_attribute: 'name',
+};
+
 const TABLE_SYSTEM_DATA_TEST_B = {
     name: CREATE_TABLE_OBJ_TEST_B.table,
     schema: CREATE_TABLE_OBJ_TEST_B.schema,
     id: 'fd23fds',
     hash_attribute: CREATE_TABLE_OBJ_TEST_B.hash_attribute,
+    residence: '*'
+};
+
+const TABLE_SYSTEM_DATA_TEST_C = {
+    name: CREATE_TABLE_OBJ_TEST_C.table,
+    schema: CREATE_TABLE_OBJ_TEST_C.schema,
+    id: 'fd23fdsc',
+    hash_attribute: CREATE_TABLE_OBJ_TEST_C.hash_attribute,
     residence: '*'
 };
 
@@ -80,7 +97,16 @@ describe("test lmdbCreateTable module", ()=>{
         date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
         await fs.remove(test_utils.getMockLMDBPath());
         await fs.mkdirp(BASE_TEST_PATH);
-
+        env.setProperty(hdb_terms.CONFIG_PARAMS.SCHEMAS, {
+            prod: {
+                path: path.join(BASE_PATH, 'alt-prod-path'),
+                tables: {
+                    coolCatNames: {
+                        path: path.join(BASE_PATH, 'alt-table-path'),
+                    },
+                }
+            },
+        });
 
         hdb_schema_env = await environment_utility.createEnvironment(BASE_TEST_PATH, systemSchema.hdb_schema.name);
         environment_utility.createDBI(hdb_schema_env, systemSchema.hdb_schema.hash_attribute, false);
@@ -155,14 +181,23 @@ describe("test lmdbCreateTable module", ()=>{
 
     it('Test creating a table under the prod schema', async ()=>{
         let expected_table = test_utils.assignObjecttoNullObject(TABLE_SYSTEM_DATA_TEST_B);
-        let schema_path = path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_B.schema);
+        let schema_path = path.join(BASE_PATH, 'alt-prod-path');
         let transactions_path = path.join(BASE_PATH, 'transactions');
         let table_path = path.join(schema_path, CREATE_TABLE_OBJ_TEST_B.table + '.mdb');
+        let table_path_c = path.join(path.join(BASE_PATH, 'alt-table-path'), CREATE_TABLE_OBJ_TEST_C.table + '.mdb');
         let expected_attributes = ['__createdtime__', '__updatedtime__', 'name'];
+
+        await fs.mkdirp(path.join(BASE_PATH, 'alt-table-path'));
+        await test_utils.assertErrorAsync(lmdb_create_table, [TABLE_SYSTEM_DATA_TEST_C, CREATE_TABLE_OBJ_TEST_C], undefined);
+
+        let new_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment, [path.join(BASE_PATH, 'alt-table-path'), CREATE_TABLE_OBJ_TEST_C.table], undefined);
+
+        await test_utils.assertErrorAsync(fs.access, [table_path_c], undefined);
+        await new_env.close();
 
         await test_utils.assertErrorAsync(lmdb_create_table, [TABLE_SYSTEM_DATA_TEST_B, CREATE_TABLE_OBJ_TEST_B], undefined);
 
-        let new_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment, [schema_path, CREATE_TABLE_OBJ_TEST_B.table], undefined);
+        new_env = await test_utils.assertErrorAsync(environment_utility.openEnvironment, [schema_path, CREATE_TABLE_OBJ_TEST_B.table], undefined);
 
         await test_utils.assertErrorAsync(fs.access, [table_path], undefined);
 
