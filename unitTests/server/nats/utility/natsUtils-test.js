@@ -445,7 +445,7 @@ describe('Test natsUtils module', () => {
 
 		it('Test viewStreamIterator returns three entries from a stream', async () => {
 			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
-			await nats_utils.publishToStream('devTest.capybara', TEST_STREAM_NAME_2, [{ id: 2 }, { id: 3 }, { id: 4 }]);
+			await nats_utils.publishToStream('txn.devTest.capybara', TEST_STREAM_NAME_2, [{ id: 2 }, { id: 3 }, { id: 4 }]);
 			const transactions = await nats_utils.viewStreamIterator(TEST_STREAM_NAME_2);
 
 			const result = [];
