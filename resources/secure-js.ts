@@ -4,6 +4,7 @@ import { registerResourceType } from './resource-server';
 import { Compartment as CompartmentClass } from 'ses';
 import { smrModule, doLockdown } from './secure-js-helper';
 import { readFile } from 'fs/promises';
+import { restHandler } from './REST-handler';
 
 export function registerJavaScript() {
 	registerResourceType('js', createHandler);
@@ -12,7 +13,15 @@ export function registerJavaScript() {
 		let result = await getCompartment().import(file_path);
 		let exports = result.namespace;
 		for (let name in exports) {
-			handlers.set(name, exports[name]);
+			let exported_class = exports[name];
+			if (typeof exported_class === 'function' && exported_class.prototype &&
+					(exported_class.prototype.get || exported_class.prototype.put || exported_class.prototype.post || exported_class.prototype.delete)) {
+				let handler = restHandler(exported_class);
+				handler.init = () => {
+
+				};
+				handlers.set(name, handler);
+			}
 		}
 		console.log({handlers});
 		return handlers;
@@ -50,6 +59,8 @@ function getCompartment() {
  * @param options
  */
 function secureOnlyFetch(resource, options) {
+	// TODO: or maybe we should constrain by doing a DNS lookup and having disallow list of IP addresses that includes
+	// this server
 	let url = typeof resource === 'string' || resource.url;
 	if (new URL(url).protocol != 'https')
 		throw new Error('Only https is allowed in fetch');

@@ -77,7 +77,11 @@ export class Transaction implements Resource {
 		// subscriptionByPrimaryKey.set(id, () => {});
 		return {};
 	}
-	getTable(table_name: string, schema_name?: string): Resource {
+	use(Table) {
+		let table_name = Table.tableName || (Table.tableName = snake_case(Table.name));
+		return this.useTable(table_name);
+	}
+	useTable(table_name: string, schema_name?: string): Resource {
 		let schema_object = schema_name ? tables[schema_name] : tables;
 		let table_txn = this.inUseTables[table_name];
 		if (table_txn)
@@ -88,6 +92,10 @@ export class Transaction implements Resource {
 		let env_path = table.envPath;
 		let env_txn = this.inUseEnvs[env_path] || (this.inUseEnvs[env_path] = new EnvTransaction(table.primaryDbi));
 		return this.inUseTables[key] || (this.inUseTables[key] = table.transaction(env_txn, env_txn.getReadTxn(), this));
+	}
+	fetch(input: RequestInfo | URL, init?: RequestInit) {
+		// TODO: Examine last-modified header and add updateAccessTime
+		return fetch(input, init);
 	}
 }
 
@@ -173,7 +181,10 @@ export class EnvTransaction {
 	}
 }
 
-initTables();
+export function snake_case(camelCase: string) {
+	return camelCase[0].toLowerCase() + camelCase.slice(1).replace(/[a-z][A-Z][a-z]/g,
+		(letters) => letters[0] + '_' + letters.slice(1);
+}
 
 /*
 function example() {

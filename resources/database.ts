@@ -9,14 +9,15 @@ import { Table } from './Table';
 import * as OpenDBIObject from '../utility/lmdb/OpenDBIObject';
 import * as OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject';
 initSync();
-pack({})
+
 export let tables = {};
+let root_env;
 export function initTables() {
 	let base_path = getHdbBasePath();
 	let root_database = join(base_path, 'data.mdb');
 
 	if (existsSync(root_database)) {
-		readMetaDb(base_path);
+		root_env = readMetaDb(base_path);
 	}
 	let schemas_base_path = getBaseSchemaPath();
 	for (let schema_entry of readdirSync(schemas_base_path)) {
@@ -52,9 +53,28 @@ function readMetaDb(path: string, default_table?: string, default_schema: string
 			if (value.is_hash_attribute)
 				schema_object[table_name] = new Table(env.openDB(attribute, dbi_init), {});
 		}
+		return env;
 	} catch (error) {
 		// @ts-ignore
 		throw new Error(`Error opening database ${path}`, { cause: error });
 	}
 }
 
+export function ensureTable(table_name: string, attributes: any[], schema_name?: string) {
+	let table = tables[schema_name || 'default']?.[table_name];
+	if (table) return table;
+	if (!root_env) {
+		let base_path = getHdbBasePath();
+		let root_database_path = join(base_path, 'data.mdb');
+		let env_init = new OpenEnvironmentObject(
+			root_database_path,
+			false
+		);
+		root_env = open(env_init);
+		let internal_dbi_init = new OpenDBIObject(false);
+		let dbis_db = root_env.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
+		for (let attribute of attributes) {
+			dbis_db.put('name', {});
+		}
+	}
+}

@@ -2,7 +2,7 @@
 const { isMainThread, parentPort, threadId } = require('worker_threads');
 const { Socket } = require('net');
 const harper_logger = require('../../utility/logging/harper_logger');
-
+const { join } = require('path');
 const hdb_utils = require('../../utility/common_utils');
 const env = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
@@ -10,7 +10,9 @@ process.on('uncaughtException', (error) => {
 	console.error('uncaughtException', error)
 	process.exit(100);
 });
-require('ts-node').register({});
+require('ts-node').register({
+		project: join(terms.PACKAGE_ROOT, 'tsconfig.json'),
+});
 const { startDefaultServer } = require('./default-server');
 // log all threads as HarperDB
 harper_logger.createLogFile(terms.PROCESS_LOG_NAMES.HDB, terms.HDB_PROC_DESCRIPTOR);

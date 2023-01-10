@@ -32,7 +32,7 @@ export function startServer(options: ServerOptions & { path: string } = { path: 
 					else
 						console.warn(`no handler found for ${extension}.`);
 				} catch(error) {
-					console.warn(`failed to load ${name} due to`, error);
+					console.warn(`failed to load ${name} due to`, error.stack);
 				}
 			} else {
 				await loadDirectory(join(directory, entry.name), web_path + '/' + entry.name);
@@ -65,14 +65,7 @@ export function startServer(options: ServerOptions & { path: string } = { path: 
 	}
 }
 export function registerResourceType(extension, create_resource) {
-	handler_creator_by_type.set(extension, async (content, file_path) => {
-		let resources = await create_resource(content, file_path);
-		let handler_map = new Map();
-		for (let [ sub_path, Resource ] of resources) {
-			handler_map.set(sub_path, restHandler(Resource));
-		}
-		return handler_map;
-	});
+	handler_creator_by_type.set(extension, create_resource);
 }
 
 async function authentication(request) {
