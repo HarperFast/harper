@@ -10,13 +10,14 @@ export function registerJavaScript() {
 	registerResourceType('js', createHandler);
 	async function createHandler(js, file_path) {
 		let handlers = new Map();
-		let result = await getCompartment().import(file_path);
+		let compartment = getCompartment();
+		let result = await compartment.import(file_path);
 		let exports = result.namespace;
 		for (let name in exports) {
 			let exported_class = exports[name];
 			if (typeof exported_class === 'function' && exported_class.prototype &&
 					(exported_class.prototype.get || exported_class.prototype.put || exported_class.prototype.post || exported_class.prototype.delete)) {
-				let handler = restHandler(exported_class);
+				let handler: any = restHandler(exported_class);
 				handler.init = () => {
 
 				};
@@ -36,6 +37,7 @@ function getCompartment() {
 
 	return compartment = new (Compartment as typeof CompartmentClass)({
 		console,
+		Math,
 		Transaction,
 		tables,
 		fetch: secureOnlyFetch,
@@ -47,7 +49,8 @@ function getCompartment() {
 		importHook: async (ms) => {
 			const { StaticModuleRecord } = await smrModule;
 			let moduleText = await readFile(ms, { encoding: 'utf-8'});
-			return new StaticModuleRecord(moduleText, ms);
+			let smr = new StaticModuleRecord(moduleText, ms);
+			return smr;
 		}
 	});
 }

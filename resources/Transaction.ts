@@ -77,9 +77,8 @@ export class Transaction implements Resource {
 		// subscriptionByPrimaryKey.set(id, () => {});
 		return {};
 	}
-	use(Table) {
-		let table_name = Table.tableName || (Table.tableName = snake_case(Table.name));
-		return this.useTable(table_name);
+	use(table: Table) {
+		return this.useTable(table.tableName, table.schemaName);
 	}
 	useTable(table_name: string, schema_name?: string): Resource {
 		let schema_object = schema_name ? tables[schema_name] : tables;
@@ -183,7 +182,7 @@ export class EnvTransaction {
 
 export function snake_case(camelCase: string) {
 	return camelCase[0].toLowerCase() + camelCase.slice(1).replace(/[a-z][A-Z][a-z]/g,
-		(letters) => letters[0] + '_' + letters.slice(1);
+		(letters) => letters[0] + '_' + letters.slice(1));
 }
 
 /*

@@ -24,6 +24,8 @@ export class Table {
 	primaryDbi: Database
 	indices: Database[]
 	envPath: string
+	tableName: string
+	schemaName: string
 	attributes: any[]
 	primaryKey: string
 	Source: { new(): Resource }
@@ -34,6 +36,7 @@ export class Table {
 		this.indices = [];
 		this.primaryKey = 'id';
 		this.envPath = primaryDbi.env.path;
+		this.tableName = options.tableName;
 		this.Transaction = makeTransactionClass(this);
 	}
 	sourcedFrom(Resource) {
@@ -372,4 +375,8 @@ export function filterByType(search_object) {
 
 function noop() {
 	// prefetch callback
+}
+export function snake_case(camelCase: string) {
+	return camelCase[0].toLowerCase() + camelCase.slice(1).replace(/[a-z][A-Z][a-z]/g,
+		(letters) => letters[0] + '_' + letters.slice(1));
 }

@@ -37,7 +37,7 @@ function readMetaDb(path: string, default_table?: string, default_schema: string
 		let env = open(env_init);
 		let internal_dbi_init = new OpenDBIObject(false);
 		let dbis_db = env.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
-		for (let {key, value} of dbis_db.getRange({ start: false })) {
+		for (let { key, value } of dbis_db.getRange({ start: false })) {
 			let [ schema_name, table_name, attribute ] = key.toString().split('.');
 			if (!attribute) {
 				attribute = table_name;
@@ -51,7 +51,7 @@ function readMetaDb(path: string, default_table?: string, default_schema: string
 			let schema_object = default_schema === 'default' ? tables : (tables[default_schema] || (tables[default_schema] = {}));
 			let dbi_init = new OpenDBIObject(!value.is_hash_attribute, value.is_hash_attribute);
 			if (value.is_hash_attribute)
-				schema_object[table_name] = new Table(env.openDB(attribute, dbi_init), {});
+				schema_object[table_name] = new Table(env.openDB(key.toString(), dbi_init), { tableName: table_name });
 		}
 		return env;
 	} catch (error) {
@@ -61,7 +61,7 @@ function readMetaDb(path: string, default_table?: string, default_schema: string
 }
 
 export function ensureTable(table_name: string, attributes: any[], schema_name?: string) {
-	let table = tables[schema_name || 'default']?.[table_name];
+	let table = (schema_name ? tables[schema_name] : tables)?.[table_name];
 	if (table) return table;
 	if (!root_env) {
 		let base_path = getHdbBasePath();
@@ -71,10 +71,17 @@ export function ensureTable(table_name: string, attributes: any[], schema_name?:
 			false
 		);
 		root_env = open(env_init);
-		let internal_dbi_init = new OpenDBIObject(false);
-		let dbis_db = root_env.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
-		for (let attribute of attributes) {
-			dbis_db.put('name', {});
+	}
+	let internal_dbi_init = new OpenDBIObject(false);
+	let dbis_db = root_env.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
+	let primary_key;
+	for (let attribute of attributes) {
+		let dbi_name = table_name + '.' + attribute.name;
+		dbis_db.put(dbi_name, attribute);
+		if (attribute.is_hash_attribute) {
+			primary_key = attribute.name;
+			let dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
+			tables[table_name] = new Table(root_env.openDB(dbi_name, dbi_init), {});
 		}
 	}
 }
