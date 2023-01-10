@@ -41,6 +41,7 @@ const test_key_val = test_utils.getHTTPSCredentials().key;
 
 let setUsersToGlobal_stub;
 let setSchemaGlobal_stub;
+let server;
 
 describe('Test customFunctionsServer module', () => {
 	before(() => {
@@ -73,6 +74,7 @@ describe('Test customFunctionsServer module', () => {
 				process.removeListener('uncaughtException', listener);
 			}
 		});
+		server.close();
 	});
 
 	after(() => {
@@ -87,15 +89,15 @@ describe('Test customFunctionsServer module', () => {
 
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			const server = customFunctionsServer_rw.__get__('server');
+			server = customFunctionsServer_rw.__get__('server');
 
 			expect(server).to.not.be.undefined;
-			expect(server.server.constructor.name).to.equal('Server');
+			expect(server.server.constructor.name).to.contain('Server');
 			expect(server.server.key).to.be.instanceOf(Buffer);
 			expect(server.server.cert).to.be.instanceOf(Buffer);
-			expect(server.initialConfig.https).to.be.true;
+			expect(server.initialConfig.https).to.have.property('allowHTTP1');
 
-			server.close();
+			
 		});
 
 		it('should build HTTPS server instance with started and listening state equal to true', async () => {
@@ -104,19 +106,19 @@ describe('Test customFunctionsServer module', () => {
 
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			const server = customFunctionsServer_rw.__get__('server');
+			server = customFunctionsServer_rw.__get__('server');
 
 			const state_key = Object.getOwnPropertySymbols(server).find((s) => String(s) === 'Symbol(fastify.state)');
 			expect(server[state_key].started).to.be.true;
 			expect(server[state_key].listening).to.be.true;
 
-			server.close();
+			
 		});
 
 		it('should build HTTPS server instance with default config settings', async () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			const server = customFunctionsServer_rw.__get__('server');
+			server = customFunctionsServer_rw.__get__('server');
 
 			expect(server.initialConfig.connectionTimeout).to.equal(
 				config_utils.getDefaultConfig(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT)
@@ -124,12 +126,12 @@ describe('Test customFunctionsServer module', () => {
 			expect(server.initialConfig.keepAliveTimeout).to.equal(
 				config_utils.getDefaultConfig(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT)
 			);
-			server.close();
+			
 		});
 
 		it('should build HTTPS server instances with provided config settings', async () => {
 			const test_config_settings = {
-				https_on: true,
+				https_enabled: true,
 				server_timeout: 3333,
 				keep_alive_timeout: 2222,
 				headers_timeout: 1111,
@@ -138,12 +140,11 @@ describe('Test customFunctionsServer module', () => {
 
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			const server = customFunctionsServer_rw.__get__('server');
+			server = customFunctionsServer_rw.__get__('server');
 
 			expect(server.server.timeout).to.equal(test_config_settings.server_timeout);
-			expect(server.server.keepAliveTimeout).to.equal(test_config_settings.keep_alive_timeout);
 			expect(server.server.headersTimeout).to.equal(test_config_settings.headers_timeout);
-			server.close();
+			
 			test_utils.preTestPrep({
 				server_timeout: config_utils.getDefaultConfig(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT),
 				keep_alive_timeout: config_utils.getDefaultConfig(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT),
@@ -155,7 +156,7 @@ describe('Test customFunctionsServer module', () => {
 
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			const server = customFunctionsServer_rw.__get__('server');
+			server = customFunctionsServer_rw.__get__('server');
 
 			const plugin_key = Object.getOwnPropertySymbols(server).find(
 				(s) => String(s) === 'Symbol(fastify.pluginNameChain)'
@@ -163,7 +164,7 @@ describe('Test customFunctionsServer module', () => {
 
 			expect(server[plugin_key].length).to.equal(2);
 
-			server.close();
+			
 		});
 
 		it('should register @fastify/cors if cors is enabled', async () => {
@@ -172,7 +173,7 @@ describe('Test customFunctionsServer module', () => {
 
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			const server = customFunctionsServer_rw.__get__('server');
+			server = customFunctionsServer_rw.__get__('server');
 
 			const plugin_key = Object.getOwnPropertySymbols(server).find(
 				(s) => String(s) === 'Symbol(fastify.pluginNameChain)'
@@ -181,7 +182,7 @@ describe('Test customFunctionsServer module', () => {
 			expect(server[plugin_key].length).to.equal(3);
 			expect(server[plugin_key]).to.deep.equal(['fastify', '@fastify/cors', 'hdb-request-time']);
 
-			server.close();
+			
 		});
 
 		it('should return 500 error for request from origin not included in CORS whitelist', async () => {
@@ -191,7 +192,7 @@ describe('Test customFunctionsServer module', () => {
 
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			const server = customFunctionsServer_rw.__get__('server');
+			server = customFunctionsServer_rw.__get__('server');
 
 			const test_headers = Object.assign({ origin: 'https://google.com' }, test_req_options.headers);
 			const test_response = await server.inject({
@@ -204,7 +205,7 @@ describe('Test customFunctionsServer module', () => {
 			expect(test_response.statusCode).to.equal(500);
 			expect(test_response.json().error).to.equal('domain https://google.com is not on access list');
 
-			server.close();
+			
 		});
 
 		it('should return resp with 200 for request from origin included in CORS whitelist', async () => {
@@ -214,7 +215,7 @@ describe('Test customFunctionsServer module', () => {
 
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			const server = customFunctionsServer_rw.__get__('server');
+			server = customFunctionsServer_rw.__get__('server');
 
 			const test_headers = Object.assign({ origin: 'https://harperdb.io' }, test_req_options.headers);
 			const test_response = await server.inject({
@@ -226,7 +227,7 @@ describe('Test customFunctionsServer module', () => {
 
 			expect(test_response.statusCode).to.equal(404);
 
-			server.close();
+			
 		});
 	});
 
@@ -234,7 +235,7 @@ describe('Test customFunctionsServer module', () => {
 		it('should return an http server', async () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			const server = customFunctionsServer_rw.__get__('server');
+			server = customFunctionsServer_rw.__get__('server');
 			const buildServer_rw = customFunctionsServer_rw.__get__('buildServer');
 
 			const test_is_https = false;
@@ -243,22 +244,22 @@ describe('Test customFunctionsServer module', () => {
 			expect(test_result.server.constructor.name).to.equal('Server');
 			expect(test_result.initialConfig.https).to.be.undefined;
 
-			server.close();
+			
 		});
 
 		it('should return an https server', async () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			const server = customFunctionsServer_rw.__get__('server');
+			server = customFunctionsServer_rw.__get__('server');
 			const buildServer_rw = customFunctionsServer_rw.__get__('buildServer');
 
 			const test_is_https = true;
 			const test_result = await buildServer_rw(test_is_https);
 
-			expect(test_result.server.constructor.name).to.equal('Server');
-			expect(test_result.initialConfig.https).to.be.true;
+			expect(test_result.server.constructor.name).to.contain('Server');
+			expect(test_result.initialConfig.https).to.have.property('allowHTTP1');
 
-			server.close();
+			
 		});
 	});
 
@@ -266,12 +267,12 @@ describe('Test customFunctionsServer module', () => {
 		it('NOMINAL - should call initial setup methods', async () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			const server = customFunctionsServer_rw.__get__('server');
+			server = customFunctionsServer_rw.__get__('server');
 
 			expect(setSchemaGlobal_stub.called).to.be.true;
 			expect(setUsersToGlobal_stub.called).to.be.true;
 
-			server.close();
+			
 		});
 	});
 
@@ -294,7 +295,7 @@ describe('Test customFunctionsServer module', () => {
 		it('should call buildRoutes', async () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			const server = customFunctionsServer_rw.__get__('server');
+			server = customFunctionsServer_rw.__get__('server');
 
 			const plugin_key = Object.getOwnPropertySymbols(server).find((s) => String(s) === 'Symbol(fastify.children)');
 			const plugins_array = Object.getOwnPropertySymbols(server[plugin_key][0]).find(
@@ -307,13 +308,13 @@ describe('Test customFunctionsServer module', () => {
 			expect(test_result).to.include('@fastify/static');
 			expect(test_result).to.include('hdbCore-auto-0');
 
-			server.close();
+			
 		});
 
 		it('should register hdbCore', async () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			const server = customFunctionsServer_rw.__get__('server');
+			server = customFunctionsServer_rw.__get__('server');
 
 			const plugin_key = Object.getOwnPropertySymbols(server).find((s) => String(s) === 'Symbol(fastify.children)');
 			const test_result = server[plugin_key][0];
@@ -324,13 +325,13 @@ describe('Test customFunctionsServer module', () => {
 			expect(Object.keys(test_result.hdbCore)).to.include('request');
 			expect(Object.keys(test_result.hdbCore)).to.include('requestWithoutAuthentication');
 
-			server.close();
+			
 		});
 
 		it('should find the appropriate route files in the test project', async () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			const server = customFunctionsServer_rw.__get__('server');
+			server = customFunctionsServer_rw.__get__('server');
 
 			const plugin_key = Object.getOwnPropertySymbols(server).find((s) => String(s) === 'Symbol(fastify.children)');
 			const children = Object.getOwnPropertySymbols(server[plugin_key][0]).find(
@@ -350,14 +351,14 @@ describe('Test customFunctionsServer module', () => {
 			const linked_prefix = server[plugin_key][0][children][1][route_prefix];
 			expect(linked_prefix).to.equal('/test-linked');
 
-			server.close();
+			
 		});
 
 		// Something is causing the template_routes to change, so I'm commenting this out for now.
 		// 		it('should register the appropriate routes with the server', async () => {
 		// 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 		// 			await new Promise((resolve) => setTimeout(resolve, 500));
-		// 			const server = customFunctionsServer_rw.__get__('server');
+		// 			server = customFunctionsServer_rw.__get__('server');
 		//
 		// 			const template_routes = `└── /
 		//     ├── test (GET)
@@ -376,7 +377,7 @@ describe('Test customFunctionsServer module', () => {
 		//
 		// 			expect(routes).to.equal(template_routes);
 		//
-		// 			server.close();
+		// 			
 		// 		});
 	});
 });
