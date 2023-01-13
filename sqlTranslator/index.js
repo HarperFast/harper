@@ -24,9 +24,9 @@ const { hdb_errors, handleHDBError } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
 const transact_to_clustering_utilities = require('../utility/clustering/transactToClusteringUtilities');
 
-function postWrite(request_body, result, originators) {
+function postWrite(request_body, result) {
 	return Promise.all([
-		transact_to_clustering_utilities.postOperationHandler(request_body, result, originators),
+		transact_to_clustering_utilities.postOperationHandler(request_body, result, undefined),
 		insert.flush(request_body),
 	]);
 }

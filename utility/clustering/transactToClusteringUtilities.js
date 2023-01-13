@@ -10,56 +10,19 @@ const ClusteringOriginObject = require('./ClusteringOriginObject');
 const crypto_hash = require('../../security/cryptoHash');
 env.initSync();
 
-const HDB_SCHEMA_STREAM_NAME = nats_terms.SCHEMA_QUEUE_CONSUMER_NAMES.stream_name;
-const HDB_SCHEMA_SUBJECT_NAME = nats_terms.SCHEMA_QUEUE_CONSUMER_NAMES.deliver_subject;
-
 module.exports = {
-	sendAttributeTransaction,
 	postOperationHandler,
 };
-
-/**
- * Propagates attribute metadata across the entire cluster.
- * @param result
- * @param request_body
- * @param originators
- */
-async function sendAttributeTransaction(result, request_body, originators = []) {
-	if (!env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
-		return;
-	}
-
-	if (
-		!common_utils.isEmptyOrZeroLength(result.new_attributes) &&
-		request_body.schema !== hdb_terms.SYSTEM_SCHEMA_NAME
-	) {
-		const username = request_body.hdb_user?.username;
-		const this_node_name = env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
-
-		for (const attribute of result.new_attributes) {
-			const transaction = {
-				operation: hdb_terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
-				schema: request_body.schema,
-				table: request_body.table,
-				attribute: attribute,
-				__origin: new ClusteringOriginObject(result.txn_time, username, this_node_name),
-			};
-
-			harper_logger.trace(`sendAttributeTransaction publishing ${HDB_SCHEMA_STREAM_NAME}`, transaction);
-			await nats_utils.publishToStream(HDB_SCHEMA_SUBJECT_NAME, HDB_SCHEMA_STREAM_NAME, [transaction], originators);
-		}
-	}
-}
 
 /**
  * Publishes a transaction to local Nats stream which will enable the transaction to be propagated across the cluster.
  * @param request_body
  * @param hashes_to_send
  * @param origin
- * @param originators
+ * @param nats_msg_header
  * @returns {Promise<void>}
  */
-async function sendOperationTransaction(request_body, hashes_to_send, origin, originators = []) {
+async function sendOperationTransaction(request_body, hashes_to_send, origin, nats_msg_header) {
 	if (request_body.schema === hdb_terms.SYSTEM_SCHEMA_NAME) {
 		return;
 	}
@@ -73,8 +36,8 @@ async function sendOperationTransaction(request_body, hashes_to_send, origin, or
 		await nats_utils.publishToStream(
 			`${nats_terms.SUBJECT_PREFIXES.TXN}.${request_body.schema}.${request_body.table}`,
 			crypto_hash.createNatsTableStreamName(request_body.schema, request_body.table),
-			[transaction_msg],
-			originators
+			nats_msg_header,
+			transaction_msg
 		);
 	}
 }
@@ -111,10 +74,10 @@ function convertCRUDOperationToTransaction(source_json, affected_hashes, origin)
  * Manages how an operation is handled by clustering after the local node has processed it.
  * @param request_body
  * @param result
- * @param originators
+ * @param nats_msg_header
  * @returns {Promise<*>}
  */
-async function postOperationHandler(request_body, result, originators = []) {
+async function postOperationHandler(request_body, result, nats_msg_header) {
 	if (!env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
 		return;
 	}
@@ -129,8 +92,7 @@ async function postOperationHandler(request_body, result, originators = []) {
 	switch (request_body.operation) {
 		case hdb_terms.OPERATIONS_ENUM.INSERT:
 			try {
-				await sendOperationTransaction(request_body, result.inserted_hashes, origin, originators);
-				await sendAttributeTransaction(result, request_body, originators);
+				await sendOperationTransaction(request_body, result.inserted_hashes, origin, nats_msg_header);
 			} catch (err) {
 				harper_logger.error('There was an error calling clustering postOperationHandler for insert.');
 				harper_logger.error(err);
@@ -138,7 +100,7 @@ async function postOperationHandler(request_body, result, originators = []) {
 			break;
 		case hdb_terms.OPERATIONS_ENUM.DELETE:
 			try {
-				await sendOperationTransaction(request_body, result.deleted_hashes, origin, originators);
+				await sendOperationTransaction(request_body, result.deleted_hashes, origin, nats_msg_header);
 			} catch (err) {
 				harper_logger.error('There was an error calling clustering postOperationHandler for delete.');
 				harper_logger.error(err);
@@ -146,8 +108,7 @@ async function postOperationHandler(request_body, result, originators = []) {
 			break;
 		case hdb_terms.OPERATIONS_ENUM.UPDATE:
 			try {
-				await sendOperationTransaction(request_body, result.update_hashes, origin, originators);
-				await sendAttributeTransaction(result, request_body, originators);
+				await sendOperationTransaction(request_body, result.update_hashes, origin, nats_msg_header);
 			} catch (err) {
 				harper_logger.error('There was an error calling clustering postOperationHandler for update.');
 				harper_logger.error(err);
@@ -155,72 +116,9 @@ async function postOperationHandler(request_body, result, originators = []) {
 			break;
 		case hdb_terms.OPERATIONS_ENUM.UPSERT:
 			try {
-				await sendOperationTransaction(request_body, result.upserted_hashes, origin, originators);
-				await sendAttributeTransaction(result, request_body, originators);
+				await sendOperationTransaction(request_body, result.upserted_hashes, origin, nats_msg_header);
 			} catch (err) {
 				harper_logger.error('There was an error calling clustering postOperationHandler for upsert.');
-				harper_logger.error(err);
-			}
-			break;
-		case hdb_terms.OPERATIONS_ENUM.CREATE_SCHEMA:
-			try {
-				let transaction = {
-					operation: hdb_terms.OPERATIONS_ENUM.CREATE_SCHEMA,
-					schema: request_body.schema,
-					__origin: origin,
-				};
-				//TODO is this publishing to the correct stream?
-				await nats_utils.publishToStream(HDB_SCHEMA_SUBJECT_NAME, HDB_SCHEMA_STREAM_NAME, [transaction], originators);
-			} catch (err) {
-				harper_logger.error('There was an error calling clustering postOperationHandler for create_schema.');
-				harper_logger.error(err);
-			}
-			break;
-		case hdb_terms.OPERATIONS_ENUM.CREATE_TABLE:
-			try {
-				let transaction = {
-					operation: hdb_terms.OPERATIONS_ENUM.CREATE_TABLE,
-					schema: request_body.schema,
-					table: request_body.table,
-					hash_attribute: request_body.hash_attribute,
-					__origin: origin,
-				};
-				//TODO is this publishing to the correct stream?
-				await nats_utils.publishToStream(HDB_SCHEMA_SUBJECT_NAME, HDB_SCHEMA_STREAM_NAME, [transaction], originators);
-			} catch (err) {
-				harper_logger.error('There was an error calling clustering postOperationHandler for create_table.');
-				harper_logger.error(err);
-			}
-			break;
-		case hdb_terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE:
-			try {
-				let transaction = {
-					operation: hdb_terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
-					schema: request_body.schema,
-					table: request_body.table,
-					attribute: request_body.attribute,
-					__origin: origin,
-				};
-				//TODO is this publishing to the correct stream?
-				await nats_utils.publishToStream(HDB_SCHEMA_SUBJECT_NAME, HDB_SCHEMA_STREAM_NAME, [transaction], originators);
-			} catch (err) {
-				harper_logger.error('There was an error calling clustering postOperationHandler for create_attribute.');
-				harper_logger.error(err);
-			}
-			break;
-		case hdb_terms.OPERATIONS_ENUM.CSV_DATA_LOAD:
-			try {
-				//TODO this seems wrong, need to investigate: https://harperdb.atlassian.net/browse/CORE-1097
-				let transaction = {
-					operation: hdb_terms.OPERATIONS_ENUM.CSV_DATA_LOAD,
-					schema: request_body.schema,
-					table: request_body.table,
-					attribute: request_body.attribute,
-				};
-				//TODO is this publishing to the correct stream?
-				await nats_utils.publishToStream(HDB_SCHEMA_SUBJECT_NAME, HDB_SCHEMA_STREAM_NAME, [transaction], originators);
-			} catch (err) {
-				harper_logger.error('There was an error calling clustering postOperationHandler for csv_data_load.');
 				harper_logger.error(err);
 			}
 			break;

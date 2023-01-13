@@ -24,6 +24,8 @@ const { encode, decode } = require('msgpackr');
 const { isEmpty } = hdb_utils;
 const user = require('../../../security/user');
 
+const STREAM_DUPE_WINDOW = 120000000000;
+
 const {
 	connect,
 	StorageType,
@@ -102,6 +104,7 @@ module.exports = {
 	getStreamInfo,
 	updateLocalStreams,
 	closeConnection,
+	getJsmServerName,
 };
 
 /**
@@ -298,6 +301,7 @@ async function createLocalStream(stream_name, subjects) {
 		retention: RetentionPolicy.Limits,
 		subjects: subjects,
 		discard: DiscardPolicy.Old,
+		duplicate_window: STREAM_DUPE_WINDOW,
 		max_msgs,
 		max_bytes,
 		max_age,
@@ -394,15 +398,11 @@ async function viewStream(stream_name, start_time = undefined, max = undefined) 
 				nats_timestamp: jmsg.info.timestampNanos,
 				nats_sequence: jmsg.info.streamSequence,
 				entry: obj,
-				originators: [],
 			};
-			let orig = [];
+
 			if (jmsg.headers) {
-				let orig_raw = jmsg.headers.get('originators');
-				if (orig_raw) {
-					orig = orig_raw.split(',');
-					wrapper.originators = orig;
-				}
+				wrapper.origin = jmsg.headers.get(nats_terms.MSG_HEADERS.ORIGIN);
+				wrapper.nats_msg_id = jmsg.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID);
 			}
 
 			entries.push(wrapper);
@@ -455,6 +455,7 @@ async function* viewStreamIterator(stream_name, start_time = undefined, max = un
 		const sub_config = { timeout: 2000 };
 		if (max) sub_config.max = max;
 		const sub = await connection.subscribe(consumer_name, sub_config);
+
 		for await (const m of sub) {
 			const jmsg = toJsMsg(m);
 			const obj = decode(jmsg.data);
@@ -462,16 +463,11 @@ async function* viewStreamIterator(stream_name, start_time = undefined, max = un
 				nats_timestamp: jmsg.info.timestampNanos,
 				nats_sequence: jmsg.info.streamSequence,
 				entry: obj,
-				originators: [],
 			};
 
-			let orig = [];
 			if (jmsg.headers) {
-				let orig_raw = jmsg.headers.get('originators');
-				if (orig_raw) {
-					orig = orig_raw.split(',');
-					wrapper.originators = orig;
-				}
+				wrapper.origin = jmsg.headers.get(nats_terms.MSG_HEADERS.ORIGIN);
+				wrapper.nats_msg_id = jmsg.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID);
 			}
 
 			yield wrapper;
@@ -498,38 +494,59 @@ async function* viewStreamIterator(stream_name, start_time = undefined, max = un
  * publishes message(s) to a stream
  * @param {String} subject_name - name of subject to publish to
  * @param {String} stream_name - the name of the NATS stream
- * @param {[]} entries - array of entries to publish to the stream
- * @param {[]} originators - list of node names which have previous processed the entry(ies)
+ * @param {} message - message to publish to the stream
+ * @param {} msg_header - header to attach to msg being published to stream
  * @returns {Promise<void>}
  */
-async function publishToStream(subject_name, stream_name, entries = [], originators = []) {
-	hdb_logger.trace(
-		`publishToStream called with subject: ${subject_name}, stream: ${stream_name}, entries:`,
-		entries,
-		`originators:`,
-		originators
-	);
-	const { connection, js } = await getNATSReferences();
+async function publishToStream(subject_name, stream_name, msg_header, message) {
+	hdb_logger.trace(`publishToStream called with subject: ${subject_name}, stream: ${stream_name}, entries:`, message);
+	msg_header = addNatsMsgHeader(message, msg_header);
+
+	const { js } = await getNATSReferences();
 	const nats_server = await getJsmServerName();
 	const subject = `${subject_name}.${nats_server}`;
-	const h = headers();
-	originators.push(nats_server);
-	h.append('originators', originators.join());
-	for (let x = 0, length = entries.length; x < length; x++) {
-		try {
-			hdb_logger.trace(`publishToStream publishing to subject: ${subject}, data:`, entries[x]);
-			await js.publish(subject, encode(entries[x]), { headers: h });
-		} catch (err) {
-			// If the stream doesn't exist it is created and published to
-			if (err.code && err.code.toString() === '503') {
-				hdb_logger.trace(`publishToStream creating stream: ${stream_name}`);
-				await createLocalStream(stream_name, [subject]);
-				await js.publish(subject, encode(entries[x]), { headers: h });
-			} else {
-				throw err;
-			}
+
+	try {
+		hdb_logger.trace(`publishToStream publishing to subject: ${subject}, data:`, message);
+		await js.publish(subject, encode(message), { headers: msg_header });
+	} catch (err) {
+		// If the stream doesn't exist it is created and published to
+		if (err.code && err.code.toString() === '503') {
+			hdb_logger.trace(`publishToStream creating stream: ${stream_name}`);
+			await createLocalStream(stream_name, [subject]);
+			await js.publish(subject, encode(message), { headers: msg_header });
+		} else {
+			throw err;
 		}
 	}
+}
+
+/**
+ * Can create a nats header (which essential is a map) and add msg id
+ * and origin properties if they don't already exist.
+ * @param req
+ * @param nats_msg_header
+ * @returns {*}
+ */
+function addNatsMsgHeader(req, nats_msg_header) {
+	if (nats_msg_header === undefined) nats_msg_header = headers();
+	const node_name = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
+
+	// If the msg header does not have a msg id property, add one.
+	if (!nats_msg_header.has(nats_terms.MSG_HEADERS.NATS_MSG_ID)) {
+		const table_hash_attr = hdb_utils.getTableHashAttribute(req.schema, req.table);
+		const operation = req.action ? req.action : req.operation;
+		const nats_msg_id = `${node_name}.${req.schema}.${
+			req.table
+		}.${operation}.${table_hash_attr}.${Date.now()}.${ulid()}`;
+		nats_msg_header.append(nats_terms.MSG_HEADERS.NATS_MSG_ID, nats_msg_id);
+	}
+
+	if (!nats_msg_header.has(nats_terms.MSG_HEADERS.ORIGIN)) {
+		nats_msg_header.append(nats_terms.MSG_HEADERS.ORIGIN, node_name);
+	}
+
+	return nats_msg_header;
 }
 
 /**
@@ -591,6 +608,7 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 			name: CONSUMER_NAMES.stream_name,
 			storage: StorageType.File,
 			retention: RetentionPolicy.Workqueue,
+			duplicate_window: STREAM_DUPE_WINDOW,
 			// txn subject is here because filter_subject in the consumer wouldn't work without it. No message will be published to it.
 			subjects: [
 				`${nats_terms.SUBJECT_PREFIXES.MSGID}.${server_name}`,

@@ -55,71 +55,26 @@ describe('Test transactToClusteringUtilities module', () => {
 		sandbox.resetHistory();
 	});
 
-	it('Test sendAttributeTransaction calls publish to stream correctly twice', async () => {
-		const result = {
-			new_attributes: ['name', 'weight'],
-			txn_time: 1234,
-		};
-
-		const expected_call_0 = [
-			{
-				operation: 'create_attribute',
-				schema: 'dev',
-				table: 'dog',
-				attribute: 'name',
-				__origin: {
-					timestamp: 1234,
-					user: 'HDB_ADMIN',
-					node_name: 'test-node',
-				},
-			},
-		];
-
-		const expected_call_1 = [
-			{
-				operation: 'create_attribute',
-				schema: 'dev',
-				table: 'dog',
-				attribute: 'weight',
-				__origin: {
-					timestamp: 1234,
-					user: 'HDB_ADMIN',
-					node_name: 'test-node',
-				},
-			},
-		];
-
-		await transactToClusteringUtilities.sendAttributeTransaction(result, INSERT_OP);
-		expect(publish_to_stream_stub.getCall(0).args[0]).to.equal(HDB_SCHEMA_SUBJECT_NAME);
-		expect(publish_to_stream_stub.getCall(0).args[1]).to.equal(HDB_SCHEMA_STREAM_NAME);
-		expect(publish_to_stream_stub.getCall(0).args[2]).to.eql(expected_call_0);
-		expect(publish_to_stream_stub.getCall(1).args[0]).to.equal(HDB_SCHEMA_SUBJECT_NAME);
-		expect(publish_to_stream_stub.getCall(1).args[1]).to.equal(HDB_SCHEMA_STREAM_NAME);
-		expect(publish_to_stream_stub.getCall(1).args[2]).to.eql(expected_call_1);
-	});
-
 	it('Test sendOperationTransaction calls nats publish to stream with correct params', async () => {
-		const expected_transaction = [
-			{
-				operation: 'upsert',
-				schema: 'dev',
-				table: 'dog',
-				__origin: 'node1',
-				records: [
-					{
-						id: 1,
-						name: 'Penny',
-						age: 8,
-					},
-				],
-			},
-		];
+		const expected_transaction = {
+			operation: 'upsert',
+			schema: 'dev',
+			table: 'dog',
+			__origin: 'node1',
+			records: [
+				{
+					id: 1,
+					name: 'Penny',
+					age: 8,
+				},
+			],
+		};
 		const sendOperationTransaction = transactToClusteringUtilities.__get__('sendOperationTransaction');
 		await sendOperationTransaction(UPSERT_OP, [1, 2, 3], 'node1');
 		expect(publish_to_stream_stub.getCall(0).args[0]).to.equal('txn.dev.dog');
 		expect(publish_to_stream_stub.getCall(0).args[1]).to.equal('9d2969dfab3c9b5daa6f8d3d0b3ad347');
-		expect(publish_to_stream_stub.getCall(0).args[2]).to.eql(expected_transaction);
-		expect(publish_to_stream_stub.getCall(0).args[3]).to.eql([]);
+		expect(publish_to_stream_stub.getCall(0).args[2]).to.be.undefined;
+		expect(publish_to_stream_stub.getCall(0).args[3]).to.eql(expected_transaction);
 	});
 
 	it('Test convertCRUDOperationToTransaction happy path when called with delete', () => {
@@ -161,24 +116,17 @@ describe('Test transactToClusteringUtilities module', () => {
 	describe('Test postOperationHandler function', () => {
 		const { postOperationHandler } = transactToClusteringUtilities;
 		let send_operation_transaction_stub = sandbox.stub();
-		let send_attribute_transaction_stub = sandbox.stub();
 		let send_operation_transaction_rw;
-		let send_attribute_transaction_rw;
 
 		before(() => {
 			send_operation_transaction_rw = transactToClusteringUtilities.__set__(
 				'sendOperationTransaction',
 				send_operation_transaction_stub
 			);
-			send_attribute_transaction_rw = transactToClusteringUtilities.__set__(
-				'sendAttributeTransaction',
-				send_attribute_transaction_stub
-			);
 		});
 
 		after(() => {
 			send_operation_transaction_rw();
-			send_attribute_transaction_rw();
 		});
 
 		afterEach(() => {
@@ -188,53 +136,21 @@ describe('Test transactToClusteringUtilities module', () => {
 		it('Test insert', async () => {
 			await postOperationHandler(INSERT_OP, { inserted_hashes: [1] });
 			expect(send_operation_transaction_stub.calledOnce).to.be.true;
-			expect(send_attribute_transaction_stub.calledOnce).to.be.true;
 		});
 
 		it('Test delete', async () => {
 			await postOperationHandler(DELETE_OP, { deleted_hashes: [1] });
 			expect(send_operation_transaction_stub.calledOnce).to.be.true;
-			expect(send_attribute_transaction_stub.called).to.be.false;
 		});
 
 		it('Test update', async () => {
 			await postOperationHandler(UPDATE_OP, { update_hashes: [1] });
 			expect(send_operation_transaction_stub.calledOnce).to.be.true;
-			expect(send_attribute_transaction_stub.calledOnce).to.be.true;
 		});
 
 		it('Test upsert', async () => {
 			await postOperationHandler(UPDATE_OP, { upserted_hashes: [1] });
 			expect(send_operation_transaction_stub.calledOnce).to.be.true;
-			expect(send_attribute_transaction_stub.calledOnce).to.be.true;
-		});
-
-		it('Test create schema', async () => {
-			await postOperationHandler({ operation: 'create_schema', schema: 'dev' }, {});
-			expect(send_operation_transaction_stub.called).to.be.false;
-			expect(send_attribute_transaction_stub.called).to.be.false;
-			expect(publish_to_stream_stub.calledOnce).to.be.true;
-		});
-
-		it('Test create table', async () => {
-			await postOperationHandler({ operation: 'create_table', schema: 'dev', table: 'dog', hash_attribute: 'id' }, {});
-			expect(send_operation_transaction_stub.called).to.be.false;
-			expect(send_attribute_transaction_stub.called).to.be.false;
-			expect(publish_to_stream_stub.calledOnce).to.be.true;
-		});
-
-		it('Test create attribute', async () => {
-			await postOperationHandler({ operation: 'create_attribute', schema: 'dev', table: 'dog', attribute: 'age' }, {});
-			expect(send_operation_transaction_stub.called).to.be.false;
-			expect(send_attribute_transaction_stub.called).to.be.false;
-			expect(publish_to_stream_stub.calledOnce).to.be.true;
-		});
-
-		it('Test CSV date load', async () => {
-			await postOperationHandler({ operation: 'csv_data_load', schema: 'dev', table: 'dog', attribute: 'age' }, {});
-			expect(send_operation_transaction_stub.called).to.be.false;
-			expect(send_attribute_transaction_stub.called).to.be.false;
-			expect(publish_to_stream_stub.calledOnce).to.be.true;
 		});
 	});
 });

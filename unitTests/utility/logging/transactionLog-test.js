@@ -23,32 +23,8 @@ const TEST_TIMEOUT = 10000;
 async function createTestStream() {
 	await nats_utils.createLocalStream(TEST_STREAM_NAME, [`unit_test.panda.testLeafServer-leaf`]);
 	for (let x = 0; x < 99; x++) {
-		const entry = [
-			{
-				operation: 'insert',
-				schema: TEST_SCHEMA,
-				table: TEST_TABLE,
-				__origin: {
-					timestamp: 1652888897398.283,
-					user: 'admin',
-					node_name: 'david_local',
-				},
-				records: [
-					{
-						record: x,
-					},
-				],
-			},
-		];
-
-		await nats_utils.publishToStream('unit_test.panda', TEST_STREAM_NAME, entry);
-		// Make sure there is gap between publishes
-		await hdb_utils.async_set_timeout(50);
-	}
-
-	const del_entry = [
-		{
-			operation: 'delete',
+		const entry = {
+			operation: 'insert',
 			schema: TEST_SCHEMA,
 			table: TEST_TABLE,
 			__origin: {
@@ -56,11 +32,31 @@ async function createTestStream() {
 				user: 'admin',
 				node_name: 'david_local',
 			},
-			hash_values: [1, 4, 6],
-		},
-	];
+			records: [
+				{
+					record: x,
+				},
+			],
+		};
 
-	await nats_utils.publishToStream('unit_test.panda', TEST_STREAM_NAME, del_entry);
+		await nats_utils.publishToStream('unit_test.panda', TEST_STREAM_NAME, undefined, entry);
+		// Make sure there is gap between publishes
+		await hdb_utils.async_set_timeout(50);
+	}
+
+	const del_entry = {
+		operation: 'delete',
+		schema: TEST_SCHEMA,
+		table: TEST_TABLE,
+		__origin: {
+			timestamp: 1652888897398.283,
+			user: 'admin',
+			node_name: 'david_local',
+		},
+		hash_values: [1, 4, 6],
+	};
+
+	await nats_utils.publishToStream('unit_test.panda', TEST_STREAM_NAME, undefined, del_entry);
 }
 
 /**

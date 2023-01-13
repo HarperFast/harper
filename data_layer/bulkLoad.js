@@ -19,7 +19,6 @@ const Batch = require('stream-json/utils/Batch');
 const comp = require('stream-chain/utils/comp');
 const { finished } = require('stream');
 const env = require('../utility/environment/environmentManager');
-const transact_to_clustering_utils = require('../utility/clustering/transactToClusteringUtilities');
 const op_func_caller = require('../utility/OperationFunctionCaller');
 const AWSConnector = require('../utility/AWS/AWSConnector');
 const { BulkLoadFileObject, BulkLoadDataObject } = require('./data_objects/BulkLoadObjects');
@@ -52,10 +51,10 @@ module.exports = {
 /**
  * Load csv values specified as a string in the message 'data' field.
  * @param json_message
- * @param originators
+ * @param nats_msg_header
  * @returns {Promise<string>}
  */
-async function csvDataLoad(json_message, originators = []) {
+async function csvDataLoad(json_message, nats_msg_header) {
 	let validation_msg = validator.dataObject(json_message);
 	if (validation_msg) {
 		throw handleHDBError(
@@ -111,7 +110,7 @@ async function csvDataLoad(json_message, originators = []) {
 			callBulkFileLoad,
 			converted_msg,
 			postCSVLoadFunction.bind(null, parse_results.meta.fields),
-			originators
+			nats_msg_header
 		);
 
 		if (bulk_load_result.message === CSV_NO_RECORDS_MSG) {
@@ -775,7 +774,7 @@ async function bulkFileLoad(records, schema, table, action) {
 	}
 }
 
-async function postCSVLoadFunction(fields, orig_bulk_msg, result, originators = []) {
+async function postCSVLoadFunction(fields, orig_bulk_msg, result, nats_msg_header) {
 	try {
 		if (orig_bulk_msg.data.length === 0) {
 			return;
@@ -812,11 +811,10 @@ async function postCSVLoadFunction(fields, orig_bulk_msg, result, originators = 
 		await nats_utils.publishToStream(
 			`${nats_terms.SUBJECT_PREFIXES.TXN}.${orig_bulk_msg.schema}.${orig_bulk_msg.table}`,
 			crypto_hash.createNatsTableStreamName(orig_bulk_msg.schema, orig_bulk_msg.table),
-			[transaction],
-			originators
+			nats_msg_header,
+			transaction
 		);
 
-		await transact_to_clustering_utils.sendAttributeTransaction(result, orig_bulk_msg, originators);
 		delete result.new_attributes;
 	} catch (err) {
 		// If an error occurs after the CSV load has happened we don't want to interfere with the original operation so the error is just logged.

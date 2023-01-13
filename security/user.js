@@ -158,14 +158,7 @@ async function addUser(user) {
 
 	const new_user = Object.assign({}, clean_user);
 	new_user.role = search_role[0];
-	let add_user_msg = { user: null }; // This is temp code as a result of removing SC
-	add_user_msg.user = new_user;
-	// TODO: Check if this should be removed, postOperation
-	hdb_utility.sendTransactionToSocketCluster(
-		terms.INTERNAL_SC_CHANNELS.ADD_USER,
-		add_user_msg,
-		env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
-	);
+
 	signalling.signalUserChange(new UserEventMsg(process.pid));
 	return `${new_user.username} successfully added`;
 }
@@ -266,13 +259,6 @@ async function alterUser(json_message) {
 		throw err;
 	}
 
-	let alter_user_msg = { user: null }; // This is temp code as a result of removing SC
-	alter_user_msg.user = clean_user;
-	hdb_utility.sendTransactionToSocketCluster(
-		terms.INTERNAL_SC_CHANNELS.ALTER_USER,
-		alter_user_msg,
-		env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
-	);
 	signalling.signalUserChange(new UserEventMsg(process.pid));
 	return success;
 }
@@ -330,13 +316,6 @@ async function dropUser(user) {
 			throw err;
 		}
 
-		let alter_user_msg = { user: null }; // This is temp code as a result of removing SC
-		alter_user_msg.user = user;
-		hdb_utility.sendTransactionToSocketCluster(
-			terms.INTERNAL_SC_CHANNELS.DROP_USER,
-			alter_user_msg,
-			env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
-		);
 		signalling.signalUserChange(new UserEventMsg(process.pid));
 		return `${user.username} successfully deleted`;
 	} catch (err) {
@@ -434,8 +413,7 @@ async function listUsers() {
 		for (let role of roles) {
 			roleMapObj[role.id] = _.cloneDeep(role);
 		}
-		if (Object.keys(roleMapObj).length === 0)
-			return null;
+		if (Object.keys(roleMapObj).length === 0) return null;
 
 		let user_search_obj = {
 			schema: 'system',
@@ -523,7 +501,10 @@ function nonEnterpriseFilter(search_results) {
 		let found_users = new Map();
 		// bucket users by role.  We will pick the role with the most users to enable
 		search_results.forEach((user, username) => {
-			if (user.role && (user.role.permission.cluster_user === undefined || user.role.permission.cluster_user === false)) {
+			if (
+				user.role &&
+				(user.role.permission.cluster_user === undefined || user.role.permission.cluster_user === false)
+			) {
 				// only add super users
 				if (user.role.permission.super_user === true) {
 					if (!user_obj[user.role.id]) {

@@ -9,14 +9,14 @@ const terms = require('./hdbTerms');
  * @param promisified_function - The operation which is in async/await format
  * @param function_input - The input needed for the operation_function_as_callback function.
  * @param followup_async_func - The response function that will be called with the operation function response as an input.  The function is expected to be promisifed, callbacks not supported.
- * @param originators
+ * @param nats_msg_header - If called from within a cluster we pass through the nats message headers
  * @returns {Promise<{}>}
  */
 async function callOperationFunctionAsAwait(
 	promisified_function,
 	function_input,
 	followup_async_func,
-	originators = []
+	nats_msg_header = undefined
 ) {
 	if (!promisified_function || typeof promisified_function !== 'function') {
 		throw new Error('Invalid function parameter');
@@ -24,11 +24,9 @@ async function callOperationFunctionAsAwait(
 	let result = undefined;
 	try {
 		result = await promisified_function(function_input);
-		//TODO: followup_async_func is meant to be a function that would prep a response for clustering, but may not be
-		// necessary.
+
 		if (followup_async_func) {
-			//TODO: Passing result twice seems silly, why is this a thing?
-			await followup_async_func(function_input, result, originators);
+			await followup_async_func(function_input, result, nats_msg_header);
 		}
 
 		// The result from insert, update, or upsert contains a properties new_attributes/txn_time. It is used by postOperationHandler to propagate
