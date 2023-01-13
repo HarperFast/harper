@@ -1,10 +1,9 @@
-const smrModule = import('@endo/static-module-record');
-function doLockdown() {
+async function doLockdown() {
 	require('ses');
 	lockdown({ domainTaming: 'unsafe', consoleTaming: 'unsafe', errorTaming: 'unsafe', errorTrapping: 'none', stackFiltering: 'verbose' });
-	return { harden };
+	const { StaticModuleRecord } = await import('@endo/static-module-record');
+	return { harden, StaticModuleRecord };
 }
 module.exports = {
-	smrModule,
 	doLockdown
 };

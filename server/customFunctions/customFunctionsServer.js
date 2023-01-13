@@ -77,7 +77,7 @@ async function customFunctionsServer() {
 		try {
 			//now that server is fully loaded/ready, start listening on port provided in config settings
 			harper_logger.info(`Custom Functions process starting on port ${props_server_port}`);
-			registerServer(terms.SERVICES.CUSTOM_FUNCTIONS, server.server);
+			registerServer(props_server_port, server.server);
 			if (isMainThread) {
 				await server.listen({ port: props_server_port, host: '::' });
 				harper_logger.info(`Custom Functions process running on port ${props_server_port}`);
@@ -207,6 +207,14 @@ function buildServer(is_https) {
 		if (cors_options) {
 			app.register(fastify_cors, cors_options);
 		}
+
+		app.register(function (instance, options, done) {
+			instance.setNotFoundHandler(function (request, reply) {
+				app.server.emit('unhandled', request.raw, reply.raw);
+			});
+			done();
+		});
+
 
 		app.register(request_time_plugin);
 

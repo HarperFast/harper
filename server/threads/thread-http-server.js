@@ -28,35 +28,35 @@ if (!isMainThread) {
 	loadComponentModules();
 	harper_logger.error('started http thread', threadId);
 	parentPort.on('message', (message) => {
-		const { type, fd } = message;
+		const { port, fd } = message;
 		if (fd) {
 			// Create a socket from the file descriptor for the socket that was routed to us. HTTP server likes to
 			// allow half open sockets
 			let socket = new Socket({fd, readable: true, writable: true, allowHalfOpen: true});
 			// for each socket, deliver the connection to the HTTP server handler/parser
-			if (SERVERS[type]) SERVERS[type].emit('connection', socket);
+			if (SERVERS[port]) SERVERS[port].emit('connection', socket);
 			else {
 				const retry = (retries) => {
 					setTimeout(() => {
-						if (SERVERS[type]) SERVERS[type].server.emit('connection', socket);
+						if (SERVERS[port]) SERVERS[port].server.emit('connection', socket);
 						else if (retries < 5) retry(retries + 1);
 						else {
-							harper_logger.error(`Server ${type} was not registered`);
+							harper_logger.error(`Server ${port} was not registered`);
 							socket.close();
 						}
 					}, 1000);
 				};
 				retry(1);
 			}
-		} else if (type === terms.IPC_EVENT_TYPES.SHUTDOWN) {
+		} else if (message.type === terms.IPC_EVENT_TYPES.SHUTDOWN) {
 			// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
 			// then let the event loop complete
 			parentPort.unref(); // remove this handle
-			for (let server_type in SERVERS) {
+			for (let port in SERVERS) {
 				// closing idle connections was added in v18, and is a better way to shutdown HTTP servers
-				SERVERS[server_type].close();
+				SERVERS[port].close();
 				// in Node v18+ this is preferable way to gracefully shutdown connections
-				if (SERVERS[server_type].closeIdleConnections()) SERVERS[server_type].server.closeIdleConnections();
+				if (SERVERS[port].closeIdleConnections()) SERVERS[port].server.closeIdleConnections();
 			}
 			setTimeout(() => {
 				harper_logger.warn('Thread did not voluntarily terminate', threadId);
@@ -70,15 +70,17 @@ if (!isMainThread) {
 	parentPort.postMessage({ type: terms.IPC_EVENT_TYPES.CHILD_STARTED });
 }
 
-function registerServer(type, server) {
-	let existing_server = SERVERS[type];
+function registerServer(port, server) {
+	let existing_server = SERVERS[port];
 	if (existing_server) {
+		// if there is an existing server on this port, we create a cascading delegation to try the request with one
+		// server and if doesn't handle the request, cascade to next server (until finally we 404)
 		let last_server = existing_server.lastServer || existing_server;
 		last_server.off('unhandled', defaultNotFound);
 		last_server.on('unhandled', (request, response) => server.emit('request', request, response));
 		existing_server.lastServer = server;
 	} else {
-		SERVERS[type] = server;
+		SERVERS[port] = server;
 	}
 	server.on('unhandled', defaultNotFound);
 }

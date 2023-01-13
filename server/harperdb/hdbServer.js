@@ -86,7 +86,7 @@ async function hdbServer() {
 		try {
 			// now that server is fully loaded/ready, start listening on port provided in config settings or just use
 			// zero to wait for sockets from the main thread
-			registerServer(terms.SERVICES.HDB_CORE, server.server);
+			registerServer(props_server_port, server.server);
 			if (isMainThread) {
 				await server.listen({ port: props_server_port, host: '::' });
 				harper_logger.info(`HarperDB ${pjson.version} ${server_type} Server running on port ${props_server_port}`);

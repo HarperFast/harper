@@ -8,7 +8,7 @@ import { findAndValidateUser } from '../security/user';
 
 const handler_creator_by_type = new Map();
 const custom_apps = [];
-export function start(options: ServerOptions & { path: string } = { path: process.cwd() }) {
+export function start(options: ServerOptions & { path: string, port: number }) {
 	let handlers = new Map();
 	async function loadDirectory(directory: string, web_path: string) {
 		for (let entry of await readdir(directory, { withFileTypes: true })) {
@@ -39,7 +39,7 @@ export function start(options: ServerOptions & { path: string } = { path: proces
 			}
 		}
 	}
-	loadDirectory(options.path || process.cwd(), '');
+	loadDirectory(options?.path || process.cwd(), '');
 
 	let server = createServer(options, async (request, response) => {
 		let path = request.url;
@@ -54,7 +54,7 @@ export function start(options: ServerOptions & { path: string } = { path: proces
 		path = request.url;
 		nextAppHandler(request, response)
 	});
-	registerServer(SERVICES.CUSTOM_FUNCTIONS, server);
+	registerServer(options.port, server);
 	async function nextAppHandler(request, response) {
 		if (custom_apps[0])
 			await custom_apps[0](request, response);

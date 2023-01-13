@@ -2,16 +2,20 @@ import { Transaction } from './Transaction';
 import { tables } from './database';
 import { registerResourceType } from './resource-server';
 import { Compartment as CompartmentClass } from 'ses';
-import { smrModule, doLockdown } from './secure-js-helper';
+import { doLockdown } from './secure-js-helper';
 import { readFile } from 'fs/promises';
 import { restHandler } from './REST-handler';
+import { pathToFileURL } from 'url';
+import { extname } from 'path';
 
 export function registerJavaScript() {
 	registerResourceType('js', createHandler);
 	async function createHandler(js, file_path) {
 		let handlers = new Map();
-		let compartment = getCompartment();
-		let result = await compartment.import(file_path);
+		// note that we use a single compartment that is used by all the secure JS modules and we load it on-demand, only
+		// loading if necessary (since it is actually very heavy)
+		let compartment = await getCompartment();
+		let result = await compartment.import(pathToFileURL(file_path).toString());
 		let exports = result.namespace;
 		for (let name in exports) {
 			let exported_class = exports[name];
@@ -31,25 +35,29 @@ export function registerJavaScript() {
 
 declare class Compartment extends CompartmentClass {}
 let compartment;
-function getCompartment() {
+async function getCompartment() {
 	if (compartment) return compartment;
-	const { harden } = doLockdown();
+	const { harden, StaticModuleRecord } = await doLockdown();
 
 	return compartment = new (Compartment as typeof CompartmentClass)({
 		console,
 		Math,
+		Date,
 		Transaction,
 		tables,
 		fetch: secureOnlyFetch,
 	}, {}, {
 		name: 'h-dapp',
-		resolveHook(ms, mr) {
-			console.log({ms,mr})
+		resolveHook(module_specifier, module_referrer) {
+			module_specifier = new URL(module_specifier, module_referrer).toString();
+			console.log({module_specifier})
+			if (!extname(module_specifier))
+				module_specifier += '.js';
+			return module_specifier;
 		},
-		importHook: async (ms) => {
-			const { StaticModuleRecord } = await smrModule;
-			let moduleText = await readFile(ms, { encoding: 'utf-8'});
-			let smr = new StaticModuleRecord(moduleText, ms);
+		importHook: async (module_specifier) => {
+			let moduleText = await readFile(new URL(module_specifier), { encoding: 'utf-8'});
+			let smr = new StaticModuleRecord(moduleText, module_specifier);
 			return smr;
 		}
 	});
@@ -69,3 +77,4 @@ function secureOnlyFetch(resource, options) {
 		throw new Error('Only https is allowed in fetch');
 	return fetch(resource, options);
 }
+export const start = registerJavaScript;

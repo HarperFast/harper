@@ -9,7 +9,7 @@ describe('Socket Router', () => {
 		workers = startHTTPThreads(4);
 	});
 	it('Start HTTP threads and delegate evenly by most idle', function () {
-		server = startSocketServer(terms.SERVICES.HDB_CORE, 0, mostIdleRouting);
+		server = startSocketServer(0, mostIdleRouting);
 
 		for (let worker of workers) {
 			worker.socketsRouted = 0;
@@ -44,7 +44,7 @@ describe('Socket Router', () => {
 	});
 
 	it('Start HTTP threads and delegate by remote address', function () {
-		server = startSocketServer(terms.SERVICES.HDB_CORE, 0, remoteAffinityRouting);
+		server = startSocketServer(0, remoteAffinityRouting);
 
 		for (let worker of workers) {
 			worker.socketsRouted = 0;

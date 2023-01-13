@@ -31,7 +31,7 @@ function startHTTPThreads(thread_count = 2) {
 	return workers;
 }
 
-function startSocketServer(type, port = 0, workerStrategy = findMostIdleWorker) {
+function startSocketServer(port = 0, workerStrategy = findMostIdleWorker) {
 	// at some point we may want to actually read from the https connections
 	let server = createServer({
 		allowHalfOpen: true,
@@ -41,7 +41,7 @@ function startSocketServer(type, port = 0, workerStrategy = findMostIdleWorker) 
 		if (!worker)
 			return harper_logger.error(`No HTTP workers found`);
 		worker.requests++;
-		worker.postMessage({ type, fd: socket._handle.fd });
+		worker.postMessage({ port, fd: socket._handle.fd });
 	}).listen(port);
 	harper_logger.info(`HarperDB ${pjson.version} Server running on port ${port}`);
 	return server;

@@ -75,3 +75,4 @@ export function registerGraphQL() {
 		return handlers;
 	}
 }
+export const start = registerGraphQL;

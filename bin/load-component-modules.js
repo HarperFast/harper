@@ -2,6 +2,8 @@ const { initTables } = require('../resources/database');
 
 const default_components = [
 	{ module: '/resources/resource-server.ts', port: 9926 },
+	{ module: '/resources/graphql.ts' },
+	{ module: '/resources/secure-js.ts' },
 	{ module: '/server/harperdb/hdbServer.js', port: 9925 },
 	{ module: '/server/customFunctions/customFunctionsServer.js', port: 9926 },
 ];
