@@ -13,7 +13,7 @@ process.on('uncaughtException', (error) => {
 require('ts-node').register({
 		project: join(terms.PACKAGE_ROOT, 'tsconfig.json'),
 });
-const { startDefaultServer } = require('./default-server');
+const { loadComponentModules } = require('../../bin/load-component-modules');
 // log all threads as HarperDB
 harper_logger.createLogFile(terms.PROCESS_LOG_NAMES.HDB, terms.HDB_PROC_DESCRIPTOR);
 env.initSync();
@@ -25,7 +25,7 @@ module.exports = {
 if (!isMainThread) {
 	console.log('starting from console')
 	harper_logger.error('starting http thread', threadId);
-	startDefaultServer();
+	loadComponentModules();
 	harper_logger.error('started http thread', threadId);
 	parentPort.on('message', (message) => {
 		const { type, fd } = message;
@@ -71,5 +71,18 @@ if (!isMainThread) {
 }
 
 function registerServer(type, server) {
-	SERVERS[type] = server;
+	let existing_server = SERVERS[type];
+	if (existing_server) {
+		let last_server = existing_server.lastServer || existing_server;
+		last_server.off('unhandled', defaultNotFound);
+		last_server.on('unhandled', (request, response) => server.emit('request', request, response));
+		existing_server.lastServer = server;
+	} else {
+		SERVERS[type] = server;
+	}
+	server.on('unhandled', defaultNotFound);
+}
+function defaultNotFound(request, response) {
+	response.writeHead(404);
+	response.end('Not found\n');
 }

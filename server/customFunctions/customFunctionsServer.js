@@ -30,6 +30,7 @@ const { registerContentHandlers } = require('../serverHelpers/contentTypes');
 
 module.exports = {
 	customFunctionsServer,
+	start: customFunctionsServer,
 };
 const TRUE_COMPARE_VAL = 'TRUE';
 let server = undefined;
@@ -76,7 +77,7 @@ async function customFunctionsServer() {
 		try {
 			//now that server is fully loaded/ready, start listening on port provided in config settings
 			harper_logger.info(`Custom Functions process starting on port ${props_server_port}`);
-			registerServer(terms.SERVICES.CUSTOM_FUNCTIONS, server);
+			registerServer(terms.SERVICES.CUSTOM_FUNCTIONS, server.server);
 			if (isMainThread) {
 				await server.listen({ port: props_server_port, host: '::' });
 				harper_logger.info(`Custom Functions process running on port ${props_server_port}`);

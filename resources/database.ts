@@ -27,6 +27,7 @@ export function initTables() {
 				readMetaDb(join(schema_path, table_entry), table_entry.split('.')[0], schema_entry);
 		}
 	}
+	return tables;
 }
 function readMetaDb(path: string, default_table?: string, default_schema: string = 'default') {
 	let env_init = new OpenEnvironmentObject(

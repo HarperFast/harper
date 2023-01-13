@@ -53,6 +53,7 @@ let server = undefined;
 
 module.exports = {
 	hdbServer,
+	start: hdbServer,
 };
 /**
  * Builds a HarperDB server.
@@ -146,7 +147,7 @@ function buildServer(is_https) {
 
 	app.register(function (instance, options, done) {
 		instance.setNotFoundHandler(function (request, reply) {
-			reply.code(404).send({error: 'Not Found', statusCode: 404});
+			app.server.emit('unhandled', request.request, request.response);
 		});
 		done();
 	});
