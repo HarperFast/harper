@@ -166,7 +166,7 @@ function buildServer(is_https) {
 
 	// This handles all get requests for the studio
 	app.register(fastify_compress);
-	app.register(fastify_static, { root: guidePath.join(__dirname, '../../docs') });
+	app.register(fastify_static, { root: guidePath.join(PACKAGE_ROOT, 'docs') });
 	app.register(fastify_serializer);
 	app.addContentTypeParser('application/x-msgpack', { parseAs: 'buffer' }, (req, body, done) => {
 		try {
