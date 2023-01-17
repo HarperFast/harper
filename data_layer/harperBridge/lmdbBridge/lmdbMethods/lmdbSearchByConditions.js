@@ -42,10 +42,6 @@ async function lmdbSearchByConditions(search_object) {
 		search_object.operator = search_object.operator ? search_object.operator.toLowerCase() : undefined;
 
 		search_object.offset = Number.isInteger(search_object.offset) ? search_object.offset : 0;
-		let resource_snapshot = new Resource();
-		let records = resource_snapshot.useTable(search_object.table, search_object.schema).search(search_object, search_object);
-		records.onDone = () => resource_snapshot.doneReading();
-		return records;
 
 		let schema_path = path.join(getBaseSchemaPath(), search_object.schema.toString());
 		let env = await environment_utility.openEnvironment(schema_path, search_object.table);
