@@ -1,4 +1,4 @@
-import { Transaction } from './Transaction';
+import { Resource } from './Resource';
 import { tables } from './database';
 import { registerResourceType } from './resource-server';
 import { Compartment as CompartmentClass } from 'ses';
@@ -37,13 +37,15 @@ declare class Compartment extends CompartmentClass {}
 let compartment;
 async function getCompartment() {
 	if (compartment) return compartment;
-	const { harden, StaticModuleRecord } = await doLockdown();
+	require('ses');
+	lockdown({ domainTaming: 'unsafe', consoleTaming: 'unsafe', errorTaming: 'unsafe', errorTrapping: 'none', stackFiltering: 'verbose' });
+	const { StaticModuleRecord } = await import('@endo/static-module-record');
 
 	return compartment = new (Compartment as typeof CompartmentClass)({
 		console,
 		Math,
 		Date,
-		Transaction,
+		Resource,
 		tables,
 		fetch: secureOnlyFetch,
 	}, {}, {

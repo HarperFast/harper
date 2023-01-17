@@ -1,6 +1,6 @@
 import { parse, Source, Kind, NamedTypeNode, StringValueNode } from 'graphql';
 import { ensureTable } from './database';
-import { Transaction } from './Transaction';
+import { Resource } from './Resource';
 import { snake_case } from './Table';
 import { registerResourceType } from './resource-server';
 import {restHandler} from './REST-handler';
@@ -56,7 +56,7 @@ export function registerGraphQL() {
 								}
 							}
 							// the resource that is generated for this query and instantiated for each request:
-							class GraphQLResource extends Transaction {
+							class GraphQLResource extends Resource {
 								get(id) {
 									let role = this.user?.role;
 									if (role && authorized_roles.indexOf(role.name) > -1 ||

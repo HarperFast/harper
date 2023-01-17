@@ -3,8 +3,8 @@ import { open, Database } from 'lmdb';
 import common from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
 import { randomUUID } from 'crypto';
-import { Resource } from './Resource';
-import { EnvTransaction, Transaction } from './Transaction';
+import { ResourceInterface } from './ResourceInterface';
+import { EnvTransaction, Resource } from './Resource';
 import { compareKeys } from 'ordered-binary';
 
 import * as lmdb_terms from '../utility/lmdb/terms';
@@ -28,7 +28,7 @@ export class Table {
 	schemaName: string
 	attributes: any[]
 	primaryKey: string
-	Source: { new(): Resource }
+	Source: { new(): ResourceInterface }
 	Transaction: ReturnType<typeof makeTransactionClass>
 
 	constructor(primaryDbi, options) {
@@ -51,13 +51,13 @@ export class Table {
 }
 function makeTransactionClass(table: Table) {
 	const { primaryKey: primary_key, indices, attributes, primaryDbi: primary_dbi } = table;
-	return class TableTransaction extends Transaction {
+	return class TableTransaction extends Resource {
 		table: any
  		envTxn: EnvTransaction
-		parent: Transaction
+		parent: Resource
 		lmdbTxn: any
 		lastAccessTime: number = 0
-		static Source: { new(): Resource }
+		static Source: { new(): ResourceInterface }
 
 		constructor(env_txn, lmdb_txn, parent, settings) {
 			super(settings, false);
@@ -68,7 +68,7 @@ function makeTransactionClass(table: Table) {
 				this.lmdbTxn = primary_dbi.useReadTransaction();
 
 		}
-		updateAccessTime(latest) {
+		updateAccessTime(latest = Date.now()) {
 			if (latest > this.lastAccessTime) {
 				this.lastAccessTime = latest;
 				if (this.parent?.updateAccessTime)
@@ -122,6 +122,7 @@ function makeTransactionClass(table: Table) {
 			updated_record.__availability__ = {residence: [/*here*/], cached: true};
 			updated_record[primary_key] = id;
 			this.put(id, updated_record, {ifVersion: updated});
+			return updated_record;
 		}
 
 		put(id, record, options): void {

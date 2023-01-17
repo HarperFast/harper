@@ -10,9 +10,6 @@ process.on('uncaughtException', (error) => {
 	console.error('uncaughtException', error)
 	process.exit(100);
 });
-require('ts-node').register({
-		project: join(terms.PACKAGE_ROOT, 'tsconfig.json'),
-});
 const { loadComponentModules } = require('../../bin/load-component-modules');
 // log all threads as HarperDB
 harper_logger.createLogFile(terms.PROCESS_LOG_NAMES.HDB, terms.HDB_PROC_DESCRIPTOR);

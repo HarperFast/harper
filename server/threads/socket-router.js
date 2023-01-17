@@ -5,6 +5,7 @@ const env = require('../../utility/environment/environmentManager');
 const hdb_terms = require('../../utility/hdbTerms');
 const harper_logger = require('../../utility/logging/harper_logger');
 const pjson = require("../../package.json");
+const { loadComponentModules } = require('../../bin/load-component-modules');
 const workers = [];
 module.exports = {
 	startHTTPThreads,
@@ -16,6 +17,7 @@ module.exports = {
 env.initSync();
 
 function startHTTPThreads(thread_count = 2) {
+	loadComponentModules();
 	for (let i = 0; i < thread_count; i++) {
 		startWorker('server/threads/thread-http-server.js', {
 			name: hdb_terms.THREAD_TYPES.HTTP,

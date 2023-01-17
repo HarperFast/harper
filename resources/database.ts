@@ -10,9 +10,11 @@ import * as OpenDBIObject from '../utility/lmdb/OpenDBIObject';
 import * as OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject';
 initSync();
 
-export let tables = {};
+export let tables = null;
 let root_env;
-export function initTables() {
+export function getTables() {
+	if (tables) return tables;
+	tables = {};
 	let base_path = getHdbBasePath();
 	let root_database = join(base_path, 'data.mdb');
 
@@ -85,4 +87,12 @@ export function ensureTable(table_name: string, attributes: any[], schema_name?:
 			tables[table_name] = new Table(root_env.openDB(dbi_name, dbi_init), {});
 		}
 	}
+}
+
+/**
+ * Get a table transaction for the given schema/table
+ */
+export function getTableTxn(table_name: string, schema_name: string) {
+	let table = tables[schema_name || 'default']?.[table_name];
+	return table.transaction()
 }

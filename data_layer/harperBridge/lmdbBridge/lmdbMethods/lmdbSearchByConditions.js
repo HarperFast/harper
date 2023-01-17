@@ -5,6 +5,7 @@ const SearchObject = require('../../../SearchObject');
 const search_validator = require('../../../../validation/searchValidator');
 const search_utility = require('../../../../utility/lmdb/searchUtility');
 const lmdb_terms = require('../../../../utility/lmdb/terms');
+const { Resource } = require('../../../../resources/Resource');
 const lmdb_search = require('../lmdbUtility/lmdbSearch');
 const cursor_functions = require('../../../../utility/lmdb/searchCursorFunctions');
 const _ = require('lodash');
@@ -41,6 +42,10 @@ async function lmdbSearchByConditions(search_object) {
 		search_object.operator = search_object.operator ? search_object.operator.toLowerCase() : undefined;
 
 		search_object.offset = Number.isInteger(search_object.offset) ? search_object.offset : 0;
+		let resource_snapshot = new Resource();
+		let records = resource_snapshot.useTable(search_object.table, search_object.schema).search(search_object, search_object);
+		records.onDone = () => resource_snapshot.doneReading();
+		return records;
 
 		let schema_path = path.join(getBaseSchemaPath(), search_object.schema.toString());
 		let env = await environment_utility.openEnvironment(schema_path, search_object.table);
@@ -77,7 +82,7 @@ async function lmdbSearchByConditions(search_object) {
 		// both AND and OR start by getting an iterator for the ids for first condition
 		let ids = await executeConditionSearch(transaction, search_object, sorted_conditions[0], table_info.hash_attribute);
 		// and then things diverge...
-		let records;
+		//let records;
 		if (!search_object.operator || search_object.operator.toLowerCase() === 'and') {
 			// get the intersection of condition searches by using the indexed query for the first condition
 			// and then filtering by all subsequent conditions

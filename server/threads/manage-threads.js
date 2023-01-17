@@ -127,7 +127,7 @@ async function restartWorkers(name = null, max_workers_down = 2, start_replaceme
 		// make a copy of the workers before iterating them, as the workers
 		// array will be mutating a lot during this
 		for (let worker of workers.slice(0)) {
-			if (name && worker.name !== name) continue; // filter by type, if specified
+			if (name && worker.name !== name || worker.wasShutdown) continue; // filter by type, if specified
 			worker.postMessage({
 				type: hdb_terms.IPC_EVENT_TYPES.SHUTDOWN,
 			});
@@ -199,7 +199,7 @@ function addPort(port) {
 		connected_ports.splice(connected_ports.indexOf(port), 1);
 	}).unref();
 }
-if (isMainThread && process.env.WATCH_DIR) {
+if (isMainThread) {
 	const watch_dir = async (dir) => {
 		for (let entry of await readdir(dir, { withFileTypes: true })) {
 			if (entry.isDirectory()) watch_dir(join(dir, entry.name));
@@ -210,5 +210,7 @@ if (isMainThread && process.env.WATCH_DIR) {
 			}
 		}
 	};
-	watch_dir(process.env.WATCH_DIR);
+	module.exports.watchDir = watch_dir;
+	if (process.env.WATCH_DIR)
+		watch_dir(process.env.WATCH_DIR);
 }

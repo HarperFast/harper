@@ -62,15 +62,22 @@ export function restHandler(Resource) {
 				if (resource_snapshot.lastAccessTime)
 					response.setHeader('last-modified', new Date(resource_snapshot.lastAccessTime).toUTCString());
 				if (response_data) {
+					if (response_data.resolveData) // if it is iterable with onDone, TODO: make a better marker for this
+						response_data.onDone = () => resource_snapshot.doneReading();
+					else
+						resource_snapshot.doneReading();
 					response.writeHead(200);
 					// do content negotiation
 					response.end(JSON.stringify(response_data));
-				} else if (method === 'GET' || method === 'HEAD') {
-					response.writeHead(404);
-					response.end('Not found');
 				} else {
-					response.writeHead(204);
-					response.end();
+					resource_snapshot.doneReading();
+					if ((method === 'GET' || method === 'HEAD')) {
+						response.writeHead(404);
+						response.end('Not found');
+					} else {
+						response.writeHead(204);
+						response.end();
+					}
 				}
 			} catch (error) {
 				resource_snapshot.abort();

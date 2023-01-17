@@ -3,7 +3,7 @@ import { createServer, ClientRequest, ServerOptions } from 'http';
 import { readdir, readFile } from 'fs/promises';
 import { join } from 'path';
 import { SERVICES } from '../utility/hdbTerms';
-import { restHandler } from './REST-handler';
+import { watchDir } from '../server/threads/manage-threads';
 import { findAndValidateUser } from '../security/user';
 
 const handler_creator_by_type = new Map();
@@ -65,6 +65,10 @@ export function start(options: ServerOptions & { path: string, port: number }) {
 }
 export function registerResourceType(extension, create_resource) {
 	handler_creator_by_type.set(extension, create_resource);
+}
+
+export function startOnMainThread(options) {
+	watchDir(options?.path || process.cwd());
 }
 
 async function authentication(request) {
