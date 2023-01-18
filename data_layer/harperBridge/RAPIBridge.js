@@ -1,9 +1,9 @@
 'use strict';
 const LMDBBridge = require('./lmdbBridge/LMDBBridge');
 const search_validator = require('../../validation/searchValidator');
-const { handleHDBError } = require('../../utility/errors/hdbError');
+const { handleHDBError, hdb_errors } = require('../../utility/errors/hdbError');
 const { Resource } = require('../../resources/Resource');
-
+const { HTTP_STATUS_CODES } = hdb_errors;
 /**
  * Currently we are extending LMDBBridge so we can use the LMDB methods as a fallback until all are implemented
  */
@@ -26,7 +26,9 @@ class RAPIBridge extends LMDBBridge {
 
 		search_object.offset = Number.isInteger(search_object.offset) ? search_object.offset : 0;
 		let resource_snapshot = new Resource();
-		let records = resource_snapshot.useTable(search_object.table, search_object.schema).search(search_object, search_object);
+		let records = resource_snapshot
+			.useTable(search_object.table, search_object.schema)
+			.search(search_object, search_object);
 		records.onDone = () => resource_snapshot.doneReading();
 		return records;
 	}

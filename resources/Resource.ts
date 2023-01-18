@@ -12,7 +12,7 @@ export class Resource implements ResourceInterface {
 	lastAccessTime = 0;
 	inUseTables = {}
 	inUseEnvs = {}
-	constructor(request, full_isolation: boolean) {
+	constructor(request?, full_isolation?: boolean) {
 		this.request = request;
 		this.user = request?.user;
 		this.fullIsolation = full_isolation;
