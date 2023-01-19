@@ -51,15 +51,13 @@ describe('Test custom functions operations', () => {
 		expect(Object.keys(endpoints)).to.have.length(1);
 		expect(projectName).to.equal('unit_test');
 		expect(endpoints[projectName]).to.be.instanceOf(Object);
-		expect(Object.keys(endpoints[projectName])).to.have.length(3);
+		expect(Object.keys(endpoints[projectName])).to.have.length(2);
 		expect(Object.keys(endpoints[projectName])).to.include('routes');
 		expect(endpoints[projectName].routes).to.be.instanceOf(Array);
 		expect(endpoints[projectName].routes).to.have.length(1);
 		expect(Object.keys(endpoints[projectName])).to.include('helpers');
 		expect(endpoints[projectName].helpers).to.be.instanceOf(Array);
 		expect(endpoints[projectName].helpers).to.have.length(1);
-		expect(Object.keys(endpoints[projectName])).to.include('static');
-		expect(endpoints[projectName].static).to.equal(4);
 	});
 
 	it('Test getCustomFunction generated file exists and has expected content', async () => {
@@ -138,15 +136,13 @@ describe('Test custom functions operations', () => {
 		expect(Object.keys(endpoints)).to.have.length(2);
 		expect(projectName).to.equal('unit_test');
 		expect(endpoints[projectName]).to.be.instanceOf(Object);
-		expect(Object.keys(endpoints[projectName])).to.have.length(3);
+		expect(Object.keys(endpoints[projectName])).to.have.length(2);
 		expect(Object.keys(endpoints[projectName])).to.include('routes');
 		expect(endpoints[projectName].routes).to.be.instanceOf(Array);
 		expect(endpoints[projectName].routes).to.have.length(1);
 		expect(Object.keys(endpoints[projectName])).to.include('helpers');
 		expect(endpoints[projectName].helpers).to.be.instanceOf(Array);
 		expect(endpoints[projectName].helpers).to.have.length(1);
-		expect(Object.keys(endpoints[projectName])).to.include('static');
-		expect(endpoints[projectName].static).to.equal(4);
 	});
 
 	it('Test dropCustomFunctionProject drops project as expected', async () => {

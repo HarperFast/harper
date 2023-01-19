@@ -6,7 +6,6 @@ const fs = require('fs');
 
 const fastify = require('fastify');
 const fastify_cors = require('@fastify/cors');
-const fastify_static = require('@fastify/static');
 const autoload = require('@fastify/autoload');
 const request_time_plugin = require('../serverHelpers/requestTimePlugin');
 const env = require('../../utility/environment/environmentManager');
@@ -139,12 +138,7 @@ async function buildRoutes(cf_server) {
 			const project_folder = path.join(CF_ROUTES_DIR, project_name);
 			harper_logger.trace('Loading project folder ' + project_folder);
 			const routes_directory = `${project_folder}/routes`;
-			const static_directory = `${project_folder}/static`;
-			const static_index = `${project_folder}/static/index.html`;
-			const static_route = `/${project_name}/static`;
-
 			const set_up_routes = fs.existsSync(routes_directory);
-			const set_up_static_route = fs.existsSync(static_directory) && fs.existsSync(static_index);
 
 			// check for a routes folder and, if present, ingest each of the route files in the project's routes folder
 			if (set_up_routes) {
@@ -166,24 +160,6 @@ async function buildRoutes(cf_server) {
 						}
 						next();
 					});
-			}
-
-			// check for a public folder and, if present, add @fastify/static to the server and set up its route, too
-			if (set_up_static_route) {
-				harper_logger.info(`Custom Functions setting up webserver for ${project_name}`);
-				cf_server
-					.register(fastify_static, {
-						root: static_directory,
-					})
-					.after((err, instance, next) => {
-						if (err && err.message) {
-							harper_logger.error(err.message);
-						} else if (err) {
-							harper_logger.error(err);
-						}
-						next();
-					});
-				cf_server.get(static_route, (req, reply) => reply.sendFile('index.html', static_directory));
 			}
 		});
 

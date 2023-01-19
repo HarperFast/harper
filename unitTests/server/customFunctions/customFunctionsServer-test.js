@@ -96,8 +96,6 @@ describe('Test customFunctionsServer module', () => {
 			expect(server.server.key).to.be.instanceOf(Buffer);
 			expect(server.server.cert).to.be.instanceOf(Buffer);
 			expect(server.initialConfig.https).to.have.property('allowHTTP1');
-
-			
 		});
 
 		it('should build HTTPS server instance with started and listening state equal to true', async () => {
@@ -111,8 +109,6 @@ describe('Test customFunctionsServer module', () => {
 			const state_key = Object.getOwnPropertySymbols(server).find((s) => String(s) === 'Symbol(fastify.state)');
 			expect(server[state_key].started).to.be.true;
 			expect(server[state_key].listening).to.be.true;
-
-			
 		});
 
 		it('should build HTTPS server instance with default config settings', async () => {
@@ -126,7 +122,6 @@ describe('Test customFunctionsServer module', () => {
 			expect(server.initialConfig.keepAliveTimeout).to.equal(
 				config_utils.getDefaultConfig(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT)
 			);
-			
 		});
 
 		it('should build HTTPS server instances with provided config settings', async () => {
@@ -144,7 +139,7 @@ describe('Test customFunctionsServer module', () => {
 
 			expect(server.server.timeout).to.equal(test_config_settings.server_timeout);
 			expect(server.server.headersTimeout).to.equal(test_config_settings.headers_timeout);
-			
+
 			test_utils.preTestPrep({
 				server_timeout: config_utils.getDefaultConfig(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT),
 				keep_alive_timeout: config_utils.getDefaultConfig(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT),
@@ -163,8 +158,6 @@ describe('Test customFunctionsServer module', () => {
 			);
 
 			expect(server[plugin_key].length).to.equal(2);
-
-			
 		});
 
 		it('should register @fastify/cors if cors is enabled', async () => {
@@ -181,8 +174,6 @@ describe('Test customFunctionsServer module', () => {
 
 			expect(server[plugin_key].length).to.equal(3);
 			expect(server[plugin_key]).to.deep.equal(['fastify', '@fastify/cors', 'hdb-request-time']);
-
-			
 		});
 
 		it('should return 500 error for request from origin not included in CORS whitelist', async () => {
@@ -204,8 +195,6 @@ describe('Test customFunctionsServer module', () => {
 
 			expect(test_response.statusCode).to.equal(500);
 			expect(test_response.json().error).to.equal('domain https://google.com is not on access list');
-
-			
 		});
 
 		it('should return resp with 200 for request from origin included in CORS whitelist', async () => {
@@ -226,8 +215,6 @@ describe('Test customFunctionsServer module', () => {
 			});
 
 			expect(test_response.statusCode).to.equal(404);
-
-			
 		});
 	});
 
@@ -243,8 +230,6 @@ describe('Test customFunctionsServer module', () => {
 
 			expect(test_result.server.constructor.name).to.equal('Server');
 			expect(test_result.initialConfig.https).to.be.undefined;
-
-			
 		});
 
 		it('should return an https server', async () => {
@@ -258,8 +243,6 @@ describe('Test customFunctionsServer module', () => {
 
 			expect(test_result.server.constructor.name).to.contain('Server');
 			expect(test_result.initialConfig.https).to.have.property('allowHTTP1');
-
-			
 		});
 	});
 
@@ -271,8 +254,6 @@ describe('Test customFunctionsServer module', () => {
 
 			expect(setSchemaGlobal_stub.called).to.be.true;
 			expect(setUsersToGlobal_stub.called).to.be.true;
-
-			
 		});
 	});
 
@@ -305,10 +286,7 @@ describe('Test customFunctionsServer module', () => {
 
 			expect(test_result).to.be.instanceOf(Array);
 			expect(test_result).to.include('buildRoutes');
-			expect(test_result).to.include('@fastify/static');
 			expect(test_result).to.include('hdbCore-auto-0');
-
-			
 		});
 
 		it('should register hdbCore', async () => {
@@ -324,8 +302,6 @@ describe('Test customFunctionsServer module', () => {
 			expect(Object.keys(test_result.hdbCore)).to.include('preValidation');
 			expect(Object.keys(test_result.hdbCore)).to.include('request');
 			expect(Object.keys(test_result.hdbCore)).to.include('requestWithoutAuthentication');
-
-			
 		});
 
 		it('should find the appropriate route files in the test project', async () => {
@@ -350,8 +326,6 @@ describe('Test customFunctionsServer module', () => {
 			expect(test_result[0]).to.equal(path.resolve(__dirname, 'custom_functions', 'test', 'routes', 'examples.js'));
 			const linked_prefix = server[plugin_key][0][children][1][route_prefix];
 			expect(linked_prefix).to.equal('/test-linked');
-
-			
 		});
 
 		// Something is causing the template_routes to change, so I'm commenting this out for now.
@@ -377,7 +351,7 @@ describe('Test customFunctionsServer module', () => {
 		//
 		// 			expect(routes).to.equal(template_routes);
 		//
-		// 			
+		//
 		// 		});
 	});
 });

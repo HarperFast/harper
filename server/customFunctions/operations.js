@@ -81,10 +81,7 @@ function getCustomFunctions() {
 					.map((filepath) => filepath.split('/').pop().split('.js')[0]),
 				helpers: fg
 					.sync(normalize(`${project_folder}/helpers/*.js`))
-					.map((filepath) => filepath.split('/').pop().split('.js')[0]),
-				static:
-					fs.existsSync(normalize(`${project_folder}/static`)) &&
-					fg.sync(normalize(`${project_folder}/static/**/*`)).length,
+					.map((filepath) => filepath.split('/').pop().split('.js')[0])
 			};
 		});
 	} catch (err) {
