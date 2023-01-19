@@ -186,7 +186,6 @@ function deployCustomFunctionProjectValidator(req) {
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 		payload: Joi.string().required().messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PACKAGE }),
-		file: Joi.string().required().messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_FILE_PATH }),
 	});
 
 	return validator.validateBySchema(req, deploy_proj_schema);
