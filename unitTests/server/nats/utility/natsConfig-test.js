@@ -159,6 +159,9 @@ describe('Test natsConfig module', () => {
 			.withArgs(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY)
 			.returns(FAKE_PRIVATE_KEY_PATH);
 		get_config_from_file_stub.withArgs(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_INSECURE).returns(true);
+		get_config_from_file_stub
+			.withArgs(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_PATH)
+			.returns(path.join(TEMP_TEST_CLUSTERING_DIR, 'leaf'));
 	});
 
 	afterEach(() => {

@@ -203,6 +203,10 @@ function validateConfig(config_doc) {
 	config_doc.setIn(['clustering', 'tls', 'certificate'], validation.value.clustering.tls.certificate);
 	config_doc.setIn(['clustering', 'tls', 'privateKey'], validation.value.clustering.tls.privateKey);
 	config_doc.setIn(['clustering', 'tls', 'certificateAuthority'], validation.value.clustering.tls.certificateAuthority);
+	config_doc.setIn(
+		['clustering', 'leafServer', 'streams', 'path'],
+		validation.value.clustering.leafServer.streams.path
+	);
 }
 
 /**

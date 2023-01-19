@@ -66,6 +66,9 @@ function configValidator(config_json) {
 		.pattern(/^[^\s.,*>]+$/)
 		.messages({ 'string.pattern.base': '{:#label} invalid, must not contain ., * or >' })
 		.empty(null);
+	const clustering_stream_path_constraints = Joi.custom(validateClusteringStreamPath)
+		.empty(null)
+		.default(setDefaultRoot);
 
 	const clustering_enabled = config_json.clustering?.enabled;
 	if (hdb_utils.isEmpty(clustering_enabled)) {
@@ -104,6 +107,7 @@ function configValidator(config_json) {
 					maxAge: number.min(120).allow(null).required(),
 					maxBytes: number.min(1).allow(null).required(),
 					maxMsgs: number.min(1).allow(null).required(),
+					path: clustering_stream_path_constraints,
 				}).required(),
 			}).required(),
 			nodeName: nats_term_constraints,
@@ -244,6 +248,15 @@ function validatePemFile(value, helpers) {
 	}
 }
 
+function validateClusteringStreamPath(value, helpers) {
+	Joi.assert(value, string.pattern(/^[\\\/]$|([\\\/][a-zA-Z_0-9\:-]+)+$/, 'directory path'));
+
+	const does_exist_msg = doesPathExist(value);
+	if (does_exist_msg) {
+		return helpers.message(does_exist_msg);
+	}
+}
+
 function validateRotationMaxSize(value, helpers) {
 	const unit = value.slice(-1);
 	if (unit !== 'G' && unit !== 'M' && unit !== 'K') {
@@ -309,6 +322,8 @@ function setDefaultRoot(parent, helpers) {
 			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CLUSTERING_PRIVATE_KEY);
 		case 'clustering.tls.certificateAuthority':
 			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CLUSTERING_CERT_AUTH);
+		case 'clustering.leafServer.streams.path':
+			return path.join(hdb_root, 'clustering', 'leaf');
 		default:
 			throw new Error(
 				`Error setting default root for config parameter: ${config_param}. Unrecognized config parameter`

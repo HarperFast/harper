@@ -21,6 +21,7 @@ clustering:
       maxAge: null
       maxBytes: null
       maxMsgs: null
+      path: null
   nodeName: null
   tls:
     certificate: null

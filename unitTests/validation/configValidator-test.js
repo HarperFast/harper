@@ -51,6 +51,7 @@ const FAKE_CONFIG = {
 				maxAge: 3600,
 				maxBytes: 10000,
 				maxMsgs: 100,
+				path: '/users/me/streams',
 			},
 		},
 		nodeName: 'test_name',
@@ -147,10 +148,14 @@ describe('Test configValidator module', () => {
 	describe('Test clustering schema in configValidator function', () => {
 		let validate_pem_file_stub;
 		let validate_pem_file_rw;
+		let validate_stream_path_stub;
+		let validate_stream_path_rw;
 
 		beforeEach(() => {
 			validate_pem_file_stub = sandbox.stub();
 			validate_pem_file_rw = config_val.__set__('validatePemFile', validate_pem_file_stub);
+			validate_stream_path_stub = sandbox.stub();
+			validate_stream_path_rw = config_val.__set__('validateClusteringStreamPath', validate_stream_path_stub);
 		});
 
 		afterEach(() => {
@@ -197,6 +202,7 @@ describe('Test configValidator module', () => {
 								maxAge: 3600,
 								maxBytes: 10000,
 								maxMsgs: 100,
+								path: '/users/me/streams',
 							},
 						},
 						nodeName: 'test_name',
@@ -738,6 +744,14 @@ describe('Test configValidator module', () => {
 			const result = set_default_root(parent, helpers);
 
 			expect(result).to.equal(path.join(HDB_ROOT, '/keys/ca.pem'));
+		});
+
+		it('Test that if clustering.leafServer.streams.path is undefined, one is created', () => {
+			hdb_root_rw = config_val.__set__('hdb_root', HDB_ROOT);
+			const helpers = { state: { path: ['clustering', 'leafServer', 'streams', 'path'] } };
+			const result = set_default_root(parent, helpers);
+
+			expect(result).to.equal(path.join(HDB_ROOT, '/clustering/leaf'));
 		});
 	});
 
