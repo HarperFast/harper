@@ -81,7 +81,7 @@ function getCustomFunctions() {
 					.map((filepath) => filepath.split('/').pop().split('.js')[0]),
 				helpers: fg
 					.sync(normalize(`${project_folder}/helpers/*.js`))
-					.map((filepath) => filepath.split('/').pop().split('.js')[0])
+					.map((filepath) => filepath.split('/').pop().split('.js')[0]),
 			};
 		});
 	} catch (err) {
@@ -364,33 +364,30 @@ async function deployCustomFunctionProject(req) {
 
 	log.trace(`deploying custom function project`);
 	const cf_dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
-	const { project, payload, file } = req;
+	const { project, payload } = req;
 	const path_to_project = path.join(cf_dir, project);
 
-	// check if the project exists
-	const projectExists = fs.existsSync(path_to_project);
+	// check if the project exists, if it doesn't, create it.
+	await fs.ensureDir(path_to_project);
 
-	if (!projectExists) {
-		fs.mkdirSync(path_to_project, { recursive: true });
-	}
-
-	// ensure /tmp exists
-	if (!fs.existsSync(TMP_PATH)) {
-		fs.mkdirSync(TMP_PATH);
-	}
+	// Create a temp file to store project tar in. Check that is doesn't already exist, if it does create another path and test.
+	let temp_file_path;
+	let temp_file_exists;
+	do {
+		temp_file_path = path.join(TMP_PATH, uuidV4() + '.tar');
+		temp_file_exists = await fs.pathExists(temp_file_path);
+	} while (temp_file_exists);
 
 	// pack the directory
-	fs.writeFileSync(file, payload, { encoding: 'base64' });
-
-	// wait for a second
-	// eslint-disable-next-line no-magic-numbers
-	await new Promise((resolve) => setTimeout(resolve, 2000));
+	await fs.outputFile(temp_file_path, payload, { encoding: 'base64' });
 
 	// extract the reconstituted file to the proper project directory
-	fs.createReadStream(file).pipe(tar.extract(path_to_project));
+	const stream = fs.createReadStream(temp_file_path);
+	stream.pipe(tar.extract(path_to_project));
+	await new Promise((resolve) => stream.on('end', resolve));
 
 	// delete the file
-	fs.unlinkSync(file);
+	await fs.unlink(temp_file_path);
 
 	// return the package payload as base64-encoded string
 	return `Successfully deployed project: ${project}`;
