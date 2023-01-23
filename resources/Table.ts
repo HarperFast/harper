@@ -6,9 +6,11 @@ import { randomUUID } from 'crypto';
 import { ResourceInterface } from './ResourceInterface';
 import { EnvTransaction, Resource } from './Resource';
 import { compareKeys } from 'ordered-binary';
-
+import { onMessageFromWorkers, broadcast } from '../server/threads/manage-threads';
 import * as lmdb_terms from '../utility/lmdb/terms';
 import * as env_mngr from '../utility/environment/environmentManager';
+
+const TRANSACTION_EVENT_TYPE = 'transaction';
 const RANGE_ESTIMATE = 100000000;
 env_mngr.initSync();
 
@@ -28,6 +30,7 @@ export class Table {
 	schemaName: string
 	attributes: any[]
 	primaryKey: string
+	subscriptions: Map<any, Function[]>
 	Source: { new(): ResourceInterface }
 	Transaction: ReturnType<typeof makeTransactionClass>
 
@@ -38,13 +41,59 @@ export class Table {
 		this.envPath = primaryDbi.env.path;
 		this.tableName = options.tableName;
 		this.Transaction = makeTransactionClass(this);
+		primaryDbi.on('aftercommit', ({next, last}) => {
+			// after each commit, broadcast the transaction to all threads so subscribers can read the
+			// transactions and find changes of interest
+			let transaction_buffers = [];
+			let last_uint32;
+			let start;
+			// get all the buffers (and starting position of the first) in this transaction
+			do {
+				if (next.uint32 !== last_uint32) {
+					last_uint32 = next.uint32;
+					if (start === undefined)
+						start = next.flagPosition;
+					transaction_buffers.push(last_uint32.buffer);
+				}
+				next = next.next;
+			} while (next !== last);
+			// broadcast all the transaction buffers so they can be (sequentially) read
+			broadcast({
+				type: TRANSACTION_EVENT_TYPE,
+				start,
+				buffers: transaction_buffers,
+			});
+		});
 	}
 	sourcedFrom(Resource) {
 		// define a source for retrieving invalidated entries for caching purposes
 		this.Source = Resource;
 		this.Transaction.Source = Resource;
 	}
-
+	subscribe(query, options) {
+		if (!this.subscriptions) {
+			this.subscriptions = new Map();
+			onMessageFromWorkers((event) => {
+				if (event.type === TRANSACTION_EVENT_TYPE) {
+					let flag_position = event.start;
+					let buffers = event.buffers;
+					// TODO: Read from these buffers, call subscriptions handlers
+					//let handlers = this.subscriptions.get(key);
+					//if (handlers) handlers.forEach(handler => handler(type));
+				}
+			});
+		}
+		let key = query.conditions[0].search_attribute;
+		let handlers = this.subscriptions.get(key);
+		if (!handlers)
+			this.subscriptions.set(key, handlers = []);
+		handlers.push(options.callback);
+		return {
+			end() {
+				handlers.splice(handlers.indexOf(options.callback), 1);
+			}
+		};
+	}
 	transaction(env_transaction, lmdb_txn, parent_transaction) {
 		return new this.Transaction(env_transaction, lmdb_txn, parent_transaction, {});
 	}
@@ -305,9 +354,8 @@ function makeTransactionClass(table: Table) {
 			}
 			return records;
 		}
-
 		subscribe(query, options) {
-			return {};
+			return this.table.subscribe(query, options);
 		}
 
 	}
