@@ -94,7 +94,7 @@
     "mkcert": "1.5.0",
     "moment": "2.29.4",
     "msgpackr": "1.8.2",
-    "nats": "2.10.2",
+    "nats": "2.11.0",
     "needle": "3.1.0",
     "node-ipc": "9.1.4",
     "node-stream-zip": "1.15.0",
