@@ -272,11 +272,12 @@ function validateRotationMaxSize(value, helpers) {
 function setDefaultThreads(parent, helpers) {
 	const config_param = helpers.state.path.join('.');
 	let processors = os.cpus().length;
+
 	// default to one less than the number of logical CPU/processors so we can have good concurrency with the
 	// ingest process and any extra processes (jobs, reply, etc.).
 	let num_processes = processors - 1;
-	// But if only two processors, keep two processes so we have some level of concurrency fairness
-	if (num_processes === 1 && processors === 2) num_processes = processors;
+	// But if only two or less processors, keep two processes so we have some level of concurrency fairness
+	if (num_processes <= 2) num_processes = 2;
 	hdb_logger.info(`Detected ${processors} cores on this machine, defaulting ${config_param} to ${num_processes}`);
 	return num_processes;
 }
