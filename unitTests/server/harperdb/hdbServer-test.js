@@ -32,6 +32,7 @@ const CERTIFICATE_PATH = path.join(KEYS_PATH, 'certificate.pem');
 
 const test_req_options = {
 	headers: {
+		'Accept': 'application/json',
 		'Content-Type': 'application/json',
 		'Authorization': 'Basic YWRtaW46QWJjMTIzNCE=',
 	},
@@ -125,6 +126,8 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
+
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -134,18 +137,6 @@ describe('Test hdbServer module', () => {
 			expect(server.server.cert).to.be.instanceOf(Buffer);
 			expect(!!server.initialConfig.https).to.be.true;
 
-			// Check to see that server handler event listeners are added to process
-			const before_exit_listeners = process.listeners('beforeExit').map((func) => func.name);
-			expect(before_exit_listeners).to.include('handleBeforeExit');
-			const exit_listeners = process.listeners('exit').map((func) => func.name);
-			expect(exit_listeners).to.include('handleExit');
-			const signit_listeners = process.listeners('SIGINT').map((func) => func.name);
-			expect(signit_listeners).to.include('handleSigint');
-			const sigquit_listeners = process.listeners('SIGQUIT').map((func) => func.name);
-			expect(sigquit_listeners).to.include('handleSigquit');
-			const sigterm_listeners = process.listeners('SIGTERM').map((func) => func.name);
-			expect(sigterm_listeners).to.include('handleSigterm');
-
 			server.close();
 		});
 
@@ -154,6 +145,8 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
+
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -169,6 +162,8 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
+
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -184,6 +179,8 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
+
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -199,6 +196,8 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
+
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -216,6 +215,8 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
+
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -228,6 +229,8 @@ describe('Test hdbServer module', () => {
 
 		it('should register 4 fastify plugins by default - @fastify/compress, @fastify/static, @fastify/accepts-serializer', async () => {
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
+
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -242,6 +245,8 @@ describe('Test hdbServer module', () => {
 
 		it('should build HTTPS server instance with default config settings', async () => {
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
+
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 			const test_max_body_size = hdbServer_rw.__get__('REQ_MAX_BODY_SIZE');
@@ -262,6 +267,8 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
+
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -287,6 +294,8 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
+
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -306,6 +315,8 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
+
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -320,6 +331,8 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep();
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
+
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -338,6 +351,8 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
+
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -356,6 +371,8 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
+
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -374,6 +391,8 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
+
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -389,17 +408,19 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
+
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
 			const test_response = await server.inject({
 				method: 'POST',
 				url: '/',
-				headers: Object.assign(
+				headers: Object.assign({},
+					test_req_options.headers,
 					{
 						Accept: 'application/x-msgpack',
-					},
-					test_req_options.headers
+					}
 				),
 				body: test_req_options.body,
 			});
@@ -416,6 +437,8 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
+
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -424,6 +447,7 @@ describe('Test hdbServer module', () => {
 				method: 'POST',
 				url: '/',
 				headers: Object.assign({}, test_req_options.headers, {
+					Accept: 'application/json',
 					'Content-Type': 'application/x-msgpack',
 					'Content-Length': body.length,
 				}),
@@ -441,6 +465,8 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
+
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -464,17 +490,19 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
+
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
 			const test_response = await server.inject({
 				method: 'POST',
 				url: '/',
-				headers: Object.assign(
+				headers: Object.assign({},
+					test_req_options.headers,
 					{
 						Accept: 'application/cbor',
 					},
-					test_req_options.headers
 				),
 				body: test_req_options.body,
 			});
@@ -491,6 +519,8 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
+
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -499,6 +529,7 @@ describe('Test hdbServer module', () => {
 				method: 'POST',
 				url: '/',
 				headers: Object.assign({}, test_req_options.headers, {
+					'Accept': 'application/json',
 					'Content-Type': 'application/cbor',
 					'Content-Length': body.length,
 				}),
@@ -516,6 +547,8 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
+
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -539,17 +572,18 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
 			const test_response = await server.inject({
 				method: 'POST',
 				url: '/',
-				headers: Object.assign(
+				headers: Object.assign({},
+					test_req_options.headers,
 					{
 						Accept: 'text/csv',
 					},
-					test_req_options.headers
 				),
 				body: test_req_options.body,
 			});
@@ -567,6 +601,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -583,6 +618,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -599,6 +635,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -615,6 +652,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -631,6 +669,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -649,6 +688,7 @@ describe('Test hdbServer module', () => {
 
 		it('should call handlePostRequest on HTTPS post request', async () => {
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -661,6 +701,7 @@ describe('Test hdbServer module', () => {
 
 		it('should return op result w/ status 200 for valid HTTPS post request', async () => {
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -678,6 +719,7 @@ describe('Test hdbServer module', () => {
 
 		it('should return 400 error for post request w/o body', async () => {
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -696,6 +738,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -718,6 +761,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -738,6 +782,7 @@ describe('Test hdbServer module', () => {
 	describe('buildServer() method', () => {
 		it('should return an http server', async () => {
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 			const buildServer_rw = hdbServer_rw.__get__('buildServer');
@@ -753,6 +798,7 @@ describe('Test hdbServer module', () => {
 
 		it('should return an https server', async () => {
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 			const buildServer_rw = hdbServer_rw.__get__('buildServer');
@@ -773,6 +819,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 			const getServerOptions_rw = hdbServer_rw.__get__('getServerOptions');
@@ -793,6 +840,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 			const getServerOptions_rw = hdbServer_rw.__get__('getServerOptions');
@@ -814,6 +862,7 @@ describe('Test hdbServer module', () => {
 	describe('getHeaderTimeoutConfig() method', () => {
 		it('should return the header timeout config value', async () => {
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 			const getHeaderTimeoutConfig_rw = hdbServer_rw.__get__('getHeaderTimeoutConfig');
@@ -835,6 +884,7 @@ describe('Test hdbServer module', () => {
 
 		it('NOMINAL - should call initial setup methods', async () => {
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -849,6 +899,7 @@ describe('Test hdbServer module', () => {
 			const test_err = 'test error!';
 			getLicense_stub.throws(new Error(test_err));
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 			await hdbServer_rw.__get__('setUp');

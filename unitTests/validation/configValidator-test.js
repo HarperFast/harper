@@ -88,7 +88,7 @@ const FAKE_CONFIG = {
 	http: {
 		threads: 2,
 	},
-	ipc: {
+	itc: {
 		network: {
 			port: 1234,
 		},
@@ -236,7 +236,7 @@ describe('Test configValidator module', () => {
 							privateKey: TEST_PRIVATE_KEY,
 						},
 					},
-					ipc: {
+					itc: {
 						network: {
 							port: 1234,
 						},
@@ -435,13 +435,13 @@ describe('Test configValidator module', () => {
 			expect(schema.error.message).to.eql(expected_error_message);
 		});
 
-		it('Test ipc and localStudio in config_schema with bad values', () => {
+		it('Test itc and localStudio in config_schema with bad values', () => {
 			let bad_config_obj = test_utils.deepClone(FAKE_CONFIG);
-			bad_config_obj.ipc.network.port = 'bad_port';
+			bad_config_obj.itc.network.port = 'bad_port';
 			bad_config_obj.localStudio.enabled = 'spinach';
 
 			const schema = configValidator(bad_config_obj);
-			const expected_schema_message = "'ipc.network.port' must be a number. 'localStudio.enabled' must be a boolean";
+			const expected_schema_message = "'localStudio.enabled' must be a boolean";
 
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});

@@ -11,7 +11,7 @@ const util = require('util');
 const harperBridge = require('./harperBridge/harperBridge');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
-const { SchemaEventMsg } = require('../server/ipc/utility/ipcUtils');
+const { SchemaEventMsg } = require('../server/threads/itc');
 const nats_utils = require('../server/nats/utility/natsUtils');
 
 module.exports = {

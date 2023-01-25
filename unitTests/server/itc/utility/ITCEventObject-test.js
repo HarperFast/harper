@@ -2,10 +2,10 @@
 
 const chai = require('chai');
 const { expect } = chai;
-const IPCEventObject = require('../../../../server/ipc/utility/IPCEventObject');
+const ITCEventObject = require('../../../../server/itc/utility/ITCEventObject');
 
-describe('Test IPCEventObject class', () => {
-    it('Test new IPCEventObject is correct shape', () => {
+describe('Test ITCEventObject class', () => {
+    it('Test new ITCEventObject is correct shape', () => {
         const message = {
             "operation":"create_schema",
             "schema": "unit_test"
@@ -17,7 +17,7 @@ describe('Test IPCEventObject class', () => {
                 "schema": "unit_test"
             }
         };
-        const ipc_event = new IPCEventObject('schema', message);
-        expect(ipc_event).to.eql(expected_event);
+        const itc_event = new ITCEventObject('schema', message);
+        expect(itc_event).to.eql(expected_event);
     });
 });

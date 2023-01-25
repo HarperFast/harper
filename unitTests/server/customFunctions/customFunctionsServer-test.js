@@ -88,6 +88,7 @@ describe('Test customFunctionsServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
+			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			server = customFunctionsServer_rw.__get__('server');
 
@@ -103,6 +104,7 @@ describe('Test customFunctionsServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
+			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			server = customFunctionsServer_rw.__get__('server');
 
@@ -113,6 +115,7 @@ describe('Test customFunctionsServer module', () => {
 
 		it('should build HTTPS server instance with default config settings', async () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
+			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			server = customFunctionsServer_rw.__get__('server');
 
@@ -134,6 +137,7 @@ describe('Test customFunctionsServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
+			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			server = customFunctionsServer_rw.__get__('server');
 
@@ -150,6 +154,7 @@ describe('Test customFunctionsServer module', () => {
 			test_utils.preTestPrep();
 
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
+			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			server = customFunctionsServer_rw.__get__('server');
 
@@ -165,6 +170,7 @@ describe('Test customFunctionsServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
+			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			server = customFunctionsServer_rw.__get__('server');
 
@@ -182,6 +188,7 @@ describe('Test customFunctionsServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
+			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			server = customFunctionsServer_rw.__get__('server');
 
@@ -203,6 +210,7 @@ describe('Test customFunctionsServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
+			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			server = customFunctionsServer_rw.__get__('server');
 
@@ -221,6 +229,7 @@ describe('Test customFunctionsServer module', () => {
 	describe('buildServer() method', () => {
 		it('should return an http server', async () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
+			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			server = customFunctionsServer_rw.__get__('server');
 			const buildServer_rw = customFunctionsServer_rw.__get__('buildServer');
@@ -234,6 +243,7 @@ describe('Test customFunctionsServer module', () => {
 
 		it('should return an https server', async () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
+			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			server = customFunctionsServer_rw.__get__('server');
 			const buildServer_rw = customFunctionsServer_rw.__get__('buildServer');
@@ -249,6 +259,7 @@ describe('Test customFunctionsServer module', () => {
 	describe('setUp() method', () => {
 		it('NOMINAL - should call initial setup methods', async () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
+			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			server = customFunctionsServer_rw.__get__('server');
 
@@ -275,6 +286,7 @@ describe('Test customFunctionsServer module', () => {
 
 		it('should call buildRoutes', async () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
+			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			server = customFunctionsServer_rw.__get__('server');
 
@@ -291,6 +303,7 @@ describe('Test customFunctionsServer module', () => {
 
 		it('should register hdbCore', async () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
+			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			server = customFunctionsServer_rw.__get__('server');
 
@@ -306,6 +319,7 @@ describe('Test customFunctionsServer module', () => {
 
 		it('should find the appropriate route files in the test project', async () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
+			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			server = customFunctionsServer_rw.__get__('server');
 

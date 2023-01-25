@@ -4,8 +4,6 @@ const env_manager = require('../../utility/environment/environmentManager');
 env_manager.initSync();
 
 const nats_utils = require('./utility/natsUtils');
-const ipc_server_handlers = require('../ipc/serverHandlers');
-const IPCClient = require('../ipc/IPCClient');
 const harper_logger = require('../../utility/logging/harper_logger');
 const hdb_terms = require('../../utility/hdbTerms');
 const nats_terms = require('./utility/natsTerms');
@@ -17,6 +15,9 @@ const { encode, decode } = require('msgpackr');
 const global_schema = require('../../utility/globalSchema');
 const schema_describe = require('../../data_layer/schemaDescribe');
 const util = require('util');
+const terms = require('../../utility/hdbTerms');
+const { isMainThread, parentPort } = require('worker_threads');
+require('../../server/threads/manage-threads');
 
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 const node_name = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
@@ -33,14 +34,6 @@ async function initialize() {
 	try {
 		harper_logger.notify('Starting reply service.');
 		await p_schema_to_global();
-
-		// Instantiate new instance of HDB IPC client and assign it to global.
-		try {
-			global.hdb_ipc = new IPCClient(process.pid, ipc_server_handlers);
-		} catch (err) {
-			harper_logger.error('Error instantiating new instance of IPC client in natsReplyService');
-			throw err;
-		}
 
 		const connection = await nats_utils.getConnection();
 		const subject_name = `${node_name}.__request__`;
@@ -106,4 +99,12 @@ async function getRemoteDescribeAll() {
 			message: err.message,
 		};
 	}
+}
+if (!isMainThread) {
+	parentPort.on('message', async (message) => {
+		const {type} = message;
+		if (type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
+			nats_utils.closeConnection();
+		}
+	});
 }

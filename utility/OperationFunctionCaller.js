@@ -23,9 +23,12 @@ async function callOperationFunctionAsAwait(
 	}
 	let result = undefined;
 	try {
+		//TODO: followup_async_func is meant to be a function that would prep a response for clustering, but may not be
+		// necessary.
 		result = await promisified_function(function_input);
 
 		if (followup_async_func) {
+			//TODO: Passing result twice seems silly, why is this a thing?
 			await followup_async_func(function_input, result, nats_msg_header);
 		}
 

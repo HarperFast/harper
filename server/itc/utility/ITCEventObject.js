@@ -1,10 +1,10 @@
 'use strict';
 
-class IPCEventObject {
+class ITCEventObject {
 	constructor(type, message) {
 		this.type = type;
 		this.message = message;
 	}
 }
 
-module.exports = IPCEventObject;
+module.exports = ITCEventObject;

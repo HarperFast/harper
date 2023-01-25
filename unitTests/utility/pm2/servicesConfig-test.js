@@ -11,6 +11,7 @@ const env_mangr = require('../../../utility/environment/environmentManager');
 const services_config = rewire('../../../utility/pm2/servicesConfig');
 const hdb_terms = require('../../../utility/hdbTerms');
 const env = require('../../../utility/environment/environmentManager');
+const { PACKAGE_ROOT } = require('../../../utility/hdbTerms');
 const LAUNCH_SCRIPTS_DIR = path.resolve(__dirname, '../../../launchServiceScripts');
 const SCRIPTS_DIR = path.resolve(__dirname, '../../../utility/scripts');
 const RESTART_SCRIPT = path.join(SCRIPTS_DIR, hdb_terms.HDB_RESTART_SCRIPT);
@@ -35,59 +36,22 @@ describe('Test pm2 servicesConfig module', () => {
 		sandbox.restore();
 	});
 
-	it('Test result from generateIPCServerConfig function is correct for non compiled', () => {
+	it('Test result from generateMainServerConfig function is correct non compiled', () => {
 		const expected_result = {
-			name: 'IPC',
-			script: hdb_terms.SERVICE_SERVERS.IPC,
 			exec_mode: 'fork',
-			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.IPC),
-			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.IPC),
-			instances: 1,
-			cwd: hdb_terms.SERVICE_SERVERS_CWD.IPC,
-			merge_logs: true,
-			env: {
-				PROCESS_NAME: hdb_terms.PROCESS_DESCRIPTORS.IPC,
-			},
-		};
-		const result = services_config.generateIPCServerConfig();
-		expect(result).to.eql(expected_result);
-	});
-
-	it('Test result from generateHDBServerConfig function is correct non compiled', () => {
-		const expected_result = {
-			exec_mode: 'cluster',
-			instances: 4,
 			name: 'HarperDB',
 			node_args: '--max-old-space-size=512',
 			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.HDB),
 			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.HDB),
-			script: path.join(LAUNCH_SCRIPTS_DIR, 'launchHarperDB.js'),
-			cwd: LAUNCH_SCRIPTS_DIR,
+			script: 'bin/harperdb.js',
+			cwd: PACKAGE_ROOT,
 			merge_logs: true,
 			env: {
+				IS_SCRIPTED_SERVICE: true,
 				PROCESS_NAME: hdb_terms.PROCESS_DESCRIPTORS.HDB,
 			},
 		};
-		const result = services_config.generateHDBServerConfig();
-		expect(result).to.eql(expected_result);
-	});
-
-	it('Test result from generateCFServerConfig function is correct non compiled', () => {
-		const expected_result = {
-			exec_mode: 'cluster',
-			instances: 4,
-			name: 'Custom Functions',
-			node_args: '--max-old-space-size=512',
-			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CUSTOM_FUNCTIONS),
-			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CUSTOM_FUNCTIONS),
-			script: path.join(LAUNCH_SCRIPTS_DIR, 'launchCustomFunctions.js'),
-			cwd: LAUNCH_SCRIPTS_DIR,
-			merge_logs: true,
-			env: {
-				PROCESS_NAME: hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS,
-			},
-		};
-		const result = services_config.generateCFServerConfig();
+		const result = services_config.generateMainServerConfig();
 		expect(result).to.eql(expected_result);
 	});
 
@@ -134,7 +98,7 @@ describe('Test pm2 servicesConfig module', () => {
 		const hdb_root = env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
 		const leaf_config_path = path.join(hdb_root, 'clustering', 'leaf.json');
 		const expected_result = {
-			name: 'Clustering Leaf',
+			name: 'Clustering Leaf-9991',
 			script: NATS_SERVER_BINARY_PATH,
 			args: `-c ${leaf_config_path}`,
 			exec_mode: 'fork',

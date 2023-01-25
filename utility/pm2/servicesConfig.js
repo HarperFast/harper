@@ -7,6 +7,7 @@ const hdb_terms = require('../hdbTerms');
 const nats_terms = require('../../server/nats/utility/natsTerms');
 const path = require('path');
 const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
+const env_manager = require('../environment/environmentManager');
 
 const DISABLE_FILE_LOG = '/dev/null';
 const LAUNCH_SCRIPTS_DIR = path.join(PACKAGE_ROOT, 'launchServiceScripts');
@@ -30,33 +31,7 @@ function initLogConfig() {
 	}
 }
 
-function generateIPCServerConfig() {
-	initLogConfig();
-
-	const ipc_log = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.IPC);
-	const ipc_config = {
-		name: hdb_terms.PROCESS_DESCRIPTORS.IPC,
-		exec_mode: 'fork',
-		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.IPC },
-		merge_logs: true,
-		out_file: ipc_log,
-		error_file: ipc_log,
-		instances: 1,
-		cwd: hdb_terms.SERVICE_SERVERS_CWD.IPC,
-	};
-
-	if (!log_to_file) {
-		ipc_config.out_file = DISABLE_FILE_LOG;
-		ipc_config.error_file = DISABLE_FILE_LOG;
-	}
-
-	return {
-		...ipc_config,
-		script: hdb_terms.SERVICE_SERVERS.IPC,
-	};
-}
-
-function generateHDBServerConfig() {
+function generateMainServerConfig() {
 	initLogConfig();
 	env.initSync();
 	log_to_file = env.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_TO_FILE);
@@ -64,23 +39,21 @@ function generateHDBServerConfig() {
 
 	const hdb_log = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.HDB);
 	const license = hdb_license.licenseSearch();
-	const mem_value = license.ram_allocation
-		? hdb_terms.MEM_SETTING_KEY + license.ram_allocation
-		: hdb_terms.MEM_SETTING_KEY + hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT;
+	const max_memory = license.ram_allocation || hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT;
+	const mem_value = hdb_terms.MEM_SETTING_KEY + max_memory;
 
 	// We are using launch scripts here because something was happening with the build where stdout/err was
 	// losing reference to the pm2 process and not being logged. It seems to only happen with clustered processes.
 	const hdb_config = {
 		name: hdb_terms.PROCESS_DESCRIPTORS.HDB,
-		script: hdb_terms.LAUNCH_SERVICE_SCRIPTS.HDB,
-		exec_mode: 'cluster',
-		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.HDB },
+		script: hdb_terms.LAUNCH_SERVICE_SCRIPTS.MAIN,
+		exec_mode: 'fork',
+		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.HDB, IS_SCRIPTED_SERVICE: true },
 		merge_logs: true,
 		out_file: hdb_log,
 		error_file: hdb_log,
-		instances: env.get(hdb_terms.CONFIG_PARAMS.HTTP_THREADS),
 		node_args: mem_value,
-		cwd: LAUNCH_SCRIPTS_DIR,
+		cwd: PACKAGE_ROOT,
 	};
 
 	if (!log_to_file) {
@@ -91,41 +64,7 @@ function generateHDBServerConfig() {
 	return hdb_config;
 }
 
-function generateCFServerConfig() {
-	initLogConfig();
-	env.initSync();
-	log_to_file = env.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_TO_FILE);
-	log_path = env.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY);
-
-	const cf_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.CUSTOM_FUNCTIONS);
-	const license = hdb_license.licenseSearch();
-	const mem_value = license.ram_allocation
-		? hdb_terms.MEM_SETTING_KEY + license.ram_allocation
-		: hdb_terms.MEM_SETTING_KEY + hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT;
-
-	// We are using launch scripts here because something was happening with the build where stdout/err was
-	// losing reference to the pm2 process and not being logged. It seems to only happen with clustered processes.
-	const cf_config = {
-		name: hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS,
-		script: hdb_terms.LAUNCH_SERVICE_SCRIPTS.CUSTOM_FUNCTIONS,
-		exec_mode: 'cluster',
-		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS },
-		merge_logs: true,
-		out_file: cf_logs,
-		error_file: cf_logs,
-		instances: env.get(hdb_terms.CONFIG_PARAMS.HTTP_THREADS),
-		node_args: mem_value,
-		cwd: LAUNCH_SCRIPTS_DIR,
-	};
-
-	if (!log_to_file) {
-		cf_config.out_file = DISABLE_FILE_LOG;
-		cf_config.error_file = DISABLE_FILE_LOG;
-	}
-
-	return cf_config;
-}
-
+const ELIDED_HUB_PORT = 9930;
 function generateNatsHubServerConfig() {
 	initLogConfig();
 	env.initSync();
@@ -134,8 +73,9 @@ function generateNatsHubServerConfig() {
 	const hdb_root = env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
 	const hub_config_path = path.join(hdb_root, 'clustering', nats_terms.NATS_CONFIG_FILES.HUB_SERVER);
 	const hub_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_HUB);
+	const hub_port = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT);
 	const hs_config = {
-		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB,
+		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB + (hub_port !== ELIDED_HUB_PORT ? '-' + hub_port : ''),
 		script: NATS_SERVER_BINARY_PATH,
 		args: `-c ${hub_config_path}`,
 		exec_mode: 'fork',
@@ -154,6 +94,7 @@ function generateNatsHubServerConfig() {
 	return hs_config;
 }
 
+const ELIDED_LEAF_PORT = 9940;
 function generateNatsLeafServerConfig() {
 	initLogConfig();
 	env.initSync();
@@ -162,8 +103,11 @@ function generateNatsLeafServerConfig() {
 	const hdb_root = env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
 	const leaf_config_path = path.join(hdb_root, 'clustering', nats_terms.NATS_CONFIG_FILES.LEAF_SERVER);
 	const leaf_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_LEAF);
+	const leaf_port = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT);
 	const ls_config = {
-		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF,
+		// we assign a unique name per port if it is not the default, so we can run multiple NATS instances for
+		// multiple HDB instances
+		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF + (leaf_port !== ELIDED_LEAF_PORT ? '-' + leaf_port : ''),
 		script: NATS_SERVER_BINARY_PATH,
 		args: `-c ${leaf_config_path}`,
 		exec_mode: 'fork',
@@ -286,52 +230,19 @@ function generateRestart() {
 	};
 }
 
-function generateJobConfig(job_id) {
-	initLogConfig();
-	const jobs_log = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.JOBS);
-	const jobs_root_dir = path.join(PACKAGE_ROOT, 'server/jobs');
-
-	const job_config = {
-		name: `JOB-${job_id}`,
-		exec_mode: 'fork',
-		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: `JOB-${job_id}` },
-		merge_logs: true,
-		out_file: jobs_log,
-		error_file: jobs_log,
-		instances: 1,
-		cwd: LAUNCH_SCRIPTS_DIR,
-		autorestart: false,
-		// To debug a job uncomment the code below and setup debugging on port (usually 9229)
-		//node_args: ['--inspect-brk'],
-	};
-
-	if (!log_to_file) {
-		job_config.out_file = DISABLE_FILE_LOG;
-		job_config.error_file = DISABLE_FILE_LOG;
-	}
-
-	return {
-		...job_config,
-		script: path.join(jobs_root_dir, 'jobProcess.js'),
-	};
-}
-
 function generateAllServiceConfigs() {
 	return {
-		apps: [generateIPCServerConfig(), generateHDBServerConfig(), generateCFServerConfig()],
+		apps: [generateMainServerConfig()],
 	};
 }
 
 module.exports = {
 	generateAllServiceConfigs,
-	generateIPCServerConfig,
-	generateHDBServerConfig,
-	generateCFServerConfig,
+	generateMainServerConfig,
 	generateRestart,
 	generateNatsHubServerConfig,
 	generateNatsLeafServerConfig,
 	generateNatsIngestServiceConfig,
 	generateNatsReplyServiceConfig,
 	generateClusteringUpgradeV4ServiceConfig,
-	generateJobConfig,
 };

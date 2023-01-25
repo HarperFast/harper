@@ -32,7 +32,6 @@ const HDB_ROOT_DIR_NAME = 'hdb';
 // Name of the HDB process
 const HDB_PROC_NAME = `hdbServer.${CODE_EXTENSION}`;
 const CUSTOM_FUNCTION_PROC_NAME = `customFunctionsServer.${CODE_EXTENSION}`;
-const IPC_SERVER_MODULE = `hdbIpcServer.${CODE_EXTENSION}`;
 const HDB_RESTART_SCRIPT = `restartHdb.${CODE_EXTENSION}`;
 
 const HDB_PROC_DESCRIPTOR = 'HarperDB';
@@ -46,7 +45,6 @@ const FOREGROUND_PID_FILE = 'foreground.pid';
 
 const PROCESS_DESCRIPTORS = {
 	HDB: HDB_PROC_DESCRIPTOR,
-	IPC: 'IPC',
 	CLUSTERING_HUB: CLUSTERING_HUB_PROC_DESCRIPTOR,
 	CLUSTERING_LEAF: CLUSTERING_LEAF_PROC_DESCRIPTOR,
 	CLUSTERING_INGEST_SERVICE: CLUSTERING_INGEST_PROC_DESCRIPTOR,
@@ -65,7 +63,6 @@ const PROCESS_DESCRIPTORS = {
 
 const PROCESS_LOG_NAMES = {
 	HDB: 'hdb.log',
-	IPC: 'ipc.log',
 	CLUSTERING_HUB: 'clustering_hub.log',
 	CLUSTERING_LEAF: 'clustering_leaf.log',
 	CLUSTERING_INGEST_SERVICE: 'clustering_ingest_service.log',
@@ -90,11 +87,8 @@ const LOG_LEVELS = {
 
 const PROCESS_DESCRIPTORS_VALIDATE = {
 	'harperdb': HDB_PROC_DESCRIPTOR,
-	'ipc': 'IPC',
 	'clustering hub': CLUSTERING_HUB_PROC_DESCRIPTOR,
 	'clustering leaf': CLUSTERING_LEAF_PROC_DESCRIPTOR,
-	'clustering ingest service': CLUSTERING_INGEST_PROC_DESCRIPTOR,
-	'clustering reply service': CLUSTERING_REPLY_SERVICE_DESCRIPTOR,
 	'custom functions': CUSTOM_FUNCTION_PROC_DESCRIPTOR,
 	'custom_functions': CUSTOM_FUNCTION_PROC_DESCRIPTOR,
 	'pm2-logrotate': PROCESS_DESCRIPTORS.PM2_LOGROTATE,
@@ -107,13 +101,10 @@ const PROCESS_DESCRIPTORS_VALIDATE = {
 const CLUSTERING_PROCESSES = {
 	CLUSTERING_HUB_PROC_DESCRIPTOR,
 	CLUSTERING_LEAF_PROC_DESCRIPTOR,
-	CLUSTERING_INGEST_PROC_DESCRIPTOR,
-	CLUSTERING_REPLY_SERVICE_DESCRIPTOR,
 };
 
 const SERVICE_SERVERS_CWD = {
 	HDB: path.join(PACKAGE_ROOT, `server/harperdb`),
-	IPC: path.join(PACKAGE_ROOT, `server/ipc`),
 	CUSTOM_FUNCTIONS: path.join(PACKAGE_ROOT, `server/customFunctions`),
 	CLUSTERING_HUB: path.join(PACKAGE_ROOT, 'server/nats'),
 	CLUSTERING_LEAF: path.join(PACKAGE_ROOT, 'server/nats'),
@@ -121,16 +112,14 @@ const SERVICE_SERVERS_CWD = {
 
 const SERVICE_SERVERS = {
 	HDB: path.join(SERVICE_SERVERS_CWD.HDB, HDB_PROC_NAME),
-	IPC: path.join(SERVICE_SERVERS_CWD.IPC, IPC_SERVER_MODULE),
 	CUSTOM_FUNCTIONS: path.join(SERVICE_SERVERS_CWD.CUSTOM_FUNCTIONS, CUSTOM_FUNCTION_PROC_NAME),
 };
 
 const LAUNCH_SERVICE_SCRIPTS = {
-	HDB: path.join(PACKAGE_ROOT, 'launchServiceScripts/launchHarperDB.js'),
-	CUSTOM_FUNCTIONS: path.join(PACKAGE_ROOT, 'launchServiceScripts/launchCustomFunctions.js'),
+	MAIN: 'bin/harperdb.js',
 	NATS_INGEST_SERVICE: path.join(PACKAGE_ROOT, 'launchServiceScripts/launchNatsIngestService.js'),
 	NATS_REPLY_SERVICE: path.join(PACKAGE_ROOT, 'launchServiceScripts/launchNatsReplyService.js'),
-	NODES_UPGRADE_4_0_0: path.resolve(PACKAGE_ROOT, 'launchServiceScripts/launchUpdateNodes4-0-0.js'),
+	NODES_UPGRADE_4_0_0: path.join(PACKAGE_ROOT, 'launchServiceScripts/launchUpdateNodes4-0-0.js'),
 };
 
 const ROLE_TYPES_ENUM = {
@@ -443,6 +432,7 @@ LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.DEPLOY_CUSTOM_FUNCTION_PROJECT] =
 
 const SERVICE_ACTIONS_ENUM = {
 	RUN: 'run',
+	START: 'start',
 	INSTALL: 'install',
 	REGISTER: 'register',
 	STOP: 'stop',
@@ -501,7 +491,6 @@ const HDB_SETTINGS_NAMES = {
 	DISABLE_TRANSACTION_LOG_KEY: 'DISABLE_TRANSACTION_LOG',
 	OPERATION_TOKEN_TIMEOUT_KEY: 'OPERATION_TOKEN_TIMEOUT',
 	REFRESH_TOKEN_TIMEOUT_KEY: 'REFRESH_TOKEN_TIMEOUT',
-	IPC_SERVER_PORT: 'IPC_SERVER_PORT',
 	CUSTOM_FUNCTIONS_ENABLED_KEY: 'CUSTOM_FUNCTIONS',
 	CUSTOM_FUNCTIONS_PORT_KEY: 'CUSTOM_FUNCTIONS_PORT',
 	CUSTOM_FUNCTIONS_DIRECTORY_KEY: 'CUSTOM_FUNCTIONS_DIRECTORY',
@@ -553,7 +542,7 @@ const CONFIG_PARAMS = {
 	CUSTOMFUNCTIONS_NODEENV: 'customFunctions_nodeEnv',
 	CUSTOMFUNCTIONS_ROOT: 'customFunctions_root',
 	HTTP_THREADS: 'http_threads',
-	IPC_NETWORK_PORT: 'ipc_network_port',
+	HTTP_REMOTE_ADDRESS_AFFINITY: 'http_remoteAddressAffinity',
 	LOCALSTUDIO_ENABLED: 'localStudio_enabled',
 	LOGGING_FILE: 'logging_file',
 	LOGGING_LEVEL: 'logging_level',
@@ -594,6 +583,7 @@ const CONFIG_PARAMS = {
 
 // If a param is added to the config file it needs to be added here also. Keep all keys lowercase.
 const CONFIG_PARAM_MAP = {
+	settings_path: BOOT_PROP_PARAMS.SETTINGS_PATH_KEY,
 	hdb_root_key: CONFIG_PARAMS.ROOTPATH,
 	hdb_root: CONFIG_PARAMS.ROOTPATH,
 	server_port_key: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT,
@@ -644,7 +634,6 @@ const CONFIG_PARAM_MAP = {
 	operation_token_timeout: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_OPERATIONTOKENTIMEOUT,
 	refresh_token_timeout_key: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_REFRESHTOKENTIMEOUT,
 	refresh_token_timeout: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_REFRESHTOKENTIMEOUT,
-	ipc_server_port: CONFIG_PARAMS.IPC_NETWORK_PORT,
 	custom_functions_enabled_key: CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED,
 	custom_functions: CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED,
 	custom_functions_port_key: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT,
@@ -688,9 +677,9 @@ const CONFIG_PARAM_MAP = {
 	customfunctions_network_timeout: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_TIMEOUT,
 	customfunctions_nodeenv: CONFIG_PARAMS.CUSTOMFUNCTIONS_NODEENV,
 	http_threads: CONFIG_PARAMS.HTTP_THREADS,
+	http_remote_address_affinity: CONFIG_PARAMS.HTTP_REMOTE_ADDRESS_AFFINITY,
 	customfunctions_processes: CONFIG_PARAMS.HTTP_THREADS,
 	customfunctions_root: CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT,
-	ipc_network_port: CONFIG_PARAMS.IPC_NETWORK_PORT,
 	localstudio_enabled: CONFIG_PARAMS.LOCALSTUDIO_ENABLED,
 	logging_file: CONFIG_PARAMS.LOGGING_FILE,
 	logging_level: CONFIG_PARAMS.LOGGING_LEVEL,
@@ -892,10 +881,8 @@ const JWT_ENUM = {
 	JWT_PASSPHRASE_NAME: '.jwtPass',
 };
 
-const HDB_IPC_SERVER = 'hdb_ipc_server';
-const HDB_IPC_CLIENT_PREFIX = 'hdb_ipc_client_';
-const IPC_EVENT_TYPES = {
-	RESTART: 'restart',
+const ITC_EVENT_TYPES = {
+	SHUTDOWN: 'shutdown',
 	CHILD_STARTED: 'child_started',
 	CHILD_STOPPED: 'child_stopped',
 	SCHEMA: 'schema',
@@ -909,6 +896,10 @@ const IPC_EVENT_TYPES = {
 const SERVICES = {
 	HDB_CORE: 'hdb_core',
 	CUSTOM_FUNCTIONS: 'custom_functions',
+};
+
+const THREAD_TYPES = {
+	HTTP: 'http',
 };
 
 const PM2_PROCESS_STATUSES = {
@@ -1013,13 +1004,11 @@ module.exports = {
 	CLUSTERING_FLAG,
 	RUN_LOG,
 	INSTALL_LOG,
-	IPC_SERVER_MODULE,
-	HDB_IPC_SERVER,
-	IPC_EVENT_TYPES,
-	HDB_IPC_CLIENT_PREFIX,
+	ITC_EVENT_TYPES,
 	CUSTOM_FUNCTION_PROC_NAME,
 	CUSTOM_FUNCTION_PROC_DESCRIPTOR,
 	SERVICES,
+	THREAD_TYPES,
 	MEM_SETTING_KEY,
 	HDB_RESTART_SCRIPT,
 	PROCESS_DESCRIPTORS,

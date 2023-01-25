@@ -3,7 +3,6 @@ const path = require('path');
 const fs = require('fs-extra');
 const log = require('./logging/harper_logger');
 const fs_extra = require('fs-extra');
-const truncate = require('truncate-utf8-bytes');
 const os = require('os');
 const net = require('net');
 const RecursiveIterator = require('recursive-iterator');
@@ -50,7 +49,6 @@ module.exports = {
 	escapeRawValue: escapeRawValue,
 	unescapeValue: unescapeValue,
 	stringifyProps: stringifyProps,
-	valueConverter: valueConverter,
 	timeoutPromise: timeoutPromise,
 	isClusterOperation: isClusterOperation,
 	getClusterUser: getClusterUser,
@@ -422,33 +420,6 @@ function stringifyProps(prop_reader_object, comments) {
 		}
 	});
 	return lines;
-}
-
-//TODO - FS-specific methods like the one below need to be moved to an FS-specific module
-/**
- * For FS only - takes a raw value from an attribute, replaces "/", ".", ".." with unicode equivalents and returns the value, escaped value & the value path
- * @param raw_value
- * @returns {{value: string, value_stripped: string, value_path: string}}
- */
-function valueConverter(raw_value) {
-	let value;
-	try {
-		value = typeof raw_value === 'object' ? JSON.stringify(raw_value) : raw_value;
-	} catch (e) {
-		log.error(e);
-		value = raw_value;
-	}
-	let value_stripped = String(escapeRawValue(value));
-	let value_path =
-		Buffer.byteLength(value_stripped) > CHARACTER_LIMIT
-			? truncate(value_stripped, CHARACTER_LIMIT) + '/blob'
-			: value_stripped;
-
-	return {
-		value: value,
-		value_stripped: value_stripped,
-		value_path: value_path,
-	};
 }
 
 function getHomeDir() {

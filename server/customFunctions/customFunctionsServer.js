@@ -13,9 +13,8 @@ const terms = require('../../utility/hdbTerms');
 const harper_logger = require('../../utility/logging/harper_logger');
 const global_schema = require('../../utility/globalSchema');
 const user_schema = require('../../security/user');
-const IPCClient = require('../ipc/IPCClient');
-const ipc_server_handlers = require('../ipc/serverHandlers');
-
+const { isMainThread } = require("worker_threads");
+const { registerServer } = require('../threads/thread-http-server');
 const getServerOptions = require('./helpers/getServerOptions');
 const getCORSOptions = require('./helpers/getCORSOptions');
 const getHeaderTimeoutConfig = require('./helpers/getHeaderTimeoutConfig');
@@ -25,14 +24,13 @@ const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 const {
 	handleServerUncaughtException,
 	serverErrorHandler,
-	handleBeforeExit,
-	handleExit,
-	handleSigint,
-	handleSigquit,
-	handleSigterm,
 } = require('../serverHelpers/serverHandlers');
+const pjson = require('../../package.json');
 const { registerContentHandlers } = require('../serverHelpers/contentTypes');
 
+module.exports = {
+	customFunctionsServer,
+};
 const TRUE_COMPARE_VAL = 'TRUE';
 let server = undefined;
 let CF_ROUTES_DIR = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
@@ -46,24 +44,12 @@ let CF_ROUTES_DIR = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_
 async function customFunctionsServer() {
 	try {
 		// Instantiate new instance of HDB IPC client and assign it to global.
-		try {
-			global.hdb_ipc = new IPCClient(process.pid, ipc_server_handlers);
-		} catch (err) {
-			harper_logger.error('Error instantiating new instance of IPC client in Custom Functions server');
-			harper_logger.error(err);
-			throw err;
-		}
 
 		harper_logger.info('In Custom Functions Fastify server' + process.cwd());
 		harper_logger.info(`Custom Functions Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
 		harper_logger.debug(`Custom Functions server process ${process.pid} starting up.`);
 
 		process.on('uncaughtException', handleServerUncaughtException);
-		process.on('beforeExit', handleBeforeExit);
-		process.on('exit', handleExit);
-		process.on('SIGINT', handleSigint);
-		process.on('SIGQUIT', handleSigquit);
-		process.on('SIGTERM', handleSigterm);
 
 		await setUp();
 
@@ -92,8 +78,15 @@ async function customFunctionsServer() {
 		try {
 			//now that server is fully loaded/ready, start listening on port provided in config settings
 			harper_logger.info(`Custom Functions process starting on port ${props_server_port}`);
-			await server.listen({ port: props_server_port, host: '::' });
-			harper_logger.info(`Custom Functions process running on port ${props_server_port}`);
+			registerServer(terms.SERVICES.CUSTOM_FUNCTIONS, server);
+			if (isMainThread) {
+				await server.listen({ port: props_server_port, host: '::' });
+				harper_logger.info(`Custom Functions process running on port ${props_server_port}`);
+			} else if (!server.server.closeIdleConnections) {
+				// before Node v18, closeIdleConnections is not available, and we have to setup a listener for fastify
+				// to handle closing by setting up the dynamic port
+				await server.listen({ port: 0, host: '::' });
+			}
 		} catch (err) {
 			server.close();
 			harper_logger.error(`Custom Functions server.listen() error: ${err}`);
@@ -148,7 +141,7 @@ async function buildRoutes(cf_server) {
 						dirNameRoutePrefix: false,
 						options: {
 							hdbCore: parent.hdbCore,
-							logger: harper_logger,
+							logger: harper_logger.loggerWithTag('custom-function'),
 							prefix: `/${project_name}`,
 						},
 					}))
@@ -207,7 +200,3 @@ function buildServer(is_https) {
 		process.exit(1);
 	}
 }
-
-(async () => {
-	await customFunctionsServer();
-})();

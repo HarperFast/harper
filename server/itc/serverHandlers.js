@@ -6,21 +6,17 @@ const clean_lmdb_map = require('../../utility/lmdb/cleanLMDBMap');
 const global_schema = require('../../utility/globalSchema');
 const schema_describe = require('../../data_layer/schemaDescribe');
 const user_schema = require('../../security/user');
-const { validateEvent } = require('../../server/ipc/utility/ipcUtils');
-const { getMetrics } = require('../../utility/environment/systemInformation');
-const {sendIpcEvent} = require("./utility/ipcUtils");
-const IPCEventObject = require("./utility/IPCEventObject");
+const { validateEvent } = require('../threads/itc');
+const harperBridge = require('../../data_layer/harperBridge/harperBridge');
 const process = require('process');
 
 /**
- * This object/functions are passed to the IPC client instance and dynamically added as event handlers.
+ * This object/functions are passed to the ITC client instance and dynamically added as event handlers.
  * @type {{schema: ((function(*): Promise<void>)|*), job: ((function(*): Promise<void>)|*), user: ((function(): Promise<void>)|*)}}
  */
-const server_ipc_handlers = {
-	[hdb_terms.IPC_EVENT_TYPES.SCHEMA]: schemaHandler,
-	[hdb_terms.IPC_EVENT_TYPES.USER]: userHandler,
-	[hdb_terms.IPC_EVENT_TYPES.METRICS]: metricsHandler,
-	[hdb_terms.IPC_EVENT_TYPES.GET_METRICS]: getMetricsHandler,
+const server_itc_handlers = {
+	[hdb_terms.ITC_EVENT_TYPES.SCHEMA]: schemaHandler,
+	[hdb_terms.ITC_EVENT_TYPES.USER]: userHandler,
 };
 
 /**
@@ -35,7 +31,7 @@ async function schemaHandler(event) {
 		return;
 	}
 
-	hdb_logger.trace(`IPC schemaHandler ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received schema event:`, event);
+	hdb_logger.trace(`ITC schemaHandler received schema event:`, event);
 	await clean_lmdb_map(event.message);
 	await syncSchemaMetadata(event.message);
 }
@@ -49,6 +45,10 @@ async function schemaHandler(event) {
  */
 async function syncSchemaMetadata(msg) {
 	try {
+		// reset current read transactions to ensure that we are getting the very latest data
+		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME);
+		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME);
+		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME);
 		if (global.hdb_schema !== undefined && typeof global.hdb_schema === 'object' && msg.operation !== undefined) {
 			switch (msg.operation) {
 				case 'drop_schema':
@@ -100,26 +100,19 @@ function handleErrorCallback(err) {
  */
 async function userHandler(event) {
 	try {
+		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.USER_TABLE_NAME);
+		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME);
 		const validate = validateEvent(event);
 		if (validate) {
 			hdb_logger.error(validate);
 			return;
 		}
 
-		hdb_logger.trace(`IPC userHandler ${hdb_terms.HDB_IPC_CLIENT_PREFIX}${process.pid} received user event:`, event);
+		hdb_logger.trace(`ITC userHandler ${hdb_terms.HDB_ITC_CLIENT_PREFIX}${process.pid} received user event:`, event);
 		await user_schema.setUsersToGlobal();
 	} catch (err) {
 		hdb_logger.error(err);
 	}
 }
 
-async function getMetricsHandler() {
-	sendIpcEvent(new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.METRICS, await getMetrics()));
-}
-
-global.metrics = {};
-function metricsHandler({ message }) {
-	global.metrics[message.pid] = message;
-}
-
-module.exports = server_ipc_handlers;
+module.exports = server_itc_handlers;

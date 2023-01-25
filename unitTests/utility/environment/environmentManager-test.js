@@ -166,7 +166,7 @@ describe('Test environmentManager module', () => {
 			env_rw.initTestEnvironment();
 
 			expect(set_property_stub.called).to.be.true;
-			expect(set_property_stub.callCount).to.equal(24);
+			expect(set_property_stub.callCount).to.equal(23);
 		});
 
 		it('Test properties are set with test config obj', () => {
@@ -180,7 +180,7 @@ describe('Test environmentManager module', () => {
 			env_rw.initTestEnvironment(test_config_obj);
 
 			expect(set_property_stub.called).to.be.true;
-			expect(set_property_stub.callCount).to.equal(32);
+			expect(set_property_stub.callCount).to.equal(31);
 		});
 	});
 });

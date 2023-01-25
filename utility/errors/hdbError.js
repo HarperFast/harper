@@ -13,7 +13,7 @@ class HdbError extends Error {
 	 * @param {Error} err_orig -  Error to be translated into HdbError. If manually throwing an error, pass `new Error()` to ensure stack trace is maintained
 	 * @param {String} [http_msg] - optional -  response message that will be returned via the API
 	 * @param {Number} [http_code] - optional -  response status code that will be returned via the API
-	 * @param {String} [log_level] - optional -  log level that will be used IF a `log_msg` is provided.  If not, nothing will be logged
+	 * @param {String} [log_level] - optional -  log level that will be used for logging of this error
 	 * @param {String} [log_msg] - optional - log message that, if provided, will be logged at the `log_level` above
 	 */
 	constructor(err_orig, http_msg, http_code, log_level, log_msg) {
@@ -30,6 +30,7 @@ class HdbError extends Error {
 			: hdb_errors.DEFAULT_ERROR_MSGS[hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
 		this.message = err_orig.message ? err_orig.message : this.http_resp_msg;
 		this.type = err_orig.name;
+		if (log_level) this.logLevel = log_level;
 
 		//This ensures that the error stack does not include [object Object] if the error message is not a string
 		if (typeof this.message !== 'string') {

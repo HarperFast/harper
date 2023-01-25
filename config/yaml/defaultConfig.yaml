@@ -46,9 +46,6 @@ customFunctions:
     certificate: null
     certificateAuthority: null
     privateKey: null
-ipc:
-  network:
-    port: 9383
 localStudio:
   enabled: false
 logging:
@@ -88,6 +85,7 @@ operationsApi:
     privateKey: null
 http:
   threads: null
+  remoteAddressAffinity: false
 rootPath: null
 storage:
   writeAsync: false

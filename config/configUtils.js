@@ -13,6 +13,8 @@ const _ = require('lodash');
 const { handleHDBError } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES, HDB_ERROR_MSGS } = require('../utility/errors/commonErrors');
 const { PACKAGE_ROOT } = require('../utility/hdbTerms');
+const minimist = require('minimist');
+const terms = require('../utility/hdbTerms');
 
 const UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is uninitialized';
 const CONFIG_INIT_MSG = 'Config successfully initialized';
@@ -118,6 +120,14 @@ function getConfigValue(param) {
 	return flat_config_obj[param_map.toLowerCase()];
 }
 
+function getConfigFilePath(boot_props_file_path) {
+	const cmd_args = minimist(process.argv);
+	if (cmd_args.ROOTPATH)
+		return path.join(cmd_args.ROOTPATH, terms.HDB_CONFIG_FILE);
+	const hdb_properties = PropertiesReader(boot_props_file_path);
+	return hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
+}
+
 /**
  * If in memory config obj is undefined or init is being forced,
  * read and parses the HarperDB config file and add to config object.
@@ -133,8 +143,7 @@ function initConfig(force = false) {
 			throw new Error(`HarperDB properties file at path ${boot_props_file_path} does not exist`);
 		}
 
-		const hdb_properties = PropertiesReader(boot_props_file_path);
-		const config_file_path = hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
+		const config_file_path = getConfigFilePath(boot_props_file_path);
 		let config_doc;
 
 		// if this is true, user is upgrading from version prior to 4.0.0. We need to initialize existing
@@ -398,8 +407,7 @@ function castConfigValue(param, value) {
  */
 function getConfiguration() {
 	const boot_props_file_path = hdb_utils.getPropsFilePath();
-	const hdb_properties = PropertiesReader(boot_props_file_path);
-	const config_file_path = hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
+	const config_file_path = getConfigFilePath(boot_props_file_path);
 	const config_doc = parseYamlDoc(config_file_path);
 
 	return config_doc.toJSON();
@@ -432,8 +440,7 @@ function readConfigFile() {
 		throw new Error(`HarperDB properties file at path ${boot_props_file_path} does not exist`);
 	}
 
-	const hdb_properties = PropertiesReader(boot_props_file_path);
-	const config_file_path = hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
+	const config_file_path = getConfigFilePath(boot_props_file_path);
 	const config_doc = parseYamlDoc(config_file_path);
 
 	return config_doc.toJSON();

@@ -4,16 +4,17 @@ const util = require('util');
 const { toJsMsg } = require('nats');
 const { decode } = require('msgpackr');
 const global_schema = require('../../utility/globalSchema');
-const ipc_server_handlers = require('../ipc/serverHandlers');
+const { isMainThread, parentPort } = require('worker_threads');
 const nats_utils = require('./utility/natsUtils');
 const nats_terms = require('./utility/natsTerms');
 const hdb_terms = require('../../utility/hdbTerms');
 const harper_logger = require('../../utility/logging/harper_logger');
 const server_utilities = require('../serverHelpers/serverUtilities');
-const IPCClient = require('../ipc/IPCClient');
 const operation_function_caller = require('../../utility/OperationFunctionCaller');
 const transact_to_cluster_utilities = require('../../utility/clustering/transactToClusteringUtilities');
 const env_mgr = require('../../utility/environment/environmentManager');
+const terms = require('../../utility/hdbTerms');
+require('../../server/threads/manage-threads');
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
 const SUBSCRIPTION_OPTIONS = {
@@ -42,20 +43,12 @@ module.exports = {
  */
 
 /**
- * initialized schema, ipc handler, established nats connection & jetstream handlers
+ * initialized schema, itc handler, established nats connection & jetstream handlers
  * @returns {Promise<void>}
  */
 async function initialize() {
 	harper_logger.notify('Starting clustering ingest service.');
 	await p_schema_to_global();
-
-	// Instantiate new instance of HDB IPC client and assign it to global.
-	try {
-		global.hdb_ipc = new IPCClient(process.pid, ipc_server_handlers);
-	} catch (err) {
-		harper_logger.error('Error instantiating new instance of IPC client in natsIngestService');
-		throw err;
-	}
 
 	const { connection, jsm, js } = await nats_utils.getNATSReferences();
 	nats_connection = connection;
@@ -84,7 +77,14 @@ async function workQueueListener() {
 		if (++operation_index >= MAX_CONCURRENCY) operation_index = 0;
 	}
 }
-
+if (!isMainThread) {
+	parentPort.on('message', async (message) => {
+		const {type} = message;
+		if (type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
+			nats_utils.closeConnection();
+		}
+	});
+}
 /**
  * receives a message & processes it as an HDB operation
  * @param msg

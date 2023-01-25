@@ -8,7 +8,7 @@ const sinon_chai = require('sinon-chai');
 chai.use(sinon_chai);
 const harper_logger = require('../../../utility/logging/harper_logger');
 const user_schema = require('../../../security/user');
-const server_ipc_handlers = rewire('../../../server/ipc/serverHandlers');
+const server_itc_handlers = rewire('../../../server/itc/serverHandlers');
 const job_runner = require('../../../server/jobs/jobRunner');
 const global_schema = require('../../../utility/globalSchema');
 const schema_describe = require('../../../data_layer/schemaDescribe');
@@ -26,10 +26,10 @@ describe('Test hdbChildIpcHandler module', () => {
 
 	after(() => {
 		sandbox.restore();
-		rewire('../../../server/ipc/serverHandlers');
+		rewire('../../../server/itc/serverHandlers');
 	});
 
-	describe('Test server_ipc_handlers', () => {
+	describe('Test server_itc_handlers', () => {
 		const clean_map_stub = sandbox.stub();
 		const sync_schema_stub = sandbox.stub();
 		let sync_schema_rw;
@@ -40,12 +40,12 @@ describe('Test hdbChildIpcHandler module', () => {
 		let job_handler;
 
 		before(() => {
-			server_ipc_handlers.__set__('clean_lmdb_map', clean_map_stub);
-			sync_schema_rw = server_ipc_handlers.__set__('syncSchemaMetadata', sync_schema_stub);
+			server_itc_handlers.__set__('clean_lmdb_map', clean_map_stub);
+			sync_schema_rw = server_itc_handlers.__set__('syncSchemaMetadata', sync_schema_stub);
 			set_users_to_global_stub = sandbox.stub(user_schema, 'setUsersToGlobal');
 			parse_msg_stub = sandbox.stub(job_runner, 'parseMessage');
-			schema_handler = server_ipc_handlers.__get__('schemaHandler');
-			user_handler = server_ipc_handlers.__get__('userHandler');
+			schema_handler = server_itc_handlers.__get__('schemaHandler');
+			user_handler = server_itc_handlers.__get__('userHandler');
 		});
 
 		afterEach(() => {
@@ -81,7 +81,7 @@ describe('Test hdbChildIpcHandler module', () => {
 				message: undefined,
 			};
 			await schema_handler(test_event);
-			expect(log_error_stub).to.have.been.calledWith("IPC event missing 'message'");
+			expect(log_error_stub).to.have.been.calledWith("ITC event missing 'message'");
 		});
 
 		it('Test user function is called as expected', async () => {
@@ -99,7 +99,7 @@ describe('Test hdbChildIpcHandler module', () => {
 				message: {},
 			};
 			await user_handler(test_event);
-			expect(log_error_stub).to.have.been.calledWith("IPC event message missing 'originator' property");
+			expect(log_error_stub).to.have.been.calledWith("ITC event message missing 'originator' property");
 		});
 
 		it('Test error from user function is logged', async () => {
@@ -119,7 +119,7 @@ describe('Test hdbChildIpcHandler module', () => {
 		let set_to_global_stub;
 
 		before(() => {
-			syncSchemaMetadata = server_ipc_handlers.__get__('syncSchemaMetadata');
+			syncSchemaMetadata = server_itc_handlers.__get__('syncSchemaMetadata');
 			set_to_global_stub = sandbox.stub(global_schema, 'setSchemaDataToGlobal');
 			describe_table_stub = sandbox.stub(schema_describe, 'describeTable');
 		});

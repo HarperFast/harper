@@ -2,6 +2,7 @@
 
 // Note - do not import/use common_utils.js in this module, it will cause circular dependencies.
 const fs = require('fs-extra');
+const { threadId } = require('worker_threads');
 const path = require('path');
 const YAML = require('yaml');
 const PropertiesReader = require('properties-reader');
@@ -53,6 +54,7 @@ module.exports = {
 	trace,
 	setLogLevel,
 	log_level,
+	loggerWithTag,
 };
 
 /**
@@ -65,12 +67,13 @@ function initLogSettings() {
 		if (hdb_properties === undefined) {
 			const boot_props_file_path = getPropsFilePath();
 			hdb_properties = PropertiesReader(boot_props_file_path);
+			let properties = assignCMDENVVariables(['ROOTPATH']);
 			({
 				level: log_level,
 				config_log_path: log_path,
 				to_file: log_to_file,
 				to_stream: log_to_stdstreams,
-			} = getLogConfig(hdb_properties.get('settings_path')));
+			} = getLogConfig(properties.ROOTPATH ? path.join(properties.ROOTPATH, hdb_terms.HDB_CONFIG_FILE) : hdb_properties.get('settings_path')));
 		}
 	} catch (err) {
 		hdb_properties = undefined;
@@ -116,8 +119,40 @@ function initLogSettings() {
 		error(err);
 		throw err;
 	}
+	logConsole('error', error);
+	logConsole('warn', warn);
+	logConsole('log', info);
+	logConsole('info', info);
+	logConsole('debug', debug);
+	logConsole('trace', trace);
 }
 
+function logConsole(level, logger) {
+	let original_logger = console[level];
+	original_logger = original_logger.original || original_logger;
+	console[level] = function(...args) {
+		logger(...args);
+		return original_logger.apply(console, args);
+	};
+	console[level].original = original_logger;
+}
+
+function loggerWithTag(tag) {
+	return {
+		notify: logWithTag(notify),
+		fatal: logWithTag(fatal),
+		error: logWithTag(error),
+		warn: logWithTag(warn),
+		info: logWithTag(info),
+		debug: logWithTag(debug),
+		trace: logWithTag(trace),
+	};
+	function logWithTag(logger) {
+		return function(...args) {
+			return logger(tag, ...args);
+		};
+	}
+}
 /**
  * If a process is not run by pm2 (like the bin modules) create a log file
  * @param log_name
@@ -125,7 +160,7 @@ function initLogSettings() {
  */
 function createLogFile(log_name, log_process_name) {
 	if (!NON_PM2_PROCESS) {
-		trace('createLogFile should only be used if the process is not being managed by pm2');
+		// no need to create the log file
 		return;
 	}
 
@@ -173,7 +208,7 @@ function createLogRecord(level, args) {
 			log_msg += ' ';
 		}
 	}
-	return `{"process_name": "${process_name}", "level": "${level}", "timestamp": "${date_now}", "message": "${log_msg}"}\n`;
+	return `{"level": "${level}", "tid": ${threadId}, "timestamp": "${date_now}", "message": "${log_msg}"}\n`;
 }
 
 /**

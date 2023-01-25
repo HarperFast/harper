@@ -174,6 +174,7 @@ async function createConnection(port, username, password, wait_on_first_connect 
  */
 async function closeConnection() {
 	if (nats_connection) {
+		await nats_connection.flush();
 		await nats_connection.close();
 		nats_connection = undefined;
 	}
@@ -458,20 +459,23 @@ async function* viewStreamIterator(stream_name, start_time = undefined, max = un
 
 		for await (const m of sub) {
 			const jmsg = toJsMsg(m);
-			const obj = decode(jmsg.data);
-			let wrapper = {
-				nats_timestamp: jmsg.info.timestampNanos,
-				nats_sequence: jmsg.info.streamSequence,
-				entry: obj,
-			};
+			let objects = decode(jmsg.data);
+			if (!objects[0])
+				objects = [objects];
+			for (let obj of objects) {
+				let wrapper = {
+					nats_timestamp: jmsg.info.timestampNanos,
+					nats_sequence: jmsg.info.streamSequence,
+					entry: obj,
+				};
 
-			if (jmsg.headers) {
-				wrapper.origin = jmsg.headers.get(nats_terms.MSG_HEADERS.ORIGIN);
-				wrapper.nats_msg_id = jmsg.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID);
+				if (jmsg.headers) {
+					wrapper.origin = jmsg.headers.get(nats_terms.MSG_HEADERS.ORIGIN);
+					wrapper.nats_msg_id = jmsg.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID);
+				}
+
+				yield wrapper;
 			}
-
-			yield wrapper;
-
 			if (sub.getPending() === 1 && jmsg.info.pending === 0) {
 				sub.stop();
 			}

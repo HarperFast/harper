@@ -51,7 +51,7 @@ const TEST_ARGS = {
 	CUSTOMFUNCTIONS_NODEENV: 'development',
 	CUSTOMFUNCTIONS_ROOT: path.join(DIRNAME, 'test_custom_functions'),
 	HTTP_THREADS: '4',
-	IPC_NETWORK_PORT: '1234',
+	HTTP_REMOTE_ADDRESS_AFFINITY: false,
 	LOCALSTUDIO_ENABLED: true,
 	LOGGING_FILE: false,
 	LOGGING_LEVEL: 'notify',
@@ -131,7 +131,6 @@ const FLAT_CONFIG_OBJ = {
 	customfunctions_tls_certificate: null,
 	customfunctions_tls_certificateauthority: null,
 	customfunctions_tls_privatekey: null,
-	ipc_network_port: 9383,
 	localstudio_enabled: false,
 	logging_auditlog: false,
 	logging_file: true,
@@ -303,6 +302,9 @@ describe('Test configUtils module', () => {
 							port: 9900,
 						},
 					},
+					ingest: {
+						threads: 1,
+					},
 					leafServer: {
 						network: {
 							port: 9944,
@@ -345,11 +347,7 @@ describe('Test configUtils module', () => {
 				},
 				http: {
 					threads: 4,
-				},
-				ipc: {
-					network: {
-						port: 1234,
-					},
+					remoteAddressAffinity: false,
 				},
 				localStudio: {
 					enabled: true,
@@ -437,7 +435,8 @@ describe('Test configUtils module', () => {
 				customfunctions_tls_certificateauthority: null,
 				customfunctions_tls_privatekey: TEST_PRIVATE_KEY,
 				http_threads: 4,
-				ipc_network_port: 1234,
+				http_remoteaddressaffinity: false,
+				clustering_ingest_threads: 1,
 				localstudio_enabled: true,
 				logging_auditlog: true,
 				logging_file: false,
@@ -495,6 +494,7 @@ describe('Test configUtils module', () => {
 			clustering_hubserver_cluster_network_routes: null,
 			clustering_hubserver_leafnodes_network_port: 9931,
 			clustering_hubserver_network_port: 9930,
+			clustering_ingest_threads: 1,
 			clustering_leafserver_network_port: 9940,
 			clustering_leafserver_network_routes: null,
 			clustering_leafserver_streams_maxage: null,
@@ -521,7 +521,7 @@ describe('Test configUtils module', () => {
 			customfunctions_tls_certificateauthority: null,
 			customfunctions_tls_privatekey: null,
 			http_threads: null,
-			ipc_network_port: 9383,
+			http_remoteaddressaffinity: false,
 			localstudio_enabled: false,
 			logging_auditlog: false,
 			logging_file: true,
@@ -791,6 +791,7 @@ describe('Test configUtils module', () => {
 					},
 					http: {
 						threads: 12,
+						remoteAddressAffinity: false,
 					},
 				},
 			};
@@ -950,7 +951,6 @@ describe('Test configUtils module', () => {
 				customfunctions_tls_certificate: null,
 				customfunctions_tls_certificateauthority: null,
 				customfunctions_tls_privatekey: null,
-				ipc_network_port: 9383,
 				localstudio_enabled: false,
 				logging_auditlog: false,
 				logging_file: true,
@@ -1373,7 +1373,6 @@ describe('Test configUtils module', () => {
 			'DISABLE_TRANSACTION_LOG': false,
 			'OPERATION_TOKEN_TIMEOUT': '1d',
 			'REFRESH_TOKEN_TIMEOUT': '30d',
-			'IPC_SERVER_PORT': 9383,
 			'CUSTOM_FUNCTIONS': false,
 			'CUSTOM_FUNCTIONS_PORT': 9926,
 			'CUSTOM_FUNCTIONS_DIRECTORY': path.join(__dirname, '../../custom_functions'),
@@ -1400,7 +1399,6 @@ describe('Test configUtils module', () => {
 			logging_auditlog: false,
 			operationsapi_authentication_operationtokentimeout: '1d',
 			operationsapi_authentication_refreshtokentimeout: '30d',
-			ipc_network_port: 9383,
 			customfunctions_enabled: false,
 			customfunctions_network_port: 9926,
 			customfunctions_root: path.join(__dirname, '../../custom_functions'),

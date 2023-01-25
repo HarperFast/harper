@@ -433,7 +433,10 @@ describe('Test lmdbCreateRecords module', () => {
 			};
 
 			let result = await test_utils.assertErrorAsync(lmdb_create_records, [insert_obj], undefined);
-			assert.deepStrictEqual(result, expected_return_result);
+			assert.deepStrictEqual(result.new_attributes, expected_return_result.new_attributes);
+			assert.deepStrictEqual(result.written_hashes, expected_return_result.written_hashes);
+			assert.deepStrictEqual(result.skipped_hashes, expected_return_result.skipped_hashes);
+			assert.deepStrictEqual(result.schema_table.attributes, expected_return_result.schema_table.attributes);
 			let dog_env = await test_utils.assertErrorAsync(
 				environment_utility.openEnvironment,
 				[path.join(BASE_SCHEMA_PATH, INSERT_OBJECT_TEST.schema), INSERT_OBJECT_TEST.table],

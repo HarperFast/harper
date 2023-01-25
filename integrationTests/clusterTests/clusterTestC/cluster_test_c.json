@@ -5219,6 +5219,14 @@
 					"name": "Restart node 1 to confirm records deleted",
 					"event": [
 						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(() => {}, 4000);"
+								]
+							}
+						},
+						{
 							"listen": "test",
 							"script": {
 								"exec": [
@@ -5232,7 +5240,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 40000)"
+									"setTimeout(()=> {}, 20000)"
 								],
 								"type": "text/javascript"
 							}
@@ -6669,6 +6677,14 @@
 					"name": "Restart node 2 to confirm records deleted",
 					"event": [
 						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(() => {}, 6000);"
+								]
+							}
+						},
+						{
 							"listen": "test",
 							"script": {
 								"exec": [
@@ -6682,7 +6698,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 40000)"
+									"setTimeout(()=> {}, 20000)"
 								],
 								"type": "text/javascript"
 							}
@@ -7954,8 +7970,7 @@
 									"pm.test('Config set messaged returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"Configuration successfully set. You must restart HarperDB for new config settings to take effect.\");",
-									"});",
-									""
+									"});"
 								],
 								"type": "text/javascript"
 							}
@@ -8008,6 +8023,14 @@
 					"name": "Restart node 1",
 					"event": [
 						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(() => {}, 4000);"
+								]
+							}
+						},
+						{
 							"listen": "test",
 							"script": {
 								"exec": [
@@ -8016,7 +8039,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 40000)",
+									"setTimeout(()=> {}, 20000)",
 									""
 								],
 								"type": "text/javascript"
@@ -8189,8 +8212,7 @@
 									"pm.test('Config set messaged returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"Configuration successfully set. You must restart HarperDB for new config settings to take effect.\");",
-									"});",
-									""
+									"});"
 								],
 								"type": "text/javascript"
 							}
@@ -8243,6 +8265,14 @@
 					"name": "Restart node 2",
 					"event": [
 						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(() => {}, 4000);"
+								]
+							}
+						},
+						{
 							"listen": "test",
 							"script": {
 								"exec": [
@@ -8251,7 +8281,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 40000)",
+									"setTimeout(()=> {}, 20000)",
 									""
 								],
 								"type": "text/javascript"
@@ -10277,8 +10307,7 @@
 									"pm.test('Table dev.fish created', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"table 'dev.fish' successfully created.\");",
-									"});",
-									""
+									"});"
 								],
 								"type": "text/javascript"
 							}
@@ -10331,6 +10360,14 @@
 					"name": "Restart node 1",
 					"event": [
 						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(() => {}, 4000);"
+								]
+							}
+						},
+						{
 							"listen": "test",
 							"script": {
 								"exec": [
@@ -10344,7 +10381,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 40000)",
+									"setTimeout(()=> {}, 20000)",
 									""
 								],
 								"type": "text/javascript"
@@ -11179,8 +11216,7 @@
 									"pm.test('Config set messaged returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"Configuration successfully set. You must restart HarperDB for new config settings to take effect.\");",
-									"});",
-									""
+									"});"
 								],
 								"type": "text/javascript"
 							}
@@ -11233,6 +11269,14 @@
 					"name": "Restart node 1",
 					"event": [
 						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(() => {}, 4000);"
+								]
+							}
+						},
+						{
 							"listen": "test",
 							"script": {
 								"exec": [
@@ -11241,7 +11285,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 40000)",
+									"setTimeout(()=> {}, 20000)",
 									""
 								],
 								"type": "text/javascript"
@@ -14789,8 +14833,7 @@
 									"pm.test('Config set messaged returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"Configuration successfully set. You must restart HarperDB for new config settings to take effect.\");",
-									"});",
-									""
+									"});"
 								],
 								"type": "text/javascript"
 							}
@@ -14843,6 +14886,14 @@
 					"name": "Restart node 1",
 					"event": [
 						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(() => {}, 4000);"
+								]
+							}
+						},
+						{
 							"listen": "test",
 							"script": {
 								"exec": [
@@ -14851,7 +14902,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 40000)",
+									"setTimeout(()=> {}, 20000)",
 									""
 								],
 								"type": "text/javascript"
@@ -18414,8 +18465,7 @@
 									"pm.test('Config set messaged returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"Configuration successfully set. You must restart HarperDB for new config settings to take effect.\");",
-									"});",
-									""
+									"});"
 								],
 								"type": "text/javascript"
 							}
@@ -18467,6 +18517,14 @@
 				{
 					"name": "Restart node 1",
 					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(() => {}, 4000);"
+								]
+							}
+						},
 						{
 							"listen": "test",
 							"script": {
@@ -18646,8 +18704,7 @@
 									"pm.test('Config set messaged returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"Configuration successfully set. You must restart HarperDB for new config settings to take effect.\");",
-									"});",
-									""
+									"});"
 								],
 								"type": "text/javascript"
 							}
@@ -18699,6 +18756,14 @@
 				{
 					"name": "Restart node 2",
 					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(() => {}, 4000);"
+								]
+							}
+						},
 						{
 							"listen": "test",
 							"script": {
@@ -18878,8 +18943,7 @@
 									"pm.test('Config set messaged returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"Configuration successfully set. You must restart HarperDB for new config settings to take effect.\");",
-									"});",
-									""
+									"});"
 								],
 								"type": "text/javascript"
 							}
@@ -18931,6 +18995,14 @@
 				{
 					"name": "Restart node 3",
 					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(() => {}, 4000);"
+								]
+							}
+						},
 						{
 							"listen": "test",
 							"script": {
@@ -19110,8 +19182,7 @@
 									"pm.test('Config set messaged returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"Configuration successfully set. You must restart HarperDB for new config settings to take effect.\");",
-									"});",
-									""
+									"});"
 								],
 								"type": "text/javascript"
 							}
@@ -19163,6 +19234,14 @@
 				{
 					"name": "Restart node 4",
 					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(() => {}, 4000);"
+								]
+							}
+						},
 						{
 							"listen": "test",
 							"script": {

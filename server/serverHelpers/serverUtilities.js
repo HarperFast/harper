@@ -310,7 +310,7 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.GET_FINGERPRINT, new OperationFunctionObject(reg.getFingerprint));
 	op_func_map.set(terms.OPERATIONS_ENUM.SET_LICENSE, new OperationFunctionObject(reg.setLicense));
 	op_func_map.set(terms.OPERATIONS_ENUM.GET_REGISTRATION_INFO, new OperationFunctionObject(reg.getRegistrationInfo));
-	op_func_map.set(terms.OPERATIONS_ENUM.RESTART, new OperationFunctionObject(stop.restartProcesses));
+	op_func_map.set(terms.OPERATIONS_ENUM.RESTART, new OperationFunctionObject(stop.restart));
 	op_func_map.set(terms.OPERATIONS_ENUM.RESTART_SERVICE, new OperationFunctionObject(stop.restartService));
 	op_func_map.set(terms.OPERATIONS_ENUM.CATCHUP, new OperationFunctionObject(catchup));
 	op_func_map.set(

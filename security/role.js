@@ -17,7 +17,7 @@ const SearchObject = require('../data_layer/SearchObject');
 const SearchByHashObject = require('../data_layer/SearchByHashObject');
 const { hdb_errors, handleHDBError } = require('../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
-const { UserEventMsg } = require('../server/ipc/utility/ipcUtils');
+const { UserEventMsg } = require('../server/threads/itc');
 
 module.exports = {
 	addRole: addRole,

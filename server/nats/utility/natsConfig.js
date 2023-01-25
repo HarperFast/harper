@@ -148,6 +148,7 @@ async function isPortAvailable(param) {
 	if (await hdb_utils.isPortTaken(port)) {
 		generateNatsConfigError(`'${param}' port '${port}' is unavailable`);
 	}
+	return true;
 }
 
 function generateNatsConfigError(msg) {

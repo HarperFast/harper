@@ -41,7 +41,6 @@ function registerContentHandlers(app) {
 				},
 			},
 		],
-		default: 'application/json',
 	});
 	app.addContentTypeParser('application/x-msgpack', {parseAs: 'buffer'}, (req, body, done) => {
 		try {

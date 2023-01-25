@@ -16,15 +16,14 @@ const fastify_compress = require('@fastify/compress');
 const fastify_static = require('@fastify/static');
 const request_time_plugin = require('../serverHelpers/requestTimePlugin');
 const guidePath = require('path');
-const {PACKAGE_ROOT} = require('../../utility/hdbTerms');
+const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
 const global_schema = require('../../utility/globalSchema');
 const common_utils = require('../../utility/common_utils');
 const user_schema = require('../../security/user');
 const hdb_license = require('../../utility/registration/hdb_license');
-const ipc_server_handlers = require('../ipc/serverHandlers');
-const IPCClient = require('../ipc/IPCClient');
+const { isMainThread } = require('worker_threads');
+const { registerServer } = require('../threads/thread-http-server');
 const { toCsvStream } = require('../../data_layer/export');
-
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
 const {
@@ -33,12 +32,8 @@ const {
 	handleServerUncaughtException,
 	serverErrorHandler,
 	reqBodyValidationHandler,
-	handleBeforeExit,
-	handleExit,
-	handleSigint,
-	handleSigquit,
-	handleSigterm,
 } = require('../serverHelpers/serverHandlers');
+const net = require("net");
 const {registerContentHandlers} = require('../serverHelpers/contentTypes');
 
 const REQ_MAX_BODY_SIZE = 1024 * 1024 * 1024; //this is 1GB in bytes
@@ -57,6 +52,9 @@ const PROPS_SERVER_PORT_KEY = HDB_SETTINGS_NAMES.SERVER_PORT_KEY;
 
 let server = undefined;
 
+module.exports = {
+	hdbServer,
+};
 /**
  * Builds a HarperDB server.
  * @returns {Promise<void>}
@@ -70,21 +68,7 @@ async function hdbServer() {
 		global.clustering_on = false;
 		global.isMaster = cluster.isMaster;
 
-		// Instantiate new instance of HDB IPC client and assign it to global.
-		try {
-			global.hdb_ipc = new IPCClient(process.pid, ipc_server_handlers);
-		} catch (err) {
-			harper_logger.error('Error instantiating new instance of IPC client in HDB server');
-			harper_logger.error(err);
-			throw err;
-		}
-
 		process.on('uncaughtException', handleServerUncaughtException);
-		process.on('beforeExit', handleBeforeExit);
-		process.on('exit', handleExit);
-		process.on('SIGINT', handleSigint);
-		process.on('SIGQUIT', handleSigquit);
-		process.on('SIGTERM', handleSigterm);
 
 		await setUp();
 
@@ -102,9 +86,17 @@ async function hdbServer() {
 
 		const server_type = is_https ? 'HTTPS' : 'HTTP';
 		try {
-			//now that server is fully loaded/ready, start listening on port provided in config settings
-			await server.listen({port: props_server_port, host: '::'});
-			harper_logger.info(`HarperDB ${pjson.version} ${server_type} Server running on port ${props_server_port}`);
+			// now that server is fully loaded/ready, start listening on port provided in config settings or just use
+			// zero to wait for sockets from the main thread
+			registerServer(terms.SERVICES.HDB_CORE, server);
+			if (isMainThread) {
+				await server.listen({ port: props_server_port, host: '::' });
+				harper_logger.info(`HarperDB ${pjson.version} ${server_type} Server running on port ${props_server_port}`);
+			} else if (!server.server.closeIdleConnections) {
+				// before Node v18, closeIdleConnections is not available, and we have to setup a listener for fastify
+				// to handle closing by setting up the dynamic port
+				await server.listen({ port: 0, host: '::' });
+			}
 		} catch (err) {
 			server.close();
 			harper_logger.error(err);
@@ -146,8 +138,8 @@ function buildServer(is_https) {
 	//Fastify does not set this property in the initial app construction
 	app.server.headersTimeout = getHeaderTimeoutConfig();
 
-	//set top-level error handler for server - all errors caught/thrown within the API will bubble up to this handler so they
-	// can be handled in a coordinated way
+	// set top-level error handler for server - all errors caught/thrown within the API will bubble up to this
+	// handler so they can be handled in a coordinated way
 	app.setErrorHandler(serverErrorHandler);
 
 	const cors_options = getCORSOpts();
@@ -264,7 +256,3 @@ function getCORSOpts() {
 function getHeaderTimeoutConfig() {
 	return env.get(PROPS_HEADER_TIMEOUT_KEY);
 }
-
-(async () => {
-	await hdbServer();
-})();

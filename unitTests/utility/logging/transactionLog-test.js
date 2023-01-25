@@ -23,24 +23,26 @@ const TEST_TIMEOUT = 10000;
 async function createTestStream() {
 	await nats_utils.createLocalStream(TEST_STREAM_NAME, [`unit_test.panda.testLeafServer-leaf`]);
 	for (let x = 0; x < 99; x++) {
-		const entry = {
-			operation: 'insert',
-			schema: TEST_SCHEMA,
-			table: TEST_TABLE,
-			__origin: {
-				timestamp: 1652888897398.283,
-				user: 'admin',
-				node_name: 'david_local',
-			},
-			records: [
-				{
-					record: x,
+		const entry = [
+			{
+				operation: 'insert',
+				schema: TEST_SCHEMA,
+				table: TEST_TABLE,
+				__origin: {
+					timestamp: 1652888897398.283,
+					user: 'admin',
+					node_name: 'david_local',
 				},
-			],
-		};
+				records: [
+					{
+						record: x,
+					},
+				],
+			},
+		];
 
 		await nats_utils.publishToStream('unit_test.panda', TEST_STREAM_NAME, undefined, entry);
-		// Make sure there is gap between publishes
+		// Make sure there is gap to ensure that each entry has a unique timestamp
 		await hdb_utils.async_set_timeout(50);
 	}
 

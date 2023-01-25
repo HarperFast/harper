@@ -6,15 +6,11 @@ const log = require('../logging/harper_logger');
 const terms = require('../hdbTerms');
 const lmdb_get_table_size = require('../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbGetTableSize');
 const schema_describe = require('../../data_layer/schemaDescribe');
-const { sendIpcEvent } = require('../../server/ipc/utility/ipcUtils');
 const env = require('./environmentManager');
 env.initSync();
 
 // eslint-disable-next-line no-unused-vars
-const SystemInformationOperation = require('./SystemInformationOperation');
 const SystemInformationObject = require('./SystemInformationObject');
-const IPCEventObject = require("../../server/ipc/utility/IPCEventObject");
-const hdb_terms = require("../hdbTerms");
 const { getBaseSchemaPath } = require("../../data_layer/harperBridge/lmdbBridge/lmdbUtility/initializePaths");
 const { openEnvironment } = require("../lmdb/environmentUtility");
 
@@ -251,32 +247,7 @@ async function getMetrics() {
 			}
 		}
 	}
-	schema_stats.pid = process.pid;
-	if (global.metrics) global.metrics[process.pid] = schema_stats;
 	return schema_stats;
-}
-async function getMetricsFromAllProcesses() {
-	// send a request for performance metrics from all processes
-	sendIpcEvent(new IPCEventObject(hdb_terms.IPC_EVENT_TYPES.GET_METRICS, {}));
-	// wait one second for a response
-	await new Promise(resolve => setTimeout(resolve, 1000));
-	await getMetrics();
-	let totals = {};
-	for (let process_id in global.metrics) {
-		let process_metrics = global.metrics[process_id];
-		for (let schema_name in process_metrics) {
-			let schema = process_metrics[schema_name];
-			let schema_stats = totals[schema_name] || (totals[schema_name] = {});
-			for (let table_name in schema) {
-				let table = schema[table_name];
-				let table_stats = schema_stats[table_name] || (schema_stats[table_name] = {});
-				for (let stat_name in table) {
-					table_stats[stat_name] = (table_stats[stat_name] || 0) + table[stat_name];
-				}
-			}
-		}
-	}
-	return totals;
 }
 
 /**
@@ -286,7 +257,7 @@ async function getMetricsFromAllProcesses() {
  */
 async function systemInformation(system_info_op) {
 	let response = new SystemInformationObject();
-	let metrics = getMetricsFromAllProcesses();
+	let metrics = getMetrics();
 	if (!Array.isArray(system_info_op.attributes) || system_info_op.attributes.length === 0) {
 		response.system = await getSystemInformation();
 		response.time = getTimeInfo();

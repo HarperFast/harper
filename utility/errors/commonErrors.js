@@ -204,12 +204,12 @@ const VALIDATION_ERROR_MSGS = {
 		`invalid sort attribute '${attribute}', the attribute must either be the table's hash attribute or an attribute used in conditions.`,
 };
 
-const IPC_ERRORS = {
-	INVALID_IPC_DATA_TYPE: 'Invalid IPC event data type, must be an object',
-	MISSING_TYPE: "IPC event missing 'type'",
-	MISSING_MSG: "IPC event missing 'message'",
-	MISSING_ORIGIN: "IPC event message missing 'originator' property",
-	INVALID_EVENT: (event) => `IPC server received invalid event type: ${event}`,
+const ITC_ERRORS = {
+	INVALID_ITC_DATA_TYPE: 'Invalid ITC event data type, must be an object',
+	MISSING_TYPE: "ITC event missing 'type'",
+	MISSING_MSG: "ITC event missing 'message'",
+	MISSING_ORIGIN: "ITC event message missing 'originator' property",
+	INVALID_EVENT: (event) => `ITC server received invalid event type: ${event}`,
 };
 
 const CUSTOM_FUNCTIONS_ERROR_MSGS = {
@@ -248,7 +248,7 @@ const HDB_ERROR_MSGS = {
 	...USER_ERROR_MSGS,
 	...WRITE_OPS_ERROR_MSGS,
 	...VALIDATION_ERROR_MSGS,
-	...IPC_ERRORS,
+	...ITC_ERRORS,
 	...CUSTOM_FUNCTIONS_ERROR_MSGS,
 	...CLUSTERING_ERROR_MSGS,
 	...CONFIG_ERROR_MSGS,
@@ -264,5 +264,5 @@ module.exports = {
 	LMDB_ERRORS_ENUM,
 	AUTHENTICATION_ERROR_MSGS,
 	VALIDATION_ERROR_MSGS,
-	IPC_ERRORS,
+	ITC_ERRORS,
 };

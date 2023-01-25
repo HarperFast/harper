@@ -12,11 +12,13 @@ const env_mangr = require('../environment/environmentManager');
 const hdb_logger = require('../../utility/logging/harper_logger');
 const config = require('../../utility/pm2/servicesConfig');
 const clustering_utils = require('../clustering/clusterUtilities');
+const { startWorker } = require('../../server/threads/manage-threads');
 const util = require('util');
 const exec = util.promisify(require('child_process').exec);
 const path = require('path');
 
 module.exports = {
+	enterScriptingMode,
 	start,
 	stop,
 	reload,
@@ -35,7 +37,8 @@ module.exports = {
 	restartHdb,
 	deleteProcess,
 	configureLogRotate,
-	startClustering,
+	startClusteringProcesses,
+	startClusteringThreads,
 	isHdbRestartRunning,
 	isClusteringRunning,
 	stopClustering,
@@ -53,13 +56,23 @@ const RELOAD_HDB_ERR =
 	'The number of HarperDB processes running is different from the settings value. ' +
 	'To restart and update the number HarperDB processes running you must stop and then start HarperDB';
 
+// This indicates when we are running as a CLI scripting command (kind of taking the place of pm2's CLI), and so we
+// are generally starting and stopping processes through PM2.
+let scripting_mode = false;
+
+/**
+ * Enable scripting mode where we act as the PM2 CLI to start and stop other processes and then exit
+ */
+function enterScriptingMode() {
+	scripting_mode = true;
+}
 /**
  * Either connects to a running pm2 daemon or launches one.
  * @returns {Promise<unknown>}
  */
 function connect() {
 	return new Promise((resolve, reject) => {
-		pm2.connect((err, res) => {
+		pm2.connect(!scripting_mode, (err, res) => {
 			if (err) {
 				reject(err);
 			}
@@ -68,6 +81,8 @@ function connect() {
 		});
 	});
 }
+
+let processes_to_kill;
 
 /**
  * Starts a service
@@ -86,7 +101,28 @@ function start(proc_config) {
 				pm2.disconnect();
 				reject(err);
 			}
-
+			if (!scripting_mode) {
+				// if we are running in standard mode, then we want to clean up our child processes when we exit
+				if (!processes_to_kill) {
+					processes_to_kill = [];
+					const kill_child = async () => {
+						if (!processes_to_kill) return;
+						let finished = processes_to_kill.map(proc_name => new Promise(resolve => {
+							pm2.stop(proc_name, (error) => {
+								if (error) hdb_logger.warn(`Error terminating process: ${error}`);
+								resolve();
+							});
+						}));
+						processes_to_kill = null;
+						await Promise.all(finished);
+						process.exit(0);
+					};
+					process.on('exit', kill_child);
+					process.on('SIGINT', kill_child);
+					process.on('SIGQUIT', kill_child);
+				}
+				processes_to_kill.push(proc_config.name);
+			}
 			pm2.disconnect();
 			resolve(res);
 		});
@@ -270,6 +306,7 @@ function describe(service_name) {
 }
 
 function kill() {
+	if (!scripting_mode) return Promise.resolve();
 	return new Promise(async (resolve, reject) => {
 		try {
 			await connect();
@@ -297,7 +334,8 @@ async function startAllServices() {
 		// The clustering services are started separately because their config is
 		// removed for security reasons after they are connected.
 		// Also we create the work queue stream when we start clustering
-		await startClustering();
+		await startClusteringProcesses();
+		await startClusteringThreads();
 
 		await start(services_config.generateAllServiceConfigs());
 	} catch (err) {
@@ -316,14 +354,8 @@ async function startService(service_name) {
 		let start_config;
 		service_name = service_name.toLowerCase();
 		switch (service_name) {
-			case hdb_terms.PROCESS_DESCRIPTORS.IPC.toLowerCase():
-				start_config = services_config.generateIPCServerConfig();
-				break;
 			case hdb_terms.PROCESS_DESCRIPTORS.HDB.toLowerCase():
-				start_config = services_config.generateHDBServerConfig();
-				break;
-			case hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS.toLowerCase():
-				start_config = services_config.generateCFServerConfig();
+				start_config = services_config.generateMainServerConfig();
 				break;
 			case hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_INGEST_SERVICE.toLowerCase():
 				start_config = services_config.generateNatsIngestServiceConfig();
@@ -394,12 +426,8 @@ async function restartAllServices(excluding = []) {
 			const service_name = service.name;
 			if (excluding.includes(service_name)) continue;
 			//if a service is run in cluster mode we want to reload (rolling restart), non-cluster processes must use restart
-			if (service.exec_mode === 'cluster_mode') {
-				if (service_name === hdb_terms.PROCESS_DESCRIPTORS.HDB) {
-					restart_hdb = true;
-				} else {
-					await reloadStopStart(service_name);
-				}
+			if (service_name === hdb_terms.PROCESS_DESCRIPTORS.HDB) {
+				restart_hdb = true;
 			} else {
 				await restart(service_name);
 			}
@@ -429,21 +457,6 @@ async function stopAllServices() {
 
 		// Kill pm2 daemon
 		await kill();
-
-		// If running in foreground get the pid of foreground process and kill it.
-		if (env_mangr.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_FOREGROUND) === true) {
-			// eslint-disable-next-line prettier/prettier
-			const foreground_pid = (
-				await fs.readFile(
-					path.join(env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY), hdb_terms.FOREGROUND_PID_FILE)
-				)
-			).toString();
-			try {
-				process.kill(foreground_pid, 'SIGTERM');
-			} catch (pid_err) {
-				hdb_logger.warn(`Error terminating foreground process: ${pid_err}`);
-			}
-		}
 	} catch (err) {
 		pm2.disconnect();
 		throw err;
@@ -472,12 +485,8 @@ async function reloadStopStart(service_name) {
 	const current_process = await describe(service_name);
 	const current_process_count = hdb_utils.isEmptyOrZeroLength(current_process) ? 0 : current_process.length;
 	if (setting_process_count !== current_process_count) {
-		if (service_name === hdb_terms.PROCESS_DESCRIPTORS.HDB) {
-			hdb_logger.error(RELOAD_HDB_ERR);
-		} else {
-			await stop(service_name);
-			await startService(service_name);
-		}
+		await stop(service_name);
+		await startService(service_name);
 	} else if (service_name === hdb_terms.PROCESS_DESCRIPTORS.HDB) {
 		// To restart HDB we need to fork a temp process which calls restart.
 		await restartHdb();
@@ -486,7 +495,6 @@ async function reloadStopStart(service_name) {
 		await reload(service_name);
 	}
 }
-
 /**
  * Stops the pm2-logrotate module but does not delete it like the other stop function does.
  * @returns {Promise<unknown>}
@@ -603,15 +611,25 @@ async function configureLogRotate() {
 	}
 }
 
+let ingestWorker;
+let replyWorker;
 /**
- * Starts all the services that make up clustering
+ * Starts all the processes that make up clustering
  * @returns {Promise<void>}
  */
-async function startClustering() {
+async function startClusteringProcesses() {
 	for (const proc in hdb_terms.CLUSTERING_PROCESSES) {
 		const service = hdb_terms.CLUSTERING_PROCESSES[proc];
 		await startService(service);
 	}
+}
+/**
+ * Starts all the threads that make up clustering
+ * @returns {Promise<void>}
+ */
+async function startClusteringThreads() {
+	ingestWorker = startWorker(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_INGEST_SERVICE, { name : hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_INGEST_SERVICE });
+	replyWorker = startWorker(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_REPLY_SERVICE, { name : hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE });
 	await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
 
 	// Check to see if the node name or purge config has been updated,
@@ -623,7 +641,7 @@ async function startClustering() {
 	for (let i = 0, rec_length = nodes.length; i < rec_length; i++) {
 		if (nodes[i].system_info?.hdb_version === hdb_terms.PRE_4_0_0_VERSION) {
 			hdb_logger.info('Starting clustering upgrade 4.0.0 process');
-			await startService(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_UPGRADE_4_0_0);
+			startWorker(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NODES_UPGRADE_4_0_0, { name: 'Upgrade-4-0-0' });
 			break;
 		}
 	}
@@ -634,8 +652,14 @@ async function startClustering() {
  */
 async function stopClustering() {
 	for (const proc in hdb_terms.CLUSTERING_PROCESSES) {
-		const service = hdb_terms.CLUSTERING_PROCESSES[proc];
-		await stop(service);
+		if (proc === hdb_terms.CLUSTERING_PROCESSES.CLUSTERING_INGEST_PROC_DESCRIPTOR) {
+			await ingestWorker.terminate();
+		} else if (proc === hdb_terms.CLUSTERING_PROCESSES.CLUSTERING_REPLY_SERVICE_DESCRIPTOR) {
+			await replyWorker.terminate();
+		} else {
+			const service = hdb_terms.CLUSTERING_PROCESSES[proc];
+			await stop(service);
+		}
 	}
 }
 

@@ -830,7 +830,7 @@ async function stopTestLeafServer() {
 	try {
 		await pm2_utils.stop('nats_test_leaf_server');
 		await pm2_utils.kill();
-		await fs.remove(TEMP_TEST_DIR);
+		fs.removeSync(TEMP_TEST_DIR);
 	} catch (err) {
 		console.error(err);
 	}

@@ -10,6 +10,7 @@ const nats_terms = require('../server/nats/utility/natsTerms');
 const minimist = require('minimist');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const config_utils = require('../config/configUtils');
+const {restartWorkers} = require('../server/threads/manage-threads');
 const { HTTP_STATUS_CODES } = hdb_errors;
 
 let pm2_utils;
@@ -26,20 +27,20 @@ module.exports = {
 	stop,
 	restartProcesses,
 	restartService,
+	restart,
 };
 
 /**
- * Restart all services or designated services.
+ * Restart the HDB process or any services that are running as a (separate) process, intended for use from the CLI
  * @returns {Promise<>}
  */
 async function restartProcesses() {
-	// This is here to accommodate requests from the CLI. Stop can also be called
-	// from the API, in that case logging will be handled by pm2.
+	// This is here to accommodate requests from the CLI.
 	hdb_logger.createLogFile(hdb_terms.PROCESS_LOG_NAMES.CLI, hdb_terms.PROCESS_DESCRIPTORS.STOP);
-
 	try {
 		// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
 		if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
+		pm2_utils.enterScriptingMode();
 
 		// If restart is called with cmd/env vars we create a backup of config and update config file.
 		const parsed_args = assignCMDENVVariables(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
@@ -124,17 +125,10 @@ async function restartProcesses() {
 		console.log(RESTART_RESPONSE);
 
 		if (clustering_enabled) {
-			await restartAllClusteringServices();
+			await restartAllClusteringProcesses();
 		}
 
-		const is_cf_reg = await pm2_utils.isServiceRegistered(hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS);
-		// If custom functions is enabled in setting.js but is not registered to pm2, start service.
-		if (custom_func_enabled && !is_cf_reg) {
-			await pm2_utils.startService(hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS);
-			hdb_logger.trace(`Starting ${hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS}`);
-		}
-
-		// The clustering processes are here because they are handled by the restartAllClusteringServices function above and dont need to be restarted again.
+		// The clustering processes are here because they are handled by the restartAllClusteringProcesses function above and dont need to be restarted again.
 		let exclude_from_restart = [
 			hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB,
 			hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF,
@@ -142,19 +136,10 @@ async function restartProcesses() {
 			hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE,
 		];
 
-		// If custom functions is disabled in setting.js and is registered to pm2, stop service.
-		if (!custom_func_enabled && is_cf_reg) {
-			exclude_from_restart.push(hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS);
-			await pm2_utils.stop(hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS);
-			hdb_logger.trace(`Stopping ${hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS}`);
-		}
-
-		// Start, restart or stop log rotate
-		await pm2_utils.configureLogRotate();
 
 		// If no service argument is passed all services are restarted.
 		hdb_logger.notify(RESTART_MSG);
-		await pm2_utils.restartAllServices(exclude_from_restart);
+		await pm2_utils.reload(hdb_terms.PROCESS_DESCRIPTORS.HDB);
 
 		return RESTART_RESPONSE;
 	} catch (err) {
@@ -165,13 +150,28 @@ async function restartProcesses() {
 }
 
 /**
+ * Restarts all services/threads (doesn't require restarting any processes)
+ * @returns {Promise<{}>}
+ */
+async function restart(json_message) {
+	const clustering_enabled = config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED);
+	if (clustering_enabled) {
+		await restartAllClusteringProcesses();
+	}
+	await restartWorkers();
+	return RESTART_RESPONSE;
+}
+
+const SERVICE_TO_WORKER_TYPE = {
+	'Custom Functions': 'http',
+}
+/**
  * Restarts servers for a specific service.
  * @param json_message
  * @returns {Promise<string>}
  */
 async function restartService(json_message) {
-	hdb_logger.createLogFile(hdb_terms.PROCESS_LOG_NAMES.CLI, hdb_terms.PROCESS_DESCRIPTORS.STOP);
-
+	hdb_logger.error('restartService');
 	// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
 	if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
 
@@ -179,6 +179,7 @@ async function restartService(json_message) {
 		throw handleHDBError(new Error(), MISSING_SERVICE, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 	const service_req = json_message.service.toLowerCase();
+
 	if (hdb_terms.PROCESS_DESCRIPTORS_VALIDATE[service_req] === undefined) {
 		throw handleHDBError(new Error(), INVALID_SERVICE_ERR, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
@@ -205,14 +206,8 @@ async function restartService(json_message) {
 	) {
 		const is_cf_reg = await pm2_utils.isServiceRegistered(service);
 		if (custom_func_enabled) {
-			// If the service is registered to pm2 it can be restarted, if it isn't it must me started.
-			if (is_cf_reg) {
-				await pm2_utils.reloadStopStart(service);
-				hdb_logger.trace(`Reloading ${service}`);
-			} else {
-				await pm2_utils.startService(service);
-				hdb_logger.trace(`Starting ${service}`);
-			}
+			hdb_logger.error('restartWorkers http');
+			restartWorkers('http'); // can't await this because it would deadlock on waiting for itself to finish
 		} else if (!custom_func_enabled && is_cf_reg) {
 			// If the service is registered but not enabled in settings, stop service.
 			await pm2_utils.stop(service);
@@ -241,6 +236,7 @@ async function stop() {
 	try {
 		// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
 		if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
+		pm2_utils.enterScriptingMode();
 
 		// Stop can be called with a --service argument which allows designated services to be stopped.
 		const cmd_args = minimist(process.argv);
@@ -281,16 +277,9 @@ async function stop() {
 	}
 }
 
-async function restartAllClusteringServices() {
+async function restartAllClusteringProcesses() {
 	await restartClustering(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB);
 	await restartClustering(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
-	await restartClustering(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_INGEST_SERVICE);
-	await restartClustering(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE);
-	// Check to see if the node name or purge config has been updated,
-	// if it has we need to change config on any local streams.
-	await nats_utils.updateLocalStreams();
-	// Close the connection to the nats-server so that if stop/restart called from CLI process will exit.
-	await nats_utils.closeConnection();
 }
 
 async function restartClustering(service) {
@@ -298,7 +287,9 @@ async function restartClustering(service) {
 	const clustering_enabled = config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED);
 	const restarting_clustering = service === 'clustering';
 	const reloading_clustering = service === 'clustering config';
-	const is_currently_running = !restarting_clustering ? await pm2_utils.isServiceRegistered(service) : undefined;
+	if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
+
+	const is_currently_running = !restarting_clustering ? await pm2_utils.isServiceRegistered(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB) : undefined;
 
 	// If 'clustering' is passed to restart we are restarting all processes that make up clustering
 	const clustering_running =
@@ -320,10 +311,19 @@ async function restartClustering(service) {
 			break;
 		// If service is 'clustering' and clustering is not running but enabled, start all the clustering processes.
 		case restarting_clustering && !clustering_running && clustering_enabled:
-			await pm2_utils.startClustering();
+			await pm2_utils.startClusteringProcesses();
 			break;
 		case restarting_clustering && clustering_running && clustering_enabled:
-			await restartAllClusteringServices();
+			await restartAllClusteringProcesses();
+			// Check to see if the node name or purge config has been updated,
+			// if it has we need to change config on any local streams.
+			await nats_utils.updateLocalStreams();
+			// Close the connection to the nats-server so that if stop/restart called from CLI process will exit.
+			await nats_utils.closeConnection();
+			let ingestRestart = restartWorkers(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_INGEST_SERVICE);
+			let replyRestart = restartWorkers(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_REPLY_SERVICE);
+			await ingestRestart;
+			await replyRestart;
 			break;
 		// If service is 'clustering' and clustering is running and enabled, restart all the clustering processes.
 		case restarting_clustering && !clustering_running && !clustering_enabled:

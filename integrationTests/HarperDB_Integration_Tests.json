@@ -58081,7 +58081,6 @@
 									"    pm.expect(jsonData.clustering).to.not.be.undefined;",
 									"    pm.expect(jsonData.customFunctions).to.not.be.undefined;",
 									"    pm.expect(jsonData.logging).to.not.be.undefined;",
-									"    pm.expect(jsonData.ipc).to.not.be.undefined;",
 									"    pm.expect(jsonData.localStudio).to.not.be.undefined;",
 									"    pm.expect(jsonData.operationsApi).to.not.be.undefined;",
 									"    pm.expect(jsonData.operationsApi.network.port).to.not.be.undefined;",

@@ -25,7 +25,7 @@ const TEST_ERROR = 'Test error stop tests';
 function clearServiceArgs() {
 	const service_index = process.argv.indexOf('--service');
 	if (service_index > -1) process.argv.splice(service_index, 1);
-	const names_index = process.argv.indexOf('not service,harperdb,ipc,custom functions,clustering');
+	const names_index = process.argv.indexOf('not service,harperdb,custom functions,clustering');
 	if (names_index > -1) process.argv.splice(names_index, 1);
 }
 
@@ -55,7 +55,7 @@ describe('Test stop.js', () => {
 		get_config_from_file_stub = sandbox.stub(config_utils, 'getConfigFromFile').returns(true);
 		sandbox.stub(nats_config, 'generateNatsConfig');
 		is_hdb_restart_running_stub = sandbox.stub(pm2_utils, 'isHdbRestartRunning');
-		start_clustering_stub = sandbox.stub(pm2_utils, 'startClustering').resolves();
+		start_clustering_stub = sandbox.stub(pm2_utils, 'startClusteringProcesses').resolves();
 		stop_clustering_stub = sandbox.stub(pm2_utils, 'stopClustering');
 		update_node_name_stub = sandbox.stub(nats_utils, 'updateLocalStreams');
 		close_connection_stub = sandbox.stub(nats_utils, 'closeConnection');
@@ -79,10 +79,12 @@ describe('Test stop.js', () => {
 		let pm2_stop_stub;
 		let start_service_stub;
 		let log_notify_stub;
+		let reload_stub;
 
 		before(() => {
 			restart_service_rw = stop.__set__('restartService', restart_service_stub);
 			restart_all_services_stub = sandbox.stub(pm2_utils, 'restartAllServices').resolves();
+			reload_stub = sandbox.stub(pm2_utils, 'reload');
 			pm2_stop_stub = sandbox.stub(pm2_utils, 'stop').resolves();
 			start_service_stub = sandbox.stub(pm2_utils, 'startService').resolves();
 			log_notify_stub = sandbox.stub(logger, 'notify');
@@ -106,56 +108,34 @@ describe('Test stop.js', () => {
 		it('Test restart all services is called if no service args passed', async () => {
 			const response = await stop.restartProcesses();
 			expect(response).to.equal('Restarting HarperDB. This may take up to 60 seconds.');
-			expect(restart_all_services_stub.called).to.be.true;
-		});
-
-		it('Test restart all services custom functions started', async () => {
-			is_service_reg_stub.withArgs('Custom Functions').resolves(false);
-			const response = await stop.restartProcesses();
-
-			expect(response).to.equal('Restarting HarperDB. This may take up to 60 seconds.');
-			expect(restart_all_services_stub.called).to.be.true;
-			expect(start_service_stub.getCall(4).args[0]).to.equal('Custom Functions');
-		});
-
-		it('Test restart all services custom functions stopped', async () => {
-			get_config_from_file_stub.returns(false);
-			is_service_reg_stub.withArgs('Custom Functions').resolves(true);
-			const response = await stop.restartProcesses();
-
-			expect(response).to.equal('Restarting HarperDB. This may take up to 60 seconds.');
-			expect(restart_all_services_stub.called).to.be.true;
-			expect(pm2_stop_stub.getCall(0).args[0]).to.equal('Custom Functions');
+			expect(reload_stub.called).to.be.true;
 		});
 
 		it('Test restart service is called for each service if args are passed', async () => {
 			get_config_from_file_stub.returns(true);
 			is_service_reg_stub.withArgs('HarperDB').resolves(true);
-			is_service_reg_stub.withArgs('IPC').resolves(true);
 			is_service_reg_stub.withArgs('Custom Functions').resolves(true);
-			let test_args = ['--service', 'not service,harperdb,ipc,custom functions,clustering'];
+			let test_args = ['--service', 'not service,harperdb,custom functions,clustering'];
 			process.argv.push(...test_args);
 			await stop.restartProcesses();
 
 			expect(restart_service_stub.getCall(0).args[0].service).to.equal('HarperDB');
-			expect(restart_service_stub.getCall(1).args[0].service).to.equal('IPC');
-			expect(restart_service_stub.getCall(2).args[0].service).to.equal('Custom Functions');
+			expect(restart_service_stub.getCall(1).args[0].service).to.equal('Custom Functions');
 		});
 
 		it('Test restart service is called for each service if args are passed service started', async () => {
 			clearServiceArgs();
 			get_config_from_file_stub.returns(true);
 			is_service_reg_stub.withArgs('HarperDB').resolves(true);
-			is_service_reg_stub.withArgs('IPC').resolves(true);
+			is_service_reg_stub.withArgs('ITC').resolves(true);
 			is_service_reg_stub.withArgs('Custom Functions').resolves(false);
 			is_service_reg_stub.withArgs('Clustering Hub').resolves(false);
 			is_service_reg_stub.withArgs('Clustering Leaf').resolves(false);
-			let test_args = ['--service', 'not service,harperdb,ipc,custom functions,clustering hub,clustering leaf'];
+			let test_args = ['--service', 'not service,harperdb,custom functions,clustering hub,clustering leaf'];
 			process.argv.push(...test_args);
 			await stop.restartProcesses();
 
 			expect(restart_service_stub.getCall(0).args[0].service).to.equal('HarperDB');
-			expect(restart_service_stub.getCall(1).args[0].service).to.equal('IPC');
 			expect(start_service_stub.getCall(1).args[0]).to.equal('Clustering Hub');
 			expect(start_service_stub.getCall(2).args[0]).to.equal('Clustering Leaf');
 			expect(start_service_stub.getCall(0).args[0]).to.equal('Custom Functions');
@@ -166,16 +146,15 @@ describe('Test stop.js', () => {
 			env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED, false);
 			get_config_from_file_stub.returns(false);
 			is_service_reg_stub.withArgs('HarperDB').resolves(false);
-			is_service_reg_stub.withArgs('IPC').resolves(true);
+			is_service_reg_stub.withArgs('ITC').resolves(true);
 			is_service_reg_stub.withArgs('Custom Functions').resolves(true);
 			is_service_reg_stub.withArgs('Clustering Hub').resolves(true);
 			is_service_reg_stub.withArgs('Clustering Leaf').resolves(true);
-			let test_args = ['--service', 'not service,harperdb,ipc,custom functions,clustering hub,clustering leaf'];
+			let test_args = ['--service', 'not service,harperdb,custom functions,clustering hub,clustering leaf'];
 			process.argv.push(...test_args);
 			await stop.restartProcesses();
 
 			expect(start_service_stub.getCall(0).args[0]).to.equal('HarperDB');
-			expect(restart_service_stub.getCall(1).args[0].service).to.equal('IPC');
 			expect(pm2_stop_stub.getCall(1).args[0]).to.equal('Clustering Hub');
 			expect(pm2_stop_stub.getCall(2).args[0]).to.equal('Clustering Leaf');
 			expect(pm2_stop_stub.getCall(0).args[0]).to.equal('Custom Functions');
@@ -260,37 +239,6 @@ describe('Test stop.js', () => {
 			expect(restart_stub.called).to.be.false;
 		});
 
-		it('Test restart restart is called happy path', async () => {
-			const result = await stop.restartService({ service: 'ipc' });
-			expect(result).to.equal('Restarting IPC');
-			expect(reload_stub.called).to.be.false;
-			expect(restart_stub.called).to.be.true;
-		});
-
-		it('Test custom functions is started if not registered', async () => {
-			get_config_from_file_stub.returns(true);
-			is_service_reg_stub.withArgs('Custom Functions').resolves(false);
-			const result = await stop.restartService({ service: 'Custom Functions' });
-			expect(start_service_stub.called).to.be.true;
-			expect(result).to.equal('Restarting Custom Functions');
-		});
-
-		it('Test custom functions is stopped if registered', async () => {
-			get_config_from_file_stub.returns(false);
-			is_service_reg_stub.withArgs('Custom Functions').resolves(true);
-			const result = await stop.restartService({ service: 'Custom Functions' });
-			expect(pm2_stop_stub.called).to.be.true;
-			expect(result).to.equal('Restarting Custom Functions');
-		});
-
-		it('Test custom functions is reloaded if registered', async () => {
-			get_config_from_file_stub.returns(true);
-			is_service_reg_stub.withArgs('Custom Functions').resolves(true);
-			const result = await stop.restartService({ service: 'Custom Functions' });
-			expect(reload_stub.called).to.be.true;
-			expect(result).to.equal('Restarting Custom Functions');
-		});
-
 		// TODO: These should be addressed as part of CORE-1493
 		/*		it('Test clustering is started if not registered', async () => {
 			check_env_setting_stub.returns({ clustering_enabled: true, custom_func_enabled: true });
@@ -342,7 +290,7 @@ describe('Test stop.js', () => {
 		after(() => {
 			const service_index = process.argv.indexOf('--service');
 			if (service_index > -1) process.argv.splice(service_index, 1);
-			const names_index = process.argv.indexOf('not service,harperdb,ipc,custom functions');
+			const names_index = process.argv.indexOf('not service,harperdb,custom functions');
 			if (names_index > -1) process.argv.splice(names_index, 1);
 		});
 
@@ -352,12 +300,11 @@ describe('Test stop.js', () => {
 		});
 
 		it('Test stop is called for each service if args are passed', async () => {
-			let test_args = ['--service', 'not service,harperdb,ipc,custom functions'];
+			let test_args = ['--service', 'not service,harperdb,custom functions'];
 			process.argv.push(...test_args);
 			await stop.stop();
 			expect(stop_stub.getCall(0).args[0]).to.equal('HarperDB');
-			expect(stop_stub.getCall(1).args[0]).to.equal('IPC');
-			expect(stop_stub.getCall(2).args[0]).to.equal('Custom Functions');
+			expect(stop_stub.getCall(1).args[0]).to.equal('Custom Functions');
 		});
 	});
 
