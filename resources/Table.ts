@@ -4,6 +4,7 @@ import common from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
 import { randomUUID } from 'crypto';
 import { ResourceInterface } from './ResourceInterface';
+import { workerData } from 'worker_threads';
 import { EnvTransaction, Resource } from './Resource';
 import { compareKeys } from 'ordered-binary';
 import { onMessageFromWorkers, broadcast } from '../server/threads/manage-threads';
@@ -13,14 +14,14 @@ import * as env_mngr from '../utility/environment/environmentManager';
 const TRANSACTION_EVENT_TYPE = 'transaction';
 const RANGE_ESTIMATE = 100000000;
 env_mngr.initSync();
-
+let b = Buffer.alloc(1);
 const LMDB_PREFETCH_WRITES = env_mngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 
 const CREATED_TIME_ATTRIBUTE_NAME = TIME_STAMP_NAMES_ENUM.CREATED_TIME;
 const UPDATED_TIME_ATTRIBUTE_NAME = TIME_STAMP_NAMES_ENUM.UPDATED_TIME;
 const LAZY_PROPERTY_ACCESS = { lazy: true };
 
-const INVALIDATED = 1;
+const INVALIDATED = 16;
 
 export class Table {
 	primaryDbi: Database
@@ -31,6 +32,8 @@ export class Table {
 	attributes: any[]
 	primaryKey: string
 	subscriptions: Map<any, Function[]>
+	expirationTimer: ReturnType<typeof setInterval>
+	expirationMS: number
 	Source: { new(): ResourceInterface }
 	Transaction: ReturnType<typeof makeTransactionClass>
 
@@ -43,7 +46,9 @@ export class Table {
 		this.Transaction = makeTransactionClass(this);
 		primaryDbi.on('aftercommit', ({next, last}) => {
 			// after each commit, broadcast the transaction to all threads so subscribers can read the
-			// transactions and find changes of interest
+			// transactions and find changes of interest. We try to use the same binary format for
+			// transactions that is used by lmdb-js for minimal modification and since the binary
+			// format can readily be shared with other threads
 			let transaction_buffers = [];
 			let last_uint32;
 			let start;
@@ -51,9 +56,11 @@ export class Table {
 			do {
 				if (next.uint32 !== last_uint32) {
 					last_uint32 = next.uint32;
-					if (start === undefined)
-						start = next.flagPosition;
-					transaction_buffers.push(last_uint32.buffer);
+					if (last_uint32) {
+						if (start === undefined)
+							start = next.flagPosition;
+						transaction_buffers.push(last_uint32.buffer);
+					}
 				}
 				next = next.next;
 			} while (next !== last);
@@ -70,7 +77,38 @@ export class Table {
 		this.Source = Resource;
 		this.Transaction.Source = Resource;
 	}
+	/**
+	 * Set TTL expiration for records in this table
+	 * @param expiration_time Time in seconds
+	 */
+	setTTLExpiration(expiration_time) {
+		// we set up a timer to remove expired entries. we only want the timer/reaper to run in one thread,
+		// so we use the first one
+		if (workerData.isFirst) {
+			if (!this.expirationTimer) {
+				let expiration_ms = expiration_time * 1000;
+				this.expirationMS = expiration_ms; // in JS we use milliseconds
+				this.expirationTimer = setInterval(() => {
+					// iterate through all entries to find expired ones
+					for (let { key, value: record, version } of this.primaryDbi.getRange({ start: false, versions: true })) {
+						if (version < Date.now() - expiration_ms) {
+							// make sure we only delete it if the version has not changed
+							this.primaryDbi.ifVersion(key, version, () => this.primaryDbi.remove(key));
+						}
+					}
+				}, expiration_ms);
+			}
+		}
+	}
+
+	/**
+	 * Make a subscription to a query, to get notified of any changes to the specified data
+	 * @param query
+	 * @param options
+	 */
 	subscribe(query, options) {
+		// setup the subscriptions map. We want to just use a single map (per table) for efficient delegation
+		// (rather than having every subscriber filter every transaction)
 		if (!this.subscriptions) {
 			this.subscriptions = new Map();
 			onMessageFromWorkers((event) => {
@@ -89,6 +127,7 @@ export class Table {
 			this.subscriptions.set(key, handlers = []);
 		handlers.push(options.callback);
 		return {
+			// return an object that we can use to end the subscription
 			end() {
 				handlers.splice(handlers.indexOf(options.callback), 1);
 			}
@@ -99,7 +138,7 @@ export class Table {
 	}
 }
 function makeTransactionClass(table: Table) {
-	const { primaryKey: primary_key, indices, attributes, primaryDbi: primary_dbi } = table;
+	const { primaryKey: primary_key, indices, attributes, primaryDbi: primary_dbi, expirationMS: expiration_ms } = table;
 	return class TableTransaction extends Resource {
 		table: any
  		envTxn: EnvTransaction
@@ -149,7 +188,10 @@ function makeTransactionClass(table: Table) {
 						// TODO: Implement retrieval from other nodes once we have horizontal caching
 
 					}
-					// TODO: retrieve it
+					if (TableTransaction.Source) return this.getFromSource(id, record);
+				} else if (expiration_ms && expiration_ms < Date.now() - entry.version) {
+					// TTL/expiration has some open questions, is it tenable to do it with replication?
+					// What if there is no source?
 					if (TableTransaction.Source) return this.getFromSource(id, record);
 				}
 				return record;
@@ -160,8 +202,14 @@ function makeTransactionClass(table: Table) {
 		 * This will be used to record that a record is being resolved
 		 */
 		async getFromSource(id, record?: any) {
-			let previousUpdated = record?.__updated__;
-			// TODO: mark as resolving
+			if (!record)
+				record = {};
+			let availability = record.__availability__ || {};
+			availability.resolving = true;
+			record.__availability__ = availability;
+			// TODO: We want to eventually use a "direct write" method to directly write to the availability portion
+			// of the record in place in the database. In the meantime, should probably use an ifVersion
+			primary_dbi.put(id, record);
 			let source = new TableTransaction.Source();
 			let updated_record = await source.get(id);
 			let updated = source.lastAccessTime;
@@ -215,7 +263,13 @@ function makeTransactionClass(table: Table) {
 			}
 			let completion;
 
-			let writes = [];
+			let writes = [{
+				store: primary_dbi,
+				operation: 'put',
+				key: id,
+				value: record,
+				version: record[UPDATED_TIME_ATTRIBUTE_NAME],
+			}];
 			// iterate the entries from the record
 			// for-in is about 5x as fast as for-of Object.entries, and this is extremely time sensitive since it can be
 			// inside a write transaction
@@ -236,7 +290,7 @@ function makeTransactionClass(table: Table) {
 							noop
 						);
 					for (let i = 0, l = values.length; i < l; i++) {
-						writes.push({ db: index, operations: 'remove', key: values[i], value: id });
+						writes.push({ store: index, operation: 'remove', key: values[i], value: id });
 					}
 				}
 				values = common.getIndexedValues(value);
@@ -247,14 +301,14 @@ function makeTransactionClass(table: Table) {
 							noop
 						);
 					for (let i = 0, l = values.length; i < l; i++) {
-						writes.push({ db: index, operations: 'put', key: values[i], value: id });
+						writes.push({ store: index, operation: 'put', key: values[i], value: id });
 					}
 				}
 			}
 
 			// use optimistic locking to only commit if the existing record state still holds true.
 			// this is superior to using an async transaction since it doesn't require JS execution
-			// during the write transaction.
+			//  during the write transaction.
 			env_txn.recordRead(primary_dbi, id, existing_entry ? existing_entry.version : null, false);
 			env_txn.writes.push(...writes);
 		}

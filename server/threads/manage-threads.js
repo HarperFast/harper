@@ -5,13 +5,15 @@ const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
 const { join, isAbsolute, extname } = require('path');
 const { totalmem } = require('os');
 const { watch, readdir } = require('fs/promises');
-const hdb_terms = require("../../utility/hdbTerms");
-const env = require("../../utility/environment/environmentManager");
-const hdb_license = require("../../utility/registration/hdb_license");
+const hdb_terms = require('../../utility/hdbTerms');
+const env = require('../../utility/environment/environmentManager');
+const hdb_license = require('../../utility/registration/hdb_license');
 const harper_logger = require('../../utility/logging/harper_logger');
 const hdb_logger = require('../../utility/logging/harper_logger');
-const THREAD_COUNT = Math.max(env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES),
-	env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES));
+const THREAD_COUNT = Math.max(
+	env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES),
+	env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES)
+);
 const MB = 1024 * 1024;
 const workers = []; // these are our child workers that we are managing
 const connected_ports = []; // these are all known connected worker ports (siblings, children, parents)
@@ -41,7 +43,10 @@ function startWorker(path, options = {}) {
 	// 16 threads: 20% of total memory per thread
 	// 64 threads: 11% of total memory per thread
 	// (and then limit to their license limit, if they have one)
-	const max_old_memory = Math.min(Math.max(Math.floor(totalmem() / MB / (1 + THREAD_COUNT / 4)), 512), licensed_memory || Infinity);
+	const max_old_memory = Math.min(
+		Math.max(Math.floor(totalmem() / MB / (1 + THREAD_COUNT / 4)), 512),
+		licensed_memory || Infinity
+	);
 	// Max young memory space (semi-space for scavenger) is 1/128 of max memory (limited to 16-64). For most of our m5
 	// machines this will be 64MB (less for t3's). This is based on recommendations from:
 	// https://www.alibabacloud.com/blog/node-js-application-troubleshooting-manual---comprehensive-gc-problems-and-optimization_594965
@@ -52,22 +57,32 @@ function startWorker(path, options = {}) {
 	let ports_to_send = [];
 	for (let existing_port of connected_ports) {
 		let { port1, port2 } = new MessageChannel();
-		existing_port.postMessage({
-			type: ADDED_PORT,
-			port: port1,
-		}, [port1]);
+		existing_port.postMessage(
+			{
+				type: ADDED_PORT,
+				port: port1,
+			},
+			[port1]
+		);
 		ports_to_send.push(port2);
 	}
 
-	const worker = new Worker(isAbsolute(path) ? path : join(PACKAGE_ROOT, path), Object.assign({
-		resourceLimits: {
-			maxOldGenerationSizeMb: max_old_memory,
-			maxYoungGenerationSizeMb: max_young_memory,
-		},
-		argv: process.argv.slice(2),
-		workerData: { addPorts: ports_to_send }, // pass these in synchronously to the worker so it has them on startup
-		transferList: ports_to_send,
-	}, options));
+	const worker = new Worker(
+		isAbsolute(path) ? path : join(PACKAGE_ROOT, path),
+		Object.assign(
+			{
+				resourceLimits: {
+					maxOldGenerationSizeMb: max_old_memory,
+					maxYoungGenerationSizeMb: max_young_memory,
+				},
+				argv: process.argv.slice(2),
+				// pass these in synchronously to the worker so it has them on startup:
+				workerData: { addPorts: ports_to_send, isFirst: options.isFirst },
+				transferList: ports_to_send,
+			},
+			options
+		)
+	);
 	addPort(worker);
 	worker.unexpectedRestarts = options.unexpectedRestarts || 0;
 	worker.restart = () => {
@@ -84,7 +99,8 @@ function startWorker(path, options = {}) {
 	});
 	worker.on('exit', (code) => {
 		worker.isExited = true;
-		if (code === 100) { } // typescript error
+		if (code === 100) {
+		} // typescript error
 		else if (worker.unexpectedRestarts < MAX_UNEXPECTED_RESTARTS) {
 			workers.splice(workers.indexOf(worker), 1);
 			if (!worker.wasShutdown && options.autoRestart !== false) {
@@ -98,8 +114,7 @@ function startWorker(path, options = {}) {
 		if (message.type === RESTART_TYPE) restartWorkers(message.workerType);
 	});
 	workers.push(worker);
-	if (options.onStarted)
-		options.onStarted(worker); // notify that it is ready
+	if (options.onStarted) options.onStarted(worker); // notify that it is ready
 	worker.name = options.name;
 	return worker;
 }
@@ -127,7 +142,7 @@ async function restartWorkers(name = null, max_workers_down = 2, start_replaceme
 		// make a copy of the workers before iterating them, as the workers
 		// array will be mutating a lot during this
 		for (let worker of workers.slice(0)) {
-			if (name && worker.name !== name || worker.wasShutdown) continue; // filter by type, if specified
+			if ((name && worker.name !== name) || worker.wasShutdown) continue; // filter by type, if specified
 			worker.postMessage({
 				type: hdb_terms.IPC_EVENT_TYPES.SHUTDOWN,
 			});
@@ -171,7 +186,7 @@ function broadcast(message) {
 	for (let port of connected_ports) {
 		try {
 			port.postMessage(message);
-		} catch(error) {
+		} catch (error) {
 			harper_logger.error(`Unable to send message to worker`, error);
 		}
 	}
@@ -185,19 +200,23 @@ if (parentPort) {
 }
 function addPort(port) {
 	connected_ports.push(port);
-	port.on('message', (message) => {
-		if (message.type === ADDED_PORT) {
-			addPort(message.port);
-		} else {
-			for (let listener of message_listeners) {
-				listener(message);
+	port
+		.on('message', (message) => {
+			if (message.type === ADDED_PORT) {
+				addPort(message.port);
+			} else {
+				for (let listener of message_listeners) {
+					listener(message);
+				}
 			}
-		}
-	}).on('close', () => {
-		connected_ports.splice(connected_ports.indexOf(port), 1);
-	}).on('exit', () => {
-		connected_ports.splice(connected_ports.indexOf(port), 1);
-	}).unref();
+		})
+		.on('close', () => {
+			connected_ports.splice(connected_ports.indexOf(port), 1);
+		})
+		.on('exit', () => {
+			connected_ports.splice(connected_ports.indexOf(port), 1);
+		})
+		.unref();
 }
 if (isMainThread) {
 	const watch_dir = async (dir) => {
@@ -211,6 +230,5 @@ if (isMainThread) {
 		}
 	};
 	module.exports.watchDir = watch_dir;
-	if (process.env.WATCH_DIR)
-		watch_dir(process.env.WATCH_DIR);
+	if (process.env.WATCH_DIR) watch_dir(process.env.WATCH_DIR);
 }

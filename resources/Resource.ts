@@ -177,7 +177,7 @@ export class EnvTransaction {
 				condition.store.ifVersion(condition.key, condition.version, nextCondition);
 			} else {
 				for (let write of this.writes) {
-					resolution = write.store[write.operation](write.key, write.value);
+					resolution = write.store[write.operation](write.key, write.value, write.version);
 				}
 			}
 		}

@@ -38,7 +38,9 @@ export function registerGraphQL() {
 								is_hash_attribute: type === 'ID',
 							});
 						}
-						ensureTable(type_def.table, attributes, type_def.schema);
+						// with graphql schema definitions, this is a declaration that the table should exist and that it
+						// should be created if it does not exist
+						ensureTable(type_def, attributes);
 					}
 					if (type_name === 'Query') {
 						for (let field of definition.fields) {

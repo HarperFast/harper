@@ -34,7 +34,8 @@ export function restHandler(Resource) {
 								if (resource_snapshot.lastAccessTime === Date.parse(request.headers['if-modified-since'])) {
 									response.writeHead(304);
 									response.end();
-									return;
+									response_data = undefined;
+									break;
 								}
 							}
 							break;

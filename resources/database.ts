@@ -62,31 +62,39 @@ function readMetaDb(path: string, default_table?: string, default_schema: string
 		throw new Error(`Error opening database ${path}`, { cause: error });
 	}
 }
-
-export function ensureTable(table_name: string, attributes: any[], schema_name?: string) {
+interface TableDefinition {
+	table_name: string
+	schema_name?: string
+	expiration?: number
+}
+export function ensureTable({ table: table_name, schema: schema_name, expiration }: TableDefinition, attributes: any[]) {
 	let table = (schema_name ? tables[schema_name] : tables)?.[table_name];
-	if (table) return table;
-	if (!root_env) {
-		let base_path = getHdbBasePath();
-		let root_database_path = join(base_path, 'data.mdb');
-		let env_init = new OpenEnvironmentObject(
-			root_database_path,
-			false
-		);
-		root_env = open(env_init);
-	}
-	let internal_dbi_init = new OpenDBIObject(false);
-	let dbis_db = root_env.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
-	let primary_key;
-	for (let attribute of attributes) {
-		let dbi_name = table_name + '.' + attribute.name;
-		dbis_db.put(dbi_name, attribute);
-		if (attribute.is_hash_attribute) {
-			primary_key = attribute.name;
-			let dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
-			tables[table_name] = new Table(root_env.openDB(dbi_name, dbi_init), {});
+	if (!table) {
+		if (!root_env) {
+			let base_path = getHdbBasePath();
+			let root_database_path = join(base_path, 'data.mdb');
+			let env_init = new OpenEnvironmentObject(
+				root_database_path,
+				false
+			);
+			root_env = open(env_init);
+		}
+		let internal_dbi_init = new OpenDBIObject(false);
+		let dbis_db = root_env.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
+		let primary_key;
+		for (let attribute of attributes) {
+			let dbi_name = table_name + '.' + attribute.name;
+			dbis_db.put(dbi_name, attribute);
+			if (attribute.is_hash_attribute) {
+				primary_key = attribute.name;
+				let dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
+				table = tables[table_name] = new Table(root_env.openDB(dbi_name, dbi_init), {});
+			}
 		}
 	}
+	if (expiration)
+		table.setTTLExpiration(expiration);
+	return table;
 }
 
 /**
