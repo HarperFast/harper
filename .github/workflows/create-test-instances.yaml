@@ -40,6 +40,5 @@ jobs:
     with:
       instanceCount: "${{ inputs.instanceCount }}"
       instanceType: ${{ inputs.instanceType }}
-      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       callingWorkflow: ${{ github.workflow }}
     secrets: inherit
