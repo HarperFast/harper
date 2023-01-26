@@ -101,7 +101,7 @@ async function messageProcessor(msg) {
 		return;
 	}
 
-	harper_logger.trace('processing message:', entry);
+	harper_logger.trace('processing message:', entry, 'with sequence:', js_msg.seq);
 	harper_logger.trace(`messageProcessor nats msg id: ${js_msg.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID)}`);
 
 	let operation_function = undefined;
