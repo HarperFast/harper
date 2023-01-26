@@ -290,7 +290,7 @@ function makeTransactionClass(table: Table) {
 							noop
 						);
 					for (let i = 0, l = values.length; i < l; i++) {
-						writes.push({ store: index, operation: 'remove', key: values[i], value: id });
+						writes.push({ store: index, operation: 'remove', key: values[i], value: id, version: undefined });
 					}
 				}
 				values = common.getIndexedValues(value);
@@ -301,7 +301,7 @@ function makeTransactionClass(table: Table) {
 							noop
 						);
 					for (let i = 0, l = values.length; i < l; i++) {
-						writes.push({ store: index, operation: 'put', key: values[i], value: id });
+						writes.push({ store: index, operation: 'put', key: values[i], value: id, version: undefined });
 					}
 				}
 			}

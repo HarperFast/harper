@@ -1,6 +1,4 @@
 const { isMainThread } = require('worker_threads');
-const { PACKAGE_ROOT } = require('../utility/hdbTerms');
-const { join } = require('path');
 
 /*require('ts-node').register({
 	project: join(PACKAGE_ROOT, 'tsconfig.json'),
@@ -10,7 +8,7 @@ const { getTables } = require('../resources/database');
 const default_components = [
 	{ module: '/resources/resource-server.js', port: 9926 },
 	{ module: '/resources/graphql.js' },
-	{ module: '/resources/secure-js.js' },
+	{ module: '/resources/js-resource.js' },
 	{ module: '/server/harperdb/hdbServer.js', port: 9925 },
 	{ module: '/server/customFunctions/customFunctionsServer.js', port: 9926 },
 ];
