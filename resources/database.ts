@@ -63,13 +63,18 @@ function readMetaDb(path: string, default_table?: string, default_schema: string
 	}
 }
 interface TableDefinition {
-	table_name: string
-	schema_name?: string
+	table: string
+	schema?: string
+	path?: string
 	expiration?: number
+	attributes: any[]
 }
-export function ensureTable({ table: table_name, schema: schema_name, expiration }: TableDefinition, attributes: any[]) {
+export function ensureTable({ table: table_name, schema: schema_name, path, expiration, attributes }: TableDefinition) {
 	let table = (schema_name ? tables[schema_name] : tables)?.[table_name];
 	if (!table) {
+		if (path) {
+
+		}
 		if (!root_env) {
 			let base_path = getHdbBasePath();
 			let root_database_path = join(base_path, 'data.mdb');
@@ -85,9 +90,9 @@ export function ensureTable({ table: table_name, schema: schema_name, expiration
 		for (let attribute of attributes) {
 			let dbi_name = table_name + '.' + attribute.name;
 			dbis_db.put(dbi_name, attribute);
-			if (attribute.is_hash_attribute) {
+			if (attribute.is_primary_key) {
 				primary_key = attribute.name;
-				let dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
+				let dbi_init = new OpenDBIObject(!attribute.is_primary_key, attribute.is_primary_key);
 				table = tables[table_name] = new Table(root_env.openDB(dbi_name, dbi_init), {});
 			}
 		}

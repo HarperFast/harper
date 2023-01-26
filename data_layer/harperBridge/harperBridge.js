@@ -1,22 +1,21 @@
 'use strict';
 
-const LMDBBridge = require('./lmdbBridge/LMDBBridge');
-const BridgeMethods = require('./BridgeMethods');
+const RAPIBridge = require('./RAPIBridge');
 const env_mngr = require('../../utility/environment/environmentManager');
 env_mngr.initSync();
 
-let harper_bridge = undefined;
+let harper_bridge;
 
 /**
  *
  * @returns {LMDBBridge|undefined}
  */
 function getBridge() {
-	if (harper_bridge instanceof BridgeMethods) {
+	if (harper_bridge) {
 		return harper_bridge;
 	}
-
-	return new LMDBBridge();
+	harper_bridge = new RAPIBridge();
+	return harper_bridge;
 }
 
 module.exports = getBridge();

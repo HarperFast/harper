@@ -5,7 +5,8 @@ const { handleHDBError, hdb_errors } = require('../../utility/errors/hdbError');
 const { Resource } = require('../../resources/Resource');
 const { HTTP_STATUS_CODES } = hdb_errors;
 /**
- * Currently we are extending LMDBBridge so we can use the LMDB methods as a fallback until all are implemented
+ * Currently we are extending LMDBBridge so we can use the LMDB methods as a fallback until all our RAPI methods are
+ * implemented
  */
 class RAPIBridge extends LMDBBridge {
 	async searchByConditions(search_object) {

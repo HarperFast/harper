@@ -1,6 +1,6 @@
 'use strict';
 
-const test_utils = require('../../../../test_utils');
+const test_utils = require('../../../test_utils');
 test_utils.preTestPrep();
 const path = require('path');
 
@@ -11,18 +11,18 @@ const BASE_SCHEMA_PATH = path.join(BASE_PATH, SCHEMA_NAME);
 const SYSTEM_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, SYSTEM_FOLDER_NAME);
 const DEV_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, 'dev');
 
-const { handleHDBError } = require('../../../../../utility/errors/hdbError');
+const { handleHDBError } = require('../../../../utility/errors/hdbError');
 
-const test_data = require('../../../../testData');
+const test_data = require('../../../testData');
 
 const rewire = require('rewire');
-const lmdb_terms = require('../../../../../utility/lmdb/terms');
-const { SearchByConditionsObject, SearchCondition } = require('../../../../../data_layer/SearchByConditionsObject');
-const lmdb_search = rewire('../../../../../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbSearchByConditions');
+const lmdb_terms = require('../../../../utility/lmdb/terms');
+const { SearchByConditionsObject, SearchCondition } = require('../../../../data_layer/SearchByConditionsObject');
+const { searchByConditions: search_by_conditions } = rewire('../../../../data_layer/harperBridge/harperBridge');
 const assert = require('assert');
 const fs = require('fs-extra');
 const sinon = require('sinon');
-const systemSchema = require('../../../../../json/systemSchema');
+const systemSchema = require('../../../../json/systemSchema');
 const { sortBy } = require('lodash');
 const TIMESTAMP = Date.now();
 
@@ -102,7 +102,7 @@ describe('test lmdbSearchByConditions module', () => {
 
 		it('test validation', async () => {
 			await assertionsAsArray(
-				lmdb_search,
+				search_by_conditions,
 				[{}],
 				test_utils.generateHDBError(
 					"'schema' is required. 'table' is required. 'get_attributes' is required. 'conditions' is required",
@@ -110,22 +110,22 @@ describe('test lmdbSearchByConditions module', () => {
 				)
 			);
 			await assertionsAsArray(
-				lmdb_search,
+				search_by_conditions,
 				[{ schema: 'dev' }],
 				test_utils.generateHDBError("'table' is required. 'get_attributes' is required. 'conditions' is required", 400)
 			);
 			await assertionsAsArray(
-				lmdb_search,
+				search_by_conditions,
 				[{ schema: 'dev', table: 'test' }],
 				test_utils.generateHDBError("'get_attributes' is required. 'conditions' is required", 400)
 			);
 			await assertionsAsArray(
-				lmdb_search,
+				search_by_conditions,
 				[{ schema: 'dev', table: 'test', get_attributes: ['*'] }],
 				test_utils.generateHDBError("'conditions' is required", 400)
 			);
 			await assertionsAsArray(
-				lmdb_search,
+				search_by_conditions,
 				[{ schema: 'dev', table: 'test', get_attributes: ['*'], conditions: [{}] }],
 				test_utils.generateHDBError(
 					"'conditions[0].search_attribute' is required. 'conditions[0].search_type' is required. 'conditions[0].search_value' is required",
@@ -133,7 +133,7 @@ describe('test lmdbSearchByConditions module', () => {
 				)
 			);
 			await assertionsAsArray(
-				lmdb_search,
+				search_by_conditions,
 				[{ schema: 'dev', table: 'test', get_attributes: ['*'], conditions: [{ search_attribute: 'city' }] }],
 				test_utils.generateHDBError(
 					"'conditions[0].search_type' is required. 'conditions[0].search_value' is required",
@@ -141,7 +141,7 @@ describe('test lmdbSearchByConditions module', () => {
 				)
 			);
 			await assertionsAsArray(
-				lmdb_search,
+				search_by_conditions,
 				[
 					{
 						schema: 'dev',
@@ -153,7 +153,7 @@ describe('test lmdbSearchByConditions module', () => {
 				test_utils.generateHDBError("'conditions[0].search_value' is required", 400)
 			);
 			await assertionsAsArray(
-				lmdb_search,
+				search_by_conditions,
 				[
 					{
 						schema: 'dev',
@@ -166,7 +166,7 @@ describe('test lmdbSearchByConditions module', () => {
 			);
 
 			await assertionsAsArray(
-				lmdb_search,
+				search_by_conditions,
 				[
 					{
 						schema: 'dev/sss',
@@ -183,7 +183,7 @@ describe('test lmdbSearchByConditions module', () => {
 			);
 
 			await assertionsAsArray(
-				lmdb_search,
+				search_by_conditions,
 				[
 					{
 						schema: 'dev',
@@ -199,7 +199,7 @@ describe('test lmdbSearchByConditions module', () => {
 			);
 
 			await assertionsAsArray(
-				lmdb_search,
+				search_by_conditions,
 				[
 					{
 						schema: 'dev2',
@@ -212,7 +212,7 @@ describe('test lmdbSearchByConditions module', () => {
 			);
 
 			await assertionsAsArray(
-				lmdb_search,
+				search_by_conditions,
 				[
 					{
 						schema: 'dev',
@@ -225,7 +225,7 @@ describe('test lmdbSearchByConditions module', () => {
 			);
 
 			await assertionsAsArray(
-				lmdb_search,
+				search_by_conditions,
 				[
 					{
 						schema: 'dev',
@@ -251,20 +251,20 @@ describe('test lmdbSearchByConditions module', () => {
 				'zzz'
 			);
 			await assertionsAsArray(
-				lmdb_search,
+				search_by_conditions,
 				[search_object],
 				test_utils.generateHDBError("'operator' must be one of [and, or]", 400)
 			);
 			search_object.operator = 'AND';
-			await assertionsAsArray(lmdb_search, [search_object], undefined);
+			await assertionsAsArray(search_by_conditions, [search_object], undefined);
 			search_object.operator = 'OR';
-			await assertionsAsArray(lmdb_search, [search_object], undefined);
+			await assertionsAsArray(search_by_conditions, [search_object], undefined);
 
 			//test limit offset validation
 			search_object.limit = 'aaaa';
 			search_object.offset = 'zzz';
 			await assertionsAsArray(
-				lmdb_search,
+				search_by_conditions,
 				[search_object],
 				test_utils.generateHDBError("'offset' must be a number. 'limit' must be a number", 400)
 			);
@@ -272,7 +272,7 @@ describe('test lmdbSearchByConditions module', () => {
 			search_object.limit = 1.1;
 			search_object.offset = 22.4;
 			await assertionsAsArray(
-				lmdb_search,
+				search_by_conditions,
 				[search_object],
 				test_utils.generateHDBError("'offset' must be an integer. 'limit' must be an integer", 400)
 			);
@@ -280,7 +280,7 @@ describe('test lmdbSearchByConditions module', () => {
 			search_object.limit = 0;
 			search_object.offset = -2;
 			await assertionsAsArray(
-				lmdb_search,
+				search_by_conditions,
 				[search_object],
 				test_utils.generateHDBError(
 					"'offset' must be greater than or equal to 0. 'limit' must be greater than or equal to 1",
@@ -323,7 +323,7 @@ describe('test lmdbSearchByConditions module', () => {
 				[new SearchCondition('state', 'equals', 'CO')],
 				undefined
 			);
-			let results = await assertionsAsArray(lmdb_search, [search_object], undefined);
+			let results = await assertionsAsArray(search_by_conditions, [search_object], undefined);
 			assert.deepEqual(results.length, 23);
 			assert.deepEqual(results, expected);
 		});
@@ -342,7 +342,7 @@ describe('test lmdbSearchByConditions module', () => {
 				[new SearchCondition('state', 'equals', 'CO'), new SearchCondition('temperature', 'between', [1, 10])],
 				undefined
 			);
-			let results = await assertionsAsArray(lmdb_search, [search_object], undefined);
+			let results = await assertionsAsArray(search_by_conditions, [search_object], undefined);
 			assert.deepEqual(results.length, 3);
 			assert.deepEqual(results, expected);
 		});
@@ -360,7 +360,7 @@ describe('test lmdbSearchByConditions module', () => {
 				],
 				undefined
 			);
-			let results = await assertionsAsArray(lmdb_search, [search_object], undefined);
+			let results = await assertionsAsArray(search_by_conditions, [search_object], undefined);
 			assert.deepEqual(results.length, 1);
 			assert.deepEqual(results, expected);
 		});
@@ -391,7 +391,7 @@ describe('test lmdbSearchByConditions module', () => {
 				[new SearchCondition('city', 'ends_with', 'bury'), new SearchCondition('state', 'equals', 'NH')],
 				undefined
 			);
-			let results = await assertionsAsArray(lmdb_search, [search_object], undefined);
+			let results = await assertionsAsArray(search_by_conditions, [search_object], undefined);
 			assert.deepEqual(results.length, 3);
 			assert.deepEqual(results, expected);
 		});
@@ -422,7 +422,7 @@ describe('test lmdbSearchByConditions module', () => {
 				[new SearchCondition('city', 'starts_with', 'Port'), new SearchCondition('state', 'equals', 'FL')],
 				undefined
 			);
-			let results = await assertionsAsArray(lmdb_search, [search_object], undefined);
+			let results = await assertionsAsArray(search_by_conditions, [search_object], undefined);
 			assert.deepEqual(results.length, 3);
 			assert.deepEqual(results, expected);
 		});
@@ -462,7 +462,7 @@ describe('test lmdbSearchByConditions module', () => {
 				[new SearchCondition('temperature', 'greater_than', 90), new SearchCondition('state', 'equals', 'FL')],
 				undefined
 			);
-			let results = await assertionsAsArray(lmdb_search, [search_object], undefined);
+			let results = await assertionsAsArray(search_by_conditions, [search_object], undefined);
 			assert.deepEqual(results.length, 4);
 			assert.deepEqual(results, expected);
 		});
@@ -508,7 +508,7 @@ describe('test lmdbSearchByConditions module', () => {
 				[new SearchCondition('temperature', 'greater_than_equal', 90), new SearchCondition('state', 'equals', 'FL')],
 				undefined
 			);
-			let results = await assertionsAsArray(lmdb_search, [search_object], undefined);
+			let results = await assertionsAsArray(search_by_conditions, [search_object], undefined);
 			assert.deepEqual(results.length, 5);
 			assert.deepEqual(results, expected);
 		});
@@ -536,7 +536,7 @@ describe('test lmdbSearchByConditions module', () => {
 				[new SearchCondition('temperature', 'less_than', 2), new SearchCondition('state', 'equals', 'UT')],
 				undefined
 			);
-			let results = await assertionsAsArray(lmdb_search, [search_object], undefined);
+			let results = await assertionsAsArray(search_by_conditions, [search_object], undefined);
 			assert.deepEqual(results.length, 2);
 			assert.deepEqual(results, expected);
 		});
@@ -570,7 +570,7 @@ describe('test lmdbSearchByConditions module', () => {
 				[new SearchCondition('temperature', 'less_than_equal', 2), new SearchCondition('state', 'equals', 'UT')],
 				undefined
 			);
-			let results = await assertionsAsArray(lmdb_search, [search_object], undefined);
+			let results = await assertionsAsArray(search_by_conditions, [search_object], undefined);
 			assert.deepEqual(results.length, 3);
 			assert.deepEqual(results, expected);
 		});
@@ -873,7 +873,7 @@ describe('test lmdbSearchByConditions module', () => {
 				undefined,
 				'or'
 			);
-			let results = await assertionsAsArray(lmdb_search, [search_object], undefined);
+			let results = await assertionsAsArray(search_by_conditions, [search_object], undefined);
 			assert.deepEqual(results.length, 285);
 			results = sortBy(results, (location) => +location.id);
 			assert.deepEqual(results, expected);
@@ -922,7 +922,7 @@ describe('test lmdbSearchByConditions module', () => {
 				undefined,
 				'or'
 			);
-			let results = await assertionsAsArray(lmdb_search, [search_object], undefined);
+			let results = await assertionsAsArray(search_by_conditions, [search_object], undefined);
 			assert.deepEqual(results.length, 5);
 			results = sortBy(results, (location) => +location.id);
 			assert.deepEqual(results, expected);
@@ -959,7 +959,7 @@ describe('test lmdbSearchByConditions module', () => {
 				2,
 				'or'
 			);
-			let results = await assertionsAsArray(lmdb_search, [search_object], undefined);
+			let results = await assertionsAsArray(search_by_conditions, [search_object], undefined);
 			//assert.deepEqual(results.length, 100);
 			assert.deepEqual(results, expected);
 		});

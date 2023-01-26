@@ -17,7 +17,7 @@ export function registerGraphQL() {
 				case Kind.OBJECT_TYPE_DEFINITION:
 					let type_name = definition.name.value;
 					// use type name as the default table (converted to snake case)
-					let type_def = { table: null, schema: null };
+					let type_def = { table: null, schema: null, attributes: [] };
 					types.set(type_name, type_def);
 					for (let directive of definition.directives) {
 						if (directive.name.value === 'table') {
@@ -35,12 +35,13 @@ export function registerGraphQL() {
 							attributes.push({
 								name: field.name.value,
 								type,
-								is_hash_attribute: type === 'ID',
+								is_primary_key: type === 'ID',
 							});
 						}
+						type_def.attributes = attributes;
 						// with graphql schema definitions, this is a declaration that the table should exist and that it
 						// should be created if it does not exist
-						ensureTable(type_def, attributes);
+						ensureTable(type_def);
 					}
 					if (type_name === 'Query') {
 						for (let field of definition.fields) {
