@@ -19,6 +19,7 @@ let entry_modules = [
 	'launchServiceScripts/launchInstallNATSServer.js',
 	'launchServiceScripts/launchNatsIngestService.js',
 	'launchServiceScripts/launchNatsReplyService.js',
+	'launchServiceScripts/launchUpdateNodes4-0-0.js',
 	'server/jobs/jobProcess.js',
 	'server/ipc/hdbIpcServer.js',
 	'utility/scripts/restartHdb.js',
