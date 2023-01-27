@@ -47193,7 +47193,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\": \"set_configuration\",\n    \"logging_auditLog\": true,\n    \"customFunctions_enabled\": true\n}"
+							"raw": "{\n\t\"operation\": \"set_configuration\",\n    \"logging_auditLog\": true,\n    \"customFunctions_enabled\": true,\n    \"localStudio_enabled\": true\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -59464,6 +59464,80 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n\"operation\":\"drop_role\",\n\"id\":\"{{role_id}}\"\n\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Test local studio HTML is returned",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"GET returns local studio HTML\", function () {",
+									"    const response = pm.response.text();",
+                                    "     pm.response.to.be.header(\"content-type\", \"text/html; charset=UTF-8\");",
+									"    pm.expect(response).to.include('<!doctype html>');",
+									"    pm.expect(response).to.include('<title>Studio :: HarperDB</title>');",
+									"    pm.expect(response).to.include('<script src=\"/hdb.js\"></script>');",
+									"    pm.expect(response).to.include('<link href=\"/hdb.css\" rel=\"stylesheet\">');",
+									"});"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"protocolProfileBehavior": {
+						"disableBodyPruning": true
+					},
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"disabled": true
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46cGFzc3dvcmQ="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": ""
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
