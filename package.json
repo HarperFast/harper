@@ -52,7 +52,6 @@
     "coverage": "nyc --reporter=lcov npm test"
   },
   "dependencies": {
-    "@fastify/accepts-serializer": "5.1.0",
     "@fastify/autoload": "5.4.0",
     "@fastify/compress": "6.1.1",
     "@fastify/cors": "8.1.0",
@@ -69,7 +68,7 @@
     "alasql": "1.7.4",
     "async": "3.2.3",
     "aws-sdk": "2.1096.0",
-    "cbor-x": "1.5.0",
+    "cbor-x": "1.5.1",
     "chalk": "4.1.2",
     "cli-progress": "3.10.0",
     "clone": "2.1.2",
