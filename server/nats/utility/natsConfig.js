@@ -146,7 +146,9 @@ async function isPortAvailable(param) {
 	}
 
 	if (await hdb_utils.isPortTaken(port)) {
-		generateNatsConfigError(`'${param}' port '${port}' is unavailable`);
+		generateNatsConfigError(
+			`'${param}' port '${port}' is is in use by another process, check to see if HarperDB is already running or another process is using this port.`
+		);
 	}
 	return true;
 }
