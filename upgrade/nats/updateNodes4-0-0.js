@@ -9,6 +9,7 @@ const add_node = require('../../utility/clustering/addNode');
 const pm2_utils = require('../../utility/pm2/utilityFunctions');
 const global_schema = require('../../utility/globalSchema');
 const remove_node = require('../../utility/clustering/removeNode');
+const semver_gte = require('semver/functions/gte');
 
 const REQUEST_STATUS_INTERVAL = 30000;
 const UPDATE_NODE_ALLOWANCE_DAYS = 7;
@@ -65,7 +66,7 @@ async function updateNode(node) {
 			hdb_log.trace('Received status:', status[0].status, 'from node:', name);
 
 			// If the remote node has been updated and is running with correct config stop calling status and call add node.
-			if (status[0].status === 'open' && status[0].system_info.hdb_version === '4.0.0') {
+			if (status[0].status === 'open' && semver_gte(status[0].system_info.hdb_version, '4.0.0')) {
 				hdb_log.notify('Received open status from node:', name, 'calling add node');
 				const add_node_req = {
 					operation: hdb_terms.OPERATIONS_ENUM.ADD_NODE,
