@@ -20,6 +20,7 @@ const LMDB_PREFETCH_WRITES = env_mngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const CREATED_TIME_ATTRIBUTE_NAME = TIME_STAMP_NAMES_ENUM.CREATED_TIME;
 const UPDATED_TIME_ATTRIBUTE_NAME = TIME_STAMP_NAMES_ENUM.UPDATED_TIME;
 const LAZY_PROPERTY_ACCESS = { lazy: true };
+const TXN_KEY = Symbol('transaction');
 
 const INVALIDATED = 16;
 
@@ -42,6 +43,7 @@ export class Table {
 		this.indices = [];
 		this.primaryKey = 'id';
 		this.envPath = primaryDbi.env.path;
+		primaryDbi.encoder.structConstructor = createRecordClass();
 		this.tableName = options.tableName;
 		this.Transaction = makeTransactionClass(this);
 		primaryDbi.on('aftercommit', ({next, last}) => {
@@ -180,6 +182,7 @@ function makeTransactionClass(table: Table) {
 
 			let record = entry?.value;
 			if (record) {
+				record[TXN_KEY] = this;
 				let availability = record.__availability__;
 				if (availability?.cached & INVALIDATED) {
 					// TODO: If cold storage/alternate storage is available, retrieve from there
@@ -432,6 +435,22 @@ function makeTransactionClass(table: Table) {
 	}
 }
 
+
+function createRecordClass() {
+	return class Record {
+		async lock() {
+			throw new Error('Lock not implemented yet');
+		}
+		save() {
+			let table_transaction = this[TXN_KEY];
+			return table_transaction.put(this);
+		}
+		get update() {
+			// TODO: Create a proxy that provides CRDT-level operation tracking that can be saved as a set of granular, mergeable updates
+			return this;
+		}
+	}
+}
 /**
  *
  * @param {SearchObject} search_object
