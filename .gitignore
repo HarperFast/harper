@@ -19,7 +19,7 @@ dependencies/*
 !dependencies/nats-server.zip
 yarn.lock
 package-lock.json
-resources/*.js
+resources/*.js*
 
 /npm_pack/*
 *.jsc
