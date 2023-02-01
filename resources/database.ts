@@ -89,6 +89,8 @@ export function ensureTable({ table: table_name, schema: schema_name, path, expi
 		let primary_key;
 		for (let attribute of attributes) {
 			let dbi_name = table_name + '.' + attribute.name;
+			if (attribute.is_primary_key)
+				attribute.is_hash_attribute = true;
 			dbis_db.put(dbi_name, attribute);
 			if (attribute.is_primary_key) {
 				primary_key = attribute.name;
@@ -98,7 +100,7 @@ export function ensureTable({ table: table_name, schema: schema_name, path, expi
 		}
 	}
 	if (expiration)
-		table.setTTLExpiration(expiration);
+		table.setTTLExpiration(+expiration);
 	return table;
 }
 

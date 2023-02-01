@@ -52,12 +52,12 @@ function deliverSocket(fd, port) {
 	// HTTP server likes to allow half open sockets
 	let socket = new Socket({ fd, readable: true, writable: true, allowHalfOpen: true });
 	// for each socket, deliver the connection to the HTTP server handler/parser
-	if (SERVERS[port]) SERVERS[port].server.emit('connection', socket);
+	if (SERVERS[port]) SERVERS[port].emit('connection', socket);
 	else {
 		const retry = (retries) => {
 			// in case the server hasn't registered itself yet
 			setTimeout(() => {
-				if (SERVERS[port]) SERVERS[port].server.emit('connection', socket);
+				if (SERVERS[port]) SERVERS[port].emit('connection', socket);
 				else if (retries < 5) retry(retries + 1);
 				else {
 					harper_logger.error(`Server on port ${port} was not registered`);
@@ -138,4 +138,8 @@ function registerServer(port, server) {
 		SERVERS[port] = server;
 	}
 	server.on('unhandled', defaultNotFound);
+}
+function defaultNotFound(request, response) {
+	response.writeHead(404);
+	response.end('Not found\n');
 }

@@ -182,6 +182,7 @@ function makeTransactionClass(table: Table) {
 
 			let record = entry?.value;
 			if (record) {
+				//record = new Record(re)
 				record[TXN_KEY] = this;
 				let availability = record.__availability__;
 				if (availability?.cached & INVALIDATED) {
