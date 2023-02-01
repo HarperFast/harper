@@ -180,9 +180,9 @@ function makeTransactionClass(table: Table) {
 				this.updateAccessTime(entry.version);
 			}
 
-			let record = entry?.value;
-			if (record) {
-				//record = new Record(re)
+			let record_data = entry?.value;
+			if (record_data) {
+				let record = createRecord(record_data);
 				record[TXN_KEY] = this;
 				let availability = record.__availability__;
 				if (availability?.cached & INVALIDATED) {
@@ -450,6 +450,31 @@ function createRecordClass() {
 			// TODO: Create a proxy that provides CRDT-level operation tracking that can be saved as a set of granular, mergeable updates
 			return this;
 		}
+	}
+}
+const RECORD_CLASS = Symbol('record');
+const SOURCE_SYMBOL = Symbol.for('source');
+function createRecord(record_data) {
+	let Record = record_data[RECORD_CLASS];
+	if (Record) return new Record(record_data);
+	else {
+		class Record extends record_data.constructor {
+			constructor(data) {
+				super();
+				this[SOURCE_SYMBOL] = data[SOURCE_SYMBOL];
+			}
+		}
+		let original_prototype = record_data.constructor.prototype;
+		let prototype = Record.prototype;
+		for (let key in original_prototype) {
+			let descriptor = Object.getOwnPropertyDescriptor(original_prototype, key);
+			descriptor.set = function(value) {
+				this.__changes__.push(key);
+			};
+			Object.defineProperty(prototype, key, descriptor);
+		}
+		original_prototype[RECORD_CLASS] = Record;
+		return new Record(record_data);
 	}
 }
 /**

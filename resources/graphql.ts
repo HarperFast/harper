@@ -1,4 +1,3 @@
-import { parse, Source, Kind, NamedTypeNode, StringValueNode } from 'graphql';
 import { ensureTable } from './database';
 import { Resource } from './Resource';
 import { snake_case } from './Table';
@@ -8,7 +7,9 @@ import {restHandler} from './REST-handler';
 export function registerGraphQL() {
 	registerResourceType('graphql', createHandler);
 	registerResourceType('gql', createHandler);
-	function createHandler(gql_content, file_path) {
+	async function createHandler(gql_content, file_path) {
+		// lazy load the graphql package so we don't load it for users that don't use graphql
+		const { parse, Source, Kind, NamedTypeNode, StringValueNode } = await import('graphql');
 		let ast = parse(new Source(gql_content, file_path));
 		let handlers = new Map();
 		let types = new Map();
@@ -73,7 +74,6 @@ export function registerGraphQL() {
 						}
 					}
 			}
-
 		}
 		return handlers;
 	}

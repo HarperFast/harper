@@ -5,6 +5,7 @@ import { join } from 'path';
 import { SERVICES } from '../utility/hdbTerms';
 import { watchDir } from '../server/threads/manage-threads';
 import { findAndValidateUser } from '../security/user';
+import { WebSocketServer } from 'ws';
 
 const handler_creator_by_type = new Map();
 const custom_apps = [];
@@ -54,6 +55,8 @@ export function start(options: ServerOptions & { path: string, port: number }) {
 		path = request.url;
 		nextAppHandler(request, response)
 	});
+	let wss = new WebSocketServer({ server });
+
 	registerServer(options.port, server);
 	async function nextAppHandler(request, response) {
 		if (custom_apps[0])
