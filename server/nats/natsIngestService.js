@@ -20,7 +20,6 @@ const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 const SUBSCRIPTION_OPTIONS = {
 	durable: nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name,
 	queue: nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_group,
-	filterSubject: `${nats_terms.SUBJECT_PREFIXES.TXN}.>`,
 };
 
 let nats_connection;
@@ -68,6 +67,7 @@ async function workQueueListener() {
 		`${nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_subject}.${nats_connection.info.server_name}`,
 		SUBSCRIPTION_OPTIONS
 	);
+
 	for await (const message of sub) {
 		// ring style queue for awaiting operations for concurrency. await the entry from 100 operations ago:
 		await outstanding_operations[operation_index];
@@ -77,9 +77,10 @@ async function workQueueListener() {
 		if (++operation_index >= MAX_CONCURRENCY) operation_index = 0;
 	}
 }
+
 if (!isMainThread) {
 	parentPort.on('message', async (message) => {
-		const {type} = message;
+		const { type } = message;
 		if (type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
 			nats_utils.closeConnection();
 		}

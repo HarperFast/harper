@@ -616,7 +616,6 @@ describe('Test natsUtils module', () => {
 
 			expect(streams[0].config.name).to.equal('__HARPERDB_WORK_QUEUE__');
 			expect(consumer.name).to.equal('HDB_WORK_QUEUE');
-			expect(consumer.config.filter_subject).to.equal('txn.>');
 
 			await jsm.consumers.delete('__HARPERDB_WORK_QUEUE__', 'HDB_WORK_QUEUE');
 			await nats_utils.deleteLocalStream('__HARPERDB_WORK_QUEUE__');
@@ -1063,59 +1062,6 @@ describe('Test natsUtils module', () => {
 
 			const inf_json = await fs.readJson(work_queue_inf_file);
 			expect(inf_json.sources).to.be.undefined;
-		}).timeout(TEST_TIMEOUT);
-
-		it('Test purgeSourceFromWorkStream removes all a sources msgs from work stream ', async () => {
-			// Create local stream
-			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
-			// Create a work queue stream
-			await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
-
-			const test_sub = {
-				schema: TEST_SCHEMA,
-				table: TEST_TABLE2,
-				publish: true,
-				subscribe: true,
-			};
-
-			// Add the test local stream as a source to the work queue stream.
-			await nats_utils.addSourceToWorkStream(
-				'testLeafServer-leaf',
-				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				test_sub
-			);
-
-			// Publish a messages to stream
-			await nats_utils.publishToStream(
-				'txn.devTest.capybara',
-				TEST_STREAM_NAME_2,
-				undefined,
-				new CreateStreamMessage('insert', 'devTest', 'capybara', [{ id: 1 }])
-			);
-			await nats_utils.publishToStream(
-				'txn.devTest.capybara',
-				TEST_STREAM_NAME_2,
-				undefined,
-				new CreateStreamMessage('insert', 'devTest', 'capybara', [{ id: 2 }])
-			);
-
-			const { jsm } = await nats_utils.getNATSReferences();
-			// Get the work queue stream info and check that there are messages there.
-			let wq_stream = await jsm.streams.info(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
-			expect(wq_stream.state.messages).to.equal(2);
-
-			// Call purge
-			const purgeSourceFromWorkStream = nats_utils.__get__('purgeSourceFromWorkStream');
-			await purgeSourceFromWorkStream(
-				TEST_SCHEMA,
-				TEST_TABLE2,
-				{ external: { api: 'API.testLeafServer-leaf' } },
-				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name
-			);
-
-			// After purge there should be no messages in work stream
-			wq_stream = await jsm.streams.info(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
-			expect(wq_stream.state.messages).to.equal(0);
 		}).timeout(TEST_TIMEOUT);
 
 		it('Test getJsmServerName returns correct name', async () => {

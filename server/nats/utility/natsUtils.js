@@ -105,6 +105,7 @@ module.exports = {
 	updateLocalStreams,
 	closeConnection,
 	getJsmServerName,
+	addNatsMsgHeader,
 };
 
 /**
@@ -174,8 +175,7 @@ async function createConnection(port, username, password, wait_on_first_connect 
  */
 async function closeConnection() {
 	if (nats_connection) {
-		await nats_connection.flush();
-		await nats_connection.close();
+		await nats_connection.drain();
 		nats_connection = undefined;
 	}
 }
@@ -460,8 +460,7 @@ async function* viewStreamIterator(stream_name, start_time = undefined, max = un
 		for await (const m of sub) {
 			const jmsg = toJsMsg(m);
 			let objects = decode(jmsg.data);
-			if (!objects[0])
-				objects = [objects];
+			if (!objects[0]) objects = [objects];
 			for (let obj of objects) {
 				let wrapper = {
 					nats_timestamp: jmsg.info.timestampNanos,
@@ -614,10 +613,7 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 			retention: RetentionPolicy.Workqueue,
 			duplicate_window: STREAM_DUPE_WINDOW,
 			// txn subject is here because filter_subject in the consumer wouldn't work without it. No message will be published to it.
-			subjects: [
-				`${nats_terms.SUBJECT_PREFIXES.MSGID}.${server_name}`,
-				`${nats_terms.SUBJECT_PREFIXES.TXN}.${CONSUMER_NAMES.stream_name}.${server_name}`,
-			],
+			subjects: [`${nats_terms.SUBJECT_PREFIXES.TXN}.${CONSUMER_NAMES.stream_name}.${server_name}`],
 		});
 	} catch (err) {
 		// If the stream already exists ignore error that is thrown.
@@ -638,7 +634,6 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 				deliver_policy: DeliverPolicy.All,
 				max_ack_pending: 10000,
 				deliver_group: CONSUMER_NAMES.deliver_group,
-				filter_subject: `${nats_terms.SUBJECT_PREFIXES.TXN}.>`,
 			});
 		} else {
 			throw e;
@@ -691,9 +686,6 @@ async function addSourceToWorkStream(node, work_queue_name, subscription) {
 	if (found === true) {
 		// If the source already exists in the work stream and there is no change to the start time, do nothing.
 		if (source.opt_start_time === start_time) return;
-
-		// Purge any msgs from source in work stream. This ensures new start time is honoured
-		await purgeSourceFromWorkStream(schema, table, source, work_queue_name);
 
 		// When updating an exising source that source first needs to be removed from the work stream.
 		w_q_stream.config.sources.splice(source_index, 1);
@@ -755,31 +747,6 @@ async function removeSourceFromWorkStream(node, work_queue_name, subscription) {
 	}
 
 	await jsm.streams.update(work_queue_name, w_q_stream.config);
-
-	// Remove any messages from source that may be in work stream.
-	// Note - when a source is used in a work stream we always keep the most recent message in the stream for tracking.
-	// For this reason purge is called.
-	await purgeSourceFromWorkStream(schema, table, source, work_queue_name);
-}
-
-/**
- * Purge all messages from work stream that match the source subject name.
- * @param schema - schema the table (source) is in.
- * @param table - the table which is the source.
- * @param source - unique node name where the sourcing from.
- * @param wq_name - name of work queue.
- * @returns {Promise<void>}
- */
-async function purgeSourceFromWorkStream(schema, table, source, wq_name) {
-	const jsm = await getJetStreamManager();
-	let source_subject_name;
-	try {
-		// Purge any messaged from source in the work stream
-		source_subject_name = createSubjectName(schema, table, source.external.api.split('.')[1]);
-		await jsm.streams.purge(wq_name, { filter: source_subject_name });
-	} catch (err) {
-		hdb_logger.error('Error purging source subject', source_subject_name, 'from work stream', wq_name);
-	}
 }
 
 /**
