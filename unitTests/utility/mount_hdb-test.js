@@ -32,7 +32,7 @@ describe('test mount_hdb module', () => {
 	after(async () => {
 		try {
 			await fs_extra.remove(BASE_BATH);
-		}catch(e){}
+		} catch (e) {}
 		sandbox.restore();
 	});
 
@@ -53,7 +53,7 @@ describe('test mount_hdb module', () => {
 		expect(make_dir_stub.getCall(7).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}schema`);
 		expect(make_dir_stub.getCall(8).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}schema${SEP}system`);
 		expect(make_dir_stub.getCall(9).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}transactions`);
-		expect(make_dir_stub.getCall(10).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}clustering`);
+		expect(make_dir_stub.getCall(10).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}clustering${SEP}leaf`);
 		expect(create_lmdb_tables_stub.args[0][0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}schema${SEP}system`);
 		mk_dir_rw();
 		create_lmdb_table_rw();
@@ -75,7 +75,7 @@ describe('test mount_hdb module', () => {
 		after(async () => {
 			try {
 				await fs_extra.remove(BASE_SCHEMA_PATH);
-			}catch(e){}
+			} catch (e) {}
 		});
 
 		it('happy path', async () => {

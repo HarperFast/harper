@@ -3,7 +3,7 @@
 const hdb_logger = require('../../utility/logging/harper_logger');
 const hdb_utils = require('../../utility/common_utils');
 const hdb_terms = require('../../utility/hdbTerms');
-const { IPC_ERRORS } = require('../../utility/errors/commonErrors');
+const { ITC_ERRORS } = require('../../utility/errors/commonErrors');
 const { parentPort, threadId, isMainThread, workerData } = require('worker_threads');
 const { onMessageFromWorkers, broadcast } = require('./manage-threads');
 
@@ -13,17 +13,17 @@ module.exports = {
 	SchemaEventMsg,
 	UserEventMsg,
 };
-let server_ipc_handlers;
+let server_itc_handlers;
 onMessageFromWorkers((event) => {
-	server_ipc_handlers = server_ipc_handlers || require('../ipc/serverHandlers');
+	server_itc_handlers = server_itc_handlers || require('../itc/serverHandlers');
 	validateEvent(event);
-	if (server_ipc_handlers[event.type])
-		server_ipc_handlers[event.type](event);
+	if (server_itc_handlers[event.type])
+		server_itc_handlers[event.type](event);
 });
 
 
 /**
- * Emits an IPC event to the IPC server.
+ * Emits an ITC event to the ITC server.
  * @param event
  */
 function sendItcEvent(event) {
@@ -32,34 +32,34 @@ function sendItcEvent(event) {
 }
 
 /**
- * Does some basic validation on an IPC event.
+ * Does some basic validation on an ITC event.
  * @param event
  * @returns {string}
  */
 function validateEvent(event) {
 	if (typeof event !== 'object') {
-		return IPC_ERRORS.INVALID_IPC_DATA_TYPE;
+		return ITC_ERRORS.INVALID_ITC_DATA_TYPE;
 	}
 
 	if (!event.hasOwnProperty('type') || hdb_utils.isEmpty(event.type)) {
-		return IPC_ERRORS.MISSING_TYPE;
+		return ITC_ERRORS.MISSING_TYPE;
 	}
 
 	if (!event.hasOwnProperty('message') || hdb_utils.isEmpty(event.message)) {
-		return IPC_ERRORS.MISSING_MSG;
+		return ITC_ERRORS.MISSING_MSG;
 	}
 
 	if (!event.message.hasOwnProperty('originator') || hdb_utils.isEmpty(event.message.originator)) {
-		return IPC_ERRORS.MISSING_ORIGIN;
+		return ITC_ERRORS.MISSING_ORIGIN;
 	}
 
-	if (hdb_terms.IPC_EVENT_TYPES[event.type.toUpperCase()] === undefined) {
-		return IPC_ERRORS.INVALID_EVENT(event.type);
+	if (hdb_terms.ITC_EVENT_TYPES[event.type.toUpperCase()] === undefined) {
+		return ITC_ERRORS.INVALID_EVENT(event.type);
 	}
 }
 
 /**
- * Constructor function for the message of schema IPC events
+ * Constructor function for the message of schema ITC events
  * @param originator
  * @param operation
  * @param schema
@@ -76,7 +76,7 @@ function SchemaEventMsg(originator, operation, schema, table = undefined, attrib
 }
 
 /**
- * Constructor function for the message of user IPC events
+ * Constructor function for the message of user ITC events
  * @param originator
  * @constructor
  */

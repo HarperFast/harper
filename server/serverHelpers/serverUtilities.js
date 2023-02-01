@@ -56,9 +56,9 @@ const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
 
 const OperationFunctionObject = require('./OperationFunctionObject');
 
-function postWrite(request_body, result, originators) {
+function postWrite(request_body, result, nats_msg_header) {
 	return Promise.all([
-		transact_to_clustering_utils.postOperationHandler(request_body, result, originators),
+		transact_to_clustering_utils.postOperationHandler(request_body, result, nats_msg_header),
 		// wait for flush (some operations like create_schema don't specify a table)
 		request_body.table ? insert.flush(request_body) : null,
 	]);
@@ -90,9 +90,7 @@ async function processLocalTransaction(req, operation_function) {
 		harper_logger.error(e);
 	}
 
-	let post_op_function =
-		terms.CLUSTER_OPERATIONS[req.body.operation] === undefined
-			? null : postWrite;
+	let post_op_function = terms.CLUSTER_OPERATIONS[req.body.operation] === undefined ? null : postWrite;
 	try {
 		let data = await operation_function_caller.callOperationFunctionAsAwait(
 			operation_function,

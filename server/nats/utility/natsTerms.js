@@ -12,6 +12,11 @@ const NATS_TERM_CONSTRAINTS_RX = /^[^\s.,*>]+$/;
 const REQUEST_SUFFIX = '__request__';
 const REQUEST_SUBJECT = (remote_node) => `${remote_node}.${REQUEST_SUFFIX}`;
 
+const MSG_HEADERS = {
+	NATS_MSG_ID: 'Nats-Msg-Id',
+	ORIGIN: 'origin',
+};
+
 const NATS_CONFIG_FILES = {
 	HUB_SERVER: 'hub.json',
 	LEAF_SERVER: 'leaf.json',
@@ -82,4 +87,5 @@ module.exports = {
 	CLUSTER_STATUS_STATUSES,
 	REQUEST_SUBJECT,
 	SUBJECT_PREFIXES,
+	MSG_HEADERS,
 };

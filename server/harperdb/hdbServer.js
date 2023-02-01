@@ -156,7 +156,7 @@ function buildServer(is_https) {
 
 	// This handles all get requests for the studio
 	app.register(fastify_compress);
-	app.register(fastify_static, { root: guidePath.join(__dirname, '../../docs') });
+	app.register(fastify_static, { root: guidePath.join(PACKAGE_ROOT, 'docs') });
 	registerContentHandlers(app);
 
 	let studio_on = env.get(terms.HDB_SETTINGS_NAMES.LOCAL_STUDIO_ON);

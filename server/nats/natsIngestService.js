@@ -4,7 +4,7 @@ const util = require('util');
 const { toJsMsg } = require('nats');
 const { decode } = require('msgpackr');
 const global_schema = require('../../utility/globalSchema');
-const ipc_server_handlers = require('../ipc/serverHandlers');
+const { isMainThread, parentPort } = require('worker_threads');
 const nats_utils = require('./utility/natsUtils');
 const nats_terms = require('./utility/natsTerms');
 const hdb_terms = require('../../utility/hdbTerms');
@@ -12,6 +12,9 @@ const harper_logger = require('../../utility/logging/harper_logger');
 const server_utilities = require('../serverHelpers/serverUtilities');
 const operation_function_caller = require('../../utility/OperationFunctionCaller');
 const transact_to_cluster_utilities = require('../../utility/clustering/transactToClusteringUtilities');
+const env_mgr = require('../../utility/environment/environmentManager');
+const terms = require('../../utility/hdbTerms');
+require('../../server/threads/manage-threads');
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
 const SUBSCRIPTION_OPTIONS = {
@@ -40,7 +43,7 @@ module.exports = {
  */
 
 /**
- * initialized schema, ipc handler, established nats connection & jetstream handlers
+ * initialized schema, itc handler, established nats connection & jetstream handlers
  * @returns {Promise<void>}
  */
 async function initialize() {
@@ -74,7 +77,14 @@ async function workQueueListener() {
 		if (++operation_index >= MAX_CONCURRENCY) operation_index = 0;
 	}
 }
-
+if (!isMainThread) {
+	parentPort.on('message', async (message) => {
+		const {type} = message;
+		if (type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
+			nats_utils.closeConnection();
+		}
+	});
+}
 /**
  * receives a message & processes it as an HDB operation
  * @param msg
@@ -82,57 +92,47 @@ async function workQueueListener() {
  */
 async function messageProcessor(msg) {
 	const js_msg = toJsMsg(msg);
-	//tell NATS we are working on the message and not to redeliver
-	js_msg.working();
 	const entry = decode(js_msg.data);
 
-	harper_logger.trace('processing message:', entry);
-
-	// Originators are tracked to make sure a transaction doesn't get processed more than once.
-	let originators = [];
-	let orig = [];
-	if (js_msg.headers) {
-		let orig_raw = js_msg.headers.get('originators');
-		if (orig_raw) {
-			orig = orig_raw.split(',');
-			originators = orig;
-		}
+	// If the msg origin header matches this node the msg can be ignored because it would have already been processed.
+	const origin = js_msg.headers.get(nats_terms.MSG_HEADERS.ORIGIN);
+	if (origin === env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME)) {
+		js_msg.ack();
+		return;
 	}
+
+	harper_logger.trace('processing message:', entry, 'with sequence:', js_msg.seq);
+	harper_logger.trace(`messageProcessor nats msg id: ${js_msg.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID)}`);
+
+	let operation_function = undefined;
+	const found_operation = server_utilities.getOperationFunction(entry);
+	operation_function = found_operation.job_operation_function
+		? found_operation.job_operation_function
+		: found_operation.operation_function;
+
+	// Run the HDB transaction.
+	// csv loading and other jobs need to use a different postOp handler
 	let result;
-	harper_logger.trace(`messageProcessor originators: ${originators} on server: ${server_name}`);
-	if (originators.indexOf(server_name) < 0) {
-		let operation_function = undefined;
-		const found_operation = server_utilities.getOperationFunction(entry);
-		operation_function = found_operation.job_operation_function
-			? found_operation.job_operation_function
-			: found_operation.operation_function;
+	try {
+		if (found_operation.job_operation_function) {
+			result = await operation_function(entry, js_msg.headers);
+		} else {
+			entry[hdb_terms.CLUSTERING_FLAG] = true;
 
-		// Run the HDB transaction.
-		// csv loading and other jobs need to use a different postOp handler
-		try {
-			if (found_operation.job_operation_function) {
-				result = await operation_function(entry, originators);
-			} else {
-				entry[hdb_terms.CLUSTERING_FLAG] = true;
-
-				result = await operation_function_caller.callOperationFunctionAsAwait(
-					operation_function,
-					entry,
-					transact_to_cluster_utilities.postOperationHandler,
-					originators
-				);
-			}
-			harper_logger.debug(result);
-		} catch (e) {
-			harper_logger.error(e);
+			result = await operation_function_caller.callOperationFunctionAsAwait(
+				operation_function,
+				entry,
+				transact_to_cluster_utilities.postOperationHandler,
+				js_msg.headers
+			);
 		}
+		harper_logger.debug(result);
+	} catch (e) {
+		harper_logger.error(e);
 	}
 
 	// Ack to NATS to acknowledge the message has been processed
 	js_msg.ack();
-
-	// Delete the message from the work queue stream once we have transacted it.
-	await js_manager.streams.deleteMessage(js_msg.info.stream, js_msg.info.streamSequence);
 
 	return result;
 }

@@ -36,24 +36,6 @@ describe('Test pm2 servicesConfig module', () => {
 		sandbox.restore();
 	});
 
-	it('Test result from generateIPCServerConfig function is correct for non compiled', () => {
-		const expected_result = {
-			name: 'IPC',
-			script: hdb_terms.SERVICE_SERVERS.IPC,
-			exec_mode: 'fork',
-			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.IPC),
-			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.IPC),
-			instances: 1,
-			cwd: hdb_terms.SERVICE_SERVERS_CWD.IPC,
-			merge_logs: true,
-			env: {
-				PROCESS_NAME: hdb_terms.PROCESS_DESCRIPTORS.IPC,
-			},
-		};
-		const result = services_config.generateIPCServerConfig();
-		expect(result).to.eql(expected_result);
-	});
-
 	it('Test result from generateMainServerConfig function is correct non compiled', () => {
 		const expected_result = {
 			exec_mode: 'fork',
@@ -70,25 +52,6 @@ describe('Test pm2 servicesConfig module', () => {
 			},
 		};
 		const result = services_config.generateMainServerConfig();
-		expect(result).to.eql(expected_result);
-	});
-
-	it('Test result from generateCFServerConfig function is correct non compiled', () => {
-		const expected_result = {
-			exec_mode: 'cluster',
-			instances: 4,
-			name: 'Custom Functions',
-			node_args: '--max-old-space-size=512',
-			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CUSTOM_FUNCTIONS),
-			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CUSTOM_FUNCTIONS),
-			script: path.join(LAUNCH_SCRIPTS_DIR, 'launchCustomFunctions.js'),
-			cwd: LAUNCH_SCRIPTS_DIR,
-			merge_logs: true,
-			env: {
-				PROCESS_NAME: hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS,
-			},
-		};
-		const result = services_config.generateCFServerConfig();
 		expect(result).to.eql(expected_result);
 	});
 

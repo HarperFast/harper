@@ -51,15 +51,13 @@ describe('Test custom functions operations', () => {
 		expect(Object.keys(endpoints)).to.have.length(1);
 		expect(projectName).to.equal('unit_test');
 		expect(endpoints[projectName]).to.be.instanceOf(Object);
-		expect(Object.keys(endpoints[projectName])).to.have.length(3);
+		expect(Object.keys(endpoints[projectName])).to.have.length(2);
 		expect(Object.keys(endpoints[projectName])).to.include('routes');
 		expect(endpoints[projectName].routes).to.be.instanceOf(Array);
 		expect(endpoints[projectName].routes).to.have.length(1);
 		expect(Object.keys(endpoints[projectName])).to.include('helpers');
 		expect(endpoints[projectName].helpers).to.be.instanceOf(Array);
 		expect(endpoints[projectName].helpers).to.have.length(1);
-		expect(Object.keys(endpoints[projectName])).to.include('static');
-		expect(endpoints[projectName].static).to.equal(4);
 	});
 
 	it('Test getCustomFunction generated file exists and has expected content', async () => {
@@ -82,17 +80,6 @@ describe('Test custom functions operations', () => {
 		expect(response.project).to.equal('unit_test');
 
 		expect(tar_spy.args[0][1].hasOwnProperty('ignore')).to.be.true;
-	}).timeout(5000);
-
-	it('Test deployCustomFunctionProject properly deploys a project', async () => {
-		const readstream_stub = sandbox.stub(fs, 'createReadStream').returns({ pipe: () => {} });
-		const deploy_response = await operations.deployCustomFunctionProject({
-			project: 'test2',
-			file: `${CF_DIR_ROOT}/test2.tar`,
-			payload: TEST_DATA_BASE64_CF_PROJECT,
-		});
-		readstream_stub.restore();
-		expect(deploy_response).to.equal('Successfully deployed project: test2');
 	}).timeout(5000);
 
 	it('Test setCustomFunction creates a function file as expected', async () => {
@@ -132,21 +119,19 @@ describe('Test custom functions operations', () => {
 
 		const endpoints = await operations.getCustomFunctions();
 
-		const projectName = Object.keys(endpoints)[1];
+		const projectName = Object.keys(endpoints)[0];
 
 		expect(endpoints).to.be.instanceOf(Object);
-		expect(Object.keys(endpoints)).to.have.length(2);
+		expect(Object.keys(endpoints)).to.have.length(1);
 		expect(projectName).to.equal('unit_test');
 		expect(endpoints[projectName]).to.be.instanceOf(Object);
-		expect(Object.keys(endpoints[projectName])).to.have.length(3);
+		expect(Object.keys(endpoints[projectName])).to.have.length(2);
 		expect(Object.keys(endpoints[projectName])).to.include('routes');
 		expect(endpoints[projectName].routes).to.be.instanceOf(Array);
 		expect(endpoints[projectName].routes).to.have.length(1);
 		expect(Object.keys(endpoints[projectName])).to.include('helpers');
 		expect(endpoints[projectName].helpers).to.be.instanceOf(Array);
 		expect(endpoints[projectName].helpers).to.have.length(1);
-		expect(Object.keys(endpoints[projectName])).to.include('static');
-		expect(endpoints[projectName].static).to.equal(4);
 	});
 
 	it('Test dropCustomFunctionProject drops project as expected', async () => {
@@ -157,6 +142,6 @@ describe('Test custom functions operations', () => {
 		const endpoints = await operations.getCustomFunctions();
 
 		expect(endpoints).to.be.instanceOf(Object);
-		expect(Object.keys(endpoints)).to.have.length(1);
+		expect(Object.keys(endpoints)).to.have.length(0);
 	});
 });

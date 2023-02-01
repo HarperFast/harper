@@ -302,6 +302,9 @@ describe('Test configUtils module', () => {
 							port: 9900,
 						},
 					},
+					ingest: {
+						threads: 1,
+					},
 					leafServer: {
 						network: {
 							port: 9944,
@@ -311,6 +314,7 @@ describe('Test configUtils module', () => {
 							maxAge: null,
 							maxBytes: null,
 							maxMsgs: null,
+							path: null,
 						},
 					},
 					nodeName: 'test_node_name',
@@ -410,6 +414,7 @@ describe('Test configUtils module', () => {
 				clustering_leafserver_streams_maxage: null,
 				clustering_leafserver_streams_maxbytes: null,
 				clustering_leafserver_streams_maxmsgs: null,
+				clustering_leafserver_streams_path: null,
 				clustering_nodename: 'test_node_name',
 				clustering_tls_certificate: TEST_CERT,
 				clustering_tls_certificateauthority: null,
@@ -488,11 +493,13 @@ describe('Test configUtils module', () => {
 			clustering_hubserver_cluster_network_routes: null,
 			clustering_hubserver_leafnodes_network_port: 9931,
 			clustering_hubserver_network_port: 9930,
+			clustering_ingest_threads: 1,
 			clustering_leafserver_network_port: 9940,
 			clustering_leafserver_network_routes: null,
 			clustering_leafserver_streams_maxage: null,
 			clustering_leafserver_streams_maxbytes: null,
 			clustering_leafserver_streams_maxmsgs: null,
+			clustering_leafserver_streams_path: null,
 			clustering_nodename: null,
 			clustering_tls_certificate: null,
 			clustering_tls_certificateauthority: null,
@@ -750,6 +757,11 @@ describe('Test configUtils module', () => {
 				value: {
 					clustering: {
 						enabled: false,
+						leafServer: {
+							streams: {
+								path: 'user/harperdb/streams',
+							},
+						},
 						tls: {
 							certificate: '/yaml/keys/certificate.pem',
 							certificateAuthority: '/yaml/keys/ca.pem',
@@ -826,6 +838,8 @@ describe('Test configUtils module', () => {
 			expect(set_in_stub.args[10][1]).to.equal(KEY_PEM);
 			expect(set_in_stub.args[11][0]).to.eql(['clustering', 'tls', 'certificateAuthority']);
 			expect(set_in_stub.args[11][1]).to.equal(CA_PEM);
+			expect(set_in_stub.args[12][0]).to.eql(['clustering', 'leafServer', 'streams', 'path']);
+			expect(set_in_stub.args[12][1]).to.equal('user/harperdb/streams');
 		});
 	});
 

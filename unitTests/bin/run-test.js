@@ -72,7 +72,7 @@ describe('Test run module', () => {
 		check_perms_stub = sandbox.stub(install_user_permission, 'checkPermission');
 		start_all_services_stub = sandbox.stub(pm2_utils, 'startAllServices').resolves();
 		start_service_stub = sandbox.stub(pm2_utils, 'startService').resolves();
-		start_clustering_stub = sandbox.stub(pm2_utils, 'startClustering').resolves();
+		start_clustering_stub = sandbox.stub(pm2_utils, 'startClusteringProcesses').resolves();
 		process_exit_stub = sandbox.stub(process, 'exit');
 		console_log_stub = sandbox.stub(console, 'log');
 		console_error_stub = sandbox.stub(console, 'error');
@@ -125,7 +125,7 @@ describe('Test run module', () => {
 			install_rw();
 			const service_index = process.argv.indexOf('--service');
 			if (service_index > -1) process.argv.splice(service_index, 1);
-			const names_index = process.argv.indexOf('not service,harperdb,ipc,custom functions');
+			const names_index = process.argv.indexOf('not service,harperdb,itc,custom functions');
 			if (names_index > -1) process.argv.splice(names_index, 1);
 		});
 

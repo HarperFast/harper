@@ -6,15 +6,11 @@ const log = require('../logging/harper_logger');
 const terms = require('../hdbTerms');
 const lmdb_get_table_size = require('../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbGetTableSize');
 const schema_describe = require('../../data_layer/schemaDescribe');
-const { sendItcEvent } = require('../../server/threads/itc');
 const env = require('./environmentManager');
 env.initSync();
 
 // eslint-disable-next-line no-unused-vars
-const SystemInformationOperation = require('./SystemInformationOperation');
 const SystemInformationObject = require('./SystemInformationObject');
-const IPCEventObject = require("../../server/ipc/utility/IPCEventObject");
-const hdb_terms = require("../hdbTerms");
 const { getBaseSchemaPath } = require("../../data_layer/harperBridge/lmdbBridge/lmdbUtility/initializePaths");
 const { openEnvironment } = require("../lmdb/environmentUtility");
 

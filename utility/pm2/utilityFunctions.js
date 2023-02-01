@@ -334,7 +334,8 @@ async function startAllServices() {
 		// The clustering services are started separately because their config is
 		// removed for security reasons after they are connected.
 		// Also we create the work queue stream when we start clustering
-		await startClustering();
+		await startClusteringProcesses();
+		await startClusteringThreads();
 
 		await start(services_config.generateAllServiceConfigs());
 	} catch (err) {
@@ -456,21 +457,6 @@ async function stopAllServices() {
 
 		// Kill pm2 daemon
 		await kill();
-
-		// If running in foreground get the pid of foreground process and kill it.
-		if (env_mangr.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_FOREGROUND) === true) {
-			// eslint-disable-next-line prettier/prettier
-			const foreground_pid = (
-				await fs.readFile(
-					path.join(env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY), hdb_terms.FOREGROUND_PID_FILE)
-				)
-			).toString();
-			try {
-				process.kill(foreground_pid, 'SIGTERM');
-			} catch (pid_err) {
-				hdb_logger.warn(`Error terminating foreground process: ${pid_err}`);
-			}
-		}
 	} catch (err) {
 		pm2.disconnect();
 		throw err;

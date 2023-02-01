@@ -23,7 +23,7 @@ async function mountHdb(hdb_path) {
 	makeDirectory(path.join(hdb_path, 'schema'));
 	makeDirectory(system_schema_path);
 	makeDirectory(path.join(hdb_path, terms.TRANSACTIONS_DIR_NAME));
-	makeDirectory(path.join(hdb_path, 'clustering'));
+	makeDirectory(path.join(hdb_path, 'clustering', 'leaf'));
 	makeDirectory(path.join(hdb_path, 'custom_functions'));
 
 	await createLMDBTables(system_schema_path);

@@ -3,8 +3,8 @@
 const { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } = require('worker_threads');
 const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
 const { join, isAbsolute, extname } = require('path');
-const { totalmem } = require('os');
 const { watch, readdir } = require('fs/promises');
+const { totalmem } = require('os');
 const hdb_terms = require('../../utility/hdbTerms');
 const env = require('../../utility/environment/environmentManager');
 const hdb_license = require('../../utility/registration/hdb_license');
@@ -18,6 +18,7 @@ const MB = 1024 * 1024;
 const workers = []; // these are our child workers that we are managing
 const connected_ports = []; // these are all known connected worker ports (siblings, children, parents)
 const MAX_UNEXPECTED_RESTARTS = 50;
+const THREAD_TERMINATION_TIMEOUT = 10000; // threads, you got 10 seconds to die
 const RESTART_TYPE = 'restart';
 const ADDED_PORT = 'added-port';
 
@@ -85,30 +86,26 @@ function startWorker(path, options = {}) {
 	);
 	addPort(worker);
 	worker.unexpectedRestarts = options.unexpectedRestarts || 0;
-	worker.restart = () => {
+	worker.startCopy = () => {
 		// in a shutdown sequence we use overlapping restarts, starting the new thread while waiting for the old thread
 		// to die, to ensure there is no loss of service and maximum availability.
-		console.log('restarting', path, threadId);
 		startWorker(path, options);
 	};
 	worker.on('error', (error) => {
 		// log errors, and it also important that we catch errors so we can recover if a thread dies (in a recoverable
 		// way)
-		console.error(error, error.stack);
-		harper_logger.error(error);
+		console.error('Worker error:', error); // these should be reported directly to users
+		harper_logger.error('Worker error:', error);
 	});
 	worker.on('exit', (code) => {
-		worker.isExited = true;
-		if (code === 100) {
-		} // typescript error
-		else if (worker.unexpectedRestarts < MAX_UNEXPECTED_RESTARTS) {
-			workers.splice(workers.indexOf(worker), 1);
-			if (!worker.wasShutdown && options.autoRestart !== false) {
-				// if this wasn't an intentional shutdown, restart now (unless we have tried too many times)
+		workers.splice(workers.indexOf(worker), 1);
+		if (!worker.wasShutdown && options.autoRestart !== false) {
+			// if this wasn't an intentional shutdown, restart now (unless we have tried too many times)
+			if (worker.unexpectedRestarts < MAX_UNEXPECTED_RESTARTS) {
 				options.unexpectedRestarts = worker.unexpectedRestarts + 1;
 				startWorker(path, options);
-			}
-		} else harper_logger.error(`Thread has been restarted ${worker.restarts} times and will not be restarted`);
+			} else harper_logger.error(`Thread has been restarted ${worker.restarts} times and will not be restarted`);
+		}
 	});
 	worker.on('message', (message) => {
 		if (message.type === RESTART_TYPE) restartWorkers(message.workerType);
@@ -118,6 +115,8 @@ function startWorker(path, options = {}) {
 	worker.name = options.name;
 	return worker;
 }
+
+const OVERLAPPING_RESTART_TYPES = [hdb_terms.THREAD_TYPES.HTTP];
 
 /**
  * Restart all the worker threads
@@ -132,7 +131,6 @@ function startWorker(path, options = {}) {
 
 async function restartWorkers(name = null, max_workers_down = 2, start_replacement_threads = true) {
 	if (isMainThread) {
-		hdb_logger.error('restartWorkers from main thread');
 		if (max_workers_down < 1) {
 			// we accept a ratio of workers, and compute absolute maximum being down at a time from the total number of
 			// threads
@@ -144,29 +142,33 @@ async function restartWorkers(name = null, max_workers_down = 2, start_replaceme
 		for (let worker of workers.slice(0)) {
 			if ((name && worker.name !== name) || worker.wasShutdown) continue; // filter by type, if specified
 			worker.postMessage({
-				type: hdb_terms.IPC_EVENT_TYPES.SHUTDOWN,
+				type: hdb_terms.ITC_EVENT_TYPES.SHUTDOWN,
 			});
 			worker.wasShutdown = true;
-			if (!worker.isExited) {
-				let when_done = new Promise((resolve) => {
-					worker.on('exit', () => {
-						waiting_to_finish.splice(waiting_to_finish.indexOf(when_done));
-						resolve();
-					});
+			const overlapping = OVERLAPPING_RESTART_TYPES.indexOf(worker.name) > -1;
+			let when_done = new Promise((resolve) => {
+				// in case the exit inside the thread doesn't timeout, call terminate if necessary
+				let timeout = setTimeout(() => worker.terminate(), THREAD_TERMINATION_TIMEOUT * 2).unref();
+				worker.on('exit', () => {
+					clearTimeout(timeout);
+					waiting_to_finish.splice(waiting_to_finish.indexOf(when_done));
+					if (!overlapping && start_replacement_threads) worker.startCopy();
+					resolve();
 				});
-				waiting_to_finish.push(when_done);
-			}
-			if (start_replacement_threads) worker.restart();
-			if (waiting_to_finish.length >= max_workers_down) {
-				// wait for one to finish before continuing to restart more
-				await Promise.race(waiting_to_finish);
+			});
+			waiting_to_finish.push(when_done);
+			if (overlapping && start_replacement_threads) {
+				worker.startCopy();
+				if (waiting_to_finish.length >= max_workers_down) {
+					// wait for one to finish before continuing to restart more
+					await Promise.race(waiting_to_finish);
+				}
 			}
 		}
 		// seems appropriate to wait for this to finish, but the API doesn't actually wait for this function
 		// to finish, so not that important
 		await Promise.all(waiting_to_finish);
 	} else {
-		hdb_logger.error('restartWorkers sending to main thread');
 		parentPort.postMessage({
 			type: RESTART_TYPE,
 			workerType: name,
@@ -182,6 +184,7 @@ const message_listeners = [];
 function onMessageFromWorkers(listener) {
 	message_listeners.push(listener);
 }
+
 function broadcast(message) {
 	for (let port of connected_ports) {
 		try {
@@ -220,10 +223,10 @@ function addPort(port) {
 }
 if (isMainThread) {
 	const watch_dir = async (dir) => {
-		for (let entry of await readdir(dir, { withFileTypes: true })) {
+		for (let entry of await readdir(dir, {withFileTypes: true})) {
 			if (entry.isDirectory()) watch_dir(join(dir, entry.name));
 		}
-		for await (let { eventType, filename } of watch(dir)) {
+		for await (let {eventType, filename} of watch(dir)) {
 			if (extname(filename) === '.ts' || extname(filename) === '.js') {
 				restartWorkers();
 			}
@@ -231,4 +234,17 @@ if (isMainThread) {
 	};
 	module.exports.watchDir = watch_dir;
 	if (process.env.WATCH_DIR) watch_dir(process.env.WATCH_DIR);
+} else {
+	parentPort.on('message', async (message) => {
+		const { type } = message;
+		if (type === hdb_terms.ITC_EVENT_TYPES.SHUTDOWN) {
+			parentPort.unref(); // remove this handle
+			setTimeout(() => {
+				harper_logger.warn('Thread did not voluntarily terminate', threadId);
+				// Note that if this occurs, you will probably want to replace the
+				// process.exit(0); with require('why-is-node-running')(); to debug what is currently running
+				process.exit(0);
+			}, THREAD_TERMINATION_TIMEOUT).unref(); // don't block the shutdown
+		}
+	});
 }

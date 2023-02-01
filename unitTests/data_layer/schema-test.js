@@ -694,32 +694,5 @@ describe('Test schema module', function () {
 			expect(signal_schema_change_stub).to.have.been.calledOnce;
 			expect(result).to.equal("attribute 'dogsrule.catsdrool.name' successfully created.");
 		});
-
-		it('should throw schema doesnt exist error', async () => {
-			let create_attr_obj = test_util.deepClone(CREATE_ATTR_OBJECT_TEST);
-			create_attr_obj.schema = 'ImNotThere';
-			let test_err_result = await test_util.testError(
-				schema.createAttribute(create_attr_obj),
-				`Schema '${create_attr_obj.schema}' does not exist`
-			);
-
-			expect(test_err_result).to.be.true;
-		});
-
-		it('should throw table doesnt exist error', async () => {
-			let create_attr_obj = test_util.deepClone(CREATE_ATTR_OBJECT_TEST);
-			create_attr_obj.table = 'noTableHere';
-			global.hdb_schema = {
-				[CREATE_ATTR_OBJECT_TEST.schema]: {
-					[CREATE_ATTR_OBJECT_TEST.table]: {},
-				},
-			};
-			let test_err_result = await test_util.testError(
-				schema.createAttribute(create_attr_obj),
-				`Table '${create_attr_obj.schema}.${create_attr_obj.table}' does not exist`
-			);
-
-			expect(test_err_result).to.be.true;
-		});
 	});
 });

@@ -5219,6 +5219,14 @@
 					"name": "Restart node 1 to confirm records deleted",
 					"event": [
 						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(() => {}, 4000);"
+								]
+							}
+						},
+						{
 							"listen": "test",
 							"script": {
 								"exec": [
@@ -5232,7 +5240,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 40000)"
+									"setTimeout(()=> {}, 20000)"
 								],
 								"type": "text/javascript"
 							}
@@ -5896,289 +5904,6 @@
 					"response": []
 				},
 				{
-					"name": "Update node pub/sub true on node 2 with start time",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test('Update node successful messaged returned', () => {",
-									"    const response = pm.response.json();",
-									"    const node_name = pm.environment.get(\"NODE1_NAME\");",
-									"    pm.expect(response.message).to.eql(`Successfully updated '${node_name}'`);",
-									"});",
-									"",
-									"// Give time for update to do its thing.",
-									"setTimeout(()=>{}, 45000)"
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\": \"update_node\",\n    \"node_name\": \"{{NODE1_NAME}}\",\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"subscribe\": true,\n            \"publish\": true,\n            \"start_time\": \"2022-08-26T18:26:58.514Z\"\n        }\n    ]\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "http",
-							"host": [
-								"{{NODE2_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Confirm node 1 changes after update true/true with date",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test('Confirm records changed node 1', () => {",
-									"    try {",
-									"        const response = pm.response.json();",
-									"        pm.expect(response.length).to.equal(8);",
-									"        pm.expect(response).to.have.deep.members([",
-									"            {",
-									"                \"id\": \"1\",",
-									"                \"type\": \"Country\"",
-									"            },",
-									"            {",
-									"                \"id\": \"2\",",
-									"                \"type\": \"Jazz\"",
-									"            },",
-									"            {",
-									"                \"id\": \"3\",",
-									"                \"type\": \"Classical\"",
-									"            },",
-									"            {",
-									"                \"id\": \"6\",",
-									"                \"type\": \"Hip hop opopotamus\"",
-									"            },",
-									"            {",
-									"                \"id\": \"7\",",
-									"                \"type\": \"Pop\"",
-									"            },",
-									"            {",
-									"                \"id\": \"8\",",
-									"                \"type\": \"Hip hop\"",
-									"            },",
-									"            {",
-									"                \"id\": \"9\",",
-									"                \"type\": \"Electronic\"",
-									"            },",
-									"            {",
-									"                \"id\": \"10\",",
-									"                \"type\": \"Dance\"",
-									"            }",
-									"        ]);",
-									"        pm.environment.set('RETRY_COUNT', 0);",
-									"    } catch (error) {",
-									"        let retry_count = parseInt(pm.environment.get('RETRY_COUNT'));",
-									"        const retry_count_max = parseInt(pm.environment.get('RETRY_COUNT_MAX'));",
-									"        if (retry_count < retry_count_max) {",
-									"            console.error(`Retry count ${retry_count} for test ${pm.info.requestName}`);",
-									"            setTimeout(() => {}, 2000);",
-									"            retry_count++",
-									"            pm.environment.set('RETRY_COUNT', retry_count);",
-									"            postman.setNextRequest(pm.info.requestId);",
-									"        } else {",
-									"            pm.environment.set('RETRY_COUNT', 0);",
-									"            console.error(`\"${pm.info.requestName}\" reached max test retry`)",
-									"            throw error",
-									"        }",
-									"    }      ",
-									"});"
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select id, type from radio.genre\"\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "http",
-							"host": [
-								"{{NODE1_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Confirm node 2 changes after update true/true with date",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test('Confirm records unchanged node 2', () => {",
-									"    try {",
-									"        const response = pm.response.json();",
-									"        pm.expect(response.length).to.equal(5);",
-									"        pm.expect(response).to.have.deep.members([",
-									"            {",
-									"                \"id\": \"6\",",
-									"                \"type\": \"Hip hop opopotamus\"",
-									"            },",
-									"            {",
-									"                \"id\": \"7\",",
-									"                \"type\": \"Pop\"",
-									"            },",
-									"            {",
-									"                \"id\": \"8\",",
-									"                \"type\": \"Hip hop\"",
-									"            },",
-									"            {",
-									"                \"id\": \"9\",",
-									"                \"type\": \"Electronic\"",
-									"            },",
-									"            {",
-									"                \"id\": \"10\",",
-									"                \"type\": \"Dance\"",
-									"            }",
-									"        ]);",
-									"        pm.environment.set('RETRY_COUNT', 0);",
-									"    } catch (error) {",
-									"        let retry_count = parseInt(pm.environment.get('RETRY_COUNT'));",
-									"        const retry_count_max = parseInt(pm.environment.get('RETRY_COUNT_MAX'));",
-									"        if (retry_count < retry_count_max) {",
-									"            console.error(`Retry count ${retry_count} for test ${pm.info.requestName}`);",
-									"            setTimeout(() => {}, 2000);",
-									"            retry_count++",
-									"            pm.environment.set('RETRY_COUNT', retry_count);",
-									"            postman.setNextRequest(pm.info.requestId);",
-									"        } else {",
-									"            pm.environment.set('RETRY_COUNT', 0);",
-									"            console.error(`\"${pm.info.requestName}\" reached max test retry`)",
-									"            throw error",
-									"        }",
-									"    }      ",
-									"});"
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select id, type from radio.genre\"\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "http",
-							"host": [
-								"{{NODE2_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
 					"name": "Update node pub/sub true/false on node 1",
 					"event": [
 						{
@@ -6506,36 +6231,44 @@
 									"pm.test('Confirm new records in table node 2', () => {",
 									"    try {",
 									"        const response = pm.response.json();",
-									"        pm.expect(response.length).to.equal(7);",
+									"        pm.expect(response.length).to.equal(9);",
 									"        pm.expect(response).to.have.deep.members([",
-									"            {",
-									"                \"id\": \"6\",",
-									"                \"type\": \"Hip hop opopotamus\"",
-									"            },",
-									"            {",
-									"                \"id\": \"7\",",
-									"                \"type\": \"Pop\"",
-									"            },",
-									"            {",
-									"                \"id\": \"8\",",
-									"                \"type\": \"Hip hop\"",
-									"            },",
-									"            {",
-									"                \"id\": \"9\",",
-									"                \"type\": \"Electronic\"",
-									"            },",
-									"            {",
-									"                \"id\": \"10\",",
-									"                \"type\": \"Dance\"",
-									"            },",
-									"            {",
-									"                \"id\": \"number1\",",
-									"                \"type\": \"Loud\"",
-									"            },",
-									"            {",
-									"                \"id\": \"number2\",",
-									"                \"type\": \"Jazz-a-tronic\"",
-									"            }",
+									"         {",
+									"        \"id\": \"1\",",
+									"        \"type\": \"Country\"",
+									"        },",
+									"        {",
+									"            \"id\": \"2\",",
+									"            \"type\": \"Jazz\"",
+									"        },",
+									"        {",
+									"            \"id\": \"3\",",
+									"            \"type\": \"Classical\"",
+									"        },",
+									"        {",
+									"            \"id\": \"7\",",
+									"            \"type\": \"Pop\"",
+									"        },",
+									"        {",
+									"            \"id\": \"8\",",
+									"            \"type\": \"Hip hop\"",
+									"        },",
+									"        {",
+									"            \"id\": \"9\",",
+									"            \"type\": \"Electronic\"",
+									"        },",
+									"        {",
+									"            \"id\": \"10\",",
+									"            \"type\": \"Dance\"",
+									"        },",
+									"        {",
+									"            \"id\": \"number1\",",
+									"            \"type\": \"Loud\"",
+									"        },",
+									"        {",
+									"            \"id\": \"number2\",",
+									"            \"type\": \"Jazz-a-tronic\"",
+									"        }",
 									"        ]);",
 									"        pm.environment.set('RETRY_COUNT', 0);",
 									"    } catch (error) {",
@@ -6669,6 +6402,14 @@
 					"name": "Restart node 2 to confirm records deleted",
 					"event": [
 						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(() => {}, 6000);"
+								]
+							}
+						},
+						{
 							"listen": "test",
 							"script": {
 								"exec": [
@@ -6682,7 +6423,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 40000)"
+									"setTimeout(()=> {}, 20000)"
 								],
 								"type": "text/javascript"
 							}
@@ -6854,28 +6595,36 @@
 									"pm.test('Confirm new node 2 not changed after restart', () => {",
 									"    try {",
 									"        const response = pm.response.json();",
-									"        pm.expect(response.length).to.equal(5);",
+									"        pm.expect(response.length).to.equal(7);",
 									"        pm.expect(response).to.have.deep.members([",
-									"            {",
-									"                \"id\": \"6\",",
-									"                \"type\": \"Hip hop opopotamus\"",
-									"            },",
-									"            {",
-									"                \"id\": \"7\",",
-									"                \"type\": \"Pop\"",
-									"            },",
-									"            {",
-									"                \"id\": \"8\",",
-									"                \"type\": \"Hip hop\"",
-									"            },",
-									"            {",
-									"                \"id\": \"9\",",
-									"                \"type\": \"Electronic\"",
-									"            },",
-									"            {",
-									"                \"id\": \"10\",",
-									"                \"type\": \"Dance\"",
-									"            }",
+									"         {",
+									"        \"id\": \"1\",",
+									"        \"type\": \"Country\"",
+									"        },",
+									"        {",
+									"            \"id\": \"2\",",
+									"            \"type\": \"Jazz\"",
+									"        },",
+									"        {",
+									"            \"id\": \"3\",",
+									"            \"type\": \"Classical\"",
+									"        },",
+									"        {",
+									"            \"id\": \"7\",",
+									"            \"type\": \"Pop\"",
+									"        },",
+									"        {",
+									"            \"id\": \"8\",",
+									"            \"type\": \"Hip hop\"",
+									"        },",
+									"        {",
+									"            \"id\": \"9\",",
+									"            \"type\": \"Electronic\"",
+									"        },",
+									"        {",
+									"            \"id\": \"10\",",
+									"            \"type\": \"Dance\"",
+									"        }",
 									"        ]);",
 									"        pm.environment.set('RETRY_COUNT', 0);",
 									"    } catch (error) {",
@@ -7153,20 +6902,8 @@
 									"",
 									"pm.test('Confirm records unchanged node 1', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.length).to.equal(10);",
+									"    pm.expect(response.length).to.equal(4);",
 									"    pm.expect(response).to.have.deep.members([",
-									"        {",
-									"            \"id\": \"1\",",
-									"            \"type\": \"Country\"",
-									"        },",
-									"        {",
-									"            \"id\": \"2\",",
-									"            \"type\": \"Jazz\"",
-									"        },",
-									"        {",
-									"            \"id\": \"3\",",
-									"            \"type\": \"Classical\"",
-									"        },",
 									"        {",
 									"            \"id\": \"6\",",
 									"            \"type\": \"Hip hop opopotamus\"",
@@ -7174,18 +6911,6 @@
 									"        {",
 									"            \"id\": \"7\",",
 									"            \"type\": \"Pop\"",
-									"        },",
-									"        {",
-									"            \"id\": \"8\",",
-									"            \"type\": \"Hip hop\"",
-									"        },",
-									"        {",
-									"            \"id\": \"9\",",
-									"            \"type\": \"Electronic\"",
-									"        },",
-									"        {",
-									"            \"id\": \"10\",",
-									"            \"type\": \"Dance\"",
 									"        },",
 									"        {",
 									"            \"id\": \"number1\",",
@@ -7258,7 +6983,7 @@
 									"",
 									"pm.test('Records are deleted', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal('4 of 4 records successfully deleted');",
+									"    pm.expect(response.message).to.equal('1 of 1 record successfully deleted');",
 									"});"
 								],
 								"type": "text/javascript"
@@ -7290,7 +7015,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"delete\",\n    \"schema\":\"radio\",\n\t\"table\":\"genre\",\n\t\"hash_values\":[\"1\", \"2\", \"3\", \"6\"]\n}",
+							"raw": "{\n\t\"operation\":\"delete\",\n    \"schema\":\"radio\",\n\t\"table\":\"genre\",\n\t\"hash_values\":[\"6\"]\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -7322,11 +7047,19 @@
 									"pm.test('Confirm node 2 unchanged after remove node', () => {",
 									"    try {",
 									"        const response = pm.response.json();",
-									"        pm.expect(response.length).to.equal(5);",
+									"        pm.expect(response.length).to.equal(7);",
 									"        pm.expect(response).to.have.deep.members([",
 									"            {",
-									"                \"id\": \"6\",",
-									"                \"type\": \"Hip hop opopotamus\"",
+									"                \"id\": \"1\",",
+									"                \"type\": \"Country\"",
+									"            },",
+									"            {",
+									"                \"id\": \"2\",",
+									"                \"type\": \"Jazz\"",
+									"            },",
+									"            {",
+									"                \"id\": \"3\",",
+									"                \"type\": \"Classical\"",
 									"            },",
 									"            {",
 									"                \"id\": \"7\",",
@@ -7486,23 +7219,11 @@
 									"",
 									"pm.test('Confirm records unchanged node 1', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.length).to.equal(6);",
+									"    pm.expect(response.length).to.equal(3);",
 									"    pm.expect(response).to.have.deep.members([",
 									"        {",
 									"            \"id\": \"7\",",
 									"            \"type\": \"Pop\"",
-									"        },",
-									"        {",
-									"            \"id\": \"8\",",
-									"            \"type\": \"Hip hop\"",
-									"        },",
-									"        {",
-									"            \"id\": \"9\",",
-									"            \"type\": \"Electronic\"",
-									"        },",
-									"        {",
-									"            \"id\": \"10\",",
-									"            \"type\": \"Dance\"",
 									"        },",
 									"        {",
 									"            \"id\": \"number1\",",
@@ -7954,8 +7675,7 @@
 									"pm.test('Config set messaged returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"Configuration successfully set. You must restart HarperDB for new config settings to take effect.\");",
-									"});",
-									""
+									"});"
 								],
 								"type": "text/javascript"
 							}
@@ -8008,6 +7728,14 @@
 					"name": "Restart node 1",
 					"event": [
 						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(() => {}, 4000);"
+								]
+							}
+						},
+						{
 							"listen": "test",
 							"script": {
 								"exec": [
@@ -8016,7 +7744,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 40000)",
+									"setTimeout(()=> {}, 20000)",
 									""
 								],
 								"type": "text/javascript"
@@ -8189,8 +7917,7 @@
 									"pm.test('Config set messaged returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"Configuration successfully set. You must restart HarperDB for new config settings to take effect.\");",
-									"});",
-									""
+									"});"
 								],
 								"type": "text/javascript"
 							}
@@ -8243,6 +7970,14 @@
 					"name": "Restart node 2",
 					"event": [
 						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(() => {}, 4000);"
+								]
+							}
+						},
+						{
 							"listen": "test",
 							"script": {
 								"exec": [
@@ -8251,7 +7986,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 40000)",
+									"setTimeout(()=> {}, 20000)",
 									""
 								],
 								"type": "text/javascript"
@@ -10277,8 +10012,7 @@
 									"pm.test('Table dev.fish created', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"table 'dev.fish' successfully created.\");",
-									"});",
-									""
+									"});"
 								],
 								"type": "text/javascript"
 							}
@@ -10331,6 +10065,14 @@
 					"name": "Restart node 1",
 					"event": [
 						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(() => {}, 4000);"
+								]
+							}
+						},
+						{
 							"listen": "test",
 							"script": {
 								"exec": [
@@ -10344,7 +10086,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 40000)",
+									"setTimeout(()=> {}, 20000)",
 									""
 								],
 								"type": "text/javascript"
@@ -11179,8 +10921,7 @@
 									"pm.test('Config set messaged returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"Configuration successfully set. You must restart HarperDB for new config settings to take effect.\");",
-									"});",
-									""
+									"});"
 								],
 								"type": "text/javascript"
 							}
@@ -11233,6 +10974,14 @@
 					"name": "Restart node 1",
 					"event": [
 						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(() => {}, 4000);"
+								]
+							}
+						},
+						{
 							"listen": "test",
 							"script": {
 								"exec": [
@@ -11241,7 +10990,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 40000)",
+									"setTimeout(()=> {}, 20000)",
 									""
 								],
 								"type": "text/javascript"
@@ -14789,8 +14538,7 @@
 									"pm.test('Config set messaged returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"Configuration successfully set. You must restart HarperDB for new config settings to take effect.\");",
-									"});",
-									""
+									"});"
 								],
 								"type": "text/javascript"
 							}
@@ -14843,6 +14591,14 @@
 					"name": "Restart node 1",
 					"event": [
 						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(() => {}, 4000);"
+								]
+							}
+						},
+						{
 							"listen": "test",
 							"script": {
 								"exec": [
@@ -14851,7 +14607,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 40000)",
+									"setTimeout(()=> {}, 20000)",
 									""
 								],
 								"type": "text/javascript"
@@ -18414,8 +18170,7 @@
 									"pm.test('Config set messaged returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"Configuration successfully set. You must restart HarperDB for new config settings to take effect.\");",
-									"});",
-									""
+									"});"
 								],
 								"type": "text/javascript"
 							}
@@ -18467,6 +18222,14 @@
 				{
 					"name": "Restart node 1",
 					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(() => {}, 4000);"
+								]
+							}
+						},
 						{
 							"listen": "test",
 							"script": {
@@ -18646,8 +18409,7 @@
 									"pm.test('Config set messaged returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"Configuration successfully set. You must restart HarperDB for new config settings to take effect.\");",
-									"});",
-									""
+									"});"
 								],
 								"type": "text/javascript"
 							}
@@ -18699,6 +18461,14 @@
 				{
 					"name": "Restart node 2",
 					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(() => {}, 4000);"
+								]
+							}
+						},
 						{
 							"listen": "test",
 							"script": {
@@ -18878,8 +18648,7 @@
 									"pm.test('Config set messaged returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"Configuration successfully set. You must restart HarperDB for new config settings to take effect.\");",
-									"});",
-									""
+									"});"
 								],
 								"type": "text/javascript"
 							}
@@ -18931,6 +18700,14 @@
 				{
 					"name": "Restart node 3",
 					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(() => {}, 4000);"
+								]
+							}
+						},
 						{
 							"listen": "test",
 							"script": {
@@ -19110,8 +18887,7 @@
 									"pm.test('Config set messaged returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"Configuration successfully set. You must restart HarperDB for new config settings to take effect.\");",
-									"});",
-									""
+									"});"
 								],
 								"type": "text/javascript"
 							}
@@ -19163,6 +18939,14 @@
 				{
 					"name": "Restart node 4",
 					"event": [
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(() => {}, 4000);"
+								]
+							}
+						},
 						{
 							"listen": "test",
 							"script": {

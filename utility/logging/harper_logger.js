@@ -2,6 +2,7 @@
 
 // Note - do not import/use common_utils.js in this module, it will cause circular dependencies.
 const fs = require('fs-extra');
+const { threadId } = require('worker_threads');
 const path = require('path');
 const YAML = require('yaml');
 const PropertiesReader = require('properties-reader');
@@ -207,7 +208,7 @@ function createLogRecord(level, args) {
 			log_msg += ' ';
 		}
 	}
-	return `{"process_name": "${process_name}", "level": "${level}", "timestamp": "${date_now}", "message": "${log_msg}"}\n`;
+	return `{"level": "${level}", "tid": ${threadId}, "timestamp": "${date_now}", "message": "${log_msg}"}\n`;
 }
 
 /**

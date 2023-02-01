@@ -41,6 +41,7 @@ module.exports = {
 	errorizeMessage: errorizeMessage,
 	stripFileExtension: stripFileExtension,
 	autoCast,
+	autoCastJSON,
 	autoCastJSONDeep,
 	removeDir: removeDir,
 	compareVersions,
@@ -51,7 +52,6 @@ module.exports = {
 	timeoutPromise: timeoutPromise,
 	isClusterOperation: isClusterOperation,
 	getClusterUser: getClusterUser,
-	sendTransactionToSocketCluster,
 	checkGlobalSchemaTable,
 	getHomeDir: getHomeDir,
 	getPropsFilePath: getPropsFilePath,
@@ -506,27 +506,6 @@ function isClusterOperation(operation_name) {
 		log.error(`Error checking operation against cluster ops ${err}`);
 	}
 	return false;
-}
-
-/**
- * sends a processed transaction from HarperDB to socketcluster
- * @param channel
- * @param transaction
- * @param originator
- */
-function sendTransactionToSocketCluster(channel, transaction, originator) {
-	if (global.hdb_socket_client !== undefined) {
-		log.trace(`Sending transaction to channel: ${channel}`);
-		let { hdb_user, hdb_auth_header, ...data } = transaction;
-		if (!data.__originator) {
-			data.__originator = {};
-		}
-		data.__transacted = true;
-		if (originator) {
-			data.__originator[originator] = terms.ORIGINATOR_SET_VALUE;
-		}
-		global.hdb_socket_client.publish(channel, data);
-	}
 }
 
 /**

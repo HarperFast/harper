@@ -364,43 +364,5 @@ describe('Test serverHandlers.js module ', () => {
             assert.ok(error_log_stub.calledOnce === true, 'Error not logged')
             assert.ok(error_log_stub.args[0][0] === TEST_ERR, 'Error message not logged')
         })
-    })
-
-    describe('Test final logger event listener handlers', () => {
-        it('Test handleBeforeExit', () => {
-            const process_stub = sandbox.stub(process, 'exit');
-            serverHandlers_rw.handleBeforeExit();
-            assert.ok(info_log_stub.args[0][0].includes('beforeExit caught') === true, 'Error should be passed to final_logger.fatal()');
-            process_stub.restore();
-        });
-
-        it('Test handleExit', () => {
-            const process_stub = sandbox.stub(process, 'exit');
-            serverHandlers_rw.handleExit();
-            assert.ok(info_log_stub.args[0][0].includes('exit caught') === true, 'Error should be passed to final_logger.fatal()');
-            process_stub.restore();
-        });
-
-        it('Test handleSigint', () => {
-            const process_stub = sandbox.stub(process, 'exit');
-            serverHandlers_rw.handleSigint();
-            assert.ok(info_log_stub.args[0][0].includes('SIGINT caught') === true, 'Error should be passed to final_logger.fatal()');
-            process_stub.restore();
-        });
-
-        it('Test handleSigquit', () => {
-            const process_stub = sandbox.stub(process, 'exit');
-            serverHandlers_rw.handleSigquit();
-            assert.ok(info_log_stub.args[0][0].includes('SIGQUIT caught') === true, 'Error should be passed to final_logger.fatal()');
-            process_stub.restore();
-        });
-
-        it('Test handleSigterm', () => {
-            const process_stub = sandbox.stub(process, 'exit');
-            serverHandlers_rw.handleSigterm();
-            assert.ok(info_log_stub.args[0][0].includes('SIGTERM caught') === true, 'Error should be passed to final_logger.fatal()');
-            process_stub.restore();
-        });
-
     });
 })

@@ -84,7 +84,7 @@ describe("test lmdbCreateAttribute module", ()=>{
     let catsdrool_env;
     before(async ()=>{
         //uuid_stub = sandbox.stub(uuid, 'v4').returns(MOCK_UUID_VALUE);
-        global.hdb_schema = {system: systemSchema};
+        global.hdb_schema = {system: systemSchema, dev: { catsdrool: {}}};
         global.lmdb_map = undefined;
         await fs.remove(test_utils.getMockLMDBPath());
         await fs.mkdirp(BASE_TEST_PATH);
@@ -229,6 +229,11 @@ describe("test lmdbCreateAttribute module", ()=>{
         create_attr_obj.attribute = 'slash/er';
         await test_utils.assertErrorAsync(lmdb_create_attribute, [create_attr_obj],
             test_utils.generateHDBError('Attribute names cannot include backticks or forward slashes',400));
+
+        create_attr_obj = { operation: 'create_attribute' }
+        await test_utils.assertErrorAsync(lmdb_create_attribute, [create_attr_obj],
+           test_utils.generateHDBError('Schema is required,Table is required,Attribute is required',400));
+
     });
 
 });

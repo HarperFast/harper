@@ -4,8 +4,9 @@ const rewire = require('rewire');
 const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
-const { toJsMsg } = require('nats');
+const { toJsMsg, headers } = require('nats');
 const { decode } = require('msgpackr');
+const TEST_HEADERS = headers();
 
 const test_utils = require('../../test_utils');
 const nats_utils = require('../../../server/nats/utility/natsUtils');
@@ -43,6 +44,7 @@ describe('Test natsIngestService module', () => {
 	let get_operation_function_spy;
 	let call_operation_function_as_await_stub;
 	let log_stub;
+	TEST_HEADERS.append(nats_terms.MSG_HEADERS.ORIGIN, 'some_other_node');
 
 	before(async () => {
 		log_stub = sandbox.stub(hdb_logger, 'notify');
@@ -100,7 +102,7 @@ describe('Test natsIngestService module', () => {
 			let opts_restore = nats_ingest_service.__set__('SUBSCRIPTION_OPTIONS', opts);
 			const test_operation = { operation: 'create_table', schema: 'dev', table: 'hippopotamus', hash_attribute: 'id' };
 			await setupTestStreamAndSource();
-			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, [test_operation]);
+			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, undefined, test_operation);
 			await nats_ingest_service.initialize();
 			await nats_ingest_service.workQueueListener();
 
@@ -137,10 +139,10 @@ describe('Test natsIngestService module', () => {
 
 			await setupTestStreamAndSource();
 			// This first publish should not show up in queue because of the filterSubject on the sub
-			await nats_utils.publishToStream('msgid.dev.hippopotamus', STREAM_NAME, [test_operation_3]);
-			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, [test_operation_1]);
-			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, [test_operation_2]);
-			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, [test_operation_3]);
+			await nats_utils.publishToStream('msgid.dev.hippopotamus', STREAM_NAME, undefined, [test_operation_3]);
+			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, undefined, test_operation_1);
+			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, undefined, test_operation_2);
+			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, undefined, test_operation_3);
 			await nats_ingest_service.initialize();
 			await nats_ingest_service.workQueueListener();
 
@@ -160,7 +162,7 @@ describe('Test natsIngestService module', () => {
 		let opts_restore = nats_ingest_service.__set__('SUBSCRIPTION_OPTIONS', opts);
 		const test_operation = { operation: 'create_table', schema: 'dev', table: 'hippopotamus', hash_attribute: 'id' };
 		await setupTestStreamAndSource();
-		await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, [test_operation]);
+		await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, TEST_HEADERS, test_operation);
 		await nats_ingest_service.initialize();
 		nats_ingest_service.__set__('server_name', 'hip_hop_hippopotamus');
 		await nats_ingest_service.workQueueListener();
@@ -170,8 +172,8 @@ describe('Test natsIngestService module', () => {
 		expect(call_operation_function_as_await_stub.args[0][0].name).to.equal('createTable');
 		expect(call_operation_function_as_await_stub.args[0][1]).to.eql(test_operation);
 		expect(call_operation_function_as_await_stub.args[0][2].name).to.equal('postOperationHandler');
-		expect(call_operation_function_as_await_stub.args[0][3]).to.eql(['testLeafServer-leaf']);
 		opts_restore();
+		await teardownTestStreamAndSource();
 	}).timeout(TEST_TIMEOUT);
 
 	it('Test messageProcessor processes job operation happy path', async () => {
@@ -184,8 +186,11 @@ describe('Test natsIngestService module', () => {
 			table: 'hippopotamus',
 			file_path: 'file/here/data.csv',
 		};
+
 		await setupTestStreamAndSource();
-		await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, [test_operation]);
+		TEST_HEADERS.append(nats_terms.MSG_HEADERS.NATS_MSG_ID, 'nats.123');
+		TEST_HEADERS.append(nats_terms.MSG_HEADERS.ORIGIN, 'another_node');
+		await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, TEST_HEADERS, test_operation);
 		await nats_ingest_service.initialize();
 		nats_ingest_service.__set__('server_name', 'hip_hop_hippopotamus');
 		await nats_ingest_service.workQueueListener();
@@ -193,5 +198,6 @@ describe('Test natsIngestService module', () => {
 		expect(get_operation_function_spy.args[0][0]).to.eql(test_operation);
 		expect(call_operation_function_as_await_stub.notCalled).to.be.true;
 		opts_restore();
+		await teardownTestStreamAndSource();
 	}).timeout(TEST_TIMEOUT);
 });

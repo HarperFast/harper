@@ -1098,9 +1098,7 @@ describe('Test bulkLoad.js', () => {
 
 	describe('test postCSVLoadFunction', async () => {
 		let sandbox = sinon.createSandbox();
-		let post_to_cluster_stub = undefined;
 		let publish_to_stream_stub;
-		let send_attribute_transaction_stub;
 		let expected_result = {
 			records: 2,
 			number_written: 3,
@@ -1109,14 +1107,12 @@ describe('Test bulkLoad.js', () => {
 		let postCSVLoadFunction = bulkLoad_rewire.__get__('postCSVLoadFunction');
 		beforeEach(() => {
 			publish_to_stream_stub = sandbox.stub(nats_utils, 'publishToStream').resolves();
-			send_attribute_transaction_stub = sandbox
-				.stub(transact_to_clustering_utils, 'sendAttributeTransaction')
-				.resolves();
-			post_to_cluster_stub = sandbox.stub(hdb_utils, `sendTransactionToSocketCluster`).returns();
 		});
+
 		afterEach(() => {
 			sandbox.restore();
 		});
+
 		it('nominal case, see sent to cluster', async () => {
 			env.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED, true);
 			let msg = test_utils.deepClone(json_message_fake);
@@ -1125,12 +1121,8 @@ describe('Test bulkLoad.js', () => {
 			msg_with_originator.__originator = { ORIGINATOR_NAME: 111 };
 			let result = await postCSVLoadFunction(['blah'], msg, expected_result, msg_with_originator);
 			assert.strictEqual(publish_to_stream_stub.calledOnce, true, 'expected publishToStream to be called');
-			assert.strictEqual(
-				send_attribute_transaction_stub.calledOnce,
-				true,
-				'expected sendAttributeTransaction to be called'
-			);
 		});
+
 		it('nominal case, see not sent to cluster', async () => {
 			env.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED, false);
 			let msg_with_originator = test_utils.deepClone(json_message_fake);

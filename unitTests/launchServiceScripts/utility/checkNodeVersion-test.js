@@ -29,12 +29,12 @@ describe('test checkNodeVersion', () => {
 	});
 
 	it('test node version is in range, not preferred version', () => {
-		let node_version_rw = check_node.__set__('INSTALLED_NODE_VERSION', '18.6.0');
+		let node_version_rw = check_node.__set__('INSTALLED_NODE_VERSION', '23.6.0');
 		let result = check_node();
 
 		expect(result).to.eql({
 			warn: `This version of HarperDB is tested against Node.js version ${pjson.engines['preferred-node']}, the currently installed Node.js` +
-				' version is: 18.6.0. Some issues may occur with untested versions of Node.js.',
+				' version is: 23.6.0. Some issues may occur with untested versions of Node.js.',
 		});
 		node_version_rw();
 	});

@@ -1,6 +1,6 @@
 const { parentPort, isMainThread } = require('worker_threads');
 const itc = require('../../../server/threads/itc');
-const server_handlers = require('../../../server/ipc/serverHandlers');
+const server_handlers = require('../../../server/itc/serverHandlers');
 
 let timer = setTimeout(() => {}, 10000); // use it keep the thread running until shutdown
 let array = [];

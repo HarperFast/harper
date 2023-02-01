@@ -8,6 +8,7 @@ const rewire = require('rewire');
 const assert = require('assert');
 // need to rewire in order to override p_search_search_by_value
 const schema_describe = rewire('../../data_layer/schemaDescribe');
+const start_time = Date.now();
 
 const TEST_DATA_DOG = [
     {
@@ -97,6 +98,7 @@ describe('Test describeAll', function() {
     it('describeAll, test nominal case', async function () {
         let all_schema = await schema_describe.describeAll();
         assert.strictEqual(Object.keys(all_schema).length, 1, 'expected schema not found');
+        assert(all_schema.dev.dog.last_updated_record >= start_time, 'Has recent updated timestamp');
     });
 
     it('describeAll, test search exception', async function () {
@@ -139,7 +141,19 @@ describe('Test describeSchema', function() {
     it('describeSchema, test nominal case', async function () {
         let desc_schema = await schema_describe.describeSchema(DESCRIBE_SCHEMA_MESSAGE);
         assert.strictEqual(Object.keys(desc_schema).length, 1, 'expected schema not found');
+        assert(desc_schema.dog.last_updated_record >= start_time, 'Has recent updated timestamp');
     });
+
+    it('describeSchema, test nominal case', async function () {
+        let error;
+        try {
+            let desc_schema = await schema_describe.describeSchema({});
+        } catch(err) {
+            error = err;
+        }
+        assert.strictEqual(error.message, 'Schema is required');
+    });
+
 
     it('describeSchema, test search exception', async function () {
         let search_stub_throw = sandbox.stub().throws(new Error('search error'));
@@ -205,6 +219,7 @@ describe('Test describeTable', function() {
     it('describeTable, test nominal case', async function () {
         let desc_table = await schema_describe.describeTable(DESCRIBE_TABLE_MESSAGE);
         assert.strictEqual(desc_table.name, TEST_TABLE_DOG, 'expected table not found');
+        assert(desc_table.last_updated_record >= start_time, 'Has recent updated timestamp');
     });
 
     it('describeTable, test validation failure', async function () {
@@ -215,6 +230,12 @@ describe('Test describeTable', function() {
             result = err;
         }
         assert.deepStrictEqual((result instanceof Error), true, 'expected validation failure');
+        try {
+            result = await schema_describe.describeTable({});
+        } catch(err) {
+            result = err;
+        }
+        assert.deepStrictEqual(result.message, 'Schema is required,Table is required');
     });
 
     it('describeTable, test search exception case', async function () {

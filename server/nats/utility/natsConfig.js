@@ -39,7 +39,7 @@ async function generateNatsConfig(is_restart = false, process_name = undefined) 
 	const HDB_ROOT = env_manager.get(CONFIG_PARAMS.ROOTPATH);
 	const HUB_PID_FILE_PATH = path.join(HDB_ROOT, HDB_CLUSTERING_FOLDER, nats_terms.PID_FILES.HUB);
 	const LEAF_PID_FILE_PATH = path.join(HDB_ROOT, HDB_CLUSTERING_FOLDER, nats_terms.PID_FILES.LEAF);
-	const LEAF_JS_STORE_DIR = path.join(HDB_ROOT, HDB_CLUSTERING_FOLDER, 'leaf');
+	const LEAF_JS_STORE_DIR = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_PATH);
 	const HUB_CONFIG_PATH = path.join(HDB_ROOT, HDB_CLUSTERING_FOLDER, nats_terms.NATS_CONFIG_FILES.HUB_SERVER);
 	const LEAF_CONFIG_PATH = path.join(HDB_ROOT, HDB_CLUSTERING_FOLDER, nats_terms.NATS_CONFIG_FILES.LEAF_SERVER);
 	const CERT_FILE = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_TLS_CERTIFICATE);
@@ -146,7 +146,9 @@ async function isPortAvailable(param) {
 	}
 
 	if (await hdb_utils.isPortTaken(port)) {
-		generateNatsConfigError(`'${param}' port '${port}' is unavailable`);
+		generateNatsConfigError(
+			`'${param}' port '${port}' is is in use by another process, check to see if HarperDB is already running or another process is using this port.`
+		);
 	}
 	return true;
 }

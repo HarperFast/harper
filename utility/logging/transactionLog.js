@@ -26,21 +26,14 @@ module.exports = {
  * @param {object} req - {schema, table, to, from, limit}
  * @returns {Promise<*[]>}
  */
-async function readTransactionLog(req) {
+async function* readTransactionLog(req) {
 	const validation = readTransactionLogValidator(req);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 
 	if (!env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
-		throw handleHDBError(
-			new Error(),
-			CLUSTERING_DISABLED_MSG,
-			HTTP_STATUS_CODES.NOT_FOUND,
-			undefined,
-			undefined,
-			true
-		);
+		throw handleHDBError(new Error(), CLUSTERING_DISABLED_MSG, HTTP_STATUS_CODES.NOT_FOUND, undefined, undefined, true);
 	}
 
 	const { schema, table } = req;
@@ -58,12 +51,9 @@ async function readTransactionLog(req) {
 
 	const stream_name = crypto_hash.createNatsTableStreamName(schema, table);
 	// Using consumer and sub config we can filter a Nats stream with from date and max messages.
-	const transactions = await nats_utils.viewStream(stream_name, parseInt(req.from), req.limit);
+	const transactions = await nats_utils.viewStreamIterator(stream_name, parseInt(req.from), req.limit);
 
-	// Build result from the array of messages in the Nats stream.
-	let result = [];
-	for (let i = 0, tx_length = transactions.length; i < tx_length; i++) {
-		const tx = transactions[i];
+	for await (const tx of transactions) {
 		// Nats uses nanosecond timestamps in their stream msgs but only accepts milliseconds when filtering streams.
 		// To keep everything the same we convert timestamp to millisecond.
 		const timestamp = Math.floor(tx?.nats_timestamp / 1000000);
@@ -80,10 +70,8 @@ async function readTransactionLog(req) {
 
 		if (tx?.entry?.operation === hdb_terms.OPERATIONS_ENUM.DELETE) formatted_tx.hash_values = tx?.entry?.hash_values;
 
-		result.push(formatted_tx);
+		yield formatted_tx;
 	}
-
-	return result;
 }
 
 /**

@@ -342,28 +342,6 @@ function dropAttributeFromGlobal(drop_attribute_object) {
 }
 
 async function createAttribute(create_attribute_object) {
-	if (!global.hdb_schema[create_attribute_object.schema]) {
-		throw handleHDBError(
-			new Error(),
-			HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(create_attribute_object.schema),
-			HTTP_STATUS_CODES.NOT_FOUND,
-			undefined,
-			undefined,
-			true
-		);
-	}
-
-	if (!global.hdb_schema[create_attribute_object.schema][create_attribute_object.table]) {
-		throw handleHDBError(
-			new Error(),
-			HDB_ERROR_MSGS.TABLE_NOT_FOUND(create_attribute_object.schema, create_attribute_object.table),
-			HTTP_STATUS_CODES.NOT_FOUND,
-			undefined,
-			undefined,
-			true
-		);
-	}
-
 	try {
 		await harperBridge.createAttribute(create_attribute_object);
 		signalling.signalSchemaChange(

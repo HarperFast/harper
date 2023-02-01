@@ -5,7 +5,8 @@ const test_utils = require('../../test_utils');
 const rewire = require('rewire');
 const fs = require('fs-extra');
 const path = require('path');
-const { pack, unpack } = require('msgpackr');
+const { pack } = require('msgpackr');
+const { encode, decode } = require('cbor-x');
 require('events').EventEmitter.defaultMaxListeners = 60;
 
 const chai = require('chai');
@@ -31,6 +32,7 @@ const CERTIFICATE_PATH = path.join(KEYS_PATH, 'certificate.pem');
 
 const test_req_options = {
 	headers: {
+		'Accept': 'application/json',
 		'Content-Type': 'application/json',
 		'Authorization': 'Basic YWRtaW46QWJjMTIzNCE=',
 	},
@@ -46,8 +48,7 @@ const DEFAULT_FASTIFY_PLUGIN_ARR = [
 	'hdb-request-time',
 	'@fastify/compress',
 	'@fastify/static',
-	'@fastify/accepts-serializer',
-	'@fastify/accepts',
+	'content-type-negotiation'
 ];
 
 let setUsersToGlobal_stub;
@@ -56,7 +57,21 @@ let handlePostRequest_spy;
 let getLicense_stub;
 let logger_error_spy;
 
-const test_op_resp = "table 'dev.dogz' successfully created.";
+const test_op_resp = [];
+for (let i = 0; i < 10; i++) {
+	test_op_resp.push({
+		i,
+		name: 'test',
+	});
+}
+async function* test_iterable_response() {
+	for (let i = 0; i < 10; i++) {
+		if (i % 4 === 0)
+			await new Promise(resolve => setTimeout(resolve, 1));
+		yield test_op_resp[i];
+	}
+}
+
 const test_cert_val = test_utils.getHTTPSCredentials().cert;
 const test_key_val = test_utils.getHTTPSCredentials().key;
 
@@ -68,7 +83,9 @@ describe('Test hdbServer module', () => {
 		sandbox.stub(harper_logger, 'debug').callsFake(() => {});
 		sandbox.stub(harper_logger, 'fatal').callsFake(() => {});
 		sandbox.stub(harper_logger, 'trace').callsFake(() => {});
-		sandbox.stub(OperationFunctionCaller, 'callOperationFunctionAsAwait').resolves(test_op_resp);
+		sandbox.stub(OperationFunctionCaller, 'callOperationFunctionAsAwait').callsFake(() => {
+			return test_iterable_response();
+		});
 		sandbox.stub(serverHandlers, 'authHandler').callsFake((req, resp, done) => done());
 		sandbox.stub(server_utilities, 'chooseOperation').callsFake(() => {});
 		setUsersToGlobal_stub = sandbox.stub(user_schema, 'setUsersToGlobal').resolves();
@@ -209,22 +226,6 @@ describe('Test hdbServer module', () => {
 			server.close();
 		});
 
-		it('should register 4 fastify plugins by default - @fastify/compress, @fastify/static, @fastify/accepts-serializer', async () => {
-			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
-
-			await new Promise((resolve) => setTimeout(resolve, 100));
-			const server = hdbServer_rw.__get__('server');
-
-			const plugin_key = Object.getOwnPropertySymbols(server).find(
-				(s) => String(s) === 'Symbol(fastify.pluginNameChain)'
-			);
-
-			expect(server[plugin_key]).to.deep.equal(DEFAULT_FASTIFY_PLUGIN_ARR);
-
-			server.close();
-		});
-
 		it('should build HTTPS server instance with default config settings', async () => {
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
 			await hdbServer_rw.hdbServer();
@@ -322,8 +323,7 @@ describe('Test hdbServer module', () => {
 				(s) => String(s) === 'Symbol(fastify.pluginNameChain)'
 			);
 
-			expect(server[plugin_key].length).to.equal(6);
-			expect(server[plugin_key]).to.deep.equal(DEFAULT_FASTIFY_PLUGIN_ARR);
+			expect(server[plugin_key]).to.not.includes('@fastify/cors');
 
 			server.close();
 		});
@@ -342,8 +342,7 @@ describe('Test hdbServer module', () => {
 				(s) => String(s) === 'Symbol(fastify.pluginNameChain)'
 			);
 
-			expect(server[plugin_key].length).to.equal(7);
-			expect(server[plugin_key].sort()).to.deep.equal(['@fastify/cors', ...DEFAULT_FASTIFY_PLUGIN_ARR].sort());
+			expect(server[plugin_key]).to.includes('@fastify/cors');
 
 			server.close();
 		});
@@ -362,8 +361,7 @@ describe('Test hdbServer module', () => {
 				(s) => String(s) === 'Symbol(fastify.pluginNameChain)'
 			);
 
-			expect(server[plugin_key].length).to.equal(7);
-			expect(server[plugin_key].sort()).to.deep.equal(['@fastify/cors', ...DEFAULT_FASTIFY_PLUGIN_ARR].sort());
+			expect(server[plugin_key]).to.includes('@fastify/cors');
 
 			server.close();
 		});
@@ -398,18 +396,18 @@ describe('Test hdbServer module', () => {
 			const test_response = await server.inject({
 				method: 'POST',
 				url: '/',
-				headers: Object.assign(
+				headers: Object.assign({},
+					test_req_options.headers,
 					{
 						Accept: 'application/x-msgpack',
-					},
-					test_req_options.headers
+					}
 				),
 				body: test_req_options.body,
 			});
 
 			expect(test_response.statusCode).to.equal(200);
-			const expectedResponse = pack({ message: test_op_resp });
-			expect(test_response.body).to.equal(expectedResponse.toString());
+			const expectedResponse = Buffer.concat(test_op_resp.map(entry => pack(entry)));
+			expect(test_response.rawPayload).to.deep.equal(expectedResponse);
 
 			server.close();
 		});
@@ -429,6 +427,7 @@ describe('Test hdbServer module', () => {
 				method: 'POST',
 				url: '/',
 				headers: Object.assign({}, test_req_options.headers, {
+					Accept: 'application/json',
 					'Content-Type': 'application/x-msgpack',
 					'Content-Length': body.length,
 				}),
@@ -436,7 +435,7 @@ describe('Test hdbServer module', () => {
 			});
 
 			expect(test_response.statusCode).to.equal(200);
-			expect(test_response.body).to.equal(JSON.stringify({ message: test_op_resp }));
+			expect(test_response.body).to.equal(JSON.stringify(test_op_resp));
 
 			server.close();
 		});
@@ -466,6 +465,87 @@ describe('Test hdbServer module', () => {
 
 			server.close();
 		});
+		it('should return CBOR when HTTP request include Accept: application/cbor', async () => {
+			const test_config_settings = { https_enabled: false };
+			test_utils.preTestPrep(test_config_settings);
+
+			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const server = hdbServer_rw.__get__('server');
+
+			const test_response = await server.inject({
+				method: 'POST',
+				url: '/',
+				headers: Object.assign({},
+					test_req_options.headers,
+					{
+						Accept: 'application/cbor',
+					},
+				),
+				body: test_req_options.body,
+			});
+
+			expect(test_response.statusCode).to.equal(200);
+			let decoded = decode(test_response.rawPayload);
+			expect(decoded).to.deep.equal(test_op_resp);
+
+			server.close();
+		});
+
+		it('should parse CBOR when HTTP request include Content-Type: application/x-msgpack', async () => {
+			const test_config_settings = { https_enabled: false };
+			test_utils.preTestPrep(test_config_settings);
+
+			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
+
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const server = hdbServer_rw.__get__('server');
+
+			const body = encode(test_req_options.body);
+			const test_response = await server.inject({
+				method: 'POST',
+				url: '/',
+				headers: Object.assign({}, test_req_options.headers, {
+					'Accept': 'application/json',
+					'Content-Type': 'application/cbor',
+					'Content-Length': body.length,
+				}),
+				body,
+			});
+
+			expect(test_response.statusCode).to.equal(200);
+			expect(test_response.body).to.equal(JSON.stringify(test_op_resp));
+
+			server.close();
+		});
+
+		it('should 400 with invalid CBOR', async () => {
+			const test_config_settings = { https_enabled: false };
+			test_utils.preTestPrep(test_config_settings);
+
+			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
+			await hdbServer_rw.hdbServer();
+
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const server = hdbServer_rw.__get__('server');
+
+			const body = Buffer.from('this is not valid CBOR');
+			const test_response = await server.inject({
+				method: 'POST',
+				url: '/',
+				headers: Object.assign({}, test_req_options.headers, {
+					'Content-Type': 'application/cbor',
+					'Content-Length': body.length,
+				}),
+				body,
+			});
+
+			expect(test_response.statusCode).to.equal(400);
+
+			server.close();
+		});
 		it('should return CSV when HTTP request include Accept: text/csv', async () => {
 			const test_config_settings = { https_on: false };
 			test_utils.preTestPrep(test_config_settings);
@@ -478,17 +558,17 @@ describe('Test hdbServer module', () => {
 			const test_response = await server.inject({
 				method: 'POST',
 				url: '/',
-				headers: Object.assign(
+				headers: Object.assign({},
+					test_req_options.headers,
 					{
 						Accept: 'text/csv',
 					},
-					test_req_options.headers
 				),
 				body: test_req_options.body,
 			});
 
 			expect(test_response.statusCode).to.equal(200);
-			const expectedResponse = '"message"\n"table \'dev.dogz\' successfully created."';
+			const expectedResponse = '\"i\",\"name\"\n0,\"test\"\n1,\"test\"\n2,\"test\"\n3,\"test\"\n4,\"test\"\n5,\"test\"\n6,\"test\"\n7,\"test\"\n8,\"test\"\n9,\"test\"';
 			expect(test_response.body).to.equal(expectedResponse);
 
 			server.close();
@@ -580,7 +660,7 @@ describe('Test hdbServer module', () => {
 			});
 
 			expect(test_response.statusCode).to.equal(200);
-			expect(test_response.body).to.equal(JSON.stringify({ message: test_op_resp }));
+			expect(test_response.body).to.equal(JSON.stringify(test_op_resp));
 
 			server.close();
 		});

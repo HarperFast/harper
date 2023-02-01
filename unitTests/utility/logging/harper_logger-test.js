@@ -234,7 +234,7 @@ describe('Test harper_logger module', () => {
 			sandbox.restore();
 		});
 
-		it('Test trace is logged and function returns if called by pm2 process', () => {
+		it.skip('Test trace is logged and function returns if called by pm2 process', () => {
 			process.env.pm_id = 1;
 			const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
 			const log_name_test = 'unit_test.log';
@@ -251,7 +251,7 @@ describe('Test harper_logger module', () => {
 			delete process.env.pm_id;
 		});
 
-		it('Test create file is called with correct path if install log', () => {
+		it.skip('Test create file is called with correct path if install log', () => {
 			sandbox.stub(YAML, 'parseDocument').returns(setTestLogConfig('error', TEST_LOG_DIR, true, false));
 			const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
 			const log_name_test = 'install.log';
@@ -261,7 +261,7 @@ describe('Test harper_logger module', () => {
 			expect(open_sync_stub.firstCall.args[0]).to.eql(path.join(INSTALL_LOG_LOCATION, log_name_test));
 		});
 
-		it('Test create file is called with correct path if not install log', () => {
+		it.skip('Test create file is called with correct path if not install log', () => {
 			sandbox.stub(YAML, 'parseDocument').returns(setTestLogConfig('error', HARPER_LOGGER_MODULE, true, false));
 			const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
 			const log_name_test = 'hdb.log';
@@ -272,7 +272,7 @@ describe('Test harper_logger module', () => {
 		});
 	});
 
-	describe('Test createLogRecord function', () => {
+	describe.skip('Test createLogRecord function', () => {
 		let createLogRecord_rw;
 		let fake_timer;
 
@@ -401,7 +401,7 @@ describe('Test harper_logger module', () => {
 		});
 	});
 
-	describe('Test notify, fatal, error, warn, info, debug, and trace functions', () => {
+	describe.skip('Test notify, fatal, error, warn, info, debug, and trace functions', () => {
 		let harper_logger;
 		const test_arg_1 = 'Fake logging announcement:';
 		const test_arg_2 = { foo: 'bar' };

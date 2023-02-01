@@ -181,7 +181,10 @@ describe('Test common_utils module', () => {
 		});
 
 		it(`Pass in values mixed with numbers and strings, expect a path`, function () {
-			assert.equal(cu.buildFolderPath('opt', 1, 'test', 45, 'data', '333-55'), `opt${SEP}1${SEP}test${SEP}45${SEP}data${SEP}333-55`);
+			assert.equal(
+				cu.buildFolderPath('opt', 1, 'test', 45, 'data', '333-55'),
+				`opt${SEP}1${SEP}test${SEP}45${SEP}data${SEP}333-55`
+			);
 		});
 	});
 
@@ -568,16 +571,16 @@ describe('Test common_utils module', () => {
 
 	describe('Test isClusterOperation', function () {
 		it('Test nominal case of isClusterOperation', function () {
-			assert.equal(cu.isClusterOperation('create_schema'), true, 'Expected true result');
+			assert.equal(cu.isClusterOperation('insert'), true, 'Expected true result');
 		});
 		it('Test strange casing in isClusterOperation', function () {
-			assert.equal(cu.isClusterOperation('crEaTe_Schema'), true, 'Expected true result');
+			assert.equal(cu.isClusterOperation('InserT'), true, 'Expected true result');
 		});
 		it('Test operation not in cluster ops, expect false', function () {
 			assert.equal(cu.isClusterOperation('alter_user'), false, 'Expected false result');
 		});
 		it('Test case, expect true', function () {
-			assert.equal(cu.isClusterOperation('CREATE_SCHEMA'), true, 'Expected true result');
+			assert.equal(cu.isClusterOperation('INSERT'), true, 'Expected true result');
 		});
 		it('Test empty operation, expect false', function () {
 			assert.equal(cu.isClusterOperation(null), false, 'Expected false result');

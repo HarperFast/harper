@@ -125,10 +125,10 @@ async function restartProcesses() {
 		console.log(RESTART_RESPONSE);
 
 		if (clustering_enabled) {
-			await restartAllClusteringServices();
+			await restartAllClusteringProcesses();
 		}
 
-		// The clustering processes are here because they are handled by the restartAllClusteringServices function above and dont need to be restarted again.
+		// The clustering processes are here because they are handled by the restartAllClusteringProcesses function above and dont need to be restarted again.
 		let exclude_from_restart = [
 			hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB,
 			hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF,
@@ -154,6 +154,10 @@ async function restartProcesses() {
  * @returns {Promise<{}>}
  */
 async function restart(json_message) {
+	const clustering_enabled = config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED);
+	if (clustering_enabled) {
+		await restartAllClusteringProcesses();
+	}
 	await restartWorkers();
 	return RESTART_RESPONSE;
 }
@@ -273,14 +277,9 @@ async function stop() {
 	}
 }
 
-async function restartAllClusteringServices() {
+async function restartAllClusteringProcesses() {
 	await restartClustering(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB);
 	await restartClustering(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
-	// Check to see if the node name or purge config has been updated,
-	// if it has we need to change config on any local streams.
-	await nats_utils.updateLocalStreams();
-	// Close the connection to the nats-server so that if stop/restart called from CLI process will exit.
-	await nats_utils.closeConnection();
 }
 
 async function restartClustering(service) {
@@ -288,6 +287,8 @@ async function restartClustering(service) {
 	const clustering_enabled = config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED);
 	const restarting_clustering = service === 'clustering';
 	const reloading_clustering = service === 'clustering config';
+	if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
+
 	const is_currently_running = !restarting_clustering ? await pm2_utils.isServiceRegistered(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB) : undefined;
 
 	// If 'clustering' is passed to restart we are restarting all processes that make up clustering
@@ -310,10 +311,19 @@ async function restartClustering(service) {
 			break;
 		// If service is 'clustering' and clustering is not running but enabled, start all the clustering processes.
 		case restarting_clustering && !clustering_running && clustering_enabled:
-			await pm2_utils.startClustering();
+			await pm2_utils.startClusteringProcesses();
 			break;
 		case restarting_clustering && clustering_running && clustering_enabled:
-			await restartAllClusteringServices();
+			await restartAllClusteringProcesses();
+			// Check to see if the node name or purge config has been updated,
+			// if it has we need to change config on any local streams.
+			await nats_utils.updateLocalStreams();
+			// Close the connection to the nats-server so that if stop/restart called from CLI process will exit.
+			await nats_utils.closeConnection();
+			let ingestRestart = restartWorkers(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_INGEST_SERVICE);
+			let replyRestart = restartWorkers(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_REPLY_SERVICE);
+			await ingestRestart;
+			await replyRestart;
 			break;
 		// If service is 'clustering' and clustering is running and enabled, restart all the clustering processes.
 		case restarting_clustering && !clustering_running && !clustering_enabled:
