@@ -302,9 +302,6 @@ describe('Test configUtils module', () => {
 							port: 9900,
 						},
 					},
-					ingest: {
-						threads: 1,
-					},
 					leafServer: {
 						network: {
 							port: 9944,
@@ -436,7 +433,6 @@ describe('Test configUtils module', () => {
 				customfunctions_tls_privatekey: TEST_PRIVATE_KEY,
 				http_threads: 4,
 				http_remoteaddressaffinity: false,
-				clustering_ingest_threads: 1,
 				localstudio_enabled: true,
 				logging_auditlog: true,
 				logging_file: false,
@@ -494,7 +490,6 @@ describe('Test configUtils module', () => {
 			clustering_hubserver_cluster_network_routes: null,
 			clustering_hubserver_leafnodes_network_port: 9931,
 			clustering_hubserver_network_port: 9930,
-			clustering_ingest_threads: 1,
 			clustering_leafserver_network_port: 9940,
 			clustering_leafserver_network_routes: null,
 			clustering_leafserver_streams_maxage: null,
