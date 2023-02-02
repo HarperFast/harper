@@ -2,7 +2,7 @@
 
 // Note - do not import/use common_utils.js in this module, it will cause circular dependencies.
 const fs = require('fs-extra');
-const { threadId } = require('worker_threads');
+const { workerData } = require('worker_threads');
 const path = require('path');
 const YAML = require('yaml');
 const PropertiesReader = require('properties-reader');
@@ -55,6 +55,7 @@ module.exports = {
 	setLogLevel,
 	log_level,
 	loggerWithTag,
+	suppressLogging,
 };
 
 /**
@@ -126,12 +127,13 @@ function initLogSettings() {
 	logConsole('debug', debug);
 	logConsole('trace', trace);
 }
-
+let logging_enabled = true;
 function logConsole(level, logger) {
 	let original_logger = console[level];
 	original_logger = original_logger.original || original_logger;
 	console[level] = function(...args) {
-		logger(...args);
+		if (logging_enabled)
+			logger(...args);
 		return original_logger.apply(console, args);
 	};
 	console[level].original = original_logger;
@@ -151,6 +153,15 @@ function loggerWithTag(tag) {
 		return function(...args) {
 			return logger(tag, ...args);
 		};
+	}
+}
+
+function suppressLogging(callback) {
+	try {
+		logging_enabled = false;
+		callback();
+	} finally {
+		logging_enabled = true;
 	}
 }
 /**
@@ -195,11 +206,15 @@ function createLogRecord(level, args) {
 	let log_msg = '';
 	let length = args.length;
 	const last_arg = length - 1;
-	let tags = level === 'info' ? '' : '[' + level + ']';
+	let tags = '[' + level + ']';
 	let x = 0;
 	if (typeof args[0] === 'string' && /\[\w+]/.test(args[0])) {
-		tags = tags ? tags.slice(0, -1) + ' ' + args[0].slice(1) : args[0];
+		tags = tags.slice(0, -1) + ' ' + args[0].slice(1);
 		x++;
+	}
+	let service_name = workerData?.name || 'main';
+	if (service_name !== 'http') {
+		tags = '[' + service_name + ' ' + tags.slice(1);
 	}
 	for (; x < length; x++) {
 		let arg = args[x];

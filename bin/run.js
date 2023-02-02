@@ -70,7 +70,7 @@ async function initialize(called_by_install = false, called_by_main = false) {
 	// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
 	if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
 
-	hdb_logger.createLogFile(terms.PROCESS_LOG_NAMES.CLI, terms.PROCESS_DESCRIPTORS.RUN);
+	hdb_logger.createLogFile(terms.PROCESS_LOG_NAMES.HDB, terms.PROCESS_DESCRIPTORS.RUN);
 
 	// The called by install check is here because if cmd/env args are passed to install (which calls run when done)
 	// we do not need to update/backup the config file on run.
@@ -210,9 +210,10 @@ async function main(called_by_install = false) {
 }
 function started() {
 	// Console log Harper dog logo
-	console.log(chalk.magenta('' + fs.readFileSync(path.join(PACKAGE_ROOT, 'utility/install/ascii_logo.txt'))));
-	console.log(chalk.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
-
+	hdb_logger.suppressLogging(() => {
+		console.log(chalk.magenta('' + fs.readFileSync(path.join(PACKAGE_ROOT, 'utility/install/ascii_logo.txt'))));
+		console.log(chalk.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
+	});
 	hdb_logger.notify(HDB_STARTED);
 }
 /**
