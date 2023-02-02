@@ -76,10 +76,19 @@ function unhookStdOutErr() {
 	unhook_std();
 }
 
-function convertLogToJson(log_path) {
-	const log = fs.readFileSync(log_path).toString().replace(/\n/g, ',');
-	let log_json = `[${log.slice(0, -1)}]`;
-	return JSON.parse(log_json);
+function convertLogToArray(log_path) {
+	let messages = [];
+	let log = fs.readFileSync(log_path).toString();
+	log.replace(/([^ ]+) \[([^\]]+)]: (.+)\n/g, (t, time, tags_string, message) => {
+		let tags = tags_string.split(' ');
+		messages.push({
+			time,
+			level: tags.length < 2 ? tags[0] : tags[1],
+			tags,
+			message,
+		});
+	});
+	return messages;
 }
 
 function readTestLog(log_path) {
@@ -453,8 +462,7 @@ describe('Test harper_logger module', () => {
 		it('Test info log writes to stdout for pm2 process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
 			harper_logger.__set__('process_name', 'unit_tests');
-			expected_log = `${date_test_string}: 
-			expected_log = `${LOG_LEVEL.INFO}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.INFO}"}\n`;
+			expected_log = `${date_test_string} [${LOG_LEVEL.INFO}]: ${LOG_MSGS_TEST.INFO}\n`;
 			capturedStdOutErr();
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
 			harper_logger.info(LOG_MSGS_TEST.INFO);
@@ -690,7 +698,7 @@ describe('Test harper_logger module', () => {
 			logAllTheLevels(harper_logger);
 
 			setTimeout(() => {
-				const logs = convertLogToJson(FULL_LOG_PATH_TEST);
+				const logs = convertLogToArray(FULL_LOG_PATH_TEST);
 				const expected_log_levels = ['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'notify'];
 				let pass = false;
 				for (const log of logs) {
@@ -715,7 +723,7 @@ describe('Test harper_logger module', () => {
 			logAllTheLevels(harper_logger);
 
 			setTimeout(() => {
-				const logs = convertLogToJson(FULL_LOG_PATH_TEST);
+				const logs = convertLogToArray(FULL_LOG_PATH_TEST);
 				const expected_log_levels = ['debug', 'info', 'warn', 'error', 'fatal', 'notify'];
 				let pass = false;
 				for (const log of logs) {
@@ -741,7 +749,7 @@ describe('Test harper_logger module', () => {
 			logAllTheLevels(harper_logger);
 
 			setTimeout(() => {
-				const logs = convertLogToJson(FULL_LOG_PATH_TEST);
+				const logs = convertLogToArray(FULL_LOG_PATH_TEST);
 				const expected_log_levels = ['info', 'warn', 'error', 'fatal', 'notify'];
 				let pass = false;
 				for (const log of logs) {
@@ -766,7 +774,7 @@ describe('Test harper_logger module', () => {
 			logAllTheLevels(harper_logger);
 
 			setTimeout(() => {
-				const logs = convertLogToJson(FULL_LOG_PATH_TEST);
+				const logs = convertLogToArray(FULL_LOG_PATH_TEST);
 				const expected_log_levels = ['warn', 'error', 'fatal', 'notify'];
 				let pass = false;
 				for (const log of logs) {
@@ -791,7 +799,7 @@ describe('Test harper_logger module', () => {
 			logAllTheLevels(harper_logger);
 
 			setTimeout(() => {
-				const logs = convertLogToJson(FULL_LOG_PATH_TEST);
+				const logs = convertLogToArray(FULL_LOG_PATH_TEST);
 				const expected_log_levels = ['error', 'fatal', 'notify'];
 				let pass = false;
 				for (const log of logs) {
@@ -816,7 +824,7 @@ describe('Test harper_logger module', () => {
 			logAllTheLevels(harper_logger);
 
 			setTimeout(() => {
-				const logs = convertLogToJson(FULL_LOG_PATH_TEST);
+				const logs = convertLogToArray(FULL_LOG_PATH_TEST);
 				const expected_log_levels = ['fatal', 'notify'];
 				let pass = false;
 				for (const log of logs) {
@@ -841,7 +849,7 @@ describe('Test harper_logger module', () => {
 			logAllTheLevels(harper_logger);
 
 			setTimeout(() => {
-				const logs = convertLogToJson(FULL_LOG_PATH_TEST);
+				const logs = convertLogToArray(FULL_LOG_PATH_TEST);
 				const expected_log_levels = ['notify'];
 				let pass = false;
 				for (const log of logs) {

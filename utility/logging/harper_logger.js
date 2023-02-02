@@ -2,14 +2,14 @@
 
 // Note - do not import/use common_utils.js in this module, it will cause circular dependencies.
 const fs = require('fs-extra');
-const { workerData } = require('worker_threads');
+const { workerData, threadId } = require('worker_threads');
 const path = require('path');
 const YAML = require('yaml');
 const PropertiesReader = require('properties-reader');
 const hdb_terms = require('../hdbTerms');
 const assignCMDENVVariables = require('../assignCmdEnvVariables');
 const os = require('os');
-const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
+const { PACKAGE_ROOT, THREAD_TYPES } = require('../../utility/hdbTerms');
 
 const LOG_LEVEL_HIERARCHY = {
 	notify: 7,
@@ -213,9 +213,7 @@ function createLogRecord(level, args) {
 		x++;
 	}
 	let service_name = workerData?.name || 'main';
-	if (service_name !== 'http') {
-		tags = '[' + service_name + ' ' + tags.slice(1);
-	}
+	tags = `[${service_name}/${threadId} ${tags.slice(1)}`;
 	for (; x < length; x++) {
 		let arg = args[x];
 		if (arg instanceof Error && arg.stack) {
