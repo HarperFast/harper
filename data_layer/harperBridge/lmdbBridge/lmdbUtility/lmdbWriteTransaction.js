@@ -45,20 +45,16 @@ async function writeTransaction(hdb_operation, lmdb_response) {
 			lmdb_terms.TRANSACTIONS_DBIS
 		);
 
-		try {
-			let txn_timestamp = txn_object.timestamp;
-			return await txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP].ifNoExists(txn_timestamp, () => {
-				txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP].put(txn_timestamp, txn_object);
-				if (!hdb_util.isEmpty(txn_object.user_name)) {
-					txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.USER_NAME].put(txn_object.user_name, txn_timestamp);
-				}
-				for (let x = 0; x < txn_object.hash_values.length; x++) {
-					txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.HASH_VALUE].put(txn_object.hash_values[x], txn_timestamp);
-				}
-			});
-		} catch (e) {
-			throw e;
-		}
+		let txn_timestamp = txn_object.timestamp;
+		return await txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP].ifNoExists(txn_timestamp, () => {
+			txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP].put(txn_timestamp, txn_object);
+			if (!hdb_util.isEmpty(txn_object.user_name)) {
+				txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.USER_NAME].put(txn_object.user_name, txn_timestamp);
+			}
+			for (let x = 0; x < txn_object.hash_values.length; x++) {
+				txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.HASH_VALUE].put(txn_object.hash_values[x], txn_timestamp);
+			}
+		});
 	}
 }
 
