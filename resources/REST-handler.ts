@@ -1,6 +1,6 @@
 const MAX_COMMIT_RETRIES = 10;
 export function restHandler(Resource) {
-	return async (next_path, request, response) => {
+	async function http(next_path, request, response) {
 		let method = request.method;
 		let request_data;
 		if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
@@ -13,77 +13,11 @@ export function restHandler(Resource) {
 			// TODO: Handle different content types
 			request_data = JSON.parse(request_binary.toString());
 		}
-		let full_isolation = method === 'POST';
 		try {
-			let resource_snapshot = new Resource(request, full_isolation);
-			try {
-				let response_data;
-				let typed_key;
-				if (next_path) {
-					typed_key = +next_path;
-					if (!(typed_key >= 0)) {
-						typed_key = next_path;
-					}
-				}
-				let retries = 0;
-				do {
-					switch (method) {
-						case 'GET':
-							if (typed_key !== undefined) {
-								response_data = await resource_snapshot.get(typed_key);
-								if (resource_snapshot.lastAccessTime === Date.parse(request.headers['if-modified-since'])) {
-									response.writeHead(304);
-									response.end();
-									response_data = undefined;
-									break;
-								}
-							}
-							break;
-						case 'POST':
-							response_data = await resource_snapshot.post(typed_key, request_data);
-							break;
-						case 'PUT':
-							response_data = await resource_snapshot.put(typed_key, request_data);
-							break;
-						case 'PATCH':
-							response_data = await resource_snapshot.patch(typed_key, request_data);
-							break;
-						case 'DELETE':
-							response_data = await resource_snapshot.delete(typed_key);
-							break;
-					}
-					if (await resource_snapshot.commit())
-						break; // if commit succeeds, break out of retry loop, we are done
-					else if (retries++ >= MAX_COMMIT_RETRIES) { // else keep retrying
-						response.writeHead(503);
-						response.end('Maximum number of commit retries was exceeded, please try again later');
-						return;
-					}
-				} while (true); // execute again if the commit requires a retry
-				if (resource_snapshot.lastAccessTime)
-					response.setHeader('last-modified', new Date(resource_snapshot.lastAccessTime).toUTCString());
-				if (response_data) {
-					if (response_data.resolveData) // if it is iterable with onDone, TODO: make a better marker for this
-						response_data.onDone = () => resource_snapshot.doneReading();
-					else
-						resource_snapshot.doneReading();
-					response.writeHead(200);
-					// do content negotiation
-					response.end(JSON.stringify(response_data));
-				} else {
-					resource_snapshot.doneReading();
-					if ((method === 'GET' || method === 'HEAD')) {
-						response.writeHead(404);
-						response.end('Not found');
-					} else {
-						response.writeHead(204);
-						response.end();
-					}
-				}
-			} catch (error) {
-				resource_snapshot.abort();
-				throw error;
-			}
+			let response_data = execute(method, next_path, request_data, request, response);
+			if (response_data.status)
+				response.writeHead(response_data.status);
+			response.end(response_data.body);
 		} catch (error) {
 			response.writeHead(400);
 			// do content negotiation
@@ -91,4 +25,89 @@ export function restHandler(Resource) {
 			response.end(JSON.stringify(error.toString()));
 		}
 	}
+	async function execute(method, path, request_data, request, response) {
+		let full_isolation = method === 'POST';
+		let resource_snapshot = new Resource(request, full_isolation);
+		try {
+			let response_data;
+			let typed_key;
+			if (path) {
+				typed_key = +path;
+				if (!(typed_key >= 0)) {
+					typed_key = path;
+				}
+			}
+			let retries = 0;
+			do {
+				switch (method) {
+					case 'GET':
+						if (typed_key !== undefined) {
+							response_data = await resource_snapshot.get(typed_key);
+							if (resource_snapshot.lastAccessTime === Date.parse(request.headers['if-modified-since'])) {
+								resource_snapshot.doneReading();
+								return { status: 304 };
+							}
+						}
+						break;
+					case 'POST':
+						response_data = await resource_snapshot.post(typed_key, request_data);
+						break;
+					case 'PUT':
+						response_data = await resource_snapshot.put(typed_key, request_data);
+						break;
+					case 'PATCH':
+						response_data = await resource_snapshot.patch(typed_key, request_data);
+						break;
+					case 'DELETE':
+						response_data = await resource_snapshot.delete(typed_key);
+						break;
+				}
+				if (await resource_snapshot.commit())
+					break; // if commit succeeds, break out of retry loop, we are done
+				else if (retries++ >= MAX_COMMIT_RETRIES) { // else keep retrying
+					return {
+						status: 503, body: 'Maximum number of commit retries was exceeded, please try again later'
+					};
+				}
+			} while (true); // execute again if the commit requires a retry
+			if (resource_snapshot.lastAccessTime && response)
+				response.setHeader('last-modified', new Date(resource_snapshot.lastAccessTime).toUTCString());
+			if (response_data) {
+				if (response_data.resolveData) // if it is iterable with onDone, TODO: make a better marker for this
+					response_data.onDone = () => resource_snapshot.doneReading();
+				else
+					resource_snapshot.doneReading();
+				return {
+					status: 200,
+					// do content negotiation
+					body: JSON.stringify(response_data),
+				};
+			} else {
+				resource_snapshot.doneReading();
+				if ((method === 'GET' || method === 'HEAD')) {
+					return { status: 404, body: 'Not found' };
+				} else {
+					return { status: 204 };
+				}
+			}
+		} catch (error) {
+			resource_snapshot.abort();
+			throw error;
+		}
+	}
+	async function ws(path, data, request, ws) {
+		let method = data.method;
+		let request_data = data.body;
+		let request_id = data.id;
+		try {
+			let response_data = execute(method, path, request_data, request);
+			response_data.id = request_id;
+			ws.send(JSON.stringify(response_data));
+		} catch (error) {
+			// do content negotiation
+			console.error(error);
+			ws.send(JSON.stringify({status: 500, id: request_id, body: error.toString()}));
+		}
+	}
+	return { http, ws };
 }

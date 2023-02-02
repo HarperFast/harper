@@ -47,16 +47,31 @@ export function start(options: ServerOptions & { path: string, port: number }) {
 		await authentication(request);
 		do {
 			let handler = handlers.get(path);
-			if (handler) return handler(request.url.slice(path.length + 1), request, response);
+			if (handler) return handler.http(request.url.slice(path.length + 1), request, response);
 			let last_slash = path.lastIndexOf('/');
 			if (last_slash === -1) break;
 			path = path.slice(0, last_slash);
 		} while(true);
-		path = request.url;
 		nextAppHandler(request, response)
 	});
 	let wss = new WebSocketServer({ server });
-
+	wss.on('connection', (ws, request) => {
+		authentication(request);
+		ws.on('error', console.error);
+		ws.on('message', function message(data) {
+			let full_path = request.path + '/' + data.path;
+			let path = full_path;
+			do {
+				let handler = handlers.get(path);
+				if (handler) return handler.ws(full_path.slice(path.length + 1), data, request, ws);
+				let last_slash = path.lastIndexOf('/');
+				if (last_slash === -1) break;
+				path = path.slice(0, last_slash);
+			} while(true);
+			console.log('received: %s', data);
+		});
+		ws.send('something');
+	});
 	registerServer(options.port, server);
 	async function nextAppHandler(request, response) {
 		if (custom_apps[0])

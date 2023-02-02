@@ -119,6 +119,7 @@
     "ulidx": "0.3.0",
     "uuid": "9.0.0",
     "validate.js": "0.11.1",
+    "ws": "^8.12.0",
     "yaml": "1.10.2"
   },
   "devDependencies": {
