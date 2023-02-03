@@ -69,7 +69,7 @@ function getSchemaPath(schema, table) {
 	const args = process.env;
 	Object.assign(args, minimist(process.argv));
 	const schema_uc = schema.toUpperCase();
-	const table_uc = table.toUpperCase();
+	const table_uc = table ? table.toUpperCase() : undefined;
 	schema = schema.toString();
 
 	const schema_table_path = args[`SCHEMA_${schema_uc}_TABLES_${table_uc}_PATH`];
