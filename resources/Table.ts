@@ -146,7 +146,7 @@ function makeTransactionClass(table: Table) {
  		envTxn: EnvTransaction
 		parent: Resource
 		lmdbTxn: any
-		lastAccessTime: number = 0
+		lastModificationTime: number = 0
 		static Source: { new(): ResourceInterface }
 
 		constructor(env_txn, lmdb_txn, parent, settings) {
@@ -158,11 +158,11 @@ function makeTransactionClass(table: Table) {
 				this.lmdbTxn = primary_dbi.useReadTransaction();
 
 		}
-		updateAccessTime(latest = Date.now()) {
-			if (latest > this.lastAccessTime) {
-				this.lastAccessTime = latest;
-				if (this.parent?.updateAccessTime)
-					this.parent.updateAccessTime(latest);
+		updateModificationTime(latest = Date.now()) {
+			if (latest > this.lastModificationTime) {
+				this.lastModificationTime = latest;
+				if (this.parent?.updateModificationTime)
+					this.parent.updateModificationTime(latest);
 			}
 		}
 		async get(id) {
@@ -176,13 +176,13 @@ function makeTransactionClass(table: Table) {
 			if (env_txn.fullIsolation) {
 				env_txn.recordRead(primary_dbi, id, entry.version, true);
 			}
-			if (entry.version > this.lastAccessTime) {
-				this.updateAccessTime(entry.version);
+			if (entry.version > this.lastModificationTime) {
+				this.updateModificationTime(entry.version);
 			}
 
 			let record_data = entry?.value;
 			if (record_data) {
-				let record = createRecord(record_data);
+				let record = record_data;// createRecord(record_data);
 				record[TXN_KEY] = this;
 				let availability = record.__availability__;
 				if (availability?.cached & INVALIDATED) {
@@ -216,7 +216,7 @@ function makeTransactionClass(table: Table) {
 			primary_dbi.put(id, record);
 			let source = new TableTransaction.Source();
 			let updated_record = await source.get(id);
-			let updated = source.lastAccessTime;
+			let updated = source.lastModificationTime;
 			if (updated) {
 				updated_record.__updated__ = updated;
 			}

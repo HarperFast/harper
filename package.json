@@ -156,5 +156,9 @@
     "newman-reporter-html": {
       "newman": "5.2.3"
     }
+  },
+  "optionalDependencies": {
+    "bufferutil": "^4.0.7",
+    "utf-8-validate": "^5.0.10"
   }
 }

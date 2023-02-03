@@ -9,7 +9,7 @@ export class Resource implements ResourceInterface {
 	user: any
 	fullIsolation: boolean
 	restartable: boolean
-	lastAccessTime = 0;
+	lastModificationTime = 0;
 	inUseTables = {}
 	inUseEnvs = {}
 	constructor(request?, full_isolation?: boolean) {
@@ -18,9 +18,9 @@ export class Resource implements ResourceInterface {
 		this.fullIsolation = full_isolation;
 		this.restartable = true; // if not restartable and full-isolation is required, need an async-transaction
 	}
-	updateAccessTime(latest = Date.now()) {
-		if (latest > this.lastAccessTime) {
-			this.lastAccessTime = latest;
+	updateModificationTime(latest = Date.now()) {
+		if (latest > this.lastModificationTime) {
+			this.lastModificationTime = latest;
 		}
 	}
 
@@ -107,12 +107,12 @@ export class Resource implements ResourceInterface {
 			// we are accumulating most recent times for the sake of making resources cacheable
 			let last_modified = response.headers['last-modified'];
 			if (last_modified) {
-				this.updateAccessTime(Date.parse(last_modified));
+				this.updateModificationTime(Date.parse(last_modified));
 				return response;
 			}
 		}
 		// else use current time
-		this.updateAccessTime();
+		this.updateModificationTime();
 		return response;
 	}
 }

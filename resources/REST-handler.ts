@@ -14,7 +14,7 @@ export function restHandler(Resource) {
 			request_data = JSON.parse(request_binary.toString());
 		}
 		try {
-			let response_data = execute(method, next_path, request_data, request, response);
+			let response_data = await execute(method, next_path, request_data, request, response);
 			if (response_data.status)
 				response.writeHead(response_data.status);
 			response.end(response_data.body);
@@ -25,7 +25,7 @@ export function restHandler(Resource) {
 			response.end(JSON.stringify(error.toString()));
 		}
 	}
-	async function execute(method, path, request_data, request, response) {
+	async function execute(method, path, request_data, request, response?) {
 		let full_isolation = method === 'POST';
 		let resource_snapshot = new Resource(request, full_isolation);
 		try {
@@ -42,7 +42,8 @@ export function restHandler(Resource) {
 				switch (method) {
 					case 'GET':
 						if (typed_key !== undefined) {
-							response_data = await resource_snapshot.get(typed_key);
+							let p = resource_snapshot.get(typed_key);;
+							response_data = await p;
 							if (resource_snapshot.lastAccessTime === Date.parse(request.headers['if-modified-since'])) {
 								resource_snapshot.doneReading();
 								return { status: 304 };
@@ -96,13 +97,13 @@ export function restHandler(Resource) {
 		}
 	}
 	async function ws(path, data, request, ws) {
-		let method = data.method;
+		let method = data.method || 'GET';
 		let request_data = data.body;
 		let request_id = data.id;
 		try {
-			let response_data = execute(method, path, request_data, request);
-			response_data.id = request_id;
-			ws.send(JSON.stringify(response_data));
+			let response_data = await execute(method, path, request_data, request);
+			//response_data.id = request_id;
+			ws.send(`{"status":${response_data.status},"id":${request_id},"data":${response_data.body}}`);
 		} catch (error) {
 			// do content negotiation
 			console.error(error);

@@ -58,8 +58,9 @@ export function start(options: ServerOptions & { path: string, port: number }) {
 	wss.on('connection', (ws, request) => {
 		authentication(request);
 		ws.on('error', console.error);
-		ws.on('message', function message(data) {
-			let full_path = request.path + '/' + data.path;
+		ws.on('message', function message(body) {
+			let data = JSON.parse(body);
+			let full_path = request.url + '/' + data.path;
 			let path = full_path;
 			do {
 				let handler = handlers.get(path);
@@ -70,7 +71,6 @@ export function start(options: ServerOptions & { path: string, port: number }) {
 			} while(true);
 			console.log('received: %s', data);
 		});
-		ws.send('something');
 	});
 	registerServer(options.port, server);
 	async function nextAppHandler(request, response) {

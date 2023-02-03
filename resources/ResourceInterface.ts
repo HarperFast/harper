@@ -5,7 +5,7 @@ export interface ResourceInterface<Key = any, Record = any> {
 	delete?(key: Key, options?: {}): boolean;
 	search?(query, options?: {}): AsyncIterable<any>;
 	subscribe?(query, options?: {}): Subscription;
-	lastAccessTime: number
+	lastModificationTime: number
 }
 type UpdatableRecord<T> = T & {
 	lock(): Promise<T>;
