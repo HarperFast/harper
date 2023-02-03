@@ -122,8 +122,7 @@ function getConfigValue(param) {
 
 function getConfigFilePath(boot_props_file_path) {
 	const cmd_args = minimist(process.argv);
-	if (cmd_args.ROOTPATH)
-		return path.join(cmd_args.ROOTPATH, terms.HDB_CONFIG_FILE);
+	if (cmd_args.ROOTPATH) return path.join(cmd_args.ROOTPATH, terms.HDB_CONFIG_FILE);
 	const hdb_properties = PropertiesReader(boot_props_file_path);
 	return hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
 }
@@ -216,6 +215,7 @@ function validateConfig(config_doc) {
 		['clustering', 'leafServer', 'streams', 'path'],
 		validation.value.clustering.leafServer.streams.path
 	);
+	config_doc.setIn(['storage', 'path'], validation.value.storage.path);
 }
 
 /**

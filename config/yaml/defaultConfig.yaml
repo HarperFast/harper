@@ -92,4 +92,5 @@ storage:
   caching: true
   compression: false
   noReadAhead: true
+  path: null
   prefetchWrites: true

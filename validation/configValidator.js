@@ -8,6 +8,7 @@ const path = require('path');
 const hdb_logger = require('../utility/logging/harper_logger');
 const hdb_utils = require('../utility/common_utils');
 const certificates_terms = require('../utility/terms/certificates');
+const hdb_terms = require('../utility/hdbTerms');
 const validator = require('./validationWrapper');
 
 const DEFAULT_KEY_DIR = 'keys';
@@ -66,9 +67,8 @@ function configValidator(config_json) {
 		.pattern(/^[^\s.,*>]+$/)
 		.messages({ 'string.pattern.base': '{:#label} invalid, must not contain ., * or >' })
 		.empty(null);
-	const clustering_stream_path_constraints = Joi.custom(validateClusteringStreamPath)
-		.empty(null)
-		.default(setDefaultRoot);
+	const clustering_stream_path_constraints = Joi.custom(validatePath).empty(null).default(setDefaultRoot);
+	const storage_path_constraints = Joi.custom(validatePath).empty(null).default(setDefaultRoot);
 
 	const clustering_enabled = config_json.clustering?.enabled;
 	if (hdb_utils.isEmpty(clustering_enabled)) {
@@ -206,6 +206,7 @@ function configValidator(config_json) {
 			caching: boolean.optional(),
 			compression: boolean.optional(),
 			noReadAhead: boolean.optional(),
+			path: storage_path_constraints,
 			prefetchWrites: boolean.optional(),
 		}).required(),
 	});
@@ -243,7 +244,7 @@ function validatePemFile(value, helpers) {
 	}
 }
 
-function validateClusteringStreamPath(value, helpers) {
+function validatePath(value, helpers) {
 	Joi.assert(value, string.pattern(/^[\\\/]$|([\\\/][a-zA-Z_0-9\:-]+)+$/, 'directory path'));
 
 	const does_exist_msg = doesPathExist(value);
@@ -320,6 +321,8 @@ function setDefaultRoot(parent, helpers) {
 			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CLUSTERING_CERT_AUTH);
 		case 'clustering.leafServer.streams.path':
 			return path.join(hdb_root, 'clustering', 'leaf');
+		case 'storage.path':
+			return path.join(hdb_root, hdb_terms.SCHEMA_DIR_NAME);
 		default:
 			throw new Error(
 				`Error setting default root for config parameter: ${config_param}. Unrecognized config parameter`
