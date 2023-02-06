@@ -201,7 +201,7 @@ function getOverflowCheck(env, transaction, hash_attribute, attribute) {
 
 /**
  * iterates the entire  hash_attribute dbi and returns all objects back
- * @param {lmdb.Transaction} transaction - Resource used to interact with all data in an environment
+ * @param {lmdb.Transaction} transaction - Transaction used to interact with all data in an environment
  * @param {String} hash_attribute - name of the hash_attribute for this environment
  * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
  * @returns {Array.<Object>} - object array of fetched records
@@ -232,7 +232,7 @@ function searchAll(transactionOrEnv, hash_attribute, fetch_attributes, reverse =
 
 /**
 * iterates the entire  hash_attribute dbi and returns all objects back in a map
-* @param {lmdb.Transaction} transactionOrEnv - Resource used to interact with all data in an environment
+* @param {lmdb.Transaction} transactionOrEnv - Transaction used to interact with all data in an environment
 * @param {String} hash_attribute - name of the hash_attribute for this environment
 * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
  * @param {boolean} reverse - defines if the iterator goes from last to first
@@ -288,7 +288,7 @@ function iterateDBI(transactionOrEnv, attribute, reverse = false, limit = undefi
 
 /**
  * counts all records in an environment based on the count from stating the hash_attribute  dbi
- * @param {lmdb.RootDatabase} env - Resource used to interact with all data in an environment
+ * @param {lmdb.RootDatabase} env - Transaction used to interact with all data in an environment
  * @param {String} hash_attribute - name of the hash_attribute for this environment
  * @returns {number} - number of records in the environment
  */
@@ -305,7 +305,7 @@ function countAll(env, hash_attribute) {
 
 /**
  * performs an equal search on the key of a named dbi, returns a list of ids where their keys literally match the search_value
- * @param {lmdb.Transaction} transactionOrEnv - Resource used to interact with all data in an environment
+ * @param {lmdb.Transaction} transactionOrEnv - Transaction used to interact with all data in an environment
  * @param {String} hash_attribute
  * @param {String} attribute - name of the attribute (dbi) to search
  * @param search_value - value to search
@@ -334,7 +334,7 @@ function equals(transactionOrEnv, hash_attribute, attribute, search_value, rever
 
 /**
  * Counts the number of entries for a key of a named dbi, returning the count
- * @param {lmdb.RootDatabase} env - Resource used to interact with all data in an environment
+ * @param {lmdb.RootDatabase} env - Transaction used to interact with all data in an environment
  * @param {String} hash_attribute
  * @param {String} attribute - name of the attribute (dbi) to search
  * @param search_value - value to search
@@ -347,7 +347,7 @@ function count(env, attribute, search_value) {
 
 /**
  * performs an startsWith search on the key of a named dbi, returns a list of ids where their keys begin with the search_value
- * @param {lmdb.Transaction} transactionOrEnv - Resource used to interact with all data in an environment
+ * @param {lmdb.Transaction} transactionOrEnv - Transaction used to interact with all data in an environment
  * @param {String} hash_attribute
  * @param {String} attribute - name of the attribute (dbi) to search
  * @param search_value - value to search
@@ -423,7 +423,7 @@ function startsWith(
 
 /**
  * performs an endsWith search on the key of a named dbi, returns a list of ids where their keys end with search_value
- * @param {lmdb.Transaction} transaction - Resource used to interact with all data in an environment
+ * @param {lmdb.Transaction} transaction - Transaction used to interact with all data in an environment
  * @param {String} hash_attribute
  * @param {String} attribute - name of the attribute (dbi) to search
  * @param search_value - value to search
@@ -446,7 +446,7 @@ function endsWith(
 
 /**
  * performs a contains search on the key of a named dbi, returns a list of ids where their keys contain the search_value
- * @param {lmdb.Transaction|lmdb.RootDatabase} transactionOrEnv - Resource used to interact with all data in an
+ * @param {lmdb.Transaction|lmdb.RootDatabase} transactionOrEnv - Transaction used to interact with all data in an
  * environment
  * @param {String} hash_attribute
  * @param {String} attribute - name of the attribute (dbi) to search
@@ -707,7 +707,7 @@ function between(
 
 /**
  * finds a single record based on the id passed
- * @param {lmdb.Transaction} transactionOrEnv - Resource used to interact with all data in an environment
+ * @param {lmdb.Transaction} transactionOrEnv - Transaction used to interact with all data in an environment
  * @param {String} hash_attribute - name of the hash_attribute for this environment
  * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
  * @param {String} id - id value to search
@@ -738,7 +738,7 @@ function searchByHash(transactionOrEnv, hash_attribute, fetch_attributes, id) {
 
 /**
  * checks if a hash value exists based on the id passed
- * @param {lmdb.Transaction} transactionOrEnv - Resource used to interact with all data in an environment
+ * @param {lmdb.Transaction} transactionOrEnv - Transaction used to interact with all data in an environment
  * @param {String} hash_attribute - name of the hash_attribute for this environment
  * @param {String|Number} id - id value to check exists
  * @returns {boolean} - whether the hash exists (true) or not (false)
@@ -768,7 +768,7 @@ function checkHashExists(transactionOrEnv, hash_attribute, id) {
 
 /**
  * finds an array of records based on the ids passed
- * @param {lmdb.Transaction} transactionOrEnv - Resource used to interact with all data in an environment
+ * @param {lmdb.Transaction} transactionOrEnv - Transaction used to interact with all data in an environment
  * @param {String} hash_attribute - name of the hash_attribute for this environment
  * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
  * @param {Array.<String>} ids - list of ids to search
@@ -783,7 +783,7 @@ function batchSearchByHash(transactionOrEnv, hash_attribute, fetch_attributes, i
 
 /**
  * finds an array of records based on the ids passed and returns a map of the results
- * @param {lmdb.Transaction} transactionOrEnv - Resource used to interact with all data in an environment
+ * @param {lmdb.Transaction} transactionOrEnv - Transaction used to interact with all data in an environment
  * @param {String} hash_attribute - name of the hash_attribute for this environment
  * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
  * @param {Array.<String>} ids - list of ids to search
@@ -801,7 +801,7 @@ function batchSearchByHashToMap(transactionOrEnv, hash_attribute, fetch_attribut
 
 /**
  * finds an array of records based on the ids passed and returns a map of the results
- * @param {lmdb.Transaction} transactionOrEnv - Resource used to interact with all data in an environment
+ * @param {lmdb.Transaction} transactionOrEnv - Transaction used to interact with all data in an environment
  * @param {String} hash_attribute - name of the hash_attribute for this environment
  * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
  * @param {Array.<String>} ids - list of ids to search
@@ -828,7 +828,7 @@ function batchHashSearch(transactionOrEnv, hash_attribute, fetch_attributes, ids
 
 /**
  * function used to intialize the batchSearchByHash functions
- * @param {lmdb.Transaction} transactionOrEnv - Resource used to interact with all data in an environment
+ * @param {lmdb.Transaction} transactionOrEnv - Transaction used to interact with all data in an environment
  * @param {String} hash_attribute - name of the hash_attribute for this environment
  * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
  * @param {Array.<String>} ids - list of ids to search
