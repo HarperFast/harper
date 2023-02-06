@@ -69,7 +69,7 @@ interface TableDefinition {
 	expiration?: number
 	attributes: any[]
 }
-export function ensureTable({ table: table_name, schema: schema_name, path, expiration, attributes }: TableDefinition) {
+export function table({ table: table_name, schema: schema_name, path, expiration, attributes }: TableDefinition) {
 	let table = (schema_name ? tables[schema_name] : tables)?.[table_name];
 	if (!table) {
 		if (path) {

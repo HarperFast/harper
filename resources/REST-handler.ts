@@ -1,3 +1,4 @@
+import { findBestSerializer } from '../server/serverHelpers/contentTypes';
 const MAX_COMMIT_RETRIES = 10;
 export function restHandler(Resource) {
 	async function http(next_path, request, response) {
@@ -17,7 +18,10 @@ export function restHandler(Resource) {
 			let response_data = await execute(method, next_path, request_data, request, response);
 			if (response_data.status)
 				response.writeHead(response_data.status);
-			response.end(response_data.body);
+			if (typeof response_data.body?.pipe === 'function')
+				response_data.body.pipe(response);
+			else
+				response.end(response_data.body);
 		} catch (error) {
 			response.writeHead(400);
 			// do content negotiation
@@ -78,10 +82,12 @@ export function restHandler(Resource) {
 					response_data.onDone = () => resource_snapshot.doneReading();
 				else
 					resource_snapshot.doneReading();
+				if (request.responseType && response)
+					response.setHeader('content-type', request.responseType);
 				return {
 					status: 200,
 					// do content negotiation
-					body: JSON.stringify(response_data),
+					body: request.serialize(response_data),
 				};
 			} else {
 				resource_snapshot.doneReading();

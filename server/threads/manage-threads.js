@@ -222,13 +222,19 @@ function addPort(port) {
 		.unref();
 }
 if (isMainThread) {
-	const watch_dir = async (dir) => {
+	let before_restart, queued_restart;
+	const watch_dir = async (dir, before_restart_callback) => {
+		if (before_restart_callback) before_restart = before_restart_callback;
 		for (let entry of await readdir(dir, {withFileTypes: true})) {
 			if (entry.isDirectory()) watch_dir(join(dir, entry.name));
 		}
 		for await (let {eventType, filename} of watch(dir)) {
 			if (extname(filename) === '.ts' || extname(filename) === '.js') {
-				restartWorkers();
+				if (queued_restart) clearTimeout(queued_restart);
+				queued_restart = setTimeout(async () => {
+					if (before_restart) await before_restart();
+					restartWorkers();
+				}, 100);
 			}
 		}
 	};

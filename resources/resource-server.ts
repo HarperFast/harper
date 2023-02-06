@@ -6,72 +6,84 @@ import { SERVICES } from '../utility/hdbTerms';
 import { watchDir } from '../server/threads/manage-threads';
 import { findAndValidateUser } from '../security/user';
 import { WebSocketServer } from 'ws';
+import { findBestSerializer } from '../server/serverHelpers/contentTypes';
 
 const handler_creator_by_type = new Map();
 const custom_apps = [];
-export function start(options: ServerOptions & { path: string, port: number }) {
-	let handlers = new Map();
-	async function loadDirectory(directory: string, web_path: string) {
-		for (let entry of await readdir(directory, { withFileTypes: true })) {
-			if (entry.isFile()) {
-				let name = entry.name;
-				let dot = name.indexOf('.');
-				if (dot === -1) continue;
-				let base = name.slice(0, dot);
-				let extension = name.slice(dot + 1);
-				let create_handler = handler_creator_by_type.get(extension);
-				try {
-					if (create_handler) {
-						let file_path = join(directory, name);
-						let path_handlers = await create_handler(await readFile(file_path, {encoding: 'utf8'}), file_path);
-						if (path_handlers instanceof Map) {
-							for (let [ key, handler ] of path_handlers)
-								handlers.set(web_path + (key !== 'default' ? '/' + key : ''), handler);
-						} else
-							handlers.set(web_path, path_handlers);
-					}
-					else
-						console.warn(`no handler found for ${extension}.`);
-				} catch(error) {
-					console.warn(`failed to load ${name} due to`, error.stack);
+
+async function loadDirectory(directory: string, web_path: string, handlers) {
+	for (let entry of await readdir(directory, { withFileTypes: true })) {
+		if (entry.isFile()) {
+			let name = entry.name;
+			let dot = name.indexOf('.');
+			if (dot === -1) continue;
+			let base = name.slice(0, dot);
+			let extension = name.slice(dot + 1);
+			let create_handler = handler_creator_by_type.get(extension);
+			try {
+				if (create_handler) {
+					let file_path = join(directory, name);
+					let path_handlers = await create_handler(await readFile(file_path, {encoding: 'utf8'}), file_path);
+					if (path_handlers instanceof Map) {
+						for (let [ key, handler ] of path_handlers)
+							handlers.set(web_path + (key !== 'default' ? '/' + key : ''), handler);
+					} else
+						handlers.set(web_path, path_handlers);
 				}
-			} else {
-				await loadDirectory(join(directory, entry.name), web_path + '/' + entry.name);
+				else
+					console.warn(`no handler found for ${extension}.`);
+			} catch(error) {
+				console.warn(`failed to load ${name} due to`, error.stack);
 			}
+		} else {
+			await loadDirectory(join(directory, entry.name), web_path + '/' + entry.name, handlers);
 		}
 	}
-	loadDirectory(options?.path || process.cwd(), '');
+}
 
+export function start(options: ServerOptions & { path: string, port: number }) {
+	let handlers = new Map();
+	loadDirectory(options?.path || process.cwd(), '', handlers);
+	options.keepAlive = true;
+	let remaining_path;
 	let server = createServer(options, async (request, response) => {
 		let path = request.url;
 		await authentication(request);
-		do {
-			let handler = handlers.get(path);
-			if (handler) return handler.http(request.url.slice(path.length + 1), request, response);
-			let last_slash = path.lastIndexOf('/');
-			if (last_slash === -1) break;
-			path = path.slice(0, last_slash);
-		} while(true);
+		const { serializer, type } = findBestSerializer(request);
+		request.serialize = serializer;
+		request.responseType = type;
+		let handler = findHandler(request.url);
+		if (handler) return handler.http(remaining_path, request, response);
 		nextAppHandler(request, response)
 	});
 	let wss = new WebSocketServer({ server });
 	wss.on('connection', (ws, request) => {
 		authentication(request);
+		const { serializer } = findBestSerializer(request);
+		request.serialize = serializer;
 		ws.on('error', console.error);
 		ws.on('message', function message(body) {
 			let data = JSON.parse(body);
 			let full_path = request.url + '/' + data.path;
-			let path = full_path;
-			do {
-				let handler = handlers.get(path);
-				if (handler) return handler.ws(full_path.slice(path.length + 1), data, request, ws);
-				let last_slash = path.lastIndexOf('/');
-				if (last_slash === -1) break;
-				path = path.slice(0, last_slash);
-			} while(true);
+			let handler = findHandler(request.url + '/' + data.path);
+			if (handler) return handler.ws(remaining_path, data, request, ws);
 			console.log('received: %s', data);
 		});
 	});
+	function findHandler(full_path) {
+		let path = full_path;
+		do {
+			let handler = handlers.get(path);
+			if (handler) {
+				remaining_path = full_path.slice(path.length + 1)
+				return handler;
+			}
+			let last_slash = path.lastIndexOf('/');
+			if (last_slash === -1) break;
+			path = path.slice(0, last_slash);
+		} while(true);
+
+	}
 	registerServer(options.port, server);
 	async function nextAppHandler(request, response) {
 		if (custom_apps[0])
@@ -85,8 +97,15 @@ export function registerResourceType(extension, create_resource) {
 	handler_creator_by_type.set(extension, create_resource);
 }
 
-export function startOnMainThread(options) {
-	watchDir(options?.path || process.cwd());
+export async function startOnMainThread(options) {
+	let path = options?.path || process.cwd();
+	// load all the resource (with dummy webpath/map) so that we can ensure all tables are created
+	// before the worker threads start
+	await loadDirectory(path, '', new Map());
+	watchDir(path, () => {
+		// reload the directory on every restart
+		return loadDirectory(path, '', new Map());
+	});
 }
 
 async function authentication(request) {

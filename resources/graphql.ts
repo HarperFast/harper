@@ -1,4 +1,4 @@
-import { ensureTable } from './database';
+import { table } from './database';
 import { Resource } from './Resource';
 import { snake_case } from './Table';
 import { registerResourceType } from './resource-server';
@@ -42,7 +42,7 @@ export function registerGraphQL() {
 						type_def.attributes = attributes;
 						// with graphql schema definitions, this is a declaration that the table should exist and that it
 						// should be created if it does not exist
-						ensureTable(type_def);
+						table(type_def);
 					}
 					if (type_name === 'Query') {
 						for (let field of definition.fields) {
@@ -79,3 +79,4 @@ export function registerGraphQL() {
 	}
 }
 export const start = registerGraphQL;
+export const startOnMainThread = registerGraphQL;

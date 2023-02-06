@@ -16,8 +16,8 @@ module.exports = {
 };
 env.initSync();
 
-function startHTTPThreads(thread_count = 2) {
-	loadComponentModules();
+async function startHTTPThreads(thread_count = 2) {
+	await loadComponentModules();
 	for (let i = 0; i < thread_count; i++) {
 		startWorker('server/threads/thread-http-server.js', {
 			name: hdb_terms.THREAD_TYPES.HTTP,
@@ -52,7 +52,7 @@ function startSocketServer(port = 0, workerStrategy = findMostIdleWorker) {
 			if (!worker) return harper_logger.error(`No HTTP workers found`);
 			worker.requests++;
 			let fd = socket._handle.fd;
-			if (fd >= 0) worker.postMessage({ port, fd: socket._handle.fd });
+			if (fd >= 0) worker.postMessage({ port, fd });
 			// valid file descriptor, forward it
 			// Windows doesn't support passing sockets by file descriptors, so we have manually proxy the socket data
 			else proxySocket(socket, worker, port);

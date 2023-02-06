@@ -2,30 +2,33 @@
 const { streamAsJSON } = require('./JSONStream');
 const { toCsvStream } = require('../../data_layer/export');
 const { pack, unpack, encodeIter } = require('msgpackr');
-const { decode, EncoderStream } = require('cbor-x');
+const { decode, encode, EncoderStream } = require('cbor-x');
 const { Readable } = require('stream');
 const media_types = {
 	'application/json': {
-		serialize: streamAsJSON,
+		serializeStream: streamAsJSON,
+		serialize: JSON.stringify,
 		q: 0.8,
 	},
 	'application/cbor': {
-		serialize: function(data) {
+		serializeStream: function(data) {
 			return new EncoderStream(PUBLIC_ENCODE_OPTIONS).end(data);
 		},
+		serialize: encode,
 		q: 1,
 	},
 	'application/x-msgpack': {
-		serialize: function(data) {
+		serializeStream: function(data) {
 			if ((data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) && !Array.isArray(data)) {
 				return Readable.from(encodeIter(data, PUBLIC_ENCODE_OPTIONS));
 			}
 			return pack(data);
 		},
+		serialize: pack,
 		q: 0.9,
 	},
 	'text/csv': {
-		serialize: function (data) {
+		serializeStream: function (data) {
 			this.header('Content-Disposition', 'attachment; filename="data.csv"');
 			return toCsvStream(data);
 		},
@@ -33,7 +36,8 @@ const media_types = {
 	},
 	'*/*': {
 		type: 'application/json',
-		serialize: streamAsJSON,
+		serializeStream: streamAsJSON,
+		serialize: JSON.stringify,
 		q: 0.8,
 	},
 };
@@ -109,7 +113,7 @@ let registerFastifySerializers = fp(
 	{ name: 'content-type-negotiation' }
 );
 
-function findBestSerializer(incoming_message) {
+function findBestSerializer(incoming_message, asStream = true) {
 	let accept_header = incoming_message.headers.accept;
 	let best_serializer;
 	let best_quality = 0;
@@ -129,7 +133,7 @@ function findBestSerializer(incoming_message) {
 		if (serializer) {
 			const quality = (serializer.q || 1) * client_quality;
 			if (quality > best_quality) {
-				best_serializer = serializer.serialize;
+				best_serializer = asStream ? serializer.serializeStream : serializer;
 				best_type = serializer.type || type;
 				best_quality = quality;
 				best_parameters = parameters;
