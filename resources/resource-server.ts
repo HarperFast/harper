@@ -6,7 +6,7 @@ import { SERVICES } from '../utility/hdbTerms';
 import { watchDir } from '../server/threads/manage-threads';
 import { findAndValidateUser } from '../security/user';
 import { WebSocketServer } from 'ws';
-import { findBestSerializer } from '../server/serverHelpers/contentTypes';
+import { findBestSerializer, getDeserializer } from '../server/serverHelpers/contentTypes';
 
 const handler_creator_by_type = new Map();
 const custom_apps = [];
@@ -30,8 +30,6 @@ async function loadDirectory(directory: string, web_path: string, handlers) {
 					} else
 						handlers.set(web_path, path_handlers);
 				}
-				else
-					console.warn(`no handler found for ${extension}.`);
 			} catch(error) {
 				console.warn(`failed to load ${name} due to`, error.stack);
 			}
@@ -47,29 +45,32 @@ export function start(options: ServerOptions & { path: string, port: number }) {
 	options.keepAlive = true;
 	let remaining_path;
 	let server = createServer(options, async (request, response) => {
-		let path = request.url;
-		await authentication(request);
-		const { serializer, type } = findBestSerializer(request);
-		request.serialize = serializer;
-		request.responseType = type;
+		await startRequest(request);
 		let handler = findHandler(request.url);
 		if (handler) return handler.http(remaining_path, request, response);
 		nextAppHandler(request, response)
 	});
 	let wss = new WebSocketServer({ server });
 	wss.on('connection', (ws, request) => {
-		authentication(request);
-		const { serializer } = findBestSerializer(request);
-		request.serialize = serializer;
+		startRequest(request);
 		ws.on('error', console.error);
 		ws.on('message', function message(body) {
-			let data = JSON.parse(body);
-			let full_path = request.url + '/' + data.path;
+			let data = request.deserialize(body);
 			let handler = findHandler(request.url + '/' + data.path);
 			if (handler) return handler.ws(remaining_path, data, request, ws);
-			console.log('received: %s', data);
+			console.error('no handler: %s', data);
 		});
 	});
+	function startRequest(request) {
+		const { serializer, type } = findBestSerializer(request);
+		request.serialize = serializer;
+		let content_type = request.headers['content-type'];
+		if (content_type) {
+			request.deserialize = getDeserializer(content_type);
+		}
+		request.responseType = type;
+		return authentication(request);
+	}
 	function findHandler(full_path) {
 		let path = full_path;
 		do {

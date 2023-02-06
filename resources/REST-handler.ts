@@ -4,15 +4,19 @@ export function restHandler(Resource) {
 	async function http(next_path, request, response) {
 		let method = request.method;
 		let request_data;
-		if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
-			let request_binary = await new Promise((resolve, reject) => {
-				let buffers = [];
-				request.on('data', data => buffers.push(data));
-				request.on('end', () => resolve(Buffer.concat(buffers)));
-				request.on('error', reject);
-			});
-			// TODO: Handle different content types
-			request_data = JSON.parse(request_binary.toString());
+		try {
+			if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
+				let request_binary = await new Promise((resolve, reject) => {
+					let buffers = [];
+					request.on('data', data => buffers.push(data));
+					request.on('end', () => resolve(Buffer.concat(buffers)));
+					request.on('error', reject);
+				});
+				request_data = request.deserialize(request_binary);
+			}
+		} catch (error) {
+			response.writeHead(400); // bad request
+			response.end(request.serialize(error.toString()));
 		}
 		try {
 			let response_data = await execute(method, next_path, request_data, request, response);
@@ -23,10 +27,10 @@ export function restHandler(Resource) {
 			else
 				response.end(response_data.body);
 		} catch (error) {
-			response.writeHead(400);
+			response.writeHead(500); // server error
 			// do content negotiation
 			console.error(error);
-			response.end(JSON.stringify(error.toString()));
+			response.end(request.serialize(error.toString()));
 		}
 	}
 	async function execute(method, path, request_data, request, response?) {
@@ -44,6 +48,17 @@ export function restHandler(Resource) {
 			let retries = 0;
 			do {
 				switch (method) {
+					case 'GET_SUB':
+						if (typed_key !== undefined) {
+							let subscription = resource_snapshot.subscribe(typed_key, () => {
+								response.send(request.serialize({
+									path,
+									invalidated: true
+								}));
+								subscription.end();
+							});
+						}
+						// fall-through
 					case 'GET':
 						if (typed_key !== undefined) {
 							let p = resource_snapshot.get(typed_key);;
@@ -75,14 +90,14 @@ export function restHandler(Resource) {
 					};
 				}
 			} while (true); // execute again if the commit requires a retry
-			if (resource_snapshot.lastAccessTime && response)
+			if (resource_snapshot.lastAccessTime && response.setHeader)
 				response.setHeader('last-modified', new Date(resource_snapshot.lastAccessTime).toUTCString());
 			if (response_data) {
 				if (response_data.resolveData) // if it is iterable with onDone, TODO: make a better marker for this
 					response_data.onDone = () => resource_snapshot.doneReading();
 				else
 					resource_snapshot.doneReading();
-				if (request.responseType && response)
+				if (request.responseType && response.setHeader)
 					response.setHeader('content-type', request.responseType);
 				return {
 					status: 200,
@@ -103,7 +118,7 @@ export function restHandler(Resource) {
 		}
 	}
 	async function ws(path, data, request, ws) {
-		let method = data.method || 'GET';
+		let method = data.method || 'GET-SUB';
 		let request_data = data.body;
 		let request_id = data.id;
 		try {

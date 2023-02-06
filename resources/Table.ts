@@ -86,7 +86,7 @@ export class Table {
 	setTTLExpiration(expiration_time) {
 		// we set up a timer to remove expired entries. we only want the timer/reaper to run in one thread,
 		// so we use the first one
-		if (workerData.isFirst) {
+		if (workerData?.isFirst) {
 			if (!this.expirationTimer) {
 				let expiration_ms = expiration_time * 1000;
 				this.expirationMS = expiration_ms; // in JS we use milliseconds
@@ -180,9 +180,8 @@ function makeTransactionClass(table: Table) {
 				this.updateModificationTime(entry.version);
 			}
 
-			let record_data = entry?.value;
-			if (record_data) {
-				let record = record_data;// createRecord(record_data);
+			let record = entry?.value;
+			if (record) {
 				record[TXN_KEY] = this;
 				let availability = record.__availability__;
 				if (availability?.cached & INVALIDATED) {
@@ -199,6 +198,13 @@ function makeTransactionClass(table: Table) {
 					if (TableTransaction.Source) return this.getFromSource(id, record);
 				}
 				return record;
+			}
+		}
+		update(record) {
+			if (typeof record === 'object' && record) {
+				return createWritableRecord(record);
+			} else {
+				return this.get(record).then(createWritableRecord);
 			}
 		}
 
@@ -454,26 +460,40 @@ function createRecordClass() {
 }
 const RECORD_CLASS = Symbol('record');
 const SOURCE_SYMBOL = Symbol.for('source');
-function createRecord(record_data) {
+function createWritableRecord(record_data, table_txn) {
 	let Record = record_data[RECORD_CLASS];
 	if (Record) return new Record(record_data);
 	else {
 		class Record extends record_data.constructor {
 			constructor(data) {
 				super();
-				this[SOURCE_SYMBOL] = data[SOURCE_SYMBOL];
+				// TODO: Handle source objects more efficient
+				//this[SOURCE_SYMBOL] = data[SOURCE_SYMBOL];
+				this.__data__ = data;
+				this.__tableTxn__ = table_txn;
+			}
+			save() {
+				this.__tableTxn__.put(this.__data__);
 			}
 		}
-		let original_prototype = record_data.constructor.prototype;
+		let original = record_data[SOURCE_SYMBOL] ? record_data.constructor.prototype : record_data;
 		let prototype = Record.prototype;
-		for (let key in original_prototype) {
-			let descriptor = Object.getOwnPropertyDescriptor(original_prototype, key);
-			descriptor.set = function(value) {
-				this.__changes__.push(key);
-			};
-			Object.defineProperty(prototype, key, descriptor);
+		for (let key in original) {
+			let descriptor = Object.getOwnPropertyDescriptor(original, key);
+			let value = descriptor.value;
+			Object.defineProperty(prototype, key, {
+				set(new_value) {
+					if (!this.__changes__)
+						this.__changes__ = [];
+					this.__changes__.push(key);
+					value = new_value;
+				},
+				get() {
+					return value;
+				}
+			});
 		}
-		original_prototype[RECORD_CLASS] = Record;
+		original[RECORD_CLASS] = Record;
 		return new Record(record_data);
 	}
 }

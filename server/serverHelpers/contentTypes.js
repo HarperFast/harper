@@ -8,6 +8,7 @@ const media_types = {
 	'application/json': {
 		serializeStream: streamAsJSON,
 		serialize: JSON.stringify,
+		deserialize: JSON.parse,
 		q: 0.8,
 	},
 	'application/cbor': {
@@ -15,6 +16,7 @@ const media_types = {
 			return new EncoderStream(PUBLIC_ENCODE_OPTIONS).end(data);
 		},
 		serialize: encode,
+		deserialize: decode,
 		q: 1,
 	},
 	'application/x-msgpack': {
@@ -25,6 +27,7 @@ const media_types = {
 			return pack(data);
 		},
 		serialize: pack,
+		deserialize: unpack,
 		q: 0.9,
 	},
 	'text/csv': {
@@ -38,6 +41,7 @@ const media_types = {
 		type: 'application/json',
 		serializeStream: streamAsJSON,
 		serialize: JSON.stringify,
+		deserialize: JSON.parse,
 		q: 0.8,
 	},
 };
@@ -156,7 +160,12 @@ function findBestSerializer(incoming_message, asStream = true) {
 	return { serializer: best_serializer, type: best_type, parameters: best_parameters };
 }
 
+function getDeserializer(contentType) {
+	return media_types[contentType]?.deserialize || JSON.parse;
+}
+
 module.exports = {
 	registerContentHandlers,
-	findBestSerializer
+	findBestSerializer,
+	getDeserializer
 };

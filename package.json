@@ -66,6 +66,7 @@
     "@turf/distance": "6.5.0",
     "@turf/helpers": "6.5.0",
     "@turf/length": "6.5.0",
+    "aedes": "^0.48.1",
     "alasql": "1.7.4",
     "async": "3.2.3",
     "aws-sdk": "2.1096.0",
