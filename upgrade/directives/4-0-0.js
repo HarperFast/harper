@@ -19,6 +19,7 @@ const routes = require('../../utility/clustering/routes');
 const nats_terms = require('../../server/nats/utility/natsTerms');
 const reindex_upgrade = require('./upgrade_scripts/4_0_0_reindex_script');
 const generate_keys = require('../../security/keys');
+const upgrade_prompts = require('../upgradePrompt');
 
 let directive4_0_0 = new UpgradeDirective('4.0.0');
 let directives = [];
@@ -26,7 +27,8 @@ let directives = [];
 async function generateNewKeys() {
 	console.log(`Generating new keys.`);
 	try {
-		await generate_keys();
+		const generate_certs = await upgrade_prompts.upgradeCertsPrompt();
+		if (generate_certs) await generate_keys();
 	} catch (err) {
 		console.error('There was a problem generating new keys. Please check the log for details.');
 		throw err;
