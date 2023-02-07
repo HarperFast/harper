@@ -90,10 +90,9 @@ async function upgradeCertsPrompt() {
 	const upgrade_cert_message =
 		`${os.EOL}` +
 		chalk.bold.green(
-			'We now require a Certifacte Authority certificate. HarperDB can generate all new certificates (your existing certificates will be backed up)' +
-				'or you can keep any existing certificates and add your own CA certificate. To add your own CA certificate set the <certificateAuthority>' +
-				'parameter in harperdb-config.yaml' +
-				`${os.EOL}`
+			'We now require a Certifacte Authority certificate. HarperDB can generate all new certificates for you (your existing certificates will be backed up) ' +
+				'or you can keep any existing certificates and add your own CA certificate. To add your own CA certificate set the <certificateAuthority> ' +
+				'parameter in harperdb-config.yaml'
 		);
 
 	prompt.override = assignCMDENVVariables(['GENERATE_CERTS']);
@@ -107,7 +106,7 @@ async function upgradeCertsPrompt() {
 				),
 				pattern: /y(es)?$|n(o)?$/,
 				message: "Must respond 'yes' or 'no'",
-				default: 'no',
+				default: 'yes',
 				required: true,
 			},
 		},
