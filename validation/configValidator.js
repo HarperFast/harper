@@ -7,19 +7,8 @@ const { boolean, string, number, array } = Joi.types();
 const path = require('path');
 const hdb_logger = require('../utility/logging/harper_logger');
 const hdb_utils = require('../utility/common_utils');
-const certificates_terms = require('../utility/terms/certificates');
 const validator = require('./validationWrapper');
 
-const DEFAULT_KEY_DIR = 'keys';
-const DEFAULT_HDB_CERT = certificates_terms.CERTIFICATE_PEM_NAME;
-const DEFAULT_HDB_PRIVATE_KEY = certificates_terms.PRIVATEKEY_PEM_NAME;
-const DEFAULT_HDB_CERT_AUTH = certificates_terms.CA_PEM_NAME;
-const DEFAULT_CF_CERT = certificates_terms.CERTIFICATE_PEM_NAME;
-const DEFAULT_CF_PRIVATE_KEY = certificates_terms.PRIVATEKEY_PEM_NAME;
-const DEFAULT_CF_CERT_AUTH = certificates_terms.CA_PEM_NAME;
-const DEFAULT_CLUSTERING_CERT = certificates_terms.CERTIFICATE_PEM_NAME;
-const DEFAULT_CLUSTERING_PRIVATE_KEY = certificates_terms.PRIVATEKEY_PEM_NAME;
-const DEFAULT_CLUSTERING_CERT_AUTH = certificates_terms.CA_PEM_NAME;
 const DEFAULT_LOG_FOLDER = 'log';
 const DEFAULT_CUSTOM_FUNCTIONS_FOLDER = 'custom_functions';
 const DEFAULT_CORES_IF_ERR = 4;
@@ -231,6 +220,8 @@ function validatePemFile(value, helpers) {
 	if (does_exist_msg) {
 		return helpers.message(does_exist_msg);
 	}
+
+	return value;
 }
 
 function validateRotationMaxSize(value, helpers) {
@@ -281,24 +272,6 @@ function setDefaultRoot(parent, helpers) {
 			return path.join(hdb_root, DEFAULT_CUSTOM_FUNCTIONS_FOLDER);
 		case 'logging.root':
 			return path.join(hdb_root, DEFAULT_LOG_FOLDER);
-		// case 'operationsApi.tls.certificate':
-		// 	return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_HDB_CERT);
-		// case 'operationsApi.tls.privateKey':
-		// 	return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_HDB_PRIVATE_KEY);
-		// case 'operationsApi.tls.certificateAuthority':
-		// 	return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_HDB_CERT_AUTH);
-		// case 'customFunctions.tls.certificate':
-		// 	return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CF_CERT);
-		// case 'customFunctions.tls.privateKey':
-		// 	return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CF_PRIVATE_KEY);
-		// case 'customFunctions.tls.certificateAuthority':
-		// 	return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CF_CERT_AUTH);
-		// case 'clustering.tls.certificate':
-		// 	return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CLUSTERING_CERT);
-		// case 'clustering.tls.privateKey':
-		// 	return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CLUSTERING_PRIVATE_KEY);
-		// case 'clustering.tls.certificateAuthority':
-		// 	return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CLUSTERING_CERT_AUTH);
 		default:
 			throw new Error(
 				`Error setting default root for config parameter: ${config_param}. Unrecognized config parameter`
