@@ -24,23 +24,37 @@ const upgrade_prompts = require('../upgradePrompt');
 let directive4_0_0 = new UpgradeDirective('4.0.0');
 let directives = [];
 
+let old_cert_path;
+let old_private_path;
+
 async function generateNewKeys() {
-	console.log(`Generating new keys.`);
 	try {
 		const generate_certs = await upgrade_prompts.upgradeCertsPrompt();
 		if (generate_certs) {
-			const old_cert = env.get(terms.HDB_SETTINGS_NAMES.CERT_KEY);
-			if (old_cert) {
-				const cert_bak = common_utils.changeExtension(old_cert, '.bak');
-				await fs.move(old_cert, cert_bak);
+			console.log(`Generating new certificates.`);
+			if (old_cert_path) {
+				const cert_bak = common_utils.changeExtension(old_cert_path, '.bak');
+				await fs.move(old_cert_path, cert_bak);
 			}
-			const old_private_key = env.get(terms.HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY);
-			if (old_private_key) {
-				const key_bak = common_utils.changeExtension(old_private_key, '.bak');
-				await fs.move(old_private_key, key_bak);
+
+			if (old_private_path) {
+				const key_bak = common_utils.changeExtension(old_private_path, '.bak');
+				await fs.move(old_private_path, key_bak);
 			}
 
 			await generate_keys();
+		} else {
+			console.log('Using existing certificates.');
+			const existing_certs = {
+				[terms.CONFIG_PARAMS.CLUSTERING_TLS_CERTIFICATE]: old_cert_path,
+				[terms.CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY]: old_private_path,
+				[terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_CERTIFICATE]: old_cert_path,
+				[terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_PRIVATEKEY]: old_private_path,
+				[terms.CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATE]: old_cert_path,
+				[terms.CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY]: old_private_path,
+			};
+
+			config_utils.updateConfigValue(undefined, undefined, existing_certs, false, true);
 		}
 	} catch (err) {
 		console.error('There was a problem generating new keys. Please check the log for details.');
@@ -163,6 +177,11 @@ async function updateSettingsFile_4_0_0() {
 		console.log(`Creating new/upgraded settings file at '${new_settings_path}'`);
 		hdb_log.info('Updating env variables with new settings values');
 		const flat_config_obj = config_utils.initOldConfig(settings_path);
+
+		// These are stored here in case they are needed by the generateNewKeys function,
+		old_cert_path = flat_config_obj[terms.CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATE.toLowerCase()];
+		old_private_path = flat_config_obj[terms.CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY.toLowerCase()];
+
 		config_utils.createConfigFile(flat_config_obj);
 	} catch (err) {
 		console.log('There was a problem creating the new HarperDB config file. Please check the log for details.');
@@ -207,8 +226,8 @@ async function updateSettingsFile_4_0_0() {
 	}
 }
 
-directive4_0_0.async_functions.push(generateNewKeys);
 directive4_0_0.async_functions.push(updateSettingsFile_4_0_0);
+directive4_0_0.async_functions.push(generateNewKeys);
 directive4_0_0.async_functions.push(reindex_upgrade);
 directive4_0_0.async_functions.push(updateNodes);
 
