@@ -58,10 +58,7 @@ function configValidator(config_json) {
 		.pattern(/^[\\\/]$|([\\\/][a-zA-Z_0-9\:-]+)+$/, 'directory path')
 		.empty(null)
 		.default(setDefaultRoot);
-	const pem_file_constraints = Joi.custom(validatePemFile)
-		.messages({ 'any.custom': '{:#label} {:#error}' })
-		.empty(null)
-		.default(setDefaultRoot);
+	const pem_file_constraints = Joi.custom(validatePemFile).messages({ 'any.custom': '{:#label} {:#error}' });
 	const nats_term_constraints = string
 		.pattern(/^[^\s.,*>]+$/)
 		.messages({ 'string.pattern.base': '{:#label} invalid, must not contain ., * or >' })
@@ -221,6 +218,8 @@ function doesPathExist(path_to_check) {
 }
 
 function validatePemFile(value, helpers) {
+	if (value === null) return;
+
 	Joi.assert(
 		value,
 		string
@@ -282,24 +281,24 @@ function setDefaultRoot(parent, helpers) {
 			return path.join(hdb_root, DEFAULT_CUSTOM_FUNCTIONS_FOLDER);
 		case 'logging.root':
 			return path.join(hdb_root, DEFAULT_LOG_FOLDER);
-		case 'operationsApi.tls.certificate':
-			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_HDB_CERT);
-		case 'operationsApi.tls.privateKey':
-			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_HDB_PRIVATE_KEY);
-		case 'operationsApi.tls.certificateAuthority':
-			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_HDB_CERT_AUTH);
-		case 'customFunctions.tls.certificate':
-			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CF_CERT);
-		case 'customFunctions.tls.privateKey':
-			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CF_PRIVATE_KEY);
-		case 'customFunctions.tls.certificateAuthority':
-			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CF_CERT_AUTH);
-		case 'clustering.tls.certificate':
-			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CLUSTERING_CERT);
-		case 'clustering.tls.privateKey':
-			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CLUSTERING_PRIVATE_KEY);
-		case 'clustering.tls.certificateAuthority':
-			return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CLUSTERING_CERT_AUTH);
+		// case 'operationsApi.tls.certificate':
+		// 	return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_HDB_CERT);
+		// case 'operationsApi.tls.privateKey':
+		// 	return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_HDB_PRIVATE_KEY);
+		// case 'operationsApi.tls.certificateAuthority':
+		// 	return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_HDB_CERT_AUTH);
+		// case 'customFunctions.tls.certificate':
+		// 	return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CF_CERT);
+		// case 'customFunctions.tls.privateKey':
+		// 	return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CF_PRIVATE_KEY);
+		// case 'customFunctions.tls.certificateAuthority':
+		// 	return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CF_CERT_AUTH);
+		// case 'clustering.tls.certificate':
+		// 	return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CLUSTERING_CERT);
+		// case 'clustering.tls.privateKey':
+		// 	return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CLUSTERING_PRIVATE_KEY);
+		// case 'clustering.tls.certificateAuthority':
+		// 	return path.join(hdb_root, DEFAULT_KEY_DIR, DEFAULT_CLUSTERING_CERT_AUTH);
 		default:
 			throw new Error(
 				`Error setting default root for config parameter: ${config_param}. Unrecognized config parameter`

@@ -28,7 +28,20 @@ async function generateNewKeys() {
 	console.log(`Generating new keys.`);
 	try {
 		const generate_certs = await upgrade_prompts.upgradeCertsPrompt();
-		if (generate_certs) await generate_keys();
+		if (generate_certs) {
+			const old_cert = env.get(terms.HDB_SETTINGS_NAMES.CERT_KEY);
+			if (old_cert) {
+				const cert_bak = common_utils.changeExtension(old_cert, '.bak');
+				await fs.move(old_cert, cert_bak);
+			}
+			const old_private_key = env.get(terms.HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY);
+			if (old_private_key) {
+				const key_bak = common_utils.changeExtension(old_private_key, '.bak');
+				await fs.move(old_private_key, key_bak);
+			}
+
+			await generate_keys();
+		}
 	} catch (err) {
 		console.error('There was a problem generating new keys. Please check the log for details.');
 		throw err;
