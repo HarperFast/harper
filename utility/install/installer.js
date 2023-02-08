@@ -25,7 +25,7 @@ const check_jwt_tokens = require('./checkJWTTokensExist');
 const global_schema = require('../../utility/globalSchema');
 const promisify = require('util').promisify;
 const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
-const generate_keys = require('../../security/keys');
+const keys = require('../../security/keys');
 
 // Removes the color formatting that was being applied to the prompt answer.
 const PROMPT_ANSWER_TRANSFORMER = (answer) => answer;
@@ -135,7 +135,7 @@ async function install() {
 	await createClusterUser(install_params);
 
 	// Create cert and private keys and write to file.
-	await generate_keys();
+	await keys.generateKeys();
 
 	// Insert current version of HarperDB into versions table.
 	await insertHdbVersionInfo();

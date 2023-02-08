@@ -18,7 +18,7 @@ const insert = require('../../data_layer/insert');
 const routes = require('../../utility/clustering/routes');
 const nats_terms = require('../../server/nats/utility/natsTerms');
 const reindex_upgrade = require('./upgrade_scripts/4_0_0_reindex_script');
-const generate_keys = require('../../security/keys');
+const keys = require('../../security/keys');
 const upgrade_prompts = require('../upgradePrompt');
 
 let directive4_0_0 = new UpgradeDirective('4.0.0');
@@ -42,19 +42,10 @@ async function generateNewKeys() {
 				await fs.move(old_private_path, key_bak);
 			}
 
-			await generate_keys();
+			await keys.generateKeys();
 		} else {
 			console.log('Using existing certificates.');
-			const existing_certs = {
-				[terms.CONFIG_PARAMS.CLUSTERING_TLS_CERTIFICATE]: old_cert_path,
-				[terms.CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY]: old_private_path,
-				[terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_CERTIFICATE]: old_cert_path,
-				[terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_PRIVATEKEY]: old_private_path,
-				[terms.CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATE]: old_cert_path,
-				[terms.CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY]: old_private_path,
-			};
-
-			config_utils.updateConfigValue(undefined, undefined, existing_certs, false, true);
+			keys.updateConfigCert(old_cert_path, old_private_path, undefined);
 		}
 	} catch (err) {
 		console.error('There was a problem generating new keys. Please check the log for details.');
