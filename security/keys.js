@@ -9,7 +9,7 @@ const env_manager = require('../utility/environment/environmentManager');
 const hdb_terms = require('../utility/hdbTerms');
 const certificates_terms = require('../utility/terms/certificates');
 const assign_cmdenv_vars = require('../utility/assignCmdEnvVariables');
-const { updateConfigValue } = require('../config/configUtils');
+const config_utils = require('../config/configUtils');
 
 module.exports = {
 	generateKeys,
@@ -104,5 +104,5 @@ function updateConfigCert(public_cert, private_cert, ca_cert) {
 			: ca_cert,
 	};
 
-	updateConfigValue(undefined, undefined, new_certs, false, true);
+	config_utils.updateConfigValue(undefined, undefined, new_certs, false, true);
 }
