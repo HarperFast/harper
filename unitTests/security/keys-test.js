@@ -78,5 +78,11 @@ describe('Test keys module', () => {
 			operationsApi_tls_privateKey: 'private/cert.pem',
 			operationsApi_tls_certificateAuthority: 'certificate/authority.pem',
 		});
+
+		delete process.env['CLUSTERING_TLS_CERTIFICATEAUTHORITY'];
+		const command = process.argv.indexOf('--CUSTOMFUNCTIONS_TLS_PRIVATEKEY');
+		const value = process.argv.indexOf('hi/im/a/private_key.pem');
+		if (command > -1) process.argv.splice(command, 1);
+		if (value > -1) process.argv.splice(value, 1);
 	});
 });
