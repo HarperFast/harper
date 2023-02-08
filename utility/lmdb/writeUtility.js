@@ -35,6 +35,7 @@ async function insertRecords(env, hash_attribute, write_attributes, records, gen
 	validateWrite(env, hash_attribute, write_attributes, records);
 
 	initializeTransaction(env, hash_attribute, write_attributes);
+	let timestamp = generate_timestamps && Date.now();
 
 	let result = new InsertRecordsResponseObject();
 
@@ -42,7 +43,7 @@ async function insertRecords(env, hash_attribute, write_attributes, records, gen
 	let keys = [];
 	for (let index = 0; index < records.length; index++) {
 		let record = records[index];
-		setTimestamps(record, true, generate_timestamps);
+		setTimestamps(record, true, timestamp);
 
 		let promise = insertRecord(env, hash_attribute, write_attributes, record);
 		let hash_value = record[hash_attribute];
@@ -50,7 +51,7 @@ async function insertRecords(env, hash_attribute, write_attributes, records, gen
 		keys.push(hash_value);
 	}
 
-	return finalizeWrite(puts, keys, records, result);
+	return finalizeWrite(puts, keys, records, result, timestamp);
 }
 
 /**
@@ -119,17 +120,15 @@ function removeSkippedRecords(records, remove_indices = []) {
  * auto sets the createdtime & updatedtime stamps on a record
  * @param {Object} record
  * @param {Boolean} is_insert
- * @param {Boolean} generate_timestamps - defines if we should create timestamps for this record
+ * @param {number} timestamp - timestamp for this record (if omitted, don't set)
  */
-function setTimestamps(record, is_insert, generate_timestamps = true) {
-	let timestamp = Date.now();
-
-	if (generate_timestamps === true || !Number.isInteger(record[UPDATED_TIME_ATTRIBUTE_NAME])) {
+function setTimestamps(record, is_insert, timestamp) {
+	if (timestamp || !Number.isInteger(record[UPDATED_TIME_ATTRIBUTE_NAME])) {
 		record[UPDATED_TIME_ATTRIBUTE_NAME] = timestamp;
 	}
 
 	if (is_insert === true) {
-		if (generate_timestamps === true || !Number.isInteger(record[CREATED_TIME_ATTRIBUTE_NAME])) {
+		if (timestamp || !Number.isInteger(record[CREATED_TIME_ATTRIBUTE_NAME])) {
 			record[CREATED_TIME_ATTRIBUTE_NAME] = timestamp;
 		}
 	} else {
@@ -171,6 +170,7 @@ async function updateRecords(env, hash_attribute, write_attributes, records, gen
 	validateWrite(env, hash_attribute, write_attributes, records);
 
 	initializeTransaction(env, hash_attribute, write_attributes);
+	let timestamp = generate_timestamps && Date.now();
 
 	let result = new UpdateRecordsResponseObject();
 
@@ -184,7 +184,7 @@ async function updateRecords(env, hash_attribute, write_attributes, records, gen
 
 		let promise;
 		try {
-			promise = updateUpsertRecord(env, hash_attribute, record, hash_value, result, true, generate_timestamps);
+			promise = updateUpsertRecord(env, hash_attribute, record, hash_value, result, true, timestamp);
 		} catch (e) {
 			result.skipped_hashes.push(hash_value);
 			remove_indices.push(index);
@@ -194,7 +194,7 @@ async function updateRecords(env, hash_attribute, write_attributes, records, gen
 		keys.push(hash_value);
 	}
 
-	return finalizeWrite(puts, keys, records, result, remove_indices);
+	return finalizeWrite(puts, keys, records, result, timestamp, remove_indices);
 }
 
 /**
@@ -215,6 +215,7 @@ async function upsertRecords(env, hash_attribute, write_attributes, records, gen
 	}
 
 	initializeTransaction(env, hash_attribute, write_attributes);
+	let timestamp = generate_timestamps && Date.now();
 
 	let result = new UpsertRecordsResponseObject();
 
@@ -232,15 +233,15 @@ async function upsertRecords(env, hash_attribute, write_attributes, records, gen
 		}
 
 		// do an upsert without requiring the record to previously existed
-		let promise = updateUpsertRecord(env, hash_attribute, record, hash_value, result, false, generate_timestamps);
+		let promise = updateUpsertRecord(env, hash_attribute, record, hash_value, result, false, timestamp);
 		puts.push(promise);
 		keys.push(hash_value);
 	}
 
-	return finalizeWrite(puts, keys, records, result);
+	return finalizeWrite(puts, keys, records, result, timestamp);
 }
 
-async function finalizeWrite(puts, keys, records, result, remove_indices = []) {
+async function finalizeWrite(puts, keys, records, result, timestamp, remove_indices = []) {
 	let put_results = await Promise.all(puts);
 	for (let x = 0, length = put_results.length; x < length; x++) {
 		if (put_results[x] === true) {
@@ -251,7 +252,7 @@ async function finalizeWrite(puts, keys, records, result, remove_indices = []) {
 		}
 	}
 
-	result.txn_time = common.getMicroTime();
+	result.txn_time = timestamp;
 
 	removeSkippedRecords(records, remove_indices);
 	return result;
@@ -265,7 +266,7 @@ async function finalizeWrite(puts, keys, records, result, remove_indices = []) {
  * @param {string|number} hash_value - the hash attribute value
  * @param {UpdateRecordsResponseObject|UpsertRecordsResponseObject} result
  * @param {boolean} Require existing record
- * @param {boolean} Generate timestamps
+ * @param {number} timestamp
  */
 function updateUpsertRecord(
 	env,
@@ -274,7 +275,7 @@ function updateUpsertRecord(
 	hash_value,
 	result,
 	must_exist = false,
-	generate_timestamps = true
+	timestamp
 ) {
 	let primary_dbi = env.dbis[hash_attribute];
 	let existing_entry = primary_dbi.getEntry(hash_value);
@@ -284,7 +285,7 @@ function updateUpsertRecord(
 		if (must_exist) return false;
 		existing_record = {};
 	}
-	setTimestamps(record, !had_existing, generate_timestamps);
+	setTimestamps(record, !had_existing, timestamp);
 	if (
 		Number.isInteger(record[UPDATED_TIME_ATTRIBUTE_NAME]) &&
 		existing_record[UPDATED_TIME_ATTRIBUTE_NAME] > record[UPDATED_TIME_ATTRIBUTE_NAME]
@@ -360,7 +361,7 @@ function updateUpsertRecord(
 	return completion.then((success) => {
 		if (!success) {
 			// try again
-			return updateUpsertRecord(env, hash_attribute, record, hash_value, result, must_exist, generate_timestamps);
+			return updateUpsertRecord(env, hash_attribute, record, hash_value, result, must_exist, timestamp);
 		}
 		return true;
 	});

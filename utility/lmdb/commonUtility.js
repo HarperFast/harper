@@ -105,10 +105,32 @@ function getMicroTime() {
 	return Number(full_micro.slice(0, pos) + '.' + full_micro.slice(pos));
 }
 
+const MAX_INTEGER_DRIFT = 100;
+let last_time = 0;
+/**
+ * A monotonic timestamp that is guaranteed to be higher than the last call to this function
+ * This is probably faster and more useful than getMicroTime
+ */
+function getNextMonotonicTime() {
+	let now = Date.now();
+	if (now > last_time) {
+		// current time is higher than last time, can safely return it
+		return last_time = now;
+	}
+	if (last_time - now < MAX_INTEGER_DRIFT) {
+		// last time is equal or ahead of now, so we are incrementing by whole numbers to preserve timestamps as integer
+		// until we drift too far
+		return last_time = Math.round(last_time) + 1;
+	}
+	// increment by as small of count as possible, to minimize drift
+	return last_time += 0.000488;
+}
+
 module.exports = {
 	validateEnv,
 	stringifyData,
 	convertKeyValueToWrite,
 	getMicroTime,
+	getNextMonotonicTime,
 	getIndexedValues,
 };
