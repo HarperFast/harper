@@ -73,16 +73,6 @@ async function run(called_by_install = false) {
 
 		hdb_logger.createLogFile(terms.PROCESS_LOG_NAMES.CLI, terms.PROCESS_DESCRIPTORS.RUN);
 
-		// The called by install check is here because if cmd/env args are passed to install (which calls run when done)
-		// we do not need to update/backup the config file on run.
-		if (!called_by_install) {
-			// If run is called with cmd/env vars we create a backup of config and update config file.
-			const parsed_args = assignCMDENVVariables(Object.keys(terms.CONFIG_PARAM_MAP), true);
-			if (!hdb_utils.isEmpty(parsed_args) && !hdb_utils.isEmptyOrZeroLength(Object.keys(parsed_args))) {
-				config_utils.updateConfigValue(undefined, undefined, parsed_args, true, true);
-			}
-		}
-
 		// Check to see if an upgrade is needed based on existing hdb_info data.  If so, we need to force the user to upgrade
 		// before the server can be started.
 		let upgrade_vers;
@@ -104,6 +94,16 @@ async function run(called_by_install = false) {
 				hdb_logger.error(err);
 			}
 			process.exit(1);
+		}
+
+		// The called by install check is here because if cmd/env args are passed to install (which calls run when done)
+		// we do not need to update/backup the config file on run.
+		if (!called_by_install) {
+			// If run is called with cmd/env vars we create a backup of config and update config file.
+			const parsed_args = assignCMDENVVariables(Object.keys(terms.CONFIG_PARAM_MAP), true);
+			if (!hdb_utils.isEmpty(parsed_args) && !hdb_utils.isEmptyOrZeroLength(Object.keys(parsed_args))) {
+				config_utils.updateConfigValue(undefined, undefined, parsed_args, true, true);
+			}
 		}
 
 		check_jwt_tokens();

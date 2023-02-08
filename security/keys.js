@@ -8,9 +8,13 @@ const hdb_logger = require('../utility/logging/harper_logger');
 const env_manager = require('../utility/environment/environmentManager');
 const hdb_terms = require('../utility/hdbTerms');
 const certificates_terms = require('../utility/terms/certificates');
+const assign_cmdenv_vars = require('../utility/assignCmdEnvVariables');
 const { updateConfigValue } = require('../config/configUtils');
 
-module.exports = generateKeys;
+module.exports = {
+	generateKeys,
+	updateConfigCert,
+};
 
 /**
  * Generates and writes to file certificate, private key and certificate authority.
@@ -59,16 +63,45 @@ async function generateKeys() {
 		throw e;
 	}
 
+	updateConfigCert(cert_path, private_path, ca_path);
+}
+
+// Update the cert config in harperdb-config.yaml
+// If CLI or Env values are present it will use those values, else it will default to passed params.
+function updateConfigCert(public_cert, private_cert, ca_cert) {
+	const cli_env_args = assign_cmdenv_vars(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
+
+	// This object is what will be added to the harperdb-config.yaml file.
+	// We check for any CLI of Env args and if they are present we use them instead of default values.
+	const conf = hdb_terms.CONFIG_PARAMS;
 	const new_certs = {
-		[hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_CERTIFICATE]: cert_path,
-		[hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY]: private_path,
-		[hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_CERT_AUTH]: ca_path,
-		[hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_CERTIFICATE]: cert_path,
-		[hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_PRIVATEKEY]: private_path,
-		[hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_CERT_AUTH]: ca_path,
-		[hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATE]: cert_path,
-		[hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY]: private_path,
-		[hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_TLS_CERT_AUTH]: ca_path,
+		[conf.CLUSTERING_TLS_CERTIFICATE]: cli_env_args[conf.CLUSTERING_TLS_CERTIFICATE.toLowerCase()]
+			? cli_env_args[conf.CLUSTERING_TLS_CERTIFICATE]
+			: public_cert,
+		[conf.CLUSTERING_TLS_PRIVATEKEY]: cli_env_args[conf.CLUSTERING_TLS_PRIVATEKEY.toLowerCase()]
+			? cli_env_args[conf.CLUSTERING_TLS_PRIVATEKEY.toLowerCase()]
+			: private_cert,
+		[conf.CLUSTERING_TLS_CERT_AUTH]: cli_env_args[conf.CLUSTERING_TLS_CERT_AUTH.toLowerCase()]
+			? cli_env_args[conf.CLUSTERING_TLS_CERT_AUTH.toLowerCase()]
+			: ca_cert,
+		[conf.CUSTOMFUNCTIONS_TLS_CERTIFICATE]: cli_env_args[conf.CUSTOMFUNCTIONS_TLS_CERTIFICATE.toLowerCase()]
+			? cli_env_args[conf.CUSTOMFUNCTIONS_TLS_CERTIFICATE.toLowerCase()]
+			: public_cert,
+		[conf.CUSTOMFUNCTIONS_TLS_PRIVATEKEY]: cli_env_args[conf.CUSTOMFUNCTIONS_TLS_PRIVATEKEY.toLowerCase()]
+			? cli_env_args[conf.CUSTOMFUNCTIONS_TLS_PRIVATEKEY.toLowerCase()]
+			: private_cert,
+		[conf.CUSTOMFUNCTIONS_TLS_CERT_AUTH]: cli_env_args[conf.CUSTOMFUNCTIONS_TLS_CERT_AUTH.toLowerCase()]
+			? cli_env_args[conf.CUSTOMFUNCTIONS_TLS_CERT_AUTH.toLowerCase()]
+			: ca_cert,
+		[conf.OPERATIONSAPI_TLS_CERTIFICATE]: cli_env_args[conf.OPERATIONSAPI_TLS_CERTIFICATE.toLowerCase()]
+			? cli_env_args[conf.OPERATIONSAPI_TLS_CERTIFICATE.toLowerCase()]
+			: public_cert,
+		[conf.OPERATIONSAPI_TLS_PRIVATEKEY]: cli_env_args[conf.OPERATIONSAPI_TLS_PRIVATEKEY.toLowerCase()]
+			? cli_env_args[conf.OPERATIONSAPI_TLS_PRIVATEKEY.toLowerCase()]
+			: private_cert,
+		[conf.OPERATIONSAPI_TLS_CERT_AUTH]: cli_env_args[conf.OPERATIONSAPI_TLS_CERT_AUTH.toLowerCase()]
+			? cli_env_args[conf.OPERATIONSAPI_TLS_CERT_AUTH.toLowerCase()]
+			: ca_cert,
 	};
 
 	updateConfigValue(undefined, undefined, new_certs, false, true);
