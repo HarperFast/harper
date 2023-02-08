@@ -69,7 +69,7 @@ describe('Test installer module', () => {
 			installer.__set__('createConfigFile', create_config_stub);
 			installer.__set__('createSuperUser', create_super_user_stub);
 			installer.__set__('createClusterUser', create_cluster_user_stub);
-			installer.__set__('generate_keys', generate_keys_stub);
+			installer.__set__('keys.generateKeys', generate_keys_stub);
 			installer.__set__('insertHdbVersionInfo', insert_ver_stub);
 			installer.__set__('check_jwt_tokens', check_jwt_stub);
 		});
