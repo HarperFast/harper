@@ -6,10 +6,11 @@ import { randomUUID } from 'crypto';
 import { ResourceInterface } from './ResourceInterface';
 import { workerData } from 'worker_threads';
 import { EnvTransaction, Resource } from './Resource';
-import { compareKeys } from 'ordered-binary';
+import { compareKeys, readKey } from 'ordered-binary';
 import { onMessageFromWorkers, broadcast } from '../server/threads/manage-threads';
 import * as lmdb_terms from '../utility/lmdb/terms';
 import * as env_mngr from '../utility/environment/environmentManager';
+import { info } from '../utility/logging/harper_logger';
 
 const TRANSACTION_EVENT_TYPE = 'transaction';
 const RANGE_ESTIMATE = 100000000;
@@ -43,7 +44,6 @@ export class Table {
 		this.indices = [];
 		this.primaryKey = 'id';
 		this.envPath = primaryDbi.env.path;
-		primaryDbi.encoder.structConstructor = createRecordClass();
 		this.tableName = options.tableName;
 		this.Transaction = makeTransactionClass(this);
 		primaryDbi.on('aftercommit', ({next, last}) => {
@@ -115,15 +115,61 @@ export class Table {
 			this.subscriptions = new Map();
 			onMessageFromWorkers((event) => {
 				if (event.type === TRANSACTION_EVENT_TYPE) {
-					let flag_position = event.start;
+					let flag_position = event.start || 2;
 					let buffers = event.buffers;
+					const HAS_KEY = 4;
+					const HAS_VALUE = 2;
+					const CONDITIONAL = 8;
+					const TXN_DELIMITER = 0x8000000;
+					const COMPRESSIBLE = 0x100000;
+					const SET_VERSION = 0x200;
+					for (let array_buffer of buffers) {
+						let uint32 = new Uint32Array(array_buffer);
+						let buffer = Buffer.from(array_buffer);
+						let first = true;
+						do {
+							let flag = uint32[flag_position++];
+							let operation = flag;
+							console.log(flag.toString(16));
+							if (flag & TXN_DELIMITER && !first)
+								break;
+							first = false;
+							if (flag & HAS_KEY) {
+								let dbi = uint32[flag_position++];
+								let key_size = uint32[flag_position++];
+								let key_position = flag_position << 2;
+								let key = readKey(buffer, key_position, key_position + key_size);
+								flag_position = ((key_position + key_size + 16) & (~7)) >> 2;
+								if (flag & HAS_VALUE) {
+									if (flag & COMPRESSIBLE)
+										flag_position += 4;
+									else
+										flag_position += 2;
+								}
+								if (flag & SET_VERSION) {
+									flag_position += 2;
+								}
+								let handlers = this.subscriptions.get(key);
+								if (handlers) handlers.forEach(handler => {
+									try {
+										handler(key);
+									} catch(error) {
+										console.error(error);
+										info(error);
+									}
+								});
+							} else {
+								flag_position++;
+							}
+						} while (flag_position < uint32.length);
+					}
 					// TODO: Read from these buffers, call subscriptions handlers
 					//let handlers = this.subscriptions.get(key);
 					//if (handlers) handlers.forEach(handler => handler(type));
-				}
+	 			}
 			});
 		}
-		let key = query.conditions[0].search_attribute;
+		let key = typeof query !== 'object' ? query : query.conditions[0].search_attribute;
 		let handlers = this.subscriptions.get(key);
 		if (!handlers)
 			this.subscriptions.set(key, handlers = []);
@@ -154,6 +200,7 @@ function makeTransactionClass(table: Table) {
 			this.envTxn = env_txn;
 			this.lmdbTxn = lmdb_txn;
 			this.parent = parent;
+			this.table = table;
 			if (settings.readOnly)
 				this.lmdbTxn = primary_dbi.useReadTransaction();
 
@@ -201,10 +248,20 @@ function makeTransactionClass(table: Table) {
 			}
 		}
 		update(record) {
+			const start_updating = (record_data) => {
+				// maybe make this a map so if the record is already updating, return the same one
+				let record = getWritableRecord(record_data);
+				let env_txn = this.envTxn;
+				// record in the list of updating records so it can be written to the database when we commit
+				if (!env_txn.updatingRecords) env_txn.updatingRecords = [];
+				env_txn.updatingRecords.push({ txn: this, record });
+				return record;
+			}
+			// handle the case of the argument being a record
 			if (typeof record === 'object' && record) {
-				return createWritableRecord(record);
-			} else {
-				return this.get(record).then(createWritableRecord);
+				return start_updating(record);
+			} else { // handle the case of the argument being a key
+				return this.get(record).then(start_updating);
 			}
 		}
 
@@ -441,61 +498,68 @@ function makeTransactionClass(table: Table) {
 		}
 	}
 }
-
-
-function createRecordClass() {
-	return class Record {
-		async lock() {
-			throw new Error('Lock not implemented yet');
-		}
-		save() {
-			let table_transaction = this[TXN_KEY];
-			return table_transaction.put(this);
-		}
-		get update() {
-			// TODO: Create a proxy that provides CRDT-level operation tracking that can be saved as a set of granular, mergeable updates
-			return this;
-		}
-	}
-}
-const RECORD_CLASS = Symbol('record');
+const RECORD_CLASS = Symbol('writable-record-class');
 const SOURCE_SYMBOL = Symbol.for('source');
-function createWritableRecord(record_data, table_txn) {
-	let Record = record_data[RECORD_CLASS];
-	if (Record) return new Record(record_data);
-	else {
-		class Record extends record_data.constructor {
-			constructor(data) {
-				super();
-				// TODO: Handle source objects more efficient
-				//this[SOURCE_SYMBOL] = data[SOURCE_SYMBOL];
-				this.__data__ = data;
-				this.__tableTxn__ = table_txn;
-			}
-			save() {
-				this.__tableTxn__.put(this.__data__);
-			}
+// perhaps we want these in the global registry, not sure:
+export const DATA = Symbol('original-data'); // property that references the original (readonly) record for a writable record
+export const OWN = Symbol('own'); // property that references an object with any changed properties or cloned/writable sub-objects
+const record_class_cache = {}; // we cache the WriteableRecord classes because they are pretty expensive to create
+
+// fast path to instantiating a WritableRecord instance for a record, that gives users the ability to make changes,
+// have those changes be tracked, and then have those changes be committed when the transaction commits
+function getWritableRecord(record_data) {
+	let WritableRecord = record_data[RECORD_CLASS];
+	if (!WritableRecord) {
+		// TODO: if it is an array, need a tracking array class
+		let has_distinct_stable_prototype = record_data[SOURCE_SYMBOL]; // if we can rely on a stable structure/shape based on the prototype
+		let from = has_distinct_stable_prototype ? record_data.constructor.prototype : record_data;
+		let next: any = record_class_cache;
+		for (let key in from) {
+			next = next[key] || (next[key] = {})
 		}
-		let original = record_data[SOURCE_SYMBOL] ? record_data.constructor.prototype : record_data;
-		let prototype = Record.prototype;
-		for (let key in original) {
-			let descriptor = Object.getOwnPropertyDescriptor(original, key);
-			let value = descriptor.value;
-			Object.defineProperty(prototype, key, {
-				set(new_value) {
-					if (!this.__changes__)
-						this.__changes__ = [];
-					this.__changes__.push(key);
-					value = new_value;
-				},
-				get() {
-					return value;
-				}
-			});
-		}
-		original[RECORD_CLASS] = Record;
-		return new Record(record_data);
+		WritableRecord = next.__copy__ || (next.__copy__ = createWritableRecordClass(from));
+		if (has_distinct_stable_prototype)
+			from[RECORD_CLASS] = WritableRecord;
 	}
+	return new WritableRecord(record_data);
+}
+
+/**
+ * If we didn't have a cached WritableRecord, actually create the class here (this is expensive)
+ * @param from
+ */
+function createWritableRecordClass(from) {
+	class WritableRecord {
+		constructor(data) {
+			this[DATA] = data;
+			this[OWN] = {};
+		}
+		toJSON() {
+			return Object.assign({}, this[DATA], this[OWN]);
+		}
+	}
+	let prototype = WritableRecord.prototype;
+	// define getters and setters for each property so we can track any changes and for getters either return the
+	// changed value or the original value from the original record
+	for (let key in from) {
+		// make the key safe; we could probably add a fast path for safe key names
+		let str_key = JSON.stringify(key);
+		Object.defineProperty(prototype, key, {
+			// this is an eval-free version of the getter, but due to the polymorphic nature of the property access is much slower
+			// get() { return prop in this.own ? this.own[prop] : this.data[prop]; },
+			// eval-based that allows each function to have monomorphic property access (FAST)
+			get: new Function('copy', 'DATA', 'OWN', `
+						return function() {
+						let v = ${str_key} in this[OWN] ? this[OWN][${str_key}] : this[DATA][${str_key}];
+						if (typeof v === 'osbject' && v) return this[OWN][${str_key}] = copy(v); else return v; };`)(getWritableRecord, DATA, OWN),
+			// perhaps eval-based would be here, but expect setters to be less frequently used
+			set(value) {
+				this[OWN][key] = value;
+			},
+			enumerable: true,
+		});
+	}
+	return WritableRecord;
 }
 /**
  *

@@ -1,7 +1,7 @@
 import { ResourceInterface } from './ResourceInterface';
 import { getTables } from './database';
 import { RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
-import { Table } from './Table';
+import { Table, DATA, OWN } from './Table';
 let tables;
 
 export class Resource implements ResourceInterface {
@@ -82,6 +82,7 @@ export class Resource implements ResourceInterface {
 	}
 	subscribe(query: any, options: any) {
 		// subscriptionByPrimaryKey.set(id, () => {});
+
 		return {};
 	}
 	use(table: Table) {
@@ -120,6 +121,7 @@ export class Resource implements ResourceInterface {
 export class EnvTransaction {
 	conditions = [] // the set of reads that were made in this txn, that need to be verified to commit the writes
 	writes = [] // the set of writes to commit if the conditions are met
+	updatingRecords?: any[]
 	fullIsolation = false
 	inTwoPhase?: boolean
 	lmdbDb: RootDatabase
@@ -176,6 +178,12 @@ export class EnvTransaction {
 			if (condition) {
 				condition.store.ifVersion(condition.key, condition.version, nextCondition);
 			} else {
+				for (let { txn, record } of this.updatingRecords || []) {
+					// TODO: get the own properties, translate to a put and a correct replication operation/CRDT
+					let original = record[DATA];
+					let own = record[OWN];
+					resolution = txn.put(original[txn.table.primaryKey], Object.assign({}, original, own));
+				}
 				for (let write of this.writes) {
 					resolution = write.store[write.operation](write.key, write.value, write.version);
 				}

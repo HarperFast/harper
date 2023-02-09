@@ -48,14 +48,16 @@ export function restHandler(Resource) {
 			let retries = 0;
 			do {
 				switch (method) {
-					case 'GET_SUB':
+					case 'GET-SUB':
 						if (typed_key !== undefined) {
-							let subscription = resource_snapshot.subscribe(typed_key, () => {
-								response.send(request.serialize({
-									path,
-									invalidated: true
-								}));
-								subscription.end();
+							let subscription = resource_snapshot.subscribe(typed_key, {
+								callback() {
+									response.send(request.serialize({
+										path,
+										invalidated: true
+									}));
+									subscription.end();
+								}
 							});
 						}
 						// fall-through
@@ -118,11 +120,11 @@ export function restHandler(Resource) {
 		}
 	}
 	async function ws(path, data, request, ws) {
-		let method = data.method || 'GET-SUB';
+		let method = data.method?.toUpperCase() || 'GET-SUB';
 		let request_data = data.body;
 		let request_id = data.id;
 		try {
-			let response_data = await execute(method, path, request_data, request);
+			let response_data = await execute(method, path, request_data, request, ws);
 			//response_data.id = request_id;
 			ws.send(`{"status":${response_data.status},"id":${request_id},"data":${response_data.body}}`);
 		} catch (error) {

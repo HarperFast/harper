@@ -69,6 +69,13 @@ export function registerGraphQL() {
 										return record;
 									} else throw new Error('Unauthorized');
 								}
+								subscribe(path, options) {
+									let role = this.user?.role;
+									if (role && authorized_roles.indexOf(role.name) > -1 ||
+										role?.permission?.super_user) {
+										return this.useTable(type_def.table, type_def.schema)?.subscribe(path, options);
+									} else throw new Error('Unauthorized');
+								}
 							}
 							handlers.set(query_name, restHandler(GraphQLResource));
 						}

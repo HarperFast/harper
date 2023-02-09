@@ -137,7 +137,7 @@ function findBestSerializer(incoming_message, asStream = true) {
 		if (serializer) {
 			const quality = (serializer.q || 1) * client_quality;
 			if (quality > best_quality) {
-				best_serializer = asStream ? serializer.serializeStream : serializer;
+				best_serializer = asStream ? serializer.serializeStream : serializer.serialize;
 				best_type = serializer.type || type;
 				best_quality = quality;
 				best_parameters = parameters;

@@ -1,4 +1,5 @@
 import { registerServer } from '../server/threads/thread-http-server';
+import { threadId } from 'worker_threads';
 import { createServer, ClientRequest, ServerOptions } from 'http';
 import { readdir, readFile } from 'fs/promises';
 import { join } from 'path';
@@ -45,14 +46,14 @@ export function start(options: ServerOptions & { path: string, port: number }) {
 	options.keepAlive = true;
 	let remaining_path;
 	let server = createServer(options, async (request, response) => {
-		await startRequest(request);
+		await startRequest(request, true);
 		let handler = findHandler(request.url);
 		if (handler) return handler.http(remaining_path, request, response);
 		nextAppHandler(request, response)
 	});
 	let wss = new WebSocketServer({ server });
 	wss.on('connection', (ws, request) => {
-		startRequest(request);
+		startRequest(request, false);
 		ws.on('error', console.error);
 		ws.on('message', function message(body) {
 			let data = request.deserialize(body);
@@ -60,9 +61,10 @@ export function start(options: ServerOptions & { path: string, port: number }) {
 			if (handler) return handler.ws(remaining_path, data, request, ws);
 			console.error('no handler: %s', data);
 		});
+		ws.on('close', () => console.log('close'));
 	});
-	function startRequest(request) {
-		const { serializer, type } = findBestSerializer(request);
+	function startRequest(request, asStream) {
+		const { serializer, type } = findBestSerializer(request, asStream);
 		request.serialize = serializer;
 		let content_type = request.headers['content-type'];
 		if (content_type) {
@@ -120,3 +122,4 @@ async function authentication(request) {
 		}
 	}
 }
+setInterval(() => { console.log(process.memoryUsage().heapUsed, threadId)}, 2000);
