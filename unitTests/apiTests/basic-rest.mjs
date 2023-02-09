@@ -65,8 +65,8 @@ describe('test REST calls', () => {
 			accept: 'application/cbor'
 		};
 
-		for (let i = 0; i < 26000; i++) {
-			let ws = new WebSocket('ws://localhost:9926/user', {
+		for (let i = 0; i < 1000000; i++) {
+			let ws = new WebSocket('ws+unix:/tmp/test:/user', {
 				headers,
 			});
 			await new Promise((resolve, reject) => {

@@ -110,16 +110,27 @@ export async function startOnMainThread(options) {
 		return loadDirectory(path, '', new Map());
 	});
 }
-
+let authorization_cache = new Map();
+const AUTHORIZATION_TTL = 5000;
+// TODO: Add this a component plugin, with a pre-request handler hook
+// TODO: Make this not return a promise if it can be fulfilled synchronously (from cache)
 async function authentication(request) {
 	let authorization = request.headers.authorization;
 	if (authorization) {
-		let [ strategy, credentials ] = authorization.split(' ');
-		switch (strategy) {
-			case 'Basic':
-				let [ username, password ] = atob(credentials).split(':');
-				request.user = await findAndValidateUser(username, password);
+		let user = authorization_cache.get(authorization);
+		if (!user) {
+			let [ strategy, credentials ] = authorization.split(' ');
+			switch (strategy) {
+				case 'Basic':
+					let [ username, password ] = atob(credentials).split(':');
+					user = await findAndValidateUser(username, password);
+
+			}
+			authorization_cache.set(authorization, user);
 		}
+		request.user = user;
 	}
 }
+// keep it cleaned out periodically
+setInterval(() => { authorization_cache = new Map() }, AUTHORIZATION_TTL);
 setInterval(() => { console.log(process.memoryUsage().heapUsed, threadId)}, 2000);

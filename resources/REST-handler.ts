@@ -19,13 +19,16 @@ export function restHandler(Resource) {
 			response.end(request.serialize(error.toString()));
 		}
 		try {
-			let response_data = await execute(method, next_path, request_data, request, response);
-			if (response_data.status)
-				response.writeHead(response_data.status);
-			if (typeof response_data.body?.pipe === 'function')
-				response_data.body.pipe(response);
-			else
-				response.end(response_data.body);
+			let response_object = await execute(method, next_path, request_data, request, response);
+			if (response_object.status)
+				response.writeHead(response_object.status);
+			if (response_object.data !== undefined) {
+				let body = request.serialize(response_object.data);
+				if (typeof body?.pipe === 'function')
+					body.pipe(response);
+				else
+					response.end(body);
+			}
 		} catch (error) {
 			response.writeHead(500); // server error
 			// do content negotiation
@@ -88,7 +91,7 @@ export function restHandler(Resource) {
 					break; // if commit succeeds, break out of retry loop, we are done
 				else if (retries++ >= MAX_COMMIT_RETRIES) { // else keep retrying
 					return {
-						status: 503, body: 'Maximum number of commit retries was exceeded, please try again later'
+						status: 503, data: 'Maximum number of commit retries was exceeded, please try again later'
 					};
 				}
 			} while (true); // execute again if the commit requires a retry
@@ -104,12 +107,12 @@ export function restHandler(Resource) {
 				return {
 					status: 200,
 					// do content negotiation
-					body: request.serialize(response_data),
+					data: response_data,
 				};
 			} else {
 				resource_snapshot.doneReading();
 				if ((method === 'GET' || method === 'HEAD')) {
-					return { status: 404, body: 'Not found' };
+					return { status: 404, data: 'Not found' };
 				} else {
 					return { status: 204 };
 				}
@@ -124,13 +127,14 @@ export function restHandler(Resource) {
 		let request_data = data.body;
 		let request_id = data.id;
 		try {
-			let response_data = await execute(method, path, request_data, request, ws);
+			let response = await execute(method, path, request_data, request, ws);
 			//response_data.id = request_id;
-			ws.send(`{"status":${response_data.status},"id":${request_id},"data":${response_data.body}}`);
+			response.id = request_id;
+			ws.send(request.serialize(response));
 		} catch (error) {
 			// do content negotiation
 			console.error(error);
-			ws.send(JSON.stringify({status: 500, id: request_id, body: error.toString()}));
+			ws.send(request.serialize({status: 500, id: request_id, data: error.toString()}));
 		}
 	}
 	return { http, ws };
