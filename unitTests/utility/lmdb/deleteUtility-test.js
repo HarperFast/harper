@@ -54,15 +54,9 @@ describe('Test deleteUtility', () => {
 	let env, transaction;
 
 	let get_monotonic_time_stub;
-	before(() => {
-		get_monotonic_time_stub = sandbox.stub(common, 'getNextMonotonicTime').returns(TXN_TIMESTAMP);
-	});
-
-	after(() => {
-		get_monotonic_time_stub.restore();
-	});
 
 	beforeEach(async () => {
+		get_monotonic_time_stub = sandbox.stub(common, 'getNextMonotonicTime').returns(TXN_TIMESTAMP);
 		global.lmdb_map = undefined;
 
 		await fs.remove(test_utils.getMockLMDBPath());
@@ -82,6 +76,7 @@ describe('Test deleteUtility', () => {
 		await env.close();
 		global.lmdb_map = undefined;
 		await fs.remove(BASE_TEST_PATH);
+		get_monotonic_time_stub.restore();
 	});
 
 	describe('Test deleteRecords function', () => {
