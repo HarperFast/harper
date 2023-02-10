@@ -22,6 +22,7 @@ class HubConfigObject {
 		hdb_users
 	) {
 		this.port = port;
+		if (ca_file === null) ca_file = undefined;
 		this.server_name = node_name + nats_terms.SERVER_SUFFIX.HUB;
 		this.pid_file = pid_file;
 		this.max_payload = 10000000;
