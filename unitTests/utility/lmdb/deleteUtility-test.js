@@ -47,22 +47,19 @@ const MULTI_RECORD_ARRAY_COMPARE = [
 const IDS = [1, 2, 3, 4, 5, 6];
 
 const TIMESTAMP = Date.now();
-const TXN_TIMESTAMP = common.getMicroTime();
+const TXN_TIMESTAMP = common.getNextMonotonicTime();
 const sandbox = sinon.createSandbox();
 
 describe('Test deleteUtility', () => {
 	let env, transaction;
 
-	let get_micro_time_stub;
-	let date_stub;
+	let get_monotonic_time_stub;
 	before(() => {
-		get_micro_time_stub = sandbox.stub(common, 'getMicroTime').returns(TXN_TIMESTAMP);
-		date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
+		get_monotonic_time_stub = sandbox.stub(common, 'getNextMonotonicTime').returns(TXN_TIMESTAMP);
 	});
 
 	after(() => {
-		get_micro_time_stub.restore();
-		date_stub.restore();
+		get_monotonic_time_stub.restore();
 	});
 
 	beforeEach(async () => {

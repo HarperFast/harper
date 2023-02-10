@@ -24,6 +24,7 @@ const assert = require('assert');
 const fs = require('fs-extra');
 const sinon = require('sinon');
 const systemSchema = require('../../../../../json/systemSchema');
+const common = require('../../../../../utility/lmdb/commonUtility');
 
 const TIMESTAMP = Date.now();
 
@@ -43,7 +44,7 @@ describe('test lmdbGetDataByValue module', () => {
 			});
 		});
 
-		date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
+		date_stub = sandbox.stub(common, 'getNextMonotonicTime').returns(TIMESTAMP);
 	});
 
 	after(() => {
@@ -152,24 +153,28 @@ describe('test lmdbGetDataByValue module', () => {
 		it('test schema validation', async () => {
 			test_utils.assertErrorAsync(
 				lmdb_search,
-				[{
-					schema: 'dev2',
-					table: 'test',
-					search_attribute: 'city',
-					search_value: '*',
-					get_attributes: ['*'],
-				}],
+				[
+					{
+						schema: 'dev2',
+						table: 'test',
+						search_attribute: 'city',
+						search_value: '*',
+						get_attributes: ['*'],
+					},
+				],
 				test_utils.generateHDBError("Schema 'dev2' does not exist", 404)
 			);
 			test_utils.assertErrorAsync(
 				lmdb_search,
-				[{
-					schema: 'dev',
-					table: 'fake',
-					search_attribute: 'city',
-					search_value: '*',
-					get_attributes: ['*'],
-				}],
+				[
+					{
+						schema: 'dev',
+						table: 'fake',
+						search_attribute: 'city',
+						search_value: '*',
+						get_attributes: ['*'],
+					},
+				],
 				test_utils.generateHDBError("Table 'dev.fake' does not exist", 404)
 			);
 			await test_utils.assertErrorAsync(
@@ -185,7 +190,7 @@ describe('test lmdbGetDataByValue module', () => {
 		});
 
 		it('test equals on string', async () => {
-			let expected = []
+			let expected = [];
 			test_data.forEach((data) => {
 				if (data.state === 'CO') {
 					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
@@ -198,7 +203,7 @@ describe('test lmdbGetDataByValue module', () => {
 		});
 
 		it('test equals on number', async () => {
-			let expected = []
+			let expected = [];
 			test_data.forEach((data) => {
 				if (parseInt(data.temperature) === 10) {
 					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
@@ -211,7 +216,7 @@ describe('test lmdbGetDataByValue module', () => {
 		});
 
 		it('test equals on hash attribute', async () => {
-			let expected = []
+			let expected = [];
 			test_data.forEach((data) => {
 				if (parseInt(data.id) === 10) {
 					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
@@ -224,7 +229,7 @@ describe('test lmdbGetDataByValue module', () => {
 		});
 
 		it('test contains on string', async () => {
-			let expected = []
+			let expected = [];
 			test_data.forEach((data) => {
 				if (data.city.includes('bert') === true) {
 					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
@@ -237,7 +242,7 @@ describe('test lmdbGetDataByValue module', () => {
 		});
 
 		it('test contains on number', async () => {
-			let expected = []
+			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature.toString().includes(0)) {
 					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
@@ -250,7 +255,7 @@ describe('test lmdbGetDataByValue module', () => {
 		});
 
 		it('test endswith on string', async () => {
-			let expected = []
+			let expected = [];
 			test_data.forEach((data) => {
 				if (data.city.endsWith('land')) {
 					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
@@ -263,7 +268,7 @@ describe('test lmdbGetDataByValue module', () => {
 		});
 
 		it('test endswith on number', async () => {
-			let expected = []
+			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature.toString().endsWith(2)) {
 					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
@@ -276,7 +281,7 @@ describe('test lmdbGetDataByValue module', () => {
 		});
 
 		it('test startswith on string', async () => {
-			let expected = []
+			let expected = [];
 			test_data.forEach((data) => {
 				if (data.city.startsWith('South')) {
 					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
@@ -289,7 +294,7 @@ describe('test lmdbGetDataByValue module', () => {
 		});
 
 		it('test searchall', async () => {
-			let expected = []
+			let expected = [];
 			test_data.forEach((data) => {
 				expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
 			});
@@ -300,7 +305,7 @@ describe('test lmdbGetDataByValue module', () => {
 		});
 
 		it('test greaterthan', async () => {
-			let expected = []
+			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature > 25) {
 					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
@@ -308,16 +313,18 @@ describe('test lmdbGetDataByValue module', () => {
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 25, 'id', ['*']);
-			let results = orderedArray(await test_utils.assertErrorAsync(
-				lmdb_search,
-				[search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.GREATER],
-				undefined
-			));
+			let results = orderedArray(
+				await test_utils.assertErrorAsync(
+					lmdb_search,
+					[search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.GREATER],
+					undefined
+				)
+			);
 			assert.deepStrictEqual(results, expected);
 		});
 
 		it('test greaterthanequal', async () => {
-			let expected = []
+			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature >= 40) {
 					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
@@ -325,16 +332,18 @@ describe('test lmdbGetDataByValue module', () => {
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*']);
-			let results = orderedArray(await test_utils.assertErrorAsync(
-				lmdb_search,
-				[search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.GREATER_OR_EQ],
-				undefined
-			));
+			let results = orderedArray(
+				await test_utils.assertErrorAsync(
+					lmdb_search,
+					[search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.GREATER_OR_EQ],
+					undefined
+				)
+			);
 			assert.deepStrictEqual(results, expected);
 		});
 
 		it('test lessthan', async () => {
-			let expected = []
+			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature < 25) {
 					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
@@ -342,16 +351,18 @@ describe('test lmdbGetDataByValue module', () => {
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 25, 'id', ['*']);
-			let results = orderedArray(await test_utils.assertErrorAsync(
-				lmdb_search,
-				[search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS],
-				undefined
-			));
+			let results = orderedArray(
+				await test_utils.assertErrorAsync(
+					lmdb_search,
+					[search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS],
+					undefined
+				)
+			);
 			assert.deepStrictEqual(results, expected);
 		});
 
 		it('test lessthanequal', async () => {
-			let expected = []
+			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature <= 40) {
 					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
@@ -359,16 +370,18 @@ describe('test lmdbGetDataByValue module', () => {
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*']);
-			let results = orderedArray(await test_utils.assertErrorAsync(
-				lmdb_search,
-				[search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS_OR_EQ],
-				undefined
-			));
+			let results = orderedArray(
+				await test_utils.assertErrorAsync(
+					lmdb_search,
+					[search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS_OR_EQ],
+					undefined
+				)
+			);
 			assert.deepStrictEqual(results, expected);
 		});
 
 		it('test between', async () => {
-			let expected = []
+			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature >= 40 && data.temperature <= 66) {
 					expected.push([data.id, test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT)]);
@@ -376,11 +389,13 @@ describe('test lmdbGetDataByValue module', () => {
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*'], 66);
-			let results = orderedArray(await test_utils.assertErrorAsync(
-				lmdb_search,
-				[search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.BETWEEN],
-				undefined
-			));
+			let results = orderedArray(
+				await test_utils.assertErrorAsync(
+					lmdb_search,
+					[search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.BETWEEN],
+					undefined
+				)
+			);
 			assert.deepStrictEqual(results, expected);
 		});
 	});

@@ -165,9 +165,9 @@ describe('Test lmdbDeleteRecords module', () => {
 
 			await lmdb_create_table(TABLE_SYSTEM_DATA_TEST_A, CREATE_TABLE_OBJ_TEST_A);
 
-			m_time = lmdb_common.getMicroTime();
+			m_time = INSERT_TIMESTAMP;
 			insert_m_time = m_time;
-			m_time_stub = sandbox.stub(lmdb_common, 'getMicroTime').returns(m_time);
+			m_time_stub = sandbox.stub(lmdb_common, 'getNextMonotonicTime').returns(m_time);
 
 			let insert_obj = test_utils.deepClone(INSERT_OBJECT_TEST);
 			await lmdb_create_records(insert_obj);
@@ -186,8 +186,8 @@ describe('Test lmdbDeleteRecords module', () => {
 			date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
 
 			m_time_stub.restore();
-			m_time = lmdb_common.getMicroTime();
-			m_time_stub = sandbox.stub(lmdb_common, 'getMicroTime').returns(m_time);
+			m_time = lmdb_common.getNextMonotonicTime();
+			m_time_stub = sandbox.stub(lmdb_common, 'getNextMonotonicTime').returns(m_time);
 		});
 
 		afterEach(async () => {

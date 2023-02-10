@@ -35,7 +35,7 @@ async function insertRecords(env, hash_attribute, write_attributes, records, gen
 	validateWrite(env, hash_attribute, write_attributes, records);
 
 	initializeTransaction(env, hash_attribute, write_attributes);
-	let timestamp = generate_timestamps && Date.now();
+	let timestamp = generate_timestamps && common.getNextMonotonicTime();
 
 	let result = new InsertRecordsResponseObject();
 
@@ -123,13 +123,14 @@ function removeSkippedRecords(records, remove_indices = []) {
  * @param {number} timestamp - timestamp for this record (if omitted, don't set)
  */
 function setTimestamps(record, is_insert, timestamp) {
-	if (timestamp || !Number.isInteger(record[UPDATED_TIME_ATTRIBUTE_NAME])) {
-		record[UPDATED_TIME_ATTRIBUTE_NAME] = timestamp;
+	let generate_timestamp = timestamp > 0;
+	if (generate_timestamp || !Number.isInteger(record[UPDATED_TIME_ATTRIBUTE_NAME])) {
+		record[UPDATED_TIME_ATTRIBUTE_NAME] = timestamp || (timestamp = common.getNextMonotonicTime());
 	}
 
 	if (is_insert === true) {
-		if (timestamp || !Number.isInteger(record[CREATED_TIME_ATTRIBUTE_NAME])) {
-			record[CREATED_TIME_ATTRIBUTE_NAME] = timestamp;
+		if (generate_timestamp || !Number.isInteger(record[CREATED_TIME_ATTRIBUTE_NAME])) {
+			record[CREATED_TIME_ATTRIBUTE_NAME] = timestamp || common.getNextMonotonicTime();
 		}
 	} else {
 		delete record[CREATED_TIME_ATTRIBUTE_NAME];
@@ -170,7 +171,7 @@ async function updateRecords(env, hash_attribute, write_attributes, records, gen
 	validateWrite(env, hash_attribute, write_attributes, records);
 
 	initializeTransaction(env, hash_attribute, write_attributes);
-	let timestamp = generate_timestamps && Date.now();
+	let timestamp = generate_timestamps && common.getNextMonotonicTime();
 
 	let result = new UpdateRecordsResponseObject();
 
@@ -215,7 +216,7 @@ async function upsertRecords(env, hash_attribute, write_attributes, records, gen
 	}
 
 	initializeTransaction(env, hash_attribute, write_attributes);
-	let timestamp = generate_timestamps && Date.now();
+	let timestamp = generate_timestamps && common.getNextMonotonicTime();
 
 	let result = new UpsertRecordsResponseObject();
 
@@ -252,7 +253,7 @@ async function finalizeWrite(puts, keys, records, result, timestamp, remove_indi
 		}
 	}
 
-	result.txn_time = timestamp;
+	result.txn_time = timestamp || common.getNextMonotonicTime();
 
 	removeSkippedRecords(records, remove_indices);
 	return result;

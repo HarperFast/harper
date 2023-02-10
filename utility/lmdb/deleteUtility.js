@@ -118,7 +118,7 @@ async function deleteRecords(env, hash_attribute, ids, when_deleted) {
 			offset++;
 		}
 
-		deleted.txn_time = common.getMicroTime();
+		deleted.txn_time = common.getNextMonotonicTime();
 
 		return deleted;
 	} catch (e) {

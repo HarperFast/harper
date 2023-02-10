@@ -24,6 +24,7 @@ const assert = require('assert');
 const fs = require('fs-extra');
 const sinon = require('sinon');
 const systemSchema = require('../../../../../json/systemSchema');
+const common = require('../../../../../utility/lmdb/commonUtility');
 
 const TIMESTAMP = Date.now();
 
@@ -39,7 +40,7 @@ const All_ATTRIBUTES = ['id', 'city', 'temperature', 'state'];
 describe('test lmdbSearchByValue module', () => {
 	let date_stub;
 	before(() => {
-		date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
+		date_stub = sandbox.stub(common, 'getNextMonotonicTime').returns(TIMESTAMP);
 	});
 
 	after(() => {
@@ -2060,7 +2061,7 @@ describe('test lmdbSearchByValue module', () => {
 				});
 			});
 		});
-		
+
 		it('test searchall', async () => {
 			let expected = [];
 			test_data.forEach((data) => {
@@ -2089,11 +2090,13 @@ describe('test lmdbSearchByValue module', () => {
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 25, 'id', ['*']);
-			let results = orderedArray(await test_utils.assertErrorAsync(
-				lmdb_search,
-				[search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.GREATER],
-				undefined
-			));
+			let results = orderedArray(
+				await test_utils.assertErrorAsync(
+					lmdb_search,
+					[search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.GREATER],
+					undefined
+				)
+			);
 			assert.deepEqual(results.length, expected.length);
 
 			results.forEach((result) => {
@@ -2114,11 +2117,13 @@ describe('test lmdbSearchByValue module', () => {
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*']);
-			let results = orderedArray(await test_utils.assertErrorAsync(
-				lmdb_search,
-				[search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.GREATER_OR_EQ],
-				undefined
-			));
+			let results = orderedArray(
+				await test_utils.assertErrorAsync(
+					lmdb_search,
+					[search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.GREATER_OR_EQ],
+					undefined
+				)
+			);
 			assert.deepEqual(results.length, expected.length);
 
 			results.forEach((result) => {
@@ -2139,11 +2144,13 @@ describe('test lmdbSearchByValue module', () => {
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 25, 'id', ['*']);
-			let results = orderedArray(await test_utils.assertErrorAsync(
-				lmdb_search,
-				[search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS],
-				undefined
-			));
+			let results = orderedArray(
+				await test_utils.assertErrorAsync(
+					lmdb_search,
+					[search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS],
+					undefined
+				)
+			);
 			assert.deepEqual(results.length, expected.length);
 
 			results.forEach((result) => {
@@ -2164,11 +2171,13 @@ describe('test lmdbSearchByValue module', () => {
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*']);
-			let results = orderedArray(await test_utils.assertErrorAsync(
-				lmdb_search,
-				[search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS_OR_EQ],
-				undefined
-			));
+			let results = orderedArray(
+				await test_utils.assertErrorAsync(
+					lmdb_search,
+					[search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS_OR_EQ],
+					undefined
+				)
+			);
 			assert.deepEqual(results.length, expected.length);
 
 			results.forEach((result) => {
@@ -2189,11 +2198,13 @@ describe('test lmdbSearchByValue module', () => {
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', 40, 'id', ['*'], 66);
-			let results = orderedArray(await test_utils.assertErrorAsync(
-				lmdb_search,
-				[search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.BETWEEN],
-				undefined
-			));
+			let results = orderedArray(
+				await test_utils.assertErrorAsync(
+					lmdb_search,
+					[search_object, hdb_terms.VALUE_SEARCH_COMPARATORS.BETWEEN],
+					undefined
+				)
+			);
 			assert.deepEqual(results.length, expected.length);
 
 			results.forEach((result) => {

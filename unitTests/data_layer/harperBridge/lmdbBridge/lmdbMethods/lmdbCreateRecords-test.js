@@ -215,8 +215,8 @@ describe('Test lmdbCreateRecords module', () => {
 
 			await lmdb_create_table(TABLE_SYSTEM_DATA_TEST_A, CREATE_TABLE_OBJ_TEST_A);
 
-			m_time = lmdb_common.getMicroTime();
-			m_time_stub = sandbox.stub(lmdb_common, 'getMicroTime').returns(m_time);
+			m_time = TIMESTAMP;
+			m_time_stub = sandbox.stub(lmdb_common, 'getNextMonotonicTime').returns(m_time);
 		});
 
 		afterEach(async () => {
@@ -281,7 +281,7 @@ describe('Test lmdbCreateRecords module', () => {
 				[dog_env, HASH_ATTRIBUTE_NAME, ALL_FETCH_ATTRIBUTES, [8, 9, 12, 10]],
 				undefined
 			);
-			records.sort((a, b) => a.id > b.id ? 1 : -1);
+			records.sort((a, b) => (a.id > b.id ? 1 : -1));
 			assert.deepStrictEqual(records, expected_search);
 
 			//verify txn created
@@ -375,13 +375,14 @@ describe('Test lmdbCreateRecords module', () => {
 
 			//change the expected microtime
 			m_time_stub.restore();
-			m_time = lmdb_common.getMicroTime();
-			m_time_stub = sandbox.stub(lmdb_common, 'getMicroTime').returns(m_time);
+			let first_time = m_time;
+			m_time++;
+			m_time_stub = sandbox.stub(lmdb_common, 'getNextMonotonicTime').returns(m_time);
 
 			let new_records_excpected = [
 				test_utils.assignObjecttoNullObject({
-					__createdtime__: TIMESTAMP,
-					__updatedtime__: TIMESTAMP,
+					__createdtime__: first_time,
+					__updatedtime__: first_time,
 					name: 'Harper',
 					breed: 'Mutt',
 					id: 8,
@@ -389,8 +390,8 @@ describe('Test lmdbCreateRecords module', () => {
 					age: 5,
 				}),
 				test_utils.assignObjecttoNullObject({
-					__createdtime__: TIMESTAMP,
-					__updatedtime__: TIMESTAMP,
+					__createdtime__: first_time,
+					__updatedtime__: first_time,
 					name: 'Penny',
 					breed: 'Mutt',
 					id: 9,
@@ -398,8 +399,8 @@ describe('Test lmdbCreateRecords module', () => {
 					height: 145,
 				}),
 				test_utils.assignObjecttoNullObject({
-					__createdtime__: TIMESTAMP,
-					__updatedtime__: TIMESTAMP,
+					__createdtime__: m_time,
+					__updatedtime__: m_time,
 					age: null,
 					name: 'David',
 					breed: 'Mutt',
@@ -407,8 +408,8 @@ describe('Test lmdbCreateRecords module', () => {
 					id: 123,
 				}),
 				test_utils.assignObjecttoNullObject({
-					__createdtime__: TIMESTAMP,
-					__updatedtime__: TIMESTAMP,
+					__createdtime__: m_time,
+					__updatedtime__: m_time,
 					name: 'Rob',
 					breed: 'Mutt',
 					id: 1232,
