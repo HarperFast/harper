@@ -10,7 +10,7 @@ const nats_terms = require('../server/nats/utility/natsTerms');
 const minimist = require('minimist');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const config_utils = require('../config/configUtils');
-const {restartWorkers} = require('../server/threads/manage-threads');
+const { restartWorkers } = require('../server/threads/manage-threads');
 const { HTTP_STATUS_CODES } = hdb_errors;
 
 let pm2_utils;
@@ -29,6 +29,23 @@ module.exports = {
 	restartService,
 	restart,
 };
+
+/**
+ * Posts a dummy msg in the Nats work queue as a workaround for Nats bug.
+ * There is a bug where on restart the most recent msg processed by the message
+ * processor in the ingest service shows up again. Ref CORE-2018
+ * @returns {Promise<void>}
+ */
+async function postDummyNatsMsg() {
+	await nats_utils.publishToStream(
+		`${nats_terms.SUBJECT_PREFIXES.TXN}.${nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name}`,
+		nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+		nats_utils.addNatsMsgHeader({ operation: 'dummy_msg' }, undefined),
+		{
+			operation: 'dummy_msg',
+		}
+	);
+}
 
 /**
  * Restart the HDB process or any services that are running as a (separate) process, intended for use from the CLI
@@ -136,7 +153,6 @@ async function restartProcesses() {
 			hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE,
 		];
 
-
 		// If no service argument is passed all services are restarted.
 		hdb_logger.notify(RESTART_MSG);
 		await pm2_utils.reload(hdb_terms.PROCESS_DESCRIPTORS.HDB);
@@ -156,6 +172,7 @@ async function restartProcesses() {
 async function restart(json_message) {
 	const clustering_enabled = config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED);
 	if (clustering_enabled) {
+		await postDummyNatsMsg();
 		await restartAllClusteringProcesses();
 	}
 	await restartWorkers();
@@ -164,14 +181,13 @@ async function restart(json_message) {
 
 const SERVICE_TO_WORKER_TYPE = {
 	'Custom Functions': 'http',
-}
+};
 /**
  * Restarts servers for a specific service.
  * @param json_message
  * @returns {Promise<string>}
  */
 async function restartService(json_message) {
-	hdb_logger.error('restartService');
 	// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
 	if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
 
@@ -206,7 +222,6 @@ async function restartService(json_message) {
 	) {
 		const is_cf_reg = await pm2_utils.isServiceRegistered(service);
 		if (custom_func_enabled) {
-			hdb_logger.error('restartWorkers http');
 			restartWorkers('http'); // can't await this because it would deadlock on waiting for itself to finish
 		} else if (!custom_func_enabled && is_cf_reg) {
 			// If the service is registered but not enabled in settings, stop service.
@@ -289,7 +304,9 @@ async function restartClustering(service) {
 	const reloading_clustering = service === 'clustering config';
 	if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
 
-	const is_currently_running = !restarting_clustering ? await pm2_utils.isServiceRegistered(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB) : undefined;
+	const is_currently_running = !restarting_clustering
+		? await pm2_utils.isServiceRegistered(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB)
+		: undefined;
 
 	// If 'clustering' is passed to restart we are restarting all processes that make up clustering
 	const clustering_running =
