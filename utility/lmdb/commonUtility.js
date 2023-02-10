@@ -97,6 +97,7 @@ function getIndexedValues(value) {
 
 /**
  * Gets the time in sub milliseconds & converts it to a decimal number where the milliseconds from epoch are on the left of decimal & sub-millisecond time is on the right
+ * @deprecated
  * @returns {number}
  */
 function getMicroTime() {
@@ -115,15 +116,18 @@ function getNextMonotonicTime() {
 	let now = Date.now();
 	if (now > last_time) {
 		// current time is higher than last time, can safely return it
-		return last_time = now;
+		last_time = now;
+		return now;
 	}
 	if (last_time - now < MAX_INTEGER_DRIFT) {
 		// last time is equal or ahead of now, so we are incrementing by whole numbers to preserve timestamps as integer
 		// until we drift too far
-		return last_time = Math.round(last_time) + 1;
+		last_time = Math.round(last_time) + 1;
+		return last_time;
 	}
 	// increment by as small of count as possible, to minimize drift
-	return last_time += 0.000488;
+	last_time += 0.000488;
+	return last_time;
 }
 
 module.exports = {
