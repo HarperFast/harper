@@ -4,29 +4,14 @@ import { assert, expect } from 'chai';
 import axios from 'axios';
 import { decode, encode, DecoderStream } from 'cbor-x';
 import { getVariables } from './utility.js';
-import { WebSocket } from 'harperdb/unitTests/apiTests/ws-test.mjs';
+import { WebSocket } from 'ws';
 const { authorization, url } = getVariables();
 
-describe('test REST calls', () => {
+describe('test WebSocket connections', () => {
 	beforeEach(async () => {
 		//await removeAllSchemas();
 	});
 
-	it('do get with CBOR', async () => {
-		const headers = {
-			authorization,
-			accept: 'application/cbor'
-		};
-		console.log('sending');
-		let response = await axios({
-			url: 'http://localhost:9926/OracleUser/33',
-			method: 'GET',
-			responseType: 'arraybuffer',
-			headers,
-		});
-		console.log('decoded arraybuffer data:', decode(response.data));
-
-	});
 	it('do post/update with CBOR', async () => {
 		const headers = {
 			authorization,
@@ -40,7 +25,7 @@ describe('test REST calls', () => {
 			ws.on('open', resolve);
 			ws.on('error', reject);
 		});
-		ws.on('message', data => console.log('got ws message', data.toString()));
+		ws.on('message', data => console.log('got ws message', decode(data)));
 		ws.send(encode({
 			method: 'get-sub',
 			path: '33',
@@ -52,8 +37,9 @@ describe('test REST calls', () => {
 		}), {
 			method: 'POST',
 			headers,
+			responseType: 'arraybuffer',
 		});
-		console.log('decoded arraybuffer data:', decode(response.data));
+		console.log('decoded arraybuffer data:', response.data.length);
 
 	});
 	it('how many websockets', async function() {
@@ -64,7 +50,7 @@ describe('test REST calls', () => {
 			accept: 'application/cbor'
 		};
 
-		for (let i = 0; i < 1000000; i++) {
+		for (let i = 0; i < 1000; i++) {
 			let ws = new WebSocket('ws+unix:/tmp/test:/user', {
 				headers,
 			});
@@ -72,7 +58,12 @@ describe('test REST calls', () => {
 				ws.on('open', resolve);
 				ws.on('error', reject);
 			});
-			ws.on('message', data => console.log('got ws message', data.toString()));
+			let path = '' + Math.ceil(Math.random() * 40);
+			ws.send(encode({
+				method: 'get-sub',
+				path,
+			}));
+			ws.on('message', data => console.log('got ws message', decode(data)));
 			if (i % 1000 == 0)
 				console.log({i})
 		}

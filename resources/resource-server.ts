@@ -11,6 +11,7 @@ import { findBestSerializer, getDeserializer } from '../server/serverHelpers/con
 
 const handler_creator_by_type = new Map();
 const custom_apps = [];
+let handlers;
 
 async function loadDirectory(directory: string, web_path: string, handlers) {
 	for (let entry of await readdir(directory, { withFileTypes: true })) {
@@ -41,8 +42,10 @@ async function loadDirectory(directory: string, web_path: string, handlers) {
 }
 
 export function start(options: ServerOptions & { path: string, port: number }) {
-	let handlers = new Map();
-	loadDirectory(options?.path || process.cwd(), '', handlers);
+	if (!handlers) {
+		handlers = new Map();
+		loadDirectory(options?.path || process.cwd(), '', handlers);
+	}
 	options.keepAlive = true;
 	let remaining_path;
 	let server = createServer(options, async (request, response) => {

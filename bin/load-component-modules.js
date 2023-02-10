@@ -9,6 +9,7 @@ const default_components = [
 	{ module: '/mqtt/broker.js', port: 1883 },
 	{ module: '/resources/graphql.js' },
 	{ module: '/resources/resource-server.js', port: '/tmp/test' },
+	{ module: '/resources/resource-server.js', port: 9926 },
 	{ module: '/resources/js-resource.js' },
 	{ module: '/server/harperdb/hdbServer.js', port: 9925 },
 	{ module: '/server/customFunctions/customFunctionsServer.js', port: 9926 },

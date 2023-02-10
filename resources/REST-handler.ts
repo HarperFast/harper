@@ -22,7 +22,9 @@ export function restHandler(Resource) {
 			let response_object = await execute(method, next_path, request_data, request, response);
 			if (response_object.status)
 				response.writeHead(response_object.status);
-			if (response_object.data !== undefined) {
+			if (response_object.data === undefined)
+				response.end();
+			else {
 				let body = request.serialize(response_object.data);
 				if (typeof body?.pipe === 'function')
 					body.pipe(response);
@@ -59,7 +61,7 @@ export function restHandler(Resource) {
 										path,
 										invalidated: true
 									}));
-									subscription.end();
+									//subscription.end();
 								}
 							});
 						}
