@@ -78,6 +78,7 @@ module.exports = {
 	doesTableExist,
 	stringifyObj,
 	ms_to_time,
+	changeExtension,
 	PACKAGE_ROOT: terms.PACKAGE_ROOT,
 };
 
@@ -231,7 +232,10 @@ function autoCast(data) {
 function autoCastJSON(data) {
 	//in order to handle json and arrays we test the string to see if it seems minimally like an object or array and perform a JSON.parse on it.
 	//if it fails we assume it is just a regular string
-	if (typeof data === 'string' && ((data.startsWith('{') && data.endsWith('}')) || (data.startsWith('[') && data.endsWith(']')))) {
+	if (
+		typeof data === 'string' &&
+		((data.startsWith('{') && data.endsWith('}')) || (data.startsWith('[') && data.endsWith(']')))
+	) {
 		try {
 			return JSON.parse(data);
 		} catch (e) {
@@ -246,15 +250,13 @@ function autoCastJSONDeep(data) {
 			for (let i = 0, l = data.length; i < l; i++) {
 				let element = data[i];
 				let casted = autoCastJSONDeep(element);
-				if (casted !== element)
-					data[i] = casted;
+				if (casted !== element) data[i] = casted;
 			}
 		} else {
 			for (let i in data) {
 				let element = data[i];
 				let casted = autoCastJSONDeep(element);
-				if (casted !== element)
-					data[i] = casted;
+				if (casted !== element) data[i] = casted;
 			}
 		}
 		return data;
@@ -338,8 +340,7 @@ function compareVersions(old_version, new_version) {
 function isCompatibleDataVersion(old_version, new_version, check_minor = false) {
 	let old_parts = old_version.toString().split('.');
 	let new_parts = new_version.toString().split('.');
-	return old_parts[0] === new_parts[0] &&
-		(!check_minor || old_parts[1] === new_parts[1]);
+	return old_parts[0] === new_parts[0] && (!check_minor || old_parts[1] === new_parts[1]);
 }
 
 /**
@@ -821,4 +822,15 @@ function ms_to_time(ms) {
 	const year = duration.years() > 0 ? duration.years() + 'y ' : '';
 
 	return year + day + hrs + min + sec;
+}
+
+/**
+ * Change the extension of a file.
+ * @param file
+ * @param extension
+ * @returns {string}
+ */
+function changeExtension(file, extension) {
+	const basename = path.basename(file, path.extname(file));
+	return path.join(path.dirname(file), basename + extension);
 }

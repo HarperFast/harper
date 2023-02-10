@@ -21,6 +21,8 @@ const routes = require('../../../utility/clustering/routes');
 const insert = require('../../../data_layer/insert');
 const person_data = require('../../personData');
 const PERSON_ATTRIBUTES = ['id', 'first_name', 'state', 'age', 'alive', 'birth_month'];
+const keys = require('../../../security/keys');
+const upgrade_prompt = require('../../../upgrade/upgradePrompt');
 
 const upgrade_script = rewire('../../../upgrade/directives/upgrade_scripts/4_0_0_reindex_script');
 const { insertRecords } = require('../../../utility/lmdb/writeUtility');
@@ -30,13 +32,21 @@ const ROOT = 'yourcomputer/hdb';
 describe('Test 4-0-0 module', () => {
 	const sandbox = sinon.createSandbox();
 	const TEST_ERROR = 'Unit test error';
-	const generate_keys_stub = sandbox.stub();
+	let generate_keys_stub;
+	let update_config_cert_stub;
+	let upgrade_prompt_stub;
+	let fs_move_stub;
 	let generate_new_keys;
 
 	before(() => {
 		test_utils.restoreInitStub();
-		directive_4_0_0_rw.__set__('generate_keys', generate_keys_stub);
+		generate_keys_stub = sandbox.stub(keys, 'generateKeys');
+		update_config_cert_stub = sandbox.stub(keys, 'updateConfigCert');
+		upgrade_prompt_stub = sandbox.stub(upgrade_prompt, 'upgradeCertsPrompt');
+		fs_move_stub = sandbox.stub(fs, 'move');
 		generate_new_keys = directive_4_0_0_rw.__get__('generateNewKeys');
+		directive_4_0_0_rw.__set__('old_cert_path', 'user/test/cert_folder/cert.pem');
+		directive_4_0_0_rw.__set__('old_private_path', 'user/test/cert_folder/private.pem');
 	});
 
 	after(() => {
@@ -71,6 +81,8 @@ describe('Test 4-0-0 module', () => {
 			logging_file: true,
 			logging_stdstreams: false,
 			operationsapi_foreground: false,
+			certificate: 'can/i/do/this.pem',
+			private_key: 'yes/you/can.pem',
 		};
 		const expected_settings_path = path.join(ROOT, '/config/settings.js');
 		const expected_backup_path = path.join(ROOT, '/backup/4_0_0_upgrade_settings.bak');
@@ -99,7 +111,7 @@ describe('Test 4-0-0 module', () => {
 		beforeEach(() => {
 			get_stub = sandbox.stub(env, 'get').onFirstCall().returns(old_settings_path).onSecondCall().returns(ROOT);
 			create_config_file_stub = sandbox.stub(config_utils, 'createConfigFile');
-			init_old_config_stub = sandbox.stub(config_utils, 'initOldConfig');
+			init_old_config_stub = sandbox.stub(config_utils, 'initOldConfig').returns(old_config_obj);
 			copy_sync_stub = sandbox.stub(fs, 'copySync');
 			remove_sync_stub = sandbox.stub(fs, 'removeSync');
 			write_file_stub = sandbox.stub(fs, 'writeFileSync');
@@ -405,12 +417,28 @@ describe('Test 4-0-0 module', () => {
 		});
 	});
 
-	it('Test generateNewKeys function calls generate_keys', async () => {
+	it('Test generateNewKeys function calls generate_keys if prompted to', async () => {
+		upgrade_prompt_stub.resolves(true);
 		await generate_new_keys();
+		expect(fs_move_stub.getCall(0).firstArg).to.equal('user/test/cert_folder/cert.pem');
+		expect(fs_move_stub.getCall(0).lastArg).to.equal('user/test/cert_folder/cert.bak');
+		expect(fs_move_stub.getCall(1).firstArg).to.equal('user/test/cert_folder/private.pem');
+		expect(fs_move_stub.getCall(1).lastArg).to.equal('user/test/cert_folder/private.bak');
 		expect(generate_keys_stub.called).to.be.true;
 	});
 
+	it('Test generateKeys does not generate keys if prompted to', async () => {
+		upgrade_prompt_stub.resolves(false);
+		await generate_new_keys();
+		expect(update_config_cert_stub.args[0]).to.eql([
+			'user/test/cert_folder/cert.pem',
+			'user/test/cert_folder/private.pem',
+			undefined,
+		]);
+	});
+
 	it('Test generateNewKeys function error is correctly handled', async () => {
+		upgrade_prompt_stub.resolves(true);
 		generate_keys_stub.throws(new Error('Test error generate keys'));
 		let error;
 		try {
