@@ -115,7 +115,6 @@ function iterateRangeBetween(
 	exclusive_lower = false,
 	exclusive_upper = false
 ) {
-	transactionOrEnv.search()
 	return setupTransaction(transactionOrEnv, hash_attribute, attribute, (transaction, attr_dbi, env, hash_attribute) => {
 		let end = reverse === true ? lower_value : upper_value;
 		let start = reverse === true ? upper_value : lower_value;

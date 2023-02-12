@@ -76,6 +76,9 @@ export function registerGraphQL() {
 										return this.useTable(type_def.table, type_def.schema)?.subscribe(path, options);
 									} else throw new Error('Unauthorized');
 								}
+								put(id, body) {
+									return this.useTable(type_def.table, type_def.schema)?.put(id, body);
+								}
 							}
 							handlers.set(query_name, restHandler(GraphQLResource));
 						}

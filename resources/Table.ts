@@ -10,9 +10,8 @@ import { compareKeys, readKey } from 'ordered-binary';
 import { onMessageFromWorkers, broadcast } from '../server/threads/manage-threads';
 import * as lmdb_terms from '../utility/lmdb/terms';
 import * as env_mngr from '../utility/environment/environmentManager';
-import { info } from '../utility/logging/harper_logger';
+import {addSubscription, listenToCommits} from './transactionBroadcast';
 
-const TRANSACTION_EVENT_TYPE = 'transaction';
 const RANGE_ESTIMATE = 100000000;
 env_mngr.initSync();
 let b = Buffer.alloc(1);
@@ -39,40 +38,14 @@ export class Table {
 	Source: { new(): ResourceInterface }
 	Transaction: ReturnType<typeof makeTransactionClass>
 
-	constructor(primaryDbi, options) {
-		this.primaryDbi = primaryDbi;
+	constructor(primary_dbi, options) {
+		this.primaryDbi = primary_dbi;
 		this.indices = [];
 		this.primaryKey = 'id';
-		this.envPath = primaryDbi.env.path;
+		this.envPath = primary_dbi.env.path;
 		this.tableName = options.tableName;
 		this.Transaction = makeTransactionClass(this);
-		primaryDbi.on('aftercommit', ({next, last}) => {
-			// after each commit, broadcast the transaction to all threads so subscribers can read the
-			// transactions and find changes of interest. We try to use the same binary format for
-			// transactions that is used by lmdb-js for minimal modification and since the binary
-			// format can readily be shared with other threads
-			let transaction_buffers = [];
-			let last_uint32;
-			let start;
-			// get all the buffers (and starting position of the first) in this transaction
-			do {
-				if (next.uint32 !== last_uint32) {
-					last_uint32 = next.uint32;
-					if (last_uint32) {
-						if (start === undefined)
-							start = next.flagPosition;
-						transaction_buffers.push(last_uint32.buffer);
-					}
-				}
-				next = next.next;
-			} while (next !== last);
-			// broadcast all the transaction buffers so they can be (sequentially) read
-			broadcast({
-				type: TRANSACTION_EVENT_TYPE,
-				start,
-				buffers: transaction_buffers,
-			});
-		});
+		listenToCommits(primary_dbi);
 	}
 	sourcedFrom(Resource) {
 		// define a source for retrieving invalidated entries for caching purposes
@@ -109,77 +82,8 @@ export class Table {
 	 * @param options
 	 */
 	subscribe(query, options) {
-		// setup the subscriptions map. We want to just use a single map (per table) for efficient delegation
-		// (rather than having every subscriber filter every transaction)
-		if (!this.subscriptions) {
-			this.subscriptions = new Map();
-			onMessageFromWorkers((event) => {
-				if (event.type === TRANSACTION_EVENT_TYPE) {
-					let flag_position = event.start || 2;
-					let buffers = event.buffers;
-					const HAS_KEY = 4;
-					const HAS_VALUE = 2;
-					const CONDITIONAL = 8;
-					const TXN_DELIMITER = 0x8000000;
-					const COMPRESSIBLE = 0x100000;
-					const SET_VERSION = 0x200;
-					for (let array_buffer of buffers) {
-						let uint32 = new Uint32Array(array_buffer);
-						let buffer = Buffer.from(array_buffer);
-						let first = true;
-						do {
-							let flag = uint32[flag_position++];
-							let operation = flag;
-							console.log(flag.toString(16));
-							if (flag & TXN_DELIMITER && !first)
-								break;
-							first = false;
-							if (flag & HAS_KEY) {
-								let dbi = uint32[flag_position++];
-								let key_size = uint32[flag_position++];
-								let key_position = flag_position << 2;
-								let key = readKey(buffer, key_position, key_position + key_size);
-								flag_position = ((key_position + key_size + 16) & (~7)) >> 2;
-								if (flag & HAS_VALUE) {
-									if (flag & COMPRESSIBLE)
-										flag_position += 4;
-									else
-										flag_position += 2;
-								}
-								if (flag & SET_VERSION) {
-									flag_position += 2;
-								}
-								let handlers = this.subscriptions.get(key);
-								if (handlers) handlers.forEach(handler => {
-									try {
-										handler(key);
-									} catch(error) {
-										console.error(error);
-										info(error);
-									}
-								});
-							} else {
-								flag_position++;
-							}
-						} while (flag_position < uint32.length);
-					}
-					// TODO: Read from these buffers, call subscriptions handlers
-					//let handlers = this.subscriptions.get(key);
-					//if (handlers) handlers.forEach(handler => handler(type));
-	 			}
-			});
-		}
 		let key = typeof query !== 'object' ? query : query.conditions[0].search_attribute;
-		let handlers = this.subscriptions.get(key);
-		if (!handlers)
-			this.subscriptions.set(key, handlers = []);
-		handlers.push(options.callback);
-		return {
-			// return an object that we can use to end the subscription
-			end() {
-				handlers.splice(handlers.indexOf(options.callback), 1);
-			}
-		};
+		return addSubscription(this.primaryDbi.env.path, this.primaryDbi.db.dbi, key, options.callback);
 	}
 	transaction(env_transaction, lmdb_txn, parent_transaction) {
 		return new this.Transaction(env_transaction, lmdb_txn, parent_transaction, {});

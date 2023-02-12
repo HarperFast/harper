@@ -18,7 +18,7 @@ describe('test WebSocket connections', () => {
 			'content-type': 'application/cbor',
 			accept: 'application/cbor'
 		};
-		let ws = new WebSocket('ws://localhost:9926/user', {
+		let ws = new WebSocket('ws://localhost:9926/our_data', {
 			headers,
 		});
 		await new Promise((resolve, reject) => {
@@ -31,11 +31,28 @@ describe('test WebSocket connections', () => {
 			path: '33',
 		}));
 		console.log('sending');
-		let response = await axios.post('http://localhost:9926/DenormalizedUser/33', encode({
+		let response = await axios.post('http://localhost:9926/our_data/33', encode({
 			method: 'addTitle',
 			titleId: 35,
 		}), {
 			method: 'POST',
+			headers,
+			responseType: 'arraybuffer',
+		});
+		console.log('decoded arraybuffer data:', response.data.length);
+
+	});
+	it('do put with CBOR', async () => {
+		const headers = {
+			authorization,
+			'content-type': 'application/cbor',
+			accept: 'application/cbor'
+		};
+		console.log('sending');
+		let response = await axios.put('http://localhost:9926/our_data/33', encode({
+			nane: 'a new record',
+			id: 33,
+		}), {
 			headers,
 			responseType: 'arraybuffer',
 		});
@@ -50,8 +67,11 @@ describe('test WebSocket connections', () => {
 			accept: 'application/cbor'
 		};
 
-		for (let i = 0; i < 1000; i++) {
-			let ws = new WebSocket('ws+unix:/tmp/test:/user', {
+		let message_count = 0;
+		let printing_connection_count;
+		let i = 0;
+		for (; i < 400;) {
+			let ws = new WebSocket('ws+unix:/tmp/test:/our_data', {
 				headers,
 			});
 			await new Promise((resolve, reject) => {
@@ -63,9 +83,24 @@ describe('test WebSocket connections', () => {
 				method: 'get-sub',
 				path,
 			}));
-			ws.on('message', data => console.log('got ws message', decode(data)));
-			if (i % 1000 == 0)
-				console.log({i})
+			let first = true;
+			ws.on('message', data => {
+				if (message_count === 0) {
+					setTimeout(() => {
+						console.log('messages received in last second:', message_count, 'last message:', decode(data));
+						message_count = 0;
+					}, 1000);
+				}
+				message_count++;
+			});
+			i++;
+			if (!printing_connection_count) {
+				setTimeout(() => {
+					console.log('connection count', i);
+					printing_connection_count = false;
+				}, 1000);
+				printing_connection_count = true;
+			}
 		}
 		await new Promise(resolve => setTimeout(resolve, 1000000));
 	});

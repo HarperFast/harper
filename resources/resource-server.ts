@@ -136,4 +136,4 @@ async function authentication(request) {
 }
 // keep it cleaned out periodically
 setInterval(() => { authorization_cache = new Map() }, AUTHORIZATION_TTL);
-setInterval(() => { console.log(process.memoryUsage().heapUsed, threadId)}, 2000);
+setInterval(() => { console.log(process.memoryUsage().heapUsed, threadId)}, 20000);

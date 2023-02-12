@@ -36,7 +36,7 @@ export class Resource implements ResourceInterface {
 		let commits = [];
 		for (let env_path in this.inUseEnvs) { // TODO: maintain this array ourselves so we don't need to key-ify
 			let env_txn = this.inUseEnvs[env_path];
-			if (env_txn.writes.length > 0) {
+			if (env_txn.writes.length > 0 || env_txn.updatingRecords?.length > 0) {
 				if (env_txn.conditions.length > 0)
 					txns_with_read_and_writes.push(env_txn);
 				else // I don't know if these will even be possible, might want to just eliminate this
