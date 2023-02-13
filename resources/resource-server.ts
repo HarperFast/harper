@@ -49,14 +49,14 @@ export function start(options: ServerOptions & { path: string, port: number }) {
 	options.keepAlive = true;
 	let remaining_path;
 	let server = createServer(options, async (request, response) => {
-		await startRequest(request, true);
+		await startRequest(request);
 		let handler = findHandler(request.url);
 		if (handler) return handler.http(remaining_path, request, response);
 		nextAppHandler(request, response)
 	});
 	let wss = new WebSocketServer({ server });
 	wss.on('connection', (ws, request) => {
-		startRequest(request, false);
+		startRequest(request);
 		ws.on('error', console.error);
 		ws.on('message', function message(body) {
 			let data = request.deserialize(body);
@@ -66,9 +66,9 @@ export function start(options: ServerOptions & { path: string, port: number }) {
 		});
 		ws.on('close', () => console.log('close'));
 	});
-	function startRequest(request, asStream) {
-		const { serializer, type } = findBestSerializer(request, asStream);
-		request.serialize = serializer;
+	function startRequest(request) {
+		const { serializer, type } = findBestSerializer(request);
+		request.serializer = serializer;
 		let content_type = request.headers['content-type'];
 		if (content_type) {
 			request.deserialize = getDeserializer(content_type);

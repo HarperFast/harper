@@ -37,9 +37,10 @@ if (!isMainThread) {
 			// then let the event loop complete
 			for (let server_type in SERVERS) {
 				// closing idle connections was added in v18, and is a better way to shutdown HTTP servers
-				SERVERS[server_type].close();
-				// in Node v18+ this is preferable way to gracefully shutdown connections
-				if (SERVERS[server_type].server.closeIdleConnections()) SERVERS[server_type].server.closeIdleConnections();
+				if (SERVERS[server_type].closeIdleConnections)
+					SERVERS[server_type].closeIdleConnections();
+				else
+					SERVERS[server_type].close();
 			}
 		}
 	}).ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles

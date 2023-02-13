@@ -16,7 +16,7 @@ export function restHandler(Resource) {
 			}
 		} catch (error) {
 			response.writeHead(400); // bad request
-			response.end(request.serialize(error.toString()));
+			response.end(request.serializer.serialize(error.toString()));
 		}
 		try {
 			let response_object = await execute(method, next_path, request_data, request, response);
@@ -25,17 +25,17 @@ export function restHandler(Resource) {
 			if (response_object.data === undefined)
 				response.end();
 			else {
-				let body = request.serialize(response_object.data);
-				if (typeof body?.pipe === 'function')
-					body.pipe(response);
+				let serializer = request.serializer;
+				if (serializer.serializeStream)
+					serializer.serializeStream(response_object.data).pipe(response);
 				else
-					response.end(body);
+					response.end(serializer.serialize(response_object.data));
 			}
 		} catch (error) {
 			response.writeHead(500); // server error
 			// do content negotiation
 			console.error(error);
-			response.end(request.serialize(error.toString()));
+			response.end(request.serializer.serialize(error.toString()));
 		}
 	}
 	async function execute(method, path, request_data, request, response?) {
@@ -57,9 +57,9 @@ export function restHandler(Resource) {
 						if (typed_key !== undefined) {
 							let subscription = resource_snapshot.subscribe(typed_key, {
 								callback() {
-									response.send(request.serialize({
+									response.send(request.serializer.serialize({
 										path,
-										invalidated: true
+										updated: true
 									}));
 									//subscription.end();
 								}
@@ -132,11 +132,11 @@ export function restHandler(Resource) {
 			let response = await execute(method, path, request_data, request, ws);
 			//response_data.id = request_id;
 			response.id = request_id;
-			ws.send(request.serialize(response));
+			ws.send(request.serializer.serialize(response));
 		} catch (error) {
 			// do content negotiation
 			console.error(error);
-			ws.send(request.serialize({status: 500, id: request_id, data: error.toString()}));
+			ws.send(request.serializer.serialize({status: 500, id: request_id, data: error.toString()}));
 		}
 	}
 	return { http, ws };

@@ -110,14 +110,14 @@ let registerFastifySerializers = fp(
 				return;
 			let { serializer, type } = findBestSerializer(request.raw);
 			reply.type(type);
-			reply.serializer(serializer);
+			reply.serializer(serializer.serializeStream || serializer.serialize);
 		});
 		done();
 	},
 	{ name: 'content-type-negotiation' }
 );
 
-function findBestSerializer(incoming_message, asStream = true) {
+function findBestSerializer(incoming_message) {
 	let accept_header = incoming_message.headers.accept;
 	let best_serializer;
 	let best_quality = 0;
@@ -137,7 +137,7 @@ function findBestSerializer(incoming_message, asStream = true) {
 		if (serializer) {
 			const quality = (serializer.q || 1) * client_quality;
 			if (quality > best_quality) {
-				best_serializer = asStream ? serializer.serializeStream : serializer.serialize;
+				best_serializer = serializer;
 				best_type = serializer.type || type;
 				best_quality = quality;
 				best_parameters = parameters;
@@ -152,7 +152,7 @@ function findBestSerializer(incoming_message, asStream = true) {
 				}
 			};
 		} else { // default if Accept header is absent
-			best_serializer = asStream ? streamAsJSON : JSON.stringify;
+			best_serializer = media_types['application/json'];
 			best_type = 'application/json';
 		}
 	}

@@ -11,8 +11,8 @@ env.initSync();
 
 // eslint-disable-next-line no-unused-vars
 const SystemInformationObject = require('./SystemInformationObject');
-const { getBaseSchemaPath } = require("../../data_layer/harperBridge/lmdbBridge/lmdbUtility/initializePaths");
-const { openEnvironment } = require("../lmdb/environmentUtility");
+const { getBaseSchemaPath } = require('../../data_layer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
+const { openEnvironment } = require('../lmdb/environmentUtility');
 
 //this will hold the system_information which is static to improve performance
 let system_information_cache = undefined;
@@ -223,7 +223,7 @@ async function getMetrics() {
 	let schemas = await schema_describe.describeAll();
 	let schema_stats = {};
 	for (let schema_name in schemas) {
-		let table_stats = schema_stats[schema_name] = {};
+		let table_stats = (schema_stats[schema_name] = {});
 		for (let table_name in schemas[schema_name]) {
 			try {
 				let schema_path = path.join(getBaseSchemaPath(), schema_name);
@@ -241,7 +241,7 @@ async function getMetrics() {
 					timePageFlushes: stats.timePageFlushes,
 					timeSync: stats.timeSync,
 				};
-			} catch(error) {
+			} catch (error) {
 				// if a schema no longer exists, don't want to throw an error
 				log.notify(`Error getting stats for table ${table_name}: ${error}`);
 			}
@@ -264,7 +264,7 @@ async function systemInformation(system_info_op) {
 		response.cpu = await getCPUInfo();
 		response.memory = await getMemoryInfo();
 		response.disk = await getDiskInfo();
-		response.network = await getNetworkInfo();
+		//response.network = await getNetworkInfo();
 		response.harperdb_processes = await getHDBProcessInfo();
 		response.table_size = await getTableSize();
 		response.metrics = await metrics;
