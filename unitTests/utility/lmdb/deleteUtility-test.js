@@ -46,7 +46,6 @@ const MULTI_RECORD_ARRAY_COMPARE = [
 
 const IDS = [1, 2, 3, 4, 5, 6];
 
-const TIMESTAMP = Date.now();
 const TXN_TIMESTAMP = common.getNextMonotonicTime();
 const sandbox = sinon.createSandbox();
 
@@ -104,7 +103,9 @@ describe('Test deleteUtility', () => {
 		it('delete all records', async () => {
 			let expected_compare = [];
 			MULTI_RECORD_ARRAY_COMPARE.forEach((compare) => {
-				expected_compare.push(Object.assign({ __updatedtime__: TIMESTAMP, __createdtime__: TIMESTAMP }, compare));
+				expected_compare.push(
+					Object.assign({ __updatedtime__: TXN_TIMESTAMP, __createdtime__: TXN_TIMESTAMP }, compare)
+				);
 			});
 
 			let records = [];
@@ -154,16 +155,16 @@ describe('Test deleteUtility', () => {
 					age: 32,
 					id: 2,
 					name: 'Jerry',
-					__createdtime__: TIMESTAMP,
-					__updatedtime__: TIMESTAMP,
+					__createdtime__: TXN_TIMESTAMP,
+					__updatedtime__: TXN_TIMESTAMP,
 				},
 				{
 					age: 44,
 					city: 'Denver',
 					id: 4,
 					name: 'Joy',
-					__createdtime__: TIMESTAMP,
-					__updatedtime__: TIMESTAMP,
+					__createdtime__: TXN_TIMESTAMP,
+					__updatedtime__: TXN_TIMESTAMP,
 				},
 			];
 
