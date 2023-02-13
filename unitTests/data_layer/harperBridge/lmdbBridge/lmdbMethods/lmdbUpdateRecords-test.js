@@ -136,12 +136,12 @@ describe('Test lmdbUpdateRecords module', () => {
 	let hdb_table_env;
 	let hdb_attribute_env;
 	before(() => {
-		date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
-	  env_manager.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_AUDITLOG, true);
+		//date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
+		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_AUDITLOG, true);
 	});
 
 	after(() => {
-		date_stub.restore();
+		//date_stub.restore();
 	});
 
 	describe('Test lmdbUpdateRecords function', () => {
@@ -152,8 +152,8 @@ describe('Test lmdbUpdateRecords module', () => {
 		let expected_hashes_txn;
 
 		beforeEach(async () => {
-			date_stub.restore();
-			date_stub = sandbox.stub(Date, 'now').returns(INSERT_TIMESTAMP);
+			//date_stub.restore();
+			//date_stub = sandbox.stub(Date, 'now').returns(INSERT_TIMESTAMP);
 			global.hdb_schema = {
 				[SCHEMA_TABLE_TEST.schema]: {
 					[SCHEMA_TABLE_TEST.name]: {
@@ -187,9 +187,9 @@ describe('Test lmdbUpdateRecords module', () => {
 
 			await lmdb_create_table(TABLE_SYSTEM_DATA_TEST_A, CREATE_TABLE_OBJ_TEST_A);
 
-			m_time = lmdb_common.getMicroTime();
+			m_time = TIMESTAMP;
 			insert_m_time = m_time;
-			m_time_stub = sandbox.stub(lmdb_common, 'getMicroTime').returns(m_time);
+			m_time_stub = sandbox.stub(lmdb_common, 'getNextMonotonicTime').returns(m_time);
 
 			let insert_obj = test_utils.deepClone(INSERT_OBJECT_TEST);
 			await lmdb_create_records(insert_obj);
@@ -204,12 +204,12 @@ describe('Test lmdbUpdateRecords module', () => {
 				expected_hashes_txn[record[HASH_ATTRIBUTE_NAME]] = [m_time];
 			});
 
-			date_stub.restore();
-			date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
+			//date_stub.restore();
+			//date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
 
 			m_time_stub.restore();
-			m_time = lmdb_common.getMicroTime();
-			m_time_stub = sandbox.stub(lmdb_common, 'getMicroTime').returns(m_time);
+			m_time = TIMESTAMP;
+			m_time_stub = sandbox.stub(lmdb_common, 'getNextMonotonicTime').returns(m_time);
 		});
 
 		afterEach(async () => {
@@ -252,6 +252,9 @@ describe('Test lmdbUpdateRecords module', () => {
 				],
 			};
 
+			m_time_stub.restore();
+			m_time = TIMESTAMP + 1;
+			m_time_stub = sandbox.stub(lmdb_common, 'getNextMonotonicTime').returns(m_time);
 			let expected_return_result = {
 				new_attributes: [],
 				written_hashes: [10],
@@ -280,8 +283,8 @@ describe('Test lmdbUpdateRecords module', () => {
 			);
 
 			let expected_search = test_utils.assignObjecttoNullObject(update_obj.records[0]);
-			expected_search.__createdtime__ = INSERT_TIMESTAMP;
-			expected_search.__updatedtime__ = TIMESTAMP;
+			expected_search.__createdtime__ = m_time - 1;
+			expected_search.__updatedtime__ = m_time;
 			expected_search.height = null;
 
 			let results = await test_utils.assertErrorAsync(lmdb_update_records, [update_obj], undefined);
@@ -310,8 +313,8 @@ describe('Test lmdbUpdateRecords module', () => {
 
 			//verify txns with update
 			let orig_rec = {
-				__createdtime__: INSERT_TIMESTAMP,
-				__updatedtime__: INSERT_TIMESTAMP,
+				__createdtime__: TIMESTAMP,
+				__updatedtime__: TIMESTAMP,
 				age: 5,
 				breed: 'Mutt',
 				height: 145,
@@ -353,6 +356,9 @@ describe('Test lmdbUpdateRecords module', () => {
 				],
 			};
 
+			m_time_stub.restore();
+			m_time = TIMESTAMP + 2;
+			m_time_stub = sandbox.stub(lmdb_common, 'getNextMonotonicTime').returns(m_time);
 			let expected_return_result = {
 				new_attributes: [],
 				written_hashes: [10],
@@ -381,7 +387,7 @@ describe('Test lmdbUpdateRecords module', () => {
 			);
 
 			let expected_search = test_utils.assignObjecttoNullObject(update_obj.records[0]);
-			expected_search.__createdtime__ = INSERT_TIMESTAMP;
+			expected_search.__createdtime__ = TIMESTAMP;
 			expected_search.__updatedtime__ = 9999999999999966;
 			expected_search.height = null;
 
@@ -411,8 +417,8 @@ describe('Test lmdbUpdateRecords module', () => {
 
 			//verify txns with update
 			let orig_rec = {
-				__createdtime__: INSERT_TIMESTAMP,
-				__updatedtime__: INSERT_TIMESTAMP,
+				__createdtime__: TIMESTAMP,
+				__updatedtime__: TIMESTAMP,
 				age: 5,
 				breed: 'Mutt',
 				height: 145,

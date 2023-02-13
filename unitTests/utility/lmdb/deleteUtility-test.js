@@ -47,25 +47,16 @@ const MULTI_RECORD_ARRAY_COMPARE = [
 const IDS = [1, 2, 3, 4, 5, 6];
 
 const TIMESTAMP = Date.now();
-const TXN_TIMESTAMP = common.getMicroTime();
+const TXN_TIMESTAMP = common.getNextMonotonicTime();
 const sandbox = sinon.createSandbox();
 
 describe('Test deleteUtility', () => {
 	let env, transaction;
 
-	let get_micro_time_stub;
-	let date_stub;
-	before(() => {
-		get_micro_time_stub = sandbox.stub(common, 'getMicroTime').returns(TXN_TIMESTAMP);
-		date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
-	});
-
-	after(() => {
-		get_micro_time_stub.restore();
-		date_stub.restore();
-	});
+	let get_monotonic_time_stub;
 
 	beforeEach(async () => {
+		get_monotonic_time_stub = sandbox.stub(common, 'getNextMonotonicTime').returns(TXN_TIMESTAMP);
 		global.lmdb_map = undefined;
 
 		await fs.remove(test_utils.getMockLMDBPath());
@@ -85,6 +76,7 @@ describe('Test deleteUtility', () => {
 		await env.close();
 		global.lmdb_map = undefined;
 		await fs.remove(BASE_TEST_PATH);
+		get_monotonic_time_stub.restore();
 	});
 
 	describe('Test deleteRecords function', () => {
