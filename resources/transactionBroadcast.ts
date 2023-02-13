@@ -11,7 +11,6 @@ export function addSubscription(path, dbi, key, listener) {
 	if (!all_subscriptions) {
 		onMessageFromWorkers((event) => {
 			if (event.type === TRANSACTION_EVENT_TYPE) {
-				console.log('got txn event', threadId);
 				let flag_position = event.start || 2;
 				let buffers = event.buffers;
 				let path = event.path;
@@ -45,6 +44,7 @@ function notifyFromTransactionData(path, buffers, flag_position) {
 	const TXN_DELIMITER = 0x8000000;
 	const COMPRESSIBLE = 0x100000;
 	const SET_VERSION = 0x200;
+	if (!all_subscriptions) return;
 	let subscriptions = all_subscriptions[path];
 	if (!subscriptions) return; // if no subscriptions to this env path, don't need to read anything
 	for (let array_buffer of buffers) {
@@ -54,7 +54,6 @@ function notifyFromTransactionData(path, buffers, flag_position) {
 		do {
 			let flag = uint32[flag_position++];
 			let operation = flag;
-			console.log(flag.toString(16));
 			if (flag & TXN_DELIMITER && !first)
 				break;
 			first = false;
@@ -77,7 +76,7 @@ function notifyFromTransactionData(path, buffers, flag_position) {
 					flag_position += 2;
 				}
 				let handlers = dbi_subscriptions?.get(key);
-				console.log(threadId, 'change to', key, 'listeners', handlers?.length, 'flag_position', flag_position);
+				//console.log(threadId, 'change to', key, 'listeners', handlers?.length, 'flag_position', flag_position);
 				if (handlers) handlers.forEach(handler => {
 					try {
 						handler(key);

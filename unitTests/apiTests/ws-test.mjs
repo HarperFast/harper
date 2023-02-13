@@ -42,21 +42,31 @@ describe('test WebSocket connections', () => {
 		console.log('decoded arraybuffer data:', response.data.length);
 
 	});
-	it('do put with CBOR', async () => {
+	it('do put with CBOR', async function() {
+		this.timeout(100000000);
 		const headers = {
 			authorization,
 			'content-type': 'application/cbor',
 			accept: 'application/cbor'
 		};
 		console.log('sending');
-		let response = await axios.put('http://localhost:9926/our_data/33', encode({
-			nane: 'a new record',
-			id: 33,
-		}), {
-			headers,
-			responseType: 'arraybuffer',
-		});
-		console.log('decoded arraybuffer data:', response.data.length);
+		let response;
+		let promises = [];
+		for (let i = 0; i < 2000; i++) {
+			let id = Math.ceil(Math.random() * 1000);
+			promises.push(axios.put('http://localhost:9926/our_data/' + id, encode({
+				nane: 'a new record',
+				id,
+			}), {
+				headers,
+				responseType: 'arraybuffer',
+			}));
+			if (promises.length > 10) {
+				response = await Promise.all(promises);
+				promises = [];
+			}
+		}
+		console.log('decoded arraybuffer data:', response[0].data.length);
 
 	});
 	it('how many websockets', async function() {
@@ -70,7 +80,7 @@ describe('test WebSocket connections', () => {
 		let message_count = 0;
 		let printing_connection_count;
 		let i = 0;
-		for (; i < 400;) {
+		for (; i < 500000;) {
 			let ws = new WebSocket('ws+unix:/tmp/test:/our_data', {
 				headers,
 			});
@@ -78,7 +88,7 @@ describe('test WebSocket connections', () => {
 				ws.on('open', resolve);
 				ws.on('error', reject);
 			});
-			let path = '' + Math.ceil(Math.random() * 40);
+			let path = '' + Math.ceil(Math.random() * 1000);
 			ws.send(encode({
 				method: 'get-sub',
 				path,

@@ -514,5 +514,5 @@ function noop() {
 }
 export function snake_case(camelCase: string) {
 	return camelCase[0].toLowerCase() + camelCase.slice(1).replace(/[a-z][A-Z][a-z]/g,
-		(letters) => letters[0] + '_' + letters.slice(1));
+		(letters) => letters[0] + '_' + letters[1].toLowerCase() + letters.slice(2));
 }

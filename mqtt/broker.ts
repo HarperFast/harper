@@ -23,9 +23,9 @@ class HDBEmitter {
 		if (table) {
 			table.subscribe(topic_parts[1], listener);
 		}
-		console.log('on', topic);
+		//console.log('on', topic);
 	}
 	emit(event, binary) {
-		console.log('emit', event);
+		//console.log('emit', event);
 	}
 }

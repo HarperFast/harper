@@ -152,7 +152,7 @@ function findBestSerializer(incoming_message, asStream = true) {
 				}
 			};
 		} else { // default if Accept header is absent
-			best_serializer = streamAsJSON;
+			best_serializer = asStream ? streamAsJSON : JSON.stringify;
 			best_type = 'application/json';
 		}
 	}
