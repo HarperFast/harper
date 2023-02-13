@@ -17,8 +17,7 @@ class LeafConfigObject {
 		hdb_users,
 		cert_file,
 		key_file,
-		ca_file,
-		insecure
+		ca_file
 	) {
 		this.port = port;
 		if (ca_file === null) ca_file = undefined;
@@ -34,14 +33,15 @@ class LeafConfigObject {
 			cert_file,
 			key_file,
 			ca_file,
-			insecure,
+			// this is a local connection, with localhost, so we can't verify CAs and don't need to
+			insecure: true,
 		};
 		this.leafnodes = {
 			remotes: [
 				{
 					tls: {
 						ca_file,
-						insecure,
+						insecure: true,
 					},
 					urls: ln_remotes_urls_sys,
 					account: 'SYS',
@@ -49,7 +49,7 @@ class LeafConfigObject {
 				{
 					tls: {
 						ca_file,
-						insecure,
+						insecure: true,
 					},
 					urls: ln_remotes_urls_hdb,
 					account: 'HDB',

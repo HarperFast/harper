@@ -162,7 +162,8 @@ async function createConnection(port, username, password, wait_on_first_connect 
 			keyFile: env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY),
 			certFile: env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_CERTIFICATE),
 			caFile: env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_CERT_AUTH),
-			rejectUnauthorized: !env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_INSECURE),
+			// this is a local connection, with localhost, so we can't verify CAs and don't need to
+			rejectUnauthorized: false,
 		},
 	});
 }
