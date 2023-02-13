@@ -57,18 +57,22 @@ async function forceUpdatePrompt(upgrade_obj) {
 async function forceDowngradePrompt(upgrade_obj) {
 	let downgrade_message =
 		`${os.EOL}` +
-		chalk.bold.green('Your installed HarperDB version is older than the version used to create your data.' +
-			' Downgrading is not recommended as it is not tested and guaranteed to work. However, if you need to' +
-			' downgrade, and a backup of your data has not been created, we recommend you cancel this process and' +
-			' backup before proceeding.' +
-		`${os.EOL}`);
+		chalk.bold.green(
+			'Your installed HarperDB version is older than the version used to create your data.' +
+				' Downgrading is not recommended as it is not tested and guaranteed to work. However, if you need to' +
+				' downgrade, and a backup of your data has not been created, we recommend you cancel this process and' +
+				' backup before proceeding.' +
+				`${os.EOL}`
+		);
 	prompt.override = assignCMDENVVariables(['CONFIRM_DOWNGRADE']);
 	prompt.start();
 	prompt.message = downgrade_message;
 	let downgrade_confirmation = {
 		properties: {
 			CONFIRM_DOWNGRADE: {
-				description: chalk.magenta(`${os.EOL}[CONFIRM_DOWNGRADE] Do you want to proceed with using your downgraded HDB instance now? (yes/no)`),
+				description: chalk.magenta(
+					`${os.EOL}[CONFIRM_DOWNGRADE] Do you want to proceed with using your downgraded HDB instance now? (yes/no)`
+				),
 				pattern: /y(es)?$|n(o)?$/,
 				message: "Must respond 'yes' or 'no'",
 				default: 'no',
@@ -82,7 +86,39 @@ async function forceDowngradePrompt(upgrade_obj) {
 	return UPGRADE_PROCEED.includes(response.CONFIRM_DOWNGRADE);
 }
 
+async function upgradeCertsPrompt() {
+	const upgrade_cert_message =
+		`${os.EOL}` +
+		chalk.bold.green(
+			'We now require a Certifacte Authority certificate. HarperDB can generate all new certificates for you (your existing certificates will be backed up) ' +
+				'or you can keep any existing certificates and add your own CA certificate. To add your own CA certificate set the <certificateAuthority> ' +
+				'parameter in harperdb-config.yaml'
+		);
+
+	prompt.override = assignCMDENVVariables(['GENERATE_CERTS']);
+	prompt.start();
+	prompt.message = upgrade_cert_message;
+	let upgrade_confirmation = {
+		properties: {
+			GENERATE_CERTS: {
+				description: chalk.magenta(
+					`${os.EOL}[GENERATE_CERTS] Do you want HarperDB to generate all new certificates? (yes/no)`
+				),
+				pattern: /y(es)?$|n(o)?$/,
+				message: "Must respond 'yes' or 'no'",
+				default: 'yes',
+				required: true,
+			},
+		},
+	};
+
+	const response = await prompt.get([upgrade_confirmation]);
+
+	return UPGRADE_PROCEED.includes(response.GENERATE_CERTS);
+}
+
 module.exports = {
 	forceUpdatePrompt,
 	forceDowngradePrompt,
+	upgradeCertsPrompt,
 };

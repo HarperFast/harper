@@ -56,6 +56,7 @@ describe('Test installer module', () => {
 		const generate_keys_stub = sandbox.stub().resolves();
 		const insert_ver_stub = sandbox.stub().resolves();
 		const check_jwt_stub = sandbox.stub();
+		let keys_rw;
 
 		before(() => {
 			installer.__set__('checkForPromptOverride', check_for_prompt_stub);
@@ -69,12 +70,13 @@ describe('Test installer module', () => {
 			installer.__set__('createConfigFile', create_config_stub);
 			installer.__set__('createSuperUser', create_super_user_stub);
 			installer.__set__('createClusterUser', create_cluster_user_stub);
-			installer.__set__('generate_keys', generate_keys_stub);
+			keys_rw = installer.__set__('keys.generateKeys', generate_keys_stub);
 			installer.__set__('insertHdbVersionInfo', insert_ver_stub);
 			installer.__set__('check_jwt_tokens', check_jwt_stub);
 		});
 
 		after(() => {
+			keys_rw();
 			rewire(installer_mod_path);
 		});
 

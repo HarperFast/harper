@@ -52,7 +52,7 @@ async function lmdbDeleteRecords(delete_obj, write_to_txn_log = true) {
 		let env_base_path = getSchemaPath(delete_obj.schema, delete_obj.table);
 		let environment = await environment_utility.openEnvironment(env_base_path, delete_obj.table);
 
-		let response = await delete_utility.deleteRecords(environment, hash_attribute, delete_obj.hash_values);
+		let response = await delete_utility.deleteRecords(environment, hash_attribute, delete_obj.hash_values, delete_obj.__origin?.timestamp);
 
 		try {
 			if (write_to_txn_log === true) {

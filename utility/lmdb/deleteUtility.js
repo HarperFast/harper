@@ -9,16 +9,19 @@ const hdb_utils = require('../common_utils');
 // eslint-disable-next-line no-unused-vars
 const lmdb = require('lmdb');
 const DeleteRecordsResponseObject = require('./DeleteRecordsResponseObject');
+const hdb_terms = require('../hdbTerms');
 const { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH } = lmdb_terms;
+const UPDATED_TIME_ATTRIBUTE_NAME = hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME;
 
 /**
  *  deletes rows and their entries in all indices
  * @param {lmdb.RootDatabase} env - environment object used high level to interact with all data in an environment
  * @param {String} hash_attribute - name of the hash_attribute for this environment
  * @param {Array.<String>} ids - list of ids to delete
+ * @param {number} when_deleted - The timestamp of the deletion
  * @returns {Promise<DeleteRecordsResponseObject>}
  */
-async function deleteRecords(env, hash_attribute, ids) {
+async function deleteRecords(env, hash_attribute, ids, when_deleted) {
 	//validate
 	common.validateEnv(env);
 
@@ -51,7 +54,11 @@ async function deleteRecords(env, hash_attribute, ids) {
 				//attempt to fetch the hash attribute value, this is the row.
 				let record = env.dbis[hash_attribute].get(hash_value);
 				//if it doesn't exist we skip & move to the next id
-				if (!record) {
+				if (
+					!record ||
+					// of if the deletion timestamp is older than the current record, last-write wins
+					(when_deleted && record[UPDATED_TIME_ATTRIBUTE_NAME] > when_deleted)
+				) {
 					deleted.skipped.push(hash_value);
 					continue;
 				}
@@ -63,10 +70,7 @@ async function deleteRecords(env, hash_attribute, ids) {
 					//iterate & delete the non-hash attribute entries
 					for (let y = 0; y < all_dbis.length; y++) {
 						let attribute = all_dbis[y];
-						if (
-							!record.hasOwnProperty(attribute) ||
-							attribute === hash_attribute
-						) {
+						if (!record.hasOwnProperty(attribute) || attribute === hash_attribute) {
 							continue;
 						}
 
@@ -114,7 +118,7 @@ async function deleteRecords(env, hash_attribute, ids) {
 			offset++;
 		}
 
-		deleted.txn_time = common.getMicroTime();
+		deleted.txn_time = common.getNextMonotonicTime();
 
 		return deleted;
 	} catch (e) {

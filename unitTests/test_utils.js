@@ -757,14 +757,17 @@ async function launchTestLeafServer(ls_net_port = 9991, node_name = 'testLeafSer
 async function generateTestKeys(test_root) {
 	const keys_test_path = path.join(test_root, 'keys');
 	await fs.mkdirp(keys_test_path);
-	const generate_keys = rewire('../security/keys');
+	const keys = rewire('../security/keys');
 	const get_hdb_path_stub = sinon.stub().returns(test_root);
-	const get_hdb_path_rw = generate_keys.__set__('env_manager.getHdbBasePath', get_hdb_path_stub);
-	await generate_keys();
+	const update_config_stub = sinon.stub();
+	const get_hdb_path_rw = keys.__set__('env_manager.getHdbBasePath', get_hdb_path_stub);
+	const update_config_rw = keys.__set__('config_utils.updateConfigValue', update_config_stub);
+	await keys.generateKeys();
 	env.setProperty(terms.CONFIG_PARAMS.CLUSTERING_TLS_CERT_AUTH, path.join(keys_test_path, 'ca.pem'));
 	env.setProperty(terms.CONFIG_PARAMS.CLUSTERING_TLS_CERTIFICATE, path.join(keys_test_path, 'certificate.pem'));
 	env.setProperty(terms.CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY, path.join(keys_test_path, 'privateKey.pem'));
 	get_hdb_path_rw();
+	update_config_rw();
 	rewire('../utility/install/installer');
 }
 

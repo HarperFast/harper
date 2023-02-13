@@ -709,6 +709,7 @@ const CONFIG_PARAM_MAP = {
 	operationsapi_network_keepalivetimeout: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT,
 	operationsapi_network_port: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT,
 	operationsapi_tls_privatekey: CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY,
+	operationsapi_tls_certificateauthority: CONFIG_PARAMS.OPERATIONSAPI_TLS_CERT_AUTH,
 	operationsapi_network_timeout: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT,
 	operationsapi_nodeenv: CONFIG_PARAMS.OPERATIONSAPI_NODEENV,
 	operationsapi_root: CONFIG_PARAMS.ROOTPATH,

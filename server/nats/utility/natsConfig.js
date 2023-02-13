@@ -187,7 +187,9 @@ async function removeNatsConfig(process_name) {
 
 		count++;
 		if (count >= MAX_SERVER_CONNECTION_RETRY) {
-			throw new Error(`removeNatsConfig timed out waiting to connect to ${process_name}`);
+			throw new Error(
+				`Operations API timed out attempting to connect to ${process_name}. This is commonly caused by incorrect clustering config. Check the ${process_name} log for further details.`
+			);
 		}
 
 		await hdb_utils.async_set_timeout(wait_time * count);
