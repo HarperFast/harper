@@ -583,6 +583,7 @@ const CONFIG_PARAMS = {
 	STORAGE_PATH: 'storage_path',
 	STORAGE_AUDIT_PATH: 'storage_audit_path',
 	SCHEMAS: 'schemas',
+	TABLES: 'tables',
 };
 
 const CONFIG_PARAM_MAP = {

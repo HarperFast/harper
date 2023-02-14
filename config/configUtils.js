@@ -41,6 +41,7 @@ module.exports = {
 	getClusteringRoutes,
 	initOldConfig,
 	getConfigFromFile,
+	addSchemaElement,
 };
 
 /**
@@ -62,6 +63,14 @@ function createConfigFile(args) {
 			} catch (err) {
 				logger.error(err);
 			}
+		}
+	}
+
+	const cli_env_args = process.env;
+	Object.assign(args, minimist(process.argv));
+
+	for (const arg in cli_env_args) { //TODO - herherherhereh
+		if (arg.includes('_TABLES_')) {
 		}
 	}
 
@@ -196,21 +205,6 @@ function validateConfig(config_doc) {
 	config_doc.setIn(['http', 'threads'], validation.value.http.threads);
 	config_doc.setIn(['customFunctions', 'root'], validation.value.customFunctions.root);
 	config_doc.setIn(['logging', 'root'], validation.value.logging.root);
-	config_doc.setIn(['operationsApi', 'tls', 'certificate'], validation.value.operationsApi.tls.certificate);
-	config_doc.setIn(['operationsApi', 'tls', 'privateKey'], validation.value.operationsApi.tls.privateKey);
-	config_doc.setIn(
-		['operationsApi', 'tls', 'certificateAuthority'],
-		validation.value.operationsApi.tls.certificateAuthority
-	);
-	config_doc.setIn(['customFunctions', 'tls', 'certificate'], validation.value.customFunctions.tls.certificate);
-	config_doc.setIn(['customFunctions', 'tls', 'privateKey'], validation.value.customFunctions.tls.privateKey);
-	config_doc.setIn(
-		['customFunctions', 'tls', 'certificateAuthority'],
-		validation.value.customFunctions.tls.certificateAuthority
-	);
-	config_doc.setIn(['clustering', 'tls', 'certificate'], validation.value.clustering.tls.certificate);
-	config_doc.setIn(['clustering', 'tls', 'privateKey'], validation.value.clustering.tls.privateKey);
-	config_doc.setIn(['clustering', 'tls', 'certificateAuthority'], validation.value.clustering.tls.certificateAuthority);
 	config_doc.setIn(
 		['clustering', 'leafServer', 'streams', 'path'],
 		validation.value.clustering.leafServer.streams.path
@@ -289,14 +283,7 @@ function updateConfigValue(param, value, parsed_args = undefined, create_backup 
 
 	// Creates a backup of config before new config is written to disk.
 	if (create_backup === true) {
-		try {
-			const backup_folder_path = path.join(hdb_root, 'backup', `${hdb_terms.HDB_CONFIG_FILE}.bak`);
-			fs.copySync(old_config_path, backup_folder_path);
-			logger.trace(`Config file: ${old_config_path} backed up to: ${backup_folder_path}`);
-		} catch (err) {
-			logger.error(BACKUP_ERR);
-			logger.error(err);
-		}
+		backupConfigFile(old_config_path, hdb_root);
 	}
 
 	fs.writeFileSync(config_file_location, String(config_doc));
@@ -304,6 +291,34 @@ function updateConfigValue(param, value, parsed_args = undefined, create_backup 
 		flat_config_obj = flattenConfig(config_doc.toJSON());
 	}
 	logger.trace(`Config parameter: ${param} updated with value: ${value}`);
+}
+
+function addSchemaElement(schema, table, location) {
+	const config_doc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
+	if (!table) {
+		config_doc.setIn([hdb_terms.CONFIG_PARAMS.SCHEMAS, schema, 'path'], location);
+	} else {
+		config_doc.setIn([hdb_terms.CONFIG_PARAMS.SCHEMAS, schema, hdb_terms.CONFIG_PARAMS.TABLES, table], location);
+	}
+
+	logger.trace('Adding custom schema element to config file, schema:', schema, 'table:', table, 'path:', location);
+
+	validateConfig(config_doc);
+	fs.writeFileSync(DEFAULT_CONFIG_FILE_PATH, String(config_doc));
+	flattenConfig(config_doc.toJSON());
+
+	//TODO: backup?
+}
+
+function backupConfigFile(config_path, hdb_root) {
+	try {
+		const backup_folder_path = path.join(hdb_root, 'backup', `${hdb_terms.HDB_CONFIG_FILE}.bak`);
+		fs.copySync(config_path, backup_folder_path);
+		logger.trace(`Config file: ${config_path} backed up to: ${backup_folder_path}`);
+	} catch (err) {
+		logger.error(BACKUP_ERR);
+		logger.error(err);
+	}
 }
 
 const PRESERVED_PROPERTIES = ['schemas'];

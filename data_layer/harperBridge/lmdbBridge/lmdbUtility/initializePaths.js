@@ -64,23 +64,26 @@ function getTransactionAuditStorePath(schema, table) {
 	);
 }
 
+// TODO - rework this, func is called a lot so each time it is called we dont want to call path exists. Reorder
+// so that if check env first
 function getSchemaPath(schema, table) {
 	// Check to see if there are any CLI or env args related to schema/table path
 	const args = process.env;
 	Object.assign(args, minimist(process.argv));
-	const schema_uc = schema.toUpperCase();
-	const table_uc = table ? table.toUpperCase() : undefined;
 	schema = schema.toString();
+	table = table.toString();
 
-	const schema_table_path = args[`SCHEMA_${schema_uc}_TABLES_${table_uc}_PATH`];
+	const schema_table_path = args[`SCHEMA_${schema}_TABLES_${table}_PATH`];
 	if (schema_table_path) {
 		checkPathExists(schema_table_path);
+		config_utils.addSchemaElement(schema, table, schema_table_path);
 		return schema_table_path;
 	}
 
-	const schema_path = args[`SCHEMA_${schema_uc}_PATH`];
+	const schema_path = args[`SCHEMA_${schema}_PATH`];
 	if (schema_path) {
 		checkPathExists(schema_path);
+		config_utils.addSchemaElement(schema, undefined, path);
 		return schema_path;
 	}
 
