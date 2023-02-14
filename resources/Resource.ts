@@ -80,13 +80,20 @@ export class Resource implements ResourceInterface {
 			env_txn.doneReading(); // done with the read snapshot txn
 		}
 	}
-	subscribe(query: any, options: any) {
-		// subscriptionByPrimaryKey.set(id, () => {});
-
-		return {};
+	subscribe(query: any, options?: {}) {
+		throw new Error('Not implemented');
 	}
 	use(table: Table) {
 		return this.useTable(table.tableName, table.schemaName);
+	}
+	update(key) {
+		throw new Error('Not implemented');
+	}
+	patch(key, updates) {
+		let record = this.update(key);
+		for (let key in updates) {
+			record[key] = updates[key];
+		}
 	}
 	useTable(table_name: string, schema_name?: string): ResourceInterface {
 		if (!tables) tables = getTables();

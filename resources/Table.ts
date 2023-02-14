@@ -24,7 +24,7 @@ const TXN_KEY = Symbol('transaction');
 
 const INVALIDATED = 16;
 
-export class Table {
+/*interface Table {
 	primaryDbi: Database
 	indices: Database[]
 	envPath: string
@@ -37,61 +37,55 @@ export class Table {
 	expirationMS: number
 	Source: { new(): ResourceInterface }
 	Transaction: ReturnType<typeof makeTransactionClass>
-
-	constructor(primary_dbi, options) {
-		this.primaryDbi = primary_dbi;
-		this.indices = [];
-		this.primaryKey = 'id';
-		this.envPath = primary_dbi.env.path;
-		this.tableName = options.tableName;
-		this.Transaction = makeTransactionClass(this);
-		listenToCommits(primary_dbi);
-	}
-	sourcedFrom(Resource) {
-		// define a source for retrieving invalidated entries for caching purposes
-		this.Source = Resource;
-		this.Transaction.Source = Resource;
-	}
-	/**
-	 * Set TTL expiration for records in this table
-	 * @param expiration_time Time in seconds
-	 */
-	setTTLExpiration(expiration_time) {
-		// we set up a timer to remove expired entries. we only want the timer/reaper to run in one thread,
-		// so we use the first one
-		if (workerData?.isFirst) {
-			if (!this.expirationTimer) {
-				let expiration_ms = expiration_time * 1000;
-				this.expirationMS = expiration_ms; // in JS we use milliseconds
-				this.expirationTimer = setInterval(() => {
-					// iterate through all entries to find expired ones
-					for (let { key, value: record, version } of this.primaryDbi.getRange({ start: false, versions: true })) {
-						if (version < Date.now() - expiration_ms) {
-							// make sure we only delete it if the version has not changed
-							this.primaryDbi.ifVersion(key, version, () => this.primaryDbi.remove(key));
+}*/
+export function makeTable(options) {
+	const { primaryKey: primary_key, indices, attributes, tableName: table_name, primaryDbi: primary_dbi, expirationMS: expiration_ms } = options;
+	listenToCommits(primary_dbi);
+	return class Table extends Resource {
+		static primaryDbi = primary_dbi;
+		static primaryKey = primary_key;
+		static tableName = table_name;
+		static envPath = primary_dbi.env.path;
+		static expirationTimer;
+		static sourcedFrom(Resource) {
+			// define a source for retrieving invalidated entries for caching purposes
+			this.Source = Resource;
+		}
+		/**
+		 * Set TTL expiration for records in this table
+		 * @param expiration_time Time in seconds
+		 */
+		static setTTLExpiration(expiration_time) {
+			// we set up a timer to remove expired entries. we only want the timer/reaper to run in one thread,
+			// so we use the first one
+			if (workerData?.isFirst) {
+				if (!this.expirationTimer) {
+					let expiration_ms = expiration_time * 1000;
+					this.expirationTimer = setInterval(() => {
+						// iterate through all entries to find expired ones
+						for (let { key, value: record, version } of this.primaryDbi.getRange({ start: false, versions: true })) {
+							if (version < Date.now() - expiration_ms) {
+								// make sure we only delete it if the version has not changed
+								this.primaryDbi.ifVersion(key, version, () => this.primaryDbi.remove(key));
+							}
 						}
-					}
-				}, expiration_ms);
+					}, expiration_ms);
+				}
 			}
 		}
-	}
 
-	/**
-	 * Make a subscription to a query, to get notified of any changes to the specified data
-	 * @param query
-	 * @param options
-	 */
-	subscribe(query, options) {
-		let key = typeof query !== 'object' ? query : query.conditions[0].search_attribute;
-		return addSubscription(this.primaryDbi.env.path, this.primaryDbi.db.dbi, key, options.callback);
-	}
-	transaction(env_transaction, lmdb_txn, parent_transaction) {
-		return new this.Transaction(env_transaction, lmdb_txn, parent_transaction, {});
-	}
-}
-function makeTransactionClass(table: Table) {
-	const { primaryKey: primary_key, indices, attributes, primaryDbi: primary_dbi, expirationMS: expiration_ms } = table;
-	return class TableTransaction extends Resource {
+		/**
+		 * Make a subscription to a query, to get notified of any changes to the specified data
+		 * @param query
+		 * @param options
+		 */
+		static subscribe(query, options) {
+			let key = typeof query !== 'object' ? query : query.conditions[0].search_attribute;
+			return addSubscription(this.primaryDbi.env.path, this.primaryDbi.db.dbi, key, options.callback);
+		}
+		static transaction(env_transaction, lmdb_txn, parent_transaction) {
+			return new this(env_transaction, lmdb_txn, parent_transaction, {});
+		}
 		table: any
  		envTxn: EnvTransaction
 		parent: Resource
@@ -104,7 +98,6 @@ function makeTransactionClass(table: Table) {
 			this.envTxn = env_txn;
 			this.lmdbTxn = lmdb_txn;
 			this.parent = parent;
-			this.table = table;
 			if (settings.readOnly)
 				this.lmdbTxn = primary_dbi.useReadTransaction();
 
@@ -121,7 +114,7 @@ function makeTransactionClass(table: Table) {
 			let env_txn = this.envTxn;
 			let entry = primary_dbi.getEntry(id, { transaction: env_txn.getReadTxn() });
 			if (!entry) {
-				if (TableTransaction.Source) return this.getFromSource(id);
+				if (this.constructor.Source) return this.getFromSource(id);
 				return;
 			}
 			if (env_txn.fullIsolation) {
@@ -142,14 +135,17 @@ function makeTransactionClass(table: Table) {
 						// TODO: Implement retrieval from other nodes once we have horizontal caching
 
 					}
-					if (TableTransaction.Source) return this.getFromSource(id, record);
+					if (this.constructor.Source) return this.getFromSource(id, record);
 				} else if (expiration_ms && expiration_ms < Date.now() - entry.version) {
 					// TTL/expiration has some open questions, is it tenable to do it with replication?
 					// What if there is no source?
-					if (TableTransaction.Source) return this.getFromSource(id, record);
+					if (this.constructor.Source) return this.getFromSource(id, record);
 				}
 				return record;
 			}
+		}
+		allowGet() {
+			// TODO: Check user's permission
 		}
 		update(record) {
 			const start_updating = (record_data) => {
@@ -181,7 +177,7 @@ function makeTransactionClass(table: Table) {
 			// TODO: We want to eventually use a "direct write" method to directly write to the availability portion
 			// of the record in place in the database. In the meantime, should probably use an ifVersion
 			primary_dbi.put(id, record);
-			let source = new TableTransaction.Source();
+			let source = new this.constructor.Source();
 			let updated_record = await source.get(id);
 			let updated = source.lastModificationTime;
 			if (updated) {

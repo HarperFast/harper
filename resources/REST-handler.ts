@@ -32,7 +32,7 @@ export function restHandler(Resource) {
 					response.end(serializer.serialize(response_object.data));
 			}
 		} catch (error) {
-			response.writeHead(500); // server error
+			response.writeHead(error.status || 500); // use specified error status, or default to generic server error
 			// do content negotiation
 			console.error(error);
 			response.end(request.serializer.serialize(error.toString()));
@@ -61,31 +61,36 @@ export function restHandler(Resource) {
 										path,
 										updated: true
 									}));
-									//subscription.end();
 								}
 							});
+							response.on('close', () => subscription.end());
 						}
 						// fall-through
 					case 'GET':
 						if (typed_key !== undefined) {
-							let p = resource_snapshot.get(typed_key);;
-							response_data = await p;
-							if (resource_snapshot.lastAccessTime === Date.parse(request.headers['if-modified-since'])) {
+							let checked = checkAllowed(resource_snapshot.allowGet?.(), resource_snapshot);
+							if (checked?.then) await checked; // fast path to avoid await if not needed
+							response_data = await resource_snapshot.get(typed_key);
+							if (resource_snapshot.lastModificationTime === Date.parse(request.headers['if-modified-since'])) {
 								resource_snapshot.doneReading();
 								return { status: 304 };
 							}
 						}
 						break;
 					case 'POST':
+						await checkAllowed(resource_snapshot.allowPost?.(), resource_snapshot);
 						response_data = await resource_snapshot.post(typed_key, request_data);
 						break;
 					case 'PUT':
+						await checkAllowed(resource_snapshot.allowPut?.(), resource_snapshot);
 						response_data = await resource_snapshot.put(typed_key, request_data);
 						break;
 					case 'PATCH':
+						await checkAllowed(resource_snapshot.allowPatch?.(), resource_snapshot);
 						response_data = await resource_snapshot.patch(typed_key, request_data);
 						break;
 					case 'DELETE':
+						await checkAllowed(resource_snapshot.allowDelete?.(), resource_snapshot);
 						response_data = await resource_snapshot.delete(typed_key);
 						break;
 				}
@@ -97,8 +102,8 @@ export function restHandler(Resource) {
 					};
 				}
 			} while (true); // execute again if the commit requires a retry
-			if (resource_snapshot.lastAccessTime && response.setHeader)
-				response.setHeader('last-modified', new Date(resource_snapshot.lastAccessTime).toUTCString());
+			if (resource_snapshot.lastModificationTime && response.setHeader)
+				response.setHeader('last-modified', new Date(resource_snapshot.lastModificationTime).toUTCString());
 			if (response_data) {
 				if (response_data.resolveData) // if it is iterable with onDone, TODO: make a better marker for this
 					response_data.onDone = () => resource_snapshot.doneReading();
@@ -140,4 +145,26 @@ export function restHandler(Resource) {
 		}
 	}
 	return { http, ws };
+}
+function checkAllowed(method_allowed, resource): void | Promise<void> {
+	let allowed = method_allowed ??
+		resource.allowAccess?.() ??
+		resource.currentUser?.role === 'superuser'; // default permission check
+	if (allowed?.then) {
+		// handle promises, waiting for them using fast path (not await)
+		return allowed.then(() => {
+			if (!allowed) checkAllowed(false, resource);
+		});
+	} else if (!allowed) {
+		let error
+		if (resource.currentUser) {
+			error = new Error('Unauthorized access to resource');
+			error.status = 403;
+		} else {
+			error = new Error('Must login');
+			error.status = 401;
+			// TODO: Optionally allow a Location header to redirect to
+		}
+		throw error;
+	}
 }
