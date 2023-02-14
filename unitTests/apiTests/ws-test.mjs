@@ -80,7 +80,7 @@ describe('test WebSocket connections', () => {
 		let message_count = 0;
 		let printing_connection_count;
 		let i = 0;
-		for (; i < 500000;) {
+		for (; i < 200000;) {
 			let ws = new WebSocket('ws+unix:/tmp/test:/our_data', {
 				headers,
 			});

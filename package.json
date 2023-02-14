@@ -23,6 +23,9 @@
     "go-lang": "1.19.4",
     "nats-server": "2.9.11"
   },
+  "exports": {
+    ".": "./index.js"
+  },
   "homepage": "https://www.harperdb.io/",
   "bugs": "support@harperdb.io",
   "author": {

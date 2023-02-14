@@ -1,5 +1,5 @@
 import { Resource } from './Resource';
-import { tables } from './database';
+import { tables, databases } from './database';
 import { Compartment as CompartmentClass } from 'ses';
 import { readFile } from 'fs/promises';
 import { extname } from 'path';
@@ -25,15 +25,28 @@ async function getCompartment(getGlobalVars) {
 		Math,
 		Date,
 		fetch: secureOnlyFetch,
-	}, getGlobalVars()), {}, {
+	}, getGlobalVars()), {
+		//harperdb: { Resource, tables, databases }
+	}, {
 		name: 'h-dapp',
 		resolveHook(module_specifier, module_referrer) {
+			if (module_specifier === 'harperdb')
+				return 'harperdb';
 			module_specifier = new URL(module_specifier, module_referrer).toString();
 			if (!extname(module_specifier))
 				module_specifier += '.js';
 			return module_specifier;
 		},
 		importHook: async (module_specifier) => {
+			if (module_specifier === 'harperdb') {
+				return {
+					imports: [],
+					exports: ['Resource','tables','databases'],
+					execute(exports) {
+						Object.assign(exports, { Resource, tables, databases });
+					}
+				}
+			}
 			let moduleText = await readFile(new URL(module_specifier), { encoding: 'utf-8'});
 			let smr = new StaticModuleRecord(moduleText, module_specifier);
 			return smr;

@@ -35,7 +35,7 @@ async function loadDirectory(directory: string, web_path: string, handlers) {
 			} catch(error) {
 				console.warn(`failed to load ${name} due to`, error.stack);
 			}
-		} else {
+		} else if (name !== 'node_modules') {
 			await loadDirectory(join(directory, entry.name), web_path + '/' + entry.name, handlers);
 		}
 	}
@@ -64,7 +64,7 @@ export function start(options: ServerOptions & { path: string, port: number }) {
 			if (handler) return handler.ws(remaining_path, data, request, ws);
 			console.error('no handler: %s', data);
 		});
-		ws.on('close', () => console.log('close'));
+//		ws.on('close', () => console.log('close'));
 	});
 	function startRequest(request) {
 		const { serializer, type } = findBestSerializer(request);
