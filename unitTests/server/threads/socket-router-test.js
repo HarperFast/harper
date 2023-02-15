@@ -39,7 +39,9 @@ describe('Socket Router', () => {
 		}
 		// make sure worker[2] got more because it had a higher expected idle
 		assert.ok(workers[2].socketsRouted > 30, 'Received enough connections');
-
+		for (let worker of workers) {
+			worker.recentELU = { idle: 0 };
+		}
 		updateWorkerIdleness(); // should reset idleness
 
 		for (let i = 0; i < 100; i++) {
@@ -73,6 +75,9 @@ describe('Socket Router', () => {
 		assert.equal(sortedWorkers[1].socketsRouted, 25, 'Received correct connections');
 		assert.equal(sortedWorkers[2].socketsRouted, 0, 'Received correct connections');
 		assert.equal(sortedWorkers[3].socketsRouted, 0, 'Received correct connections');
+		for (let worker of workers) {
+			worker.recentELU = { idle: 0 };
+		}
 		updateWorkerIdleness(); // should reset idleness
 
 		for (let i = 0; i < 100; i++) {
