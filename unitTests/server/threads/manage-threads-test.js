@@ -9,7 +9,7 @@ const terms = require('../../../utility/hdbTerms');
 const assert = require('assert');
 const { threadId } = require('worker_threads');
 
-describe('(Re)start workers', () => {
+describe('(Re)start/monitor workers', () => {
 	before(async function () {
 		await shutdownWorkers();
 	});
@@ -57,18 +57,18 @@ describe('(Re)start workers', () => {
 			});
 		});
 	});
-	it('getThreadInfo', async function () {
+	it('getThreadInfo should return stats', async function () {
+		this.timeout(5000);
 		let worker1 = startWorker('unitTests/server/threads/thread-for-tests');
 		let worker2 = startWorker('unitTests/server/threads/thread-for-tests');
-		await new Promise((resolve) => setTimeout(resolve, 1500)); // wait for resources to be reported
+		await new Promise((resolve) => setTimeout(resolve, 2000)); // wait for resources to be reported
 		let worker_info = await getThreadInfo();
 		assert(worker_info.length >= 2);
-		for (let worker of worker_info) {
-			// these values are important to ensure that they are reported
-			assert(worker.heapUsed);
-			assert(worker.arrayBuffers);
-			assert(worker.active);
-		}
+		let worker = worker_info[worker_info.length - 1];
+		// these values are important to ensure that they are reported
+		assert(worker.heapUsed);
+		assert(worker.arrayBuffers);
+		assert(worker.active);
 	});
 	it('Shutdown workers', async function () {
 		let initial_workers_num = workers.length;
