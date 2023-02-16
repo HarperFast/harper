@@ -245,11 +245,14 @@ let monitoring = false;
 function startMonitoring() {
 	if (monitoring) return;
 	monitoring = true;
+	// we periodically get the event loop utilitization so we have a reasonable time frame to check the recent
+	// utilization levels (last second) and so we don't have to make these calls to frequently
 	setInterval(() => {
 		for (let worker of workers) {
 			let current_ELU = worker.performance.eventLoopUtilization();
 			let recent_ELU;
 			if (worker.lastTotalELU) {
+				// get the difference between current and last to determine the last second of utilization
 				recent_ELU = worker.performance.eventLoopUtilization(current_ELU, worker.lastTotalELU);
 			} else {
 				recent_ELU = current_ELU;
@@ -258,7 +261,7 @@ function startMonitoring() {
 			worker.recentELU = recent_ELU;
 		}
 		if (monitor_listener) monitor_listener();
-	}, 1000).unref;
+	}, MONITORING_INTERVAL).unref();
 }
 const REPORTING_INTERVAL = 1000;
 
@@ -268,7 +271,7 @@ if (parentPort) {
 		addPort(port);
 	}
 	setInterval(() => {
-		// post our memory usage as a resource report
+		// post our memory usage as a resource report, reporting our memory usage
 		let memory_usage = process.memoryUsage();
 		parentPort.postMessage({
 			type: RESOURCE_REPORT,
@@ -280,6 +283,7 @@ if (parentPort) {
 	}, REPORTING_INTERVAL).unref();
 	getThreadInfo = () =>
 		new Promise((resolve, reject) => {
+			// request thread info from the parent thread and wait for it to response with info on all the threads
 			parentPort.on('message', receiveThreadInfo);
 			parentPort.postMessage({ type: REQUEST_THREAD_INFO });
 			function receiveThreadInfo(message) {
