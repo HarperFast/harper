@@ -30,7 +30,7 @@ const HDB_DEFAULT_CONFIG_FILE = 'defaultConfig.yaml';
 const HDB_ROOT_DIR_NAME = 'hdb';
 
 // Name of the HDB process
-const HDB_PROC_NAME = `hdbServer.${CODE_EXTENSION}`;
+const HDB_PROC_NAME = `harperdb.${CODE_EXTENSION}`;
 const CUSTOM_FUNCTION_PROC_NAME = `customFunctionsServer.${CODE_EXTENSION}`;
 const HDB_RESTART_SCRIPT = `restartHdb.${CODE_EXTENSION}`;
 

@@ -1,5 +1,5 @@
 'use strict';
-const { startWorker } = require('./manage-threads');
+const { startWorker, setMonitorListener } = require('./manage-threads');
 const { createServer } = require('net');
 const env = require('../../utility/environment/environmentManager');
 const hdb_terms = require('../../utility/hdbTerms');
@@ -115,6 +115,8 @@ setInterval(() => {
 	}
 }, AFFINITY_TIMEOUT).unref();
 
+// basically, the amount of additional idleness to expect based on previous idleness (some work will continue, some
+// won't)
 const EXPECTED_IDLE_DECAY = 1000;
 
 /**
@@ -123,15 +125,13 @@ const EXPECTED_IDLE_DECAY = 1000;
 function updateWorkerIdleness() {
 	second_best_availability = 0;
 	for (let worker of workers) {
-		let idle = worker.performance.eventLoopUtilization().idle;
-		worker.expectedIdle = idle - worker.lastIdle + EXPECTED_IDLE_DECAY;
-		worker.lastIdle = idle;
+		worker.expectedIdle = worker.recentELU.idle + EXPECTED_IDLE_DECAY;
 		worker.requests = 1;
 	}
 	workers.sort((a, b) => (a.expectedIdle > b.expectedIdle ? -1 : 1));
 }
 
-setInterval(updateWorkerIdleness, 1000).unref();
+setMonitorListener(updateWorkerIdleness);
 
 let requestMap = new Map();
 let nextId = 1;
