@@ -106,7 +106,7 @@ export class Resource implements ResourceInterface {
 		let key = schema_name ? (schema_name + '/' + table_name) : table_name;
 		let env_path = table.envPath;
 		let env_txn = this.inUseEnvs[env_path] || (this.inUseEnvs[env_path] = new EnvTransaction(table.primaryDbi));
-		return this.inUseTables[key] || (this.inUseTables[key] = table.transaction(env_txn, env_txn.getReadTxn(), this));
+		return this.inUseTables[key] || (this.inUseTables[key] = table.transaction(this.request, env_txn, env_txn.getReadTxn(), this));
 	}
 	async fetch(input: RequestInfo | URL, init?: RequestInit) {
 		let response = await fetch(input, init);

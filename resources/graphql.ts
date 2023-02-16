@@ -18,12 +18,12 @@ export function registerGraphQL() {
 				case Kind.OBJECT_TYPE_DEFINITION:
 					let type_name = definition.name.value;
 					// use type name as the default table (converted to snake case)
-					let type_def = { table: null, schema: null, attributes: [] };
+					let type_def = { table: null, schema: null, attributes: [], table: null };
 					types.set(type_name, type_def);
 					for (let directive of definition.directives) {
 						if (directive.name.value === 'table') {
 							for (let arg of directive.arguments) {
-								type_def[arg.name.value] = (arg.value as StringValueNode).value;
+								type_def.table = (arg.value as StringValueNode).value;
 							}
 							if (!type_def.table)
 								type_def.table = snake_case(type_name);
@@ -42,7 +42,7 @@ export function registerGraphQL() {
 						type_def.attributes = attributes;
 						// with graphql schema definitions, this is a declaration that the table should exist and that it
 						// should be created if it does not exist
-						table(type_def);
+						type_def.tableClass = table(type_def);
 					}
 					if (type_name === 'Query') {
 						for (let field of definition.fields) {
@@ -60,7 +60,7 @@ export function registerGraphQL() {
 								}
 							}
 							// the resource that is generated for this query and instantiated for each request:
-							class GraphQLResource extends Resource {
+							/*class GraphQLResource extends Resource {
 								get(id) {
 									let role = this.user?.role;
 									if (role && authorized_roles.indexOf(role.name) > -1 ||
@@ -80,7 +80,8 @@ export function registerGraphQL() {
 									return this.useTable(type_def.table, type_def.schema)?.put(id, body);
 								}
 							}
-							handlers.set(query_name, restHandler(GraphQLResource));
+							handlers.set(query_name, restHandler(GraphQLResource));*/
+							handlers.set(query_name, restHandler(type_def.tableClass));
 						}
 					}
 			}

@@ -29,8 +29,11 @@ module.exports = {
 	workers,
 	onMessageFromWorkers,
 	broadcast,
+	messageTypeListener
 };
-
+let messageTypeListeners = {
+	[RESTART_TYPE](message) { restartWorkers(message.workerType) }
+};
 function startWorker(path, options = {}) {
 	const license = hdb_license.licenseSearch();
 	const licensed_memory = license.ram_allocation;
@@ -108,7 +111,7 @@ function startWorker(path, options = {}) {
 		}
 	});
 	worker.on('message', (message) => {
-		if (message.type === RESTART_TYPE) restartWorkers(message.workerType);
+		messageTypeListeners[message.type]?.(message);
 	});
 	workers.push(worker);
 	if (options.onStarted) options.onStarted(worker); // notify that it is ready
@@ -175,7 +178,9 @@ async function restartWorkers(name = null, max_workers_down = 2, start_replaceme
 		});
 	}
 }
-
+function messageTypeListener(type, listener) {
+	messageTypeListeners[type] = listener;
+}
 function shutdownWorkers(name) {
 	return restartWorkers(name, Infinity, false);
 }

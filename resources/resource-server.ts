@@ -8,6 +8,7 @@ import { watchDir } from '../server/threads/manage-threads';
 import { findAndValidateUser } from '../security/user';
 import { WebSocketServer } from 'ws';
 import { findBestSerializer, getDeserializer } from '../server/serverHelpers/contentTypes';
+import './analytics';
 
 const handler_creator_by_type = new Map();
 const custom_apps = [];
@@ -27,15 +28,20 @@ async function loadDirectory(directory: string, web_path: string, handlers) {
 					let file_path = join(directory, name);
 					let path_handlers = await create_handler(await readFile(file_path, {encoding: 'utf8'}), file_path);
 					if (path_handlers instanceof Map) {
-						for (let [ key, handler ] of path_handlers)
-							handlers.set(web_path + (key !== 'default' ? '/' + key : ''), handler);
-					} else
+						for (let [ key, handler ] of path_handlers) {
+							let path = web_path + (key !== 'default' ? '/' + key : '');
+							handler.path = path;
+							handlers.set(path, handler);
+						}
+					} else {
+						path_handlers.path = web_path;
 						handlers.set(web_path, path_handlers);
+					}
 				}
 			} catch(error) {
 				console.warn(`failed to load ${name} due to`, error.stack);
 			}
-		} else if (name !== 'node_modules') {
+		} else if (entry.name !== 'node_modules') {
 			await loadDirectory(join(directory, entry.name), web_path + '/' + entry.name, handlers);
 		}
 	}
@@ -51,7 +57,7 @@ export function start(options: ServerOptions & { path: string, port: number }) {
 	let server = createServer(options, async (request, response) => {
 		await startRequest(request);
 		let handler = findHandler(request.url);
-		if (handler) return handler.http(remaining_path, request, response);
+		if (handler) return handler.http(remaining_path, request, response).finally(() => {})
 		nextAppHandler(request, response)
 	});
 	let wss = new WebSocketServer({ server });
@@ -67,6 +73,9 @@ export function start(options: ServerOptions & { path: string, port: number }) {
 //		ws.on('close', () => console.log('close'));
 	});
 	function startRequest(request) {
+		// TODO: check rate limiting here?
+		let client_id = request.socket.ip;
+
 		const { serializer, type } = findBestSerializer(request);
 		request.serializer = serializer;
 		let content_type = request.headers['content-type'];
@@ -136,4 +145,3 @@ async function authentication(request) {
 }
 // keep it cleaned out periodically
 setInterval(() => { authorization_cache = new Map() }, AUTHORIZATION_TTL);
-setInterval(() => { console.log(process.memoryUsage().heapUsed, threadId)}, 20000);

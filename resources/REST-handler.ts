@@ -1,25 +1,31 @@
 import { findBestSerializer } from '../server/serverHelpers/contentTypes';
+import { recordRequest } from './analytics';
+
 const MAX_COMMIT_RETRIES = 10;
 export function restHandler(Resource) {
 	async function http(next_path, request, response) {
 		let method = request.method;
+		let start = performance.now();
 		let request_data;
 		try {
-			if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
-				let request_binary = await new Promise((resolve, reject) => {
-					let buffers = [];
-					request.on('data', data => buffers.push(data));
-					request.on('end', () => resolve(Buffer.concat(buffers)));
-					request.on('error', reject);
-				});
-				request_data = request.deserialize(request_binary);
+			try {
+				if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
+					let request_binary = await new Promise((resolve, reject) => {
+						let buffers = [];
+						request.on('data', data => buffers.push(data));
+						request.on('end', () => resolve(Buffer.concat(buffers)));
+						request.on('error', reject);
+					});
+					request_data = request.deserialize(request_binary);
+				}
+			} catch (error) {
+				error.status = 400;
+				throw error;
 			}
-		} catch (error) {
-			response.writeHead(400); // bad request
-			response.end(request.serializer.serialize(error.toString()));
-		}
-		try {
 			let response_object = await execute(method, next_path, request_data, request, response);
+			let execution_time = performance.now() - start;
+			response.setHeader('Server-Timing', `db;dur=${execution_time}`);
+			recordRequest(this.path, execution_time);
 			if (response_object.status)
 				response.writeHead(response_object.status);
 			if (response_object.data === undefined)
@@ -32,6 +38,8 @@ export function restHandler(Resource) {
 					response.end(serializer.serialize(response_object.data));
 			}
 		} catch (error) {
+			let execution_time = performance.now() - start;
+			recordRequest(this.path, execution_time);
 			response.writeHead(error.status || 500); // use specified error status, or default to generic server error
 			// do content negotiation
 			console.error(error);
@@ -50,6 +58,7 @@ export function restHandler(Resource) {
 					typed_key = path;
 				}
 			}
+			let user = request.user;
 			let retries = 0;
 			do {
 				switch (method) {
@@ -68,7 +77,7 @@ export function restHandler(Resource) {
 						// fall-through
 					case 'GET':
 						if (typed_key !== undefined) {
-							let checked = checkAllowed(resource_snapshot.allowGet?.(), resource_snapshot);
+							let checked = checkAllowed(resource_snapshot.allowGet?.(user), user, resource_snapshot);
 							if (checked?.then) await checked; // fast path to avoid await if not needed
 							response_data = await resource_snapshot.get(typed_key);
 							if (resource_snapshot.lastModificationTime === Date.parse(request.headers['if-modified-since'])) {
@@ -78,19 +87,19 @@ export function restHandler(Resource) {
 						}
 						break;
 					case 'POST':
-						await checkAllowed(resource_snapshot.allowPost?.(), resource_snapshot);
+						await checkAllowed(resource_snapshot.allowPost?.(user), user, resource_snapshot);
 						response_data = await resource_snapshot.post(typed_key, request_data);
 						break;
 					case 'PUT':
-						await checkAllowed(resource_snapshot.allowPut?.(), resource_snapshot);
+						await checkAllowed(resource_snapshot.allowPut?.(user), user, resource_snapshot);
 						response_data = await resource_snapshot.put(typed_key, request_data);
 						break;
 					case 'PATCH':
-						await checkAllowed(resource_snapshot.allowPatch?.(), resource_snapshot);
+						await checkAllowed(resource_snapshot.allowPatch?.(user), user, resource_snapshot);
 						response_data = await resource_snapshot.patch(typed_key, request_data);
 						break;
 					case 'DELETE':
-						await checkAllowed(resource_snapshot.allowDelete?.(), resource_snapshot);
+						await checkAllowed(resource_snapshot.allowDelete?.(user), user, resource_snapshot);
 						response_data = await resource_snapshot.delete(typed_key);
 						break;
 				}
@@ -146,10 +155,10 @@ export function restHandler(Resource) {
 	}
 	return { http, ws };
 }
-function checkAllowed(method_allowed, resource): void | Promise<void> {
+function checkAllowed(method_allowed, user, resource): void | Promise<void> {
 	let allowed = method_allowed ??
 		resource.allowAccess?.() ??
-		resource.currentUser?.role === 'superuser'; // default permission check
+		user?.role.permission.super_user; // default permission check
 	if (allowed?.then) {
 		// handle promises, waiting for them using fast path (not await)
 		return allowed.then(() => {
@@ -157,7 +166,7 @@ function checkAllowed(method_allowed, resource): void | Promise<void> {
 		});
 	} else if (!allowed) {
 		let error
-		if (resource.currentUser) {
+		if (user) {
 			error = new Error('Unauthorized access to resource');
 			error.status = 403;
 		} else {

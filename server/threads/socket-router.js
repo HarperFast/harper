@@ -5,7 +5,7 @@ const env = require('../../utility/environment/environmentManager');
 const hdb_terms = require('../../utility/hdbTerms');
 const harper_logger = require('../../utility/logging/harper_logger');
 const pjson = require('../../package.json');
-const { unlinkSync } = require('fs');
+const { unlinkSync, existsSync } = require('fs');
 const workers = [];
 module.exports = {
 	startHTTPThreads,
@@ -43,9 +43,11 @@ async function startHTTPThreads(thread_count = 2) {
 
 function startSocketServer(port = 0, workerStrategy = findMostIdleWorker) {
 	if (typeof port === 'string') {
-		// if we are using a unix domain socket, we want to delete it first, otherwise it will throw an EADDRESSINUSE
+		// if we are using a unix domain socket, we try to delete it first, otherwise it will throw an EADDRESSINUSE
 		// error
-		unlinkSync(port);
+		try {
+			if (existsSync(port)) unlinkSync(port);
+		} catch (error) {}
 	}
 	// at some point we may want to actually read from the https connections
 	let server = createServer(

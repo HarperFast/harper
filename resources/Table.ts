@@ -38,6 +38,11 @@ const INVALIDATED = 16;
 	Source: { new(): ResourceInterface }
 	Transaction: ReturnType<typeof makeTransactionClass>
 }*/
+/**
+ * This returns a Table class for the given table settings (determined from the metadata table)
+ * Instances of the returned class are Resource instances, intended to provide a consistent view or transaction of the table
+ * @param options
+ */
 export function makeTable(options) {
 	const { primaryKey: primary_key, indices, attributes, tableName: table_name, primaryDbi: primary_dbi, expirationMS: expiration_ms } = options;
 	listenToCommits(primary_dbi);
@@ -93,12 +98,16 @@ export function makeTable(options) {
 		lastModificationTime: number = 0
 		static Source: { new(): ResourceInterface }
 
-		constructor(env_txn, lmdb_txn, parent, settings) {
-			super(settings, false);
+		constructor(request, env_txn, lmdb_txn, parent) {
+			super(request, false);
+			if (!env_txn) {
+				env_txn = new EnvTransaction(primary_dbi);
+				lmdb_txn = env_txn.getReadTxn();
+			}
 			this.envTxn = env_txn;
 			this.lmdbTxn = lmdb_txn;
 			this.parent = parent;
-			if (settings.readOnly)
+			if (request.readOnly)
 				this.lmdbTxn = primary_dbi.useReadTransaction();
 
 		}
@@ -144,8 +153,10 @@ export function makeTable(options) {
 				return record;
 			}
 		}
-		allowGet() {
-			// TODO: Check user's permission
+		allowGet(user) {
+			if (!user) return false;
+			let permission = user.role.permission;
+			return permission.super_user || permission[table_name]?.read;
 		}
 		update(record) {
 			const start_updating = (record_data) => {
