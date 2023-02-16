@@ -51,9 +51,16 @@ function createConfigFile(args) {
 	flat_default_config_obj = flattenConfig(config_doc.toJSON());
 
 	// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
+	let schemas_args;
 	for (const arg in args) {
 		const config_param = CONFIG_PARAM_MAP[arg.toLowerCase()];
-		if (config_param === CONFIG_PARAMS.SCHEMAS.toLowerCase()) continue;
+
+		// Schemas config args are handled differently, so if they exist set them to var that will be used by setSchemaConfig
+		if (config_param === CONFIG_PARAMS.SCHEMAS) {
+			schemas_args = args[arg];
+			continue;
+		}
+
 		if (config_param !== undefined) {
 			const split_param = config_param.split('_');
 			const value = castConfigValue(config_param, args[arg]);
@@ -65,41 +72,8 @@ function createConfigFile(args) {
 		}
 	}
 
-	// TODO: put this in upgrade so it works with install, also check it working with set_config api
-	const cli_env_args = process.env;
-	Object.assign(args, minimist(process.argv));
-	if (cli_env_args.hasOwnProperty(CONFIG_PARAMS.SCHEMAS.toUpperCase())) {
-		let schemas_conf;
-		try {
-			schemas_conf = JSON.parse(cli_env_args[CONFIG_PARAMS.SCHEMAS.toUpperCase()]);
-			for (const schema_conf of schemas_conf) {
-				const schema = Object.keys(schema_conf)[0];
-				if (schema_conf[schema].hasOwnProperty(SCHEMAS_PARAM_CONFIG.TABLES)) {
-					for (const table in schema_conf[schema][SCHEMAS_PARAM_CONFIG.TABLES]) {
-						const table_path_var = schema_conf[schema][SCHEMAS_PARAM_CONFIG.TABLES][table].hasOwnProperty(
-							SCHEMAS_PARAM_CONFIG.PATH
-						)
-							? SCHEMAS_PARAM_CONFIG.PATH
-							: SCHEMAS_PARAM_CONFIG.AUDIT_PATH;
-						const table_path = schema_conf[schema][SCHEMAS_PARAM_CONFIG.TABLES][table][table_path_var];
-						const keys = [CONFIG_PARAMS.SCHEMAS, schema, SCHEMAS_PARAM_CONFIG.TABLES, table, table_path_var];
-						config_doc.hasIn(keys) ? config_doc.setIn(keys, table_path) : config_doc.addIn(keys, table_path);
-					}
-				} else {
-					const schema_path_var = schema_conf[schema].hasOwnProperty(SCHEMAS_PARAM_CONFIG.PATH)
-						? SCHEMAS_PARAM_CONFIG.PATH
-						: SCHEMAS_PARAM_CONFIG.AUDIT_PATH;
-					const schema_path = schema_conf[schema][schema_path_var];
-					const keys = [CONFIG_PARAMS.SCHEMAS, schema, schema_path_var];
-					config_doc.hasIn(keys) ? config_doc.setIn(keys, schema_path) : config_doc.addIn(keys, schema_path);
-				}
-			}
-		} catch (err) {
-			logger.error('Error parsing schemas CLI/env config arguments', err);
-		}
-	}
-	// --SCHEMAS [{\"dev_schema\":{\"path\":\"\/Users\/davidcockerill\/test_location\",\"tables\":{\"coolcat\":{\"auditPath\":\"\/Users\/davidcockerill\/test_location\"}}}}]
-	// --SCHEMAS [{\"dev_schema\":{\"path\":\"\/Users\/davidcockerill\/test_location\"}}]
+	if (schemas_args) setSchemaConfig(config_doc, schemas_args);
+
 	// Validates config doc and if required sets default values for some parameters.
 	validateConfig(config_doc);
 	const config_obj = config_doc.toJSON();
@@ -111,6 +85,37 @@ function createConfigFile(args) {
 	fs.createFileSync(config_file_path);
 	fs.writeFileSync(config_file_path, String(config_doc));
 	logger.trace(`Config file written to ${config_file_path}`);
+}
+
+function setSchemaConfig(config_doc, schema_conf_json) {
+	let schemas_conf;
+	try {
+		schemas_conf = JSON.parse(schema_conf_json);
+		for (const schema_conf of schemas_conf) {
+			const schema = Object.keys(schema_conf)[0];
+			if (schema_conf[schema].hasOwnProperty(SCHEMAS_PARAM_CONFIG.TABLES)) {
+				for (const table in schema_conf[schema][SCHEMAS_PARAM_CONFIG.TABLES]) {
+					const table_path_var = schema_conf[schema][SCHEMAS_PARAM_CONFIG.TABLES][table].hasOwnProperty(
+						SCHEMAS_PARAM_CONFIG.PATH
+					)
+						? SCHEMAS_PARAM_CONFIG.PATH
+						: SCHEMAS_PARAM_CONFIG.AUDIT_PATH;
+					const table_path = schema_conf[schema][SCHEMAS_PARAM_CONFIG.TABLES][table][table_path_var];
+					const keys = [CONFIG_PARAMS.SCHEMAS, schema, SCHEMAS_PARAM_CONFIG.TABLES, table, table_path_var];
+					config_doc.hasIn(keys) ? config_doc.setIn(keys, table_path) : config_doc.addIn(keys, table_path);
+				}
+			} else {
+				const schema_path_var = schema_conf[schema].hasOwnProperty(SCHEMAS_PARAM_CONFIG.PATH)
+					? SCHEMAS_PARAM_CONFIG.PATH
+					: SCHEMAS_PARAM_CONFIG.AUDIT_PATH;
+				const schema_path = schema_conf[schema][schema_path_var];
+				const keys = [CONFIG_PARAMS.SCHEMAS, schema, schema_path_var];
+				config_doc.hasIn(keys) ? config_doc.setIn(keys, schema_path) : config_doc.addIn(keys, schema_path);
+			}
+		}
+	} catch (err) {
+		logger.error('Error parsing schemas CLI/env config arguments', err);
+	}
 }
 
 /**
@@ -276,8 +281,11 @@ function updateConfigValue(param, value, parsed_args = undefined, create_backup 
 	const old_hdb_root = getConfigValue(CONFIG_PARAM_MAP.hdb_root);
 	const old_config_path = path.join(old_hdb_root, hdb_terms.HDB_CONFIG_FILE);
 	const config_doc = parseYamlDoc(old_config_path);
+	let schemas_args;
 
-	if (parsed_args === undefined) {
+	if (parsed_args === undefined && param.toLowerCase() === CONFIG_PARAMS.SCHEMAS) {
+		schemas_args = value;
+	} else if (parsed_args === undefined) {
 		const config_param = CONFIG_PARAM_MAP[param.toLowerCase()];
 		if (config_param === undefined) {
 			throw new Error(`Unable to update config, unrecognized config parameter: ${param}`);
@@ -290,7 +298,13 @@ function updateConfigValue(param, value, parsed_args = undefined, create_backup 
 		// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
 		for (const arg in parsed_args) {
 			const config_param = CONFIG_PARAM_MAP[arg.toLowerCase()];
-			if (config_param === CONFIG_PARAMS.SCHEMAS.toLowerCase()) continue;
+
+			// Schemas config args are handled differently, so if they exist set them to var that will be used by setSchemaConfig
+			if (config_param === CONFIG_PARAMS.SCHEMAS) {
+				schemas_args = parsed_args[arg];
+				continue;
+			}
+
 			if (config_param !== undefined) {
 				const split_param = config_param.split('_');
 				const new_value = castConfigValue(config_param, parsed_args[arg]);
@@ -302,6 +316,8 @@ function updateConfigValue(param, value, parsed_args = undefined, create_backup 
 			}
 		}
 	}
+
+	if (schemas_args) setSchemaConfig(config_doc, schemas_args);
 
 	// Validates config doc and if required sets default values for some parameters.
 	validateConfig(config_doc);

@@ -25,9 +25,9 @@ let RESET_SUCCESS_MSG = 'successfully reset license';
 async function register() {
 	if (
 		ARGS.help ||
-		(ARGS.api_call === undefined &&
-			ARGS.ram_allocation === undefined &&
-			ARGS.storage_type === undefined &&
+		(ARGS.api_call === 1000000000000 &&
+			ARGS.ram_allocation === 5000 &&
+			ARGS.storage_type === 'lmdb' &&
 			ARGS.reset_license === undefined)
 	) {
 		console.log(
@@ -84,6 +84,7 @@ async function register() {
 		};
 		console.log('generating license');
 		let generated_license = license_generator.generateLicense(license_object);
+		console.log(generated_license);
 		console.log('validating & writing license to hdb');
 		await reg_handler.parseLicense(generated_license, 'harperdb.io');
 		console.log('license saved');

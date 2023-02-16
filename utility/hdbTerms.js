@@ -713,6 +713,7 @@ const CONFIG_PARAM_MAP = {
 	operationsapi_network_timeout: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT,
 	operationsapi_nodeenv: CONFIG_PARAMS.OPERATIONSAPI_NODEENV,
 	operationsapi_root: CONFIG_PARAMS.ROOTPATH,
+	schemas: CONFIG_PARAMS.SCHEMAS,
 };
 for (let key in CONFIG_PARAMS) {
 	let name = CONFIG_PARAMS[key];
