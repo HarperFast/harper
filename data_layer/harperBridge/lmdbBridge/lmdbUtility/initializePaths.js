@@ -76,14 +76,12 @@ function getSchemaPath(schema, table) {
 	const schema_table_path = args[`SCHEMA_${schema}_TABLES_${table}_PATH`];
 	if (schema_table_path) {
 		checkPathExists(schema_table_path);
-		config_utils.addSchemaElement(schema, table, schema_table_path);
 		return schema_table_path;
 	}
 
 	const schema_path = args[`SCHEMA_${schema}_PATH`];
 	if (schema_path) {
 		checkPathExists(schema_path);
-		config_utils.addSchemaElement(schema, undefined, path);
 		return schema_path;
 	}
 

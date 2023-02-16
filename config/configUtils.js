@@ -12,15 +12,14 @@ const PropertiesReader = require('properties-reader');
 const _ = require('lodash');
 const { handleHDBError } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES, HDB_ERROR_MSGS } = require('../utility/errors/commonErrors');
-const { PACKAGE_ROOT } = require('../utility/hdbTerms');
 const minimist = require('minimist');
-const terms = require('../utility/hdbTerms');
 
+const { SCHEMAS_PARAM_CONFIG, CONFIG_PARAMS, CONFIG_PARAM_MAP } = hdb_terms;
 const UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is uninitialized';
 const CONFIG_INIT_MSG = 'Config successfully initialized';
 const BACKUP_ERR = 'Error backing up config file';
 const EMPTY_GET_VALUE = 'Empty parameter sent to getConfigValue';
-const DEFAULT_CONFIG_FILE_PATH = path.join(PACKAGE_ROOT, 'config', 'yaml', hdb_terms.HDB_DEFAULT_CONFIG_FILE);
+const DEFAULT_CONFIG_FILE_PATH = path.join(hdb_terms.PACKAGE_ROOT, 'config', 'yaml', hdb_terms.HDB_DEFAULT_CONFIG_FILE);
 const CONFIGURE_SUCCESS_RESPONSE =
 	'Configuration successfully set. You must restart HarperDB for new config settings to take effect.';
 
@@ -41,7 +40,6 @@ module.exports = {
 	getClusteringRoutes,
 	initOldConfig,
 	getConfigFromFile,
-	addSchemaElement,
 };
 
 /**
@@ -54,7 +52,8 @@ function createConfigFile(args) {
 
 	// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
 	for (const arg in args) {
-		const config_param = hdb_terms.CONFIG_PARAM_MAP[arg.toLowerCase()];
+		const config_param = CONFIG_PARAM_MAP[arg.toLowerCase()];
+		if (config_param === CONFIG_PARAMS.SCHEMAS.toLowerCase()) continue;
 		if (config_param !== undefined) {
 			const split_param = config_param.split('_');
 			const value = castConfigValue(config_param, args[arg]);
@@ -66,14 +65,41 @@ function createConfigFile(args) {
 		}
 	}
 
+	// TODO: put this in upgrade so it works with install, also check it working with set_config api
 	const cli_env_args = process.env;
 	Object.assign(args, minimist(process.argv));
-
-	for (const arg in cli_env_args) { //TODO - herherherhereh
-		if (arg.includes('_TABLES_')) {
+	if (cli_env_args.hasOwnProperty(CONFIG_PARAMS.SCHEMAS.toUpperCase())) {
+		let schemas_conf;
+		try {
+			schemas_conf = JSON.parse(cli_env_args[CONFIG_PARAMS.SCHEMAS.toUpperCase()]);
+			for (const schema_conf of schemas_conf) {
+				const schema = Object.keys(schema_conf)[0];
+				if (schema_conf[schema].hasOwnProperty(SCHEMAS_PARAM_CONFIG.TABLES)) {
+					for (const table in schema_conf[schema][SCHEMAS_PARAM_CONFIG.TABLES]) {
+						const table_path_var = schema_conf[schema][SCHEMAS_PARAM_CONFIG.TABLES][table].hasOwnProperty(
+							SCHEMAS_PARAM_CONFIG.PATH
+						)
+							? SCHEMAS_PARAM_CONFIG.PATH
+							: SCHEMAS_PARAM_CONFIG.AUDIT_PATH;
+						const table_path = schema_conf[schema][SCHEMAS_PARAM_CONFIG.TABLES][table][table_path_var];
+						const keys = [CONFIG_PARAMS.SCHEMAS, schema, SCHEMAS_PARAM_CONFIG.TABLES, table, table_path_var];
+						config_doc.hasIn(keys) ? config_doc.setIn(keys, table_path) : config_doc.addIn(keys, table_path);
+					}
+				} else {
+					const schema_path_var = schema_conf[schema].hasOwnProperty(SCHEMAS_PARAM_CONFIG.PATH)
+						? SCHEMAS_PARAM_CONFIG.PATH
+						: SCHEMAS_PARAM_CONFIG.AUDIT_PATH;
+					const schema_path = schema_conf[schema][schema_path_var];
+					const keys = [CONFIG_PARAMS.SCHEMAS, schema, schema_path_var];
+					config_doc.hasIn(keys) ? config_doc.setIn(keys, schema_path) : config_doc.addIn(keys, schema_path);
+				}
+			}
+		} catch (err) {
+			logger.error('Error parsing schemas CLI/env config arguments', err);
 		}
 	}
-
+	// --SCHEMAS [{\"dev_schema\":{\"path\":\"\/Users\/davidcockerill\/test_location\",\"tables\":{\"coolcat\":{\"auditPath\":\"\/Users\/davidcockerill\/test_location\"}}}}]
+	// --SCHEMAS [{\"dev_schema\":{\"path\":\"\/Users\/davidcockerill\/test_location\"}}]
 	// Validates config doc and if required sets default values for some parameters.
 	validateConfig(config_doc);
 	const config_obj = config_doc.toJSON();
@@ -99,7 +125,7 @@ function getDefaultConfig(param) {
 		flat_default_config_obj = flattenConfig(config_doc.toJSON());
 	}
 
-	const param_map = hdb_terms.CONFIG_PARAM_MAP[param.toLowerCase()];
+	const param_map = CONFIG_PARAM_MAP[param.toLowerCase()];
 	if (param_map === undefined) return undefined;
 
 	return flat_default_config_obj[param_map.toLowerCase()];
@@ -123,7 +149,7 @@ function getConfigValue(param) {
 		return undefined;
 	}
 
-	const param_map = hdb_terms.CONFIG_PARAM_MAP[param.toLowerCase()];
+	const param_map = CONFIG_PARAM_MAP[param.toLowerCase()];
 	if (param_map === undefined) return undefined;
 
 	return flat_config_obj[param_map.toLowerCase()];
@@ -131,7 +157,7 @@ function getConfigValue(param) {
 
 function getConfigFilePath(boot_props_file_path) {
 	const cmd_args = minimist(process.argv);
-	if (cmd_args.ROOTPATH) return path.join(cmd_args.ROOTPATH, terms.HDB_CONFIG_FILE);
+	if (cmd_args.ROOTPATH) return path.join(cmd_args.ROOTPATH, hdb_terms.HDB_CONFIG_FILE);
 	const hdb_properties = PropertiesReader(boot_props_file_path);
 	return hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
 }
@@ -224,7 +250,7 @@ function updateConfigObject(param, value) {
 		flat_config_obj = {};
 	}
 
-	const config_obj_key = hdb_terms.CONFIG_PARAM_MAP[param.toLowerCase()];
+	const config_obj_key = CONFIG_PARAM_MAP[param.toLowerCase()];
 	if (config_obj_key === undefined) {
 		logger.trace(`Unable to update config object because config param '${param}' does not exist`);
 		return;
@@ -247,12 +273,12 @@ function updateConfigValue(param, value, parsed_args = undefined, create_backup 
 	}
 
 	// Old root/path is used just in case they are updating the operations api root.
-	const old_hdb_root = getConfigValue(hdb_terms.CONFIG_PARAM_MAP.hdb_root);
+	const old_hdb_root = getConfigValue(CONFIG_PARAM_MAP.hdb_root);
 	const old_config_path = path.join(old_hdb_root, hdb_terms.HDB_CONFIG_FILE);
 	const config_doc = parseYamlDoc(old_config_path);
 
 	if (parsed_args === undefined) {
-		const config_param = hdb_terms.CONFIG_PARAM_MAP[param.toLowerCase()];
+		const config_param = CONFIG_PARAM_MAP[param.toLowerCase()];
 		if (config_param === undefined) {
 			throw new Error(`Unable to update config, unrecognized config parameter: ${param}`);
 		}
@@ -263,7 +289,8 @@ function updateConfigValue(param, value, parsed_args = undefined, create_backup 
 	} else {
 		// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
 		for (const arg in parsed_args) {
-			const config_param = hdb_terms.CONFIG_PARAM_MAP[arg.toLowerCase()];
+			const config_param = CONFIG_PARAM_MAP[arg.toLowerCase()];
+			if (config_param === CONFIG_PARAMS.SCHEMAS.toLowerCase()) continue;
 			if (config_param !== undefined) {
 				const split_param = config_param.split('_');
 				const new_value = castConfigValue(config_param, parsed_args[arg]);
@@ -296,9 +323,9 @@ function updateConfigValue(param, value, parsed_args = undefined, create_backup 
 function addSchemaElement(schema, table, location) {
 	const config_doc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
 	if (!table) {
-		config_doc.setIn([hdb_terms.CONFIG_PARAMS.SCHEMAS, schema, 'path'], location);
+		config_doc.setIn([CONFIG_PARAMS.SCHEMAS, schema, 'path'], location);
 	} else {
-		config_doc.setIn([hdb_terms.CONFIG_PARAMS.SCHEMAS, schema, hdb_terms.CONFIG_PARAMS.TABLES, table], location);
+		config_doc.setIn([CONFIG_PARAMS.SCHEMAS, schema, CONFIG_PARAMS.TABLES, table], location);
 	}
 
 	logger.trace('Adding custom schema element to config file, schema:', schema, 'table:', table, 'path:', location);
@@ -355,7 +382,7 @@ function flattenConfig(obj) {
  */
 function castConfigValue(param, value) {
 	// Some params should be string numbers if only a number is passed, for those cases we need to cast them to string.
-	if (param === hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME || param === hdb_terms.CONFIG_PARAMS.CLUSTERING_USER) {
+	if (param === CONFIG_PARAMS.CLUSTERING_NODENAME || param === CONFIG_PARAMS.CLUSTERING_USER) {
 		if (!isNaN(value)) {
 			return value.toString();
 		}
@@ -513,13 +540,13 @@ function initOldConfig(old_config_path) {
 	const old_hdb_properties = PropertiesReader(old_config_path);
 	flat_config_obj = {};
 
-	for (const config_param in hdb_terms.CONFIG_PARAM_MAP) {
+	for (const config_param in CONFIG_PARAM_MAP) {
 		const value = old_hdb_properties.get(config_param.toUpperCase());
 		if (hdb_utils.isEmpty(value) || (typeof value === 'string' && value.trim().length === 0)) {
 			continue;
 		}
-		let param_key = hdb_terms.CONFIG_PARAM_MAP[config_param].toLowerCase();
-		if (param_key === hdb_terms.CONFIG_PARAMS.LOGGING_ROOT) {
+		let param_key = CONFIG_PARAM_MAP[config_param].toLowerCase();
+		if (param_key === CONFIG_PARAMS.LOGGING_ROOT) {
 			flat_config_obj[param_key] = path.dirname(value);
 		} else {
 			flat_config_obj[param_key] = value;

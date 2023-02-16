@@ -583,7 +583,6 @@ const CONFIG_PARAMS = {
 	STORAGE_PATH: 'storage_path',
 	STORAGE_AUDIT_PATH: 'storage_audit_path',
 	SCHEMAS: 'schemas',
-	TABLES: 'tables',
 };
 
 const CONFIG_PARAM_MAP = {
@@ -719,6 +718,12 @@ for (let key in CONFIG_PARAMS) {
 	let name = CONFIG_PARAMS[key];
 	CONFIG_PARAM_MAP[name.toLowerCase()] = name;
 }
+
+const SCHEMAS_PARAM_CONFIG = {
+	TABLES: 'tables',
+	PATH: 'path',
+	AUDIT_PATH: 'auditPath',
+};
 
 // Describes all available job types
 const JOB_TYPE_ENUM = {
@@ -1034,4 +1039,5 @@ module.exports = {
 	FOREGROUND_PID_FILE,
 	PACKAGE_ROOT,
 	PRE_4_0_0_VERSION,
+	SCHEMAS_PARAM_CONFIG,
 };
