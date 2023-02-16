@@ -11,9 +11,8 @@ env.initSync();
 
 // eslint-disable-next-line no-unused-vars
 const SystemInformationObject = require('./SystemInformationObject');
-const { getBaseSchemaPath } = require('../../data_layer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
 const { openEnvironment } = require('../lmdb/environmentUtility');
-const { getSchemaPath } = require("../../data_layer/harperBridge/lmdbBridge/lmdbUtility/initializePaths");
+const { getSchemaPath } = require('../../data_layer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
 
 //this will hold the system_information which is static to improve performance
 let system_information_cache = undefined;

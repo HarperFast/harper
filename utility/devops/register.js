@@ -84,7 +84,6 @@ async function register() {
 		};
 		console.log('generating license');
 		let generated_license = license_generator.generateLicense(license_object);
-		console.log(generated_license);
 		console.log('validating & writing license to hdb');
 		await reg_handler.parseLicense(generated_license, 'harperdb.io');
 		console.log('license saved');

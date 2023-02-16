@@ -55,7 +55,7 @@ function createConfigFile(args) {
 	for (const arg in args) {
 		const config_param = CONFIG_PARAM_MAP[arg.toLowerCase()];
 
-		// Schemas config args are handled differently, so if they exist set them to var that will be used by setSchemaConfig
+		// Schemas config args are handled differently, so if they exist set them to var that will be used by setSchemasConfig
 		if (config_param === CONFIG_PARAMS.SCHEMAS) {
 			schemas_args = args[arg];
 			continue;
@@ -72,7 +72,7 @@ function createConfigFile(args) {
 		}
 	}
 
-	if (schemas_args) setSchemaConfig(config_doc, schemas_args);
+	if (schemas_args) setSchemasConfig(config_doc, schemas_args);
 
 	// Validates config doc and if required sets default values for some parameters.
 	validateConfig(config_doc);
@@ -87,10 +87,21 @@ function createConfigFile(args) {
 	logger.trace(`Config file written to ${config_file_path}`);
 }
 
-function setSchemaConfig(config_doc, schema_conf_json) {
+/**
+ * Sets any schema/table location config that belongs under the 'schemas' config element.
+ * @param config_doc
+ * @param schema_conf_json
+ */
+function setSchemasConfig(config_doc, schema_conf_json) {
 	let schemas_conf;
 	try {
-		schemas_conf = JSON.parse(schema_conf_json);
+		try {
+			schemas_conf = JSON.parse(schema_conf_json);
+		} catch (err) {
+			if (!hdb_utils.isObject(schema_conf_json)) throw err;
+			schemas_conf = schema_conf_json;
+		}
+
 		for (const schema_conf of schemas_conf) {
 			const schema = Object.keys(schema_conf)[0];
 			if (schema_conf[schema].hasOwnProperty(SCHEMAS_PARAM_CONFIG.TABLES)) {
@@ -299,7 +310,7 @@ function updateConfigValue(param, value, parsed_args = undefined, create_backup 
 		for (const arg in parsed_args) {
 			const config_param = CONFIG_PARAM_MAP[arg.toLowerCase()];
 
-			// Schemas config args are handled differently, so if they exist set them to var that will be used by setSchemaConfig
+			// Schemas config args are handled differently, so if they exist set them to var that will be used by setSchemasConfig
 			if (config_param === CONFIG_PARAMS.SCHEMAS) {
 				schemas_args = parsed_args[arg];
 				continue;
@@ -317,7 +328,7 @@ function updateConfigValue(param, value, parsed_args = undefined, create_backup 
 		}
 	}
 
-	if (schemas_args) setSchemaConfig(config_doc, schemas_args);
+	if (schemas_args) setSchemasConfig(config_doc, schemas_args);
 
 	// Validates config doc and if required sets default values for some parameters.
 	validateConfig(config_doc);
@@ -334,23 +345,6 @@ function updateConfigValue(param, value, parsed_args = undefined, create_backup 
 		flat_config_obj = flattenConfig(config_doc.toJSON());
 	}
 	logger.trace(`Config parameter: ${param} updated with value: ${value}`);
-}
-
-function addSchemaElement(schema, table, location) {
-	const config_doc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
-	if (!table) {
-		config_doc.setIn([CONFIG_PARAMS.SCHEMAS, schema, 'path'], location);
-	} else {
-		config_doc.setIn([CONFIG_PARAMS.SCHEMAS, schema, CONFIG_PARAMS.TABLES, table], location);
-	}
-
-	logger.trace('Adding custom schema element to config file, schema:', schema, 'table:', table, 'path:', location);
-
-	validateConfig(config_doc);
-	fs.writeFileSync(DEFAULT_CONFIG_FILE_PATH, String(config_doc));
-	flattenConfig(config_doc.toJSON());
-
-	//TODO: backup?
 }
 
 function backupConfigFile(config_path, hdb_root) {

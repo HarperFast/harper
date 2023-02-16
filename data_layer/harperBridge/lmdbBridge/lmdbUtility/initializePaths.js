@@ -64,35 +64,7 @@ function getTransactionAuditStorePath(schema, table) {
 	);
 }
 
-// TODO - rework this, func is called a lot so each time it is called we dont want to call path exists. Reorder
-// so that if check env first
 function getSchemaPath(schema, table) {
-	// Check to see if there are any CLI or env args related to schema/table path
-	const args = process.env;
-	Object.assign(args, minimist(process.argv));
-	schema = schema.toString();
-	table = table.toString();
-
-	const schema_table_path = args[`SCHEMA_${schema}_TABLES_${table}_PATH`];
-	if (schema_table_path) {
-		checkPathExists(schema_table_path);
-		return schema_table_path;
-	}
-
-	const schema_path = args[`SCHEMA_${schema}_PATH`];
-	if (schema_path) {
-		checkPathExists(schema_path);
-		return schema_path;
-	}
-
-	const storage_path = args['STORAGE_PATH'];
-	if (storage_path) {
-		checkPathExists(storage_path);
-		const storage_schema_path = path.join(args['STORAGE_PATH'], schema);
-		fs.mkdirsSync(storage_schema_path);
-		return storage_schema_path;
-	}
-
 	let schema_config = env.get(hdb_terms.CONFIG_PARAMS.SCHEMAS)?.[schema];
 	return (
 		(table && schema_config?.tables?.[table]?.path) || schema_config?.path || path.join(getBaseSchemaPath(), schema)
