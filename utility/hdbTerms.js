@@ -714,6 +714,7 @@ const CONFIG_PARAM_MAP = {
 	operationsapi_nodeenv: CONFIG_PARAMS.OPERATIONSAPI_NODEENV,
 	operationsapi_root: CONFIG_PARAMS.ROOTPATH,
 	schemas: CONFIG_PARAMS.SCHEMAS,
+	storage_path: CONFIG_PARAMS.STORAGE_PATH,
 };
 for (let key in CONFIG_PARAMS) {
 	let name = CONFIG_PARAMS[key];

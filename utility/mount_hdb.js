@@ -36,7 +36,7 @@ async function mountHdb(hdb_path) {
  */
 async function createLMDBTables() {
 	// eslint-disable-next-line global-require
-	const lmdb_create_table = require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
+	let lmdb_create_table;
 	// eslint-disable-next-line global-require
 	const CreateTableObject = require('../data_layer/CreateTableObject');
 
@@ -47,9 +47,11 @@ async function createLMDBTables() {
 		let table_env;
 		let hash_attribute = system_schema[table_name].hash_attribute;
 		try {
+			const schema_path = init_paths.initSystemSchemaPaths(terms.SYSTEM_SCHEMA_NAME, table_name);
+			lmdb_create_table =
+				lmdb_create_table ?? require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
 			let create_table = new CreateTableObject(terms.SYSTEM_SCHEMA_NAME, table_name, hash_attribute);
 			await lmdb_create_table(undefined, create_table);
-			const schema_path = init_paths.getSchemaPath(terms.SYSTEM_SCHEMA_NAME, table_name);
 			table_env = await lmdb_environment_utility.openEnvironment(schema_path, table_name);
 		} catch (e) {
 			hdb_logger.error(`issue creating environment for ${terms.SYSTEM_SCHEMA_NAME}.${table_name}: ${e}`);
