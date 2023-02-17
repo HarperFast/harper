@@ -6,7 +6,6 @@ const env_mangr = require('../environment/environmentManager');
 const validator = require('../../validation/readLogValidator');
 const path = require('path');
 const fs = require('fs-extra');
-const readline = require('readline');
 const { once } = require('events');
 const { handleHDBError, hdb_errors } = require('../errors/hdbError');
 const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
@@ -47,10 +46,6 @@ async function readLog(request) {
 	read_log_input_stream.on('error', (err) => {
 		hdb_logger.error(err);
 	});
-	const rl = readline.createInterface({
-		input: read_log_input_stream,
-		crlfDelay: Infinity,
-	});
 
 	const level_defined = request.level !== undefined;
 	const level = level_defined ? request.level : undefined;
@@ -64,21 +59,35 @@ async function readLog(request) {
 	const max = start + limit;
 	let count = 0;
 	let result = [];
-
-	rl.on('line', (r_line) => {
+	let remaining = '';
+	read_log_input_stream.on('data', (log_data) => {
 		let line;
+		let reader = /([^ ]+) \[([^\]]+)]: (.+)\n/g;
+		log_data = remaining + log_data;
+		let last_position = 0;
+		let parsed;
+		while ((parsed = reader.exec(log_data))) {
+			let [t, timestamp, tags_string, message] = parsed;
+			let tags = tags_string.split(' ');
+			let thread = tags[0];
+			let level = tags[1];
+			tags.splice(0, 2);
+			onLogMessage({
+				timestamp,
+				thread,
+				level,
+				tags,
+				message,
+			});
+			last_position = reader.lastIndex + t.length;
+		}
+		remaining = log_data.slice(last_position);
+	});
+	read_log_input_stream.resume();
+	function onLogMessage(line) {
 		let log_date;
 		let from_date;
 		let until_date;
-
-		try {
-			line = JSON.parse(r_line);
-		} catch (err) {
-			//The log might contain non json logs that haven't been parsed by hdb.
-			hdb_logger.warn(err.message);
-			return;
-		}
-
 		switch (true) {
 			case level_defined && from_defined && until_defined:
 				log_date = new Date(line.timestamp);
@@ -93,7 +102,7 @@ async function readLog(request) {
 					pushLineToResult(line, order, result);
 					count++;
 					// If the count of matching lines is the max number of results, end the readline.
-					if (count === max) endReadLine(rl);
+					if (count === max) endReader(read_log_input_stream);
 				}
 
 				// If all the criteria do not match, ignore the line and go to the next.
@@ -110,7 +119,7 @@ async function readLog(request) {
 					pushLineToResult(line, order, result);
 					count++;
 					// If the count of matching lines is the max number of results, end the readline.
-					if (count === max) endReadLine(rl);
+					if (count === max) endReader(read_log_input_stream);
 				}
 
 				// If criteria do not match, ignore the line and go to the next.
@@ -127,7 +136,7 @@ async function readLog(request) {
 					pushLineToResult(line, order, result);
 					count++;
 					// If the count of matching lines is the max number of results, end the readline.
-					if (count === max) endReadLine(rl);
+					if (count === max) endReader(rl);
 				}
 
 				// If criteria do not match, ignore the line and go to the next.
@@ -145,7 +154,7 @@ async function readLog(request) {
 					pushLineToResult(line, order, result);
 					count++;
 					// If the count of matching lines is the max number of results, end the readline.
-					if (count === max) endReadLine(rl);
+					if (count === max) endReader(read_log_input_streamread_log_input_stream);
 				}
 
 				// If all the criteria do not match, ignore the line and go to the next.
@@ -158,7 +167,7 @@ async function readLog(request) {
 					pushLineToResult(line, order, result);
 					count++;
 					// If the count of matching lines is the max number of results, end the readline.
-					if (count === max) endReadLine(rl);
+					if (count === max) endReader(read_log_input_stream);
 				}
 
 				// If level criteria do not match, ignore the line and go to the next.
@@ -175,7 +184,7 @@ async function readLog(request) {
 					pushLineToResult(line, order, result);
 					count++;
 					// If the count of matching lines is the max number of results, end the readline.
-					if (count === max) endReadLine(rl);
+					if (count === max) endReader(read_log_input_stream);
 				}
 
 				// If criteria do not match, ignore the line and go to the next.
@@ -192,7 +201,7 @@ async function readLog(request) {
 					pushLineToResult(line, order, result);
 					count++;
 					// If the count of matching lines is the max number of results, end the readline.
-					if (count === max) endReadLine(rl);
+					if (count === max) endReader(read_log_input_stream);
 				}
 
 				// If criteria do not match, ignore the line and go to the next.
@@ -205,12 +214,12 @@ async function readLog(request) {
 					pushLineToResult(line, order, result);
 					count++;
 					// If the count of matching lines is the max number of results, end the readline.
-					if (count === max) endReadLine(rl);
+					if (count === max) endReader(read_log_input_stream);
 				}
 		}
-	});
+	}
 
-	await once(rl, 'close');
+	await once(read_log_input_stream, 'close');
 
 	return result;
 }
@@ -219,7 +228,7 @@ async function readLog(request) {
  * End the readline stream.
  * @param r_line
  */
-function endReadLine(r_line) {
+function endReader(r_line) {
 	r_line.close();
 	r_line.removeAllListeners();
 }
