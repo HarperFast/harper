@@ -76,6 +76,13 @@ function getSchemaPath(schema, table) {
 	);
 }
 
+/**
+ * It is possible to set where the system schema/table files reside. This function will check for CLI/env vars
+ * on install and update accordingly.
+ * @param schema
+ * @param table
+ * @returns {string|string|*}
+ */
 function initSystemSchemaPaths(schema, table) {
 	schema = schema.toString();
 	table = table.toString();
@@ -122,9 +129,10 @@ function initSystemSchemaPaths(schema, table) {
 		}
 	}
 
+	// If storage_path is passed use that to determine location
 	const storage_path = args[CONFIG_PARAMS.STORAGE_PATH.toUpperCase()];
 	if (storage_path) {
-		checkPathExists(storage_path);
+		if (!fs.pathExistsSync(storage_path)) throw new Error(storage_path + ' does not exist');
 		const storage_schema_path = path.join(storage_path, schema);
 		fs.mkdirsSync(storage_schema_path);
 		env.setProperty(CONFIG_PARAMS.STORAGE_PATH, storage_path);
@@ -132,11 +140,8 @@ function initSystemSchemaPaths(schema, table) {
 		return storage_schema_path;
 	}
 
+	// Default to default location
 	return getSystemSchemaPath();
-}
-
-function checkPathExists(storage_path) {
-	if (!fs.pathExistsSync(storage_path)) throw new Error(storage_path + ' does not exist');
 }
 
 module.exports = {
