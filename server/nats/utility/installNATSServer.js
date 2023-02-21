@@ -175,8 +175,14 @@ async function installer() {
 	try {
 		await downloadNATSServer();
 		//test nats-server version
-		let version_str = await runCommand(`${NATS_SERVER_BINARY_PATH} --version`, undefined);
-		console.log(chalk.green(`****Successfully extracted ${version_str}.****`));
+		try {
+			let version_str = await runCommand(`${NATS_SERVER_BINARY_PATH} --version`, undefined);
+			console.log(chalk.green(`****Successfully extracted ${version_str}.****`));
+		} catch (error) {
+			// even if NATS successfully installs, sometimes the version check can spuriously fail with "Text file busy"
+			// error, but NATS will still be installed and working correctly, so we shouldn't fail the whole installation.
+			console.warn('Error checking NATS versions', error);
+		}
 		return;
 	} catch (e) {
 		console.error(chalk.red(`Error: ${e.message}. Failed to download NATS server.  Building from source`));
@@ -193,8 +199,7 @@ async function installer() {
 	let nats_source_folder = await extractNATSServer();
 	console.log(chalk.green('Building NATS Server binary.'));
 	if (platform() == 'win32') await runCommand(`set GOPATH=${DEPENDENCIES_PATH}&& go build`, nats_source_folder);
-	else
-		await runCommand(`export GOPATH=${DEPENDENCIES_PATH} && go build`, nats_source_folder);
+	else await runCommand(`export GOPATH=${DEPENDENCIES_PATH} && go build`, nats_source_folder);
 	console.log(chalk.green('Building NATS Server binary complete.'));
 	await cleanUp(nats_source_folder);
 	console.log(chalk.green(`****NATS Server v${REQUIRED_NATS_SERVER_VERSION} is installed.****`));
