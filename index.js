@@ -1,3 +1,5 @@
 const { Resource } = require('./resources/Resource');
 const { tables, databases } = require('./resources/database');
-module.exports = { Resource, tables, databases };
+const plugins = {};
+const resources = new Map();
+module.exports = { Resource, tables, databases, plugins, resources };

@@ -8,11 +8,12 @@ import { watchDir } from '../server/threads/manage-threads';
 import { findAndValidateUser } from '../security/user';
 import { WebSocketServer } from 'ws';
 import { findBestSerializer, getDeserializer } from '../server/serverHelpers/contentTypes';
+import { plugins } from '../index';
 import './analytics';
 
 const handler_creator_by_type = new Map();
 const custom_apps = [];
-let handlers;
+let handlers = new Map();
 
 async function loadDirectory(directory: string, web_path: string, handlers) {
 	for (let entry of await readdir(directory, { withFileTypes: true })) {
@@ -46,12 +47,21 @@ async function loadDirectory(directory: string, web_path: string, handlers) {
 		}
 	}
 }
+let started;
+export function registerHandler(path, handler) {
+	handlers.set(path, handler);
+	if (!started) {
+		start({});
+	}
+}
+
 
 export function start(options: ServerOptions & { path: string, port: number }) {
-	if (!handlers) {
+	started = true;
+/*	if (!handlers) {
 		handlers = new Map();
 		loadDirectory(options?.path || process.cwd(), '', handlers);
-	}
+	}*/
 	options.keepAlive = true;
 	let remaining_path;
 	let server = createServer(options, async (request, response) => {
@@ -99,7 +109,7 @@ export function start(options: ServerOptions & { path: string, port: number }) {
 		} while(true);
 
 	}
-	registerServer(options.port, server);
+	plugins.customFunctionHandler(server);
 	async function nextAppHandler(request, response) {
 		if (custom_apps[0])
 			await custom_apps[0](request, response);

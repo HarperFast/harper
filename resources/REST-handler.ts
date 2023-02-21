@@ -1,8 +1,9 @@
 import { findBestSerializer } from '../server/serverHelpers/contentTypes';
 import { recordRequest } from './analytics';
+import {registerHandler} from './resource-server';
 
 const MAX_COMMIT_RETRIES = 10;
-export function restHandler(Resource) {
+export function restHandler(path, Resource) {
 	async function http(next_path, request, response) {
 		let method = request.method;
 		let start = performance.now();
@@ -153,6 +154,7 @@ export function restHandler(Resource) {
 			ws.send(request.serializer.serialize({status: 500, id: request_id, data: error.toString()}));
 		}
 	}
+	registerHandler(path, { http, ws });
 	return { http, ws };
 }
 function checkAllowed(method_allowed, user, resource): void | Promise<void> {

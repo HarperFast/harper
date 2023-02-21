@@ -4,15 +4,18 @@ const socket_router = require('../server/threads/socket-router');
 	project: join(PACKAGE_ROOT, 'tsconfig.json'),
 });*/
 const { getTables } = require('../resources/database');
+const { loadCustomFunctions } = require('../server/customFunctions/customFunctionsLoader');
+const { plugins } = require('../index');
 
+let loaded_plugins = new Map();
 const default_components = [
-	{ module: '/mqtt/broker.js', port: 1883 },
+	//{ module: '/mqtt/broker.js', port: 1883 },
+	{ module: '/server/customFunctions/customFunctionsServer.js', port: 9926 },
 	{ module: '/resources/graphql.js' },
 	{ module: '/resources/resource-server.js', port: '/tmp/test' },
 	{ module: '/resources/resource-server.js', port: 9926 },
 	{ module: '/resources/js-resource.js' },
 	{ module: '/server/harperdb/hdbServer.js', port: 9925 },
-	{ module: '/server/customFunctions/customFunctionsServer.js', port: 9926 },
 ];
 async function loadComponentModules(components = default_components) {
 	let tables = getTables();
@@ -26,10 +29,17 @@ async function loadComponentModules(components = default_components) {
 					ports_started.push(port);
 					socket_router.startSocketServer(port);
 				}
-			} else await component.start({ port, tables });
+			} else if (component.start) Object.assign(plugins, await component.start({ port, tables }));
+			loaded_plugins.set(component, true);
 		} catch (error) {
 			console.error('Error loading component', error, module_id);
 		}
 	}
+	await loadCustomFunctions(loaded_plugins);
+	let all_ready = [];
+	for (let [component] of loaded_plugins) {
+		if (component.ready) all_ready.push(component.ready());
+	}
+	if (all_ready.length > 0) await Promise.all(all_ready);
 }
 module.exports.loadComponentModules = loadComponentModules;

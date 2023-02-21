@@ -20,6 +20,7 @@ dependencies/*
 yarn.lock
 package-lock.json
 resources/*.js*
+server/customFunctions/customFunctionsLoader.js*
 
 /npm_pack/*
 *.jsc
