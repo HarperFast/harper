@@ -9,6 +9,7 @@ const path = require('path');
 const os = require('os');
 const { PACKAGE_ROOT } = require('../utility/hdbTerms');
 const check_node = require('../launchServiceScripts/utility/checkNodeVersion');
+const { SERVICE_ACTIONS_ENUM } = hdb_terms;
 
 harperDBService();
 
@@ -68,12 +69,15 @@ function harperDBService() {
 
 		let result = undefined;
 		switch (service) {
-			case hdb_terms.SERVICE_ACTIONS_ENUM.RUN: case hdb_terms.SERVICE_ACTIONS_ENUM.START:
+			case SERVICE_ACTIONS_ENUM.RUN:
+				console.warn('The "run" command is deprecated, please use "start" instead');
+			// fall through (it is just deprecated, still want to start harperdb)
+			case SERVICE_ACTIONS_ENUM.START:
 				// The require is here to better control the flow of imports when this module is called.
 				const run = require('./run');
 				result = run.launch();
 				break;
-			case hdb_terms.SERVICE_ACTIONS_ENUM.INSTALL:
+			case SERVICE_ACTIONS_ENUM.INSTALL:
 				const install = require('./install');
 				install()
 					.then(() => {
@@ -84,7 +88,7 @@ function harperDBService() {
 						console.error(install_err);
 					});
 				break;
-			case hdb_terms.SERVICE_ACTIONS_ENUM.REGISTER:
+			case SERVICE_ACTIONS_ENUM.REGISTER:
 				// register requires a lot of imports that could fail during install, so only bring it in when needed.
 				const register = require('./register');
 				register
@@ -96,7 +100,7 @@ function harperDBService() {
 						console.error(register_err);
 					});
 				break;
-			case hdb_terms.SERVICE_ACTIONS_ENUM.STOP:
+			case SERVICE_ACTIONS_ENUM.STOP:
 				// The require is here to better control the flow of imports when this module is called.
 				const stop = require('./stop');
 				stop
@@ -108,7 +112,7 @@ function harperDBService() {
 						console.error(stop_err);
 					});
 				break;
-			case hdb_terms.SERVICE_ACTIONS_ENUM.RESTART:
+			case SERVICE_ACTIONS_ENUM.RESTART:
 				// The require is here to better control the flow of imports when this module is called.
 				const stop_for_restart = require('./stop');
 				stop_for_restart
@@ -122,10 +126,10 @@ function harperDBService() {
 						process.exit(1);
 					});
 				break;
-			case hdb_terms.SERVICE_ACTIONS_ENUM.VERSION:
+			case SERVICE_ACTIONS_ENUM.VERSION:
 				version.printVersion();
 				break;
-			case hdb_terms.SERVICE_ACTIONS_ENUM.UPGRADE:
+			case SERVICE_ACTIONS_ENUM.UPGRADE:
 				logger.setLogLevel(hdb_terms.LOG_LEVELS.INFO);
 				// The require is here to better control the flow of imports when this module is called.
 				const upgrade = require('./upgrade');
@@ -139,10 +143,27 @@ function harperDBService() {
 						logger.error(`Got an error during upgrade ${e}`);
 					});
 				break;
-			default:
+			case undefined:
 				// The require is here to better control the flow of imports when this module is called.
 				require('./run').main();
 				break;
+			default:
+				console.warn(`The "${service}" command is not understood.`);
+			// fall through
+			case SERVICE_ACTIONS_ENUM.HELP:
+				console.log(`
+Usage: harperdb [command]
+
+With no command, harperdb will simply run HarperDB (in the foreground) 
+
+Commands:
+  version - Print the version
+  start - Starts a separate background process for harperdb and CLI will exit
+  stop - Stop the harperdb background process
+  restart - Restart the harperdb background process
+  install - Install harperdb
+  register - Register harperdb
+  upgrade - Upgrade harperdb`);
 		}
 	});
 }
