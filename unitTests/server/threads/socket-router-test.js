@@ -59,6 +59,7 @@ describe('Socket Router', () => {
 		for (let worker of workers) {
 			worker.socketsRouted = 0;
 			worker.postMessage = function ({ type, fd }) {
+				if (type === 'added-port') return;
 				// stub this and don't send to real worker, just count messages
 				this.socketsRouted++;
 				assert.equal(type, terms.SERVICES.HDB_CORE);

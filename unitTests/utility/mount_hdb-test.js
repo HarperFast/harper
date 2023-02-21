@@ -86,6 +86,7 @@ describe('test mount_hdb module', () => {
 		it('happy path', async () => {
 			let err;
 			try {
+				console.log('creating lmdb tables', SYSTEM_SCHEMA_PATH);
 				await create_lmdb_tables(SYSTEM_SCHEMA_PATH);
 			} catch (e) {
 				err = e;

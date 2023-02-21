@@ -48,14 +48,18 @@ describe('(Re)start/monitor workers', () => {
 		assert.equal(worker2StartedCount, 2);
 	});
 	it('Broadcast through "itc"', async function () {
+		console.log('starting broadcast test');
 		let worker1 = startWorker('unitTests/server/threads/thread-for-tests');
 		let worker2 = startWorker('unitTests/server/threads/thread-for-tests');
+		console.log('started broadcast threads');
 		worker1.postMessage({ type: 'broadcast1' });
+		console.log('send broadcast request');
 		await new Promise((resolve) => {
 			worker2.on('message', (event) => {
 				if (event.type === 'received-broadcast') resolve();
 			});
 		});
+		console.log('received broadcast response');
 	});
 	it('getThreadInfo should return stats', async function () {
 		this.timeout(5000);

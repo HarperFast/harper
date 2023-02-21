@@ -6,9 +6,10 @@ let timer = setTimeout(() => {}, 10000); // use it keep the thread running until
 let array = [];
 if (!isMainThread) {
 	server_handlers.broadcast2 = (event) => {
-		parentPort.postMessage({type: 'received-broadcast'});
+		parentPort.postMessage({ type: 'received-broadcast' });
 	};
-	parentPort.on('message', message => {
+	parentPort.on('message', (message) => {
+		console.log('test thread received', message.type);
 		if (message.type == 'oom') {
 			while (true) {
 				array.push(new Array(64));
@@ -19,6 +20,7 @@ if (!isMainThread) {
 			itc.sendItcEvent({
 				type: 'broadcast2',
 			});
+			console.log('sent broadcast back');
 		} else if (message.type === 'shutdown') {
 			timer.unref();
 		}
