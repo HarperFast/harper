@@ -14,7 +14,7 @@ describe('Test getLMDBStats function', function () {
 	let env = undefined;
 	let txn_env;
 	const LMDB_TEST_FOLDER_NAME = 'lmdbTest';
-	const BASE_TEST_PATH = path.join(test_util.getMockLMDBPath(), 'schema', LMDB_TEST_FOLDER_NAME);
+	const BASE_TEST_PATH = path.join(test_util.getMockLMDBPath(), LMDB_TEST_FOLDER_NAME);
 	const BASE_TXN_PATH = path.join(test_util.getMockLMDBPath(), 'transactions', LMDB_TEST_FOLDER_NAME);
 	const TEST_ENVIRONMENT_NAME = 'test';
 	const ID_DBI_NAME = 'id';

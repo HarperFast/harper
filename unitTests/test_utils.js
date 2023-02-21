@@ -163,6 +163,7 @@ function cleanUpDirectories(target_path) {
  */
 function getMockTestPath() {
 	env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, path.join(UNIT_TEST_DIR, ENV_DIR_NAME));
+	env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, path.join(UNIT_TEST_DIR, ENV_DIR_NAME));
 	return path.join(UNIT_TEST_DIR, ENV_DIR_NAME);
 }
 
@@ -173,6 +174,7 @@ function getMockTestPath() {
 function getMockLMDBPath() {
 	let lmdb_path = path.join(UNIT_TEST_DIR, ENV_DIR_NAME, process.pid.toString());
 	env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, lmdb_path);
+	env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, lmdb_path);
 	return lmdb_path;
 }
 
@@ -634,7 +636,7 @@ function assertErrorSync(test_func, args, error_object, message) {
 
 function asKeyValueArray(iterable) {
 	let values = Array.from(iterable);
-	return [values.map(v => v.key), values.map(v => v.value)];
+	return [values.map((v) => v.key), values.map((v) => v.value)];
 }
 /**
  * assigns objects to an null object, which is how we create objects in lmdb
@@ -666,10 +668,8 @@ function assignObjectToMap(object) {
  */
 function orderedArray(iterator) {
 	let array = Array.from(iterator);
-	if (Array.isArray(array[0]))
-		return array.sort((a, b) => a[0] > b[0] ? 1 : -1);
-	if (array[0]?.id)
-		return array.sort((a, b) => a.id > b.id ? 1 : -1);
+	if (Array.isArray(array[0])) return array.sort((a, b) => (a[0] > b[0] ? 1 : -1));
+	if (array[0]?.id) return array.sort((a, b) => (a.id > b.id ? 1 : -1));
 	return array;
 }
 
@@ -862,7 +862,7 @@ function restoreInitStub() {
 }
 
 function arrayOfValues(iterator) {
-	return Array.from(iterator.map(e => e.value));
+	return Array.from(iterator.map((e) => e.value));
 }
 
 module.exports = {

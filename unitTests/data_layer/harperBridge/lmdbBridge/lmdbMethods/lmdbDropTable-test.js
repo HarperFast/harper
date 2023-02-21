@@ -4,11 +4,9 @@ const test_utils = require('../../../../test_utils');
 test_utils.preTestPrep();
 const path = require('path');
 const SYSTEM_FOLDER_NAME = 'system';
-const SCHEMA_NAME = 'schema';
 const BASE_PATH = test_utils.getMockLMDBPath();
-const BASE_SCHEMA_PATH = path.join(BASE_PATH, SCHEMA_NAME);
-const SYSTEM_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, SYSTEM_FOLDER_NAME);
-const DEV_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, 'dev');
+const SYSTEM_SCHEMA_PATH = path.join(BASE_PATH, SYSTEM_FOLDER_NAME);
+const DEV_SCHEMA_PATH = path.join(BASE_PATH, 'dev');
 const TRANSACTIONS_NAME = 'transactions';
 const BASE_TXN_PATH = path.join(BASE_PATH, TRANSACTIONS_NAME);
 
@@ -132,7 +130,7 @@ describe('test lmdbDropTable module', () => {
 
 		after(async () => {
 			let env2 = await environment_utility.openEnvironment(
-				path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_A.schema),
+				path.join(BASE_PATH, CREATE_TABLE_OBJ_TEST_A.schema),
 				CREATE_TABLE_OBJ_TEST_A.table
 			);
 			await env2.close();
@@ -436,7 +434,7 @@ describe('test deleteAttributesFromSystem function', () => {
 
 	after(async () => {
 		let env = await environment_utility.openEnvironment(
-			path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_A.schema),
+			path.join(BASE_PATH, CREATE_TABLE_OBJ_TEST_A.schema),
 			CREATE_TABLE_OBJ_TEST_A.table
 		);
 		env.close();

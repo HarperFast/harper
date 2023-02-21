@@ -25,9 +25,9 @@ let RESET_SUCCESS_MSG = 'successfully reset license';
 async function register() {
 	if (
 		ARGS.help ||
-		(ARGS.api_call === 1000000000000 &&
-			ARGS.ram_allocation === 5000 &&
-			ARGS.storage_type === 'lmdb' &&
+		(ARGS.api_call === undefined &&
+			ARGS.ram_allocation === undefined &&
+			ARGS.storage_type === undefined &&
 			ARGS.reset_license === undefined)
 	) {
 		console.log(
