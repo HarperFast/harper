@@ -1,8 +1,11 @@
 const { parentPort, isMainThread } = require('worker_threads');
 const itc = require('../../../server/threads/itc');
 const server_handlers = require('../../../server/itc/serverHandlers');
+console.log('thread-for-tests has started');
 
-let timer = setTimeout(() => {}, 10000); // use it keep the thread running until shutdown
+let timer = setTimeout(() => {
+	console.log('thread-for-tests timed out');
+}, 10000); // use it keep the thread running until shutdown
 let array = [];
 if (!isMainThread) {
 	server_handlers.broadcast2 = (event) => {

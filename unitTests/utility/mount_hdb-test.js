@@ -75,6 +75,7 @@ describe('test mount_hdb module', () => {
 	describe('test createLMDBTables', () => {
 		before(async () => {
 			await fs_extra.mkdirp(SYSTEM_SCHEMA_PATH);
+			console.log('created system schema directory', SYSTEM_SCHEMA_PATH);
 		});
 
 		after(async () => {
