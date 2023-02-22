@@ -6,10 +6,11 @@ import * as env from '../../utility/environment/environmentManager';
 import { HDB_SETTINGS_NAMES } from '../../utility/hdbTerms';
 import * as graphql_handler from '../../resources/graphql';
 import * as js_handler from '../../resources/js-resource';
+import * as REST from '../../resources/REST';
 import * as fastify_routes_handler from '../../plugins/fastifyRoutes';
 import * as fg from 'fast-glob';
-const { readFile } = promises;
 import { watchDir, restartWorkers } from '../../server/threads/manage-threads';
+const { readFile } = promises;
 
 const CONFIG_FILENAME = 'config.yaml';
 let CF_ROUTES_DIR = env.get(HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
@@ -29,12 +30,14 @@ export function loadCustomFunctions(loaded_plugin_modules: Map<any, any>) {
 }
 
 const TRUSTED_HANDLERS = {
+	REST,
 	'graphql-schema': graphql_handler,
 	'js-resource': js_handler,
 	'fastify_routes': fastify_routes_handler,
 };
 
 const DEFAULT_HANDLERS = [
+	'REST',
 	{
 		path: '*.graphql',
 		module: 'graphql-schema',
@@ -58,6 +61,7 @@ export async function loadCustomFunction(app_folder: string, no_watch?: boolean)
 		config = {};
 	}
 	for (let handler_config of config.handlers || DEFAULT_HANDLERS) {
+		if (typeof handler_config === 'string') handler_config = { module: handler_config };
 		let module = TRUSTED_HANDLERS[handler_config.module] || await import(handler_config.module);
 		let start_resolution = loaded_plugins.get(module);
 		if (!start_resolution) {

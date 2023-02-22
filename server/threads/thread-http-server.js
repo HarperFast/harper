@@ -126,7 +126,11 @@ function proxyRequest(message) {
 	}
 }
 
-function registerServer(port, server) {
+function registerServer(server, port) {
+	if (!port) { // if no port is provided, default to custom functions port
+		server = port;
+		port = parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10);
+	}
 	let existing_server = SERVERS[port];
 	if (existing_server) {
 		// if there is an existing server on this port, we create a cascading delegation to try the request with one

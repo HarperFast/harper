@@ -1,5 +1,5 @@
 import { registerResourceType } from './resource-server';
-import { restHandler } from './REST-handler';
+import { restHandler } from './REST';
 import { pathToFileURL } from 'url';
 import { secureImport} from './secure-js';
 import { Resource } from './Resource';

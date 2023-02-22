@@ -3,7 +3,7 @@ import { isMainThread } from 'worker_threads';
 import { Resource } from './Resource';
 import { snake_case } from './Table';
 import { registerResourceType } from './resource-server';
-import { restHandler } from './REST-handler';
+import { restHandler } from './REST';
 import { resources } from '../index';
 
 export function registerGraphQL() {

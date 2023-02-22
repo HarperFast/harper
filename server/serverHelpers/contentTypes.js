@@ -209,7 +209,7 @@ function deserializeUnknownType(content_type, parameters) {
 	if (content_type.startsWith('text/')) {
 		// convert the data to a string since it is text (using the provided charset if specified)
 		let charset = parameters?.match(/charset=(.+)/)?.[1] || 'utf-8';
-		return (data: Buffer) => ({
+		return (data) => ({
 			contentType: content_type,
 			data: data.toString(charset),
 		});
