@@ -4,7 +4,7 @@ const { toCsvStream } = require('../../data_layer/export');
 const { pack, unpack, encodeIter } = require('msgpackr');
 const { decode, encode, EncoderStream } = require('cbor-x');
 const { Readable } = require('stream');
-const media_types = {
+const media_types = { // TODO: Make these monomorphic for faster access
 	'application/json': {
 		serializeStream: streamAsJSON,
 		serialize: JSON.stringify,
@@ -36,6 +36,13 @@ const media_types = {
 			return toCsvStream(data);
 		},
 		q: 0.1,
+	},
+	'text/event-stream': { // Server-Sent Events (SSE)
+		serializeStream: function(data) {
+			// TODO: Use a streaming iterator to send data in SSE format
+		},
+		isSubscription: true,
+		q: 0.8
 	},
 	'*/*': {
 		type: 'application/json',
@@ -160,8 +167,30 @@ function findBestSerializer(incoming_message) {
 	return { serializer: best_serializer, type: best_type, parameters: best_parameters };
 }
 
-function getDeserializer(contentType) {
-	return media_types[contentType]?.deserialize || JSON.parse;
+function getDeserializer(content_type) {
+	if (!content_type) return media_types['application/json'].deserialize;
+	let parameters_start = content_type.indexOf(';');
+	let parameters;
+	if (parameters_start > -1) {
+		parameters = content_type.slice(parameters_start + 1);
+		content_type = content_type.slice(0, parameters_start);
+	}
+	return media_types[content_type]?.deserialize || deserializeUnknownType(content_type, parameters);
+}
+function deserializeUnknownType(type, parameters) {
+	if (type.startsWith('text/')) {
+		// convert the data to a string (using the provided charset if specified)
+		let charset = parameters?.match(/charset=(.+)/)?.[1] || 'utf-8';
+		return (data: Buffer) => ({
+			type,
+			data: data.toString(charset),
+		});
+	} else if (type === 'application/octet-stream') {
+		// use this type as a way of directly transferring binary data (since that is what it means)
+		return data => data;
+	} else { // else record the type and binary data as a pair
+		return (data) => ({ type, data });
+	}
 }
 
 module.exports = {
