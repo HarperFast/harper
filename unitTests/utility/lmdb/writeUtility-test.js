@@ -49,22 +49,14 @@ const UPDATE_ONE_FAKE_RECORD_EXPECTED = {
 	age: 0,
 };
 
-const TXN_TIMESTAMP = common.getMicroTime();
+const TXN_TIMESTAMP = TIMESTAMP;
 
 const generateValidationErr = (msg) => {
 	return test_utils.generateHDBError(msg, 400);
 };
 
 describe('Test writeUtility module', () => {
-	let date_stub;
-
-	before(() => {
-		date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
-	});
-
-	after(() => {
-		date_stub.restore();
-	});
+	let get_monotonic_time_stub;
 
 	describe('Test validateInsert function', () => {
 		let env, transaction;
@@ -137,13 +129,16 @@ describe('Test writeUtility module', () => {
 		before(() => {
 			rw_set_timestamps = write_utility.__get__('setTimestamps');
 			sandbox.restore();
-			date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
+			get_monotonic_time_stub = sandbox.stub(common, 'getNextMonotonicTime').returns(TXN_TIMESTAMP);
+		});
+		after(() => {
+			get_monotonic_time_stub.restore();
 		});
 
 		it('pass record, is insert = true, expect timestamps created', () => {
 			let record = test_utils.deepClone(ONE_RECORD_ARRAY[0]);
 
-			rw_set_timestamps(record, true);
+			rw_set_timestamps(record, true, TIMESTAMP);
 			assert.deepStrictEqual(record.__updatedtime__, TIMESTAMP);
 			assert.deepStrictEqual(record.__createdtime__, TIMESTAMP);
 		});
@@ -168,7 +163,7 @@ describe('Test writeUtility module', () => {
 			let record = test_utils.deepClone(ONE_RECORD_ARRAY[0]);
 			record.__createdtime__ = 'heyyy';
 			record.__updatedtime__ = 'heyyy';
-			rw_set_timestamps(record, false);
+			rw_set_timestamps(record, false, TIMESTAMP);
 			assert.deepStrictEqual(record.__updatedtime__, TIMESTAMP);
 			assert.deepStrictEqual(record.__createdtime__, undefined);
 		});
@@ -194,23 +189,13 @@ describe('Test writeUtility module', () => {
 
 	describe('Test insertRecords function', () => {
 		let stub;
-		let get_micro_time_stub;
-		before(() => {
-			date_stub.restore();
-			get_micro_time_stub = sandbox.stub(common, 'getMicroTime').returns(TXN_TIMESTAMP);
-		});
-
-		after(() => {
-			get_micro_time_stub.restore();
-			date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
-		});
+		let get_monotonic_time_stub;
 		let env, transaction;
 		beforeEach(async () => {
-			date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
+			get_monotonic_time_stub = sandbox.stub(common, 'getNextMonotonicTime').returns(TXN_TIMESTAMP);
 			global.lmdb_map = undefined;
 			try {
-				if (env)
-					await lmdb_env_util.closeEnvironment(env);
+				if (env) await lmdb_env_util.closeEnvironment(env);
 			} catch (e) {}
 			await fs.remove(test_utils.getMockLMDBPath());
 			await fs.mkdirp(BASE_TEST_PATH);
@@ -223,7 +208,7 @@ describe('Test writeUtility module', () => {
 
 		afterEach(async () => {
 			await env.close();
-			date_stub.restore();
+			get_monotonic_time_stub.restore();
 
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
@@ -546,23 +531,13 @@ describe('Test writeUtility module', () => {
 
 	describe('Test updateRecords function', () => {
 		let env, transaction;
-		let get_micro_time_stub;
-		before(() => {
-			date_stub.restore();
-			get_micro_time_stub = sandbox.stub(common, 'getMicroTime').returns(TXN_TIMESTAMP);
-		});
-
-		after(() => {
-			date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
-			get_micro_time_stub.restore();
-		});
+		let get_monotonic_time_stub;
 
 		beforeEach(async () => {
-			date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
+			get_monotonic_time_stub = sandbox.stub(common, 'getNextMonotonicTime').returns(TXN_TIMESTAMP);
 			global.lmdb_map = undefined;
 			try {
-				if (env)
-					await lmdb_env_util.closeEnvironment(env);
+				if (env) await lmdb_env_util.closeEnvironment(env);
 			} catch (e) {}
 			await fs.remove(test_utils.getMockLMDBPath());
 			await fs.mkdirp(BASE_TEST_PATH);
@@ -575,7 +550,7 @@ describe('Test writeUtility module', () => {
 
 		afterEach(async () => {
 			await env.close();
-			date_stub.restore();
+			get_monotonic_time_stub.restore();
 
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
@@ -799,15 +774,7 @@ describe('Test writeUtility module', () => {
 		});
 
 		it('test partially updating row & make sure other attributes are untouched', async () => {
-			let all_attributes_for_update = [
-				'__createdtime__',
-				'__updatedtime__',
-				'age',
-				'city',
-				'height',
-				'id',
-				'name',
-			];
+			let all_attributes_for_update = ['__createdtime__', '__updatedtime__', 'age', 'city', 'height', 'id', 'name'];
 
 			let records = [];
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {
@@ -1025,11 +992,9 @@ describe('Test writeUtility module', () => {
 
 	describe('Test upsertRecords function', () => {
 		let env, transaction;
-		let get_micro_time_stub;
+		let get_monotonic_time_stub;
 		let uuid_stub;
 		before(() => {
-			date_stub.restore();
-			get_micro_time_stub = sandbox.stub(common, 'getMicroTime').returns(TXN_TIMESTAMP);
 			uuid_stub = write_utility.__set__('uuid', {
 				v4: () => {
 					return UUID_VALUE;
@@ -1038,17 +1003,14 @@ describe('Test writeUtility module', () => {
 		});
 
 		after(() => {
-			date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
-			get_micro_time_stub.restore();
 			uuid_stub();
 		});
 
 		beforeEach(async () => {
-			date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
+			get_monotonic_time_stub = sandbox.stub(common, 'getNextMonotonicTime').returns(TXN_TIMESTAMP);
 			global.lmdb_map = undefined;
 			try {
-				if (env)
-					await lmdb_env_util.closeEnvironment(env);
+				if (env) await lmdb_env_util.closeEnvironment(env);
 			} catch (e) {}
 			await fs.remove(test_utils.getMockLMDBPath());
 			await fs.mkdirp(BASE_TEST_PATH);
@@ -1061,7 +1023,7 @@ describe('Test writeUtility module', () => {
 
 		afterEach(async () => {
 			await env.close();
-			date_stub.restore();
+			get_monotonic_time_stub.restore();
 
 			global.lmdb_map = undefined;
 			await fs.remove(test_utils.getMockLMDBPath());
@@ -1235,15 +1197,7 @@ describe('Test writeUtility module', () => {
 		});
 
 		it('test partially upserting row & make sure other attributes are untouched', async () => {
-			let all_attributes_for_upsert = [
-				'__createdtime__',
-				'__updatedtime__',
-				'age',
-				'height',
-				'id',
-				'name',
-				'city',
-			];
+			let all_attributes_for_upsert = ['__createdtime__', '__updatedtime__', 'age', 'height', 'id', 'name', 'city'];
 
 			let records = [];
 			for (let { key, value } of env.dbis[HASH_ATTRIBUTE_NAME].getRange({ start: false })) {

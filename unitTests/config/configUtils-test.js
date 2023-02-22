@@ -29,7 +29,6 @@ const TEST_ARGS = {
 	CLUSTERING_HUBSERVER_NETWORK_PORT: '9900',
 	CLUSTERING_LEAFSERVER_NETWORK_PORT: '9944',
 	CLUSTERING_LEAFSERVER_NETWORK_ROUTES: '[]',
-	CLUSTERING_INGEST_SERVICE_PROCESSES: '1',
 	CLUSTERING_REPLY_SERVICE_PROCESSES: '1',
 	CLUSTERING_TLS_CERTIFICATE: TEST_CERT,
 	CLUSTERING_TLS_PRIVATEKEY: TEST_PRIVATE_KEY,
@@ -109,7 +108,6 @@ const FLAT_CONFIG_OBJ = {
 	],
 	clustering_hubserver_leafnodes_network_port: 9931,
 	clustering_hubserver_network_port: 9930,
-	clustering_ingestservice_processes: 1,
 	clustering_leafserver_network_port: 9940,
 	clustering_nodename: null,
 	clustering_replyservice_processes: 1,
@@ -302,9 +300,6 @@ describe('Test configUtils module', () => {
 							port: 9900,
 						},
 					},
-					ingest: {
-						threads: 1,
-					},
 					leafServer: {
 						network: {
 							port: 9944,
@@ -493,7 +488,6 @@ describe('Test configUtils module', () => {
 			clustering_hubserver_cluster_network_routes: null,
 			clustering_hubserver_leafnodes_network_port: 9931,
 			clustering_hubserver_network_port: 9930,
-			clustering_ingest_threads: 1,
 			clustering_leafserver_network_port: 9940,
 			clustering_leafserver_network_routes: null,
 			clustering_leafserver_streams_maxage: null,
@@ -928,7 +922,6 @@ describe('Test configUtils module', () => {
 				],
 				clustering_hubserver_leafnodes_network_port: 9931,
 				clustering_hubserver_network_port: 9930,
-				clustering_ingestservice_processes: 1,
 				clustering_leafserver_network_port: 9940,
 				clustering_nodename: null,
 				clustering_replyservice_processes: 1,

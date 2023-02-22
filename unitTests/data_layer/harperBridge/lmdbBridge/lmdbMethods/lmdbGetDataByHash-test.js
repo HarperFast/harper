@@ -22,6 +22,7 @@ const assert = require('assert');
 const fs = require('fs-extra');
 const sinon = require('sinon');
 const systemSchema = require('../../../../../json/systemSchema');
+const common = require('../../../../../utility/lmdb/commonUtility');
 
 const TIMESTAMP = Date.now();
 const HASH_ATTRIBUTE_NAME = 'id';
@@ -97,7 +98,7 @@ describe('Test lmdbGetDataByHash module', () => {
 	let hdb_table_env;
 	let hdb_attribute_env;
 	before(() => {
-		date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
+		date_stub = sandbox.stub(common, 'getNextMonotonicTime').returns(TIMESTAMP);
 	});
 
 	after(() => {
@@ -211,9 +212,7 @@ describe('Test lmdbGetDataByHash module', () => {
 			await test_utils.assertErrorAsync(
 				lmdb_get_data_by_hash,
 				[search_obj],
-				new Error(
-					"'get_attributes' must contain at least 1 item"
-				)
+				new Error("'get_attributes' must contain at least 1 item")
 			);
 		});
 

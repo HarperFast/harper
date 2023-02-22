@@ -290,6 +290,8 @@ function setDefaultRoot(parent, helpers) {
 			return path.join(hdb_root, DEFAULT_CUSTOM_FUNCTIONS_FOLDER);
 		case 'logging.root':
 			return path.join(hdb_root, DEFAULT_LOG_FOLDER);
+		case 'clustering.leafServer.streams.path':
+			return path.join(hdb_root, 'clustering', 'leaf');
 		default:
 			throw new Error(
 				`Error setting default root for config parameter: ${config_param}. Unrecognized config parameter`

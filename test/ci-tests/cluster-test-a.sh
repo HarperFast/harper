@@ -27,4 +27,4 @@ sed -in "s/ClstrTestANode3/${public_dns_names[2]%%.*}/" clusterTests/clusterTest
 sed -in "s/ClstrTestANode4/${public_dns_names[3]%%.*}/" clusterTests/clusterTestA/Five_node_cluster_tests_env_var.postman_environment.json
 sed -in "s/ClstrTestANode5/${public_dns_names[4]%%.*}/" clusterTests/clusterTestA/Five_node_cluster_tests_env_var.postman_environment.json
 
-newman run clusterTests/clusterTestA/Five_Node_Cluster.postman_collection.json -e clusterTests/clusterTestA/Five_node_cluster_tests_env_var.postman_environment.json --reporters cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html  --delay-request 100 --insecure
+newman run clusterTests/clusterTestA/Five_Node_Cluster.postman_collection.json -e clusterTests/clusterTestA/Five_node_cluster_tests_env_var.postman_environment.json --reporters cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html  --delay-request 100 --insecure --reporter-cli-show-timestamps

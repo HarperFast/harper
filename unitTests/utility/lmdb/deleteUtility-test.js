@@ -46,26 +46,16 @@ const MULTI_RECORD_ARRAY_COMPARE = [
 
 const IDS = [1, 2, 3, 4, 5, 6];
 
-const TIMESTAMP = Date.now();
-const TXN_TIMESTAMP = common.getMicroTime();
+const TXN_TIMESTAMP = common.getNextMonotonicTime();
 const sandbox = sinon.createSandbox();
 
 describe('Test deleteUtility', () => {
 	let env, transaction;
 
-	let get_micro_time_stub;
-	let date_stub;
-	before(() => {
-		get_micro_time_stub = sandbox.stub(common, 'getMicroTime').returns(TXN_TIMESTAMP);
-		date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
-	});
-
-	after(() => {
-		get_micro_time_stub.restore();
-		date_stub.restore();
-	});
+	let get_monotonic_time_stub;
 
 	beforeEach(async () => {
+		get_monotonic_time_stub = sandbox.stub(common, 'getNextMonotonicTime').returns(TXN_TIMESTAMP);
 		global.lmdb_map = undefined;
 
 		await fs.remove(test_utils.getMockLMDBPath());
@@ -85,6 +75,7 @@ describe('Test deleteUtility', () => {
 		await env.close();
 		global.lmdb_map = undefined;
 		await fs.remove(BASE_TEST_PATH);
+		get_monotonic_time_stub.restore();
 	});
 
 	describe('Test deleteRecords function', () => {
@@ -112,7 +103,9 @@ describe('Test deleteUtility', () => {
 		it('delete all records', async () => {
 			let expected_compare = [];
 			MULTI_RECORD_ARRAY_COMPARE.forEach((compare) => {
-				expected_compare.push(Object.assign({ __updatedtime__: TIMESTAMP, __createdtime__: TIMESTAMP }, compare));
+				expected_compare.push(
+					Object.assign({ __updatedtime__: TXN_TIMESTAMP, __createdtime__: TXN_TIMESTAMP }, compare)
+				);
 			});
 
 			let records = [];
@@ -162,16 +155,16 @@ describe('Test deleteUtility', () => {
 					age: 32,
 					id: 2,
 					name: 'Jerry',
-					__createdtime__: TIMESTAMP,
-					__updatedtime__: TIMESTAMP,
+					__createdtime__: TXN_TIMESTAMP,
+					__updatedtime__: TXN_TIMESTAMP,
 				},
 				{
 					age: 44,
 					city: 'Denver',
 					id: 4,
 					name: 'Joy',
-					__createdtime__: TIMESTAMP,
-					__updatedtime__: TIMESTAMP,
+					__createdtime__: TXN_TIMESTAMP,
+					__updatedtime__: TXN_TIMESTAMP,
 				},
 			];
 
