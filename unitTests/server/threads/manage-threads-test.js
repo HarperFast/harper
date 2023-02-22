@@ -13,7 +13,8 @@ describe('(Re)start/monitor workers', () => {
 	before(async function () {
 		await shutdownWorkers();
 	});
-	it.skip('Start worker and handle errors/restarts', async function () {
+	it('Start worker and handle errors/restarts', async function () {
+		this.timeout(10000);
 		let worker1StartedCount = 0;
 		let worker2StartedCount = 0;
 		let worker1Started;
@@ -48,23 +49,16 @@ describe('(Re)start/monitor workers', () => {
 		assert.equal(worker2StartedCount, 2);
 	});
 	it('Broadcast through "itc"', async function () {
-		process.on('uncaughtException', (error) => {
-			console.error('uncaught', error);
-		});
 		console.log('starting broadcast test');
-		let worker1 = startWorker('unitTests/server/threads/thread-for-tests');
-		let worker2 = startWorker('unitTests/server/threads/thread-for-tests');
+		let worker1 = startWorker('unitTests/server/threads/thread-for-tests', { name: 'itc-test' });
+		let worker2 = startWorker('unitTests/server/threads/thread-for-tests', { name: 'itc-test' });
 		console.log('started broadcast threads');
 		worker1.postMessage({ type: 'broadcast1' });
 		console.log('send broadcast request');
-		let interval = setInterval(() => {
-			console.log('waiting...');
-		}, 400);
 		await new Promise((resolve) => {
 			worker2.on('message', (event) => {
 				if (event.type === 'received-broadcast') {
 					resolve();
-					clearInterval(interval);
 				}
 			});
 		});
@@ -72,12 +66,13 @@ describe('(Re)start/monitor workers', () => {
 	});
 	it('getThreadInfo should return stats', async function () {
 		this.timeout(5000);
-		let worker1 = startWorker('unitTests/server/threads/thread-for-tests');
-		let worker2 = startWorker('unitTests/server/threads/thread-for-tests');
-		await new Promise((resolve) => setTimeout(resolve, 2000)); // wait for resources to be reported
+		let worker1 = startWorker('unitTests/server/threads/thread-for-tests', { name: 'gti-test' });
+		let worker2 = startWorker('unitTests/server/threads/thread-for-tests', { name: 'gti-test' });
+		await new Promise((resolve) => setTimeout(resolve, 3500)); // wait for resources to be reported
 		let worker_info = await getThreadInfo();
 		assert(worker_info.length >= 2);
 		let worker = worker_info[worker_info.length - 1];
+		console.log(worker);
 		// these values are important to ensure that they are reported
 		assert(worker.heapUsed);
 		assert(worker.arrayBuffers);
@@ -92,8 +87,9 @@ describe('(Re)start/monitor workers', () => {
 	});
 
 	afterEach(async function () {
-		for (let worker of workers) {
+		await shutdownWorkers();
+		/*for (let worker of workers) {
 			worker.terminate();
-		}
+		}*/
 	});
 });
