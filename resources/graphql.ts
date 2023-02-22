@@ -4,6 +4,7 @@ import { Resource } from './Resource';
 import { snake_case } from './Table';
 import { registerResourceType } from './resource-server';
 import { restHandler } from './REST-handler';
+import { resources } from '../index';
 
 export function registerGraphQL() {
 	registerResourceType('graphql', createHandler);
@@ -84,7 +85,8 @@ export async function handleFile(gql_content, relative_path, file_path) {
 						}
 						handlers.set(query_name, restHandler(GraphQLResource));*/
 						if (!isMainThread)
-							handlers.set(query_name, restHandler(relative_path + '/' + query_name, type_def.tableClass));
+							resources.set(relative_path + '/' + query_name, type_def.tableClass);
+							//handlers.set(query_name, restHandler(relative_path + '/' + query_name, type_def.tableClass));
 					}
 				}
 		}

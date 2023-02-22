@@ -9,6 +9,7 @@ import * as js_handler from '../../resources/js-resource';
 import * as fastify_routes_handler from '../../plugins/fastifyRoutes';
 import * as fg from 'fast-glob';
 const { readFile } = promises;
+import { watchDir, restartWorkers } from '../../server/threads/manage-threads';
 
 const CONFIG_FILENAME = 'config.yaml';
 let CF_ROUTES_DIR = env.get(HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
@@ -48,7 +49,7 @@ const DEFAULT_HANDLERS = [
 	},
 ];
 
-export async function loadCustomFunction(app_folder) {
+export async function loadCustomFunction(app_folder: string, no_watch?: boolean) {
 	let config_path = join(app_folder, CONFIG_FILENAME);
 	let config;
 	if (existsSync(config_path)) {
@@ -78,5 +79,12 @@ export async function loadCustomFunction(app_folder) {
 					module.handleFile(contents, relative_path, filename, basename(app_folder));
 			}
 		}
+	}
+	// Auto restart threads on changes to any app folder. TODO: Make this configurable
+	if (isMainThread && !no_watch) {
+		watchDir(app_folder, () => {
+			loadCustomFunction(app_folder, true);
+			restartWorkers();
+		});
 	}
 }
