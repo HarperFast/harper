@@ -44,6 +44,28 @@ const media_types = { // TODO: Make these monomorphic for faster access
 		isSubscription: true,
 		q: 0.8
 	},
+	// TODO: Support this as well:
+	//'multipart/form-data'
+	'application/x-www-form-urlencoded': {
+		deserialize(data) {
+			let object = {};
+			for (let [ key, value ] of new URLSearchParams(data)) {
+				if (object.hasOwnProperty(key)) {
+					// in case there are multiple query params with the same name, convert them to an array
+					let last = object[key];
+					if (Array.isArray(last)) last.push(value);
+					else object.key = [last, value];
+				} else object[key] = value;
+			}
+		},
+		serialize(data) {
+			let usp = new URLSearchParams();
+			for (let key in data) {
+				usp.set(key, data);
+			}
+			return usp.toString();
+		}
+	},
 	'*/*': {
 		type: 'application/json',
 		serializeStream: streamAsJSON,
@@ -166,6 +188,11 @@ function findBestSerializer(incoming_message) {
 
 	return { serializer: best_serializer, type: best_type, parameters: best_parameters };
 }
+function serialize(response_data, request, output_stream) {
+	if (response_data?.contentType && response_data.data) {
+
+	}
+}
 
 function getDeserializer(content_type) {
 	if (!content_type) return media_types['application/json'].deserialize;
@@ -177,15 +204,16 @@ function getDeserializer(content_type) {
 	}
 	return media_types[content_type]?.deserialize || deserializeUnknownType(content_type, parameters);
 }
-function deserializeUnknownType(type, parameters) {
-	if (type.startsWith('text/')) {
-		// convert the data to a string (using the provided charset if specified)
+function deserializeUnknownType(content_type, parameters) {
+	// TODO: store the content-disposition too
+	if (content_type.startsWith('text/')) {
+		// convert the data to a string since it is text (using the provided charset if specified)
 		let charset = parameters?.match(/charset=(.+)/)?.[1] || 'utf-8';
 		return (data: Buffer) => ({
-			type,
+			contentType: content_type,
 			data: data.toString(charset),
 		});
-	} else if (type === 'application/octet-stream') {
+	} else if (content_type === 'application/octet-stream') {
 		// use this type as a way of directly transferring binary data (since that is what it means)
 		return data => data;
 	} else { // else record the type and binary data as a pair
