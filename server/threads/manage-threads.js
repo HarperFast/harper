@@ -72,7 +72,6 @@ function startWorker(path, options = {}) {
 		);
 		ports_to_send.push(port2);
 	}
-	console.log('creating worker', path, options.name);
 	const worker = new Worker(
 		isAbsolute(path) ? path : join(PACKAGE_ROOT, path),
 		Object.assign(
@@ -88,7 +87,6 @@ function startWorker(path, options = {}) {
 			options
 		)
 	);
-	console.log('created worker', path);
 	addPort(worker, true);
 	worker.unexpectedRestarts = options.unexpectedRestarts || 0;
 	worker.startCopy = () => {
@@ -121,7 +119,6 @@ function startWorker(path, options = {}) {
 	startMonitoring();
 	if (options.onStarted) options.onStarted(worker); // notify that it is ready
 	worker.name = options.name;
-	console.log('finished adding worker events');
 	return worker;
 }
 
