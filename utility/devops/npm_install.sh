@@ -24,7 +24,7 @@ harperdb install --TC_AGREEMENT yes --HDB_ROOT $(pwd)/hdb --HTTP_PORT 9925 --HTT
 
    sleep 3s
 
-   harperdb run
+   harperdb start
       sleep 3s
       theProc=$(ps -ef | grep [h]db_express)
       thePort=$(ss -tln | grep 9925)

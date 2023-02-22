@@ -41,7 +41,7 @@ sed -i 's/ALLOW_SELF_SIGNED_SSL_CERTS = false/ALLOW_SELF_SIGNED_SSL_CERTS=TRUE/'
 #KILL only this node
 #kill $(ps -ef | grep "$target_dir/node_$node_count" | awk '{print $2}')
 
-./linux-harperdb run
+./linux-harperdb start
 sleep 7s
 
 #Add Node
@@ -51,7 +51,7 @@ newman run https://api.getpostman.com/collections/4f5d17b0-e923-e7c0-feb9-f80dbc
 #kill $(ps -ef | grep "$target_dir/node_$node_count" | awk '{print $2}')
 
 #sleep 10s
-#./linux-harperdb run
+#./linux-harperdb start
 
 node_count=$(($node_count - 1));
 http_port=$(($http_port + $port_offset));
@@ -61,12 +61,12 @@ done
 #echo "CLUSTER BUILT NOTHING SHOULD BE RUNNING: $(ps -ef | grep $target_dir)"
 
 #cd $target_dir/node_1/harperdb/bin/
-#./linux-harperdb run
+#./linux-harperdb start
 
 #sleep 7s
 
 #cd $target_dir/node_2/harperdb/bin/
-#./linux-harperdb run
+#./linux-harperdb start
 
 #sleep 5s
 
