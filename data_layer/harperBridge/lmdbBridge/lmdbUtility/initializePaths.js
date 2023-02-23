@@ -143,11 +143,16 @@ function initSystemSchemaPaths(schema, table) {
 	// Default to default location
 	return getSystemSchemaPath();
 }
-
+function resetPaths() {
+	BASE_SCHEMA_PATH = undefined;
+	SYSTEM_SCHEMA_PATH = undefined;
+	TRANSACTION_STORE_PATH = undefined;
+}
 module.exports = {
 	getBaseSchemaPath,
 	getSystemSchemaPath,
 	getTransactionAuditStorePath,
 	getSchemaPath,
 	initSystemSchemaPaths,
+	resetPaths
 };

@@ -18,10 +18,9 @@ const sinon = require('sinon');
 const rw_mount = rewire('../../utility/mount_hdb');
 const SEP = path.sep;
 const create_lmdb_tables = rw_mount.__get__('createLMDBTables');
-
-const BASE_BATH = test_utils.getMockTestPath();
-const BASE_SCHEMA_PATH = test_utils.getMockLMDBPath();
-const SYSTEM_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, hdb_terms.SYSTEM_SCHEMA_NAME);
+let BASE_BATH;
+let BASE_SCHEMA_PATH;
+let SYSTEM_SCHEMA_PATH;
 
 describe('test mount_hdb module', () => {
 	const sandbox = sinon.createSandbox();
@@ -29,11 +28,12 @@ describe('test mount_hdb module', () => {
 	let get_schema_path_stub;
 
 	before(async () => {
-		try {
-			await fs_extra.remove(BASE_BATH);
-		} catch (e) {}
+		BASE_BATH = env_mngr.getHdbBasePath();
+		BASE_SCHEMA_PATH = path.join(BASE_BATH, hdb_terms.SCHEMA_DIR_NAME);
+		SYSTEM_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, hdb_terms.SYSTEM_SCHEMA_NAME);
 		init_system_schema_paths_stub = sandbox.stub(init_paths, 'initSystemSchemaPaths').returns(SYSTEM_SCHEMA_PATH);
 		get_schema_path_stub = sandbox.stub(init_paths, 'getSchemaPath').returns(SYSTEM_SCHEMA_PATH);
+		await fs_extra.mkdirp(BASE_BATH);
 	});
 
 	after(async () => {
@@ -77,7 +77,8 @@ describe('test mount_hdb module', () => {
 	describe('test createLMDBTables', () => {
 		before(async () => {
 			await fs_extra.mkdirp(SYSTEM_SCHEMA_PATH);
-			console.log('created system schema directory', SYSTEM_SCHEMA_PATH);
+			env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.STORAGE_PATH, null); // make sure this isn't set
+			init_paths.resetPaths();
 		});
 
 		after(async () => {
@@ -89,8 +90,7 @@ describe('test mount_hdb module', () => {
 		it('happy path', async () => {
 			let err;
 			try {
-				console.log('creating lmdb tables', SYSTEM_SCHEMA_PATH);
-				await create_lmdb_tables();
+				await create_lmdb_tables(SYSTEM_SCHEMA_PATH);
 			} catch (e) {
 				err = e;
 			}
