@@ -43,7 +43,7 @@ $working_dir/utility/devops/script_register_local.exp $target_dir/node_$node_cou
 #KILL only this node
 #kill $(ps -ef | grep "$target_dir/node_$node_count" | awk '{print $2}')
 
-node harperdb run
+node harperdb start
 sleep 10s
 
 #Add Node
@@ -64,12 +64,12 @@ done
 #kill $(ps -ef | grep "harperdb_cluster" | awk '{print $2}')
 
 #cd $target_dir/node_1/harperdb/bin/
-#node harperdb run
+#node harperdb start
 
 #sleep 7s
 
 #cd $target_dir/node_2/harperdb/bin/
-#node harperdb run
+#node harperdb start
 
 #sleep 10s
 ###########  this was to make sure all the processes were up whn dooing cluster testing among KB and Z. Maybe get rid of this?

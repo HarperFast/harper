@@ -20,7 +20,7 @@ const SETTINGS = (settings_values = {}) =>
 	'\t;Set to true to enable HTTPS on the HarperDB REST endpoint\n' +
 	'Requires a valid certificate and key=\n' +
 	`HTTPS_ON=${!hdb_utils.isEmpty(settings_values.HTTPS_ON) ? settings_values.HTTPS_ON : 'FALSE'}\n` +
-	'\t;Set to true to have HarperDB run using standard HTTP\n' +
+	'\t;Set to true to have harperdb start using standard HTTP\n' +
 	`HTTP_ON=${!hdb_utils.isEmpty(settings_values.HTTP_ON) ? settings_values.HTTP_ON : 'TRUE'}\n` +
 	'\t;Set to true to enable Cross Origin Resource Sharing, which allows requests across a domain\n' +
 	'CORS_ON=TRUE\n' +

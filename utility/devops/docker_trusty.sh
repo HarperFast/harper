@@ -69,7 +69,7 @@ harperdb_run()
      echo "I am in this directory now: $(pwd)"
      ./linux-harperdb install --TC_AGREEMENT yes --HDB_ROOT $hdb_data --HTTP_PORT 9925 --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME admin --HDB_ADMIN_PASSWORD "Abc1234!"
     sleep 7s
-    ./linux-harperdb run
+    ./linux-harperdb start
     sleep 3s
     theProc=$(ps -ef | grep [h]db_express);
 
@@ -138,7 +138,7 @@ echo "I am in this directory now: $(pwd)"
 
 sleep 10s
 
-./armv7-harperdb run
+./armv7-harperdb start
 
 sleep 7s
 theProc=$(ps -ef | grep [h]db_express);
