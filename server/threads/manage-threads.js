@@ -72,7 +72,6 @@ function startWorker(path, options = {}) {
 		);
 		ports_to_send.push(port2);
 	}
-
 	const worker = new Worker(
 		isAbsolute(path) ? path : join(PACKAGE_ROOT, path),
 		Object.assign(
@@ -88,7 +87,7 @@ function startWorker(path, options = {}) {
 			options
 		)
 	);
-	addPort(worker);
+	addPort(worker, true);
 	worker.unexpectedRestarts = options.unexpectedRestarts || 0;
 	worker.startCopy = () => {
 		// in a shutdown sequence we use overlapping restarts, starting the new thread while waiting for the old thread
@@ -298,7 +297,7 @@ if (parentPort) {
 }
 module.exports.getThreadInfo = getThreadInfo;
 
-function addPort(port) {
+function addPort(port, keep_ref) {
 	connected_ports.push(port);
 	port
 		.on('message', (message) => {
@@ -315,8 +314,8 @@ function addPort(port) {
 		})
 		.on('exit', () => {
 			connected_ports.splice(connected_ports.indexOf(port), 1);
-		})
-		.unref();
+		});
+	if (!keep_ref) port.unref();
 }
 
 if (!isMainThread) {

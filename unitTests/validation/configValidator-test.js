@@ -5,7 +5,7 @@ const { expect } = chai;
 const sinon = require('sinon');
 const rewire = require('rewire');
 const config_val = rewire('../../validation/configValidator');
-const { configValidator, routesValidator } = config_val;
+const { configValidator, routesValidator, doesPathExist } = config_val;
 const path = require('path');
 const test_utils = require('../test_utils');
 const hdb_utils = require('../../utility/common_utils');
@@ -148,14 +148,15 @@ describe('Test configValidator module', () => {
 	describe('Test clustering schema in configValidator function', () => {
 		let validate_pem_file_stub;
 		let validate_pem_file_rw;
-		let validate_stream_path_stub;
-		let validate_stream_path_rw;
+		let does_path_rw;
+		let does_path_stub;
 
 		beforeEach(() => {
 			validate_pem_file_stub = sandbox.stub();
 			validate_pem_file_rw = config_val.__set__('validatePemFile', validate_pem_file_stub);
-			validate_stream_path_stub = sandbox.stub();
-			validate_stream_path_rw = config_val.__set__('validateClusteringStreamPath', validate_stream_path_stub);
+			does_path_stub = sandbox.stub();
+			does_path_rw = config_val.__set__('doesPathExist', does_path_stub);
+			does_path_stub.returns(null);
 		});
 
 		afterEach(() => {
@@ -278,6 +279,7 @@ describe('Test configValidator module', () => {
 					rootPath: path.join(__dirname, '/carrot'),
 					storage: {
 						writeAsync: true,
+						path: path.join(__dirname, '/carrot/schema'),
 					},
 				},
 			};
@@ -295,7 +297,8 @@ describe('Test configValidator module', () => {
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'clustering.hubServer.cluster.name' is required. 'clustering.hubServer.cluster.network.port' must be a number. 'clustering.hubServer.cluster.network.routes[0].host' must be a string. 'clustering.hubServer.leafNodes.network.port' must be a number. 'clustering.hubServer.network.port' must be greater than or equal to 0";
+				"'clustering.hubServer.cluster.name' is required. 'clustering.hubServer.cluster.network.port' must be a" +
+				" number. 'clustering.hubServer.cluster.network.routes[0].host' must be a string. 'clustering.hubServer.leafNodes.network.port' must be a number. 'clustering.hubServer.network.port' must be greater than or equal to 0";
 
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
@@ -308,7 +311,9 @@ describe('Test configValidator module', () => {
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'clustering.leafServer.network.port' is required. 'clustering.leafServer.streams.maxAge' must be greater than or equal to 120. 'clustering.nodeName' invalid, must not contain ., * or >";
+				"'clustering.leafServer.network.port' is required. 'clustering.leafServer.streams.maxAge' must be" +
+				" greater than or equal to 120. 'clustering.nodeName'" +
+				' invalid, must not contain ., * or >';
 
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
@@ -319,7 +324,7 @@ describe('Test configValidator module', () => {
 			bad_config_obj.clustering.user = 9999;
 
 			const schema = configValidator(bad_config_obj);
-			const expected_schema_message = "'clustering.user' must be a string";
+			const expected_schema_message = "'clustering.user' must" + ' be a string';
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
 
@@ -332,7 +337,9 @@ describe('Test configValidator module', () => {
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'clustering.hubServer.cluster.name' is required. 'clustering.hubServer.cluster.network.port' is required. 'clustering.hubServer.leafNodes.network.port' is required. 'clustering.hubServer.network.port' is required";
+				"'clustering.hubServer.cluster.name' is required. 'clustering.hubServer.cluster.network.port' is" +
+				" required. 'clustering.hubServer.leafNodes.network.port' is required." +
+				" 'clustering.hubServer.network.port' is required";
 
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});

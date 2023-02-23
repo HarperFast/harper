@@ -6,9 +6,9 @@ let timer = setTimeout(() => {}, 10000); // use it keep the thread running until
 let array = [];
 if (!isMainThread) {
 	server_handlers.broadcast2 = (event) => {
-		parentPort.postMessage({type: 'received-broadcast'});
+		parentPort.postMessage({ type: 'received-broadcast' });
 	};
-	parentPort.on('message', message => {
+	parentPort.on('message', (message) => {
 		if (message.type == 'oom') {
 			while (true) {
 				array.push(new Array(64));

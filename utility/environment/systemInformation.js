@@ -1,6 +1,5 @@
 'use strict';
 
-const path = require('path');
 const si = require('systeminformation');
 const log = require('../logging/harper_logger');
 const terms = require('../hdbTerms');
@@ -12,8 +11,8 @@ env.initSync();
 
 // eslint-disable-next-line no-unused-vars
 const SystemInformationObject = require('./SystemInformationObject');
-const { getBaseSchemaPath } = require('../../data_layer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
 const { openEnvironment } = require('../lmdb/environmentUtility');
+const { getSchemaPath } = require('../../data_layer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
 
 //this will hold the system_information which is static to improve performance
 let system_information_cache = undefined;
@@ -225,7 +224,7 @@ async function getMetrics() {
 		let table_stats = (schema_stats[schema_name] = {});
 		for (let table_name in schemas[schema_name]) {
 			try {
-				let schema_path = path.join(getBaseSchemaPath(), schema_name);
+				let schema_path = getSchemaPath(schema_path, table_name);
 				let env = await openEnvironment(schema_path, table_name);
 				let stats = env.getStats();
 				table_stats[table_name] = {

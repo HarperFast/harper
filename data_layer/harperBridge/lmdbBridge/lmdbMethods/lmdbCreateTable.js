@@ -3,8 +3,7 @@
 const hdb_terms = require('../../../../utility/hdbTerms');
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
 const write_utility = require('../../../../utility/lmdb/writeUtility');
-const path = require('path');
-const { getSystemSchemaPath, getBaseSchemaPath } = require('../lmdbUtility/initializePaths');
+const { getSystemSchemaPath, getSchemaPath } = require('../lmdbUtility/initializePaths');
 const system_schema = require('../../../../json/systemSchema');
 const lmdb_create_attribute = require('./lmdbCreateAttribute');
 const LMDBCreateAttributeObject = require('../lmdbUtility/LMDBCreateAttributeObject');
@@ -26,7 +25,7 @@ module.exports = lmdbCreateTable;
  * @param table_create_obj
  */
 async function lmdbCreateTable(table_system_data, table_create_obj) {
-	let schema_path = path.join(getBaseSchemaPath(), table_create_obj.schema.toString());
+	let schema_path = getSchemaPath(table_create_obj.schema, table_create_obj.table);
 
 	let created_time_attr = new LMDBCreateAttributeObject(
 		table_create_obj.schema,

@@ -2,14 +2,13 @@
 
 const search_utility = require('../../../../utility/lmdb/searchUtility');
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
-const path = require('path');
 const common_utils = require('../../../../utility/common_utils');
 const lmdb_terms = require('../../../../utility/lmdb/terms');
 const hdb_terms = require('../../../../utility/hdbTerms');
-const { getBaseSchemaPath } = require('../lmdbUtility/initializePaths');
 const system_schema = require('../../../../json/systemSchema.json');
 const LMDB_ERRORS = require('../../../../utility/errors/commonErrors').LMDB_ERRORS_ENUM;
 const { compareKeys } = require('ordered-binary');
+const { getSchemaPath } = require('./initializePaths');
 
 const WILDCARDS = hdb_terms.SEARCH_WILDCARDS;
 
@@ -42,7 +41,7 @@ async function prepSearch(search_object, comparator, return_map) {
  * @param {Boolean} return_map
  */
 async function executeSearch(search_object, search_type, hash_attribute, return_map) {
-	let schema_path = path.join(getBaseSchemaPath(), search_object.schema.toString());
+	let schema_path = getSchemaPath(search_object.schema, search_object.table);
 	let env = await environment_utility.openEnvironment(schema_path, search_object.table);
 	let search_results = searchByType(env, search_object, search_type, hash_attribute);
 	let transaction = search_results.transaction || env;

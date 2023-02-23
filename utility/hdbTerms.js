@@ -580,9 +580,12 @@ const CONFIG_PARAMS = {
 	STORAGE_COMPRESSION: 'storage_compression',
 	STORAGE_NOREADAHEAD: 'storage_noReadAhead',
 	STORAGE_PREFETCHWRITES: 'storage_prefetchWrites',
+	STORAGE_ENCRYPTION: 'storage_encryption',
+	STORAGE_PATH: 'storage_path',
+	STORAGE_AUDIT_PATH: 'storage_audit_path',
+	SCHEMAS: 'schemas',
 };
 
-// If a param is added to the config file it needs to be added here also. Keep all keys lowercase.
 const CONFIG_PARAM_MAP = {
 	settings_path: BOOT_PROP_PARAMS.SETTINGS_PATH_KEY,
 	hdb_root_key: CONFIG_PARAMS.ROOTPATH,
@@ -711,13 +714,18 @@ const CONFIG_PARAM_MAP = {
 	operationsapi_network_timeout: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT,
 	operationsapi_nodeenv: CONFIG_PARAMS.OPERATIONSAPI_NODEENV,
 	operationsapi_root: CONFIG_PARAMS.ROOTPATH,
-	rootpath: CONFIG_PARAMS.ROOTPATH,
-	storage_writeasync: CONFIG_PARAMS.STORAGE_WRITEASYNC,
-	storage_overlappingsync: CONFIG_PARAMS.STORAGE_OVERLAPPINGSYNC,
-	storage_noreadahead: CONFIG_PARAMS.STORAGE_NOREADAHEAD,
-	storage_caching: CONFIG_PARAMS.STORAGE_CACHING,
-	storage_compression: CONFIG_PARAMS.STORAGE_COMPRESSION,
-	storage_prefetchwrites: CONFIG_PARAMS.STORAGE_PREFETCHWRITES,
+	schemas: CONFIG_PARAMS.SCHEMAS,
+	storage_path: CONFIG_PARAMS.STORAGE_PATH,
+};
+for (let key in CONFIG_PARAMS) {
+	let name = CONFIG_PARAMS[key];
+	CONFIG_PARAM_MAP[name.toLowerCase()] = name;
+}
+
+const SCHEMAS_PARAM_CONFIG = {
+	TABLES: 'tables',
+	PATH: 'path',
+	AUDIT_PATH: 'auditPath',
 };
 
 // Describes all available job types
@@ -1034,4 +1042,5 @@ module.exports = {
 	FOREGROUND_PID_FILE,
 	PACKAGE_ROOT,
 	PRE_4_0_0_VERSION,
+	SCHEMAS_PARAM_CONFIG,
 };

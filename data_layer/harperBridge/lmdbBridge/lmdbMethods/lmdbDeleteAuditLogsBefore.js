@@ -4,7 +4,6 @@ const environment_utility = require('../../../../utility/lmdb/environmentUtility
 const { getTransactionAuditStorePath } = require('../lmdbUtility/initializePaths');
 // eslint-disable-next-line no-unused-vars
 const DeleteBeforeObject = require('../../../DeleteBeforeObject');
-const path = require('path');
 const lmdb_terms = require('../../../../utility/lmdb/terms');
 const hdb_utils = require('../../../../utility/common_utils');
 const DeleteAuditLogsBeforeResults = require('./DeleteAuditLogsBeforeResults');
@@ -21,7 +20,7 @@ module.exports = deleteAuditLogsBefore;
  * @param {DeleteBeforeObject} delete_audit_logs_obj
  */
 async function deleteAuditLogsBefore(delete_audit_logs_obj) {
-	let schema_path = path.join(getTransactionAuditStorePath(), delete_audit_logs_obj.schema);
+	let schema_path = getTransactionAuditStorePath(delete_audit_logs_obj.schema, delete_audit_logs_obj.table);
 	let env = await environment_utility.openEnvironment(schema_path, delete_audit_logs_obj.table, true);
 	let all_dbis = environment_utility.listDBIs(env);
 	environment_utility.initializeDBIs(env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP, all_dbis);
