@@ -4,8 +4,7 @@ const hdb_terms = require('../../../../utility/hdbTerms');
 const lmdb_create_records = require('./lmdbCreateRecords');
 const InsertObject = require('../../../InsertObject');
 const fs = require('fs-extra');
-const path = require('path');
-const { getBaseSchemaPath } = require('../lmdbUtility/initializePaths');
+const { getSchemaPath } = require('../lmdbUtility/initializePaths');
 
 module.exports = lmdbCreateSchema;
 
@@ -28,5 +27,5 @@ async function lmdbCreateSchema(create_schema_obj) {
 	);
 
 	await lmdb_create_records(insert_object);
-	await fs.mkdirp(path.join(getBaseSchemaPath(), create_schema_obj.schema.toString()));
+	await fs.mkdirp(getSchemaPath(create_schema_obj.schema));
 }

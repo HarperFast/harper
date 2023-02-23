@@ -377,7 +377,9 @@ async function checkForExistingInstall() {
 	if (boot_file_exists) {
 		hdb_logger.trace(`Install found an existing boot prop file at:${boot_prop_path}`);
 		const hdb_properties = PropertiesReader(boot_prop_path);
-		const config_file_path = config_utils.getConfigValue(hdb_terms.BOOT_PROP_PARAMS.SETTINGS_PATH_KEY) || hdb_properties.get(hdb_terms.BOOT_PROP_PARAMS.SETTINGS_PATH_KEY);
+		const config_file_path =
+			config_utils.getConfigValue(hdb_terms.BOOT_PROP_PARAMS.SETTINGS_PATH_KEY) ||
+			hdb_properties.get(hdb_terms.BOOT_PROP_PARAMS.SETTINGS_PATH_KEY);
 		hdb_exists = await fs.pathExists(config_file_path);
 	}
 

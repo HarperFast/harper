@@ -24,10 +24,10 @@ if (!isMainThread) {
 	loadComponentModules();
 	harper_logger.error('started http thread', threadId);
 	parentPort.on('message', (message) => {
-		const { port, fd } = message;
+		const { port, fd, data } = message;
 		if (fd) {
 			// Create a socket from the file descriptor for the socket that was routed to us.
-			deliverSocket(fd, port);
+			deliverSocket(fd, port, data);
 		} else if (message.requestId) {
 			// Windows doesn't support passing file descriptors, so we have to resort to manually proxying the socket
 			// data for each request
@@ -48,17 +48,24 @@ if (!isMainThread) {
 	parentPort.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
 }
 
-function deliverSocket(fd, port) {
+function deliverSocket(fd, port, data) {
 	// Create a socket and deliver it to the HTTP server
 	// HTTP server likes to allow half open sockets
 	let socket = new Socket({ fd, readable: true, writable: true, allowHalfOpen: true });
 	// for each socket, deliver the connection to the HTTP server handler/parser
-	if (SERVERS[port]) SERVERS[port].emit('connection', socket);
-	else {
+	let app_server = SERVERS[port];
+	if (app_server) {
+		app_server.server.emit('connection', socket);
+		if (data) socket.emit('data', data);
+	} else {
 		const retry = (retries) => {
 			// in case the server hasn't registered itself yet
 			setTimeout(() => {
-				if (SERVERS[port]) SERVERS[port].emit('connection', socket);
+				let app_server = SERVERS[port];
+				if (app_server) {
+					app_server.server.emit('connection', socket);
+					if (data) socket.emit('data', data);
+				}
 				else if (retries < 5) retry(retries + 1);
 				else {
 					harper_logger.error(`Server on port ${port} was not registered`);

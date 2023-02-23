@@ -50,20 +50,29 @@ function startSocketServer(port = 0, workerStrategy = findMostIdleWorker) {
 		} catch (error) {}
 	}
 	// at some point we may want to actually read from the https connections
+	let worker_strategy;
+	if (session_affinity_identifier) {
+		// use remote ip address based session affinity
+		if (session_affinity_identifier === 'ip') worker_strategy = findByRemoteAddressAffinity;
+		// use a header for session affinity (like Authorization or Cookie)
+		else worker_strategy = makeFindByHeaderAffinity(session_affinity_identifier);
+	} else
+		worker_strategy = findMostIdleWorker; // no session affinity, just delegate to most idle worker
 	let server = createServer(
 		{
 			allowHalfOpen: true,
-			pauseOnConnect: true,
+			pauseOnConnect: !worker_strategy.readsData,
 		},
 		(socket) => {
-			const worker = workerStrategy(socket);
-			if (!worker) return harper_logger.error(`No HTTP workers found`);
-			worker.requests++;
-			let fd = socket._handle.fd;
-			if (fd >= 0) worker.postMessage({ port, fd });
-			// valid file descriptor, forward it
-			// Windows doesn't support passing sockets by file descriptors, so we have manually proxy the socket data
-			else proxySocket(socket, worker, port);
+			worker_strategy(socket, (worker, received_data) => {
+				if (!worker) return harper_logger.error(`No HTTP workers found`);
+				worker.requests++;
+				let fd = socket._handle.fd;
+				if (fd >= 0) worker.postMessage({ port, fd: socket._handle.fd, data: received_data });
+				// valid file descriptor, forward it
+				// Windows doesn't support passing sockets by file descriptors, so we have manually proxy the socket data
+				else proxySocket(socket, worker, port);
+			});
 		}
 	).listen(port);
 	harper_logger.info(`HarperDB ${pjson.version} Server running on port ${port}`);
@@ -76,7 +85,7 @@ let second_best_availability = 0;
  * Delegate to workers based on what worker is likely to be most idle/available.
  * @returns Worker
  */
-function findMostIdleWorker() {
+function findMostIdleWorker(socket, deliver) {
 	// fast algorithm for delegating work to workers based on last idleness check (without constantly checking idleness)
 	let selected_worker;
 	let last_availability = 0;
@@ -86,43 +95,81 @@ function findMostIdleWorker() {
 			selected_worker = worker;
 		} else if (last_availability >= second_best_availability) {
 			second_best_availability = availability;
-			return selected_worker;
+			return deliver(selected_worker);
 		}
 		last_availability = availability;
 	}
 	second_best_availability = 0;
-	return selected_worker;
+	deliver(selected_worker);
 }
 
 const AFFINITY_TIMEOUT = 3600000; // an hour timeout
-const remoteAddresses = new Map();
+const sessions = new Map();
 
 /**
  * Delegate to workers using session affinity based on remote address. This will send all requests
  * from the same remote address to the same worker.
  * @returns Worker
  */
-function findByRemoteAddressAffinity(socket) {
+function findByRemoteAddressAffinity(socket, deliver) {
 	let address = socket.remoteAddress;
-	let entry = remoteAddresses.get(address);
+	let entry = sessions.get(address);
 	const now = Date.now();
 	if (entry) {
 		entry.lastUsed = now;
-		return entry.worker;
+		return deliver(entry.worker);
 	}
-	const worker = findMostIdleWorker();
-	remoteAddresses.set(address, {
-		worker,
-		lastUsed: now,
+	findMostIdleWorker(socket, (worker) => {
+		sessions.set(address, {
+			worker,
+			lastUsed: now,
+		});
+		deliver(worker);
 	});
-	return worker;
+}
+
+/**
+ * Creates a worker strategy that uses session affinity to maintain the same thread for requests that have the
+ * same value of the provided header. You can use a header of "Authorization" for clients that are using
+ * basic authentication, or "Cookie" for clients using cookie-based authentication.
+ * @param header
+ * @returns {findByHeaderAffinity}
+ */
+function makeFindByHeaderAffinity(header) {
+	// regular expression to find the specified header and group match on the value
+	let header_expression = new RegExp(`${header}:\s*(.+)`, 'i');
+	findByHeaderAffinity.readsData = true; // make sure we don't start with the socket being paused
+	return findByHeaderAffinity;
+	function findByHeaderAffinity(socket, deliver) {
+		socket.on('data', (data) => {
+			// must forcibly stop the TCP handle to ensure no more data is read and that all further data is read by
+			// the child worker thread (once it resumes the socket)
+			socket._handle.readStop();
+			let header_block = data.toString('latin1'); // latin is standard HTTP header encoding and faster
+			let header_value = header_block.match(header_expression)?.[1];
+			let entry = sessions.get(header_value);
+			const now = Date.now();
+			if (entry) {
+				entry.lastUsed = now;
+				return deliver(entry.worker);
+			}
+
+			findMostIdleWorker(socket, (worker) => {
+				sessions.set(header_value, {
+					worker,
+					lastUsed: now,
+				});
+				deliver(worker, data);
+			});
+		});
+	};
 }
 
 setInterval(() => {
 	// clear out expired entries
 	const now = Date.now();
-	for (let [address, entry] of remoteAddresses) {
-		if (entry.lastUsed + AFFINITY_TIMEOUT < now) remoteAddresses.delete(address);
+	for (let [address, entry] of sessions) {
+		if (entry.lastUsed + AFFINITY_TIMEOUT < now) sessions.delete(address);
 	}
 }, AFFINITY_TIMEOUT).unref();
 

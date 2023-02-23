@@ -1,11 +1,10 @@
 'use strict';
 
 const TableSizeObject = require('./TableSizeObject');
-const path = require('path');
-const lmdb_init_paths = require('./initializePaths');
 const lmdb_terms = require('../../../../utility/lmdb/terms');
 const lmdb_environment_utility = require('../../../../utility/lmdb/environmentUtility');
 const log = require('../../../../utility/logging/harper_logger');
+const { getSchemaPath, getTransactionAuditStorePath } = require('./initializePaths');
 
 module.exports = lmdbGetTableSize;
 
@@ -18,12 +17,12 @@ async function lmdbGetTableSize(table_object) {
 	let table_stats = new TableSizeObject();
 	try {
 		//get the table record count
-		let schema_path = path.join(lmdb_init_paths.getBaseSchemaPath(), table_object.schema.toString());
+		let schema_path = getSchemaPath(table_object.schema, table_object.name);
 		let env = await lmdb_environment_utility.openEnvironment(schema_path, table_object.name);
 		let dbi_stat = lmdb_environment_utility.statDBI(env, table_object.hash_attribute);
 
 		//get the txn log record count
-		let txn_path = path.join(lmdb_init_paths.getTransactionAuditStorePath(), table_object.schema.toString());
+		let txn_path = getTransactionAuditStorePath(table_object.schema, table_object.name);
 		let txn_env = await lmdb_environment_utility.openEnvironment(txn_path, table_object.name, true);
 		let txn_dbi_stat = lmdb_environment_utility.statDBI(txn_env, lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP);
 

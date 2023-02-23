@@ -14,7 +14,7 @@ function registration_test()
 	
 	node harperdb install --TC_AGREEMENT yes --HDB_ROOT $hdb_data/hdb --HTTP_PORT 9925 --HTTPS_PORT 31283 --HDB_ADMIN_USERNAME admin --HDB_ADMIN_PASSWORD "Abc1234!"
 	
-	node harperdb run
+	node harperdb start
 	
 #theProc checks to make sure this specific instance of harperdb is running.
 #grep -v grep makes sure theProc does not get the value of the grep process that is being used to grep the harperdb proccess.

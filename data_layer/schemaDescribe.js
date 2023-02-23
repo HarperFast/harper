@@ -5,7 +5,6 @@ const search = require('./search');
 const logger = require('../utility/logging/harper_logger');
 const validator = require('../validation/schema_validator');
 const _ = require('lodash');
-const path = require('path');
 const crypto_hash = require('../security/cryptoHash');
 const hdb_utils = require('../utility/common_utils');
 const { promisify } = require('util');
@@ -17,7 +16,7 @@ env_mngr.initSync();
 
 const lmdb_environment_utility = require('../utility/lmdb/environmentUtility');
 const search_utility = require('../utility/lmdb/searchUtility');
-const lmdb_init_paths = require('../data_layer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
+const { getSchemaPath } = require('./harperBridge/lmdbBridge/lmdbUtility/initializePaths');
 
 // Promisified functions
 let p_search_search_by_value = promisify(search.searchByValue);
@@ -230,7 +229,7 @@ async function descTable(describe_table_object, attr_perms) {
 			table_result.clustering_stream_name = crypto_hash.createNatsTableStreamName(table1.schema, table1.name);
 
 			try {
-				let schema_path = path.join(lmdb_init_paths.getBaseSchemaPath(), table_result.schema.toString());
+				let schema_path = getSchemaPath(table_result.schema, table_result.name);
 				let env = await lmdb_environment_utility.openEnvironment(schema_path, table_result.name);
 				let dbi_stat = lmdb_environment_utility.statDBI(env, table_result.hash_attribute);
 				table_result.record_count = dbi_stat.entryCount;

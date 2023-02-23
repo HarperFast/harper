@@ -85,11 +85,12 @@ operationsApi:
     privateKey: null
 http:
   threads: null
-  remoteAddressAffinity: false
+  sessionAffinity: null
 rootPath: null
 storage:
   writeAsync: false
   caching: true
   compression: false
   noReadAhead: true
+  path: null
   prefetchWrites: true

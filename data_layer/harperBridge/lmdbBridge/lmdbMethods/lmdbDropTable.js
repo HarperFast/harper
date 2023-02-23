@@ -4,12 +4,10 @@ const SearchObject = require('../../../SearchObject');
 const DeleteObject = require('../../../../data_layer/DeleteObject');
 const search_by_value = require('./lmdbSearchByValue');
 const delete_records = require('./lmdbDeleteRecords');
-const drop_all_attributes = require('../lmdbUtility/lmdbDropAllAttributes');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const hdb_utils = require('../../../../utility/common_utils');
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
-const { getBaseSchemaPath, getTransactionAuditStorePath } = require('../lmdbUtility/initializePaths');
-const path = require('path');
+const { getTransactionAuditStorePath, getSchemaPath } = require('../lmdbUtility/initializePaths');
 const log = require('../../../../utility/logging/harper_logger');
 
 module.exports = lmdbDropTable;
@@ -29,7 +27,7 @@ async function lmdbDropTable(drop_table_obj) {
 		await deleteAttributesFromSystem(drop_table_obj);
 		await dropTableFromSystem(drop_table_obj);
 
-		let schema_path = path.join(getBaseSchemaPath(), drop_table_obj.schema.toString());
+		let schema_path = getSchemaPath(drop_table_obj.schema, drop_table_obj.table);
 		try {
 			await environment_utility.deleteEnvironment(schema_path, drop_table_obj.table);
 		} catch (e) {
@@ -43,7 +41,7 @@ async function lmdbDropTable(drop_table_obj) {
 		}
 
 		try {
-			let transaction_path = path.join(getTransactionAuditStorePath(), drop_table_obj.schema.toString());
+			let transaction_path = getTransactionAuditStorePath(drop_table_obj.schema, drop_table_obj.table);
 			await environment_utility.deleteEnvironment(transaction_path, drop_table_obj.table, true);
 		} catch (e) {
 			if (e.message === 'invalid environment') {

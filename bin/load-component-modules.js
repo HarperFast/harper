@@ -6,6 +6,8 @@ const socket_router = require('../server/threads/socket-router');
 const { getTables } = require('../resources/database');
 const { loadCustomFunctions } = require('../server/customFunctions/customFunctionsLoader');
 const { plugins } = require('../index');
+const env = require('../utility/environment/environmentManager');
+const hdb_terms = require('../utility/hdbTerms');
 
 let loaded_plugins = new Map();
 const default_components = [
@@ -23,7 +25,8 @@ async function loadComponentModules(components = default_components) {
 				if (component.startOnMainThread) await component.startOnMainThread();
 				if (port && !ports_started.includes(port)) {
 					ports_started.push(port);
-					socket_router.startSocketServer(port);
+					const session_affinity = env.get(hdb_terms.CONFIG_PARAMS.HTTP_SESSION_AFFINITY);
+					socket_router.startSocketServer(port, session_affinity);
 				}
 			} else if (component.start) await component.start({ port, tables });
 			loaded_plugins.set(component, true);

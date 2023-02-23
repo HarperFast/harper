@@ -84,6 +84,7 @@ const TEST_ARGS = {
 	STORAGE_COMPRESSION: false,
 	STORAGE_NOREADAHEAD: false,
 	STORAGE_PREFETCHWRITES: false,
+	STORAGE_PATH: 'users/unit_test/path',
 	OPERATIONSAPI_TLS_CERTIFICATE: TEST_CERT,
 	OPERATIONSAPI_TLS_PRIVATEKEY: TEST_PRIVATE_KEY,
 	OPERATIONSAPI_TLS_CERT_AUTH: null,
@@ -342,7 +343,7 @@ describe('Test configUtils module', () => {
 				},
 				http: {
 					threads: 4,
-					remoteAddressAffinity: false,
+					sessionAffinity: null,
 				},
 				localStudio: {
 					enabled: true,
@@ -395,6 +396,7 @@ describe('Test configUtils module', () => {
 					compression: false,
 					noReadAhead: false,
 					prefetchWrites: false,
+					path: 'users/unit_test/path',
 				},
 			};
 			const expected_flat_config = {
@@ -430,7 +432,7 @@ describe('Test configUtils module', () => {
 				customfunctions_tls_certificateauthority: null,
 				customfunctions_tls_privatekey: TEST_PRIVATE_KEY,
 				http_threads: 4,
-				http_remoteaddressaffinity: false,
+				http_sessionaffinity: null,
 				localstudio_enabled: true,
 				logging_auditlog: true,
 				logging_file: false,
@@ -464,6 +466,7 @@ describe('Test configUtils module', () => {
 				storage_compression: false,
 				storage_noreadahead: false,
 				storage_prefetchwrites: false,
+				storage_path: 'users/unit_test/path',
 				operationsapi_tls_certificate: TEST_CERT,
 				operationsapi_tls_certificateauthority: null,
 				operationsapi_tls_privatekey: TEST_PRIVATE_KEY,
@@ -514,7 +517,7 @@ describe('Test configUtils module', () => {
 			customfunctions_tls_certificateauthority: null,
 			customfunctions_tls_privatekey: null,
 			http_threads: null,
-			http_remoteaddressaffinity: false,
+			http_sessionaffinity: null,
 			localstudio_enabled: false,
 			logging_auditlog: false,
 			logging_file: true,
@@ -547,6 +550,7 @@ describe('Test configUtils module', () => {
 			storage_compression: false,
 			storage_noreadahead: true,
 			storage_prefetchwrites: true,
+			storage_path: null,
 			operationsapi_tls_certificate: null,
 			operationsapi_tls_certificateauthority: null,
 			operationsapi_tls_privatekey: null,
@@ -756,35 +760,20 @@ describe('Test configUtils module', () => {
 								path: 'user/harperdb/streams',
 							},
 						},
-						tls: {
-							certificate: '/yaml/keys/certificate.pem',
-							certificateAuthority: '/yaml/keys/ca.pem',
-							privateKey: '/yaml/keys/privateKey.pem',
-						},
 					},
 					customFunctions: {
 						enabled: false,
 						root: '/yaml/custom_functions',
-						tls: {
-							certificate: '/yaml/keys/certificate.pem',
-							certificateAuthority: '/yaml/keys/ca.pem',
-							privateKey: '/yaml/keys/privateKey.pem',
-						},
 					},
 					logging: {
 						root: '/yaml/log',
 					},
-					operationsApi: {
-						// 23250
-						tls: {
-							certificate: '/yaml/keys/certificate.pem',
-							certificateAuthority: '/yaml/keys/ca.pem',
-							privateKey: '/yaml/keys/privateKey.pem',
-						},
-					},
 					http: {
 						threads: 12,
 						remoteAddressAffinity: false,
+					},
+					storage: {
+						path: 'path/to/storage',
 					},
 				},
 			};
@@ -814,26 +803,8 @@ describe('Test configUtils module', () => {
 			expect(set_in_stub.secondCall.args[1]).to.equal(CF_ROOT);
 			expect(set_in_stub.args[2][0]).to.eql(['logging', 'root']);
 			expect(set_in_stub.args[2][1]).to.equal(LOG_ROOT);
-			expect(set_in_stub.args[3][0]).to.eql(['operationsApi', 'tls', 'certificate']);
-			expect(set_in_stub.args[3][1]).to.equal(CERT_PEM);
-			expect(set_in_stub.args[4][0]).to.eql(['operationsApi', 'tls', 'privateKey']);
-			expect(set_in_stub.args[4][1]).to.equal(KEY_PEM);
-			expect(set_in_stub.args[5][0]).to.eql(['operationsApi', 'tls', 'certificateAuthority']);
-			expect(set_in_stub.args[5][1]).to.equal(CA_PEM);
-			expect(set_in_stub.args[6][0]).to.eql(['customFunctions', 'tls', 'certificate']);
-			expect(set_in_stub.args[6][1]).to.equal(CERT_PEM);
-			expect(set_in_stub.args[7][0]).to.eql(['customFunctions', 'tls', 'privateKey']);
-			expect(set_in_stub.args[7][1]).to.equal(KEY_PEM);
-			expect(set_in_stub.args[8][0]).to.eql(['customFunctions', 'tls', 'certificateAuthority']);
-			expect(set_in_stub.args[8][1]).to.equal(CA_PEM);
-			expect(set_in_stub.args[9][0]).to.eql(['clustering', 'tls', 'certificate']);
-			expect(set_in_stub.args[9][1]).to.equal(CERT_PEM);
-			expect(set_in_stub.args[10][0]).to.eql(['clustering', 'tls', 'privateKey']);
-			expect(set_in_stub.args[10][1]).to.equal(KEY_PEM);
-			expect(set_in_stub.args[11][0]).to.eql(['clustering', 'tls', 'certificateAuthority']);
-			expect(set_in_stub.args[11][1]).to.equal(CA_PEM);
-			expect(set_in_stub.args[12][0]).to.eql(['clustering', 'leafServer', 'streams', 'path']);
-			expect(set_in_stub.args[12][1]).to.equal('user/harperdb/streams');
+			expect(set_in_stub.args[3][1]).to.equal('user/harperdb/streams');
+			expect(set_in_stub.args[4][1]).to.equal('path/to/storage');
 		});
 	});
 
@@ -1414,6 +1385,50 @@ describe('Test configUtils module', () => {
 			const result = config_utils_rw.initOldConfig(OLD_CONFIG_PATH);
 
 			expect(result).to.eql(EXPECTED_CONFIG_OBJ);
+		});
+	});
+
+	describe('Test setSchemasConfig function', () => {
+		const set_in_stub = sandbox.stub().callsFake(() => {});
+		const has_in_stub = sandbox.stub().callsFake(() => false);
+		const add_in_stub = sandbox.stub().callsFake(() => {});
+		const fake_config_doc = {
+			value: {},
+			setIn: set_in_stub,
+			addIn: add_in_stub,
+			hasIn: has_in_stub,
+		};
+		const schema_conf = [
+			{
+				dev_schema: {
+					tables: {
+						furry_friend: {
+							path: 'path/to/the/fur',
+						},
+					},
+				},
+			},
+			{
+				second_test_schema: {
+					path: 'im/number/two',
+				},
+			},
+			{
+				audit_test_schema: {
+					auditPath: 'audit/path',
+				},
+			},
+		];
+
+		it('Test all schemas config is added to config doc', () => {
+			const setSchemasConfig = config_utils_rw.__get__('setSchemasConfig');
+			setSchemasConfig(fake_config_doc, schema_conf);
+			expect(add_in_stub.getCall(0).firstArg).to.eql(['schemas', 'dev_schema', 'tables', 'furry_friend', 'path']);
+			expect(add_in_stub.getCall(0).lastArg).to.eql('path/to/the/fur');
+			expect(add_in_stub.getCall(1).firstArg).to.eql(['schemas', 'second_test_schema', 'path']);
+			expect(add_in_stub.getCall(1).lastArg).to.eql('im/number/two');
+			expect(add_in_stub.getCall(2).firstArg).to.eql(['schemas', 'audit_test_schema', 'auditPath']);
+			expect(add_in_stub.getCall(2).lastArg).to.eql('audit/path');
 		});
 	});
 });

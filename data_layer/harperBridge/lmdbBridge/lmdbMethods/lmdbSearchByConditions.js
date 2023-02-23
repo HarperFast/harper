@@ -9,13 +9,11 @@ const { Resource } = require('../../../../resources/Resource');
 const lmdb_search = require('../lmdbUtility/lmdbSearch');
 const cursor_functions = require('../../../../utility/lmdb/searchCursorFunctions');
 const _ = require('lodash');
-const { getBaseSchemaPath } = require('../lmdbUtility/initializePaths');
-const path = require('path');
+const { getSchemaPath } = require('../lmdbUtility/initializePaths');
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
 const { handleHDBError, hdb_errors } = require('../../../../utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
 const RANGE_ESTIMATE = 100000000;
-const LAZY_PROPERTY_ACCESS = { lazy: true };
 
 module.exports = lmdbSearchByConditions;
 
@@ -42,8 +40,7 @@ async function lmdbSearchByConditions(search_object) {
 		search_object.operator = search_object.operator ? search_object.operator.toLowerCase() : undefined;
 
 		search_object.offset = Number.isInteger(search_object.offset) ? search_object.offset : 0;
-
-		let schema_path = path.join(getBaseSchemaPath(), search_object.schema.toString());
+		let schema_path = getSchemaPath(search_object.schema, search_object.table);
 		let env = await environment_utility.openEnvironment(schema_path, search_object.table);
 
 		const table_info = global.hdb_schema[search_object.schema][search_object.table];

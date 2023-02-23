@@ -6,13 +6,9 @@ const path = require('path');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = require('../../../../../utility/errors/commonErrors');
 
 const SYSTEM_FOLDER_NAME = 'system';
-const SCHEMA_NAME = 'schema';
 const BASE_PATH = test_utils.getMockLMDBPath();
-const BASE_SCHEMA_PATH = path.join(BASE_PATH, SCHEMA_NAME);
-const SYSTEM_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, SYSTEM_FOLDER_NAME);
-const DEV_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, 'dev');
-const TRANSACTIONS_NAME = 'transactions';
-const BASE_TXN_PATH = path.join(BASE_PATH, TRANSACTIONS_NAME);
+const SYSTEM_SCHEMA_PATH = path.join(BASE_PATH, SYSTEM_FOLDER_NAME);
+const DEV_SCHEMA_PATH = path.join(BASE_PATH, 'dev');
 
 let test_data = require('../../../../testData');
 

@@ -2,16 +2,14 @@
 
 const search_utility = require('../../../../utility/lmdb/searchUtility');
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
-const path = require('path');
 const common_utils = require('../../../../utility/common_utils');
 const lmdb_terms = require('../../../../utility/lmdb/terms');
 const hdb_terms = require('../../../../utility/hdbTerms');
-const { getBaseSchemaPath } = require('../lmdbUtility/initializePaths');
 const system_schema = require('../../../../json/systemSchema.json');
 const LMDB_ERRORS = require('../../../../utility/errors/commonErrors').LMDB_ERRORS_ENUM;
+const { getSchemaPath } = require('./initializePaths');
 
 const WILDCARDS = hdb_terms.SEARCH_WILDCARDS;
-
 
 /**
  * gets the search_type & based on the size of the dbi being searched will either perform an in process search or launch a new process to perform a search
@@ -41,7 +39,7 @@ async function prepSearch(search_object, comparator, return_map) {
  * @param {Boolean} return_map
  */
 async function executeSearch(search_object, search_type, hash_attribute, return_map) {
-	let schema_path = path.join(getBaseSchemaPath(), search_object.schema.toString());
+	let schema_path = getSchemaPath(search_object.schema, search_object.table);
 	let env = await environment_utility.openEnvironment(schema_path, search_object.table);
 	let search_results = searchByType(env, search_object, search_type, hash_attribute);
 	let transaction = search_results.transaction || env;
@@ -63,27 +61,26 @@ async function executeSearch(search_object, search_type, hash_attribute, return_
 	if (fetch_more === false) {
 		let attribute = search_object.search_attribute;
 		if (attribute === hash_attribute) {
-			if (return_map)
-				return createMapFromIterable(search_results, () => true);
-			return search_results.map(entry => ({ [hash_attribute]: entry.key }));
+			if (return_map) return createMapFromIterable(search_results, () => true);
+			return search_results.map((entry) => ({ [hash_attribute]: entry.key }));
 		}
 		let toObject = (entry) => ({
 			[hash_attribute]: entry.value,
 			[attribute]: entry.key,
 		});
-		if (return_map)
-			return createMapFromIterable(search_results, toObject);
+		if (return_map) return createMapFromIterable(search_results, toObject);
 		return search_results.map(toObject);
 	}
 
-	let ids = search_object.search_attribute === hash_attribute ?
-		search_results.map(entry => entry.key) : search_results.map(entry => entry.value);
+	let ids =
+		search_object.search_attribute === hash_attribute
+			? search_results.map((entry) => entry.key)
+			: search_results.map((entry) => entry.value);
 	if (return_map === true) {
 		return search_utility.batchSearchByHashToMap(transaction, hash_attribute, search_object.get_attributes, ids);
 	}
 
 	return search_utility.batchSearchByHash(transaction, hash_attribute, search_object.get_attributes, ids);
-
 }
 
 /**
@@ -156,17 +153,37 @@ function searchByType(transactionOrEnv, search_object, search_type, hash_attribu
 			);
 			break;
 		case lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH:
-			return search_utility.batchSearchByHash(transactionOrEnv, search_object.search_attribute, search_object.get_attributes, [
-				search_object.search_value,
-			]);
+			return search_utility.batchSearchByHash(
+				transactionOrEnv,
+				search_object.search_attribute,
+				search_object.get_attributes,
+				[search_object.search_value]
+			);
 		case lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH_TO_MAP:
-			return search_utility.batchSearchByHashToMap(transactionOrEnv, search_object.search_attribute, search_object.get_attributes, [
-				search_object.search_value,
-			]);
+			return search_utility.batchSearchByHashToMap(
+				transactionOrEnv,
+				search_object.search_attribute,
+				search_object.get_attributes,
+				[search_object.search_value]
+			);
 		case lmdb_terms.SEARCH_TYPES.SEARCH_ALL:
-			return search_utility.searchAll(transactionOrEnv, hash_attribute, search_object.get_attributes, reverse, limit, offset);
+			return search_utility.searchAll(
+				transactionOrEnv,
+				hash_attribute,
+				search_object.get_attributes,
+				reverse,
+				limit,
+				offset
+			);
 		case lmdb_terms.SEARCH_TYPES.SEARCH_ALL_TO_MAP:
-			return search_utility.searchAllToMap(transactionOrEnv, hash_attribute, search_object.get_attributes, reverse, limit, offset);
+			return search_utility.searchAllToMap(
+				transactionOrEnv,
+				hash_attribute,
+				search_object.get_attributes,
+				reverse,
+				limit,
+				offset
+			);
 		case lmdb_terms.SEARCH_TYPES.BETWEEN:
 			search_results = search_utility.between(
 				transactionOrEnv,
@@ -353,5 +370,5 @@ module.exports = {
 	createSearchTypeFromSearchObject,
 	prepSearch,
 	searchByType,
-//	filterByType,
+	//	filterByType,
 };
