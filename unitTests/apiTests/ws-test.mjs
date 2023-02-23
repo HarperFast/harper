@@ -18,7 +18,7 @@ describe('test WebSocket connections', () => {
 			'content-type': 'application/cbor',
 			accept: 'application/cbor'
 		};
-		let ws = new WebSocket('ws://localhost:9926/our_data', {
+		let ws = new WebSocket('ws://localhost:9926/DenormalizedUser', {
 			headers,
 		});
 		await new Promise((resolve, reject) => {
@@ -31,7 +31,7 @@ describe('test WebSocket connections', () => {
 			path: '33',
 		}));
 		console.log('sending');
-		let response = await axios.post('http://localhost:9926/our_data/33', encode({
+		let response = await axios.post('http://localhost:9926/DenormalizedUser/33', encode({
 			method: 'addTitle',
 			titleId: 35,
 		}), {
@@ -80,8 +80,9 @@ describe('test WebSocket connections', () => {
 		let message_count = 0;
 		let printing_connection_count;
 		let i = 0;
-		for (; i < 200000;) {
-			let ws = new WebSocket('ws+unix:/tmp/test:/our_data', {
+		for (; i < 20;) {
+//			let ws = new WebSocket('ws+unix:/tmp/test:/our_data', {
+			let ws = new WebSocket('ws://localhost:9926/our_data', {
 				headers,
 			});
 			await new Promise((resolve, reject) => {

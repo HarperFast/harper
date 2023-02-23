@@ -19,7 +19,7 @@ export function addSubscription(path, dbi, key, listener) {
 		});
 		all_subscriptions = Object.create(null); // using it as a map that doesn't change much
 	}
-	let env_subscriptions: Map<any, Function[]>[] = all_subscriptions[path] || (all_subscriptions[path] = []);
+	let env_subscriptions = all_subscriptions[path] || (all_subscriptions[path] = []);
 	let dbi_subscriptions = env_subscriptions[dbi] || (env_subscriptions[dbi] = new Map());
 	let listeners: any[] = dbi_subscriptions.get(key);
 	if (listeners) listeners.push(listener);
@@ -31,7 +31,7 @@ export function addSubscription(path, dbi, key, listener) {
 			if (listeners.length === 0) {
 				dbi_subscriptions.delete(key);
 				if (dbi_subscriptions.size === 0) {
-					env_subscriptions.delete(key);
+					delete env_subscriptions[dbi];
 				}
 			}
 		}

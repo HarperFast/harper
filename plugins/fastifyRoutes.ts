@@ -14,7 +14,7 @@ import { isMainThread } from 'worker_threads';
 import * as getServerOptions from '../server/customFunctions/helpers/getServerOptions';
 import * as getCORSOptions from '../server/customFunctions/helpers/getCORSOptions';
 import * as getHeaderTimeoutConfig from '../server/customFunctions/helpers/getHeaderTimeoutConfig';
-
+import { httpServer } from '../server/threads/thread-http-server';
 import { serverErrorHandler } from '../server/serverHelpers/serverHandlers';
 import { registerContentHandlers } from '../server/serverHelpers/contentTypes';
 import { plugins } from '../index';
@@ -26,7 +26,7 @@ export async function handleFile(js_content, relative_path, file_path, project_n
 	if (!fastify_server) {
 		const props_http_secure_on = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_HTTPS);
 		fastify_server = buildServer(props_http_secure_on);
-		plugins.customFunctionHandler((await fastify_server).server);
+		httpServer((await fastify_server).server);
 	}
 	let server = await fastify_server;
 	let route_folder = dirname(file_path);
@@ -76,7 +76,7 @@ async function customFunctionsServer() {
 		try {
 			//now that server is fully loaded/ready, start listening on port provided in config settings
 			harper_logger.info(`Custom Functions process starting on port ${props_server_port}`);
-			registerServer(props_server_port, server.server);
+			httpServer(server.server, props_server_port);
 			if (isMainThread) {
 				await server.listen({ port: props_server_port, host: '::' });
 				harper_logger.info(`Custom Functions process running on port ${props_server_port}`);

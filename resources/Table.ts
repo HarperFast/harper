@@ -387,7 +387,7 @@ export function makeTable(options) {
 			return records;
 		}
 		subscribe(query, options) {
-			return this.table.subscribe(query, options);
+			return this.constructor.subscribe(query, options);
 		}
 
 	}

@@ -4,18 +4,18 @@ import { Compartment as CompartmentClass } from 'ses';
 import { readFile } from 'fs/promises';
 import { extname } from 'path';
 
+let compartment;
 export async function secureImport(url, getGlobalVars) {
 	// note that we use a single compartment that is used by all the secure JS modules and we load it on-demand, only
 	// loading if necessary (since it is actually very heavy)
-	let compartment = await getCompartment(getGlobalVars);
-	let result = await compartment.import(url);
+	if (!compartment)
+		compartment = getCompartment(getGlobalVars);
+	let result = await (await compartment).import(url);
 	return result.namespace;
 }
 
 declare class Compartment extends CompartmentClass {}
-let compartment;
 async function getCompartment(getGlobalVars) {
-	if (compartment) return compartment;
 	require('ses');
 	lockdown({ domainTaming: 'unsafe', consoleTaming: 'unsafe', errorTaming: 'unsafe', errorTrapping: 'none', stackFiltering: 'verbose' });
 	const { StaticModuleRecord } = await import('@endo/static-module-record');

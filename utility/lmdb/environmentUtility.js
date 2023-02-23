@@ -10,7 +10,7 @@ const DBIDefinition = require('./DBIDefinition');
 const OpenDBIObject = require('./OpenDBIObject');
 const OpenEnvironmentObject = require('./OpenEnvironmentObject');
 const lmdb_terms = require('./terms');
-const {table} = require('../../resources/database');
+const { table } = require('../../resources/database');
 
 const INTERNAL_DBIS_NAME = lmdb_terms.INTERNAL_DBIS_NAME;
 const DBI_DEFINITION_NAME = lmdb_terms.DBI_DEFINITION_NAME;
@@ -142,10 +142,7 @@ async function createEnvironment(base_path, env_name, is_txn = false, is_v3 = fa
 		if (e.message === LMDB_ERRORS.INVALID_ENVIRONMENT) {
 			let environment_path = path.join(base_path, env_name);
 			await fs.mkdirp(is_v3 ? environment_path : base_path);
-			let env_init = new OpenEnvironmentObject(
-				is_v3 ? environment_path : environment_path + MDB_FILE_EXTENSION,
-				false
-			);
+			let env_init = new OpenEnvironmentObject(is_v3 ? environment_path : environment_path + MDB_FILE_EXTENSION, false);
 			let env = lmdb.open(env_init);
 
 			env.dbis = Object.create(null);
@@ -160,7 +157,7 @@ async function createEnvironment(base_path, env_name, is_txn = false, is_v3 = fa
 			let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
 			env[lmdb_terms.ENVIRONMENT_NAME_KEY] = full_name;
 			//global.lmdb_map[full_name] = env;
-			let table = table({ table: env_name, schema: path.parse(base_path).name, path: environment_path });
+			table({ table: env_name, schema: path.parse(base_path).name, path: environment_path });
 
 			return env;
 		}

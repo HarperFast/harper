@@ -64,7 +64,12 @@ function readMetaDb(path: string, default_table?: string, default_schema: string
 			let tables = databases[schema_name] || (databases[schema_name] = Object.create(null));
 			let dbi_init = new OpenDBIObject(!value.is_hash_attribute, value.is_hash_attribute);
 			if (value.is_hash_attribute)
-				tables[table_name] = makeTable({ primaryDbi: env.openDB(key.toString(), dbi_init), tableName: table_name });
+				tables[table_name] = makeTable({
+					primaryDbi: env.openDB(key.toString(), dbi_init),
+					tableName: table_name,
+					primaryKey: value.name,
+					indices: [],
+				});
 		}
 		return env;
 	} catch (error) {
@@ -109,7 +114,12 @@ export function table({ table: table_name, schema: database_name, path, expirati
 			if (attribute.is_primary_key) {
 				primary_key = attribute.name;
 				let dbi_init = new OpenDBIObject(!attribute.is_primary_key, attribute.is_primary_key);
-				table = tables[table_name] = makeTable({ primaryDbi: env.openDB(dbi_name, dbi_init), tableName: table_name });
+				table = tables[table_name] = makeTable({
+					primaryDbi: env.openDB(dbi_name, dbi_init),
+					primaryKey: primary_key,
+					tableName: table_name,
+					indices: [],
+				});
 			}
 		}
 	}

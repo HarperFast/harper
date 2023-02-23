@@ -43,7 +43,7 @@ const DEFAULT_HANDLERS = [
 		module: 'graphql-schema',
 	},
 	{
-		path: 'resources/*.js',
+		path: '*.js',
 		module: 'js-resource',
 	},
 	{
@@ -54,15 +54,18 @@ const DEFAULT_HANDLERS = [
 
 export async function loadCustomFunction(app_folder: string, no_watch?: boolean) {
 	let config_path = join(app_folder, CONFIG_FILENAME);
+	let resources = new Map();
 	let config;
 	if (existsSync(config_path)) {
 		config = parseDocument(readFileSync(app_folder, 'utf8'), { simpleKeys: true }).toJSON();
 	} else {
 		config = {};
 	}
+	let handler_modules = [];
 	for (let handler_config of config.handlers || DEFAULT_HANDLERS) {
 		if (typeof handler_config === 'string') handler_config = { module: handler_config };
 		let module = TRUSTED_HANDLERS[handler_config.module] || await import(handler_config.module);
+		handler_modules.push(module);
 		let start_resolution = loaded_plugins.get(module);
 		if (!start_resolution) {
 			if (isMainThread)
@@ -78,11 +81,15 @@ export async function loadCustomFunction(app_folder: string, no_watch?: boolean)
 				let contents = await readFile(filename);
 				let relative_path = relative(app_folder, filename);
 				if (isMainThread)
-					module.setupFile?.(contents, relative_path, filename, basename(app_folder));
+					module.setupFile?.(contents, relative_path, filename, resources);
 				else
-					module.handleFile(contents, relative_path, filename, basename(app_folder));
+					module.handleFile?.(contents, relative_path, filename, resources);
 			}
 		}
+	}
+	let app_name = basename(app_folder);
+	for (let module of handler_modules) {
+		module.loadedResources?.(resources, app_name);
 	}
 	// Auto restart threads on changes to any app folder. TODO: Make this configurable
 	if (isMainThread && !no_watch) {

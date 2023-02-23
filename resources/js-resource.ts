@@ -10,7 +10,7 @@ const SECURE_JS = true;
 export function registerJavaScript() {
 	registerResourceType('js', createHandler);
 }
-export async function handleFile(js, relative_path, file_path) {
+export async function handleFile(js, relative_path, file_path, resources) {
 	let handlers = new Map();
 	let exports;
 	let module_url = pathToFileURL(file_path).toString();
@@ -28,11 +28,11 @@ export async function handleFile(js, relative_path, file_path) {
 		if (typeof exported_class === 'function' && exported_class.prototype &&
 			(exported_class.prototype.get || exported_class.prototype.put || exported_class.prototype.post || exported_class.prototype.delete)) {
 			// use the REST handler to expose the Resource as an endpoint
-			let handler: any = restHandler(relative_path, exported_class);
+			/*let handler: any = restHandler(relative_path, exported_class);
 			handler.init = () => {
 				// TODO: Allow for an initialization routine?
-			};
-			handlers.set(name, handler);
+			};*/
+			resources.set('/' + name, exported_class);
 		}
 	}
 	return handlers;

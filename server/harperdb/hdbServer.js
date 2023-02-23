@@ -32,13 +32,13 @@ const {
 	serverErrorHandler,
 	reqBodyValidationHandler,
 } = require('../serverHelpers/serverHandlers');
-const net = require("net");
-const {registerContentHandlers} = require('../serverHelpers/contentTypes');
+const net = require('net');
+const { registerContentHandlers } = require('../serverHelpers/contentTypes');
 
 const REQ_MAX_BODY_SIZE = 1024 * 1024 * 1024; //this is 1GB in bytes
 const TRUE_COMPARE_VAL = 'TRUE';
 
-const {HDB_SETTINGS_NAMES} = terms;
+const { HDB_SETTINGS_NAMES } = terms;
 const PROPS_CORS_KEY = HDB_SETTINGS_NAMES.CORS_ENABLED_KEY;
 const PROPS_CORS_ACCESSLIST_KEY = 'CORS_ACCESSLIST';
 const PROPS_SERVER_TIMEOUT_KEY = HDB_SETTINGS_NAMES.SERVER_TIMEOUT_KEY;
@@ -86,7 +86,7 @@ async function hdbServer() {
 		try {
 			// now that server is fully loaded/ready, start listening on port provided in config settings or just use
 			// zero to wait for sockets from the main thread
-			registerServer(props_server_port, server.server);
+			registerServer(server.server, props_server_port);
 			if (isMainThread) {
 				await server.listen({ port: props_server_port, host: '::' });
 				harper_logger.info(`HarperDB ${pjson.version} ${server_type} Server running on port ${props_server_port}`);
@@ -206,7 +206,7 @@ function getServerOptions(is_https) {
 		const credentials = {
 			allowHTTP1: true, // Support both HTTPS/1 and /2
 			key: fs.readFileSync(`${privateKey}`),
-			cert: fs.readFileSync(`${certificate}`)
+			cert: fs.readFileSync(`${certificate}`),
 		};
 		// ALPN negotiation will not upgrade non-TLS HTTP/1, so we only turn on HTTP/2 when we have secure HTTPS,
 		// plus browsers do not support unsecured HTTP/2, so there isn't a lot of value in trying to use insecure HTTP/2.

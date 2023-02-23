@@ -1,6 +1,7 @@
 'use strict';
 const { isMainThread, parentPort, threadId } = require('worker_threads');
 const { Socket } = require('net');
+const { createServer } = require('http');
 const harper_logger = require('../../utility/logging/harper_logger');
 const { join } = require('path');
 const hdb_utils = require('../../utility/common_utils');
@@ -15,9 +16,8 @@ const { loadComponentModules } = require('../../bin/load-component-modules');
 harper_logger.createLogFile(terms.PROCESS_LOG_NAMES.HDB, terms.HDB_PROC_DESCRIPTOR);
 env.initSync();
 const SERVERS = {};
-module.exports = {
-	registerServer,
-};
+exports.registerServer = registerServer;
+exports.httpServer = httpServer;
 if (!isMainThread) {
 	console.log('starting from console')
 	harper_logger.error('starting http thread', threadId);
@@ -128,7 +128,6 @@ function proxyRequest(message) {
 
 function registerServer(server, port) {
 	if (!port) { // if no port is provided, default to custom functions port
-		server = port;
 		port = parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10);
 	}
 	let existing_server = SERVERS[port];
@@ -143,6 +142,26 @@ function registerServer(server, port) {
 		SERVERS[port] = server;
 	}
 	server.on('unhandled', defaultNotFound);
+}
+let default_server, http_listeners = [];
+function httpServer(listener) {
+	if (typeof listener === 'function') {
+		if (!default_server) {
+			default_server = createServer(async (request, response) => {
+				for (let i = 0, l = http_listeners.length; i < l; i++) {
+					let listener = http_listeners[i];
+					let result = listener(request, response);
+					if (result.then) result = await result;
+					if (result) return;
+				}
+			});
+			registerServer(default_server);
+		}
+		http_listeners.push(listener);
+		return default_server; // TODO: Remove this once we have wsServer
+	} else {
+		registerServer(listener);
+	}
 }
 function defaultNotFound(request, response) {
 	response.writeHead(404);

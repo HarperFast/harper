@@ -25,7 +25,7 @@ async function loadComponentModules(components = default_components) {
 					ports_started.push(port);
 					socket_router.startSocketServer(port);
 				}
-			} else if (component.start) Object.assign(plugins, await component.start({ port, tables }));
+			} else if (component.start) await component.start({ port, tables });
 			loaded_plugins.set(component, true);
 		} catch (error) {
 			console.error('Error loading component', error, module_id);

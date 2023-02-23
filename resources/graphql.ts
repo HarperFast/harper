@@ -1,16 +1,14 @@
 import { table } from './database';
 import { isMainThread } from 'worker_threads';
-import { Resource } from './Resource';
+import { dirname } from 'path';
 import { snake_case } from './Table';
 import { registerResourceType } from './resource-server';
-import { restHandler } from './REST';
-import { resources } from '../index';
 
 export function registerGraphQL() {
 	registerResourceType('graphql', createHandler);
 	registerResourceType('gql', createHandler);
 }
-export async function handleFile(gql_content, relative_path, file_path) {
+export async function handleFile(gql_content, relative_path, file_path, resources) {
 	// lazy load the graphql package so we don't load it for users that don't use graphql
 	const { parse, Source, Kind, NamedTypeNode, StringValueNode } = await import('graphql');
 	let ast = parse(new Source(gql_content.toString(), file_path));
@@ -84,9 +82,13 @@ export async function handleFile(gql_content, relative_path, file_path) {
 							}
 						}
 						handlers.set(query_name, restHandler(GraphQLResource));*/
-						if (!isMainThread)
-							resources.set(relative_path + '/' + query_name, type_def.tableClass);
+						if (!isMainThread) {
+							let web_path = dirname(relative_path);
+							if (web_path === '.') web_path = '/';
+							else web_path = '/' + web_path + '/';
+							resources.set(web_path + query_name, type_def.tableClass);
 							//handlers.set(query_name, restHandler(relative_path + '/' + query_name, type_def.tableClass));
+						}
 					}
 				}
 		}

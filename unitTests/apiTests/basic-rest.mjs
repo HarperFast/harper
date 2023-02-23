@@ -18,7 +18,7 @@ describe('test REST calls', () => {
 		};
 		console.log('sending');
 		let response = await axios({
-			url: 'http://localhost:9926/user/36',
+			url: 'http://localhost:9926/user/39',
 			method: 'GET',
 			responseType: 'arraybuffer',
 			headers,

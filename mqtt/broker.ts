@@ -6,7 +6,7 @@ export async function start({ port, tables }) {
 	let handle = broker.handle;
 	const server = createServer(handle);
 	port = port || 1883;
-	registerServer(port, server);/*
+	registerServer(server, port);/*
 	server.listen(port, function () {
 		console.log('server started and listening on port ', port)
 	});*/

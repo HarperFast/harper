@@ -189,7 +189,7 @@ export class EnvTransaction {
 					// TODO: get the own properties, translate to a put and a correct replication operation/CRDT
 					let original = record[DATA];
 					let own = record[OWN];
-					resolution = txn.put(original[txn.table.primaryKey], Object.assign({}, original, own));
+					resolution = txn.put(original[txn.constructor.primaryKey], Object.assign({}, original, own));
 				}
 				for (let write of this.writes) {
 					resolution = write.store[write.operation](write.key, write.value, write.version);

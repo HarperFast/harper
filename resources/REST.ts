@@ -2,11 +2,11 @@ import { findBestSerializer, getDeserializer } from '../server/serverHelpers/con
 import { recordRequest } from './analytics';
 import { createServer, ClientRequest, ServerOptions } from 'http';
 import { WebSocketServer } from 'ws';
-import { resources, plugins } from '../index';
+import { httpServer } from '../server/threads/thread-http-server';
 import { findAndValidateUser } from '../security/user';
 
 const MAX_COMMIT_RETRIES = 10;
-async function http(Resource, next_path, request, response) {
+async function http(Resource, resource_path, next_path, request, response) {
 	let method = request.method;
 	let start = performance.now();
 	let request_data;
@@ -28,7 +28,7 @@ async function http(Resource, next_path, request, response) {
 		let response_object = await execute(Resource, method, next_path, request_data, request, response);
 		let execution_time = performance.now() - start;
 		response.setHeader('Server-Timing', `db;dur=${execution_time}`);
-		recordRequest(this.path, execution_time);
+		recordRequest(resource_path, execution_time);
 		if (response_object.status)
 			response.writeHead(response_object.status);
 		if (response_object.data === undefined)
@@ -42,7 +42,7 @@ async function http(Resource, next_path, request, response) {
 		}
 	} catch (error) {
 		let execution_time = performance.now() - start;
-		recordRequest(this.path, execution_time);
+		recordRequest(resource_path, execution_time);
 		response.writeHead(error.status || 500); // use specified error status, or default to generic server error
 		// do content negotiation
 		console.error(error);
@@ -141,7 +141,7 @@ async function execute(Resource, method, path, request_data, request, response?)
 		throw error;
 	}
 }
-async function wsMessage(Resource, path, data, request, ws) {
+async function wsMessage(Resource, resource_path, path, data, request, ws) {
 	let method = data.method?.toUpperCase() || 'GET-SUB';
 	let request_data = data.body;
 	let request_id = data.id;
@@ -180,18 +180,24 @@ function checkAllowed(method_allowed, user, resource): void | Promise<void> {
 }
 
 let started;
+let app_resources = [];
+export function loadedResources(resources, app_name) {
+	app_resources.push(resources);
+}
 export function start(options: ServerOptions & { path: string, port: number }) {
+	if (started)
+		return;
 	started = true;
 	/*	if (!handlers) {
 			handlers = new Map();
 			loadDirectory(options?.path || process.cwd(), '', handlers);
 		}*/
 	options.keepAlive = true;
-	let remaining_path;
-	let server = createServer(options, async (request, response) => {
+	let remaining_path, resource_path;
+	let server = httpServer(async (request, response) => {
 		await startRequest(request);
 		let resource = findResource(request.url);
-		if (resource) return http(resource, remaining_path, request, response).finally(() => {})
+		if (resource) return http(resource, resource_path, remaining_path, request, response).then(() => true, () => true);
 		nextAppHandler(request, response)
 	});
 	let wss = new WebSocketServer({ server });
@@ -201,7 +207,7 @@ export function start(options: ServerOptions & { path: string, port: number }) {
 		ws.on('message', function message(body) {
 			let data = request.deserialize(body);
 			let resource = findResource(request.url + '/' + data.path);
-			if (resource) return wsMessage(resource, remaining_path, data, request, ws);
+			if (resource) return wsMessage(resource, resource_path, remaining_path, data, request, ws);
 			console.error('no handler: %s', data);
 		});
 //		ws.on('close', () => console.log('close'));
@@ -222,20 +228,21 @@ export function start(options: ServerOptions & { path: string, port: number }) {
 		return authentication(request);
 	}
 	function findResource(full_path) {
-		let path = full_path;
-		do {
-			let resource = resources.get(path);
-			if (resource) {
-				remaining_path = full_path.slice(path.length + 1)
-				return resource;
-			}
-			let last_slash = path.lastIndexOf('/');
-			if (last_slash === -1) break;
-			path = path.slice(0, last_slash);
-		} while(true);
-
+		for (let resources of app_resources) {
+			let path = full_path;
+			do {
+				let resource = resources.get(path);
+				if (resource) {
+					remaining_path = full_path.slice(path.length + 1);
+					resource_path = path;
+					return resource;
+				}
+				let last_slash = path.lastIndexOf('/');
+				if (last_slash === -1) break;
+				path = path.slice(0, last_slash);
+			} while (true);
+		}
 	}
-	plugins.customFunctionHandler(server);
 	async function nextAppHandler(request, response) {
 		server.emit('unhandled', request, response);
 	}
