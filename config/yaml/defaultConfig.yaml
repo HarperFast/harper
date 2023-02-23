@@ -85,7 +85,7 @@ operationsApi:
     privateKey: null
 http:
   threads: null
-  remoteAddressAffinity: false
+  sessionAffinity: null
 rootPath: null
 storage:
   writeAsync: false

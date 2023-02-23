@@ -193,16 +193,17 @@ async function main(called_by_install = false) {
 			}
 		} else {
 			startHTTPThreads(env.get(hdb_terms.CONFIG_PARAMS.HTTP_THREADS));
-			const REMOTE_ADDRESS_AFFINITY = env.get(hdb_terms.CONFIG_PARAMS.HTTP_REMOTE_ADDRESS_AFFINITY);
+			const SESSION_AFFINITY = env.get(hdb_terms.CONFIG_PARAMS.HTTP_SESSION_AFFINITY);
 			startSocketServer(
 				terms.SERVICES.HDB_CORE,
 				parseInt(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT), 10),
-				REMOTE_ADDRESS_AFFINITY ? remoteAffinityRouting : mostIdleRouting
+				SESSION_AFFINITY
 			);
 			if (custom_func_enabled) {
 				startSocketServer(
 					terms.SERVICES.CUSTOM_FUNCTIONS,
-					parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10)
+					parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10),
+					SESSION_AFFINITY
 				);
 			}
 			if (start_clustering) {
