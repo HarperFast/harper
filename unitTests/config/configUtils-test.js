@@ -343,7 +343,7 @@ describe('Test configUtils module', () => {
 				},
 				http: {
 					threads: 4,
-					remoteAddressAffinity: false,
+					sessionAffinity: null,
 				},
 				localStudio: {
 					enabled: true,
@@ -432,7 +432,7 @@ describe('Test configUtils module', () => {
 				customfunctions_tls_certificateauthority: null,
 				customfunctions_tls_privatekey: TEST_PRIVATE_KEY,
 				http_threads: 4,
-				http_remoteaddressaffinity: false,
+				http_sessionaffinity: null,
 				localstudio_enabled: true,
 				logging_auditlog: true,
 				logging_file: false,
@@ -517,7 +517,7 @@ describe('Test configUtils module', () => {
 			customfunctions_tls_certificateauthority: null,
 			customfunctions_tls_privatekey: null,
 			http_threads: null,
-			http_remoteaddressaffinity: false,
+			http_sessionaffinity: null,
 			localstudio_enabled: false,
 			logging_auditlog: false,
 			logging_file: true,
