@@ -439,6 +439,7 @@ const SERVICE_ACTIONS_ENUM = {
 	RESTART: 'restart',
 	VERSION: 'version',
 	UPGRADE: 'upgrade',
+	HELP: 'help',
 };
 
 //describes the Geo Conversion types
