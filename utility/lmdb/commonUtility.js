@@ -94,30 +94,37 @@ function getIndexedValues(value) {
 	return values;
 }
 
-const MAX_INTEGER_DRIFT = 100;
-let last_time = 0;
+let last_time = 0; // reported time used to ensure monotonic time.
+let start_time = 0; // the start time of the (current time relative to performance time counter)
+function adjustStartTime() {
+	// calculate the start time
+	// TODO: We may actually want to implement a gradual time shift if the clock time really changes substantially
+	// and for sub-millisecond updates, may want to average them so we can progressively narrow in on true time
+	let last_start_time = start_time;
+	start_time = Date.now() - performance.now();
+	if (last_start_time)
+		console.log({last_start_time, start_time});
+}
+adjustStartTime();
+// we periodically update our start time because clock time can drift (but we still ensure monotonic time)
+const TIME_ADJUSTMENT_INTERVAL = 60000;
+setInterval(adjustStartTime, TIME_ADJUSTMENT_INTERVAL).unref();
 /**
  * A monotonic timestamp that is guaranteed to be higher than the last call to this function.
  * Will use decimal microseconds as necessary to differentiate from previous calls without too much drift.
  */
 function getNextMonotonicTime() {
-	let now = Date.now();
+	let now = performance.now() + start_time;
 	if (now > last_time) {
 		// current time is higher than last time, can safely return it
 		last_time = now;
 		return now;
 	}
-	if (last_time - now < MAX_INTEGER_DRIFT) {
-		// last time is equal or ahead of now, so we are incrementing by whole numbers to preserve timestamps as integer
-		// until we drift too far
-		last_time = Math.round(last_time) + 1;
-		return last_time;
-	}
-	// increment by as small of count as possible, to minimize drift
+	// otherwise, we MUST return a higher time than last time, so we increase the time and return it.
+	// increment by as small of count as possible, to minimize how far we are from clock time
 	last_time += 0.000488;
 	return last_time;
 }
-
 module.exports = {
 	validateEnv,
 	stringifyData,
