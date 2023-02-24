@@ -14,10 +14,9 @@ import { isMainThread } from 'worker_threads';
 import * as getServerOptions from '../server/customFunctions/helpers/getServerOptions';
 import * as getCORSOptions from '../server/customFunctions/helpers/getCORSOptions';
 import * as getHeaderTimeoutConfig from '../server/customFunctions/helpers/getHeaderTimeoutConfig';
-import { httpServer } from '../server/threads/thread-http-server';
 import { serverErrorHandler } from '../server/serverHelpers/serverHandlers';
 import { registerContentHandlers } from '../server/serverHelpers/contentTypes';
-import { plugins } from '../index';
+import { server } from '../index';
 let CF_ROUTES_DIR = env.get(HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 
 let fastify_server;
@@ -26,13 +25,13 @@ export async function handleFile(js_content, relative_path, file_path, project_n
 	if (!fastify_server) {
 		const props_http_secure_on = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_HTTPS);
 		fastify_server = buildServer(props_http_secure_on);
-		httpServer((await fastify_server).server);
+		server.http((await fastify_server).server);
 	}
-	let server = await fastify_server;
+	let resolved_server = await fastify_server;
 	let route_folder = dirname(file_path);
 	if (!route_folders.has(route_folder)) {
 		route_folders.add(route_folder);
-		server.register(buildRouteFolder(route_folder, project_name));
+		resolved_server.register(buildRouteFolder(route_folder, project_name));
 	}
 }
 /**

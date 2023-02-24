@@ -1,5 +1,3 @@
-import { registerResourceType } from './resource-server';
-import { restHandler } from './REST';
 import { pathToFileURL } from 'url';
 import { secureImport} from './secure-js';
 import { Resource } from './Resource';
@@ -7,9 +5,6 @@ import { tables } from './database';
 
 // TODO: Make this configurable
 const SECURE_JS = true;
-export function registerJavaScript() {
-	registerResourceType('js', createHandler);
-}
 export async function handleFile(js, relative_path, file_path, resources) {
 	let handlers = new Map();
 	let exports;

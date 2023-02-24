@@ -106,6 +106,7 @@ export function makeTable(options) {
 			}
 			this.envTxn = env_txn;
 			this.lmdbTxn = lmdb_txn;
+			this.inUseEnvs[Table.envPath] = env_txn;
 			this.parent = parent;
 			if (request.readOnly)
 				this.lmdbTxn = primary_dbi.useReadTransaction();

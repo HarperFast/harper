@@ -50,6 +50,10 @@ const DEFAULT_HANDLERS = [
 		path: 'routes/*.js',
 		module: 'fastify_routes',
 	},
+	/*{
+		path: 'static',
+		module: 'fastify_routes',
+	},*/
 ];
 
 export async function loadCustomFunction(app_folder: string, no_watch?: boolean) {
@@ -77,13 +81,21 @@ export async function loadCustomFunction(app_folder: string, no_watch?: boolean)
 		await start_resolution;
 		if (module.handleFile && handler_config.path) {
 			let path = join(app_folder, handler_config.path);
-			for (let filename of await fg(path)) {
-				let contents = await readFile(filename);
-				let relative_path = relative(app_folder, filename);
-				if (isMainThread)
-					module.setupFile?.(contents, relative_path, filename, resources);
-				else
-					module.handleFile?.(contents, relative_path, filename, resources);
+			for (let entry of await fg(path, { onlyFiles: false, objectMode: true })) {
+				let { path, dirent } = entry;
+				let relative_path = relative(app_folder, path);
+				if (dirent.isFile()) {
+					let contents = await readFile(path);
+					if (isMainThread)
+						module.setupFile?.(contents, relative_path, path, resources);
+					else
+						module.handleFile?.(contents, relative_path, path, resources);
+				} else {
+					if (isMainThread)
+						module.setupDirectory?.(relative_path, path, resources);
+					else
+						module.handleDirectory?.(relative_path, path, resources);
+				}
 			}
 		}
 	}

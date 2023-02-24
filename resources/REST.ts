@@ -1,9 +1,9 @@
 import { findBestSerializer, getDeserializer } from '../server/serverHelpers/contentTypes';
 import { recordRequest } from './analytics';
 import { createServer, ClientRequest, ServerOptions } from 'http';
-import { WebSocketServer } from 'ws';
-import { httpServer } from '../server/threads/thread-http-server';
+import { WebSocketServer, WebSocket } from 'ws';
 import { findAndValidateUser } from '../security/user';
+import { server } from '../index';
 
 const MAX_COMMIT_RETRIES = 10;
 async function http(Resource, resource_path, next_path, request, response) {
@@ -49,6 +49,7 @@ async function http(Resource, resource_path, next_path, request, response) {
 		response.end(request.serializer.serialize(error.toString()));
 	}
 }
+let message_count = 0;
 async function execute(Resource, method, path, request_data, request, response?) {
 	let full_isolation = method === 'POST';
 	let resource_snapshot = new Resource(request, full_isolation);
@@ -69,6 +70,14 @@ async function execute(Resource, method, path, request_data, request, response?)
 					if (typed_key !== undefined) {
 						let subscription = resource_snapshot.subscribe(typed_key, {
 							callback() {
+								if (!message_count) {
+									setTimeout(() => {
+										console.log('message count (in last 10 seconds)', message_count, 'connection_count', connection_count, 'mem', Math.round(process.memoryUsage().heapUsed / 1000000));
+										message_count = 0;
+									}, 10000);
+								}
+								message_count++;
+
 								response.send(request.serializer.serialize({
 									path,
 									updated: true
@@ -184,6 +193,9 @@ let app_resources = [];
 export function loadedResources(resources, app_name) {
 	app_resources.push(resources);
 }
+let connection_count = 0;
+let printing_connection_count;
+
 export function start(options: ServerOptions & { path: string, port: number }) {
 	if (started)
 		return;
@@ -194,23 +206,32 @@ export function start(options: ServerOptions & { path: string, port: number }) {
 		}*/
 	options.keepAlive = true;
 	let remaining_path, resource_path;
-	let server = httpServer(async (request, response) => {
+	let http_server = server.http(async (request, response) => {
 		await startRequest(request);
 		let resource = findResource(request.url);
 		if (resource) return http(resource, resource_path, remaining_path, request, response).then(() => true, () => true);
 		nextAppHandler(request, response)
 	});
-	let wss = new WebSocketServer({ server });
+	let wss = new WebSocketServer({ server: http_server });
 	wss.on('connection', (ws, request) => {
+		connection_count++;
+		if (!printing_connection_count) {
+			setTimeout(() => {
+				console.log('connection count', connection_count,'mem', Math.round(process.memoryUsage().heapUsed / 1000000));
+				printing_connection_count = false;
+			}, 1000);
+			printing_connection_count = true;
+		}
+
 		startRequest(request);
 		ws.on('error', console.error);
 		ws.on('message', function message(body) {
 			let data = request.deserialize(body);
-			let resource = findResource(request.url + '/' + data.path);
+			let resource = findResource(request.url + '/' + (data.path ?? ''));
 			if (resource) return wsMessage(resource, resource_path, remaining_path, data, request, ws);
 			console.error('no handler: %s', data);
 		});
-//		ws.on('close', () => console.log('close'));
+		ws.on('close', () => connection_count--);
 	});
 	function startRequest(request) {
 		// TODO: check rate limiting here?
@@ -244,7 +265,7 @@ export function start(options: ServerOptions & { path: string, port: number }) {
 		}
 	}
 	async function nextAppHandler(request, response) {
-		server.emit('unhandled', request, response);
+		http_server.emit('unhandled', request, response);
 	}
 }
 

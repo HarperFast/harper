@@ -2,12 +2,12 @@ import { table } from './database';
 import { isMainThread } from 'worker_threads';
 import { dirname } from 'path';
 import { snake_case } from './Table';
-import { registerResourceType } from './resource-server';
+/*import { registerResourceType } from './resource-server';
 
 export function registerGraphQL() {
 	registerResourceType('graphql', createHandler);
 	registerResourceType('gql', createHandler);
-}
+}*/
 export async function handleFile(gql_content, relative_path, file_path, resources) {
 	// lazy load the graphql package so we don't load it for users that don't use graphql
 	const { parse, Source, Kind, NamedTypeNode, StringValueNode } = await import('graphql');

@@ -86,6 +86,7 @@ interface TableDefinition {
 }
 export function table({ table: table_name, schema: database_name, path, expiration, attributes }: TableDefinition) {
 	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
+	getDatabases();
 	let table = databases[database_name]?.[table_name];
 	if (!table) {
 		if (path) {
@@ -106,7 +107,7 @@ export function table({ table: table_name, schema: database_name, path, expirati
 		let internal_dbi_init = new OpenDBIObject(false);
 		let dbis_db = env.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
 		let primary_key;
-		for (let attribute of attributes) {
+		for (let attribute of attributes || []) {
 			let dbi_name = table_name + '.' + attribute.name;
 			if (attribute.is_primary_key)
 				attribute.is_hash_attribute = true;

@@ -5,7 +5,6 @@ const socket_router = require('../server/threads/socket-router');
 });*/
 const { getTables } = require('../resources/database');
 const { loadCustomFunctions } = require('../server/customFunctions/customFunctionsLoader');
-const { plugins } = require('../index');
 const env = require('../utility/environment/environmentManager');
 const hdb_terms = require('../utility/hdbTerms');
 

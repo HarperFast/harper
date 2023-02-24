@@ -41,7 +41,7 @@ async function startHTTPThreads(thread_count = 2) {
 	return workers;
 }
 
-function startSocketServer(port = 0, workerStrategy = findMostIdleWorker) {
+function startSocketServer(port = 0, session_affinity_identifier) {
 	if (typeof port === 'string') {
 		// if we are using a unix domain socket, we try to delete it first, otherwise it will throw an EADDRESSINUSE
 		// error

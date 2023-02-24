@@ -7,6 +7,7 @@ const { join } = require('path');
 const hdb_utils = require('../../utility/common_utils');
 const env = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
+const { server } = require('../../index');
 process.on('uncaughtException', (error) => {
 	console.error('uncaughtException', error)
 	process.exit(100);
@@ -53,17 +54,17 @@ function deliverSocket(fd, port, data) {
 	// HTTP server likes to allow half open sockets
 	let socket = new Socket({ fd, readable: true, writable: true, allowHalfOpen: true });
 	// for each socket, deliver the connection to the HTTP server handler/parser
-	let app_server = SERVERS[port];
-	if (app_server) {
-		app_server.server.emit('connection', socket);
+	let http_server = SERVERS[port];
+	if (http_server) {
+		http_server.emit('connection', socket);
 		if (data) socket.emit('data', data);
 	} else {
 		const retry = (retries) => {
 			// in case the server hasn't registered itself yet
 			setTimeout(() => {
-				let app_server = SERVERS[port];
-				if (app_server) {
-					app_server.server.emit('connection', socket);
+				let http_server = SERVERS[port];
+				if (http_server) {
+					http_server.emit('connection', socket);
 					if (data) socket.emit('data', data);
 				}
 				else if (retries < 5) retry(retries + 1);
@@ -170,6 +171,7 @@ function httpServer(listener) {
 		registerServer(listener);
 	}
 }
+server.http = httpServer;
 function defaultNotFound(request, response) {
 	response.writeHead(404);
 	response.end('Not found\n');
