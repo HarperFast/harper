@@ -53,7 +53,7 @@ function harperDBService() {
 			return logger.error(err);
 		}
 
-		if (process.argv && process.argv[2]) {
+		if (process.argv && process.argv[2] && !process.argv[2].startsWith('-')) {
 			service = process.argv[2].toLowerCase();
 		}
 
