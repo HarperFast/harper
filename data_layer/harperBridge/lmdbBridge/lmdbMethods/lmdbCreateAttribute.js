@@ -3,8 +3,7 @@
 const hdb_terms = require('../../../../utility/hdbTerms');
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
 const write_utility = require('../../../../utility/lmdb/writeUtility');
-const { getSystemSchemaPath, getBaseSchemaPath } = require('../lmdbUtility/initializePaths');
-const path = require('path');
+const { getSystemSchemaPath, getSchemaPath} = require('../lmdbUtility/initializePaths');
 const system_schema = require('../../../../json/systemSchema');
 const schema_validator = require('../../../../validation/schema_validator');
 const LMDBCreateAttributeObject = require('../lmdbUtility/LMDBCreateAttributeObject');
@@ -81,7 +80,7 @@ async function lmdbCreateAttribute(create_attribute_obj) {
 	try {
 		//create dbi into the environment for this table
 		let env = await environment_utility.openEnvironment(
-			path.join(getBaseSchemaPath(), create_attribute_obj.schema.toString()),
+			getSchemaPath(create_attribute_obj.schema, create_attribute_obj.table),
 			create_attribute_obj.table
 		);
 		if (env.dbis[create_attribute_obj.attribute] !== undefined) {

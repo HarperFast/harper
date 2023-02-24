@@ -30,7 +30,7 @@ const HDB_DEFAULT_CONFIG_FILE = 'defaultConfig.yaml';
 const HDB_ROOT_DIR_NAME = 'hdb';
 
 // Name of the HDB process
-const HDB_PROC_NAME = `hdbServer.${CODE_EXTENSION}`;
+const HDB_PROC_NAME = `harperdb.${CODE_EXTENSION}`;
 const CUSTOM_FUNCTION_PROC_NAME = `customFunctionsServer.${CODE_EXTENSION}`;
 const HDB_RESTART_SCRIPT = `restartHdb.${CODE_EXTENSION}`;
 
@@ -439,6 +439,7 @@ const SERVICE_ACTIONS_ENUM = {
 	RESTART: 'restart',
 	VERSION: 'version',
 	UPGRADE: 'upgrade',
+	HELP: 'help',
 };
 
 //describes the Geo Conversion types
@@ -542,7 +543,7 @@ const CONFIG_PARAMS = {
 	CUSTOMFUNCTIONS_NODEENV: 'customFunctions_nodeEnv',
 	CUSTOMFUNCTIONS_ROOT: 'customFunctions_root',
 	HTTP_THREADS: 'http_threads',
-	HTTP_REMOTE_ADDRESS_AFFINITY: 'http_remoteAddressAffinity',
+	HTTP_SESSION_AFFINITY: 'http_sessionAffinity',
 	LOCALSTUDIO_ENABLED: 'localStudio_enabled',
 	LOGGING_FILE: 'logging_file',
 	LOGGING_LEVEL: 'logging_level',
@@ -579,9 +580,12 @@ const CONFIG_PARAMS = {
 	STORAGE_COMPRESSION: 'storage_compression',
 	STORAGE_NOREADAHEAD: 'storage_noReadAhead',
 	STORAGE_PREFETCHWRITES: 'storage_prefetchWrites',
+	STORAGE_ENCRYPTION: 'storage_encryption',
+	STORAGE_PATH: 'storage_path',
+	STORAGE_AUDIT_PATH: 'storage_audit_path',
+	SCHEMAS: 'schemas',
 };
 
-// If a param is added to the config file it needs to be added here also. Keep all keys lowercase.
 const CONFIG_PARAM_MAP = {
 	settings_path: BOOT_PROP_PARAMS.SETTINGS_PATH_KEY,
 	hdb_root_key: CONFIG_PARAMS.ROOTPATH,
@@ -677,7 +681,7 @@ const CONFIG_PARAM_MAP = {
 	customfunctions_network_timeout: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_TIMEOUT,
 	customfunctions_nodeenv: CONFIG_PARAMS.CUSTOMFUNCTIONS_NODEENV,
 	http_threads: CONFIG_PARAMS.HTTP_THREADS,
-	http_remote_address_affinity: CONFIG_PARAMS.HTTP_REMOTE_ADDRESS_AFFINITY,
+	http_session_affinity: CONFIG_PARAMS.HTTP_SESSION_AFFINITY,
 	customfunctions_processes: CONFIG_PARAMS.HTTP_THREADS,
 	customfunctions_root: CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT,
 	localstudio_enabled: CONFIG_PARAMS.LOCALSTUDIO_ENABLED,
@@ -706,16 +710,22 @@ const CONFIG_PARAM_MAP = {
 	operationsapi_network_keepalivetimeout: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT,
 	operationsapi_network_port: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT,
 	operationsapi_tls_privatekey: CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY,
+	operationsapi_tls_certificateauthority: CONFIG_PARAMS.OPERATIONSAPI_TLS_CERT_AUTH,
 	operationsapi_network_timeout: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT,
 	operationsapi_nodeenv: CONFIG_PARAMS.OPERATIONSAPI_NODEENV,
 	operationsapi_root: CONFIG_PARAMS.ROOTPATH,
-	rootpath: CONFIG_PARAMS.ROOTPATH,
-	storage_writeasync: CONFIG_PARAMS.STORAGE_WRITEASYNC,
-	storage_overlappingsync: CONFIG_PARAMS.STORAGE_OVERLAPPINGSYNC,
-	storage_noreadahead: CONFIG_PARAMS.STORAGE_NOREADAHEAD,
-	storage_caching: CONFIG_PARAMS.STORAGE_CACHING,
-	storage_compression: CONFIG_PARAMS.STORAGE_COMPRESSION,
-	storage_prefetchwrites: CONFIG_PARAMS.STORAGE_PREFETCHWRITES,
+	schemas: CONFIG_PARAMS.SCHEMAS,
+	storage_path: CONFIG_PARAMS.STORAGE_PATH,
+};
+for (let key in CONFIG_PARAMS) {
+	let name = CONFIG_PARAMS[key];
+	CONFIG_PARAM_MAP[name.toLowerCase()] = name;
+}
+
+const SCHEMAS_PARAM_CONFIG = {
+	TABLES: 'tables',
+	PATH: 'path',
+	AUDIT_PATH: 'auditPath',
 };
 
 // Describes all available job types
@@ -1032,4 +1042,5 @@ module.exports = {
 	FOREGROUND_PID_FILE,
 	PACKAGE_ROOT,
 	PRE_4_0_0_VERSION,
+	SCHEMAS_PARAM_CONFIG,
 };

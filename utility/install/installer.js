@@ -25,7 +25,7 @@ const check_jwt_tokens = require('./checkJWTTokensExist');
 const global_schema = require('../../utility/globalSchema');
 const promisify = require('util').promisify;
 const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
-const generate_keys = require('../../security/keys');
+const keys = require('../../security/keys');
 
 // Removes the color formatting that was being applied to the prompt answer.
 const PROMPT_ANSWER_TRANSFORMER = (answer) => answer;
@@ -135,7 +135,7 @@ async function install() {
 	await createClusterUser(install_params);
 
 	// Create cert and private keys and write to file.
-	await generate_keys();
+	await keys.generateKeys();
 
 	// Insert current version of HarperDB into versions table.
 	await insertHdbVersionInfo();
@@ -377,7 +377,9 @@ async function checkForExistingInstall() {
 	if (boot_file_exists) {
 		hdb_logger.trace(`Install found an existing boot prop file at:${boot_prop_path}`);
 		const hdb_properties = PropertiesReader(boot_prop_path);
-		const config_file_path = config_utils.getConfigValue(hdb_terms.BOOT_PROP_PARAMS.SETTINGS_PATH_KEY) || hdb_properties.get(hdb_terms.BOOT_PROP_PARAMS.SETTINGS_PATH_KEY);
+		const config_file_path =
+			config_utils.getConfigValue(hdb_terms.BOOT_PROP_PARAMS.SETTINGS_PATH_KEY) ||
+			hdb_properties.get(hdb_terms.BOOT_PROP_PARAMS.SETTINGS_PATH_KEY);
 		hdb_exists = await fs.pathExists(config_file_path);
 	}
 

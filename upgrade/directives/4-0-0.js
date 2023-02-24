@@ -18,15 +18,35 @@ const insert = require('../../data_layer/insert');
 const routes = require('../../utility/clustering/routes');
 const nats_terms = require('../../server/nats/utility/natsTerms');
 const reindex_upgrade = require('./upgrade_scripts/4_0_0_reindex_script');
-const generate_keys = require('../../security/keys');
+const keys = require('../../security/keys');
+const upgrade_prompts = require('../upgradePrompt');
 
 let directive4_0_0 = new UpgradeDirective('4.0.0');
 let directives = [];
 
+let old_cert_path;
+let old_private_path;
+
 async function generateNewKeys() {
-	console.log(`Generating new keys.`);
 	try {
-		await generate_keys();
+		const generate_certs = await upgrade_prompts.upgradeCertsPrompt();
+		if (generate_certs) {
+			console.log(`Generating new certificates.`);
+			if (old_cert_path) {
+				const cert_bak = common_utils.changeExtension(old_cert_path, '.bak');
+				await fs.move(old_cert_path, cert_bak);
+			}
+
+			if (old_private_path) {
+				const key_bak = common_utils.changeExtension(old_private_path, '.bak');
+				await fs.move(old_private_path, key_bak);
+			}
+
+			await keys.generateKeys();
+		} else {
+			console.log('Using existing certificates.');
+			keys.updateConfigCert(old_cert_path, old_private_path, undefined);
+		}
 	} catch (err) {
 		console.error('There was a problem generating new keys. Please check the log for details.');
 		throw err;
@@ -148,6 +168,11 @@ async function updateSettingsFile_4_0_0() {
 		console.log(`Creating new/upgraded settings file at '${new_settings_path}'`);
 		hdb_log.info('Updating env variables with new settings values');
 		const flat_config_obj = config_utils.initOldConfig(settings_path);
+
+		// These are stored here in case they are needed by the generateNewKeys function,
+		old_cert_path = flat_config_obj[terms.CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATE.toLowerCase()];
+		old_private_path = flat_config_obj[terms.CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY.toLowerCase()];
+
 		config_utils.createConfigFile(flat_config_obj);
 	} catch (err) {
 		console.log('There was a problem creating the new HarperDB config file. Please check the log for details.');
@@ -192,8 +217,8 @@ async function updateSettingsFile_4_0_0() {
 	}
 }
 
-directive4_0_0.async_functions.push(generateNewKeys);
 directive4_0_0.async_functions.push(updateSettingsFile_4_0_0);
+directive4_0_0.async_functions.push(generateNewKeys);
 directive4_0_0.async_functions.push(reindex_upgrade);
 directive4_0_0.async_functions.push(updateNodes);
 

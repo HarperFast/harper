@@ -22,7 +22,12 @@ const upgrade = require('./upgrade');
 const minimist = require('minimist');
 const spawn = require('child_process').spawn;
 const { PACKAGE_ROOT } = require('../utility/hdbTerms');
-const { startHTTPThreads, startSocketServer, mostIdleRouting, remoteAffinityRouting } = require('../server/threads/socket-router');
+const {
+	startHTTPThreads,
+	startSocketServer,
+	mostIdleRouting,
+	remoteAffinityRouting,
+} = require('../server/threads/socket-router');
 
 const hdbInfoController = require('../data_layer/hdbInfoController');
 
@@ -72,16 +77,6 @@ async function initialize(called_by_install = false, called_by_main = false) {
 
 	hdb_logger.createLogFile(terms.PROCESS_LOG_NAMES.HDB, terms.PROCESS_DESCRIPTORS.RUN);
 
-	// The called by install check is here because if cmd/env args are passed to install (which calls run when done)
-	// we do not need to update/backup the config file on run.
-	if (!called_by_install) {
-		// If run is called with cmd/env vars we create a backup of config and update config file.
-		const parsed_args = assignCMDENVVariables(Object.keys(terms.CONFIG_PARAM_MAP), true);
-		if (!hdb_utils.isEmpty(parsed_args) && !hdb_utils.isEmptyOrZeroLength(Object.keys(parsed_args))) {
-			config_utils.updateConfigValue(undefined, undefined, parsed_args, true, true);
-		}
-	}
-
 	// Check to see if an upgrade is needed based on existing hdb_info data.  If so, we need to force the user to upgrade
 	// before the server can be started.
 	let upgrade_vers;
@@ -103,6 +98,16 @@ async function initialize(called_by_install = false, called_by_main = false) {
 			hdb_logger.error(err);
 		}
 		process.exit(1);
+	}
+
+	// The called by install check is here because if cmd/env args are passed to install (which calls run when done)
+	// we do not need to update/backup the config file on run.
+	if (!called_by_install) {
+		// If run is called with cmd/env vars we create a backup of config and update config file.
+		const parsed_args = assignCMDENVVariables(Object.keys(terms.CONFIG_PARAM_MAP), true);
+		if (!hdb_utils.isEmpty(parsed_args) && !hdb_utils.isEmptyOrZeroLength(Object.keys(parsed_args))) {
+			config_utils.updateConfigValue(undefined, undefined, parsed_args, true, true);
+		}
 	}
 
 	check_jwt_tokens();
@@ -186,15 +191,20 @@ async function main(called_by_install = false) {
 				hdb_logger.notify(log_msg);
 				console.log(log_msg);
 			}
-
 		} else {
 			startHTTPThreads(env.get(hdb_terms.CONFIG_PARAMS.HTTP_THREADS));
-			const REMOTE_ADDRESS_AFFINITY = env.get(hdb_terms.CONFIG_PARAMS.HTTP_REMOTE_ADDRESS_AFFINITY);
-			startSocketServer(terms.SERVICES.HDB_CORE,
+			const SESSION_AFFINITY = env.get(hdb_terms.CONFIG_PARAMS.HTTP_SESSION_AFFINITY);
+			startSocketServer(
+				terms.SERVICES.HDB_CORE,
 				parseInt(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT), 10),
-				REMOTE_ADDRESS_AFFINITY ? remoteAffinityRouting : mostIdleRouting);
+				SESSION_AFFINITY
+			);
 			if (custom_func_enabled) {
-				startSocketServer(terms.SERVICES.CUSTOM_FUNCTIONS, parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10));
+				startSocketServer(
+					terms.SERVICES.CUSTOM_FUNCTIONS,
+					parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10),
+					SESSION_AFFINITY
+				);
 			}
 			if (start_clustering) {
 				if (!is_scripted) await pm2_utils.startClusteringProcesses();

@@ -175,9 +175,9 @@ describe('Test lmdbUpsertRecords module', () => {
 
 			await lmdb_create_table(TABLE_SYSTEM_DATA_TEST_A, CREATE_TABLE_OBJ_TEST_A);
 
-			m_time = lmdb_common.getMicroTime();
+			m_time = TIMESTAMP;
 			insert_m_time = m_time;
-			m_time_stub = sandbox.stub(lmdb_common, 'getMicroTime').returns(m_time);
+			m_time_stub = sandbox.stub(lmdb_common, 'getNextMonotonicTime').returns(m_time);
 
 			let insert_obj = test_utils.deepClone(INSERT_OBJECT_TEST);
 			await lmdb_create_records(insert_obj);
@@ -196,8 +196,8 @@ describe('Test lmdbUpsertRecords module', () => {
 			date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
 
 			m_time_stub.restore();
-			m_time = lmdb_common.getMicroTime();
-			m_time_stub = sandbox.stub(lmdb_common, 'getMicroTime').returns(m_time);
+			m_time = TIMESTAMP;
+			m_time_stub = sandbox.stub(lmdb_common, 'getNextMonotonicTime').returns(m_time);
 		});
 
 		afterEach(async () => {
@@ -254,7 +254,7 @@ describe('Test lmdbUpsertRecords module', () => {
 			};
 
 			let expected_search = test_utils.assignObjecttoNullObject(upsert_obj.records[0]);
-			expected_search.__createdtime__ = INSERT_TIMESTAMP;
+			expected_search.__createdtime__ = TIMESTAMP;
 			expected_search.__updatedtime__ = TIMESTAMP;
 			expected_search.height = null;
 
@@ -423,7 +423,7 @@ describe('Test lmdbUpsertRecords module', () => {
 			};
 
 			let expected_search1 = test_utils.assignObjecttoNullObject(upsert_obj.records[0]);
-			expected_search1.__createdtime__ = INSERT_TIMESTAMP;
+			expected_search1.__createdtime__ = TIMESTAMP;
 			expected_search1.__updatedtime__ = TIMESTAMP;
 			expected_search1.height = null;
 

@@ -12,15 +12,14 @@ const PropertiesReader = require('properties-reader');
 const _ = require('lodash');
 const { handleHDBError } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES, HDB_ERROR_MSGS } = require('../utility/errors/commonErrors');
-const { PACKAGE_ROOT } = require('../utility/hdbTerms');
 const minimist = require('minimist');
-const terms = require('../utility/hdbTerms');
 
+const { SCHEMAS_PARAM_CONFIG, CONFIG_PARAMS, CONFIG_PARAM_MAP } = hdb_terms;
 const UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is uninitialized';
 const CONFIG_INIT_MSG = 'Config successfully initialized';
 const BACKUP_ERR = 'Error backing up config file';
 const EMPTY_GET_VALUE = 'Empty parameter sent to getConfigValue';
-const DEFAULT_CONFIG_FILE_PATH = path.join(PACKAGE_ROOT, 'config', 'yaml', hdb_terms.HDB_DEFAULT_CONFIG_FILE);
+const DEFAULT_CONFIG_FILE_PATH = path.join(hdb_terms.PACKAGE_ROOT, 'config', 'yaml', hdb_terms.HDB_DEFAULT_CONFIG_FILE);
 const CONFIGURE_SUCCESS_RESPONSE =
 	'Configuration successfully set. You must restart HarperDB for new config settings to take effect.';
 
@@ -52,8 +51,16 @@ function createConfigFile(args) {
 	flat_default_config_obj = flattenConfig(config_doc.toJSON());
 
 	// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
+	let schemas_args;
 	for (const arg in args) {
-		const config_param = hdb_terms.CONFIG_PARAM_MAP[arg.toLowerCase()];
+		const config_param = CONFIG_PARAM_MAP[arg.toLowerCase()];
+
+		// Schemas config args are handled differently, so if they exist set them to var that will be used by setSchemasConfig
+		if (config_param === CONFIG_PARAMS.SCHEMAS) {
+			schemas_args = args[arg];
+			continue;
+		}
+
 		if (config_param !== undefined) {
 			const split_param = config_param.split('_');
 			const value = castConfigValue(config_param, args[arg]);
@@ -64,6 +71,8 @@ function createConfigFile(args) {
 			}
 		}
 	}
+
+	if (schemas_args) setSchemasConfig(config_doc, schemas_args);
 
 	// Validates config doc and if required sets default values for some parameters.
 	validateConfig(config_doc);
@@ -79,6 +88,48 @@ function createConfigFile(args) {
 }
 
 /**
+ * Sets any schema/table location config that belongs under the 'schemas' config element.
+ * @param config_doc
+ * @param schema_conf_json
+ */
+function setSchemasConfig(config_doc, schema_conf_json) {
+	let schemas_conf;
+	try {
+		try {
+			schemas_conf = JSON.parse(schema_conf_json);
+		} catch (err) {
+			if (!hdb_utils.isObject(schema_conf_json)) throw err;
+			schemas_conf = schema_conf_json;
+		}
+
+		for (const schema_conf of schemas_conf) {
+			const schema = Object.keys(schema_conf)[0];
+			if (schema_conf[schema].hasOwnProperty(SCHEMAS_PARAM_CONFIG.TABLES)) {
+				for (const table in schema_conf[schema][SCHEMAS_PARAM_CONFIG.TABLES]) {
+					const table_path_var = schema_conf[schema][SCHEMAS_PARAM_CONFIG.TABLES][table].hasOwnProperty(
+						SCHEMAS_PARAM_CONFIG.PATH
+					)
+						? SCHEMAS_PARAM_CONFIG.PATH
+						: SCHEMAS_PARAM_CONFIG.AUDIT_PATH;
+					const table_path = schema_conf[schema][SCHEMAS_PARAM_CONFIG.TABLES][table][table_path_var];
+					const keys = [CONFIG_PARAMS.SCHEMAS, schema, SCHEMAS_PARAM_CONFIG.TABLES, table, table_path_var];
+					config_doc.hasIn(keys) ? config_doc.setIn(keys, table_path) : config_doc.addIn(keys, table_path);
+				}
+			} else {
+				const schema_path_var = schema_conf[schema].hasOwnProperty(SCHEMAS_PARAM_CONFIG.PATH)
+					? SCHEMAS_PARAM_CONFIG.PATH
+					: SCHEMAS_PARAM_CONFIG.AUDIT_PATH;
+				const schema_path = schema_conf[schema][schema_path_var];
+				const keys = [CONFIG_PARAMS.SCHEMAS, schema, schema_path_var];
+				config_doc.hasIn(keys) ? config_doc.setIn(keys, schema_path) : config_doc.addIn(keys, schema_path);
+			}
+		}
+	} catch (err) {
+		logger.error('Error parsing schemas CLI/env config arguments', err);
+	}
+}
+
+/**
  * Get a default config value from in memory object.
  * If object is undefined read the default config yaml and instantiate default config obj.
  * @param param
@@ -90,7 +141,7 @@ function getDefaultConfig(param) {
 		flat_default_config_obj = flattenConfig(config_doc.toJSON());
 	}
 
-	const param_map = hdb_terms.CONFIG_PARAM_MAP[param.toLowerCase()];
+	const param_map = CONFIG_PARAM_MAP[param.toLowerCase()];
 	if (param_map === undefined) return undefined;
 
 	return flat_default_config_obj[param_map.toLowerCase()];
@@ -114,7 +165,7 @@ function getConfigValue(param) {
 		return undefined;
 	}
 
-	const param_map = hdb_terms.CONFIG_PARAM_MAP[param.toLowerCase()];
+	const param_map = CONFIG_PARAM_MAP[param.toLowerCase()];
 	if (param_map === undefined) return undefined;
 
 	return flat_config_obj[param_map.toLowerCase()];
@@ -122,8 +173,7 @@ function getConfigValue(param) {
 
 function getConfigFilePath(boot_props_file_path) {
 	const cmd_args = minimist(process.argv);
-	if (cmd_args.ROOTPATH)
-		return path.join(cmd_args.ROOTPATH, terms.HDB_CONFIG_FILE);
+	if (cmd_args.ROOTPATH) return path.join(cmd_args.ROOTPATH, hdb_terms.HDB_CONFIG_FILE);
 	const hdb_properties = PropertiesReader(boot_props_file_path);
 	return hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
 }
@@ -197,25 +247,11 @@ function validateConfig(config_doc) {
 	config_doc.setIn(['http', 'threads'], validation.value.http.threads);
 	config_doc.setIn(['customFunctions', 'root'], validation.value.customFunctions.root);
 	config_doc.setIn(['logging', 'root'], validation.value.logging.root);
-	config_doc.setIn(['operationsApi', 'tls', 'certificate'], validation.value.operationsApi.tls.certificate);
-	config_doc.setIn(['operationsApi', 'tls', 'privateKey'], validation.value.operationsApi.tls.privateKey);
-	config_doc.setIn(
-		['operationsApi', 'tls', 'certificateAuthority'],
-		validation.value.operationsApi.tls.certificateAuthority
-	);
-	config_doc.setIn(['customFunctions', 'tls', 'certificate'], validation.value.customFunctions.tls.certificate);
-	config_doc.setIn(['customFunctions', 'tls', 'privateKey'], validation.value.customFunctions.tls.privateKey);
-	config_doc.setIn(
-		['customFunctions', 'tls', 'certificateAuthority'],
-		validation.value.customFunctions.tls.certificateAuthority
-	);
-	config_doc.setIn(['clustering', 'tls', 'certificate'], validation.value.clustering.tls.certificate);
-	config_doc.setIn(['clustering', 'tls', 'privateKey'], validation.value.clustering.tls.privateKey);
-	config_doc.setIn(['clustering', 'tls', 'certificateAuthority'], validation.value.clustering.tls.certificateAuthority);
 	config_doc.setIn(
 		['clustering', 'leafServer', 'streams', 'path'],
 		validation.value.clustering.leafServer.streams.path
 	);
+	config_doc.setIn(['storage', 'path'], validation.value.storage.path);
 }
 
 /**
@@ -230,7 +266,7 @@ function updateConfigObject(param, value) {
 		flat_config_obj = {};
 	}
 
-	const config_obj_key = hdb_terms.CONFIG_PARAM_MAP[param.toLowerCase()];
+	const config_obj_key = CONFIG_PARAM_MAP[param.toLowerCase()];
 	if (config_obj_key === undefined) {
 		logger.trace(`Unable to update config object because config param '${param}' does not exist`);
 		return;
@@ -253,12 +289,15 @@ function updateConfigValue(param, value, parsed_args = undefined, create_backup 
 	}
 
 	// Old root/path is used just in case they are updating the operations api root.
-	const old_hdb_root = getConfigValue(hdb_terms.CONFIG_PARAM_MAP.hdb_root);
+	const old_hdb_root = getConfigValue(CONFIG_PARAM_MAP.hdb_root);
 	const old_config_path = path.join(old_hdb_root, hdb_terms.HDB_CONFIG_FILE);
 	const config_doc = parseYamlDoc(old_config_path);
+	let schemas_args;
 
-	if (parsed_args === undefined) {
-		const config_param = hdb_terms.CONFIG_PARAM_MAP[param.toLowerCase()];
+	if (parsed_args === undefined && param.toLowerCase() === CONFIG_PARAMS.SCHEMAS) {
+		schemas_args = value;
+	} else if (parsed_args === undefined) {
+		const config_param = CONFIG_PARAM_MAP[param.toLowerCase()];
 		if (config_param === undefined) {
 			throw new Error(`Unable to update config, unrecognized config parameter: ${param}`);
 		}
@@ -269,7 +308,14 @@ function updateConfigValue(param, value, parsed_args = undefined, create_backup 
 	} else {
 		// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
 		for (const arg in parsed_args) {
-			const config_param = hdb_terms.CONFIG_PARAM_MAP[arg.toLowerCase()];
+			const config_param = CONFIG_PARAM_MAP[arg.toLowerCase()];
+
+			// Schemas config args are handled differently, so if they exist set them to var that will be used by setSchemasConfig
+			if (config_param === CONFIG_PARAMS.SCHEMAS) {
+				schemas_args = parsed_args[arg];
+				continue;
+			}
+
 			if (config_param !== undefined) {
 				const split_param = config_param.split('_');
 				const new_value = castConfigValue(config_param, parsed_args[arg]);
@@ -282,6 +328,8 @@ function updateConfigValue(param, value, parsed_args = undefined, create_backup 
 		}
 	}
 
+	if (schemas_args) setSchemasConfig(config_doc, schemas_args);
+
 	// Validates config doc and if required sets default values for some parameters.
 	validateConfig(config_doc);
 	const hdb_root = config_doc.getIn(['rootPath']);
@@ -289,14 +337,7 @@ function updateConfigValue(param, value, parsed_args = undefined, create_backup 
 
 	// Creates a backup of config before new config is written to disk.
 	if (create_backup === true) {
-		try {
-			const backup_folder_path = path.join(hdb_root, 'backup', `${hdb_terms.HDB_CONFIG_FILE}.bak`);
-			fs.copySync(old_config_path, backup_folder_path);
-			logger.trace(`Config file: ${old_config_path} backed up to: ${backup_folder_path}`);
-		} catch (err) {
-			logger.error(BACKUP_ERR);
-			logger.error(err);
-		}
+		backupConfigFile(old_config_path, hdb_root);
 	}
 
 	fs.writeFileSync(config_file_location, String(config_doc));
@@ -306,6 +347,18 @@ function updateConfigValue(param, value, parsed_args = undefined, create_backup 
 	logger.trace(`Config parameter: ${param} updated with value: ${value}`);
 }
 
+function backupConfigFile(config_path, hdb_root) {
+	try {
+		const backup_folder_path = path.join(hdb_root, 'backup', `${hdb_terms.HDB_CONFIG_FILE}.bak`);
+		fs.copySync(config_path, backup_folder_path);
+		logger.trace(`Config file: ${config_path} backed up to: ${backup_folder_path}`);
+	} catch (err) {
+		logger.error(BACKUP_ERR);
+		logger.error(err);
+	}
+}
+
+const PRESERVED_PROPERTIES = ['schemas'];
 /**
  * Flattens the JSON version of HarperDB config with underscores separating each parent/child key.
  * @param obj
@@ -317,7 +370,7 @@ function flattenConfig(obj) {
 	for (const i in obj) {
 		if (!obj.hasOwnProperty(i)) continue;
 
-		if (typeof obj[i] == 'object' && obj[i] !== null && !Array.isArray(obj[i])) {
+		if (typeof obj[i] == 'object' && obj[i] !== null && !Array.isArray(obj[i]) && !PRESERVED_PROPERTIES.includes(i)) {
 			const flat_obj = flattenConfig(obj[i]);
 			for (const x in flat_obj) {
 				if (!flat_obj.hasOwnProperty(x)) continue;
@@ -339,7 +392,7 @@ function flattenConfig(obj) {
  */
 function castConfigValue(param, value) {
 	// Some params should be string numbers if only a number is passed, for those cases we need to cast them to string.
-	if (param === hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME || param === hdb_terms.CONFIG_PARAMS.CLUSTERING_USER) {
+	if (param === CONFIG_PARAMS.CLUSTERING_NODENAME || param === CONFIG_PARAMS.CLUSTERING_USER) {
 		if (!isNaN(value)) {
 			return value.toString();
 		}
@@ -497,13 +550,13 @@ function initOldConfig(old_config_path) {
 	const old_hdb_properties = PropertiesReader(old_config_path);
 	flat_config_obj = {};
 
-	for (const config_param in hdb_terms.CONFIG_PARAM_MAP) {
+	for (const config_param in CONFIG_PARAM_MAP) {
 		const value = old_hdb_properties.get(config_param.toUpperCase());
 		if (hdb_utils.isEmpty(value) || (typeof value === 'string' && value.trim().length === 0)) {
 			continue;
 		}
-		let param_key = hdb_terms.CONFIG_PARAM_MAP[config_param].toLowerCase();
-		if (param_key === hdb_terms.CONFIG_PARAMS.LOGGING_ROOT) {
+		let param_key = CONFIG_PARAM_MAP[config_param].toLowerCase();
+		if (param_key === CONFIG_PARAMS.LOGGING_ROOT) {
 			flat_config_obj[param_key] = path.dirname(value);
 		} else {
 			flat_config_obj[param_key] = value;

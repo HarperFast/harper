@@ -6,8 +6,7 @@ const lmdb_check_new_attributes = require('../lmdbUtility/lmdbCheckForNewAttribu
 const hdb_terms = require('../../../../utility/hdbTerms');
 const lmdb_update_records = require('../../../../utility/lmdb/writeUtility').updateRecords;
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
-const path = require('path');
-const { getBaseSchemaPath } = require('../lmdbUtility/initializePaths');
+const { getSchemaPath } = require('../lmdbUtility/initializePaths');
 const write_transaction = require('../lmdbUtility/lmdbWriteTransaction');
 const logger = require('../../../../utility/logging/harper_logger');
 
@@ -36,7 +35,7 @@ async function lmdbUpdateRecords(update_obj) {
 		}
 
 		let new_attributes = await lmdb_check_new_attributes(update_obj.hdb_auth_header, schema_table, attributes);
-		let env_base_path = path.join(getBaseSchemaPath(), update_obj.schema.toString());
+		let env_base_path = getSchemaPath(update_obj.schema, update_obj.table);
 		let environment = await environment_utility.openEnvironment(env_base_path, update_obj.table);
 		let lmdb_response = await lmdb_update_records(
 			environment,

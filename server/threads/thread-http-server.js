@@ -18,10 +18,10 @@ if (!isMainThread) {
 	const custom_func_enabled = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY);
 	if (custom_func_enabled) require('../customFunctions/customFunctionsServer').customFunctionsServer();
 	parentPort.on('message', (message) => {
-		const { type, fd } = message;
+		const { type, fd, data } = message;
 		if (fd) {
 			// Create a socket from the file descriptor for the socket that was routed to us.
-			deliverSocket(fd, type);
+			deliverSocket(fd, type, data);
 		} else if (message.requestId) {
 			// Windows doesn't support passing file descriptors, so we have to resort to manually proxying the socket
 			// data for each request
@@ -41,17 +41,24 @@ if (!isMainThread) {
 	parentPort.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
 }
 
-function deliverSocket(fd, type) {
+function deliverSocket(fd, type, data) {
 	// Create a socket and deliver it to the HTTP server
 	// HTTP server likes to allow half open sockets
 	let socket = new Socket({ fd, readable: true, writable: true, allowHalfOpen: true });
 	// for each socket, deliver the connection to the HTTP server handler/parser
-	if (SERVERS[type]) SERVERS[type].server.emit('connection', socket);
-	else {
+	let app_server = SERVERS[type];
+	if (app_server) {
+		app_server.server.emit('connection', socket);
+		if (data) socket.emit('data', data);
+	} else {
 		const retry = (retries) => {
 			// in case the server hasn't registered itself yet
 			setTimeout(() => {
-				if (SERVERS[type]) SERVERS[type].server.emit('connection', socket);
+				let app_server = SERVERS[type];
+				if (app_server) {
+					app_server.server.emit('connection', socket);
+					if (data) socket.emit('data', data);
+				}
 				else if (retries < 5) retry(retries + 1);
 				else {
 					harper_logger.error(`Server ${type} was not registered`);

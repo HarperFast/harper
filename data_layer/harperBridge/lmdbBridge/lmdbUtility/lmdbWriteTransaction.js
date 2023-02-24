@@ -29,7 +29,7 @@ async function writeTransaction(hdb_operation, lmdb_response) {
 		return;
 	}
 
-	let txn_env_base_path = path.join(getTransactionAuditStorePath(), hdb_operation.schema.toString());
+	let txn_env_base_path = getTransactionAuditStorePath(hdb_operation.schema, hdb_operation.table);
 	let txn_env = await environment_util.openEnvironment(txn_env_base_path, hdb_operation.table, true);
 
 	let txn_object = createTransactionObject(hdb_operation, lmdb_response);

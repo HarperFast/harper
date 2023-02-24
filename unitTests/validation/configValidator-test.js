@@ -5,7 +5,7 @@ const { expect } = chai;
 const sinon = require('sinon');
 const rewire = require('rewire');
 const config_val = rewire('../../validation/configValidator');
-const { configValidator, routesValidator } = config_val;
+const { configValidator, routesValidator, doesPathExist } = config_val;
 const path = require('path');
 const test_utils = require('../test_utils');
 const hdb_utils = require('../../utility/common_utils');
@@ -148,14 +148,15 @@ describe('Test configValidator module', () => {
 	describe('Test clustering schema in configValidator function', () => {
 		let validate_pem_file_stub;
 		let validate_pem_file_rw;
-		let validate_stream_path_stub;
-		let validate_stream_path_rw;
+		let does_path_rw;
+		let does_path_stub;
 
 		beforeEach(() => {
 			validate_pem_file_stub = sandbox.stub();
 			validate_pem_file_rw = config_val.__set__('validatePemFile', validate_pem_file_stub);
-			validate_stream_path_stub = sandbox.stub();
-			validate_stream_path_rw = config_val.__set__('validateClusteringStreamPath', validate_stream_path_stub);
+			does_path_stub = sandbox.stub();
+			does_path_rw = config_val.__set__('doesPathExist', does_path_stub);
+			does_path_stub.returns(null);
 		});
 
 		afterEach(() => {
@@ -210,9 +211,6 @@ describe('Test configValidator module', () => {
 							processes: 3,
 						},
 						tls: {
-							certificate: 'clustering/cert/unit_test.pem',
-							certificateAuthority: TEST_CA,
-							privateKey: 'clustering/test/key.pem',
 							insecure: true,
 						},
 						user: 'ItsMe',
@@ -230,11 +228,7 @@ describe('Test configValidator module', () => {
 						},
 						nodeEnv: 'development',
 						root: '/test_custom_functions',
-						tls: {
-							certificate: TEST_CERT,
-							certificateAuthority: 'cf/test/ca.pem',
-							privateKey: TEST_PRIVATE_KEY,
-						},
+						tls: {},
 					},
 					itc: {
 						network: {
@@ -277,11 +271,7 @@ describe('Test configValidator module', () => {
 							timeout: 120001,
 						},
 						nodeEnv: 'development',
-						tls: {
-							certificate: 'op_api/cert.pem',
-							certificateAuthority: TEST_CA,
-							privateKey: TEST_PRIVATE_KEY,
-						},
+						tls: {},
 					},
 					http: {
 						threads: 2,
@@ -289,6 +279,7 @@ describe('Test configValidator module', () => {
 					rootPath: path.join(__dirname, '/carrot'),
 					storage: {
 						writeAsync: true,
+						path: path.join(__dirname, '/carrot/schema'),
 					},
 				},
 			};
@@ -306,7 +297,8 @@ describe('Test configValidator module', () => {
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'clustering.hubServer.cluster.name' is required. 'clustering.hubServer.cluster.network.port' must be a number. 'clustering.hubServer.cluster.network.routes[0].host' must be a string. 'clustering.hubServer.leafNodes.network.port' must be a number. 'clustering.hubServer.network.port' must be greater than or equal to 0";
+				"'clustering.hubServer.cluster.name' is required. 'clustering.hubServer.cluster.network.port' must be a" +
+				" number. 'clustering.hubServer.cluster.network.routes[0].host' must be a string. 'clustering.hubServer.leafNodes.network.port' must be a number. 'clustering.hubServer.network.port' must be greater than or equal to 0";
 
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
@@ -319,7 +311,9 @@ describe('Test configValidator module', () => {
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'clustering.leafServer.network.port' is required. 'clustering.leafServer.streams.maxAge' must be greater than or equal to 120. 'clustering.nodeName' invalid, must not contain ., * or >";
+				"'clustering.leafServer.network.port' is required. 'clustering.leafServer.streams.maxAge' must be" +
+				" greater than or equal to 120. 'clustering.nodeName'" +
+				' invalid, must not contain ., * or >';
 
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
@@ -330,7 +324,7 @@ describe('Test configValidator module', () => {
 			bad_config_obj.clustering.user = 9999;
 
 			const schema = configValidator(bad_config_obj);
-			const expected_schema_message = "'clustering.user' must be a string";
+			const expected_schema_message = "'clustering.user' must" + ' be a string';
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
 
@@ -343,7 +337,9 @@ describe('Test configValidator module', () => {
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'clustering.hubServer.cluster.name' is required. 'clustering.hubServer.cluster.network.port' is required. 'clustering.hubServer.leafNodes.network.port' is required. 'clustering.hubServer.network.port' is required";
+				"'clustering.hubServer.cluster.name' is required. 'clustering.hubServer.cluster.network.port' is" +
+				" required. 'clustering.hubServer.leafNodes.network.port' is required." +
+				" 'clustering.hubServer.network.port' is required";
 
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
@@ -688,70 +684,6 @@ describe('Test configValidator module', () => {
 			const result = set_default_root(parent, helpers);
 
 			expect(result).to.equal(path.join(HDB_ROOT, '/log'));
-		});
-
-		it('Test that if operationsApi.tls.certificate is undefined, one is created', () => {
-			hdb_root_rw = config_val.__set__('hdb_root', HDB_ROOT);
-			const helpers = { state: { path: ['operationsApi', 'tls', 'certificate'] } };
-			const result = set_default_root(parent, helpers);
-
-			expect(result).to.equal(path.join(HDB_ROOT, '/keys/certificate.pem'));
-		});
-
-		it('Test that if operationsApi.tls.privateKey is undefined, one is created', () => {
-			hdb_root_rw = config_val.__set__('hdb_root', HDB_ROOT);
-			const helpers = { state: { path: ['operationsApi', 'tls', 'privateKey'] } };
-			const result = set_default_root(parent, helpers);
-
-			expect(result).to.equal(path.join(HDB_ROOT, '/keys/privateKey.pem'));
-		});
-
-		it('Test that if customFunctions.tls.certificate is undefined, one is created', () => {
-			hdb_root_rw = config_val.__set__('hdb_root', HDB_ROOT);
-			const helpers = { state: { path: ['customFunctions', 'tls', 'certificate'] } };
-			const result = set_default_root(parent, helpers);
-
-			expect(result).to.equal(path.join(HDB_ROOT, '/keys/certificate.pem'));
-		});
-
-		it('Test that if customFunctions.tls.privateKey is undefined, one is created', () => {
-			hdb_root_rw = config_val.__set__('hdb_root', HDB_ROOT);
-			const helpers = { state: { path: ['customFunctions', 'tls', 'privateKey'] } };
-			const result = set_default_root(parent, helpers);
-
-			expect(result).to.equal(path.join(HDB_ROOT, '/keys/privateKey.pem'));
-		});
-
-		it('Test that if clustering.tls.certificate is undefined, one is created', () => {
-			hdb_root_rw = config_val.__set__('hdb_root', HDB_ROOT);
-			const helpers = { state: { path: ['clustering', 'tls', 'certificate'] } };
-			const result = set_default_root(parent, helpers);
-
-			expect(result).to.equal(path.join(HDB_ROOT, '/keys/certificate.pem'));
-		});
-
-		it('Test that if clustering.tls.privateKey is undefined, one is created', () => {
-			hdb_root_rw = config_val.__set__('hdb_root', HDB_ROOT);
-			const helpers = { state: { path: ['clustering', 'tls', 'privateKey'] } };
-			const result = set_default_root(parent, helpers);
-
-			expect(result).to.equal(path.join(HDB_ROOT, '/keys/privateKey.pem'));
-		});
-
-		it('Test that if clustering.tls.certificateAuthority is undefined, one is created', () => {
-			hdb_root_rw = config_val.__set__('hdb_root', HDB_ROOT);
-			const helpers = { state: { path: ['clustering', 'tls', 'certificateAuthority'] } };
-			const result = set_default_root(parent, helpers);
-
-			expect(result).to.equal(path.join(HDB_ROOT, '/keys/ca.pem'));
-		});
-
-		it('Test that if clustering.leafServer.streams.path is undefined, one is created', () => {
-			hdb_root_rw = config_val.__set__('hdb_root', HDB_ROOT);
-			const helpers = { state: { path: ['clustering', 'leafServer', 'streams', 'path'] } };
-			const result = set_default_root(parent, helpers);
-
-			expect(result).to.equal(path.join(HDB_ROOT, '/clustering/leaf'));
 		});
 	});
 

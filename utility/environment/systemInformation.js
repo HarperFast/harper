@@ -1,18 +1,18 @@
 'use strict';
 
-const path = require('path');
 const si = require('systeminformation');
 const log = require('../logging/harper_logger');
 const terms = require('../hdbTerms');
 const lmdb_get_table_size = require('../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbGetTableSize');
 const schema_describe = require('../../data_layer/schemaDescribe');
+const { getThreadInfo } = require('../../server/threads/manage-threads');
 const env = require('./environmentManager');
 env.initSync();
 
 // eslint-disable-next-line no-unused-vars
 const SystemInformationObject = require('./SystemInformationObject');
-const { getBaseSchemaPath } = require("../../data_layer/harperBridge/lmdbBridge/lmdbUtility/initializePaths");
-const { openEnvironment } = require("../lmdb/environmentUtility");
+const { openEnvironment } = require('../lmdb/environmentUtility');
+const { getSchemaPath } = require('../../data_layer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
 
 //this will hold the system_information which is static to improve performance
 let system_information_cache = undefined;
@@ -83,7 +83,7 @@ async function getMemoryInfo() {
 	try {
 		// eslint-disable-next-line no-unused-vars
 		let { buffers, cached, slab, buffcache, ...mem_info } = await si.mem();
-		return mem_info;
+		return Object.assign(mem_info, process.memoryUsage());
 	} catch (e) {
 		log.error(`error in getMemoryInfo: ${e}`);
 		return {};
@@ -105,7 +105,7 @@ async function getHDBProcessInfo() {
 		processes.list.forEach((process) => {
 			if (process.params.includes(terms.HDB_PROC_NAME)) {
 				harperdb_processes.core.push(process);
-			} else if (process.params.includes('socketcluster')) {
+			} else if (process.name === 'nats-server') {
 				harperdb_processes.clustering.push(process);
 			}
 		});
@@ -172,8 +172,6 @@ async function getNetworkInfo() {
 			network.stats.push(stat);
 		});
 
-		network.connections = await si.networkConnections();
-
 		return network;
 	} catch (e) {
 		log.error(`error in getNetworkInfo: ${e}`);
@@ -223,10 +221,10 @@ async function getMetrics() {
 	let schemas = await schema_describe.describeAll();
 	let schema_stats = {};
 	for (let schema_name in schemas) {
-		let table_stats = schema_stats[schema_name] = {};
+		let table_stats = (schema_stats[schema_name] = {});
 		for (let table_name in schemas[schema_name]) {
 			try {
-				let schema_path = path.join(getBaseSchemaPath(), schema_name);
+				let schema_path = getSchemaPath(schema_path, table_name);
 				let env = await openEnvironment(schema_path, table_name);
 				let stats = env.getStats();
 				table_stats[table_name] = {
@@ -241,7 +239,7 @@ async function getMetrics() {
 					timePageFlushes: stats.timePageFlushes,
 					timeSync: stats.timeSync,
 				};
-			} catch(error) {
+			} catch (error) {
 				// if a schema no longer exists, don't want to throw an error
 				log.notify(`Error getting stats for table ${table_name}: ${error}`);
 			}
@@ -257,7 +255,6 @@ async function getMetrics() {
  */
 async function systemInformation(system_info_op) {
 	let response = new SystemInformationObject();
-	let metrics = getMetrics();
 	if (!Array.isArray(system_info_op.attributes) || system_info_op.attributes.length === 0) {
 		response.system = await getSystemInformation();
 		response.time = getTimeInfo();
@@ -267,7 +264,8 @@ async function systemInformation(system_info_op) {
 		response.network = await getNetworkInfo();
 		response.harperdb_processes = await getHDBProcessInfo();
 		response.table_size = await getTableSize();
-		response.metrics = await metrics;
+		response.metrics = await getMetrics();
+		response.threads = await getThreadInfo();
 		return response;
 	}
 
@@ -296,6 +294,12 @@ async function systemInformation(system_info_op) {
 				break;
 			case 'table_size':
 				response.table_size = await getTableSize();
+				break;
+			case 'database_metrics':
+				response.metrics = await getMetrics();
+				break;
+			case 'threads':
+				response.threads = await getThreadInfo();
 				break;
 			default:
 				break;

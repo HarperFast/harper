@@ -144,6 +144,7 @@ function translateRolePermissions(role, schema) {
 		}
 		final_permissions[s] = schema_perms_template();
 		if (perms[s]) {
+			if (perms[s].describe) final_permissions[s].describe = true; // preserve describe
 			//translate schema.tables to permissions
 			Object.keys(schema[s]).forEach((t) => {
 				if (perms[s].tables[t]) {

@@ -7,8 +7,7 @@ const search_by_value = require('./lmdbSearchByValue');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const delete_records = require('../../../../utility/lmdb/deleteUtility').deleteRecords;
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
-const path = require('path');
-const { getBaseSchemaPath } = require('../lmdbUtility/initializePaths');
+const { getSchemaPath } = require('../lmdbUtility/initializePaths');
 
 const { promisify } = require('util');
 const p_timeout = promisify(setTimeout);
@@ -75,7 +74,7 @@ async function lmdbDeleteRecordsBefore(delete_obj) {
  * @returns {Promise<{skipped_hashes: [], deleted_hashes: [], message: string}>}
  */
 async function chunkDeletes(delete_obj, deletes, schema_table_hash) {
-	let env_base_path = path.join(getBaseSchemaPath(), delete_obj.schema.toString());
+	let env_base_path = getSchemaPath(delete_obj.schema, delete_obj.table);
 	let environment = await environment_utility.openEnvironment(env_base_path, delete_obj.table);
 
 	let total_results = {

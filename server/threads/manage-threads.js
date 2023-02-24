@@ -20,13 +20,18 @@ const connected_ports = []; // these are all known connected worker ports (sibli
 const MAX_UNEXPECTED_RESTARTS = 50;
 const THREAD_TERMINATION_TIMEOUT = 10000; // threads, you got 10 seconds to die
 const RESTART_TYPE = 'restart';
+const REQUEST_THREAD_INFO = 'request_thread_info';
+const RESOURCE_REPORT = 'resource_report';
+const THREAD_INFO = 'thread_info';
 const ADDED_PORT = 'added-port';
+let getThreadInfo;
 
 module.exports = {
 	startWorker,
 	restartWorkers,
 	shutdownWorkers,
 	workers,
+	setMonitorListener,
 	onMessageFromWorkers,
 	broadcast,
 };
@@ -67,7 +72,6 @@ function startWorker(path, options = {}) {
 		);
 		ports_to_send.push(port2);
 	}
-
 	const worker = new Worker(
 		isAbsolute(path) ? path : join(PACKAGE_ROOT, path),
 		Object.assign(
@@ -84,7 +88,7 @@ function startWorker(path, options = {}) {
 			options
 		)
 	);
-	addPort(worker);
+	addPort(worker, true);
 	worker.unexpectedRestarts = options.unexpectedRestarts || 0;
 	worker.startCopy = () => {
 		// in a shutdown sequence we use overlapping restarts, starting the new thread while waiting for the old thread
@@ -109,8 +113,11 @@ function startWorker(path, options = {}) {
 	});
 	worker.on('message', (message) => {
 		if (message.type === RESTART_TYPE) restartWorkers(message.workerType);
+		if (message.type === REQUEST_THREAD_INFO) sendThreadInfo(worker);
+		if (message.type === RESOURCE_REPORT) recordResourceReport(worker, message);
 	});
 	workers.push(worker);
+	startMonitoring();
 	if (options.onStarted) options.onStarted(worker); // notify that it is ready
 	worker.name = options.name;
 	return worker;
@@ -196,14 +203,102 @@ function broadcast(message) {
 	}
 }
 
+function sendThreadInfo(target_worker) {
+	target_worker.postMessage({
+		type: THREAD_INFO,
+		workers: getChildWorkerInfo(),
+	});
+}
+
+function getChildWorkerInfo() {
+	let now = Date.now();
+	return workers.map((worker) => ({
+		threadId: worker.threadId,
+		name: worker.name,
+		heapTotal: worker.resources?.heapTotal,
+		heapUsed: worker.resources?.heapUsed,
+		externalMemory: worker.resources?.external,
+		arrayBuffers: worker.resources?.arrayBuffers,
+		sinceLastUpdate: now - worker.resources?.updated,
+		...worker.recentELU,
+	}));
+}
+
+/** Record update from worker on stats that it self-reports
+ *
+ * @param worker
+ * @param message
+ */
+function recordResourceReport(worker, message) {
+	worker.resources = message;
+	// we want to record when this happens so we know if it has reported recently
+	worker.resources.updated = Date.now();
+}
+
+let monitor_listener;
+function setMonitorListener(listener) {
+	monitor_listener = listener;
+}
+
+const MONITORING_INTERVAL = 1000;
+let monitoring = false;
+function startMonitoring() {
+	if (monitoring) return;
+	monitoring = true;
+	// we periodically get the event loop utilitization so we have a reasonable time frame to check the recent
+	// utilization levels (last second) and so we don't have to make these calls to frequently
+	setInterval(() => {
+		for (let worker of workers) {
+			let current_ELU = worker.performance.eventLoopUtilization();
+			let recent_ELU;
+			if (worker.lastTotalELU) {
+				// get the difference between current and last to determine the last second of utilization
+				recent_ELU = worker.performance.eventLoopUtilization(current_ELU, worker.lastTotalELU);
+			} else {
+				recent_ELU = current_ELU;
+			}
+			worker.lastTotalELU = current_ELU;
+			worker.recentELU = recent_ELU;
+		}
+		if (monitor_listener) monitor_listener();
+	}, MONITORING_INTERVAL).unref();
+}
+const REPORTING_INTERVAL = 1000;
+
 if (parentPort) {
 	addPort(parentPort);
 	for (let port of workerData.addPorts) {
 		addPort(port);
 	}
+	setInterval(() => {
+		// post our memory usage as a resource report, reporting our memory usage
+		let memory_usage = process.memoryUsage();
+		parentPort.postMessage({
+			type: RESOURCE_REPORT,
+			heapTotal: memory_usage.heapTotal,
+			heapUsed: memory_usage.heapUsed,
+			external: memory_usage.external,
+			arrayBuffers: memory_usage.arrayBuffers,
+		});
+	}, REPORTING_INTERVAL).unref();
+	getThreadInfo = () =>
+		new Promise((resolve, reject) => {
+			// request thread info from the parent thread and wait for it to response with info on all the threads
+			parentPort.on('message', receiveThreadInfo);
+			parentPort.postMessage({ type: REQUEST_THREAD_INFO });
+			function receiveThreadInfo(message) {
+				if (message.type === THREAD_INFO) {
+					parentPort.off('message', receiveThreadInfo);
+					resolve(message.workers);
+				}
+			}
+		});
+} else {
+	getThreadInfo = getChildWorkerInfo;
 }
+module.exports.getThreadInfo = getThreadInfo;
 
-function addPort(port) {
+function addPort(port, keep_ref) {
 	connected_ports.push(port);
 	port
 		.on('message', (message) => {
@@ -220,8 +315,8 @@ function addPort(port) {
 		})
 		.on('exit', () => {
 			connected_ports.splice(connected_ports.indexOf(port), 1);
-		})
-		.unref();
+		});
+	if (!keep_ref) port.unref();
 }
 
 if (!isMainThread) {

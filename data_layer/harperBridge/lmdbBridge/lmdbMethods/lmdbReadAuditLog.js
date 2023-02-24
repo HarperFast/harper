@@ -6,7 +6,6 @@ const lmdb_utils = require('../../../../utility/lmdb/commonUtility');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const hdb_utils = require('../../../../utility/common_utils');
 const { getTransactionAuditStorePath } = require('../lmdbUtility/initializePaths');
-const path = require('path');
 const search_utility = require('../../../../utility/lmdb/searchUtility');
 const LMDBTransactionObject = require('../lmdbUtility/LMDBTransactionObject');
 const log = require('../../../../utility/logging/harper_logger');
@@ -19,7 +18,7 @@ module.exports = readAuditLog;
  * @returns {Promise<[]>}
  */
 async function readAuditLog(read_audit_log_obj) {
-	let base_path = path.join(getTransactionAuditStorePath(), read_audit_log_obj.schema);
+	let base_path = getTransactionAuditStorePath(read_audit_log_obj.schema, read_audit_log_obj.table);
 	let env = await environment_utility.openEnvironment(base_path, read_audit_log_obj.table, true);
 	let all_dbis = environment_utility.listDBIs(env);
 

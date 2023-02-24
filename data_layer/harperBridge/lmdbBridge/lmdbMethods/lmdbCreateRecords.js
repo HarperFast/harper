@@ -7,11 +7,10 @@ const hdb_terms = require('../../../../utility/hdbTerms');
 const lmdbProcessRows = require('../lmdbUtility/lmdbProcessRows');
 const lmdb_insert_records = require('../../../../utility/lmdb/writeUtility').insertRecords;
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
-const path = require('path');
 const logger = require('../../../../utility/logging/harper_logger');
 
 const lmdb_check_new_attributes = require('../lmdbUtility/lmdbCheckForNewAttributes');
-const { getBaseSchemaPath } = require('../lmdbUtility/initializePaths');
+const { getSchemaPath } = require('../lmdbUtility/initializePaths');
 const write_transaction = require('../lmdbUtility/lmdbWriteTransaction');
 
 module.exports = lmdbCreateRecords;
@@ -39,7 +38,7 @@ async function lmdbCreateRecords(insert_obj) {
 		}
 
 		let new_attributes = await lmdb_check_new_attributes(insert_obj.hdb_auth_header, schema_table, attributes);
-		let env_base_path = path.join(getBaseSchemaPath(), insert_obj.schema.toString());
+		let env_base_path = getSchemaPath(insert_obj.schema, insert_obj.table);
 		let environment = await environment_utility.openEnvironment(env_base_path, insert_obj.table);
 		let lmdb_response = await lmdb_insert_records(
 			environment,
