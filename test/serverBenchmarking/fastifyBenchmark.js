@@ -46,12 +46,12 @@ const OP_FUNC_MAP = {
 };
 
 instance.interceptors.request.use((config) => {
-    config.headers['request-startTime'] = lmdb_util.getMicroTime();
+    config.headers['request-startTime'] = performance.now();
     return config;
 });
 
 instance.interceptors.response.use((response) => {
-    const end = lmdb_util.getMicroTime();
+    const end = performance.now();
     const start = response.config.headers['request-startTime'];
 
     const milliseconds = end - start;
@@ -231,9 +231,9 @@ async function rawDataFunctionBenchmark() {
         while (x-- > 0) {
 
             try {
-                const start = lmdb_util.getMicroTime();
+                const start = performance.now();
                 await func(input);
-                const end = lmdb_util.getMicroTime();
+                const end = performance.now();
 
                 sum+= end-start;
                 times_run += 1;

@@ -284,7 +284,10 @@ describe('Test lmdbReadAuditLog module', () => {
 
 		it('test reading by timestamp with timestamp newer than newest entry', async () => {
 			await createTransactions();
-			let results = search_txn_by_timestamp_func(txn_env, [common.getMicroTime(), common.getMicroTime() + 1]);
+			let results = search_txn_by_timestamp_func(txn_env, [
+				common.getNextMonotonicTime(),
+				common.getNextMonotonicTime() + 1,
+			]);
 			results = Array.from(results);
 			assert.deepEqual(results, []);
 		});
@@ -428,7 +431,7 @@ describe('Test lmdbReadAuditLog module', () => {
 async function createTransactions() {
 	let insert_obj_1 = new InsertObject('dev', 'test', 'id', INSERT_RECORDS_1);
 	insert_obj_1.hdb_user = HDB_USER_1;
-	let insert_response_1 = new InsertRecordsResponseObject(INSERT_HASHES_1, [], common.getMicroTime());
+	let insert_response_1 = new InsertRecordsResponseObject(INSERT_HASHES_1, [], common.getNextMonotonicTime());
 	let txn_obj_1 = new LMDBInsertTransactionObject(
 		insert_obj_1.records,
 		insert_obj_1.hdb_user.username,
@@ -439,7 +442,7 @@ async function createTransactions() {
 
 	let insert_obj_2 = new InsertObject('dev', 'test', 'id', INSERT_RECORDS_2);
 	insert_obj_2.hdb_user = HDB_USER_2;
-	let insert_response_2 = new InsertRecordsResponseObject(INSERT_HASHES_2, [], common.getMicroTime());
+	let insert_response_2 = new InsertRecordsResponseObject(INSERT_HASHES_2, [], common.getNextMonotonicTime());
 	let txn_obj_2 = new LMDBInsertTransactionObject(
 		insert_obj_2.records,
 		insert_obj_2.hdb_user.username,
@@ -450,7 +453,12 @@ async function createTransactions() {
 
 	let update_obj_1 = new UpdateObject('dev', 'test', UPDATE_RECORDS_1);
 	update_obj_1.hdb_user = HDB_USER_3;
-	let update_response_1 = new UpdateRecordsResponseObject(UPDATE_HASHES_1, [], common.getMicroTime(), INSERT_RECORDS_1);
+	let update_response_1 = new UpdateRecordsResponseObject(
+		UPDATE_HASHES_1,
+		[],
+		common.getNextMonotonicTime(),
+		INSERT_RECORDS_1
+	);
 	let txn_obj_3 = new LMDBUpdateTransactionObject(
 		update_obj_1.records,
 		update_response_1.original_records,
@@ -460,7 +468,7 @@ async function createTransactions() {
 	);
 	await lmdb_write_txn(update_obj_1, update_response_1);
 
-	let m_time = common.getMicroTime();
+	let m_time = common.getNextMonotonicTime();
 	let origin = new ClusteringOriginObject(m_time, 'phil', 'node1');
 	let insert_obj_3 = new InsertObject('dev', 'test', 'id', INSERT_RECORDS_3, origin);
 	insert_obj_3.hdb_user = HDB_USER_1;
@@ -476,7 +484,12 @@ async function createTransactions() {
 
 	let update_obj_2 = new UpdateObject('dev', 'test', UPDATE_RECORDS_2);
 	update_obj_2.hdb_user = HDB_USER_2;
-	let update_response_2 = new UpdateRecordsResponseObject(UPDATE_HASHES_2, [], common.getMicroTime(), INSERT_RECORDS_3);
+	let update_response_2 = new UpdateRecordsResponseObject(
+		UPDATE_HASHES_2,
+		[],
+		common.getNextMonotonicTime(),
+		INSERT_RECORDS_3
+	);
 	let txn_obj_5 = new LMDBUpdateTransactionObject(
 		update_obj_2.records,
 		update_response_2.original_records,
@@ -488,7 +501,7 @@ async function createTransactions() {
 
 	let delete_obj_1 = new DeleteObject('dev', 'test', DELETE_HASHES_1);
 	delete_obj_1.hdb_user = HDB_USER_3;
-	let delete_response_1 = new DeleteRecordsResponseObject(DELETE_HASHES_1, [], common.getMicroTime(), [
+	let delete_response_1 = new DeleteRecordsResponseObject(DELETE_HASHES_1, [], common.getNextMonotonicTime(), [
 		INSERT_RECORDS_2[0],
 		UPDATE_RECORDS_1[0],
 	]);
@@ -502,7 +515,7 @@ async function createTransactions() {
 
 	let insert_obj_4 = new InsertObject('dev', 'test', 'id', INSERT_RECORDS_4);
 	insert_obj_4.hdb_user = HDB_USER_1;
-	let insert_response_4 = new InsertRecordsResponseObject(INSERT_HASHES_4, [], common.getMicroTime());
+	let insert_response_4 = new InsertRecordsResponseObject(INSERT_HASHES_4, [], common.getNextMonotonicTime());
 	let txn_obj_7 = new LMDBInsertTransactionObject(
 		insert_obj_4.records,
 		insert_obj_4.hdb_user.username,

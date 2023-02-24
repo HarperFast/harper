@@ -5,7 +5,6 @@ const LMDB_ERRORS = require('../errors/commonErrors').LMDB_ERRORS_ENUM;
 const lmdb = require('lmdb');
 const lmdb_terms = require('./terms');
 const Buffer = require('buffer').Buffer;
-const microtime = require('microtime');
 
 const { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH } = lmdb_terms;
 const PRIMITIVES = ['number', 'string', 'symbol', 'boolean', 'bigint'];
@@ -95,22 +94,11 @@ function getIndexedValues(value) {
 	return values;
 }
 
-/**
- * Gets the time in sub milliseconds & converts it to a decimal number where the milliseconds from epoch are on the left of decimal & sub-millisecond time is on the right
- * @deprecated
- * @returns {number}
- */
-function getMicroTime() {
-	let full_micro = microtime.now().toString();
-	let pos = full_micro.length - 3;
-	return Number(full_micro.slice(0, pos) + '.' + full_micro.slice(pos));
-}
-
 const MAX_INTEGER_DRIFT = 100;
 let last_time = 0;
 /**
- * A monotonic timestamp that is guaranteed to be higher than the last call to this function
- * This is probably faster and more useful than getMicroTime
+ * A monotonic timestamp that is guaranteed to be higher than the last call to this function.
+ * Will use decimal microseconds as necessary to differentiate from previous calls without too much drift.
  */
 function getNextMonotonicTime() {
 	let now = Date.now();
@@ -134,7 +122,6 @@ module.exports = {
 	validateEnv,
 	stringifyData,
 	convertKeyValueToWrite,
-	getMicroTime,
 	getNextMonotonicTime,
 	getIndexedValues,
 };

@@ -46,13 +46,13 @@ async function readAuditLog(read_audit_log_obj) {
  * If only 1 element is supplied the second will be set to now UTC and the transaction log will be traversed from the designated start time until now.
  * If 2 elements are supplied the transaction log will be read between the two timestamps
  */
-function searchTransactionsByTimestamp(env, timestamps = [0, lmdb_utils.getMicroTime()]) {
+function searchTransactionsByTimestamp(env, timestamps = [0, Date.now()]) {
 	if (hdb_utils.isEmpty(timestamps[0])) {
 		timestamps[0] = 0;
 	}
 
 	if (hdb_utils.isEmpty(timestamps[1])) {
-		timestamps[1] = lmdb_utils.getMicroTime();
+		timestamps[1] = Date.now();
 	}
 
 	let timestamp_dbi = env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP];
@@ -66,8 +66,9 @@ function searchTransactionsByTimestamp(env, timestamps = [0, lmdb_utils.getMicro
 		}
 	}
 
-	return timestamp_dbi.getRange({ start: timestamps[0], end: next_value }).map(({ value }) =>
-		Object.assign(new LMDBTransactionObject(), value));
+	return timestamp_dbi
+		.getRange({ start: timestamps[0], end: next_value })
+		.map(({ value }) => Object.assign(new LMDBTransactionObject(), value));
 }
 
 /**
