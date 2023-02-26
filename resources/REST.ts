@@ -50,25 +50,18 @@ async function http(Resource, resource_path, next_path, request, response) {
 	}
 }
 let message_count = 0;
-async function execute(Resource, method, path, request_data, request, response?) {
+async function execute(Resource, method, relative_url, request_data, request, response?) {
 	let full_isolation = method === 'POST';
 	let resource_snapshot = new Resource(request, full_isolation);
 	try {
 		let response_data;
-		let typed_key;
-		if (path) {
-			typed_key = +path;
-			if (!(typed_key >= 0)) {
-				typed_key = path;
-			}
-		}
 		let user = request.user;
 		let retries = 0;
 		do {
 			switch (method) {
 				case 'GET-SUB':
-					if (typed_key !== undefined) {
-						let subscription = resource_snapshot.subscribe(typed_key, {
+					if (relative_url !== undefined) {
+						let subscription = resource_snapshot.subscribe(relative_url, {
 							callback() {
 								if (!message_count) {
 									setTimeout(() => {
@@ -88,10 +81,10 @@ async function execute(Resource, method, path, request_data, request, response?)
 					}
 					// fall-through
 				case 'GET':
-					if (typed_key !== undefined) {
+					if (relative_url !== undefined) {
 						let checked = checkAllowed(resource_snapshot.allowGet?.(user), user, resource_snapshot);
 						if (checked?.then) await checked; // fast path to avoid await if not needed
-						response_data = await resource_snapshot.get(typed_key);
+						response_data = await resource_snapshot.get(relative_url);
 						if (resource_snapshot.lastModificationTime === Date.parse(request.headers['if-modified-since'])) {
 							resource_snapshot.doneReading();
 							return { status: 304 };
@@ -100,19 +93,19 @@ async function execute(Resource, method, path, request_data, request, response?)
 					break;
 				case 'POST':
 					await checkAllowed(resource_snapshot.allowPost?.(user), user, resource_snapshot);
-					response_data = await resource_snapshot.post(typed_key, request_data);
+					response_data = await resource_snapshot.post(relative_url, request_data);
 					break;
 				case 'PUT':
 					await checkAllowed(resource_snapshot.allowPut?.(user), user, resource_snapshot);
-					response_data = await resource_snapshot.put(typed_key, request_data);
+					response_data = await resource_snapshot.put(relative_url, request_data);
 					break;
 				case 'PATCH':
 					await checkAllowed(resource_snapshot.allowPatch?.(user), user, resource_snapshot);
-					response_data = await resource_snapshot.patch(typed_key, request_data);
+					response_data = await resource_snapshot.patch(relative_url, request_data);
 					break;
 				case 'DELETE':
 					await checkAllowed(resource_snapshot.allowDelete?.(user), user, resource_snapshot);
-					response_data = await resource_snapshot.delete(typed_key);
+					response_data = await resource_snapshot.delete(relative_url);
 					break;
 			}
 			if (await resource_snapshot.commit())

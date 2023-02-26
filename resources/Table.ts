@@ -44,12 +44,15 @@ const INVALIDATED = 16;
  * @param options
  */
 export function makeTable(options) {
-	const { primaryKey: primary_key, indices, attributes, tableName: table_name, primaryDbi: primary_dbi, expirationMS: expiration_ms } = options;
+	let { primaryKey: primary_key, indices, attributes, tableName: table_name, primaryDbi: primary_dbi, expirationMS: expiration_ms } = options;
+	if (!attributes) attributes = [];
 	listenToCommits(primary_dbi);
+	let primary_key_attribute = attributes.find(attribute => attribute.is_primary_key) || {};
 	return class Table extends Resource {
 		static primaryDbi = primary_dbi;
 		static primaryKey = primary_key;
 		static tableName = table_name;
+		static indices = indices;
 		static envPath = primary_dbi.env.path;
 		static expirationTimer;
 		static sourcedFrom(Resource) {
@@ -85,7 +88,7 @@ export function makeTable(options) {
 		 * @param options
 		 */
 		static subscribe(query, options) {
-			let key = typeof query !== 'object' ? query : query.conditions[0].search_attribute;
+			let key = typeof query !== 'object' ? query : query.conditions[0].attribute;
 			return addSubscription(this.primaryDbi.env.path, this.primaryDbi.db.dbi, key, options.callback);
 		}
 		static transaction(env_transaction, lmdb_txn, parent_transaction) {
@@ -119,16 +122,15 @@ export function makeTable(options) {
 					this.parent.updateModificationTime(latest);
 			}
 		}
-		async get(id) {
+		async getById(id) {
 			// TODO: determine if we use lazy access properties
+			if (primary_key_attribute.is_number)
+				id = +id;
 			let env_txn = this.envTxn;
 			let entry = primary_dbi.getEntry(id, { transaction: env_txn.getReadTxn() });
 			if (!entry) {
 				if (this.constructor.Source) return this.getFromSource(id);
 				return;
-			}
-			if (env_txn.fullIsolation) {
-				env_txn.recordRead(primary_dbi, id, entry.version, true);
 			}
 			if (entry.version > this.lastModificationTime) {
 				this.updateModificationTime(entry.version);
@@ -319,19 +321,19 @@ export function makeTable(options) {
 
 		async* search(query, options): AsyncIterable<any> {
 			query.offset = Number.isInteger(query.offset) ? query.offset : 0;
-
+			let conditions = query.conditions || query;
 			// Sort the conditions by narrowest to broadest. Note that we want to do this both for intersection where
 			// it allows us to do minimal filtering, and for union where we can return the fastest results first
 			// in an iterator/stream.
-			let sorted_conditions = sortBy(query.conditions, (condition) => {
+			conditions = sortBy(conditions, (condition) => {
 				if (condition.estimated_count === undefined) {
 					// skip if it is cached
-					let search_type = condition.search_type;
+					let search_type = condition.type;
 					if (search_type === lmdb_terms.SEARCH_TYPES.EQUALS) {
 						// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
-						let index = indices[condition.search_attribute];
-						condition.estimated_count = index ? index.getValuesCount(condition.search_value) : Infinity;
-					} else if (search_type === lmdb_terms.SEARCH_TYPES.CONTAINS || search_type === lmdb_terms.SEARCH_TYPES.ENDS_WITH)
+						let index = indices[condition.attribute];
+						condition.estimated_count = index ? index.getValuesCount(condition.value) : Infinity;
+					} else if (search_type === lmdb_terms.SEARCH_TYPES.CONTAINS || type === lmdb_terms.SEARCH_TYPES.ENDS_WITH)
 						condition.estimated_count = Infinity;
 						// this search types can't/doesn't use indices, so try do them last
 					// for range queries (betweens, starts-with, greater, etc.), just arbitrarily guess
@@ -339,17 +341,17 @@ export function makeTable(options) {
 				}
 				return condition.estimated_count; // use cached count
 			});
-			let search_type = sorted_conditions[0].search_type;
+			let search_type = conditions[0].type;
 
 			// both AND and OR start by getting an iterator for the ids for first condition
-			let first_search = sorted_conditions[0];
+			let first_search = conditions[0];
 			let ids = idsForCondition(first_search);
 			// and then things diverge...
 			let records;
 			if (!query.operator || query.operator.toLowerCase() === 'and') {
 				// get the intersection of condition searches by using the indexed query for the first condition
 				// and then filtering by all subsequent conditions
-				let filters = sorted_conditions.slice(1).map(filterByType);
+				let filters = conditions.slice(1).map(filterByType);
 				let filters_length = filters.length;
 				records = ids.map((id) => primary_dbi.get(id, { transaction: this.lmdbTxn, lazy: true }));
 				if (filters_length > 0)
@@ -366,8 +368,8 @@ export function makeTable(options) {
 					);
 			} else {
 				//get the union of ids from all condition searches
-				for (let i = 1; i < sorted_conditions.length; i++) {
-					let condition = sorted_conditions[i];
+				for (let i = 1; i < conditions.length; i++) {
+					let condition = conditions[i];
 					// might want to lazily execute this after getting to this point in the iteration
 					let next_ids = idsForCondition(condition);
 					ids = ids.concat(next_ids);
@@ -401,6 +403,9 @@ export function makeTable(options) {
 				inclusiveEnd = true;
 		}
 		let index = indices[search_condition.attribute];
+		if (!index) {
+			throw new Error(`${search_condition.attribute} is not indexed, can not search for this attribute`);
+		}
 		let is_primary_key = search_condition.attribute === primary_key;
 		let range_options = { start, end, inclusiveEnd, values: !is_primary_key};
 		if (is_primary_key) {
@@ -479,38 +484,38 @@ function createWritableRecordClass(from) {
  * @returns {({}) => boolean}
  */
 export function filterByType(search_object) {
-	const search_type = search_object.search_type;
-	const attribute = search_object.search_attribute;
-	const search_value = search_object.search_value;
+	const search_type = search_object.type;
+	const attribute = search_object.attribute;
+	const value = search_object.value;
 
 	switch (search_type) {
 		case lmdb_terms.SEARCH_TYPES.EQUALS:
-			return (record) => record[attribute] === search_value;
+			return (record) => record[attribute] === value;
 		case lmdb_terms.SEARCH_TYPES.CONTAINS:
-			return (record) => typeof record[attribute] === 'string' && record[attribute].includes(search_value);
+			return (record) => typeof record[attribute] === 'string' && record[attribute].includes(value);
 		case lmdb_terms.SEARCH_TYPES.ENDS_WITH:
 		case lmdb_terms.SEARCH_TYPES._ENDS_WITH:
-			return (record) => typeof record[attribute] === 'string' && record[attribute].endsWith(search_value);
+			return (record) => typeof record[attribute] === 'string' && record[attribute].endsWith(value);
 		case lmdb_terms.SEARCH_TYPES.STARTS_WITH:
 		case lmdb_terms.SEARCH_TYPES._STARTS_WITH:
-			return (record) => typeof record[attribute] === 'string' && record[attribute].startsWith(search_value);
+			return (record) => typeof record[attribute] === 'string' && record[attribute].startsWith(value);
 		case lmdb_terms.SEARCH_TYPES.BETWEEN:
 			return (record) => {
 				let value = record[attribute];
-				return compareKeys(value, search_value[0]) >= 0 && compareKeys(value, search_value[1]) <= 0;
+				return compareKeys(value, value[0]) >= 0 && compareKeys(value, value[1]) <= 0;
 			};
 		case lmdb_terms.SEARCH_TYPES.GREATER_THAN:
 		case lmdb_terms.SEARCH_TYPES._GREATER_THAN:
-			return (record) => compareKeys(record[attribute], search_value) > 0;
+			return (record) => compareKeys(record[attribute], value) > 0;
 		case lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL:
 		case lmdb_terms.SEARCH_TYPES._GREATER_THAN_EQUAL:
-			return (record) => compareKeys(record[attribute], search_value) >= 0;
+			return (record) => compareKeys(record[attribute], value) >= 0;
 		case lmdb_terms.SEARCH_TYPES.LESS_THAN:
 		case lmdb_terms.SEARCH_TYPES._LESS_THAN:
-			return (record) => compareKeys(record[attribute], search_value) < 0;
+			return (record) => compareKeys(record[attribute], value) < 0;
 		case lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL:
 		case lmdb_terms.SEARCH_TYPES._LESS_THAN_EQUAL:
-			return (record) => compareKeys(record[attribute], search_value) <= 0;
+			return (record) => compareKeys(record[attribute], value) <= 0;
 		default:
 			return Object.create(null);
 	}

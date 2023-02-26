@@ -3,7 +3,13 @@ import { getTables } from './database';
 import { RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
 import { Table, DATA, OWN } from './Table';
 let tables;
-
+const QUERY_PARSER = /([^&|=<>!(),]+)([&|=<>!(),]*)/g
+const SYMBOL_OPERATORS = {
+	'<': 'lt',
+	'<=': 'le',
+	'>': 'gt',
+	'>=': 'ge',
+}
 export class Resource implements ResourceInterface {
 	request: any
 	user: any
@@ -79,6 +85,61 @@ export class Resource implements ResourceInterface {
 			let env_txn = this.inUseEnvs[env_path];
 			env_txn.doneReading(); // done with the read snapshot txn
 		}
+	}
+	async get(url, options?) {
+		let search_start = url.indexOf?.('?');
+		if (search_start > -1) {
+			return this.search(this.parseQuery(url.slice(search_start + 1)), options);
+		}
+		let slash_index = url.indexOf?.('/');
+		if (slash_index === -1)
+			return this.getById(url, options);
+		let id = url.slice(0, slash_index);
+		let property = url.slice(slash_index + 1);
+		let record = await this.getById(id, { lazy: true });
+		return record[property];
+	}
+	parseQuery(query_string: string) {
+		let match;
+		let attribute, comparison;
+		let conditions = [];
+		while ((match = QUERY_PARSER.exec(query_string))) {
+			let [ , value, operator ] = match;
+			switch(operator[0]) {
+				case ')':
+					// finish call
+					operator = operator.slice(1);
+					break;
+				case '=':
+					if (attribute) { // a FIQL operator like =gt=
+						comparison = value;
+					} else {
+						comparison = 'equals';
+						attribute = decodeURIComponent(value);
+					}
+					break;
+				case '!':
+					// TODO: not-equal
+				case '<': case '>':
+					comparison = SYMBOL_OPERATORS[operator];
+					attribute = decodeURIComponent(value);
+					break;
+
+				case '':
+				case '&':
+				case '|':
+					if (attribute) {
+						conditions.push({
+							type: comparison,
+							attribute,
+							value: decodeURIComponent(value),
+						});
+					}
+					attribute = undefined;
+			}
+		}
+		return conditions;
+
 	}
 	subscribe(query: any, options?: {}) {
 		throw new Error('Not implemented');

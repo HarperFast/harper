@@ -68,7 +68,7 @@ function readMetaDb(path: string, default_table?: string, default_schema: string
 					primaryDbi: env.openDB(key.toString(), dbi_init),
 					tableName: table_name,
 					primaryKey: value.name,
-					indices: [],
+					indices: {},
 				});
 		}
 		return env;
@@ -84,46 +84,75 @@ interface TableDefinition {
 	expiration?: number
 	attributes: any[]
 }
-export function table({ table: table_name, schema: database_name, path, expiration, attributes }: TableDefinition) {
+export async function table({ table: table_name, schema: database_name, path, expiration, attributes }: TableDefinition) {
 	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
 	getDatabases();
 	let table = databases[database_name]?.[table_name];
-	if (!table) {
+	let root_store;
+	let primary_key;
+	let primary_key_attribute
+	let indices;
+	if (table) {
+		primary_key = table.primaryKey;
+		root_store = table.primaryDbi;
+	} else {
 		if (path) {
 
 		}
 		let tables = databases[database_name] || (databases[database_name] = Object.create(null));
 		path = join(getHdbBasePath(), DATABASE_PATH, (database_name || DEFAULT_DATABASE_NAME) + '.mdb');
-		let env = database_envs.get(path);
-		if (!env) {
+		root_store = database_envs.get(path);
+		if (!root_store) {
 			// TODO: validate database name
 			let env_init = new OpenEnvironmentObject(
 				path,
 				false
 			);
-			env = open(env_init);
-			database_envs.set(path, env);
+			root_store = open(env_init);
+			database_envs.set(path, root_store);
 		}
-		let internal_dbi_init = new OpenDBIObject(false);
-		let dbis_db = env.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
-		let primary_key;
-		for (let attribute of attributes || []) {
-			let dbi_name = table_name + '.' + attribute.name;
-			if (attribute.is_primary_key)
-				attribute.is_hash_attribute = true;
-			dbis_db.put(dbi_name, attribute);
-			if (attribute.is_primary_key) {
-				primary_key = attribute.name;
-				let dbi_init = new OpenDBIObject(!attribute.is_primary_key, attribute.is_primary_key);
-				table = tables[table_name] = makeTable({
-					primaryDbi: env.openDB(dbi_name, dbi_init),
-					primaryKey: primary_key,
-					tableName: table_name,
-					indices: [],
-				});
-			}
-		}
+		primary_key_attribute = attributes.find(attribute => attribute.is_primary_key);
+		primary_key = primary_key_attribute.name;
+		primary_key_attribute.is_hash_attribute = true;
+		let dbi_init = new OpenDBIObject(!primary_key_attribute.is_primary_key, attribute.is_primary_key);
+		let dbi_name = table_name + '.' + primary_key_attribute.name;
+		table = tables[table_name] = makeTable({
+			primaryDbi: root_store.openDB(dbi_name, dbi_init),
+			primaryKey: primary_key,
+			tableName: table_name,
+			indices: [],
+		});
 	}
+	indices = table.indices;
+	let internal_dbi_init = new OpenDBIObject(false);
+	let dbis_db = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
+
+	let last_commit;
+	// iterate through the attributes to ensure that we have all the dbis created and indexed
+	for (let attribute of attributes || []) {
+		// non-indexed attributes do not need a dbi
+		if (!attribute.indexed || attribute.is_primary_key) continue;
+		let dbi_name = table_name + '.' + attribute.name;
+		if (attribute.is_primary_key)
+			attribute.is_hash_attribute = true;
+		let dbi_init = new OpenDBIObject(true, false);
+		let dbi = root_store.openDB(dbi_name, dbi_init);
+		let dbi_descriptor = dbis_db.get(dbi_name);
+		if (!dbi_descriptor) {
+			let property = attribute.name;
+			// this means that a new attribute has been introduced that needs to be indexed
+			for (let entry of table.primaryDbi.getRange()) {
+				let record = entry.value;
+				let value_to_index = record[property];
+				dbi.put(value_to_index, record[primary_key]);
+				// TODO: put in indexing code
+			}
+			dbis_db.put(dbi_name, attribute);
+			last_commit = dbi.committed;
+		}
+		indices[attribute.name] = dbi;
+	}
+	if (last_commit) await last_commit;
 	if (expiration)
 		table.setTTLExpiration(+expiration);
 	return table;

@@ -29,16 +29,45 @@ export async function handleFile(gql_content, relative_path, file_path, resource
 						if (!type_def.table)
 							type_def.table = snake_case(type_name);
 					}
+					if (directive.name.value === 'sealed') {
+						type_def.sealed = true;
+					}
 				}
 				if (type_def.table) {
 					let attributes = [];
+					let has_primary_key = false;
 					for (let field of definition.fields) {
 						let type = (field.type as NamedTypeNode).name?.value;
-						attributes.push({
+						let attribute = {
 							name: field.name.value,
 							type,
-							is_primary_key: type === 'ID',
-						});
+							is_number: type === 'Int' || type === 'Float',
+						};
+						attributes.push(attribute);
+						for (let directive of field.directives) {
+							if (directive.name.value === 'primaryKey') {
+								if (has_primary_key)
+									console.warn('Can not define two attributes as a primary key');
+								else {
+									attribute.is_primary_key = true;
+									has_primary_key = true;
+								}
+							} else if (directive.name.value === 'indexed') {
+								attribute.indexed = true;
+							}
+						}
+						if (!has_primary_key) {
+							let id_attribute = attributes.find(attribute => attribute.name === 'id');
+							if (id_attribute)
+								id_attribute.is_primary_key = true;
+							else
+								// Do we wait until we have auto-incrementing numbers before auto-adding a primary key?
+								attributes.push({
+									name: 'id',
+									type: 'ID',
+									is_primary_key: true,
+								});
+						}
 					}
 					type_def.attributes = attributes;
 					// with graphql schema definitions, this is a declaration that the table should exist and that it
