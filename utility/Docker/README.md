@@ -40,7 +40,6 @@ If no environment variables are passed to `docker run`, HarperDB will run with d
 - `HDB_ADMIN_USERNAME=HDB_ADMIN`
 - `HDB_ADMIN_PASSWORD=password`
 - `LOGGING_STDSTREAMS=true`
-- `OPERATIONSAPI_FOREGROUND=true`
 
 ### Persisting Data
 Containers created from this image will store all data and HarperDB configuration at `/home/harperdb/hdb`. To persist this data beyond the lifecycle of a container, use a Docker volume to mount this directory to the container host.
