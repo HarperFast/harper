@@ -6,10 +6,10 @@ import { findAndValidateUser } from '../security/user';
 import { server } from '../index';
 
 interface Response {
-	status: number
-	headers: any
-	data: any
-	body: any
+	status?: number
+	headers?: any
+	data?: any
+	body?: any
 }
 
 const MAX_COMMIT_RETRIES = 10;
