@@ -52,14 +52,14 @@ const PROPS_SERVER_PORT_KEY = HDB_SETTINGS_NAMES.SERVER_PORT_KEY;
 let server = undefined;
 
 module.exports = {
-	hdbServer,
-	start: hdbServer,
+	hdbServer: operationsServer,
+	start: operationsServer,
 };
 /**
  * Builds a HarperDB server.
  * @returns {Promise<void>}
  */
-async function hdbServer() {
+async function operationsServer() {
 	try {
 		harper_logger.info('In Fastify server' + process.cwd());
 		harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);

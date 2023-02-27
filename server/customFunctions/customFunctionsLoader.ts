@@ -15,17 +15,23 @@ const { readFile } = promises;
 const CONFIG_FILENAME = 'config.yaml';
 let CF_ROUTES_DIR = env.get(HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 let loaded_plugins: Map<any, any>;
-export function loadCustomFunctions(loaded_plugin_modules: Map<any, any>) {
+let watches_setup;
+export function loadCustomFunctions(loaded_plugin_modules?: Map<any, any>) {
 	loaded_plugins = loaded_plugin_modules;
+	let resources = new Map();
 	const cf_folders = readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
 	let cfs_loaded = [];
 	for (let app_entry of cf_folders) {
 		if (!app_entry.isDirectory() && !app_entry.isSymbolicLink()) return;
 		const app_name = app_entry.name;
 		const app_folder = join(CF_ROUTES_DIR, app_name);
-		cfs_loaded.push(loadCustomFunction(app_folder));
+		cfs_loaded.push(loadCustomFunction(app_folder, resources));
 	}
-	cfs_loaded.push(loadCustomFunction(process.cwd()));
+	cfs_loaded.push(loadCustomFunction(process.cwd(), resources));
+	watches_setup = true;
+	for (let [ module ] of loaded_plugins) {
+		module.loadedResources?.(resources);
+	}
 	return Promise.all(cfs_loaded);
 }
 
@@ -56,9 +62,8 @@ const DEFAULT_HANDLERS = [
 	},*/
 ];
 
-export async function loadCustomFunction(app_folder: string, no_watch?: boolean) {
+export async function loadCustomFunction(app_folder: string, resources: Map<any, any>) {
 	let config_path = join(app_folder, CONFIG_FILENAME);
-	let resources = new Map();
 	let config;
 	if (existsSync(config_path)) {
 		config = parseDocument(readFileSync(app_folder, 'utf8'), { simpleKeys: true }).toJSON();
@@ -84,6 +89,7 @@ export async function loadCustomFunction(app_folder: string, no_watch?: boolean)
 			for (let entry of await fg(path, { onlyFiles: false, objectMode: true })) {
 				let { path, dirent } = entry;
 				let relative_path = relative(app_folder, path);
+				let app_name = basename(app_folder); // TODO: Can optionally use this to prefix resources
 				if (dirent.isFile()) {
 					let contents = await readFile(path);
 					if (isMainThread)
@@ -99,14 +105,10 @@ export async function loadCustomFunction(app_folder: string, no_watch?: boolean)
 			}
 		}
 	}
-	let app_name = basename(app_folder);
-	for (let module of handler_modules) {
-		module.loadedResources?.(resources, app_name);
-	}
 	// Auto restart threads on changes to any app folder. TODO: Make this configurable
-	if (isMainThread && !no_watch) {
+	if (isMainThread && !watches_setup) {
 		watchDir(app_folder, () => {
-			loadCustomFunction(app_folder, true);
+			loadCustomFunctions();
 			restartWorkers();
 		});
 	}

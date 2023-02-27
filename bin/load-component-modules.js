@@ -11,8 +11,9 @@ const hdb_terms = require('../utility/hdbTerms');
 let loaded_plugins = new Map();
 const default_components = [
 	//{ module: '/mqtt/broker.js', port: 1883 },
-	{ module: '/server/customFunctions/customFunctionsServer.js', port: 9926 },
-	{ module: '/server/harperdb/hdbServer.js', port: 9925 },
+	{ module: '/server/customFunctions/defaultHTTPServer.js', port: 9926 },
+	{ module: '/server/harperdb/operationsServer.js', port: 9925 },
+	{ module: '/security/basicAuth.js' },
 ];
 async function loadComponentModules(components = default_components) {
 	let tables = getTables();
@@ -27,7 +28,7 @@ async function loadComponentModules(components = default_components) {
 					const session_affinity = env.get(hdb_terms.CONFIG_PARAMS.HTTP_SESSION_AFFINITY);
 					socket_router.startSocketServer(port, session_affinity);
 				}
-			} else if (component.start) await component.start({ port, tables });
+			} else if (component.start) await component.start({ port });
 			loaded_plugins.set(component, true);
 		} catch (error) {
 			console.error('Error loading component', error, module_id);

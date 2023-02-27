@@ -11,7 +11,7 @@ describe('Test ps_list', () => {
 		// something specifically for Windows
 		return;
 	let execFunc = async () => {
-		return { stdout: 'PID COMM\n 280 /harperdb/server/hdbServer.js\n' };
+		return { stdout: 'PID COMM\n 280 /harperdb/server/operationsServer.js\n' };
 	};
 
 	afterEach(() => {
@@ -41,7 +41,7 @@ describe('Test ps_list', () => {
 		expect(result[0]).to.have.property('cmd');
 		expect(result[0]).to.have.property('pid').equal(280);
 		expect(result[0]).to.have.property('pid').not.equal(28);
-		expect(result[0]).to.have.property('name').equal('hdbServer.js');
-		expect(result[0]).to.have.property('cmd').equal('/harperdb/server/hdbServer.js');
+		expect(result[0]).to.have.property('name').equal('operationsServer.js');
+		expect(result[0]).to.have.property('cmd').equal('/harperdb/server/operationsServer.js');
 	});
 });

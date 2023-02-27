@@ -5,11 +5,19 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { findAndValidateUser } from '../security/user';
 import { server } from '../index';
 
+interface Response {
+	status: number
+	headers: any
+	data: any
+	body: any
+}
+
 const MAX_COMMIT_RETRIES = 10;
-async function http(Resource, resource_path, next_path, request, response) {
+async function http(Resource, resource_path, next_path, request) {
 	let method = request.method;
 	let start = performance.now();
 	let request_data;
+	let headers = new Headers();
 	try {
 		try {
 			if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
@@ -25,109 +33,101 @@ async function http(Resource, resource_path, next_path, request, response) {
 			error.status = 400;
 			throw error;
 		}
-		let response_object = await execute(Resource, method, next_path, request_data, request, response);
+		let response_object = await execute(Resource, method, next_path, request_data, request);
 		let execution_time = performance.now() - start;
-		response.setHeader('Server-Timing', `db;dur=${execution_time}`);
+		response_object.headers['Server-Timing'] = `db;dur=${execution_time}`;
 		recordRequest(resource_path, execution_time);
-		if (response_object.status)
-			response.writeHead(response_object.status);
-		if (response_object.data === undefined)
-			response.end();
-		else {
+		if (response_object.data !== undefined) {
 			let serializer = request.serializer;
 			if (serializer.serializeStream)
-				serializer.serializeStream(response_object.data).pipe(response);
+				response_object.body = serializer.serializeStream(response_object.data);
 			else
-				response.end(serializer.serialize(response_object.data));
+				response_object.body = serializer.serialize(response_object.data);
 		}
+		return response_object;
 	} catch (error) {
 		let execution_time = performance.now() - start;
 		recordRequest(resource_path, execution_time);
-		response.writeHead(error.status || 500); // use specified error status, or default to generic server error
-		// do content negotiation
+		// do content negotiation on the error
 		console.error(error);
-		response.end(request.serializer.serialize(error.toString()));
+		return new Response(request.serializer.serialize(error.toString()), {
+			status: error.status || 500// use specified error status, or default to generic server error
+		});
 	}
 }
 let message_count = 0;
-async function execute(Resource, method, relative_url, request_data, request, response?) {
+async function execute(Resource, method, relative_url, request_data, request, ws?): Response {
 	let full_isolation = method === 'POST';
 	let resource_snapshot = new Resource(request, full_isolation);
 	try {
 		let response_data;
 		let user = request.user;
 		let retries = 0;
-		do {
-			switch (method) {
-				case 'GET-SUB':
-					if (relative_url !== undefined) {
-						let subscription = resource_snapshot.subscribe(relative_url, {
-							callback() {
-								if (!message_count) {
-									setTimeout(() => {
-										console.log('message count (in last 10 seconds)', message_count, 'connection_count', connection_count, 'mem', Math.round(process.memoryUsage().heapUsed / 1000000));
-										message_count = 0;
-									}, 10000);
-								}
-								message_count++;
-
-								response.send(request.serializer.serialize({
-									path,
-									updated: true
-								}));
+		switch (method) {
+			case 'GET-SUB':
+				if (relative_url !== undefined) {
+					let subscription = resource_snapshot.subscribe(relative_url, {
+						callback() {
+							if (!message_count) {
+								setTimeout(() => {
+									console.log('message count (in last 10 seconds)', message_count, 'connection_count', connection_count, 'mem', Math.round(process.memoryUsage().heapUsed / 1000000));
+									message_count = 0;
+								}, 10000);
 							}
-						});
-						response.on('close', () => subscription.end());
-					}
-					// fall-through
-				case 'GET':
-					if (relative_url !== undefined) {
-						let checked = checkAllowed(resource_snapshot.allowGet?.(user), user, resource_snapshot);
-						if (checked?.then) await checked; // fast path to avoid await if not needed
-						response_data = await resource_snapshot.get(relative_url);
-						if (resource_snapshot.lastModificationTime === Date.parse(request.headers['if-modified-since'])) {
-							resource_snapshot.doneReading();
-							return { status: 304 };
+							message_count++;
+
+							ws.send(request.serializer.serialize({
+								path: relative_url,
+								updated: true
+							}));
 						}
+					});
+					ws.on('close', () => subscription.end());
+				}
+				// fall-through
+			case 'GET':
+				if (relative_url !== undefined) {
+					let checked = checkAllowed(resource_snapshot.allowGet?.(user), user, resource_snapshot);
+					if (checked?.then) await checked; // fast path to avoid await if not needed
+					response_data = await resource_snapshot.get(relative_url);
+					if (resource_snapshot.lastModificationTime === Date.parse(request.headers._asObject['if-modified-since'])) {
+						resource_snapshot.doneReading();
+						return { status: 304 };
 					}
-					break;
-				case 'POST':
-					await checkAllowed(resource_snapshot.allowPost?.(user), user, resource_snapshot);
-					response_data = await resource_snapshot.post(relative_url, request_data);
-					break;
-				case 'PUT':
-					await checkAllowed(resource_snapshot.allowPut?.(user), user, resource_snapshot);
-					response_data = await resource_snapshot.put(relative_url, request_data);
-					break;
-				case 'PATCH':
-					await checkAllowed(resource_snapshot.allowPatch?.(user), user, resource_snapshot);
-					response_data = await resource_snapshot.patch(relative_url, request_data);
-					break;
-				case 'DELETE':
-					await checkAllowed(resource_snapshot.allowDelete?.(user), user, resource_snapshot);
-					response_data = await resource_snapshot.delete(relative_url);
-					break;
-			}
-			if (await resource_snapshot.commit())
-				break; // if commit succeeds, break out of retry loop, we are done
-			else if (retries++ >= MAX_COMMIT_RETRIES) { // else keep retrying
-				return {
-					status: 503, data: 'Maximum number of commit retries was exceeded, please try again later'
-				};
-			}
-		} while (true); // execute again if the commit requires a retry
-		if (resource_snapshot.lastModificationTime && response.setHeader)
-			response.setHeader('last-modified', new Date(resource_snapshot.lastModificationTime).toUTCString());
+				}
+				break;
+			case 'POST':
+				await checkAllowed(resource_snapshot.allowPost?.(user), user, resource_snapshot);
+				response_data = await resource_snapshot.post(relative_url, request_data);
+				break;
+			case 'PUT':
+				await checkAllowed(resource_snapshot.allowPut?.(user), user, resource_snapshot);
+				response_data = await resource_snapshot.put(relative_url, request_data);
+				break;
+			case 'PATCH':
+				await checkAllowed(resource_snapshot.allowPatch?.(user), user, resource_snapshot);
+				response_data = await resource_snapshot.patch(relative_url, request_data);
+				break;
+			case 'DELETE':
+				await checkAllowed(resource_snapshot.allowDelete?.(user), user, resource_snapshot);
+				response_data = await resource_snapshot.delete(relative_url);
+				break;
+		}
+		await resource_snapshot.commit();
 		if (response_data) {
 			if (response_data.resolveData) // if it is iterable with onDone, TODO: make a better marker for this
 				response_data.onDone = () => resource_snapshot.doneReading();
 			else
 				resource_snapshot.doneReading();
-			if (request.responseType && response.setHeader)
-				response.setHeader('content-type', request.responseType);
+			let headers = { // TODO: Move this to negotiation in contentType
+				'Content-Type': request.responseType,
+				Vary: 'Accept',
+			};
+			if (resource_snapshot.lastModificationTime)
+				headers['Last-Modified'] = new Date(resource_snapshot.lastModificationTime).toUTCString();
 			return {
 				status: 200,
-				// do content negotiation
+				headers,
 				data: response_data,
 			};
 		} else {
@@ -165,7 +165,7 @@ function checkAllowed(method_allowed, user, resource): void | Promise<void> {
 	if (allowed?.then) {
 		// handle promises, waiting for them using fast path (not await)
 		return allowed.then(() => {
-			if (!allowed) checkAllowed(false, resource);
+			if (!allowed) checkAllowed(false, user, resource);
 		});
 	} else if (!allowed) {
 		let error
@@ -182,9 +182,9 @@ function checkAllowed(method_allowed, user, resource): void | Promise<void> {
 }
 
 let started;
-let app_resources = [];
-export function loadedResources(resources, app_name) {
-	app_resources.push(resources);
+let resources = new Map();
+export function loadedResources(loaded_resources) {
+	resources = loaded_resources;
 }
 let connection_count = 0;
 let printing_connection_count;
@@ -199,11 +199,11 @@ export function start(options: ServerOptions & { path: string, port: number }) {
 		}*/
 	options.keepAlive = true;
 	let remaining_path, resource_path;
-	let http_server = server.http(async (request, response) => {
+	let http_server = server.http(async (request, next_handler) => {
 		await startRequest(request);
 		let resource = findResource(request.url);
-		if (resource) return http(resource, resource_path, remaining_path, request, response).then(() => true, () => true);
-		nextAppHandler(request, response)
+		if (resource) return http(resource, resource_path, remaining_path, request);
+		return next_handler(request);
 	});
 	let wss = new WebSocketServer({ server: http_server });
 	wss.on('connection', (ws, request) => {
@@ -228,34 +228,29 @@ export function start(options: ServerOptions & { path: string, port: number }) {
 	});
 	function startRequest(request) {
 		// TODO: check rate limiting here?
-		let client_id = request.socket.ip;
-
 		const { serializer, type } = findBestSerializer(request);
 		request.serializer = serializer;
 		if (serializer.isSubscription)
 			request.method = 'GET-SUB';
-		let content_type = request.headers['content-type'];
+		let content_type = request.headers._asObject['content-type'];
 		if (content_type) {
 			request.deserialize = getDeserializer(content_type);
 		}
 		request.responseType = type;
-		return authentication(request);
 	}
 	function findResource(full_path) {
-		for (let resources of app_resources) {
-			let path = full_path;
-			do {
-				let resource = resources.get(path);
-				if (resource) {
-					remaining_path = full_path.slice(path.length + 1);
-					resource_path = path;
-					return resource;
-				}
-				let last_slash = path.lastIndexOf('/');
-				if (last_slash === -1) break;
-				path = path.slice(0, last_slash);
-			} while (true);
-		}
+		let path = full_path;
+		do { // TODO: I think it would be faster to go forward through paths rather than reverse
+			let resource = resources.get(path);
+			if (resource) {
+				remaining_path = full_path.slice(path.length + 1);
+				resource_path = path;
+				return resource;
+			}
+			let last_slash = path.lastIndexOf('/');
+			if (last_slash === -1) break;
+			path = path.slice(0, last_slash);
+		} while (true);
 	}
 	async function nextAppHandler(request, response) {
 		http_server.emit('unhandled', request, response);
@@ -263,26 +258,3 @@ export function start(options: ServerOptions & { path: string, port: number }) {
 }
 
 
-let authorization_cache = new Map();
-const AUTHORIZATION_TTL = 5000;
-// TODO: Add this a component plugin, with a pre-request handler hook
-// TODO: Make this not return a promise if it can be fulfilled synchronously (from cache)
-async function authentication(request) {
-	let authorization = request.headers.authorization;
-	if (authorization) {
-		let user = authorization_cache.get(authorization);
-		if (!user) {
-			let [ strategy, credentials ] = authorization.split(' ');
-			switch (strategy) {
-				case 'Basic':
-					let [ username, password ] = atob(credentials).split(':');
-					user = await findAndValidateUser(username, password);
-
-			}
-			authorization_cache.set(authorization, user);
-		}
-		request.user = user;
-	}
-}
-// keep it cleaned out periodically
-setInterval(() => { authorization_cache = new Map() }, AUTHORIZATION_TTL);

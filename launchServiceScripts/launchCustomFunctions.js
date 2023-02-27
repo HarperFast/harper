@@ -1,3 +1,3 @@
 'use strict';
 
-require('../server/customFunctions/customFunctionsServer').customFunctionsServer();
+require('../server/customFunctions/defaultHTTPServer').customFunctionsServer();

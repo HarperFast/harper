@@ -1,7 +1,7 @@
 'use strict';
 const { isMainThread, parentPort, threadId } = require('worker_threads');
 const { Socket } = require('net');
-const { createServer } = require('http');
+const { createServer, IncomingMessage } = require('http');
 const harper_logger = require('../../utility/logging/harper_logger');
 const { join } = require('path');
 const hdb_utils = require('../../utility/common_utils');
@@ -151,28 +151,81 @@ function registerServer(server, port) {
 	}
 	server.on('unhandled', defaultNotFound);
 }
-let default_server, http_listeners = [];
-function httpServer(listener) {
+let default_server, next_callback, http_listeners = []
+function httpServer(listener, port) {
 	if (typeof listener === 'function') {
 		if (!default_server) {
-			default_server = createServer(async (request, response) => {
-				for (let i = 0, l = http_listeners.length; i < l; i++) {
-					let listener = http_listeners[i];
-					let result = listener(request, response);
-					if (result.then) result = await result;
-					if (result) return;
+			default_server = createServer(async (request, nodeResponse) => {
+				try {
+					request.nodeResponse = nodeResponse;
+					// assign a more WHATWG compliant headers object, this is our real standard interface
+					request.headers = new Headers(request.headers);
+					let response = await next_callback(request);
+					nodeResponse.writeHead(response.status, response.headers);
+					let body = response.body;
+					if (body?.pipe)
+						body.pipe(nodeResponse);
+					else
+						nodeResponse.end(body);
+				} catch (error) {
+					nodeResponse.writeHead(500);
+					nodeResponse.end(error.toString());
 				}
 			});
 			registerServer(default_server);
 		}
 		http_listeners.push(listener);
+		makeHTTPCallback();
 		return default_server; // TODO: Remove this once we have wsServer
 	} else {
-		registerServer(listener);
+		registerServer(listener, port);
 	}
+}
+function makeHTTPCallback() {
+	next_callback = notFound;
+	// go through the listeners in reverse order so each callback can be passed to the one before
+	// and then each middleware layer can call the next middleware layer
+	for (let i = http_listeners.length; i > 0;) {
+		let listener = http_listeners[--i];
+		let callback = next_callback;
+		next_callback = (request) => {
+			return listener(request, callback);
+		};
+	}
+}
+function notFound() {
+	return {
+		status: 404,
+		body: 'Not found'
+	};
 }
 server.http = httpServer;
 function defaultNotFound(request, response) {
 	response.writeHead(404);
 	response.end('Not found\n');
+}
+
+/*let kHeaders = Symbol.for('kHeaders');
+class Request extends IncomingMessage {
+	get headers() {
+		if (!this[kHeaders]) {
+			this[kHeaders] = new Headers();
+
+			const src = this.rawHeaders;
+			const dst = this[kHeaders];
+
+			for (let n = 0; n < this[kHeadersCount]; n += 2) {
+				this._addHeaderLine(src[n + 0], src[n + 1], dst);
+			}
+		}
+		return this[kHeaders];
+	}
+}*/
+class Headers {
+	constructor(headers) {
+		this._asObject = headers;
+	}
+	get(name) {
+		return this._asObject[name.toLowerCase()];
+	}
 }

@@ -322,6 +322,15 @@ export function makeTable(options) {
 		async* search(query, options): AsyncIterable<any> {
 			query.offset = Number.isInteger(query.offset) ? query.offset : 0;
 			let conditions = query.conditions || query;
+			for (let condition of conditions) {
+				let attribute = attributes.find(attribute => attribute.name == condition.attribute);
+				if (!attribute) {
+					// TODO: Make it a 404
+					throw new Error(`${condition.attribute} is not a defined attribute`);
+				}
+				if (attribute.is_number) // convert to a number if that is expected
+					condition.value = +condition.value;
+			}
 			// Sort the conditions by narrowest to broadest. Note that we want to do this both for intersection where
 			// it allows us to do minimal filtering, and for union where we can return the fastest results first
 			// in an iterator/stream.
@@ -333,7 +342,7 @@ export function makeTable(options) {
 						// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
 						let index = indices[condition.attribute];
 						condition.estimated_count = index ? index.getValuesCount(condition.value) : Infinity;
-					} else if (search_type === lmdb_terms.SEARCH_TYPES.CONTAINS || type === lmdb_terms.SEARCH_TYPES.ENDS_WITH)
+					} else if (search_type === lmdb_terms.SEARCH_TYPES.CONTAINS || search_type === lmdb_terms.SEARCH_TYPES.ENDS_WITH)
 						condition.estimated_count = Infinity;
 						// this search types can't/doesn't use indices, so try do them last
 					// for range queries (betweens, starts-with, greater, etc.), just arbitrarily guess
