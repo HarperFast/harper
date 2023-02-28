@@ -10,7 +10,10 @@ const hdb_terms = require('../hdbTerms');
 const assignCMDENVVariables = require('../assignCmdEnvVariables');
 const os = require('os');
 const { PACKAGE_ROOT, THREAD_TYPES } = require('../../utility/hdbTerms');
-
+const native_console_methods = {};
+for (let key in console) {
+	native_console_methods[key] = console[key];
+}
 const LOG_LEVEL_HIERARCHY = {
 	notify: 7,
 	fatal: 6,
@@ -56,6 +59,7 @@ module.exports = {
 	log_level,
 	loggerWithTag,
 	suppressLogging,
+	setupConsoleLogging,
 };
 
 /**
@@ -120,6 +124,11 @@ function initLogSettings() {
 		error(err);
 		throw err;
 	}
+	setupConsoleLogging();
+}
+let logging_enabled = true;
+
+function setupConsoleLogging() {
 	logConsole('error', error);
 	logConsole('warn', warn);
 	logConsole('log', info);
@@ -127,16 +136,13 @@ function initLogSettings() {
 	logConsole('debug', debug);
 	logConsole('trace', trace);
 }
-let logging_enabled = true;
 function logConsole(level, logger) {
-	let original_logger = console[level];
-	original_logger = original_logger.original || original_logger;
 	console[level] = function(...args) {
 		if (logging_enabled)
 			logger(...args);
-		return original_logger.apply(console, args);
+		if (!/PM2 log:|App \[/.test(args[0]))
+			return native_console_methods[level](...args);
 	};
-	console[level].original = original_logger;
 }
 
 function loggerWithTag(tag) {
