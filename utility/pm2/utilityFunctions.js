@@ -57,6 +57,8 @@ function enterScriptingMode() {
 function connect() {
 	return new Promise((resolve, reject) => {
 		pm2.connect(!scripting_mode, (err, res) => {
+			// PM2 tries to take over logging. We are not going to be defeated, we are taking it back!
+			hdb_logger.setupConsoleLogging();
 			if (err) {
 				reject(err);
 			}
