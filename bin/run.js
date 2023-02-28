@@ -34,11 +34,9 @@ const hdbInfoController = require('../data_layer/hdbInfoController');
 const SYSTEM_SCHEMA = require('../json/systemSchema.json');
 const schema_describe = require('../data_layer/schemaDescribe');
 const lmdb_create_txn_environment = require('../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsAuditEnvironment');
-
-let pm2_utils;
-
 const CreateTableObject = require('../data_layer/CreateTableObject');
 const hdb_terms = require('../utility/hdbTerms');
+let pm2_utils;
 
 // These may change to match unix return codes (i.e. 0, 1)
 const ENOENT_ERR_CODE = -2;
@@ -69,13 +67,8 @@ async function initialize(called_by_install = false, called_by_main = false) {
 		}
 	}
 
-	// Set where the pm2.log file is created. This has to be done before pm2 is imported.
-	process.env.PM2_LOG_FILE_PATH = path.join(env.getHdbBasePath(), 'log', 'pm2.log');
-
 	// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
 	if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
-
-	hdb_logger.createLogFile(terms.PROCESS_LOG_NAMES.HDB, terms.PROCESS_DESCRIPTORS.RUN);
 
 	// Check to see if an upgrade is needed based on existing hdb_info data.  If so, we need to force the user to upgrade
 	// before the server can be started.
@@ -127,8 +120,6 @@ async function initialize(called_by_install = false, called_by_main = false) {
 	if (clustering_enabled) {
 		await nats_config.generateNatsConfig(called_by_main);
 	}
-
-	await pm2_utils.configureLogRotate();
 }
 /**
  * Starts Harper DB threads

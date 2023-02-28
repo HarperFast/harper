@@ -526,7 +526,7 @@ function nonEnterpriseFilter(search_results) {
 			}
 		});
 		if (most_users_tuple.role === undefined) {
-			logger.error('No roles found with active users.  This is bad.');
+			logger.warn('No roles found with active users.');
 			return new Map();
 		}
 

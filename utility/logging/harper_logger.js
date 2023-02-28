@@ -24,19 +24,15 @@ const LOG_LEVEL_HIERARCHY = {
 // Install log is created in harperdb/logs because the hdb folder doesn't exist initially during the install process.
 const INSTALL_LOG_LOCATION = path.join(PACKAGE_ROOT, `logs`);
 
-// If harper_logger is called by a non-pm2 managed process it will not have a pm id.
-const NON_PM2_PROCESS = process.env.pm_id === undefined;
-
 // Location of default config YAML.
 const DEFAULT_CONFIG_FILE = path.join(PACKAGE_ROOT, 'config/yaml/', hdb_terms.HDB_DEFAULT_CONFIG_FILE);
 
-let process_name =
-	process.env.PROCESS_NAME === undefined ? hdb_terms.PROCESS_DESCRIPTORS.INSTALL : process.env.PROCESS_NAME;
-let non_pm2_log_file;
 let log_to_file;
 let log_to_stdstreams;
 let log_level;
-let log_path;
+let log_name;
+let log_root;
+let log_file_path;
 
 // If this is the first time logger is called by process, hdb props will be undefined.
 // Call init to get all the required log settings.
@@ -44,7 +40,6 @@ let hdb_properties;
 if (hdb_properties === undefined) initLogSettings();
 
 module.exports = {
-	createLogFile,
 	notify,
 	fatal,
 	error,
@@ -56,6 +51,7 @@ module.exports = {
 	log_level,
 	loggerWithTag,
 	suppressLogging,
+	initLogSettings,
 };
 
 /**
@@ -63,18 +59,25 @@ module.exports = {
  * If the settings file doesn't exist (during install) check for command or env vars, if there aren't
  * any, use default values.
  */
-function initLogSettings() {
+function initLogSettings(force_init = false) {
 	try {
-		if (hdb_properties === undefined) {
+		if (hdb_properties === undefined || force_init) {
 			const boot_props_file_path = getPropsFilePath();
 			hdb_properties = PropertiesReader(boot_props_file_path);
 			let properties = assignCMDENVVariables(['ROOTPATH']);
 			({
 				level: log_level,
-				config_log_path: log_path,
+				config_log_path: log_root,
 				to_file: log_to_file,
 				to_stream: log_to_stdstreams,
-			} = getLogConfig(properties.ROOTPATH ? path.join(properties.ROOTPATH, hdb_terms.HDB_CONFIG_FILE) : hdb_properties.get('settings_path')));
+			} = getLogConfig(
+				properties.ROOTPATH
+					? path.join(properties.ROOTPATH, hdb_terms.HDB_CONFIG_FILE)
+					: hdb_properties.get('settings_path')
+			));
+
+			log_name = hdb_terms.LOG_NAMES.HDB;
+			log_file_path = path.join(log_root, log_name);
 		}
 	} catch (err) {
 		hdb_properties = undefined;
@@ -111,7 +114,9 @@ function initLogSettings() {
 			log_level = log_level === undefined ? default_level : log_level;
 
 			// If env hasn't been initialized process is likely install.
-			log_path = INSTALL_LOG_LOCATION;
+			log_root = INSTALL_LOG_LOCATION;
+			log_name = hdb_terms.LOG_NAMES.INSTALL;
+			log_file_path = path.join(log_root, log_name);
 
 			return;
 		}
@@ -127,13 +132,13 @@ function initLogSettings() {
 	logConsole('debug', debug);
 	logConsole('trace', trace);
 }
+
 let logging_enabled = true;
 function logConsole(level, logger) {
 	let original_logger = console[level];
 	original_logger = original_logger.original || original_logger;
-	console[level] = function(...args) {
-		if (logging_enabled)
-			logger(...args);
+	console[level] = function (...args) {
+		if (logging_enabled) logger(...args);
 		return original_logger.apply(console, args);
 	};
 	console[level].original = original_logger;
@@ -150,7 +155,7 @@ function loggerWithTag(tag) {
 		trace: logWithTag(trace),
 	};
 	function logWithTag(logger) {
-		return function(...args) {
+		return function (...args) {
 			return logger(tag, ...args);
 		};
 	}
@@ -162,32 +167,6 @@ function suppressLogging(callback) {
 		callback();
 	} finally {
 		logging_enabled = true;
-	}
-}
-/**
- * If a process is not run by pm2 (like the bin modules) create a log file
- * @param log_name
- * @param log_process_name
- */
-function createLogFile(log_name, log_process_name) {
-	if (!NON_PM2_PROCESS) {
-		// no need to create the log file
-		return;
-	}
-
-	if (hdb_properties === undefined) initLogSettings();
-	process_name = log_process_name;
-	let log_dir;
-	if (log_name === hdb_terms.PROCESS_LOG_NAMES.INSTALL) {
-		log_dir = INSTALL_LOG_LOCATION;
-	} else {
-		log_dir = log_path;
-	}
-
-	if (log_to_file) {
-		// Create or open a log file
-		non_pm2_log_file = path.join(log_dir, log_name);
-		fs.ensureFileSync(non_pm2_log_file);
 	}
 }
 
@@ -232,53 +211,31 @@ function createLogRecord(level, args) {
 }
 
 /**
- * If the log file doesn't exist, write to the install log. The only time the log file should be undefined is initially
- * during install or before any of the bin modules have had a chance to create their own log.
+ * Log to std out and/or file
  * @param log
  */
-function writeToLogFile(log) {
-	if (non_pm2_log_file === undefined) {
-		process_name = hdb_terms.PROCESS_DESCRIPTORS.INSTALL;
-		fs.ensureDirSync(INSTALL_LOG_LOCATION);
-		non_pm2_log_file = path.join(INSTALL_LOG_LOCATION, hdb_terms.PROCESS_LOG_NAMES.INSTALL);
-		fs.ensureFileSync(non_pm2_log_file);
-	}
-
-	fs.appendFileSync(non_pm2_log_file, log);
-}
-
-/**
- * Determine if non-pm2 managed log should go to std out and/or file
- * @param log
- */
-function nonPm2LogStdOut(log) {
-	if (log_to_file) writeToLogFile(log);
+function logStdOut(log) {
+	if (log_to_file) fs.appendFileSync(log_file_path, log);
 	if (log_to_stdstreams) process.stdout.write(log);
 }
 
 /**
- * Determine if non-pm2 managed log should go to std err and/or file
+ * Log to std err and/or file
  * @param log
  */
-function nonPm2LogStdErr(log) {
-	if (log_to_file) writeToLogFile(log);
+function logStdErr(log) {
+	if (log_to_file) fs.appendFileSync(log_file_path, log);
 	if (log_to_stdstreams) process.stderr.write(log);
 }
 
 /**
- * Log a info level log.
+ * Log an info level log.
  * @param args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
  * Provide args separated by commas. No need to stringify objects. createLogRecord will do that
  */
 function info(...args) {
 	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['info']) {
-		const log = createLogRecord('info', args);
-		if (NON_PM2_PROCESS) {
-			nonPm2LogStdOut(log);
-			return;
-		}
-
-		process.stdout.write(log);
+		logStdOut(createLogRecord('info', args));
 	}
 }
 
@@ -289,13 +246,7 @@ function info(...args) {
  */
 function trace(...args) {
 	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['trace']) {
-		const log = createLogRecord('trace', args);
-		if (NON_PM2_PROCESS) {
-			nonPm2LogStdOut(log);
-			return;
-		}
-
-		process.stdout.write(log);
+		logStdOut(createLogRecord('trace', args));
 	}
 }
 
@@ -306,13 +257,7 @@ function trace(...args) {
  */
 function error(...args) {
 	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['error']) {
-		const log = createLogRecord('error', args);
-		if (NON_PM2_PROCESS) {
-			nonPm2LogStdErr(log);
-			return;
-		}
-
-		process.stderr.write(log);
+		logStdErr(createLogRecord('error', args));
 	}
 }
 
@@ -323,13 +268,7 @@ function error(...args) {
  */
 function debug(...args) {
 	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['debug']) {
-		const log = createLogRecord('debug', args);
-		if (NON_PM2_PROCESS) {
-			nonPm2LogStdOut(log);
-			return;
-		}
-
-		process.stdout.write(log);
+		logStdOut(createLogRecord('debug', args));
 	}
 }
 
@@ -340,13 +279,7 @@ function debug(...args) {
  */
 function notify(...args) {
 	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['notify']) {
-		const log = createLogRecord('notify', args);
-		if (NON_PM2_PROCESS) {
-			nonPm2LogStdOut(log);
-			return;
-		}
-
-		process.stdout.write(log);
+		logStdOut(createLogRecord('notify', args));
 	}
 }
 
@@ -357,13 +290,7 @@ function notify(...args) {
  */
 function fatal(...args) {
 	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['fatal']) {
-		const log = createLogRecord('fatal', args);
-		if (NON_PM2_PROCESS) {
-			nonPm2LogStdErr(log);
-			return;
-		}
-
-		process.stderr.write(log);
+		logStdErr(createLogRecord('fatal', args));
 	}
 }
 
@@ -374,13 +301,7 @@ function fatal(...args) {
  */
 function warn(...args) {
 	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['warn']) {
-		const log = createLogRecord('warn', args);
-		if (NON_PM2_PROCESS) {
-			nonPm2LogStdErr(log);
-			return;
-		}
-
-		process.stderr.write(log);
+		logStdErr(createLogRecord('warn', args));
 	}
 }
 

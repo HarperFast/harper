@@ -1,7 +1,7 @@
 # HarperDB configuration file. Refer to https://harperdb.io/docs/reference/configuration-file/
 ---
 clustering:
-  enabled: true
+  enabled: false
   hubServer:
     cluster:
       name: harperdb

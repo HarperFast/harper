@@ -52,8 +52,6 @@ async function postDummyNatsMsg() {
  * @returns {Promise<>}
  */
 async function restartProcesses() {
-	// This is here to accommodate requests from the CLI.
-	hdb_logger.createLogFile(hdb_terms.PROCESS_LOG_NAMES.CLI, hdb_terms.PROCESS_DESCRIPTORS.STOP);
 	try {
 		// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
 		if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
@@ -99,22 +97,7 @@ async function restartProcesses() {
 				console.log(`Restarting ${service}`);
 				hdb_logger.trace(`Restarting ${service}`);
 
-				if (service === hdb_terms.PROCESS_DESCRIPTORS.PM2_LOGROTATE) {
-					await pm2_utils.configureLogRotate();
-				} else if (service_req.toLowerCase().includes('clustering')) {
-					await restartClustering(service_req);
-				} else if (await pm2_utils.isServiceRegistered(service)) {
-					// We need to allow for restart to be called on services that arent registered/managed by pm2. If restart is called on a
-					// service that isn't registered that service will be started by pm2.
-
-					// If the service is registered but the settings value is not set to enabled, stop the service.
-					if (service === hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS && !custom_func_enabled) {
-						await pm2_utils.stop(hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS);
-						hdb_logger.trace(`Stopping ${hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS}`);
-					} else {
-						await restartService({ service });
-					}
-				} else if (service === hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS) {
+				if (service === hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS) {
 					if (custom_func_enabled) {
 						await pm2_utils.startService(service);
 						hdb_logger.trace(`Starting ${service}`);
@@ -212,8 +195,6 @@ async function restartService(json_message) {
 		}
 
 		await pm2_utils.reloadStopStart(service);
-	} else if (service === hdb_terms.PROCESS_DESCRIPTORS.PM2_LOGROTATE) {
-		await pm2_utils.configureLogRotate();
 	} else if (service.toLowerCase().includes('clustering')) {
 		await restartClustering(service);
 	} else if (
@@ -246,8 +227,6 @@ async function restartService(json_message) {
  * this will fail.
  */
 async function stop() {
-	hdb_logger.createLogFile(hdb_terms.PROCESS_LOG_NAMES.CLI, hdb_terms.PROCESS_DESCRIPTORS.STOP);
-
 	try {
 		// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
 		if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');

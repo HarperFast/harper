@@ -57,22 +57,12 @@ const PROCESS_DESCRIPTORS = {
 	UPGRADE: 'Upgrade',
 	REGISTER: 'Register',
 	JOB: 'Job',
-	PM2_LOGROTATE: 'pm2-logrotate',
 	CLUSTERING_UPGRADE_4_0_0: 'Upgrade-4-0-0',
 };
 
-const PROCESS_LOG_NAMES = {
+const LOG_NAMES = {
 	HDB: 'hdb.log',
-	CLUSTERING_HUB: 'clustering_hub.log',
-	CLUSTERING_LEAF: 'clustering_leaf.log',
-	CLUSTERING_INGEST_SERVICE: 'clustering_ingest_service.log',
-	CLUSTERING_REPLY_SERVICE: 'clustering_reply_service.log',
-	CUSTOM_FUNCTIONS: 'custom_functions.log',
 	INSTALL: 'install.log',
-	CLI: 'cli.log',
-	PM2: 'pm2.log',
-	CLUSTERING_UPGRADE: 'clustering_upgrade.log',
-	JOBS: 'jobs.log',
 };
 
 const LOG_LEVELS = {
@@ -91,8 +81,6 @@ const PROCESS_DESCRIPTORS_VALIDATE = {
 	'clustering leaf': CLUSTERING_LEAF_PROC_DESCRIPTOR,
 	'custom functions': CUSTOM_FUNCTION_PROC_DESCRIPTOR,
 	'custom_functions': CUSTOM_FUNCTION_PROC_DESCRIPTOR,
-	'pm2-logrotate': PROCESS_DESCRIPTORS.PM2_LOGROTATE,
-	'logrotate': PROCESS_DESCRIPTORS.PM2_LOGROTATE,
 	'clustering': 'clustering',
 	'clustering config': 'clustering config',
 };
@@ -176,9 +164,6 @@ const SCHEMA_DIR_NAME = 'schema';
 const TRANSACTIONS_DIR_NAME = 'transactions';
 const LIMIT_COUNT_NAME = '.count';
 const ID_ATTRIBUTE_STRING = 'id';
-
-const INSTALL_LOG = 'install_log.log';
-const RUN_LOG = 'run_log.log';
 
 const PROCESS_NAME_ENV_PROP = 'PROCESS_NAME';
 
@@ -1012,8 +997,6 @@ module.exports = {
 	READ_AUDIT_LOG_SEARCH_TYPES_ENUM,
 	JWT_ENUM,
 	CLUSTERING_FLAG,
-	RUN_LOG,
-	INSTALL_LOG,
 	ITC_EVENT_TYPES,
 	CUSTOM_FUNCTION_PROC_NAME,
 	CUSTOM_FUNCTION_PROC_DESCRIPTOR,
@@ -1028,7 +1011,7 @@ module.exports = {
 	LAUNCH_SERVICE_SCRIPTS,
 	LOG_LEVELS,
 	PROCESS_NAME_ENV_PROP,
-	PROCESS_LOG_NAMES,
+	LOG_NAMES,
 	PM2_PROCESS_STATUSES,
 	CONFIG_PARAM_MAP,
 	CONFIG_PARAMS,
