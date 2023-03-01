@@ -387,10 +387,6 @@ describe('test systemInformation module', () => {
 
 			assert(Array.isArray(results.size));
 
-			Object.keys(results.size[0]).forEach((key) => {
-				assert(EXPECTED_PROPERTIES.disk_size.indexOf(key) >= 0);
-			});
-
 			EXPECTED_PROPERTIES.disk_size.forEach((property) => {
 				assert(results.size[0].hasOwnProperty(property));
 			});

@@ -104,7 +104,6 @@ async function processLocalTransaction(req, operation_function) {
 		if (data instanceof Error) {
 			throw data;
 		}
-
 		if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
 			global_schema.setSchemaDataToGlobal((err) => {
 				if (err) {

@@ -175,7 +175,9 @@ async function restart(json_message) {
 		await postDummyNatsMsg();
 		await restartAllClusteringProcesses();
 	}
-	await restartWorkers();
+	setTimeout(() => {
+		restartWorkers();
+	}, 50); // can't await this because it would deadlock on waiting for itself to finish
 	return RESTART_RESPONSE;
 }
 
@@ -222,7 +224,10 @@ async function restartService(json_message) {
 	) {
 		const is_cf_reg = await pm2_utils.isServiceRegistered(service);
 		if (custom_func_enabled) {
-			restartWorkers('http'); // can't await this because it would deadlock on waiting for itself to finish
+			setTimeout(() => {
+				hdb_logger.notify('restarting http workers');
+				restartWorkers('http');
+			}, 200); // can't await this because it would deadlock on waiting for itself to finish
 		} else if (!custom_func_enabled && is_cf_reg) {
 			// If the service is registered but not enabled in settings, stop service.
 			await pm2_utils.stop(service);

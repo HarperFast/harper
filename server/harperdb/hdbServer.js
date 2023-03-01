@@ -33,13 +33,13 @@ const {
 	serverErrorHandler,
 	reqBodyValidationHandler,
 } = require('../serverHelpers/serverHandlers');
-const net = require("net");
-const {registerContentHandlers} = require('../serverHelpers/contentTypes');
+const net = require('net');
+const { registerContentHandlers } = require('../serverHelpers/contentTypes');
 
 const REQ_MAX_BODY_SIZE = 1024 * 1024 * 1024; //this is 1GB in bytes
 const TRUE_COMPARE_VAL = 'TRUE';
 
-const {HDB_SETTINGS_NAMES} = terms;
+const { HDB_SETTINGS_NAMES } = terms;
 const PROPS_CORS_KEY = HDB_SETTINGS_NAMES.CORS_ENABLED_KEY;
 const PROPS_CORS_ACCESSLIST_KEY = 'CORS_ACCESSLIST';
 const PROPS_SERVER_TIMEOUT_KEY = HDB_SETTINGS_NAMES.SERVER_TIMEOUT_KEY;
@@ -149,7 +149,7 @@ function buildServer(is_https) {
 
 	app.register(function (instance, options, done) {
 		instance.setNotFoundHandler(function (request, reply) {
-			reply.code(404).send({error: 'Not Found', statusCode: 404});
+			reply.code(404).send({ error: 'Not Found', statusCode: 404 });
 		});
 		done();
 	});
@@ -177,6 +177,9 @@ function buildServer(is_https) {
 			preValidation: [reqBodyValidationHandler, authHandler],
 		},
 		async function (req, res) {
+			// if the operation is a restart, we have to tell the client not to use keep alive on this connection
+			// anymore; it needs to be closed because this thread is going to be terminated
+			if (req.body?.operation?.startsWith('restart')) res.header('Connection', 'close');
 			//if no error is thrown below, the response 'data' returned from the handler will be returned with 200/OK code
 			return handlePostRequest(req);
 		}
@@ -200,6 +203,8 @@ function getServerOptions(is_https) {
 		bodyLimit: REQ_MAX_BODY_SIZE,
 		connectionTimeout: server_timeout,
 		keepAliveTimeout: keep_alive_timeout,
+		forceCloseConnections: true,
+		return503OnClosing: false,
 	};
 
 	if (is_https) {
@@ -208,7 +213,7 @@ function getServerOptions(is_https) {
 		const credentials = {
 			allowHTTP1: true, // Support both HTTPS/1 and /2
 			key: fs.readFileSync(`${privateKey}`),
-			cert: fs.readFileSync(`${certificate}`)
+			cert: fs.readFileSync(`${certificate}`),
 		};
 		// ALPN negotiation will not upgrade non-TLS HTTP/1, so we only turn on HTTP/2 when we have secure HTTPS,
 		// plus browsers do not support unsecured HTTP/2, so there isn't a lot of value in trying to use insecure HTTP/2.

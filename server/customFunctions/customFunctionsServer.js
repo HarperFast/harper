@@ -13,7 +13,7 @@ const terms = require('../../utility/hdbTerms');
 const harper_logger = require('../../utility/logging/harper_logger');
 const global_schema = require('../../utility/globalSchema');
 const user_schema = require('../../security/user');
-const { isMainThread } = require("worker_threads");
+const { isMainThread } = require('worker_threads');
 const { registerServer } = require('../threads/thread-http-server');
 const getServerOptions = require('./helpers/getServerOptions');
 const getCORSOptions = require('./helpers/getCORSOptions');
@@ -21,10 +21,7 @@ const getHeaderTimeoutConfig = require('./helpers/getHeaderTimeoutConfig');
 
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
-const {
-	handleServerUncaughtException,
-	serverErrorHandler,
-} = require('../serverHelpers/serverHandlers');
+const { handleServerUncaughtException, serverErrorHandler } = require('../serverHelpers/serverHandlers');
 const pjson = require('../../package.json');
 const { registerContentHandlers } = require('../serverHelpers/contentTypes');
 

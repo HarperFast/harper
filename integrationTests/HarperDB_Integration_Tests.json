@@ -47223,7 +47223,7 @@
 									"});",
 									"",
 									"// This timeout is here to give HDB time to restart before the next text is ran.",
-									"setTimeout(() => {}, 30000)"
+									"setTimeout(() => {}, 20000)"
 								],
 								"type": "text/javascript"
 							}
@@ -60300,8 +60300,11 @@
 									"pm.test(\"Restart service success message is returned\", function () {",
 									"    const json_data = pm.response.json();",
 									"    pm.expect(json_data.message).to.equal(\"Restarting Custom Functions\");",
-									"});"
-								],
+									"});",
+                                  "",
+                                  "// This timeout is here to give HDB time to restart before the next text is ran.",
+                                  "setTimeout(() => {}, 20000)"
+                                ],
 								"type": "text/javascript"
 							}
 						}
@@ -60483,8 +60486,11 @@
 									"pm.test(\"Restart service success message is returned\", function () {",
 									"    const json_data = pm.response.json();",
 									"    pm.expect(json_data.message).to.equal(\"Restarting Custom Functions\");",
-									"});"
-								],
+									"});",
+                                  "",
+                                  "// This timeout is here to give HDB time to restart before the next text is ran.",
+                                  "setTimeout(() => {}, 20000)"
+                                ],
 								"type": "text/javascript"
 							}
 						}
@@ -60549,15 +60555,6 @@
 									"    pm.expect(json_data).to.haveOwnProperty('directory');",
 									"    pm.environment.set('cf_port', json_data.port);",
 									"});"
-								],
-								"type": "text/javascript"
-							}
-						},
-						{
-							"listen": "prerequest",
-							"script": {
-								"exec": [
-									"setTimeout(() => {}, 30000);"
 								],
 								"type": "text/javascript"
 							}
