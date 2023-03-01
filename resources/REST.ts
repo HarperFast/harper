@@ -3,6 +3,7 @@ import { recordRequest } from './analytics';
 import { createServer, ClientRequest, ServerOptions } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { findAndValidateUser } from '../security/user';
+import { authentication } from '../security/basicAuth';
 import { server } from '../index';
 
 interface Response {
@@ -17,7 +18,6 @@ async function http(Resource, resource_path, next_path, request) {
 	let method = request.method;
 	let start = performance.now();
 	let request_data;
-	let headers = new Headers();
 	try {
 		try {
 			if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
@@ -35,6 +35,8 @@ async function http(Resource, resource_path, next_path, request) {
 		}
 		let response_object = await execute(Resource, method, next_path, request_data, request);
 		let execution_time = performance.now() - start;
+		if (!response_object.headers)
+			response_object.headers = {};
 		response_object.headers['Server-Timing'] = `db;dur=${execution_time}`;
 		recordRequest(resource_path, execution_time);
 		if (response_object.data !== undefined) {
@@ -50,9 +52,10 @@ async function http(Resource, resource_path, next_path, request) {
 		recordRequest(resource_path, execution_time);
 		// do content negotiation on the error
 		console.error(error);
-		return new Response(request.serializer.serialize(error.toString()), {
-			status: error.status || 500// use specified error status, or default to generic server error
-		});
+		return {
+			status: error.status || 500,// use specified error status, or default to generic server error
+			body: request.serializer.serialize(error.toString()),
+		};
 	}
 }
 let message_count = 0;
@@ -90,7 +93,7 @@ async function execute(Resource, method, relative_url, request_data, request, ws
 					let checked = checkAllowed(resource_snapshot.allowGet?.(user), user, resource_snapshot);
 					if (checked?.then) await checked; // fast path to avoid await if not needed
 					response_data = await resource_snapshot.get(relative_url);
-					if (resource_snapshot.lastModificationTime === Date.parse(request.headers._asObject['if-modified-since'])) {
+					if (resource_snapshot.lastModificationTime === Date.parse(request.headers['if-modified-since'])) {
 						resource_snapshot.doneReading();
 						return { status: 304 };
 					}
@@ -206,7 +209,7 @@ export function start(options: ServerOptions & { path: string, port: number }) {
 		return next_handler(request);
 	});
 	let wss = new WebSocketServer({ server: http_server });
-	wss.on('connection', (ws, request) => {
+	wss.on('connection', async (ws, request) => {
 		connection_count++;
 		if (!printing_connection_count) {
 			setTimeout(() => {
@@ -215,7 +218,7 @@ export function start(options: ServerOptions & { path: string, port: number }) {
 			}, 1000);
 			printing_connection_count = true;
 		}
-
+		await authentication(request);
 		startRequest(request);
 		ws.on('error', console.error);
 		ws.on('message', function message(body) {
@@ -232,7 +235,7 @@ export function start(options: ServerOptions & { path: string, port: number }) {
 		request.serializer = serializer;
 		if (serializer.isSubscription)
 			request.method = 'GET-SUB';
-		let content_type = request.headers._asObject['content-type'];
+		let content_type = request.headers['content-type'];
 		if (content_type) {
 			request.deserialize = getDeserializer(content_type);
 		}

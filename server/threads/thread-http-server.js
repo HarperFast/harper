@@ -159,7 +159,8 @@ function httpServer(listener, port) {
 				try {
 					request.nodeResponse = nodeResponse;
 					// assign a more WHATWG compliant headers object, this is our real standard interface
-					request.headers = new Headers(request.headers);
+					//request.headers = new Headers(request.headers);
+					request.headers.get = get;
 					let response = await next_callback(request);
 					nodeResponse.writeHead(response.status, response.headers);
 					let body = response.body;
@@ -228,4 +229,7 @@ class Headers {
 	get(name) {
 		return this._asObject[name.toLowerCase()];
 	}
+}
+function get(name) {
+	return this[name];
 }

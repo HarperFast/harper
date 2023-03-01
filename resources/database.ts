@@ -114,7 +114,7 @@ export async function table({ table: table_name, schema: database_name, path, ex
 		primary_key_attribute = attributes.find(attribute => attribute.is_primary_key);
 		primary_key = primary_key_attribute.name;
 		primary_key_attribute.is_hash_attribute = true;
-		let dbi_init = new OpenDBIObject(!primary_key_attribute.is_primary_key, attribute.is_primary_key);
+		let dbi_init = new OpenDBIObject(!primary_key_attribute.is_primary_key, primary_key_attribute.is_primary_key);
 		let dbi_name = table_name + '.' + primary_key_attribute.name;
 		table = tables[table_name] = makeTable({
 			primaryDbi: root_store.openDB(dbi_name, dbi_init),

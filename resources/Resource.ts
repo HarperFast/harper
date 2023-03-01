@@ -92,7 +92,7 @@ export class Resource implements ResourceInterface {
 			return this.search(this.parseQuery(url.slice(search_start + 1)), options);
 		}
 		let slash_index = url.indexOf?.('/');
-		if (slash_index === -1)
+		if (!(slash_index > -1))
 			return this.getById(url, options);
 		let id = url.slice(0, slash_index);
 		let property = url.slice(slash_index + 1);

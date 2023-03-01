@@ -147,7 +147,7 @@ let registerFastifySerializers = fp(
 );
 
 function findBestSerializer(incoming_message) {
-	let accept_header = incoming_message.headers._asObject.accept;
+	let accept_header = incoming_message.headers.accept;
 	let best_serializer;
 	let best_quality = 0;
 	let best_type;

@@ -5,7 +5,7 @@ let authorization_cache = new Map();
 const AUTHORIZATION_TTL = 5000;
 // TODO: Make this not return a promise if it can be fulfilled synchronously (from cache)
 async function authentication(request) {
-	let authorization = request.headers._asObject.authorization;
+	let authorization = request.headers.authorization;
 	if (authorization) {
 		let user = authorization_cache.get(authorization);
 		if (!user) {
@@ -20,6 +20,7 @@ async function authentication(request) {
 		request.user = user;
 	}
 }
+exports.authentication = authentication;
 exports.start = function (options) {
 	server.http((request, next_handler) => {
 		return authentication(request).then(() => next_handler(request));
