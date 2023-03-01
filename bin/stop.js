@@ -97,7 +97,20 @@ async function restartProcesses() {
 				console.log(`Restarting ${service}`);
 				hdb_logger.trace(`Restarting ${service}`);
 
-				if (service === hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS) {
+				if (service_req.toLowerCase().includes('clustering')) {
+					await restartClustering(service_req);
+				} else if (await pm2_utils.isServiceRegistered(service)) {
+					// We need to allow for restart to be called on services that arent registered/managed by pm2. If restart is called on a
+					// service that isn't registered that service will be started by pm2.
+
+					// If the service is registered but the settings value is not set to enabled, stop the service.
+					if (service === hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS && !custom_func_enabled) {
+						await pm2_utils.stop(hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS);
+						hdb_logger.trace(`Stopping ${hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS}`);
+					} else {
+						await restartService({ service });
+					}
+				} else if (service === hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS) {
 					if (custom_func_enabled) {
 						await pm2_utils.startService(service);
 						hdb_logger.trace(`Starting ${service}`);

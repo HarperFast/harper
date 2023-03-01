@@ -9,7 +9,7 @@ const PropertiesReader = require('properties-reader');
 const hdb_terms = require('../hdbTerms');
 const assignCMDENVVariables = require('../assignCmdEnvVariables');
 const os = require('os');
-const { PACKAGE_ROOT, THREAD_TYPES } = require('../../utility/hdbTerms');
+const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
 const native_console_methods = {};
 for (let key in console) {
 	native_console_methods[key] = console[key];
@@ -142,11 +142,9 @@ function setupConsoleLogging() {
 	logConsole('trace', trace);
 }
 function logConsole(level, logger) {
-	console[level] = function(...args) {
-		if (logging_enabled)
-			logger(...args);
-		if (!/PM2 log:|App \[/.test(args[0]))
-			return native_console_methods[level](...args);
+	console[level] = function (...args) {
+		if (logging_enabled) logger(...args);
+		if (!/PM2 log:|App \[/.test(args[0])) return native_console_methods[level](...args);
 	};
 }
 

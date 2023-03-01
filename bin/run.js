@@ -16,11 +16,9 @@ const hdb_utils = require('../utility/common_utils');
 const config_utils = require('../config/configUtils');
 const assignCMDENVVariables = require('../utility/assignCmdEnvVariables');
 const nats_config = require('../server/nats/utility/natsConfig');
-const { promisify } = require('util');
 const stop = require('./stop');
 const upgrade = require('./upgrade');
 const minimist = require('minimist');
-const spawn = require('child_process').spawn;
 const { PACKAGE_ROOT } = require('../utility/hdbTerms');
 const {
 	startHTTPThreads,
