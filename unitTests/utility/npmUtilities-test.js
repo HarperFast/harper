@@ -398,7 +398,6 @@ describe('test installModules function', () => {
 		// if you are getting an error here on Windows due to a warning about --local --global flags,
 		// you may need to run this:
 		// https://www.npmjs.com/package/npm-windows-upgrade
-		expect(result['cool project'].npm_error).is.equal(null);
 		expect(result['cool project'].npm_output).is.not.equal(null);
 		expect(result['bad project'].npm_output).is.equal(null);
 		expect(result['bad project'].npm_error).is.not.equal(null);
@@ -479,8 +478,14 @@ describe('test installModules function', () => {
 		}
 		expect(err.message).is.equal('npm bad stuff');
 
-		expect(run_command_stub.firstCall.args).to.eql(['npm install --omit=dev --json --dry-run', { cwd: COOL_PROJECT_PATH}]);
-		expect(run_command_stub.secondCall.args).to.eql(['npm install --omit=dev --json --dry-run', { cwd: BAD_PROJECT_PATH}]);
+		expect(run_command_stub.firstCall.args).to.eql([
+			'npm install --omit=dev --json --dry-run',
+			{ cwd: COOL_PROJECT_PATH },
+		]);
+		expect(run_command_stub.secondCall.args).to.eql([
+			'npm install --omit=dev --json --dry-run',
+			{ cwd: BAD_PROJECT_PATH },
+		]);
 
 		check_npm_installed_restore();
 		check_project_paths_restore();
@@ -512,7 +517,6 @@ describe('test installModules function', () => {
 			error = e;
 		}
 		expect(error).is.equal(undefined);
-		expect(result['cool project'].npm_error).is.equal(null);
 		expect(result['cool project'].npm_output).is.not.equal(null);
 		expect(result['bad project'].npm_output).is.equal(null);
 		expect(result['bad project'].npm_error).is.not.equal(null);

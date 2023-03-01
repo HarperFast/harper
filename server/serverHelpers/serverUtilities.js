@@ -97,20 +97,19 @@ async function processLocalTransaction(req, operation_function) {
 		post_op_function
 	);
 
-	if (typeof data !== 'object') {
-		data = { message: data };
-	}
-	if (data instanceof Error) {
-		throw data;
-	}
-
-	if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
-		global_schema.setSchemaDataToGlobal((err) => {
-			if (err) {
-				harper_logger.error(err);
-			}
-		});
-	}
+		if (typeof data !== 'object') {
+			data = { message: data };
+		}
+		if (data instanceof Error) {
+			throw data;
+		}
+		if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
+			global_schema.setSchemaDataToGlobal((err) => {
+				if (err) {
+					harper_logger.error(err);
+				}
+			});
+		}
 
 	return data;
 }

@@ -11,6 +11,7 @@ const common_validators = {
 		message: 'names cannot include backticks or forward slashes',
 	},
 	schema_length: {
+		minimum: 1,
 		maximum: 250,
 		tooLong: 'cannot exceed 250 characters',
 	},

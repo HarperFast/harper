@@ -22,7 +22,7 @@ const common = require('../../utility/common_utils');
 const schema_validator = require('../../validation/schema_validator');
 const schema_metadata_validator = require('../../validation/schemaMetadataValidator');
 const util = require('util');
-const clonedeep = require('lodash.clonedeep');
+const { cloneDeep } = require('lodash');
 const harperBridge = require('../../data_layer/harperBridge/harperBridge');
 const nats_utils = require('../../server/nats/utility/natsUtils');
 
@@ -65,7 +65,7 @@ const GLOBAL_SCHEMA_FAKE = {
 	},
 };
 
-let global_schema_original = clonedeep(global.hdb_schema);
+let global_schema_original = cloneDeep(global.hdb_schema);
 
 /**
  * Cleans up any leftover structure built by buildSchemaTableStruc.
@@ -172,7 +172,7 @@ describe('Test schema module', function () {
 		});
 
 		it('should throw schema already exists error', async function () {
-			global.hdb_schema = clonedeep(GLOBAL_SCHEMA_FAKE);
+			global.hdb_schema = cloneDeep(GLOBAL_SCHEMA_FAKE);
 			let error;
 
 			try {
@@ -287,7 +287,7 @@ describe('Test schema module', function () {
 
 		it('should throw table already exists error message', async function () {
 			let error;
-			global.hdb_schema = clonedeep(GLOBAL_SCHEMA_FAKE);
+			global.hdb_schema = cloneDeep(GLOBAL_SCHEMA_FAKE);
 
 			try {
 				await schema.createTableStructure(CREATE_TABLE_OBJECT_TEST);
@@ -477,7 +477,7 @@ describe('Test schema module', function () {
 		it('Test that validation error is caught and thrown', async () => {
 			let test_err_result = await test_util.testError(
 				schema.dropTable({ operation: 'drop_table', table: '', schema: 'dogs' }),
-				'Table is required'
+				'Table is too short (minimum is 1 characters)'
 			);
 
 			expect(test_err_result).to.be.true;
@@ -576,7 +576,7 @@ describe('Test schema module', function () {
 
 		it('should throw cannot drop a hash attribute error', async function () {
 			attr_validator_stub.returns();
-			global.hdb_schema = clonedeep(GLOBAL_SCHEMA_FAKE);
+			global.hdb_schema = cloneDeep(GLOBAL_SCHEMA_FAKE);
 			let error;
 
 			try {

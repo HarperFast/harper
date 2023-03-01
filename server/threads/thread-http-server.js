@@ -14,28 +14,35 @@ if (!isMainThread) {
 	require('../harperdb/hdbServer').hdbServer();
 	const custom_func_enabled = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY);
 	if (custom_func_enabled) require('../customFunctions/customFunctionsServer').customFunctionsServer();
-	parentPort
-		.on('message', (message) => {
-			const { type, fd, data } = message;
-			if (fd) {
-				// Create a socket from the file descriptor for the socket that was routed to us.
-				deliverSocket(fd, type, data);
-			} else if (message.requestId) {
-				// Windows doesn't support passing file descriptors, so we have to resort to manually proxying the socket
-				// data for each request
-				proxyRequest(message);
-			} else if (type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
-				// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
-				// then let the event loop complete
-				for (let server_type in SERVERS) {
-					// closing idle connections was added in v18, and is a better way to shutdown HTTP servers
-					SERVERS[server_type].close();
-					// in Node v18+ this is preferable way to gracefully shutdown connections
-					if (SERVERS[server_type].server.closeIdleConnections()) SERVERS[server_type].server.closeIdleConnections();
-				}
+	parentPort.on('message', (message) => {
+		const { type, fd, data } = message;
+		if (fd) {
+			// Create a socket from the file descriptor for the socket that was routed to us.
+			deliverSocket(fd, type, data);
+		} else if (message.requestId) {
+			// Windows doesn't support passing file descriptors, so we have to resort to manually proxying the socket
+			// data for each request
+			proxyRequest(message);
+		} else if (type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
+			// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
+			// then let the event loop complete
+			for (let server_type in SERVERS) {
+				SERVERS[server_type].close().then(() => {
+					// Terminating a thread this way is really really wrong. A NodeJS thread (or process) is supposed to end
+					// once it has completed all referenced work, and this allows NodeJS to property monitor for any
+					// outstanding work. Violently exiting this way circumvents this, and means that there may be
+					// existing work left to be done. But we have to resort to this because fastify doesn't seem to
+					// capable of properly cleaning up after itself, and once it is started it will not let a thread
+					// gracefully exit. Looking at fastify issues, it sounds like their cleanup operation is a mess, and
+					// there are no real viable plans to fix it. We really need to rely on fastify less and move on to
+					// the superior technology of directly interacting with NodeJS.
+					// One thing we could also do here is try to detect if fastify has received any requests. For some
+					// reason if a fastify server has not received any requests yet, we can gracefully exit properly.
+					process.exit(0);
+				});
 			}
-		})
-		.ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
+		}
+	}).ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
 	// notify that we are now ready to start receiving requests
 	parentPort.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
 }
