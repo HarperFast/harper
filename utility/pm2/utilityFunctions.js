@@ -47,6 +47,7 @@ module.exports = {
 	reloadClustering,
 };
 const { PACKAGE_ROOT } = require('../hdbTerms');
+const { loggerWithTag } = hdb_logger;
 
 const PM2_LOGROTATE_VERSION = '2.7.0';
 const PM2_MODULE_LOCATION = path.join(PACKAGE_ROOT, 'node_modules/pm2/bin/pm2');
@@ -86,6 +87,11 @@ function connect() {
 
 let processes_to_kill;
 const MAX_RESTARTS = 10;
+const NATS_LEVELS = {
+	INF: 'info',
+	WRN: 'warn',
+	ERR: 'error',
+}
 let shutting_down;
 /**
  * Starts a service
@@ -95,7 +101,6 @@ let shutting_down;
 function start(proc_config) {
 	if (pm2_mode)
 		return startWithPM2(proc_config);
-	proc_config.stdio = 'inherit';
 	let subprocess = execFile(proc_config.script, proc_config.args.split(' '), proc_config);
 	subprocess.on('exit', (code) => {
 		let index = processes_to_kill.indexOf(subprocess); // dead, remove it from processes to kill now
@@ -106,8 +111,22 @@ function start(proc_config) {
 			if (proc_config.restarts < MAX_RESTARTS) start(proc_config);
 		}
 	});
-	subprocess.stdout.on('data', console.log);
-	subprocess.stderr.on('data', console.warn);
+	let process_logger = loggerWithTag(proc_config.name)
+	function extractMessages(log) {
+		let NATS_PARSER = /\[\d+][^\[]+\[(\w+)]/g;
+		let log_start, last_position = 0, last_level;
+		while (log_start = NATS_PARSER.exec(log)) {
+			if (log_start.index) {
+				process_logger[last_level || 'info'](log.slice(last_position, log_start.index));
+			}
+			let [ start_text, level ] = log_start;
+			last_position = log_start.index + start_text.length;
+			last_level = NATS_LEVELS[level];
+		}
+		process_logger[last_level || 'info'](log.slice(last_position));
+	}
+	subprocess.stdout.on('data', extractMessages);
+	subprocess.stderr.on('data', extractMessages);
 	subprocess.unref();
 
 	// if we are running in standard mode, then we want to clean up our child processes when we exit
