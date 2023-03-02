@@ -14,11 +14,13 @@ const config = require('../../utility/pm2/servicesConfig');
 const clustering_utils = require('../clustering/clusterUtilities');
 const { startWorker } = require('../../server/threads/manage-threads');
 const util = require('util');
-const exec = util.promisify(require('child_process').exec);
+const child_process = require('child_process');
+const { execFile } = child_process;
+const exec = util.promisify(child_process.exec);
 const path = require('path');
 
 module.exports = {
-	enterScriptingMode,
+	enterPM2Mode,
 	start,
 	stop,
 	reload,
@@ -58,13 +60,13 @@ const RELOAD_HDB_ERR =
 
 // This indicates when we are running as a CLI scripting command (kind of taking the place of pm2's CLI), and so we
 // are generally starting and stopping processes through PM2.
-let scripting_mode = false;
+let pm2_mode = false;
 
 /**
  * Enable scripting mode where we act as the PM2 CLI to start and stop other processes and then exit
  */
-function enterScriptingMode() {
-	scripting_mode = true;
+function enterPM2Mode() {
+	pm2_mode = true;
 }
 /**
  * Either connects to a running pm2 daemon or launches one.
@@ -72,7 +74,7 @@ function enterScriptingMode() {
  */
 function connect() {
 	return new Promise((resolve, reject) => {
-		pm2.connect(!scripting_mode, (err, res) => {
+		pm2.connect((err, res) => {
 			if (err) {
 				reject(err);
 			}
@@ -83,13 +85,48 @@ function connect() {
 }
 
 let processes_to_kill;
-
+const MAX_RESTARTS = 10;
+let shutting_down;
 /**
  * Starts a service
  * @param proc_config
  * @returns {Promise<unknown>}
  */
 function start(proc_config) {
+	if (pm2_mode)
+		return startWithPM2(proc_config);
+	proc_config.stdio = 'inherit';
+	let subprocess = execFile(proc_config.script, proc_config.args.split(' '), proc_config);
+	subprocess.on('exit', (code) => {
+		let index = processes_to_kill.indexOf(subprocess); // dead, remove it from processes to kill now
+		if (index > -1) processes_to_kill.splice(index, 1);
+		if (!shutting_down && code > 0) {
+			proc_config.restarts = (proc_config.restarts || 0) + 1;
+			// restart the child process
+			if (proc_config.restarts < MAX_RESTARTS) start(proc_config);
+		}
+	});
+	subprocess.stdout.on('data', console.log);
+	subprocess.stderr.on('data', console.warn);
+	subprocess.unref();
+
+	// if we are running in standard mode, then we want to clean up our child processes when we exit
+	if (!processes_to_kill) {
+		processes_to_kill = [];
+		const kill_children = () => {
+			shutting_down = true;
+			if (!processes_to_kill) return;
+			processes_to_kill.map(proc => proc.kill());
+			process.exit(0);
+		};
+		process.on('exit', kill_children);
+		process.on('SIGINT', kill_children);
+		process.on('SIGQUIT', kill_children);
+	}
+	processes_to_kill.push(subprocess);
+
+}
+function startWithPM2(proc_config) {
 	return new Promise(async (resolve, reject) => {
 		try {
 			await connect();
@@ -100,28 +137,6 @@ function start(proc_config) {
 			if (err) {
 				pm2.disconnect();
 				reject(err);
-			}
-			if (!scripting_mode) {
-				// if we are running in standard mode, then we want to clean up our child processes when we exit
-				if (!processes_to_kill) {
-					processes_to_kill = [];
-					const kill_child = async () => {
-						if (!processes_to_kill) return;
-						let finished = processes_to_kill.map(proc_name => new Promise(resolve => {
-							pm2.stop(proc_name, (error) => {
-								if (error) hdb_logger.warn(`Error terminating process: ${error}`);
-								resolve();
-							});
-						}));
-						processes_to_kill = null;
-						await Promise.all(finished);
-						process.exit(0);
-					};
-					process.on('exit', kill_child);
-					process.on('SIGINT', kill_child);
-					process.on('SIGQUIT', kill_child);
-				}
-				processes_to_kill.push(proc_config.name);
 			}
 			pm2.disconnect();
 			resolve(res);
@@ -306,7 +321,7 @@ function describe(service_name) {
 }
 
 function kill() {
-	if (!scripting_mode) return Promise.resolve();
+	if (!pm2_mode) return Promise.resolve();
 	return new Promise(async (resolve, reject) => {
 		try {
 			await connect();

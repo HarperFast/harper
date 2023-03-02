@@ -237,7 +237,7 @@ async function launch() {
 	}
 	try {
 		if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
-		pm2_utils.enterScriptingMode();
+		pm2_utils.enterPM2Mode();
 		await initialize();
 		const clustering_enabled = hdb_utils.autoCastBoolean(env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY));
 		if (clustering_enabled) await pm2_utils.startClusteringProcesses();

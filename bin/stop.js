@@ -57,7 +57,7 @@ async function restartProcesses() {
 	try {
 		// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
 		if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
-		pm2_utils.enterScriptingMode();
+		pm2_utils.enterPM2Mode();
 
 		// If restart is called with cmd/env vars we create a backup of config and update config file.
 		const parsed_args = assignCMDENVVariables(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
@@ -256,7 +256,7 @@ async function stop() {
 	try {
 		// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
 		if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
-		pm2_utils.enterScriptingMode();
+		pm2_utils.enterPM2Mode();
 
 		// Stop can be called with a --service argument which allows designated services to be stopped.
 		const cmd_args = minimist(process.argv);
