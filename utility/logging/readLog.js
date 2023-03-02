@@ -36,10 +36,10 @@ async function readLog(request) {
 	}
 
 	const log_path = env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY);
-	const log_name = request.log_name === undefined ? hdb_terms.PROCESS_LOG_NAMES.HDB : request.log_name;
+	const log_name = request.log_name === undefined ? hdb_terms.LOG_NAMES.HDB : request.log_name;
 	const read_log_path =
-		log_name === hdb_terms.PROCESS_LOG_NAMES.INSTALL
-			? path.join(INSTALL_LOG_LOCATION, hdb_terms.PROCESS_LOG_NAMES.INSTALL)
+		log_name === hdb_terms.LOG_NAMES.INSTALL
+			? path.join(INSTALL_LOG_LOCATION, hdb_terms.LOG_NAMES.INSTALL)
 			: path.join(log_path, log_name);
 
 	const read_log_input_stream = fs.createReadStream(read_log_path);
@@ -136,7 +136,7 @@ async function readLog(request) {
 					pushLineToResult(line, order, result);
 					count++;
 					// If the count of matching lines is the max number of results, end the readline.
-					if (count === max) endReader(rl);
+					if (count === max) endReader(read_log_input_stream);
 				}
 
 				// If criteria do not match, ignore the line and go to the next.
@@ -154,7 +154,7 @@ async function readLog(request) {
 					pushLineToResult(line, order, result);
 					count++;
 					// If the count of matching lines is the max number of results, end the readline.
-					if (count === max) endReader(read_log_input_streamread_log_input_stream);
+					if (count === max) endReader(read_log_input_stream);
 				}
 
 				// If all the criteria do not match, ignore the line and go to the next.
