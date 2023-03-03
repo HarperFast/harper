@@ -10,7 +10,7 @@ const fs = require('fs-extra');
 const services_config = require('./servicesConfig');
 const env_mangr = require('../environment/environmentManager');
 const hdb_logger = require('../../utility/logging/harper_logger');
-const config = require('../../utility/pm2/servicesConfig');
+const config = require('.//servicesConfig');
 const clustering_utils = require('../clustering/clusterUtilities');
 const { startWorker } = require('../../server/threads/manage-threads');
 const util = require('util');
@@ -50,7 +50,7 @@ const { PACKAGE_ROOT } = require('../hdbTerms');
 const { loggerWithTag } = hdb_logger;
 
 const PM2_LOGROTATE_VERSION = '2.7.0';
-const PM2_MODULE_LOCATION = path.join(PACKAGE_ROOT, 'node_modules/pm2/bin/pm2');
+const PM2_MODULE_LOCATION = path.join(PACKAGE_ROOT, 'node_modules/processManagement/bin/processManagement');
 const LOG_ROTATE_INSTALLED = 'Log rotate installed.';
 const LOG_ROTATE_INSTALL_ERR = 'Error installing log rotate.';
 const LOG_ROTATE_UPDATE = 'Log rotate updated.';
@@ -59,7 +59,7 @@ const RELOAD_HDB_ERR =
 	'The number of HarperDB processes running is different from the settings value. ' +
 	'To restart and update the number HarperDB processes running you must stop and then start HarperDB';
 
-// This indicates when we are running as a CLI scripting command (kind of taking the place of pm2's CLI), and so we
+// This indicates when we are running as a CLI scripting command (kind of taking the place of processManagement's CLI), and so we
 // are generally starting and stopping processes through PM2.
 let pm2_mode = false;
 
@@ -70,7 +70,7 @@ function enterPM2Mode() {
 	pm2_mode = true;
 }
 /**
- * Either connects to a running pm2 daemon or launches one.
+ * Either connects to a running processManagement daemon or launches one.
  * @returns {Promise<unknown>}
  */
 function connect() {
@@ -164,7 +164,7 @@ function startWithPM2(proc_config) {
 }
 
 /**
- * Stops a specific service then deletes it from pm2
+ * Stops a specific service then deletes it from processManagement
  * @param service_name
  * @returns {Promise<unknown>}
  */
@@ -181,7 +181,7 @@ function stop(service_name) {
 				reject(err);
 			}
 
-			// Once the service has stopped, delete it from pm2
+			// Once the service has stopped, delete it from processManagement
 			pm2.delete(service_name, (del_err, del_res) => {
 				if (del_err) {
 					pm2.disconnect();
@@ -269,7 +269,7 @@ function deleteProcess(service_name) {
 }
 
 /**
- * To restart HarperDB we use pm2 to fork a process and then call restart from that process.
+ * To restart HarperDB we use processManagement to fork a process and then call restart from that process.
  * We do this because we were seeing random errors when HDB was calling restart on itself.
  * @returns {Promise<void>}
  */
@@ -478,7 +478,7 @@ async function restartAllServices(excluding = []) {
 }
 
 /**
- * stops all services then kills the pm2 daemon
+ * stops all services then kills the processManagement daemon
  * @returns {Promise<void>}
  */
 async function stopAllServices() {
@@ -489,7 +489,7 @@ async function stopAllServices() {
 			await stop(service.name);
 		}
 
-		// Kill pm2 daemon
+		// Kill processManagement daemon
 		await kill();
 	} catch (err) {
 		pm2.disconnect();
@@ -498,7 +498,7 @@ async function stopAllServices() {
 }
 
 /**
- * Check to see if a service is currently managed by pm2
+ * Check to see if a service is currently managed by processManagement
  */
 async function isServiceRegistered(service) {
 	return !hdb_utils.isEmptyOrZeroLength(await describe(service));
@@ -530,7 +530,7 @@ async function reloadStopStart(service_name) {
 	}
 }
 /**
- * Stops the pm2-logrotate module but does not delete it like the other stop function does.
+ * Stops the processManagement-logrotate module but does not delete it like the other stop function does.
  * @returns {Promise<unknown>}
  */
 function stopLogrotate() {
@@ -553,7 +553,7 @@ function stopLogrotate() {
 }
 
 /**
- * Install pm2's logrotate module.
+ * Install processManagement's logrotate module.
  * @returns {Promise<void>}
  */
 async function installLogRotate() {
@@ -573,7 +573,7 @@ async function installLogRotate() {
 }
 
 /**
- * Update pm2's logrotate module.
+ * Update processManagement's logrotate module.
  * @returns {Promise<void>}
  */
 async function updateLogRotateConfig() {
@@ -609,7 +609,7 @@ async function updateLogRotateConfig() {
 }
 
 /**
- * If pm2-logrotate is already installed, start it. If it isn't, install it.
+ * If processManagement-logrotate is already installed, start it. If it isn't, install it.
  * If LOG_ROTATE is set to false and logrotate is online, stop it.
  * After this is done run its config.
  * @returns {Promise<void>}
@@ -716,7 +716,7 @@ async function isClusteringRunning() {
 
 /**
  * Calls a native Nats method to reload the Hub & Leaf servers.
- * This will NOT restart the pm2 process.
+ * This will NOT restart the processManagement process.
  * @returns {Promise<void>}
  */
 async function reloadClustering() {

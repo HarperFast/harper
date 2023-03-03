@@ -8,7 +8,7 @@ const rewire = require('rewire');
 const { expect } = chai;
 const hdb_license = require('../../../utility/registration/hdb_license');
 const env_mangr = require('../../../utility/environment/environmentManager');
-const services_config = rewire('../../../utility/pm2/servicesConfig');
+const services_config = rewire('../../../utility/processManagement/servicesConfig');
 const hdb_terms = require('../../../utility/hdbTerms');
 const env = require('../../../utility/environment/environmentManager');
 const { PACKAGE_ROOT } = require('../../../utility/hdbTerms');
@@ -21,7 +21,7 @@ const NATS_SERVER_BINARY_PATH = path.resolve(__dirname, '../../../dependencies',
 
 let LOG_PATH;
 
-describe('Test pm2 servicesConfig module', () => {
+describe('Test processManagement servicesConfig module', () => {
 	const sandbox = sinon.createSandbox();
 	let os_cpus_stub;
 
@@ -86,8 +86,8 @@ describe('Test pm2 servicesConfig module', () => {
 				PROCESS_NAME: 'Clustering Hub',
 			},
 			merge_logs: true,
-			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_HUB),
-			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_HUB),
+			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.HDB),
+			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.HDB),
 			instances: 1,
 		};
 		const result = services_config.generateNatsHubServerConfig();
@@ -106,47 +106,11 @@ describe('Test pm2 servicesConfig module', () => {
 				PROCESS_NAME: 'Clustering Leaf',
 			},
 			merge_logs: true,
-			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_LEAF),
-			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_LEAF),
+			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.HDB),
+			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.HDB),
 			instances: 1,
 		};
 		const result = services_config.generateNatsLeafServerConfig();
-		expect(result).to.eql(expected_result);
-	});
-
-	it('Test result from generateNatsIngestServiceConfig is correct', () => {
-		const expected_result = {
-			name: 'Clustering Ingest Service',
-			script: path.join(LAUNCH_SCRIPTS_DIR, 'launchNatsIngestService.js'),
-			exec_mode: 'cluster',
-			env: {
-				PROCESS_NAME: 'Clustering Ingest Service',
-			},
-			merge_logs: true,
-			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_INGEST_SERVICE),
-			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_INGEST_SERVICE),
-			instances: 1,
-			cwd: LAUNCH_SCRIPTS_DIR,
-		};
-		const result = services_config.generateNatsIngestServiceConfig();
-		expect(result).to.eql(expected_result);
-	});
-
-	it('Test result from generateNatsReplyServiceConfig is correct', () => {
-		const expected_result = {
-			name: 'Clustering Reply Service',
-			script: path.join(LAUNCH_SCRIPTS_DIR, 'launchNatsReplyService.js'),
-			exec_mode: 'cluster',
-			env: {
-				PROCESS_NAME: 'Clustering Reply Service',
-			},
-			merge_logs: true,
-			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_REPLY_SERVICE),
-			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_REPLY_SERVICE),
-			instances: 1,
-			cwd: LAUNCH_SCRIPTS_DIR,
-		};
-		const result = services_config.generateNatsReplyServiceConfig();
 		expect(result).to.eql(expected_result);
 	});
 
@@ -159,8 +123,8 @@ describe('Test pm2 servicesConfig module', () => {
 				PROCESS_NAME: 'Upgrade-4-0-0',
 			},
 			merge_logs: true,
-			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_UPGRADE),
-			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_UPGRADE),
+			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.HDB),
+			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.HDB),
 			instances: 1,
 			cwd: LAUNCH_SCRIPTS_DIR,
 			autorestart: false,
