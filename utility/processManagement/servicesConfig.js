@@ -36,15 +36,15 @@ function generateMainServerConfig() {
 	};
 }
 
+const ELIDED_HUB_PORT = 9930;
 function generateNatsHubServerConfig() {
 	env.initSync();
 	const hdb_root = env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
 	const hub_config_path = path.join(hdb_root, 'clustering', nats_terms.NATS_CONFIG_FILES.HUB_SERVER);
-	const hub_logs = path.join(env.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY), hdb_terms.LOG_NAMES.CLUSTERING_HUB);
-	const hub_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.HDB);
+	const hub_logs = path.join(env.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY), hdb_terms.LOG_NAMES.HDB);
 	const hub_port = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT);
 	const hs_config = {
-		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB,
+		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB + (hub_port !== ELIDED_HUB_PORT ? '-' + hub_port : ''),
 		script: NATS_SERVER_BINARY_PATH,
 		args: `-c ${hub_config_path}`,
 		exec_mode: 'fork',
@@ -63,15 +63,17 @@ function generateNatsHubServerConfig() {
 	return hs_config;
 }
 
+const ELIDED_LEAF_PORT = 9940;
 function generateNatsLeafServerConfig() {
 	env.initSync();
 	const hdb_root = env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
 	const leaf_config_path = path.join(hdb_root, 'clustering', nats_terms.NATS_CONFIG_FILES.LEAF_SERVER);
-	const leaf_logs = path.join(env.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY), hdb_terms.LOG_NAMES.CLUSTERING_LEAF);
-	const leaf_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.HDB);
+	const leaf_logs = path.join(env.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY), hdb_terms.LOG_NAMES.HDB);
 	const leaf_port = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT);
 	const ls_config = {
-		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF,
+		// we assign a unique name per port if it is not the default, so we can run multiple NATS instances for
+		// multiple HDB instances
+		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF + (leaf_port !== ELIDED_LEAF_PORT ? '-' + leaf_port : ''),
 		script: NATS_SERVER_BINARY_PATH,
 		args: `-c ${leaf_config_path}`,
 		exec_mode: 'fork',
@@ -90,46 +92,32 @@ function generateNatsLeafServerConfig() {
 	return ls_config;
 }
 
-function generateNatsIngestServiceConfig() {
-	return {
-		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_INGEST_SERVICE,
-		script: hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_INGEST_SERVICE,
-		exec_mode: 'cluster',
-		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_INGEST_SERVICE },
-		instances: 1,
-		cwd: LAUNCH_SCRIPTS_DIR,
-	};
-}
-
-function generateNatsReplyServiceConfig() {
-	return {
-		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE,
-		script: hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_REPLY_SERVICE,
-		exec_mode: 'cluster',
-		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE },
-		instances: 1,
-		cwd: LAUNCH_SCRIPTS_DIR,
-	};
-}
-
 /**
  * Generates the config used to launch a process that will upgrade pre 4.0.0 instances clustering node connections
  * @returns {{cwd: string, merge_logs: boolean, out_file: string, instances: number, name: string, env: {}, error_file: string, script: string, exec_mode: string}}
  */
 function generateClusteringUpgradeV4ServiceConfig() {
-	initLogConfig();
 	env.initSync();
-	const clustering_upgrade_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.HDB);
+	const clustering_upgrade_logs = path.join(env.get(hdb_terms.CONFIG_PARAMS.LOGGING_ROOT), hdb_terms.LOG_NAMES.HDB);
 	const clustering_upgrade_config = {
-	return {
 		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_UPGRADE_4_0_0,
 		script: hdb_terms.LAUNCH_SERVICE_SCRIPTS.NODES_UPGRADE_4_0_0,
 		exec_mode: 'fork',
 		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_UPGRADE_4_0_0 },
+		merge_logs: true,
+		out_file: clustering_upgrade_logs,
+		error_file: clustering_upgrade_logs,
 		instances: 1,
 		cwd: LAUNCH_SCRIPTS_DIR,
 		autorestart: false,
 	};
+
+	if (!env.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_TO_FILE)) {
+		clustering_upgrade_config.out_file = DISABLE_FILE_LOG;
+		clustering_upgrade_config.error_file = DISABLE_FILE_LOG;
+	}
+
+	return clustering_upgrade_config;
 }
 
 function generateRestart() {

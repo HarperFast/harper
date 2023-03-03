@@ -18,39 +18,43 @@ const LOG_NAME_TEST = 'log_unit_test.log';
 const TEST_LOG_DIR = path.join(__dirname, LOG_DIR_TEST);
 const FULL_LOG_PATH_TEST = path.join(TEST_LOG_DIR, LOG_NAME_TEST);
 
-function logAllLevels(num, stream) {
-	stream.write(
-		`{"process_name": "unit-tests", "level": "notify", "timestamp": "2022-01-06T01:01:0${num}.000Z", "message": "notify log ${num}"}\n`
+function logAllLevels(num) {
+	fs.appendFileSync(
+		FULL_LOG_PATH_TEST,
+		`2023-03-02T21:52:1${num}.688Z [main/0 notify]: Howdy doody, they call me a notify log. I am used for unit testing.\n`
 	);
-	stream.write(
-		`{"process_name": "unit-tests", "level": "fatal", "timestamp": "2022-02-06T01:02:0${num}.000Z", "message": "fatal log ${num}"}\n`
+	fs.appendFileSync(
+		FULL_LOG_PATH_TEST,
+		`2023-03-02T21:52:1${num}.688Z [main/0 fatal]: Howdy doody, they call me a fatal log. I am used for unit testing.\n`
 	);
-	stream.write(
-		`{"process_name": "unit-tests", "level": "error", "timestamp": "2022-03-06T01:03:0${num}.000Z", "message": "error log ${num}"}\n`
+	fs.appendFileSync(
+		FULL_LOG_PATH_TEST,
+		`2023-03-02T21:52:1${num}.688Z [main/0 error]: Howdy doody, they call me a error log. I am used for unit testing.\n`
 	);
-	stream.write('This is a non json string\n');
-	stream.write(
-		`{"process_name": "unit-tests", "level": "warn", "timestamp": "2022-04-06T01:04:0${num}.000Z", "message": "warn log ${num}"}\n`
+	fs.appendFileSync(
+		FULL_LOG_PATH_TEST,
+		`2023-03-02T21:52:1${num}.688Z [main/0 warn]: Howdy doody, they call me a warn log. I am used for unit testing.\n`
 	);
-	stream.write(
-		`{"process_name": "unit-tests", "level": "info", "timestamp": "2022-05-06T01:05:0${num}.000Z", "message": "info log ${num}"}\n`
+	fs.appendFileSync(
+		FULL_LOG_PATH_TEST,
+		`2023-03-02T21:52:1${num}.688Z [main/0 info]: Howdy doody, they call me a info log. I am used for unit testing.\n`
 	);
-	stream.write(
-		`{"process_name": "unit-tests", "level": "debug", "timestamp": "2022-06-06T01:06:0${num}.000Z", "message": "debug log ${num}"}\n`
+	fs.appendFileSync(
+		FULL_LOG_PATH_TEST,
+		`2023-03-02T21:52:1${num}.688Z [main/0 debug]: Howdy doody, they call me a debug log. I am used for unit testing.\n`
 	);
-	stream.write(
-		`{"process_name": "unit-tests", "level": "trace", "timestamp": "2022-07-06T01:07:0${num}.000Z", "message": "trace log ${num}"}\n`
+	fs.appendFileSync(
+		FULL_LOG_PATH_TEST,
+		`2023-03-02T21:52:1${num}.688Z [main/0 trace]: Howdy doody, they call me a trace log. I am used for unit testing.\n`
 	);
 }
 
 function createTestLog() {
 	fs.mkdirpSync(TEST_LOG_DIR);
-	const write_stream = fs.createWriteStream(FULL_LOG_PATH_TEST);
 
 	for (let x = 0; x < 5; x++) {
-		logAllLevels(x + 1, write_stream);
+		logAllLevels(x);
 	}
-	return new Promise(resolve => write_stream.end('', resolve));
 }
 
 describe('Test readLog module', () => {
@@ -82,18 +86,6 @@ describe('Test readLog module', () => {
 			validator_rw();
 		});
 
-		it('Test readlog skips non json lines', async () => {
-			const warn_stub = sandbox.stub(harper_logger, 'warn');
-
-			const test_request = {
-				operation: 'read_log',
-				log_name: LOG_NAME_TEST,
-			};
-			await read_log(test_request);
-
-			expect(warn_stub.callCount).to.equal(5);
-		});
-
 		it('Test bad request throws validation error', async () => {
 			validator_rw();
 
@@ -121,48 +113,39 @@ describe('Test readLog module', () => {
 		it('Test if level, from, and until are defined, correct results are returned', async () => {
 			const test_request = {
 				operation: 'read_log',
-				level: 'fatal',
-				from: '2022-01-06T01:01:01.000Z',
-				until: '2022-03-06T01:03:06.000Z',
+				level: 'warn',
+				from: '2023-03-02T21:52:10.688Z',
+				until: '2023-03-02T21:52:12.688Z',
 				log_name: LOG_NAME_TEST,
 			};
 
 			const expected_logs = [
 				{
-					process_name: 'unit-tests',
-					level: 'fatal',
-					timestamp: '2022-02-06T01:02:01.000Z',
-					message: 'fatal log 1',
+					timestamp: '2023-03-02T21:52:10.688Z',
+					thread: 'main/0',
+					level: 'warn',
+					tags: [],
+					message: 'Howdy doody, they call me a warn log. I am used for unit testing.',
 				},
 				{
-					process_name: 'unit-tests',
-					level: 'fatal',
-					timestamp: '2022-02-06T01:02:02.000Z',
-					message: 'fatal log 2',
+					timestamp: '2023-03-02T21:52:11.688Z',
+					thread: 'main/0',
+					level: 'warn',
+					tags: [],
+					message: 'Howdy doody, they call me a warn log. I am used for unit testing.',
 				},
 				{
-					process_name: 'unit-tests',
-					level: 'fatal',
-					timestamp: '2022-02-06T01:02:03.000Z',
-					message: 'fatal log 3',
-				},
-				{
-					process_name: 'unit-tests',
-					level: 'fatal',
-					timestamp: '2022-02-06T01:02:04.000Z',
-					message: 'fatal log 4',
-				},
-				{
-					process_name: 'unit-tests',
-					level: 'fatal',
-					timestamp: '2022-02-06T01:02:05.000Z',
-					message: 'fatal log 5',
+					timestamp: '2023-03-02T21:52:12.688Z',
+					thread: 'main/0',
+					level: 'warn',
+					tags: [],
+					message: 'Howdy doody, they call me a warn log. I am used for unit testing.',
 				},
 			];
 
 			const result = await read_log(test_request);
 
-			expect(result.length).to.equal(5);
+			expect(result.length).to.equal(3);
 			expect(result).to.eql(expected_logs);
 		});
 
@@ -171,35 +154,24 @@ describe('Test readLog module', () => {
 				operation: 'read_log',
 				start: 2,
 				level: 'fatal',
-				from: '2022-01-06T01:01:01.000Z',
-				until: '2022-03-06T01:03:06.000Z',
+				from: '2023-03-02T21:52:10.688Z',
+				until: '2023-03-02T21:52:12.688Z',
 				log_name: LOG_NAME_TEST,
 			};
 
 			const expected_logs = [
 				{
-					process_name: 'unit-tests',
 					level: 'fatal',
-					timestamp: '2022-02-06T01:02:03.000Z',
-					message: 'fatal log 3',
-				},
-				{
-					process_name: 'unit-tests',
-					level: 'fatal',
-					timestamp: '2022-02-06T01:02:04.000Z',
-					message: 'fatal log 4',
-				},
-				{
-					process_name: 'unit-tests',
-					level: 'fatal',
-					timestamp: '2022-02-06T01:02:05.000Z',
-					message: 'fatal log 5',
+					message: 'Howdy doody, they call me a fatal log. I am used for unit testing.',
+					tags: [],
+					thread: 'main/0',
+					timestamp: '2023-03-02T21:52:12.688Z',
 				},
 			];
 
 			const result = await read_log(test_request);
 
-			expect(result.length).to.equal(3);
+			expect(result.length).to.equal(1);
 			expect(result).to.eql(expected_logs);
 		});
 
@@ -207,34 +179,30 @@ describe('Test readLog module', () => {
 			const test_request = {
 				operation: 'read_log',
 				level: 'trace',
-				from: '2022-07-06T01:07:02.900Z',
+				from: '2023-03-02T21:52:13.688Z',
 				log_name: LOG_NAME_TEST,
 			};
 
 			const expected_logs = [
 				{
-					process_name: 'unit-tests',
 					level: 'trace',
-					timestamp: '2022-07-06T01:07:03.000Z',
-					message: 'trace log 3',
+					message: 'Howdy doody, they call me a trace log. I am used for unit testing.',
+					tags: [],
+					thread: 'main/0',
+					timestamp: '2023-03-02T21:52:13.688Z',
 				},
 				{
-					process_name: 'unit-tests',
 					level: 'trace',
-					timestamp: '2022-07-06T01:07:04.000Z',
-					message: 'trace log 4',
-				},
-				{
-					process_name: 'unit-tests',
-					level: 'trace',
-					timestamp: '2022-07-06T01:07:05.000Z',
-					message: 'trace log 5',
+					message: 'Howdy doody, they call me a trace log. I am used for unit testing.',
+					tags: [],
+					thread: 'main/0',
+					timestamp: '2023-03-02T21:52:14.688Z',
 				},
 			];
 
 			const result = await read_log(test_request);
 
-			expect(result.length).to.equal(3);
+			expect(result.length).to.equal(2);
 			expect(result).to.eql(expected_logs);
 		});
 
@@ -243,69 +211,54 @@ describe('Test readLog module', () => {
 				operation: 'read_log',
 				start: 1,
 				level: 'trace',
-				from: '2022-07-06T01:07:03.000Z',
+				from: '2023-03-02T21:52:13.688Z',
 				log_name: LOG_NAME_TEST,
 			};
 
 			const expected_logs = [
 				{
-					process_name: 'unit-tests',
 					level: 'trace',
-					timestamp: '2022-07-06T01:07:04.000Z',
-					message: 'trace log 4',
-				},
-				{
-					process_name: 'unit-tests',
-					level: 'trace',
-					timestamp: '2022-07-06T01:07:05.000Z',
-					message: 'trace log 5',
+					message: 'Howdy doody, they call me a trace log. I am used for unit testing.',
+					tags: [],
+					thread: 'main/0',
+					timestamp: '2023-03-02T21:52:14.688Z',
 				},
 			];
 
 			const result = await read_log(test_request);
 
-			expect(result.length).to.equal(2);
+			expect(result.length).to.equal(1);
 			expect(result).to.eql(expected_logs);
 		});
 
 		it('Test if level and until are defined, correct results are returned', async () => {
 			const test_request = {
 				operation: 'read_log',
-				level: 'error',
-				until: '2022-03-06T01:03:04.100Z',
+				level: 'notify',
+				until: '2023-03-02T21:52:11.688Z',
 				log_name: LOG_NAME_TEST,
 			};
 
 			const expected_logs = [
 				{
-					process_name: 'unit-tests',
-					level: 'error',
-					timestamp: '2022-03-06T01:03:01.000Z',
-					message: 'error log 1',
+					level: 'notify',
+					message: 'Howdy doody, they call me a notify log. I am used for unit testing.',
+					tags: [],
+					thread: 'main/0',
+					timestamp: '2023-03-02T21:52:10.688Z',
 				},
 				{
-					process_name: 'unit-tests',
-					level: 'error',
-					timestamp: '2022-03-06T01:03:02.000Z',
-					message: 'error log 2',
-				},
-				{
-					process_name: 'unit-tests',
-					level: 'error',
-					timestamp: '2022-03-06T01:03:03.000Z',
-					message: 'error log 3',
-				},
-				{
-					process_name: 'unit-tests',
-					level: 'error',
-					timestamp: '2022-03-06T01:03:04.000Z',
-					message: 'error log 4',
+					level: 'notify',
+					message: 'Howdy doody, they call me a notify log. I am used for unit testing.',
+					tags: [],
+					thread: 'main/0',
+					timestamp: '2023-03-02T21:52:11.688Z',
 				},
 			];
 
 			const result = await read_log(test_request);
 
-			expect(result.length).to.equal(4);
+			expect(result.length).to.equal(2);
 			expect(result).to.eql(expected_logs);
 		});
 
@@ -313,146 +266,133 @@ describe('Test readLog module', () => {
 			const test_request = {
 				operation: 'read_log',
 				level: 'error',
-				until: '2022-03-06T01:03:04.200Z',
-				count: 1,
+				until: '2023-03-02T21:52:13.688Z',
+				limit: 1,
 				start: 2,
 				log_name: LOG_NAME_TEST,
 			};
 
 			const expected_logs = [
 				{
-					process_name: 'unit-tests',
 					level: 'error',
-					timestamp: '2022-03-06T01:03:03.000Z',
-					message: 'error log 3',
-				},
-				{
-					process_name: 'unit-tests',
-					level: 'error',
-					timestamp: '2022-03-06T01:03:04.000Z',
-					message: 'error log 4',
+					message: 'Howdy doody, they call me a error log. I am used for unit testing.',
+					tags: [],
+					thread: 'main/0',
+					timestamp: '2023-03-02T21:52:12.688Z',
 				},
 			];
 
 			const result = await read_log(test_request);
 
-			expect(result.length).to.equal(2);
+			expect(result.length).to.equal(1);
 			expect(result).to.eql(expected_logs);
 		});
 
 		it('Test if from and until are defined, correct results are returned', async () => {
 			const test_request = {
 				operation: 'read_log',
-				from: '2022-03-06T01:03:04.000Z',
-				until: '2022-05-06T01:05:03.000Z',
+				from: '2023-03-02T21:52:13.700Z',
+				until: '2023-03-02T21:52:14.688Z',
 				log_name: LOG_NAME_TEST,
 			};
 
 			const expected_logs = [
 				{
-					level: 'warn',
-					message: 'warn log 1',
-					process_name: 'unit-tests',
-					timestamp: '2022-04-06T01:04:01.000Z',
+					timestamp: '2023-03-02T21:52:14.688Z',
+					thread: 'main/0',
+					level: 'notify',
+					tags: [],
+					message: 'Howdy doody, they call me a notify log. I am used for unit testing.',
 				},
 				{
-					level: 'info',
-					message: 'info log 1',
-					process_name: 'unit-tests',
-					timestamp: '2022-05-06T01:05:01.000Z',
+					timestamp: '2023-03-02T21:52:14.688Z',
+					thread: 'main/0',
+					level: 'fatal',
+					tags: [],
+					message: 'Howdy doody, they call me a fatal log. I am used for unit testing.',
 				},
 				{
-					level: 'warn',
-					message: 'warn log 2',
-					process_name: 'unit-tests',
-					timestamp: '2022-04-06T01:04:02.000Z',
-				},
-				{
-					level: 'info',
-					message: 'info log 2',
-					process_name: 'unit-tests',
-					timestamp: '2022-05-06T01:05:02.000Z',
-				},
-				{
-					level: 'warn',
-					message: 'warn log 3',
-					process_name: 'unit-tests',
-					timestamp: '2022-04-06T01:04:03.000Z',
-				},
-				{
-					level: 'info',
-					message: 'info log 3',
-					process_name: 'unit-tests',
-					timestamp: '2022-05-06T01:05:03.000Z',
-				},
-				{
+					timestamp: '2023-03-02T21:52:14.688Z',
+					thread: 'main/0',
 					level: 'error',
-					message: 'error log 4',
-					process_name: 'unit-tests',
-					timestamp: '2022-03-06T01:03:04.000Z',
+					tags: [],
+					message: 'Howdy doody, they call me a error log. I am used for unit testing.',
 				},
 				{
+					timestamp: '2023-03-02T21:52:14.688Z',
+					thread: 'main/0',
 					level: 'warn',
-					message: 'warn log 4',
-					process_name: 'unit-tests',
-					timestamp: '2022-04-06T01:04:04.000Z',
+					tags: [],
+					message: 'Howdy doody, they call me a warn log. I am used for unit testing.',
 				},
 				{
-					level: 'error',
-					message: 'error log 5',
-					process_name: 'unit-tests',
-					timestamp: '2022-03-06T01:03:05.000Z',
+					timestamp: '2023-03-02T21:52:14.688Z',
+					thread: 'main/0',
+					level: 'info',
+					tags: [],
+					message: 'Howdy doody, they call me a info log. I am used for unit testing.',
 				},
 				{
-					level: 'warn',
-					message: 'warn log 5',
-					process_name: 'unit-tests',
-					timestamp: '2022-04-06T01:04:05.000Z',
+					timestamp: '2023-03-02T21:52:14.688Z',
+					thread: 'main/0',
+					level: 'debug',
+					tags: [],
+					message: 'Howdy doody, they call me a debug log. I am used for unit testing.',
+				},
+				{
+					timestamp: '2023-03-02T21:52:14.688Z',
+					thread: 'main/0',
+					level: 'trace',
+					tags: [],
+					message: 'Howdy doody, they call me a trace log. I am used for unit testing.',
 				},
 			];
 
 			const result = await read_log(test_request);
 
-			expect(result.length).to.equal(10);
+			expect(result.length).to.equal(7);
 			expect(result).to.eql(expected_logs);
 		});
 
 		it('Test if from and until are defined, PLUS limit, correct results are returned', async () => {
 			const test_request = {
 				operation: 'read_log',
-				from: '2022-03-06T01:03:04.000Z',
-				until: '2022-05-06T01:05:03.000Z',
+				from: '2023-03-02T21:52:13.700Z',
+				until: '2023-03-02T21:52:14.688Z',
 				limit: 4,
 				log_name: LOG_NAME_TEST,
 			};
 
 			const expected_logs = [
 				{
+					timestamp: '2023-03-02T21:52:14.688Z',
+					thread: 'main/0',
+					level: 'notify',
+					tags: [],
+					message: 'Howdy doody, they call me a notify log. I am used for unit testing.',
+				},
+				{
+					timestamp: '2023-03-02T21:52:14.688Z',
+					thread: 'main/0',
+					level: 'fatal',
+					tags: [],
+					message: 'Howdy doody, they call me a fatal log. I am used for unit testing.',
+				},
+				{
+					timestamp: '2023-03-02T21:52:14.688Z',
+					thread: 'main/0',
+					level: 'error',
+					tags: [],
+					message: 'Howdy doody, they call me a error log. I am used for unit testing.',
+				},
+				{
+					timestamp: '2023-03-02T21:52:14.688Z',
+					thread: 'main/0',
 					level: 'warn',
-					message: 'warn log 1',
-					process_name: 'unit-tests',
-					timestamp: '2022-04-06T01:04:01.000Z',
-				},
-				{
-					level: 'info',
-					message: 'info log 1',
-					process_name: 'unit-tests',
-					timestamp: '2022-05-06T01:05:01.000Z',
-				},
-				{
-					level: 'warn',
-					message: 'warn log 2',
-					process_name: 'unit-tests',
-					timestamp: '2022-04-06T01:04:02.000Z',
-				},
-				{
-					level: 'info',
-					message: 'info log 2',
-					process_name: 'unit-tests',
-					timestamp: '2022-05-06T01:05:02.000Z',
+					tags: [],
+					message: 'Howdy doody, they call me a warn log. I am used for unit testing.',
 				},
 			];
-
 			const result = await read_log(test_request);
 
 			expect(result.length).to.equal(4);
@@ -468,34 +408,39 @@ describe('Test readLog module', () => {
 
 			const expected_logs = [
 				{
+					timestamp: '2023-03-02T21:52:10.688Z',
+					thread: 'main/0',
 					level: 'warn',
-					message: 'warn log 1',
-					process_name: 'unit-tests',
-					timestamp: '2022-04-06T01:04:01.000Z',
+					tags: [],
+					message: 'Howdy doody, they call me a warn log. I am used for unit testing.',
 				},
 				{
+					timestamp: '2023-03-02T21:52:11.688Z',
+					thread: 'main/0',
 					level: 'warn',
-					message: 'warn log 2',
-					process_name: 'unit-tests',
-					timestamp: '2022-04-06T01:04:02.000Z',
+					tags: [],
+					message: 'Howdy doody, they call me a warn log. I am used for unit testing.',
 				},
 				{
+					timestamp: '2023-03-02T21:52:12.688Z',
+					thread: 'main/0',
 					level: 'warn',
-					message: 'warn log 3',
-					process_name: 'unit-tests',
-					timestamp: '2022-04-06T01:04:03.000Z',
+					tags: [],
+					message: 'Howdy doody, they call me a warn log. I am used for unit testing.',
 				},
 				{
+					timestamp: '2023-03-02T21:52:13.688Z',
+					thread: 'main/0',
 					level: 'warn',
-					message: 'warn log 4',
-					process_name: 'unit-tests',
-					timestamp: '2022-04-06T01:04:04.000Z',
+					tags: [],
+					message: 'Howdy doody, they call me a warn log. I am used for unit testing.',
 				},
 				{
+					timestamp: '2023-03-02T21:52:14.688Z',
+					thread: 'main/0',
 					level: 'warn',
-					message: 'warn log 5',
-					process_name: 'unit-tests',
-					timestamp: '2022-04-06T01:04:05.000Z',
+					tags: [],
+					message: 'Howdy doody, they call me a warn log. I am used for unit testing.',
 				},
 			];
 
@@ -515,34 +460,39 @@ describe('Test readLog module', () => {
 
 			const expected_logs = [
 				{
+					timestamp: '2023-03-02T21:52:14.688Z',
+					thread: 'main/0',
 					level: 'notify',
-					message: 'notify log 5',
-					process_name: 'unit-tests',
-					timestamp: '2022-01-06T01:01:05.000Z',
+					tags: [],
+					message: 'Howdy doody, they call me a notify log. I am used for unit testing.',
 				},
 				{
+					timestamp: '2023-03-02T21:52:13.688Z',
+					thread: 'main/0',
 					level: 'notify',
-					message: 'notify log 4',
-					process_name: 'unit-tests',
-					timestamp: '2022-01-06T01:01:04.000Z',
+					tags: [],
+					message: 'Howdy doody, they call me a notify log. I am used for unit testing.',
 				},
 				{
+					timestamp: '2023-03-02T21:52:12.688Z',
+					thread: 'main/0',
 					level: 'notify',
-					message: 'notify log 3',
-					process_name: 'unit-tests',
-					timestamp: '2022-01-06T01:01:03.000Z',
+					tags: [],
+					message: 'Howdy doody, they call me a notify log. I am used for unit testing.',
 				},
 				{
+					timestamp: '2023-03-02T21:52:11.688Z',
+					thread: 'main/0',
 					level: 'notify',
-					message: 'notify log 2',
-					process_name: 'unit-tests',
-					timestamp: '2022-01-06T01:01:02.000Z',
+					tags: [],
+					message: 'Howdy doody, they call me a notify log. I am used for unit testing.',
 				},
 				{
+					timestamp: '2023-03-02T21:52:10.688Z',
+					thread: 'main/0',
 					level: 'notify',
-					message: 'notify log 1',
-					process_name: 'unit-tests',
-					timestamp: '2022-01-06T01:01:01.000Z',
+					tags: [],
+					message: 'Howdy doody, they call me a notify log. I am used for unit testing.',
 				},
 			];
 
@@ -562,92 +512,45 @@ describe('Test readLog module', () => {
 
 			const expected_logs = [
 				{
+					timestamp: '2023-03-02T21:52:10.688Z',
+					thread: 'main/0',
 					level: 'notify',
-					message: 'notify log 1',
-					process_name: 'unit-tests',
-					timestamp: '2022-01-06T01:01:01.000Z',
+					tags: [],
+					message: 'Howdy doody, they call me a notify log. I am used for unit testing.',
 				},
 				{
+					timestamp: '2023-03-02T21:52:11.688Z',
+					thread: 'main/0',
 					level: 'notify',
-					message: 'notify log 2',
-					process_name: 'unit-tests',
-					timestamp: '2022-01-06T01:01:02.000Z',
+					tags: [],
+					message: 'Howdy doody, they call me a notify log. I am used for unit testing.',
 				},
 				{
+					timestamp: '2023-03-02T21:52:12.688Z',
+					thread: 'main/0',
 					level: 'notify',
-					message: 'notify log 3',
-					process_name: 'unit-tests',
-					timestamp: '2022-01-06T01:01:03.000Z',
+					tags: [],
+					message: 'Howdy doody, they call me a notify log. I am used for unit testing.',
 				},
 				{
+					timestamp: '2023-03-02T21:52:13.688Z',
+					thread: 'main/0',
 					level: 'notify',
-					message: 'notify log 4',
-					process_name: 'unit-tests',
-					timestamp: '2022-01-06T01:01:04.000Z',
+					tags: [],
+					message: 'Howdy doody, they call me a notify log. I am used for unit testing.',
 				},
 				{
+					timestamp: '2023-03-02T21:52:14.688Z',
+					thread: 'main/0',
 					level: 'notify',
-					message: 'notify log 5',
-					process_name: 'unit-tests',
-					timestamp: '2022-01-06T01:01:05.000Z',
+					tags: [],
+					message: 'Howdy doody, they call me a notify log. I am used for unit testing.',
 				},
 			];
 
 			const result = await read_log(test_request);
 
 			expect(result.length).to.equal(5);
-			expect(result).to.eql(expected_logs);
-		});
-
-		it('Test if from is defined, correct results are returned', async () => {
-			const test_request = {
-				operation: 'read_log',
-				from: '2022-06-06T01:06:05.000Z',
-				log_name: LOG_NAME_TEST,
-			};
-
-			const expected_logs = [
-				{
-					level: 'trace',
-					message: 'trace log 1',
-					process_name: 'unit-tests',
-					timestamp: '2022-07-06T01:07:01.000Z',
-				},
-				{
-					level: 'trace',
-					message: 'trace log 2',
-					process_name: 'unit-tests',
-					timestamp: '2022-07-06T01:07:02.000Z',
-				},
-				{
-					level: 'trace',
-					message: 'trace log 3',
-					process_name: 'unit-tests',
-					timestamp: '2022-07-06T01:07:03.000Z',
-				},
-				{
-					level: 'trace',
-					message: 'trace log 4',
-					process_name: 'unit-tests',
-					timestamp: '2022-07-06T01:07:04.000Z',
-				},
-				{
-					level: 'debug',
-					message: 'debug log 5',
-					process_name: 'unit-tests',
-					timestamp: '2022-06-06T01:06:05.000Z',
-				},
-				{
-					level: 'trace',
-					message: 'trace log 5',
-					process_name: 'unit-tests',
-					timestamp: '2022-07-06T01:07:05.000Z',
-				},
-			];
-
-			const result = await read_log(test_request);
-
-			expect(result.length).to.equal(6);
 			expect(result).to.eql(expected_logs);
 		});
 
@@ -667,18 +570,65 @@ describe('Test readLog module', () => {
 		it('Test if until is defined, correct results are returned', async () => {
 			const test_request = {
 				operation: 'read_log',
-				until: '2022-01-06T01:01:02.000Z',
+				until: '2023-03-02T21:52:11.687Z',
 				log_name: LOG_NAME_TEST,
 			};
 
 			const expected_logs = [
-				{ process_name: 'unit-tests', level: 'notify', timestamp: '2022-01-06T01:01:01.000Z', message: 'notify log 1' },
-				{ process_name: 'unit-tests', level: 'notify', timestamp: '2022-01-06T01:01:02.000Z', message: 'notify log 2' },
+				{
+					timestamp: '2023-03-02T21:52:10.688Z',
+					thread: 'main/0',
+					level: 'notify',
+					tags: [],
+					message: 'Howdy doody, they call me a notify log. I am used for unit testing.',
+				},
+				{
+					timestamp: '2023-03-02T21:52:10.688Z',
+					thread: 'main/0',
+					level: 'fatal',
+					tags: [],
+					message: 'Howdy doody, they call me a fatal log. I am used for unit testing.',
+				},
+				{
+					timestamp: '2023-03-02T21:52:10.688Z',
+					thread: 'main/0',
+					level: 'error',
+					tags: [],
+					message: 'Howdy doody, they call me a error log. I am used for unit testing.',
+				},
+				{
+					timestamp: '2023-03-02T21:52:10.688Z',
+					thread: 'main/0',
+					level: 'warn',
+					tags: [],
+					message: 'Howdy doody, they call me a warn log. I am used for unit testing.',
+				},
+				{
+					timestamp: '2023-03-02T21:52:10.688Z',
+					thread: 'main/0',
+					level: 'info',
+					tags: [],
+					message: 'Howdy doody, they call me a info log. I am used for unit testing.',
+				},
+				{
+					timestamp: '2023-03-02T21:52:10.688Z',
+					thread: 'main/0',
+					level: 'debug',
+					tags: [],
+					message: 'Howdy doody, they call me a debug log. I am used for unit testing.',
+				},
+				{
+					timestamp: '2023-03-02T21:52:10.688Z',
+					thread: 'main/0',
+					level: 'trace',
+					tags: [],
+					message: 'Howdy doody, they call me a trace log. I am used for unit testing.',
+				},
 			];
 
 			const result = await read_log(test_request);
 
-			expect(result.length).to.equal(2);
+			expect(result.length).to.equal(7);
 			expect(result).to.eql(expected_logs);
 		});
 	});

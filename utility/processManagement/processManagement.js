@@ -82,7 +82,7 @@ const NATS_LEVELS = {
 	INF: 'info',
 	WRN: 'warn',
 	ERR: 'error',
-}
+};
 let shutting_down;
 /**
  * Starts a service
@@ -90,8 +90,7 @@ let shutting_down;
  * @returns {Promise<unknown>}
  */
 function start(proc_config) {
-	if (pm2_mode)
-		return startWithPM2(proc_config);
+	if (pm2_mode) return startWithPM2(proc_config);
 	let subprocess = execFile(proc_config.script, proc_config.args.split(' '), proc_config);
 	subprocess.on('exit', (code) => {
 		let index = processes_to_kill.indexOf(subprocess); // dead, remove it from processes to kill now
@@ -102,15 +101,17 @@ function start(proc_config) {
 			if (proc_config.restarts < MAX_RESTARTS) start(proc_config);
 		}
 	});
-	let process_logger = loggerWithTag(proc_config.name)
+	let process_logger = loggerWithTag(proc_config.name);
 	function extractMessages(log) {
 		let NATS_PARSER = /\[\d+][^\[]+\[(\w+)]/g;
-		let log_start, last_position = 0, last_level;
-		while (log_start = NATS_PARSER.exec(log)) {
+		let log_start,
+			last_position = 0,
+			last_level;
+		while ((log_start = NATS_PARSER.exec(log))) {
 			if (log_start.index) {
 				process_logger[last_level || 'info'](log.slice(last_position, log_start.index));
 			}
-			let [ start_text, level ] = log_start;
+			let [start_text, level] = log_start;
 			last_position = log_start.index + start_text.length;
 			last_level = NATS_LEVELS[level];
 		}
@@ -126,7 +127,7 @@ function start(proc_config) {
 		const kill_children = () => {
 			shutting_down = true;
 			if (!processes_to_kill) return;
-			processes_to_kill.map(proc => proc.kill());
+			processes_to_kill.map((proc) => proc.kill());
 			process.exit(0);
 		};
 		process.on('exit', kill_children);
@@ -134,7 +135,6 @@ function start(proc_config) {
 		process.on('SIGQUIT', kill_children);
 	}
 	processes_to_kill.push(subprocess);
-
 }
 function startWithPM2(proc_config) {
 	return new Promise(async (resolve, reject) => {
@@ -147,31 +147,6 @@ function startWithPM2(proc_config) {
 			if (err) {
 				pm2.disconnect();
 				reject(err);
-			}
-			if (!scripting_mode) {
-				// if we are running in standard mode, then we want to clean up our child processes when we exit
-				if (!processes_to_kill) {
-					processes_to_kill = [];
-					const kill_child = async () => {
-						if (!processes_to_kill) return;
-						let finished = processes_to_kill.map(
-							(proc_name) =>
-								new Promise((resolve) => {
-									pm2.stop(proc_name, (error) => {
-										if (error) hdb_logger.warn(`Error terminating process: ${error}`);
-										resolve();
-									});
-								})
-						);
-						processes_to_kill = null;
-						await Promise.all(finished);
-						process.exit(0);
-					};
-					process.on('exit', kill_child);
-					process.on('SIGINT', kill_child);
-					process.on('SIGQUIT', kill_child);
-				}
-				processes_to_kill.push(proc_config.name);
 			}
 			pm2.disconnect();
 			resolve(res);
