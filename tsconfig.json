@@ -1,6 +1,7 @@
 {
   "include": ["**/*"],
   "compilerOptions": {
+    "outDir": "ts-build",
     "noImplicitAny": false,
     "target": "ES2020",
     "moduleResolution": "NodeNext",

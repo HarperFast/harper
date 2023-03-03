@@ -1,12 +1,9 @@
 const { isMainThread } = require('worker_threads');
 const socket_router = require('../server/threads/socket-router');
-/*require('ts-node').register({
-	project: join(PACKAGE_ROOT, 'tsconfig.json'),
-});*/
+const hdb_terms = require('../utility/hdbTerms');
 const { getTables } = require('../resources/database');
 const { loadCustomFunctions } = require('../server/customFunctions/customFunctionsLoader');
 const env = require('../utility/environment/environmentManager');
-const hdb_terms = require('../utility/hdbTerms');
 
 let loaded_plugins = new Map();
 const default_components = [

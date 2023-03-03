@@ -2,13 +2,15 @@
 
 const path = require('path');
 const fs = require('fs');
+const { relative, join } = path;
+const { existsSync } = fs;
 /**
  * Finds and returns the package root directory
  * @returns {string}
  */
 function getHDBPackageRoot() {
 	let dir = __dirname;
-	while (!fs.existsSync(path.join(dir, 'package.json'))) {
+	while (!existsSync(path.join(dir, 'package.json'))) {
 		let parent = path.dirname(dir);
 		if (parent === dir) throw new Error('Could not find package root');
 		dir = parent;
@@ -16,6 +18,53 @@ function getHDBPackageRoot() {
 	return dir;
 }
 const PACKAGE_ROOT = getHDBPackageRoot();
+const TS_DIRECTORY = 'ts-build';
+let Module = module.constructor;
+let findPath = Module._findPath;
+/**
+ * Hack the node module system to make it so we can load the TypeScript compiled modules from a separate directory
+ * *and* load JavaScript files from their existing source directory. This is just intended for source/dev use, and
+ * should be skipped in our built version. But this allows us to keep TypeScript alongside JavaScript while having
+ * the built output in separate directory so we can easily gitignore all the built modules.
+ */
+Module._findPath = function (request, paths, isMain) {
+	if (
+		request.startsWith('.') &&
+		!isMain &&
+		paths.length === 1 &&
+		paths[0].startsWith(PACKAGE_ROOT) &&
+		!paths[0].includes('node_modules')
+	) {
+		// relative reference in our code base
+		let path = relative(PACKAGE_ROOT, paths[0]);
+		let alternate;
+		if (path.startsWith(TS_DIRECTORY)) {
+			alternate = join(PACKAGE_ROOT, relative(TS_DIRECTORY, path));
+		} else {
+			alternate = join(PACKAGE_ROOT, TS_DIRECTORY, path);
+		}
+		let filename = join(alternate, request) + '.js';
+		if (existsSync(filename)) return filename;
+	}
+	return findPath(request, paths, isMain);
+};
+/*let resolveLookupPaths = Module._resolveLookupPaths;
+Module._resolveLookupPaths = function(request, parent) {
+	let paths = resolveLookupPaths(request, parent);
+	if (request.startsWith('.') && parent?.filename.startsWith(PACKAGE_ROOT)) {
+		// relative reference
+		if (!parent.filename.includes('node_modules')) {
+			let path = relative(PACKAGE_ROOT, paths[0]);
+			if (path.startsWith(TS_DIRECTORY)) {
+				paths.push(relative(TS_DIRECTORY, path));
+			} else {
+				paths.push(join(PACKAGE_ROOT, TS_DIRECTORY, path));
+
+			}
+		}
+	}
+	return paths;
+}*/
 
 /**
  * This module should contain common variables/values that will be used across the project.  This should avoid

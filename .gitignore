@@ -18,9 +18,9 @@ unitTests/server/nats/tempTestDir/*
 dependencies/*
 !dependencies/nats-server.zip
 yarn.lock
+yarn-error.log
 package-lock.json
-resources/*.js*
-server/customFunctions/customFunctionsLoader.js*
+ts-build
 
 /npm_pack/*
 *.jsc
