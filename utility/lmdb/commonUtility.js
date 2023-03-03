@@ -100,10 +100,7 @@ function adjustStartTime() {
 	// calculate the start time
 	// TODO: We may actually want to implement a gradual time shift if the clock time really changes substantially
 	// and for sub-millisecond updates, may want to average them so we can progressively narrow in on true time
-	let last_start_time = start_time;
 	start_time = Date.now() - performance.now();
-	if (last_start_time)
-		console.log({last_start_time, start_time});
 }
 adjustStartTime();
 // we periodically update our start time because clock time can drift (but we still ensure monotonic time)

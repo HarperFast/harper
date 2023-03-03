@@ -388,7 +388,7 @@ describe('Test lmdbUpdateRecords module', () => {
 
 			let expected_search = test_utils.assignObjecttoNullObject(update_obj.records[0]);
 			expected_search.__createdtime__ = TIMESTAMP;
-			expected_search.__updatedtime__ = 9999999999999966;
+			expected_search.__updatedtime__ = TIMESTAMP + 2;
 			expected_search.height = null;
 
 			let results = await test_utils.assertErrorAsync(lmdb_update_records, [update_obj], undefined);
