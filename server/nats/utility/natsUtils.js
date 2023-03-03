@@ -555,7 +555,7 @@ function addNatsMsgHeader(req, nats_msg_header) {
 
 /**
  * Gets some of the server config that is needed by other functions
- * @param process_name - The process name pm2 gives the server
+ * @param process_name - The process name processManagement gives the server
  * @returns {undefined|{server_name: string, port: *}}
  */
 function getServerConfig(process_name) {

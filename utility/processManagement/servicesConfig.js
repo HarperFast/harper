@@ -43,7 +43,7 @@ function generateMainServerConfig() {
 	const mem_value = hdb_terms.MEM_SETTING_KEY + max_memory;
 
 	// We are using launch scripts here because something was happening with the build where stdout/err was
-	// losing reference to the pm2 process and not being logged. It seems to only happen with clustered processes.
+	// losing reference to the processManagement process and not being logged. It seems to only happen with clustered processes.
 	const hdb_config = {
 		name: hdb_terms.PROCESS_DESCRIPTORS.HDB,
 		script: hdb_terms.LAUNCH_SERVICE_SCRIPTS.MAIN,
@@ -72,7 +72,7 @@ function generateNatsHubServerConfig() {
 	log_path = env.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY);
 	const hdb_root = env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
 	const hub_config_path = path.join(hdb_root, 'clustering', nats_terms.NATS_CONFIG_FILES.HUB_SERVER);
-	const hub_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_HUB);
+	const hub_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.HDB);
 	const hub_port = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT);
 	const hs_config = {
 		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB + (hub_port !== ELIDED_HUB_PORT ? '-' + hub_port : ''),
@@ -102,7 +102,7 @@ function generateNatsLeafServerConfig() {
 	log_path = env.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY);
 	const hdb_root = env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
 	const leaf_config_path = path.join(hdb_root, 'clustering', nats_terms.NATS_CONFIG_FILES.LEAF_SERVER);
-	const leaf_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_LEAF);
+	const leaf_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.HDB);
 	const leaf_port = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT);
 	const ls_config = {
 		// we assign a unique name per port if it is not the default, so we can run multiple NATS instances for
@@ -126,54 +126,6 @@ function generateNatsLeafServerConfig() {
 	return ls_config;
 }
 
-function generateNatsIngestServiceConfig() {
-	initLogConfig();
-	env.initSync();
-	const ingest_service_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_INGEST_SERVICE);
-	const ingest_ser_config = {
-		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_INGEST_SERVICE,
-		script: hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_INGEST_SERVICE,
-		exec_mode: 'cluster',
-		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_INGEST_SERVICE },
-		merge_logs: true,
-		out_file: ingest_service_logs,
-		error_file: ingest_service_logs,
-		instances: 1,
-		cwd: LAUNCH_SCRIPTS_DIR,
-	};
-
-	if (!log_to_file) {
-		ingest_ser_config.out_file = DISABLE_FILE_LOG;
-		ingest_ser_config.error_file = DISABLE_FILE_LOG;
-	}
-
-	return ingest_ser_config;
-}
-
-function generateNatsReplyServiceConfig() {
-	initLogConfig();
-	env.initSync();
-	const reply_service_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_REPLY_SERVICE);
-	const reply_ser_config = {
-		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE,
-		script: hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_REPLY_SERVICE,
-		exec_mode: 'cluster',
-		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE },
-		merge_logs: true,
-		out_file: reply_service_logs,
-		error_file: reply_service_logs,
-		instances: 1,
-		cwd: LAUNCH_SCRIPTS_DIR,
-	};
-
-	if (!log_to_file) {
-		reply_ser_config.out_file = DISABLE_FILE_LOG;
-		reply_ser_config.error_file = DISABLE_FILE_LOG;
-	}
-
-	return reply_ser_config;
-}
-
 /**
  * Generates the config used to launch a process that will upgrade pre 4.0.0 instances clustering node connections
  * @returns {{cwd: string, merge_logs: boolean, out_file: string, instances: number, name: string, env: {}, error_file: string, script: string, exec_mode: string}}
@@ -181,7 +133,7 @@ function generateNatsReplyServiceConfig() {
 function generateClusteringUpgradeV4ServiceConfig() {
 	initLogConfig();
 	env.initSync();
-	const clustering_upgrade_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.CLUSTERING_UPGRADE);
+	const clustering_upgrade_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.HDB);
 	const clustering_upgrade_config = {
 		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_UPGRADE_4_0_0,
 		script: hdb_terms.LAUNCH_SERVICE_SCRIPTS.NODES_UPGRADE_4_0_0,
@@ -242,7 +194,5 @@ module.exports = {
 	generateRestart,
 	generateNatsHubServerConfig,
 	generateNatsLeafServerConfig,
-	generateNatsIngestServiceConfig,
-	generateNatsReplyServiceConfig,
 	generateClusteringUpgradeV4ServiceConfig,
 };

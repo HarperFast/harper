@@ -1,6 +1,6 @@
 'use strict';
 
-const pm2_utils = require('../pm2/utilityFunctions');
+const pm2_utils = require('../processManagement/processManagement');
 const hdb_terms = require('../hdbTerms');
 
 /**
@@ -15,7 +15,7 @@ const hdb_terms = require('../hdbTerms');
 			await pm2_utils.reload(proc.pm_id);
 		}
 
-		// Once this script has finished reloading all the HarperDB processes, delete this process from pm2.
+		// Once this script has finished reloading all the HarperDB processes, delete this process from processManagement.
 		await pm2_utils.deleteProcess(hdb_terms.PROCESS_DESCRIPTORS.RESTART_HDB);
 	} catch (err) {
 		console.error(err);

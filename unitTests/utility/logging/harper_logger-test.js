@@ -234,7 +234,7 @@ describe('Test harper_logger module', () => {
 			sandbox.restore();
 		});
 
-		it.skip('Test trace is logged and function returns if called by pm2 process', () => {
+		it.skip('Test trace is logged and function returns if called by processManagement process', () => {
 			process.env.pm_id = 1;
 			const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
 			const log_name_test = 'unit_test.log';
@@ -245,7 +245,7 @@ describe('Test harper_logger module', () => {
 			harper_logger.createLogFile(log_name_test, log_process_name_test);
 
 			expect(trace_stub.firstCall.args[0]).to.equal(
-				'createLogFile should only be used if the process is not being managed by pm2'
+				'createLogFile should only be used if the process is not being managed by processManagement'
 			);
 			error_rw();
 			delete process.env.pm_id;
@@ -433,7 +433,7 @@ describe('Test harper_logger module', () => {
 			sandbox.restore();
 		});
 
-		it('Test info log logs to file and stream for non-pm2 process', (done) => {
+		it('Test info log logs to file and stream for non-processManagement process', (done) => {
 			harper_logger.createLogFile(LOG_NAME_TEST, LOG_PROCESS_NAME_TEST);
 			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.INFO}", "timestamp": "${date_test_string}", "message": "${test_message}"}\n`;
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
@@ -450,7 +450,7 @@ describe('Test harper_logger module', () => {
 			}, 100);
 		});
 
-		it('Test info log writes to stdout for pm2 process', () => {
+		it('Test info log writes to stdout for processManagement process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
 			harper_logger.__set__('process_name', 'unit_tests');
 			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.INFO}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.INFO}"}\n`;
@@ -464,7 +464,7 @@ describe('Test harper_logger module', () => {
 			unhookStdOutErr();
 		});
 
-		it('Test trace log logs to file and stream for non-pm2 process', (done) => {
+		it('Test trace log logs to file and stream for non-processManagement process', (done) => {
 			harper_logger.createLogFile(LOG_NAME_TEST, LOG_PROCESS_NAME_TEST);
 			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.TRACE}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.TRACE}"}\n`;
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
@@ -479,7 +479,7 @@ describe('Test harper_logger module', () => {
 			}, 100);
 		});
 
-		it('Test trace log writes to stdout for pm2 process', () => {
+		it('Test trace log writes to stdout for processManagement process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
 			harper_logger.__set__('process_name', 'unit_tests');
 			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.TRACE}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.TRACE}"}\n`;
@@ -493,7 +493,7 @@ describe('Test harper_logger module', () => {
 			unhookStdOutErr();
 		});
 
-		it('Test error log logs to file and stream for non-pm2 process', (done) => {
+		it('Test error log logs to file and stream for non-processManagement process', (done) => {
 			harper_logger.createLogFile(LOG_NAME_TEST, LOG_PROCESS_NAME_TEST);
 			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.ERROR}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.ERROR}"}\n`;
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
@@ -508,7 +508,7 @@ describe('Test harper_logger module', () => {
 			}, 100);
 		});
 
-		it('Test error log writes to stdout for pm2 process', () => {
+		it('Test error log writes to stdout for processManagement process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
 			harper_logger.__set__('process_name', 'unit_tests');
 			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.ERROR}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.ERROR}"}\n`;
@@ -522,7 +522,7 @@ describe('Test harper_logger module', () => {
 			unhookStdOutErr();
 		});
 
-		it('Test debug log logs to file and stream for non-pm2 process', (done) => {
+		it('Test debug log logs to file and stream for non-processManagement process', (done) => {
 			harper_logger.createLogFile(LOG_NAME_TEST, LOG_PROCESS_NAME_TEST);
 			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.DEBUG}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.DEBUG}"}\n`;
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
@@ -536,7 +536,7 @@ describe('Test harper_logger module', () => {
 			}, 100);
 		});
 
-		it('Test debug log writes to stdout for pm2 process', () => {
+		it('Test debug log writes to stdout for processManagement process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
 			harper_logger.__set__('process_name', 'unit_tests');
 			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.DEBUG}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.DEBUG}"}\n`;
@@ -550,7 +550,7 @@ describe('Test harper_logger module', () => {
 			unhookStdOutErr();
 		});
 
-		it('Test notify log logs to file and stream for non-pm2 process', (done) => {
+		it('Test notify log logs to file and stream for non-processManagement process', (done) => {
 			harper_logger.createLogFile(LOG_NAME_TEST, LOG_PROCESS_NAME_TEST);
 			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.NOTIFY}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.NOTIFY}"}\n`;
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
@@ -564,7 +564,7 @@ describe('Test harper_logger module', () => {
 			}, 100);
 		});
 
-		it('Test notify log writes to stdout for pm2 process', () => {
+		it('Test notify log writes to stdout for processManagement process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
 			harper_logger.__set__('process_name', 'unit_tests');
 			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.NOTIFY}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.NOTIFY}"}\n`;
@@ -578,7 +578,7 @@ describe('Test harper_logger module', () => {
 			unhookStdOutErr();
 		});
 
-		it('Test fatal log logs to file and stream for non-pm2 process', (done) => {
+		it('Test fatal log logs to file and stream for non-processManagement process', (done) => {
 			harper_logger.createLogFile(LOG_NAME_TEST, LOG_PROCESS_NAME_TEST);
 			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.FATAL}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.FATAL}"}\n`;
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
@@ -592,7 +592,7 @@ describe('Test harper_logger module', () => {
 			}, 100);
 		});
 
-		it('Test fatal log writes to stdout for pm2 process', () => {
+		it('Test fatal log writes to stdout for processManagement process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
 			harper_logger.__set__('process_name', 'unit_tests');
 			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.FATAL}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.FATAL}"}\n`;
@@ -606,7 +606,7 @@ describe('Test harper_logger module', () => {
 			unhookStdOutErr();
 		});
 
-		it('Test warn log logs to file and stream for non-pm2 process', (done) => {
+		it('Test warn log logs to file and stream for non-processManagement process', (done) => {
 			harper_logger.createLogFile(LOG_NAME_TEST, LOG_PROCESS_NAME_TEST);
 			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.WARN}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.WARN}"}\n`;
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
@@ -620,7 +620,7 @@ describe('Test harper_logger module', () => {
 			}, 100);
 		});
 
-		it('Test warn log writes to stdout for pm2 process', () => {
+		it('Test warn log writes to stdout for processManagement process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
 			harper_logger.__set__('process_name', 'unit_tests');
 			expected_log = `{"process_name": "${LOG_PROCESS_NAME_TEST}", "level": "${LOG_LEVEL.WARN}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.WARN}"}\n`;

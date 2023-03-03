@@ -26,7 +26,7 @@ module.exports = initialize;
 
 /**
  * This module is designed to handle requests from other nodes, such as add, update or delete node.
- * It runs in its own process managed by pm2.
+ * It runs in its own process managed by processManagement.
  * The nats connection is what keeps the process open/running.
  * @returns {Promise<void>}
  */
@@ -102,7 +102,7 @@ async function getRemoteDescribeAll() {
 }
 if (!isMainThread) {
 	parentPort.on('message', async (message) => {
-		const {type} = message;
+		const { type } = message;
 		if (type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
 			nats_utils.closeConnection();
 		}

@@ -116,7 +116,7 @@ async function install() {
 	}
 	env_manager.setHdbBasePath(hdb_root);
 
-	// Set where the pm2.log file is created. This has to be done before pm2 is imported.
+	// Set where the pm2.log file is created. This has to be done before processManagement is imported.
 	process.env.PM2_LOG_FILE_PATH = path.join(hdb_root, 'log', 'pm2.log');
 
 	// Creates the HarperDB project folder structure and the LMDB environments/dbis.
