@@ -41,6 +41,8 @@ function generateNatsHubServerConfig() {
 	const hdb_root = env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
 	const hub_config_path = path.join(hdb_root, 'clustering', nats_terms.NATS_CONFIG_FILES.HUB_SERVER);
 	const hub_logs = path.join(env.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY), hdb_terms.LOG_NAMES.CLUSTERING_HUB);
+	const hub_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.HDB);
+	const hub_port = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT);
 	const hs_config = {
 		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB,
 		script: NATS_SERVER_BINARY_PATH,
@@ -66,6 +68,8 @@ function generateNatsLeafServerConfig() {
 	const hdb_root = env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
 	const leaf_config_path = path.join(hdb_root, 'clustering', nats_terms.NATS_CONFIG_FILES.LEAF_SERVER);
 	const leaf_logs = path.join(env.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY), hdb_terms.LOG_NAMES.CLUSTERING_LEAF);
+	const leaf_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.HDB);
+	const leaf_port = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT);
 	const ls_config = {
 		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF,
 		script: NATS_SERVER_BINARY_PATH,
@@ -113,6 +117,10 @@ function generateNatsReplyServiceConfig() {
  * @returns {{cwd: string, merge_logs: boolean, out_file: string, instances: number, name: string, env: {}, error_file: string, script: string, exec_mode: string}}
  */
 function generateClusteringUpgradeV4ServiceConfig() {
+	initLogConfig();
+	env.initSync();
+	const clustering_upgrade_logs = path.join(log_path, hdb_terms.PROCESS_LOG_NAMES.HDB);
+	const clustering_upgrade_config = {
 	return {
 		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_UPGRADE_4_0_0,
 		script: hdb_terms.LAUNCH_SERVICE_SCRIPTS.NODES_UPGRADE_4_0_0,
@@ -152,7 +160,5 @@ module.exports = {
 	generateRestart,
 	generateNatsHubServerConfig,
 	generateNatsLeafServerConfig,
-	generateNatsIngestServiceConfig,
-	generateNatsReplyServiceConfig,
 	generateClusteringUpgradeV4ServiceConfig,
 };

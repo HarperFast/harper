@@ -333,6 +333,3 @@ if (!isMainThread) {
 		}
 	});
 }
-setInterval(() => {
-	harper_logger.warn('Thread is alive', threadId);
-},5000).unref();

@@ -114,7 +114,7 @@ async function runJob(runner_message, operation) {
 }
 
 /**
- * Launches job in a separate process using pm2
+ * Launches job in a separate process using processManagement
  * @param job_id
  * @returns {Promise<void>}
  */

@@ -39,8 +39,9 @@ module.exports = {
 async function upgrade(upgrade_obj) {
 	await p_schema_to_global();
 
-	// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
-	if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
+	// Requiring the processManagement mod will create the .pm2 dir. This code is here to allow install to set
+	// pm2 env vars before that is done.
+	if (pm2_utils === undefined) pm2_utils = require('../utility/processManagement/processManagement');
 
 	//We have to make sure HDB is installed before doing anything else
 	if (!fs.existsSync(env.get(env.BOOT_PROPS_FILE_PATH))) {
@@ -114,14 +115,14 @@ async function upgrade(upgrade_obj) {
 async function checkIfRunning() {
 	let hdb_running = false;
 
-	// This is here to accommodate any HDB process that might have been started with old versions of HDB that dont use pm2.
+	// This is here to accommodate any HDB process that might have been started with old versions of HDB that dont use processManagement.
 	const list_hdb_server = await ps_list.findPs(hdb_terms.HDB_PROC_NAME);
 	if (!hdb_utils.isEmptyOrZeroLength(list_hdb_server)) {
 		hdb_running = true;
 	}
 
 	if (!hdb_running) {
-		// This is here to accommodate any HDB process that might have been started with old versions of HDB that dont use pm2.
+		// This is here to accommodate any HDB process that might have been started with old versions of HDB that dont use processManagement.
 		const list_hdb_express = await ps_list.findPs('hdb_express');
 		if (!hdb_utils.isEmptyOrZeroLength(list_hdb_express)) {
 			hdb_running = true;

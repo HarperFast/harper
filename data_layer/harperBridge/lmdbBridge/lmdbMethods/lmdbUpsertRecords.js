@@ -52,7 +52,7 @@ async function lmdbUpsertRecords(upsert_obj) {
 		schema_table.hash_attribute,
 		attributes,
 		upsert_obj.records,
-		upsert_obj[hdb_terms.CLUSTERING_FLAG] !== true
+		upsert_obj.__origin?.timestamp
 	);
 
 	try {

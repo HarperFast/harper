@@ -1,15 +1,11 @@
 on:
-  push:
-    branches:
-      - "CORE-1771"
-  workflow_call:
-    outputs:
-      nodeVersion: 
-        value: ${{jobs.getNodeVersion.outputs.nodeVersion}}
-      harperdbVersion: 
-        value: ${{jobs.getNodeVersion.outputs.harperdbVersion}}
   workflow_dispatch:
-name: Build
+    inputs:
+      updateLatest: 
+        type: boolean
+        description: Update the latest version to the tar produced by this branch
+        default: true
+name: Build Offline Install Package
 jobs:
   getNodeVersion:
     runs-on: ubuntu-latest
@@ -38,7 +34,6 @@ jobs:
     - name: Build artifact
       run: |
         #!/bin/bash
-        whoami
         ./utility/devops/build/all-in-one-build.sh
     - name: 'Upload Artifact'
       uses: actions/upload-artifact@v3
@@ -46,3 +41,18 @@ jobs:
         name: harperdb-${{ needs.getNodeVersion.outputs.harperdbVersion }}.tgz
         path: harperdb-${{ needs.getNodeVersion.outputs.harperdbVersion }}.tgz
         retention-days: 1
+    - name: Publish to s3
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        AWS_DEFAULT_REGION: us-east-1
+      run: |
+        #!/bin/bash
+        set -ex
+        aws s3 cp ./harperdb-${{ needs.getNodeVersion.outputs.harperdbVersion }}.tgz s3://products-harperdb-io
+
+        if [[ ${{inputs.updateLatest }} == "true" ]]
+        then
+          aws s3 rm --recursive s3://products-harperdb-io/latest
+          aws s3 cp ./harperdb-${{ needs.getNodeVersion.outputs.harperdbVersion }}.tgz s3://products-harperdb-io/latest/
+        fi

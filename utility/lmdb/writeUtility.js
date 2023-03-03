@@ -28,14 +28,13 @@ const UPDATED_TIME_ATTRIBUTE_NAME = hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {Array.<String>} write_attributes - list of all attributes to write to the database
  * @param  {Array.<Object>} records - object array records to insert
- * @param {Boolean} generate_timestamps - defines if timestamps should be created
+ * @param {boolean|number} timestamp
  * @returns {Promise<InsertRecordsResponseObject>}
  */
-async function insertRecords(env, hash_attribute, write_attributes, records, generate_timestamps = true) {
+async function insertRecords(env, hash_attribute, write_attributes, records, timestamp = common.getNextMonotonicTime()) {
 	validateWrite(env, hash_attribute, write_attributes, records);
 
 	initializeTransaction(env, hash_attribute, write_attributes);
-	let timestamp = generate_timestamps && common.getNextMonotonicTime();
 
 	let result = new InsertRecordsResponseObject();
 
@@ -163,15 +162,14 @@ function initializeTransaction(env, hash_attribute, write_attributes) {
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {Array.<String>} write_attributes - list of all attributes to write to the database
  * @param  {Array.<Object>} records - object array records to update
- * @param {boolean} generate_timestamps
+ * @param {boolean|number} timestamp
  * @returns {Promise<UpdateRecordsResponseObject>}
  */
-async function updateRecords(env, hash_attribute, write_attributes, records, generate_timestamps = true) {
+async function updateRecords(env, hash_attribute, write_attributes, records, timestamp = common.getNextMonotonicTime()) {
 	//validate
 	validateWrite(env, hash_attribute, write_attributes, records);
 
 	initializeTransaction(env, hash_attribute, write_attributes);
-	let timestamp = generate_timestamps && common.getNextMonotonicTime();
 
 	let result = new UpdateRecordsResponseObject();
 
@@ -204,10 +202,10 @@ async function updateRecords(env, hash_attribute, write_attributes, records, gen
  * @param {String} hash_attribute - name of the table's hash attribute
  * @param {Array.<String>} write_attributes - list of all attributes to write to the database
  * @param  {Array.<Object>} records - object array records to update
- * @param {boolean} generate_timestamps
+ * @param {boolean|number} timestamp
  * @returns {Promise<UpdateRecordsResponseObject>}
  */
-async function upsertRecords(env, hash_attribute, write_attributes, records, generate_timestamps = true) {
+async function upsertRecords(env, hash_attribute, write_attributes, records, timestamp = common.getNextMonotonicTime()) {
 	//validate
 	try {
 		validateWrite(env, hash_attribute, write_attributes, records);
@@ -216,7 +214,6 @@ async function upsertRecords(env, hash_attribute, write_attributes, records, gen
 	}
 
 	initializeTransaction(env, hash_attribute, write_attributes);
-	let timestamp = generate_timestamps && common.getNextMonotonicTime();
 
 	let result = new UpsertRecordsResponseObject();
 

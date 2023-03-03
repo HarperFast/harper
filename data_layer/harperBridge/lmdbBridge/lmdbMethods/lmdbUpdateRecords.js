@@ -42,7 +42,7 @@ async function lmdbUpdateRecords(update_obj) {
 			schema_table.hash_attribute,
 			attributes,
 			update_obj.records,
-			update_obj[hdb_terms.CLUSTERING_FLAG] !== true
+			update_obj.__origin?.timestamp
 		);
 
 		try {

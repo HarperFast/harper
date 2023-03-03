@@ -53,9 +53,9 @@ async function postDummyNatsMsg() {
  */
 async function restartProcesses() {
 	try {
-		// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
-		if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
-		pm2_utils.enterScriptingMode();
+		// Requiring the processManagement mod will create the .processManagement dir. This code is here to allow install to set processManagement env vars before that is done.
+		if (pm2_utils === undefined) pm2_utils = require('../utility/processManagement/processManagement');
+		pm2_utils.enterPM2Mode();
 
 		// If restart is called with cmd/env vars we create a backup of config and update config file.
 		const parsed_args = assignCMDENVVariables(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
@@ -100,8 +100,8 @@ async function restartProcesses() {
 				if (service_req.toLowerCase().includes('clustering')) {
 					await restartClustering(service_req);
 				} else if (await pm2_utils.isServiceRegistered(service)) {
-					// We need to allow for restart to be called on services that arent registered/managed by pm2. If restart is called on a
-					// service that isn't registered that service will be started by pm2.
+					// We need to allow for restart to be called on services that arent registered/managed by processManagement. If restart is called on a
+					// service that isn't registered that service will be started by processManagement.
 
 					// If the service is registered but the settings value is not set to enabled, stop the service.
 					if (service === hdb_terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS && !custom_func_enabled) {
@@ -186,8 +186,9 @@ const SERVICE_TO_WORKER_TYPE = {
  * @returns {Promise<string>}
  */
 async function restartService(json_message) {
-	// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
-	if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
+	// Requiring the processManagement mod will create the .pm2 dir. This code is here to allow install to set
+	// pm2 env vars before that is done.
+	if (pm2_utils === undefined) pm2_utils = require('../utility/processManagement/processManagement');
 
 	if (hdb_utils.isEmpty(json_message.service)) {
 		throw handleHDBError(new Error(), MISSING_SERVICE, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
@@ -246,9 +247,10 @@ async function restartService(json_message) {
  */
 async function stop() {
 	try {
-		// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
-		if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
-		pm2_utils.enterScriptingMode();
+		// Requiring the processManagement mod will create the .pm2 dir. This code is here to allow install to set
+		// pm2 env vars before that is done.
+		if (pm2_utils === undefined) pm2_utils = require('../utility/processManagement/processManagement');
+		pm2_utils.enterPM2Mode();
 
 		// Stop can be called with a --service argument which allows designated services to be stopped.
 		const cmd_args = minimist(process.argv);
@@ -299,7 +301,7 @@ async function restartClustering(service) {
 	const clustering_enabled = config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED);
 	const restarting_clustering = service === 'clustering';
 	const reloading_clustering = service === 'clustering config';
-	if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
+	if (pm2_utils === undefined) pm2_utils = require('../utility/processManagement/processManagement');
 
 	const is_currently_running = !restarting_clustering
 		? await pm2_utils.isServiceRegistered(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB)

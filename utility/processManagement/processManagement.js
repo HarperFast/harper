@@ -9,12 +9,17 @@ const pm2 = require('pm2');
 const services_config = require('./servicesConfig');
 const env_mangr = require('../environment/environmentManager');
 const hdb_logger = require('../../utility/logging/harper_logger');
-const config = require('../../utility/pm2/servicesConfig');
+const config = require('.//servicesConfig');
 const clustering_utils = require('../clustering/clusterUtilities');
 const { startWorker } = require('../../server/threads/manage-threads');
+const util = require('util');
+const child_process = require('child_process');
+const { execFile } = child_process;
+const exec = util.promisify(child_process.exec);
+const path = require('path');
 
 module.exports = {
-	enterScriptingMode,
+	enterPM2Mode,
 	start,
 	stop,
 	reload,
@@ -40,23 +45,26 @@ module.exports = {
 	reloadClustering,
 };
 
-// This indicates when we are running as a CLI scripting command (kind of taking the place of pm2's CLI), and so we
+const { PACKAGE_ROOT } = require('../hdbTerms');
+const { loggerWithTag } = hdb_logger;
+
+// This indicates when we are running as a CLI scripting command (kind of taking the place of processManagement's CLI), and so we
 // are generally starting and stopping processes through PM2.
-let scripting_mode = false;
+let pm2_mode = false;
 
 /**
  * Enable scripting mode where we act as the PM2 CLI to start and stop other processes and then exit
  */
-function enterScriptingMode() {
-	scripting_mode = true;
+function enterPM2Mode() {
+	pm2_mode = true;
 }
 /**
- * Either connects to a running pm2 daemon or launches one.
+ * Either connects to a running processManagement daemon or launches one.
  * @returns {Promise<unknown>}
  */
 function connect() {
 	return new Promise((resolve, reject) => {
-		pm2.connect(!scripting_mode, (err, res) => {
+		pm2.connect((err, res) => {
 			// PM2 tries to take over logging. We are not going to be defeated, we are taking it back!
 			hdb_logger.setupConsoleLogging();
 			if (err) {
@@ -69,13 +77,66 @@ function connect() {
 }
 
 let processes_to_kill;
-
+const MAX_RESTARTS = 10;
+const NATS_LEVELS = {
+	INF: 'info',
+	WRN: 'warn',
+	ERR: 'error',
+}
+let shutting_down;
 /**
  * Starts a service
  * @param proc_config
  * @returns {Promise<unknown>}
  */
 function start(proc_config) {
+	if (pm2_mode)
+		return startWithPM2(proc_config);
+	let subprocess = execFile(proc_config.script, proc_config.args.split(' '), proc_config);
+	subprocess.on('exit', (code) => {
+		let index = processes_to_kill.indexOf(subprocess); // dead, remove it from processes to kill now
+		if (index > -1) processes_to_kill.splice(index, 1);
+		if (!shutting_down && code > 0) {
+			proc_config.restarts = (proc_config.restarts || 0) + 1;
+			// restart the child process
+			if (proc_config.restarts < MAX_RESTARTS) start(proc_config);
+		}
+	});
+	let process_logger = loggerWithTag(proc_config.name)
+	function extractMessages(log) {
+		let NATS_PARSER = /\[\d+][^\[]+\[(\w+)]/g;
+		let log_start, last_position = 0, last_level;
+		while (log_start = NATS_PARSER.exec(log)) {
+			if (log_start.index) {
+				process_logger[last_level || 'info'](log.slice(last_position, log_start.index));
+			}
+			let [ start_text, level ] = log_start;
+			last_position = log_start.index + start_text.length;
+			last_level = NATS_LEVELS[level];
+		}
+		process_logger[last_level || 'info'](log.slice(last_position));
+	}
+	subprocess.stdout.on('data', extractMessages);
+	subprocess.stderr.on('data', extractMessages);
+	subprocess.unref();
+
+	// if we are running in standard mode, then we want to clean up our child processes when we exit
+	if (!processes_to_kill) {
+		processes_to_kill = [];
+		const kill_children = () => {
+			shutting_down = true;
+			if (!processes_to_kill) return;
+			processes_to_kill.map(proc => proc.kill());
+			process.exit(0);
+		};
+		process.on('exit', kill_children);
+		process.on('SIGINT', kill_children);
+		process.on('SIGQUIT', kill_children);
+	}
+	processes_to_kill.push(subprocess);
+
+}
+function startWithPM2(proc_config) {
 	return new Promise(async (resolve, reject) => {
 		try {
 			await connect();
@@ -119,7 +180,7 @@ function start(proc_config) {
 }
 
 /**
- * Stops a specific service then deletes it from pm2
+ * Stops a specific service then deletes it from processManagement
  * @param service_name
  * @returns {Promise<unknown>}
  */
@@ -136,7 +197,7 @@ function stop(service_name) {
 				reject(err);
 			}
 
-			// Once the service has stopped, delete it from pm2
+			// Once the service has stopped, delete it from processManagement
 			pm2.delete(service_name, (del_err, del_res) => {
 				if (del_err) {
 					pm2.disconnect();
@@ -224,7 +285,7 @@ function deleteProcess(service_name) {
 }
 
 /**
- * To restart HarperDB we use pm2 to fork a process and then call restart from that process.
+ * To restart HarperDB we use processManagement to fork a process and then call restart from that process.
  * We do this because we were seeing random errors when HDB was calling restart on itself.
  * @returns {Promise<void>}
  */
@@ -295,7 +356,7 @@ function describe(service_name) {
 }
 
 function kill() {
-	if (!scripting_mode) return Promise.resolve();
+	if (!pm2_mode) return Promise.resolve();
 	return new Promise(async (resolve, reject) => {
 		try {
 			await connect();
@@ -433,7 +494,7 @@ async function restartAllServices(excluding = []) {
 }
 
 /**
- * stops all services then kills the pm2 daemon
+ * stops all services then kills the processManagement daemon
  * @returns {Promise<void>}
  */
 async function stopAllServices() {
@@ -444,7 +505,7 @@ async function stopAllServices() {
 			await stop(service.name);
 		}
 
-		// Kill pm2 daemon
+		// Kill processManagement daemon
 		await kill();
 	} catch (err) {
 		pm2.disconnect();
@@ -453,7 +514,7 @@ async function stopAllServices() {
 }
 
 /**
- * Check to see if a service is currently managed by pm2
+ * Check to see if a service is currently managed by processManagement
  */
 async function isServiceRegistered(service) {
 	return !hdb_utils.isEmptyOrZeroLength(await describe(service));
@@ -560,7 +621,7 @@ async function isClusteringRunning() {
 
 /**
  * Calls a native Nats method to reload the Hub & Leaf servers.
- * This will NOT restart the pm2 process.
+ * This will NOT restart the processManagement process.
  * @returns {Promise<void>}
  */
 async function reloadClustering() {

@@ -3,7 +3,7 @@
 const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
-const pm2_utils = require('../../../utility/pm2/utilityFunctions');
+const pm2_utils = require('../../../utility/processManagement/processManagement');
 const eng_mgr = require('../../../utility/environment/environmentManager');
 const hdb_terms = require('../../../utility/hdbTerms');
 const insert = require('../../../data_layer/insert');

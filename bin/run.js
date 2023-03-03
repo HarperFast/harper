@@ -65,6 +65,12 @@ async function initialize(called_by_install = false, called_by_main = false) {
 		}
 	}
 
+	// Set where the pm2.log file is created. This has to be done before processManagement is imported.
+	process.env.PM2_LOG_FILE_PATH = path.join(env.getHdbBasePath(), 'log', 'pm2.log');
+
+	// Requiring the processManagement mod will create the .pm2 dir. This code is here to allow install to set
+	// pm2 env vars before that is done.
+	if (pm2_utils === undefined) pm2_utils = require('../utility/processManagement/processManagement');
 	// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
 	if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
 
@@ -226,8 +232,8 @@ async function launch() {
 		return main();
 	}
 	try {
-		if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
-		pm2_utils.enterScriptingMode();
+		if (pm2_utils === undefined) pm2_utils = require('../utility/processManagement/processManagement');
+		pm2_utils.enterPM2Mode();
 		await initialize();
 		const clustering_enabled = hdb_utils.autoCastBoolean(env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY));
 		if (clustering_enabled) await pm2_utils.startClusteringProcesses();

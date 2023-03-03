@@ -463,7 +463,7 @@ describe('Test lmdbCreateRecords module', () => {
 			await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, expected_timestamp, hashes);
 		});
 
-		it('Test inserting record with __clustering__', async () => {
+		it('Test inserting record with clustering', async () => {
 			let expected_result = {
 				new_attributes: ['name', 'breed', 'age'],
 				written_hashes: [8],
@@ -475,7 +475,7 @@ describe('Test lmdbCreateRecords module', () => {
 					schema: INSERT_OBJECT_TEST.schema,
 					name: INSERT_OBJECT_TEST.table,
 				},
-				txn_time: m_time,
+				txn_time: 123456,
 			};
 
 			//verify no transactions
@@ -495,7 +495,9 @@ describe('Test lmdbCreateRecords module', () => {
 						__updatedtime__: 123456,
 					},
 				],
-				__clustering__: true,
+				__origin: {
+					timestamp: 123456,
+				},
 			};
 
 			let results = await test_utils.assertErrorAsync(lmdb_create_records, [insert_obj1], undefined);
@@ -504,15 +506,15 @@ describe('Test lmdbCreateRecords module', () => {
 			//verify txn created
 			let insert_txn_obj = Object.assign(
 				{},
-				new LMDBInsertTransactionObject(insert_obj1.records, undefined, m_time, [8])
+				new LMDBInsertTransactionObject(insert_obj1.records, undefined, 123456, [8], { timestamp: 123456 })
 			);
 			let expected_timestamp = test_utils.assignObjecttoNullObject({
-				[m_time]: [insert_txn_obj],
+				[123456]: [insert_txn_obj],
 			});
 
 			let hashes = Object.create(null);
 			insert_obj1.records.forEach((record) => {
-				hashes[record[HASH_ATTRIBUTE_NAME]] = [m_time];
+				hashes[record[HASH_ATTRIBUTE_NAME]] = [123456];
 			});
 			await verify_txn(TXN_SCHEMA_PATH, INSERT_OBJECT_TEST.table, expected_timestamp, hashes);
 

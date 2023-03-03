@@ -90,7 +90,7 @@ describe('test lmdbWriteTransaction module', () => {
 
 		it('test for insert operation no user on operation', async () => {
 			let insert_obj = new InsertObject('dev', 'test', 'id', INSERT_RECORDS);
-			let insert_response = new InsertRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime());
+			let insert_response = new InsertRecordsResponseObject(INSERT_HASHES, [], common.getNextMonotonicTime());
 
 			let insert_txn_obj = new LMDBInsertTransactionObject(
 				INSERT_RECORDS,
@@ -113,7 +113,7 @@ describe('test lmdbWriteTransaction module', () => {
 		it('test for insert operation with user on operation', async () => {
 			let insert_obj = new InsertObject('dev', 'test', 'id', INSERT_RECORDS);
 			insert_obj.hdb_user = HDB_USER;
-			let insert_response = new InsertRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime());
+			let insert_response = new InsertRecordsResponseObject(INSERT_HASHES, [], common.getNextMonotonicTime());
 
 			let insert_txn_obj = new LMDBInsertTransactionObject(
 				INSERT_RECORDS,
@@ -137,7 +137,12 @@ describe('test lmdbWriteTransaction module', () => {
 		it('test for update operation', async () => {
 			let update_obj = new UpdateObject('dev', 'test', UPDATE_RECORDS);
 			update_obj.hdb_user = HDB_USER;
-			let update_response = new UpdateRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime(), INSERT_RECORDS);
+			let update_response = new UpdateRecordsResponseObject(
+				INSERT_HASHES,
+				[],
+				common.getNextMonotonicTime(),
+				INSERT_RECORDS
+			);
 
 			let update_txn_obj = new LMDBUpdateTransactionObject(
 				UPDATE_RECORDS,
@@ -162,7 +167,11 @@ describe('test lmdbWriteTransaction module', () => {
 		it('test for upsert operation', async () => {
 			let upsert_obj = new UpsertObject('dev', 'test', UPSERT_RECORDS);
 			upsert_obj.hdb_user = HDB_USER;
-			let upsert_response = new UpsertRecordsResponseObject(INSERT_HASHES, common.getMicroTime(), INSERT_RECORDS);
+			let upsert_response = new UpsertRecordsResponseObject(
+				INSERT_HASHES,
+				common.getNextMonotonicTime(),
+				INSERT_RECORDS
+			);
 
 			let upsert_txn_obj = new LMDBUpsertTransactionObject(
 				UPSERT_RECORDS,
@@ -187,7 +196,12 @@ describe('test lmdbWriteTransaction module', () => {
 		it('test for delete operation', async () => {
 			let delete_obj = new DeleteObject('dev', 'test', INSERT_HASHES);
 			delete_obj.hdb_user = HDB_USER;
-			let delete_response = new DeleteRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime(), UPDATE_RECORDS);
+			let delete_response = new DeleteRecordsResponseObject(
+				INSERT_HASHES,
+				[],
+				common.getNextMonotonicTime(),
+				UPDATE_RECORDS
+			);
 
 			let delete_txn_obj = new LMDBDeleteTransactionObject(
 				INSERT_HASHES,
@@ -211,7 +225,12 @@ describe('test lmdbWriteTransaction module', () => {
 		it('test for unknown operation', async () => {
 			let delete_obj = { operation: 'other' };
 			delete_obj.hdb_user = HDB_USER;
-			let delete_response = new DeleteRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime(), UPDATE_RECORDS);
+			let delete_response = new DeleteRecordsResponseObject(
+				INSERT_HASHES,
+				[],
+				common.getNextMonotonicTime(),
+				UPDATE_RECORDS
+			);
 
 			let error = undefined;
 			let response = undefined;
@@ -243,7 +262,7 @@ describe('test lmdbWriteTransaction module', () => {
 
 		it('test writing insert no user on operation', async () => {
 			let insert_obj = new InsertObject('dev', 'test', 'id', INSERT_RECORDS);
-			let insert_response = new InsertRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime());
+			let insert_response = new InsertRecordsResponseObject(INSERT_HASHES, [], common.getNextMonotonicTime());
 
 			//call the write txn function
 			let error = undefined;
@@ -291,7 +310,7 @@ describe('test lmdbWriteTransaction module', () => {
 			env_mngr.setProperty('logging_auditlog', false);
 
 			let insert_obj = new InsertObject('dev', 'test', 'id', INSERT_RECORDS);
-			let insert_response = new InsertRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime());
+			let insert_response = new InsertRecordsResponseObject(INSERT_HASHES, [], common.getNextMonotonicTime());
 
 			//call the write txn function
 			let error = undefined;
@@ -326,7 +345,7 @@ describe('test lmdbWriteTransaction module', () => {
 		it('test writing insert with user on operation', async () => {
 			let insert_obj = new InsertObject('dev', 'test', 'id', INSERT_RECORDS);
 			insert_obj.hdb_user = HDB_USER;
-			let insert_response = new InsertRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime());
+			let insert_response = new InsertRecordsResponseObject(INSERT_HASHES, [], common.getNextMonotonicTime());
 
 			//call the write txn function
 			let error = undefined;
@@ -376,7 +395,12 @@ describe('test lmdbWriteTransaction module', () => {
 		it('test writing update with user on operation', async () => {
 			let update_obj = new UpdateObject('dev', 'test', UPDATE_RECORDS);
 			update_obj.hdb_user = HDB_USER;
-			let update_response = new UpdateRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime(), INSERT_RECORDS);
+			let update_response = new UpdateRecordsResponseObject(
+				INSERT_HASHES,
+				[],
+				common.getNextMonotonicTime(),
+				INSERT_RECORDS
+			);
 
 			//call the write txn function
 			let error = undefined;
@@ -432,7 +456,11 @@ describe('test lmdbWriteTransaction module', () => {
 		it('test writing upsert with user on operation', async () => {
 			let upsert_obj = new UpsertObject('dev', 'test', UPSERT_RECORDS);
 			upsert_obj.hdb_user = HDB_USER;
-			let upsert_response = new UpsertRecordsResponseObject(INSERT_HASHES, common.getMicroTime(), UPDATE_RECORDS);
+			let upsert_response = new UpsertRecordsResponseObject(
+				INSERT_HASHES,
+				common.getNextMonotonicTime(),
+				UPDATE_RECORDS
+			);
 
 			//call the write txn function
 			let error = undefined;
@@ -488,7 +516,12 @@ describe('test lmdbWriteTransaction module', () => {
 		it('test writing delete with user on operation', async () => {
 			let delete_obj = new DeleteObject('dev', 'test', UPDATE_RECORDS);
 			delete_obj.hdb_user = HDB_USER;
-			let delete_response = new DeleteRecordsResponseObject(INSERT_HASHES, [], common.getMicroTime(), UPDATE_RECORDS);
+			let delete_response = new DeleteRecordsResponseObject(
+				INSERT_HASHES,
+				[],
+				common.getNextMonotonicTime(),
+				UPDATE_RECORDS
+			);
 
 			//call the write txn function
 			let error = undefined;
