@@ -22,8 +22,8 @@ const common_utils = require('../../utility/common_utils');
 const user_schema = require('../../security/user');
 const hdb_license = require('../../utility/registration/hdb_license');
 const { isMainThread } = require('worker_threads');
-const { registerServer } = require('../threads/thread-http-server');
-const { toCsvStream } = require('../../data_layer/export');
+const { registerServer } = require('../threads/threadHTTPServer');
+const { toCsvStream } = require('../../dataLayer/export');
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
 const {

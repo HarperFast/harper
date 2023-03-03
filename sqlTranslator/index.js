@@ -7,11 +7,11 @@ module.exports = {
 	checkASTPermissions,
 };
 
-const insert = require('../data_layer/insert');
+const insert = require('../dataLayer/insert');
 const util = require('util');
 const cb_insert_insert = util.callbackify(insert.insert);
-const search = require('../data_layer/search').search;
-const update = require('../data_layer/update').update;
+const search = require('../dataLayer/search').search;
+const update = require('../dataLayer/update').update;
 const cb_update_update = util.callbackify(update);
 const delete_translator = require('./deleteTranslator').convertDelete;
 const alasql = require('alasql');

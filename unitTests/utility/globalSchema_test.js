@@ -6,7 +6,7 @@ const assert = require('assert');
 const async = require('async');
 const system_schema = require('../../json/systemSchema.json');
 const rewire = require('rewire');
-const schema = rewire('../../data_layer/schemaDescribe');
+const schema = rewire('../../dataLayer/schemaDescribe');
 const global_schema = rewire('../../utility/globalSchema');
 
 const TEST_DATA_BIRD = [

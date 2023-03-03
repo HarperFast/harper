@@ -9,7 +9,7 @@ const nats_utils = require('../../../server/nats/utility/natsUtils');
 const clustering_utils = require('../../../utility/clustering/clusterUtilities');
 const env_mgr = require('../../../utility/environment/environmentManager');
 const UpdateRemoteResponseObject = require('../../../utility/clustering/UpdateRemoteResponseObject');
-const _delete = require('../../../data_layer/delete');
+const _delete = require('../../../dataLayer/delete');
 const remove_node = rewire('../../../utility/clustering/removeNode');
 
 describe('Test removeNode module', () => {

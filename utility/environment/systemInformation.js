@@ -3,16 +3,16 @@
 const si = require('systeminformation');
 const log = require('../logging/harper_logger');
 const terms = require('../hdbTerms');
-const lmdb_get_table_size = require('../../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbGetTableSize');
-const schema_describe = require('../../data_layer/schemaDescribe');
-const { getThreadInfo } = require('../../server/threads/manage-threads');
+const lmdb_get_table_size = require('../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbGetTableSize');
+const schema_describe = require('../../dataLayer/schemaDescribe');
+const { getThreadInfo } = require('../../server/threads/manageThreads');
 const env = require('./environmentManager');
 env.initSync();
 
 // eslint-disable-next-line no-unused-vars
 const SystemInformationObject = require('./SystemInformationObject');
 const { openEnvironment } = require('../lmdb/environmentUtility');
-const { getSchemaPath } = require('../../data_layer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
+const { getSchemaPath } = require('../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
 
 //this will hold the system_information which is static to improve performance
 let system_information_cache = undefined;

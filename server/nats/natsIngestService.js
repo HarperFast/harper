@@ -14,7 +14,7 @@ const operation_function_caller = require('../../utility/OperationFunctionCaller
 const transact_to_cluster_utilities = require('../../utility/clustering/transactToClusteringUtilities');
 const env_mgr = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
-require('../../server/threads/manage-threads');
+require('../threads/manageThreads');
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
 const SUBSCRIPTION_OPTIONS = {

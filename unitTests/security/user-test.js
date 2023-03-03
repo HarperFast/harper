@@ -10,7 +10,7 @@ chai.use(sinon_chai);
 const rewire = require('rewire');
 const crypto_hash = require('../../security/cryptoHash');
 const user = rewire('../../security/user');
-const insert = require('../../data_layer/insert');
+const insert = require('../../dataLayer/insert');
 const validation = require('../../validation/user_validation');
 const signalling = require('../../utility/signalling');
 const logger = require('../../utility/logging/harper_logger');
