@@ -24,7 +24,7 @@ const LOG_LEVEL_HIERARCHY = {
 // Install log is created in harperdb/logs because the hdb folder doesn't exist initially during the install process.
 const INSTALL_LOG_LOCATION = path.join(PACKAGE_ROOT, `logs`);
 
-// If harper_logger is called by a non-pm2 managed process it will not have a pm id.
+// If harper_logger is called by a non-processManagement managed process it will not have a pm id.
 const NON_PM2_PROCESS = process.env.pm_id === undefined;
 
 // Location of default config YAML.
@@ -73,7 +73,11 @@ function initLogSettings() {
 				config_log_path: log_path,
 				to_file: log_to_file,
 				to_stream: log_to_stdstreams,
-			} = getLogConfig(properties.ROOTPATH ? path.join(properties.ROOTPATH, hdb_terms.HDB_CONFIG_FILE) : hdb_properties.get('settings_path')));
+			} = getLogConfig(
+				properties.ROOTPATH
+					? path.join(properties.ROOTPATH, hdb_terms.HDB_CONFIG_FILE)
+					: hdb_properties.get('settings_path')
+			));
 		}
 	} catch (err) {
 		hdb_properties = undefined;
@@ -130,7 +134,7 @@ function initLogSettings() {
 function logConsole(level, logger) {
 	let original_logger = console[level];
 	original_logger = original_logger.original || original_logger;
-	console[level] = function(...args) {
+	console[level] = function (...args) {
 		logger(...args);
 		return original_logger.apply(console, args);
 	};
@@ -148,13 +152,13 @@ function loggerWithTag(tag) {
 		trace: logWithTag(trace),
 	};
 	function logWithTag(logger) {
-		return function(...args) {
+		return function (...args) {
 			return logger(tag, ...args);
 		};
 	}
 }
 /**
- * If a process is not run by pm2 (like the bin modules) create a log file
+ * If a process is not run by processManagement (like the bin modules) create a log file
  * @param log_name
  * @param log_process_name
  */
@@ -228,7 +232,7 @@ function writeToLogFile(log) {
 }
 
 /**
- * Determine if non-pm2 managed log should go to std out and/or file
+ * Determine if non-processManagement managed log should go to std out and/or file
  * @param log
  */
 function nonPm2LogStdOut(log) {
@@ -237,7 +241,7 @@ function nonPm2LogStdOut(log) {
 }
 
 /**
- * Determine if non-pm2 managed log should go to std err and/or file
+ * Determine if non-processManagement managed log should go to std err and/or file
  * @param log
  */
 function nonPm2LogStdErr(log) {

@@ -65,11 +65,6 @@ const PROCESS_DESCRIPTORS = {
 
 const PROCESS_LOG_NAMES = {
 	HDB: 'hdb.log',
-	CLUSTERING_HUB: 'clustering_hub.log',
-	CLUSTERING_LEAF: 'clustering_leaf.log',
-	CLUSTERING_INGEST_SERVICE: 'clustering_ingest_service.log',
-	CLUSTERING_REPLY_SERVICE: 'clustering_reply_service.log',
-	CUSTOM_FUNCTIONS: 'custom_functions.log',
 	INSTALL: 'install.log',
 	CLI: 'cli.log',
 	PM2: 'pm2.log',

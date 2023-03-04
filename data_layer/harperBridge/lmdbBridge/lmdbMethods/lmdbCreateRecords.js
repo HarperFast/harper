@@ -45,7 +45,7 @@ async function lmdbCreateRecords(insert_obj) {
 			schema_table.hash_attribute,
 			attributes,
 			insert_obj.records,
-			insert_obj[hdb_terms.CLUSTERING_FLAG] !== true
+			insert_obj.__origin?.timestamp
 		);
 
 		try {

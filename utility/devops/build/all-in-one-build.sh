@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 
 apt-get update && apt-get install -y jq rsync
 
@@ -41,12 +42,12 @@ export PATH=~/.npm-global/bin:$PATH
 npm --silent install --production --legacy-peer-deps
 sleep 2
 
-# Download binaries for common platforms
-supported_architectures=("darwin-arm64" "darwin-x64" "linux-arm64" "linux-x64" "win32-x64")
-for sa in ${supported_architectures[@]}
-do
-  mkdir dependencies/$sa
-done
+# # Download binaries for common platforms
+# supported_architectures=("darwin-arm64" "darwin-x64" "linux-arm64" "linux-x64" "win32-x64")
+# for sa in ${supported_architectures[@]}
+# do
+#   mkdir dependencies/$sa
+# done
 npm run download-prebuilds
 
 # Obfuscate code

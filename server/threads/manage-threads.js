@@ -10,10 +10,9 @@ const env = require('../../utility/environment/environmentManager');
 const hdb_license = require('../../utility/registration/hdb_license');
 const harper_logger = require('../../utility/logging/harper_logger');
 const hdb_logger = require('../../utility/logging/harper_logger');
-const THREAD_COUNT = Math.max(
-	env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES),
-	env.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES)
-);
+const terms = require('../../utility/hdbTerms');
+env.initSync();
+const THREAD_COUNT = env.get(hdb_terms.CONFIG_PARAMS.HTTP_THREADS) || 1;
 const MB = 1024 * 1024;
 const workers = []; // these are our child workers that we are managing
 const connected_ports = []; // these are all known connected worker ports (siblings, children, parents)
@@ -77,6 +76,7 @@ function startWorker(path, options = {}) {
 		);
 		ports_to_send.push(port2);
 	}
+	if (!extname(path)) path += '.js';
 	const worker = new Worker(
 		isAbsolute(path) ? path : join(PACKAGE_ROOT, path),
 		Object.assign(
@@ -155,6 +155,7 @@ async function restartWorkers(name = null, max_workers_down = 2, start_replaceme
 				type: hdb_terms.ITC_EVENT_TYPES.SHUTDOWN,
 			});
 			worker.wasShutdown = true;
+			worker.emit('shutdown', {});
 			const overlapping = OVERLAPPING_RESTART_TYPES.indexOf(worker.name) > -1;
 			let when_done = new Promise((resolve) => {
 				// in case the exit inside the thread doesn't timeout, call terminate if necessary
@@ -348,8 +349,8 @@ if (isMainThread) {
 			parentPort.unref(); // remove this handle
 			setTimeout(() => {
 				harper_logger.warn('Thread did not voluntarily terminate', threadId);
-				// Note that if this occurs, you will probably want to replace the
-				// process.exit(0); with require('why-is-node-running')(); to debug what is currently running
+				// Note that if this occurs, you may want to use this to debug what is currently running:
+				// require('why-is-node-running')();
 				process.exit(0);
 			}, THREAD_TERMINATION_TIMEOUT).unref(); // don't block the shutdown
 		}

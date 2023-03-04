@@ -37,11 +37,23 @@ if (!isMainThread) {
 			// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
 			// then let the event loop complete
 			for (let server_type in SERVERS) {
-				// closing idle connections was added in v18, and is a better way to shutdown HTTP servers
-				if (SERVERS[server_type].closeIdleConnections)
-					SERVERS[server_type].closeIdleConnections();
-				else
-					SERVERS[server_type].close();
+				// TODO: If fastify has fielded a route and messed up the closing, then have to manually exit the
+				//  process otherwise we can use a graceful exit
+				// if (SERVERS[server_type].hasRequests)
+				SERVERS[server_type].close().then(() => {
+					// Terminating a thread this way is really really wrong. A NodeJS thread (or process) is supposed to end
+					// once it has completed all referenced work, and this allows NodeJS to property monitor for any
+					// outstanding work. Violently exiting this way circumvents this, and means that there may be
+					// existing work left to be done. But we have to resort to this because fastify doesn't seem to
+					// capable of properly cleaning up after itself, and once it is started it will not let a thread
+					// gracefully exit. Looking at fastify issues, it sounds like their cleanup operation is a mess, and
+					// there are no real viable plans to fix it. We really need to rely on fastify less and move on to
+					// the superior technology of directly interacting with NodeJS.
+					// One thing we could also do here is try to detect if fastify has received any requests. For some
+					// reason if a fastify server has not received any requests yet, we can gracefully exit properly.
+					process.exit(0);
+				});
+				// else server.close() and server.closeIdleConnections()
 			}
 		}
 	}).ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles

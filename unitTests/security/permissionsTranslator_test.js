@@ -5,7 +5,7 @@ const sinon = require('sinon');
 const { expect } = chai;
 
 const rewire = require('rewire');
-const clonedeep = require('lodash.clonedeep');
+const { cloneDeep } = require('lodash');
 const permissionsTranslator_rw = rewire('../../security/permissionsTranslator');
 const { TEST_NON_SU_ROLE, TEST_SCHEMA_DOG_BREED, TEST_TWO_SCHEMAS } = require('../test_data');
 const terms = require('../../utility/hdbTerms');
@@ -52,7 +52,7 @@ const createAttrPermsObj = (read_perm, insert_perm, update_perm) => ({
 });
 
 const getUpdatedRoleObj = () => {
-	const test_role = clonedeep(TEST_NON_SU_ROLE);
+	const test_role = cloneDeep(TEST_NON_SU_ROLE);
 	test_role.__createdtime__ = terms.PERMS_UPDATE_RELEASE_TIMESTAMP;
 	test_role.__updatedtime__ = terms.PERMS_UPDATE_RELEASE_TIMESTAMP + Math.round(Math.random() * 1000000);
 	return test_role;
@@ -87,7 +87,7 @@ const isSystemTimestampAttr = (attr_name) => {
 
 const validateAttrPerms = (final_perms, initial_perms, hash_key = 'id') => {
 	let is_valid = true;
-	console.log(final_perms, initial_perms)
+	console.log(final_perms, initial_perms);
 	if (!initial_perms || initial_perms.attribute_permissions.length === 0) {
 		if (final_perms.length !== 0) {
 			return false;
@@ -306,7 +306,7 @@ describe('Test permissionsTranslator module', function () {
 			'createStructureUserPermissions',
 			createStructureUserPermissions_spy
 		);
-		global.hdb_schema = clonedeep(TEST_SCHEMA_DOG_BREED);
+		global.hdb_schema = cloneDeep(TEST_SCHEMA_DOG_BREED);
 	});
 	afterEach(() => {
 		sandbox.resetHistory();
@@ -364,7 +364,7 @@ describe('Test permissionsTranslator module', function () {
 		};
 
 		before(() => {
-			global.hdb_schema = clonedeep(TEST_TWO_SCHEMAS);
+			global.hdb_schema = cloneDeep(TEST_TWO_SCHEMAS);
 		});
 
 		afterEach(() => {
@@ -373,7 +373,7 @@ describe('Test permissionsTranslator module', function () {
 		});
 
 		after(() => {
-			global.hdb_schema = clonedeep(TEST_SCHEMA_DOG_BREED);
+			global.hdb_schema = cloneDeep(TEST_SCHEMA_DOG_BREED);
 		});
 
 		it('test structure_user = true', () => {
@@ -386,7 +386,7 @@ describe('Test permissionsTranslator module', function () {
 		});
 
 		it('test structure_user = ["dev"]', () => {
-			let role = clonedeep(SUPER_STRUCTURE_USER_ROLE);
+			let role = cloneDeep(SUPER_STRUCTURE_USER_ROLE);
 			role.permission.structure_user = ['dev'];
 			role.__updatedtime__ = Date.now();
 			const test_result = permissionsTranslator_rw.getRolePermissions(role);
@@ -407,7 +407,7 @@ describe('Test permissionsTranslator module', function () {
 			const test_attr_perm = createAttrPermission(test_attr, createAttrPermsObj(true, false, false));
 			test_role.permission[TEST_SCHEMA].tables.dog.attribute_permissions.push(test_attr_perm);
 
-			const test_result = permissionsTranslator_rw.getRolePermissions(clonedeep(test_role));
+			const test_result = permissionsTranslator_rw.getRolePermissions(cloneDeep(test_role));
 			expect(test_result.super_user).to.deep.equal(test_role.permission.super_user);
 			expect(test_result.system).to.deep.equal(test_role.permission.system);
 			Object.keys(test_result[TEST_SCHEMA].tables).forEach((table) => {
@@ -611,7 +611,7 @@ describe('Test permissionsTranslator module', function () {
 		});
 
 		it('translateRolePermissions step should only use non-system schema values', () => {
-			const test_role = clonedeep(TEST_NON_SU_ROLE);
+			const test_role = cloneDeep(TEST_NON_SU_ROLE);
 			permissionsTranslator_rw.getRolePermissions(test_role);
 
 			expect(translateRolePerms_spy.calledOnce).to.be.true;
@@ -646,7 +646,7 @@ describe('Test permissionsTranslator module', function () {
 		});
 
 		it("Pass roles w/ diff '__updatedtime__' and expect new, non-cached permissions returned both times ", () => {
-			const test_role = clonedeep(TEST_NON_SU_ROLE);
+			const test_role = cloneDeep(TEST_NON_SU_ROLE);
 			const test_result = permissionsTranslator_rw.getRolePermissions(test_role);
 			expect(test_result[TEST_SCHEMA].describe).to.be.true;
 			expect(test_result.tables).to.deep.equal(test_role.permission.tables);
@@ -673,7 +673,7 @@ describe('Test permissionsTranslator module', function () {
 			expect(test_result.system).to.deep.equal(test_role.permission.system);
 			expect(translateRolePerms_spy.calledOnce).to.be.true;
 
-			const orig_global_schema = clonedeep(global.hdb_schema);
+			const orig_global_schema = cloneDeep(global.hdb_schema);
 			global.hdb_schema[TEST_SCHEMA].owners = orig_global_schema[TEST_SCHEMA].dog;
 
 			const test_result2 = permissionsTranslator_rw.getRolePermissions(test_role);

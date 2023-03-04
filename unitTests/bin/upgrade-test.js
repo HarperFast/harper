@@ -120,7 +120,7 @@ describe('Test upgrade.js', () => {
 			expect(processExit_stub.args[0][0]).to.eql(1);
 		});
 
-		it('Exception case - should catch exception and exit process if pm2 process is running', async () => {
+		it('Exception case - should catch exception and exit process if processManagement process is running', async () => {
 			find_ps_stub.resolves([]);
 			pm2_list_stub.resolves(['a process']);
 			await checkIfRunning_rw();

@@ -20,6 +20,8 @@ function getServerOptions(is_https) {
 		bodyLimit: REQ_MAX_BODY_SIZE,
 		connectionTimeout: server_timeout,
 		keepAliveTimeout: keep_alive_timeout,
+		return503OnClosing: false,
+		forceCloseConnections: true,
 		ignoreTrailingSlash: true,
 	};
 

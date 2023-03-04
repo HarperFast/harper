@@ -25,7 +25,7 @@ async function startHTTPThreads(thread_count = 2) {
 			isFirst: i === 0,
 			onStarted(worker) {
 				// note that this can be called multiple times, once when started, and again when threads are restarted
-				workers[i] = worker;
+				workers.push(worker);
 				worker.expectedIdle = 1;
 				worker.lastIdle = 0;
 				worker.requests = 1;
@@ -35,7 +35,13 @@ async function startHTTPThreads(thread_count = 2) {
 						if (handler) handler(message);
 					}
 				});
-			}, // when we implement dynamic thread counts, will also have an onFinished
+				worker.on('exit', removeWorker);
+				worker.on('shutdown', removeWorker);
+				function removeWorker() {
+					let index = workers.indexOf(worker);
+					if (index > -1) workers.splice(index, 1);
+				}
+			}
 		});
 	}
 	return workers;
@@ -90,6 +96,8 @@ function findMostIdleWorker(socket, deliver) {
 	let selected_worker;
 	let last_availability = 0;
 	for (let worker of workers) {
+		if (worker.threadId === -1)
+			continue;
 		let availability = worker.expectedIdle / worker.requests;
 		if (availability > last_availability) {
 			selected_worker = worker;
@@ -115,7 +123,7 @@ function findByRemoteAddressAffinity(socket, deliver) {
 	let address = socket.remoteAddress;
 	let entry = sessions.get(address);
 	const now = Date.now();
-	if (entry) {
+	if (entry && entry.worker.threadId !== -1) {
 		entry.lastUsed = now;
 		return deliver(entry.worker);
 	}
@@ -149,7 +157,7 @@ function makeFindByHeaderAffinity(header) {
 			let header_value = header_block.match(header_expression)?.[1];
 			let entry = sessions.get(header_value);
 			const now = Date.now();
-			if (entry) {
+			if (entry && entry.worker.threadId !== -1) {
 				entry.lastUsed = now;
 				return deliver(entry.worker);
 			}

@@ -34,7 +34,7 @@ module.exports = {
 
 /**
  * This module is designed to manage messages in the Nats/clustering work queue stream. It is run as a separate process
- * managed by pm2. The work queue stream gets messages from other nodes. A message is a HDB transaction that was performed
+ * managed by processManagement. The work queue stream gets messages from other nodes. A message is a HDB transaction that was performed
  * on a remote node. This module repetitively sets up a Nats consumer on the work queue and grabs any new messages from it.
  * When it receives a new message it will decide what the HDB transaction is, and then run it locally.
  * https://docs.nats.io/nats-concepts/jetstream/streams

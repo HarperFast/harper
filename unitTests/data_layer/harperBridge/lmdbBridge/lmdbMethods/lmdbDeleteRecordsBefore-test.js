@@ -141,6 +141,7 @@ describe('test validateDropSchema module', () => {
 			];
 
 			for (let x = 0; x < 10; x++) {
+				await sleep(10);
 				let start = x * 100;
 				let object_chunk = test_data.slice(start, start + 100);
 				INSERT_OBJECT_TEST.records = object_chunk;

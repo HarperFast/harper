@@ -175,6 +175,9 @@ function buildServer(is_https) {
 			preValidation: [reqBodyValidationHandler, authHandler],
 		},
 		async function (req, res) {
+			// if the operation is a restart, we have to tell the client not to use keep alive on this connection
+			// anymore; it needs to be closed because this thread is going to be terminated
+			if (req.body?.operation?.startsWith('restart')) res.header('Connection', 'close');
 			//if no error is thrown below, the response 'data' returned from the handler will be returned with 200/OK code
 			return handlePostRequest(req);
 		}
@@ -198,6 +201,8 @@ function getServerOptions(is_https) {
 		bodyLimit: REQ_MAX_BODY_SIZE,
 		connectionTimeout: server_timeout,
 		keepAliveTimeout: keep_alive_timeout,
+		forceCloseConnections: true,
+		return503OnClosing: false,
 	};
 
 	if (is_https) {

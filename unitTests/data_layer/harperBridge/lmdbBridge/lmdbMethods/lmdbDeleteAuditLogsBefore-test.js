@@ -96,7 +96,7 @@ describe('test lmdbDeleteAuditLogsBefore module', () => {
 
 		it('test deleting when there are no txns', async () => {
 			let env = await environment_utility.openEnvironment(BASE_TRANSACTIONS_PATH, 'test', true);
-			let results = await delete_txns_function(env, common.getMicroTime());
+			let results = await delete_txns_function(env, common.getNextMonotonicTime());
 			assert.deepStrictEqual(results, new DeleteAuditLogsBeforeResults());
 
 			let iterate_results = search_util.iterateDBI(env, 'timestamp');
@@ -209,7 +209,7 @@ async function createTransactions(count) {
 	let promises = [];
 	for (let x = 0; x < count; x++) {
 		let insert_response = new InsertRecordsResponseObject(INSERT_HASHES, []);
-		m_times[x] = common.getMicroTime();
+		m_times[x] = common.getNextMonotonicTime();
 		insert_response.txn_time = m_times[x];
 		promises.push(lmdb_write_txn(insert_obj, insert_response));
 	}
