@@ -8,11 +8,12 @@ const hdb_utils = require('../../utility/common_utils');
 const env = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 const { server } = require('../../index');
+const { WebSocketServer } = require('ws');
 process.on('uncaughtException', (error) => {
 	console.error('uncaughtException', error)
 	process.exit(100);
 });
-const { loadComponentModules } = require('../../bin/load-component-modules');
+const { loadComponentModules } = require('../../bin/loadComponentModules');
 // log all threads as HarperDB
 harper_logger.createLogFile(terms.PROCESS_LOG_NAMES.HDB, terms.HDB_PROC_DESCRIPTOR);
 env.initSync();
@@ -20,10 +21,7 @@ const SERVERS = {};
 exports.registerServer = registerServer;
 exports.httpServer = httpServer;
 if (!isMainThread) {
-	console.log('starting from console')
-	harper_logger.error('starting http thread', threadId);
 	loadComponentModules();
-	harper_logger.error('started http thread', threadId);
 	parentPort.on('message', (message) => {
 		const { port, fd, data } = message;
 		if (fd) {
@@ -66,17 +64,19 @@ function deliverSocket(fd, port, data) {
 	// HTTP server likes to allow half open sockets
 	let socket = new Socket({ fd, readable: true, writable: true, allowHalfOpen: true });
 	// for each socket, deliver the connection to the HTTP server handler/parser
-	let http_server = SERVERS[port];
-	if (http_server) {
-		http_server.emit('connection', socket);
+	let server = SERVERS[port];
+	if (server) {
+		if (typeof server === 'function') server(socket);
+		else server.emit('connection', socket);
 		if (data) socket.emit('data', data);
 	} else {
 		const retry = (retries) => {
 			// in case the server hasn't registered itself yet
 			setTimeout(() => {
-				let http_server = SERVERS[port];
-				if (http_server) {
-					http_server.emit('connection', socket);
+				let server = SERVERS[port];
+				if (server) {
+					if (typeof server === 'function') server(socket);
+					else server.emit('connection', socket);
 					if (data) socket.emit('data', data);
 				}
 				else if (retries < 5) retry(retries + 1);
@@ -147,9 +147,6 @@ function proxyRequest(message) {
 }
 
 function registerServer(server, port) {
-	if (!port) { // if no port is provided, default to custom functions port
-		port = parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10);
-	}
 	let existing_server = SERVERS[port];
 	if (existing_server) {
 		// if there is an existing server on this port, we create a cascading delegation to try the request with one
@@ -163,56 +160,97 @@ function registerServer(server, port) {
 	}
 	server.on('unhandled', defaultNotFound);
 }
-let default_server, next_callback, http_listeners = []
-function httpServer(listener, port) {
+let default_server, http_chain, request_listeners = [], http_responders = []
+function httpServer(listener, options) {
+	let port = options || {};
+	if (!port) { // if no port is provided, default to custom functions port
+		port = parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10);
+	}
 	if (typeof listener === 'function') {
-		if (!default_server) {
-			default_server = createServer(async (request, nodeResponse) => {
-				try {
-					request.nodeResponse = nodeResponse;
-					// assign a more WHATWG compliant headers object, this is our real standard interface
-					//request.headers = new Headers(request.headers);
-					request.headers.get = get;
-					let response = await next_callback(request);
-					nodeResponse.writeHead(response.status, response.headers);
-					let body = response.body;
-					if (body?.pipe)
-						body.pipe(nodeResponse);
-					else
-						nodeResponse.end(body);
-				} catch (error) {
-					nodeResponse.writeHead(500);
-					nodeResponse.end(error.toString());
-				}
-			});
-			registerServer(default_server);
-		}
-		http_listeners.push(listener);
-		makeHTTPCallback();
-		return default_server; // TODO: Remove this once we have wsServer
+		getDefaultHTTPServer();
+		if (requestOnly)
+			request_listeners.push(listener);
+		else
+			http_responders.push(listener);
+		http_chain = makeCallbackChain(request_listeners.concat(http_responders));
 	} else {
 		registerServer(listener, port);
 	}
 }
-function makeHTTPCallback() {
-	next_callback = notFound;
+function getDefaultHTTPServer() {
+	if (!default_server) {
+		default_server = createServer(async (request, nodeResponse) => {
+			try {
+				request.nodeResponse = nodeResponse;
+				// assign a more WHATWG compliant headers object, this is our real standard interface
+				//request.headers = new Headers(request.headers);
+				request.headers.get = get;
+				let response = await http_chain(request);
+				nodeResponse.writeHead(response.status, response.headers);
+				let body = response.body;
+				if (body?.pipe)
+					body.pipe(nodeResponse);
+				else
+					nodeResponse.end(body);
+			} catch (error) {
+				nodeResponse.writeHead(500);
+				nodeResponse.end(error.toString());
+			}
+		});
+		registerServer(default_server);
+	}
+	return default_server;
+}
+
+function makeCallbackChain(listeners) {
+	let next_callback = notFound;
 	// go through the listeners in reverse order so each callback can be passed to the one before
 	// and then each middleware layer can call the next middleware layer
-	for (let i = http_listeners.length; i > 0;) {
-		let listener = http_listeners[--i];
+	for (let i = listeners.length; i > 0;) {
+		let listener = listeners[--i];
 		let callback = next_callback;
 		next_callback = (request) => {
+			// for listener only layers, the response through
 			return listener(request, callback);
 		};
 	}
+	return next_callback;
 }
+const NOT_FOUND = {
+	status: 404,
+	body: 'Not found'
+};
 function notFound() {
-	return {
-		status: 404,
-		body: 'Not found'
-	};
+	return NOT_FOUND;
 }
 server.http = httpServer;
+server.request = (listener, options) => {
+	httpServer(listener, Object.assign({ requestOnly: true}, options));
+};
+/**
+ * Direct socket listener
+ * @param listener
+ * @param port
+ */
+server.socket = function(listener, port) {
+
+	SERVERS[port] = listener;
+};
+let ws_listeners = [], ws_server, ws_chain;
+server.ws = function(listener, port) {
+	if (!ws_server) {
+		ws_server = new WebSocketServer({server: getDefaultHTTPServer()});
+		ws_server.on('connection', async (ws, request) => {
+			let chain_completion = ws_chain();
+			for (let i = 0; i < ws_listeners.length; i++) {
+				let listener = ws_listeners[i];
+				listener(ws, request, chain_completion);
+			}
+		});
+	}
+	ws_listeners.push(listener);
+	ws_chain = makeCallbackChain(request_listeners);
+}
 function defaultNotFound(request, response) {
 	response.writeHead(404);
 	response.end('Not found\n');

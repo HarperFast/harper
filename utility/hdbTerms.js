@@ -1041,4 +1041,4 @@ module.exports = {
 	PRE_4_0_0_VERSION,
 	SCHEMAS_PARAM_CONFIG,
 };
-require('./devops/ts-build');
+require('./devops/tsBuild');

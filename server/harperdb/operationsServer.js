@@ -22,7 +22,7 @@ const common_utils = require('../../utility/common_utils');
 const user_schema = require('../../security/user');
 const hdb_license = require('../../utility/registration/hdb_license');
 const { isMainThread } = require('worker_threads');
-const { registerServer } = require('../threads/thread-http-server');
+const { server: server_registration } = require('../../index');
 const { toCsvStream } = require('../../data_layer/export');
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
@@ -86,7 +86,7 @@ async function operationsServer() {
 		try {
 			// now that server is fully loaded/ready, start listening on port provided in config settings or just use
 			// zero to wait for sockets from the main thread
-			registerServer(server.server, props_server_port);
+			server_registration.http(server.server, { port: props_server_port });
 			if (isMainThread) {
 				await server.listen({ port: props_server_port, host: '::' });
 				harper_logger.info(`HarperDB ${pjson.version} ${server_type} Server running on port ${props_server_port}`);

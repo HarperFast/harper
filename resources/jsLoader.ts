@@ -4,14 +4,21 @@ import { Compartment as CompartmentClass } from 'ses';
 import { readFile } from 'fs/promises';
 import { extname } from 'path';
 
+// TODO: Make this configurable
+const SECURE_JS = true;
+
 let compartment;
-export async function secureImport(url, getGlobalVars) {
-	// note that we use a single compartment that is used by all the secure JS modules and we load it on-demand, only
-	// loading if necessary (since it is actually very heavy)
-	if (!compartment)
-		compartment = getCompartment(getGlobalVars);
-	let result = await (await compartment).import(url);
-	return result.namespace;
+export async function secureImport(module_url) {
+	if (SECURE_JS) {
+		// note that we use a single compartment that is used by all the secure JS modules and we load it on-demand, only
+		// loading if necessary (since it is actually very heavy)
+		if (!compartment)
+			compartment = getCompartment(getGlobalVars);
+		let result = await (await compartment).import(module_url);
+		return result.namespace;
+	} else {
+		return import(module_url);
+	}
 }
 
 declare class Compartment extends CompartmentClass {}
@@ -67,4 +74,15 @@ function secureOnlyFetch(resource, options) {
 	if (new URL(url).protocol != 'https')
 		throw new Error('Only https is allowed in fetch');
 	return fetch(resource, options);
+}
+
+
+/**
+ * Get the set of global variables that should be available to the h-dapp modules
+ */
+function getGlobalVars() {
+	return {
+		Resource,
+		tables,
+	}
 }

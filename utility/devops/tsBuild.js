@@ -19,6 +19,9 @@ if (isMainThread) {
 			statSync(join(PACKAGE_ROOT, filename)).mtimeMs >
 			statSync(join(PACKAGE_ROOT, TS_DIRECTORY, filename.replace(/.ts$/, '.js'))).mtimeMs
 		) {
+			console.warn(
+				`TypeScript ${filename} is not compiled (consider enabling auto-compilation of TypeScript in your IDE). Compiling now`
+			);
 			needs_compile = true;
 			break;
 		}

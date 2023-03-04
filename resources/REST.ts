@@ -1,10 +1,10 @@
 import { findBestSerializer, getDeserializer } from '../server/serverHelpers/contentTypes';
 import { recordRequest } from './analytics';
 import { createServer, ClientRequest, ServerOptions } from 'http';
-import { WebSocketServer, WebSocket } from 'ws';
 import { findAndValidateUser } from '../security/user';
 import { authentication } from '../security/basicAuth';
 import { server } from '../index';
+import { Resources } from './Resources';
 
 interface Response {
 	status?: number
@@ -14,6 +14,7 @@ interface Response {
 }
 
 const MAX_COMMIT_RETRIES = 10;
+
 async function http(Resource, resource_path, next_path, request) {
 	let method = request.method;
 	let start = performance.now();
@@ -58,7 +59,9 @@ async function http(Resource, resource_path, next_path, request) {
 		};
 	}
 }
+
 let message_count = 0;
+
 async function execute(Resource, method, relative_url, request_data, request, ws?): Response {
 	let full_isolation = method === 'POST';
 	let resource_snapshot = new Resource(request, full_isolation);
@@ -87,7 +90,7 @@ async function execute(Resource, method, relative_url, request_data, request, ws
 					});
 					ws.on('close', () => subscription.end());
 				}
-				// fall-through
+			// fall-through
 			case 'GET':
 				if (relative_url !== undefined) {
 					let checked = checkAllowed(resource_snapshot.allowGet?.(user), user, resource_snapshot);
@@ -95,7 +98,7 @@ async function execute(Resource, method, relative_url, request_data, request, ws
 					response_data = await resource_snapshot.get(relative_url);
 					if (resource_snapshot.lastModificationTime === Date.parse(request.headers['if-modified-since'])) {
 						resource_snapshot.doneReading();
-						return { status: 304 };
+						return {status: 304};
 					}
 				}
 				break;
@@ -136,9 +139,9 @@ async function execute(Resource, method, relative_url, request_data, request, ws
 		} else {
 			resource_snapshot.doneReading();
 			if ((method === 'GET' || method === 'HEAD')) {
-				return { status: 404, data: 'Not found' };
+				return {status: 404, data: 'Not found'};
 			} else {
-				return { status: 204 };
+				return {status: 204};
 			}
 		}
 	} catch (error) {
@@ -146,6 +149,7 @@ async function execute(Resource, method, relative_url, request_data, request, ws
 		throw error;
 	}
 }
+
 async function wsMessage(Resource, resource_path, path, data, request, ws) {
 	let method = data.method?.toUpperCase() || 'GET-SUB';
 	let request_data = data.body;
@@ -161,6 +165,7 @@ async function wsMessage(Resource, resource_path, path, data, request, ws) {
 		ws.send(request.serializer.serialize({status: 500, id: request_id, data: error.toString()}));
 	}
 }
+
 function checkAllowed(method_allowed, user, resource): void | Promise<void> {
 	let allowed = method_allowed ??
 		resource.allowAccess?.() ??
@@ -185,53 +190,56 @@ function checkAllowed(method_allowed, user, resource): void | Promise<void> {
 }
 
 let started;
-let resources = new Map();
-export function loadedResources(loaded_resources) {
-	resources = loaded_resources;
-}
+let resources: Resources;
+
 let connection_count = 0;
 let printing_connection_count;
 
-export function start(options: ServerOptions & { path: string, port: number }) {
+export function start(options: ServerOptions & { path: string, port: number, server: any, resources: any }) {
 	if (started)
 		return;
 	started = true;
+	resources = options.resources;
 	/*	if (!handlers) {
 			handlers = new Map();
 			loadDirectory(options?.path || process.cwd(), '', handlers);
 		}*/
 	options.keepAlive = true;
 	let remaining_path, resource_path;
-	let http_server = server.http(async (request, next_handler) => {
+	options.server.http(async (request: Request, next_handler) => {
 		await startRequest(request);
-		let resource = findResource(request.url);
-		if (resource) return http(resource, resource_path, remaining_path, request);
+		let entry = resources.getMatch(request.url);
+		if (entry) {
+			return http(entry.Resource, entry.path, resources.remainingPath, request);
+		}
 		return next_handler(request);
 	});
-	let wss = new WebSocketServer({ server: http_server });
-	wss.on('connection', async (ws, request) => {
+	options.server.ws(async (ws, request, chain_completion) => {
 		connection_count++;
 		if (!printing_connection_count) {
 			setTimeout(() => {
-				console.log('connection count', connection_count,'mem', Math.round(process.memoryUsage().heapUsed / 1000000));
+				console.log('connection count', connection_count, 'mem', Math.round(process.memoryUsage().heapUsed / 1000000));
 				printing_connection_count = false;
 			}, 1000);
 			printing_connection_count = true;
 		}
-		await authentication(request);
 		startRequest(request);
 		ws.on('error', console.error);
 		ws.on('message', function message(body) {
+			// await chain_completion;
 			let data = request.deserialize(body);
-			let resource = findResource(request.url + '/' + (data.path ?? ''));
-			if (resource) return wsMessage(resource, resource_path, remaining_path, data, request, ws);
+			let entry = resources.getMatch(request.url + '/' + (data.path ?? ''));
+			if (entry) {
+				return wsMessage(entry.Resource, entry.path, resources.remainingPath, data, request, ws);
+			}
 			console.error('no handler: %s', data);
 		});
 		ws.on('close', () => connection_count--);
 	});
+
 	function startRequest(request) {
 		// TODO: check rate limiting here?
-		const { serializer, type } = findBestSerializer(request);
+		const {serializer, type} = findBestSerializer(request);
 		request.serializer = serializer;
 		if (serializer.isSubscription)
 			request.method = 'GET-SUB';
@@ -240,23 +248,6 @@ export function start(options: ServerOptions & { path: string, port: number }) {
 			request.deserialize = getDeserializer(content_type);
 		}
 		request.responseType = type;
-	}
-	function findResource(full_path) {
-		let path = full_path;
-		do { // TODO: I think it would be faster to go forward through paths rather than reverse
-			let resource = resources.get(path);
-			if (resource) {
-				remaining_path = full_path.slice(path.length + 1);
-				resource_path = path;
-				return resource;
-			}
-			let last_slash = path.lastIndexOf('/');
-			if (last_slash === -1) break;
-			path = path.slice(0, last_slash);
-		} while (true);
-	}
-	async function nextAppHandler(request, response) {
-		http_server.emit('unhandled', request, response);
 	}
 }
 

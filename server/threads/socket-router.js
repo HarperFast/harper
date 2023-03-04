@@ -17,7 +17,7 @@ module.exports = {
 env.initSync();
 
 async function startHTTPThreads(thread_count = 2) {
-	let { loadComponentModules } = require('../../bin/load-component-modules');
+	let { loadComponentModules } = require('../../bin/loadComponentModules');
 	await loadComponentModules();
 	for (let i = 0; i < thread_count; i++) {
 		startWorker('server/threads/thread-http-server.js', {

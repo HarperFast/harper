@@ -1,5 +1,5 @@
-const { server } = require('../index');
-const { findAndValidateUser } = require('./user');
+import { server } from '../index';
+import { findAndValidateUser } from './user';
 
 let authorization_cache = new Map();
 const AUTHORIZATION_TTL = 5000;
@@ -22,9 +22,12 @@ async function authentication(request) {
 }
 exports.authentication = authentication;
 exports.start = function (options) {
-	server.http((request, next_handler) => {
-		return authentication(request).then(() => next_handler(request));
-	}, options.port || 'all-http');
+	server.request(
+		(request, next_handler) => {
+			return authentication(request).then(() => next_handler(request));
+		},
+		{ port: options.port || 'all-http', handlesWebSockets: true }
+	);
 	// keep it cleaned out periodically
 	setInterval(() => {
 		authorization_cache = new Map();
