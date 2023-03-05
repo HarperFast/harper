@@ -1,4 +1,4 @@
-import { findBestSerializer, getDeserializer } from '../server/serverHelpers/contentTypes';
+import { serialize, getDeserializer } from '../server/serverHelpers/contentTypes';
 import { recordRequest } from './analytics';
 import { createServer, ClientRequest, ServerOptions } from 'http';
 import { findAndValidateUser } from '../security/user';
@@ -41,11 +41,7 @@ async function http(Resource, resource_path, next_path, request) {
 		response_object.headers['Server-Timing'] = `db;dur=${execution_time}`;
 		recordRequest(resource_path, execution_time);
 		if (response_object.data !== undefined) {
-			let serializer = request.serializer;
-			if (serializer.serializeStream)
-				response_object.body = serializer.serializeStream(response_object.data);
-			else
-				response_object.body = serializer.serialize(response_object.data);
+			response_object.body = serialize(response_object.data, request, response_object);
 		}
 		return response_object;
 	} catch (error) {
@@ -55,7 +51,7 @@ async function http(Resource, resource_path, next_path, request) {
 		console.error(error);
 		return {
 			status: error.status || 500,// use specified error status, or default to generic server error
-			body: request.serializer.serialize(error.toString()),
+			body: serialize(error.toString(), request),
 		};
 	}
 }
@@ -82,10 +78,10 @@ async function execute(Resource, method, relative_url, request_data, request, ws
 							}
 							message_count++;
 
-							ws.send(request.serializer.serialize({
+							ws.send(serialize({
 								path: relative_url,
 								updated: true
-							}));
+							}, request));
 						}
 					});
 					ws.on('close', () => subscription.end());
@@ -158,11 +154,11 @@ async function wsMessage(Resource, resource_path, path, data, request, ws) {
 		let response = await execute(Resource, method, path, request_data, request, ws);
 		//response_data.id = request_id;
 		response.id = request_id;
-		ws.send(request.serializer.serialize(response));
+		ws.send(serialize(response, request));
 	} catch (error) {
 		// do content negotiation
 		console.error(error);
-		ws.send(request.serializer.serialize({status: 500, id: request_id, data: error.toString()}));
+		ws.send(serialize({status: 500, id: request_id, data: error.toString()}, request));
 	}
 }
 
@@ -204,7 +200,6 @@ export function start(options: ServerOptions & { path: string, port: number, ser
 			handlers = new Map();
 			loadDirectory(options?.path || process.cwd(), '', handlers);
 		}*/
-	options.keepAlive = true;
 	let remaining_path, resource_path;
 	options.server.http(async (request: Request, next_handler) => {
 		await startRequest(request);
@@ -239,16 +234,27 @@ export function start(options: ServerOptions & { path: string, port: number, ser
 
 	function startRequest(request) {
 		// TODO: check rate limiting here?
-		const {serializer, type} = findBestSerializer(request);
-		request.serializer = serializer;
-		if (serializer.isSubscription)
+		let url = request.url;
+		let dot_index = url.lastIndexOf('.');
+		if (dot_index > -1) {
+			// we can use .extensions to force the Accept header
+			let ext = url.slice(dot_index + 1);
+			let accept = EXTENSION_TYPES[ext];
+			if (accept)
+				request.headers.accept = accept;
+		}
+		if (request.headers.accept === 'text/event-stream')
 			request.method = 'GET-SUB';
 		let content_type = request.headers['content-type'];
 		if (content_type) {
 			request.deserialize = getDeserializer(content_type);
 		}
-		request.responseType = type;
 	}
 }
 
-
+const EXTENSION_TYPES = {
+	json: 'application/json',
+	cbor: 'application/cbor',
+	msgpack: 'application/x-msgpack',
+	csv: 'text/csv',
+}

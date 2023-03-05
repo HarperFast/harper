@@ -147,6 +147,9 @@ function proxyRequest(message) {
 }
 
 function registerServer(server, port) {
+	if (!+port) { // if no port is provided, default to custom functions port
+		port = parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10);
+	}
 	let existing_server = SERVERS[port];
 	if (existing_server) {
 		// if there is an existing server on this port, we create a cascading delegation to try the request with one
@@ -162,13 +165,13 @@ function registerServer(server, port) {
 }
 let default_server, http_chain, request_listeners = [], http_responders = []
 function httpServer(listener, options) {
-	let port = options || {};
-	if (!port) { // if no port is provided, default to custom functions port
+	let port = options?.port || {};
+	if (!+port) { // if no port is provided, default to custom functions port
 		port = parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10);
 	}
 	if (typeof listener === 'function') {
 		getDefaultHTTPServer();
-		if (requestOnly)
+		if (options?.requestOnly)
 			request_listeners.push(listener);
 		else
 			http_responders.push(listener);
@@ -281,5 +284,5 @@ class Headers {
 	}
 }
 function get(name) {
-	return this[name];
+	return this[name.toLowerCase()];
 }

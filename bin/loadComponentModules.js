@@ -11,12 +11,14 @@ const { secureImport } = require('../resources/jsLoader');
 const { Resources } = require('../resources/Resources');
 
 const CORE_PLUGINS = {
+	'app-server': {},
 	'operations-server': operationsServer,
 	'auth': basicAuth,
 };
 let loaded_plugins = new Map();
 const default_components = [
 	//{ module: '/mqtt/broker.js', port: 1883 },
+	{ module: 'app-server', port: 9926 },
 	{ module: 'operations-server', port: 9925 },
 	{ module: 'auth' },
 ];

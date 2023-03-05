@@ -26,7 +26,7 @@ exports.start = function (options) {
 		(request, next_handler) => {
 			return authentication(request).then(() => next_handler(request));
 		},
-		{ port: options.port || 'all-http', handlesWebSockets: true }
+		{ port: options.port || 'all-http' }
 	);
 	// keep it cleaned out periodically
 	setInterval(() => {

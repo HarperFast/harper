@@ -188,10 +188,25 @@ function findBestSerializer(incoming_message) {
 
 	return { serializer: best_serializer, type: best_type, parameters: best_parameters };
 }
-function serialize(response_data, request, output_stream) {
+function serialize(response_data, request, response_object) {
 	if (response_data?.contentType && response_data.data) {
-
+		response_object.headers['Content-Type'] = response_data.contentType;
+		return response_data.data;
 	}
+	if (response_data instanceof Uint8Array) {
+		response_object.headers['Content-Type'] = 'application/octet-stream';
+		return response_data;
+	}
+	let serializer = findBestSerializer(request);
+	// TODO: If a different content type is preferred, look through resources to see if there is one
+	// specifically for that content type (most useful for html).
+
+	if (response_object) {
+		response_object.headers['Content-Type'] = serializer.type;
+		if (serializer.serializer.serializeStream)
+			return serializer.serializer.serializeStream(response_data);
+	}
+	return serializer.serializer.serialize(response_data);
 }
 
 function getDeserializer(content_type) {
@@ -224,5 +239,6 @@ function deserializeUnknownType(content_type, parameters) {
 module.exports = {
 	registerContentHandlers,
 	findBestSerializer,
-	getDeserializer
+	getDeserializer,
+	serialize,
 };

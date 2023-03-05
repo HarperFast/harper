@@ -27,7 +27,7 @@ export class Resources extends Map {
 	getMatch(path: string, type?: string) {
 		let slash_index = 2;
 		let found_entry;
-		while((slash_index = path.indexOf(slash_index)) > -1) {
+		while((slash_index = path.indexOf('/', slash_index)) > -1) {
 			let resource_path = path.slice(0, slash_index);
 			let entry = this.get(resource_path);
 			if (entry) {
