@@ -571,11 +571,17 @@ describe('Test harper_logger module', () => {
 
 	describe('Test setLogLevel function', () => {
 		let harper_logger;
+		let close_log_file;
 
 		before(() => {
 			sandbox.restore();
 			sandbox.stub(YAML, 'parseDocument').returns(setTestLogConfig(LOG_LEVEL.INFO, TEST_LOG_DIR, true, true));
 			harper_logger = requireUncached(HARPER_LOGGER_MODULE);
+			close_log_file = harper_logger.__get__('closeLogFile');
+		});
+
+		beforeEach(() => {
+			fs.ensureFileSync(FULL_LOG_PATH_TEST);
 		});
 
 		after(() => {
@@ -587,12 +593,12 @@ describe('Test harper_logger module', () => {
 		afterEach(() => {
 			try {
 				fs.emptyDirSync(TEST_LOG_DIR);
+				close_log_file();
 			} catch (e) {}
 			sandbox.restore();
 		});
 
 		it('Test the correct hierarchical logs are logged when level set to trace', (done) => {
-			fs.ensureFileSync(FULL_LOG_PATH_TEST);
 			harper_logger.setLogLevel(LOG_LEVEL.TRACE);
 			logAllTheLevels(harper_logger);
 

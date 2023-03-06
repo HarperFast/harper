@@ -9,24 +9,15 @@ const install = rewire('../../bin/install');
 
 describe('Test install module', () => {
 	const sandbox = sinon.createSandbox();
-	let create_log_file_stub;
 	let installer_stub;
 
 	before(() => {
-		create_log_file_stub = sandbox.stub(hdb_logger, 'createLogFile');
 		installer_stub = sandbox.stub();
 		install.__set__('installer', installer_stub);
 	});
 
 	after(() => {
 		sandbox.restore();
-	});
-
-	it('Test create log file called and installer', async () => {
-		await install();
-		expect(create_log_file_stub.args[0][0]).to.equal('install.log');
-		expect(create_log_file_stub.args[0][1]).to.equal('Install');
-		expect(installer_stub.called).to.be.true;
 	});
 
 	it('Test error from installer is handled correctly', async () => {

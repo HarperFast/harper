@@ -249,6 +249,8 @@ function validateRotationMaxSize(value, helpers) {
 	if (isNaN(parseInt(size))) {
 		return helpers.message(INVALID_MAX_SIZE_VALUE_MSG);
 	}
+
+	return value;
 }
 
 function setDefaultThreads(parent, helpers) {

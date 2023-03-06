@@ -44,7 +44,6 @@ describe('Test run module', () => {
 	let start_all_services_stub;
 	let start_service_stub;
 	let check_perms_stub;
-	let config_log_rotate_stub;
 	let spawn_stub;
 	let get_prob_stub;
 	let start_clustering_stub;
@@ -76,7 +75,6 @@ describe('Test run module', () => {
 		process_exit_stub = sandbox.stub(process, 'exit');
 		console_log_stub = sandbox.stub(console, 'log');
 		console_error_stub = sandbox.stub(console, 'error');
-		config_log_rotate_stub = sandbox.stub(pm2_utils, 'configureLogRotate');
 		test_util.preTestPrep();
 		run_rw = rewire('../../bin/run');
 		log_rw = run_rw.__set__('hdb_logger', logger_fake);
