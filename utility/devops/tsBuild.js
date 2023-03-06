@@ -4,6 +4,7 @@ const { execSync, execFileSync, spawnSync } = require('child_process');
 const { isMainThread } = require('worker_threads');
 const { join, relative } = require('path');
 const { PACKAGE_ROOT } = require('../hdbTerms');
+require('source-map-support').install();
 const SRC_DIRECTORIES = ['resources', 'server'];
 const TS_DIRECTORY = 'ts-build';
 let needs_compile;
