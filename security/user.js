@@ -24,11 +24,11 @@ module.exports = {
 };
 
 //requires must be declared after module.exports to avoid cyclical dependency
-const insert = require('../data_layer/insert');
-const delete_ = require('../data_layer/delete');
+const insert = require('../dataLayer/insert');
+const delete_ = require('../dataLayer/delete');
 const password = require('../utility/password');
 const validation = require('../validation/user_validation');
-const search = require('../data_layer/search');
+const search = require('../dataLayer/search');
 const signalling = require('../utility/signalling');
 const hdb_utility = require('../utility/common_utils');
 const validate = require('validate.js');

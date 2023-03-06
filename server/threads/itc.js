@@ -5,7 +5,7 @@ const hdb_utils = require('../../utility/common_utils');
 const hdb_terms = require('../../utility/hdbTerms');
 const { ITC_ERRORS } = require('../../utility/errors/commonErrors');
 const { parentPort, threadId, isMainThread, workerData } = require('worker_threads');
-const { onMessageFromWorkers, broadcast } = require('./manage-threads');
+const { onMessageFromWorkers, broadcast } = require('./manageThreads');
 
 module.exports = {
 	sendItcEvent,
@@ -17,10 +17,8 @@ let server_itc_handlers;
 onMessageFromWorkers((event) => {
 	server_itc_handlers = server_itc_handlers || require('../itc/serverHandlers');
 	validateEvent(event);
-	if (server_itc_handlers[event.type])
-		server_itc_handlers[event.type](event);
+	if (server_itc_handlers[event.type]) server_itc_handlers[event.type](event);
 });
-
 
 /**
  * Emits an ITC event to the ITC server.

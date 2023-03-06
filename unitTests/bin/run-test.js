@@ -62,8 +62,8 @@ describe('Test run module', () => {
 	before(() => {
 		settings_test_file.buildFile();
 		// These are here because having them in the usual spot was causing errors in other tests. I dont know why exactly... but this helps.
-		hdbInfoController = require('../../data_layer/hdbInfoController');
-		schema_describe = require('../../data_layer/schemaDescribe');
+		hdbInfoController = require('../../dataLayer/hdbInfoController');
+		schema_describe = require('../../dataLayer/schemaDescribe');
 		upgrade = require('../../bin/upgrade');
 		stop = require('../../bin/stop');
 

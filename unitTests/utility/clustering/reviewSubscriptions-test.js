@@ -6,7 +6,7 @@ const sinon = require('sinon');
 const rewire = require('rewire');
 const nats_utils = require('../../../server/nats/utility/natsUtils');
 const hdb_utils = require('../../../utility/common_utils');
-const schema_mod = require('../../../data_layer/schema');
+const schema_mod = require('../../../dataLayer/schema');
 const test_utils = require('../../test_utils');
 
 const review_subscriptions = rewire('../../../utility/clustering/reviewSubscriptions');

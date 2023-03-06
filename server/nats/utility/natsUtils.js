@@ -17,7 +17,7 @@ const hdb_terms = require('../../../utility/hdbTerms');
 const hdb_utils = require('../../../utility/common_utils');
 const hdb_logger = require('../../../utility/logging/harper_logger');
 const crypto_hash = require('../../../security/cryptoHash');
-const transaction = require('../../../data_layer/transaction');
+const transaction = require('../../../dataLayer/transaction');
 const config_utils = require('../../../config/configUtils');
 const { encode, decode } = require('msgpackr');
 

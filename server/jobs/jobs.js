@@ -6,16 +6,16 @@
  */
 
 const uuidV4 = require('uuid').v4;
-const insert = require('../../data_layer/insert');
-const search = require('../../data_layer/search');
-const Search_Object = require('../../data_layer/SearchObject');
-const search_by_hash_obj = require('../../data_layer/SearchByHashObject');
-const SQL_Search_Object = require('../../data_layer/SqlSearchObject');
+const insert = require('../../dataLayer/insert');
+const search = require('../../dataLayer/search');
+const Search_Object = require('../../dataLayer/SearchObject');
+const search_by_hash_obj = require('../../dataLayer/SearchByHashObject');
+const SQL_Search_Object = require('../../dataLayer/SqlSearchObject');
 const hdb_terms = require('../../utility/hdbTerms');
 const JobObject = require('./JobObject');
-const UpdateObject = require('../../data_layer/UpdateObject');
+const UpdateObject = require('../../dataLayer/UpdateObject');
 const log = require('../../utility/logging/harper_logger');
-const Insert_Object = require('../../data_layer/InsertObject');
+const Insert_Object = require('../../dataLayer/InsertObject');
 const hdb_util = require('../../utility/common_utils');
 const { promisify } = require('util');
 const moment = require('moment');

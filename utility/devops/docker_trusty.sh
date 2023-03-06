@@ -16,7 +16,7 @@ sed -i "/HDB_PROC_NAME/ s/ =.*/ = 'no_oneis_here';/" /opt/harperdb/bin/run.js
 #now allows directory use
 #version i was using only allowed individual .js files at a time.)
 
-files=( "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/install" "utility/logging" "utility/functions" "utility/functions/date" "utility/functions/math" "utility/functions/string" "utility/functions/sql" "utility/registration" "utility/fs" "utility/threads" "lib/fileSystem" "lib/server" "lib/streams" "server" "server/clustering" "json" "events")
+files=( "dataLayer" "sqlTranslator" "validation" "security" "utility" "utility/install" "utility/logging" "utility/functions" "utility/functions/date" "utility/functions/math" "utility/functions/string" "utility/functions/sql" "utility/registration" "utility/fs" "utility/threads" "lib/fileSystem" "lib/server" "lib/streams" "server" "server/clustering" "json" "events")
 
 working_dir="$(pwd)/../../";
 mirrored_dir="/tmp/harperdb_prod"

@@ -25,14 +25,14 @@ const {
 	startSocketServer,
 	mostIdleRouting,
 	remoteAffinityRouting,
-} = require('../server/threads/socket-router');
+} = require('../server/threads/socketRouter');
 
-const hdbInfoController = require('../data_layer/hdbInfoController');
+const hdbInfoController = require('../dataLayer/hdbInfoController');
 
 const SYSTEM_SCHEMA = require('../json/systemSchema.json');
-const schema_describe = require('../data_layer/schemaDescribe');
-const lmdb_create_txn_environment = require('../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsAuditEnvironment');
-const CreateTableObject = require('../data_layer/CreateTableObject');
+const schema_describe = require('../dataLayer/schemaDescribe');
+const lmdb_create_txn_environment = require('../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsAuditEnvironment');
+const CreateTableObject = require('../dataLayer/CreateTableObject');
 const hdb_terms = require('../utility/hdbTerms');
 let pm2_utils;
 
@@ -71,8 +71,6 @@ async function initialize(called_by_install = false, called_by_main = false) {
 	// Requiring the processManagement mod will create the .pm2 dir. This code is here to allow install to set
 	// pm2 env vars before that is done.
 	if (pm2_utils === undefined) pm2_utils = require('../utility/processManagement/processManagement');
-	// Requiring the pm2 mod will create the .pm2 dir. This code is here to allow install to set pm2 env vars before that is done.
-	if (pm2_utils === undefined) pm2_utils = require('../utility/pm2/utilityFunctions');
 
 	// Check to see if an upgrade is needed based on existing hdb_info data.  If so, we need to force the user to upgrade
 	// before the server can be started.
