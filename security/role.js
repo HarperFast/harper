@@ -1,8 +1,8 @@
 'use strict';
 
-const insert = require('../data_layer/insert');
-const search = require('../data_layer/search');
-const delete_ = require('../data_layer/delete');
+const insert = require('../dataLayer/insert');
+const search = require('../dataLayer/search');
+const delete_ = require('../dataLayer/delete');
 const validation = require('../validation/role_validation');
 const signalling = require('../utility/signalling');
 const uuidV4 = require('uuid').v4;
@@ -13,8 +13,8 @@ const hdb_utils = require('../utility/common_utils');
 const p_search_search_by_value = util.promisify(search.searchByValue);
 const p_search_search_by_hash = util.promisify(search.searchByHash);
 const p_delete_delete = util.promisify(delete_.delete);
-const SearchObject = require('../data_layer/SearchObject');
-const SearchByHashObject = require('../data_layer/SearchByHashObject');
+const SearchObject = require('../dataLayer/SearchObject');
+const SearchByHashObject = require('../dataLayer/SearchByHashObject');
 const { hdb_errors, handleHDBError } = require('../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const { UserEventMsg } = require('../server/threads/itc');
@@ -86,7 +86,7 @@ async function addRole(role) {
 	let search_role;
 	try {
 		// here, and for other interactions, need convert to real array
-		search_role = Array.from((await p_search_search_by_value(search_obj) )|| []);
+		search_role = Array.from((await p_search_search_by_value(search_obj)) || []);
 	} catch (err) {
 		throw handleHDBError(err);
 	}

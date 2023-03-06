@@ -3,7 +3,7 @@
 --recursive
 --exit
 ../unitTests/bin
-../unitTests/data_layer
+../unitTests/dataLayer
 ../unitTests/security
 ../unitTests/server
 ../unitTests/sqlTranslator

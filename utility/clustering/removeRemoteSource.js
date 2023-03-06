@@ -10,8 +10,8 @@ const nats_utils = require('../../server/nats/utility/natsUtils');
 const env_manager = require('../environment/environmentManager');
 const UpdateRemoteResponseObject = require('./UpdateRemoteResponseObject');
 const { NodeSubscription } = require('./NodeObject');
-const DeleteObject = require('../../data_layer/DeleteObject');
-const _delete = require('../../data_layer/delete');
+const DeleteObject = require('../../dataLayer/DeleteObject');
+const _delete = require('../../dataLayer/delete');
 
 const node_name = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 

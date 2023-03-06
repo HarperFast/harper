@@ -8,8 +8,8 @@ const hdb_utils = require('../common_utils');
 const UpdateRemoteResponseObject = require('./UpdateRemoteResponseObject');
 const pm2_utils = require('../processManagement/processManagement');
 const clustering_utils = require('./clusterUtilities');
-const UpdateObject = require('../../data_layer/UpdateObject');
-const insert = require('../../data_layer/insert');
+const UpdateObject = require('../../dataLayer/UpdateObject');
+const insert = require('../../dataLayer/insert');
 
 module.exports = getRemoteSourceConfig;
 

@@ -6,7 +6,7 @@ const terms = require('../utility/hdbTerms');
 const hdb_logger = require('../utility/logging/harper_logger');
 const lmdb_environment_utility = require('../utility/lmdb/environmentUtility');
 const system_schema = require('../json/systemSchema');
-const init_paths = require('../data_layer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
+const init_paths = require('../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
 
 module.exports = mountHdb;
 
@@ -38,7 +38,7 @@ async function createLMDBTables() {
 	// eslint-disable-next-line global-require
 	let lmdb_create_table;
 	// eslint-disable-next-line global-require
-	const CreateTableObject = require('../data_layer/CreateTableObject');
+	const CreateTableObject = require('../dataLayer/CreateTableObject');
 
 	let tables = Object.keys(system_schema);
 
@@ -49,7 +49,7 @@ async function createLMDBTables() {
 		try {
 			const schema_path = init_paths.initSystemSchemaPaths(terms.SYSTEM_SCHEMA_NAME, table_name);
 			lmdb_create_table =
-				lmdb_create_table ?? require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
+				lmdb_create_table ?? require('../dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
 			let create_table = new CreateTableObject(terms.SYSTEM_SCHEMA_NAME, table_name, hash_attribute);
 			await lmdb_create_table(undefined, create_table);
 			table_env = await lmdb_environment_utility.openEnvironment(schema_path, table_name);

@@ -13,11 +13,11 @@ const get_remote_source_config = require('../../utility/clustering/getRemoteSour
 const UpdateRemoteResponseObject = require('../../utility/clustering/UpdateRemoteResponseObject');
 const { encode, decode } = require('msgpackr');
 const global_schema = require('../../utility/globalSchema');
-const schema_describe = require('../../data_layer/schemaDescribe');
+const schema_describe = require('../../dataLayer/schemaDescribe');
 const util = require('util');
 const terms = require('../../utility/hdbTerms');
 const { isMainThread, parentPort } = require('worker_threads');
-require('../../server/threads/manage-threads');
+require('../threads/manageThreads');
 
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 const node_name = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);

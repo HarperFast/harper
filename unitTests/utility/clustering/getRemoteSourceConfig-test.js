@@ -6,7 +6,7 @@ const sinon = require('sinon');
 const pm2_utils = require('../../../utility/processManagement/processManagement');
 const eng_mgr = require('../../../utility/environment/environmentManager');
 const hdb_terms = require('../../../utility/hdbTerms');
-const insert = require('../../../data_layer/insert');
+const insert = require('../../../dataLayer/insert');
 const clustering_utils = require('../../../utility/clustering/clusterUtilities');
 const getRemoteSourceConfig = require('../../../utility/clustering/getRemoteSourceConfig');
 

@@ -15,7 +15,7 @@
 #now allows directory use
 #version i was using only allowed individual .js files at a time.)
 
-files=( "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/install" "utility/logging" "utility/functions" "utility/functions/date" "utility/functions/math" "utility/functions/string" "utility/functions/sql" "utility/registration" "lib/fileSystem" "lib/server" "lib/streams" "server" "server/clustering" "json" "bin")
+files=( "dataLayer" "sqlTranslator" "validation" "security" "utility" "utility/install" "utility/logging" "utility/functions" "utility/functions/date" "utility/functions/math" "utility/functions/string" "utility/functions/sql" "utility/registration" "lib/fileSystem" "lib/server" "lib/streams" "server" "server/clustering" "json" "bin")
 
 working_dir="$(pwd)/../../";
 mirrored_dir="/tmp/harperdb_dev"
