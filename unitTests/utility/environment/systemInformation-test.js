@@ -6,7 +6,7 @@ const system_information = require('../../../utility/environment/systemInformati
 const rw_system_information = rewire('../../../utility/environment/systemInformation');
 const SystemInformationOperation = require('../../../utility/environment/SystemInformationOperation');
 
-const TableSizeObject = require('../../../data_layer/harperBridge/lmdbBridge/lmdbUtility/TableSizeObject');
+const TableSizeObject = require('../../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/TableSizeObject');
 
 let rw_getHDBProcessInfo;
 

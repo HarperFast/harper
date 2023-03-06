@@ -4,10 +4,10 @@ const hdb_logger = require('../../utility/logging/harper_logger');
 const hdb_terms = require('../../utility/hdbTerms');
 const clean_lmdb_map = require('../../utility/lmdb/cleanLMDBMap');
 const global_schema = require('../../utility/globalSchema');
-const schema_describe = require('../../data_layer/schemaDescribe');
+const schema_describe = require('../../dataLayer/schemaDescribe');
 const user_schema = require('../../security/user');
 const { validateEvent } = require('../threads/itc');
-const harperBridge = require('../../data_layer/harperBridge/harperBridge');
+const harperBridge = require('../../dataLayer/harperBridge/harperBridge');
 const process = require('process');
 
 /**

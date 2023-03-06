@@ -10,12 +10,12 @@
  * The required_permissions member contains the permissions needed for each operation.  Any new operations added to
  * Harper need to have operations specified in here or they will never pass the permissions checks.
  * */
-const write = require('../data_layer/insert');
-const search = require('../data_layer/search');
-const schema = require('../data_layer/schema');
-const schema_describe = require('../data_layer/schemaDescribe');
-const delete_ = require('../data_layer/delete');
-const read_audit_log = require('../data_layer/readAuditLog');
+const write = require('../dataLayer/insert');
+const search = require('../dataLayer/search');
+const schema = require('../dataLayer/schema');
+const schema_describe = require('../dataLayer/schemaDescribe');
+const delete_ = require('../dataLayer/delete');
+const read_audit_log = require('../dataLayer/readAuditLog');
 const user = require('../security/user');
 const role = require('../security/role');
 const harper_logger = require('../utility/logging/harper_logger');

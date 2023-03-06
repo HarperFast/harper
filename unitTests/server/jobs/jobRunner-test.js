@@ -9,10 +9,10 @@ const jobs_runner = rewire('../../../server/jobs/jobRunner');
 const jobs = require('../../../server/jobs/jobs');
 const sinon = require('sinon');
 const hdb_term = require('../../../utility/hdbTerms');
-const bulk_load = require('../../../data_layer/bulkLoad');
+const bulk_load = require('../../../dataLayer/bulkLoad');
 const JobObject = require('../../../server/jobs/JobObject');
 const pm2_utils = require('../../../utility/processManagement/processManagement');
-const threads_start = require('../../../server/threads/manage-threads');
+const threads_start = require('../../../server/threads/manageThreads');
 
 const DATA_LOAD_MESSAGE = {
 	operation: 'csv_data_load',

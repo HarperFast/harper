@@ -27,17 +27,17 @@ const {
 	startSocketServer,
 	mostIdleRouting,
 	remoteAffinityRouting,
-} = require('../server/threads/socket-router');
+} = require('../server/threads/socketRouter');
 
-const hdbInfoController = require('../data_layer/hdbInfoController');
+const hdbInfoController = require('../dataLayer/hdbInfoController');
 
 const SYSTEM_SCHEMA = require('../json/systemSchema.json');
-const schema_describe = require('../data_layer/schemaDescribe');
-const lmdb_create_txn_environment = require('../data_layer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsAuditEnvironment');
+const schema_describe = require('../dataLayer/schemaDescribe');
+const lmdb_create_txn_environment = require('../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsAuditEnvironment');
 
 let pm2_utils;
 
-const CreateTableObject = require('../data_layer/CreateTableObject');
+const CreateTableObject = require('../dataLayer/CreateTableObject');
 const hdb_terms = require('../utility/hdbTerms');
 
 // These may change to match unix return codes (i.e. 0, 1)

@@ -1,6 +1,6 @@
 'use strict';
 const { streamAsJSON } = require('./JSONStream');
-const { toCsvStream } = require('../../data_layer/export');
+const { toCsvStream } = require('../../dataLayer/export');
 const { pack, unpack, encodeIter } = require('msgpackr');
 const { decode, encode, EncoderStream } = require('cbor-x');
 const { Readable } = require('stream');

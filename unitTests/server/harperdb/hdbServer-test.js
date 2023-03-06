@@ -48,7 +48,7 @@ const DEFAULT_FASTIFY_PLUGIN_ARR = [
 	'hdb-request-time',
 	'@fastify/compress',
 	'@fastify/static',
-	'content-type-negotiation'
+	'content-type-negotiation',
 ];
 
 let setUsersToGlobal_stub;
@@ -66,8 +66,7 @@ for (let i = 0; i < 10; i++) {
 }
 async function* test_iterable_response() {
 	for (let i = 0; i < 10; i++) {
-		if (i % 4 === 0)
-			await new Promise(resolve => setTimeout(resolve, 1));
+		if (i % 4 === 0) await new Promise((resolve) => setTimeout(resolve, 1));
 		yield test_op_resp[i];
 	}
 }
@@ -133,7 +132,7 @@ describe('Test hdbServer module', () => {
 			expect(server).to.not.be.undefined;
 			expect(server.server.constructor.name).to.contains('Server');
 			expect(server.server.key).to.be.instanceOf(Buffer);
-			expect(server.server.cert).to.be.instanceOf(Buffer);
+			expect(typeof server.server.cert === 'string').to.be.true;
 			expect(!!server.initialConfig.https).to.be.true;
 
 			server.close();
@@ -203,7 +202,7 @@ describe('Test hdbServer module', () => {
 			expect(server).to.not.be.undefined;
 			expect(server.server.constructor.name).to.contain('Server');
 			expect(server.server.key).to.be.instanceOf(Buffer);
-			expect(server.server.cert).to.be.instanceOf(Buffer);
+			expect(typeof server.server.cert === 'string').to.be.true;
 			expect(!!server.initialConfig.https).to.be.true;
 
 			server.close();
@@ -396,17 +395,14 @@ describe('Test hdbServer module', () => {
 			const test_response = await server.inject({
 				method: 'POST',
 				url: '/',
-				headers: Object.assign({},
-					test_req_options.headers,
-					{
-						Accept: 'application/x-msgpack',
-					}
-				),
+				headers: Object.assign({}, test_req_options.headers, {
+					Accept: 'application/x-msgpack',
+				}),
 				body: test_req_options.body,
 			});
 
 			expect(test_response.statusCode).to.equal(200);
-			const expectedResponse = Buffer.concat(test_op_resp.map(entry => pack(entry)));
+			const expectedResponse = Buffer.concat(test_op_resp.map((entry) => pack(entry)));
 			expect(test_response.rawPayload).to.deep.equal(expectedResponse);
 
 			server.close();
@@ -427,7 +423,7 @@ describe('Test hdbServer module', () => {
 				method: 'POST',
 				url: '/',
 				headers: Object.assign({}, test_req_options.headers, {
-					Accept: 'application/json',
+					'Accept': 'application/json',
 					'Content-Type': 'application/x-msgpack',
 					'Content-Length': body.length,
 				}),
@@ -477,12 +473,9 @@ describe('Test hdbServer module', () => {
 			const test_response = await server.inject({
 				method: 'POST',
 				url: '/',
-				headers: Object.assign({},
-					test_req_options.headers,
-					{
-						Accept: 'application/cbor',
-					},
-				),
+				headers: Object.assign({}, test_req_options.headers, {
+					Accept: 'application/cbor',
+				}),
 				body: test_req_options.body,
 			});
 
@@ -558,22 +551,19 @@ describe('Test hdbServer module', () => {
 			const test_response = await server.inject({
 				method: 'POST',
 				url: '/',
-				headers: Object.assign({},
-					test_req_options.headers,
-					{
-						Accept: 'text/csv',
-					},
-				),
+				headers: Object.assign({}, test_req_options.headers, {
+					Accept: 'text/csv',
+				}),
 				body: test_req_options.body,
 			});
 
 			expect(test_response.statusCode).to.equal(200);
-			const expectedResponse = '\"i\",\"name\"\n0,\"test\"\n1,\"test\"\n2,\"test\"\n3,\"test\"\n4,\"test\"\n5,\"test\"\n6,\"test\"\n7,\"test\"\n8,\"test\"\n9,\"test\"';
+			const expectedResponse =
+				'"i","name"\n0,"test"\n1,"test"\n2,"test"\n3,"test"\n4,"test"\n5,"test"\n6,"test"\n7,"test"\n8,"test"\n9,"test"';
 			expect(test_response.body).to.equal(expectedResponse);
 
 			server.close();
 		});
-
 
 		it('should return docs html static file result w/ status 200 for valid HTTP get request', async () => {
 			const test_config_settings = { https_enabled: false, local_studio_on: true };
@@ -832,7 +822,7 @@ describe('Test hdbServer module', () => {
 			expect(test_results.connectionTimeout).to.equal(test_config_settings.server_timeout);
 			expect(test_results.https).to.be.an.instanceOf(Object);
 			expect(test_results.https.key).to.be.an.instanceOf(Buffer);
-			expect(test_results.https.cert).to.be.an.instanceOf(Buffer);
+			expect(typeof test_results.https.cert === 'string').to.be.true;
 
 			server.close();
 		});

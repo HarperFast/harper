@@ -9,8 +9,8 @@ const env_mngr = require('../../utility/environment/environmentManager');
 const global_schema = require('../../utility/globalSchema');
 
 const reg_info = require('../../utility/registration/registrationHandler');
-const schema_describe = require('../../data_layer/schemaDescribe');
-const search = require('../../data_layer/search');
+const schema_describe = require('../../dataLayer/schemaDescribe');
+const search = require('../../dataLayer/search');
 const sql = require('../../sqlTranslator/index');
 const p_search_search_by_hash = promisify(search.searchByHash);
 const p_search_search_by_value = promisify(search.searchByValue);

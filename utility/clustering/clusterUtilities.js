@@ -1,20 +1,20 @@
 'use strict';
 
-const insert = require('../../data_layer/insert');
+const insert = require('../../dataLayer/insert');
 const hdb_utils = require('../common_utils');
 const util = require('util');
 const terms = require('../hdbTerms');
 const env_mgr = require('../environment/environmentManager');
 env_mgr.initSync();
 const auth = require('../../security/auth');
-const search = require('../../data_layer/search');
+const search = require('../../dataLayer/search');
 const { Node, NodeSubscription } = require('./NodeObject');
-const SearchByHashObject = require('../../data_layer/SearchByHashObject');
-const UpsertObject = require('../../data_layer/UpsertObject');
+const SearchByHashObject = require('../../dataLayer/SearchByHashObject');
+const UpsertObject = require('../../dataLayer/UpsertObject');
 const { RemotePayloadObject, RemotePayloadSubscription } = require('./RemotePayloadObject');
 const { handleHDBError, hdb_errors } = require('../errors/hdbError');
 const { HTTP_STATUS_CODES, HDB_ERROR_MSGS } = hdb_errors;
-const SearchObject = require('../../data_layer/SearchObject');
+const SearchObject = require('../../dataLayer/SearchObject');
 const system_information = require('../environment/systemInformation');
 const version = require('../../bin/version');
 

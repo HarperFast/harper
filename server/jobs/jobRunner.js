@@ -3,12 +3,12 @@
 const hdb_util = require('../../utility/common_utils');
 const hdb_terms = require('../../utility/hdbTerms');
 const moment = require('moment');
-const bulk_load = require('../../data_layer/bulkLoad');
+const bulk_load = require('../../dataLayer/bulkLoad');
 const log = require('../../utility/logging/harper_logger');
 const jobs = require('./jobs');
-const hdb_export = require('../../data_layer/export');
-const hdb_delete = require('../../data_layer/delete');
-const threads_start = require('../threads/manage-threads');
+const hdb_export = require('../../dataLayer/export');
+const hdb_delete = require('../../dataLayer/delete');
+const threads_start = require('../threads/manageThreads');
 const transaction_log = require('../../utility/logging/transactionLog');
 
 class RunnerMessage {

@@ -11,7 +11,7 @@ const user_schema = require('../../../security/user');
 const server_itc_handlers = rewire('../../../server/itc/serverHandlers');
 const job_runner = require('../../../server/jobs/jobRunner');
 const global_schema = require('../../../utility/globalSchema');
-const schema_describe = require('../../../data_layer/schemaDescribe');
+const schema_describe = require('../../../dataLayer/schemaDescribe');
 
 describe('Test hdbChildIpcHandler module', () => {
 	const TEST_ERR = 'The roof is on fire';

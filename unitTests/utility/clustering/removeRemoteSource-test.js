@@ -6,7 +6,7 @@ const sinon = require('sinon');
 const rewire = require('rewire');
 const clustering_utils = require('../../../utility/clustering/clusterUtilities');
 const nats_utils = require('../../../server/nats/utility/natsUtils');
-const _delete = require('../../../data_layer/delete');
+const _delete = require('../../../dataLayer/delete');
 const removeRemoteSource = rewire('../../../utility/clustering/removeRemoteSource');
 
 describe('Test removeRemoteSource module', () => {

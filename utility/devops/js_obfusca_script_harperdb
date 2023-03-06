@@ -10,9 +10,9 @@
 #Then add newly obfuscated files through the --output option in javascript-obfuscator command.
 
 #Files to search for javascript to obfuscate as of 9/1/2017.. Please keep this updated!!
-# "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/logging"
+# "dataLayer" "sqlTranslator" "validation" "security" "utility" "utility/logging"
 
-files=( "data_layer" "sqlTranslator" "validation" "security" "utility" "utility/logging" )
+files=( "dataLayer" "sqlTranslator" "validation" "security" "utility" "utility/logging" )
 working_dir=$(pwd);
 mirrored_dir="/tmp/harperdb"
 

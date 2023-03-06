@@ -12,7 +12,7 @@ const env_mangr = require('../environment/environmentManager');
 const hdb_logger = require('../../utility/logging/harper_logger');
 const config = require('.//servicesConfig');
 const clustering_utils = require('../clustering/clusterUtilities');
-const { startWorker } = require('../../server/threads/manage-threads');
+const { startWorker } = require('../../server/threads/manageThreads');
 const util = require('util');
 const child_process = require('child_process');
 const { execFile } = child_process;
@@ -85,7 +85,7 @@ function connect() {
 	});
 }
 
-let processes_to_kill;
+let child_processes;
 const MAX_RESTARTS = 10;
 const NATS_LEVELS = {
 	INF: 'info',
@@ -102,9 +102,10 @@ function start(proc_config) {
 	if (pm2_mode)
 		return startWithPM2(proc_config);
 	let subprocess = execFile(proc_config.script, proc_config.args.split(' '), proc_config);
+	subprocess.name = proc_config.name;
 	subprocess.on('exit', (code) => {
-		let index = processes_to_kill.indexOf(subprocess); // dead, remove it from processes to kill now
-		if (index > -1) processes_to_kill.splice(index, 1);
+		let index = child_processes.indexOf(subprocess); // dead, remove it from processes to kill now
+		if (index > -1) child_processes.splice(index, 1);
 		if (!shutting_down && code > 0) {
 			proc_config.restarts = (proc_config.restarts || 0) + 1;
 			// restart the child process
@@ -130,19 +131,19 @@ function start(proc_config) {
 	subprocess.unref();
 
 	// if we are running in standard mode, then we want to clean up our child processes when we exit
-	if (!processes_to_kill) {
-		processes_to_kill = [];
+	if (!child_processes) {
+		child_processes = [];
 		const kill_children = () => {
 			shutting_down = true;
-			if (!processes_to_kill) return;
-			processes_to_kill.map(proc => proc.kill());
+			if (!child_processes) return;
+			child_processes.map(proc => proc.kill());
 			process.exit(0);
 		};
 		process.on('exit', kill_children);
 		process.on('SIGINT', kill_children);
 		process.on('SIGQUIT', kill_children);
 	}
-	processes_to_kill.push(subprocess);
+	child_processes.push(subprocess);
 
 }
 function startWithPM2(proc_config) {
@@ -169,6 +170,15 @@ function startWithPM2(proc_config) {
  * @returns {Promise<unknown>}
  */
 function stop(service_name) {
+	if (!pm2_mode) {
+		for (let process of child_processes) {
+			if (process.name === service_name) {
+				child_processes.splice(child_processes.indexOf(process), 1);
+				process.kill();
+			}
+		}
+		return;
+	}
 	return new Promise(async (resolve, reject) => {
 		try {
 			await connect();
@@ -340,7 +350,14 @@ function describe(service_name) {
 }
 
 function kill() {
-	if (!pm2_mode) return Promise.resolve();
+	if (!pm2_mode) {
+		for (let process of child_processes || []) {
+			process.kill();
+		}
+		child_processes = []
+		return;
+	}
+
 	return new Promise(async (resolve, reject) => {
 		try {
 			await connect();

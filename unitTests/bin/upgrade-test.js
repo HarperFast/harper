@@ -10,7 +10,7 @@ const { expect } = chai;
 const rewire = require('rewire');
 let upgrade_rw;
 
-const hdbInfoController = require('../../data_layer/hdbInfoController');
+const hdbInfoController = require('../../dataLayer/hdbInfoController');
 const updatePrompt = require('../../upgrade/upgradePrompt');
 const directivesManager = require('../../upgrade/directivesManager');
 const chalk = require('chalk');

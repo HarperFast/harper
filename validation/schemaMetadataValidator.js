@@ -1,6 +1,6 @@
 'use strict';
 
-const schema_describe = require('../data_layer/schemaDescribe');
+const schema_describe = require('../dataLayer/schemaDescribe');
 const { hdb_errors } = require('../utility/errors/hdbError');
 
 module.exports = {

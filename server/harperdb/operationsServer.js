@@ -38,7 +38,7 @@ const { registerContentHandlers } = require('../serverHelpers/contentTypes');
 const REQ_MAX_BODY_SIZE = 1024 * 1024 * 1024; //this is 1GB in bytes
 const TRUE_COMPARE_VAL = 'TRUE';
 
-const { HDB_SETTINGS_NAMES } = terms;
+const { HDB_SETTINGS_NAMES, CONFIG_PARAMS } = terms;
 const PROPS_CORS_KEY = HDB_SETTINGS_NAMES.CORS_ENABLED_KEY;
 const PROPS_CORS_ACCESSLIST_KEY = 'CORS_ACCESSLIST';
 const PROPS_SERVER_TIMEOUT_KEY = HDB_SETTINGS_NAMES.SERVER_TIMEOUT_KEY;
@@ -208,10 +208,12 @@ function getServerOptions(is_https) {
 	if (is_https) {
 		const privateKey = env.get(PROPS_PRIVATE_KEY);
 		const certificate = env.get(PROPS_CERT_KEY);
+		const certificateAuthority = env.get(CONFIG_PARAMS.OPERATIONSAPI_TLS_CERT_AUTH);
 		const credentials = {
 			allowHTTP1: true, // Support both HTTPS/1 and /2
-			key: fs.readFileSync(`${privateKey}`),
-			cert: fs.readFileSync(`${certificate}`),
+			key: fs.readFileSync(privateKey),
+			// if they have a CA, we append it, so it is included
+			cert: fs.readFileSync(certificate) + (certificateAuthority ? '\n\n' + fs.readFileSync(certificateAuthority) : ''),
 		};
 		// ALPN negotiation will not upgrade non-TLS HTTP/1, so we only turn on HTTP/2 when we have secure HTTPS,
 		// plus browsers do not support unsecured HTTP/2, so there isn't a lot of value in trying to use insecure HTTP/2.
