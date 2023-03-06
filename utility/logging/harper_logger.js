@@ -30,12 +30,15 @@ const INSTALL_LOG_LOCATION = path.join(PACKAGE_ROOT, `logs`);
 // Location of default config YAML.
 const DEFAULT_CONFIG_FILE = path.join(PACKAGE_ROOT, 'config/yaml/', hdb_terms.HDB_DEFAULT_CONFIG_FILE);
 
+const CLOSE_LOG_FD_TIMEOUT = 10000;
+
 let log_to_file;
 let log_to_stdstreams;
 let log_level;
 let log_name;
 let log_root;
 let log_file_path;
+let log_fd;
 
 // If this is the first time logger is called by process, hdb props will be undefined.
 // Call init to get all the required log settings.
@@ -66,6 +69,7 @@ module.exports = {
 function initLogSettings(force_init = false) {
 	try {
 		if (hdb_properties === undefined || force_init) {
+			closeLogFile();
 			const boot_props_file_path = getPropsFilePath();
 			hdb_properties = PropertiesReader(boot_props_file_path);
 			let properties = assignCMDENVVariables(['ROOTPATH']);
@@ -219,7 +223,10 @@ function createLogRecord(level, args) {
  * @param log
  */
 function logStdOut(log) {
-	if (log_to_file) fs.appendFileSync(log_file_path, log);
+	if (log_to_file) {
+		openLogFile();
+		fs.appendFileSync(log_fd, log);
+	}
 	if (log_to_stdstreams) process.stdout.write(log);
 }
 
@@ -228,8 +235,27 @@ function logStdOut(log) {
  * @param log
  */
 function logStdErr(log) {
-	if (log_to_file) fs.appendFileSync(log_file_path, log);
+	if (log_to_file) {
+		openLogFile();
+		fs.appendFileSync(log_fd, log);
+	}
 	if (log_to_stdstreams) process.stderr.write(log);
+}
+
+function closeLogFile() {
+	try {
+		fs.closeSync(log_fd);
+	} catch (err) {}
+	log_fd = null;
+}
+
+function openLogFile() {
+	if (!log_fd) {
+		log_fd = fs.openSync(log_file_path, 'a');
+		setTimeout(() => {
+			closeLogFile();
+		}, CLOSE_LOG_FD_TIMEOUT).unref(); // periodically time it out so we can reset it in case the file has been moved (log rotation or by user) or deleted.
+	}
 }
 
 /**
