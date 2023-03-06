@@ -3,6 +3,7 @@ const LMDBBridge = require('./lmdbBridge/LMDBBridge');
 const search_validator = require('../../validation/searchValidator');
 const { handleHDBError, hdb_errors } = require('../../utility/errors/hdbError');
 const { Resource } = require('../../resources/Resource');
+const { table } = require('../../resources/database');
 const { HTTP_STATUS_CODES } = hdb_errors;
 /**
  * Currently we are extending LMDBBridge so we can use the LMDB methods as a fallback until all our RAPI methods are
@@ -32,6 +33,24 @@ class RAPIBridge extends LMDBBridge {
 			.search(search_object, search_object);
 		records.onDone = () => resource_snapshot.doneReading();
 		return records;
+	}
+	/**
+	 * Writes new table data to the system tables creates the enivronment file and creates two datastores to track created and updated
+	 * timestamps for new table data.
+	 * @param table_system_data
+	 * @param table_create_obj
+	 */
+	async createTable(table_system_data, table_create_obj) {
+		return table({
+			database: table_create_obj.schema,
+			table: table_create_obj.table,
+			attributes: [
+				{
+					name: table_create_obj.hash_attribute,
+					is_primary_key: true,
+				},
+			],
+		});
 	}
 }
 module.exports = RAPIBridge;

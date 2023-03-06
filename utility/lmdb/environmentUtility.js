@@ -157,7 +157,7 @@ async function createEnvironment(base_path, env_name, is_txn = false, is_v3 = fa
 			let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
 			env[lmdb_terms.ENVIRONMENT_NAME_KEY] = full_name;
 			//global.lmdb_map[full_name] = env;
-			table({ table: env_name, schema: path.parse(base_path).name, path: environment_path });
+			table({ table: env_name, database: path.parse(base_path).name, path: environment_path });
 
 			return env;
 		}

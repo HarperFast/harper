@@ -1,4 +1,4 @@
-import { serialize, getDeserializer } from '../server/serverHelpers/contentTypes';
+import { serialize, serializeMessage, getDeserializer } from '../server/serverHelpers/contentTypes';
 import { recordRequest } from './analytics';
 import { createServer, ClientRequest, ServerOptions } from 'http';
 import { findAndValidateUser } from '../security/user';
@@ -68,25 +68,13 @@ async function execute(Resource, method, relative_url, request_data, request, ws
 		switch (method) {
 			case 'GET-SUB':
 				if (relative_url !== undefined) {
-					let subscription = resource_snapshot.subscribe(relative_url, {
-						callback() {
-							if (!message_count) {
-								setTimeout(() => {
-									console.log('message count (in last 10 seconds)', message_count, 'connection_count', connection_count, 'mem', Math.round(process.memoryUsage().heapUsed / 1000000));
-									message_count = 0;
-								}, 10000);
-							}
-							message_count++;
-
-							ws.send(serialize({
-								path: relative_url,
-								updated: true
-							}, request));
-						}
+					let subscription = response_data = resource_snapshot.subscribe(relative_url, {
+						callback: request.onUpdate,
 					});
 					ws.on('close', () => subscription.end());
+					response_data = request.stream;
 				}
-			// fall-through
+				break;
 			case 'GET':
 				if (relative_url !== undefined) {
 					let checked = checkAllowed(resource_snapshot.allowGet?.(user), user, resource_snapshot);
@@ -152,13 +140,27 @@ async function wsMessage(Resource, resource_path, path, data, request, ws) {
 	let request_id = data.id;
 	try {
 		let response = await execute(Resource, method, path, request_data, request, ws);
+		response.callback = () => {
+			if (!message_count) {
+				setTimeout(() => {
+					console.log('message count (in last 10 seconds)', message_count, 'connection_count', connection_count, 'mem', Math.round(process.memoryUsage().heapUsed / 1000000));
+					message_count = 0;
+				}, 10000);
+			}
+			message_count++;
+			ws.send(serializeMessage({
+				path,
+				updated: true
+			}, request));
+		};
+		ws.on('close', () => response.end());
 		//response_data.id = request_id;
 		response.id = request_id;
-		ws.send(serialize(response, request));
+		ws.send(serializeMessage(response, request));
 	} catch (error) {
 		// do content negotiation
 		console.error(error);
-		ws.send(serialize({status: 500, id: request_id, data: error.toString()}, request));
+		ws.send(serializeMessage({status: 500, id: request_id, data: error.toString()}, request));
 	}
 }
 
@@ -243,8 +245,9 @@ export function start(options: ServerOptions & { path: string, port: number, ser
 			if (accept)
 				request.headers.accept = accept;
 		}
-		if (request.headers.accept === 'text/event-stream')
+		if (request.headers.accept === 'text/event-stream') {
 			request.method = 'GET-SUB';
+		}
 		let content_type = request.headers['content-type'];
 		if (content_type) {
 			request.deserialize = getDeserializer(content_type);

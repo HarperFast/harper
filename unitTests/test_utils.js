@@ -22,8 +22,8 @@ const crypto_hash = require('../security/cryptoHash');
 const { handleHDBError } = require('../utility/errors/hdbError');
 const environment_utility = require('../utility/lmdb/environmentUtility');
 const lmdb_create_schema = require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateSchema');
-const lmdb_create_table = require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
 const lmdb_create_records = require('../data_layer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateRecords');
+const { createTable } = require('../data_layer/harperBridge/harperBridge');
 const pm2_utils = require('../utility/processManagement/processManagement');
 const nats_utils = require('../server/nats/utility/natsUtils');
 const config_utils = require('../config/configUtils');
@@ -282,7 +282,7 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
 		if (!global.hdb_schema[schema] || !global.hdb_schema[schema][table]) {
 			const create_table_obj = new CreateTableObj(schema, table, hash_attribute);
 			const create_sys_table_obj = new CreateSystemTableObj(schema, table, hash_attribute);
-			await lmdb_create_table(create_sys_table_obj, create_table_obj);
+			await createTable(create_sys_table_obj, create_table_obj);
 			env_array.push(await environment_utility.openEnvironment(path.join(BASE_SCHEMA_PATH, schema), table));
 			env_array.push(await environment_utility.openEnvironment(path.join(BASE_TXN_PATH, schema), table, true));
 
@@ -313,9 +313,9 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
 async function tearDownMockDB(envs = undefined, partial_teardown = false) {
 	try {
 		if (envs !== undefined) {
-			for (const environment of envs) {
+			for (const Table of envs) {
 				try {
-					await environment.close();
+					await Table.remove();
 					// eslint-disable-next-line no-empty
 				} catch (err) {}
 			}

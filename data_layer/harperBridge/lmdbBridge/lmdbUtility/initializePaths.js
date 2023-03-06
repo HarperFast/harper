@@ -152,6 +152,7 @@ module.exports = {
 	getBaseSchemaPath,
 	getSystemSchemaPath,
 	getTransactionAuditStorePath,
+	getTransactionAuditStoreBasePath,
 	getSchemaPath,
 	initSystemSchemaPaths,
 	resetPaths

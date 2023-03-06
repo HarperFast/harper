@@ -19,13 +19,14 @@ export async function handleFile(gql_content, relative_path, file_path, resource
 			case Kind.OBJECT_TYPE_DEFINITION:
 				let type_name = definition.name.value;
 				// use type name as the default table (converted to snake case)
-				let type_def = { table: null, schema: null, attributes: [], table: null };
+				let type_def = { table: null, database: null, attributes: [], table: null };
 				types.set(type_name, type_def);
 				for (let directive of definition.directives) {
 					if (directive.name.value === 'table') {
 						for (let arg of directive.arguments) {
-							type_def.table = (arg.value as StringValueNode).value;
+							type_def[arg.name.value] = (arg.value as StringValueNode).value;
 						}
+						if (type_def.schema) type_def.database = type_def.schema;
 						if (!type_def.table)
 							type_def.table = snake_case(type_name);
 					}
@@ -70,7 +71,7 @@ export async function handleFile(gql_content, relative_path, file_path, resource
 						}
 					}
 					type_def.attributes = attributes;
-					// with graphql schema definitions, this is a declaration that the table should exist and that it
+					// with graphql database definitions, this is a declaration that the table should exist and that it
 					// should be created if it does not exist
 					type_def.tableClass = await table(type_def);
 				}
@@ -95,7 +96,7 @@ export async function handleFile(gql_content, relative_path, file_path, resource
 								let role = this.user?.role;
 								if (role && authorized_roles.indexOf(role.name) > -1 ||
 										role?.permission?.super_user) {
-									let record = this.useTable(type_def.table, type_def.schema)?.get(id);
+									let record = this.useTable(type_def.table, type_def.database)?.get(id);
 									return record;
 								} else throw new Error('Unauthorized');
 							}
@@ -103,11 +104,11 @@ export async function handleFile(gql_content, relative_path, file_path, resource
 								let role = this.user?.role;
 								if (role && authorized_roles.indexOf(role.name) > -1 ||
 									role?.permission?.super_user) {
-									return this.useTable(type_def.table, type_def.schema)?.subscribe(path, options);
+									return this.useTable(type_def.table, type_def.database)?.subscribe(path, options);
 								} else throw new Error('Unauthorized');
 							}
 							put(id, body) {
-								return this.useTable(type_def.table, type_def.schema)?.put(id, body);
+								return this.useTable(type_def.table, type_def.database)?.put(id, body);
 							}
 						}
 						handlers.set(query_name, restHandler(GraphQLResource));*/

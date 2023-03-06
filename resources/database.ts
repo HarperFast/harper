@@ -4,16 +4,19 @@ import { pack } from 'msgpackr';
 import { open } from 'lmdb';
 import { join, extname, basename } from 'path';
 import { existsSync, readdirSync } from 'fs';
-import { getBaseSchemaPath } from '../data_layer/harperBridge/lmdbBridge/lmdbUtility/initializePaths';
+import { getBaseSchemaPath, getTransactionAuditStoreBasePath } from '../data_layer/harperBridge/lmdbBridge/lmdbUtility/initializePaths';
 import { makeTable } from './Table';
 import * as OpenDBIObject from '../utility/lmdb/OpenDBIObject';
 import * as OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject';
 const DEFAULT_DATABASE_NAME = 'data';
 const DATABASE_PATH = 'database';
+const AUDIT_PATH = 'transactions';
 initSync();
 
+const USE_AUDIT = true; // TODO: Get this from config
 export let tables = null;
 export let databases = null;
+export let auditDbs = null;
 let database_envs = new Map<string, any>();
 export function getTables() {
 	return getDatabases().data || {};
@@ -21,7 +24,17 @@ export function getTables() {
 export function getDatabases() {
 	if (databases) return databases;
 	databases = {};
-	let database_path = join(getHdbBasePath(), DATABASE_PATH);
+	loadDatabases(databases, join(getHdbBasePath(), DATABASE_PATH), getBaseSchemaPath());
+	return databases;
+}
+export function getAuditDbs() {
+	if (auditDbs) return auditDbs;
+	auditDbs = {};
+	loadDatabases(auditDbs, join(getHdbBasePath(), AUDIT_PATH), getTransactionAuditStoreBasePath());
+	return auditDbs;
+}
+export function loadDatabases(databases, database_path, schemas_base_path) {
+	// First load all the databases from our main database folder
 	if (existsSync(database_path)) {
 		for (let database_entry of readdirSync(database_path)) {
 			if (extname(database_entry).toLowerCase() === '.mdb') {
@@ -29,7 +42,8 @@ export function getDatabases() {
 			}
 		}
 	}
-	let schemas_base_path = getBaseSchemaPath();
+	// TODO: Load any databases defined with explicit storage paths from the config
+	// now we load databases from the legacy "schema" directory folder structure
 	for (let schema_entry of readdirSync(schemas_base_path)) {
 		let schema_path = join(schemas_base_path, schema_entry);
 		for (let table_entry of readdirSync(schema_path)) {
@@ -38,7 +52,6 @@ export function getDatabases() {
 		}
 	}
 	tables = databases[DEFAULT_DATABASE_NAME] || {};
-	return databases;
 }
 function readMetaDb(path: string, default_table?: string, default_schema: string = DEFAULT_DATABASE_NAME) {
 	let env_init = new OpenEnvironmentObject(
@@ -79,28 +92,29 @@ function readMetaDb(path: string, default_table?: string, default_schema: string
 }
 interface TableDefinition {
 	table: string
-	schema?: string
+	database?: string
 	path?: string
 	expiration?: number
 	attributes: any[]
+	isAudit?: boolean
 }
-export async function table({ table: table_name, schema: database_name, path, expiration, attributes }: TableDefinition) {
+export async function table({ table: table_name, database: database_name, path, expiration, attributes, isAudit }: TableDefinition) {
 	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
-	getDatabases();
-	let table = databases[database_name]?.[table_name];
+	let databases = isAudit ? getAuditDbs() : getDatabases();
+	let Table = databases[database_name]?.[table_name];
 	let root_store;
 	let primary_key;
 	let primary_key_attribute
 	let indices;
-	if (table) {
-		primary_key = table.primaryKey;
-		root_store = table.primaryDbi;
+	if (Table) {
+		primary_key = Table.primaryKey;
+		root_store = Table.primaryDbi;
 	} else {
 		if (path) {
 
 		}
 		let tables = databases[database_name] || (databases[database_name] = Object.create(null));
-		path = join(getHdbBasePath(), DATABASE_PATH, (database_name || DEFAULT_DATABASE_NAME) + '.mdb');
+		path = join(getHdbBasePath(), isAudit ? AUDIT_PATH : DATABASE_PATH, (database_name || DEFAULT_DATABASE_NAME) + '.mdb');
 		root_store = database_envs.get(path);
 		if (!root_store) {
 			// TODO: validate database name
@@ -116,16 +130,17 @@ export async function table({ table: table_name, schema: database_name, path, ex
 		primary_key_attribute.is_hash_attribute = true;
 		let dbi_init = new OpenDBIObject(!primary_key_attribute.is_primary_key, primary_key_attribute.is_primary_key);
 		let dbi_name = table_name + '.' + primary_key_attribute.name;
-		table = tables[table_name] = makeTable({
+		Table = tables[table_name] = makeTable({
 			primaryDbi: root_store.openDB(dbi_name, dbi_init),
 			primaryKey: primary_key,
 			tableName: table_name,
 			indices: [],
 		});
 	}
-	indices = table.indices;
+	indices = Table.indices;
 	let internal_dbi_init = new OpenDBIObject(false);
 	let dbis_db = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
+	Table.dbisDB = dbis_db;
 
 	let last_commit;
 	// iterate through the attributes to ensure that we have all the dbis created and indexed
@@ -141,7 +156,7 @@ export async function table({ table: table_name, schema: database_name, path, ex
 		if (!dbi_descriptor) {
 			let property = attribute.name;
 			// this means that a new attribute has been introduced that needs to be indexed
-			for (let entry of table.primaryDbi.getRange()) {
+			for (let entry of Table.primaryDbi.getRange()) {
 				let record = entry.value;
 				let value_to_index = record[property];
 				dbi.put(value_to_index, record[primary_key]);
@@ -154,7 +169,10 @@ export async function table({ table: table_name, schema: database_name, path, ex
 	}
 	if (last_commit) await last_commit;
 	if (expiration)
-		table.setTTLExpiration(+expiration);
-	return table;
+		Table.setTTLExpiration(+expiration);
+	let has_audit_table = !isAudit && USE_AUDIT;
+	if (has_audit_table)
+		await table({ table: table_name, database: database_name, path, expiration, attributes, isAudit: true });
+	return Table;
 }
 
