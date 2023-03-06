@@ -60,28 +60,40 @@ async function readLog(request) {
 	let count = 0;
 	let result = [];
 	let remaining = '';
+	let pending_log_entry;
 	read_log_input_stream.on('data', (log_data) => {
-		let reader = /([^ ]+) \[([^\]]+)]: (.+)\n/g;
+		let reader = /(?:^|\n)(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:[\d\.]+Z) \[([^\]]+)]: /g;
 		log_data = remaining + log_data;
 		let last_position = 0;
 		let parsed;
 		while ((parsed = reader.exec(log_data))) {
 			if (read_log_input_stream.destroyed) break;
-			let [t, timestamp, tags_string, message] = parsed;
+			if (pending_log_entry) {
+				pending_log_entry.message = log_data.slice(last_position, parsed.index);
+				onLogMessage(pending_log_entry);
+			}
+			let [intro, timestamp, tags_string, message] = parsed;
 			let tags = tags_string.split(' ');
 			let thread = tags[0];
 			let level = tags[1];
 			tags.splice(0, 2);
-			onLogMessage({
+			pending_log_entry = {
 				timestamp,
 				thread,
 				level,
 				tags,
-				message,
-			});
-			last_position = reader.lastIndex + t.length;
+				message: '',
+			};
+			last_position = parsed.index + intro.length;
 		}
 		remaining = log_data.slice(last_position);
+	});
+	read_log_input_stream.on('end', (log_data) => {
+		if (read_log_input_stream.destroyed) return;
+		if (pending_log_entry) {
+			pending_log_entry.message = remaining.trim();
+			onLogMessage(pending_log_entry);
+		}
 	});
 	read_log_input_stream.resume();
 	function onLogMessage(line) {

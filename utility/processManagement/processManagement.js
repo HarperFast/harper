@@ -110,13 +110,13 @@ function start(proc_config) {
 			last_level;
 		while ((log_start = NATS_PARSER.exec(log))) {
 			if (log_start.index) {
-				process_logger[last_level || 'info'](log.slice(last_position, log_start.index));
+				process_logger[last_level || 'info'](log.slice(last_position, log_start.index).trim());
 			}
 			let [start_text, level] = log_start;
 			last_position = log_start.index + start_text.length;
 			last_level = NATS_LEVELS[level];
 		}
-		process_logger[last_level || 'info'](log.slice(last_position));
+		process_logger[last_level || 'info'](log.slice(last_position).trim());
 	}
 	subprocess.stdout.on('data', extractMessages);
 	subprocess.stderr.on('data', extractMessages);

@@ -185,6 +185,7 @@ function suppressLogging(callback) {
  * @returns {string} - a complete log
  */
 
+const SERVICE_NAME = workerData?.name.replace(/ /g, '-') || 'main';
 function createLogRecord(level, args) {
 	const date_now = new Date(Date.now()).toISOString();
 
@@ -199,8 +200,7 @@ function createLogRecord(level, args) {
 		tags = tags.slice(0, -1) + ' ' + args[0].slice(1);
 		x++;
 	}
-	let service_name = workerData?.name || 'main';
-	tags = `[${service_name}/${threadId} ${tags.slice(1)}`;
+	tags = `[${SERVICE_NAME}/${threadId} ${tags.slice(1)}`;
 	for (; x < length; x++) {
 		let arg = args[x];
 		if (arg instanceof Error && arg.stack) {
