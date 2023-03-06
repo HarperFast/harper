@@ -95,7 +95,7 @@ describe('Test customFunctionsServer module', () => {
 			expect(server).to.not.be.undefined;
 			expect(server.server.constructor.name).to.contain('Server');
 			expect(server.server.key).to.be.instanceOf(Buffer);
-			expect(server.server.cert).to.be.instanceOf(Buffer);
+			expect(typeof server.server.cert === 'string').to.be.true;
 			expect(server.initialConfig.https).to.have.property('allowHTTP1');
 		});
 
