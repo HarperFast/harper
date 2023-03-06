@@ -5,7 +5,7 @@ import { onMessageFromWorkers, broadcast } from '../server/threads/manage-thread
 const TRANSACTION_EVENT_TYPE = 'transaction';
 
 let all_subscriptions;
-export function addSubscription(path, dbi, key, listener) {
+export function addSubscription(path, dbi, key, listener?: (key) => any) {
 	// set up the subscriptions map. We want to just use a single map (per table) for efficient delegation
 	// (rather than having every subscriber filter every transaction)
 	if (!all_subscriptions) {
@@ -21,14 +21,14 @@ export function addSubscription(path, dbi, key, listener) {
 	}
 	let env_subscriptions = all_subscriptions[path] || (all_subscriptions[path] = []);
 	let dbi_subscriptions = env_subscriptions[dbi] || (env_subscriptions[dbi] = new Map());
-	let listeners: any[] = dbi_subscriptions.get(key);
-	if (listeners) listeners.push(listener);
-	else dbi_subscriptions.set(key, listeners = [listener]);
-	return {
+	let subscriptions: any[] = dbi_subscriptions.get(key);
+
+	let subscription = {
+		callback: listener,
 		end() {
 			// cleanup
-			listeners.splice(listeners.indexOf(listener), 1);
-			if (listeners.length === 0) {
+			subscriptions.splice(subscriptions.indexOf(subscription), 1);
+			if (subscriptions.length === 0) {
 				dbi_subscriptions.delete(key);
 				if (dbi_subscriptions.size === 0) {
 					delete env_subscriptions[dbi];
@@ -36,6 +36,9 @@ export function addSubscription(path, dbi, key, listener) {
 			}
 		}
 	};
+	if (subscriptions) subscriptions.push(subscription);
+	else dbi_subscriptions.set(key, subscriptions = [subscription]);
+	return subscription;
 }
 function notifyFromTransactionData(path, buffers, flag_position) {
 	const HAS_KEY = 4;
@@ -75,11 +78,11 @@ function notifyFromTransactionData(path, buffers, flag_position) {
 				if (flag & SET_VERSION) {
 					flag_position += 2;
 				}
-				let handlers = dbi_subscriptions?.get(key);
+				let subscriptions = dbi_subscriptions?.get(key);
 				//console.log(threadId, 'change to', key, 'listeners', handlers?.length, 'flag_position', flag_position);
-				if (handlers) handlers.forEach(handler => {
+				if (subscriptions) subscriptions.forEach(subscription => {
 					try {
-						handler(key);
+						subscription.callback(key);
 					} catch(error) {
 						console.error(error);
 						info(error);

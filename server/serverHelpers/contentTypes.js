@@ -4,7 +4,7 @@ const { toCsvStream } = require('../../data_layer/export');
 const { pack, unpack, encodeIter } = require('msgpackr');
 const { decode, encode, EncoderStream } = require('cbor-x');
 const { Readable } = require('stream');
-const media_types = { // TODO: Make these monomorphic for faster access
+const media_types = { // TODO: Make these monomorphic for faster access. And use a Map
 	'application/json': {
 		serializeStream: streamAsJSON,
 		serialize: JSON.stringify,
@@ -38,10 +38,17 @@ const media_types = { // TODO: Make these monomorphic for faster access
 		q: 0.1,
 	},
 	'text/event-stream': { // Server-Sent Events (SSE)
-		serializeStream: function(data) {
-			// TODO: Use a streaming iterator to send data in SSE format
+		serializeStream: function(subscription) {
+			// create a readable stream that we use to stream out events from our subscription
+			let stream = new Readable({
+			});
+			// TODO: if we can skip messages, use back-pressure and allow messages to be skipped
+			subscription.callback = (data) => {
+				stream.push(data);
+			};
+			stream.on('end', () => subscription.end());
+			return stream;
 		},
-		isSubscription: true,
 		q: 0.8
 	},
 	// TODO: Support this as well:
@@ -188,6 +195,14 @@ function findBestSerializer(incoming_message) {
 
 	return { serializer: best_serializer, type: best_type, parameters: best_parameters };
 }
+
+/**
+ * Serialize a response
+ * @param response_data
+ * @param request
+ * @param response_object
+ * @returns {Uint8Array|*}
+ */
 function serialize(response_data, request, response_object) {
 	if (response_data?.contentType && response_data.data) {
 		response_object.headers['Content-Type'] = response_data.contentType;
@@ -201,12 +216,24 @@ function serialize(response_data, request, response_object) {
 	// TODO: If a different content type is preferred, look through resources to see if there is one
 	// specifically for that content type (most useful for html).
 
-	if (response_object) {
-		response_object.headers['Content-Type'] = serializer.type;
-		if (serializer.serializer.serializeStream)
-			return serializer.serializer.serializeStream(response_data);
-	}
+	response_object.headers['Content-Type'] = serializer.type;
+	if (serializer.serializer.serializeStream)
+		return serializer.serializer.serializeStream(response_data);
 	return serializer.serializer.serialize(response_data);
+}
+
+/**
+ * Serialize a message, may be use multiple times (like with WebSockets)
+ * @param message
+ * @param request
+ * @returns {*}
+ */
+function serializeMessage(message, request) {
+	let serialize = request.serialize;
+	if (serialize) return serialize(message);
+	let serializer = findBestSerializer(request);
+	serialize = request.serialize = serializer.serializer.serialize;
+	return serialize(message);
 }
 
 function getDeserializer(content_type) {
@@ -238,7 +265,7 @@ function deserializeUnknownType(content_type, parameters) {
 
 module.exports = {
 	registerContentHandlers,
-	findBestSerializer,
+	serializeMessage,
 	getDeserializer,
 	serialize,
 };

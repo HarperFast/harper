@@ -94,6 +94,11 @@ export function makeTable(options) {
 		static transaction(env_transaction, lmdb_txn, parent_transaction) {
 			return new this(env_transaction, lmdb_txn, parent_transaction, {});
 		}
+		static delete() {
+			// TODO: remove all the dbi references
+			Table.dbisDB.remove(Table.tableName);
+		}
+
 		table: any
  		envTxn: EnvTransaction
 		parent: Resource
