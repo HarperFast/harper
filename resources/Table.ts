@@ -7,7 +7,6 @@ import { ResourceInterface } from './ResourceInterface';
 import { workerData } from 'worker_threads';
 import { EnvTransaction, Resource } from './Resource';
 import { compareKeys, readKey } from 'ordered-binary';
-import { onMessageFromWorkers, broadcast } from '../server/threads/manage-threads';
 import * as lmdb_terms from '../utility/lmdb/terms';
 import * as env_mngr from '../utility/environment/environmentManager';
 import {addSubscription, listenToCommits} from './transactionBroadcast';
@@ -94,9 +93,14 @@ export function makeTable(options) {
 		static transaction(env_transaction, lmdb_txn, parent_transaction) {
 			return new this(env_transaction, lmdb_txn, parent_transaction, {});
 		}
-		static delete() {
+		static async delete() {
 			// TODO: remove all the dbi references
-			Table.dbisDB.remove(Table.tableName);
+			for (let key in indices) {
+				Table.dbisDB. remove(Table.tableName + '.' + key);
+				let index = indices[key];
+				index.drop();
+			}
+			return Table.dbisDB.committed;
 		}
 
 		table: any
@@ -116,8 +120,6 @@ export function makeTable(options) {
 			this.lmdbTxn = lmdb_txn;
 			this.inUseEnvs[Table.envPath] = env_txn;
 			this.parent = parent;
-			if (request.readOnly)
-				this.lmdbTxn = primary_dbi.useReadTransaction();
 
 		}
 		updateModificationTime(latest = Date.now()) {
@@ -127,6 +129,11 @@ export function makeTable(options) {
 					this.parent.updateModificationTime(latest);
 			}
 		}
+
+		/**
+		 * This retrieves a record by its primary key (id).
+		 * @param id
+		 */
 		async getById(id) {
 			// TODO: determine if we use lazy access properties
 			if (primary_key_attribute.is_number)
@@ -161,11 +168,22 @@ export function makeTable(options) {
 				return record;
 			}
 		}
+
+		/**
+		 * Determine if the user is allowed to get/read data from the current resource
+		 * @param user
+		 */
 		allowGet(user) {
 			if (!user) return false;
 			let permission = user.role.permission;
 			return permission.super_user || permission[table_name]?.read;
 		}
+
+		/**
+		 * Start updating a record. The returned record will be "writable" record, which records changes which are written
+		 * once the corresponding transaction is committed. These changes can (eventually) include CRDT type operations.
+		 * @param record This can be a record returned from get or a record id.
+		 */
 		update(record) {
 			const start_updating = (record_data) => {
 				// maybe make this a map so if the record is already updating, return the same one
@@ -208,6 +226,15 @@ export function makeTable(options) {
 			return updated_record;
 		}
 
+		/**
+		 * Store the provided record by the provided id. If no id is provided, it is auto-generated. This is not written
+		 * until the corresponding transaction is committed. This will either immediately fail (synchronously) or always
+		 * succeed. That doesn't necessarily mean it will "win", another concurrent put could come "after" (monotonically,
+		 * even if not chronologically) this one.
+		 * @param id
+		 * @param record
+		 * @param options
+		 */
 		put(id, record, options): void {
 			let env_txn = this.envTxn;
 			if (!id) {

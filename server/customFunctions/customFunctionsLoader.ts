@@ -9,7 +9,7 @@ import * as js_handler from '../../resources/js-resource';
 import * as REST from '../../resources/REST';
 import * as fastify_routes_handler from '../../plugins/fastifyRoutes';
 import * as fg from 'fast-glob';
-import { watchDir, restartWorkers } from '../../server/threads/manage-threads';
+import { watchDir, restartWorkers } from '../../server/threads/manageThreads';
 import { secureImport } from '../../resources/jsLoader';
 import { server } from '../../index';
 import {Resources} from '../../resources/Resources';

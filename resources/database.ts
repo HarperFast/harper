@@ -3,8 +3,8 @@ import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms';
 import { pack } from 'msgpackr';
 import { open } from 'lmdb';
 import { join, extname, basename } from 'path';
-import { existsSync, readdirSync } from 'fs';
-import { getBaseSchemaPath, getTransactionAuditStoreBasePath } from '../data_layer/harperBridge/lmdbBridge/lmdbUtility/initializePaths';
+import { existsSync, readdirSync, DirEnt } from 'fs';
+import { getBaseSchemaPath, getTransactionAuditStoreBasePath } from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths';
 import { makeTable } from './Table';
 import * as OpenDBIObject from '../utility/lmdb/OpenDBIObject';
 import * as OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject';
@@ -36,19 +36,21 @@ export function getAuditDbs() {
 export function loadDatabases(databases, database_path, schemas_base_path) {
 	// First load all the databases from our main database folder
 	if (existsSync(database_path)) {
-		for (let database_entry of readdirSync(database_path)) {
-			if (extname(database_entry).toLowerCase() === '.mdb') {
-				readMetaDb(join(database_path, database_entry), null, basename(database_entry, '.mdb'));
+		for (let database_entry: DirEnt of readdirSync(database_path, { withFileTypes: true })) {
+			if (database_entry.isFile() && extname(database_entry.name).toLowerCase() === '.mdb') {
+				readMetaDb(join(database_path, database_entry.name), null, basename(database_entry.name, '.mdb'));
 			}
 		}
 	}
 	// TODO: Load any databases defined with explicit storage paths from the config
 	// now we load databases from the legacy "schema" directory folder structure
-	for (let schema_entry of readdirSync(schemas_base_path)) {
-		let schema_path = join(schemas_base_path, schema_entry);
-		for (let table_entry of readdirSync(schema_path)) {
-			if (extname(table_entry).toLowerCase() === '.mdb')
-				readMetaDb(join(schema_path, table_entry), basename(table_entry, '.mdb'), schema_entry);
+	for (let schema_entry: DirEnt of readdirSync(schemas_base_path, { withFileTypes: true })) {
+		if (!schema_entry.isFile()) {
+			let schema_path = join(schemas_base_path, schema_entry.name);
+			for (let table_entry: DirEnt of readdirSync(schema_path, {withFileTypes: true})) {
+				if (table_entry.isFile() && extname(table_entry.name).toLowerCase() === '.mdb')
+					readMetaDb(join(schema_path, table_entry.name), basename(table_entry.name, '.mdb'), schema_entry.name);
+			}
 		}
 	}
 	tables = databases[DEFAULT_DATABASE_NAME] || {};

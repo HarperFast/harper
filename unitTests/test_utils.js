@@ -16,6 +16,7 @@ const SysUserObject = require('../server/nats/utility/SysUserObject');
 const HdbUserObject = require('../server/nats/utility/HdbUserObject');
 const systemSchema = require('../json/systemSchema.json');
 const env = require('../utility/environment/environmentManager');
+const { table: ensure_table } = require('../resources/database');
 const terms = require('../utility/hdbTerms');
 const nats_terms = rewire('../server/nats/utility/natsTerms');
 const crypto_hash = require('../security/cryptoHash');
@@ -23,8 +24,7 @@ const { handleHDBError } = require('../utility/errors/hdbError');
 const environment_utility = require('../utility/lmdb/environmentUtility');
 const pm2_utils = require('../utility/processManagement/processManagement');
 const lmdb_create_schema = require('../dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateSchema');
-const lmdb_create_table = require('../dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
-const { createTable } = require('../dataLayer/harperBridge/harperBridge');
+const { createTable, createRecords } = require('../dataLayer/harperBridge/harperBridge');
 const nats_utils = require('../server/nats/utility/natsUtils');
 const config_utils = require('../config/configUtils');
 const user = require('../security/user');
@@ -237,7 +237,7 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
 			for (const attr in record) {
 				if (!unique_attributes.includes(attr)) {
 					unique_attributes.push(attr);
-					attributes.push({ attribute: attr });
+					attributes.push({ attribute: attr, is_primary_key: attr === hash_attribute });
 				}
 			}
 		}
@@ -249,53 +249,10 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
 		await fs.mkdirp(BASE_SYSTEM_PATH);
 		await fs.mkdirp(BASE_SCHEMA_PATH);
 
-		if (lmdb_schema_env === undefined) {
-			const hdb_schema_env = await environment_utility.createEnvironment(
-				BASE_SYSTEM_PATH,
-				systemSchema.hdb_schema.name
-			);
-			environment_utility.createDBI(hdb_schema_env, systemSchema.hdb_schema.hash_attribute, false, true);
-			env_array.push(hdb_schema_env);
-		}
-
-		if (lmdb_table_env === undefined) {
-			const hdb_table_env = await environment_utility.createEnvironment(BASE_SYSTEM_PATH, systemSchema.hdb_table.name);
-			environment_utility.createDBI(hdb_table_env, systemSchema.hdb_table.hash_attribute, false, true);
-			env_array.push(hdb_table_env);
-		}
-
-		if (lmdb_attribute_env === undefined) {
-			const hdb_attribute_env = await environment_utility.createEnvironment(
-				BASE_SYSTEM_PATH,
-				systemSchema.hdb_attribute.name
-			);
-			environment_utility.createDBI(hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, false, true);
-			env_array.push(hdb_attribute_env);
-		}
-
-		if (!global.hdb_schema[schema]) {
-			const create_schema_obj = new CreateSchemaObj(schema);
-			await lmdb_create_schema(create_schema_obj);
-			global.hdb_schema[schema] = {};
-		}
-
-		if (!global.hdb_schema[schema] || !global.hdb_schema[schema][table]) {
-			const create_table_obj = new CreateTableObj(schema, table, hash_attribute);
-			const create_sys_table_obj = new CreateSystemTableObj(schema, table, hash_attribute);
-			await createTable(create_sys_table_obj, create_table_obj);
-			env_array.push(await environment_utility.openEnvironment(path.join(BASE_SCHEMA_PATH, schema), table));
-			env_array.push(await environment_utility.openEnvironment(path.join(BASE_TXN_PATH, schema), table, true));
-
-			global.hdb_schema[schema][table] = {
-				attributes,
-				hash_attribute: hash_attribute,
-				name: table,
-				schema,
-			};
-		}
+		env_array.push(await ensure_table({ database: schema, table, attributes }));
 
 		const insert_records_obj = new InsertRecordsObj(schema, table, test_data);
-		await lmdb_create_records(insert_records_obj);
+		await createRecords(insert_records_obj);
 
 		return env_array;
 	} catch (err) {
@@ -315,7 +272,7 @@ async function tearDownMockDB(envs = undefined, partial_teardown = false) {
 		if (envs !== undefined) {
 			for (const Table of envs) {
 				try {
-					await Table.remove();
+					await Table.delete();
 					// eslint-disable-next-line no-empty
 				} catch (err) {}
 			}

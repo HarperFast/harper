@@ -17,8 +17,8 @@ const test_data = require('../../../testData');
 
 const rewire = require('rewire');
 const lmdb_terms = require('../../../../utility/lmdb/terms');
-const { SearchByConditionsObject, SearchCondition } = require('../../../../data_layer/SearchByConditionsObject');
-const { searchByConditions: search_by_conditions } = rewire('../../../../data_layer/harperBridge/harperBridge');
+const { SearchByConditionsObject, SearchCondition } = require('../../../../dataLayer/SearchByConditionsObject');
+const { searchByConditions: search_by_conditions } = rewire('../../../../dataLayer/harperBridge/harperBridge');
 const assert = require('assert');
 const fs = require('fs-extra');
 const sinon = require('sinon');

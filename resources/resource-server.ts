@@ -4,7 +4,7 @@ import { createServer, ClientRequest, ServerOptions } from 'http';
 import { readdir, readFile } from 'fs/promises';
 import { join } from 'path';
 import { SERVICES } from '../utility/hdbTerms';
-import { watchDir } from '../server/threads/manage-threads';
+import { watchDir } from '../server/threads/manageThreads';
 import { findAndValidateUser } from '../security/user';
 import { WebSocketServer } from 'ws';
 import { findBestSerializer, getDeserializer } from '../server/serverHelpers/contentTypes';

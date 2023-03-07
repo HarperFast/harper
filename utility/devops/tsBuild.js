@@ -16,8 +16,10 @@ if (isMainThread) {
 		SRC_DIRECTORIES.map((dir) => dir + '/**/*.ts'),
 		{ cwd: PACKAGE_ROOT }
 	)) {
+		// Note that we subtract a second from the source file timestamp because it seems like WebStorm compiles and
+		// then saves the source file, so it can have a slightly newer timestamp
 		if (
-			statSync(join(PACKAGE_ROOT, filename)).mtimeMs >
+			statSync(join(PACKAGE_ROOT, filename)).mtimeMs - 4000 >
 			statSync(join(PACKAGE_ROOT, TS_DIRECTORY, filename.replace(/.ts$/, '.js'))).mtimeMs
 		) {
 			console.warn(

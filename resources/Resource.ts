@@ -2,6 +2,7 @@ import { ResourceInterface } from './ResourceInterface';
 import { getTables } from './database';
 import { RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
 import { Table, DATA, OWN } from './Table';
+import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 let tables;
 const QUERY_PARSER = /([^&|=<>!(),]+)([&|=<>!(),]*)/g
 const SYMBOL_OPERATORS = {
@@ -36,7 +37,7 @@ export class Resource implements ResourceInterface {
 	 * Restartable/optimistic with full isolation: Acquire lock/ownership, complete transaction with optimistic checks, possibly return restart-required
 	 * Non-restartable across multiple env/dbs with full isolation: Wait on commit of async-transaction
 	 */
-	async commit(): Promise<boolean> {
+	commit(): Promise<boolean> {
 		let txns_with_read_and_writes = [];
 		let txns_with_only_writes = []
 		let commits = [];
@@ -49,7 +50,7 @@ export class Resource implements ResourceInterface {
 					txns_with_only_writes.push(env_txn);
 			}
 		}
-		if (txns_with_read_and_writes.length >= 2) {
+		/*if (txns_with_read_and_writes.length >= 2) {
 			// if multiple read+write txns are needed, we switch to a two phase commit approach and first do a request phase
 			for (let env_txn of txns_with_read_and_writes) {
 				commits.push(env_txn.requestCommit());
@@ -60,19 +61,19 @@ export class Resource implements ResourceInterface {
 			}
 			// all requests succeeded, proceed with collecting actual commits
 			commits = [];
-		}
+		}*/
 		for (let env_txn of txns_with_read_and_writes) {
 			commits.push(env_txn.commit());
 		}
-		if (commits.length === 1) { // no two phase commit, so just verify that the single commit succeeds before proceeding
+		/*if (commits.length === 1) { // no two phase commit, so just verify that the single commit succeeds before proceeding
 			if (!await commits[0])
 				return false;
 			commits = [];
-		}
+		}*/
 		for (let env_txn of txns_with_only_writes) {
 			commits.push(env_txn.commit());
 		}
-		return (await Promise.all(commits)).indexOf(false) === -1;
+		return Promise.all(commits);
 	}
 	abort() {
 		for (let env_path in this.inUseEnvs) { // TODO: maintain this array ourselves so we don't need to key-ify
@@ -237,26 +238,28 @@ export class EnvTransaction {
 	/**
 	 * Resolves to true if the commit succeeded, resolves to false if the commit needs to be retried
 	 */
-	commit(): Promise<boolean> {
+	commit(): CommitResolution {
 		this.doneReading();
 		let remaining_conditions = this.inTwoPhase ? [] : this.conditions.slice(0).reverse();
-		let resolution;
+		let txn_time, resolution;
 		const nextCondition = () => {
 			let condition = remaining_conditions.pop();
 			if (condition) {
 				condition.store.ifVersion(condition.key, condition.version, nextCondition);
 			} else {
+				txn_time = getNextMonotonicTime();
 				for (let { txn, record } of this.updatingRecords || []) {
 					// TODO: get the own properties, translate to a put and a correct replication operation/CRDT
 					let original = record[DATA];
 					let own = record[OWN];
+					own.__updatedtime__ = txn_time;
 					resolution = txn.put(original[txn.constructor.primaryKey], Object.assign({}, original, own));
 				}
 				for (let write of this.writes) {
 					resolution = write.store[write.operation](write.key, write.value, write.version);
 				}
 			}
-		}
+		};
 		nextCondition();
 		// TODO: This is where we write to the SharedArrayBuffer so that subscribers from other threads can
 		// listen... And then we can use it determine when the commit has been delivered to at least one other
@@ -265,7 +268,10 @@ export class EnvTransaction {
 		// now reset transactions tracking; this transaction be reused and committed again
 		this.conditions = [];
 		this.writes = [];
-		return resolution;
+		return resolution?.then(resolution => ({
+			success: resolution,
+			txnTime: txn_time,
+		}));
 	}
 	abort(): void {
 		this.doneReading();
@@ -279,7 +285,10 @@ export function snake_case(camelCase: string) {
 	return camelCase[0].toLowerCase() + camelCase.slice(1).replace(/[a-z][A-Z][a-z]/g,
 		(letters) => letters[0] + '_' + letters.slice(1));
 }
-
+interface CommitResolution {
+	txnTime: number
+	resolution: Promise<boolean>
+}
 /*
 function example() {
 	class MyEndpoint extends Resource {

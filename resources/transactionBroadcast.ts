@@ -1,7 +1,7 @@
 import { readKey } from 'ordered-binary';
 import { info } from '../utility/logging/harper_logger';
 import { threadId } from 'worker_threads';
-import { onMessageFromWorkers, broadcast } from '../server/threads/manage-threads';
+import { onMessageFromWorkers, broadcast } from '../server/threads/manageThreads';
 const TRANSACTION_EVENT_TYPE = 'transaction';
 
 let all_subscriptions;

@@ -1,5 +1,5 @@
 const { isMainThread } = require('worker_threads');
-const socket_router = require('../server/threads/socket-router');
+const socket_router = require('../server/threads/socketRouter');
 const hdb_terms = require('../utility/hdbTerms');
 const operationsServer = require('../server/harperdb/operationsServer');
 const basicAuth = require('../security/basicAuth');

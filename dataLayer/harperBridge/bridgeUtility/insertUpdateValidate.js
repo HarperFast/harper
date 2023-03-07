@@ -3,6 +3,7 @@
 const hdb_utils = require('../../../utility/common_utils');
 const log = require('../../../utility/logging/harper_logger');
 const insert_validator = require('../../../validation/insertValidator');
+const { getDatabases } = require('../../../resources/database');
 
 module.exports = insertUpdateValidate;
 
@@ -31,12 +32,12 @@ function insertUpdateValidate(write_object) {
 		throw new Error('records must be an array');
 	}
 
-	let schema_table = global.hdb_schema[write_object.schema][write_object.table];
+	let schema_table = getDatabases()[write_object.schema][write_object.table];
 	if (hdb_utils.isEmpty(schema_table)) {
 		throw new Error(`could not retrieve schema:${write_object.schema} and table ${write_object.table}`);
 	}
 
-	let hash_attribute = schema_table.hash_attribute;
+	let hash_attribute = schema_table.primaryKey;
 	let dups = new Set();
 	let attributes = {};
 

@@ -1,6 +1,6 @@
 'use strict';
 
-const RAPIBridge = require('./RAPIBridge');
+const { RAPIBridge } = require('./RAPIBridge');
 const env_mngr = require('../../utility/environment/environmentManager');
 env_mngr.initSync();
 
