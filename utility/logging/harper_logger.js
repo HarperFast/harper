@@ -185,7 +185,7 @@ function suppressLogging(callback) {
  * @returns {string} - a complete log
  */
 
-const SERVICE_NAME = workerData?.name.replace(/ /g, '-') || 'main';
+const SERVICE_NAME = workerData?.name?.replace(/ /g, '-') || 'main';
 function createLogRecord(level, args) {
 	const date_now = new Date(Date.now()).toISOString();
 
