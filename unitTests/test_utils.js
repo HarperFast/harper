@@ -249,7 +249,9 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
 		await fs.mkdirp(BASE_SYSTEM_PATH);
 		await fs.mkdirp(BASE_SCHEMA_PATH);
 
-		env_array.push(await ensure_table({ database: schema, table, attributes }));
+		env_array.push(await ensure_table({
+			database: schema, table, attributes, path: BASE_SCHEMA_PATH
+		}));
 
 		const insert_records_obj = new InsertRecordsObj(schema, table, test_data);
 		await createRecords(insert_records_obj);

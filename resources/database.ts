@@ -15,21 +15,25 @@ initSync();
 
 const USE_AUDIT = true; // TODO: Get this from config
 export let tables = null;
-export let databases = null;
-export let auditDbs = null;
+export let databases = {};
+let loaded_databases, loaded_audit_dbs;
+export let auditDbs = {};
 let database_envs = new Map<string, any>();
 export function getTables() {
 	return getDatabases().data || {};
 }
+
 export function getDatabases() {
-	if (databases) return databases;
-	databases = {};
+	if (!loaded_databases) return databases;
+	loaded_databases = true;
 	loadDatabases(databases, join(getHdbBasePath(), DATABASE_PATH), getBaseSchemaPath());
 	return databases;
 }
 export function getAuditDbs() {
-	if (auditDbs) return auditDbs;
+	if (!loaded_audit_dbs) return auditDbs;
+	loaded_audit_dbs = true;
 	auditDbs = {};
+	let base_path = getTransactionAuditStoreBasePath();
 	loadDatabases(auditDbs, join(getHdbBasePath(), AUDIT_PATH), getTransactionAuditStoreBasePath());
 	return auditDbs;
 }
@@ -44,12 +48,14 @@ export function loadDatabases(databases, database_path, schemas_base_path) {
 	}
 	// TODO: Load any databases defined with explicit storage paths from the config
 	// now we load databases from the legacy "schema" directory folder structure
-	for (let schema_entry: DirEnt of readdirSync(schemas_base_path, { withFileTypes: true })) {
-		if (!schema_entry.isFile()) {
-			let schema_path = join(schemas_base_path, schema_entry.name);
-			for (let table_entry: DirEnt of readdirSync(schema_path, {withFileTypes: true})) {
-				if (table_entry.isFile() && extname(table_entry.name).toLowerCase() === '.mdb')
-					readMetaDb(join(schema_path, table_entry.name), basename(table_entry.name, '.mdb'), schema_entry.name);
+	if (existsSync(schemas_base_path)) {
+		for (let schema_entry: DirEnt of readdirSync(schemas_base_path, {withFileTypes: true})) {
+			if (!schema_entry.isFile()) {
+				let schema_path = join(schemas_base_path, schema_entry.name);
+				for (let table_entry: DirEnt of readdirSync(schema_path, {withFileTypes: true})) {
+					if (table_entry.isFile() && extname(table_entry.name).toLowerCase() === '.mdb')
+						readMetaDb(join(schema_path, table_entry.name), basename(table_entry.name, '.mdb'), schema_entry.name);
+				}
 			}
 		}
 	}
@@ -100,10 +106,10 @@ interface TableDefinition {
 	attributes: any[]
 	isAudit?: boolean
 }
-export async function table({ table: table_name, database: database_name, path, expiration, attributes, isAudit }: TableDefinition) {
+export async function table({ table: table_name, database: database_name, path: custom_path, expiration, attributes, isAudit }: TableDefinition) {
 	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
-	let databases = isAudit ? getAuditDbs() : getDatabases();
-	let Table = databases[database_name]?.[table_name];
+	let dbs = isAudit ? auditDbs : databases;
+	let Table = dbs[database_name]?.[table_name];
 	let root_store;
 	let primary_key;
 	let primary_key_attribute
@@ -112,11 +118,8 @@ export async function table({ table: table_name, database: database_name, path, 
 		primary_key = Table.primaryKey;
 		root_store = Table.primaryDbi;
 	} else {
-		if (path) {
-
-		}
-		let tables = databases[database_name] || (databases[database_name] = Object.create(null));
-		path = join(getHdbBasePath(), isAudit ? AUDIT_PATH : DATABASE_PATH, (database_name || DEFAULT_DATABASE_NAME) + '.mdb');
+		let tables = dbs[database_name] || (dbs[database_name] = Object.create(null));
+		let path = join(custom_path || join(getHdbBasePath(), isAudit ? AUDIT_PATH : DATABASE_PATH), database_name + '.mdb');
 		root_store = database_envs.get(path);
 		if (!root_store) {
 			// TODO: validate database name
@@ -138,6 +141,9 @@ export async function table({ table: table_name, database: database_name, path, 
 			tableName: table_name,
 			indices: [],
 		});
+		let has_audit_table = !isAudit && USE_AUDIT && !custom_path;
+		if (has_audit_table)
+			await table({ table: table_name, database: database_name, path: custom_path, expiration, attributes, isAudit: true });
 	}
 	indices = Table.indices;
 	let internal_dbi_init = new OpenDBIObject(false);
@@ -172,9 +178,6 @@ export async function table({ table: table_name, database: database_name, path, 
 	if (last_commit) await last_commit;
 	if (expiration)
 		Table.setTTLExpiration(+expiration);
-	let has_audit_table = !isAudit && USE_AUDIT;
-	if (has_audit_table)
-		await table({ table: table_name, database: database_name, path, expiration, attributes, isAudit: true });
 	return Table;
 }
 
