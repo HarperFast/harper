@@ -153,6 +153,7 @@ function logConsole(level, logger) {
 }
 
 function loggerWithTag(tag) {
+	let tag_object = { tagName: tag.replace(/ /g, '-') }; // tag can't have spaces
 	return {
 		notify: logWithTag(notify),
 		fatal: logWithTag(fatal),
@@ -164,7 +165,7 @@ function loggerWithTag(tag) {
 	};
 	function logWithTag(logger) {
 		return function (...args) {
-			return logger(tag, ...args);
+			return logger(tag_object, ...args);
 		};
 	}
 }
@@ -196,11 +197,21 @@ function createLogRecord(level, args) {
 	const last_arg = length - 1;
 	let tags = '[' + level + ']';
 	let x = 0;
-	if (typeof args[0] === 'string' && /\[\w+]/.test(args[0])) {
+	if (typeof args[0] === 'string' && /\[[\w-]+]/.test(args[0])) {
 		tags = tags.slice(0, -1) + ' ' + args[0].slice(1);
 		x++;
 	}
-	tags = `[${SERVICE_NAME}/${threadId} ${tags.slice(1)}`;
+	let service_name;
+	if (typeof args[0] === 'object') {
+		if (args[0]?.tagName) {
+			tags = tags.slice(0, -1) + ' ' + args[0]?.tagName + ']';
+			x++;
+		} else if (args[0]?.serviceName) {
+			service_name = args[0]?.serviceName
+			x++;
+		}
+	}
+	tags = `[${service_name || (SERVICE_NAME + '/' + threadId)} ${tags.slice(1)}`;
 	for (; x < length; x++) {
 		let arg = args[x];
 		if (arg instanceof Error && arg.stack) {
