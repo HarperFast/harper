@@ -77,6 +77,12 @@ const LOG_LEVELS = {
 	TRACE: 'trace',
 };
 
+const NATS_LOG_LEVELS = {
+	INF: 'info',
+	WRN: 'warn',
+	ERR: 'error',
+};
+
 const PROCESS_DESCRIPTORS_VALIDATE = {
 	'harperdb': HDB_PROC_DESCRIPTOR,
 	'clustering hub': CLUSTERING_HUB_PROC_DESCRIPTOR,
@@ -516,6 +522,7 @@ const CONFIG_PARAMS = {
 	CLUSTERING_TLS_PRIVATEKEY: 'clustering_tls_privateKey',
 	CLUSTERING_TLS_CERT_AUTH: 'clustering_tls_certificateAuthority',
 	CLUSTERING_TLS_INSECURE: 'clustering_tls_insecure',
+	CLUSTERING_LOGLEVEL: 'clustering_logLevel',
 	CUSTOMFUNCTIONS_ENABLED: 'customFunctions_enabled',
 	CUSTOMFUNCTIONS_NETWORK_PORT: 'customFunctions_network_port',
 	CUSTOMFUNCTIONS_TLS_CERTIFICATE: 'customFunctions_tls_certificate',
@@ -640,6 +647,7 @@ const CONFIG_PARAM_MAP = {
 	clustering_tls_privatekey: CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY,
 	clustering_tls_certificateauthority: CONFIG_PARAMS.CLUSTERING_TLS_CERT_AUTH,
 	clustering_tls_insecure: CONFIG_PARAMS.CLUSTERING_TLS_INSECURE,
+	clustering_loglevel: CONFIG_PARAMS.CLUSTERING_LOGLEVEL,
 	customfunctions_enabled: CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED,
 	customfunctions_network_port: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT,
 	customfunctions_tls_certificate: CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_CERTIFICATE,
@@ -1008,4 +1016,5 @@ module.exports = {
 	PACKAGE_ROOT,
 	PRE_4_0_0_VERSION,
 	SCHEMAS_PARAM_CONFIG,
+	NATS_LOG_LEVELS,
 };
