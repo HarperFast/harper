@@ -71,6 +71,27 @@ const SUBJECT_PREFIXES = {
 	MSGID: 'msgid',
 };
 
+const LOG_LEVELS = {
+	ERR: 'error',
+	WRN: 'warn',
+	INF: 'info',
+	DBG: 'debug',
+	TRC: 'trace',
+};
+
+const LOG_LEVEL_HIERARCHY = {
+	[LOG_LEVELS.ERR]: 1,
+	[LOG_LEVELS.WRN]: 2,
+	[LOG_LEVELS.INF]: 3,
+	[LOG_LEVELS.DBG]: 4,
+	[LOG_LEVELS.TRC]: 5,
+};
+
+const LOG_LEVEL_FLAGS = {
+	debug: '-D',
+	trace: '-DVV',
+};
+
 module.exports = {
 	NATS_SERVER_ZIP,
 	NATS_SERVER_NAME,
@@ -88,4 +109,7 @@ module.exports = {
 	REQUEST_SUBJECT,
 	SUBJECT_PREFIXES,
 	MSG_HEADERS,
+	LOG_LEVELS,
+	LOG_LEVEL_FLAGS,
+	LOG_LEVEL_HIERARCHY,
 };

@@ -77,12 +77,6 @@ const LOG_LEVELS = {
 	TRACE: 'trace',
 };
 
-const NATS_LOG_LEVELS = {
-	INF: 'info',
-	WRN: 'warn',
-	ERR: 'error',
-};
-
 const PROCESS_DESCRIPTORS_VALIDATE = {
 	'harperdb': HDB_PROC_DESCRIPTOR,
 	'clustering hub': CLUSTERING_HUB_PROC_DESCRIPTOR,
@@ -1016,5 +1010,4 @@ module.exports = {
 	PACKAGE_ROOT,
 	PRE_4_0_0_VERSION,
 	SCHEMAS_PARAM_CONFIG,
-	NATS_LOG_LEVELS,
 };
