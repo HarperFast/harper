@@ -3,6 +3,7 @@ const { streamAsJSON } = require('./JSONStream');
 const { toCsvStream } = require('../../dataLayer/export');
 const { pack, unpack, encodeIter } = require('msgpackr');
 const { decode, encode, EncoderStream } = require('cbor-x');
+const { createBrotliCompress, brotliCompress } = require('zlib');
 const { Readable } = require('stream');
 const media_types = { // TODO: Make these monomorphic for faster access. And use a Map
 	'application/json': {
@@ -153,6 +154,11 @@ let registerFastifySerializers = fp(
 	{ name: 'content-type-negotiation' }
 );
 
+/**
+ * This is returns the best serializer for the request's Accept header (content negotiation)
+ * @param incoming_message
+ * @returns {{serializer, type: string, parameters: {q: number}}|{serializer(): void}}
+ */
 function findBestSerializer(incoming_message) {
 	let accept_header = incoming_message.headers.accept;
 	let best_serializer;
@@ -204,22 +210,44 @@ function findBestSerializer(incoming_message) {
  * @returns {Uint8Array|*}
  */
 function serialize(response_data, request, response_object) {
+	// TODO: Maybe support other compression encodings; browsers basically universally support brotli, but Node's HTTP
+	//  client itself actually (just) supports gzip/deflate
+	let compress = request.headers['accept-encoding']?.includes('br');
+	let response_body;
 	if (response_data?.contentType && response_data.data) {
+		// we use this as a special marker for blobs of data that are explicitly one content type
 		response_object.headers['Content-Type'] = response_data.contentType;
-		return response_data.data;
+		response_body = response_data.data;
 	}
 	if (response_data instanceof Uint8Array) {
+		// If a user function or property returns a direct Buffer of binary data, this is the most appropriate content
+		// type for it.
 		response_object.headers['Content-Type'] = 'application/octet-stream';
-		return response_data;
-	}
-	let serializer = findBestSerializer(request);
-	// TODO: If a different content type is preferred, look through resources to see if there is one
-	// specifically for that content type (most useful for html).
+		response_body = response_data;
+	} else {
+		let serializer = findBestSerializer(request);
+		// TODO: If a different content type is preferred, look through resources to see if there is one
+		// specifically for that content type (most useful for html).
 
-	response_object.headers['Content-Type'] = serializer.type;
-	if (serializer.serializer.serializeStream)
-		return serializer.serializer.serializeStream(response_data);
-	return serializer.serializer.serialize(response_data);
+		response_object.headers['Content-Type'] = serializer.type;
+		if (serializer.serializer.serializeStream) {
+			let stream = serializer.serializer.serializeStream(response_data);
+			if (compress) {
+				response_object.headers['Content-Encoding'] = 'br';
+				// TODO: Use the fastest setting here and only do it if load is low
+				stream = stream.pipe(createBrotliCompress());
+			}
+			return stream;
+		}
+		response_body = serializer.serializer.serialize(response_data);
+	}
+	if (compress) {
+		// TODO: Only do this if the size is large and we can cache the result (otherwise use logic above)
+		response_object.headers['Content-Encoding'] = 'br';
+		// if we have a single buffer (or string) we compress in a single async call
+		response_body = new Promise(resolve => brotliCompress(response_body, resolve));
+	}
+	return response_body
 }
 
 /**
