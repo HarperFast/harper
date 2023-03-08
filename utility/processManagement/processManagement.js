@@ -102,7 +102,9 @@ function start(proc_config) {
 			if (proc_config.restarts < MAX_RESTARTS) start(proc_config);
 		}
 	});
-	let process_logger = loggerWithTag(proc_config.name);
+	const SERVICE_DEFINITION = {
+		serviceName: proc_config.name.replace(/ /g, '-'),
+	};
 	function extractMessages(log) {
 		let NATS_PARSER = /\[\d+][^\[]+\[(\w+)]/g;
 		let log_start,
@@ -110,13 +112,13 @@ function start(proc_config) {
 			last_level;
 		while ((log_start = NATS_PARSER.exec(log))) {
 			if (log_start.index) {
-				process_logger[last_level || 'info'](log.slice(last_position, log_start.index).trim());
+				hdb_logger[last_level || 'info'](SERVICE_DEFINITION, log.slice(last_position, log_start.index).trim());
 			}
 			let [start_text, level] = log_start;
 			last_position = log_start.index + start_text.length;
 			last_level = NATS_LEVELS[level];
 		}
-		process_logger[last_level || 'info'](log.slice(last_position).trim());
+		hdb_logger[last_level || 'info'](SERVICE_DEFINITION, log.slice(last_position).trim());
 	}
 	subprocess.stdout.on('data', extractMessages);
 	subprocess.stderr.on('data', extractMessages);
