@@ -91,7 +91,7 @@
     "minimist": "1.2.6",
     "mkcert": "1.5.0",
     "moment": "2.29.4",
-    "msgpackr": "1.8.2",
+    "msgpackr": "1.8.5",
     "nats": "2.9.2",
     "needle": "3.1.0",
     "node-ipc": "9.1.4",
@@ -148,6 +148,9 @@
   "overrides": {
     "eslint-plugin-radar": {
       "eslint": "8.22.0"
+    },
+    "lmdb": {
+      "msgpackr": "1.8.5"
     },
     "newman-reporter-html": {
       "newman": "5.2.3"
