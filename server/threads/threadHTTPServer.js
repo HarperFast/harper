@@ -38,7 +38,9 @@ if (!isMainThread) {
 				// TODO: If fastify has fielded a route and messed up the closing, then have to manually exit the
 				//  process otherwise we can use a graceful exit
 				// if (SERVERS[server_type].hasRequests)
-				SERVERS[server_type].close().then(() => {
+				SERVERS[server_type].close();
+				// TODO: Let fastify register as a close handler
+					/*.then(() => {
 					// Terminating a thread this way is really really wrong. A NodeJS thread (or process) is supposed to end
 					// once it has completed all referenced work, and this allows NodeJS to property monitor for any
 					// outstanding work. Violently exiting this way circumvents this, and means that there may be
@@ -50,7 +52,7 @@ if (!isMainThread) {
 					// One thing we could also do here is try to detect if fastify has received any requests. For some
 					// reason if a fastify server has not received any requests yet, we can gracefully exit properly.
 					process.exit(0);
-				});
+				});*/
 				// else server.close() and server.closeIdleConnections()
 			}
 		}
