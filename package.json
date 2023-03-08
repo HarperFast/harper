@@ -32,7 +32,7 @@
     "name": "HarperDB",
     "email": "support@harperdb.io"
   },
-  "license": "See License in ./license/Community+Edition+and+Evaluation+End+User+License+Agreement.pdf",
+  "license": "SEE LICENSE IN LICENSE",
   "scripts": {
     "submodules": "git submodule update --init --recursive",
     "build": "eslint -c ./.eslintbuild bin/ dataLayer/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
