@@ -72,7 +72,7 @@ async function readLog(request) {
 				pending_log_entry.message = log_data.slice(last_position, parsed.index);
 				onLogMessage(pending_log_entry);
 			}
-			let [intro, timestamp, tags_string, message] = parsed;
+			let [intro, timestamp, tags_string] = parsed;
 			let tags = tags_string.split(' ');
 			let thread = tags[0];
 			let level = tags[1];
