@@ -5,13 +5,13 @@ const operationsServer = require('../server/harperdb/operationsServer');
 const basicAuth = require('../security/basicAuth');
 const { server } = require('../index');
 const { getTables } = require('../resources/database');
-const { loadCustomFunctions } = require('../server/customFunctions/customFunctionsLoader');
+const { loadApplications } = require('../server/customFunctions/applicationsLoader');
 const env = require('../utility/environment/environmentManager');
 const { secureImport } = require('../resources/jsLoader');
 const { Resources } = require('../resources/Resources');
 
 const CORE_PLUGINS = {
-	'app-server': {},
+	'app-server': {}, // this is intended to be the default http handler for http-based plugins
 	'operations-server': operationsServer,
 	'auth': basicAuth,
 };
@@ -42,7 +42,7 @@ async function loadComponentModules(components = default_components) {
 			console.error('Error loading component', error, module_id);
 		}
 	}
-	await loadCustomFunctions(loaded_plugins, resources);
+	await loadApplications(loaded_plugins, resources);
 	let all_ready = [];
 	for (let [component] of loaded_plugins) {
 		if (component.ready) all_ready.push(component.ready());

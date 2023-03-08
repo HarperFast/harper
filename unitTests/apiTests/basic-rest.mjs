@@ -37,6 +37,7 @@ describe('test REST calls', () => {
 			titleId: 35,
 		}), {
 			method: 'POST',
+			responseType: 'arraybuffer',
 			headers,
 		});
 		console.log('decoded arraybuffer data:', decode(response.data));

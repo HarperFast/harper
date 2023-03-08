@@ -1,7 +1,8 @@
 import { ResourceInterface } from './ResourceInterface';
 import { getTables } from './database';
 import { RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
-import { Table, DATA, OWN } from './Table';
+import { Table } from './Table';
+import { DATA, OWN } from './writableRecord';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 let tables;
 const QUERY_PARSER = /([^&|=<>!(),]+)([&|=<>!(),]*)/g
@@ -11,6 +12,14 @@ const SYMBOL_OPERATORS = {
 	'>': 'gt',
 	'>=': 'ge',
 }
+
+/**
+ * This is the main class that can be extended for any resource in HarperDB and provides the essential reusable
+ * uniform interface for interacting with data, defining the API for providing data (data sources) and for consuming
+ * data. This interface is used pervasively in HarperDB and is implemented by database tables and can be used to define
+ * sources for caching, real-data sources for messaging protocols, and RESTful endpoints, as well as any other types of
+ * data aggregation, processing, or monitoring.
+ */
 export class Resource implements ResourceInterface {
 	request: any
 	user: any
@@ -23,8 +32,14 @@ export class Resource implements ResourceInterface {
 		this.request = request;
 		this.user = request?.user;
 		this.fullIsolation = full_isolation;
-		this.restartable = true; // if not restartable and full-isolation is required, need an async-transaction
 	}
+
+	/**
+	 * Resources track the last modified time, which is essential for all caching layers in a system (and beyond to
+	 * clients that may do caching). Any type a source is accessed with a modification time, this can be called to ensure
+	 * the current resource has this time or later as its aggregate modification time.
+	 * @param latest
+	 */
 	updateModificationTime(latest = Date.now()) {
 		if (latest > this.lastModificationTime) {
 			this.lastModificationTime = latest;

@@ -60,7 +60,7 @@ export class RAPIBridge extends LMDBBridge {
 	}
 
 	async createRecords(insert_obj) {
-		let { schema_table, attributes } = insertUpdateValidate(insert_obj);
+		let {schema_table, attributes} = insertUpdateValidate(insert_obj);
 
 		lmdbProcessRows(insert_obj, attributes, schema_table.primaryKey);
 
@@ -76,7 +76,7 @@ export class RAPIBridge extends LMDBBridge {
 		let new_attributes;
 		if (insert_obj.auto_generate_indices)
 			new_attributes = await lmdb_check_new_attributes(insert_obj.hdb_auth_header, schema_table, attributes);
-		let Table = await table({ database: insert_obj.schema, table: insert_obj.table });
+		let Table = await table({database: insert_obj.schema, table: insert_obj.table});
 		let txn = new Table();
 		let put_options = {
 			timestamp: insert_obj.__origin?.timestamp
@@ -100,5 +100,5 @@ export class RAPIBridge extends LMDBBridge {
 		}
 
 		return response;
-
+	}
 }

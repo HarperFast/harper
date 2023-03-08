@@ -23,7 +23,11 @@ if (isMainThread) {
 			statSync(join(PACKAGE_ROOT, TS_DIRECTORY, filename.replace(/.ts$/, '.js'))).mtimeMs
 		) {
 			console.warn(
-				`TypeScript ${filename} is not compiled (consider enabling auto-compilation of TypeScript in your IDE). Compiling now`
+				`TypeScript ${filename} is not compiled (TS source file was modified at ${new Date(
+					statSync(join(PACKAGE_ROOT, filename)).mtimeMs
+				)} and compiled file at ${new Date(
+					statSync(join(PACKAGE_ROOT, TS_DIRECTORY, filename.replace(/.ts$/, '.js'))).mtimeMs
+				)}, consider enabling auto-compilation of TypeScript in your IDE). Compiling now`
 			);
 			needs_compile = true;
 			break;

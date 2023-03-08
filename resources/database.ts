@@ -24,13 +24,13 @@ export function getTables() {
 }
 
 export function getDatabases() {
-	if (!loaded_databases) return databases;
+	if (loaded_databases) return databases;
 	loaded_databases = true;
 	loadDatabases(databases, join(getHdbBasePath(), DATABASE_PATH), getBaseSchemaPath());
 	return databases;
 }
 export function getAuditDbs() {
-	if (!loaded_audit_dbs) return auditDbs;
+	if (loaded_audit_dbs) return auditDbs;
 	loaded_audit_dbs = true;
 	auditDbs = {};
 	let base_path = getTransactionAuditStoreBasePath();

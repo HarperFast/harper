@@ -20,7 +20,7 @@ let CF_ROUTES_DIR = env.get(HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 let loaded_plugins: Map<any, any>;
 let watches_setup;
 let resources;
-export function loadCustomFunctions(loaded_plugin_modules?: Map<any, any>, loaded_resources?: Resources) {
+export function loadApplications(loaded_plugin_modules?: Map<any, any>, loaded_resources?: Resources) {
 	if (loaded_resources)
 		resources = loaded_resources;
 	if (loaded_plugin_modules)
@@ -31,11 +31,13 @@ export function loadCustomFunctions(loaded_plugin_modules?: Map<any, any>, loade
 		if (!app_entry.isDirectory() && !app_entry.isSymbolicLink()) return;
 		const app_name = app_entry.name;
 		const app_folder = join(CF_ROUTES_DIR, app_name);
-		cfs_loaded.push(loadCustomFunction(app_folder, resources));
+		cfs_loaded.push(loadApplication(app_folder, resources));
 	}
-	cfs_loaded.push(loadCustomFunction(process.cwd(), resources));
-	watches_setup = true;
-	return Promise.all(cfs_loaded);
+	// TODO: Get the "current" app from command line "run" argument
+	cfs_loaded.push(loadApplication(process.cwd(), resources));
+	return Promise.all(cfs_loaded).then(() => {
+		watches_setup = true;
+	});
 }
 
 const TRUSTED_HANDLERS = {
@@ -65,7 +67,7 @@ const DEFAULT_HANDLERS = [
 	},*/
 ];
 
-export async function loadCustomFunction(app_folder: string, resources: Resources) {
+export async function loadApplication(app_folder: string, resources: Resources) {
 	try {
 		let config_path = join(app_folder, CONFIG_FILENAME);
 		let config;
@@ -112,7 +114,7 @@ export async function loadCustomFunction(app_folder: string, resources: Resource
 		// Auto restart threads on changes to any app folder. TODO: Make this configurable
 		if (isMainThread && !watches_setup) {
 			watchDir(app_folder, () => {
-				loadCustomFunctions();
+				loadApplications();
 				restartWorkers();
 			});
 		}
