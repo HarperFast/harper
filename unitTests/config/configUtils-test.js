@@ -308,6 +308,7 @@ describe('Test configUtils module', () => {
 							path: null,
 						},
 					},
+					logLevel: 'error',
 					nodeName: 'test_node_name',
 					tls: {
 						certificate: TEST_CERT,
@@ -402,6 +403,7 @@ describe('Test configUtils module', () => {
 				clustering_leafserver_streams_maxbytes: null,
 				clustering_leafserver_streams_maxmsgs: null,
 				clustering_leafserver_streams_path: null,
+				clustering_loglevel: 'error',
 				clustering_nodename: 'test_node_name',
 				clustering_tls_certificate: TEST_CERT,
 				clustering_tls_certificateauthority: null,
@@ -482,6 +484,7 @@ describe('Test configUtils module', () => {
 			clustering_leafserver_streams_maxbytes: null,
 			clustering_leafserver_streams_maxmsgs: null,
 			clustering_leafserver_streams_path: null,
+			clustering_loglevel: 'error',
 			clustering_nodename: null,
 			clustering_tls_certificate: null,
 			clustering_tls_certificateauthority: null,

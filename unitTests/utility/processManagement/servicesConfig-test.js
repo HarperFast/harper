@@ -30,6 +30,7 @@ describe('Test processManagement servicesConfig module', () => {
 		sandbox.stub(hdb_license, 'licenseSearch').returns({ ram_allocation: 512 });
 		env_mangr.initTestEnvironment();
 		LOG_PATH = env.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY);
+		sandbox.stub(env, 'initSync');
 	});
 
 	after(() => {
