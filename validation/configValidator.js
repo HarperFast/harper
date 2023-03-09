@@ -148,7 +148,7 @@ function configValidator(config_json) {
 			file: boolean.required(),
 			level: Joi.valid('notify', 'fatal', 'error', 'warn', 'info', 'debug', 'trace'),
 			rotation: Joi.object({
-				enabled: boolean.required(),
+				enabled: boolean.optional(),
 				frequency: string.optional().empty(null),
 				size: string.custom(validateRotationMaxSize).optional().empty(null),
 				path: string.optional().empty(null),

@@ -241,10 +241,7 @@ function createLogRecord(level, args) {
  * @param log
  */
 function logStdOut(log) {
-	if (log_to_file) {
-		openLogFile();
-		fs.appendFileSync(log_fd, log);
-	}
+	if (log_to_file) logToFile(log);
 	if (log_to_stdstreams) process.stdout.write(log);
 }
 
@@ -253,11 +250,13 @@ function logStdOut(log) {
  * @param log
  */
 function logStdErr(log) {
-	if (log_to_file) {
-		openLogFile();
-		fs.appendFileSync(log_fd, log);
-	}
+	if (log_to_file) logToFile(log);
 	if (log_to_stdstreams) process.stderr.write(log);
+}
+
+function logToFile(log) {
+	openLogFile();
+	fs.appendFileSync(log_fd, log);
 }
 
 function closeLogFile() {
