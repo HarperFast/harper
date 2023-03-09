@@ -131,12 +131,14 @@ async function checkNATSServerInstalled() {
 		//check if binary exists
 		await fs.access(NATS_SERVER_PATH);
 	} catch (e) {
+		console.error(`${NATS_SERVER_PATH} does not exist`);
 		return false;
 	}
 
 	//if nats-server exists check the version
 	let version_str = await runCommand(`${NATS_SERVER_PATH} --version`, undefined);
 	let version = version_str.substring(version_str.lastIndexOf('v') + 1, version_str.length);
+	console.log(`check ${version} versus ${REQUIRED_NATS_SERVER_VERSION}`);
 	return semver.eq(version, REQUIRED_NATS_SERVER_VERSION);
 }
 
