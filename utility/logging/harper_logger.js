@@ -195,23 +195,19 @@ function createLogRecord(level, args) {
 	let log_msg = '';
 	let length = args.length;
 	const last_arg = length - 1;
-	let tags = '[' + level + ']';
+	let tags = [ level ];
 	let x = 0;
-	if (typeof args[0] === 'string' && /\[[\w-]+]/.test(args[0])) {
-		tags = tags.slice(0, -1) + ' ' + args[0].slice(1);
-		x++;
-	}
 	let service_name;
 	if (typeof args[0] === 'object') {
 		if (args[0]?.tagName) {
-			tags = tags.slice(0, -1) + ' ' + args[0]?.tagName + ']';
+			tags.push(args[0]?.tagName);
 			x++;
 		} else if (args[0]?.serviceName) {
 			service_name = args[0]?.serviceName
 			x++;
 		}
 	}
-	tags = `[${service_name || (SERVICE_NAME + '/' + threadId)} ${tags.slice(1)}`;
+	tags.unshift(service_name || (SERVICE_NAME + '/' + threadId));
 	for (; x < length; x++) {
 		let arg = args[x];
 		if (arg instanceof Error && arg.stack) {
@@ -226,7 +222,7 @@ function createLogRecord(level, args) {
 		}
 	}
 
-	return `${date_now}${tags ? ' ' + tags : tags}: ${log_msg}\n`;
+	return `${date_now} [${tags.join('] [')}]: ${log_msg}\n`;
 }
 
 /**
