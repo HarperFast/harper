@@ -32,7 +32,7 @@ function insertUpdateValidate(write_object) {
 		throw new Error('records must be an array');
 	}
 
-	let schema_table = getDatabases()[write_object.schema][write_object.table];
+	let schema_table = getDatabases()[write_object.schema]?.[write_object.table];
 	if (hdb_utils.isEmpty(schema_table)) {
 		throw new Error(`could not retrieve schema:${write_object.schema} and table ${write_object.table}`);
 	}

@@ -246,7 +246,7 @@ server.ws = function(listener, port) {
 	if (!ws_server) {
 		ws_server = new WebSocketServer({server: getDefaultHTTPServer()});
 		ws_server.on('connection', async (ws, request) => {
-			let chain_completion = ws_chain();
+			let chain_completion = ws_chain(request);
 			for (let i = 0; i < ws_listeners.length; i++) {
 				let listener = ws_listeners[i];
 				listener(ws, request, chain_completion);

@@ -20,25 +20,49 @@ export function addSubscription(path, dbi, key, listener?: (key) => any) {
 		all_subscriptions = Object.create(null); // using it as a map that doesn't change much
 	}
 	let env_subscriptions = all_subscriptions[path] || (all_subscriptions[path] = []);
-	let dbi_subscriptions = env_subscriptions[dbi] || (env_subscriptions[dbi] = new Map());
+	let dbi_subscriptions = env_subscriptions[dbi];
+	if (!dbi_subscriptions) {
+		dbi_subscriptions = env_subscriptions[dbi] = new Map()
+		dbi_subscriptions.envs = env_subscriptions;
+		dbi_subscriptions.dbi = dbi;
+	}
 	let subscriptions: any[] = dbi_subscriptions.get(key);
 
-	let subscription = {
-		callback: listener,
-		end() {
-			// cleanup
-			subscriptions.splice(subscriptions.indexOf(subscription), 1);
-			if (subscriptions.length === 0) {
-				dbi_subscriptions.delete(key);
-				if (dbi_subscriptions.size === 0) {
-					delete env_subscriptions[dbi];
-				}
+	let subscription = new Subscription(listener);
+	if (subscriptions) subscriptions.push(subscription);
+	else {
+		dbi_subscriptions.set(key, subscriptions = [subscription]);
+		subscriptions.dbis = dbi_subscriptions;
+		subscriptions.key = key;
+	}
+	subscription.subscriptions = subscriptions;
+	return subscription;
+}
+
+class Subscription {
+	callback: (key) => any
+	subscriptions: []
+	constructor(listener) {
+		this.callback = listener;
+	}
+	end() {
+		// cleanup
+		this.subscriptions.splice(this.subscriptions.indexOf(subscription), 1);
+		if (this.subscriptions.length === 0) {
+			let dbi_subscriptions = this.subscriptions.dbis;
+			let key = this.subscriptions.key;
+			dbi_subscriptions.delete(key);
+			if (dbi_subscriptions.size === 0) {
+				let env_subscriptions = dbi_subscriptions.envs;
+				let dbi = dbi_subscriptions.dbi;
+				delete env_subscriptions[dbi];
 			}
 		}
-	};
-	if (subscriptions) subscriptions.push(subscription);
-	else dbi_subscriptions.set(key, subscriptions = [subscription]);
-	return subscription;
+
+	}
+	toJSON() {
+		return { name: 'subscription' };
+	}
 }
 function notifyFromTransactionData(path, buffers, flag_position) {
 	const HAS_KEY = 4;
@@ -78,9 +102,9 @@ function notifyFromTransactionData(path, buffers, flag_position) {
 				if (flag & SET_VERSION) {
 					flag_position += 2;
 				}
-				let subscriptions = dbi_subscriptions?.get(key);
+				let key_subscriptions = dbi_subscriptions?.get(key);
 				//console.log(threadId, 'change to', key, 'listeners', handlers?.length, 'flag_position', flag_position);
-				if (subscriptions) subscriptions.forEach(subscription => {
+				if (key_subscriptions) key_subscriptions.forEach(subscription => {
 					try {
 						subscription.callback(key);
 					} catch(error) {

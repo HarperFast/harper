@@ -71,8 +71,6 @@ async function execute(Resource, method, relative_url, request_data, request, ws
 					let subscription = response_data = resource_snapshot.subscribe(relative_url, {
 						callback: request.onUpdate,
 					});
-					ws.on('close', () => subscription.end());
-					response_data = request.stream;
 				}
 				break;
 			case 'GET':
@@ -140,7 +138,8 @@ async function wsMessage(Resource, resource_path, path, data, request, ws) {
 	let request_id = data.id;
 	try {
 		let response = await execute(Resource, method, path, request_data, request, ws);
-		response.callback = () => {
+		let subscription = response.data;
+		subscription.callback = () => {
 			if (!message_count) {
 				setTimeout(() => {
 					console.log('message count (in last 10 seconds)', message_count, 'connection_count', connection_count, 'mem', Math.round(process.memoryUsage().heapUsed / 1000000));
@@ -153,7 +152,7 @@ async function wsMessage(Resource, resource_path, path, data, request, ws) {
 				updated: true
 			}, request));
 		};
-		ws.on('close', () => response.end());
+		ws.on('close', () => subscription.end());
 		//response_data.id = request_id;
 		response.id = request_id;
 		ws.send(serializeMessage(response, request));
