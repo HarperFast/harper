@@ -62,7 +62,7 @@ async function readLog(request) {
 	let remaining = '';
 	let pending_log_entry;
 	read_log_input_stream.on('data', (log_data) => {
-		let reader = /(?:^|\n)(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:[\d\.]+Z) \[([^\]]+)]: /g;
+		let reader = /(?:^|\n)(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:[\d\.]+Z) \[(.+?)]: /g;
 		log_data = remaining + log_data;
 		let last_position = 0;
 		let parsed;
@@ -73,7 +73,7 @@ async function readLog(request) {
 				onLogMessage(pending_log_entry);
 			}
 			let [intro, timestamp, tags_string] = parsed;
-			let tags = tags_string.split(' ');
+			let tags = tags_string.split('] [');
 			let thread = tags[0];
 			let level = tags[1];
 			tags.splice(0, 2);
