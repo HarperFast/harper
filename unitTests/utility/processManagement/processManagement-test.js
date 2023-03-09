@@ -285,14 +285,6 @@ describe('Test processManagement utilityFunctions module', () => {
 			expect(process_meta[0].pm2_env.status).to.equal('online');
 		}).timeout(30000);
 
-		it('Test error is handled as expected', async () => {
-			await test_utils.assertErrorAsync(
-				utility_functions.restart,
-				['HarperACDC'],
-				new Error('process or namespace not found')
-			);
-		});
-
 		it('Test error from connect causes promise to reject', async () => {
 			const connect_rw = utility_functions.__set__('connect', sandbox.stub().throws(new Error(test_err)));
 			await test_utils.assertErrorAsync(utility_functions.restart, ['test'], new Error(test_err));

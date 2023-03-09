@@ -1,5 +1,6 @@
 'use strict';
 
+const { isMainThread, parentPort } = require('worker_threads');
 const hdb_terms = require('../utility/hdbTerms');
 const hdb_logger = require('../utility/logging/harper_logger');
 const hdb_utils = require('../utility/common_utils');
@@ -10,7 +11,7 @@ const nats_terms = require('../server/nats/utility/natsTerms');
 const minimist = require('minimist');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const config_utils = require('../config/configUtils');
-const { restartWorkers } = require('../server/threads/manageThreads');
+const { restartWorkers, onMessageFromWorkers } = require('../server/threads/manageThreads');
 const { HTTP_STATUS_CODES } = hdb_errors;
 
 let pm2_utils;
@@ -160,21 +161,36 @@ async function restartProcesses() {
 		return msg;
 	}
 }
-
+const RESTART_TYPE = 'restart';
 /**
  * Restarts all services/threads (doesn't require restarting any processes)
  * @returns {Promise<{}>}
  */
 async function restart(json_message) {
-	const clustering_enabled = config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED);
-	if (clustering_enabled) {
-		await postDummyNatsMsg();
-		await restartAllClusteringProcesses();
+	if (isMainThread) {
+		const clustering_enabled = config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED);
+		if (clustering_enabled) {
+			await postDummyNatsMsg();
+			await restartAllClusteringProcesses();
+		}
+		setTimeout(() => {
+			restartWorkers();
+		}, 50); // can't await this because it would deadlock on waiting for itself to finish
+	} else {
+		parentPort.postMessage({
+			type: RESTART_TYPE,
+		});
 	}
-	setTimeout(() => {
-		restartWorkers();
-	}, 50); // can't await this because it would deadlock on waiting for itself to finish
 	return RESTART_RESPONSE;
+}
+
+if (isMainThread) {
+	onMessageFromWorkers((message) => {
+		if (message.type === RESTART_TYPE) {
+			if (message.workerType) restartService({ service: message.workerType });
+			else restart({});
+		}
+	});
 }
 
 const SERVICE_TO_WORKER_TYPE = {
@@ -201,6 +217,13 @@ async function restartService(json_message) {
 
 	const custom_func_enabled = config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED);
 	const service = hdb_terms.PROCESS_DESCRIPTORS_VALIDATE[service_req];
+	if (!isMainThread) {
+		parentPort.postMessage({
+			type: RESTART_TYPE,
+			workerType: json_message.service,
+		});
+		return `Restarting ${service}`;
+	}
 
 	// For clustered services a rolling restart is available.
 	if (service === hdb_terms.PROCESS_DESCRIPTORS.HDB) {
