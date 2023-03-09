@@ -124,7 +124,7 @@
 		},
 		{
 			"key": "RESTART_INTERVAL",
-			"value": "4000",
+			"value": "7500",
 			"type": "default",
 			"enabled": true
 		},

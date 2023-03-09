@@ -6,7 +6,6 @@ const nats_terms = require('../../server/nats/utility/natsTerms');
 const env_mgr = require('../environment/environmentManager');
 const hdb_utils = require('../common_utils');
 const UpdateRemoteResponseObject = require('./UpdateRemoteResponseObject');
-const pm2_utils = require('../processManagement/processManagement');
 const clustering_utils = require('./clusterUtilities');
 const UpdateObject = require('../../dataLayer/UpdateObject');
 const insert = require('../../dataLayer/insert');
@@ -21,10 +20,8 @@ async function getRemoteSourceConfig(req) {
 	try {
 		hdb_logger.trace(`getRemoteSourceConfig called`);
 
-		// Calculate Hub server uptime
-		const hub_desc = await pm2_utils.describe(hdb_terms.CLUSTERING_HUB_PROC_DESCRIPTOR);
-		const uptime = hub_desc[0].pm2_env.pm_uptime;
-		const time_elapsed = hdb_utils.ms_to_time(Date.now() - uptime);
+		const uptime = process.uptime() * 1000;
+		const time_elapsed = hdb_utils.ms_to_time(uptime);
 
 		const response = new ConfigResponseObject(
 			env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT),

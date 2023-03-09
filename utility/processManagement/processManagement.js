@@ -18,6 +18,7 @@ const child_process = require('child_process');
 const { execFile } = child_process;
 const exec = util.promisify(child_process.exec);
 const path = require('path');
+const si = require('systeminformation');
 
 module.exports = {
 	enterPM2Mode,
@@ -47,6 +48,7 @@ module.exports = {
 	reloadClustering,
 };
 const { PACKAGE_ROOT } = require('../hdbTerms');
+const terms = require('../hdbTerms');
 const { loggerWithTag } = hdb_logger;
 
 const PM2_LOGROTATE_VERSION = '2.7.0';
@@ -171,7 +173,7 @@ function startWithPM2(proc_config) {
  */
 function stop(service_name) {
 	if (!pm2_mode) {
-		for (let process of child_processes) {
+		for (let process of child_processes || []) {
 			if (process.name === service_name) {
 				child_processes.splice(child_processes.indexOf(process), 1);
 				process.kill();
@@ -185,7 +187,7 @@ function stop(service_name) {
 		} catch (err) {
 			reject(err);
 		}
-		pm2.stop(service_name, (err, res) => {
+		pm2.stop(service_name, async (err, res) => {
 			if (err) {
 				pm2.disconnect();
 				reject(err);
@@ -236,6 +238,14 @@ function reload(service_name) {
  * @returns {Promise<unknown>}
  */
 function restart(service_name) {
+	if (!pm2_mode) {
+		for (let child_process of child_processes || []) {
+			// kill the child process and let it (auto) restart
+			if (child_process.name === service_name) {
+				child_process.kill();
+			}
+		}
+	}
 	return new Promise(async (resolve, reject) => {
 		try {
 			await connect();
@@ -243,11 +253,6 @@ function restart(service_name) {
 			reject(err);
 		}
 		pm2.restart(service_name, (err, res) => {
-			if (err) {
-				pm2.disconnect();
-				reject(err);
-			}
-
 			pm2.disconnect();
 			resolve(res);
 		});
@@ -508,6 +513,14 @@ async function stopAllServices() {
 
 		// Kill processManagement daemon
 		await kill();
+		let processes = await si.processes();
+
+		processes.list.forEach((process) => {
+			if (process.params.includes(terms.HDB_PROC_NAME)) {
+				exec('kill', [process.pid]);
+			}
+		});
+
 	} catch (err) {
 		pm2.disconnect();
 		throw err;
@@ -518,6 +531,8 @@ async function stopAllServices() {
  * Check to see if a service is currently managed by processManagement
  */
 async function isServiceRegistered(service) {
+	if (child_processes?.find(child_process => child_process.name === service))
+		return true;
 	return !hdb_utils.isEmptyOrZeroLength(await describe(service));
 }
 
