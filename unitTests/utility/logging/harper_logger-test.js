@@ -776,4 +776,13 @@ describe('Test harper_logger module', () => {
 			expect(result).to.be.false;
 		});
 	});
+
+	it('Test suppressLogging function', () => {
+		const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
+		const fake_func = sandbox.stub().callsFake(() => {});
+		const enabled_var = harper_logger.__get__('logging_enabled');
+		harper_logger.suppressLogging(fake_func);
+		expect(enabled_var).to.be.true;
+		expect(fake_func.called).to.be.true;
+	});
 });
