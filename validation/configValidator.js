@@ -149,9 +149,10 @@ function configValidator(config_json) {
 			level: Joi.valid('notify', 'fatal', 'error', 'warn', 'info', 'debug', 'trace'),
 			rotation: Joi.object({
 				enabled: boolean.optional(),
-				frequency: string.optional().empty(null),
-				size: string.custom(validateRotationMaxSize).optional().empty(null),
-				path: string.optional().empty(null),
+				compress: boolean.optional(),
+				interval: string.optional().empty(null),
+				maxSize: string.custom(validateRotationMaxSize).optional().empty(null),
+				path: string.optional().empty(null).default(setDefaultRoot),
 			}).required(),
 			root: root_constraints,
 			stdStreams: boolean.required(),
@@ -294,6 +295,8 @@ function setDefaultRoot(parent, helpers) {
 			return path.join(hdb_root, 'clustering', 'leaf');
 		case 'storage.path':
 			return path.join(hdb_root, hdb_terms.SCHEMA_DIR_NAME);
+		case 'logging.rotation.path':
+			return path.join(hdb_root, DEFAULT_LOG_FOLDER);
 		default:
 			throw new Error(
 				`Error setting default root for config parameter: ${config_param}. Unrecognized config parameter`

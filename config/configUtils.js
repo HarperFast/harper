@@ -272,6 +272,9 @@ function validateConfig(config_doc) {
 		validation.value.clustering.leafServer.streams.path
 	);
 	config_doc.setIn(['storage', 'path'], validation.value.storage.path);
+
+	if (validation.value.logging.rotation.path)
+		config_doc.setIn(['logging', 'rotation', 'path'], validation.value.logging.rotation.path);
 }
 
 /**
