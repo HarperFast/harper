@@ -18,6 +18,7 @@ const assignCMDENVVariables = require('../utility/assignCmdEnvVariables');
 const nats_config = require('../server/nats/utility/natsConfig');
 const stop = require('./stop');
 const upgrade = require('./upgrade');
+const log_rotator = require('../utility/logging/logRotator');
 const minimist = require('minimist');
 const { PACKAGE_ROOT } = require('../utility/hdbTerms');
 const {
@@ -204,6 +205,8 @@ async function main(called_by_install = false) {
 				await pm2_utils.startClusteringThreads();
 			}
 		}
+
+		if (env.get(terms.CONFIG_PARAMS.LOGGING_ROTATION_ENABLED)) await log_rotator();
 		if (!is_scripted) started();
 	} catch (err) {
 		console.error(err);

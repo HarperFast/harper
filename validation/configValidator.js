@@ -15,8 +15,11 @@ const DEFAULT_LOG_FOLDER = 'log';
 const DEFAULT_CUSTOM_FUNCTIONS_FOLDER = 'custom_functions';
 const DEFAULT_CORES_IF_ERR = 4;
 const INVALID_SIZE_UNIT_MSG = 'Invalid logging.rotation.maxSize unit. Available units are G, M or K';
+const INVALID_INTERVAL_UNIT_MSG = 'Invalid logging.rotation.interval unit. Available units are D, H or M (minutes)';
 const INVALID_MAX_SIZE_VALUE_MSG =
 	"Invalid logging.rotation.maxSize value. Value should be a number followed by unit e.g. '10M'";
+const INVALID_INTERVAL_VALUE_MSG =
+	"Invalid logging.rotation.interval value. Value should be a number followed by unit e.g. '10D'";
 const UNDEFINED_OPS_API = 'rootPath config parameter is undefined';
 const UNDEFINED_NATS_ENABLED = 'clustering.enabled config parameter is undefined';
 
@@ -150,7 +153,7 @@ function configValidator(config_json) {
 			rotation: Joi.object({
 				enabled: boolean.optional(),
 				compress: boolean.optional(),
-				interval: string.optional().empty(null),
+				interval: string.custom(validateRotationInterval).optional().empty(null),
 				maxSize: string.custom(validateRotationMaxSize).optional().empty(null),
 				path: string.optional().empty(null).default(setDefaultRoot),
 			}).required(),
@@ -250,6 +253,20 @@ function validateRotationMaxSize(value, helpers) {
 	const size = value.slice(0, -1);
 	if (isNaN(parseInt(size))) {
 		return helpers.message(INVALID_MAX_SIZE_VALUE_MSG);
+	}
+
+	return value;
+}
+
+function validateRotationInterval(value, helpers) {
+	const unit = value.slice(-1);
+	if (unit !== 'D' && unit !== 'H' && unit !== 'M') {
+		return helpers.message(INVALID_INTERVAL_UNIT_MSG);
+	}
+
+	const size = value.slice(0, -1);
+	if (isNaN(parseInt(size))) {
+		return helpers.message(INVALID_INTERVAL_VALUE_MSG);
 	}
 
 	return value;

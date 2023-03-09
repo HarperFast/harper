@@ -65,6 +65,7 @@ module.exports = {
 	initLogSettings,
 	setupConsoleLogging,
 	logCustomLevel,
+	getLogFilePath: () => log_file_path,
 	OUTPUTS,
 };
 
@@ -218,7 +219,7 @@ function createLogRecord(level, args) {
 			x++;
 		}
 	}
-	tags = `[${service_name || (SERVICE_NAME + '/' + threadId)} ${tags.slice(1)}`;
+	tags = `[${service_name || SERVICE_NAME + '/' + threadId} ${tags.slice(1)}`;
 	for (; x < length; x++) {
 		let arg = args[x];
 		if (arg instanceof Error && arg.stack) {
