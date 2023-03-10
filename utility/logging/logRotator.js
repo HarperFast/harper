@@ -12,7 +12,8 @@ const hdb_logger = require('./harper_logger');
 const { CONFIG_PARAMS, ITC_EVENT_TYPES } = require('../hdbTerms');
 const { onMessageFromWorkers } = require('../../server/threads/manageThreads');
 
-const LOG_ROTATE_INTERVAL = 60000;
+// Interval to check log file and decide if it should be rotated.
+const LOG_AUDIT_INTERVAL = 60000;
 const INT_SIZE_UNDEFINED_MSG =
 	"'interval' and 'maxSize' are both undefined, to enable logging rotation at least one of these values must be defined in harperdb-config.yaml";
 const PATH_UNDEFINED_MSG =
@@ -90,7 +91,7 @@ async function logRotator() {
 					last_rotation_time = Date.now() / 60000;
 				}
 			}
-		}, LOG_ROTATE_INTERVAL).unref();
+		}, LOG_AUDIT_INTERVAL).unref();
 	} catch (err) {
 		hdb_logger.error(err);
 	}
