@@ -11,6 +11,7 @@ const fs = require('fs-extra');
 const path = require('path');
 const test_util = require('../test_utils');
 const env_mangr = require('../../utility/environment/environmentManager');
+const hdb_terms = require('../../utility/hdbTerms');
 const install_user_permission = require('../../utility/install_user_permission');
 const pm2_utils = require('../../utility/processManagement/processManagement');
 const nats_config = require('../../server/nats/utility/natsConfig');
@@ -79,6 +80,7 @@ describe('Test run module', () => {
 		run_rw = rewire('../../bin/run');
 		log_rw = run_rw.__set__('hdb_logger', logger_fake);
 		sandbox.stub(nats_config, 'generateNatsConfig');
+		env_mangr.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_ROTATION_ENABLED, false);
 	});
 
 	after(() => {
@@ -427,36 +429,6 @@ describe('Test run module', () => {
 			expect(log_error_stub.getCall(0).firstArg).to.equal(
 				'Unable to create the transaction audit environment for unit_tests.are_amazing, due to: I am a unit test error test'
 			);
-		});
-	});
-
-	describe('Test processExitHandler function', () => {
-		let stop_stub;
-		let processExitHandler;
-
-		before(() => {
-			run_rw.__set__('getRunInForeground', () => true);
-			stop_stub = sandbox.stub(stop, 'stop');
-			processExitHandler = run_rw.__get__('processExitHandler');
-		});
-
-		beforeEach(() => {
-			sandbox.resetHistory();
-		});
-
-		after(() => {
-			run_rw.__set__('getRunInForeground', () => false);
-		});
-
-		it('Test stop is called happy path', async () => {
-			await processExitHandler();
-			expect(stop_stub).to.have.been.called;
-		});
-
-		it('Test error from stop is handled', async () => {
-			stop_stub.throws(TEST_ERROR);
-			await processExitHandler();
-			expect(console_error_stub.getCall(0).firstArg.name).to.equal(TEST_ERROR);
 		});
 	});
 

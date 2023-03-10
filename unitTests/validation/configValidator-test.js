@@ -433,8 +433,9 @@ describe('Test configValidator module', () => {
 			bad_config_obj.logging.file = 'sassafrass';
 			bad_config_obj.logging.level = 'holla';
 			bad_config_obj.logging.rotation.enabled = 'please';
-			bad_config_obj.logging.rotation.frequency = 1;
-			bad_config_obj.logging.rotation.size = '100z';
+			bad_config_obj.logging.rotation.interval = 1;
+			bad_config_obj.logging.rotation.compress = 'nah';
+			bad_config_obj.logging.rotation.maxSize = '100z';
 			bad_config_obj.logging.rotation.path = true;
 			bad_config_obj.logging.root = '/???';
 			bad_config_obj.logging.stdStreams = ['not_a_boolean'];
@@ -442,8 +443,7 @@ describe('Test configValidator module', () => {
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'logging.file' must be a boolean. 'logging.level' must be one of [notify, fatal, error, warn, info, debug, trace]. 'logging.rotation.enabled' must be a boolean. 'logging.rotation.frequency' must be a string. Invalid logging.rotation.maxSize unit. Available units are G, M or K. 'logging.rotation.path' must be a string. 'logging.root' with value '/???' fails to match the directory path pattern. 'logging.stdStreams' must be a boolean. 'logging.auditLog' must be a boolean";
-
+				"'logging.file' must be a boolean. 'logging.level' must be one of [notify, fatal, error, warn, info, debug, trace]. 'logging.rotation.enabled' must be a boolean. 'logging.rotation.compress' must be a boolean. 'logging.rotation.interval' must be a string. Invalid logging.rotation.maxSize unit. Available units are G, M or K. 'logging.rotation.path' must be a string. 'logging.root' with value '/???' fails to match the directory path pattern. 'logging.stdStreams' must be a boolean. 'logging.auditLog' must be a boolean";
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
 
