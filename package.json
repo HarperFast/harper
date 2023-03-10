@@ -83,7 +83,7 @@
     "json2csv": "5.0.7",
     "jsonata": "1.8.6",
     "jsonwebtoken": "9.0.0",
-    "lmdb": "2.7.9",
+    "lmdb": "2.7.10",
     "lodash": "4.17.21",
     "mathjs": "10.4.0",
     "microtime": "3.1.1",
@@ -147,9 +147,6 @@
   "overrides": {
     "eslint-plugin-radar": {
       "eslint": "8.22.0"
-    },
-    "lmdb": {
-      "msgpackr": "1.8.5"
     },
     "newman-reporter-html": {
       "newman": "5.2.3"
