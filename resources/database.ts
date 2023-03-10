@@ -19,10 +19,19 @@ export let databases = {};
 let loaded_databases, loaded_audit_dbs;
 export let auditDbs = {};
 let database_envs = new Map<string, any>();
+
+/**
+ * This gets the set of tables from the default database ("data").
+ */
 export function getTables() {
 	return getDatabases().data || {};
 }
 
+/**
+ * This provides the main entry point for getting the set of all HarperDB databases. This proactively scans the known
+ * databases/schemas directories and finds any databases and opens them. This done proactively so that there is a fast
+ * object available to all consumers that doesn't require runtime checks for database open states.
+ */
 export function getDatabases() {
 	if (loaded_databases) return databases;
 	loaded_databases = true;
@@ -61,6 +70,13 @@ export function loadDatabases(databases, database_path, schemas_base_path) {
 	}
 	tables = databases[DEFAULT_DATABASE_NAME] || {};
 }
+
+/**
+ * This is responsible for reading the internal dbi to get a list of all the tables and their indexed or registered attributes
+ * @param path
+ * @param default_table
+ * @param default_schema
+ */
 function readMetaDb(path: string, default_table?: string, default_schema: string = DEFAULT_DATABASE_NAME) {
 	let env_init = new OpenEnvironmentObject(
 		path,
@@ -106,6 +122,16 @@ interface TableDefinition {
 	attributes: any[]
 	isAudit?: boolean
 }
+
+/**
+ * This can be called to ensure that the specified table exists and if it does not exist, it should be created.
+ * @param table_name
+ * @param database_name
+ * @param custom_path
+ * @param expiration
+ * @param attributes
+ * @param isAudit
+ */
 export async function table({ table: table_name, database: database_name, path: custom_path, expiration, attributes, isAudit }: TableDefinition) {
 	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
 	let dbs = isAudit ? auditDbs : databases;

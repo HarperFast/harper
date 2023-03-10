@@ -1,5 +1,4 @@
-import util from 'util';
-import { join, dirname } from 'path';
+import { dirname } from 'path';
 import fs from 'fs';
 
 import fastify from 'fastify';
@@ -21,6 +20,20 @@ let CF_ROUTES_DIR = env.get(HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 
 let fastify_server;
 let route_folders = new Set();
+
+/**
+ * This is the entry point for the fastify route autoloader plugin. This plugin loads JS modules from provided path
+ * (configurable) and gives them access to the fastify server, so they can register route handlers. This builds a
+ * fastify server instance on-demand, and registers it with the main http access point. Prior to 4.2 this (and static)
+ * were basically the only loaders for HarperDB applications, and this supports all legacy custom functions that rely
+ * on fastify routes. Fastify's performance is not as good as our native HTTP handling, so generally this isn't the
+ * first choice for new applications where performance is a priority, but certainly is a good option for anyone who
+ * likes and/or is familiar with fastify and wants to use its plugins.
+ * @param js_content
+ * @param relative_path
+ * @param file_path
+ * @param project_name
+ */
 export async function handleFile(js_content, relative_path, file_path, project_name) {
 	if (!fastify_server) {
 		const props_http_secure_on = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_HTTPS);

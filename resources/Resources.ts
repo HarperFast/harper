@@ -1,6 +1,11 @@
-export class Resources extends Map {
-	remainingPath = ''
-	set(path, Resource, type) {
+import { Resource } from './Resource';
+
+/**
+ * This is the global set of all resources that have been registered on this server.
+ */
+export class Resources extends Map<string, typeof Resource> {
+	remainingPath = '' // this is to communicate the rest of the path after the part that matches the resource
+	set(path, Resource, type?: string) {
 		let entry = {
 			Resource,
 			path,
@@ -11,7 +16,7 @@ export class Resources extends Map {
 		// now mark any entries that have sub paths so we can efficiently route forward
 		for (let [ path, entry ] of this) {
 			let slash_index = 2;
-			while((slash_index = path.indexOf(slash_index)) > -1) {
+			while((slash_index = path.indexOf('/')) > -1) {
 				let parent_entry = this.get(path.slice(0, slash_index));
 				if (parent_entry) parent_entry.hasSubPaths = true;
 				slash_index += 2;
@@ -20,9 +25,12 @@ export class Resources extends Map {
 	}
 
 	/**
-	 * Find the best (longest) match resource path that matches the (beginning of the) provided path
-	 * @param path
-	 * @param type
+	 * Find the best (longest) match resource path that matches the (beginning of the) provided path, in order to find
+	 * the correct Resource to handle this URL path.
+	 * @param path The URL Path
+	 * @param type Optional request content type, allows layering of resources, specifically for defining HTML handlers
+	 * that can further transform data from the main structured object resources.
+	 * @return The matched Resource class. Note that the remaining path is "returned" by setting the remainingPath property
 	 */
 	getMatch(path: string, type?: string) {
 		let slash_index = 2;
@@ -60,5 +68,4 @@ export class Resources extends Map {
 	setRepresentation(path, type, representation) {
 
 	}
-
 }

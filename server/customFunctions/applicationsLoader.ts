@@ -20,6 +20,13 @@ let CF_ROUTES_DIR = env.get(HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 let loaded_plugins: Map<any, any>;
 let watches_setup;
 let resources;
+
+/**
+ * Load all the applications registered in HarperDB, those in the custom_functions directory as well as any directly
+ * specified to run
+ * @param loaded_plugin_modules
+ * @param loaded_resources
+ */
 export function loadApplications(loaded_plugin_modules?: Map<any, any>, loaded_resources?: Resources) {
 	if (loaded_resources)
 		resources = loaded_resources;
@@ -33,7 +40,7 @@ export function loadApplications(loaded_plugin_modules?: Map<any, any>, loaded_r
 		const app_folder = join(CF_ROUTES_DIR, app_name);
 		cfs_loaded.push(loadApplication(app_folder, resources));
 	}
-	// TODO: Get the "current" app from command line "run" argument
+	// TODO: Get the "current" app from command line "run" argument or something like that
 	cfs_loaded.push(loadApplication(process.cwd(), resources));
 	return Promise.all(cfs_loaded).then(() => {
 		watches_setup = true;
@@ -67,6 +74,11 @@ const DEFAULT_HANDLERS = [
 	},*/
 ];
 
+/**
+ * Load an application from the specified directory
+ * @param app_folder
+ * @param resources
+ */
 export async function loadApplication(app_folder: string, resources: Resources) {
 	try {
 		let config_path = join(app_folder, CONFIG_FILENAME);
@@ -77,11 +89,15 @@ export async function loadApplication(app_folder: string, resources: Resources) 
 			config = {};
 		}
 		let handler_modules = [];
+		// iterate through the app handlers so they can each do their own loading process
 		for (let handler_config of config.handlers || DEFAULT_HANDLERS) {
 			if (typeof handler_config === 'string') handler_config = {module: handler_config};
+			// our own trusted modules can be directly retrieved from our map, otherwise use the (configurable) secure
+			// module loader
 			let module = TRUSTED_HANDLERS[handler_config.module] || await secureImport(handler_config.module);
 			handler_modules.push(module);
 			let start_resolution = loaded_plugins.get(module);
+			// call the main start hook
 			if (!start_resolution) {
 				if (isMainThread)
 					start_resolution = module.startOnMainThread?.({server, resources});
@@ -90,6 +106,9 @@ export async function loadApplication(app_folder: string, resources: Resources) 
 				loaded_plugins.set(module, start_resolution);
 			}
 			await start_resolution;
+			// a loader is configured to specify a glob of files to be loaded, we pass each of those to the plugin
+			// handling files ourselves allows us to pass files to sandboxed modules that might not otherwise have
+			// access to the file system.
 			if (module.handleFile && handler_config.path) {
 				let path = join(app_folder, handler_config.path);
 				for (let entry of await fg(path, {onlyFiles: false, objectMode: true})) {
@@ -103,6 +122,7 @@ export async function loadApplication(app_folder: string, resources: Resources) 
 						else
 							module.handleFile?.(contents, relative_path, path, resources);
 					} else {
+						// some plugins may want to just handle whole directories
 						if (isMainThread)
 							module.setupDirectory?.(relative_path, path, resources);
 						else

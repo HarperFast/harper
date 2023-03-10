@@ -8,6 +8,17 @@ export function registerGraphQL() {
 	registerResourceType('graphql', createHandler);
 	registerResourceType('gql', createHandler);
 }*/
+/**
+ * This is the entry point for handling GraphQL schemas (and server-side defined queries, eventually). This will be
+ * called for schemas, and this will parse the schema (into an AST), and use it to ensure all specified tables and their
+ * attributes exist. This is intended to be the default/primary way to define a table in HarperDB. This supports various
+ * directives for configuring indexing, attribute types, table configuration, and more.
+ *
+ * @param gql_content
+ * @param relative_path
+ * @param file_path
+ * @param resources
+ */
 export async function handleFile(gql_content, relative_path, file_path, resources) {
 	// lazy load the graphql package so we don't load it for users that don't use graphql
 	const { parse, Source, Kind, NamedTypeNode, StringValueNode } = await import('graphql');
@@ -90,7 +101,8 @@ export async function handleFile(gql_content, relative_path, file_path, resource
 								}
 							}
 						}
-						// the resource that is generated for this query and instantiated for each request:
+						// Eventually we may create a custom resource that is generated for this query and instantiated for
+						// each request, that can handle any GraphQL defined sets of properties that should be returned
 						/*class GraphQLResource extends Resource {
 							get(id) {
 								let role = this.user?.role;
@@ -112,6 +124,8 @@ export async function handleFile(gql_content, relative_path, file_path, resource
 							}
 						}
 						handlers.set(query_name, restHandler(GraphQLResource));*/
+						// the main thread should only be setting up tables, worker threads actually register the resources
+						// for server usage
 						if (!isMainThread) {
 							let web_path = dirname(relative_path);
 							if (web_path === '.') web_path = '/';
