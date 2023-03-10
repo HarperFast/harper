@@ -179,9 +179,11 @@ async function installer() {
 			let version_str = await runCommand(`${NATS_SERVER_BINARY_PATH} --version`, undefined);
 			console.log(chalk.green(`****Successfully extracted ${version_str}.****`));
 		} catch (error) {
-			// even if NATS successfully installs, sometimes the version check can spuriously fail with "Text file busy"
-			// error, but NATS will still be installed and working correctly, so we shouldn't fail the whole installation.
-			console.warn('Error checking NATS versions', error);
+			if (error.toString().includes('file busy')) {
+				// even if NATS successfully installs, sometimes the version check can spuriously fail with "Text file busy"
+				// error, but NATS will still be installed and working correctly, so we shouldn't fail the whole installation.
+				console.warn('Error checking NATS versions', error);
+			} else throw error; // ok this is a real error, we need to try to build from source, so rethrow
 		}
 		return;
 	} catch (e) {
