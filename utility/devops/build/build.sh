@@ -59,7 +59,7 @@ dot-json ./npm_pack/package.json overrides --delete
 
 cd ./npm_pack/
 # Add the postinstall script back
-npm set-script postinstall "$post_install"
+dot-json ./npm_pack/package.json scripts.postinstall "$post_install"
 cd ../
 
 # Copy LICENSE file
