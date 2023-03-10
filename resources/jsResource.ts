@@ -1,6 +1,17 @@
 import { pathToFileURL } from 'url';
 import { secureImport } from './jsLoader';
 
+/**
+ * This is the handler for JavaScript Resource modules. These are loaded through the standard app configuration, and loads
+ * JS modules. The returned exports from modules are then scanned for any exported Resource classes, and if it exported
+ * any, they are registered as resources. This provides a convenient file-path based routing mechanism for defining
+ * Resources (in JavaScript). This goes through our secure JS loader, so modules are sandboxed if secure sandboxing
+ * is enabled.
+ * @param js
+ * @param relative_path
+ * @param file_path
+ * @param resources
+ */
 export async function handleFile(js, relative_path, file_path, resources) {
 	let handlers = new Map();
 	let module_url = pathToFileURL(file_path).toString();

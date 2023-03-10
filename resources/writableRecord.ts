@@ -9,7 +9,7 @@ const record_class_cache = {}; // we cache the WritableRecord classes because th
 /**
  *	A WritableRecord is a wrapper around a cacheable, frozen read-only record, designed to facilitate record updates,
  *	and tracks property (and sub-object/array) changes so that on commit, any property changes can be written as part of
- *	the commit.
+ *	the commit. This will also track specific updates so can record information in CRDTs.
  * @param record_data
  */
 export function getWritableRecord(record_data) {

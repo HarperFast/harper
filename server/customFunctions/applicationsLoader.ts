@@ -5,7 +5,7 @@ import { parseDocument } from 'yaml';
 import * as env from '../../utility/environment/environmentManager';
 import { HDB_SETTINGS_NAMES } from '../../utility/hdbTerms';
 import * as graphql_handler from '../../resources/graphql';
-import * as js_handler from '../../resources/js-resource';
+import * as js_handler from '../../resources/jsResource';
 import * as REST from '../../resources/REST';
 import * as fastify_routes_handler from '../../plugins/fastifyRoutes';
 import * as fg from 'fast-glob';

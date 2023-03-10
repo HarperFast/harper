@@ -2,12 +2,6 @@ import { table } from './database';
 import { isMainThread } from 'worker_threads';
 import { dirname } from 'path';
 import { snake_case } from './Table';
-/*import { registerResourceType } from './resource-server';
-
-export function registerGraphQL() {
-	registerResourceType('graphql', createHandler);
-	registerResourceType('gql', createHandler);
-}*/
 /**
  * This is the entry point for handling GraphQL schemas (and server-side defined queries, eventually). This will be
  * called for schemas, and this will parse the schema (into an AST), and use it to ensure all specified tables and their

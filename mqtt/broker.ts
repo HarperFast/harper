@@ -1,15 +1,23 @@
-import { createServer } from 'net';
-import { registerServer } from '../server/threads/thread-http-server';
-export async function start({ port, tables }) {
-	const { default: Aedes } = await import('aedes');
-	let broker = new Aedes({ mq: new HDBEmitter(tables)});
-	let handle = broker.handle;
-	const server = createServer(handle);
-	port = port || 1883;
-	registerServer(server, port);/*
-	server.listen(port, function () {
-		console.log('server started and listening on port ', port)
-	});*/
+import {  } from 'mqtt-packet';
+const DEFAULT_MQTT_PORT = 1883;
+export async function start({ server, port, webSocket, resources }) {
+	if (webSocket)
+		server.ws((ws) => {
+			let onMessage = onSocket(ws);
+			ws.on('message', onMessage);
+		}, port); // if there is no port, we are piggy-backing off of default app http server
+	else // standard TCP socket
+		server.socket((socket) => {
+			let onMessage = onSocket(socket);
+			socket.on('data', onMessage);
+		}, port || DEFAULT_MQTT_PORT);
+}
+
+function onSocket(socket) {
+	function onMessage() {
+
+	}
+	return onMessage;
 }
 
 class HDBEmitter {

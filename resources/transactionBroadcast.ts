@@ -5,6 +5,16 @@ import { onMessageFromWorkers, broadcast } from '../server/threads/manageThreads
 const TRANSACTION_EVENT_TYPE = 'transaction';
 
 let all_subscriptions;
+
+/**
+ * This module/function is responsible for the main work of tracking subscriptions and listening for new transactions
+ * that have occurred on any thread, and then reading through the transaction log to notify listeners. This is
+ * responsible for cleanup of subscriptions as well.
+ * @param path
+ * @param dbi
+ * @param key
+ * @param listener
+ */
 export function addSubscription(path, dbi, key, listener?: (key) => any) {
 	// set up the subscriptions map. We want to just use a single map (per table) for efficient delegation
 	// (rather than having every subscriber filter every transaction)
@@ -39,6 +49,10 @@ export function addSubscription(path, dbi, key, listener?: (key) => any) {
 	return subscription;
 }
 
+/**
+ * This is the class that is returned from subscribe calls and provide the interface to set a callback, end the
+ * subscription and get the initial state.
+ */
 class Subscription {
 	callback: (key) => any
 	subscriptions: []
@@ -64,6 +78,16 @@ class Subscription {
 		return { name: 'subscription' };
 	}
 }
+
+/**
+ * This does the low level work of scanning the lmdb-js transaction log, in its binary format. This is usually written
+ * by other threads, and shared with us through a SharedArrayBuffer (extremely efficient!). We happen to know/control
+ * lmdb-js, so we basically use the same code as the lmdb-js C code uses for reading and interpreting this log of
+ * write instructions. We can then use this to delegate to updates to our map of subscribers.
+ * @param path
+ * @param buffers
+ * @param flag_position
+ */
 function notifyFromTransactionData(path, buffers, flag_position) {
 	const HAS_KEY = 4;
 	const HAS_VALUE = 2;
@@ -119,6 +143,10 @@ function notifyFromTransactionData(path, buffers, flag_position) {
 	}
 }
 
+/**
+ * Interface with lmdb-js to listen for commits and find the SharedArrayBuffers that hold the transaction log/instructions.
+ * @param primary_dbi
+ */
 export function listenToCommits(primary_dbi) {
 	let lmdb_env = primary_dbi.env;
 	if (!lmdb_env.hasBroadcastListener) {

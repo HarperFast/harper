@@ -115,10 +115,17 @@ export class Resource implements ResourceInterface {
 		let record = await this.getById(id, { lazy: true });
 		return record[property];
 	}
+
+	/**
+	 * This is responsible for taking a query string (from a get()) and converting it to a standard query object
+	 * structure
+	 * @param query_string
+	 */
 	parseQuery(query_string: string) {
 		let match;
 		let attribute, comparison;
 		let conditions = [];
+		// TODO: Use URLSearchParams with a fallback for when it can't parse everything (USP is very fast)
 		while ((match = QUERY_PARSER.exec(query_string))) {
 			let [ , value, operator ] = match;
 			switch(operator[0]) {
@@ -157,9 +164,22 @@ export class Resource implements ResourceInterface {
 		return conditions;
 
 	}
+
+	/**
+	 * This is called by protocols that wish to make a subscription for real-time notification/updates
+	 * @param query
+	 * @param options
+	 */
 	subscribe(query: any, options?: {}) {
 		throw new Error('Not implemented');
 	}
+
+	/**
+	 * This used to indicate that this resource will use another resource to compute its data. Doing this will include
+	 * the other resource in the resource snapshot and track timestamps of data used from that resource, allowing for
+	 * automated modification/timestamp handling.
+	 * @param table
+	 */
 	use(table: Table) {
 		return this.useTable(table.tableName, table.schemaName);
 	}
@@ -251,9 +271,9 @@ export class EnvTransaction {
 	}
 
 	/**
-	 * Resolves to true if the commit succeeded, resolves to false if the commit needs to be retried
+	 * Resolves with information on the timestamp and success of the commit
 	 */
-	commit(): CommitResolution {
+	commit(): Promise<CommitResolution> {
 		this.doneReading();
 		let remaining_conditions = this.inTwoPhase ? [] : this.conditions.slice(0).reverse();
 		let txn_time, resolution;
@@ -302,7 +322,7 @@ export function snake_case(camelCase: string) {
 }
 interface CommitResolution {
 	txnTime: number
-	resolution: Promise<boolean>
+	resolution: boolean
 }
 /*
 function example() {

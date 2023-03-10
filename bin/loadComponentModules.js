@@ -18,6 +18,7 @@ const CORE_PLUGINS = {
 let loaded_plugins = new Map();
 const default_components = [
 	//{ module: '/mqtt/broker.js', port: 1883 },
+	//{ module: '/mqtt/broker.js', webSocket: true },
 	{ module: 'app-server', port: 9926 },
 	{ module: 'operations-server', port: 9925 },
 	{ module: 'auth' },
@@ -32,13 +33,14 @@ async function loadComponentModules(components = default_components) {
 	let tables = getTables();
 	let ports_started = [];
 	let resources = new Resources();
-	for (let { module: module_id, port } of default_components) {
+	for (let component_definition of default_components) {
+		let { module: module_id, port } = component_definition;
 		// use predefined core plugins or use the secure/sandbox loader (if configured)
 		let component = CORE_PLUGINS[module_id] || (await secureImport(module_id));
 		try {
 			// start each component
 			if (isMainThread) {
-				if (component.startOnMainThread) await component.startOnMainThread();
+				if (component.startOnMainThread) await component.startOnMainThread(component_definition);
 				if (port && !ports_started.includes(port)) {
 					// if there is a TCP port associated with the plugin, we set up the routing on the main thread for it
 					ports_started.push(port);
@@ -48,7 +50,7 @@ async function loadComponentModules(components = default_components) {
 			} else if (component.start)
 				// on child threads, we can connect to a port that the main thread is routing
 				// (we can't start our own)
-				await component.start({ server, port, resources });
+				await component.start({ server, resources, ...component_definition });
 			loaded_plugins.set(component, true);
 		} catch (error) {
 			console.error('Error loading component', error, module_id);
