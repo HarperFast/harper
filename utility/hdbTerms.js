@@ -872,6 +872,7 @@ const ITC_EVENT_TYPES = {
 	CLUSTER_STATUS_REQUEST: 'cluster_status_request',
 	METRICS: 'metrics',
 	GET_METRICS: 'get_metrics',
+	RESTART: 'restart',
 };
 
 const SERVICES = {

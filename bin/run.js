@@ -317,19 +317,6 @@ async function openCreateAuditEnvironment(schema, table_name) {
 	}
 }
 
-/**
- * If running in foreground and exit event occurs stop is called
- * @returns {Promise<void>}
- */
-async function processExitHandler() {
-	try {
-		await stop.stop();
-	} catch (err) {
-		console.error(err);
-	}
-	process.exit(143);
-}
-
 module.exports = {
 	launch,
 	main,
