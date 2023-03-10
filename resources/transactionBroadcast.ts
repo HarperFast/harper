@@ -54,10 +54,10 @@ export function addSubscription(path, dbi, key, listener?: (key) => any) {
  * subscription and get the initial state.
  */
 class Subscription {
-	callback: (key) => any
+	listener: (key) => any
 	subscriptions: []
 	constructor(listener) {
-		this.callback = listener;
+		this.listener = listener;
 	}
 	end() {
 		// cleanup

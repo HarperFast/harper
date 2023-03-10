@@ -139,7 +139,7 @@ async function wsMessage(Resource, resource_path, path, data, request, ws) {
 	try {
 		let response = await execute(Resource, method, path, request_data, request, ws);
 		let subscription = response.data;
-		subscription.callback = () => {
+		subscription.listener = () => {
 			if (!message_count) {
 				setTimeout(() => {
 					console.log('message count (in last 10 seconds)', message_count, 'connection_count', connection_count, 'mem', Math.round(process.memoryUsage().heapUsed / 1000000));

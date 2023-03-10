@@ -11,6 +11,7 @@ import * as lmdb_terms from '../utility/lmdb/terms';
 import * as env_mngr from '../utility/environment/environmentManager';
 import {addSubscription, listenToCommits} from './transactionBroadcast';
 import { getWritableRecord } from './writableRecord'
+import {tables} from './database';
 
 const RANGE_ESTIMATE = 100000000;
 env_mngr.initSync();

@@ -44,7 +44,7 @@ const media_types = { // TODO: Make these monomorphic for faster access. And use
 			let stream = new Readable({
 			});
 			// TODO: if we can skip messages, use back-pressure and allow messages to be skipped
-			subscription.callback = (data) => {
+			subscription.listener = (data) => {
 				stream.push(data);
 			};
 			stream.on('end', () => subscription.end());
