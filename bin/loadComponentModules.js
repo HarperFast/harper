@@ -3,12 +3,12 @@ const socket_router = require('../server/threads/socketRouter');
 const hdb_terms = require('../utility/hdbTerms');
 const operationsServer = require('../server/harperdb/operationsServer');
 const basicAuth = require('../security/basicAuth');
-const { server } = require('../index');
 const { getTables } = require('../resources/database');
 const { loadApplications } = require('../server/customFunctions/applicationsLoader');
 const env = require('../utility/environment/environmentManager');
 const { secureImport } = require('../resources/jsLoader');
-const { Resources } = require('../resources/Resources');
+const { resetResources } = require('../resources/Resources');
+const { server } = require('../server/Server');
 
 const CORE_PLUGINS = {
 	'app-server': {}, // this is intended to be the default http handler for http-based plugins
@@ -17,8 +17,7 @@ const CORE_PLUGINS = {
 };
 let loaded_plugins = new Map();
 const default_components = [
-	//{ module: '/mqtt/broker.js', port: 1883 },
-	//{ module: '/mqtt/broker.js', webSocket: true },
+	{ module: '/mqtt/broker.js', port: 1883 },
 	{ module: 'app-server', port: 9926 },
 	{ module: 'operations-server', port: 9925 },
 	{ module: 'auth' },
@@ -32,7 +31,7 @@ const default_components = [
 async function loadComponentModules(components = default_components) {
 	let tables = getTables();
 	let ports_started = [];
-	let resources = new Resources();
+	let resources = resetResources();
 	for (let component_definition of default_components) {
 		let { module: module_id, port } = component_definition;
 		// use predefined core plugins or use the secure/sandbox loader (if configured)

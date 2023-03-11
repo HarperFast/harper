@@ -94,6 +94,7 @@
     "minimist": "1.2.8",
     "mkcert": "1.5.1",
     "moment": "2.29.4",
+    "mqtt-packet": "8.1.2",
     "msgpackr": "1.8.4",
     "nats": "2.12.1",
     "needle": "3.2.0",

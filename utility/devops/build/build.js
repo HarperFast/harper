@@ -19,7 +19,7 @@ let entry_modules = [
 	'launchServiceScripts/launchNatsReplyService.js',
 	'launchServiceScripts/launchUpdateNodes4-0-0.js',
 	'server/jobs/jobProcess.js',
-	'server/threads/threadHTTPServer.js',
+	'server/threads/threadServer.js',
 	'utility/scripts/restartHdb.js',
 ];
 for (let entry_module of entry_modules) {

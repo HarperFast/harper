@@ -3,7 +3,7 @@ import { recordRequest } from './analytics';
 import { createServer, ClientRequest, ServerOptions } from 'http';
 import { findAndValidateUser } from '../security/user';
 import { authentication } from '../security/basicAuth';
-import { server } from '../index';
+import { server } from '../server/Server';
 import { Resources } from './Resources';
 
 interface Response {

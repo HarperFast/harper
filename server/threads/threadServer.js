@@ -7,7 +7,7 @@ const { join } = require('path');
 const hdb_utils = require('../../utility/common_utils');
 const env = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
-const { server } = require('../../index');
+const { server } = require('../Server');
 const { WebSocketServer } = require('ws');
 process.on('uncaughtException', (error) => {
 	console.error('uncaughtException', error)
@@ -235,18 +235,19 @@ server.request = (listener, options) => {
 /**
  * Direct socket listener
  * @param listener
- * @param port
+ * @param options
  */
-server.socket = function(listener, port) {
-
-	SERVERS[port] = listener;
+server.socket = function(listener, options) {
+	SERVERS[options.port] = listener;
 };
 let ws_listeners = [], ws_server, ws_chain;
-server.ws = function(listener, port) {
+server.ws = function(listener, options) {
 	if (!ws_server) {
 		ws_server = new WebSocketServer({server: getDefaultHTTPServer()});
 		ws_server.on('connection', async (ws, request) => {
 			let chain_completion = ws_chain(request);
+			let protocol = request.headers['sec-websocket-protocol'];
+			// TODO: select listener by protocol
 			for (let i = 0; i < ws_listeners.length; i++) {
 				let listener = ws_listeners[i];
 				listener(ws, request, chain_completion);

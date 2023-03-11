@@ -20,7 +20,7 @@ async function startHTTPThreads(thread_count = 2) {
 	let { loadComponentModules } = require('../../bin/loadComponentModules');
 	await loadComponentModules();
 	for (let i = 0; i < thread_count; i++) {
-		startWorker('server/threads/threadHTTPServer.js', {
+		startWorker('server/threads/threadServer.js', {
 			name: hdb_terms.THREAD_TYPES.HTTP,
 			isFirst: i === 0,
 			onStarted(worker) {

@@ -69,3 +69,7 @@ export class Resources extends Map<string, typeof Resource> {
 
 	}
 }
+export let resources: Resources
+export function resetResources() {
+	return resources = new Resources();
+}
