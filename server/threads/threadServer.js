@@ -13,7 +13,7 @@ process.on('uncaughtException', (error) => {
 	console.error('uncaughtException', error)
 	process.exit(100);
 });
-const { loadComponentModules } = require('../../bin/loadComponentModules');
+const { loadServerModules } = require('../loadServerModules');
 // log all threads as HarperDB
 harper_logger.createLogFile(terms.PROCESS_LOG_NAMES.HDB, terms.HDB_PROC_DESCRIPTOR);
 env.initSync();
@@ -21,7 +21,7 @@ const SERVERS = {};
 exports.registerServer = registerServer;
 exports.httpServer = httpServer;
 if (!isMainThread) {
-	loadComponentModules();
+	loadServerModules();
 	parentPort.on('message', (message) => {
 		const { port, fd, data } = message;
 		if (fd) {

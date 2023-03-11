@@ -1,14 +1,14 @@
 const { isMainThread } = require('worker_threads');
-const socket_router = require('../server/threads/socketRouter');
+const socket_router = require('./threads/socketRouter');
 const hdb_terms = require('../utility/hdbTerms');
-const operationsServer = require('../server/harperdb/operationsServer');
+const operationsServer = require('./operationsServer');
 const basicAuth = require('../security/basicAuth');
-const { getTables } = require('../resources/database');
-const { loadApplications } = require('../server/customFunctions/applicationsLoader');
+const { getTables } = require('../resources/tables');
+const { loadApplications } = require('../apps/applicationsLoader');
 const env = require('../utility/environment/environmentManager');
-const { secureImport } = require('../resources/jsLoader');
+const { secureImport } = require('../security/jsLoader');
 const { resetResources } = require('../resources/Resources');
-const { server } = require('../server/Server');
+const { server } = require('./Server');
 
 const CORE_PLUGINS = {
 	'app-server': {}, // this is intended to be the default http handler for http-based plugins
@@ -28,7 +28,7 @@ const default_components = [
  * @param components
  * @returns {Promise<void>}
  */
-async function loadComponentModules(components = default_components) {
+async function loadServerModules(components = default_components) {
 	let tables = getTables();
 	let ports_started = [];
 	let resources = resetResources();
@@ -63,4 +63,4 @@ async function loadComponentModules(components = default_components) {
 	}
 	if (all_ready.length > 0) await Promise.all(all_ready);
 }
-module.exports.loadComponentModules = loadComponentModules;
+module.exports.loadComponentModules = loadServerModules;

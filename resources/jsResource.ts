@@ -1,5 +1,5 @@
 import { pathToFileURL } from 'url';
-import { secureImport } from './jsLoader';
+import { secureImport } from '../security/jsLoader';
 
 /**
  * This is the handler for JavaScript Resource modules. These are loaded through the standard app configuration, and loads

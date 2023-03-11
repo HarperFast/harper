@@ -8,11 +8,11 @@ const uuidV4 = require('uuid').v4;
 const normalize = require('normalize-path');
 
 const validator = require('./operationsValidation');
-const log = require('../../utility/logging/harper_logger');
-const terms = require('../../utility/hdbTerms');
-const env = require('../../utility/environment/environmentManager');
-const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
-const { handleHDBError, hdb_errors } = require('../../utility/errors/hdbError');
+const log = require('../utility/logging/harper_logger');
+const terms = require('../utility/hdbTerms');
+const env = require('../utility/environment/environmentManager');
+const { PACKAGE_ROOT } = require('../utility/hdbTerms');
+const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 const CUSTOM_FUNCTION_TEMPLATE = path.join(PACKAGE_ROOT, 'custom_function_template');
@@ -39,7 +39,7 @@ function isCFEnabled() {
  * @return Object.<String>
  */
 function customFunctionsStatus() {
-	console.log(`getting custom api status`)
+	console.log(`getting custom api status`);
 	log.trace(`getting custom api status`);
 	let response = {};
 

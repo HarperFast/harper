@@ -1,5 +1,5 @@
 import { ResourceInterface } from './ResourceInterface';
-import { getTables } from './database';
+import { getTables } from './tables';
 import { RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
 import { Table } from './Table';
 import { DATA, OWN } from './writableRecord';

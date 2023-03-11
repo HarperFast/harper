@@ -1,10 +1,10 @@
 import { serialize, serializeMessage, getDeserializer } from '../server/serverHelpers/contentTypes';
-import { recordRequest } from './analytics';
+import { recordRequest } from '../resources/analytics';
 import { createServer, ClientRequest, ServerOptions } from 'http';
 import { findAndValidateUser } from '../security/user';
 import { authentication } from '../security/basicAuth';
-import { server } from '../server/Server';
-import { Resources } from './Resources';
+import { server } from './Server';
+import { Resources } from '../resources/Resources';
 
 interface Response {
 	status?: number

@@ -4,15 +4,15 @@ import { isMainThread } from 'worker_threads';
 import { parseDocument } from 'yaml';
 import * as env from '../../utility/environment/environmentManager';
 import { HDB_SETTINGS_NAMES } from '../../utility/hdbTerms';
-import * as graphql_handler from '../../resources/graphql';
-import * as js_handler from '../../resources/jsResource';
-import * as REST from '../../resources/REST';
-import * as fastify_routes_handler from '../../plugins/fastifyRoutes';
+import * as graphql_handler from '../resources/graphql';
+import * as js_handler from '../resources/jsResource';
+import * as REST from '../server/REST';
+import * as fastify_routes_handler from '../server/fastifyRoutes';
 import * as fg from 'fast-glob';
 import { watchDir, restartWorkers } from '../../server/threads/manageThreads';
-import { secureImport } from '../../resources/jsLoader';
-import { server } from '../../index';
-import {Resources} from '../../resources/Resources';
+import { secureImport } from '../security/jsLoader';
+import { server } from '../index';
+import {Resources} from '../resources/Resources';
 const { readFile } = promises;
 
 const CONFIG_FILENAME = 'config.yaml';
@@ -47,14 +47,14 @@ export function loadApplications(loaded_plugin_modules?: Map<any, any>, loaded_r
 	});
 }
 
-const TRUSTED_HANDLERS = {
+const TRUSTED_RESOURCE_LOADERS = {
 	REST,
 	'graphql-schema': graphql_handler,
 	'js-resource': js_handler,
 	'fastify-routes': fastify_routes_handler,
 };
 
-const DEFAULT_HANDLERS = [
+const DEFAULT_RESOURCE_LOADERS = [
 	'REST',
 	{
 		path: '*.graphql',
@@ -90,11 +90,11 @@ export async function loadApplication(app_folder: string, resources: Resources) 
 		}
 		let handler_modules = [];
 		// iterate through the app handlers so they can each do their own loading process
-		for (let handler_config of config.handlers || DEFAULT_HANDLERS) {
+		for (let handler_config of config.resourceLoaders || DEFAULT_RESOURCE_LOADERS) {
 			if (typeof handler_config === 'string') handler_config = {module: handler_config};
 			// our own trusted modules can be directly retrieved from our map, otherwise use the (configurable) secure
 			// module loader
-			let module = TRUSTED_HANDLERS[handler_config.module] || await secureImport(handler_config.module);
+			let module = TRUSTED_RESOURCE_LOADERS[handler_config.module] || await secureImport(handler_config.module);
 			handler_modules.push(module);
 			let start_resolution = loaded_plugins.get(module);
 			// call the main start hook

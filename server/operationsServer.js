@@ -1,29 +1,29 @@
 'use strict';
 
 const cluster = require('cluster');
-const env = require('../../utility/environment/environmentManager');
+const env = require('../utility/environment/environmentManager');
 env.initSync();
-const terms = require('../../utility/hdbTerms');
+const terms = require('../utility/hdbTerms');
 const util = require('util');
-const harper_logger = require('../../utility/logging/harper_logger');
-const { streamAsJSON } = require('../serverHelpers/JSONStream');
+const harper_logger = require('../utility/logging/harper_logger');
+const { streamAsJSON } = require('./serverHelpers/JSONStream');
 const fs = require('fs');
 const fastify = require('fastify');
 
-const pjson = require('../../package.json');
+const pjson = require('../package.json');
 const fastify_cors = require('@fastify/cors');
 const fastify_compress = require('@fastify/compress');
 const fastify_static = require('@fastify/static');
-const request_time_plugin = require('../serverHelpers/requestTimePlugin');
+const request_time_plugin = require('./serverHelpers/requestTimePlugin');
 const guidePath = require('path');
-const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
-const global_schema = require('../../utility/globalSchema');
-const common_utils = require('../../utility/common_utils');
-const user_schema = require('../../security/user');
-const hdb_license = require('../../utility/registration/hdb_license');
+const { PACKAGE_ROOT } = require('../utility/hdbTerms');
+const global_schema = require('../utility/globalSchema');
+const common_utils = require('../utility/common_utils');
+const user_schema = require('../security/user');
+const hdb_license = require('../utility/registration/hdb_license');
 const { isMainThread } = require('worker_threads');
-const { server: server_registration } = require('../../index');
-const { toCsvStream } = require('../../dataLayer/export');
+const { server: server_registration } = require('../index');
+const { toCsvStream } = require('../dataLayer/export');
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
 const {
@@ -31,9 +31,9 @@ const {
 	handlePostRequest,
 	serverErrorHandler,
 	reqBodyValidationHandler,
-} = require('../serverHelpers/serverHandlers');
+} = require('./serverHelpers/serverHandlers');
 const net = require('net');
-const { registerContentHandlers } = require('../serverHelpers/contentTypes');
+const { registerContentHandlers } = require('./serverHelpers/contentTypes');
 
 const REQ_MAX_BODY_SIZE = 1024 * 1024 * 1024; //this is 1GB in bytes
 const TRUE_COMPARE_VAL = 'TRUE';

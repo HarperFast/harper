@@ -288,7 +288,7 @@ function setDefaultRoot(parent, helpers) {
 	}
 
 	switch (config_param) {
-		case 'customFunctions.root':
+		case 'fastifyRoutes.root':
 			return path.join(hdb_root, DEFAULT_CUSTOM_FUNCTIONS_FOLDER);
 		case 'logging.root':
 			return path.join(hdb_root, DEFAULT_LOG_FOLDER);

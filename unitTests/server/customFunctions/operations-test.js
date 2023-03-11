@@ -8,7 +8,7 @@ const path = require('path');
 const tar = require('tar-fs');
 const test_util = require('../../test_utils');
 test_util.getMockTestPath();
-const operations = rewire('../../../server/customFunctions/operations');
+const operations = rewire('../../../server/fastifyRoutes/operations');
 const env = require('../../../utility/environment/environmentManager');
 const { TEST_DATA_BASE64_CF_PROJECT } = require('../../test_data');
 const { expect } = chai;

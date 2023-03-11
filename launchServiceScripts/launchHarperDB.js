@@ -1,3 +1,3 @@
 'use strict';
 
-require('../server/harperdb/operationsServer').hdbServer();
+require('../server/operationsServer').hdbServer();

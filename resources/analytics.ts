@@ -1,6 +1,6 @@
 import { isMainThread, parentPort, threadId } from 'worker_threads';
 import { messageTypeListener } from '../server/threads/manageThreads';
-import { databases } from './database';
+import { databases } from './tables';
 let active_actions = new Map<string, number[]>();
 
 /**

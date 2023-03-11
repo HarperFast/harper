@@ -17,8 +17,8 @@ module.exports = {
 env.initSync();
 
 async function startHTTPThreads(thread_count = 2) {
-	let { loadComponentModules } = require('../../bin/loadComponentModules');
-	await loadComponentModules();
+	let { loadServerModules } = require('../loadServerModules');
+	await loadServerModules();
 	for (let i = 0; i < thread_count; i++) {
 		startWorker('server/threads/threadServer.js', {
 			name: hdb_terms.THREAD_TYPES.HTTP,

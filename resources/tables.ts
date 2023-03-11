@@ -28,7 +28,8 @@ export function getTables() {
 }
 
 /**
- * This provides the main entry point for getting the set of all HarperDB databases. This proactively scans the known
+ * This provides the main entry point for getting the set of all HarperDB tables (organized by schemas/databases).
+ * This proactively scans the known
  * databases/schemas directories and finds any databases and opens them. This done proactively so that there is a fast
  * object available to all consumers that doesn't require runtime checks for database open states.
  */

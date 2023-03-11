@@ -3,11 +3,11 @@
 const Joi = require('joi');
 const fs = require('fs-extra');
 const path = require('path');
-const validator = require('../../validation/validationWrapper');
-const env_mangr = require('../../utility/environment/environmentManager');
-const hdb_terms = require('../../utility/hdbTerms');
-const hdb_logger = require('../../utility/logging/harper_logger');
-const { hdb_errors } = require('../../utility/errors/hdbError');
+const validator = require('../validation/validationWrapper');
+const env_mangr = require('../utility/environment/environmentManager');
+const hdb_terms = require('../utility/hdbTerms');
+const hdb_logger = require('../utility/logging/harper_logger');
+const { hdb_errors } = require('../utility/errors/hdbError');
 const { HDB_ERROR_MSGS } = hdb_errors;
 
 // File name can only be alphanumeric, dash and underscores

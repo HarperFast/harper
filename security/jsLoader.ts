@@ -1,5 +1,5 @@
-import { Resource } from './Resource';
-import { tables, databases } from './database';
+import { Resource } from '../resources/Resource';
+import { tables, databases } from '../resources/tables';
 import { Compartment as CompartmentClass } from 'ses';
 import { readFile } from 'fs/promises';
 import { extname } from 'path';
@@ -8,6 +8,13 @@ import { extname } from 'path';
 const SECURE_JS = true;
 
 let compartment;
+
+/**
+ * This is the main entry point for loading plugin and application modules that may be sandboxed/constrained to a
+ * secure JavaScript compartment. The configuration defines if these are loaded in a secure compartment or if they
+ * are just loaded with a standard import.
+ * @param module_url
+ */
 export async function secureImport(module_url) {
 	if (SECURE_JS) {
 		// note that we use a single compartment that is used by all the secure JS modules and we load it on-demand, only

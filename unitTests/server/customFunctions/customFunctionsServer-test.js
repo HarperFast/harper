@@ -15,12 +15,12 @@ const sandbox = sinon.createSandbox();
 const harper_logger = require('../../../utility/logging/harper_logger');
 const user_schema = require('../../../security/user');
 const global_schema = require('../../../utility/globalSchema');
-const operations = rewire('../../../server/customFunctions/operations');
+const operations = rewire('../../../server/fastifyRoutes/operations');
 const env = require('../../../utility/environment/environmentManager');
 
 const { CONFIG_PARAMS } = require('../../../utility/hdbTerms');
 const config_utils = require('../../../config/configUtils');
-const CF_SERVER_PATH = '../../../server/customFunctions/customFunctionsServer';
+const CF_SERVER_PATH = '../../../server/fastifyRoutes/customFunctionsServer';
 const KEYS_PATH = path.join(test_utils.getMockTestPath(), 'utility/keys');
 const PRIVATE_KEY_PATH = path.join(KEYS_PATH, 'privateKey.pem');
 const CERTIFICATE_PATH = path.join(KEYS_PATH, 'certificate.pem');
