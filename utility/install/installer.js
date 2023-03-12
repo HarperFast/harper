@@ -128,6 +128,9 @@ async function install() {
 	// Create the harperdb-config.yaml file
 	await createConfigFile(install_params);
 
+	// At this point there should be config and HarperDB folders so re-init log settings to update
+	hdb_logger.initLogSettings(true);
+
 	// Create the super user.
 	await createSuperUser(install_params);
 

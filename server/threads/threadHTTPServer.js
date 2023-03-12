@@ -1,13 +1,10 @@
 'use strict';
 
-const { isMainThread, parentPort, threadId } = require("worker_threads");
-const { Socket } = require("net");
 const harper_logger = require('../../utility/logging/harper_logger');
-const hdb_utils = require("../../utility/common_utils");
-const env = require("../../utility/environment/environmentManager");
-const terms = require("../../utility/hdbTerms");
-// log all threads as HarperDB
-harper_logger.createLogFile(terms.PROCESS_LOG_NAMES.HDB, terms.HDB_PROC_DESCRIPTOR);
+const { isMainThread, parentPort, threadId } = require('worker_threads');
+const { Socket } = require('net');
+const env = require('../../utility/environment/environmentManager');
+const terms = require('../../utility/hdbTerms');
 env.initSync();
 const SERVERS = {};
 module.exports = {
@@ -67,8 +64,7 @@ function deliverSocket(fd, type, data) {
 				if (app_server) {
 					app_server.server.emit('connection', socket);
 					if (data) socket.emit('data', data);
-				}
-				else if (retries < 5) retry(retries + 1);
+				} else if (retries < 5) retry(retries + 1);
 				else {
 					harper_logger.error(`Server ${type} was not registered`);
 					socket.close();
@@ -112,25 +108,21 @@ function proxyRequest(message) {
 				originalDestroy.call(socket);
 				parentPort.postMessage({
 					requestId,
-					event: 'destroy'
+					event: 'destroy',
 				});
 			};
 			break;
 		case 'data':
-			if (!socket._readableState.destroyed)
-				socket.emit('data', Buffer.from(data, 'latin1'));
+			if (!socket._readableState.destroyed) socket.emit('data', Buffer.from(data, 'latin1'));
 			break;
 		case 'drain':
-			if (!socket._readableState.destroyed)
-				socket.emit('drain', {});
+			if (!socket._readableState.destroyed) socket.emit('drain', {});
 			break;
 		case 'end':
-			if (!socket._readableState.destroyed)
-				socket.emit('end', {});
+			if (!socket._readableState.destroyed) socket.emit('end', {});
 			break;
 		case 'error':
-			if (!socket._readableState.destroyed)
-				socket.emit('error', {});
+			if (!socket._readableState.destroyed) socket.emit('error', {});
 			break;
 	}
 }

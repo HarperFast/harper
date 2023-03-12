@@ -80,7 +80,8 @@ function startWorker(path, options = {}) {
 					maxYoungGenerationSizeMb: max_young_memory,
 				},
 				argv: process.argv.slice(2),
-				workerData: { addPorts: ports_to_send }, // pass these in synchronously to the worker so it has them on startup
+				workerData: { addPorts: ports_to_send, name: options.name }, // pass these in synchronously to the worker so
+				// it has them on startup
 				transferList: ports_to_send,
 			},
 			options

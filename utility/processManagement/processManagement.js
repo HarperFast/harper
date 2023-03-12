@@ -6,7 +6,6 @@ const nats_config = require('../../server/nats/utility/natsConfig');
 const nats_utils = require('../../server/nats/utility/natsUtils');
 const nats_terms = require('../../server/nats/utility/natsTerms');
 const pm2 = require('pm2');
-const fs = require('fs-extra');
 const services_config = require('./servicesConfig');
 const env_mangr = require('../environment/environmentManager');
 const hdb_logger = require('../../utility/logging/harper_logger');
@@ -39,7 +38,6 @@ module.exports = {
 	reloadStopStart,
 	restartHdb,
 	deleteProcess,
-	configureLogRotate,
 	startClusteringProcesses,
 	startClusteringThreads,
 	isHdbRestartRunning,
@@ -47,19 +45,10 @@ module.exports = {
 	stopClustering,
 	reloadClustering,
 };
+
 const { PACKAGE_ROOT } = require('../hdbTerms');
 const terms = require('../hdbTerms');
 const { loggerWithTag } = hdb_logger;
-
-const PM2_LOGROTATE_VERSION = '2.7.0';
-const PM2_MODULE_LOCATION = path.join(PACKAGE_ROOT, 'node_modules/processManagement/bin/processManagement');
-const LOG_ROTATE_INSTALLED = 'Log rotate installed.';
-const LOG_ROTATE_INSTALL_ERR = 'Error installing log rotate.';
-const LOG_ROTATE_UPDATE = 'Log rotate updated.';
-const LOG_ROTATE_UPDATE_ERR = 'Error updating log rotate.';
-const RELOAD_HDB_ERR =
-	'The number of HarperDB processes running is different from the settings value. ' +
-	'To restart and update the number HarperDB processes running you must stop and then start HarperDB';
 
 // This indicates when we are running as a CLI scripting command (kind of taking the place of processManagement's CLI), and so we
 // are generally starting and stopping processes through PM2.
@@ -78,6 +67,8 @@ function enterPM2Mode() {
 function connect() {
 	return new Promise((resolve, reject) => {
 		pm2.connect((err, res) => {
+			// PM2 tries to take over logging. We are not going to be defeated, we are taking it back!
+			hdb_logger.setupConsoleLogging();
 			if (err) {
 				reject(err);
 			}
@@ -93,7 +84,7 @@ const NATS_LEVELS = {
 	INF: 'info',
 	WRN: 'warn',
 	ERR: 'error',
-}
+};
 let shutting_down;
 /**
  * Starts a service
@@ -101,8 +92,7 @@ let shutting_down;
  * @returns {Promise<unknown>}
  */
 function start(proc_config) {
-	if (pm2_mode)
-		return startWithPM2(proc_config);
+	if (pm2_mode) return startWithPM2(proc_config);
 	let subprocess = execFile(proc_config.script, proc_config.args.split(' '), proc_config);
 	subprocess.name = proc_config.name;
 	subprocess.on('exit', (code) => {
@@ -114,19 +104,23 @@ function start(proc_config) {
 			if (proc_config.restarts < MAX_RESTARTS) start(proc_config);
 		}
 	});
-	let process_logger = loggerWithTag(proc_config.name)
+	const SERVICE_DEFINITION = {
+		serviceName: proc_config.name.replace(/ /g, '-'),
+	};
 	function extractMessages(log) {
 		let NATS_PARSER = /\[\d+][^\[]+\[(\w+)]/g;
-		let log_start, last_position = 0, last_level;
-		while (log_start = NATS_PARSER.exec(log)) {
+		let log_start,
+			last_position = 0,
+			last_level;
+		while ((log_start = NATS_PARSER.exec(log))) {
 			if (log_start.index) {
-				process_logger[last_level || 'info'](log.slice(last_position, log_start.index));
+				hdb_logger[last_level || 'info'](SERVICE_DEFINITION, log.slice(last_position, log_start.index).trim());
 			}
-			let [ start_text, level ] = log_start;
+			let [start_text, level] = log_start;
 			last_position = log_start.index + start_text.length;
 			last_level = NATS_LEVELS[level];
 		}
-		process_logger[last_level || 'info'](log.slice(last_position));
+		hdb_logger[last_level || 'info'](SERVICE_DEFINITION, log.slice(last_position).trim());
 	}
 	subprocess.stdout.on('data', extractMessages);
 	subprocess.stderr.on('data', extractMessages);
@@ -561,121 +555,6 @@ async function reloadStopStart(service_name) {
 		await reload(service_name);
 	}
 }
-/**
- * Stops the processManagement-logrotate module but does not delete it like the other stop function does.
- * @returns {Promise<unknown>}
- */
-function stopLogrotate() {
-	return new Promise(async (resolve, reject) => {
-		try {
-			await connect();
-		} catch (err) {
-			reject(err);
-		}
-		pm2.stop(hdb_terms.PROCESS_DESCRIPTORS.PM2_LOGROTATE, (err, res) => {
-			if (err) {
-				pm2.disconnect();
-				reject(err);
-			}
-
-			pm2.disconnect();
-			resolve(res);
-		});
-	});
-}
-
-/**
- * Install processManagement's logrotate module.
- * @returns {Promise<void>}
- */
-async function installLogRotate() {
-	const { stdout, stderr } = await exec(
-		`${
-			process.platform === 'win32' ? 'node' : ''
-		} ${PM2_MODULE_LOCATION} install pm2-logrotate@${PM2_LOGROTATE_VERSION}`
-	);
-	hdb_logger.debug(`loadLogRotate stdout: ${stdout}`);
-
-	if (stderr) {
-		hdb_logger.error(LOG_ROTATE_INSTALL_ERR);
-		throw stderr;
-	}
-
-	hdb_logger.info(LOG_ROTATE_INSTALLED);
-}
-
-/**
- * Update processManagement's logrotate module.
- * @returns {Promise<void>}
- */
-async function updateLogRotateConfig() {
-	const log_rotate_config = {
-		max_size: env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_ROTATE_MAX_SIZE),
-		retain: env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_ROTATE_RETAIN),
-		compress: env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_ROTATE_COMPRESS),
-		dateFormat: env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_ROTATE_DATE_FORMAT),
-		rotateModule: env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_ROTATE_ROTATE_MODULE),
-		workerInterval: env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_ROTATE_WORKER_INTERVAL),
-		rotateInterval: env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_ROTATE_ROTATE_INTERVAL),
-		TZ: env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_ROTATE_TIMEZONE),
-	};
-
-	// Loop through all the rotate config params and build a command that is executed in a child process.
-	let update_command = '';
-	for (const param in log_rotate_config) {
-		update_command += `${
-			process.platform === 'win32' ? 'node' : ''
-		} ${PM2_MODULE_LOCATION} set pm2-logrotate:${param} ${log_rotate_config[param]}`;
-		if (param !== 'TZ') update_command += ' && ';
-	}
-
-	const { stdout, stderr } = await exec(update_command);
-	hdb_logger.debug(`updateLogRotateConfig stdout: ${stdout}`);
-
-	if (stderr) {
-		hdb_logger.error(LOG_ROTATE_UPDATE_ERR);
-		throw stderr;
-	}
-
-	hdb_logger.info(LOG_ROTATE_UPDATE);
-}
-
-/**
- * If processManagement-logrotate is already installed, start it. If it isn't, install it.
- * If LOG_ROTATE is set to false and logrotate is online, stop it.
- * After this is done run its config.
- * @returns {Promise<void>}
- */
-async function configureLogRotate() {
-	env_mangr.initSync();
-	const logrotate_env = hdb_utils.autoCastBoolean(env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_ROTATE));
-	const logrotate_des = await describe(hdb_terms.PROCESS_DESCRIPTORS.PM2_LOGROTATE);
-	let logrotate_status;
-	let logrotate_installed = false;
-	if (!hdb_utils.isEmptyOrZeroLength(logrotate_des)) {
-		logrotate_installed = true;
-		logrotate_status = logrotate_des[0].pm2_env.status;
-	}
-
-	// If log rotate set to true in settings but not installed, call install.
-	if (logrotate_env && !logrotate_installed) {
-		await installLogRotate();
-		await updateLogRotateConfig();
-		return;
-	}
-
-	// If log rotate set to true in settings and is installed call start.
-	if (logrotate_env && logrotate_installed) {
-		await start(hdb_terms.PROCESS_DESCRIPTORS.PM2_LOGROTATE);
-		await updateLogRotateConfig();
-		return;
-	}
-
-	// If log rotate is set to false and it is running, stop it.
-	if (!logrotate_env && logrotate_status === hdb_terms.PM2_PROCESS_STATUSES.ONLINE) {
-		await stopLogrotate();
-	}
-}
 
 let ingestWorker;
 let replyWorker;
@@ -694,8 +573,12 @@ async function startClusteringProcesses() {
  * @returns {Promise<void>}
  */
 async function startClusteringThreads() {
-	ingestWorker = startWorker(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_INGEST_SERVICE, { name : hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_INGEST_SERVICE });
-	replyWorker = startWorker(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_REPLY_SERVICE, { name : hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE });
+	ingestWorker = startWorker(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_INGEST_SERVICE, {
+		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_INGEST_SERVICE,
+	});
+	replyWorker = startWorker(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_REPLY_SERVICE, {
+		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE,
+	});
 	await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
 
 	// Check to see if the node name or purge config has been updated,

@@ -16,11 +16,9 @@ const hdb_utils = require('../utility/common_utils');
 const config_utils = require('../config/configUtils');
 const assignCMDENVVariables = require('../utility/assignCmdEnvVariables');
 const nats_config = require('../server/nats/utility/natsConfig');
-const { promisify } = require('util');
 const stop = require('./stop');
 const upgrade = require('./upgrade');
 const minimist = require('minimist');
-const spawn = require('child_process').spawn;
 const { PACKAGE_ROOT } = require('../utility/hdbTerms');
 const {
 	startHTTPThreads,
@@ -34,11 +32,9 @@ const hdbInfoController = require('../dataLayer/hdbInfoController');
 const SYSTEM_SCHEMA = require('../json/systemSchema.json');
 const schema_describe = require('../dataLayer/schemaDescribe');
 const lmdb_create_txn_environment = require('../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsAuditEnvironment');
-
-let pm2_utils;
-
 const CreateTableObject = require('../dataLayer/CreateTableObject');
 const hdb_terms = require('../utility/hdbTerms');
+let pm2_utils;
 
 // These may change to match unix return codes (i.e. 0, 1)
 const ENOENT_ERR_CODE = -2;
@@ -75,8 +71,6 @@ async function initialize(called_by_install = false, called_by_main = false) {
 	// Requiring the processManagement mod will create the .pm2 dir. This code is here to allow install to set
 	// pm2 env vars before that is done.
 	if (pm2_utils === undefined) pm2_utils = require('../utility/processManagement/processManagement');
-
-	hdb_logger.createLogFile(terms.PROCESS_LOG_NAMES.CLI, terms.PROCESS_DESCRIPTORS.RUN);
 
 	// Check to see if an upgrade is needed based on existing hdb_info data.  If so, we need to force the user to upgrade
 	// before the server can be started.
@@ -128,8 +122,6 @@ async function initialize(called_by_install = false, called_by_main = false) {
 	if (clustering_enabled) {
 		await nats_config.generateNatsConfig(called_by_main);
 	}
-
-	await pm2_utils.configureLogRotate();
 }
 /**
  * Starts Harper DB threads
@@ -221,9 +213,10 @@ async function main(called_by_install = false) {
 }
 function started() {
 	// Console log Harper dog logo
-	console.log(chalk.magenta('' + fs.readFileSync(path.join(PACKAGE_ROOT, 'utility/install/ascii_logo.txt'))));
-	console.log(chalk.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
-
+	hdb_logger.suppressLogging(() => {
+		console.log(chalk.magenta('' + fs.readFileSync(path.join(PACKAGE_ROOT, 'utility/install/ascii_logo.txt'))));
+		console.log(chalk.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
+	});
 	hdb_logger.notify(HDB_STARTED);
 }
 /**

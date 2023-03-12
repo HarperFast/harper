@@ -37,7 +37,6 @@ module.exports = {
  * @returns {Promise<void>}
  */
 async function upgrade(upgrade_obj) {
-	hdb_logger.createLogFile(hdb_terms.PROCESS_LOG_NAMES.CLI, hdb_terms.PROCESS_DESCRIPTORS.UPGRADE);
 	await p_schema_to_global();
 
 	// Requiring the processManagement mod will create the .pm2 dir. This code is here to allow install to set

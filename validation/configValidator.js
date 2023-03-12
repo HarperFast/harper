@@ -147,15 +147,10 @@ function configValidator(config_json) {
 			file: boolean.required(),
 			level: Joi.valid('notify', 'fatal', 'error', 'warn', 'info', 'debug', 'trace'),
 			rotation: Joi.object({
-				compress: boolean.required(),
-				dateFormat: string.required(),
-				maxSize: string.custom(validateRotationMaxSize).required(),
-				retain: number.min(0).required(),
-				rotate: boolean.required(),
-				rotateInterval: string.required(),
-				rotateModule: boolean.required(),
-				timezone: string.required(),
-				workerInterval: number.min(1).required(),
+				enabled: boolean.optional(),
+				frequency: string.optional().empty(null),
+				size: string.custom(validateRotationMaxSize).optional().empty(null),
+				path: string.optional().empty(null),
 			}).required(),
 			root: root_constraints,
 			stdStreams: boolean.required(),
@@ -254,6 +249,8 @@ function validateRotationMaxSize(value, helpers) {
 	if (isNaN(parseInt(size))) {
 		return helpers.message(INVALID_MAX_SIZE_VALUE_MSG);
 	}
+
+	return value;
 }
 
 function setDefaultThreads(parent, helpers) {

@@ -76,14 +76,9 @@ async function export_local(export_object) {
 	}
 
 	let file_path = hdb_utils.buildFolderPath(export_object.path, filename);
-	try {
-		await confirmPath(export_object.path);
-		let records = await getRecords(export_object);
-		return await saveToLocal(file_path, export_object.format, records);
-	} catch (err) {
-		hdb_logger.error(err);
-		throw new Error(err);
-	}
+	await confirmPath(export_object.path);
+	let records = await getRecords(export_object);
+	return await saveToLocal(file_path, export_object.format, records);
 }
 
 /**
@@ -382,10 +377,5 @@ async function getRecords(export_object) {
 	//in order to validate the search function and invoke permissions we need to add the hdb_user to the search_operation
 	export_object.search_operation.hdb_user = export_object.hdb_user;
 
-	try {
-		return operation(export_object.search_operation);
-	} catch (e) {
-		hdb_logger.error(e);
-		throw e;
-	}
+	return operation(export_object.search_operation);
 }

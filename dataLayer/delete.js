@@ -63,15 +63,11 @@ async function deleteFilesBefore(delete_obj) {
 		);
 	}
 
-	try {
-		let results = await harperBridge.deleteRecordsBefore(delete_obj);
-		await p_global_schema(delete_obj.schema, delete_obj.table);
-		harper_logger.info(`Finished deleting files before ${delete_obj.date}`);
-		if (results && results.message) {
-			return results.message;
-		}
-	} catch (err) {
-		throw err;
+	let results = await harperBridge.deleteRecordsBefore(delete_obj);
+	await p_global_schema(delete_obj.schema, delete_obj.table);
+	harper_logger.info(`Finished deleting files before ${delete_obj.date}`);
+	if (results && results.message) {
+		return results.message;
 	}
 }
 
@@ -109,15 +105,11 @@ async function deleteAuditLogsBefore(delete_obj) {
 		);
 	}
 
-	try {
-		let results = await harperBridge.deleteAuditLogsBefore(delete_obj);
-		await p_global_schema(delete_obj.schema, delete_obj.table);
-		harper_logger.info(`Finished deleting audit logs before ${delete_obj.timestamp}`);
+	let results = await harperBridge.deleteAuditLogsBefore(delete_obj);
+	await p_global_schema(delete_obj.schema, delete_obj.table);
+	harper_logger.info(`Finished deleting audit logs before ${delete_obj.timestamp}`);
 
-		return results;
-	} catch (err) {
-		throw err;
-	}
+	return results;
 }
 
 /**

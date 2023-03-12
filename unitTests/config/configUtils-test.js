@@ -55,15 +55,10 @@ const TEST_ARGS = {
 	LOGGING_FILE: false,
 	LOGGING_LEVEL: 'notify',
 	LOGGING_ROOT: path.join(DIRNAME, 'testlogging'),
-	LOGGING_ROTATION_COMPRESS: true,
-	LOGGING_ROTATION_DATEFORMAT: 'YYYY-MM-DD',
-	LOGGING_ROTATION_MAXSIZE: '5M',
-	LOGGING_ROTATION_RETAIN: '20',
-	LOGGING_ROTATION_ROTATE: true,
-	LOGGING_ROTATION_ROTATEINTERVAL: '0 0 0 0 0',
-	LOGGING_ROTATION_ROTATEMODULE: false,
-	LOGGING_ROTATION_TIMEZONE: 'CST',
-	LOGGING_ROTATION_WORKERINTERVAL: '20',
+	LOGGING_ROTATION_ENABLED: true,
+	LOGGING_ROTATION_FREQUENCY: '10D',
+	LOGGING_ROTATION_SIZE: '10M',
+	LOGGING_ROTATION_PATH: 'lets/send/log/here',
 	LOGGING_STDSTREAMS: true,
 	LOGGING_AUDITLOG: true,
 	OPERATIONSAPI_AUTHENTICATION_OPERATIONTOKENTIMEOUT: '2d',
@@ -353,15 +348,10 @@ describe('Test configUtils module', () => {
 					file: false,
 					level: 'notify',
 					rotation: {
-						compress: true,
-						dateFormat: 'YYYY-MM-DD',
-						maxSize: '5M',
-						retain: 20,
-						rotate: true,
-						rotateInterval: '0 0 0 0 0',
-						rotateModule: false,
-						timezone: 'CST',
-						workerInterval: 20,
+						enabled: true,
+						frequency: '10D',
+						path: 'lets/send/log/here',
+						size: '10M',
 					},
 					root: path.join(DIRNAME, '/testlogging'),
 					stdStreams: true,
@@ -437,15 +427,10 @@ describe('Test configUtils module', () => {
 				logging_auditlog: true,
 				logging_file: false,
 				logging_level: 'notify',
-				logging_rotation_compress: true,
-				logging_rotation_dateformat: 'YYYY-MM-DD',
-				logging_rotation_maxsize: '5M',
-				logging_rotation_retain: 20,
-				logging_rotation_rotate: true,
-				logging_rotation_rotateinterval: '0 0 0 0 0',
-				logging_rotation_rotatemodule: false,
-				logging_rotation_timezone: 'CST',
-				logging_rotation_workerinterval: 20,
+				logging_rotation_enabled: true,
+				logging_rotation_frequency: '10D',
+				logging_rotation_size: '10M',
+				logging_rotation_path: 'lets/send/log/here',
 				logging_root: path.join(DIRNAME, '/testlogging'),
 				logging_stdstreams: true,
 				operationsapi_authentication_operationtokentimeout: '2d',
@@ -523,15 +508,10 @@ describe('Test configUtils module', () => {
 			logging_file: true,
 			logging_level: 'error',
 			logging_root: null,
-			logging_rotation_compress: false,
-			logging_rotation_dateformat: 'YYYY-MM-DD_HH-mm-ss',
-			logging_rotation_maxsize: '10M',
-			logging_rotation_retain: 30,
-			logging_rotation_rotate: false,
-			logging_rotation_rotateinterval: '0 0 * * *',
-			logging_rotation_rotatemodule: true,
-			logging_rotation_timezone: 'GMT',
-			logging_rotation_workerinterval: 30,
+			logging_rotation_enabled: false,
+			logging_rotation_frequency: null,
+			logging_rotation_size: null,
+			logging_rotation_path: null,
 			logging_stdstreams: false,
 			operationsapi_authentication_operationtokentimeout: '1d',
 			operationsapi_authentication_refreshtokentimeout: '30d',
@@ -575,7 +555,7 @@ describe('Test configUtils module', () => {
 			flat_default_config_obj_rw = config_utils_rw.__set__('flat_default_config_obj', expected_flat_default_config_obj);
 			const parse_document_spy = sandbox.spy(YAML, 'parseDocument');
 
-			const value = config_utils_rw.getDefaultConfig(hdbTerms.CONFIG_PARAMS.LOGGING_ROTATION_COMPRESS);
+			const value = config_utils_rw.getDefaultConfig(hdbTerms.CONFIG_PARAMS.LOGGING_ROTATION_ENABLED);
 			const value2 = config_utils_rw.getDefaultConfig(hdbTerms.CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_CERTIFICATE);
 			const value3 = config_utils_rw.getDefaultConfig(hdbTerms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT);
 
@@ -919,15 +899,10 @@ describe('Test configUtils module', () => {
 				logging_file: true,
 				logging_level: 'error',
 				logging_root: null,
-				logging_rotation_compress: false,
-				logging_rotation_dateformat: 'YYYY-MM-DD_HH-mm-ss',
-				logging_rotation_maxsize: '10M',
-				logging_rotation_retain: 30,
-				logging_rotation_rotate: false,
-				logging_rotation_rotateinterval: '0 0 * * *',
-				logging_rotation_rotatemodule: true,
-				logging_rotation_timezone: 'GMT',
-				logging_rotation_workerinterval: 30,
+				logging_rotation_enabled: false,
+				logging_rotation_frequency: null,
+				logging_rotation_size: null,
+				logging_rotation_path: null,
 				logging_stdstreams: false,
 				operationsapi_authentication_operationtokentimeout: '1d',
 				operationsapi_authentication_refreshtokentimeout: '30d',
@@ -960,7 +935,7 @@ describe('Test configUtils module', () => {
 				{
 					logging_level: 'warn',
 					logging_stdStreams: true,
-					logging_rotation_compress: true,
+					logging_rotation_enabled: true,
 					fake_config_param: 'fake_value',
 				},
 				false,
@@ -976,7 +951,7 @@ describe('Test configUtils module', () => {
 			expect(set_in_stub.secondCall.args[1]).to.be.true;
 			expect(set_in_stub.thirdCall.args[0][0]).to.equal('logging');
 			expect(set_in_stub.thirdCall.args[0][1]).to.equal('rotation');
-			expect(set_in_stub.thirdCall.args[0][2]).to.equal('compress');
+			expect(set_in_stub.thirdCall.args[0][2]).to.equal('enabled');
 			expect(set_in_stub.thirdCall.args[1]).to.be.true;
 
 			fs.unlinkSync(CONFIG_FILE_PATH);

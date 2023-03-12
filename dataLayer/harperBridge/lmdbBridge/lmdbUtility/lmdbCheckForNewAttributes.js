@@ -20,34 +20,30 @@ module.exports = lmdbCheckForNewAttributes;
  * @param data_attributes
  */
 async function lmdbCheckForNewAttributes(hdb_auth_header, table_schema, data_attributes) {
-	try {
-		if (h_utils.isEmptyOrZeroLength(data_attributes)) {
-			return data_attributes;
-		}
-
-		let raw_attributes = [];
-		if (!h_utils.isEmptyOrZeroLength(table_schema.attributes)) {
-			table_schema.attributes.forEach((attribute) => {
-				raw_attributes.push(attribute.attribute);
-			});
-		}
-
-		let new_attributes = data_attributes.filter((attribute) => raw_attributes.indexOf(attribute) < 0);
-
-		if (new_attributes.length === 0) {
-			return new_attributes;
-		}
-
-		await Promise.all(
-			new_attributes.map(async (attribute) => {
-				await createNewAttribute(hdb_auth_header, table_schema.schema, table_schema.name, attribute);
-			})
-		);
-
-		return new_attributes;
-	} catch (e) {
-		throw e;
+	if (h_utils.isEmptyOrZeroLength(data_attributes)) {
+		return data_attributes;
 	}
+
+	let raw_attributes = [];
+	if (!h_utils.isEmptyOrZeroLength(table_schema.attributes)) {
+		table_schema.attributes.forEach((attribute) => {
+			raw_attributes.push(attribute.attribute);
+		});
+	}
+
+	let new_attributes = data_attributes.filter((attribute) => raw_attributes.indexOf(attribute) < 0);
+
+	if (new_attributes.length === 0) {
+		return new_attributes;
+	}
+
+	await Promise.all(
+		new_attributes.map(async (attribute) => {
+			await createNewAttribute(hdb_auth_header, table_schema.schema, table_schema.name, attribute);
+		})
+	);
+
+	return new_attributes;
 }
 
 /**
@@ -83,20 +79,16 @@ async function createNewAttribute(hdb_auth_header, schema, table, attribute) {
  */
 async function createAttribute(create_attribute_object) {
 	let attribute_structure;
-	try {
-		attribute_structure = await lmdbCreateAttribute(create_attribute_object);
-		signalling.signalSchemaChange(
-			new SchemaEventMsg(
-				process.pid,
-				hdb_terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
-				create_attribute_object.schema,
-				create_attribute_object.table,
-				create_attribute_object.attribute
-			)
-		);
+	attribute_structure = await lmdbCreateAttribute(create_attribute_object);
+	signalling.signalSchemaChange(
+		new SchemaEventMsg(
+			process.pid,
+			hdb_terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
+			create_attribute_object.schema,
+			create_attribute_object.table,
+			create_attribute_object.attribute
+		)
+	);
 
-		return attribute_structure;
-	} catch (err) {
-		throw err;
-	}
+	return attribute_structure;
 }

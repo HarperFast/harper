@@ -57,17 +57,14 @@ const PROCESS_DESCRIPTORS = {
 	UPGRADE: 'Upgrade',
 	REGISTER: 'Register',
 	JOB: 'Job',
-	PM2_LOGROTATE: 'pm2-logrotate',
 	CLUSTERING_UPGRADE_4_0_0: 'Upgrade-4-0-0',
 };
 
-const PROCESS_LOG_NAMES = {
+const LOG_NAMES = {
 	HDB: 'hdb.log',
 	INSTALL: 'install.log',
-	CLI: 'cli.log',
-	PM2: 'pm2.log',
-	CLUSTERING_UPGRADE: 'clustering_upgrade.log',
-	JOBS: 'jobs.log',
+	CLUSTERING_HUB: 'clustering_hub.log',
+	CLUSTERING_LEAF: 'clustering_leaf.log',
 };
 
 const LOG_LEVELS = {
@@ -86,8 +83,6 @@ const PROCESS_DESCRIPTORS_VALIDATE = {
 	'clustering leaf': CLUSTERING_LEAF_PROC_DESCRIPTOR,
 	'custom functions': CUSTOM_FUNCTION_PROC_DESCRIPTOR,
 	'custom_functions': CUSTOM_FUNCTION_PROC_DESCRIPTOR,
-	'pm2-logrotate': PROCESS_DESCRIPTORS.PM2_LOGROTATE,
-	'logrotate': PROCESS_DESCRIPTORS.PM2_LOGROTATE,
 	'clustering': 'clustering',
 	'clustering config': 'clustering config',
 };
@@ -171,9 +166,6 @@ const SCHEMA_DIR_NAME = 'schema';
 const TRANSACTIONS_DIR_NAME = 'transactions';
 const LIMIT_COUNT_NAME = '.count';
 const ID_ATTRIBUTE_STRING = 'id';
-
-const INSTALL_LOG = 'install_log.log';
-const RUN_LOG = 'run_log.log';
 
 const PROCESS_NAME_ENV_PROP = 'PROCESS_NAME';
 
@@ -543,15 +535,10 @@ const CONFIG_PARAMS = {
 	LOGGING_FILE: 'logging_file',
 	LOGGING_LEVEL: 'logging_level',
 	LOGGING_ROOT: 'logging_root',
-	LOGGING_ROTATION_COMPRESS: 'logging_rotation_compress',
-	LOGGING_ROTATION_DATEFORMAT: 'logging_rotation_dateFormat',
-	LOGGING_ROTATION_MAXSIZE: 'logging_rotation_maxSize',
-	LOGGING_ROTATION_RETAIN: 'logging_rotation_retain',
-	LOGGING_ROTATION_ROTATE: 'logging_rotation_rotate',
-	LOGGING_ROTATION_ROTATEINTERVAL: 'logging_rotation_rotateInterval',
-	LOGGING_ROTATION_ROTATEMODULE: 'logging_rotation_rotateModule',
-	LOGGING_ROTATION_TIMEZONE: 'logging_rotation_timezone',
-	LOGGING_ROTATION_WORKERINTERVAL: 'logging_rotation_workerInterval',
+	LOGGING_ROTATION_ENABLED: 'logging_rotation_enabled',
+	LOGGING_ROTATION_FREQUENCY: 'logging_rotation_frequency',
+	LOGGING_ROTATION_SIZE: 'logging_rotation_size',
+	LOGGING_ROTATION_PATH: 'logging_rotation_path',
 	LOGGING_STDSTREAMS: 'logging_stdStreams',
 	LOGGING_AUDITLOG: 'logging_auditLog',
 	OPERATIONSAPI_AUTHENTICATION_OPERATIONTOKENTIMEOUT: 'operationsApi_authentication_operationTokenTimeout',
@@ -603,16 +590,6 @@ const CONFIG_PARAM_MAP = {
 	log_level: CONFIG_PARAMS.LOGGING_LEVEL,
 	log_path_key: CONFIG_PARAMS.LOGGING_ROOT,
 	log_path: CONFIG_PARAMS.LOGGING_ROOT,
-	log_daily_rotate: CONFIG_PARAMS.LOGGING_ROTATION_ROTATE,
-	log_rotate: CONFIG_PARAMS.LOGGING_ROTATION_ROTATE,
-	log_rotate_max_size: CONFIG_PARAMS.LOGGING_ROTATION_MAXSIZE,
-	log_rotate_retain: CONFIG_PARAMS.LOGGING_ROTATION_RETAIN,
-	log_rotate_compress: CONFIG_PARAMS.LOGGING_ROTATION_COMPRESS,
-	log_rotate_date_format: CONFIG_PARAMS.LOGGING_ROTATION_DATEFORMAT,
-	log_rotate_rotate_module: CONFIG_PARAMS.LOGGING_ROTATION_ROTATEMODULE,
-	log_rotate_worker_interval: CONFIG_PARAMS.LOGGING_ROTATION_WORKERINTERVAL,
-	log_rotate_rotate_interval: CONFIG_PARAMS.LOGGING_ROTATION_ROTATEINTERVAL,
-	log_rotate_timezone: CONFIG_PARAMS.LOGGING_ROTATION_TIMEZONE,
 	props_env_key: CONFIG_PARAMS.OPERATIONSAPI_NODEENV,
 	node_env: CONFIG_PARAMS.OPERATIONSAPI_NODEENV,
 	clustering_node_name_key: CONFIG_PARAMS.CLUSTERING_NODENAME,
@@ -683,15 +660,10 @@ const CONFIG_PARAM_MAP = {
 	logging_file: CONFIG_PARAMS.LOGGING_FILE,
 	logging_level: CONFIG_PARAMS.LOGGING_LEVEL,
 	logging_root: CONFIG_PARAMS.LOGGING_ROOT,
-	logging_rotation_compress: CONFIG_PARAMS.LOGGING_ROTATION_COMPRESS,
-	logging_rotation_dateformat: CONFIG_PARAMS.LOGGING_ROTATION_DATEFORMAT,
-	logging_rotation_maxsize: CONFIG_PARAMS.LOGGING_ROTATION_MAXSIZE,
-	logging_rotation_retain: CONFIG_PARAMS.LOGGING_ROTATION_RETAIN,
-	logging_rotation_rotate: CONFIG_PARAMS.LOGGING_ROTATION_ROTATE,
-	logging_rotation_rotateinterval: CONFIG_PARAMS.LOGGING_ROTATION_ROTATEINTERVAL,
-	logging_rotation_rotatemodule: CONFIG_PARAMS.LOGGING_ROTATION_ROTATEMODULE,
-	logging_rotation_timezone: CONFIG_PARAMS.LOGGING_ROTATION_TIMEZONE,
-	logging_rotation_workerinterval: CONFIG_PARAMS.LOGGING_ROTATION_WORKERINTERVAL,
+	logging_rotation_enabled: CONFIG_PARAMS.LOGGING_ROTATION_ENABLED,
+	logging_rotation_frequency: CONFIG_PARAMS.LOGGING_ROTATION_FREQUENCY,
+	logging_rotation_size: CONFIG_PARAMS.LOGGING_ROTATION_SIZE,
+	logging_rotation_path: CONFIG_PARAMS.LOGGING_ROTATION_PATH,
 	logging_stdstreams: CONFIG_PARAMS.LOGGING_STDSTREAMS,
 	logging_auditlog: CONFIG_PARAMS.LOGGING_AUDITLOG,
 	operationsapi_authentication_operationtokentimeout: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_OPERATIONTOKENTIMEOUT,
@@ -1007,8 +979,6 @@ module.exports = {
 	READ_AUDIT_LOG_SEARCH_TYPES_ENUM,
 	JWT_ENUM,
 	CLUSTERING_FLAG,
-	RUN_LOG,
-	INSTALL_LOG,
 	ITC_EVENT_TYPES,
 	CUSTOM_FUNCTION_PROC_NAME,
 	CUSTOM_FUNCTION_PROC_DESCRIPTOR,
@@ -1023,7 +993,7 @@ module.exports = {
 	LAUNCH_SERVICE_SCRIPTS,
 	LOG_LEVELS,
 	PROCESS_NAME_ENV_PROP,
-	PROCESS_LOG_NAMES,
+	LOG_NAMES,
 	PM2_PROCESS_STATUSES,
 	CONFIG_PARAM_MAP,
 	CONFIG_PARAMS,

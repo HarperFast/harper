@@ -42,16 +42,16 @@ function validateDatetime(value, helpers) {
 }
 
 function validateReadLogPath(value, helpers) {
-	const process_log_name = _.invert(hdb_terms.PROCESS_LOG_NAMES);
+	const process_log_name = _.invert(hdb_terms.LOG_NAMES);
 	if (process_log_name[value] === undefined) {
 		return helpers.message(`'log_name' '${value}' is invalid.`);
 	}
 
 	const log_path = env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY);
-	const log_name = value === undefined ? hdb_terms.PROCESS_LOG_NAMES.HDB : value;
+	const log_name = value === undefined ? hdb_terms.LOG_NAMES.HDB : value;
 	const read_log_path =
-		log_name === hdb_terms.PROCESS_LOG_NAMES.INSTALL
-			? path.join(INSTALL_LOG_LOCATION, hdb_terms.PROCESS_LOG_NAMES.INSTALL)
+		log_name === hdb_terms.LOG_NAMES.INSTALL
+			? path.join(INSTALL_LOG_LOCATION, hdb_terms.LOG_NAMES.INSTALL)
 			: path.join(log_path, log_name);
 
 	let exists = fs.existsSync(read_log_path);

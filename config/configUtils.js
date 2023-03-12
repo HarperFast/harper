@@ -23,6 +23,16 @@ const DEFAULT_CONFIG_FILE_PATH = path.join(hdb_terms.PACKAGE_ROOT, 'config', 'ya
 const CONFIGURE_SUCCESS_RESPONSE =
 	'Configuration successfully set. You must restart HarperDB for new config settings to take effect.';
 
+const DEPRECATED_CONFIG = {
+	logging_rotation_compress: 'logging.rotation.compress',
+	logging_rotation_retain: 'logging.rotation.retain',
+	logging_rotation_rotate: 'logging.rotation.rotate',
+	logging_rotation_rotateinterval: 'logging.rotation.rotateInterval',
+	logging_rotation_rotatemodule: 'logging.rotation.rotateModule',
+	logging_rotation_timezone: 'logging.rotation.timezone',
+	logging_rotation_workerinterval: 'logging.rotation.workerInterval',
+};
+
 let flat_default_config_obj;
 let flat_config_obj;
 
@@ -226,6 +236,17 @@ function initConfig(force = false) {
 		const config_obj = config_doc.toJSON();
 
 		flat_config_obj = flattenConfig(config_obj);
+
+		// If config has old version of logrotate enabled let user know it has been deprecated.
+		if (flat_config_obj['logging_rotation_rotate']) {
+			for (const key in DEPRECATED_CONFIG) {
+				if (flat_config_obj[key])
+					logger.error(
+						`Config ${DEPRECATED_CONFIG[key]} has been deprecated. Please check https://docs.harperdb.io/docs/ for further details.`
+					);
+			}
+		}
+
 		logger.trace(CONFIG_INIT_MSG);
 	}
 }

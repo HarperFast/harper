@@ -54,15 +54,10 @@ logging:
   level: error
   root: null
   rotation:
-    compress: false
-    dateFormat: YYYY-MM-DD_HH-mm-ss
-    maxSize: 10M
-    retain: 30
-    rotate: false
-    rotateInterval: 0 0 * * *
-    rotateModule: true
-    timezone: GMT
-    workerInterval: 30
+    enabled: false
+    frequency: null
+    size: null
+    path: null
   stdStreams: false
 operationsApi:
   authentication:
