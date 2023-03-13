@@ -1,5 +1,5 @@
 import { ResourceInterface } from './ResourceInterface';
-import { getTables } from './tables';
+import { getTables } from './tableLoader';
 import { Table } from './Table';
 import { DatabaseTransaction } from './DatabaseTransaction';
 let tables;
@@ -256,7 +256,7 @@ export class Resource implements ResourceInterface {
 		if (!table) return;
 		let key = schema_name ? (schema_name + '/' + table_name) : table_name;
 		let env_path = table.envPath;
-		let env_txn = this.inUseEnvs[env_path] || (this.inUseEnvs[env_path] = new DatabaseTransaction(table.primaryDbi, this.user));
+		let env_txn = this.inUseEnvs[env_path] || (this.inUseEnvs[env_path] = new DatabaseTransaction(table.primaryStore, this.user));
 		return this.inUseTables[key] || (this.inUseTables[key] = table.transaction(this.request, env_txn, env_txn.getReadTxn(), this));
 	}
 	async fetch(input: RequestInfo | URL, init?: RequestInit) {

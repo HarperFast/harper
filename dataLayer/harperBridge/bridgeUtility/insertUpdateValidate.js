@@ -3,7 +3,7 @@
 const hdb_utils = require('../../../utility/common_utils');
 const log = require('../../../utility/logging/harper_logger');
 const insert_validator = require('../../../validation/insertValidator');
-const { getDatabases } = require('../../../resources/tables');
+const { getDatabases } = require('../../../resources/tableLoader');
 
 module.exports = insertUpdateValidate;
 

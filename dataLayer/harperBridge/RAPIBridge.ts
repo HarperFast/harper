@@ -3,7 +3,7 @@ import * as LMDBBridge from './lmdbBridge/LMDBBridge';
 import * as search_validator from '../../validation/searchValidator';
 import { handleHDBError, hdb_errors } from '../../utility/errors/hdbError';
 import { Resource } from '../../resources/Resource';
-import { table } from '../../resources/tables';
+import { table } from '../../resources/tableLoader';
 import * as insertUpdateValidate from './bridgeUtility/insertUpdateValidate';
 import * as lmdbProcessRows from './lmdbBridge/lmdbUtility/lmdbProcessRows';
 import * as hdb_terms from '../../utility/hdbTerms';

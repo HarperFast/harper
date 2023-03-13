@@ -1,5 +1,5 @@
 import { Resource } from '../resources/Resource';
-import { tables, databases } from '../resources/tables';
+import { tables, databases } from '../resources/tableLoader';
 import { Compartment as CompartmentClass } from 'ses';
 import { readFile } from 'fs/promises';
 import { extname } from 'path';
@@ -57,7 +57,7 @@ async function getCompartment(getGlobalVars) {
 					imports: [],
 					exports: ['Resource','tables','databases'],
 					execute(exports) {
-						Object.assign(exports, { Resource, tables, databases });
+						Object.assign(exports, { Resource, tables: tables, databases });
 					}
 				}
 			}
@@ -90,6 +90,6 @@ function secureOnlyFetch(resource, options) {
 function getGlobalVars() {
 	return {
 		Resource,
-		tables,
+		tables: tables,
 	}
 }

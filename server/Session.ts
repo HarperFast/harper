@@ -1,5 +1,5 @@
 // this is used for durable sessions, that is sessions in MQTT that are not "clean" sessions and durable AMQP queues
-import { tables } from '../resources/tables';
+import { tables } from '../resources/tableLoader';
 import { resources } from '../resources/Resources';
 /**
  * This is used to start or retrieve a real-time communication session, like an MQTT session, or an AMQP queue.

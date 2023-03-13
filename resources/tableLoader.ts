@@ -1,5 +1,5 @@
 import { initSync, getHdbBasePath } from '../utility/environment/environmentManager';
-import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms';
+import { INTERNAL_DBIS_NAME, AUDIT_STORE_NAME } from '../utility/lmdb/terms';
 import { pack } from 'msgpackr';
 import { open } from 'lmdb';
 import { join, extname, basename } from 'path';
@@ -16,8 +16,7 @@ initSync();
 const USE_AUDIT = true; // TODO: Get this from config
 export let tables = null;
 export let databases = {};
-let loaded_databases, loaded_audit_dbs;
-export let auditDbs = {};
+let loaded_databases;
 let database_envs = new Map<string, any>();
 
 /**
@@ -32,23 +31,16 @@ export function getTables() {
  * This proactively scans the known
  * databases/schemas directories and finds any databases and opens them. This done proactively so that there is a fast
  * object available to all consumers that doesn't require runtime checks for database open states.
+ * This also attaches the audit store associated with table. Note that legacy tables had a single audit table per db table
+ * but in newer multi-table databases, there is one consistent, integrated audit table for the database since transactions
+ * can span any tables in the database.
  */
 export function getDatabases() {
 	if (loaded_databases) return databases;
 	loaded_databases = true;
-	loadDatabases(databases, join(getHdbBasePath(), DATABASE_PATH), getBaseSchemaPath());
-	return databases;
-}
-export function getAuditDbs() {
-	if (loaded_audit_dbs) return auditDbs;
-	loaded_audit_dbs = true;
-	auditDbs = {};
-	let base_path = getTransactionAuditStoreBasePath();
-	loadDatabases(auditDbs, join(getHdbBasePath(), AUDIT_PATH), getTransactionAuditStoreBasePath());
-	return auditDbs;
-}
-export function loadDatabases(databases, database_path, schemas_base_path) {
+	const database_path = join(getHdbBasePath(), DATABASE_PATH);
 	// First load all the databases from our main database folder
+	// TODO: Load any databases defined with explicit storage paths from the config
 	if (existsSync(database_path)) {
 		for (let database_entry: DirEnt of readdirSync(database_path, { withFileTypes: true })) {
 			if (database_entry.isFile() && extname(database_entry.name).toLowerCase() === '.mdb') {
@@ -56,15 +48,17 @@ export function loadDatabases(databases, database_path, schemas_base_path) {
 			}
 		}
 	}
-	// TODO: Load any databases defined with explicit storage paths from the config
 	// now we load databases from the legacy "schema" directory folder structure
-	if (existsSync(schemas_base_path)) {
-		for (let schema_entry: DirEnt of readdirSync(schemas_base_path, {withFileTypes: true})) {
+	if (existsSync(getBaseSchemaPath())) {
+		for (let schema_entry: DirEnt of readdirSync(getBaseSchemaPath(), {withFileTypes: true})) {
 			if (!schema_entry.isFile()) {
-				let schema_path = join(schemas_base_path, schema_entry.name);
+				let schema_path = join(getBaseSchemaPath(), schema_entry.name);
+				let schema_audit_path = join(getTransactionAuditStoreBasePath(), schema_entry.name);
 				for (let table_entry: DirEnt of readdirSync(schema_path, {withFileTypes: true})) {
-					if (table_entry.isFile() && extname(table_entry.name).toLowerCase() === '.mdb')
-						readMetaDb(join(schema_path, table_entry.name), basename(table_entry.name, '.mdb'), schema_entry.name);
+					if (table_entry.isFile() && extname(table_entry.name).toLowerCase() === '.mdb') {
+						let audit_path = join(schema_audit_path, table_entry.name);
+						readMetaDb(join(schema_path, table_entry.name), basename(table_entry.name, '.mdb'), schema_entry.name, audit_path);
+					}
 				}
 			}
 		}
@@ -78,7 +72,7 @@ export function loadDatabases(databases, database_path, schemas_base_path) {
  * @param default_table
  * @param default_schema
  */
-function readMetaDb(path: string, default_table?: string, default_schema: string = DEFAULT_DATABASE_NAME) {
+function readMetaDb(path: string, default_table?: string, default_schema: string = DEFAULT_DATABASE_NAME, audit_path?: string) {
 	let env_init = new OpenEnvironmentObject(
 		path,
 		false
@@ -87,8 +81,21 @@ function readMetaDb(path: string, default_table?: string, default_schema: string
 		let env = open(env_init);
 		database_envs.set(path, env);
 		let internal_dbi_init = new OpenDBIObject(false);
-		let dbis_db = env.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
-		for (let { key, value } of dbis_db.getRange({ start: false })) {
+		let dbis_store = env.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
+		let audit_store;
+		if (USE_AUDIT) {
+			if (audit_path) {
+				if (existsSync(audit_path)) {
+					env_init.path = audit_path;
+					audit_store = open(env_init);
+					audit_store.isLegacy = true;
+				}
+			} else {
+				audit_store = env.openDB(AUDIT_STORE_NAME, internal_dbi_init);
+			}
+		}
+
+		for (let { key, value } of dbis_store.getRange({ start: false })) {
 			let [ schema_name, table_name, attribute ] = key.toString().split('.');
 			if (!attribute) {
 				attribute = table_name;
@@ -101,13 +108,15 @@ function readMetaDb(path: string, default_table?: string, default_schema: string
 			}
 			let tables = databases[schema_name] || (databases[schema_name] = Object.create(null));
 			let dbi_init = new OpenDBIObject(!value.is_hash_attribute, value.is_hash_attribute);
-			if (value.is_hash_attribute)
-				tables[table_name] = makeTable({
-					primaryDbi: env.openDB(key.toString(), dbi_init),
+			if (value.is_hash_attribute) {
+				let table = tables[table_name] = makeTable({
+					primaryStore: env.openDB(key.toString(), dbi_init),
+					auditStore: audit_store,
 					tableName: table_name,
 					primaryKey: value.name,
 					indices: {},
 				});
+			}
 		}
 		return env;
 	} catch (error) {
@@ -131,9 +140,9 @@ interface TableDefinition {
  * @param custom_path
  * @param expiration
  * @param attributes
- * @param isAudit
+ * @param audit
  */
-export async function table({ table: table_name, database: database_name, path: custom_path, expiration, attributes, isAudit }: TableDefinition) {
+export async function table({ table: table_name, database: database_name, path: custom_path, expiration, attributes, audit }: TableDefinition) {
 	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
 	let dbs = isAudit ? auditDbs : databases;
 	let Table = dbs[database_name]?.[table_name];
@@ -143,7 +152,7 @@ export async function table({ table: table_name, database: database_name, path: 
 	let indices;
 	if (Table) {
 		primary_key = Table.primaryKey;
-		root_store = Table.primaryDbi;
+		root_store = Table.primaryStore;
 	} else {
 		let tables = dbs[database_name] || (dbs[database_name] = Object.create(null));
 		let path = join(custom_path || join(getHdbBasePath(), isAudit ? AUDIT_PATH : DATABASE_PATH), database_name + '.mdb');
@@ -157,20 +166,22 @@ export async function table({ table: table_name, database: database_name, path: 
 			root_store = open(env_init);
 			database_envs.set(path, root_store);
 		}
+		let audit_store = root_store.auditStore;
+		if (!audit_store && audit) {
+			audit_store = root_store.openDB(AUDIT_STORE_NAME, {});
+		}
 		primary_key_attribute = attributes.find(attribute => attribute.is_primary_key);
 		primary_key = primary_key_attribute.name;
 		primary_key_attribute.is_hash_attribute = true;
 		let dbi_init = new OpenDBIObject(!primary_key_attribute.is_primary_key, primary_key_attribute.is_primary_key);
 		let dbi_name = table_name + '.' + primary_key_attribute.name;
 		Table = tables[table_name] = makeTable({
-			primaryDbi: root_store.openDB(dbi_name, dbi_init),
+			primaryStore: root_store.openDB(dbi_name, dbi_init),
+			auditStore: audit_store,
 			primaryKey: primary_key,
 			tableName: table_name,
 			indices: [],
 		});
-		let has_audit_table = !isAudit && USE_AUDIT && !custom_path;
-		if (has_audit_table)
-			await table({ table: table_name, database: database_name, path: custom_path, expiration, attributes, isAudit: true });
 	}
 	indices = Table.indices;
 	let internal_dbi_init = new OpenDBIObject(false);
@@ -191,7 +202,7 @@ export async function table({ table: table_name, database: database_name, path: 
 		if (!dbi_descriptor) {
 			let property = attribute.name;
 			// this means that a new attribute has been introduced that needs to be indexed
-			for (let entry of Table.primaryDbi.getRange()) {
+			for (let entry of Table.primaryStore.getRange()) {
 				let record = entry.value;
 				let value_to_index = record[property];
 				dbi.put(value_to_index, record[primary_key]);

@@ -26,7 +26,7 @@ const TXN_KEY = Symbol('transaction');
 const INVALIDATED = 16;
 
 /*interface Table {
-	primaryDbi: Database
+	primaryStore: Database
 	indices: Database[]
 	envPath: string
 	tableName: string
@@ -45,16 +45,17 @@ const INVALIDATED = 16;
  * @param options
  */
 export function makeTable(options) {
-	let { primaryKey: primary_key, indices, attributes, tableName: table_name, primaryDbi: primary_dbi, expirationMS: expiration_ms } = options;
+	let { primaryKey: primary_key, indices, attributes, tableName: table_name, primaryStore: primary_store, expirationMS: expiration_ms, auditStore: audit_store } = options;
 	if (!attributes) attributes = [];
-	listenToCommits(primary_dbi);
+	listenToCommits(primary_store);
 	let primary_key_attribute = attributes.find(attribute => attribute.is_primary_key) || {};
 	return class Table extends Resource {
-		static primaryDbi = primary_dbi;
+		static primaryStore = primary_store;
+		static auditStore = audit_store;
 		static primaryKey = primary_key;
 		static tableName = table_name;
 		static indices = indices;
-		static envPath = primary_dbi.env.path;
+		static envPath = primary_store.env.path;
 		static expirationTimer;
 		static sourcedFrom(Resource) {
 			// define a source for retrieving invalidated entries for caching purposes
@@ -72,10 +73,10 @@ export function makeTable(options) {
 					let expiration_ms = expiration_time * 1000;
 					this.expirationTimer = setInterval(() => {
 						// iterate through all entries to find expired ones
-						for (let { key, value: record, version } of this.primaryDbi.getRange({ start: false, versions: true })) {
+						for (let { key, value: record, version } of this.primaryStore.getRange({ start: false, versions: true })) {
 							if (version < Date.now() - expiration_ms) {
 								// make sure we only delete it if the version has not changed
-								this.primaryDbi.ifVersion(key, version, () => this.primaryDbi.remove(key));
+								this.primaryStore.ifVersion(key, version, () => this.primaryStore.remove(key));
 							}
 						}
 					}, expiration_ms);
@@ -90,7 +91,7 @@ export function makeTable(options) {
 		 */
 		static subscribe(query, options) {
 			let key = typeof query !== 'object' ? query : query.conditions[0].attribute;
-			return addSubscription(this.primaryDbi.env.path, this.primaryDbi.db.dbi, key, options.callback);
+			return addSubscription(this.primaryStore.env.path, this.primaryStore.db.dbi, key, options.callback);
 		}
 		static transaction(env_transaction, lmdb_txn, parent_transaction) {
 			return new this(env_transaction, lmdb_txn, parent_transaction, {});
@@ -115,7 +116,7 @@ export function makeTable(options) {
 		constructor(request, env_txn, lmdb_txn, parent) {
 			super(request, false);
 			if (!env_txn) {
-				env_txn = new EnvTransaction(primary_dbi);
+				env_txn = new EnvTransaction(primary_store);
 				lmdb_txn = env_txn.getReadTxn();
 			}
 			this.envTxn = env_txn;
@@ -141,7 +142,7 @@ export function makeTable(options) {
 			if (primary_key_attribute.is_number)
 				id = +id;
 			let env_txn = this.envTxn;
-			let entry = primary_dbi.getEntry(id, { transaction: env_txn.getReadTxn() });
+			let entry = primary_store.getEntry(id, { transaction: env_txn.getReadTxn() });
 			if (!entry) {
 				if (this.constructor.Source) return this.getFromSource(id);
 				return;
@@ -215,7 +216,7 @@ export function makeTable(options) {
 			record.__availability__ = availability;
 			// TODO: We want to eventually use a "direct write" method to directly write to the availability portion
 			// of the record in place in the database. In the meantime, should probably use an ifVersion
-			primary_dbi.put(id, record);
+			primary_store.put(id, record);
 			let source = new this.constructor.Source();
 			let updated_record = await source.get(id);
 			let updated = source.lastModificationTime;
@@ -242,7 +243,7 @@ export function makeTable(options) {
 			if (!id) {
 				id = record[primary_key] = randomUUID();//uuid.v4();
 			}
-			let existing_entry = primary_dbi.getEntry(id);
+			let existing_entry = primary_store.getEntry(id);
 			let existing_record = existing_entry?.value;
 			let had_existing = existing_record;
 			if (!existing_record) {
@@ -279,7 +280,7 @@ export function makeTable(options) {
 			let completion;
 
 			let writes = [{
-				store: primary_dbi,
+				store: primary_store,
 				operation: 'put',
 				key: id,
 				value: record,
@@ -323,16 +324,16 @@ export function makeTable(options) {
 			// use optimistic locking to only commit if the existing record state still holds true.
 			// this is superior to using an async transaction since it doesn't require JS execution
 			//  during the write transaction.
-			env_txn.recordRead(primary_dbi, id, existing_entry ? existing_entry.version : null, false);
+			env_txn.recordRead(primary_store, id, existing_entry ? existing_entry.version : null, false);
 			env_txn.writes.push(...writes);
 		}
 
 		delete(id, options): boolean {
 			let env_txn = this.envTxn;
-			let existing_entry = primary_dbi.getEntry(id);
+			let existing_entry = primary_store.getEntry(id);
 			let existing_record = existing_entry?.value;
 			if (!existing_record) return false;
-			env_txn.recordRead(primary_dbi, id, existing_entry.version, false);
+			env_txn.recordRead(primary_store, id, existing_entry.version, false);
 			for (let i = 0, l = indices.length; i < l; i++) {
 				let index = indices[i];
 				let existing_value = existing_record[id];
@@ -395,7 +396,7 @@ export function makeTable(options) {
 				// and then filtering by all subsequent conditions
 				let filters = conditions.slice(1).map(filterByType);
 				let filters_length = filters.length;
-				records = ids.map((id) => primary_dbi.get(id, { transaction: this.lmdbTxn, lazy: true }));
+				records = ids.map((id) => primary_store.get(id, { transaction: this.lmdbTxn, lazy: true }));
 				if (filters_length > 0)
 					records = records.filter((record) => {
 						for (let i = 0; i < filters_length; i++) {
@@ -427,7 +428,7 @@ export function makeTable(options) {
 						return true;
 					})
 					.slice(offset, query.limit && query.limit + offset);
-				records = ids.map((id) => primary_dbi.get(id, { transaction: this.lmdbTxn, lazy: true }));
+				records = ids.map((id) => primary_store.get(id, { transaction: this.lmdbTxn, lazy: true }));
 			}
 			return records;
 		}
