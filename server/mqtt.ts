@@ -1,7 +1,7 @@
 // for now we are using mqtt-packet, but we may implement some of this ourselves, particularly packet generation so that
 // we can implement more efficient progressive buffer allocation.
 import { parser } from 'mqtt-packet';
-import { getSession, Session } from './Session';
+import { getSession, DurableSubscriptionsSession } from './DurableSubscriptionsSession';
 const parser4 = parser({ protocolVersion: 4});
 const DEFAULT_MQTT_PORT = 1883;
 export async function start({ server, port, webSocket }) {
@@ -19,12 +19,13 @@ export async function start({ server, port, webSocket }) {
 }
 
 function onSocket(socket, send) {
-	let session: Session;
+	let session: DurableSubscriptionsSession;
 	function onMessage(data) {
 		let message = parser4.parse(data);
 		switch(message.cmd) {
 			case 'connect':
-				session = getSession(message.clientId)
+				//TODO: Is it a clean or durable session?
+				session = getSession(message.clientId);
 				session.setListener((message) => {
 					// TODO: Send a publish command
 					send(parser4.generate({
