@@ -22,11 +22,10 @@ export async function handleFile(js, relative_path, file_path, resources) {
 		let exported_class = exports[name];
 		if (
 			typeof exported_class === 'function' &&
-			exported_class.prototype &&
-			(exported_class.prototype.get ||
-				exported_class.prototype.put ||
-				exported_class.prototype.post ||
-				exported_class.prototype.delete)
+			(exported_class.get ||
+				exported_class.put ||
+				exported_class.post ||
+				exported_class.delete)
 		) {
 			// use the REST handler to expose the Resource as an endpoint
 			/*let handler: any = restHandler(relative_path, exported_class);

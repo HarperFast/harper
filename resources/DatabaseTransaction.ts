@@ -1,5 +1,5 @@
 import { RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
-import { DATA, OWN } from './writableRecord';
+import { DATA, OWN } from './WritableRecord';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 
 export class DatabaseTransaction {

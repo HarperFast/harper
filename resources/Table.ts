@@ -10,7 +10,7 @@ import { compareKeys, readKey } from 'ordered-binary';
 import * as lmdb_terms from '../utility/lmdb/terms';
 import * as env_mngr from '../utility/environment/environmentManager';
 import {addSubscription, listenToCommits} from './transactionBroadcast';
-import { getWritableRecord } from './writableRecord'
+import { getWritableRecord } from './WritableRecord'
 import {tables} from './tables';
 
 const RANGE_ESTIMATE = 100000000;

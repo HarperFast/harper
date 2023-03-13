@@ -21,15 +21,12 @@ const SYMBOL_OPERATORS = {
 export class Resource implements ResourceInterface {
 	request: any
 	user: any
-	fullIsolation: boolean
-	restartable: boolean
 	lastModificationTime = 0;
 	inUseTables = {}
 	inUseEnvs = {}
-	constructor(request?, full_isolation?: boolean) {
+	constructor(request?) {
 		this.request = request;
 		this.user = request?.user;
-		this.fullIsolation = full_isolation;
 	}
 
 	getById(id: any, options?: any): {} {
@@ -243,7 +240,7 @@ export class Resource implements ResourceInterface {
 	use(table: Table) {
 		return this.useTable(table.tableName, table.schemaName);
 	}
-	update(key) {
+	update(keyOrRecord) {
 		throw new Error('Not implemented');
 	}
 	useTable(table_name: string, schema_name?: string): ResourceInterface {
