@@ -154,7 +154,7 @@ describe('Test export.js', () => {
 				err = e;
 			}
 			assert.ok(err.message.length > 0, 'expected error');
-			assert.ok(err.message.indexOf('bah') > 0, 'expected error');
+			assert.ok(err.message === 'bah', 'expected error');
 		});
 
 		it('Test validation error is handled correctly', async () => {

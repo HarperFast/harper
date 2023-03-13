@@ -4,7 +4,6 @@ const hdb_terms = require('../../utility/hdbTerms');
 const hdb_utils = require('../../utility/common_utils');
 const harper_logger = require('../../utility/logging/harper_logger');
 const global_schema = require('../../utility/globalSchema');
-const pm2_utils = require('../../utility/processManagement/processManagement');
 const user = require('../../security/user');
 const promisify = require('util').promisify;
 const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);

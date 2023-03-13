@@ -14,11 +14,6 @@ const os = require('os');
 const logger = require('../../utility/logging/harper_logger');
 
 const HDB_ROOT = path.join(__dirname, 'carrot');
-const FAKE_CERT = '/fake/pem/cert.pem';
-const FAKE_PRIVATE_KEY = '/fake/pem/key.pem';
-const TEST_CERT = path.join(__dirname, 'carrot/keys/certificate.pem');
-const TEST_PRIVATE_KEY = path.join(__dirname, 'carrot/keys/privateKey.pem');
-const TEST_CA = path.join(__dirname, 'carrot/keys/ca.pem');
 
 const FAKE_CONFIG = {
 	clustering: {
@@ -101,15 +96,10 @@ const FAKE_CONFIG = {
 		file: false,
 		level: 'notify',
 		rotation: {
-			compress: true,
-			dateFormat: 'YYYY-MM-DD',
-			maxSize: '5M',
-			retain: 20,
-			rotate: true,
-			rotateInterval: '0 0 0 0 0',
-			rotateModule: false,
-			timezone: 'CST',
-			workerInterval: 20,
+			enabled: true,
+			frequency: '1d',
+			path: '/put/logs/here',
+			size: '100M',
 		},
 		root: null,
 		stdStreams: true,
@@ -243,14 +233,10 @@ describe('Test configValidator module', () => {
 						file: false,
 						level: 'notify',
 						rotation: {
-							compress: true,
-							dateFormat: 'YYYY-MM-DD',
-							retain: 20,
-							rotate: true,
-							rotateInterval: '0 0 0 0 0',
-							rotateModule: false,
-							timezone: 'CST',
-							workerInterval: 20,
+							enabled: true,
+							frequency: '1d',
+							size: '100M',
+							path: '/put/logs/here',
 						},
 						root: path.join(HDB_ROOT, 'log'),
 						stdStreams: true,
@@ -446,22 +432,17 @@ describe('Test configValidator module', () => {
 			let bad_config_obj = test_utils.deepClone(FAKE_CONFIG);
 			bad_config_obj.logging.file = 'sassafrass';
 			bad_config_obj.logging.level = 'holla';
-			bad_config_obj.logging.rotation.compress = 26;
-			bad_config_obj.logging.rotation.dateFormat = { date: 'MM / DD / YY' };
-			bad_config_obj.logging.rotation.maxSize = '12P';
-			bad_config_obj.logging.rotation.retain = false;
-			bad_config_obj.logging.rotation.rotate = [true];
-			bad_config_obj.logging.rotation.rotateInterval = false;
-			bad_config_obj.logging.rotation.rotateModule = 'nerp';
-			bad_config_obj.logging.rotation.timezone = false;
-			bad_config_obj.logging.rotation.workerInterval = 0;
+			bad_config_obj.logging.rotation.enabled = 'please';
+			bad_config_obj.logging.rotation.frequency = 1;
+			bad_config_obj.logging.rotation.size = '100z';
+			bad_config_obj.logging.rotation.path = true;
 			bad_config_obj.logging.root = '/???';
 			bad_config_obj.logging.stdStreams = ['not_a_boolean'];
 			bad_config_obj.logging.auditLog = ['not_a_boolean'];
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'logging.file' must be a boolean. 'logging.level' must be one of [notify, fatal, error, warn, info, debug, trace]. 'logging.rotation.compress' must be a boolean. 'logging.rotation.dateFormat' must be a string. Invalid logging.rotation.maxSize unit. Available units are G, M or K. 'logging.rotation.retain' must be a number. 'logging.rotation.rotate' must be a boolean. 'logging.rotation.rotateInterval' must be a string. 'logging.rotation.rotateModule' must be a boolean. 'logging.rotation.timezone' must be a string. 'logging.rotation.workerInterval' must be greater than or equal to 1. 'logging.root' with value '/???' fails to match the directory path pattern. 'logging.stdStreams' must be a boolean. 'logging.auditLog' must be a boolean";
+				"'logging.file' must be a boolean. 'logging.level' must be one of [notify, fatal, error, warn, info, debug, trace]. 'logging.rotation.enabled' must be a boolean. 'logging.rotation.frequency' must be a string. Invalid logging.rotation.maxSize unit. Available units are G, M or K. 'logging.rotation.path' must be a string. 'logging.root' with value '/???' fails to match the directory path pattern. 'logging.stdStreams' must be a boolean. 'logging.auditLog' must be a boolean";
 
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});

@@ -614,8 +614,6 @@ describe('Test processManagement utilityFunctions module', () => {
 			const expected_result = {
 				name: 'Restart HDB',
 				exec_mode: 'fork',
-				out_file: path.resolve(__dirname, '../../envDir/log/pm2.log'),
-				error_file: path.resolve(__dirname, '../../envDir/log/pm2.log'),
 				instances: 1,
 				autorestart: false,
 				cwd: path.resolve(__dirname, '../../../utility/scripts'),
@@ -623,7 +621,6 @@ describe('Test processManagement utilityFunctions module', () => {
 				env: {
 					PROCESS_NAME: 'Restart HDB',
 				},
-				merge_logs: true,
 			};
 			const start_stub = sandbox.stub().resolves();
 			const start_rw = utility_functions.__set__('start', start_stub);

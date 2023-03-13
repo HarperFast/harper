@@ -91,12 +91,11 @@ async function processLocalTransaction(req, operation_function) {
 	}
 
 	let post_op_function = terms.CLUSTER_OPERATIONS[req.body.operation] === undefined ? null : postWrite;
-	try {
-		let data = await operation_function_caller.callOperationFunctionAsAwait(
-			operation_function,
-			req.body,
-			post_op_function
-		);
+	let data = await operation_function_caller.callOperationFunctionAsAwait(
+		operation_function,
+		req.body,
+		post_op_function
+	);
 
 		if (typeof data !== 'object') {
 			data = { message: data };
@@ -112,11 +111,7 @@ async function processLocalTransaction(req, operation_function) {
 			});
 		}
 
-		return data;
-	} catch (error) {
-		harper_logger.info(error);
-		throw error;
-	}
+	return data;
 }
 
 const OPERATION_FUNCTION_MAP = initializeOperationFunctionMap();

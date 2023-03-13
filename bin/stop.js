@@ -53,8 +53,6 @@ async function postDummyNatsMsg() {
  * @returns {Promise<>}
  */
 async function restartProcesses() {
-	// This is here to accommodate requests from the CLI.
-	hdb_logger.createLogFile(hdb_terms.PROCESS_LOG_NAMES.CLI, hdb_terms.PROCESS_DESCRIPTORS.STOP);
 	try {
 		// Requiring the processManagement mod will create the .processManagement dir. This code is here to allow install to set processManagement env vars before that is done.
 		if (pm2_utils === undefined) pm2_utils = require('../utility/processManagement/processManagement');
@@ -100,9 +98,7 @@ async function restartProcesses() {
 				console.log(`Restarting ${service}`);
 				hdb_logger.trace(`Restarting ${service}`);
 
-				if (service === hdb_terms.PROCESS_DESCRIPTORS.PM2_LOGROTATE) {
-					await pm2_utils.configureLogRotate();
-				} else if (service_req.toLowerCase().includes('clustering')) {
+				if (service_req.toLowerCase().includes('clustering')) {
 					await restartClustering(service_req);
 				} else if (await pm2_utils.isServiceRegistered(service)) {
 					// We need to allow for restart to be called on services that arent registered/managed by processManagement. If restart is called on a
@@ -238,8 +234,6 @@ async function restartService(json_message) {
 		}
 
 		await pm2_utils.reloadStopStart(service);
-	} else if (service === hdb_terms.PROCESS_DESCRIPTORS.PM2_LOGROTATE) {
-		await pm2_utils.configureLogRotate();
 	} else if (service.toLowerCase().includes('clustering')) {
 		await restartClustering(service);
 	} else if (
@@ -275,8 +269,6 @@ async function restartService(json_message) {
  * this will fail.
  */
 async function stop() {
-	hdb_logger.createLogFile(hdb_terms.PROCESS_LOG_NAMES.CLI, hdb_terms.PROCESS_DESCRIPTORS.STOP);
-
 	try {
 		// Requiring the processManagement mod will create the .pm2 dir. This code is here to allow install to set
 		// pm2 env vars before that is done.

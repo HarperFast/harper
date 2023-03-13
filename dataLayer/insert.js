@@ -136,20 +136,16 @@ async function insertData(insert_object) {
 		throw handleHDBError(new Error(), invalid_schema_table_msg, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	try {
-		let bridge_insert_result = await harperBridge.createRecords(insert_object);
+	let bridge_insert_result = await harperBridge.createRecords(insert_object);
 
-		return returnObject(
-			INSERT_ACTION,
-			bridge_insert_result.written_hashes,
-			insert_object,
-			bridge_insert_result.skipped_hashes,
-			bridge_insert_result.new_attributes,
-			bridge_insert_result.txn_time
-		);
-	} catch (e) {
-		throw e;
-	}
+	return returnObject(
+		INSERT_ACTION,
+		bridge_insert_result.written_hashes,
+		insert_object,
+		bridge_insert_result.skipped_hashes,
+		bridge_insert_result.new_attributes,
+		bridge_insert_result.txn_time
+	);
 }
 
 /**
@@ -171,30 +167,26 @@ async function updateData(update_object) {
 		throw handleHDBError(new Error(), invalid_schema_table_msg, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	try {
-		let bridge_update_result = await harperBridge.updateRecords(update_object);
-		if (!hdb_utils.isEmpty(bridge_update_result.existing_rows)) {
-			return returnObject(
-				bridge_update_result.update_action,
-				[],
-				update_object,
-				bridge_update_result.hashes,
-				undefined,
-				bridge_update_result.txn_time
-			);
-		}
-
+	let bridge_update_result = await harperBridge.updateRecords(update_object);
+	if (!hdb_utils.isEmpty(bridge_update_result.existing_rows)) {
 		return returnObject(
-			UPDATE_ACTION,
-			bridge_update_result.written_hashes,
+			bridge_update_result.update_action,
+			[],
 			update_object,
-			bridge_update_result.skipped_hashes,
-			bridge_update_result.new_attributes,
+			bridge_update_result.hashes,
+			undefined,
 			bridge_update_result.txn_time
 		);
-	} catch (e) {
-		throw e;
 	}
+
+	return returnObject(
+		UPDATE_ACTION,
+		bridge_update_result.written_hashes,
+		update_object,
+		bridge_update_result.skipped_hashes,
+		bridge_update_result.new_attributes,
+		bridge_update_result.txn_time
+	);
 }
 
 /**

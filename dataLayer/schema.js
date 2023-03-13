@@ -64,31 +64,23 @@ async function createSchemaStructure(schema_create_object) {
 		);
 	}
 
-	try {
-		await harperBridge.createSchema(schema_create_object);
+	await harperBridge.createSchema(schema_create_object);
 
-		return `schema '${schema_create_object.schema}' successfully created`;
-	} catch (err) {
-		throw err;
-	}
+	return `schema '${schema_create_object.schema}' successfully created`;
 }
 
 async function createTable(create_table_object) {
-	try {
-		let create_table_structure = await createTableStructure(create_table_object);
-		signalling.signalSchemaChange(
-			new SchemaEventMsg(
-				process.pid,
-				create_table_object.operation,
-				create_table_object.schema,
-				create_table_object.table
-			)
-		);
+	let create_table_structure = await createTableStructure(create_table_object);
+	signalling.signalSchemaChange(
+		new SchemaEventMsg(
+			process.pid,
+			create_table_object.operation,
+			create_table_object.schema,
+			create_table_object.table
+		)
+	);
 
-		return create_table_structure;
-	} catch (err) {
-		throw err;
-	}
+	return create_table_structure;
 }
 
 async function createTableStructure(create_table_object) {
@@ -342,21 +334,16 @@ function dropAttributeFromGlobal(drop_attribute_object) {
 }
 
 async function createAttribute(create_attribute_object) {
-	try {
-		await harperBridge.createAttribute(create_attribute_object);
-		signalling.signalSchemaChange(
-			new SchemaEventMsg(
-				process.pid,
-				create_attribute_object.operation,
-				create_attribute_object.schema,
-				create_attribute_object.table,
-				create_attribute_object.attribute
-			)
-		);
+	await harperBridge.createAttribute(create_attribute_object);
+	signalling.signalSchemaChange(
+		new SchemaEventMsg(
+			process.pid,
+			create_attribute_object.operation,
+			create_attribute_object.schema,
+			create_attribute_object.table,
+			create_attribute_object.attribute
+		)
+	);
 
-		return `attribute '${create_attribute_object.schema}.${create_attribute_object.table}.${create_attribute_object.attribute}' successfully created.`;
-	} catch (err) {
-		logger.error(err);
-		throw err;
-	}
+	return `attribute '${create_attribute_object.schema}.${create_attribute_object.table}.${create_attribute_object.attribute}' successfully created.`;
 }

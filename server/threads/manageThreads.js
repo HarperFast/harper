@@ -88,7 +88,7 @@ function startWorker(path, options = {}) {
 				execArgv: ['--enable-source-maps'],
 				argv: process.argv.slice(2),
 				// pass these in synchronously to the worker so it has them on startup:
-				workerData: { addPorts: ports_to_send, isFirst: options.isFirst },
+				workerData: { addPorts: ports_to_send, isFirst: options.isFirst, name: options.name },
 				transferList: ports_to_send,
 			},
 			options

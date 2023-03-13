@@ -41,11 +41,8 @@ describe('Test processManagement servicesConfig module', () => {
 			exec_mode: 'fork',
 			name: 'HarperDB',
 			node_args: '--max-old-space-size=512',
-			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.HDB),
-			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.HDB),
 			script: 'bin/harperdb.js',
 			cwd: PACKAGE_ROOT,
-			merge_logs: true,
 			env: {
 				IS_SCRIPTED_SERVICE: true,
 				PROCESS_NAME: hdb_terms.PROCESS_DESCRIPTORS.HDB,
@@ -60,12 +57,9 @@ describe('Test processManagement servicesConfig module', () => {
 			name: 'Restart HDB',
 			script: RESTART_SCRIPT,
 			exec_mode: 'fork',
-			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.PM2),
-			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.PM2),
 			instances: 1,
 			cwd: SCRIPTS_DIR,
 			autorestart: false,
-			merge_logs: true,
 			env: {
 				PROCESS_NAME: hdb_terms.PROCESS_DESCRIPTORS.RESTART_HDB,
 			},
@@ -85,8 +79,8 @@ describe('Test processManagement servicesConfig module', () => {
 				PROCESS_NAME: 'Clustering Hub',
 			},
 			merge_logs: true,
-			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.HDB),
-			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.HDB),
+			out_file: path.join(LOG_PATH, hdb_terms.LOG_NAMES.HDB),
+			error_file: path.join(LOG_PATH, hdb_terms.LOG_NAMES.HDB),
 			instances: 1,
 		};
 		const result = services_config.generateNatsHubServerConfig();
@@ -106,8 +100,8 @@ describe('Test processManagement servicesConfig module', () => {
 				PROCESS_NAME: 'Clustering Leaf',
 			},
 			merge_logs: true,
-			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.HDB),
-			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.HDB),
+			out_file: path.join(LOG_PATH, hdb_terms.LOG_NAMES.HDB),
+			error_file: path.join(LOG_PATH, hdb_terms.LOG_NAMES.HDB),
 			instances: 1,
 		};
 		const result = services_config.generateNatsLeafServerConfig();
@@ -125,8 +119,8 @@ describe('Test processManagement servicesConfig module', () => {
 				PROCESS_NAME: 'Upgrade-4-0-0',
 			},
 			merge_logs: true,
-			out_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.HDB),
-			error_file: path.join(LOG_PATH, hdb_terms.PROCESS_LOG_NAMES.HDB),
+			out_file: path.join(LOG_PATH, hdb_terms.LOG_NAMES.HDB),
+			error_file: path.join(LOG_PATH, hdb_terms.LOG_NAMES.HDB),
 			instances: 1,
 			cwd: LAUNCH_SCRIPTS_DIR,
 			autorestart: false,
