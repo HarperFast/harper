@@ -14,6 +14,7 @@ interface Server {
 }
 interface ServerOptions {
 	port?: number
+	secure?: any
 }
 interface WebSocketOptions extends ServerOptions {
 	subProtocol: string

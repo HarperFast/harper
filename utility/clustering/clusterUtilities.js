@@ -6,7 +6,7 @@ const util = require('util');
 const terms = require('../hdbTerms');
 const env_mgr = require('../environment/environmentManager');
 env_mgr.initSync();
-const auth = require('../../security/auth');
+const auth = require('../../security/fastifyAuth');
 const search = require('../../dataLayer/search');
 const { Node, NodeSubscription } = require('./NodeObject');
 const SearchByHashObject = require('../../dataLayer/SearchByHashObject');

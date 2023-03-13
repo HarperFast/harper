@@ -217,18 +217,20 @@ function serialize(response_data, request, response_object) {
 	if (response_data?.contentType && response_data.data) {
 		// we use this as a special marker for blobs of data that are explicitly one content type
 		response_object.headers['Content-Type'] = response_data.contentType;
+		response_object.headers['Vary'] = 'Accept-Encoding';
 		response_body = response_data.data;
 	}
 	if (response_data instanceof Uint8Array) {
 		// If a user function or property returns a direct Buffer of binary data, this is the most appropriate content
 		// type for it.
 		response_object.headers['Content-Type'] = 'application/octet-stream';
+		response_object.headers['Vary'] = 'Accept-Encoding';
 		response_body = response_data;
 	} else {
 		let serializer = findBestSerializer(request);
 		// TODO: If a different content type is preferred, look through resources to see if there is one
 		// specifically for that content type (most useful for html).
-
+		response_object.headers['Vary'] = 'Accept, Accept-Encoding';
 		response_object.headers['Content-Type'] = serializer.type;
 		if (serializer.serializer.serializeStream) {
 			let stream = serializer.serializer.serializeStream(response_data);

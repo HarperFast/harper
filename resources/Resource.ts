@@ -1,9 +1,7 @@
 import { ResourceInterface } from './ResourceInterface';
 import { getTables } from './tables';
-import { RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
 import { Table } from './Table';
-import { DATA, OWN } from './writableRecord';
-import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
+import { DatabaseTransaction } from './DatabaseTransaction';
 let tables;
 const QUERY_PARSER = /([^&|=<>!(),]+)([&|=<>!(),]*)/g
 const SYMBOL_OPERATORS = {
@@ -32,6 +30,10 @@ export class Resource implements ResourceInterface {
 		this.request = request;
 		this.user = request?.user;
 		this.fullIsolation = full_isolation;
+	}
+
+	getById(id: any, options?: any): {} {
+		throw new Error('Not implemented');
 	}
 
 	/**
@@ -102,18 +104,76 @@ export class Resource implements ResourceInterface {
 			env_txn.doneReading(); // done with the read snapshot txn
 		}
 	}
-	async get(url, options?) {
-		let search_start = url.indexOf?.('?');
-		if (search_start > -1) {
-			return this.search(this.parseQuery(url.slice(search_start + 1)), options);
+	static async get(identifier: string|number, options?: any) {
+		let resource = new this(options);
+		let user = options?.user;
+		let checked = checkAllowed(resource.allowGet?.(user), user, resource);
+		if (checked?.then) await checked; // fast path to avoid await if not needed
+		let data;
+		if (typeof identifier === 'number')
+			data = resource.getById(identifier, options);
+		else {
+			let search_start = identifier.indexOf?.('?');
+			if (search_start > -1) {
+				return {
+					data: resource.search(this.parseQuery(url.slice(search_start + 1)), options)
+				};
+			}
+			let slash_index = identifier.indexOf?.('/');
+			let data;
+			if (slash_index > -1) {
+				let id = decodeURIComponent(identifier.slice(0, slash_index));
+				let property = decodeURIComponent(identifier.slice(slash_index + 1));
+				let record = await resource.getById(id, {lazy: true});
+				data = record[property];
+			} else
+				data = resource.getById(decodeURIComponent(identifier), options);
 		}
-		let slash_index = url.indexOf?.('/');
-		if (!(slash_index > -1))
-			return this.getById(url, options);
-		let id = url.slice(0, slash_index);
-		let property = url.slice(slash_index + 1);
-		let record = await this.getById(id, { lazy: true });
-		return record[property];
+		// TODO: commit or indicate stop reading
+		return {
+			updated: resource.lastModificationTime,
+			data,
+		};
+	}
+
+	static async put(identifier: string|number, request?: any) {
+		let updated_data = request.data;
+		let resource = new this(options);
+		let user = request.user;
+		let checked = checkAllowed(resource.allowPut?.(user), user, resource);
+		if (checked?.then) await checked; // fast path to avoid await if not needed
+		resource.put(identifier, updated_data);
+		await resource.commit();
+	}
+	static async patch(identifier: string|number, request?: any) {
+		let updates = request.data;
+		let resource = new this(options);
+		let user = request.user;
+		let checked = checkAllowed(resource.allowPatch?.(user), user, resource);
+		if (checked?.then) await checked; // fast path to avoid await if not needed
+		let record = await resource.update(identifier);
+		for (let key in updates) {
+			record[key] = updates[key];
+		}
+		await resource.commit();
+	}
+	static async delete(identifier: string|number, request?: any) {
+		let updates = request.data;
+		let resource = new this(options);
+		let user = request.user;
+		let checked = checkAllowed(resource.allowDelete?.(user), user, resource);
+		if (checked?.then) await checked; // fast path to avoid await if not needed
+		await resource.delete(identifier);
+		await resource.commit();
+	}
+	static async post(identifier: string|number, request?: any) {
+		let updates = request.data;
+		let resource = new this(options);
+		let user = request.user;
+		let checked = checkAllowed(resource.allowPost?.(user), user, resource);
+		if (checked?.then) await checked; // fast path to avoid await if not needed
+		await resource.create(identifier);
+		await resource.commit();
 	}
 
 	/**
@@ -121,7 +181,7 @@ export class Resource implements ResourceInterface {
 	 * structure
 	 * @param query_string
 	 */
-	parseQuery(query_string: string) {
+	static parseQuery(query_string: string) {
 		let match;
 		let attribute, comparison;
 		let conditions = [];
@@ -186,12 +246,6 @@ export class Resource implements ResourceInterface {
 	update(key) {
 		throw new Error('Not implemented');
 	}
-	patch(key, updates) {
-		let record = this.update(key);
-		for (let key in updates) {
-			record[key] = updates[key];
-		}
-	}
 	useTable(table_name: string, schema_name?: string): ResourceInterface {
 		if (!tables) tables = getTables();
 		let schema_object = schema_name ? tables[schema_name] : tables;
@@ -202,7 +256,7 @@ export class Resource implements ResourceInterface {
 		if (!table) return;
 		let key = schema_name ? (schema_name + '/' + table_name) : table_name;
 		let env_path = table.envPath;
-		let env_txn = this.inUseEnvs[env_path] || (this.inUseEnvs[env_path] = new EnvTransaction(table.primaryDbi));
+		let env_txn = this.inUseEnvs[env_path] || (this.inUseEnvs[env_path] = new DatabaseTransaction(table.primaryDbi, this.user));
 		return this.inUseTables[key] || (this.inUseTables[key] = table.transaction(this.request, env_txn, env_txn.getReadTxn(), this));
 	}
 	async fetch(input: RequestInfo | URL, init?: RequestInit) {
@@ -222,127 +276,31 @@ export class Resource implements ResourceInterface {
 	}
 }
 
-export class EnvTransaction {
-	conditions = [] // the set of reads that were made in this txn, that need to be verified to commit the writes
-	writes = [] // the set of writes to commit if the conditions are met
-	updatingRecords?: any[]
-	fullIsolation = false
-	inTwoPhase?: boolean
-	lmdbDb: RootDatabase
-	readTxn: LMDBTransaction
-	constructor(lmdb_db) {
-		this.lmdbDb = lmdb_db;
-	}
-	getReadTxn() {// used optimistically
-		return this.readTxn || (this.readTxn = this.lmdbDb.useReadTransaction());
-	}
-	doneReading() {
-		if (this.readTxn) {
-			this.readTxn.done();
-			this.readTxn = null;
-		}
-	}
-
-	recordRead(store, key, version, lock) {
-		this.conditions.push({ store, key, version, lock });
-	}
-
-	/**
-	 * When multiple env/databases are involved in a transaction, we basically do a local two phase commit
-	 * using this method to perform the first request (or voting phase). This helps us to eliminate the need
-	 * for restarting transactions.
-	 */
-	requestCommit(): Promise<boolean> {
-		this.inTwoPhase = true;
-		let first_condition = this.conditions[0];
-		if (!first_condition) return Promise.resolve(true);
-		return first_condition.store.transaction(() => {
-			let rejected;
-			for (let condition of this.conditions) {
-				rejected = true;
-				condition.store.ifVersion(condition.key, condition.version, () => {
-					rejected = false;
-				});
-				if (rejected)
-					break;
-			}
-			return !rejected;
-		});
-	}
-
-	/**
-	 * Resolves with information on the timestamp and success of the commit
-	 */
-	commit(): Promise<CommitResolution> {
-		this.doneReading();
-		let remaining_conditions = this.inTwoPhase ? [] : this.conditions.slice(0).reverse();
-		let txn_time, resolution;
-		const nextCondition = () => {
-			let condition = remaining_conditions.pop();
-			if (condition) {
-				condition.store.ifVersion(condition.key, condition.version, nextCondition);
-			} else {
-				txn_time = getNextMonotonicTime();
-				for (let { txn, record } of this.updatingRecords || []) {
-					// TODO: get the own properties, translate to a put and a correct replication operation/CRDT
-					let original = record[DATA];
-					let own = record[OWN];
-					own.__updatedtime__ = txn_time;
-					resolution = txn.put(original[txn.constructor.primaryKey], Object.assign({}, original, own));
-				}
-				for (let write of this.writes) {
-					resolution = write.store[write.operation](write.key, write.value, write.version);
-				}
-			}
-		};
-		nextCondition();
-		// TODO: This is where we write to the SharedArrayBuffer so that subscribers from other threads can
-		// listen... And then we can use it determine when the commit has been delivered to at least one other
-		// node
-
-		// now reset transactions tracking; this transaction be reused and committed again
-		this.conditions = [];
-		this.writes = [];
-		return resolution?.then(resolution => ({
-			success: resolution,
-			txnTime: txn_time,
-		}));
-	}
-	abort(): void {
-		this.doneReading();
-		// reset the transaction
-		this.conditions = [];
-		this.writes = [];
-	}
-}
-
 export function snake_case(camelCase: string) {
 	return camelCase[0].toLowerCase() + camelCase.slice(1).replace(/[a-z][A-Z][a-z]/g,
 		(letters) => letters[0] + '_' + letters.slice(1));
 }
-interface CommitResolution {
-	txnTime: number
-	resolution: boolean
-}
-/*
-function example() {
-	class MyEndpoint extends Resource {
-		authorize(request) {
 
+
+function checkAllowed(method_allowed, user, resource): void | Promise<void> {
+	let allowed = method_allowed ??
+		resource.allowAccess?.() ??
+		user?.role.permission.super_user; // default permission check
+	if (allowed?.then) {
+		// handle promises, waiting for them using fast path (not await)
+		return allowed.then(() => {
+			if (!allowed) checkAllowed(false, user, resource);
+		});
+	} else if (!allowed) {
+		let error
+		if (user) {
+			error = new Error('Unauthorized access to resource');
+			error.status = 403;
+		} else {
+			error = new Error('Must login');
+			error.status = 401;
+			// TODO: Optionally allow a Location header to redirect to
 		}
-		get(id) {
-			this.enforceRole('my-role');
-			let user = this.userTable.get(id);
-			user.entitlements = user.entitlementIds.map(id => this.entitlements.get(id));
-			return user;
-		}
-		put(id, userAccount) {
-			let userAccount = this.userTable.get(id);
-			userAccount.entitlements.push(newGame)
-			this.userTable.put(userAccount);
-		}
+		throw error;
 	}
-	MyEndpoint.authorization({
-		get: 'my-role'
-	})
-}*/
+}

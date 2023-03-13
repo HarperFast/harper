@@ -9,6 +9,7 @@ const env = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 const { server } = require('../Server');
 const { WebSocketServer } = require('ws');
+const { TLSSocket } = require('tls');
 process.on('uncaughtException', (error) => {
 	console.error('uncaughtException', error)
 	process.exit(100);
@@ -238,7 +239,20 @@ server.request = (listener, options) => {
  * @param options
  */
 server.socket = function(listener, options) {
-	SERVERS[options.port] = listener;
+	if (options.secure) {
+		const secureContext = createSecureContext({
+			// TODO: Get the certificates
+		})
+		const TLS_options = {
+			isServer: true,
+			secureContext,
+		};
+		SERVERS[options.port] = (socket) => {
+			// TODO: Do we need to wait for secureConnect to notify listener?
+			listener(new TLSSocket(socket, TLS_options));
+		};
+	} else
+		SERVERS[options.port] = listener;
 };
 let ws_listeners = [], ws_server, ws_chain;
 server.ws = function(listener, options) {

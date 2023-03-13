@@ -826,6 +826,7 @@ const TIME_STAMP_NAMES_ENUM = {
 	CREATED_TIME: '__createdtime__',
 	UPDATED_TIME: '__updatedtime__',
 };
+const UPDATES_PROPERTY = '\x1F';
 const CLUSTERING_FLAG = '__clustering__';
 
 const TIME_STAMP_NAMES = Object.values(TIME_STAMP_NAMES_ENUM);

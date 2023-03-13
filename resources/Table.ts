@@ -95,7 +95,7 @@ export function makeTable(options) {
 		static transaction(env_transaction, lmdb_txn, parent_transaction) {
 			return new this(env_transaction, lmdb_txn, parent_transaction, {});
 		}
-		static async delete() {
+		static async dropTable() {
 			// TODO: remove all the dbi references
 			for (let key in indices) {
 				Table.dbisDB. remove(Table.tableName + '.' + key);
@@ -320,7 +320,6 @@ export function makeTable(options) {
 					}
 				}
 			}
-
 			// use optimistic locking to only commit if the existing record state still holds true.
 			// this is superior to using an async transaction since it doesn't require JS execution
 			//  during the write transaction.

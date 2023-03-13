@@ -2,7 +2,7 @@ import { serialize, serializeMessage, getDeserializer } from '../server/serverHe
 import { recordRequest } from '../resources/analytics';
 import { createServer, ClientRequest, ServerOptions } from 'http';
 import { findAndValidateUser } from '../security/user';
-import { authentication } from '../security/basicAuth';
+import { authentication } from '../security/auth';
 import { server } from './Server';
 import { Resources } from '../resources/Resources';
 
@@ -28,20 +28,37 @@ async function http(Resource, resource_path, next_path, request) {
 					request.on('end', () => resolve(Buffer.concat(buffers)));
 					request.on('error', reject);
 				});
-				request_data = request.deserialize(request_binary);
+				request.data = request.deserialize(request_binary);
 			}
-		} catch (error) {
+		} catch (error) { // TODO: Convert to HDBError
 			error.status = 400;
 			throw error;
 		}
-		let response_object = await execute(Resource, method, next_path, request_data, request);
+
+		let resource_result = Resource[method.toLowerCase()](next_path, request);
+			//= await execute(Resource, method, next_path, request_data, request);
+		let if_modified_since = request.headers['if-modified-since'];
+		let status = 200;
+		if (if_modified_since && resource_result.updated === Date.parse(if_modified_since)) {
+			resource_result.cancel();
+			status = 302;
+			resource_result.data = undefined;
+		}
+
+		let headers = {};
+		if (resource_result.updated)
+			headers['Last-Modified'] = new Date(resource_result.updated).toUTCString();
 		let execution_time = performance.now() - start;
-		if (!response_object.headers)
-			response_object.headers = {};
-		response_object.headers['Server-Timing'] = `db;dur=${execution_time}`;
+		headers['Server-Timing'] = `db;dur=${execution_time}`;
 		recordRequest(resource_path, execution_time);
-		if (response_object.data !== undefined) {
-			response_object.body = serialize(response_object.data, request, response_object);
+		let response_object = {
+			status,
+			headers,
+			body: undefined,
+		}
+
+		if (resource_result.data !== undefined) {
+			response_object.body = serialize(resource_result.data, request, response_object)
 		}
 		return response_object;
 	} catch (error) {
@@ -103,6 +120,11 @@ async function execute(Resource, method, relative_url, request_data, request, ws
 		}
 		await resource_snapshot.commit();
 		if (response_data) {
+			let if_modified_since = request.headers['if-modified-since'];
+			if (if_modified_since && resource_snapshot.lastModificationTime === Date.parse(if_modified_since) {
+				resource_snapshot.doneReading();
+				return {status: 304};
+			}
 			if (response_data.resolveData) // if it is iterable with onDone, TODO: make a better marker for this
 				response_data.onDone = () => resource_snapshot.doneReading();
 			else
