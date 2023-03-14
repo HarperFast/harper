@@ -1,7 +1,8 @@
-import { table } from './tables';
+import { table } from './tableLoader';
 import { isMainThread } from 'worker_threads';
 import { dirname } from 'path';
 import { snake_case } from './Table';
+import { createRequire } from 'module';
 /**
  * This is the entry point for handling GraphQL schemas (and server-side defined queries, eventually). This will be
  * called for schemas, and this will parse the schema (into an AST), and use it to ensure all specified tables and their
@@ -15,7 +16,9 @@ import { snake_case } from './Table';
  */
 export async function handleFile(gql_content, relative_path, file_path, resources) {
 	// lazy load the graphql package so we don't load it for users that don't use graphql
-	const { parse, Source, Kind, NamedTypeNode, StringValueNode } = await import('graphql');
+	const { parse, Source, Kind, NamedTypeNode, StringValueNode } = require('graphql');
+	// This crashes Node:
+	//const { parse, Source, Kind, NamedTypeNode, StringValueNode } = await import('graphql');
 	let ast = parse(new Source(gql_content.toString(), file_path));
 	let handlers = new Map();
 	let types = new Map();

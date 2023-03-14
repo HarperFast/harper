@@ -11,8 +11,8 @@ import * as fastify_routes_handler from '../server/fastifyRoutes';
 import * as fg from 'fast-glob';
 import { watchDir, restartWorkers } from '../../server/threads/manageThreads';
 import { secureImport } from '../security/jsLoader';
-import { server } from '../index';
-import {Resources} from '../resources/Resources';
+import { server } from '../server/Server';
+import { Resources } from '../resources/Resources';
 const { readFile } = promises;
 
 const CONFIG_FILENAME = 'config.yaml';
@@ -40,7 +40,6 @@ export function loadApplications(loaded_plugin_modules?: Map<any, any>, loaded_r
 		const app_folder = join(CF_ROUTES_DIR, app_name);
 		cfs_loaded.push(loadApplication(app_folder, resources));
 	}
-	// TODO: Get the "current" app from command line "run" argument or something like that
 	if (process.env.RUN_HDB_APP) {
 		cfs_loaded.push(loadApplication(process.env.RUN_HDB_APP, resources));
 	}
@@ -102,9 +101,9 @@ export async function loadApplication(app_folder: string, resources: Resources) 
 			// call the main start hook
 			if (!start_resolution) {
 				if (isMainThread)
-					start_resolution = module.startOnMainThread?.({server, resources});
+					start_resolution = module.startOnMainThread?.({ server, resources });
 				else
-					start_resolution = module.start?.({server, resources});
+					start_resolution = module.start?.({ server, resources });
 				loaded_plugins.set(module, start_resolution);
 			}
 			await start_resolution;

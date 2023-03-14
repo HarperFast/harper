@@ -1,6 +1,5 @@
-import { initSync, getHdbBasePath } from '../utility/environment/environmentManager';
+import { initSync, getHdbBasePath, get as env_get } from '../utility/environment/environmentManager';
 import { INTERNAL_DBIS_NAME, AUDIT_STORE_NAME } from '../utility/lmdb/terms';
-import { pack } from 'msgpackr';
 import { open } from 'lmdb';
 import { join, extname, basename } from 'path';
 import { existsSync, readdirSync, DirEnt } from 'fs';
@@ -8,9 +7,9 @@ import { getBaseSchemaPath, getTransactionAuditStoreBasePath } from '../dataLaye
 import { makeTable } from './Table';
 import * as OpenDBIObject from '../utility/lmdb/OpenDBIObject';
 import * as OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject';
+import { CONFIG_PARAMS } from '../utility/hdbTerms';
 const DEFAULT_DATABASE_NAME = 'data';
 const DATABASE_PATH = 'database';
-const AUDIT_PATH = 'transactions';
 initSync();
 
 const USE_AUDIT = true; // TODO: Get this from config
@@ -38,7 +37,7 @@ export function getTables() {
 export function getDatabases() {
 	if (loaded_databases) return databases;
 	loaded_databases = true;
-	const database_path = join(getHdbBasePath(), DATABASE_PATH);
+	const database_path = process.env.STORAGE_PATH || env_get(CONFIG_PARAMS.STORAGE_PATH) || join(getHdbBasePath(), DATABASE_PATH);
 	// First load all the databases from our main database folder
 	// TODO: Load any databases defined with explicit storage paths from the config
 	if (existsSync(database_path)) {
@@ -63,7 +62,7 @@ export function getDatabases() {
 			}
 		}
 	}
-	tables = databases[DEFAULT_DATABASE_NAME] || {};
+	return databases;
 }
 
 /**
@@ -130,7 +129,6 @@ interface TableDefinition {
 	path?: string
 	expiration?: number
 	attributes: any[]
-	isAudit?: boolean
 }
 
 /**
@@ -142,10 +140,9 @@ interface TableDefinition {
  * @param attributes
  * @param audit
  */
-export async function table({ table: table_name, database: database_name, path: custom_path, expiration, attributes, audit }: TableDefinition) {
+export async function table({ table: table_name, database: database_name, expiration, attributes, audit }: TableDefinition) {
 	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
-	let dbs = isAudit ? auditDbs : databases;
-	let Table = dbs[database_name]?.[table_name];
+	let Table = databases[database_name]?.[table_name];
 	let root_store;
 	let primary_key;
 	let primary_key_attribute
@@ -154,8 +151,10 @@ export async function table({ table: table_name, database: database_name, path: 
 		primary_key = Table.primaryKey;
 		root_store = Table.primaryStore;
 	} else {
-		let tables = dbs[database_name] || (dbs[database_name] = Object.create(null));
-		let path = join(custom_path || join(getHdbBasePath(), isAudit ? AUDIT_PATH : DATABASE_PATH), database_name + '.mdb');
+		let tables = databases[database_name] || (databases[database_name] = Object.create(null));
+		// TODO: How to get the storage path from env?
+		let database_path = process.env.STORAGE_PATH || env_get(CONFIG_PARAMS.STORAGE_PATH) || join(getHdbBasePath(), DATABASE_PATH);
+		let path = join(database_path, database_name + '.mdb');
 		root_store = database_envs.get(path);
 		if (!root_store) {
 			// TODO: validate database name

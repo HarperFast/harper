@@ -47,7 +47,7 @@ async function startHTTPThreads(thread_count = 2) {
 	return Promise.all(workers.map(worker => new Promise((resolve, reject) => {
 		function onMessage(message) {
 			if (message.type === hdb_terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STARTED) {
-				worker.removeEventListener(onMessage);
+				worker.removeListener('message', onMessage);
 				resolve();
 			}
 		}

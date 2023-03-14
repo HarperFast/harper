@@ -5,7 +5,8 @@ import { sortBy } from 'lodash';
 import { randomUUID } from 'crypto';
 import { ResourceInterface } from './ResourceInterface';
 import { workerData } from 'worker_threads';
-import { EnvTransaction, Resource } from './Resource';
+import { Resource } from './Resource';
+import { DatabaseTransaction } from './DatabaseTransaction';
 import { compareKeys, readKey } from 'ordered-binary';
 import * as lmdb_terms from '../utility/lmdb/terms';
 import * as env_mngr from '../utility/environment/environmentManager';
@@ -107,7 +108,7 @@ export function makeTable(options) {
 		}
 
 		table: any
- 		envTxn: EnvTransaction
+ 		envTxn: DatabaseTransaction
 		parent: Resource
 		lmdbTxn: any
 		lastModificationTime: number = 0
@@ -116,7 +117,7 @@ export function makeTable(options) {
 		constructor(request, env_txn, lmdb_txn, parent) {
 			super(request, false);
 			if (!env_txn) {
-				env_txn = new EnvTransaction(primary_store);
+				env_txn = new DatabaseTransaction(primary_store, request?.user);
 				lmdb_txn = env_txn.getReadTxn();
 			}
 			this.envTxn = env_txn;

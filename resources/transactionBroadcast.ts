@@ -145,15 +145,15 @@ function notifyFromTransactionData(path, buffers, flag_position) {
 
 /**
  * Interface with lmdb-js to listen for commits and find the SharedArrayBuffers that hold the transaction log/instructions.
- * @param primary_dbi
+ * @param primary_store
  */
-export function listenToCommits(primary_dbi) {
-	let lmdb_env = primary_dbi.env;
+export function listenToCommits(primary_store) {
+	let lmdb_env = primary_store.env;
 	if (!lmdb_env.hasBroadcastListener) {
 		lmdb_env.hasBroadcastListener = true;
 		let path = lmdb_env.path;
 
-		primary_dbi.on('aftercommit', ({next, last}) => {
+		primary_store.on('aftercommit', ({next, last}) => {
 			// after each commit, broadcast the transaction to all threads so subscribers can read the
 			// transactions and find changes of interest. We try to use the same binary format for
 			// transactions that is used by lmdb-js for minimal modification and since the binary

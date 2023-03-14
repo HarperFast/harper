@@ -5,7 +5,7 @@ import { Resource } from './Resource';
  */
 export class Resources extends Map<string, typeof Resource> {
 	remainingPath = '' // this is to communicate the rest of the path after the part that matches the resource
-	set(path, Resource, type?: string) {
+	set(path, Resource, type?: string): void {
 		let entry = {
 			Resource,
 			path,
@@ -16,7 +16,7 @@ export class Resources extends Map<string, typeof Resource> {
 		// now mark any entries that have sub paths so we can efficiently route forward
 		for (let [ path, entry ] of this) {
 			let slash_index = 2;
-			while((slash_index = path.indexOf('/')) > -1) {
+			while((slash_index = path.indexOf('/', slash_index)) > -1) {
 				let parent_entry = this.get(path.slice(0, slash_index));
 				if (parent_entry) parent_entry.hasSubPaths = true;
 				slash_index += 2;

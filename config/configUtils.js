@@ -270,7 +270,7 @@ function validateConfig(config_doc) {
 	config_doc.setIn(['logging', 'root'], validation.value.logging.root);
 	config_doc.setIn(
 		['clustering', 'leafServer', 'streams', 'path'],
-		validation.value.clustering.leafServer.streams.path
+		validation.value.clustering.leafServer.streams?.path
 	);
 	config_doc.setIn(['storage', 'path'], validation.value.storage.path);
 }

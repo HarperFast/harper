@@ -2,19 +2,19 @@ const { isMainThread } = require('worker_threads');
 const socket_router = require('./threads/socketRouter');
 const hdb_terms = require('../utility/hdbTerms');
 const operationsServer = require('./operationsServer');
-const basicAuth = require('../security/auth');
+const auth = require('../security/auth');
 const { getTables } = require('../resources/tableLoader');
 const { loadApplications } = require('../apps/applicationsLoader');
 const env = require('../utility/environment/environmentManager');
 const { secureImport } = require('../security/jsLoader');
 const { resetResources } = require('../resources/Resources');
-const mqtt = require('mqtt');
+const mqtt = require('./mqtt');
 const { server } = require('./Server');
 
 const CORE_PLUGINS = {
 	'app-server': {}, // this is intended to be the default http handler for http-based plugins
 	'operations-server': operationsServer,
-	'auth': basicAuth,
+	'auth': auth,
 	// 'NATS-cluster':..
 	mqtt,
 };

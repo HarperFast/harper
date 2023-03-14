@@ -35,7 +35,7 @@ async function http(Resource, resource_path, next_path, request) {
 			throw error;
 		}
 
-		let resource_result = Resource[method.toLowerCase()](next_path, request);
+		let resource_result = await Resource[method.toLowerCase()](next_path, request);
 			//= await execute(Resource, method, next_path, request_data, request);
 		let if_modified_since = request.headers['if-modified-since'];
 		let status = 200;
@@ -57,7 +57,9 @@ async function http(Resource, resource_path, next_path, request) {
 			body: undefined,
 		}
 
-		if (resource_result.data !== undefined) {
+		if (resource_result.data === undefined) {
+			response_object.status = resource_result.updated ? 204 : 404;
+		} else {
 			response_object.body = serialize(resource_result.data, request, response_object)
 		}
 		return response_object;
@@ -121,7 +123,7 @@ async function execute(Resource, method, relative_url, request_data, request, ws
 		await resource_snapshot.commit();
 		if (response_data) {
 			let if_modified_since = request.headers['if-modified-since'];
-			if (if_modified_since && resource_snapshot.lastModificationTime === Date.parse(if_modified_since) {
+			if (if_modified_since && resource_snapshot.lastModificationTime === Date.parse(if_modified_since)) {
 				resource_snapshot.doneReading();
 				return {status: 304};
 			}

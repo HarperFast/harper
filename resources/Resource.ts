@@ -29,7 +29,7 @@ export class Resource implements ResourceInterface {
 		this.user = request?.user;
 	}
 
-	getById(id: any, options?: any): {} {
+	getById(id: any, options?: any): Promise<{}> {
 		throw new Error('Not implemented');
 	}
 
@@ -117,14 +117,13 @@ export class Resource implements ResourceInterface {
 				};
 			}
 			let slash_index = identifier.indexOf?.('/');
-			let data;
 			if (slash_index > -1) {
 				let id = decodeURIComponent(identifier.slice(0, slash_index));
 				let property = decodeURIComponent(identifier.slice(slash_index + 1));
 				let record = await resource.getById(id, {lazy: true});
 				data = record[property];
 			} else
-				data = resource.getById(decodeURIComponent(identifier), options);
+				data = await resource.getById(decodeURIComponent(identifier), options);
 		}
 		// TODO: commit or indicate stop reading
 		return {

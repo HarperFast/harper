@@ -1,8 +1,9 @@
-import { findAndValidateUser } from './user';
+import { findAndValidateUser, getSuperUser } from './user';
 import { validateOperationToken } from './tokenAuthentication';
 
 let authorization_cache = new Map();
 const AUTHORIZATION_TTL = 5000;
+const AUTHORIZE_LOCAL = true;
 // TODO: Make this not return a promise if it can be fulfilled synchronously (from cache)
 async function authentication(request) {
 	let headers = request.headers;
@@ -13,10 +14,10 @@ async function authentication(request) {
 	if (authorization) {
 		let user = authorization_cache.get(authorization);
 		if (!user) {
-			let [ strategy, credentials ] = authorization.split(' ');
+			let [strategy, credentials] = authorization.split(' ');
 			switch (strategy) {
 				case 'Basic':
-					let [ username, password ] = atob(credentials).split(':');
+					let [username, password] = atob(credentials).split(':');
 					user = await findAndValidateUser(username, password);
 					break;
 				case 'Bearer':
@@ -26,6 +27,10 @@ async function authentication(request) {
 			authorization_cache.set(authorization, user);
 		}
 		request.user = user;
+	} else {
+		if (AUTHORIZE_LOCAL && request.socket.remoteAddress.includes('127.0.0.1')) {
+			request.user = await getSuperUser();
+		}
 	}
 }
 exports.authentication = authentication;

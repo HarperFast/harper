@@ -10,6 +10,7 @@ module.exports = {
 	addUser,
 	alterUser,
 	dropUser,
+	getSuperUser,
 	userInfo,
 	listUsers,
 	listUsersExternal,
@@ -607,6 +608,15 @@ async function findAndValidateUser(username, pw, validate_password = true) {
 			);
 	}
 	return user;
+}
+
+async function getSuperUser() {
+	if (!global.hdb_users) {
+		await setUsersToGlobal();
+	}
+	for (let [username, user] of global.hdb_users) {
+		if (user.role.role === 'super_user') return user;
+	}
 }
 
 /**

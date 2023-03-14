@@ -4,7 +4,7 @@ import { assert, expect } from 'chai';
 import axios from 'axios';
 import { decode, encode, DecoderStream } from 'cbor-x';
 import { getVariables } from './utility.js';
-import { setupTestApp } from './setup.mjs';
+import { setupTestApp } from './setupTestApp.mjs';
 const { authorization, url } = getVariables();
 
 describe('test REST calls', () => {
@@ -17,7 +17,7 @@ describe('test REST calls', () => {
 
 	it('do get with CBOR', async () => {
 		const headers = {
-			authorization,
+			//authorization,
 			accept: 'application/cbor'
 		};
 		console.log('sending');
@@ -32,7 +32,7 @@ describe('test REST calls', () => {
 	});
 	it('do post/update with CBOR', async () => {
 		const headers = {
-			authorization,
+			//authorization,
 			'content-type': 'application/cbor',
 			accept: 'application/cbor'
 		};

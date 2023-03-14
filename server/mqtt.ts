@@ -25,6 +25,7 @@ function onSocket(socket, send) {
 		switch(message.cmd) {
 			case 'connect':
 				//TODO: Is it a clean or durable session?
+				// TODO: Do we want to prefix the user name to the client id (to prevent collisions when poor ids are used)
 				session = getSession(message.clientId);
 				session.setListener((message) => {
 					// TODO: Send a publish command

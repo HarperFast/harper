@@ -14,13 +14,18 @@ process.on('uncaughtException', (error) => {
 	console.error('uncaughtException', error)
 	process.exit(100);
 });
-const { loadServerModules } = require('../loadServerModules');
-// log all threads as HarperDB
-harper_logger.createLogFile(terms.PROCESS_LOG_NAMES.HDB, terms.HDB_PROC_DESCRIPTOR);
 env.initSync();
+const { loadServerModules } = require('../loadServerModules');
 const SERVERS = {};
 exports.registerServer = registerServer;
 exports.httpServer = httpServer;
+server.http = httpServer;
+server.request = onRequest;
+server.socket = onSocket;
+server.ws = onWebSocket;
+let ws_listeners = [], ws_server, ws_chain;
+let default_server, http_chain, request_listeners = [], http_responders = []
+
 if (!isMainThread) {
 	loadServerModules().then(() => {
 		parentPort.on('message', (message) => {
@@ -167,7 +172,6 @@ function registerServer(server, port) {
 	}
 	server.on('unhandled', defaultNotFound);
 }
-let default_server, http_chain, request_listeners = [], http_responders = []
 function httpServer(listener, options) {
 	let port = options?.port || {};
 	if (!+port) { // if no port is provided, default to custom functions port
@@ -200,8 +204,9 @@ function getDefaultHTTPServer() {
 				else
 					nodeResponse.end(body);
 			} catch (error) {
-				nodeResponse.writeHead(500);
+				nodeResponse.writeHead(error.hdb_resp_code || 500);
 				nodeResponse.end(error.toString());
+				harper_logger.error(error);
 			}
 		});
 		registerServer(default_server);
@@ -230,16 +235,15 @@ const NOT_FOUND = {
 function notFound() {
 	return NOT_FOUND;
 }
-server.http = httpServer;
-server.request = (listener, options) => {
+function onRequest(listener, options) {
 	httpServer(listener, Object.assign({ requestOnly: true}, options));
-};
+}
 /**
  * Direct socket listener
  * @param listener
  * @param options
  */
-server.socket = function(listener, options) {
+function onSocket(listener, options) {
 	if (options.secure) {
 		const secureContext = createSecureContext({
 			// TODO: Get the certificates
@@ -254,9 +258,8 @@ server.socket = function(listener, options) {
 		};
 	} else
 		SERVERS[options.port] = listener;
-};
-let ws_listeners = [], ws_server, ws_chain;
-server.ws = function(listener, options) {
+}
+function onWebSocket(listener, options) {
 	if (!ws_server) {
 		ws_server = new WebSocketServer({server: getDefaultHTTPServer()});
 		ws_server.on('connection', async (ws, request) => {
