@@ -148,7 +148,7 @@ async function downloadNATSServer(platform, architecture) {
 	for (const entry of Object.values(entries)) {
 		if (!entry.isDirectory && entry.name.endsWith(nats_binary_name)) {
 			await stream_zip.extract(entry.name, binary_path);
-			console.log(chalk.green(`Successfully extracted nats-server zip.`));
+			console.log(chalk.green(`Successfully extracted nats-server zip to ${binary_path}.`));
 		}
 	}
 	await stream_zip.close();
