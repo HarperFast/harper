@@ -148,7 +148,7 @@ async function downloadNATSServer(platform, architecture) {
 	for (const entry of Object.values(entries)) {
 		if (!entry.isDirectory && entry.name.endsWith(nats_binary_name)) {
 			await stream_zip.extract(entry.name, binary_path);
-			console.log(chalk.green(`Successfully extracted nats-server zip.`));
+			console.log(chalk.green(`Successfully extracted nats-server zip to ${binary_path}.`));
 		}
 	}
 	await stream_zip.close();
@@ -193,8 +193,7 @@ async function installer() {
 	let nats_source_folder = await extractNATSServer();
 	console.log(chalk.green('Building NATS Server binary.'));
 	if (platform() == 'win32') await runCommand(`set GOPATH=${DEPENDENCIES_PATH}&& go build`, nats_source_folder);
-	else
-		await runCommand(`export GOPATH=${DEPENDENCIES_PATH} && go build`, nats_source_folder);
+	else await runCommand(`export GOPATH=${DEPENDENCIES_PATH} && go build`, nats_source_folder);
 	console.log(chalk.green('Building NATS Server binary complete.'));
 	await cleanUp(nats_source_folder);
 	console.log(chalk.green(`****NATS Server v${REQUIRED_NATS_SERVER_VERSION} is installed.****`));

@@ -1,6 +1,6 @@
 {
   "name": "harperdb",
-  "version": "4.0.6",
+  "version": "4.0.8",
   "description": "HarperDB is a distributed SQL & NoSQL data platform focused on speed, flexibility, and ease of use.",
   "keywords": [
     "database",
@@ -19,7 +19,7 @@
   },
   "engines": {
     "node": ">=14.0.0",
-    "preferred-node": "18.13.0",
+    "preferred-node": "18.15.0",
     "go-lang": "1.19.3",
     "nats-server": "2.9.8"
   },
@@ -51,11 +51,11 @@
     "coverage": "nyc --reporter=lcov npm test"
   },
   "dependencies": {
-    "@fastify/accepts-serializer": "5.1.0",
-    "@fastify/autoload": "5.4.0",
-    "@fastify/compress": "6.1.1",
-    "@fastify/cors": "8.1.0",
-    "@fastify/static": "6.5.0",
+    "@fastify/accepts-serializer": "5.2.0",
+    "@fastify/autoload": "5.7.1",
+    "@fastify/compress": "6.2.0",
+    "@fastify/cors": "8.2.0",
+    "@fastify/static": "6.9.0",
     "@turf/area": "6.5.0",
     "@turf/boolean-contains": "6.5.0",
     "@turf/boolean-disjoint": "6.5.0",
@@ -66,15 +66,14 @@
     "@turf/helpers": "6.5.0",
     "@turf/length": "6.5.0",
     "alasql": "1.7.4",
-    "async": "3.2.3",
     "aws-sdk": "2.1096.0",
     "chalk": "4.1.2",
     "cli-progress": "3.10.0",
     "clone": "2.1.2",
     "esbuild": "^0.14.49",
     "fast-glob": "3.2.11",
-    "fastify": "4.8.1",
-    "fastify-plugin": "4.2.1",
+    "fastify": "4.14.1",
+    "fastify-plugin": "4.5.0",
     "fill-range": "7.0.1",
     "fs-extra": "10.0.1",
     "human-readable-ids": "1.0.4",
@@ -83,13 +82,13 @@
     "joi": "17.6.0",
     "json2csv": "5.0.7",
     "jsonata": "1.8.6",
-    "jsonwebtoken": "8.5.1",
-    "lmdb": "2.7.6",
+    "jsonwebtoken": "9.0.0",
+    "lmdb": "2.7.10",
     "lodash": "4.17.21",
     "mathjs": "10.4.0",
     "microtime": "3.1.1",
     "minimist": "1.2.6",
-    "mkcert": "1.5.0",
+    "mkcert": "1.5.1",
     "moment": "2.29.4",
     "msgpackr": "1.8.5",
     "nats": "2.9.2",
@@ -148,9 +147,6 @@
   "overrides": {
     "eslint-plugin-radar": {
       "eslint": "8.22.0"
-    },
-    "lmdb": {
-      "msgpackr": "1.8.5"
     },
     "newman-reporter-html": {
       "newman": "5.2.3"

@@ -69,7 +69,7 @@ dot-json ./npm_pack/package.json overrides --delete
 
 cd ./npm_pack/
 # Add the postinstall script back
-npm set-script postinstall "$post_install"
+dot-json ./package.json scripts.postinstall "$post_install"
 # Create bundleDependencies section of package.json
 bundle-dependencies update
 cd ../
