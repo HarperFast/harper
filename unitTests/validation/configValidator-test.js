@@ -695,4 +695,24 @@ describe('Test configValidator module', () => {
 		const result = routesValidator(test_array);
 		expect(result.message).to.equal("'routes[0].host' is required. 'routes[1].port' is required");
 	});
+
+	it('Test validateRotationInterval invalid unit', () => {
+		const validate_interval = config_val.__get__('validateRotationInterval');
+		const message_stub = sinon.stub();
+		const helpers = { message: message_stub };
+		const result = validate_interval('10B', helpers);
+		expect(helpers.message.args[0][0]).to.equal(
+			'Invalid logging.rotation.interval unit. Available units are D, H or M (minutes)'
+		);
+	});
+
+	it('Test validateRotationInterval invalid value', () => {
+		const validate_interval = config_val.__get__('validateRotationInterval');
+		const message_stub = sinon.stub();
+		const helpers = { message: message_stub };
+		const result = validate_interval('ONED', helpers);
+		expect(helpers.message.args[0][0]).to.equal(
+			"Invalid logging.rotation.interval value. Value should be a number followed by unit e.g. '10D'"
+		);
+	});
 });
