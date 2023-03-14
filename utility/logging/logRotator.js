@@ -12,7 +12,7 @@ const hdb_logger = require('./harper_logger');
 const { CONFIG_PARAMS, ITC_EVENT_TYPES } = require('../hdbTerms');
 const { onMessageFromWorkers } = require('../../server/threads/manageThreads');
 
-// Interval to check log file and decide if it should be rotated.
+// Interval in ms to check log file and decide if it should be rotated.
 const LOG_AUDIT_INTERVAL = 60000;
 const INT_SIZE_UNDEFINED_MSG =
 	"'interval' and 'maxSize' are both undefined, to enable logging rotation at least one of these values must be defined in harperdb-config.yaml";
@@ -34,8 +34,9 @@ onMessageFromWorkers((message) => {
 });
 
 /**
- * Rotates hdb.log using an interval and/or maxSize param.
+ * Rotates hdb.log using an interval and/or maxSize param to determine if log should be rotated.
  * Uses an unref setInterval to periodically check time passed since rotation and size of log file.
+ * If log file is within the values set in config, log file will be renamed/moved and a new empty hdb.log created.
  * @returns {Promise<void>}
  */
 async function logRotator() {
@@ -54,6 +55,7 @@ async function logRotator() {
 			return;
 		}
 
+		// Convert maxSize param to bytes.
 		let max_bytes;
 		if (max_size) {
 			const unit = max_size.slice(-1);
@@ -63,6 +65,7 @@ async function logRotator() {
 			else max_bytes = size * 1000;
 		}
 
+		// Convert interval param to minutes.
 		let max_interval;
 		if (interval) {
 			const unit = interval.slice(-1);
@@ -72,6 +75,7 @@ async function logRotator() {
 			else max_interval = value;
 		}
 
+		// convert date.now to minutes
 		last_rotation_time = Date.now() / 60000;
 		hdb_logger.trace('Log rotate enabled, maxSize:', max_size, 'interval:', interval);
 		set_interval_id = setInterval(async () => {
