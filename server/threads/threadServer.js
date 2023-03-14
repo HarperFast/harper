@@ -22,25 +22,25 @@ const SERVERS = {};
 exports.registerServer = registerServer;
 exports.httpServer = httpServer;
 if (!isMainThread) {
-	loadServerModules();
-	parentPort.on('message', (message) => {
-		const { port, fd, data } = message;
-		if (fd) {
-			// Create a socket from the file descriptor for the socket that was routed to us.
-			deliverSocket(fd, port, data);
-		} else if (message.requestId) {
-			// Windows doesn't support passing file descriptors, so we have to resort to manually proxying the socket
-			// data for each request
-			proxyRequest(message);
-		} else if (message.type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
-			// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
-			// then let the event loop complete
-			for (let server_type in SERVERS) {
-				// TODO: If fastify has fielded a route and messed up the closing, then have to manually exit the
-				//  process otherwise we can use a graceful exit
-				// if (SERVERS[server_type].hasRequests)
-				SERVERS[server_type].close();
-				// TODO: Let fastify register as a close handler
+	loadServerModules().then(() => {
+		parentPort.on('message', (message) => {
+			const {port, fd, data} = message;
+			if (fd) {
+				// Create a socket from the file descriptor for the socket that was routed to us.
+				deliverSocket(fd, port, data);
+			} else if (message.requestId) {
+				// Windows doesn't support passing file descriptors, so we have to resort to manually proxying the socket
+				// data for each request
+				proxyRequest(message);
+			} else if (message.type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
+				// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
+				// then let the event loop complete
+				for (let server_type in SERVERS) {
+					// TODO: If fastify has fielded a route and messed up the closing, then have to manually exit the
+					//  process otherwise we can use a graceful exit
+					// if (SERVERS[server_type].hasRequests)
+					SERVERS[server_type].close();
+					// TODO: Let fastify register as a close handler
 					/*.then(() => {
 					// Terminating a thread this way is really really wrong. A NodeJS thread (or process) is supposed to end
 					// once it has completed all referenced work, and this allows NodeJS to property monitor for any
@@ -54,12 +54,13 @@ if (!isMainThread) {
 					// reason if a fastify server has not received any requests yet, we can gracefully exit properly.
 					process.exit(0);
 				});*/
-				// else server.close() and server.closeIdleConnections()
+					// else server.close() and server.closeIdleConnections()
+				}
 			}
-		}
-	}).ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
-	// notify that we are now ready to start receiving requests
-	parentPort.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
+		}).ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
+		// notify that we are now ready to start receiving requests
+		parentPort.postMessage({type: terms.ITC_EVENT_TYPES.CHILD_STARTED});
+	});
 }
 
 function deliverSocket(fd, port, data) {

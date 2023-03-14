@@ -28,7 +28,7 @@ const default_server_modules = [
 ];
 
 /**
- * Load the main set of global server_module plugin modules
+ * This is main entry point for loading the main set of global server modules that power HarperDB.
  * @param server_modules
  * @returns {Promise<void>}
  */

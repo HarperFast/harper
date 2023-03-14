@@ -4,9 +4,13 @@ import { assert, expect } from 'chai';
 import axios from 'axios';
 import { decode, encode, DecoderStream } from 'cbor-x';
 import { getVariables } from './utility.js';
+import { setupTestApp } from './setup.mjs';
 const { authorization, url } = getVariables();
 
 describe('test REST calls', () => {
+	before(async () => {
+		await setupTestApp();
+	});
 	beforeEach(async () => {
 		//await removeAllSchemas();
 	});

@@ -38,6 +38,15 @@ const media_types = { // TODO: Make these monomorphic for faster access. And use
 		},
 		q: 0.1,
 	},
+	'text/plain': {
+		serialize(data) {
+			return data.toString()
+		},
+		deserialize(data) {
+			return data.toString()
+		},
+		q: 0.01,
+	},
 	'text/event-stream': { // Server-Sent Events (SSE)
 		serializeStream: function(subscription) {
 			// create a readable stream that we use to stream out events from our subscription

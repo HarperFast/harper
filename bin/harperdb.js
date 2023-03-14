@@ -70,8 +70,11 @@ function harperDBService() {
 		let result = undefined;
 		switch (service) {
 			case SERVICE_ACTIONS_ENUM.RUN:
-				console.warn('The "run" command is deprecated, please use "start" instead');
-			// fall through (it is just deprecated, still want to start harperdb)
+				// Run a specific application folder
+				let app_folder = process.argv[3];
+				process.env.RUN_HDB_APP = app_folder;
+				require('./run').main();
+				break;
 			case SERVICE_ACTIONS_ENUM.START:
 				// The require is here to better control the flow of imports when this module is called.
 				const run = require('./run');

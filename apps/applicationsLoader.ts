@@ -41,7 +41,9 @@ export function loadApplications(loaded_plugin_modules?: Map<any, any>, loaded_r
 		cfs_loaded.push(loadApplication(app_folder, resources));
 	}
 	// TODO: Get the "current" app from command line "run" argument or something like that
-	cfs_loaded.push(loadApplication(process.cwd(), resources));
+	if (process.env.RUN_HDB_APP) {
+		cfs_loaded.push(loadApplication(process.env.RUN_HDB_APP, resources));
+	}
 	return Promise.all(cfs_loaded).then(() => {
 		watches_setup = true;
 	});
