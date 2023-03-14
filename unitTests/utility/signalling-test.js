@@ -56,7 +56,7 @@ describe('Test signalling module', () => {
 	it('Test signalSchemaChange sad path', () => {
 		send_itc_event_stub.throws(TEST_ERROR);
 		signalling.signalSchemaChange('message');
-		expect(log_error_stub.args[0][0].name).to.equal(TEST_ERROR);
+		expect(log_error_stub.getCall(1).args[0].name).to.equal(TEST_ERROR);
 	});
 
 	it('Test signalUserChange happy path', () => {
@@ -72,6 +72,6 @@ describe('Test signalling module', () => {
 	it('Test signalUserChange sad path', () => {
 		send_itc_event_stub.throws(TEST_ERROR);
 		signalling.signalUserChange('message');
-		expect(log_error_stub.args[0][0].name).to.equal(TEST_ERROR);
+		expect(log_error_stub.getCall(1).args[0].name).to.equal(TEST_ERROR);
 	});
 });

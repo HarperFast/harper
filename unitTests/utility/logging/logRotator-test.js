@@ -39,6 +39,7 @@ describe('Test logRotator module', () => {
 		log_rotator.__set__('hdb_logger.getLogFilePath', sandbox.stub().returns(LOG_FILE_PATH_TEST));
 		log_rotator.__set__('hdb_logger.notify', log_notify_stub);
 		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_ROTATION_PATH, LOG_DIR_TEST);
+		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_ROOT, LOG_DIR_TEST);
 		fs.mkdirpSync(LOG_DIR_TEST);
 	});
 
