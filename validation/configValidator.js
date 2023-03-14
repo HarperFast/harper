@@ -97,6 +97,7 @@ function configValidator(config_json) {
 					path: clustering_stream_path_constraints,
 				}).required(),
 			}).required(),
+			logLevel: Joi.valid('error', 'warn', 'info', 'debug', 'trace'),
 			nodeName: nats_term_constraints,
 			tls: Joi.object({
 				certificate: pem_file_constraints,

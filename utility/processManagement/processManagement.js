@@ -11,7 +11,7 @@ const env_mangr = require('../environment/environmentManager');
 const hdb_logger = require('../../utility/logging/harper_logger');
 const config = require('.//servicesConfig');
 const clustering_utils = require('../clustering/clusterUtilities');
-const { startWorker } = require('../../server/threads/manageThreads');
+const { startWorker, onMessageFromWorkers } = require('../../server/threads/manageThreads');
 const util = require('util');
 const child_process = require('child_process');
 const { execFile } = child_process;
@@ -54,6 +54,10 @@ const { loggerWithTag } = hdb_logger;
 // are generally starting and stopping processes through PM2.
 let pm2_mode = false;
 
+onMessageFromWorkers((message) => {
+	if (message.type === 'restart') env_mangr.initSync(true);
+});
+
 /**
  * Enable scripting mode where we act as the PM2 CLI to start and stop other processes and then exit
  */
@@ -80,11 +84,6 @@ function connect() {
 
 let child_processes;
 const MAX_RESTARTS = 10;
-const NATS_LEVELS = {
-	INF: 'info',
-	WRN: 'warn',
-	ERR: 'error',
-};
 let shutting_down;
 /**
  * Starts a service
@@ -108,19 +107,44 @@ function start(proc_config) {
 		serviceName: proc_config.name.replace(/ /g, '-'),
 	};
 	function extractMessages(log) {
+		const CLUSTERING_LOG_LEVEL = env_mangr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LOGLEVEL);
 		let NATS_PARSER = /\[\d+][^\[]+\[(\w+)]/g;
 		let log_start,
 			last_position = 0,
 			last_level;
 		while ((log_start = NATS_PARSER.exec(log))) {
-			if (log_start.index) {
-				hdb_logger[last_level || 'info'](SERVICE_DEFINITION, log.slice(last_position, log_start.index).trim());
+			// Only log if level is at or above clustering log level
+			if (
+				log_start.index &&
+				nats_terms.LOG_LEVEL_HIERARCHY[CLUSTERING_LOG_LEVEL] >= nats_terms.LOG_LEVEL_HIERARCHY[last_level || 'info']
+			) {
+				const output =
+					last_level === nats_terms.LOG_LEVELS.ERR || last_level === nats_terms.LOG_LEVELS.WRN
+						? hdb_logger.OUTPUTS.STDERR
+						: hdb_logger.OUTPUTS.STDOUT;
+
+				hdb_logger.logCustomLevel(
+					last_level || 'info',
+					output,
+					SERVICE_DEFINITION,
+					log.slice(last_position, log_start.index).trim()
+				);
 			}
+
 			let [start_text, level] = log_start;
 			last_position = log_start.index + start_text.length;
-			last_level = NATS_LEVELS[level];
+			last_level = nats_terms.LOG_LEVELS[level];
 		}
-		hdb_logger[last_level || 'info'](SERVICE_DEFINITION, log.slice(last_position).trim());
+
+		// Only log if level is at or above clustering log level
+		if (nats_terms.LOG_LEVEL_HIERARCHY[CLUSTERING_LOG_LEVEL] >= nats_terms.LOG_LEVEL_HIERARCHY[last_level || 'info']) {
+			const output =
+				last_level === nats_terms.LOG_LEVELS.ERR || last_level === nats_terms.LOG_LEVELS.WRN
+					? hdb_logger.OUTPUTS.STDERR
+					: hdb_logger.OUTPUTS.STDOUT;
+
+			hdb_logger.logCustomLevel(last_level || 'info', output, SERVICE_DEFINITION, log.slice(last_position).trim());
+		}
 	}
 	subprocess.stdout.on('data', extractMessages);
 	subprocess.stderr.on('data', extractMessages);
@@ -132,7 +156,7 @@ function start(proc_config) {
 		const kill_children = () => {
 			shutting_down = true;
 			if (!child_processes) return;
-			child_processes.map(proc => proc.kill());
+			child_processes.map((proc) => proc.kill());
 			process.exit(0);
 		};
 		process.on('exit', kill_children);
@@ -140,7 +164,6 @@ function start(proc_config) {
 		process.on('SIGQUIT', kill_children);
 	}
 	child_processes.push(subprocess);
-
 }
 function startWithPM2(proc_config) {
 	return new Promise(async (resolve, reject) => {
@@ -353,7 +376,7 @@ function kill() {
 		for (let process of child_processes || []) {
 			process.kill();
 		}
-		child_processes = []
+		child_processes = [];
 		return;
 	}
 
