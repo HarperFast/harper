@@ -43,26 +43,6 @@ function requireUncached(module) {
 	return rewire(module);
 }
 
-function createLogRecord(level, process_name, date_now, args) {
-	let log_msg = '';
-	let length = args.length;
-	const last_arg = length - 1;
-	for (let x = 0; x < length; x++) {
-		let arg = args[x];
-		if (arg instanceof Error && arg.stack) {
-			log_msg += arg.stack;
-		} else if (typeof arg === 'object') {
-			log_msg += JSON.stringify(arg);
-		} else {
-			log_msg += arg;
-		}
-		if (x < last_arg) {
-			log_msg += ' ';
-		}
-	}
-	return `{"process_name": "${process_name}", "level": "${level}", "timestamp": "${date_now}", "message": "${log_msg}"}\n`;
-}
-
 let captured_stdout = '';
 let unhook_std;
 function capturedStdOutErr() {
@@ -252,23 +232,23 @@ describe('Test harper_logger module', () => {
 
 		it('Test record is correctly returned if message is array', () => {
 			const result = createLogRecord_rw('info', [LOG_MSGS_TEST.INFO]);
-			expect(result).to.equal(`2018-10-03T18:50:33.675Z [main/0 info]: info log\n`);
+			expect(result).to.equal(`2018-10-03T18:50:33.675Z [main/0] [info]: info log\n`);
 		});
 
 		it('Test record is correctly returned if message array has multiple args with object', () => {
 			const result = createLogRecord_rw('info', [`${LOG_MSGS_TEST.INFO}:`, { foo: 'bar' }]);
-			expect(result).to.equal(`2018-10-03T18:50:33.675Z [main/0 info]: info log: {"foo":"bar"}\n`);
+			expect(result).to.equal(`2018-10-03T18:50:33.675Z [main/0] [info]: info log: {"foo":"bar"}\n`);
 		});
 
 		it('Test record is correctly returned if called by an instance of an error', () => {
 			const test_error = new Error(LOG_MSGS_TEST.INFO);
 			const result = createLogRecord_rw('info', [test_error]);
-			expect(result).to.equal(`2018-10-03T18:50:33.675Z [main/0 info]: ${test_error.stack}\n`);
+			expect(result).to.equal(`2018-10-03T18:50:33.675Z [main/0] [info]: ${test_error.stack}\n`);
 		});
 
 		it('Test record is correctly returned if message is an object', () => {
 			const result = createLogRecord_rw('info', [{ foo: 'bar' }]);
-			expect(result).to.equal(`2018-10-03T18:50:33.675Z [main/0 info]: {"foo":"bar"}\n`);
+			expect(result).to.equal(`2018-10-03T18:50:33.675Z [main/0] [info]: {"foo":"bar"}\n`);
 		});
 	});
 
@@ -277,7 +257,7 @@ describe('Test harper_logger module', () => {
 		let logStdOut;
 		let logStdErr;
 		let append_file_stub;
-		const test_log = `2018-10-03T18:50:33.675Z [main/0 info]: this is a unit test log\n`;
+		const test_log = `2018-10-03T18:50:33.675Z [main/0] [info]: this is a unit test log\n`;
 
 		before(() => {
 			harper_logger = requireUncached(HARPER_LOGGER_MODULE);
@@ -795,5 +775,14 @@ describe('Test harper_logger module', () => {
 
 			expect(result).to.be.false;
 		});
+	});
+
+	it('Test suppressLogging function', () => {
+		const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
+		const fake_func = sandbox.stub().callsFake(() => {});
+		const enabled_var = harper_logger.__get__('logging_enabled');
+		harper_logger.suppressLogging(fake_func);
+		expect(enabled_var).to.be.true;
+		expect(fake_func.called).to.be.true;
 	});
 });

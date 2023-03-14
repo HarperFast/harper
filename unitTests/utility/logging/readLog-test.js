@@ -21,31 +21,31 @@ const FULL_LOG_PATH_TEST = path.join(TEST_LOG_DIR, LOG_NAME_TEST);
 function logAllLevels(num) {
 	fs.appendFileSync(
 		FULL_LOG_PATH_TEST,
-		`2023-03-02T21:52:1${num}.688Z [main/0 notify]: Howdy doody, they call me a notify log. I am used for unit testing.\n`
+		`2023-03-02T21:52:1${num}.688Z [main/0] [notify]: Howdy doody, they call me a notify log. I am used for unit testing.\n`
 	);
 	fs.appendFileSync(
 		FULL_LOG_PATH_TEST,
-		`2023-03-02T21:52:1${num}.688Z [main/0 fatal]: Howdy doody, they call me a fatal log. I am used for unit testing.\n`
+		`2023-03-02T21:52:1${num}.688Z [main/0] [fatal]: Howdy doody, they call me a fatal log. I am used for unit testing.\n`
 	);
 	fs.appendFileSync(
 		FULL_LOG_PATH_TEST,
-		`2023-03-02T21:52:1${num}.688Z [main/0 error]: Howdy doody, they call me a error log. I am used for unit testing.\n`
+		`2023-03-02T21:52:1${num}.688Z [main/0] [error]: Howdy doody, they call me a error log. I am used for unit testing.\n`
 	);
 	fs.appendFileSync(
 		FULL_LOG_PATH_TEST,
-		`2023-03-02T21:52:1${num}.688Z [main/0 warn]: Howdy doody, they call me a warn log. I am used for unit testing.\n`
+		`2023-03-02T21:52:1${num}.688Z [main/0] [warn]: Howdy doody, they call me a warn log. I am used for unit testing.\n`
 	);
 	fs.appendFileSync(
 		FULL_LOG_PATH_TEST,
-		`2023-03-02T21:52:1${num}.688Z [main/0 info]: Howdy doody, they call me a info log. I am used for unit testing.\n`
+		`2023-03-02T21:52:1${num}.688Z [main/0] [info]: Howdy doody, they call me a info log. I am used for unit testing.\n`
 	);
 	fs.appendFileSync(
 		FULL_LOG_PATH_TEST,
-		`2023-03-02T21:52:1${num}.688Z [main/0 debug]: Howdy doody, they call me a debug log. I am used for unit testing.\n`
+		`2023-03-02T21:52:1${num}.688Z [main/0] [debug]: Howdy doody, they call me a debug log. I am used for unit testing.\n`
 	);
 	fs.appendFileSync(
 		FULL_LOG_PATH_TEST,
-		`2023-03-02T21:52:1${num}.688Z [main/0 trace]: Howdy doody, they call me a trace log. I am used for unit testing.\n`
+		`2023-03-02T21:52:1${num}.688Z [main/0] [trace]: Howdy doody, they call me a trace log. I am used for unit testing.\n`
 	);
 }
 
