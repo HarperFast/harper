@@ -73,7 +73,7 @@
     "clone": "2.1.2",
     "esbuild": "^0.17.10",
     "fast-glob": "3.2.12",
-    "fastify": "4.13.0",
+    "fastify": "4.14.1",
     "fastify-plugin": "4.5.0",
     "fs-extra": "11.1.0",
     "human-readable-ids": "1.0.4",
