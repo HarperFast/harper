@@ -8,8 +8,9 @@ import { setupTestApp } from './setupTestApp.mjs';
 const { authorization, url } = getVariables();
 
 describe('test REST calls', () => {
+	let available_records;
 	before(async () => {
-		await setupTestApp();
+		available_records = await setupTestApp();
 	});
 	beforeEach(async () => {
 		//await removeAllSchemas();
@@ -22,13 +23,27 @@ describe('test REST calls', () => {
 		};
 		console.log('sending');
 		let response = await axios({
-			url: 'http://localhost:9926/user/39',
+			url: 'http://localhost:9926/VariedProps/' + available_records[1],
 			method: 'GET',
 			responseType: 'arraybuffer',
 			headers,
 		});
-		console.log('decoded arraybuffer data:', decode(response.data));
-
+		assert.equal(response.status, 200);
+		let data = decode(response.data);
+		assert.equal(available_records[1], data.id);
+		response = await axios({
+			url: 'http://localhost:9926/VariedProps/' + available_records[1],
+			method: 'GET',
+			responseType: 'arraybuffer',
+			headers: {
+				'If-Modified-Since': response.headers['last-modified'],
+				...headers
+			},
+			validateStatus: function (status) {
+				return status >= 200 && status < 400;
+			},
+		});
+		assert.equal(response.status, 304);
 	});
 	it('do post/update with CBOR', async () => {
 		const headers = {

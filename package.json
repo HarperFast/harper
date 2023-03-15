@@ -94,8 +94,8 @@
     "minimist": "1.2.8",
     "mkcert": "1.5.1",
     "moment": "2.29.4",
-    "mqtt-packet": "8.1.2",
-    "msgpackr": "1.8.4",
+    "mqtt-packet": "~8.1.2",
+    "msgpackr": "1.8.5",
     "nats": "2.12.1",
     "needle": "3.2.0",
     "node-stream-zip": "1.15.0",
@@ -117,7 +117,6 @@
     "stream-json": "1.7.5",
     "systeminformation": "5.17.10",
     "tar-fs": "2.1.1",
-    "typescript": "^4.9.4",
     "ulidx": "0.5.0",
     "uuid": "9.0.0",
     "validate.js": "0.13.1",
@@ -139,6 +138,7 @@
     "mocha-teamcity-reporter": "3.0.0",
     "mock-require": "3.0.3",
     "mock-stdin": "1.0.0",
+    "mqtt": "~4.3.7",
     "newman": "5.3.2",
     "newman-reporter-html": "1.0.5",
     "newman-reporter-htmlextra": "^1.22.11",
@@ -150,7 +150,8 @@
     "rimraf": "3.0.2",
     "sinon": "10.0.0",
     "sinon-chai": "3.7.0",
-    "source-map-support": "^0.5.21"
+    "source-map-support": "^0.5.21",
+    "typescript": "^4.9.4"
   },
   "overrides": {
     "eslint-plugin-radar": {

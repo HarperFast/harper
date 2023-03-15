@@ -73,8 +73,9 @@ export class DatabaseTransaction {
 					resolution = txn.put(original[txn.constructor.primaryKey], Object.assign({}, original, own));
 				}
 				for (let write of this.writes) {
-					write.value.__updates__.push(txn_time); // TODO: Move to an overflow key in the audit table if this gets too big
-					resolution = write.store[write.operation](write.key, write.value, write.version);
+					let updates = write.value.__updates__ || (write.value.__updates__ = []);
+					updates.push(txn_time); // TODO: Move to an overflow key in the audit table if this gets too big
+					resolution = write.store[write.operation](write.key, write.value, txn_time);
 				}
 				if (this.lmdbDb.auditStore) {
 					this.lmdbDb.auditStore.put(txn_time, {

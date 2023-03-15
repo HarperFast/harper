@@ -39,9 +39,10 @@ async function http(Resource, resource_path, next_path, request) {
 			//= await execute(Resource, method, next_path, request_data, request);
 		let if_modified_since = request.headers['if-modified-since'];
 		let status = 200;
-		if (if_modified_since && resource_result.updated === Date.parse(if_modified_since)) {
-			resource_result.cancel();
-			status = 302;
+		if (!resource_result) resource_result = {};
+		if (if_modified_since && resource_result.updated <= (Date.parse(if_modified_since) + 1000)) {
+			//resource_result.cancel();
+			status = 304;
 			resource_result.data = undefined;
 		}
 
@@ -58,7 +59,8 @@ async function http(Resource, resource_path, next_path, request) {
 		}
 
 		if (resource_result.data === undefined) {
-			response_object.status = resource_result.updated ? 204 : 404;
+			if (response_object.status === 200)
+				response_object.status = resource_result.updated ? 204 : 404;
 		} else {
 			response_object.body = serialize(resource_result.data, request, response_object)
 		}

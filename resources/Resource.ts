@@ -134,16 +134,20 @@ export class Resource implements ResourceInterface {
 
 	static async put(identifier: string|number, request?: any) {
 		let updated_data = request.data;
-		let resource = new this(options);
+		let resource = new this(request);
 		let user = request.user;
 		let checked = checkAllowed(resource.allowPut?.(user), user, resource);
 		if (checked?.then) await checked; // fast path to avoid await if not needed
 		resource.put(identifier, updated_data);
-		await resource.commit();
+		let txn = await resource.commit();
+		return {
+			updated: txn[0].txnTime,
+			data: updated_data,
+		};
 	}
 	static async patch(identifier: string|number, request?: any) {
 		let updates = request.data;
-		let resource = new this(options);
+		let resource = new this(request);
 		let user = request.user;
 		let checked = checkAllowed(resource.allowPatch?.(user), user, resource);
 		if (checked?.then) await checked; // fast path to avoid await if not needed
@@ -155,7 +159,7 @@ export class Resource implements ResourceInterface {
 	}
 	static async delete(identifier: string|number, request?: any) {
 		let updates = request.data;
-		let resource = new this(options);
+		let resource = new this(request);
 		let user = request.user;
 		let checked = checkAllowed(resource.allowDelete?.(user), user, resource);
 		if (checked?.then) await checked; // fast path to avoid await if not needed
@@ -164,7 +168,7 @@ export class Resource implements ResourceInterface {
 	}
 	static async post(identifier: string|number, request?: any) {
 		let updates = request.data;
-		let resource = new this(options);
+		let resource = new this(request);
 		let user = request.user;
 		let checked = checkAllowed(resource.allowPost?.(user), user, resource);
 		if (checked?.then) await checked; // fast path to avoid await if not needed

@@ -1,4 +1,10 @@
-type User @table(table: "user", expiration: 10, caching: true, compression: false, audit: true) {
+type VariedProps @table @endpoint {
+	id: ID @primaryKey
+	name: String @indexed
+}
+type Caching
+@table(table: "user", expiration: 10, caching: true, compression: false, audit: true)
+{
 	id: ID
 	name: String @indexed
 	entitlements: [Entitlement]
@@ -10,6 +16,7 @@ type OurData @table {
 }
 
 type Query {
-	user: User @allow(role: "admin") @allowGet(role: "user")
+	Caching: Caching @allow(role: "admin") @allowGet(role: "user")
+	VariedProps: VariedProps
 	our_data: OurData
 }
