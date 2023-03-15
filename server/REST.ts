@@ -236,7 +236,7 @@ export function start(options: ServerOptions & { path: string, port: number, ser
 		}
 		return next_handler(request);
 	});
-	options.server.ws(async (ws, request, chain_completion) => {
+	/*options.server.ws(async (ws, request, chain_completion) => {
 		connection_count++;
 		if (!printing_connection_count) {
 			setTimeout(() => {
@@ -257,7 +257,7 @@ export function start(options: ServerOptions & { path: string, port: number, ser
 			console.error('no handler: %s', data);
 		});
 		ws.on('close', () => connection_count--);
-	});
+	});*/
 
 	function startRequest(request) {
 		// TODO: check rate limiting here?
