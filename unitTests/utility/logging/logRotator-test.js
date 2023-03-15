@@ -31,6 +31,7 @@ function callLogger() {
 describe('Test logRotator module', () => {
 	const sandbox = sinon.createSandbox();
 	const log_notify_stub = sandbox.stub();
+	const log_error_stub = sandbox.stub();
 
 	before(() => {
 		hdb_logger.__set__('log_to_stdstreams', false);
@@ -38,13 +39,14 @@ describe('Test logRotator module', () => {
 		log_rotator.__set__('LOG_AUDIT_INTERVAL', 100);
 		log_rotator.__set__('hdb_logger.getLogFilePath', sandbox.stub().returns(LOG_FILE_PATH_TEST));
 		log_rotator.__set__('hdb_logger.notify', log_notify_stub);
+		log_rotator.__set__('hdb_logger.error', log_error_stub);
 		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_ROTATION_PATH, LOG_DIR_TEST);
 		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_ROOT, LOG_DIR_TEST);
 		fs.mkdirpSync(LOG_DIR_TEST);
 	});
 
 	afterEach(() => {
-		log_notify_stub.resetHistory();
+		sandbox.resetHistory();
 		fs.emptyDirSync(LOG_DIR_TEST);
 	});
 
@@ -103,5 +105,23 @@ describe('Test logRotator module', () => {
 		expect(fs.pathExistsSync(LOG_FILE_PATH_TEST), 'Expected to not find test log because rotate should have deleted it')
 			.to.be.false;
 		expect(fs.pathExistsSync(path.join(LOG_DIR_TEST, rotated_log_name))).to.be.true;
+	});
+
+	it('Test error logged if max size and interval not defined', async () => {
+		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_ROTATION_MAXSIZE, undefined);
+		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_ROTATION_INTERVAL, undefined);
+		await log_rotator();
+		expect(log_error_stub.args[0][0]).to.equal(
+			"'interval' and 'maxSize' are both undefined, to enable logging rotation at least one of these values must be defined in harperdb-config.yaml"
+		);
+	});
+
+	it('Test error logged if rotation path is undefined', async () => {
+		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_ROTATION_MAXSIZE, '1K');
+		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_ROTATION_PATH, undefined);
+		await log_rotator();
+		expect(log_error_stub.args[0][0]).to.equal(
+			"'logging.rotation.path' is undefined, to enable logging rotation set this value in harperdb-config.yaml"
+		);
 	});
 });
