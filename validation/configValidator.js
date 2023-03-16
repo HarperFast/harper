@@ -53,7 +53,8 @@ function configValidator(config_json) {
 	const nats_term_constraints = string
 		.pattern(/^[^\s.,*>]+$/)
 		.messages({ 'string.pattern.base': '{:#label} invalid, must not contain ., * or >' })
-		.empty(null);
+		.empty(null)
+		.required();
 	const clustering_stream_path_constraints = Joi.custom(validatePath).empty(null).default(setDefaultRoot);
 	const storage_path_constraints = Joi.custom(validatePath).empty(null).default(setDefaultRoot);
 
@@ -105,7 +106,7 @@ function configValidator(config_json) {
 				privateKey: pem_file_constraints,
 				insecure: boolean.required(),
 			}),
-			user: Joi.string().required(),
+			user: string.optional().empty(null),
 		}).required();
 	} else {
 		clustering_validation_schema = Joi.object({
