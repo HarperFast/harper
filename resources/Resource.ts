@@ -103,9 +103,12 @@ export class Resource implements ResourceInterface {
 	}
 	static async get(identifier: string|number, options?: any) {
 		let resource = new this(options);
-		let user = options?.user;
-		let checked = checkAllowed(resource.allowGet?.(user), user, resource);
-		if (checked?.then) await checked; // fast path to avoid await if not needed
+		let user;
+		if (options) {
+			user = options.user;
+			let checked = checkAllowed(resource.allowGet?.(user), user, resource);
+			if (checked?.then) await checked; // fast path to avoid await if not needed
+		}
 		let data;
 		if (typeof identifier === 'number')
 			data = resource.getById(identifier, options);
@@ -150,7 +153,6 @@ export class Resource implements ResourceInterface {
 		let resource = new this(request);
 		let user = request.user;
 		let checked = checkAllowed(resource.allowPatch?.(user), user, resource);
-		if (checked?.then) await checked; // fast path to avoid await if not needed
 		let record = await resource.update(identifier);
 		for (let key in updates) {
 			record[key] = updates[key];
@@ -162,7 +164,6 @@ export class Resource implements ResourceInterface {
 		let resource = new this(request);
 		let user = request.user;
 		let checked = checkAllowed(resource.allowDelete?.(user), user, resource);
-		if (checked?.then) await checked; // fast path to avoid await if not needed
 		await resource.delete(identifier);
 		await resource.commit();
 	}
@@ -171,8 +172,19 @@ export class Resource implements ResourceInterface {
 		let resource = new this(request);
 		let user = request.user;
 		let checked = checkAllowed(resource.allowPost?.(user), user, resource);
-		if (checked?.then) await checked; // fast path to avoid await if not needed
 		await resource.create(identifier);
+		await resource.commit();
+	}
+
+	static async publish(identifier: string|number, request?: any) {
+		let data = request.data;
+		let resource = new this(request);
+		let user = request.user;
+		let checked = checkAllowed(resource.allowPublish?.(user), user, resource);
+		if (request.retain) // retain flag means we persist this message (for any future subscription starts), so treat it as the record itself
+			await resource.put(identifier, data);
+		else
+			await resource.publish(identifier, data);
 		await resource.commit();
 	}
 

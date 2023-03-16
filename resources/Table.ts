@@ -90,9 +90,16 @@ export function makeTable(options) {
 		 * @param query
 		 * @param options
 		 */
-		static subscribe(query, options) {
+		static async subscribe(query, options) {
 			let key = typeof query !== 'object' ? query : query.conditions[0].attribute;
-			return addSubscription(this.primaryStore.env.path, this.primaryStore.db.dbi, key, options.callback);
+			if (options?.listener && !options.noRetain) {
+				let result = await this.get(query, options);
+				let data = result?.data;
+				if (data) {
+					options.listener(data[primary_key], data);
+				}
+			}
+			return addSubscription(this.primaryStore.env.path, this.primaryStore.db.dbi, key, options.listener);
 		}
 		static transaction(env_transaction, lmdb_txn, parent_transaction) {
 			return new this(env_transaction, lmdb_txn, parent_transaction, {});

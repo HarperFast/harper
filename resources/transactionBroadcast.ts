@@ -130,7 +130,7 @@ function notifyFromTransactionData(path, buffers, flag_position) {
 				//console.log(threadId, 'change to', key, 'listeners', handlers?.length, 'flag_position', flag_position);
 				if (key_subscriptions) key_subscriptions.forEach(subscription => {
 					try {
-						subscription.callback(key);
+						subscription.listener(key);
 					} catch(error) {
 						console.error(error);
 						info(error);

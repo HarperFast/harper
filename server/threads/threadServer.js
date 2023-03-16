@@ -184,6 +184,7 @@ function httpServer(listener, options) {
 		else
 			http_responders.push(listener);
 		http_chain = makeCallbackChain(request_listeners.concat(http_responders));
+		ws_chain = makeCallbackChain(request_listeners);
 	} else {
 		registerServer(listener, port);
 	}

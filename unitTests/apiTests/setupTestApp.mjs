@@ -52,7 +52,6 @@ export async function setupTestApp() {
 			headers,
 		});
 		created_records.push(object.id);
-		console.log('decoded arraybuffer data:', decode(response.data));
 	}
 	return created_records;
 }
