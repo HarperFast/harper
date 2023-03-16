@@ -101,7 +101,7 @@ describe('Test logRotator module', () => {
 		await hdb_utils.async_set_timeout(300);
 		const set_interval_id = log_rotator.__get__('set_interval_id');
 		clearInterval(set_interval_id);
-		const rotated_log_name = log_notify_stub.args[0][0].split('/').pop();
+		const rotated_log_name = log_notify_stub.args[0][0].split(path.sep).pop();
 		expect(fs.pathExistsSync(LOG_FILE_PATH_TEST), 'Expected to not find test log because rotate should have deleted it')
 			.to.be.false;
 		expect(fs.pathExistsSync(path.join(LOG_DIR_TEST, rotated_log_name))).to.be.true;
