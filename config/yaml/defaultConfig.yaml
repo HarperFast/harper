@@ -56,8 +56,9 @@ logging:
   root: null
   rotation:
     enabled: false
-    frequency: null
-    size: null
+    compress: false
+    interval: null
+    maxSize: null
     path: null
   stdStreams: false
 operationsApi:

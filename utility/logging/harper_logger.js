@@ -65,6 +65,8 @@ module.exports = {
 	initLogSettings,
 	setupConsoleLogging,
 	logCustomLevel,
+	closeLogFile,
+	getLogFilePath: () => log_file_path,
 	OUTPUTS,
 };
 

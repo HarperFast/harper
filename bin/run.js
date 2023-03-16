@@ -18,6 +18,7 @@ const assignCMDENVVariables = require('../utility/assignCmdEnvVariables');
 const nats_config = require('../server/nats/utility/natsConfig');
 const stop = require('./stop');
 const upgrade = require('./upgrade');
+const log_rotator = require('../utility/logging/logRotator');
 const minimist = require('minimist');
 const { PACKAGE_ROOT } = require('../utility/hdbTerms');
 const {
@@ -204,6 +205,8 @@ async function main(called_by_install = false) {
 				await pm2_utils.startClusteringThreads();
 			}
 		}
+
+		if (env.get(terms.CONFIG_PARAMS.LOGGING_ROTATION_ENABLED)) await log_rotator();
 		if (!is_scripted) started();
 	} catch (err) {
 		console.error(err);
@@ -312,19 +315,6 @@ async function openCreateAuditEnvironment(schema, table_name) {
 		console.error(error_msg);
 		hdb_logger.error(error_msg);
 	}
-}
-
-/**
- * If running in foreground and exit event occurs stop is called
- * @returns {Promise<void>}
- */
-async function processExitHandler() {
-	try {
-		await stop.stop();
-	} catch (err) {
-		console.error(err);
-	}
-	process.exit(143);
 }
 
 module.exports = {

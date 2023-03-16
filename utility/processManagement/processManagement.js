@@ -16,7 +16,6 @@ const util = require('util');
 const child_process = require('child_process');
 const { execFile } = child_process;
 const exec = util.promisify(child_process.exec);
-const path = require('path');
 const si = require('systeminformation');
 
 module.exports = {
@@ -537,7 +536,6 @@ async function stopAllServices() {
 				exec('kill', [process.pid]);
 			}
 		});
-
 	} catch (err) {
 		pm2.disconnect();
 		throw err;
@@ -548,8 +546,7 @@ async function stopAllServices() {
  * Check to see if a service is currently managed by processManagement
  */
 async function isServiceRegistered(service) {
-	if (child_processes?.find(child_process => child_process.name === service))
-		return true;
+	if (child_processes?.find((child_process) => child_process.name === service)) return true;
 	return !hdb_utils.isEmptyOrZeroLength(await describe(service));
 }
 

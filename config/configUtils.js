@@ -24,7 +24,6 @@ const CONFIGURE_SUCCESS_RESPONSE =
 	'Configuration successfully set. You must restart HarperDB for new config settings to take effect.';
 
 const DEPRECATED_CONFIG = {
-	logging_rotation_compress: 'logging.rotation.compress',
 	logging_rotation_retain: 'logging.rotation.retain',
 	logging_rotation_rotate: 'logging.rotation.rotate',
 	logging_rotation_rotateinterval: 'logging.rotation.rotateInterval',
@@ -273,6 +272,9 @@ function validateConfig(config_doc) {
 		validation.value.clustering.leafServer.streams.path
 	);
 	config_doc.setIn(['storage', 'path'], validation.value.storage.path);
+
+	if (validation.value.logging.rotation.path)
+		config_doc.setIn(['logging', 'rotation', 'path'], validation.value.logging.rotation.path);
 }
 
 /**
