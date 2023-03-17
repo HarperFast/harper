@@ -3,13 +3,14 @@ import * as LMDBBridge from './lmdbBridge/LMDBBridge';
 import * as search_validator from '../../validation/searchValidator';
 import { handleHDBError, hdb_errors } from '../../utility/errors/hdbError';
 import { Resource } from '../../resources/Resource';
-import { table } from '../../resources/tableLoader';
+import { table, getDatabases } from '../../resources/tableLoader';
 import * as insertUpdateValidate from './bridgeUtility/insertUpdateValidate';
 import * as lmdbProcessRows from './lmdbBridge/lmdbUtility/lmdbProcessRows';
 import * as hdb_terms from '../../utility/hdbTerms';
 import * as lmdb_check_new_attributes from './lmdbBridge/lmdbUtility/lmdbCheckForNewAttributes';
 import * as write_transaction from './lmdbBridge/lmdbUtility/lmdbWriteTransaction';
 import * as logger from '../../utility/logging/harper_logger';
+import * as SearchObject from '../SearchObject';
 const { HTTP_STATUS_CODES } = hdb_errors;
 /**
  * Currently we are extending LMDBBridge so we can use the LMDB methods as a fallback until all our RAPI methods are
@@ -50,12 +51,7 @@ export class RAPIBridge extends LMDBBridge {
 		return table({
 			database: table_create_obj.schema,
 			table: table_create_obj.table,
-			attributes: [
-				{
-					name: table_create_obj.hash_attribute,
-					is_primary_key: true,
-				},
-			],
+			attributes: table_create_obj.attributes,
 		});
 	}
 
@@ -76,15 +72,15 @@ export class RAPIBridge extends LMDBBridge {
 		let new_attributes;
 		if (insert_obj.auto_generate_indices)
 			new_attributes = await lmdb_check_new_attributes(insert_obj.hdb_auth_header, schema_table, attributes);
-		let Table = await table({database: insert_obj.schema, table: insert_obj.table});
+		let Table = getDatabases()[insert_obj.schema][insert_obj.table];
 		let txn = new Table();
 		let put_options = {
 			timestamp: insert_obj.__origin?.timestamp
 		}
 		let keys = [];
 		for (let record of insert_obj.records) {
-			txn.put(record[schema_table.hash_attribute], record, put_options);
-			keys.push(record[schema_table.hash_attribute]);
+			txn.put(record[insert_obj.hash_attribute], record, put_options);
+			keys.push(record[insert_obj.hash_attribute]);
 		}
 		let results = (await txn.commit())[0];
 		let response = {
@@ -100,5 +96,24 @@ export class RAPIBridge extends LMDBBridge {
 		}
 
 		return response;
+	}
+	async searchByValue(search_object: SearchObject) {
+		let schema = getDatabases()[search_object.schema || 'data'];
+		// TODO: fix validation/errors
+		if (!schema) throw new Error('no schema');
+		let table = schema[search_object.table];
+		if (!table) throw new Error('no table');
+		let table_txn = table.transaction();
+		let conditions = search_object.search_value == '*' ? [] :
+			[{
+				attribute: search_object.search_attribute,
+				value: search_object.search_value,
+				get_attributes: search_object.get_attributes,
+			}];
+		return table_txn.search({
+			limit: search_object.limit,
+			offset: search_object.offset,
+			conditions,
+		});
 	}
 }

@@ -7,9 +7,8 @@ import { getBaseSchemaPath, getTransactionAuditStoreBasePath } from '../dataLaye
 import { makeTable } from './Table';
 import * as OpenDBIObject from '../utility/lmdb/OpenDBIObject';
 import * as OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject';
-import { CONFIG_PARAMS } from '../utility/hdbTerms';
+import { CONFIG_PARAMS, DATABASES_DIR_NAME } from '../utility/hdbTerms';
 const DEFAULT_DATABASE_NAME = 'data';
-const DATABASE_PATH = 'database';
 initSync();
 
 const USE_AUDIT = true; // TODO: Get this from config
@@ -37,7 +36,7 @@ export function getTables() {
 export function getDatabases() {
 	if (loaded_databases) return databases;
 	loaded_databases = true;
-	const database_path = process.env.STORAGE_PATH || env_get(CONFIG_PARAMS.STORAGE_PATH) || join(getHdbBasePath(), DATABASE_PATH);
+	const database_path = process.env.STORAGE_PATH || env_get(CONFIG_PARAMS.STORAGE_PATH) || join(getHdbBasePath(), DATABASES_DIR_NAME);
 	// First load all the databases from our main database folder
 	// TODO: Load any databases defined with explicit storage paths from the config
 	if (existsSync(database_path)) {
@@ -94,34 +93,50 @@ function readMetaDb(path: string, default_table?: string, schema_name: string = 
 			}
 		}
 
+		let tables_to_load = new Map();
 		for (let { key, value } of dbis_store.getRange({ start: false })) {
-			let [ table_name, attribute ] = key.toString().split('/');
+			let [table_name, attribute] = key.toString().split('/');
 			if (!attribute) {
 				attribute = table_name;
 				table_name = default_table;
 			}
-			let tables = databases[schema_name] || (databases[schema_name] = Object.create(null));
-			let dbi_init = new OpenDBIObject(!value.is_hash_attribute, value.is_hash_attribute);
-			if (value.is_hash_attribute) {
-				let table_id = value.tableId;
-				if (table_id) {
-					if (table_id >= (root_store.nextTableId || 0))
-						root_store.nextTableId = table_id + 1;
-				} else {
-					if (!root_store.nextTableId)
-						root_store.nextTableId = 1;
-					value.tableId = table_id = root_store.nextTableId++;
-					dbis_store.putSync(key, value);
+			let attributes = tables_to_load.get(table_name);
+			if (!attributes)
+				tables_to_load.set(table_name, attributes = []);
+			attributes.push(value);
+			value.key = key;
+		}
+		let tables = databases[schema_name] || (databases[schema_name] = Object.create(null));
+		for (let [ table_name, attributes ] of tables_to_load) {
+			for (let attribute of attributes) {
+				let dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
+				if (attribute.is_hash_attribute) {
+					let table_id = attribute.tableId;
+					if (table_id) {
+						if (table_id >= (root_store.nextTableId || 0))
+							root_store.nextTableId = table_id + 1;
+					} else {
+						if (!root_store.nextTableId)
+							root_store.nextTableId = 1;
+						attribute.tableId = table_id = root_store.nextTableId++;
+						dbis_store.putSync(attribute.key, attribute);
+					}
+					let primary_store = root_store.openDB(attribute.key, dbi_init);
+					primary_store.tableId = table_id;
+					let indices = {};
+					for (let attribute of attributes) {
+						if (!attribute.is_hash_attribute)
+							indices[attribute.name] = root_store.openDB(attribute.key, dbi_init);
+					}
+					let table = tables[table_name] = makeTable({
+						primaryStore: primary_store,
+						auditStore: audit_store,
+						tableName: table_name,
+						primaryKey: attribute.name,
+						indices,
+						attributes,
+					});
 				}
-				let primary_store = root_store.openDB(key.toString(), dbi_init);
-				primary_store.tableId = table_id;
-				let table = tables[table_name] = makeTable({
-					primaryStore: primary_store,
-					auditStore: audit_store,
-					tableName: table_name,
-					primaryKey: value.name,
-					indices: {},
-				});
 			}
 		}
 		return root_store;
@@ -147,8 +162,9 @@ interface TableDefinition {
  * @param attributes
  * @param audit
  */
-export async function table({ table: table_name, database: database_name, expiration, attributes, audit }: TableDefinition) {
+export async function table({ table: table_name, database: database_name, expiration, attributes }: TableDefinition) {
 	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
+	getDatabases();
 	let Table = databases[database_name]?.[table_name];
 	let root_store;
 	let primary_key;
@@ -157,13 +173,19 @@ export async function table({ table: table_name, database: database_name, expira
 	let dbis_db;
 	let internal_dbi_init = new OpenDBIObject(false);
 
+	for (let attribute of attributes) {
+		if (attribute.attribute) { // there is some code that calls the attribute's name the attribute's attribute
+			attribute.name = attribute.attribute;
+			attribute.indexed = true;
+		}
+	}
 	if (Table) {
 		primary_key = Table.primaryKey;
 		root_store = Table.primaryStore;
 	} else {
 		let tables = databases[database_name] || (databases[database_name] = Object.create(null));
 		// TODO: How to get the storage path from env?
-		let database_path = process.env.STORAGE_PATH || env_get(CONFIG_PARAMS.STORAGE_PATH) || join(getHdbBasePath(), DATABASE_PATH);
+		let database_path = process.env.STORAGE_PATH || env_get(CONFIG_PARAMS.STORAGE_PATH) || join(getHdbBasePath(), DATABASES_DIR_NAME);
 		let path = join(database_path, database_name + '.mdb');
 		root_store = database_envs.get(path);
 		if (!root_store) {
@@ -195,6 +217,7 @@ export async function table({ table: table_name, database: database_name, expira
 			primaryKey: primary_key,
 			tableName: table_name,
 			indices: [],
+			attributes,
 		});
 		dbis_db = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
 		dbis_db.put(dbi_name, primary_key_attribute);

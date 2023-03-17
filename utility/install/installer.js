@@ -553,7 +553,8 @@ async function createAdminUser(role, admin_user) {
 			admin_user.role = role_response.role;
 			await user_ops.addUser(admin_user);
 		} catch (err) {
-			throw new Error(`Error creating user - ${err}`);
+			err.message = `Error creating user - ${err}`;
+			throw err;
 		}
 	}
 }

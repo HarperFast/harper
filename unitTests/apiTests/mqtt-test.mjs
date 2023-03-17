@@ -20,7 +20,7 @@ describe('test MQTT connections and commands', () => {
 					Accept: 'application/cbor'
 				}
 			}
-		})
+		});
 
 		await new Promise((resolve, reject) => {
 			client.on('connect', resolve);
@@ -32,7 +32,7 @@ describe('test MQTT connections and commands', () => {
 					Accept: 'application/json'
 				}
 			}
-		})
+		});
 
 		await new Promise((resolve, reject) => {
 			client2.on('connect', resolve);
@@ -91,5 +91,16 @@ describe('test MQTT connections and commands', () => {
 			});
 		});
 	});
-
+	it('subscribe to wildcard/full table', async function () {
+		this.timeout(10000);
+		await new Promise((resolve, reject) => {
+			client2.subscribe('SimpleRecord/+', function (err) {
+				console.log('subscribed', err);
+				if (err) reject(err);
+				else {
+					resolve();
+				}
+			});
+		});
+	});
 });

@@ -59,7 +59,7 @@ async function initialize(called_by_install = false, called_by_main = false) {
 		try {
 			await install();
 		} catch (err) {
-			console.error(INSTALL_ERR);
+			console.error(INSTALL_ERR, err);
 			hdb_logger.error(err);
 			process.exit(1);
 		}
@@ -106,7 +106,7 @@ async function initialize(called_by_install = false, called_by_main = false) {
 	}
 
 	check_jwt_tokens();
-	await checkAuditLogEnvironmentsExist();
+	//await checkAuditLogEnvironmentsExist();
 	writeLicenseFromVars();
 
 	// Check user has required permissions to start HDB.

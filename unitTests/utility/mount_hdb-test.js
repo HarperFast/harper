@@ -29,7 +29,7 @@ describe('test mount_hdb module', () => {
 
 	before(async () => {
 		BASE_BATH = env_mngr.getHdbBasePath();
-		BASE_SCHEMA_PATH = path.join(BASE_BATH, hdb_terms.SCHEMA_DIR_NAME);
+		BASE_SCHEMA_PATH = path.join(BASE_BATH, hdb_terms.DATABASES_DIR_NAME);
 		SYSTEM_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, hdb_terms.SYSTEM_SCHEMA_NAME);
 		init_system_schema_paths_stub = sandbox.stub(init_paths, 'initSystemSchemaPaths').returns(SYSTEM_SCHEMA_PATH);
 		get_schema_path_stub = sandbox.stub(init_paths, 'getSchemaPath').returns(SYSTEM_SCHEMA_PATH);

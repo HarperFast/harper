@@ -1,6 +1,6 @@
 import { CONFIG_PARAMS, TIME_STAMP_NAMES_ENUM } from '../utility/hdbTerms';
 import { open, Database } from 'lmdb';
-import common from '../utility/lmdb/commonUtility';
+import { getIndexedValues } from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
 import { randomUUID } from 'crypto';
 import { ResourceInterface } from './ResourceInterface';
@@ -264,16 +264,17 @@ export function makeTable(options) {
 			}
 			if (attributes && !options?.noValidation) {
 				let validation_errors;
+				/*
 				for (let i = 0, l = attributes.length; i < l; i++) {
 					let attribute = attributes[i];
-					if (attribute.type === typeof record[attribute.name]) {
+					if (!attribute.type || attribute.type === typeof record[attribute.name]) {
 						// any other validations
 					} else if (attribute.required && record[attribute.name] == null) {
 						(validation_errors || (validation_errors = [])).push(`Property ${attribute.name} is required`);
 					} else {
 						(validation_errors || (validation_errors = [])).push(`Property ${attribute.name} must be a ${attribute.type}`);
 					}
-				}
+				}*/
 				if (validation_errors) {
 					throw new Error(validation_errors.join('. '));
 				}
@@ -302,16 +303,17 @@ export function makeTable(options) {
 			// iterate the entries from the record
 			// for-in is about 5x as fast as for-of Object.entries, and this is extremely time sensitive since it can be
 			// inside a write transaction
-			for (let i = 0, l = indices.length; i < l; i++) {
-				let index = indices[i];
-				let value = record[primary_key];
-				let existing_value = existing_record[primary_key];
+			// TODO: Make an array version of indices that is faster
+			for (let key in indices) {
+				let index = indices[key];
+				let value = record[key];
+				let existing_value = existing_record[key];
 				if (value === existing_value) {
 					continue;
 				}
 
 				//if the update cleared out the attribute value we need to delete it from the index
-				let values = common.getIndexedValues(existing_value);
+				let values = getIndexedValues(existing_value);
 				if (values) {
 					if (LMDB_PREFETCH_WRITES)
 						index.prefetch(
@@ -322,7 +324,7 @@ export function makeTable(options) {
 						writes.push({ store: index, operation: 'remove', key: values[i], value: id, version: undefined });
 					}
 				}
-				values = common.getIndexedValues(value);
+				values = getIndexedValues(value);
 				if (values) {
 					if (LMDB_PREFETCH_WRITES)
 						index.prefetch(
@@ -352,7 +354,7 @@ export function makeTable(options) {
 				let existing_value = existing_record[id];
 
 				//if the update cleared out the attribute value we need to delete it from the index
-				let values = common.getIndexedValues(existing_value);
+				let values = getIndexedValues(existing_value);
 				if (values) {
 					if (LMDB_PREFETCH_WRITES)
 						index.prefetch(
@@ -366,7 +368,7 @@ export function makeTable(options) {
 			}
 		}
 
-		async* search(query, options): AsyncIterable<any> {
+		search(query, options): AsyncIterable<any> {
 			query.offset = Number.isInteger(query.offset) ? query.offset : 0;
 			let conditions = query.conditions || query;
 			for (let condition of conditions) {
@@ -397,51 +399,53 @@ export function makeTable(options) {
 				}
 				return condition.estimated_count; // use cached count
 			});
-			let search_type = conditions[0].type;
-
 			// both AND and OR start by getting an iterator for the ids for first condition
 			let first_search = conditions[0];
-			let ids = idsForCondition(first_search);
-			// and then things diverge...
 			let records;
-			if (!query.operator || query.operator.toLowerCase() === 'and') {
-				// get the intersection of condition searches by using the indexed query for the first condition
-				// and then filtering by all subsequent conditions
-				let filters = conditions.slice(1).map(filterByType);
-				let filters_length = filters.length;
-				records = ids.map((id) => primary_store.get(id, { transaction: this.lmdbTxn, lazy: true }));
-				if (filters_length > 0)
-					records = records.filter((record) => {
-						for (let i = 0; i < filters_length; i++) {
-							if (!filters[i](record)) return false; // didn't match filters
-						}
-						return true;
-					});
-				if (query.offset || query.limit !== undefined)
-					records = records.slice(
-						query.offset,
-						query.limit !== undefined ? (query.offset || 0) + query.limit : undefined
-					);
+			if (!first_search) {
+				records = primary_store.getRange({ start: false }).map(({ value }) => value);
 			} else {
-				//get the union of ids from all condition searches
-				for (let i = 1; i < conditions.length; i++) {
-					let condition = conditions[i];
-					// might want to lazily execute this after getting to this point in the iteration
-					let next_ids = idsForCondition(condition);
-					ids = ids.concat(next_ids);
+				let ids = idsForCondition(first_search);
+				// and then things diverge...
+				if (!query.operator || query.operator.toLowerCase() === 'and') {
+					// get the intersection of condition searches by using the indexed query for the first condition
+					// and then filtering by all subsequent conditions
+					let filters = conditions.slice(1).map(filterByType);
+					let filters_length = filters.length;
+					records = ids.map((id) => primary_store.get(id, {transaction: this.lmdbTxn, lazy: true}));
+					if (filters_length > 0)
+						records = records.filter((record) => {
+							for (let i = 0; i < filters_length; i++) {
+								if (!filters[i](record)) return false; // didn't match filters
+							}
+							return true;
+						});
+					if (query.offset || query.limit !== undefined)
+						records = records.slice(
+							query.offset,
+							query.limit !== undefined ? (query.offset || 0) + query.limit : undefined
+						);
+				} else {
+					//get the union of ids from all condition searches
+					for (let i = 1; i < conditions.length; i++) {
+						let condition = conditions[i];
+						// might want to lazily execute this after getting to this point in the iteration
+						let next_ids = idsForCondition(condition);
+						ids = ids.concat(next_ids);
+					}
+					let returned_ids = new Set();
+					let offset = query.offset || 0;
+					ids = ids
+						.filter((id) => {
+							if (returned_ids.has(id))
+								// skip duplicates
+								return false;
+							returned_ids.add(id);
+							return true;
+						})
+						.slice(offset, query.limit && query.limit + offset);
+					records = ids.map((id) => primary_store.get(id, {transaction: this.lmdbTxn, lazy: true}));
 				}
-				let returned_ids = new Set();
-				let offset = query.offset || 0;
-				ids = ids
-					.filter((id) => {
-						if (returned_ids.has(id))
-							// skip duplicates
-							return false;
-						returned_ids.add(id);
-						return true;
-					})
-					.slice(offset, query.limit && query.limit + offset);
-				records = ids.map((id) => primary_store.get(id, { transaction: this.lmdbTxn, lazy: true }));
 			}
 			return records;
 		}

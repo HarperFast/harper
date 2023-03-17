@@ -60,35 +60,32 @@ export class DatabaseTransaction {
 	commit(): Promise<CommitResolution> {
 		this.doneReading();
 		let remaining_conditions = this.inTwoPhase ? [] : this.conditions.slice(0).reverse();
-		let txn_time, resolution;
+		let txn_time, resolution, write_resolution;
 		const nextCondition = () => {
 			let condition = remaining_conditions.pop();
 			if (condition) {
-				condition.store.ifVersion(condition.key, condition.version, nextCondition);
+				let condition_resolution = condition.store.ifVersion(condition.key, condition.version, nextCondition);
+				resolution = resolution || condition_resolution;
 			} else {
 				txn_time = getNextMonotonicTime();
-				let buffer;
-				let targetView;
-				let position;
 				for (let { txn, record } of this.updatingRecords || []) {
 					// TODO: get the own properties, translate to a put and a correct replication operation/CRDT
 					let original = record[DATA];
 					let own = record[OWN];
 					own.__updatedtime__ = txn_time;
-					resolution = txn.put(original[txn.constructor.primaryKey], Object.assign({}, original, own));
+					write_resolution = txn.put(original[txn.constructor.primaryKey], Object.assign({}, original, own));
 				}
 				for (let write of this.writes) {
-					let updates = write.value.__updates__ || (write.value.__updates__ = []);
-					updates.push(txn_time); // TODO: Move to an overflow key in the audit table if this gets too big
 					if (this.auditStore && write.store.useVersions) {
+						let updates = write.value.__updates__ || (write.value.__updates__ = []);
+						updates.push(txn_time); // TODO: Move to an overflow key in the audit table if this gets too big
 						this.auditStore.put([txn_time, write.store.tableId, write.key], {
 							operation: write.operation,
 							username: this.username,
 							value: write.value
 						});
 					}
-
-					resolution = write.store[write.operation]?.(write.key, write.value, txn_time);
+					write_resolution = write.store[write.operation]?.(write.key, write.value, txn_time);
 				}
 			}
 		};
@@ -101,6 +98,7 @@ export class DatabaseTransaction {
 		// now reset transactions tracking; this transaction be reused and committed again
 		this.conditions = [];
 		this.writes = [];
+		resolution = resolution || write_resolution;
 		return resolution?.then(resolution => ({
 			success: resolution,
 			txnTime: txn_time,

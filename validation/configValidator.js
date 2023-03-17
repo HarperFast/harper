@@ -285,14 +285,14 @@ function setDefaultRoot(parent, helpers) {
 	}
 
 	switch (config_param) {
-		case 'fastifyRoutes.root':
+		case 'customFunctions.root':
 			return path.join(hdb_root, DEFAULT_CUSTOM_FUNCTIONS_FOLDER);
 		case 'logging.root':
 			return path.join(hdb_root, DEFAULT_LOG_FOLDER);
 		case 'clustering.leafServer.streams.path':
 			return path.join(hdb_root, 'clustering', 'leaf');
 		case 'storage.path':
-			return path.join(hdb_root, hdb_terms.SCHEMA_DIR_NAME);
+			return path.join(hdb_root, hdb_terms.DATABASES_DIR_NAME);
 		default:
 			throw new Error(
 				`Error setting default root for config parameter: ${config_param}. Unrecognized config parameter`
