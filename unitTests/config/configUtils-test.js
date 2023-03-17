@@ -793,8 +793,8 @@ describe('Test configUtils module', () => {
 			expect(set_in_stub.secondCall.args[1]).to.equal(CF_ROOT);
 			expect(set_in_stub.args[2][0]).to.eql(['logging', 'root']);
 			expect(set_in_stub.args[2][1]).to.equal(LOG_ROOT);
-			expect(set_in_stub.args[3][1]).to.equal('user/harperdb/streams');
-			expect(set_in_stub.args[4][1]).to.equal('path/to/storage');
+			expect(set_in_stub.args[3][1]).to.equal('path/to/storage');
+			expect(set_in_stub.args[4][1]).to.equal('path/for/rotated/logs');
 		});
 	});
 
