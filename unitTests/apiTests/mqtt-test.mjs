@@ -86,7 +86,7 @@ describe('test MQTT connections and commands', () => {
 			client.publish('SimpleRecord/47', JSON.stringify({
 				name: 'This is a test 2'
 			}), {
-				retain: false,
+				retain: true,
 				qos: 1,
 			});
 		});

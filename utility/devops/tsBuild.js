@@ -16,18 +16,24 @@ if (isMainThread) {
 		SRC_DIRECTORIES.map((dir) => dir + '/**/*.ts'),
 		{ cwd: PACKAGE_ROOT }
 	)) {
-		// Note that we subtract a second from the source file timestamp because it seems like WebStorm compiles and
-		// then saves the source file, so it can have a slightly newer timestamp
-		if (
-			statSync(join(PACKAGE_ROOT, filename)).mtimeMs - 4000 >
-			statSync(join(PACKAGE_ROOT, TS_DIRECTORY, filename.replace(/.ts$/, '.js'))).mtimeMs
-		) {
+		let source_time = 0;
+		let compiled_time = 0;
+		try {
+			// Note that we subtract a few seconds from the source file timestamp because it seems like WebStorm
+			// compiles and then saves the source file, so it can have a slightly newer timestamp
+			source_time = statSync(join(PACKAGE_ROOT, filename)).mtimeMs - 5000;
+			compiled_time = statSync(join(PACKAGE_ROOT, TS_DIRECTORY, filename.replace(/.ts$/, '.js'))).mtimeMs;
+		} catch (error) {}
+
+		if (source_time > compiled_time) {
 			console.warn(
-				`TypeScript ${filename} is not compiled (TS source file was modified at ${new Date(
-					statSync(join(PACKAGE_ROOT, filename)).mtimeMs
-				)} and compiled file at ${new Date(
-					statSync(join(PACKAGE_ROOT, TS_DIRECTORY, filename.replace(/.ts$/, '.js'))).mtimeMs
-				)}, consider enabling auto-compilation of TypeScript in your IDE). Compiling now`
+				`TypeScript ${filename} is not compiled` +
+					(compiled_time
+						? ` (TS source file was modified at ${new Date(source_time)} and compiled file at ${new Date(
+								compiled_time
+						  )})`
+						: '') +
+					`, consider enabling auto-compilation of TypeScript in your IDE), compiling now.`
 			);
 			needs_compile = true;
 			break;
