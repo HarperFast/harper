@@ -99,6 +99,7 @@ function readMetaDb(path: string, default_table?: string, schema_name: string = 
 			if (!attribute) {
 				attribute = table_name;
 				table_name = default_table;
+				value.name = attribute;
 			}
 			let attributes = tables_to_load.get(table_name);
 			if (!attributes)
@@ -125,8 +126,10 @@ function readMetaDb(path: string, default_table?: string, schema_name: string = 
 					primary_store.tableId = table_id;
 					let indices = {};
 					for (let attribute of attributes) {
-						if (!attribute.is_hash_attribute)
+						if (!attribute.is_hash_attribute) {
+							let dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
 							indices[attribute.name] = root_store.openDB(attribute.key, dbi_init);
+						}
 					}
 					let table = tables[table_name] = makeTable({
 						primaryStore: primary_store,
