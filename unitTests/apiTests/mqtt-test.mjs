@@ -26,7 +26,7 @@ describe('test MQTT connections and commands', () => {
 			client.on('connect', resolve);
 			client.on('error', reject);
 		});
-		client2 = connect('ws://localhost:9926', {
+		client2 = connect('mqtt://localhost:1883', {
 			wsOptions: {
 				headers: {
 					Accept: 'application/json'

@@ -17,11 +17,12 @@ export async function start({ server, port, webSocket }) {
 		}, { port, subProtocol: 'mqtt' }); // if there is no port, we are piggy-backing off of default app http server
 	if (port || webSocket !== true) // standard TCP socket
 		server.socket(async (socket) => {
+			let user;
 			if (AUTHORIZE_LOCAL && socket.remoteAddress.includes('127.0.0.1')) {
-				socket.user = await getSuperUser();
+				user = await getSuperUser();
 			}
 
-			let onMessage = onSocket(socket, (message) => socket.write(message));
+			let onMessage = onSocket(socket, (message) => socket.write(message), null, user);
 			socket.on('data', onMessage);
 		}, { port: port || DEFAULT_MQTT_PORT });
 }
