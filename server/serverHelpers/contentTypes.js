@@ -144,7 +144,7 @@ function registerContentHandlers(app) {
 		}
 	});
 }
-
+// TODO: Only load this if fastify is loaded
 const fp = require('fastify-plugin');
 
 let registerFastifySerializers = fp(
@@ -223,7 +223,7 @@ function serialize(response_data, request, response_object) {
 	//  client itself actually (just) supports gzip/deflate
 	let compress = request.headers['accept-encoding']?.includes('br');
 	let response_body;
-	if (response_data?.contentType && response_data.data) {
+	if (response_data?.contentType != null && response_data.data != null) {
 		// we use this as a special marker for blobs of data that are explicitly one content type
 		response_object.headers['Content-Type'] = response_data.contentType;
 		response_object.headers['Vary'] = 'Accept-Encoding';
@@ -268,6 +268,8 @@ function serialize(response_data, request, response_object) {
  * @returns {*}
  */
 function serializeMessage(message, request) {
+	if (message?.contentType != null && message.data != null)
+		return message;
 	let serialize = request.serialize;
 	if (serialize) return serialize(message);
 	let serializer = findBestSerializer(request);
@@ -275,8 +277,13 @@ function serializeMessage(message, request) {
 	return serialize(message);
 }
 
-function getDeserializer(content_type) {
-	if (!content_type) return media_types['application/json'].deserialize;
+function getDeserializer(content_type, body) {
+	if (!content_type) {
+		if (body[0] === 123) { // left curly brace
+			return tryJSONParse;
+		}
+		return (data) => ({ contentType: '', data });
+	};
 	let parameters_start = content_type.indexOf(';');
 	let parameters;
 	if (parameters_start > -1) {
@@ -298,10 +305,18 @@ function deserializeUnknownType(content_type, parameters) {
 		// use this type as a way of directly transferring binary data (since that is what it means)
 		return data => data;
 	} else { // else record the type and binary data as a pair
-		return (data) => ({ type, data });
+		return (data) => ({ contentType: content_type, data });
 	}
 }
-
+// try to JSON parse, but since we don't know for sure, this will return the body
+// otherwise
+function tryJSONParse(input) {
+	try {
+		return JSON.parse(input);
+	} catch (error) {
+		return input;
+	}
+}
 module.exports = {
 	registerContentHandlers,
 	serializeMessage,

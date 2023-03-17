@@ -3,8 +3,9 @@
 import { parser as makeParser, generate } from 'mqtt-packet';
 import { getSession, DurableSubscriptionsSession } from './DurableSubscriptionsSession';
 import { findAndValidateUser, getSuperUser } from '../security/user';
-import { serializeMessage } from './serverHelpers/contentTypes';
-const parser = makeParser({ protocolVersion: 4});
+import { serializeMessage, getDeserializer } from './serverHelpers/contentTypes';
+import { threadId } from 'worker_threads';
+
 const DEFAULT_MQTT_PORT = 1883;
 const AUTHORIZE_LOCAL = true;
 export async function start({ server, port, webSocket }) {
@@ -27,6 +28,7 @@ export async function start({ server, port, webSocket }) {
 
 function onSocket(socket, send, request, user) {
 	let session: DurableSubscriptionsSession;
+	const parser = makeParser({ protocolVersion: 4});
 	function onMessage(data) {
 		parser.parse(data);
 	}
@@ -36,21 +38,33 @@ function onSocket(socket, send, request, user) {
 		try {
 			switch (packet.cmd) {
 				case 'connect':
-					//TODO: Is it a clean or durable session?
+					if (packet.username) {
+						try {
+							user = findAndValidateUser(packet.username, packet.password.toString());
+						} catch(error) {
+							console.warn(error);
+						}
+					}
+					if (!user)
+						return send(generate({ // Send a connection acknowledgment with indication of auth failure
+							cmd: 'connack',
+							returnCode: 0x86, // bad username or password
+						}));
+
 					// TODO: Do we want to prefix the user name to the client id (to prevent collisions when poor ids are used)
 					session = await getSession(packet);
+					// TODO: Handle the will & testament, and possibly use the will's content type as a hint for expected contet
 					session.user = user;
 					session.setListener((topic, message) => {
-						// TODO: Send a publish command in response to any messages received on our subscriptions
 						send(generate({
 							cmd: 'publish',
 							topic,
-							payload: serialize(message)
+							payload: serialize(message),
 						}));
 					});
 					send(generate({ // Send a connection acknowledgment
 						cmd: 'connack',
-						returnCode: 0,
+						returnCode: 0, // success
 					}));
 					break;
 				case 'subscribe':
@@ -66,11 +80,39 @@ function onSocket(socket, send, request, user) {
 					}));
 					break;
 				case 'publish':
-					await session.publish(packet);
-					send(generate({ // Send a subscription acknowledgment
-						cmd: 'puback',
-						messageId: packet.messageId,
-					}));
+					// deserialize
+					let deserialize = socket.deserialize || (socket.deserialize = getDeserializer(request?.headers['content-type'], packet.payload));
+					let data = packet.payload.length > 0 ? deserialize(packet.payload) :
+						undefined; // zero payload length maps to a delete
+					let published
+					try {
+						published = await session.publish(packet, data);
+					} catch(error) {
+						console.warn(error);
+						if (packet.qos > 0) {
+							return send(generate({ // Send a subscription acknowledgment
+								cmd: 'puback',
+								messageId: packet.messageId,
+								reasonCode: 0x80, // unspecified error
+							}));
+						}
+					}
+					if (packet.qos > 0) {
+						if (published === false)
+							return send(generate({ // Send a subscription acknowledgment
+								cmd: 'puback',
+								messageId: packet.messageId,
+								reasonCode: 0x90, // Topic name invalid
+							}));
+						send(generate({ // Send a subscription acknowledgment
+							cmd: 'puback',
+							messageId: packet.messageId,
+							reasonCode: 0 // success
+						}));
+					}
+					break;
+				case 'pingreq':
+					send(generate({ cmd: 'pingresp' }));
 					break;
 				case 'disconnect':
 					session.end();

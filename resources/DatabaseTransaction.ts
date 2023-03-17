@@ -1,4 +1,4 @@
-import { RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
+import { Database, RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
 import { DATA, OWN } from './WritableRecord';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 
@@ -10,10 +10,12 @@ export class DatabaseTransaction {
 	username: string
 	inTwoPhase?: boolean
 	lmdbDb: RootDatabase
+	auditStore: Database
 	readTxn: LMDBTransaction
-	constructor(lmdb_db, user) {
+	constructor(lmdb_db, user, audit_store) {
 		this.lmdbDb = lmdb_db;
 		this.username = user?.name;
+		this.auditStore = audit_store;
 	}
 	getReadTxn() {// used optimistically
 		return this.readTxn || (this.readTxn = this.lmdbDb.useReadTransaction());
@@ -65,6 +67,9 @@ export class DatabaseTransaction {
 				condition.store.ifVersion(condition.key, condition.version, nextCondition);
 			} else {
 				txn_time = getNextMonotonicTime();
+				let buffer;
+				let targetView;
+				let position;
 				for (let { txn, record } of this.updatingRecords || []) {
 					// TODO: get the own properties, translate to a put and a correct replication operation/CRDT
 					let original = record[DATA];
@@ -75,18 +80,20 @@ export class DatabaseTransaction {
 				for (let write of this.writes) {
 					let updates = write.value.__updates__ || (write.value.__updates__ = []);
 					updates.push(txn_time); // TODO: Move to an overflow key in the audit table if this gets too big
-					resolution = write.store[write.operation](write.key, write.value, txn_time);
-				}
-				if (this.lmdbDb.auditStore) {
-					this.lmdbDb.auditStore.put(txn_time, {
-						origin,
-						username: this.username,
-						operations: this.writes
-					});
+					if (this.auditStore && write.store.useVersions) {
+						this.auditStore.put([txn_time, write.store.tableId, write.key], {
+							operation: write.operation,
+							username: this.username,
+							value: write.value
+						});
+					}
+
+					resolution = write.store[write.operation]?.(write.key, write.value, txn_time);
 				}
 			}
 		};
 		nextCondition();
+		// TODO: if any of these fail, restart this
 		// TODO: This is where we write to the SharedArrayBuffer so that subscribers from other threads can
 		// listen... And then we can use it determine when the commit has been delivered to at least one other
 		// node

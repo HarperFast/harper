@@ -69,18 +69,18 @@ export function getDatabases() {
  * This is responsible for reading the internal dbi to get a list of all the tables and their indexed or registered attributes
  * @param path
  * @param default_table
- * @param default_schema
+ * @param schema_name
  */
-function readMetaDb(path: string, default_table?: string, default_schema: string = DEFAULT_DATABASE_NAME, audit_path?: string) {
+function readMetaDb(path: string, default_table?: string, schema_name: string = DEFAULT_DATABASE_NAME, audit_path?: string) {
 	let env_init = new OpenEnvironmentObject(
 		path,
 		false
 	);
 	try {
-		let env = open(env_init);
-		database_envs.set(path, env);
+		let root_store = open(env_init);
+		database_envs.set(path, root_store);
 		let internal_dbi_init = new OpenDBIObject(false);
-		let dbis_store = env.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
+		let dbis_store = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
 		let audit_store;
 		if (USE_AUDIT) {
 			if (audit_path) {
@@ -90,17 +90,12 @@ function readMetaDb(path: string, default_table?: string, default_schema: string
 					audit_store.isLegacy = true;
 				}
 			} else {
-				audit_store = env.openDB(AUDIT_STORE_NAME, internal_dbi_init);
+				audit_store = root_store.openDB(AUDIT_STORE_NAME, internal_dbi_init);
 			}
 		}
 
 		for (let { key, value } of dbis_store.getRange({ start: false })) {
-			let [ schema_name, table_name, attribute ] = key.toString().split('.');
-			if (!attribute) {
-				attribute = table_name;
-				table_name = schema_name;
-				schema_name = default_schema;
-			}
+			let [ table_name, attribute ] = key.toString().split('/');
 			if (!attribute) {
 				attribute = table_name;
 				table_name = default_table;
@@ -108,8 +103,20 @@ function readMetaDb(path: string, default_table?: string, default_schema: string
 			let tables = databases[schema_name] || (databases[schema_name] = Object.create(null));
 			let dbi_init = new OpenDBIObject(!value.is_hash_attribute, value.is_hash_attribute);
 			if (value.is_hash_attribute) {
+				let table_id = value.tableId;
+				if (table_id) {
+					if (table_id >= (root_store.nextTableId || 0))
+						root_store.nextTableId = table_id + 1;
+				} else {
+					if (!root_store.nextTableId)
+						root_store.nextTableId = 1;
+					value.tableId = table_id = root_store.nextTableId++;
+					dbis_store.putSync(key, value);
+				}
+				let primary_store = root_store.openDB(key.toString(), dbi_init);
+				primary_store.tableId = table_id;
 				let table = tables[table_name] = makeTable({
-					primaryStore: env.openDB(key.toString(), dbi_init),
+					primaryStore: primary_store,
 					auditStore: audit_store,
 					tableName: table_name,
 					primaryKey: value.name,
@@ -117,7 +124,7 @@ function readMetaDb(path: string, default_table?: string, default_schema: string
 				});
 			}
 		}
-		return env;
+		return root_store;
 	} catch (error) {
 		// @ts-ignore
 		throw new Error(`Error opening database ${path}`, { cause: error });
@@ -147,6 +154,9 @@ export async function table({ table: table_name, database: database_name, expira
 	let primary_key;
 	let primary_key_attribute
 	let indices;
+	let dbis_db;
+	let internal_dbi_init = new OpenDBIObject(false);
+
 	if (Table) {
 		primary_key = Table.primaryKey;
 		root_store = Table.primaryStore;
@@ -166,25 +176,31 @@ export async function table({ table: table_name, database: database_name, expira
 			database_envs.set(path, root_store);
 		}
 		let audit_store = root_store.auditStore;
-		if (!audit_store && audit) {
+		if (!audit_store && USE_AUDIT) {
 			audit_store = root_store.openDB(AUDIT_STORE_NAME, {});
 		}
 		primary_key_attribute = attributes.find(attribute => attribute.is_primary_key);
 		primary_key = primary_key_attribute.name;
 		primary_key_attribute.is_hash_attribute = true;
 		let dbi_init = new OpenDBIObject(!primary_key_attribute.is_primary_key, primary_key_attribute.is_primary_key);
-		let dbi_name = table_name + '.' + primary_key_attribute.name;
+		let dbi_name = table_name + '/' + primary_key_attribute.name;
+		let primary_store = root_store.openDB(dbi_name, dbi_init);
+		if (!root_store.env.nextTableId)
+			root_store.env.nextTableId = 1;
+		primary_store.tableId = root_store.env.nextTableId++;
+		primary_key_attribute.tableId = primary_store.tableId;
 		Table = tables[table_name] = makeTable({
-			primaryStore: root_store.openDB(dbi_name, dbi_init),
+			primaryStore: primary_store,
 			auditStore: audit_store,
 			primaryKey: primary_key,
 			tableName: table_name,
 			indices: [],
 		});
+		dbis_db = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
+		dbis_db.put(dbi_name, primary_key_attribute);
 	}
 	indices = Table.indices;
-	let internal_dbi_init = new OpenDBIObject(false);
-	let dbis_db = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
+	dbis_db = dbis_db || root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
 	Table.dbisDB = dbis_db;
 
 	let last_commit;
@@ -192,9 +208,7 @@ export async function table({ table: table_name, database: database_name, expira
 	for (let attribute of attributes || []) {
 		// non-indexed attributes do not need a dbi
 		if (!attribute.indexed || attribute.is_primary_key) continue;
-		let dbi_name = table_name + '.' + attribute.name;
-		if (attribute.is_primary_key)
-			attribute.is_hash_attribute = true;
+		let dbi_name = table_name + '/' + attribute.name;
 		let dbi_init = new OpenDBIObject(true, false);
 		let dbi = root_store.openDB(dbi_name, dbi_init);
 		let dbi_descriptor = dbis_db.get(dbi_name);

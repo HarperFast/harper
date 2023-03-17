@@ -35,7 +35,7 @@ export async function setupTestApp() {
 	process.env.RUN_HDB_APP = fileURLToPath(new URL('../testApp', import.meta.url));
 	created_records = [];
 	const { startHTTPThreads } = await import('../../server/threads/socketRouter.js');
-	await startHTTPThreads(1);
+	await startHTTPThreads(2);
 	for (let i = 0; i < 20; i++) {
 		let object = {id: Math.round(random() * 1000000)};
 		for (let i = 0; i < 20; i++) {

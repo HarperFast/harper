@@ -2,6 +2,8 @@ import { readKey } from 'ordered-binary';
 import { info } from '../utility/logging/harper_logger';
 import { threadId } from 'worker_threads';
 import { onMessageFromWorkers, broadcast } from '../server/threads/manageThreads';
+import { MAXIMUM_KEY } from 'ordered-binary';
+import {tables} from './tableLoader';
 const TRANSACTION_EVENT_TYPE = 'transaction';
 
 let all_subscriptions;
@@ -15,7 +17,9 @@ let all_subscriptions;
  * @param key
  * @param listener
  */
-export function addSubscription(path, dbi, key, listener?: (key) => any) {
+export function addSubscription(table, key, listener?: (key) => any) {
+	let path = table.primaryStore.env.path;
+	let table_id = table.primaryStore.tableId;
 	// set up the subscriptions map. We want to just use a single map (per table) for efficient delegation
 	// (rather than having every subscriber filter every transaction)
 	if (!all_subscriptions) {
@@ -29,20 +33,27 @@ export function addSubscription(path, dbi, key, listener?: (key) => any) {
 		});
 		all_subscriptions = Object.create(null); // using it as a map that doesn't change much
 	}
-	let env_subscriptions = all_subscriptions[path] || (all_subscriptions[path] = []);
-	let dbi_subscriptions = env_subscriptions[dbi];
-	if (!dbi_subscriptions) {
-		dbi_subscriptions = env_subscriptions[dbi] = new Map()
-		dbi_subscriptions.envs = env_subscriptions;
-		dbi_subscriptions.dbi = dbi;
+	let database_subscriptions = all_subscriptions[path] || (all_subscriptions[path] = []);
+	database_subscriptions.auditStore = table.auditStore;
+	let table_subscriptions = database_subscriptions[table_id];
+	if (!table_subscriptions) {
+		table_subscriptions = database_subscriptions[table_id] = new Map()
+		table_subscriptions.envs = database_subscriptions;
+		table_subscriptions.tableId = table_id;
+		table_subscriptions.allKeys = [];
 	}
-	let subscriptions: any[] = dbi_subscriptions.get(key);
-
 	let subscription = new Subscription(listener);
+	if (key == null) {
+		table_subscriptions.allKeys.push(subscription);
+		subscription.subscriptions = table_subscriptions;
+		return subscription;
+	}
+	let subscriptions: any[] = table_subscriptions.get(key);
+
 	if (subscriptions) subscriptions.push(subscription);
 	else {
-		dbi_subscriptions.set(key, subscriptions = [subscription]);
-		subscriptions.dbis = dbi_subscriptions;
+		table_subscriptions.set(key, subscriptions = [subscription]);
+		subscriptions.tables = table_subscriptions;
 		subscriptions.key = key;
 	}
 	subscription.subscriptions = subscriptions;
@@ -61,14 +72,15 @@ class Subscription {
 	}
 	end() {
 		// cleanup
-		this.subscriptions.splice(this.subscriptions.indexOf(subscription), 1);
+		this.subscriptions.splice(this.subscriptions.indexOf(this), 1);
 		if (this.subscriptions.length === 0) {
-			let dbi_subscriptions = this.subscriptions.dbis;
+			let table_subscriptions = this.subscriptions.tables;
+			// TODO: Handle cleanup of wildcard
 			let key = this.subscriptions.key;
-			dbi_subscriptions.delete(key);
-			if (dbi_subscriptions.size === 0) {
-				let env_subscriptions = dbi_subscriptions.envs;
-				let dbi = dbi_subscriptions.dbi;
+			table_subscriptions.delete(key);
+			if (table_subscriptions.size === 0) {
+				let env_subscriptions = table_subscriptions.envs;
+				let dbi = table_subscriptions.dbi;
 				delete env_subscriptions[dbi];
 			}
 		}
@@ -88,7 +100,7 @@ class Subscription {
  * @param buffers
  * @param flag_position
  */
-function notifyFromTransactionData(path, buffers, flag_position) {
+function notifyFromTransactionDataSharedBuffers(path, buffers, flag_position) {
 	const HAS_KEY = 4;
 	const HAS_VALUE = 2;
 	const CONDITIONAL = 8;
@@ -128,18 +140,61 @@ function notifyFromTransactionData(path, buffers, flag_position) {
 				}
 				let key_subscriptions = dbi_subscriptions?.get(key);
 				//console.log(threadId, 'change to', key, 'listeners', handlers?.length, 'flag_position', flag_position);
-				if (key_subscriptions) key_subscriptions.forEach(subscription => {
+				if (key_subscriptions) {
+					for (let subscription of key_subscriptions) {
+						try {
+							subscription.listener(key);
+						} catch(error) {
+							console.error(error);
+							info(error);
+						}
+					}
+				}
+				for (let subscription of dbi_subscriptions.allKeys) {
 					try {
 						subscription.listener(key);
 					} catch(error) {
 						console.error(error);
 						info(error);
 					}
-				});
+				}
 			} else {
 				flag_position++;
 			}
 		} while (flag_position < uint32.length);
+	}
+}
+
+let last_time = Date.now();
+function notifyFromTransactionData(path, buffers, flag_position) {
+	if (!all_subscriptions) return;
+	let subscriptions = all_subscriptions[path];
+	if (!subscriptions) return; // if no subscriptions to this env path, don't need to read anything
+	for (let { key, value: audit_record } of subscriptions.auditStore.getRange({ start: [ last_time, MAXIMUM_KEY ] })) {
+		let [ txn_time, table_id, record_key ] = key;
+		last_time = txn_time;
+		let table_subscriptions = subscriptions[table_id];
+		if (!table_subscriptions) continue;
+		for (let subscription of table_subscriptions.allKeys) {
+			try {
+				subscription.listener(record_key, audit_record);
+			} catch(error) {
+				console.error(error);
+				info(error);
+			}
+		}
+		let key_subscriptions = table_subscriptions.get(record_key);
+		if (!key_subscriptions) continue;
+		if (key_subscriptions) {
+			for (let subscription of key_subscriptions) {
+				try {
+					subscription.listener(record_key, audit_record);
+				} catch(error) {
+					console.error(error);
+					info(error);
+				}
+			}
+		}
 	}
 }
 

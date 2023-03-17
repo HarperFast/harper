@@ -116,7 +116,7 @@ export class Resource implements ResourceInterface {
 			let search_start = identifier.indexOf?.('?');
 			if (search_start > -1) {
 				return {
-					data: resource.search(this.parseQuery(url.slice(search_start + 1)), options)
+					data: resource.search(this.parseQuery(identifier.slice(search_start + 1)), options)
 				};
 			}
 			let slash_index = identifier.indexOf?.('/');
@@ -136,11 +136,11 @@ export class Resource implements ResourceInterface {
 	}
 
 	static async put(identifier: string|number, request?: any) {
-		let updated_data = request.data;
 		let resource = new this(request);
 		let user = request.user;
 		let checked = checkAllowed(resource.allowPut?.(user), user, resource);
 		if (checked?.then) await checked; // fast path to avoid await if not needed
+		let updated_data = await request.data;
 		resource.put(identifier, updated_data);
 		let txn = await resource.commit();
 		return {
@@ -149,10 +149,10 @@ export class Resource implements ResourceInterface {
 		};
 	}
 	static async patch(identifier: string|number, request?: any) {
-		let updates = request.data;
 		let resource = new this(request);
 		let user = request.user;
 		let checked = checkAllowed(resource.allowPatch?.(user), user, resource);
+		let updates = await request.data;
 		let record = await resource.update(identifier);
 		for (let key in updates) {
 			record[key] = updates[key];
@@ -160,7 +160,6 @@ export class Resource implements ResourceInterface {
 		await resource.commit();
 	}
 	static async delete(identifier: string|number, request?: any) {
-		let updates = request.data;
 		let resource = new this(request);
 		let user = request.user;
 		let checked = checkAllowed(resource.allowDelete?.(user), user, resource);
@@ -168,24 +167,28 @@ export class Resource implements ResourceInterface {
 		await resource.commit();
 	}
 	static async post(identifier: string|number, request?: any) {
-		let updates = request.data;
 		let resource = new this(request);
 		let user = request.user;
 		let checked = checkAllowed(resource.allowPost?.(user), user, resource);
+		let new_object = await request.data;
 		await resource.create(identifier);
 		await resource.commit();
 	}
 
 	static async publish(identifier: string|number, request?: any) {
-		let data = request.data;
 		let resource = new this(request);
 		let user = request.user;
 		let checked = checkAllowed(resource.allowPublish?.(user), user, resource);
-		if (request.retain) // retain flag means we persist this message (for any future subscription starts), so treat it as the record itself
-			await resource.put(identifier, data);
-		else
+		let data = await request.data;
+		if (request.retain) {// retain flag means we persist this message (for any future subscription starts), so treat it as the record itself
+			if (data === undefined)
+				await resource.delete(identifier);
+			else
+				await resource.put(identifier, data);
+		} else
 			await resource.publish(identifier, data);
 		await resource.commit();
+		return true;
 	}
 
 	/**
@@ -268,7 +271,7 @@ export class Resource implements ResourceInterface {
 		if (!table) return;
 		let key = schema_name ? (schema_name + '/' + table_name) : table_name;
 		let env_path = table.envPath;
-		let env_txn = this.inUseEnvs[env_path] || (this.inUseEnvs[env_path] = new DatabaseTransaction(table.primaryStore, this.user));
+		let env_txn = this.inUseEnvs[env_path] || (this.inUseEnvs[env_path] = new DatabaseTransaction(table.primaryStore, this.user, table.auditStore));
 		return this.inUseTables[key] || (this.inUseTables[key] = table.transaction(this.request, env_txn, env_txn.getReadTxn(), this));
 	}
 	async fetch(input: RequestInfo | URL, init?: RequestInit) {

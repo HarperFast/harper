@@ -10,9 +10,8 @@ import { DatabaseTransaction } from './DatabaseTransaction';
 import { compareKeys, readKey } from 'ordered-binary';
 import * as lmdb_terms from '../utility/lmdb/terms';
 import * as env_mngr from '../utility/environment/environmentManager';
-import {addSubscription, listenToCommits} from './transactionBroadcast';
+import { addSubscription, listenToCommits } from './transactionBroadcast';
 import { getWritableRecord } from './WritableRecord'
-import {tables} from './tables';
 
 const RANGE_ESTIMATE = 100000000;
 env_mngr.initSync();
@@ -26,8 +25,9 @@ const TXN_KEY = Symbol('transaction');
 
 const INVALIDATED = 16;
 
-/*interface Table {
+interface Table {
 	primaryStore: Database
+	auditStore: Database
 	indices: Database[]
 	envPath: string
 	tableName: string
@@ -38,15 +38,15 @@ const INVALIDATED = 16;
 	expirationTimer: ReturnType<typeof setInterval>
 	expirationMS: number
 	Source: { new(): ResourceInterface }
-	Transaction: ReturnType<typeof makeTransactionClass>
-}*/
+	Transaction: ReturnType<typeof makeTable>
+}
 /**
  * This returns a Table class for the given table settings (determined from the metadata table)
  * Instances of the returned class are Resource instances, intended to provide a consistent view or transaction of the table
  * @param options
  */
 export function makeTable(options) {
-	let { primaryKey: primary_key, indices, attributes, tableName: table_name, primaryStore: primary_store, expirationMS: expiration_ms, auditStore: audit_store } = options;
+	let { primaryKey: primary_key, indices, attributes, tableId: table_id, tableName: table_name, primaryStore: primary_store, expirationMS: expiration_ms, auditStore: audit_store } = options;
 	if (!attributes) attributes = [];
 	listenToCommits(primary_store);
 	let primary_key_attribute = attributes.find(attribute => attribute.is_primary_key) || {};
@@ -92,14 +92,19 @@ export function makeTable(options) {
 		 */
 		static async subscribe(query, options) {
 			let key = typeof query !== 'object' ? query : query.conditions[0].attribute;
-			if (options?.listener && !options.noRetain) {
+			if (key === '' || key === '?') // TODO: Should this require special permission?
+				key = null; // wildcard, get everything in table
+			if (options?.listener && !options.noRetain && key != null) {
 				let result = await this.get(query, options);
 				let data = result?.data;
 				if (data) {
 					options.listener(data[primary_key], data);
 				}
 			}
-			return addSubscription(this.primaryStore.env.path, this.primaryStore.db.dbi, key, options.listener);
+			return addSubscription(this, key, async (key, audit_record) => {
+				//let result = await this.get(key);
+				options.listener(key, audit_record.value);
+			});
 		}
 		static transaction(env_transaction, lmdb_txn, parent_transaction) {
 			return new this(env_transaction, lmdb_txn, parent_transaction, {});
@@ -124,7 +129,7 @@ export function makeTable(options) {
 		constructor(request, env_txn, lmdb_txn, parent) {
 			super(request, false);
 			if (!env_txn) {
-				env_txn = new DatabaseTransaction(primary_store, request?.user);
+				env_txn = new DatabaseTransaction(primary_store, request?.user, audit_store);
 				lmdb_txn = env_txn.getReadTxn();
 			}
 			this.envTxn = env_txn;
@@ -442,6 +447,19 @@ export function makeTable(options) {
 		}
 		subscribe(query, options) {
 			return this.constructor.subscribe(query, options);
+		}
+
+		/**
+		 * Publishing a message to a record adds an (observable) entry in the audit log, but does not change
+		 * the record at all. This entries should be replicated and trigger subscription listeners.
+ 		 * @param id
+		 * @param message
+		 * @param options
+		 */
+		publish(id, message, options) {
+			this.envTxn.writes.push({
+				store: primary_store, operation: 'message', key: id, value: message,
+			});
 		}
 
 	}

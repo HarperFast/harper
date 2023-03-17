@@ -11,38 +11,85 @@ const { authorization, url } = getVariables();
 
 describe('test MQTT connections and commands', () => {
 	let available_records;
-	let client;
+	let client, client2;
 	before(async () => {
 		available_records = await setupTestApp();
-		client = connect('ws://localhost:9926')
+		client = connect('ws://localhost:9926', {
+			wsOptions: {
+				headers: {
+					Accept: 'application/cbor'
+				}
+			}
+		})
 
 		await new Promise((resolve, reject) => {
 			client.on('connect', resolve);
 			client.on('error', reject);
 		});
-	});
-	it('subscribe to retained record', async function () {
-		this.timeout(10000);
-		for (let j = 0; j < 100; j++) {
-			let client = connect('ws://localhost:9926');
-			for (let i = 0; i < 20; i++) {
-				let path = 'VariedProps/' + available_records[i];
-				await new Promise((resolve, reject) => {
-					client.subscribe(path, function (err) {
-						//console.log('subscribed', err);
-						if (err) reject(err);
-						else {
-							//	client.publish('VariedProps/' + available_records[2], 'Hello mqtt')
-						}
-					});
-					client.once('message', (topic, payload, packet) => {
-						let record = JSON.parse(payload);
-						//console.log(topic, record);
-						resolve();
-					});
-				});
+		client2 = connect('ws://localhost:9926', {
+			wsOptions: {
+				headers: {
+					Accept: 'application/json'
+				}
 			}
-			console.log('finished',j)
-		}
+		})
+
+		await new Promise((resolve, reject) => {
+			client2.on('connect', resolve);
+			client2.on('error', reject);
+		});
 	});
+	it('subscribe to retained/persisted record', async function () {
+		this.timeout(10000);
+		let path = 'VariedProps/' + available_records[1];
+		await new Promise((resolve, reject) => {
+			client.subscribe(path, function (err) {
+				//console.log('subscribed', err);
+				if (err) reject(err);
+				else {
+					//	client.publish('VariedProps/' + available_records[2], 'Hello mqtt')
+				}
+			});
+			client.once('message', (topic, payload, packet) => {
+				let record = decode(payload);
+				console.log(topic, record);
+				resolve();
+			});
+		});
+	});
+	it('subscribe to wildcard/full table', async function () {
+		this.timeout(10000);
+		await new Promise((resolve, reject) => {
+			client2.subscribe('SimpleRecord/+', function (err) {
+				console.log('subscribed', err);
+				if (err) reject(err);
+				else {
+					resolve();
+				}
+			});
+		});
+		let message_count = 0;
+		await new Promise((resolve, reject) => {
+			client2.on('message', (topic, payload, packet) => {
+				let record = JSON.parse(payload, packet);
+				console.log('second', topic, record);
+				if (++message_count == 2)
+					resolve();
+			});
+			client2.publish('SimpleRecord/44', JSON.stringify({
+				name: 'This is a test 1'
+			}), {
+				retain: false,
+				qos: 1,
+			});
+
+			client.publish('SimpleRecord/47', JSON.stringify({
+				name: 'This is a test 2'
+			}), {
+				retain: false,
+				qos: 1,
+			});
+		});
+	});
+
 });

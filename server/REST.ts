@@ -22,13 +22,20 @@ async function http(Resource, resource_path, next_path, request) {
 	try {
 		try {
 			if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
-				let request_binary = await new Promise((resolve, reject) => {
+				// TODO: Support convert to async iterator in some cases?
+				// TODO: Support cancelation (if the request otherwise fails or takes too many bytes)
+				request.data = new Promise((resolve, reject) => {
 					let buffers = [];
 					request.on('data', data => buffers.push(data));
 					request.on('end', () => resolve(Buffer.concat(buffers)));
 					request.on('error', reject);
+				}).then((body) => {
+					try {
+						return getDeserializer(request.headers['content-type'])(body);
+					} catch (error) {
+						// TODO: Convert to HDBError with error 400
+					}
 				});
-				request.data = request.deserialize(request_binary);
 			}
 		} catch (error) { // TODO: Convert to HDBError
 			error.status = 400;
@@ -272,10 +279,6 @@ export function start(options: ServerOptions & { path: string, port: number, ser
 		}
 		if (request.headers.accept === 'text/event-stream') {
 			request.method = 'GET-SUB';
-		}
-		let content_type = request.headers['content-type'];
-		if (content_type) {
-			request.deserialize = getDeserializer(content_type);
 		}
 	}
 }

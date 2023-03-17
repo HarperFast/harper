@@ -52,28 +52,32 @@ export class SubscriptionsSession {
 		this.sessionId = session_id;
 	}
 	addSubscription(subscription) {
-		let { topic, qos, startTime: start_time } = subscription;
+		let { topic, qos, rh, startTime: start_time } = subscription;
 		if (topic[0] !== '/')
 			topic = '/' + topic; // do not like this. maybe resource should not have preceding slashes.
 		let entry = resources.getMatch(topic);
 		let remaining_path = resources.remainingPath;
+		if (remaining_path === '+' || remaining_path === '#')
+			remaining_path = '?'; // normalize wildcard
 		entry.Resource.subscribe(remaining_path, {
 			listener: (id, message) => {
 				this.listener(entry.path.slice(1) + '/' + id, message, subscription);
 			},
 			user: this.user,
 			startTime: start_time,
+			noRetain: rh,
 		});
 	}
-	publish(message) {
+	publish(message, data) {
 		let { topic, payload } = message;
-		// deserialize
-		message.data = payload;
+		message.data = data;
+		message.user = this.user;
 		if (topic[0] !== '/')
 			topic = '/' + topic; // do not like this. maybe resource should not have preceding slashes.
-		let Resource = resources.getMatch(topic);
+		let entry = resources.getMatch(topic);
+		if (!entry) return false;
 		let remaining_path = resources.remainingPath;
-		return Resource.publish(remaining_path, message);
+		return entry.Resource.publish(remaining_path, message);
 	}
 	setListener(listener: (message) => any) {
 		this.listener = listener;

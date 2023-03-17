@@ -2,21 +2,13 @@ type VariedProps @table @endpoint {
 	id: ID @primaryKey
 	name: String @indexed
 }
-type Caching
-@table(table: "user", expiration: 10, caching: true, compression: false, audit: true)
-{
-	id: ID
-	name: String @indexed
-	entitlements: [Entitlement]
-}
 
-type OurData @table {
+type SimpleRecord @table {
 	id: ID @primaryKey
 	name: String @indexed
 }
 
 type Query {
-	Caching: Caching @allow(role: "admin") @allowGet(role: "user")
 	VariedProps: VariedProps
-	our_data: OurData
+	SimpleRecord: SimpleRecord
 }
