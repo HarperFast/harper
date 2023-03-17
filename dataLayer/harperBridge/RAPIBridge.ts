@@ -97,6 +97,51 @@ export class RAPIBridge extends LMDBBridge {
 
 		return response;
 	}
+
+	async upsertRecords(upsert_obj) {
+		let {schema_table, attributes} = insertUpdateValidate(upsert_obj);
+
+		lmdbProcessRows(upsert_obj, attributes, schema_table.primaryKey);
+
+		if (upsert_obj.schema !== hdb_terms.SYSTEM_SCHEMA_NAME) {
+			if (!attributes.includes(hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME)) {
+				attributes.push(hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME);
+			}
+
+			if (!attributes.includes(hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME)) {
+				attributes.push(hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME);
+			}
+		}
+		let new_attributes;
+		if (upsert_obj.auto_generate_indices)
+			new_attributes = await lmdb_check_new_attributes(upsert_obj.hdb_auth_header, schema_table, attributes);
+		let Table = getDatabases()[upsert_obj.schema][upsert_obj.table];
+		let txn = new Table();
+		let put_options = {
+			timestamp: upsert_obj.__origin?.timestamp
+		}
+		let keys = [];
+		for (let record of upsert_obj.records) {
+			txn.put(record[Table.primaryKey], record, put_options);
+			keys.push(record[Table.primaryKey]);
+		}
+		let results = (await txn.commit())[0];
+		let response = {
+			txn_time: results.txnTime,
+			written_hashes: keys,
+			new_attributes,
+			skipped_hashes: [],
+		}
+		try {
+			await write_transaction(upsert_obj, response);
+		} catch (e) {
+			logger.error(`unable to write transaction due to ${e.message}`);
+		}
+
+		return response;
+	}
+
+
 	async searchByValue(search_object: SearchObject) {
 		let schema = getDatabases()[search_object.schema || 'data'];
 		// TODO: fix validation/errors

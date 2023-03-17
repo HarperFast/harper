@@ -3,7 +3,7 @@
 import { assert, expect } from 'chai';
 import axios from 'axios';
 import { decode, encode, DecoderStream } from 'cbor-x';
-import { getVariables } from './utility.js';
+import { getVariables, callOperation } from './utility.js';
 import { setupTestApp } from './setupTestApp.mjs';
 import { connect } from 'mqtt';
 const { authorization, url } = getVariables();
@@ -57,6 +57,43 @@ describe('test MQTT connections and commands', () => {
 			});
 		});
 	});
+	it.only('subscribe to retained record with upsert operation', async function () {
+		this.timeout(10000);
+		let path = 'SimpleRecord/77';
+		await new Promise((resolve, reject) => {
+			let client = connect('mqtt://localhost:1883');
+			client.on('connect', resolve);
+			client.on('error', reject);
+		});
+		console.log('connected');
+		await new Promise((resolve, reject) => {
+			client.subscribe(path, function (err) {
+				//console.log('subscribed', err);
+				if (err) reject(err);
+				else {
+					//	client.publish('VariedProps/' + available_records[2], 'Hello mqtt')
+				}
+			});
+			client.once('message', (topic, payload, packet) => {
+				let record = decode(payload);
+				console.log(topic, record);
+				resolve();
+			});
+			callOperation({
+				"operation": "upsert",
+				"schema": "data",
+				"table": "simple_record",
+				"records": [{
+					id: '77',
+					name: 'test record from operation'
+				}]
+			}).then(response => {
+				console.log(response);
+			}, response => {
+				reject(response);
+			});
+		});
+	});
 	it('subscribe to wildcard/full table', async function () {
 		this.timeout(10000);
 		await new Promise((resolve, reject) => {
@@ -91,10 +128,31 @@ describe('test MQTT connections and commands', () => {
 			});
 		});
 	});
-	it('subscribe to wildcard/full table', async function () {
+	it('subscribe with QoS=1 and reconnect with non-clean session', async function () {
 		this.timeout(10000);
+		let client = connect('mqtt://localhost:1883', {
+			clean: false,
+			clientId: 'test-client1'
+		});
 		await new Promise((resolve, reject) => {
-			client2.subscribe('SimpleRecord/+', function (err) {
+			client.on('connect', resolve);
+			client.on('error', reject);
+		});
+		await new Promise((resolve, reject) => {
+			client.subscribe('SimpleRecord/+', {
+				qos: 1
+			}, function (err) {
+				console.log('subscribed', err);
+				if (err) reject(err);
+				else {
+					resolve();
+				}
+			});
+		});
+		await new Promise((resolve, reject) => {
+			client.subscribe('SimpleRecord/+', {
+				qos: 1
+			}, function (err) {
 				console.log('subscribed', err);
 				if (err) reject(err);
 				else {

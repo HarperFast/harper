@@ -15,6 +15,7 @@ const is_number = require('is-number');
 const _ = require('lodash');
 const { hdb_errors } = require('./errors/hdbError');
 
+
 const async_set_timeout = require('util').promisify(setTimeout);
 const HDB_PROC_START_TIMEOUT = 100;
 const CHECK_PROCS_LOOP_LIMIT = 5;
@@ -659,7 +660,8 @@ function checkSchemaTableExist(schema, table) {
  * @returns {string}
  */
 function checkSchemaExists(schema) {
-	if (!global.hdb_schema[schema]) {
+	const { getDatabases } = require('../resources/tableLoader');
+	if (!getDatabases()[schema]) {
 		return hdb_errors.HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schema);
 	}
 }
@@ -671,7 +673,8 @@ function checkSchemaExists(schema) {
  * @returns {string}
  */
 function checkTableExists(schema, table) {
-	if (!global.hdb_schema[schema][table]) {
+	const { getDatabases } = require('../resources/tableLoader');
+	if (!getDatabases()[schema][table]) {
 		return hdb_errors.HDB_ERROR_MSGS.TABLE_NOT_FOUND(schema, table);
 	}
 }
