@@ -1,4 +1,3 @@
-
 import { databases } from '../resources/tableLoader';
 import { resources } from '../resources/Resources';
 /**
@@ -29,11 +28,11 @@ export function getSession({ clientId: session_id, clean: non_durable }) {
 	let session;
 	if (session_id) {
 		// TODO: Try to get the persistent session.
-		let session_record = !non_durable && databases.system.hdb_durable_sessions?.getById(session_id);
+		const session_record = !non_durable && databases.system.hdb_durable_sessions?.getById(session_id);
 		if (session_record) {
 			session = new DurableSubscriptionsSession(session_id, session_record);
 			// resuming a session, we need to resume each subscription
-			for (let subscription of session_record.subscriptions) {
+			for (const subscription of session_record.subscriptions) {
 				session.addSubscription(subscription);
 			}
 		} else {
@@ -45,38 +44,36 @@ export function getSession({ clientId: session_id, clean: non_durable }) {
 }
 
 export class SubscriptionsSession {
-	listener: (message, subscription) => any
-	sessionId: any
-	user: any
+	listener: (message, subscription) => any;
+	sessionId: any;
+	user: any;
+	subscriptions = [];
 	constructor(session_id) {
 		this.sessionId = session_id;
 	}
 	addSubscription(subscription) {
-		let { topic, qos, rh, startTime: start_time } = subscription;
-		if (topic[0] !== '/')
-			topic = '/' + topic; // do not like this. maybe resource should not have preceding slashes.
-		let entry = resources.getMatch(topic);
-		let remaining_path = resources.remainingPath;
-		if (remaining_path === '+' || remaining_path === '#')
-			remaining_path = '?'; // normalize wildcard
-		entry.Resource.subscribe(remaining_path, {
-			listener: (id, message) => {
-				this.listener(entry.path.slice(1) + '/' + id, message, subscription);
-			},
-			user: this.user,
-			startTime: start_time,
-			noRetain: rh,
-		});
+		const { topic, qos, rh, startTime: start_time } = subscription;
+		const entry = resources.getMatch(topic);
+		let remaining_path = entry.remainingPath;
+		if (remaining_path === '+' || remaining_path === '#') remaining_path = '?'; // normalize wildcard
+		this.subscriptions.push(
+			entry.Resource.subscribe(remaining_path, {
+				listener: (id, message) => {
+					this.listener(entry.path + '/' + id, message, subscription);
+				},
+				user: this.user,
+				startTime: start_time,
+				noRetain: rh,
+			})
+		);
 	}
 	publish(message, data) {
-		let { topic, payload } = message;
+		const { topic, payload } = message;
 		message.data = data;
 		message.user = this.user;
-		if (topic[0] !== '/')
-			topic = '/' + topic; // do not like this. maybe resource should not have preceding slashes.
-		let entry = resources.getMatch(topic);
+		const entry = resources.getMatch(topic);
 		if (!entry) return false;
-		let remaining_path = resources.remainingPath;
+		const remaining_path = entry.remainingPath;
 		return entry.Resource.publish(remaining_path, message);
 	}
 	setListener(listener: (message) => any) {
@@ -85,16 +82,21 @@ export class SubscriptionsSession {
 	acknowledge() {
 		// TODO: Increment the timestamp for the corresponding subscription, possibly recording any interim unacked messages
 	}
+	disconnect() {
+		for (const subscription of this.subscriptions) {
+			subscription.end();
+		}
+	}
 }
 export class DurableSubscriptionsSession extends SubscriptionsSession {
-	sessionRecord: any
+	sessionRecord: any;
 	constructor(session_id, record?) {
 		super(session_id);
 		this.sessionRecord = record;
 	}
 	addSubscription(subscription) {
 		super.addSubscription(subscription);
-		let { topic, qos, startTime: start_time } = subscription;
+		const { topic, qos, startTime: start_time } = subscription;
 		if (qos > 0 && !start_time) {
 			// TODO: Add this to the session record with the correct timestamp and save it
 			this.sessionRecord.subscriptions.push({ topic, qos, startTime: Date.now() });

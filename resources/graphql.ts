@@ -14,49 +14,47 @@ import { createRequire } from 'module';
  * @param file_path
  * @param resources
  */
-export async function handleFile(gql_content, relative_path, file_path, resources) {
+export async function handleFile(gql_content, url_path, file_path, resources) {
 	// lazy load the graphql package so we don't load it for users that don't use graphql
 	const { parse, Source, Kind, NamedTypeNode, StringValueNode } = require('graphql');
 	// This crashes Node:
 	//const { parse, Source, Kind, NamedTypeNode, StringValueNode } = await import('graphql');
-	let ast = parse(new Source(gql_content.toString(), file_path));
-	let handlers = new Map();
-	let types = new Map();
-	for (let definition of ast.definitions) {
+	const ast = parse(new Source(gql_content.toString(), file_path));
+	const handlers = new Map();
+	const types = new Map();
+	for (const definition of ast.definitions) {
 		switch (definition.kind) {
 			case Kind.OBJECT_TYPE_DEFINITION:
-				let type_name = definition.name.value;
+				const type_name = definition.name.value;
 				// use type name as the default table (converted to snake case)
-				let type_def = { table: null, database: null, attributes: [], table: null };
+				const type_def = { table: null, database: null, attributes: [], table: null };
 				types.set(type_name, type_def);
-				for (let directive of definition.directives) {
+				for (const directive of definition.directives) {
 					if (directive.name.value === 'table') {
-						for (let arg of directive.arguments) {
+						for (const arg of directive.arguments) {
 							type_def[arg.name.value] = (arg.value as StringValueNode).value;
 						}
 						if (type_def.schema) type_def.database = type_def.schema;
-						if (!type_def.table)
-							type_def.table = snake_case(type_name);
+						if (!type_def.table) type_def.table = snake_case(type_name);
 					}
 					if (directive.name.value === 'sealed') {
 						type_def.sealed = true;
 					}
 				}
 				if (type_def.table) {
-					let attributes = [];
+					const attributes = [];
 					let has_primary_key = false;
-					for (let field of definition.fields) {
-						let type = (field.type as NamedTypeNode).name?.value;
-						let attribute = {
+					for (const field of definition.fields) {
+						const type = (field.type as NamedTypeNode).name?.value;
+						const attribute = {
 							name: field.name.value,
 							type,
 							is_number: type === 'Int' || type === 'Float',
 						};
 						attributes.push(attribute);
-						for (let directive of field.directives) {
+						for (const directive of field.directives) {
 							if (directive.name.value === 'primaryKey') {
-								if (has_primary_key)
-									console.warn('Can not define two attributes as a primary key');
+								if (has_primary_key) console.warn('Can not define two attributes as a primary key');
 								else {
 									attribute.is_primary_key = true;
 									has_primary_key = true;
@@ -66,11 +64,10 @@ export async function handleFile(gql_content, relative_path, file_path, resource
 							}
 						}
 						if (!has_primary_key) {
-							let id_attribute = attributes.find(attribute => attribute.name === 'id');
-							if (id_attribute)
-								id_attribute.is_primary_key = true;
+							const id_attribute = attributes.find((attribute) => attribute.name === 'id');
+							if (id_attribute) id_attribute.is_primary_key = true;
+							// Do we wait until we have auto-incrementing numbers before auto-adding a primary key?
 							else
-								// Do we wait until we have auto-incrementing numbers before auto-adding a primary key?
 								attributes.push({
 									name: 'id',
 									type: 'ID',
@@ -84,14 +81,14 @@ export async function handleFile(gql_content, relative_path, file_path, resource
 					type_def.tableClass = await table(type_def);
 				}
 				if (type_name === 'Query') {
-					for (let field of definition.fields) {
-						let query_name = field.name.value;
-						let type_name = (field.type as NamedTypeNode).name.value;
-						let type_def = types.get(type_name);
-						let authorized_roles = [];
-						for (let directive of definition.directives) {
+					for (const field of definition.fields) {
+						const query_name = field.name.value;
+						const type_name = (field.type as NamedTypeNode).name.value;
+						const type_def = types.get(type_name);
+						const authorized_roles = [];
+						for (const directive of definition.directives) {
 							if (directive.name.value === 'allow') {
-								for (let arg of directive.arguments) {
+								for (const arg of directive.arguments) {
 									if (arg.name.value === 'role') {
 										authorized_roles.push((arg.value as StringValueNode).value);
 									}
@@ -124,10 +121,7 @@ export async function handleFile(gql_content, relative_path, file_path, resource
 						// the main thread should only be setting up tables, worker threads actually register the resources
 						// for server usage
 						if (!isMainThread) {
-							let web_path = dirname(relative_path);
-							if (web_path === '.') web_path = '/';
-							else web_path = '/' + web_path + '/';
-							resources.set(web_path + query_name, type_def.tableClass);
+							resources.set(dirname(url_path) + '/' + query_name, type_def.tableClass);
 							//handlers.set(query_name, restHandler(relative_path + '/' + query_name, type_def.tableClass));
 						}
 					}

@@ -1,3 +1,3 @@
-import { Resource } from './resources/Resource';
-import { tables, databases } from './resources/tableLoader';
-export { Resource, tables, databases };
+export { Resource } from './resources/Resource';
+export { tables, databases } from './resources/tableLoader';
+export { findAndValidateUser as auth } from './security/user';

@@ -8,13 +8,13 @@ import { threadId } from 'worker_threads';
 
 const DEFAULT_MQTT_PORT = 1883;
 const AUTHORIZE_LOCAL = true;
-export async function start({ server, port, webSocket }) {
+export async function start({ server, port, webSocket, secure }) {
 	// here we basically normalize the different types of sockets to pass to our socket/message handler
 	if (webSocket !== false)
 		server.ws( (ws, request, chain_completion) => {
 			let onMessage = onSocket(ws, (message) => ws.send(message), request, Promise.resolve(chain_completion).then(() => request?.user));
 			ws.on('message', onMessage);
-		}, { port, subProtocol: 'mqtt' }); // if there is no port, we are piggy-backing off of default app http server
+		}, { port, subProtocol: 'mqtt', secure }); // if there is no port, we are piggy-backing off of default app http server
 	if (port || webSocket !== true) // standard TCP socket
 		server.socket(async (socket) => {
 			let user;
@@ -24,7 +24,7 @@ export async function start({ server, port, webSocket }) {
 
 			let onMessage = onSocket(socket, (message) => socket.write(message), null, user);
 			socket.on('data', onMessage);
-		}, { port: port || DEFAULT_MQTT_PORT });
+		}, { port: port || DEFAULT_MQTT_PORT, secure });
 }
 
 function onSocket(socket, send, request, user) {
@@ -116,7 +116,7 @@ function onSocket(socket, send, request, user) {
 					send(generate({ cmd: 'pingresp' }));
 					break;
 				case 'disconnect':
-					session.end();
+					session.disconnect();
 					break;
 			}
 		} catch (error) {

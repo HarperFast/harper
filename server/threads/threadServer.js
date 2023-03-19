@@ -9,7 +9,7 @@ const env = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 const { server } = require('../Server');
 const { WebSocketServer } = require('ws');
-const { TLSSocket } = require('tls');
+const { TLSSocket, createSecureContext } = require('tls');
 process.on('uncaughtException', (error) => {
 	console.error('uncaughtException', error)
 	process.exit(100);

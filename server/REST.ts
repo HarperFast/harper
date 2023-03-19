@@ -7,17 +7,17 @@ import { server } from './Server';
 import { Resources } from '../resources/Resources';
 
 interface Response {
-	status?: number
-	headers?: any
-	data?: any
-	body?: any
+	status?: number;
+	headers?: any;
+	data?: any;
+	body?: any;
 }
 
 const MAX_COMMIT_RETRIES = 10;
 
 async function http(Resource, resource_path, next_path, request) {
-	let method = request.method;
-	let start = performance.now();
+	const method = request.method;
+	const start = performance.now();
 	let request_data;
 	try {
 		try {
@@ -25,8 +25,8 @@ async function http(Resource, resource_path, next_path, request) {
 				// TODO: Support convert to async iterator in some cases?
 				// TODO: Support cancelation (if the request otherwise fails or takes too many bytes)
 				request.data = new Promise((resolve, reject) => {
-					let buffers = [];
-					request.on('data', data => buffers.push(data));
+					const buffers = [];
+					request.on('data', (data) => buffers.push(data));
 					request.on('end', () => resolve(Buffer.concat(buffers)));
 					request.on('error', reject);
 				}).then((body) => {
@@ -37,48 +37,47 @@ async function http(Resource, resource_path, next_path, request) {
 					}
 				});
 			}
-		} catch (error) { // TODO: Convert to HDBError
+		} catch (error) {
+			// TODO: Convert to HDBError
 			error.status = 400;
 			throw error;
 		}
 
 		let resource_result = await Resource[method.toLowerCase()](next_path, request);
-			//= await execute(Resource, method, next_path, request_data, request);
-		let if_modified_since = request.headers['if-modified-since'];
+		//= await execute(Resource, method, next_path, request_data, request);
+		const if_modified_since = request.headers['if-modified-since'];
 		let status = 200;
 		if (!resource_result) resource_result = {};
-		if (if_modified_since && resource_result.updated <= (Date.parse(if_modified_since) + 1000)) {
+		if (if_modified_since && resource_result.updated <= Date.parse(if_modified_since) + 1000) {
 			//resource_result.cancel();
 			status = 304;
 			resource_result.data = undefined;
 		}
 
-		let headers = {};
-		if (resource_result.updated)
-			headers['Last-Modified'] = new Date(resource_result.updated).toUTCString();
-		let execution_time = performance.now() - start;
+		const headers = {};
+		if (resource_result.updated) headers['Last-Modified'] = new Date(resource_result.updated).toUTCString();
+		const execution_time = performance.now() - start;
 		headers['Server-Timing'] = `db;dur=${execution_time}`;
 		recordRequest(resource_path, execution_time);
-		let response_object = {
+		const response_object = {
 			status,
 			headers,
 			body: undefined,
-		}
+		};
 
 		if (resource_result.data === undefined) {
-			if (response_object.status === 200)
-				response_object.status = resource_result.updated ? 204 : 404;
+			if (response_object.status === 200) response_object.status = resource_result.updated ? 204 : 404;
 		} else {
-			response_object.body = serialize(resource_result.data, request, response_object)
+			response_object.body = serialize(resource_result.data, request, response_object);
 		}
 		return response_object;
 	} catch (error) {
-		let execution_time = performance.now() - start;
+		const execution_time = performance.now() - start;
 		recordRequest(resource_path, execution_time);
 		// do content negotiation on the error
 		console.error(error);
 		return {
-			status: error.status || 500,// use specified error status, or default to generic server error
+			status: error.status || 500, // use specified error status, or default to generic server error
 			body: serialize(error.toString(), request),
 		};
 	}
@@ -87,28 +86,28 @@ async function http(Resource, resource_path, next_path, request) {
 let message_count = 0;
 
 async function execute(Resource, method, relative_url, request_data, request, ws?): Response {
-	let full_isolation = method === 'POST';
-	let resource_snapshot = new Resource(request, full_isolation);
+	const full_isolation = method === 'POST';
+	const resource_snapshot = new Resource(request, full_isolation);
 	try {
 		let response_data;
-		let user = request.user;
-		let retries = 0;
+		const user = request.user;
+		const retries = 0;
 		switch (method) {
 			case 'GET-SUB':
 				if (relative_url !== undefined) {
-					let subscription = response_data = resource_snapshot.subscribe(relative_url, {
+					const subscription = (response_data = resource_snapshot.subscribe(relative_url, {
 						callback: request.onUpdate,
-					});
+					}));
 				}
 				break;
 			case 'GET':
 				if (relative_url !== undefined) {
-					let checked = checkAllowed(resource_snapshot.allowGet?.(user), user, resource_snapshot);
+					const checked = checkAllowed(resource_snapshot.allowGet?.(user), user, resource_snapshot);
 					if (checked?.then) await checked; // fast path to avoid await if not needed
 					response_data = await resource_snapshot.get(relative_url);
 					if (resource_snapshot.lastModificationTime === Date.parse(request.headers['if-modified-since'])) {
 						resource_snapshot.doneReading();
-						return {status: 304};
+						return { status: 304 };
 					}
 				}
 				break;
@@ -131,18 +130,19 @@ async function execute(Resource, method, relative_url, request_data, request, ws
 		}
 		await resource_snapshot.commit();
 		if (response_data) {
-			let if_modified_since = request.headers['if-modified-since'];
+			const if_modified_since = request.headers['if-modified-since'];
 			if (if_modified_since && resource_snapshot.lastModificationTime === Date.parse(if_modified_since)) {
 				resource_snapshot.doneReading();
-				return {status: 304};
+				return { status: 304 };
 			}
-			if (response_data.resolveData) // if it is iterable with onDone, TODO: make a better marker for this
+			if (response_data.resolveData)
+				// if it is iterable with onDone, TODO: make a better marker for this
 				response_data.onDone = () => resource_snapshot.doneReading();
-			else
-				resource_snapshot.doneReading();
-			let headers = { // TODO: Move this to negotiation in contentType
+			else resource_snapshot.doneReading();
+			const headers = {
+				// TODO: Move this to negotiation in contentType
 				'Content-Type': request.responseType,
-				Vary: 'Accept',
+				'Vary': 'Accept',
 			};
 			if (resource_snapshot.lastModificationTime)
 				headers['Last-Modified'] = new Date(resource_snapshot.lastModificationTime).toUTCString();
@@ -153,10 +153,10 @@ async function execute(Resource, method, relative_url, request_data, request, ws
 			};
 		} else {
 			resource_snapshot.doneReading();
-			if ((method === 'GET' || method === 'HEAD')) {
-				return {status: 404, data: 'Not found'};
+			if (method === 'GET' || method === 'HEAD') {
+				return { status: 404, data: 'Not found' };
 			} else {
-				return {status: 204};
+				return { status: 204 };
 			}
 		}
 	} catch (error) {
@@ -166,24 +166,36 @@ async function execute(Resource, method, relative_url, request_data, request, ws
 }
 
 async function wsMessage(Resource, resource_path, path, data, request, ws) {
-	let method = data.method?.toUpperCase() || 'GET-SUB';
-	let request_data = data.body;
-	let request_id = data.id;
+	const method = data.method?.toUpperCase() || 'GET-SUB';
+	const request_data = data.body;
+	const request_id = data.id;
 	try {
-		let response = await execute(Resource, method, path, request_data, request, ws);
-		let subscription = response.data;
+		const response = await execute(Resource, method, path, request_data, request, ws);
+		const subscription = response.data;
 		subscription.listener = () => {
 			if (!message_count) {
 				setTimeout(() => {
-					console.log('message count (in last 10 seconds)', message_count, 'connection_count', connection_count, 'mem', Math.round(process.memoryUsage().heapUsed / 1000000));
+					console.log(
+						'message count (in last 10 seconds)',
+						message_count,
+						'connection_count',
+						connection_count,
+						'mem',
+						Math.round(process.memoryUsage().heapUsed / 1000000)
+					);
 					message_count = 0;
 				}, 10000);
 			}
 			message_count++;
-			ws.send(serializeMessage({
-				path,
-				updated: true
-			}, request));
+			ws.send(
+				serializeMessage(
+					{
+						path,
+						updated: true,
+					},
+					request
+				)
+			);
 		};
 		ws.on('close', () => subscription.end());
 		//response_data.id = request_id;
@@ -192,21 +204,19 @@ async function wsMessage(Resource, resource_path, path, data, request, ws) {
 	} catch (error) {
 		// do content negotiation
 		console.error(error);
-		ws.send(serializeMessage({status: 500, id: request_id, data: error.toString()}, request));
+		ws.send(serializeMessage({ status: 500, id: request_id, data: error.toString() }, request));
 	}
 }
 
 function checkAllowed(method_allowed, user, resource): void | Promise<void> {
-	let allowed = method_allowed ??
-		resource.allowAccess?.() ??
-		user?.role.permission.super_user; // default permission check
+	const allowed = method_allowed ?? resource.allowAccess?.() ?? user?.role.permission.super_user; // default permission check
 	if (allowed?.then) {
 		// handle promises, waiting for them using fast path (not await)
 		return allowed.then(() => {
 			if (!allowed) checkAllowed(false, user, resource);
 		});
 	} else if (!allowed) {
-		let error
+		let error;
 		if (user) {
 			error = new Error('Unauthorized access to resource');
 			error.status = 403;
@@ -222,24 +232,22 @@ function checkAllowed(method_allowed, user, resource): void | Promise<void> {
 let started;
 let resources: Resources;
 
-let connection_count = 0;
+const connection_count = 0;
 let printing_connection_count;
 
-export function start(options: ServerOptions & { path: string, port: number, server: any, resources: any }) {
-	if (started)
-		return;
+export function start(options: ServerOptions & { path: string; port: number; server: any; resources: any }) {
+	if (started) return;
 	started = true;
 	resources = options.resources;
 	/*	if (!handlers) {
 			handlers = new Map();
 			loadDirectory(options?.path || process.cwd(), '', handlers);
 		}*/
-	let remaining_path, resource_path;
 	options.server.http(async (request: Request, next_handler) => {
 		await startRequest(request);
-		let entry = resources.getMatch(request.url);
+		const entry = resources.getMatch(request.url.slice(1));
 		if (entry) {
-			return http(entry.Resource, entry.path, resources.remainingPath, request);
+			return http(entry.Resource, entry.path, entry.remainingPath, request);
 		}
 		return next_handler(request);
 	});
@@ -259,7 +267,7 @@ export function start(options: ServerOptions & { path: string, port: number, ser
 			let data = request.deserialize(body);
 			let entry = resources.getMatch(request.url + '/' + (data.path ?? ''));
 			if (entry) {
-				return wsMessage(entry.Resource, entry.path, resources.remainingPath, data, request, ws);
+				return wsMessage(entry.Resource, entry.path, entry.remainingPath, data, request, ws);
 			}
 			console.error('no handler: %s', data);
 		});
@@ -268,14 +276,13 @@ export function start(options: ServerOptions & { path: string, port: number, ser
 
 	function startRequest(request) {
 		// TODO: check rate limiting here?
-		let url = request.url;
-		let dot_index = url.lastIndexOf('.');
+		const url = request.url;
+		const dot_index = url.lastIndexOf('.');
 		if (dot_index > -1) {
 			// we can use .extensions to force the Accept header
-			let ext = url.slice(dot_index + 1);
-			let accept = EXTENSION_TYPES[ext];
-			if (accept)
-				request.headers.accept = accept;
+			const ext = url.slice(dot_index + 1);
+			const accept = EXTENSION_TYPES[ext];
+			if (accept) request.headers.accept = accept;
 		}
 		if (request.headers.accept === 'text/event-stream') {
 			request.method = 'GET-SUB';
@@ -288,4 +295,4 @@ const EXTENSION_TYPES = {
 	cbor: 'application/cbor',
 	msgpack: 'application/x-msgpack',
 	csv: 'text/csv',
-}
+};

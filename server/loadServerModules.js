@@ -20,7 +20,8 @@ const CORE_PLUGINS = {
 };
 let loaded_server_modules = new Map();
 const default_server_modules = [
-	{ module: 'mqtt', port: 1883, secure: true },
+	{ module: 'mqtt', port: 1883 },
+	//{ module: 'mqtt', port: 8883, secure: true },
 	{ module: 'app-server', port: 9926 },
 	{ module: 'operations-server', port: 9925 },
 	// 'NATS-cluster':..

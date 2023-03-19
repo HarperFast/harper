@@ -8,15 +8,29 @@ import { Socket } from 'net';
  */
 interface Server {
 	socket?(listener: (socket: Socket) => void, options: ServerOptions): void;
-	http?(listener: (request: Request, nextLayer: (request: Request) => Response) => void, options?: ServerOptions): void
-	request?(listener: (request: Request, nextLayer: (request: Request) => Response) => void, options?: ServerOptions): void
-	ws?(listener: (ws: WebSocket, request: Request, requestCompletion: Promise<any>) => any, options?: WebSocketOptions): void
+	http?(listener: (request: Request, nextLayer: (request: Request) => Response) => void, options?: ServerOptions): void;
+	request?(
+		listener: (request: Request, nextLayer: (request: Request) => Response) => void,
+		options?: ServerOptions
+	): void;
+	ws?(
+		listener: (ws: WebSocket, request: Request, requestCompletion: Promise<any>) => any,
+		options?: WebSocketOptions
+	): void;
+	contentType(mime_type, handler: ContentTypeHandler);
 }
 interface ServerOptions {
-	port?: number
-	secure?: any
+	port?: number;
+	secure?: any;
 }
 interface WebSocketOptions extends ServerOptions {
-	subProtocol: string
+	subProtocol: string;
 }
+export interface ContentTypeHandler {
+	serialize(data: any): Buffer | string;
+	serializeStream(data: any): Buffer | string;
+	deserialize(data: any): Buffer | string;
+	q: number;
+}
+
 export const server: Server = {};

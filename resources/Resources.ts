@@ -4,20 +4,21 @@ import { Resource } from './Resource';
  * This is the global set of all resources that have been registered on this server.
  */
 export class Resources extends Map<string, typeof Resource> {
-	remainingPath = '' // this is to communicate the rest of the path after the part that matches the resource
 	set(path, Resource, type?: string): void {
-		let entry = {
+		if (path.startsWith('/')) path = path.replace(/^\/+/, '');
+		const entry = {
 			Resource,
 			path,
 			type,
 			hasSubPaths: false,
+			remainingPath: '', // reset after each match
 		};
 		super.set(path, entry);
 		// now mark any entries that have sub paths so we can efficiently route forward
-		for (let [ path, entry ] of this) {
+		for (const [path, entry] of this) {
 			let slash_index = 2;
-			while((slash_index = path.indexOf('/', slash_index)) > -1) {
-				let parent_entry = this.get(path.slice(0, slash_index));
+			while ((slash_index = path.indexOf('/', slash_index)) > -1) {
+				const parent_entry = this.get(path.slice(0, slash_index));
 				if (parent_entry) parent_entry.hasSubPaths = true;
 				slash_index += 2;
 			}
@@ -35,12 +36,12 @@ export class Resources extends Map<string, typeof Resource> {
 	getMatch(path: string, type?: string) {
 		let slash_index = 2;
 		let found_entry;
-		while((slash_index = path.indexOf('/', slash_index)) > -1) {
-			let resource_path = path.slice(0, slash_index);
-			let entry = this.get(resource_path);
+		while ((slash_index = path.indexOf('/', slash_index)) > -1) {
+			const resource_path = path.slice(0, slash_index);
+			const entry = this.get(resource_path);
 			if (entry) {
 				if (!entry.hasSubPaths) {
-					this.remainingPath = path.slice(slash_index + 1);
+					entry.remainingPath = path.slice(slash_index + 1);
 					return entry;
 				}
 				found_entry = entry;
@@ -50,7 +51,7 @@ export class Resources extends Map<string, typeof Resource> {
 		return found_entry;
 	}
 
-/*	set(path, Resource) {
+	/*	set(path, Resource) {
 		let current_location = { paths: this.paths };
 		for (let path_part of path.split('/')) {
 			if (!path_part) continue;
@@ -65,11 +66,9 @@ export class Resources extends Map<string, typeof Resource> {
 		}
 		current_location.Resource = Resource;
 	}*/
-	setRepresentation(path, type, representation) {
-
-	}
+	setRepresentation(path, type, representation) {}
 }
-export let resources: Resources
+export let resources: Resources;
 export function resetResources() {
-	return resources = new Resources();
+	return (resources = new Resources());
 }

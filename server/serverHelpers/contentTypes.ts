@@ -1,101 +1,106 @@
-'use strict';
-const { streamAsJSON } = require('./JSONStream');
-const { toCsvStream } = require('../../dataLayer/export');
-const { pack, unpack, encodeIter } = require('msgpackr');
-const { decode, encode, EncoderStream } = require('cbor-x');
-const { createBrotliCompress, brotliCompress } = require('zlib');
-const { Readable } = require('stream');
-const media_types = { // TODO: Make these monomorphic for faster access. And use a Map
-	'application/json': {
-		serializeStream: streamAsJSON,
-		serialize: JSON.stringify,
-		deserialize: JSON.parse,
-		q: 0.8,
-	},
-	'application/cbor': {
-		serializeStream: function(data) {
-			return new EncoderStream(PUBLIC_ENCODE_OPTIONS).end(data);
-		},
-		serialize: encode,
-		deserialize: decode,
-		q: 1,
-	},
-	'application/x-msgpack': {
-		serializeStream: function(data) {
-			if ((data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) && !Array.isArray(data)) {
-				return Readable.from(encodeIter(data, PUBLIC_ENCODE_OPTIONS));
-			}
-			return pack(data);
-		},
-		serialize: pack,
-		deserialize: unpack,
-		q: 0.9,
-	},
-	'text/csv': {
-		serializeStream: function (data) {
-			this.header('Content-Disposition', 'attachment; filename="data.csv"');
-			return toCsvStream(data);
-		},
-		q: 0.1,
-	},
-	'text/plain': {
-		serialize(data) {
-			return data.toString()
-		},
-		deserialize(data) {
-			return data.toString()
-		},
-		q: 0.01,
-	},
-	'text/event-stream': { // Server-Sent Events (SSE)
-		serializeStream: function(subscription) {
-			// create a readable stream that we use to stream out events from our subscription
-			let stream = new Readable({
-			});
-			// TODO: if we can skip messages, use back-pressure and allow messages to be skipped
-			subscription.listener = (data) => {
-				stream.push(data);
-			};
-			stream.on('end', () => subscription.end());
-			return stream;
-		},
-		q: 0.8
-	},
-	// TODO: Support this as well:
-	//'multipart/form-data'
-	'application/x-www-form-urlencoded': {
-		deserialize(data) {
-			let object = {};
-			for (let [ key, value ] of new URLSearchParams(data)) {
-				if (object.hasOwnProperty(key)) {
-					// in case there are multiple query params with the same name, convert them to an array
-					let last = object[key];
-					if (Array.isArray(last)) last.push(value);
-					else object.key = [last, value];
-				} else object[key] = value;
-			}
-		},
-		serialize(data) {
-			let usp = new URLSearchParams();
-			for (let key in data) {
-				usp.set(key, data);
-			}
-			return usp.toString();
-		}
-	},
-	'*/*': {
-		type: 'application/json',
-		serializeStream: streamAsJSON,
-		serialize: JSON.stringify,
-		deserialize: JSON.parse,
-		q: 0.8,
-	},
+import { streamAsJSON } from './JSONStream';
+import { toCsvStream } from '../../dataLayer/export';
+import { pack, unpack, encodeIter } from 'msgpackr';
+import { decode, encode, EncoderStream } from 'cbor-x';
+import { createBrotliCompress, brotliCompress } from 'zlib';
+import { Readable } from 'stream';
+import { server, ContentTypeHandler } from '../Server';
+
+server.contentType = function (mime_type: string, handler: ContentTypeHandler) {
+	media_types.set(mime_type, handler);
 };
 
+const media_types = new Map();
+// TODO: Make these monomorphic for faster access. And use a Map
+media_types.set('application/json', {
+	serializeStream: streamAsJSON,
+	serialize: JSON.stringify,
+	deserialize: JSON.parse,
+	q: 0.8,
+});
+media_types.set('application/cbor', {
+	serializeStream(data) {
+		return new EncoderStream(PUBLIC_ENCODE_OPTIONS).end(data);
+	},
+	serialize: encode,
+	deserialize: decode,
+	q: 1,
+});
+media_types.set('application/x-msgpack', {
+	serializeStream(data) {
+		if ((data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) && !Array.isArray(data)) {
+			return Readable.from(encodeIter(data, PUBLIC_ENCODE_OPTIONS));
+		}
+		return pack(data);
+	},
+	serialize: pack,
+	deserialize: unpack,
+	q: 0.9,
+});
+media_types.set('text/csv', {
+	serializeStream(data) {
+		this.header('Content-Disposition', 'attachment; filename="data.csv"');
+		return toCsvStream(data);
+	},
+	q: 0.1,
+});
+media_types.set('text/plain', {
+	serialize(data) {
+		return data.toString();
+	},
+	deserialize(data) {
+		return data.toString();
+	},
+	q: 0.01,
+});
+media_types.set('text/event-stream', {
+	// Server-Sent Events (SSE)
+	serializeStream: function (subscription) {
+		// create a readable stream that we use to stream out events from our subscription
+		const stream = new Readable({});
+		// TODO: if we can skip messages, use back-pressure and allow messages to be skipped
+		subscription.listener = (data) => {
+			stream.push(data);
+		};
+		stream.on('end', () => subscription.end());
+		return stream;
+	},
+	q: 0.8,
+});
+// TODO: Support this as well:
+//'multipart/form-data'
+media_types.set('application/x-www-form-urlencoded', {
+	deserialize(data) {
+		const object = {};
+		for (const [key, value] of new URLSearchParams(data)) {
+			if (object.hasOwnProperty(key)) {
+				// in case there are multiple query params with the same name, convert them to an array
+				const last = object[key];
+				if (Array.isArray(last)) last.push(value);
+				else object.key = [last, value];
+			} else object[key] = value;
+		}
+	},
+	serialize(data) {
+		const usp = new URLSearchParams();
+		for (const key in data) {
+			usp.set(key, data);
+		}
+		return usp.toString();
+	},
+});
+media_types.set('*/*', {
+	type: 'application/json',
+	serializeStream: streamAsJSON,
+	serialize: JSON.stringify,
+	deserialize: JSON.parse,
+	q: 0.8,
+});
+
 const PUBLIC_ENCODE_OPTIONS = {
-	useRecords: false
+	useRecords: false,
 };
-function registerContentHandlers(app) {
+export function registerContentHandlers(app) {
 	app.register(registerFastifySerializers, {
 		serializers: [
 			{
@@ -104,13 +109,13 @@ function registerContentHandlers(app) {
 			},
 			{
 				regex: /^application\/cbor$/,
-				serializer: function(data) {
+				serializer: function (data) {
 					return new EncoderStream(PUBLIC_ENCODE_OPTIONS).end(data);
 				},
 			},
 			{
 				regex: /^application\/(x-)?msgpack$/,
-				serializer: function(data) {
+				serializer: function (data) {
 					if ((data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) && !Array.isArray(data)) {
 						return Readable.from(encodeIter(data, PUBLIC_ENCODE_OPTIONS));
 					}
@@ -126,7 +131,7 @@ function registerContentHandlers(app) {
 			},
 		],
 	});
-	app.addContentTypeParser('application/x-msgpack', {parseAs: 'buffer'}, (req, body, done) => {
+	app.addContentTypeParser('application/x-msgpack', { parseAs: 'buffer' }, (req, body, done) => {
 		try {
 			done(null, unpack(body));
 		} catch (error) {
@@ -135,7 +140,7 @@ function registerContentHandlers(app) {
 		}
 	});
 
-	app.addContentTypeParser('application/cbor', {parseAs: 'buffer'}, (req, body, done) => {
+	app.addContentTypeParser('application/cbor', { parseAs: 'buffer' }, (req, body, done) => {
 		try {
 			done(null, decode(body));
 		} catch (error) {
@@ -147,14 +152,13 @@ function registerContentHandlers(app) {
 // TODO: Only load this if fastify is loaded
 const fp = require('fastify-plugin');
 
-let registerFastifySerializers = fp(
+const registerFastifySerializers = fp(
 	function (fastify, opts, done) {
 		// eslint-disable-next-line require-await
 		fastify.addHook('preSerialization', async (request, reply) => {
-			let content_type = reply.raw.getHeader('content-type');
-			if (content_type)
-				return;
-			let { serializer, type } = findBestSerializer(request.raw);
+			const content_type = reply.raw.getHeader('content-type');
+			if (content_type) return;
+			const { serializer, type } = findBestSerializer(request.raw);
 			reply.type(type);
 			reply.serializer(serializer.serializeStream || serializer.serialize);
 		});
@@ -168,23 +172,23 @@ let registerFastifySerializers = fp(
  * @param incoming_message
  * @returns {{serializer, type: string, parameters: {q: number}}|{serializer(): void}}
  */
-function findBestSerializer(incoming_message) {
-	let accept_header = incoming_message.headers.accept;
+export function findBestSerializer(incoming_message) {
+	const accept_header = incoming_message.headers.accept;
 	let best_serializer;
 	let best_quality = 0;
 	let best_type;
 	let best_parameters;
 	const accept_types = accept_header ? accept_header.toLowerCase().split(/\s*,\s*/) : [];
 	for (const accept_type of accept_types) {
-		const [ type, ...parameter_parts ] = accept_type.split(/\s*;\s*/);
+		const [type, ...parameter_parts] = accept_type.split(/\s*;\s*/);
 		let client_quality = 1;
 		const parameters = { q: 1 };
-		for(const part of parameter_parts) {
+		for (const part of parameter_parts) {
 			const equal_index = part.indexOf('=');
 			parameters[part.substring(0, equal_index)] = part.substring(equal_index + 1);
 		}
 		client_quality = +parameters.q;
-		const serializer = media_types[type];
+		const serializer = media_types.get(type);
 		if (serializer) {
 			const quality = (serializer.q || 1) * client_quality;
 			if (quality > best_quality) {
@@ -199,11 +203,15 @@ function findBestSerializer(incoming_message) {
 		if (accept_header) {
 			return {
 				serializer() {
-					this.code(406).send('No supported content types found in Accept header, supported types include: ' + Object.keys(media_types).join(', '));
-				}
+					this.code(406).send(
+						'No supported content types found in Accept header, supported types include: ' +
+							Object.keys(media_types).join(', ')
+					);
+				},
 			};
-		} else { // default if Accept header is absent
-			best_serializer = media_types['application/json'];
+		} else {
+			// default if Accept header is absent
+			best_serializer = media_types.get('application/json');
 			best_type = 'application/json';
 		}
 	}
@@ -218,10 +226,10 @@ function findBestSerializer(incoming_message) {
  * @param response_object
  * @returns {Uint8Array|*}
  */
-function serialize(response_data, request, response_object) {
+export function serialize(response_data, request, response_object) {
 	// TODO: Maybe support other compression encodings; browsers basically universally support brotli, but Node's HTTP
 	//  client itself actually (just) supports gzip/deflate
-	let compress = request.headers['accept-encoding']?.includes('br');
+	const compress = request.headers['accept-encoding']?.includes('br');
 	let response_body;
 	if (response_data?.contentType != null && response_data.data != null) {
 		// we use this as a special marker for blobs of data that are explicitly one content type
@@ -236,7 +244,7 @@ function serialize(response_data, request, response_object) {
 		response_object.headers['Vary'] = 'Accept-Encoding';
 		response_body = response_data;
 	} else {
-		let serializer = findBestSerializer(request);
+		const serializer = findBestSerializer(request);
 		// TODO: If a different content type is preferred, look through resources to see if there is one
 		// specifically for that content type (most useful for html).
 		response_object.headers['Vary'] = 'Accept, Accept-Encoding';
@@ -256,9 +264,9 @@ function serialize(response_data, request, response_object) {
 		// TODO: Only do this if the size is large and we can cache the result (otherwise use logic above)
 		response_object.headers['Content-Encoding'] = 'br';
 		// if we have a single buffer (or string) we compress in a single async call
-		response_body = new Promise(resolve => brotliCompress(response_body, resolve));
+		response_body = new Promise((resolve) => brotliCompress(response_body, resolve));
 	}
-	return response_body
+	return response_body;
 }
 
 /**
@@ -267,44 +275,45 @@ function serialize(response_data, request, response_object) {
  * @param request
  * @returns {*}
  */
-function serializeMessage(message, request) {
-	if (message?.contentType != null && message.data != null)
-		return message;
+export function serializeMessage(message, request) {
+	if (message?.contentType != null && message.data != null) return message;
 	let serialize = request.serialize;
 	if (serialize) return serialize(message);
-	let serializer = findBestSerializer(request);
+	const serializer = findBestSerializer(request);
 	serialize = request.serialize = serializer.serializer.serialize;
 	return serialize(message);
 }
 
-function getDeserializer(content_type, body) {
+export function getDeserializer(content_type, body) {
 	if (!content_type) {
-		if (body[0] === 123) { // left curly brace
+		if (body[0] === 123) {
+			// left curly brace
 			return tryJSONParse;
 		}
 		return (data) => ({ contentType: '', data });
-	};
-	let parameters_start = content_type.indexOf(';');
+	}
+	const parameters_start = content_type.indexOf(';');
 	let parameters;
 	if (parameters_start > -1) {
 		parameters = content_type.slice(parameters_start + 1);
 		content_type = content_type.slice(0, parameters_start);
 	}
-	return media_types[content_type]?.deserialize || deserializeUnknownType(content_type, parameters);
+	return media_types.get(content_type)?.deserialize || deserializeUnknownType(content_type, parameters);
 }
 function deserializeUnknownType(content_type, parameters) {
 	// TODO: store the content-disposition too
 	if (content_type.startsWith('text/')) {
 		// convert the data to a string since it is text (using the provided charset if specified)
-		let charset = parameters?.match(/charset=(.+)/)?.[1] || 'utf-8';
+		const charset = parameters?.match(/charset=(.+)/)?.[1] || 'utf-8';
 		return (data) => ({
 			contentType: content_type,
 			data: data.toString(charset),
 		});
 	} else if (content_type === 'application/octet-stream') {
 		// use this type as a way of directly transferring binary data (since that is what it means)
-		return data => data;
-	} else { // else record the type and binary data as a pair
+		return (data) => data;
+	} else {
+		// else record the type and binary data as a pair
 		return (data) => ({ contentType: content_type, data });
 	}
 }
@@ -317,9 +326,3 @@ function tryJSONParse(input) {
 		return input;
 	}
 }
-module.exports = {
-	registerContentHandlers,
-	serializeMessage,
-	getDeserializer,
-	serialize,
-};
