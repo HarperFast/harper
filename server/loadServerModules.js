@@ -33,10 +33,11 @@ const default_server_modules = [
  * @param server_modules
  * @returns {Promise<void>}
  */
-async function loadServerModules(server_modules = default_server_modules) {
+async function loadServerModules(server_modules = default_server_modules, is_worker_thread = false) {
 	let tables = getTables();
 	let ports_started = [];
 	let resources = resetResources();
+	resources.isWorker = is_worker_thread;
 	for (let server_module_definition of default_server_modules) {
 		let { module: module_id, port } = server_module_definition;
 		// use predefined core plugins or use the secure/sandbox loader (if configured)
@@ -51,7 +52,8 @@ async function loadServerModules(server_modules = default_server_modules) {
 					const session_affinity = env.get(hdb_terms.CONFIG_PARAMS.HTTP_SESSION_AFFINITY);
 					socket_router.startSocketServer(port, session_affinity);
 				}
-			} else if (server_module.start)
+			}
+			if (is_worker_thread && server_module.start)
 				// on child threads, we can connect to a port that the main thread is routing
 				// (we can't start our own)
 				await server_module.start({ server, resources, ...server_module_definition });

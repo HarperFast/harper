@@ -4,6 +4,7 @@ import { Resource } from './Resource';
  * This is the global set of all resources that have been registered on this server.
  */
 export class Resources extends Map<string, typeof Resource> {
+	isWorker = true
 	set(path, Resource, type?: string): void {
 		if (path.startsWith('/')) path = path.replace(/^\/+/, '');
 		const entry = {

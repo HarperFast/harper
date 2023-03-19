@@ -2,6 +2,9 @@ import { getMockLMDBPath } from '../test_utils.js';
 import { fileURLToPath } from 'url';
 import axios from 'axios';
 import { decode, encode, DecoderStream } from 'cbor-x';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const config = {};
 
 const headers = {
 	//authorization,
@@ -34,8 +37,8 @@ export async function setupTestApp() {
 	// might need fileURLToPath
 	process.env.RUN_HDB_APP = fileURLToPath(new URL('../testApp', import.meta.url));
 	created_records = [];
-	const { startHTTPThreads } = await import('../../server/threads/socketRouter.js');
-	await startHTTPThreads(2);
+	const { startHTTPThreads } = require('../../server/threads/socketRouter');
+	await startHTTPThreads(config.threads || 0);
 	for (let i = 0; i < 20; i++) {
 		let object = {id: Math.round(random() * 1000000)};
 		for (let i = 0; i < 20; i++) {

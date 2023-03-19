@@ -1,6 +1,6 @@
 'use strict';
 const { isMainThread, parentPort, threadId } = require('worker_threads');
-const { Socket } = require('net');
+const { Socket, createServer: createSocketServer } = require('net');
 const { createServer, IncomingMessage } = require('http');
 const harper_logger = require('../../utility/logging/harper_logger');
 const { join } = require('path');
@@ -11,7 +11,7 @@ const { server } = require('../Server');
 const { WebSocketServer } = require('ws');
 const { TLSSocket, createSecureContext } = require('tls');
 process.on('uncaughtException', (error) => {
-	console.error('uncaughtException', error)
+	console.error('uncaughtException', error);
 	process.exit(100);
 });
 env.initSync();
@@ -19,34 +19,41 @@ const { loadServerModules } = require('../loadServerModules');
 const SERVERS = {};
 exports.registerServer = registerServer;
 exports.httpServer = httpServer;
+exports.deliverSocket = deliverSocket;
 server.http = httpServer;
 server.request = onRequest;
 server.socket = onSocket;
 server.ws = onWebSocket;
-let ws_listeners = [], ws_server, ws_chain;
-let default_server, http_chain, request_listeners = [], http_responders = []
+let ws_listeners = [],
+	ws_server,
+	ws_chain;
+let default_server,
+	http_chain,
+	request_listeners = [],
+	http_responders = [];
 
 if (!isMainThread) {
-	loadServerModules().then(() => {
-		parentPort.on('message', (message) => {
-			const {port, fd, data} = message;
-			if (fd) {
-				// Create a socket from the file descriptor for the socket that was routed to us.
-				deliverSocket(fd, port, data);
-			} else if (message.requestId) {
-				// Windows doesn't support passing file descriptors, so we have to resort to manually proxying the socket
-				// data for each request
-				proxyRequest(message);
-			} else if (message.type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
-				// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
-				// then let the event loop complete
-				for (let server_type in SERVERS) {
-					// TODO: If fastify has fielded a route and messed up the closing, then have to manually exit the
-					//  process otherwise we can use a graceful exit
-					// if (SERVERS[server_type].hasRequests)
-					SERVERS[server_type].close();
-					// TODO: Let fastify register as a close handler
-					/*.then(() => {
+	loadServerModules(undefined, true).then(() => {
+		parentPort
+			.on('message', (message) => {
+				const { port, fd, data } = message;
+				if (fd) {
+					// Create a socket from the file descriptor for the socket that was routed to us.
+					deliverSocket(fd, port, data);
+				} else if (message.requestId) {
+					// Windows doesn't support passing file descriptors, so we have to resort to manually proxying the socket
+					// data for each request
+					proxyRequest(message);
+				} else if (message.type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
+					// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
+					// then let the event loop complete
+					for (let server_type in SERVERS) {
+						// TODO: If fastify has fielded a route and messed up the closing, then have to manually exit the
+						//  process otherwise we can use a graceful exit
+						// if (SERVERS[server_type].hasRequests)
+						SERVERS[server_type].close();
+						// TODO: Let fastify register as a close handler
+						/*.then(() => {
 					// Terminating a thread this way is really really wrong. A NodeJS thread (or process) is supposed to end
 					// once it has completed all referenced work, and this allows NodeJS to property monitor for any
 					// outstanding work. Violently exiting this way circumvents this, and means that there may be
@@ -59,19 +66,20 @@ if (!isMainThread) {
 					// reason if a fastify server has not received any requests yet, we can gracefully exit properly.
 					process.exit(0);
 				});*/
-					// else server.close() and server.closeIdleConnections()
+						// else server.close() and server.closeIdleConnections()
+					}
 				}
-			}
-		}).ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
+			})
+			.ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
 		// notify that we are now ready to start receiving requests
-		parentPort.postMessage({type: terms.ITC_EVENT_TYPES.CHILD_STARTED});
+		parentPort.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
 	});
 }
 
 function deliverSocket(fd, port, data) {
 	// Create a socket and deliver it to the HTTP server
 	// HTTP server likes to allow half open sockets
-	let socket = new Socket({ fd, readable: true, writable: true, allowHalfOpen: true });
+	let socket = fd >= 0 ? new Socket({ fd, readable: true, writable: true, allowHalfOpen: true }) : fd;
 	// for each socket, deliver the connection to the HTTP server handler/parser
 	let server = SERVERS[port];
 	if (server) {
@@ -87,8 +95,7 @@ function deliverSocket(fd, port, data) {
 					if (typeof server === 'function') server(socket);
 					else server.emit('connection', socket);
 					if (data) socket.emit('data', data);
-				}
-				else if (retries < 5) retry(retries + 1);
+				} else if (retries < 5) retry(retries + 1);
 				else {
 					harper_logger.error(`Server on port ${port} was not registered`);
 					socket.close();
@@ -132,31 +139,28 @@ function proxyRequest(message) {
 				originalDestroy.call(socket);
 				parentPort.postMessage({
 					requestId,
-					event: 'destroy'
+					event: 'destroy',
 				});
 			};
 			break;
 		case 'data':
-			if (!socket._readableState.destroyed)
-				socket.emit('data', Buffer.from(data, 'latin1'));
+			if (!socket._readableState.destroyed) socket.emit('data', Buffer.from(data, 'latin1'));
 			break;
 		case 'drain':
-			if (!socket._readableState.destroyed)
-				socket.emit('drain', {});
+			if (!socket._readableState.destroyed) socket.emit('drain', {});
 			break;
 		case 'end':
-			if (!socket._readableState.destroyed)
-				socket.emit('end', {});
+			if (!socket._readableState.destroyed) socket.emit('end', {});
 			break;
 		case 'error':
-			if (!socket._readableState.destroyed)
-				socket.emit('error', {});
+			if (!socket._readableState.destroyed) socket.emit('error', {});
 			break;
 	}
 }
 
 function registerServer(server, port) {
-	if (!+port) { // if no port is provided, default to custom functions port
+	if (!+port) {
+		// if no port is provided, default to custom functions port
 		port = parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10);
 	}
 	let existing_server = SERVERS[port];
@@ -174,15 +178,14 @@ function registerServer(server, port) {
 }
 function httpServer(listener, options) {
 	let port = options?.port || {};
-	if (!+port) { // if no port is provided, default to custom functions port
+	if (!+port) {
+		// if no port is provided, default to custom functions port
 		port = parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10);
 	}
 	if (typeof listener === 'function') {
 		getDefaultHTTPServer();
-		if (options?.requestOnly)
-			request_listeners.push(listener);
-		else
-			http_responders.push(listener);
+		if (options?.requestOnly) request_listeners.push(listener);
+		else http_responders.push(listener);
 		http_chain = makeCallbackChain(request_listeners.concat(http_responders));
 		ws_chain = makeCallbackChain(request_listeners);
 	} else {
@@ -200,10 +203,8 @@ function getDefaultHTTPServer() {
 				let response = await http_chain(request);
 				nodeResponse.writeHead(response.status, response.headers);
 				let body = response.body;
-				if (body?.pipe)
-					body.pipe(nodeResponse);
-				else
-					nodeResponse.end(body);
+				if (body?.pipe) body.pipe(nodeResponse);
+				else nodeResponse.end(body);
 			} catch (error) {
 				nodeResponse.writeHead(error.hdb_resp_code || 500);
 				nodeResponse.end(error.toString());
@@ -219,7 +220,7 @@ function makeCallbackChain(listeners) {
 	let next_callback = notFound;
 	// go through the listeners in reverse order so each callback can be passed to the one before
 	// and then each middleware layer can call the next middleware layer
-	for (let i = listeners.length; i > 0;) {
+	for (let i = listeners.length; i > 0; ) {
 		let listener = listeners[--i];
 		let callback = next_callback;
 		next_callback = (request) => {
@@ -231,13 +232,13 @@ function makeCallbackChain(listeners) {
 }
 const NOT_FOUND = {
 	status: 404,
-	body: 'Not found'
+	body: 'Not found',
 };
 function notFound() {
 	return NOT_FOUND;
 }
 function onRequest(listener, options) {
-	httpServer(listener, Object.assign({ requestOnly: true}, options));
+	httpServer(listener, Object.assign({ requestOnly: true }, options));
 }
 /**
  * Direct socket listener
@@ -248,7 +249,7 @@ function onSocket(listener, options) {
 	if (options.secure) {
 		const secureContext = createSecureContext({
 			// TODO: Get the certificates
-		})
+		});
 		const TLS_options = {
 			isServer: true,
 			secureContext,
@@ -257,12 +258,11 @@ function onSocket(listener, options) {
 			// TODO: Do we need to wait for secureConnect to notify listener?
 			listener(new TLSSocket(socket, TLS_options));
 		};
-	} else
-		SERVERS[options.port] = listener;
+	} else SERVERS[options.port] = listener;
 }
 function onWebSocket(listener, options) {
 	if (!ws_server) {
-		ws_server = new WebSocketServer({server: getDefaultHTTPServer()});
+		ws_server = new WebSocketServer({ server: getDefaultHTTPServer() });
 		ws_server.on('connection', async (ws, request) => {
 			let chain_completion = ws_chain(request);
 			let protocol = request.headers['sec-websocket-protocol'];

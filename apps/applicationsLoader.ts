@@ -3,7 +3,7 @@ import { join, relative, basename } from 'path';
 import { isMainThread } from 'worker_threads';
 import { parseDocument } from 'yaml';
 import * as env from '../../utility/environment/environmentManager';
-import { HDB_SETTINGS_NAMES } from '../../utility/hdbTerms';
+import { HDB_SETTINGS_NAMES, CONFIG_PARAMS } from '../../utility/hdbTerms';
 import * as graphql_handler from '../resources/graphql';
 import * as js_handler from '../resources/jsResource';
 import * as REST from '../server/REST';
@@ -138,11 +138,11 @@ export async function loadApplication(app_folder: string, resources: Resources) 
 					if (dirent.isFile()) {
 						const contents = await readFile(path);
 						if (isMainThread) module.setupFile?.(contents, url_path, path, resources);
-						else module.handleFile?.(contents, url_path, path, resources);
+						if (resources.isWorker) module.handleFile?.(contents, url_path, path, resources);
 					} else {
 						// some plugins may want to just handle whole directories
 						if (isMainThread) module.setupDirectory?.(url_path, path, resources);
-						else module.handleDirectory?.(url_path, path, resources);
+						if (resources.isWorker) module.handleDirectory?.(url_path, path, resources);
 					}
 				}
 			}

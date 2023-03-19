@@ -1,23 +1,21 @@
-'use strict';
-const { startWorker, setMonitorListener } = require('./manageThreads');
-const { createServer } = require('net');
-const env = require('../../utility/environment/environmentManager');
-const hdb_terms = require('../../utility/hdbTerms');
-const harper_logger = require('../../utility/logging/harper_logger');
-const pjson = require('../../package.json');
-const { unlinkSync, existsSync } = require('fs');
+import { startWorker, setMonitorListener } from './manageThreads';
+import { createServer } from 'net';
+import * as env from '../../utility/environment/environmentManager';
+import * as hdb_terms from '../../utility/hdbTerms';
+import * as harper_logger from '../../utility/logging/harper_logger';
+import { unlinkSync, existsSync } from 'fs';
 const workers = [];
-module.exports = {
-	startHTTPThreads,
-	startSocketServer,
-	updateWorkerIdleness,
-	mostIdleRouting: findMostIdleWorker,
-	remoteAffinityRouting: findByRemoteAddressAffinity,
-};
 env.initSync();
+let direct_thread_server;
 
-async function startHTTPThreads(thread_count = 2) {
-	let { loadServerModules } = require('../loadServerModules');
+export async function startHTTPThreads(thread_count = 2) {
+	const { loadServerModules } = require('../loadServerModules');
+
+	if (thread_count === 0) {
+		direct_thread_server = require('./threadServer');
+		await loadServerModules(undefined, true);
+		return Promise.resolve([]);
+	}
 	await loadServerModules();
 	for (let i = 0; i < thread_count; i++) {
 		startWorker('server/threads/threadServer.js', {
@@ -31,32 +29,37 @@ async function startHTTPThreads(thread_count = 2) {
 				worker.requests = 1;
 				worker.on('message', (message) => {
 					if (message.requestId) {
-						let handler = requestMap.get(message.requestId);
+						const handler = requestMap.get(message.requestId);
 						if (handler) handler(message);
 					}
 				});
 				worker.on('exit', removeWorker);
 				worker.on('shutdown', removeWorker);
 				function removeWorker() {
-					let index = workers.indexOf(worker);
+					const index = workers.indexOf(worker);
 					if (index > -1) workers.splice(index, 1);
 				}
-			}
+			},
 		});
 	}
-	return Promise.all(workers.map(worker => new Promise((resolve, reject) => {
-		function onMessage(message) {
-			if (message.type === hdb_terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STARTED) {
-				worker.removeListener('message', onMessage);
-				resolve();
-			}
-		}
-		worker.on('message', onMessage);
-		worker.on('error', reject);
-	})));
+	return Promise.all(
+		workers.map(
+			(worker) =>
+				new Promise((resolve, reject) => {
+					function onMessage(message) {
+						if (message.type === hdb_terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STARTED) {
+							worker.removeListener('message', onMessage);
+							resolve();
+						}
+					}
+					worker.on('message', onMessage);
+					worker.on('error', reject);
+				})
+		)
+	);
 }
 
-function startSocketServer(port = 0, session_affinity_identifier) {
+export function startSocketServer(port = 0, session_affinity_identifier) {
 	if (typeof port === 'string') {
 		// if we are using a unix domain socket, we try to delete it first, otherwise it will throw an EADDRESSINUSE
 		// error
@@ -71,18 +74,23 @@ function startSocketServer(port = 0, session_affinity_identifier) {
 		if (session_affinity_identifier === 'ip') worker_strategy = findByRemoteAddressAffinity;
 		// use a header for session affinity (like Authorization or Cookie)
 		else worker_strategy = makeFindByHeaderAffinity(session_affinity_identifier);
-	} else
-		worker_strategy = findMostIdleWorker; // no session affinity, just delegate to most idle worker
-	let server = createServer(
+	} else worker_strategy = findMostIdleWorker; // no session affinity, just delegate to most idle worker
+	const server = createServer(
 		{
 			allowHalfOpen: true,
 			pauseOnConnect: !worker_strategy.readsData,
 		},
 		(socket) => {
 			worker_strategy(socket, (worker, received_data) => {
-				if (!worker) return harper_logger.error(`No HTTP workers found`);
+				if (!worker) {
+					if (direct_thread_server) {
+						direct_thread_server.deliverSocket(socket, port, received_data);
+						socket.resume();
+					} else harper_logger.error(`No HTTP workers found`);
+					return;
+				}
 				worker.requests++;
-				let fd = socket._handle.fd;
+				const fd = socket._handle.fd;
 				if (fd >= 0) worker.postMessage({ port, fd: socket._handle.fd, data: received_data });
 				// valid file descriptor, forward it
 				// Windows doesn't support passing sockets by file descriptors, so we have manually proxy the socket data
@@ -90,6 +98,7 @@ function startSocketServer(port = 0, session_affinity_identifier) {
 			});
 		}
 	).listen(port);
+	const pjson = require('../../../package.json');
 	harper_logger.info(`HarperDB ${pjson.version} Server running on port ${port}`);
 	return server;
 }
@@ -104,10 +113,9 @@ function findMostIdleWorker(socket, deliver) {
 	// fast algorithm for delegating work to workers based on last idleness check (without constantly checking idleness)
 	let selected_worker;
 	let last_availability = 0;
-	for (let worker of workers) {
-		if (worker.threadId === -1)
-			continue;
-		let availability = worker.expectedIdle / worker.requests;
+	for (const worker of workers) {
+		if (worker.threadId === -1) continue;
+		const availability = worker.expectedIdle / worker.requests;
 		if (availability > last_availability) {
 			selected_worker = worker;
 		} else if (last_availability >= second_best_availability) {
@@ -129,8 +137,8 @@ const sessions = new Map();
  * @returns Worker
  */
 function findByRemoteAddressAffinity(socket, deliver) {
-	let address = socket.remoteAddress;
-	let entry = sessions.get(address);
+	const address = socket.remoteAddress;
+	const entry = sessions.get(address);
 	const now = Date.now();
 	if (entry && entry.worker.threadId !== -1) {
 		entry.lastUsed = now;
@@ -154,7 +162,7 @@ function findByRemoteAddressAffinity(socket, deliver) {
  */
 function makeFindByHeaderAffinity(header) {
 	// regular expression to find the specified header and group match on the value
-	let header_expression = new RegExp(`${header}:\s*(.+)`, 'i');
+	const header_expression = new RegExp(`${header}:\s*(.+)`, 'i');
 	findByHeaderAffinity.readsData = true; // make sure we don't start with the socket being paused
 	return findByHeaderAffinity;
 	function findByHeaderAffinity(socket, deliver) {
@@ -162,9 +170,9 @@ function makeFindByHeaderAffinity(header) {
 			// must forcibly stop the TCP handle to ensure no more data is read and that all further data is read by
 			// the child worker thread (once it resumes the socket)
 			socket._handle.readStop();
-			let header_block = data.toString('latin1'); // latin is standard HTTP header encoding and faster
-			let header_value = header_block.match(header_expression)?.[1];
-			let entry = sessions.get(header_value);
+			const header_block = data.toString('latin1'); // latin is standard HTTP header encoding and faster
+			const header_value = header_block.match(header_expression)?.[1];
+			const entry = sessions.get(header_value);
 			const now = Date.now();
 			if (entry && entry.worker.threadId !== -1) {
 				entry.lastUsed = now;
@@ -179,13 +187,13 @@ function makeFindByHeaderAffinity(header) {
 				deliver(worker, data);
 			});
 		});
-	};
+	}
 }
 
 setInterval(() => {
 	// clear out expired entries
 	const now = Date.now();
-	for (let [address, entry] of sessions) {
+	for (const [address, entry] of sessions) {
 		if (entry.lastUsed + AFFINITY_TIMEOUT < now) sessions.delete(address);
 	}
 }, AFFINITY_TIMEOUT).unref();
@@ -197,9 +205,9 @@ const EXPECTED_IDLE_DECAY = 1000;
 /**
  * Updates the idleness statistics for each worker
  */
-function updateWorkerIdleness() {
+export function updateWorkerIdleness() {
 	second_best_availability = 0;
-	for (let worker of workers) {
+	for (const worker of workers) {
 		worker.expectedIdle = worker.recentELU.idle + EXPECTED_IDLE_DECAY;
 		worker.requests = 1;
 	}
@@ -208,7 +216,7 @@ function updateWorkerIdleness() {
 
 setMonitorListener(updateWorkerIdleness);
 
-let requestMap = new Map();
+const requestMap = new Map();
 let nextId = 1;
 
 /**
@@ -223,11 +231,11 @@ let nextId = 1;
  */
 function proxySocket(socket, worker, port) {
 	// socket proxying for Windows
-	let requestId = nextId++;
+	const requestId = nextId++;
 	worker.postMessage({ port, requestId, event: 'connection' });
 	socket
 		.on('data', (buffer) => {
-			let data = buffer.toString('latin1');
+			const data = buffer.toString('latin1');
 			worker.postMessage({ port, requestId, data, event: 'data' });
 		})
 		.on('close', (hadError) => {
