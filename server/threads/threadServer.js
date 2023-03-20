@@ -201,6 +201,7 @@ function getDefaultHTTPServer() {
 				//request.headers = new Headers(request.headers);
 				request.headers.get = get;
 				let response = await http_chain(request);
+				await request.onResponse?.(response); // TODO: Do fast checks for promise
 				nodeResponse.writeHead(response.status, response.headers);
 				let body = response.body;
 				if (body?.pipe) body.pipe(nodeResponse);
