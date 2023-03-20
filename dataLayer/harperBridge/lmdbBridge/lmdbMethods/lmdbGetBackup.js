@@ -10,7 +10,7 @@ module.exports = getBackup;
 const META_SIZE = 32768;
 /**
  * function execute the read_transaction_log operation
- * @param {ReadAuditLogObject} read_audit_log_obj
+ * @param {GetBackupObject} get_backup_obj
  * @returns {Promise<[]>}
  */
 async function getBackup(get_backup_obj) {
@@ -23,13 +23,15 @@ async function getBackup(get_backup_obj) {
 		let readTxn = env.useReadTransaction(); // this guarantees the current transaction is preserved in the backup
 		// create a file stream that starts after the meta area
 		let fileStream = createReadStream(null, { fd, start: META_SIZE });
-		let stream = new Readable.from((async function*() {
-			yield metaBuffers; // return the meta area that was frozen inside the write transaction
-			for await (const chunk of fileStream) {
-				yield chunk;
-			}
-			readTxn.done(); // done with the read txn
-		})());
+		let stream = new Readable.from(
+			(async function* () {
+				yield metaBuffers; // return the meta area that was frozen inside the write transaction
+				for await (const chunk of fileStream) {
+					yield chunk;
+				}
+				readTxn.done(); // done with the read txn
+			})()
+		);
 		stream.headers = new Map();
 		stream.headers.set('content-type', 'application/octet-stream');
 		stream.headers.set('content-disposition', `attachment; filename="${get_backup_obj.table}"`);

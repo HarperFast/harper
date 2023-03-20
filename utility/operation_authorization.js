@@ -16,6 +16,7 @@ const schema = require('../dataLayer/schema');
 const schema_describe = require('../dataLayer/schemaDescribe');
 const delete_ = require('../dataLayer/delete');
 const read_audit_log = require('../dataLayer/readAuditLog');
+const get_backup = require('../dataLayer/getBackup');
 const user = require('../security/user');
 const role = require('../security/role');
 const harper_logger = require('../utility/logging/harper_logger');
@@ -139,6 +140,7 @@ required_permissions.set(delete_.deleteAuditLogsBefore.name, new permission(true
 required_permissions.set(stop.restart.name, new permission(true, []));
 required_permissions.set(stop.restartService.name, new permission(true, []));
 required_permissions.set(read_audit_log.name, new permission(true, []));
+required_permissions.set(get_backup.name, new permission(true, []));
 required_permissions.set(system_information.systemInformation.name, new permission(true, []));
 required_permissions.set(config_utils.getConfiguration.name, new permission(true, []));
 required_permissions.set(transaction_log.readTransactionLog.name, new permission(true, []));
