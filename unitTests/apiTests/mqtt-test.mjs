@@ -57,7 +57,7 @@ describe('test MQTT connections and commands', () => {
 			});
 		});
 	});
-	it.only('subscribe to retained record with upsert operation', async function () {
+	it('subscribe to retained record with upsert operation', async function () {
 		this.timeout(10000);
 		let path = 'SimpleRecord/77';
 		await new Promise((resolve, reject) => {

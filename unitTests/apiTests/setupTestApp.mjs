@@ -1,8 +1,11 @@
 import { getMockLMDBPath } from '../test_utils.js';
 import { fileURLToPath } from 'url';
+import installer from '../../utility/install/installer.js';
 import axios from 'axios';
 import { decode, encode, DecoderStream } from 'cbor-x';
 import { createRequire } from 'module';
+import env from '../../utility/environment/environmentManager.js';
+import hdb_terms from '../../utility/hdbTerms.js';
 const require = createRequire(import.meta.url);
 const config = {};
 
@@ -31,7 +34,7 @@ export async function setupTestApp() {
 	// exit if it is already setup or we are running in the browser
 	if (created_records || typeof navigator !== 'undefined') return created_records;
 	let path = getMockLMDBPath();
-	process.env.STORAGE_PATH = path;
+	process.env.SCHEMAS_DATA_PATH = path;
 	// make it easy to see what is going on when unit testing
 	process.env.LOGGING_STDSTREAMS = 'true';
 	// might need fileURLToPath

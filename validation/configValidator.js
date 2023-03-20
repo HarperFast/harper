@@ -292,6 +292,8 @@ function setDefaultRoot(parent, helpers) {
 		case 'clustering.leafServer.streams.path':
 			return path.join(hdb_root, 'clustering', 'leaf');
 		case 'storage.path':
+			const legacy_storage_path = path.join(hdb_root, hdb_terms.LEGACY_DATABASES_DIR_NAME);
+			if (fs.existsSync(legacy_storage_path)) return legacy_storage_path;
 			return path.join(hdb_root, hdb_terms.DATABASES_DIR_NAME);
 		default:
 			throw new Error(

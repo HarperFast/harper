@@ -18,7 +18,7 @@ interface Server {
 		options?: WebSocketOptions
 	): void;
 	contentType(mime_type, handler: ContentTypeHandler): void;
-	auth(username: string, password: string): any;
+	auth(username: string, password?: string): any;
 }
 interface ServerOptions {
 	port?: number;

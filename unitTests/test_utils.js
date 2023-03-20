@@ -174,7 +174,7 @@ function getMockTestPath() {
 function getMockLMDBPath() {
 	let lmdb_path = path.join(UNIT_TEST_DIR, ENV_DIR_NAME, process.pid.toString());
 	env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, lmdb_path);
-	env.setProperty(terms.CONFIG_PARAMS.STORAGE_PATH, lmdb_path);
+	env.setProperty(terms.CONFIG_PARAMS.SCHEMAS, { data: { path: lmdb_path } });
 	return lmdb_path;
 }
 
@@ -249,9 +249,14 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
 		await fs.mkdirp(BASE_SYSTEM_PATH);
 		await fs.mkdirp(BASE_SCHEMA_PATH);
 
-		env_array.push(await ensure_table({
-			database: schema, table, attributes, path: BASE_SCHEMA_PATH
-		}));
+		env_array.push(
+			await ensure_table({
+				database: schema,
+				table,
+				attributes,
+				path: BASE_SCHEMA_PATH,
+			})
+		);
 
 		const insert_records_obj = new InsertRecordsObj(schema, table, test_data);
 		await createRecords(insert_records_obj);

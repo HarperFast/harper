@@ -120,10 +120,8 @@ export async function handleFile(gql_content, url_path, file_path, resources) {
 						handlers.set(query_name, restHandler(GraphQLResource));*/
 						// the main thread should only be setting up tables, worker threads actually register the resources
 						// for server usage
-						if (!isMainThread) {
-							resources.set(dirname(url_path) + '/' + query_name, type_def.tableClass);
-							//handlers.set(query_name, restHandler(relative_path + '/' + query_name, type_def.tableClass));
-						}
+						resources.set(dirname(url_path) + '/' + query_name, type_def.tableClass);
+						//handlers.set(query_name, restHandler(relative_path + '/' + query_name, type_def.tableClass));
 					}
 				}
 		}

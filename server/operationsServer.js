@@ -87,10 +87,7 @@ async function operationsServer() {
 			// now that server is fully loaded/ready, start listening on port provided in config settings or just use
 			// zero to wait for sockets from the main thread
 			server_registration.http(server.server, { port: props_server_port });
-			if (isMainThread) {
-				await server.listen({ port: props_server_port, host: '::' });
-				harper_logger.info(`HarperDB ${pjson.version} ${server_type} Server running on port ${props_server_port}`);
-			} else if (!server.server.closeIdleConnections) {
+			if (!server.server.closeIdleConnections) {
 				// before Node v18, closeIdleConnections is not available, and we have to setup a listener for fastify
 				// to handle closing by setting up the dynamic port
 				await server.listen({ port: 0, host: '::' });

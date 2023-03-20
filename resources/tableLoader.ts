@@ -10,7 +10,7 @@ import {
 import { makeTable } from './Table';
 import * as OpenDBIObject from '../utility/lmdb/OpenDBIObject';
 import * as OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject';
-import { CONFIG_PARAMS, DATABASES_DIR_NAME } from '../utility/hdbTerms';
+import { CONFIG_PARAMS, LEGACY_DATABASES_DIR_NAME } from '../utility/hdbTerms';
 const DEFAULT_DATABASE_NAME = 'data';
 initSync();
 
@@ -40,7 +40,9 @@ export function getDatabases() {
 	if (loaded_databases) return databases;
 	loaded_databases = true;
 	const database_path =
-		process.env.STORAGE_PATH || env_get(CONFIG_PARAMS.STORAGE_PATH) || join(getHdbBasePath(), 'schema');
+		process.env.STORAGE_PATH ||
+		env_get(CONFIG_PARAMS.STORAGE_PATH) ||
+		join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME);
 	// First load all the databases from our main database folder
 	// TODO: Load any databases defined with explicit storage paths from the config
 	if (existsSync(database_path)) {
@@ -68,6 +70,31 @@ export function getDatabases() {
 					}
 				}
 			}
+		}
+	}
+	const schema_configs = env_get(CONFIG_PARAMS.SCHEMAS);
+	if (schema_configs) {
+		for (const db_name in schema_configs) {
+			const schema_config = schema_configs[db_name];
+			const database_path = schema_config.path;
+			if (existsSync(database_path)) {
+				for (const database_entry: DirEnt of readdirSync(database_path, { withFileTypes: true })) {
+					if (database_entry.isFile() && extname(database_entry.name).toLowerCase() === '.mdb') {
+						readMetaDb(join(database_path, database_entry.name), null, db_name);
+					}
+				}
+			}
+			const table_configs = schema_config.tables;
+			if (table_configs) {
+				for (const table_name in table_configs) {
+					const table_config = table_configs[table_name];
+					const table_path = join(table_config.path, 'data.mdb');
+					if (existsSync(table_path)) {
+						readMetaDb(table_path, table_name, db_name);
+					}
+				}
+			}
+			//TODO: Iterate configured table paths
 		}
 	}
 	return databases;
@@ -196,10 +223,14 @@ export async function table({ table: table_name, database: database_name, expira
 		root_store = Table.primaryStore;
 	} else {
 		const tables = databases[database_name] || (databases[database_name] = Object.create(null));
-		// TODO: How to get the storage path from env?
+		const table_path = env_get(CONFIG_PARAMS.SCHEMAS)?.[database_name]?.tables?.[table_name]?.path;
 		const database_path =
-			process.env.STORAGE_PATH || env_get(CONFIG_PARAMS.STORAGE_PATH) || join(getHdbBasePath(), DATABASES_DIR_NAME);
-		const path = join(database_path, database_name + '.mdb');
+			table_path ||
+			env_get(CONFIG_PARAMS.SCHEMAS)?.[database_name]?.path ||
+			process.env.STORAGE_PATH ||
+			env_get(CONFIG_PARAMS.STORAGE_PATH) ||
+			join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME);
+		const path = join(database_path, table_path ? 'data.mdb' : database_name + '.mdb');
 		root_store = database_envs.get(path);
 		if (!root_store) {
 			// TODO: validate database name

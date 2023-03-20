@@ -112,7 +112,7 @@ export async function loadApplication(app_folder: string, resources: Resources) 
 			// call the main start hook
 			if (!start_resolution) {
 				if (isMainThread) start_resolution = module.startOnMainThread?.({ server, resources });
-				else start_resolution = module.start?.({ server, resources });
+				if (resources.isWorker) start_resolution = module.start?.({ server, resources });
 				loaded_plugins.set(module, start_resolution);
 			}
 			await start_resolution;
@@ -137,12 +137,12 @@ export async function loadApplication(app_folder: string, resources: Resources) 
 					url_path += (url_path.endsWith('/') ? '' : '/') + relative_path;
 					if (dirent.isFile()) {
 						const contents = await readFile(path);
-						if (isMainThread) module.setupFile?.(contents, url_path, path, resources);
-						if (resources.isWorker) module.handleFile?.(contents, url_path, path, resources);
+						if (isMainThread) await module.setupFile?.(contents, url_path, path, resources);
+						if (resources.isWorker) await module.handleFile?.(contents, url_path, path, resources);
 					} else {
 						// some plugins may want to just handle whole directories
-						if (isMainThread) module.setupDirectory?.(url_path, path, resources);
-						if (resources.isWorker) module.handleDirectory?.(url_path, path, resources);
+						if (isMainThread) await module.setupDirectory?.(url_path, path, resources);
+						if (resources.isWorker) await module.handleDirectory?.(url_path, path, resources);
 					}
 				}
 			}

@@ -26,7 +26,7 @@ async function authentication(request) {
 		session = session_table.get(session_id);
 	}
 	request.session = session;
-	request.user = session?.user;
+	request.user = null;
 	let new_user;
 	if (authorization) {
 		let new_user = authorization_cache.get(authorization);
@@ -44,12 +44,16 @@ async function authentication(request) {
 			authorization_cache.set(authorization, new_user);
 		}
 		request.user = new_user;
-	} else {
-		if (AUTHORIZE_LOCAL && request.socket.remoteAddress.includes('127.0.0.1')) {
-			request.user = new_user = await getSuperUser();
-		}
+	} else if (session?.user) {
+		// or should this be cached in the session?
+		request.user = await server.auth(session.user);
+	} else if (AUTHORIZE_LOCAL && request.socket.remoteAddress.includes('127.0.0.1')) {
+		request.user = new_user = await getSuperUser();
 	}
-	if ((new_user && !session) || session.user?.username !== new_user?.username) {
+	if (
+		((new_user && !session) || session.user?.username !== new_user?.username) && // new session or change in session
+		headers['user-agent']?.startsWith('Mozilla') // only set cookies and create sessions on web browsers
+	) {
 		const new_session = !session_id;
 		if (new_session) {
 			session_id = uuid();

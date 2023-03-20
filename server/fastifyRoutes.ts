@@ -16,10 +16,10 @@ import * as getHeaderTimeoutConfig from './fastifyRoutes/helpers/getHeaderTimeou
 import { serverErrorHandler } from '../server/serverHelpers/serverHandlers';
 import { registerContentHandlers } from '../server/serverHelpers/contentTypes';
 import { server } from '../index';
-let CF_ROUTES_DIR = env.get(HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+const CF_ROUTES_DIR = env.get(HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 
 let fastify_server;
-let route_folders = new Set();
+const route_folders = new Set();
 
 /**
  * This is the entry point for the fastify route autoloader plugin. This plugin loads JS modules from provided path
@@ -40,8 +40,8 @@ export async function handleFile(js_content, relative_path, file_path, project_n
 		fastify_server = buildServer(props_http_secure_on);
 		server.http((await fastify_server).server);
 	}
-	let resolved_server = await fastify_server;
-	let route_folder = dirname(file_path);
+	const resolved_server = await fastify_server;
+	const route_folder = dirname(file_path);
 	if (!route_folders.has(route_folder)) {
 		route_folders.add(route_folder);
 		resolved_server.register(buildRouteFolder(route_folder, project_name));
@@ -89,10 +89,7 @@ async function customFunctionsServer() {
 			//now that server is fully loaded/ready, start listening on port provided in config settings
 			harper_logger.info(`Custom Functions process starting on port ${props_server_port}`);
 			httpServer(server.server, props_server_port);
-			if (isMainThread) {
-				await server.listen({ port: props_server_port, host: '::' });
-				harper_logger.info(`Custom Functions process running on port ${props_server_port}`);
-			} else if (!server.server.closeIdleConnections) {
+			if (!server.server.closeIdleConnections) {
 				// before Node v18, closeIdleConnections is not available, and we have to setup a listener for fastify
 				// to handle closing by setting up the dynamic port
 				await server.listen({ port: 0, host: '::' });
@@ -169,7 +166,7 @@ function buildRouteFolder(routes_folder, project_name) {
 async function buildServer(is_https) {
 	try {
 		harper_logger.info(`Custom Functions starting buildServer.`);
-		let server_opts = getServerOptions(is_https);
+		const server_opts = getServerOptions(is_https);
 
 		const app = fastify(server_opts);
 		//Fastify does not set this property in the initial app construction

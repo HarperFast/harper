@@ -69,6 +69,7 @@ let hdb_root = undefined;
  */
 
 module.exports = install;
+install.createSuperUser = createSuperUser;
 
 /**
  * Calls all the functions that are needed to install HarperDB.
