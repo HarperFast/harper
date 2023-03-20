@@ -45,8 +45,8 @@ describe('Test 4-0-0 module', () => {
 		upgrade_prompt_stub = sandbox.stub(upgrade_prompt, 'upgradeCertsPrompt');
 		fs_move_stub = sandbox.stub(fs, 'move');
 		generate_new_keys = directive_4_0_0_rw.__get__('generateNewKeys');
-		directive_4_0_0_rw.__set__('old_cert_path', 'user/test/cert_folder/cert.pem');
-		directive_4_0_0_rw.__set__('old_private_path', 'user/test/cert_folder/private.pem');
+		directive_4_0_0_rw.__set__('old_cert_path', path.join('user', 'test', 'cert_folder', 'cert.pem'));
+		directive_4_0_0_rw.__set__('old_private_path', path.join('user', 'test', 'cert_folder', 'private.pem'));
 	});
 
 	after(() => {
@@ -420,10 +420,10 @@ describe('Test 4-0-0 module', () => {
 	it('Test generateNewKeys function calls generate_keys if prompted to', async () => {
 		upgrade_prompt_stub.resolves(true);
 		await generate_new_keys();
-		expect(fs_move_stub.getCall(0).firstArg).to.equal('user/test/cert_folder/cert.pem');
-		expect(fs_move_stub.getCall(0).lastArg).to.equal('user/test/cert_folder/cert.bak');
-		expect(fs_move_stub.getCall(1).firstArg).to.equal('user/test/cert_folder/private.pem');
-		expect(fs_move_stub.getCall(1).lastArg).to.equal('user/test/cert_folder/private.bak');
+		expect(fs_move_stub.getCall(0).firstArg).to.equal(path.join('user', 'test', 'cert_folder', 'cert.pem'));
+		expect(fs_move_stub.getCall(0).lastArg).to.equal(path.join('user', 'test', 'cert_folder', 'cert.bak'));
+		expect(fs_move_stub.getCall(1).firstArg).to.equal(path.join('user', 'test', 'cert_folder', 'private.pem'));
+		expect(fs_move_stub.getCall(1).lastArg).to.equal(path.join('user', 'test', 'cert_folder', 'private.bak'));
 		expect(generate_keys_stub.called).to.be.true;
 	});
 
@@ -431,8 +431,8 @@ describe('Test 4-0-0 module', () => {
 		upgrade_prompt_stub.resolves(false);
 		await generate_new_keys();
 		expect(update_config_cert_stub.args[0]).to.eql([
-			'user/test/cert_folder/cert.pem',
-			'user/test/cert_folder/private.pem',
+			path.join('user', 'test', 'cert_folder', 'cert.pem'),
+			path.join('user', 'test', 'cert_folder', 'private.pem'),
 			undefined,
 		]);
 	});

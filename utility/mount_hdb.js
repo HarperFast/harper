@@ -1,6 +1,6 @@
 'use strict';
 
-const fs = require('fs');
+const { mkdirpSync } = require('fs-extra');
 const path = require('path');
 const terms = require('../utility/hdbTerms');
 const hdb_logger = require('../utility/logging/harper_logger');
@@ -78,23 +78,7 @@ async function createLMDBTables() {
 	}
 }
 
-function makeDirectory(targetDir, { isRelativeToScript = false } = {}) {
-	const sep = path.sep;
-	const initDir = path.isAbsolute(targetDir) ? sep : '';
-	const baseDir = isRelativeToScript ? __dirname : '.';
-
-	targetDir.split('/').reduce((parentDir, childDir) => {
-		const curDir = path.resolve(baseDir, parentDir, childDir);
-		try {
-			if (curDir && curDir !== '/') {
-				fs.mkdirSync(curDir, { mode: terms.HDB_FILE_PERMISSIONS });
-				hdb_logger.info(`Directory ${curDir} created`);
-			}
-		} catch (err) {
-			if (err.code !== 'EEXIST') {
-				throw err;
-			}
-		}
-		return curDir;
-	}, initDir);
+function makeDirectory(targetDir) {
+	mkdirpSync(targetDir, { mode: terms.HDB_FILE_PERMISSIONS });
+	hdb_logger.info(`Directory ${targetDir} created`);
 }
