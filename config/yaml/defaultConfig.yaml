@@ -33,7 +33,7 @@ clustering:
 customFunctions:
   enabled: true
   network:
-    cors: true
+    cors: false
     corsAccessList:
       - null
     headersTimeout: 60000
@@ -69,7 +69,7 @@ operationsApi:
   network:
     cors: true
     corsAccessList:
-      - null
+      - https://studio.harperdb.io
     headersTimeout: 60000
     https: false
     keepAliveTimeout: 5000
