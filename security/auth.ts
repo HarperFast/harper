@@ -51,7 +51,7 @@ async function authentication(request) {
 		request.user = new_user = await getSuperUser();
 	}
 	if (
-		((new_user && !session) || session.user?.username !== new_user?.username) && // new session or change in session
+		((new_user && !session) || session?.user?.username !== new_user?.username) && // new session or change in session
 		headers['user-agent']?.startsWith('Mozilla') // only set cookies and create sessions on web browsers
 	) {
 		const new_session = !session_id;

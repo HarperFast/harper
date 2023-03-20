@@ -44,7 +44,7 @@ function configValidator(config_json) {
 
 	const enabled_constraints = boolean.required();
 	const node_env_constraints = Joi.valid('production', 'development').required();
-	const threads_constraints = number.min(1).max(1000).empty(null).default(setDefaultThreads);
+	const threads_constraints = number.min(0).max(1000).empty(null).default(setDefaultThreads);
 	const root_constraints = string
 		.pattern(/^[\\\/]$|([\\\/][a-zA-Z_0-9\:-]+)+$/, 'directory path')
 		.empty(null)
