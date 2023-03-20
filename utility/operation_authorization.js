@@ -140,7 +140,7 @@ required_permissions.set(delete_.deleteAuditLogsBefore.name, new permission(true
 required_permissions.set(stop.restart.name, new permission(true, []));
 required_permissions.set(stop.restartService.name, new permission(true, []));
 required_permissions.set(read_audit_log.name, new permission(true, []));
-required_permissions.set(get_backup.name, new permission(true, []));
+required_permissions.set(get_backup.name, new permission(true, [READ_PERM]));
 required_permissions.set(system_information.systemInformation.name, new permission(true, []));
 required_permissions.set(config_utils.getConfiguration.name, new permission(true, []));
 required_permissions.set(transaction_log.readTransactionLog.name, new permission(true, []));
@@ -452,7 +452,7 @@ function hasPermissions(user_object, op, schema_table_map, permsResponse, action
 	// set to true if this operation affects a system table.  Only su can read from system tables, but can't update/delete.
 	let is_su_system_operation = schema_table_map.has('system');
 	const user_perms = user_object.role.permission;
-	if (user_perms.super_user && !is_su_system_operation) {
+	if (user_perms.super_user && (!is_su_system_operation || required_permissions.get(op).perms.length > 0)) {
 		//admins can do (almost) anything through the hole in sheet!
 		return null;
 	}
