@@ -39,7 +39,6 @@ async function updateAllNodes() {
 
 		await Promise.allSettled(update_node_func_calls);
 		hdb_log.notify('Shutting down 4.0.0 clustering upgrade process');
-		await pm2_utils.deleteProcess(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_UPGRADE_4_0_0);
 	} catch (err) {
 		hdb_log.error(err);
 		throw err;

@@ -58,7 +58,7 @@ function configValidator(config_json) {
 		.messages({ 'string.pattern.base': '{:#label} invalid, must not contain ., * or >' })
 		.empty(null)
 		.required();
-	const clustering_stream_path_constraints = Joi.custom(validatePath).empty(null).default(setDefaultRoot);
+	const clustering_stream_path_constraints = Joi.string().empty(null).default(setDefaultRoot);
 	const storage_path_constraints = Joi.custom(validatePath).empty(null).default(setDefaultRoot);
 
 	const clustering_enabled = config_json.clustering?.enabled;
@@ -95,9 +95,9 @@ function configValidator(config_json) {
 				}).required(),
 				streams: Joi.object({
 					// Max age must be above duplicate_window stream setting
-					maxAge: number.min(120).allow(null).required(),
-					maxBytes: number.min(1).allow(null).required(),
-					maxMsgs: number.min(1).allow(null).required(),
+					maxAge: number.min(120).allow(null).optional(),
+					maxBytes: number.min(1).allow(null).optional(),
+					maxMsgs: number.min(1).allow(null).optional(),
 					path: clustering_stream_path_constraints,
 				}).required(),
 			}).required(),
