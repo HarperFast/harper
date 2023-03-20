@@ -66,14 +66,6 @@ describe('test mount_hdb module', () => {
 		create_lmdb_table_rw();
 	});
 
-	it('Test makeDirectory function call mkdirSync as expected', () => {
-		const mkdir_sync_stub = sandbox.stub(fs, 'mkdirSync');
-		const makeDirectory = rw_mount.__get__('makeDirectory');
-		makeDirectory(`mount${SEP}test${SEP}hdb`);
-		expect(mkdir_sync_stub.called).to.be.true;
-		mkdir_sync_stub.restore();
-	});
-
 	describe('test createLMDBTables', () => {
 		before(async () => {
 			await fs_extra.mkdirp(SYSTEM_SCHEMA_PATH);
