@@ -13,8 +13,6 @@ interface Response {
 	body?: any;
 }
 
-const MAX_COMMIT_RETRIES = 10;
-
 async function http(Resource, resource_path, next_path, request) {
 	const method = request.method;
 	const start = performance.now();
@@ -79,7 +77,8 @@ async function http(Resource, resource_path, next_path, request) {
 		console.error(error);
 		return {
 			status: error.status || 500, // use specified error status, or default to generic server error
-			body: serialize(error.toString(), request),
+			headers: {},
+			body: serializeMessage(error.toString(), request),
 		};
 	}
 }
