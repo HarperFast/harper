@@ -6,6 +6,7 @@ import * as env from '../../utility/environment/environmentManager';
 import { HDB_SETTINGS_NAMES, CONFIG_PARAMS } from '../../utility/hdbTerms';
 import * as graphql_handler from '../resources/graphql';
 import * as js_handler from '../resources/jsResource';
+import * as login from '../resources/login';
 import * as REST from '../server/REST';
 import * as fastify_routes_handler from '../server/fastifyRoutes';
 import * as fg from 'fast-glob';
@@ -52,6 +53,7 @@ const TRUSTED_RESOURCE_LOADERS = {
 	'graphql-schema': graphql_handler,
 	'js-resource': js_handler,
 	'fastify-routes': fastify_routes_handler,
+	login,
 	/*
 	static: ...
 	login: ...
@@ -63,17 +65,21 @@ const DEFAULT_RESOURCE_LOADERS = [
 	{
 		files: '*.graphql',
 		module: 'graphql-schema',
-		path: '/', // from root path by default, like http://server/query
+		//path: '/', // from root path by default, like http://server/query
 	},
 	{
 		files: '*.js',
 		module: 'js-resource',
-		path: '/', // from root path by default, like http://server/resource-name
+		//path: '/', // from root path by default, like http://server/resource-name
 	},
 	{
 		files: 'routes/*.js',
 		module: 'fastify-routes',
 		path: '.', // relative to the app-name, like  http://server/app-name/route-name
+	},
+	{
+		module: 'login',
+		path: '/',
 	},
 	/*{
 		files: 'static',
@@ -126,7 +132,7 @@ export async function loadApplication(app_folder: string, resources: Resources) 
 					const { path, dirent } = entry;
 					const relative_path = relative(app_folder, path);
 					const app_name = basename(app_folder);
-					let url_path = handler_config.path;
+					let url_path = handler_config.path || '/';
 					url_path = url_path.startsWith('/')
 						? url_path
 						: url_path.startsWith('./')

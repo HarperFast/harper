@@ -3,13 +3,13 @@ import { getTables } from './tableLoader';
 import { Table } from './Table';
 import { DatabaseTransaction } from './DatabaseTransaction';
 let tables;
-const QUERY_PARSER = /([^&|=<>!(),]+)([&|=<>!(),]*)/g
+const QUERY_PARSER = /([^&|=<>!(),]+)([&|=<>!(),]*)/g;
 const SYMBOL_OPERATORS = {
 	'<': 'lt',
 	'<=': 'le',
 	'>': 'gt',
 	'>=': 'ge',
-}
+};
 
 /**
  * This is the main class that can be extended for any resource in HarperDB and provides the essential reusable
@@ -19,11 +19,11 @@ const SYMBOL_OPERATORS = {
  * data aggregation, processing, or monitoring.
  */
 export class Resource implements ResourceInterface {
-	request: any
-	user: any
+	request: any;
+	user: any;
 	lastModificationTime = 0;
-	inUseTables = {}
-	inUseEnvs = {}
+	inUseTables = {};
+	inUseEnvs = {};
 	constructor(request?) {
 		this.request = request;
 		this.user = request?.user;
@@ -52,16 +52,16 @@ export class Resource implements ResourceInterface {
 	 * Non-restartable across multiple env/dbs with full isolation: Wait on commit of async-transaction
 	 */
 	commit(): Promise<boolean> {
-		let txns_with_read_and_writes = [];
-		let txns_with_only_writes = []
-		let commits = [];
-		for (let env_path in this.inUseEnvs) { // TODO: maintain this array ourselves so we don't need to key-ify
-			let env_txn = this.inUseEnvs[env_path];
+		const txns_with_read_and_writes = [];
+		const txns_with_only_writes = [];
+		const commits = [];
+		for (const env_path in this.inUseEnvs) {
+			// TODO: maintain this array ourselves so we don't need to key-ify
+			const env_txn = this.inUseEnvs[env_path];
 			if (env_txn.writes.length > 0 || env_txn.updatingRecords?.length > 0) {
-				if (env_txn.conditions.length > 0)
-					txns_with_read_and_writes.push(env_txn);
-				else // I don't know if these will even be possible, might want to just eliminate this
-					txns_with_only_writes.push(env_txn);
+				if (env_txn.conditions.length > 0) txns_with_read_and_writes.push(env_txn);
+				// I don't know if these will even be possible, might want to just eliminate this
+				else txns_with_only_writes.push(env_txn);
 			}
 		}
 		/*if (txns_with_read_and_writes.length >= 2) {
@@ -76,7 +76,7 @@ export class Resource implements ResourceInterface {
 			// all requests succeeded, proceed with collecting actual commits
 			commits = [];
 		}*/
-		for (let env_txn of txns_with_read_and_writes) {
+		for (const env_txn of txns_with_read_and_writes) {
 			commits.push(env_txn.commit());
 		}
 		/*if (commits.length === 1) { // no two phase commit, so just verify that the single commit succeeds before proceeding
@@ -84,49 +84,49 @@ export class Resource implements ResourceInterface {
 				return false;
 			commits = [];
 		}*/
-		for (let env_txn of txns_with_only_writes) {
+		for (const env_txn of txns_with_only_writes) {
 			commits.push(env_txn.commit());
 		}
 		return Promise.all(commits);
 	}
 	abort() {
-		for (let env_path in this.inUseEnvs) { // TODO: maintain this array ourselves so we don't need to key-ify
-			let env_txn = this.inUseEnvs[env_path];
+		for (const env_path in this.inUseEnvs) {
+			// TODO: maintain this array ourselves so we don't need to key-ify
+			const env_txn = this.inUseEnvs[env_path];
 			env_txn.abort(); // done with the read snapshot txn
 		}
 	}
 	doneReading() {
-		for (let env_path in this.inUseEnvs) { // TODO: maintain this array ourselves so we don't need to key-ify
-			let env_txn = this.inUseEnvs[env_path];
+		for (const env_path in this.inUseEnvs) {
+			// TODO: maintain this array ourselves so we don't need to key-ify
+			const env_txn = this.inUseEnvs[env_path];
 			env_txn.doneReading(); // done with the read snapshot txn
 		}
 	}
-	static async get(identifier: string|number, options?: any) {
-		let resource = new this(options);
+	static async get(identifier: string | number, options?: any) {
+		const resource = new this(options);
 		let user;
 		if (options) {
 			user = options.user;
-			let checked = checkAllowed(resource.allowGet?.(user), user, resource);
+			const checked = checkAllowed(resource.allowGet?.(user), user, resource);
 			if (checked?.then) await checked; // fast path to avoid await if not needed
 		}
 		let data;
-		if (typeof identifier === 'number')
-			data = resource.getById(identifier, options);
+		if (typeof identifier === 'number') data = resource.getById(identifier, options);
 		else {
-			let search_start = identifier.indexOf?.('?');
+			const search_start = identifier.indexOf?.('?');
 			if (search_start > -1) {
 				return {
-					data: resource.search(this.parseQuery(identifier.slice(search_start + 1)), options)
+					data: resource.search(this.parseQuery(identifier.slice(search_start + 1)), options),
 				};
 			}
-			let slash_index = identifier.indexOf?.('/');
+			const slash_index = identifier.indexOf?.('/');
 			if (slash_index > -1) {
-				let id = decodeURIComponent(identifier.slice(0, slash_index));
-				let property = decodeURIComponent(identifier.slice(slash_index + 1));
-				let record = await resource.getById(id, {lazy: true});
+				const id = decodeURIComponent(identifier.slice(0, slash_index));
+				const property = decodeURIComponent(identifier.slice(slash_index + 1));
+				const record = await resource.getById(id, { lazy: true });
 				data = record[property];
-			} else
-				data = await resource.getById(decodeURIComponent(identifier), options);
+			} else data = await resource.getById(decodeURIComponent(identifier), options);
 		}
 		// TODO: commit or indicate stop reading
 		return {
@@ -134,59 +134,69 @@ export class Resource implements ResourceInterface {
 			data,
 		};
 	}
+	static async head(identifier: string | number, request?: any) {
+		const result = await this.get(identifier, request);
+		return {
+			updated: result.updated,
+			// no data, that is the point of a HEAD request
+		};
+	}
+	static async options(identifier: string | number, request?: any) {
+		return {
+			// mainly used for CORS
+		};
+	}
 
-	static async put(identifier: string|number, request?: any) {
-		let resource = new this(request);
-		let user = request.user;
-		let checked = checkAllowed(resource.allowPut?.(user), user, resource);
+	static async put(identifier: string | number, request?: any) {
+		const resource = new this(request);
+		const user = request.user;
+		const checked = checkAllowed(resource.allowPut?.(user), user, resource);
 		if (checked?.then) await checked; // fast path to avoid await if not needed
-		let updated_data = await request.data;
+		const updated_data = await request.data;
 		resource.put(identifier, updated_data);
-		let txn = await resource.commit();
+		const txn = await resource.commit();
 		return {
 			updated: txn[0].txnTime,
 			data: updated_data,
 		};
 	}
-	static async patch(identifier: string|number, request?: any) {
-		let resource = new this(request);
-		let user = request.user;
-		let checked = checkAllowed(resource.allowPatch?.(user), user, resource);
-		let updates = await request.data;
-		let record = await resource.update(identifier);
-		for (let key in updates) {
+	static async patch(identifier: string | number, request?: any) {
+		const resource = new this(request);
+		const user = request.user;
+		const checked = checkAllowed(resource.allowPatch?.(user), user, resource);
+		const updates = await request.data;
+		const record = await resource.update(identifier);
+		for (const key in updates) {
 			record[key] = updates[key];
 		}
 		await resource.commit();
 	}
-	static async delete(identifier: string|number, request?: any) {
-		let resource = new this(request);
-		let user = request.user;
-		let checked = checkAllowed(resource.allowDelete?.(user), user, resource);
+	static async delete(identifier: string | number, request?: any) {
+		const resource = new this(request);
+		const user = request.user;
+		const checked = checkAllowed(resource.allowDelete?.(user), user, resource);
 		await resource.delete(identifier);
 		await resource.commit();
 	}
-	static async post(identifier: string|number, request?: any) {
-		let resource = new this(request);
-		let user = request.user;
-		let checked = checkAllowed(resource.allowPost?.(user), user, resource);
-		let new_object = await request.data;
+	static async post(identifier: string | number, request?: any) {
+		const resource = new this(request);
+		const user = request.user;
+		const checked = checkAllowed(resource.allowPost?.(user), user, resource);
+		const new_object = await request.data;
 		await resource.create(identifier);
 		await resource.commit();
 	}
 
-	static async publish(identifier: string|number, request?: any) {
-		let resource = new this(request);
-		let user = request.user;
-		let checked = checkAllowed(resource.allowPublish?.(user), user, resource);
-		let data = await request.data;
-		if (request.retain) {// retain flag means we persist this message (for any future subscription starts), so treat it as the record itself
-			if (data === undefined)
-				await resource.delete(identifier);
-			else
-				await resource.put(identifier, data);
-		} else
-			await resource.publish(identifier, data);
+	static async publish(identifier: string | number, request?: any) {
+		const resource = new this(request);
+		const user = request.user;
+		const checked = checkAllowed(resource.allowPublish?.(user), user, resource);
+		const data = await request.data;
+		if (request.retain) {
+			// retain flag means we persist this message (for any future subscription starts), so treat it as the record itself
+			if (data === undefined) await resource.delete(identifier);
+			else await resource.put(identifier, data);
+		} else await resource.publish(identifier, data);
 		await resource.commit();
 		return true;
 	}
@@ -199,17 +209,18 @@ export class Resource implements ResourceInterface {
 	static parseQuery(query_string: string) {
 		let match;
 		let attribute, comparison;
-		let conditions = [];
+		const conditions = [];
 		// TODO: Use URLSearchParams with a fallback for when it can't parse everything (USP is very fast)
 		while ((match = QUERY_PARSER.exec(query_string))) {
-			let [ , value, operator ] = match;
-			switch(operator[0]) {
+			let [, value, operator] = match;
+			switch (operator[0]) {
 				case ')':
 					// finish call
 					operator = operator.slice(1);
 					break;
 				case '=':
-					if (attribute) { // a FIQL operator like =gt=
+					if (attribute) {
+						// a FIQL operator like =gt=
 						comparison = value;
 					} else {
 						comparison = 'equals';
@@ -217,8 +228,9 @@ export class Resource implements ResourceInterface {
 					}
 					break;
 				case '!':
-					// TODO: not-equal
-				case '<': case '>':
+				// TODO: not-equal
+				case '<':
+				case '>':
 					comparison = SYMBOL_OPERATORS[operator];
 					attribute = decodeURIComponent(value);
 					break;
@@ -237,7 +249,6 @@ export class Resource implements ResourceInterface {
 			}
 		}
 		return conditions;
-
 	}
 
 	/**
@@ -263,23 +274,27 @@ export class Resource implements ResourceInterface {
 	}
 	useTable(table_name: string, schema_name?: string): ResourceInterface {
 		if (!tables) tables = getTables();
-		let schema_object = schema_name ? tables[schema_name] : tables;
-		let table_txn = this.inUseTables[table_name];
-		if (table_txn)
-			return table_txn;
-		let table: Table = schema_object?.[table_name];
+		const schema_object = schema_name ? tables[schema_name] : tables;
+		const table_txn = this.inUseTables[table_name];
+		if (table_txn) return table_txn;
+		const table: Table = schema_object?.[table_name];
 		if (!table) return;
-		let key = schema_name ? (schema_name + '/' + table_name) : table_name;
-		let env_path = table.envPath;
-		let env_txn = this.inUseEnvs[env_path] || (this.inUseEnvs[env_path] = new DatabaseTransaction(table.primaryStore, this.user, table.auditStore));
-		return this.inUseTables[key] || (this.inUseTables[key] = table.transaction(this.request, env_txn, env_txn.getReadTxn(), this));
+		const key = schema_name ? schema_name + '/' + table_name : table_name;
+		const env_path = table.envPath;
+		const env_txn =
+			this.inUseEnvs[env_path] ||
+			(this.inUseEnvs[env_path] = new DatabaseTransaction(table.primaryStore, this.user, table.auditStore));
+		return (
+			this.inUseTables[key] ||
+			(this.inUseTables[key] = table.transaction(this.request, env_txn, env_txn.getReadTxn(), this))
+		);
 	}
 	async fetch(input: RequestInfo | URL, init?: RequestInit) {
-		let response = await fetch(input, init);
-		let method = init?.method || 'GET';
+		const response = await fetch(input, init);
+		const method = init?.method || 'GET';
 		if (method === 'GET' && response.status === 200) {
 			// we are accumulating most recent times for the sake of making resources cacheable
-			let last_modified = response.headers['last-modified'];
+			const last_modified = response.headers['last-modified'];
 			if (last_modified) {
 				this.updateModificationTime(Date.parse(last_modified));
 				return response;
@@ -292,22 +307,21 @@ export class Resource implements ResourceInterface {
 }
 
 export function snake_case(camelCase: string) {
-	return camelCase[0].toLowerCase() + camelCase.slice(1).replace(/[a-z][A-Z][a-z]/g,
-		(letters) => letters[0] + '_' + letters.slice(1));
+	return (
+		camelCase[0].toLowerCase() +
+		camelCase.slice(1).replace(/[a-z][A-Z][a-z]/g, (letters) => letters[0] + '_' + letters.slice(1))
+	);
 }
 
-
 function checkAllowed(method_allowed, user, resource): void | Promise<void> {
-	let allowed = method_allowed ??
-		resource.allowAccess?.() ??
-		user?.role.permission.super_user; // default permission check
+	const allowed = method_allowed ?? resource.allowAccess?.() ?? user?.role.permission.super_user; // default permission check
 	if (allowed?.then) {
 		// handle promises, waiting for them using fast path (not await)
 		return allowed.then(() => {
 			if (!allowed) checkAllowed(false, user, resource);
 		});
 	} else if (!allowed) {
-		let error
+		let error;
 		if (user) {
 			error = new Error('Unauthorized access to resource');
 			error.status = 403;

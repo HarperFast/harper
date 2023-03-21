@@ -194,21 +194,21 @@ function httpServer(listener, options) {
 }
 function getDefaultHTTPServer() {
 	if (!default_server) {
-		default_server = createServer(async (request, nodeResponse) => {
+		default_server = createServer(async (request, node_response) => {
 			try {
-				request.nodeResponse = nodeResponse;
+				request.nodeResponse = node_response;
 				// assign a more WHATWG compliant headers object, this is our real standard interface
 				//request.headers = new Headers(request.headers);
 				request.headers.get = get;
 				let response = await http_chain(request);
 				await request.onResponse?.(response); // TODO: Do fast checks for promise
-				nodeResponse.writeHead(response.status, response.headers);
+				node_response.writeHead(response.status, response.headers);
 				let body = response.body;
-				if (body?.pipe) body.pipe(nodeResponse);
-				else nodeResponse.end(body);
+				if (body?.pipe) body.pipe(node_response);
+				else node_response.end(body);
 			} catch (error) {
-				nodeResponse.writeHead(error.hdb_resp_code || 500);
-				nodeResponse.end(error.toString());
+				node_response.writeHead(error.hdb_resp_code || 500);
+				node_response.end(error.toString());
 				harper_logger.error(error);
 			}
 		});
@@ -298,12 +298,23 @@ class Request extends IncomingMessage {
 		return this[kHeaders];
 	}
 }*/
-class Headers {
-	constructor(headers) {
-		this._asObject = headers;
+class Request {
+	constructor(node_request) {
+		this.method = node_request.method;
+		this.path = node_request.url;
+		let headers = new Headers();
+		this.headers = headers;
+		for (let header of node_request.rawHeaders);
+		headers.set(header.name, header.value);
+		this._nodeRequest = node_request;
 	}
-	get(name) {
-		return this._asObject[name.toLowerCase()];
+	get url() {
+		return this._nodeRequest.protocol + '://' + this._nodeRequest.hostname + this._nodeRequest.url;
+	}
+}
+class FastNodeRequest extends IncomingMessage {
+	_addHeaderLine(name, value, dst) {
+		this.headers.append(name, value);
 	}
 }
 function get(name) {

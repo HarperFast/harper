@@ -200,7 +200,7 @@ interface TableDefinition {
  * @param attributes
  * @param audit
  */
-export async function table({ table: table_name, database: database_name, expiration, attributes }: TableDefinition) {
+export function table({ table: table_name, database: database_name, expiration, attributes }: TableDefinition) {
 	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
 	getDatabases();
 	let Table = databases[database_name]?.[table_name];
@@ -218,6 +218,7 @@ export async function table({ table: table_name, database: database_name, expira
 			attribute.indexed = true;
 		}
 	}
+	let txn_commit;
 	if (Table) {
 		primary_key = Table.primaryKey;
 		root_store = Table.primaryStore;
@@ -260,36 +261,48 @@ export async function table({ table: table_name, database: database_name, expira
 			attributes,
 		});
 		dbis_db = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
+		startTxn();
 		dbis_db.put(dbi_name, primary_key_attribute);
 	}
 	indices = Table.indices;
 	dbis_db = dbis_db || root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
 	Table.dbisDB = dbis_db;
-
-	let last_commit;
-	// iterate through the attributes to ensure that we have all the dbis created and indexed
-	for (const attribute of attributes || []) {
-		// non-indexed attributes do not need a dbi
-		if (!attribute.indexed || attribute.is_primary_key) continue;
-		const dbi_name = table_name + '/' + attribute.name;
-		const dbi_init = new OpenDBIObject(true, false);
-		const dbi = root_store.openDB(dbi_name, dbi_init);
-		const dbi_descriptor = dbis_db.get(dbi_name);
-		if (!dbi_descriptor) {
-			const property = attribute.name;
-			// this means that a new attribute has been introduced that needs to be indexed
-			for (const entry of Table.primaryStore.getRange()) {
-				const record = entry.value;
-				const value_to_index = record[property];
-				dbi.put(value_to_index, record[primary_key]);
-				// TODO: put in indexing code
+	try {
+		// iterate through the attributes to ensure that we have all the dbis created and indexed
+		for (const attribute of attributes || []) {
+			// non-indexed attributes do not need a dbi
+			if (!attribute.indexed || attribute.is_primary_key) continue;
+			const dbi_name = table_name + '/' + attribute.name;
+			const dbi_init = new OpenDBIObject(true, false);
+			const dbi = root_store.openDB(dbi_name, dbi_init);
+			const dbi_descriptor = dbis_db.get(dbi_name);
+			if (!dbi_descriptor) {
+				startTxn();
+				const property = attribute.name;
+				// this means that a new attribute has been introduced that needs to be indexed
+				for (const entry of Table.primaryStore.getRange()) {
+					const record = entry.value;
+					const value_to_index = record[property];
+					dbi.put(value_to_index, record[primary_key]);
+					// TODO: put in indexing code
+				}
+				dbis_db.put(dbi_name, attribute);
 			}
-			dbis_db.put(dbi_name, attribute);
-			last_commit = dbi.committed;
+			indices[attribute.name] = dbi;
 		}
-		indices[attribute.name] = dbi;
+	} finally {
+		if (txn_commit) txn_commit();
 	}
-	if (last_commit) await last_commit;
 	if (expiration) Table.setTTLExpiration(+expiration);
 	return Table;
+	function startTxn() {
+		if (txn_commit) return;
+		root_store.transactionSync(() => {
+			return {
+				then(callback) {
+					txn_commit = callback;
+				},
+			};
+		});
+	}
 }
