@@ -1,5 +1,6 @@
 import { findAndValidateUser, getSuperUser } from './user';
 import { server } from '../server/Server';
+import { resources } from '../resources/Resources';
 import { validateOperationToken } from './tokenAuthentication';
 import { table } from '../resources/tableLoader';
 import { v4 as uuid } from 'uuid';
@@ -89,6 +90,18 @@ export async function authentication(request, next_handler) {
 		request.session.update({ user: request.user.username });
 	}
 	const response = await next_handler(request);
+	if (response.status === 401) {
+		if (
+			headers['user-agent']?.startsWith('Mozilla') &&
+			headers.accept?.startsWith('text/html') &&
+			resources.loginPath
+		) {
+			// on the web if we have a login page, default to redirecting to it
+			response.status = 302;
+			response.headers.Location = resources.loginPath(request);
+		} // the HTTP specified way of indicating HTTP authentication methods supported:
+		else response.headers['WWW-Authenticate'] = 'Basic, Bearer';
+	}
 	for (let i = 0, l = response_headers.length; i < l; ) {
 		const name = response_headers[i++];
 		const value = response_headers[i++];
