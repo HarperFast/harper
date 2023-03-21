@@ -21,10 +21,12 @@ const SYMBOL_OPERATORS = {
 export class Resource implements ResourceInterface {
 	request: any;
 	user: any;
+	id: any;
 	lastModificationTime = 0;
 	inUseTables = {};
 	inUseEnvs = {};
-	constructor(request?) {
+	constructor(id?, request?) {
+		this.id = id;
 		this.request = request;
 		this.user = request?.user;
 	}
@@ -104,29 +106,45 @@ export class Resource implements ResourceInterface {
 		}
 	}
 	static async get(identifier: string | number, options?: any) {
-		const resource = new this(options);
-		let user;
-		if (options) {
-			user = options.user;
-			const checked = checkAllowed(resource.allowGet?.(user), user, resource);
-			if (checked?.then) await checked; // fast path to avoid await if not needed
-		}
-		let data;
-		if (typeof identifier === 'number') data = resource.getById(identifier, options);
-		else {
+		let data, resource;
+		if (typeof identifier === 'number') {
+			resource = this.instantiate(identifier, options);
+			let user;
+			if (options) {
+				user = options.user;
+				const checked = checkAllowed(resource.allowRead?.(user), user, resource);
+				if (checked?.then) await checked; // fast path to avoid await if not needed
+			}
+			data = resource.get();
+		} else {
 			const search_start = identifier.indexOf?.('?');
 			if (search_start > -1) {
+				resource = this.instantiate(null, options);
+				let user;
+				if (options) {
+					user = options.user;
+					const checked = checkAllowed(resource.allowRead?.(user), user, resource);
+					if (checked?.then) await checked; // fast path to avoid await if not needed
+				}
 				return {
 					data: resource.search(this.parseQuery(identifier.slice(search_start + 1)), options),
 				};
 			}
+			resource = this.instantiate(identifier, options);
+			let user;
+			if (options) {
+				user = options.user;
+				const checked = checkAllowed(resource.allowRead?.(user), user, resource);
+				if (checked?.then) await checked; // fast path to avoid await if not needed
+			}
+
 			const slash_index = identifier.indexOf?.('/');
 			if (slash_index > -1) {
 				const id = decodeURIComponent(identifier.slice(0, slash_index));
 				const property = decodeURIComponent(identifier.slice(slash_index + 1));
 				const record = await resource.getById(id, { lazy: true });
 				data = record[property];
-			} else data = await resource.getById(decodeURIComponent(identifier), options);
+			} else data = await resource.get();
 		}
 		// TODO: commit or indicate stop reading
 		return {
@@ -147,13 +165,17 @@ export class Resource implements ResourceInterface {
 		};
 	}
 
+	static instantiate(id, request) {
+		return id == null && this.Collection ? new this.Collection(request) : new this(id, request);
+	}
+
 	static async put(identifier: string | number, request?: any) {
-		const resource = new this(request);
+		const resource = this.instantiate(identifier, request);
 		const user = request.user;
 		const checked = checkAllowed(resource.allowPut?.(user), user, resource);
 		if (checked?.then) await checked; // fast path to avoid await if not needed
 		const updated_data = await request.data;
-		resource.put(identifier, updated_data);
+		resource.put(updated_data);
 		const txn = await resource.commit();
 		return {
 			updated: txn[0].txnTime,
@@ -161,25 +183,25 @@ export class Resource implements ResourceInterface {
 		};
 	}
 	static async patch(identifier: string | number, request?: any) {
-		const resource = new this(request);
+		const resource = this.instantiate(identifier, request);
 		const user = request.user;
 		const checked = checkAllowed(resource.allowPatch?.(user), user, resource);
 		const updates = await request.data;
-		const record = await resource.update(identifier);
+		const record = await resource.update();
 		for (const key in updates) {
 			record[key] = updates[key];
 		}
 		await resource.commit();
 	}
 	static async delete(identifier: string | number, request?: any) {
-		const resource = new this(request);
+		const resource = this.instantiate(identifier, request);
 		const user = request.user;
 		const checked = checkAllowed(resource.allowDelete?.(user), user, resource);
-		await resource.delete(identifier);
+		await resource.delete();
 		await resource.commit();
 	}
 	static async post(identifier: string | number, request?: any) {
-		const resource = new this(request);
+		const resource = this.instantiate(identifier, request);
 		const user = request.user;
 		const checked = checkAllowed(resource.allowPost?.(user), user, resource);
 		const new_object = await request.data;
@@ -188,15 +210,15 @@ export class Resource implements ResourceInterface {
 	}
 
 	static async publish(identifier: string | number, request?: any) {
-		const resource = new this(request);
+		const resource = this.instantiate(identifier, request);
 		const user = request.user;
 		const checked = checkAllowed(resource.allowPublish?.(user), user, resource);
 		const data = await request.data;
 		if (request.retain) {
 			// retain flag means we persist this message (for any future subscription starts), so treat it as the record itself
 			if (data === undefined) await resource.delete(identifier);
-			else await resource.put(identifier, data);
-		} else await resource.publish(identifier, data);
+			else await resource.put(data);
+		} else await resource.publish(data);
 		await resource.commit();
 		return true;
 	}
@@ -264,10 +286,12 @@ export class Resource implements ResourceInterface {
 	 * This used to indicate that this resource will use another resource to compute its data. Doing this will include
 	 * the other resource in the resource snapshot and track timestamps of data used from that resource, allowing for
 	 * automated modification/timestamp handling.
-	 * @param table
+	 * @param ResourceToUse
 	 */
-	use(table: Table) {
-		return this.useTable(table.tableName, table.schemaName);
+	use(ResourceToUse: typeof Resource, identifier: string | number) {
+		const Used = this.useTable(ResourceToUse.tableName, ResourceToUse.schemaName);
+		if (identifier == null) return Used;
+		return new Used(identifier, this.request);
 	}
 	update(keyOrRecord) {
 		throw new Error('Not implemented');

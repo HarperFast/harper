@@ -99,7 +99,7 @@ async function operationsServer() {
 			throw err;
 		}
 	} catch (err) {
-		harper_logger.error(`Failed to build server on ${process.pid}`);
+		console.error(`Failed to build server on ${process.pid}`);
 		harper_logger.fatal(err);
 		process.exit(1);
 	}
@@ -110,14 +110,10 @@ async function operationsServer() {
  * @returns {Promise<void>}
  */
 async function setUp() {
-	try {
-		harper_logger.trace('Configuring HarperDB process.');
-		await p_schema_to_global();
-		await user_schema.setUsersToGlobal();
-		await hdb_license.getLicense();
-	} catch (e) {
-		harper_logger.error(e);
-	}
+	harper_logger.trace('Configuring HarperDB process.');
+	await p_schema_to_global();
+	await user_schema.setUsersToGlobal();
+	await hdb_license.getLicense();
 }
 
 /**
