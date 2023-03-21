@@ -39,6 +39,7 @@ export async function setupTestApp() {
 	process.env.LOGGING_STDSTREAMS = 'true';
 	// might need fileURLToPath
 	process.env.RUN_HDB_APP = fileURLToPath(new URL('../testApp', import.meta.url));
+	process.env._UNREF_SERVER = true; // unref the server so when we are done nothing should block us from exiting
 	created_records = [];
 	const { startHTTPThreads } = require('../../server/threads/socketRouter');
 	await startHTTPThreads(config.threads || 0);

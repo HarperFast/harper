@@ -141,8 +141,8 @@ export function makeTable(options) {
 
 		constructor(identifier, request, env_txn, lmdb_txn, parent) {
 			// coerce if we know this is supposed to be a number
-			if (primary_key_attribute.is_number && identifier != null) identifier = +identifier;
 			super(identifier, request);
+			if (primary_key_attribute.is_number && this.id != null) this.id = +this.id;
 			if (!env_txn) {
 				env_txn = new DatabaseTransaction(primary_store, request?.user, audit_store);
 				lmdb_txn = env_txn.getReadTxn();

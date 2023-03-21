@@ -26,9 +26,9 @@ async function http(Resource, resource_path, next_path, request) {
 				// TODO: Support cancelation (if the request otherwise fails or takes too many bytes)
 				request.data = new Promise((resolve, reject) => {
 					const buffers = [];
-					request.on('data', (data) => buffers.push(data));
-					request.on('end', () => resolve(Buffer.concat(buffers)));
-					request.on('error', reject);
+					request.body.on('data', (data) => buffers.push(data));
+					request.body.on('end', () => resolve(Buffer.concat(buffers)));
+					request.body.on('error', reject);
 				}).then((body) => {
 					try {
 						return getDeserializer(request.headers['content-type'])(body);
@@ -64,6 +64,7 @@ async function http(Resource, resource_path, next_path, request) {
 			headers,
 			body: undefined,
 		};
+		// TODO: Handle 201 Created
 
 		if (resource_result.data === undefined) {
 			if (response_object.status === 200) response_object.status = resource_result.updated ? 204 : 404;
@@ -84,86 +85,6 @@ async function http(Resource, resource_path, next_path, request) {
 }
 
 let message_count = 0;
-
-async function execute(Resource, method, relative_url, request_data, request, ws?): Response {
-	const full_isolation = method === 'POST';
-	const resource_snapshot = new Resource(request, full_isolation);
-	try {
-		let response_data;
-		const user = request.user;
-		const retries = 0;
-		switch (method) {
-			case 'GET-SUB':
-				if (relative_url !== undefined) {
-					const subscription = (response_data = resource_snapshot.subscribe(relative_url, {
-						callback: request.onUpdate,
-					}));
-				}
-				break;
-			case 'GET':
-				if (relative_url !== undefined) {
-					const checked = checkAllowed(resource_snapshot.allowGet?.(user), user, resource_snapshot);
-					if (checked?.then) await checked; // fast path to avoid await if not needed
-					response_data = await resource_snapshot.get(relative_url);
-					if (resource_snapshot.lastModificationTime === Date.parse(request.headers['if-modified-since'])) {
-						resource_snapshot.doneReading();
-						return { status: 304 };
-					}
-				}
-				break;
-			case 'POST':
-				await checkAllowed(resource_snapshot.allowPost?.(user), user, resource_snapshot);
-				response_data = await resource_snapshot.post(relative_url, request_data);
-				break;
-			case 'PUT':
-				await checkAllowed(resource_snapshot.allowPut?.(user), user, resource_snapshot);
-				response_data = await resource_snapshot.put(relative_url, request_data);
-				break;
-			case 'PATCH':
-				await checkAllowed(resource_snapshot.allowPatch?.(user), user, resource_snapshot);
-				response_data = await resource_snapshot.patch(relative_url, request_data);
-				break;
-			case 'DELETE':
-				await checkAllowed(resource_snapshot.allowDelete?.(user), user, resource_snapshot);
-				response_data = await resource_snapshot.delete(relative_url);
-				break;
-		}
-		await resource_snapshot.commit();
-		if (response_data) {
-			const if_modified_since = request.headers['if-modified-since'];
-			if (if_modified_since && resource_snapshot.lastModificationTime === Date.parse(if_modified_since)) {
-				resource_snapshot.doneReading();
-				return { status: 304 };
-			}
-			if (response_data.resolveData)
-				// if it is iterable with onDone, TODO: make a better marker for this
-				response_data.onDone = () => resource_snapshot.doneReading();
-			else resource_snapshot.doneReading();
-			const headers = {
-				// TODO: Move this to negotiation in contentType
-				'Content-Type': request.responseType,
-				'Vary': 'Accept',
-			};
-			if (resource_snapshot.lastModificationTime)
-				headers['Last-Modified'] = new Date(resource_snapshot.lastModificationTime).toUTCString();
-			return {
-				status: 200,
-				headers,
-				data: response_data,
-			};
-		} else {
-			resource_snapshot.doneReading();
-			if (method === 'GET' || method === 'HEAD') {
-				return { status: 404, data: 'Not found' };
-			} else {
-				return { status: 204 };
-			}
-		}
-	} catch (error) {
-		resource_snapshot.abort();
-		throw error;
-	}
-}
 
 async function wsMessage(Resource, resource_path, path, data, request, ws) {
 	const method = data.method?.toUpperCase() || 'GET-SUB';
@@ -245,7 +166,7 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 		}*/
 	options.server.http(async (request: Request, next_handler) => {
 		await startRequest(request);
-		const entry = resources.getMatch(request.url.slice(1));
+		const entry = resources.getMatch(request.pathname.slice(1));
 		if (entry) {
 			return http(entry.Resource, entry.path, entry.remainingPath, request);
 		}
@@ -276,11 +197,11 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 
 	function startRequest(request) {
 		// TODO: check rate limiting here?
-		const url = request.url;
-		const dot_index = url.lastIndexOf('.');
+		const path = request.pathname;
+		const dot_index = path.lastIndexOf('.');
 		if (dot_index > -1) {
 			// we can use .extensions to force the Accept header
-			const ext = url.slice(dot_index + 1);
+			const ext = path.slice(dot_index + 1);
 			const accept = EXTENSION_TYPES[ext];
 			if (accept) request.headers.accept = accept;
 		}

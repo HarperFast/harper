@@ -194,14 +194,12 @@ function httpServer(listener, options) {
 }
 function getDefaultHTTPServer() {
 	if (!default_server) {
-		default_server = createServer(async (request, node_response) => {
+		default_server = createServer(async (node_request, node_response) => {
 			try {
-				request.nodeResponse = node_response;
+				let request = new Request(node_request);
 				// assign a more WHATWG compliant headers object, this is our real standard interface
 				//request.headers = new Headers(request.headers);
-				request.headers.get = get;
 				let response = await http_chain(request);
-				await request.onResponse?.(response); // TODO: Do fast checks for promise
 				node_response.writeHead(response.status, response.headers);
 				let body = response.body;
 				if (body?.pipe) body.pipe(node_response);
@@ -264,7 +262,8 @@ function onSocket(listener, options) {
 function onWebSocket(listener, options) {
 	if (!ws_server) {
 		ws_server = new WebSocketServer({ server: getDefaultHTTPServer() });
-		ws_server.on('connection', async (ws, request) => {
+		ws_server.on('connection', async (ws, node_request) => {
+			let request = new Request(node_request);
 			let chain_completion = ws_chain(request);
 			let protocol = request.headers['sec-websocket-protocol'];
 			// TODO: select listener by protocol
@@ -282,39 +281,56 @@ function defaultNotFound(request, response) {
 	response.end('Not found\n');
 }
 
-/*let kHeaders = Symbol.for('kHeaders');
-class Request extends IncomingMessage {
-	get headers() {
-		if (!this[kHeaders]) {
-			this[kHeaders] = new Headers();
-
-			const src = this.rawHeaders;
-			const dst = this[kHeaders];
-
-			for (let n = 0; n < this[kHeadersCount]; n += 2) {
-				this._addHeaderLine(src[n + 0], src[n + 1], dst);
-			}
-		}
-		return this[kHeaders];
-	}
-}*/
+/**
+ * We define our own request class, to ensure that it has integrity against leaks in a secure environment
+ * and so for better conformance to WHATWG standards.
+ */
 class Request {
+	#node_request;
+	#body;
 	constructor(node_request) {
 		this.method = node_request.method;
-		this.path = node_request.url;
-		let headers = new Headers();
-		this.headers = headers;
-		for (let header of node_request.rawHeaders);
-		headers.set(header.name, header.value);
-		this._nodeRequest = node_request;
+		let url = node_request.url;
+		this.#node_request = node_request;
+		let question_index = url.indexOf('?');
+		if (question_index > -1) {
+			this.pathname = url.slice(0, question_index);
+			this.search = url.slice(question_index);
+		} else {
+			this.pathname = url;
+			this.search = '';
+		}
+		this.headers = node_request.headers;
+		this.headers.get = get;
 	}
 	get url() {
-		return this._nodeRequest.protocol + '://' + this._nodeRequest.hostname + this._nodeRequest.url;
+		return this.protocol + '://' + this.host + this.pathname + this.search;
+	}
+	get protocol() {
+		return this.#node_request.socket.encrypted ? 'https' : 'http';
+	}
+	get ip() {
+		return this.#node_request.socket.remoteAddress;
+	}
+	get body() {
+		return this.#body || (this.#body = new RequestBody(this.#node_request));
+	}
+	get host() {
+		return this.#node_request.authority || this.#node_request.headers.host;
+	}
+	get isAborted() {
+		// TODO: implement this
+		return false;
 	}
 }
-class FastNodeRequest extends IncomingMessage {
-	_addHeaderLine(name, value, dst) {
-		this.headers.append(name, value);
+class RequestBody {
+	#node_request;
+	constructor(node_request) {
+		this.#node_request = node_request;
+	}
+	on(event, listener) {
+		this.#node_request.on(event, listener);
+		return this;
 	}
 }
 function get(name) {

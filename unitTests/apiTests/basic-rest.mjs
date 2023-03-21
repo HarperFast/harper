@@ -5,6 +5,7 @@ import axios from 'axios';
 import { decode, encode, DecoderStream } from 'cbor-x';
 import { getVariables } from './utility.js';
 import { setupTestApp } from './setupTestApp.mjs';
+import why_is_node_running from 'why-is-node-still-running';
 const { authorization, url } = getVariables();
 
 describe('test REST calls', () => {
@@ -45,17 +46,19 @@ describe('test REST calls', () => {
 		});
 		assert.equal(response.status, 304);
 	});
-	it('do post/update with CBOR', async () => {
+	it('PUT with CBOR', async () => {
+		setTimeout(() => {
+			//why_is_node_running.whyIsNodeStillRunning();
+		}, 4000).unref();
 		const headers = {
 			//authorization,
 			'content-type': 'application/cbor',
 			accept: 'application/cbor'
 		};
-		let response = await axios.post('http://localhost:9926/DenormalizedUser/33', encode({
-			method: 'addTitle',
-			titleId: 35,
+		let response = await axios.put('http://localhost:9926/VariedProps/33', encode({
+			id: 33,
+			name: 'new record',
 		}), {
-			method: 'POST',
 			responseType: 'arraybuffer',
 			headers,
 		});

@@ -22,11 +22,12 @@ export class Resource implements ResourceInterface {
 	request: any;
 	user: any;
 	id: any;
+	property?: string;
 	lastModificationTime = 0;
 	inUseTables = {};
 	inUseEnvs = {};
-	constructor(id?, request?) {
-		this.id = id;
+	constructor(identifier?, request?) {
+		this.id = identifier;
 		this.request = request;
 		this.user = request?.user;
 	}
@@ -106,45 +107,21 @@ export class Resource implements ResourceInterface {
 		}
 	}
 	static async get(identifier: string | number, options?: any) {
-		let data, resource;
-		if (typeof identifier === 'number') {
-			resource = this.instantiate(identifier, options);
-			let user;
-			if (options) {
-				user = options.user;
-				const checked = checkAllowed(resource.allowRead?.(user), user, resource);
-				if (checked?.then) await checked; // fast path to avoid await if not needed
-			}
-			data = resource.get();
-		} else {
-			const search_start = identifier.indexOf?.('?');
-			if (search_start > -1) {
-				resource = this.instantiate(null, options);
-				let user;
-				if (options) {
-					user = options.user;
-					const checked = checkAllowed(resource.allowRead?.(user), user, resource);
-					if (checked?.then) await checked; // fast path to avoid await if not needed
-				}
-				return {
-					data: resource.search(this.parseQuery(identifier.slice(search_start + 1)), options),
-				};
-			}
-			resource = this.instantiate(identifier, options);
-			let user;
-			if (options) {
-				user = options.user;
-				const checked = checkAllowed(resource.allowRead?.(user), user, resource);
-				if (checked?.then) await checked; // fast path to avoid await if not needed
-			}
-
-			const slash_index = identifier.indexOf?.('/');
-			if (slash_index > -1) {
-				const id = decodeURIComponent(identifier.slice(0, slash_index));
-				const property = decodeURIComponent(identifier.slice(slash_index + 1));
-				const record = await resource.getById(id, { lazy: true });
-				data = record[property];
-			} else data = await resource.get();
+		const resource = this.instantiate(identifier, options);
+		let user;
+		let data;
+		if (options) {
+			user = options.user;
+			const checked = checkAllowed(resource.allowRead?.(user), user, resource);
+			if (checked?.then) await checked; // fast path to avoid await if not needed
+		}
+		if (options.search)
+			return {
+				data: resource.search(this.parseQuery(options.search), options),
+			};
+		data = await resource.get();
+		if (resource.property) {
+			data = data[resource.property];
 		}
 		// TODO: commit or indicate stop reading
 		return {
@@ -165,8 +142,19 @@ export class Resource implements ResourceInterface {
 		};
 	}
 
-	static instantiate(id, request) {
-		return id == null && this.Collection ? new this.Collection(request) : new this(id, request);
+	static instantiate(identifier, request) {
+		if (identifier == null && this.Collection) return new this.Collection(request);
+		let resource;
+		if (typeof identifier === 'string') {
+			const slash_index = identifier.indexOf?.('/');
+			if (slash_index > -1) {
+				resource = new this(decodeURIComponent(identifier.slice(0, slash_index)), request);
+				resource.property = decodeURIComponent(identifier.slice(slash_index + 1));
+			} else {
+				resource = new this(decodeURIComponent(identifier), request);
+			}
+		} else resource = new this(identifier, request);
+		return resource;
 	}
 
 	static async put(identifier: string | number, request?: any) {
