@@ -9,7 +9,6 @@ const hdb_terms = require('../../utility/hdbTerms');
 const env = require('../../utility/environment/environmentManager');
 const hdb_license = require('../../utility/registration/hdb_license');
 const harper_logger = require('../../utility/logging/harper_logger');
-const hdb_logger = require('../../utility/logging/harper_logger');
 const terms = require('../../utility/hdbTerms');
 env.initSync();
 const THREAD_COUNT = env.get(hdb_terms.CONFIG_PARAMS.HTTP_THREADS) || 1;

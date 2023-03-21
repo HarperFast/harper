@@ -24,7 +24,6 @@ const CONFIGURE_SUCCESS_RESPONSE =
 	'Configuration successfully set. You must restart HarperDB for new config settings to take effect.';
 
 const DEPRECATED_CONFIG = {
-	logging_rotation_compress: 'logging.rotation.compress',
 	logging_rotation_retain: 'logging.rotation.retain',
 	logging_rotation_rotate: 'logging.rotation.rotate',
 	logging_rotation_rotateinterval: 'logging.rotation.rotateInterval',
@@ -231,6 +230,8 @@ function initConfig(force = false) {
 			}
 		}
 
+		checkForUpdatedConfig(config_doc, config_file_path);
+
 		// Validates config doc and if required sets default values for some parameters.
 		validateConfig(config_doc);
 		const config_obj = config_doc.toJSON();
@@ -252,6 +253,36 @@ function initConfig(force = false) {
 }
 
 /**
+ * When running an upgraded version there is a chance these config params won't exist.
+ * To address this we check for them and write them to config file if needed.
+ * @param config_doc
+ * @param config_file_path
+ */
+function checkForUpdatedConfig(config_doc, config_file_path) {
+	const root_path = config_doc.getIn(['rootPath']);
+	let update_file = false;
+	if (!config_doc.hasIn(['storage', 'path'])) {
+		config_doc.setIn(['storage', 'path'], path.join(root_path, hdb_terms.SCHEMA_DIR_NAME));
+		update_file = true;
+	}
+
+	if (!config_doc.hasIn(['clustering', 'leafServer', 'streams', 'path'])) {
+		config_doc.setIn(['clustering', 'leafServer', 'streams', 'path'], path.join(root_path, 'clustering', 'leaf'));
+		update_file = true;
+	}
+
+	if (!config_doc.hasIn(['logging', 'rotation', 'path'])) {
+		config_doc.setIn(['logging', 'rotation', 'path'], path.join(root_path, 'log'));
+		update_file = true;
+	}
+
+	if (update_file) {
+		logger.trace('Updating config file with missing config params');
+		fs.writeFileSync(config_file_path, String(config_doc));
+	}
+}
+
+/**
  * Validates the config doc and adds any default values to doc.
  * NOTE - If any default values are set in configValidator they also need to be 'setIn' in this function.
  * @param config_doc
@@ -268,11 +299,12 @@ function validateConfig(config_doc) {
 	config_doc.setIn(['http', 'threads'], validation.value.http.threads);
 	config_doc.setIn(['customFunctions', 'root'], validation.value.customFunctions.root);
 	config_doc.setIn(['logging', 'root'], validation.value.logging.root);
+	config_doc.setIn(['storage', 'path'], validation.value.storage.path);
+	config_doc.setIn(['logging', 'rotation', 'path'], validation.value.logging.rotation.path);
 	config_doc.setIn(
 		['clustering', 'leafServer', 'streams', 'path'],
 		validation.value.clustering.leafServer.streams?.path
 	);
-	config_doc.setIn(['storage', 'path'], validation.value.storage.path);
 }
 
 /**

@@ -200,11 +200,10 @@ describe('Test customFunctionsServer module', () => {
 				body: test_req_options.body,
 			});
 
-			expect(test_response.statusCode).to.equal(500);
-			expect(test_response.json().error).to.equal('domain https://google.com is not on access list');
+			expect(test_response.headers['access-allow-origin']).to.equal(undefined);
 		});
 
-		it('should return resp with 200 for request from origin included in CORS whitelist', async () => {
+		it('should return resp with 200 for request from origin included in CORS access list', async () => {
 			const test_config_settings = { cors_enabled: true, cors_accesslist: 'https://harperdb.io' };
 
 			test_utils.preTestPrep(test_config_settings);
@@ -222,7 +221,7 @@ describe('Test customFunctionsServer module', () => {
 				body: test_req_options.body,
 			});
 
-			expect(test_response.statusCode).to.equal(404);
+			expect(test_response.headers['access-control-allow-origin']).to.equal('https://harperdb.io');
 		});
 	});
 

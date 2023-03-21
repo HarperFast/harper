@@ -15,8 +15,11 @@ const DEFAULT_LOG_FOLDER = 'log';
 const DEFAULT_CUSTOM_FUNCTIONS_FOLDER = 'custom_functions';
 const DEFAULT_CORES_IF_ERR = 4;
 const INVALID_SIZE_UNIT_MSG = 'Invalid logging.rotation.maxSize unit. Available units are G, M or K';
+const INVALID_INTERVAL_UNIT_MSG = 'Invalid logging.rotation.interval unit. Available units are D, H or M (minutes)';
 const INVALID_MAX_SIZE_VALUE_MSG =
 	"Invalid logging.rotation.maxSize value. Value should be a number followed by unit e.g. '10M'";
+const INVALID_INTERVAL_VALUE_MSG =
+	"Invalid logging.rotation.interval value. Value should be a number followed by unit e.g. '10D'";
 const UNDEFINED_OPS_API = 'rootPath config parameter is undefined';
 const UNDEFINED_NATS_ENABLED = 'clustering.enabled config parameter is undefined';
 
@@ -53,8 +56,9 @@ function configValidator(config_json) {
 	const nats_term_constraints = string
 		.pattern(/^[^\s.,*>]+$/)
 		.messages({ 'string.pattern.base': '{:#label} invalid, must not contain ., * or >' })
-		.empty(null);
-	const clustering_stream_path_constraints = Joi.custom(validatePath).empty(null).default(setDefaultRoot);
+		.empty(null)
+		.required();
+	const clustering_stream_path_constraints = Joi.string().empty(null).default(setDefaultRoot);
 	const storage_path_constraints = Joi.custom(validatePath).empty(null).default(setDefaultRoot);
 
 	const clustering_enabled = config_json.clustering?.enabled;
@@ -91,12 +95,13 @@ function configValidator(config_json) {
 				}).required(),
 				streams: Joi.object({
 					// Max age must be above duplicate_window stream setting
-					maxAge: number.min(120).allow(null).required(),
-					maxBytes: number.min(1).allow(null).required(),
-					maxMsgs: number.min(1).allow(null).required(),
+					maxAge: number.min(120).allow(null).optional(),
+					maxBytes: number.min(1).allow(null).optional(),
+					maxMsgs: number.min(1).allow(null).optional(),
 					path: clustering_stream_path_constraints,
 				}).required(),
 			}).required(),
+			logLevel: Joi.valid('error', 'warn', 'info', 'debug', 'trace'),
 			nodeName: nats_term_constraints,
 			tls: Joi.object({
 				certificate: pem_file_constraints,
@@ -104,7 +109,7 @@ function configValidator(config_json) {
 				privateKey: pem_file_constraints,
 				insecure: boolean.required(),
 			}),
-			user: Joi.string().required(),
+			user: string.optional().empty(null),
 		}).required();
 	} else {
 		clustering_validation_schema = Joi.object({
@@ -148,9 +153,10 @@ function configValidator(config_json) {
 			level: Joi.valid('notify', 'fatal', 'error', 'warn', 'info', 'debug', 'trace'),
 			rotation: Joi.object({
 				enabled: boolean.optional(),
-				frequency: string.optional().empty(null),
-				size: string.custom(validateRotationMaxSize).optional().empty(null),
-				path: string.optional().empty(null),
+				compress: boolean.optional(),
+				interval: string.custom(validateRotationInterval).optional().empty(null),
+				maxSize: string.custom(validateRotationMaxSize).optional().empty(null),
+				path: string.optional().empty(null).default(setDefaultRoot),
 			}).required(),
 			root: root_constraints,
 			stdStreams: boolean.required(),
@@ -253,6 +259,20 @@ function validateRotationMaxSize(value, helpers) {
 	return value;
 }
 
+function validateRotationInterval(value, helpers) {
+	const unit = value.slice(-1);
+	if (unit !== 'D' && unit !== 'H' && unit !== 'M') {
+		return helpers.message(INVALID_INTERVAL_UNIT_MSG);
+	}
+
+	const size = value.slice(0, -1);
+	if (isNaN(parseInt(size))) {
+		return helpers.message(INVALID_INTERVAL_VALUE_MSG);
+	}
+
+	return value;
+}
+
 function setDefaultThreads(parent, helpers) {
 	const config_param = helpers.state.path.join('.');
 	let processors = os.cpus().length;
@@ -295,6 +315,8 @@ function setDefaultRoot(parent, helpers) {
 			const legacy_storage_path = path.join(hdb_root, hdb_terms.LEGACY_DATABASES_DIR_NAME);
 			if (fs.existsSync(legacy_storage_path)) return legacy_storage_path;
 			return path.join(hdb_root, hdb_terms.DATABASES_DIR_NAME);
+		case 'logging.rotation.path':
+			return path.join(hdb_root, DEFAULT_LOG_FOLDER);
 		default:
 			throw new Error(
 				`Error setting default root for config parameter: ${config_param}. Unrecognized config parameter`

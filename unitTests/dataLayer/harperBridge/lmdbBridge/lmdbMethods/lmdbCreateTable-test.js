@@ -126,7 +126,9 @@ describe('test lmdbCreateTable module', () => {
 
 		date_stub.restore();
 		delete global.hdb_schema;
-		await fs.remove(BASE_PATH);
+		try {
+			await fs.remove(BASE_PATH);
+		} catch(error) {}
 		global.lmdb_map = undefined;
 	});
 

@@ -56,8 +56,9 @@ const TEST_ARGS = {
 	LOGGING_LEVEL: 'notify',
 	LOGGING_ROOT: path.join(DIRNAME, 'testlogging'),
 	LOGGING_ROTATION_ENABLED: true,
-	LOGGING_ROTATION_FREQUENCY: '10D',
-	LOGGING_ROTATION_SIZE: '10M',
+	LOGGING_ROTATION_COMPRESS: true,
+	LOGGING_ROTATION_INTERVAL: '10D',
+	LOGGING_ROTATION_MAXSIZE: '10M',
 	LOGGING_ROTATION_PATH: 'lets/send/log/here',
 	LOGGING_STDSTREAMS: true,
 	LOGGING_AUDITLOG: true,
@@ -308,6 +309,7 @@ describe('Test configUtils module', () => {
 							path: null,
 						},
 					},
+					logLevel: 'error',
 					nodeName: 'test_node_name',
 					tls: {
 						certificate: TEST_CERT,
@@ -349,9 +351,10 @@ describe('Test configUtils module', () => {
 					level: 'notify',
 					rotation: {
 						enabled: true,
-						frequency: '10D',
+						compress: true,
+						interval: '10D',
 						path: 'lets/send/log/here',
-						size: '10M',
+						maxSize: '10M',
 					},
 					root: path.join(DIRNAME, '/testlogging'),
 					stdStreams: true,
@@ -402,6 +405,7 @@ describe('Test configUtils module', () => {
 				clustering_leafserver_streams_maxbytes: null,
 				clustering_leafserver_streams_maxmsgs: null,
 				clustering_leafserver_streams_path: null,
+				clustering_loglevel: 'error',
 				clustering_nodename: 'test_node_name',
 				clustering_tls_certificate: TEST_CERT,
 				clustering_tls_certificateauthority: null,
@@ -428,8 +432,9 @@ describe('Test configUtils module', () => {
 				logging_file: false,
 				logging_level: 'notify',
 				logging_rotation_enabled: true,
-				logging_rotation_frequency: '10D',
-				logging_rotation_size: '10M',
+				logging_rotation_compress: true,
+				logging_rotation_interval: '10D',
+				logging_rotation_maxsize: '10M',
 				logging_rotation_path: 'lets/send/log/here',
 				logging_root: path.join(DIRNAME, '/testlogging'),
 				logging_stdstreams: true,
@@ -482,6 +487,7 @@ describe('Test configUtils module', () => {
 			clustering_leafserver_streams_maxbytes: null,
 			clustering_leafserver_streams_maxmsgs: null,
 			clustering_leafserver_streams_path: null,
+			clustering_loglevel: 'error',
 			clustering_nodename: null,
 			clustering_tls_certificate: null,
 			clustering_tls_certificateauthority: null,
@@ -489,7 +495,7 @@ describe('Test configUtils module', () => {
 			clustering_tls_insecure: true,
 			clustering_user: null,
 			customfunctions_enabled: true,
-			customfunctions_network_cors: true,
+			customfunctions_network_cors: false,
 			customfunctions_network_corsaccesslist: [null],
 			customfunctions_network_headerstimeout: 60000,
 			customfunctions_network_https: false,
@@ -509,15 +515,16 @@ describe('Test configUtils module', () => {
 			logging_level: 'error',
 			logging_root: null,
 			logging_rotation_enabled: false,
-			logging_rotation_frequency: null,
-			logging_rotation_size: null,
+			logging_rotation_interval: null,
+			logging_rotation_compress: false,
+			logging_rotation_maxsize: null,
 			logging_rotation_path: null,
 			logging_stdstreams: false,
 			operationsapi_authentication_operationtokentimeout: '1d',
 			operationsapi_authentication_refreshtokentimeout: '30d',
 			operationsapi_foreground: false,
 			operationsapi_network_cors: true,
-			operationsapi_network_corsaccesslist: [null],
+			operationsapi_network_corsaccesslist: ['https://studio.harperdb.io'],
 			operationsapi_network_headerstimeout: 60000,
 			operationsapi_network_https: false,
 			operationsapi_network_keepalivetimeout: 5000,
@@ -747,6 +754,9 @@ describe('Test configUtils module', () => {
 					},
 					logging: {
 						root: '/yaml/log',
+						rotation: {
+							path: 'path/for/rotated/logs',
+						},
 					},
 					http: {
 						threads: 12,
@@ -783,8 +793,8 @@ describe('Test configUtils module', () => {
 			expect(set_in_stub.secondCall.args[1]).to.equal(CF_ROOT);
 			expect(set_in_stub.args[2][0]).to.eql(['logging', 'root']);
 			expect(set_in_stub.args[2][1]).to.equal(LOG_ROOT);
-			expect(set_in_stub.args[3][1]).to.equal('user/harperdb/streams');
-			expect(set_in_stub.args[4][1]).to.equal('path/to/storage');
+			expect(set_in_stub.args[3][1]).to.equal('path/to/storage');
+			expect(set_in_stub.args[4][1]).to.equal('path/for/rotated/logs');
 		});
 	});
 

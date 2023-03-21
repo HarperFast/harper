@@ -361,8 +361,8 @@ describe('Test processManagement utilityFunctions module', () => {
 			let leaf_name_found = false;
 			list.forEach((proc) => {
 				if (proc.name === 'HarperDB') hdb_name_found = true;
-				if (proc.name === 'Clustering Hub-7711') hub_name_found = true;
-				if (proc.name === 'Clustering Leaf-7715') leaf_name_found = true;
+				if (proc.name === 'Clustering Hub') hub_name_found = true;
+				if (proc.name === 'Clustering Leaf') leaf_name_found = true;
 			});
 
 			expect(list.length).to.equal(3);
@@ -417,13 +417,13 @@ describe('Test processManagement utilityFunctions module', () => {
 
 		it('Test a unique set of services is returned', async () => {
 			const expected_obj = {
-				'Clustering Hub-7711': {
+				'Clustering Hub': {
 					exec_mode: 'fork_mode',
-					name: 'Clustering Hub-7711',
+					name: 'Clustering Hub',
 				},
-				'Clustering Leaf-7715': {
+				'Clustering Leaf': {
 					exec_mode: 'fork_mode',
-					name: 'Clustering Leaf-7715',
+					name: 'Clustering Leaf',
 				},
 				'HarperDB': {
 					name: 'HarperDB',
@@ -520,8 +520,8 @@ describe('Test processManagement utilityFunctions module', () => {
 			const restart_calls = [...restart_stub.args[0], ...restart_stub.args[1]];
 			expect(reload_calls).to.include('HarperDB');
 			expect(reload_calls.length).to.equal(1);
-			expect(restart_calls).to.include('Clustering Hub-7711');
-			expect(restart_calls).to.include('Clustering Leaf-7715');
+			expect(restart_calls).to.include('Clustering Hub');
+			expect(restart_calls).to.include('Clustering Leaf');
 			expect(restart_calls.length).to.equal(2);
 		}).timeout(20000);
 	});

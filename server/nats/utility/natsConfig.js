@@ -200,4 +200,5 @@ async function removeNatsConfig(process_name) {
 	const config_file_path = path.join(env_manager.get(CONFIG_PARAMS.ROOTPATH), HDB_CLUSTERING_FOLDER, config_file);
 	await fs.writeFile(config_file_path, string_of_zeros);
 	await fs.remove(config_file_path);
+	hdb_logger.notify(process_name, 'started.');
 }

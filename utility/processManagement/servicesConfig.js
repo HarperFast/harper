@@ -38,15 +38,17 @@ function generateMainServerConfig() {
 
 const ELIDED_HUB_PORT = 9930;
 function generateNatsHubServerConfig() {
-	env.initSync();
+	env.initSync(true);
 	const hdb_root = env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
 	const hub_config_path = path.join(hdb_root, 'clustering', nats_terms.NATS_CONFIG_FILES.HUB_SERVER);
 	const hub_logs = path.join(env.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY), hdb_terms.LOG_NAMES.HDB);
 	const hub_port = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT);
+	const nats_logging_flag =
+		nats_terms.LOG_LEVEL_FLAGS[env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LOGLEVEL)] ?? undefined;
 	const hs_config = {
 		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB + (hub_port !== ELIDED_HUB_PORT ? '-' + hub_port : ''),
 		script: NATS_SERVER_BINARY_PATH,
-		args: `-c ${hub_config_path}`,
+		args: nats_logging_flag ? `${nats_logging_flag} -c ${hub_config_path}` : `-c ${hub_config_path}`,
 		exec_mode: 'fork',
 		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB },
 		merge_logs: true,
@@ -65,17 +67,19 @@ function generateNatsHubServerConfig() {
 
 const ELIDED_LEAF_PORT = 9940;
 function generateNatsLeafServerConfig() {
-	env.initSync();
+	env.initSync(true);
 	const hdb_root = env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
 	const leaf_config_path = path.join(hdb_root, 'clustering', nats_terms.NATS_CONFIG_FILES.LEAF_SERVER);
 	const leaf_logs = path.join(env.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY), hdb_terms.LOG_NAMES.HDB);
 	const leaf_port = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT);
+	const nats_logging_flag =
+		nats_terms.LOG_LEVEL_FLAGS[env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LOGLEVEL)] ?? undefined;
 	const ls_config = {
 		// we assign a unique name per port if it is not the default, so we can run multiple NATS instances for
 		// multiple HDB instances
 		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF + (leaf_port !== ELIDED_LEAF_PORT ? '-' + leaf_port : ''),
 		script: NATS_SERVER_BINARY_PATH,
-		args: `-c ${leaf_config_path}`,
+		args: nats_logging_flag ? `${nats_logging_flag} -c ${leaf_config_path}` : `-c ${leaf_config_path}`,
 		exec_mode: 'fork',
 		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF },
 		merge_logs: true,

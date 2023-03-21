@@ -58876,7 +58876,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\": \"set_configuration\",\n    \"logging_rotation_size\": \"12M\"\n}",
+							"raw": "{\n\t\"operation\": \"set_configuration\",\n    \"logging_rotation_maxSize\": \"12M\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -58907,7 +58907,7 @@
 									"pm.test(\"test confirms clustering nodename and logging rotation maxsize\", ()=>{",
 									"",
 									"    const jsonData = pm.response.json();",
-									"    pm.expect(jsonData.logging.rotation.size).to.equal(\"12M\");",
+									"    pm.expect(jsonData.logging.rotation.maxSize).to.equal(\"12M\");",
 									"",
 									"});"
 								],

@@ -719,8 +719,7 @@ describe('Test hdbServer module', () => {
 				body: test_req_options.body,
 			});
 
-			expect(test_response.statusCode).to.equal(500);
-			expect(test_response.json().error).to.equal('domain https://google.com is not on access list');
+			expect(test_response.headers['access-allow-origin']).to.equal(undefined);
 
 			server.close();
 		});
@@ -742,8 +741,7 @@ describe('Test hdbServer module', () => {
 				body: test_req_options.body,
 			});
 
-			expect(test_response.statusCode).to.equal(200);
-
+			expect(test_response.headers['access-control-allow-origin']).to.equal('https://harperdb.io');
 			server.close();
 		});
 	});

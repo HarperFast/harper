@@ -24,6 +24,11 @@ const LOG_LEVEL_HIERARCHY = {
 	trace: 1,
 };
 
+const OUTPUTS = {
+	STDOUT: 'stdOut',
+	STDERR: 'stdErr',
+};
+
 // Install log is created in harperdb/logs because the hdb folder doesn't exist initially during the install process.
 const INSTALL_LOG_LOCATION = path.join(PACKAGE_ROOT, `logs`);
 
@@ -59,6 +64,10 @@ module.exports = {
 	suppressLogging,
 	initLogSettings,
 	setupConsoleLogging,
+	logCustomLevel,
+	closeLogFile,
+	getLogFilePath: () => log_file_path,
+	OUTPUTS,
 };
 
 /**
@@ -203,7 +212,7 @@ function createLogRecord(level, args) {
 			tags.push(args[0]?.tagName);
 			x++;
 		} else if (args[0]?.serviceName) {
-			service_name = args[0]?.serviceName
+			service_name = args[0]?.serviceName;
 			x++;
 		}
 	}
@@ -339,6 +348,11 @@ function warn(...args) {
 	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['warn']) {
 		logStdErr(createLogRecord('warn', args));
 	}
+}
+
+function logCustomLevel(level, output, ...args) {
+	if (output === OUTPUTS.STDERR) logStdErr(createLogRecord(level, args));
+	else logStdOut(createLogRecord(level, args));
 }
 
 /**

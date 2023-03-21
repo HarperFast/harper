@@ -13,6 +13,7 @@
         "../unitTests/server/customFunctions/customFunctionsServer-test.js",
         "../unitTests/server/nats/**/*.js",
         "../unitTests/upgrade/**/*.js",
-        "../unitTests/apiTests/**/*.js"
+        "../unitTests/apiTests/**/*.js",
+        "../unitTests/utility/logging/*.js"
     ]
 }
