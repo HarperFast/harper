@@ -115,7 +115,7 @@ export class Resource implements ResourceInterface {
 			const checked = checkAllowed(resource.allowRead?.(user), user, resource);
 			if (checked?.then) await checked; // fast path to avoid await if not needed
 		}
-		if (options.search)
+		if (options?.search)
 			return {
 				data: resource.search(this.parseQuery(options.search), options),
 			};

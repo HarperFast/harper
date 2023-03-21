@@ -114,10 +114,15 @@ export function makeTable(options) {
 					options.listener(data[primary_key], data);
 				}
 			}
-			return addSubscription(this, key, async (key, audit_record) => {
-				//let result = await this.get(key);
-				options.listener(key, audit_record.value);
-			});
+			return addSubscription(
+				this,
+				key,
+				async (key, audit_record) => {
+					//let result = await this.get(key);
+					options.listener(key, audit_record.value);
+				},
+				options.startTime
+			);
 		}
 		static transaction(env_transaction, lmdb_txn, parent_transaction) {
 			return new this(env_transaction, lmdb_txn, parent_transaction, {});

@@ -1,5 +1,6 @@
 import { table } from '../resources/tableLoader';
 import { resources } from '../resources/Resources';
+import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 const DurableSession = table({
 	database: 'system',
 	table: 'hdb_durable_session',
@@ -66,7 +67,7 @@ export class SubscriptionsSession {
 					this.listener(entry.path + '/' + id, message, subscription);
 				},
 				user: this.user,
-				startTime: start_time,
+				startTime: start_time || getNextMonotonicTime(),
 				noRetain: rh,
 			})
 		);
