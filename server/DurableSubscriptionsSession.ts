@@ -1,5 +1,11 @@
-import { databases } from '../resources/tableLoader';
+import { table } from '../resources/tableLoader';
 import { resources } from '../resources/Resources';
+const DurableSession = table({
+	database: 'system',
+	table: 'hdb_durable_session',
+	attributes: [{ name: 'id', is_primary_key: true }],
+});
+
 /**
  * This is used for durable sessions, that is sessions in MQTT that are not "clean" sessions (and with QoS >= 1
  * subscriptions) and durable AMQP queues, with real-time communication and reliable delivery that requires tracking
@@ -24,11 +30,10 @@ import { resources } from '../resources/Resources';
  * subscriptions.
  * @param session_id
  */
-export function getSession({ clientId: session_id, clean: non_durable }) {
+export async function getSession({ clientId: session_id, clean: non_durable }) {
 	let session;
 	if (session_id) {
-		// TODO: Try to get the persistent session.
-		const session_record = !non_durable && databases.system.hdb_durable_sessions?.getById(session_id);
+		const session_record = !non_durable && (await DurableSession.get(session_id))?.data;
 		if (session_record) {
 			session = new DurableSubscriptionsSession(session_id, session_record);
 			// resuming a session, we need to resume each subscription
@@ -36,7 +41,6 @@ export function getSession({ clientId: session_id, clean: non_durable }) {
 				session.addSubscription(subscription);
 			}
 		} else {
-			// TODO: Create a new session
 			session = non_durable ? new SubscriptionsSession(session_id) : new DurableSubscriptionsSession(session_id);
 		}
 	}
@@ -92,7 +96,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	sessionRecord: any;
 	constructor(session_id, record?) {
 		super(session_id);
-		this.sessionRecord = record;
+		this.sessionRecord = record || { id: session_id, subscriptions: [] };
 	}
 	addSubscription(subscription) {
 		super.addSubscription(subscription);
@@ -100,6 +104,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		if (qos > 0 && !start_time) {
 			// TODO: Add this to the session record with the correct timestamp and save it
 			this.sessionRecord.subscriptions.push({ topic, qos, startTime: Date.now() });
+			DurableSession.put(this.sessionRecord.id, this.sessionRecord);
 		}
 		return subscription.qos;
 	}
