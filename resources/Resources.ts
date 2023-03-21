@@ -54,21 +54,6 @@ export class Resources extends Map<string, typeof Resource> {
 		return found_entry;
 	}
 
-	/*	set(path, Resource) {
-		let current_location = { paths: this.paths };
-		for (let path_part of path.split('/')) {
-			if (!path_part) continue;
-			if (!current_location.paths)
-				current_location.paths = Object.create(null);
-			let next = current_location.paths[path_part];
-			if (!next) {
-				current_location.paths[path_part] = next = {
-				};
-			}
-			current_location = next;
-		}
-		current_location.Resource = Resource;
-	}*/
 	setRepresentation(path, type, representation) {}
 }
 export let resources: Resources;

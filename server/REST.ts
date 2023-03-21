@@ -55,7 +55,7 @@ async function http(Resource, resource_path, next_path, request) {
 		const headers = {};
 		if (resource_result.updated) headers['Last-Modified'] = new Date(resource_result.updated).toUTCString();
 		const execution_time = performance.now() - start;
-		headers['Server-Timing'] = `db;dur=${execution_time}`;
+		headers['Server-Timing'] = `db;dur=${execution_time.toFixed(2)}`;
 		recordRequest(resource_path, execution_time);
 		const response_object = {
 			status,

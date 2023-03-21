@@ -15,7 +15,6 @@ const CORE_PLUGINS = {
 	'app-server': {}, // this is intended to be the default http handler for http-based plugins
 	'operations-server': operationsServer,
 	'auth': auth,
-	// 'NATS-cluster':..
 	mqtt,
 };
 let loaded_server_modules = new Map();
@@ -24,7 +23,6 @@ const default_server_modules = [
 	//{ module: 'mqtt', port: 8883, secure: true },
 	{ module: 'app-server', port: 9926 },
 	{ module: 'operations-server', port: 9925 },
-	// 'NATS-cluster':..
 	{ module: 'auth' },
 ];
 

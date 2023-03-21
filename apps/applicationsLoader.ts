@@ -77,7 +77,7 @@ const DEFAULT_RESOURCE_LOADERS = [
 		module: 'fastify-routes',
 		path: '.', // relative to the app-name, like  http://server/app-name/route-name
 	},
-	{
+	/*{
 		module: 'login',
 		path: '/',
 	},
