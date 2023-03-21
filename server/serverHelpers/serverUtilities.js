@@ -97,19 +97,19 @@ async function processLocalTransaction(req, operation_function) {
 		post_op_function
 	);
 
-		if (typeof data !== 'object') {
-			data = { message: data };
-		}
-		if (data instanceof Error) {
-			throw data;
-		}
-		if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
-			global_schema.setSchemaDataToGlobal((err) => {
-				if (err) {
-					harper_logger.error(err);
-				}
-			});
-		}
+	if (typeof data !== 'object') {
+		data = { message: data };
+	}
+	if (data instanceof Error) {
+		throw data;
+	}
+	if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
+		global_schema.setSchemaDataToGlobal((err) => {
+			if (err) {
+				harper_logger.error(err);
+			}
+		});
+	}
 
 	return data;
 }
@@ -233,7 +233,10 @@ async function executeJob(json) {
 		let job_runner_message = new job_runner.RunnerMessage(new_job_object, json);
 		await job_runner.parseMessage(job_runner_message);
 
-		return `Starting job with id ${new_job_object.id}`;
+		return {
+			message: `Starting job with id ${new_job_object.id}`,
+			job_id: new_job_object.id,
+		};
 	} catch (err) {
 		let message = `There was an error executing job: ${err.http_resp_msg ? err.http_resp_msg : err}`;
 		harper_logger.error(message);
