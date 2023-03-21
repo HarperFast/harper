@@ -31,7 +31,7 @@ let USER_SEARCH_RESULT = new Map([
 				permission: {
 					cluster_user: true,
 				},
-				role: 'cluster_role',
+				role: 'cluster_user',
 			},
 			username: 'cluster_user',
 		},
@@ -1092,7 +1092,7 @@ describe('Test user.js', () => {
 					permission: {
 						cluster_user: true,
 					},
-					role: 'cluster_role',
+					role: 'cluster_user',
 				},
 				username: 'cluster_user',
 				decrypt_hash: 'a_password@123/!',
