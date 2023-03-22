@@ -55,39 +55,10 @@ export class Resource implements ResourceInterface {
 	 * Non-restartable across multiple env/dbs with full isolation: Wait on commit of async-transaction
 	 */
 	commit(): Promise<boolean> {
-		const txns_with_read_and_writes = [];
-		const txns_with_only_writes = [];
 		const commits = [];
 		for (const env_path in this.inUseEnvs) {
 			// TODO: maintain this array ourselves so we don't need to key-ify
 			const env_txn = this.inUseEnvs[env_path];
-			if (env_txn.writes.length > 0 || env_txn.updatingRecords?.length > 0) {
-				if (env_txn.conditions.length > 0) txns_with_read_and_writes.push(env_txn);
-				// I don't know if these will even be possible, might want to just eliminate this
-				else txns_with_only_writes.push(env_txn);
-			}
-		}
-		/*if (txns_with_read_and_writes.length >= 2) {
-			// if multiple read+write txns are needed, we switch to a two phase commit approach and first do a request phase
-			for (let env_txn of txns_with_read_and_writes) {
-				commits.push(env_txn.requestCommit());
-			}
-			if ((await Promise.all(commits)).indexOf(false) > -1) {
-				for (let env_txn of txns_with_read_and_writes) env_txn.abort();
-				return false;
-			}
-			// all requests succeeded, proceed with collecting actual commits
-			commits = [];
-		}*/
-		for (const env_txn of txns_with_read_and_writes) {
-			commits.push(env_txn.commit());
-		}
-		/*if (commits.length === 1) { // no two phase commit, so just verify that the single commit succeeds before proceeding
-			if (!await commits[0])
-				return false;
-			commits = [];
-		}*/
-		for (const env_txn of txns_with_only_writes) {
 			commits.push(env_txn.commit());
 		}
 		return Promise.all(commits);
@@ -123,7 +94,7 @@ export class Resource implements ResourceInterface {
 		if (resource.property) {
 			data = data[resource.property];
 		}
-		// TODO: commit or indicate stop reading
+		resource.commit();
 		return {
 			updated: resource.lastModificationTime,
 			data,

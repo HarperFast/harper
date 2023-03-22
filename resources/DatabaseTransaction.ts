@@ -3,21 +3,22 @@ import { DATA, OWN } from './WritableRecord';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 
 export class DatabaseTransaction {
-	conditions = [] // the set of reads that were made in this txn, that need to be verified to commit the writes
-	writes = [] // the set of writes to commit if the conditions are met
-	updatingRecords?: any[]
-	fullIsolation = false
-	username: string
-	inTwoPhase?: boolean
-	lmdbDb: RootDatabase
-	auditStore: Database
-	readTxn: LMDBTransaction
+	conditions = []; // the set of reads that were made in this txn, that need to be verified to commit the writes
+	writes = []; // the set of writes to commit if the conditions are met
+	updatingRecords?: any[];
+	fullIsolation = false;
+	username: string;
+	inTwoPhase?: boolean;
+	lmdbDb: RootDatabase;
+	auditStore: Database;
+	readTxn: LMDBTransaction;
 	constructor(lmdb_db, user, audit_store) {
 		this.lmdbDb = lmdb_db;
 		this.username = user?.name;
 		this.auditStore = audit_store;
 	}
-	getReadTxn() {// used optimistically
+	getReadTxn() {
+		// used optimistically
 		return this.readTxn || (this.readTxn = this.lmdbDb.useReadTransaction());
 	}
 	doneReading() {
@@ -32,57 +33,34 @@ export class DatabaseTransaction {
 	}
 
 	/**
-	 * When multiple env/databases are involved in a transaction, we basically do a local two phase commit
-	 * using this method to perform the first request (or voting phase). This helps us to eliminate the need
-	 * for restarting transactions.
-	 */
-	requestCommit(): Promise<boolean> {
-		this.inTwoPhase = true;
-		let first_condition = this.conditions[0];
-		if (!first_condition) return Promise.resolve(true);
-		return first_condition.store.transaction(() => {
-			let rejected;
-			for (let condition of this.conditions) {
-				rejected = true;
-				condition.store.ifVersion(condition.key, condition.version, () => {
-					rejected = false;
-				});
-				if (rejected)
-					break;
-			}
-			return !rejected;
-		});
-	}
-
-	/**
 	 * Resolves with information on the timestamp and success of the commit
 	 */
 	commit(): Promise<CommitResolution> {
 		this.doneReading();
-		let remaining_conditions = this.inTwoPhase ? [] : this.conditions.slice(0).reverse();
+		const remaining_conditions = this.inTwoPhase ? [] : this.conditions.slice(0).reverse();
 		let txn_time, resolution, write_resolution;
 		const nextCondition = () => {
-			let condition = remaining_conditions.pop();
+			const condition = remaining_conditions.pop();
 			if (condition) {
-				let condition_resolution = condition.store.ifVersion(condition.key, condition.version, nextCondition);
+				const condition_resolution = condition.store.ifVersion(condition.key, condition.version, nextCondition);
 				resolution = resolution || condition_resolution;
 			} else {
 				txn_time = getNextMonotonicTime();
-				for (let { txn, record } of this.updatingRecords || []) {
+				for (const { txn, record } of this.updatingRecords || []) {
 					// TODO: get the own properties, translate to a put and a correct replication operation/CRDT
-					let original = record[DATA];
-					let own = record[OWN];
+					const original = record[DATA];
+					const own = record[OWN];
 					own.__updatedtime__ = txn_time;
 					write_resolution = txn.put(original[txn.constructor.primaryKey], Object.assign({}, original, own));
 				}
-				for (let write of this.writes) {
+				for (const write of this.writes) {
 					if (this.auditStore && write.store.useVersions) {
-						let updates = write.value.__updates__ || (write.value.__updates__ = []);
+						const updates = write.value.__updates__ || (write.value.__updates__ = []);
 						updates.push(txn_time); // TODO: Move to an overflow key in the audit table if this gets too big
 						this.auditStore.put([txn_time, write.store.tableId, write.key], {
 							operation: write.operation,
 							username: this.username,
-							value: write.value
+							value: write.value,
 						});
 					}
 					write_resolution = write.store[write.operation]?.(write.key, write.value, txn_time);
@@ -99,7 +77,7 @@ export class DatabaseTransaction {
 		this.conditions = [];
 		this.writes = [];
 		resolution = resolution || write_resolution;
-		return resolution?.then(resolution => ({
+		return resolution?.then((resolution) => ({
 			success: resolution,
 			txnTime: txn_time,
 		}));
@@ -112,6 +90,6 @@ export class DatabaseTransaction {
 	}
 }
 interface CommitResolution {
-	txnTime: number
-	resolution: boolean
+	txnTime: number;
+	resolution: boolean;
 }
