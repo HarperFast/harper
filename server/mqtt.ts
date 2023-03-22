@@ -14,13 +14,14 @@ export async function start({ server, port, webSocket, secure }) {
 	if (webSocket !== false)
 		server.ws(
 			(ws, request, chain_completion) => {
-				const onMessage = onSocket(
+				const { onMessage, onClose } = onSocket(
 					ws,
 					(message) => ws.send(message),
 					request,
 					Promise.resolve(chain_completion).then(() => request?.user)
 				);
 				ws.on('message', onMessage);
+				ws.on('close', onClose);
 			},
 			{ port, subProtocol: 'mqtt', secure }
 		); // if there is no port, we are piggy-backing off of default app http server
@@ -33,8 +34,9 @@ export async function start({ server, port, webSocket, secure }) {
 					user = await getSuperUser();
 				}
 
-				const onMessage = onSocket(socket, (message) => socket.write(message), null, user);
+				const { onMessage, onClose } = onSocket(socket, (message) => socket.write(message), null, user);
 				socket.on('data', onMessage);
+				socket.on('close', onClose);
 			},
 			{ port: port || DEFAULT_MQTT_PORT, secure }
 		);
@@ -45,6 +47,9 @@ function onSocket(socket, send, request, user) {
 	const parser = makeParser({ protocolVersion: 4 });
 	function onMessage(data) {
 		parser.parse(data);
+	}
+	function onClose() {
+		session.disconnect();
 	}
 	parser.on('packet', async (packet) => {
 		if (user?.then) user = await user;
@@ -72,13 +77,17 @@ function onSocket(socket, send, request, user) {
 					// TODO: Handle the will & testament, and possibly use the will's content type as a hint for expected contet
 					session.user = user;
 					session.setListener((topic, message) => {
-						send(
-							generate({
-								cmd: 'publish',
-								topic,
-								payload: serialize(message),
-							})
-						);
+						const payload = generate({
+							cmd: 'publish',
+							topic,
+							payload: serialize(message),
+						});
+						try {
+							send(payload);
+						} catch (error) {
+							console.warn(error);
+							session.disconnect();
+						}
 					});
 					send(
 						generate({
@@ -168,5 +177,5 @@ function onSocket(socket, send, request, user) {
 			return request ? serializeMessage(data, request) : JSON.stringify(data);
 		}
 	});
-	return onMessage;
+	return { onMessage, onClose };
 }

@@ -4,6 +4,7 @@ import { threadId } from 'worker_threads';
 import { onMessageFromWorkers, broadcast } from '../server/threads/manageThreads';
 import { MAXIMUM_KEY } from 'ordered-binary';
 import { tables } from './tableLoader';
+import { getLastTxnId } from 'lmdb';
 const TRANSACTION_EVENT_TYPE = 'transaction';
 
 let all_subscriptions;
@@ -25,10 +26,15 @@ export function addSubscription(table, key, listener?: (key) => any, start_time:
 	if (!all_subscriptions) {
 		onMessageFromWorkers((event) => {
 			if (event.type === TRANSACTION_EVENT_TYPE) {
-				const flag_position = event.start || 2;
-				const buffers = event.buffers;
-				const path = event.path;
-				notifyFromTransactionData(path, buffers, flag_position);
+				/* TODO: We want to actually pass around the LMDB txn id and the first time stamp, as it should be much more
+				     efficient, but first we
+				need lmdb-js support for get the txn_id cursor/range entries, so we can validate each entry matches
+				the txn_id
+				const txn_id = event.txnId;
+				const first_txn = event.firstTxn;
+				 */
+				const audit_ids = event.auditIds;
+				notifyFromTransactionData(path, audit_ids);
 			}
 		});
 		all_subscriptions = Object.create(null); // using it as a map that doesn't change much
@@ -164,15 +170,22 @@ function notifyFromTransactionDataSharedBuffers(path, buffers, flag_position) {
 }
 
 let last_time = Date.now();
-function notifyFromTransactionData(path, buffers, flag_position) {
+function notifyFromTransactionData(path, audit_ids) {
 	if (!all_subscriptions) return;
 	const subscriptions = all_subscriptions[path];
 	if (!subscriptions) return; // if no subscriptions to this env path, don't need to read anything
-	for (const { key, value: audit_record } of subscriptions.auditStore.getRange({ start: [last_time, MAXIMUM_KEY] })) {
-		const [txn_time, table_id, record_key] = key;
+	/*
+	TODO: Once we have lmdb-js support for returning lmdb txn ids, we can iterate with checks on the txn id.
+	 for (const { key, value: audit_record } of subscriptions.auditStore.getRange({ start: [first_txn, MAXIMUM_KEY] })) {
+		if (txn_id !== getLastTxnId()) continue;
+
+	 */
+	for (const audit_id of audit_ids) {
+		const [txn_time, table_id, record_key] = audit_id;
 		last_time = txn_time;
 		const table_subscriptions = subscriptions[table_id];
 		if (!table_subscriptions) continue;
+		const audit_record = subscriptions.auditStore.get(audit_id);
 		for (const subscription of table_subscriptions.allKeys) {
 			try {
 				subscription.listener(record_key, audit_record);
@@ -201,13 +214,14 @@ function notifyFromTransactionData(path, buffers, flag_position) {
  * Interface with lmdb-js to listen for commits and find the SharedArrayBuffers that hold the transaction log/instructions.
  * @param primary_store
  */
-export function listenToCommits(primary_store) {
-	const lmdb_env = primary_store.env;
+export function listenToCommits(audit_store) {
+	const lmdb_env = audit_store.env;
+	audit_store.cache = new Map(); // this is a trick to get the key and store information to pass through after the commit
 	if (!lmdb_env.hasBroadcastListener) {
 		lmdb_env.hasBroadcastListener = true;
 		const path = lmdb_env.path;
 
-		primary_store.on('aftercommit', ({ next, last }) => {
+		audit_store.on('aftercommit', ({ next, last, txnId }) => {
 			// after each commit, broadcast the transaction to all threads so subscribers can read the
 			// transactions and find changes of interest. We try to use the same binary format for
 			// transactions that is used by lmdb-js for minimal modification and since the binary
@@ -215,8 +229,16 @@ export function listenToCommits(primary_store) {
 			const transaction_buffers = [];
 			let last_uint32;
 			let start;
+			let first_txn;
+			const audit_ids = [];
 			// get all the buffers (and starting position of the first) in this transaction
 			do {
+				/* TODO: Once we have lmdb support for return txn ids, we can just get the first one
+				if (!first_txn && next.meta && next.meta.store === audit_store && next.meta.key) {
+					first_txn = next.meta.key[0];
+					break;
+				}*/
+				if (next.meta && next.meta.store === audit_store && next.meta.key) audit_ids.push(next.meta.key);
 				if (next.uint32 !== last_uint32) {
 					last_uint32 = next.uint32;
 					if (last_uint32) {
@@ -228,14 +250,18 @@ export function listenToCommits(primary_store) {
 			} while (next !== last);
 			// broadcast all the transaction buffers so they can be (sequentially) read and subscriptions messages
 			// delivered on all other threads
-			broadcast({
-				type: TRANSACTION_EVENT_TYPE,
-				path,
-				buffers: transaction_buffers,
-				start,
-			});
+			if (first_txn)
+				broadcast({
+					type: TRANSACTION_EVENT_TYPE,
+					path,
+					buffers: transaction_buffers,
+					auditIds: audit_ids,
+					//txnId,
+					//firstTxn: first_txn,
+					start,
+				});
 			// and notify on our own thread too
-			notifyFromTransactionData(path, transaction_buffers, start);
+			notifyFromTransactionData(path, audit_ids);
 		});
 	}
 }

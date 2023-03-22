@@ -180,7 +180,8 @@ function readMetaDb(
 		return root_store;
 	} catch (error) {
 		// @ts-ignore
-		throw new Error(`Error opening database ${path}`, { cause: error });
+		error.message += `Error opening database ${path}`;
+		throw error;
 	}
 }
 interface TableDefinition {

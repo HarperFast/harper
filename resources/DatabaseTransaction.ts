@@ -1,5 +1,6 @@
-import { Database, RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
+import { asBinary, Database, getLastVersion, RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
 import { DATA, OWN } from './WritableRecord';
+import { UPDATES_PROPERTY } from '../utility/hdbTerms';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 
 export class DatabaseTransaction {
@@ -39,48 +40,51 @@ export class DatabaseTransaction {
 		this.doneReading();
 		const remaining_conditions = this.inTwoPhase ? [] : this.conditions.slice(0).reverse();
 		let txn_time, resolution, write_resolution;
+		for (const { txn, record } of this.updatingRecords || []) {
+			// TODO: get the own properties, translate to a put and a correct replication operation/CRDT
+			const original = record[DATA];
+			const own = record[OWN];
+			write_resolution = txn.put(original[txn.constructor.primaryKey], Object.assign({}, original, own));
+		}
+		let write_index = 0;
+		txn_time = getNextMonotonicTime();
 		const nextCondition = () => {
-			const condition = remaining_conditions.pop();
-			if (condition) {
-				const condition_resolution = condition.store.ifVersion(condition.key, condition.version, nextCondition);
+			const write = this.writes[write_index++];
+			if (write) {
+				const entry = write.store.getBinaryFast(write.key);
+				const version = entry ? getLastVersion() : null;
+				write.lastVersion = version;
+				const condition_resolution = write.store.ifVersion(write.key, version, nextCondition);
 				resolution = resolution || condition_resolution;
 			} else {
-				txn_time = getNextMonotonicTime();
-				for (const { txn, record } of this.updatingRecords || []) {
-					// TODO: get the own properties, translate to a put and a correct replication operation/CRDT
-					const original = record[DATA];
-					const own = record[OWN];
-					own.__updatedtime__ = txn_time;
-					write_resolution = txn.put(original[txn.constructor.primaryKey], Object.assign({}, original, own));
-				}
 				for (const write of this.writes) {
-					if (this.auditStore && write.store.useVersions) {
-						const updates = write.value.__updates__ || (write.value.__updates__ = []);
-						updates.push(txn_time); // TODO: Move to an overflow key in the audit table if this gets too big
-						this.auditStore.put([txn_time, write.store.tableId, write.key], {
-							operation: write.operation,
-							username: this.username,
-							value: write.value,
-						});
-					}
-					write_resolution = write.store[write.operation]?.(write.key, write.value, txn_time);
+					const audit_record = write.commit();
+					audit_record.username = this.username;
+					audit_record.lastVersion = write.lastVersion;
+					this.auditStore.put([txn_time, write.store.tableId, write.key], audit_record);
 				}
 			}
 		};
 		nextCondition();
+		//this.auditStore.ifNoExists('txn_time-fix this', nextCondition);
 		// TODO: if any of these fail, restart this
 		// TODO: This is where we write to the SharedArrayBuffer so that subscribers from other threads can
 		// listen... And then we can use it determine when the commit has been delivered to at least one other
 		// node
 
-		// now reset transactions tracking; this transaction be reused and committed again
-		this.conditions = [];
-		this.writes = [];
 		resolution = resolution || write_resolution;
-		return resolution?.then((resolution) => ({
-			success: resolution,
-			txnTime: txn_time,
-		}));
+		return resolution?.then((resolution) => {
+			if (resolution) {
+				// now reset transactions tracking; this transaction be reused and committed again
+				this.conditions = [];
+				this.writes = [];
+				return {
+					txnTime: txn_time,
+				};
+			} else {
+				return this.commit(); // try again
+			}
+		});
 	}
 	abort(): void {
 		this.doneReading();

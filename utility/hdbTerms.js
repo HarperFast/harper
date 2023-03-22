@@ -803,7 +803,7 @@ const TIME_STAMP_NAMES_ENUM = {
 	CREATED_TIME: '__createdtime__',
 	UPDATED_TIME: '__updatedtime__',
 };
-const UPDATES_PROPERTY = '\x1F';
+const METADATA_PROPERTY = Symbol('metadata');
 const CLUSTERING_FLAG = '__clustering__';
 
 const TIME_STAMP_NAMES = Object.values(TIME_STAMP_NAMES_ENUM);
@@ -1018,5 +1018,6 @@ module.exports = {
 	PACKAGE_ROOT,
 	PRE_4_0_0_VERSION,
 	SCHEMAS_PARAM_CONFIG,
+	METADATA_PROPERTY,
 };
 require('./devops/tsBuild');

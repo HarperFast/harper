@@ -1,5 +1,5 @@
 import { CONFIG_PARAMS, TIME_STAMP_NAMES_ENUM } from '../utility/hdbTerms';
-import { open, Database } from 'lmdb';
+import { open, Database, asBinary } from 'lmdb';
 import { getIndexedValues } from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
 import { randomUUID } from 'crypto';
@@ -57,7 +57,7 @@ export function makeTable(options) {
 		auditStore: audit_store,
 	} = options;
 	if (!attributes) attributes = [];
-	listenToCommits(primary_store);
+	if (audit_store) listenToCommits(audit_store);
 	const primary_key_attribute = attributes.find((attribute) => attribute.is_primary_key) || {};
 	return class Table extends Resource {
 		static primaryStore = primary_store;
@@ -119,7 +119,11 @@ export function makeTable(options) {
 				key,
 				async (key, audit_record) => {
 					//let result = await this.get(key);
-					options.listener(key, audit_record.value);
+					try {
+						options.listener(key, audit_record.value);
+					} catch (error) {
+						console.error(error);
+					}
 				},
 				options.startTime
 			);
@@ -282,119 +286,150 @@ export function makeTable(options) {
 				id = this.id;
 			}
 			if (!id) {
-				id = record[primary_key] = randomUUID(); //uuid.v4();
-			}
-			const existing_entry = primary_store.getEntry(id);
-			let existing_record = existing_entry?.value;
-			const had_existing = existing_record;
-			if (!existing_record) {
-				existing_record = {};
+				id = this.id;
+				if (!id)
+					id = record[primary_key] = randomUUID(); //uuid.v4();
 			}
 			if (attributes && !options?.noValidation) {
 				let validation_errors;
-				/*
 				for (let i = 0, l = attributes.length; i < l; i++) {
 					let attribute = attributes[i];
-					if (!attribute.type || attribute.type === typeof record[attribute.name]) {
-						// any other validations
-					} else if (attribute.required && record[attribute.name] == null) {
-						(validation_errors || (validation_errors = [])).push(`Property ${attribute.name} is required`);
-					} else {
-						(validation_errors || (validation_errors = [])).push(`Property ${attribute.name} must be a ${attribute.type}`);
+					if (attribute.type) {
+						let value = record[attribute.name];
+						if (value != null) {
+							switch(attribute.type) {
+								case 'Int': case 'Float':
+									if (typeof value !== 'number' || (attribute.type === 'Int' && value !== Math.floor(value)))
+										((validation_errors || (validation_errors = [])).push(`Property ${attribute.name} must be an ${attribute.type === 'Int' ? 'integer' : 'number'}`);
+									break;
+								case 'ID':
+									if (typeof value !== 'number' && typeof value !== 'string')
+										((validation_errors || (validation_errors = [])).push(`Property ${attribute.name} must be a string or number`);
+									break;
+								case 'String':
+									if (typeof value !== 'string')
+										((validation_errors || (validation_errors = [])).push(`Property ${attribute.name} must be a string`);
+							}
+						}
 					}
-				}*/
+					if (attribute.required && record[attribute.name] == null) {
+						(validation_errors || (validation_errors = [])).push(`Property ${attribute.name} is required`);
+					}
+				}
 				if (validation_errors) {
 					throw new Error(validation_errors.join('. '));
-				}
-			}
-
-			//setTimestamps(record, !had_existing, generate_timestamps);
-			if (
-				Number.isInteger(record[UPDATED_TIME_ATTRIBUTE_NAME]) &&
-				existing_record[UPDATED_TIME_ATTRIBUTE_NAME] > record[UPDATED_TIME_ATTRIBUTE_NAME]
-			) {
-				// This is not an error condition in our world of last-record-wins
-				// replication. If the existing record is newer than it just means the provided record
-				// is, well... older. And newer records are supposed to "win" over older records, and that
-				// is normal, non-error behavior.
-				return;
-			}
-			let completion;
-
-			const writes = [
-				{
-					store: primary_store,
-					operation: 'put',
-					key: id,
-					value: record,
-					version: record[UPDATED_TIME_ATTRIBUTE_NAME],
-				},
-			];
-			// iterate the entries from the record
-			// for-in is about 5x as fast as for-of Object.entries, and this is extremely time sensitive since it can be
-			// inside a write transaction
-			// TODO: Make an array version of indices that is faster
-			for (const key in indices) {
-				const index = indices[key];
-				const value = record[key];
-				const existing_value = existing_record[key];
-				if (value === existing_value) {
-					continue;
-				}
-
-				//if the update cleared out the attribute value we need to delete it from the index
-				let values = getIndexedValues(existing_value);
-				if (values) {
-					if (LMDB_PREFETCH_WRITES)
-						index.prefetch(
-							values.map((v) => ({ key: v, value: id })),
-							noop
-						);
-					for (let i = 0, l = values.length; i < l; i++) {
-						writes.push({ store: index, operation: 'remove', key: values[i], value: this.id, version: undefined });
-					}
-				}
-				values = getIndexedValues(value);
-				if (values) {
-					if (LMDB_PREFETCH_WRITES)
-						index.prefetch(
-							values.map((v) => ({ key: v, value: id })),
-							noop
-						);
-					for (let i = 0, l = values.length; i < l; i++) {
-						writes.push({ store: index, operation: 'put', key: values[i], value: this.id, version: undefined });
-					}
 				}
 			}
 			// use optimistic locking to only commit if the existing record state still holds true.
 			// this is superior to using an async transaction since it doesn't require JS execution
 			//  during the write transaction.
-			env_txn.recordRead(primary_store, this.id, existing_entry ? existing_entry.version : null, false);
-			env_txn.writes.push(...writes);
+			env_txn.writes.push({
+				key: id,
+				store: primary_store,
+				commit: (txn_time) => {
+					const existing_entry = primary_store.getEntry(id);
+					let existing_record = existing_entry?.value;
+					const had_existing = existing_record;
+					if (!existing_record) {
+						existing_record = {};
+					}
+
+					if (existing_entry?.version > txn_time) {
+						// This is not an error condition in our world of last-record-wins
+						// replication. If the existing record is newer than it just means the provided record
+						// is, well... older. And newer records are supposed to "win" over older records, and that
+						// is normal, non-error behavior. So we still record an audit entry
+						return {
+							// return the audit record that should be recorded
+							operation: 'put',
+							value: record,
+							// TODO: What should this be?
+							lastUpdate: existing_entry.version,
+						};
+					}
+					let completion;
+
+					primary_store.put(id, record, txn_time);
+					// iterate the entries from the record
+					// for-in is about 5x as fast as for-of Object.entries, and this is extremely time sensitive since it can be
+					// inside a write transaction
+					// TODO: Make an array version of indices that is faster
+					for (const key in indices) {
+						const index = indices[key];
+						const value = record[key];
+						const existing_value = existing_record[key];
+						if (value === existing_value) {
+							continue;
+						}
+
+						//if the update cleared out the attribute value we need to delete it from the index
+						let values = getIndexedValues(existing_value);
+						if (values) {
+							if (LMDB_PREFETCH_WRITES)
+								index.prefetch(
+									values.map((v) => ({ key: v, value: id })),
+									noop
+								);
+							for (let i = 0, l = values.length; i < l; i++) {
+								index.remove(values[i], this.id);
+							}
+						}
+						values = getIndexedValues(value);
+						if (values) {
+							if (LMDB_PREFETCH_WRITES)
+								index.prefetch(
+									values.map((v) => ({ key: v, value: id })),
+									noop
+								);
+							for (let i = 0, l = values.length; i < l; i++) {
+								index.put(values[i], this.id);
+							}
+						}
+					}
+					return {
+						// return the audit record that should be recorded
+						operation: 'put',
+						value: record,
+					};
+				},
+			});
 		}
 
-		delete(options): boolean {
+		delete(id, options): boolean {
 			const env_txn = this.envTxn;
+			if (typeof id === 'object') {
+				options = id;
+				id = this.id;
+			} else if (!id)
+				id = this.id;
 			const existing_entry = primary_store.getEntry(this.id);
 			const existing_record = existing_entry?.value;
 			if (!existing_record) return false;
-			for (let i = 0, l = indices.length; i < l; i++) {
-				const index = indices[i];
-				const existing_value = existing_record[this.id];
+			env_txn.writes.push({
+				key: id,
+				store: primary_store,
+				commit: (txn_time) => {
 
-				//if the update cleared out the attribute value we need to delete it from the index
-				const values = getIndexedValues(existing_value);
-				if (values) {
-					if (LMDB_PREFETCH_WRITES)
-						index.prefetch(
-							values.map((v) => ({ key: v, value: this.id })),
-							noop
-						);
-					for (let i = 0, l = values.length; i < l; i++) {
-						env_txn.writes.push({ db: index, operations: 'remove', key: values[i], value: this.id });
+					for (let i = 0, l = indices.length; i < l; i++) {
+						const index = indices[i];
+						const existing_value = existing_record[id];
+
+						//if the update cleared out the attribute value we need to delete it from the index
+						const values = getIndexedValues(existing_value);
+						if (values) {
+							if (LMDB_PREFETCH_WRITES)
+								index.prefetch(
+									values.map((v) => ({key: v, value: id})),
+									noop
+								);
+							for (let i = 0, l = values.length; i < l; i++) {
+								index.remove(values[i], id);
+							}
+						}
 					}
+					primary_store.remove(id);
 				}
-			}
+			});
 		}
 		static Collection = class Collection extends Table {
 			constructor(request) {
@@ -500,9 +535,16 @@ export function makeTable(options) {
 		publish(message, options) {
 			this.envTxn.writes.push({
 				store: primary_store,
-				operation: 'message',
 				key: this.id,
-				value: message,
+				commit: (txn_time) => {
+					// just need to update the version number of the record so it points to the latest audit record
+					primary_store.put(this.id, asBinary(primary_store.getBinary(this.id)), txn_time);
+					// messages are recorded in the audit entry
+					return {
+						operation: 'message',
+						value: message,
+					};
+				},
 			});
 		}
 	};

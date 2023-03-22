@@ -56,21 +56,26 @@ export class SubscriptionsSession {
 	constructor(session_id) {
 		this.sessionId = session_id;
 	}
-	addSubscription(subscription) {
-		const { topic, qos, rh, startTime: start_time } = subscription;
+	addSubscription(subscription_request) {
+		const { topic, qos, rh, startTime: start_time } = subscription_request;
 		const entry = resources.getMatch(topic);
 		let remaining_path = entry.remainingPath;
 		if (remaining_path === '+' || remaining_path === '#') remaining_path = '?'; // normalize wildcard
-		this.subscriptions.push(
-			entry.Resource.subscribe(remaining_path, {
-				listener: (id, message) => {
-					this.listener(entry.path + '/' + id, message, subscription);
-				},
-				user: this.user,
-				startTime: start_time || getNextMonotonicTime(),
-				noRetain: rh,
-			})
-		);
+		// If there are a large number of subscriptions, we could include a map of existing subscriptions
+		// to make this faster, but for a few subscriptions that would probably be slower.
+		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
+		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
+		if (existing_subscription) existing_subscription.end();
+		const subscription = entry.Resource.subscribe(remaining_path, {
+			listener: (id, message) => {
+				this.listener(entry.path + '/' + id, message, subscription);
+			},
+			user: this.user,
+			startTime: start_time || getNextMonotonicTime(),
+			noRetain: rh,
+		});
+		subscription.topic = topic;
+		this.subscriptions.push(subscription);
 	}
 	publish(message, data) {
 		const { topic, payload } = message;
@@ -91,6 +96,7 @@ export class SubscriptionsSession {
 		for (const subscription of this.subscriptions) {
 			subscription.end();
 		}
+		this.subscriptions = [];
 	}
 }
 export class DurableSubscriptionsSession extends SubscriptionsSession {
