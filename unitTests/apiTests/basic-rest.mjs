@@ -33,7 +33,7 @@ describe('test REST calls', () => {
 		let data = JSON.parse(response.data);
 		assert.equal(available_records[1], data.id);
 	});
-		it('do get with CBOR', async () => {
+	it('do get with CBOR', async () => {
 		const headers = {
 			//authorization,
 			accept: 'application/cbor'
@@ -81,5 +81,29 @@ describe('test REST calls', () => {
 		});
 		console.log('decoded arraybuffer data:', decode(response.data));
 
+	});
+	describe('querying with query parameters', function() {
+		it('do query by string property', async () => {
+			let response = await axios('http://localhost:9926/FourProp?name=name3');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.length, 1);
+			assert.equal(response.data[0].name, 'name3');
+		});
+		it('do query by numeric property', async () => {
+			let response = await axios('http://localhost:9926/FourProp?age=25');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.length, 1);
+			assert.equal(response.data[0].age, 25);
+		});
+		it('do query by two properties with no match', async () => {
+			let response = await axios('http://localhost:9926/FourProp?name=name2&age=28');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.length, 0);
+		});
+		it('do query by two properties with one match', async () => {
+			let response = await axios('http://localhost:9926/FourProp?name=name2&age=22');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.length, 1);
+		});
 	});
 });

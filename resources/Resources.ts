@@ -51,6 +51,7 @@ export class Resources extends Map<string, typeof Resource> {
 			slash_index += 2;
 		}
 		if (!found_entry) found_entry = this.get(path); // try the exact path
+		if (found_entry) found_entry.remainingPath = '';
 		return found_entry;
 	}
 

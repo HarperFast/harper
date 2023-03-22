@@ -7,8 +7,15 @@ type SimpleRecord @table {
 	id: ID @primaryKey
 	name: String @indexed
 }
+type FourProp @table {
+	id: ID @primaryKey
+	name: String @indexed
+	age: Int @indexed
+	title: String
+}
 
 type Query {
 	VariedProps: VariedProps
 	SimpleRecord: SimpleRecord
+	FourProp: FourProp
 }

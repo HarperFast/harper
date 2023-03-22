@@ -3,7 +3,7 @@ import { getTables } from './tableLoader';
 import { Table } from './Table';
 import { DatabaseTransaction } from './DatabaseTransaction';
 let tables;
-const QUERY_PARSER = /([^&|=<>!(),]+)([&|=<>!(),]*)/g;
+const QUERY_PARSER = /([^?&|=<>!(),]+)([&|=<>!(),]*)/g;
 const SYMBOL_OPERATORS = {
 	'<': 'lt',
 	'<=': 'le',
@@ -216,7 +216,7 @@ export class Resource implements ResourceInterface {
 					attribute = decodeURIComponent(value);
 					break;
 
-				case '':
+				case undefined:
 				case '&':
 				case '|':
 					if (attribute) {

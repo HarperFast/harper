@@ -60,5 +60,20 @@ export async function setupTestApp() {
 		});
 		created_records.push(object.id);
 	}
+
+	for (let i = 0; i < 10; i++) {
+		let object = {
+			id: i,
+			name: 'name' + i,
+			age: 20 + i,
+			title: 'title' + i
+		};
+		let response = await axios.put('http://localhost:9926/FourProp/' + object.id, encode(object), {
+			method: 'PUT',
+			responseType: 'arraybuffer',
+			headers,
+		});
+	}
+
 	return created_records;
 }
