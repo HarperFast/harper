@@ -54,7 +54,7 @@ describe('test REST calls', () => {
 			method: 'GET',
 			responseType: 'arraybuffer',
 			headers: {
-				'If-Modified-Since': response.headers['last-modified'],
+				'If-Match': response.headers.etag,
 				...headers
 			},
 			validateStatus: function (status) {

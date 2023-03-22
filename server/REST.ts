@@ -43,17 +43,17 @@ async function http(Resource, resource_path, next_path, request) {
 
 		let resource_result = await Resource[method.toLowerCase()](next_path, request);
 		//= await execute(Resource, method, next_path, request_data, request);
-		const if_modified_since = request.headers['if-modified-since'];
+		const if_match = request.headers['if-match'];
 		let status = 200;
 		if (!resource_result) resource_result = {};
-		if (if_modified_since && resource_result.updated <= Date.parse(if_modified_since) + 1000) {
+		if (if_match && resource_result.updated?.toString(36) == if_match) {
 			//resource_result.cancel();
 			status = 304;
 			resource_result.data = undefined;
 		}
 
 		const headers = {};
-		if (resource_result.updated) headers['Last-Modified'] = new Date(resource_result.updated).toUTCString();
+		if (resource_result.updated) headers['ETag'] = resource_result.updated.toString(36);
 		const execution_time = performance.now() - start;
 		headers['Server-Timing'] = `db;dur=${execution_time.toFixed(2)}`;
 		recordRequest(resource_path, execution_time);

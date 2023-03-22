@@ -58,7 +58,7 @@ export class DatabaseTransaction {
 				resolution = resolution || condition_resolution;
 			} else {
 				for (const write of this.writes) {
-					const audit_record = write.commit();
+					const audit_record = write.commit(txn_time);
 					audit_record.username = this.username;
 					audit_record.lastVersion = write.lastVersion;
 					this.auditStore.put([txn_time, write.store.tableId, write.key], audit_record);
