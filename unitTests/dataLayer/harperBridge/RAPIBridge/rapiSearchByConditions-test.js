@@ -13,7 +13,7 @@ const DEV_SCHEMA_PATH = path.join(BASE_SCHEMA_PATH, 'dev');
 
 const { handleHDBError } = require('../../../../utility/errors/hdbError');
 
-const test_data = require('../../../testData');
+const test_data = require('../../../testData.json');
 
 const rewire = require('rewire');
 const lmdb_terms = require('../../../../utility/lmdb/terms');
@@ -22,7 +22,7 @@ const { searchByConditions: search_by_conditions } = rewire('../../../../dataLay
 const assert = require('assert');
 const fs = require('fs-extra');
 const sinon = require('sinon');
-const systemSchema = require('../../../../json/systemSchema');
+const systemSchema = require('../../../../json/systemSchema.json');
 const { sortBy } = require('lodash');
 const TIMESTAMP = Date.now();
 

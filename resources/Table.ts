@@ -443,7 +443,6 @@ export function makeTable(options) {
 			for (const condition of conditions) {
 				const attribute = attributes.find((attribute) => attribute.name == condition.attribute);
 				if (!attribute) {
-					// TODO: Make it a 404
 					throw handleHDBError(new Error(), `${condition.attribute} is not a defined attribute`, 404);
 				}
 				if (attribute.is_number)
@@ -551,13 +550,22 @@ export function makeTable(options) {
 	};
 	function idsForCondition(search_condition) {
 		let start;
-		let end, inclusiveEnd, inclusiveStart, filter;
+		let end, inclusiveEnd, exclusiveStart, filter;
 		switch (search_condition.type) {
 			case 'lt':
 				start = true;
 				end = search_condition.value;
 				break;
+			case 'lte':
+				start = true;
+				end = search_condition.value;
+				inclusiveEnd = true;
+				break;
 			case 'gt':
+				start = search_condition.value;
+				exclusiveStart = true;
+				break;
+			case 'gte':
 				start = search_condition.value;
 				break;
 			case lmdb_terms.SEARCH_TYPES.EQUALS:
@@ -568,7 +576,7 @@ export function makeTable(options) {
 		}
 		const index = indices[search_condition.attribute];
 		if (!index) {
-			throw new Error(`${search_condition.attribute} is not indexed, can not search for this attribute`);
+			throw handleHDBError(new Error(), `${search_condition.attribute} is not indexed, can not search for this attribute`, 404);
 		}
 		const is_primary_key = search_condition.attribute === primary_key;
 		const range_options = { start, end, inclusiveEnd, values: !is_primary_key };
