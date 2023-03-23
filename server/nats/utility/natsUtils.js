@@ -255,25 +255,36 @@ async function getNATSReferences() {
 
 /**
  * gets a list of all nats servers in the cluster
+ * @param timeout - the amount of time the request will wait for a response from the Nats network.
  * @returns {Promise<*[]>}
  */
-async function getServerList() {
-	const leaf_port = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT);
+async function getServerList(timeout) {
+	const hub_port = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT);
 	const { sys_name, decrypt_hash } = await user.getClusterUser();
-	const connection = await createConnection(leaf_port, sys_name, decrypt_hash);
+	const connection = await createConnection(hub_port, sys_name, decrypt_hash);
 	const subj = createInbox();
 	const sub = connection.subscribe(subj);
 	let servers = [];
+	let start_time;
 	const get_servers = (async () => {
 		// get the servers in parallel
 		for await (const m of sub) {
-			servers.push(jc.decode(m.data));
+			const response = jc.decode(m.data);
+			response.response_time = Date.now() - start_time;
+			servers.push(response);
 		}
 	})();
 
+	start_time = Date.now();
+	// These are internal Nats subjects used across all servers for accessing server information.
+	// https://docs.nats.io/running-a-nats-service/configuration/sys_accounts#available-events-and-services
+	// Return general server information. We use it to get which routes exist on each node.
 	await connection.publish('$SYS.REQ.SERVER.PING.VARZ', undefined, { reply: subj });
+	// Discover all connected servers. We use it to see which nodes are connected to this one
+	// and all connected nodes within the cluster from this nodes point of view.
+	await connection.publish('$SYS.REQ.SERVER.PING', undefined, { reply: subj });
 	await connection.flush();
-	await hdb_utils.async_set_timeout(50); // delay for NATS to process published messages
+	await hdb_utils.async_set_timeout(timeout); // delay for NATS to process published messages
 	await sub.drain();
 	await connection.close();
 	await get_servers; // make sure we have finished getting the servers

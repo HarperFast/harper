@@ -18,6 +18,7 @@ const remove_node = require('../../utility/clustering/removeNode');
 const configure_cluster = require('../../utility/clustering/configureCluster');
 const purge_stream = require('../../utility/clustering/purgeStream');
 const cluster_status = require('../../utility/clustering/clusterStatus');
+const cluster_network = require('../../utility/clustering/clusterNetwork');
 const routes = require('../../utility/clustering/routes');
 const export_ = require('../../dataLayer/export');
 const op_auth = require('../../utility/operation_authorization');
@@ -97,19 +98,19 @@ async function processLocalTransaction(req, operation_function) {
 		post_op_function
 	);
 
-		if (typeof data !== 'object') {
-			data = { message: data };
-		}
-		if (data instanceof Error) {
-			throw data;
-		}
-		if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
-			global_schema.setSchemaDataToGlobal((err) => {
-				if (err) {
-					harper_logger.error(err);
-				}
-			});
-		}
+	if (typeof data !== 'object') {
+		data = { message: data };
+	}
+	if (data instanceof Error) {
+		throw data;
+	}
+	if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
+		global_schema.setSchemaDataToGlobal((err) => {
+			if (err) {
+				harper_logger.error(err);
+			}
+		});
+	}
 
 	return data;
 }
@@ -283,6 +284,7 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.PURGE_STREAM, new OperationFunctionObject(purge_stream));
 	op_func_map.set(terms.OPERATIONS_ENUM.SET_CONFIGURATION, new OperationFunctionObject(config_utils.setConfiguration));
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_STATUS, new OperationFunctionObject(cluster_status.clusterStatus));
+	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_NETWORK, new OperationFunctionObject(cluster_network));
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_SET_ROUTES, new OperationFunctionObject(routes.setRoutes));
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_GET_ROUTES, new OperationFunctionObject(routes.getRoutes));
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_DELETE_ROUTES, new OperationFunctionObject(routes.deleteRoutes));
