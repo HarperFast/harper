@@ -192,6 +192,35 @@ interface TableDefinition {
 	attributes: any[];
 }
 
+export function database({ table: table_name, database: database_name, expiration, attributes }: TableDefinition) {
+	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
+	getDatabases();
+	const database = databases[database_name];
+	let root_store;
+	let primary_key;
+	let txn_commit;
+	if (database) {
+		return database;
+	} else {
+		const database = databases[database_name] || (databases[database_name] = Object.create(null));
+		const table_path = env_get(CONFIG_PARAMS.SCHEMAS)?.[database_name]?.tables?.[table_name]?.path;
+		const database_path =
+			table_path ||
+			env_get(CONFIG_PARAMS.SCHEMAS)?.[database_name]?.path ||
+			process.env.STORAGE_PATH ||
+			env_get(CONFIG_PARAMS.STORAGE_PATH) ||
+			join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME);
+		const path = join(database_path, table_path ? 'data.mdb' : database_name + '.mdb');
+		root_store = database_envs.get(path);
+		if (!root_store) {
+			// TODO: validate database name
+			const env_init = new OpenEnvironmentObject(path, false);
+			root_store = open(env_init);
+			database_envs.set(path, root_store);
+		}
+	}
+}
+
 /**
  * This can be called to ensure that the specified table exists and if it does not exist, it should be created.
  * @param table_name
