@@ -76,7 +76,7 @@ async function http(Resource, resource_path, next_path, request) {
 		// do content negotiation on the error
 		console.error(error);
 		return {
-			status: error.status || 500, // use specified error status, or default to generic server error
+			status: error.http_resp_code || 500, // use specified error status, or default to generic server error
 			headers: {},
 			body: serializeMessage(error.toString(), request),
 		};

@@ -105,5 +105,26 @@ describe('test REST calls', () => {
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 1);
 		});
+		it('do query for missing property', async () => {
+			let response = await axios('http://localhost:9926/FourProp?notaprop=22', {
+				validateStatus: function (status) {
+					return true;
+				},
+			});
+			assert.equal(response.status, 404);
+		});
+		it('do a less than query by numeric property', async () => {
+			let response = await axios('http://localhost:9926/FourProp?age=lt=25');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.length, 5);
+			assert.equal(response.data[4].age, 24);
+		});
+		it('do a less than query by numeric property with limit and offset', async () => {
+			let response = await axios('http://localhost:9926/FourProp?age=lt=25&offset=1&limit=2');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.length, 2);
+			assert.equal(response.data[1].age, 22);
+		});
+
 	});
 });

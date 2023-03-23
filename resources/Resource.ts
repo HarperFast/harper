@@ -191,6 +191,7 @@ export class Resource implements ResourceInterface {
 		let match;
 		let attribute, comparison;
 		const conditions = [];
+		let offset, limit, sort, select;
 		// TODO: Use URLSearchParams with a fallback for when it can't parse everything (USP is very fast)
 		while ((match = QUERY_PARSER.exec(query_string))) {
 			let [, value, operator] = match;
@@ -215,21 +216,35 @@ export class Resource implements ResourceInterface {
 					comparison = SYMBOL_OPERATORS[operator];
 					attribute = decodeURIComponent(value);
 					break;
-
 				case undefined:
 				case '&':
 				case '|':
 					if (attribute) {
-						conditions.push({
-							type: comparison,
-							attribute,
-							value: decodeURIComponent(value),
-						});
+						switch (attribute) {
+							case 'offset':
+								offset = +value;
+								break;
+							case 'limit':
+								limit = +value;
+								break;
+							default:
+								conditions.push({
+									type: comparison,
+									attribute,
+									value: decodeURIComponent(value),
+								});
+						}
 					}
 					attribute = undefined;
 			}
 		}
-		return conditions;
+		return {
+			offset,
+			limit,
+			sort,
+			select,
+			conditions,
+		};
 	}
 
 	/**

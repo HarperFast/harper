@@ -12,6 +12,7 @@ import * as lmdb_terms from '../utility/lmdb/terms';
 import * as env_mngr from '../utility/environment/environmentManager';
 import { addSubscription, listenToCommits } from './transactionBroadcast';
 import { getWritableRecord } from './WritableRecord';
+import { handleHDBError } from '../utility/errors/hdbError';
 
 const RANGE_ESTIMATE = 100000000;
 env_mngr.initSync();
@@ -443,7 +444,7 @@ export function makeTable(options) {
 				const attribute = attributes.find((attribute) => attribute.name == condition.attribute);
 				if (!attribute) {
 					// TODO: Make it a 404
-					throw new Error(`${condition.attribute} is not a defined attribute`);
+					throw handleHDBError(new Error(), `${condition.attribute} is not a defined attribute`, 404);
 				}
 				if (attribute.is_number)
 					// convert to a number if that is expected
@@ -549,11 +550,19 @@ export function makeTable(options) {
 		}
 	};
 	function idsForCondition(search_condition) {
-		const start = search_condition.value;
+		let start;
 		let end, inclusiveEnd, inclusiveStart, filter;
 		switch (search_condition.type) {
+			case 'lt':
+				start = true;
+				end = search_condition.value;
+				break;
+			case 'gt':
+				start = search_condition.value;
+				break;
 			case lmdb_terms.SEARCH_TYPES.EQUALS:
 			case undefined:
+				start = search_condition.value;
 				end = search_condition.value;
 				inclusiveEnd = true;
 		}
@@ -602,7 +611,7 @@ export function filterByType(search_object) {
 		case lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL:
 		case lmdb_terms.SEARCH_TYPES._GREATER_THAN_EQUAL:
 			return (record) => compareKeys(record[attribute], value) >= 0;
-		case lmdb_terms.SEARCH_TYPES.LESS_THAN:
+		case lmdb_terms.SEARCH_TYPES.LESS_THAN: case 'lt':
 		case lmdb_terms.SEARCH_TYPES._LESS_THAN:
 			return (record) => compareKeys(record[attribute], value) < 0;
 		case lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL:
