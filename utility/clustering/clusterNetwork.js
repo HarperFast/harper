@@ -70,7 +70,7 @@ async function clusterNetwork(req) {
 				// If the server data contains routes array map them to a host/port object array.
 				node.routes = server_data.cluster?.urls
 					? server_data.cluster?.urls.map((r) => {
-							return { host: r.split(':')[0], port: r.split(':')[1] };
+							return { host: r.split(':')[0], port: hdb_utils.autoCast(r.split(':')[1]) };
 					  })
 					: [];
 			}

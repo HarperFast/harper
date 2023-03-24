@@ -4,6 +4,8 @@ const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
 const nats_utils = require('../../../server/nats/utility/natsUtils');
+const env_mgr = require('../../../utility/environment/environmentManager');
+const hdb_terms = require('../../../utility/hdbTerms');
 const cluster_network = require('../../../utility/clustering/clusterNetwork');
 
 const fake_server_list = [
@@ -145,6 +147,7 @@ describe('Test clusterNetwork module', () => {
 
 	before(() => {
 		sandbox.stub(nats_utils, 'getServerList').resolves(fake_server_list);
+		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED, true);
 	});
 
 	after(() => {
@@ -162,7 +165,7 @@ describe('Test clusterNetwork module', () => {
 					routes: [
 						{
 							host: '3.142.255.78',
-							port: '12345',
+							port: 12345,
 						},
 					],
 				},
@@ -186,7 +189,7 @@ describe('Test clusterNetwork module', () => {
 					routes: [
 						{
 							host: '3.142.255.78',
-							port: '12345',
+							port: 12345,
 						},
 					],
 				},
