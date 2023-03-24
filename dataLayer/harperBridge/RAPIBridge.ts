@@ -3,7 +3,7 @@ import * as LMDBBridge from './lmdbBridge/LMDBBridge';
 import * as search_validator from '../../validation/searchValidator';
 import { handleHDBError, hdb_errors } from '../../utility/errors/hdbError';
 import { Resource } from '../../resources/Resource';
-import { table, getDatabases } from '../../resources/tableLoader';
+import { table, getDatabases, database } from '../../resources/tableLoader';
 import * as insertUpdateValidate from './bridgeUtility/insertUpdateValidate';
 import * as lmdbProcessRows from './lmdbBridge/lmdbUtility/lmdbProcessRows';
 import * as hdb_terms from '../../utility/hdbTerms';
@@ -48,10 +48,23 @@ export class RAPIBridge extends LMDBBridge {
 	 * @param table_create_obj
 	 */
 	async createTable(table_system_data, table_create_obj) {
+		const attributes = table_create_obj.attributes || [
+			{ name: table_create_obj.hash_attribute, is_primary_key: true },
+			// TODO: __createdtime__, __updatedtime__
+		];
+		for (const attribute of attributes) {
+			if (attribute.name === table_create_obj.hash_attribute) attribute.is_primary_key = true;
+		}
 		return table({
 			database: table_create_obj.schema,
 			table: table_create_obj.table,
-			attributes: table_create_obj.attributes,
+			attributes,
+		});
+	}
+	async createSchema(create_schema_obj) {
+		return database({
+			database: create_schema_obj.schema,
+			table: create_schema_obj.table,
 		});
 	}
 
@@ -79,8 +92,8 @@ export class RAPIBridge extends LMDBBridge {
 		};
 		const keys = [];
 		for (const record of insert_obj.records) {
-			txn.put(record[insert_obj.hash_attribute], record, put_options);
-			keys.push(record[insert_obj.hash_attribute]);
+			txn.put(record[Table.primaryKey], record, put_options);
+			keys.push(record[Table.primaryKey]);
 		}
 		const results = (await txn.commit())[0];
 		const response = {

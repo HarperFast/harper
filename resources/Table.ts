@@ -372,7 +372,7 @@ export function makeTable(options) {
 									noop
 								);
 							for (let i = 0, l = values.length; i < l; i++) {
-								index.remove(values[i], this.id);
+								index.remove(values[i], id);
 							}
 						}
 						values = getIndexedValues(value);
@@ -383,7 +383,7 @@ export function makeTable(options) {
 									noop
 								);
 							for (let i = 0, l = values.length; i < l; i++) {
-								index.put(values[i], this.id);
+								index.put(values[i], id);
 							}
 						}
 					}
@@ -403,7 +403,7 @@ export function makeTable(options) {
 				id = this.id;
 			} else if (!id)
 				id = this.id;
-			const existing_entry = primary_store.getEntry(this.id);
+			const existing_entry = primary_store.getEntry(id);
 			const existing_record = existing_entry?.value;
 			if (!existing_record) return false;
 			env_txn.writes.push({

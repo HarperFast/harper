@@ -192,33 +192,27 @@ interface TableDefinition {
 	attributes: any[];
 }
 
-export function database({ table: table_name, database: database_name, expiration, attributes }: TableDefinition) {
+const ROOT_STORE_KEY = Symbol('root-store');
+export function database({ database: database_name, table: table_name }) {
 	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
 	getDatabases();
-	const database = databases[database_name];
-	let root_store;
-	let primary_key;
-	let txn_commit;
-	if (database) {
-		return database;
-	} else {
-		const database = databases[database_name] || (databases[database_name] = Object.create(null));
-		const table_path = env_get(CONFIG_PARAMS.SCHEMAS)?.[database_name]?.tables?.[table_name]?.path;
-		const database_path =
-			table_path ||
-			env_get(CONFIG_PARAMS.SCHEMAS)?.[database_name]?.path ||
-			process.env.STORAGE_PATH ||
-			env_get(CONFIG_PARAMS.STORAGE_PATH) ||
-			join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME);
-		const path = join(database_path, table_path ? 'data.mdb' : database_name + '.mdb');
-		root_store = database_envs.get(path);
-		if (!root_store) {
-			// TODO: validate database name
-			const env_init = new OpenEnvironmentObject(path, false);
-			root_store = open(env_init);
-			database_envs.set(path, root_store);
-		}
+	const database = databases[database_name] || (databases[database_name] = Object.create(null));
+	const table_path = env_get(CONFIG_PARAMS.SCHEMAS)?.[database_name]?.tables?.[table_name]?.path;
+	const database_path =
+		table_path ||
+		env_get(CONFIG_PARAMS.SCHEMAS)?.[database_name]?.path ||
+		process.env.STORAGE_PATH ||
+		env_get(CONFIG_PARAMS.STORAGE_PATH) ||
+		join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME);
+	const path = join(database_path, table_path ? 'data.mdb' : database_name + '.mdb');
+	let root_store = database_envs.get(path);
+	if (!root_store) {
+		// TODO: validate database name
+		const env_init = new OpenEnvironmentObject(path, false);
+		root_store = open(env_init);
+		database_envs.set(path, root_store);
 	}
+	return root_store;
 }
 
 /**
@@ -232,9 +226,9 @@ export function database({ table: table_name, database: database_name, expiratio
  */
 export function table({ table: table_name, database: database_name, expiration, attributes }: TableDefinition) {
 	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
-	getDatabases();
-	let Table = databases[database_name]?.[table_name];
-	let root_store;
+	const root_store = database({ database: database_name, table: table_name });
+	const tables = databases[database_name];
+	let Table = tables?.[table_name];
 	let primary_key;
 	let primary_key_attribute;
 	let indices;
@@ -251,24 +245,7 @@ export function table({ table: table_name, database: database_name, expiration, 
 	let txn_commit;
 	if (Table) {
 		primary_key = Table.primaryKey;
-		root_store = Table.primaryStore;
 	} else {
-		const tables = databases[database_name] || (databases[database_name] = Object.create(null));
-		const table_path = env_get(CONFIG_PARAMS.SCHEMAS)?.[database_name]?.tables?.[table_name]?.path;
-		const database_path =
-			table_path ||
-			env_get(CONFIG_PARAMS.SCHEMAS)?.[database_name]?.path ||
-			process.env.STORAGE_PATH ||
-			env_get(CONFIG_PARAMS.STORAGE_PATH) ||
-			join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME);
-		const path = join(database_path, table_path ? 'data.mdb' : database_name + '.mdb');
-		root_store = database_envs.get(path);
-		if (!root_store) {
-			// TODO: validate database name
-			const env_init = new OpenEnvironmentObject(path, false);
-			root_store = open(env_init);
-			database_envs.set(path, root_store);
-		}
 		let audit_store = root_store.auditStore;
 		if (!audit_store && USE_AUDIT) {
 			audit_store = root_store.openDB(AUDIT_STORE_NAME, {});

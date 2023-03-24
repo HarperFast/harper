@@ -546,7 +546,8 @@ async function createAdminUser(role, admin_user) {
 	try {
 		role_response = await role_ops.addRole(role);
 	} catch (err) {
-		throw new Error(`Error creating role - ${err}`);
+		err.message += 'Error creating role';
+		throw err;
 	}
 
 	if (admin_user) {
