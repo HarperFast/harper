@@ -18,6 +18,7 @@ const remove_node = require('../../utility/clustering/removeNode');
 const configure_cluster = require('../../utility/clustering/configureCluster');
 const purge_stream = require('../../utility/clustering/purgeStream');
 const cluster_status = require('../../utility/clustering/clusterStatus');
+const cluster_network = require('../../utility/clustering/clusterNetwork');
 const routes = require('../../utility/clustering/routes');
 const export_ = require('../../dataLayer/export');
 const op_auth = require('../../utility/operation_authorization');
@@ -229,7 +230,10 @@ async function executeJob(json) {
 		let job_runner_message = new job_runner.RunnerMessage(new_job_object, json);
 		await job_runner.parseMessage(job_runner_message);
 
-		return `Starting job with id ${new_job_object.id}`;
+		return {
+			message: `Starting job with id ${new_job_object.id}`,
+			job_id: new_job_object.id,
+		};
 	} catch (err) {
 		let message = `There was an error executing job: ${err.http_resp_msg ? err.http_resp_msg : err}`;
 		harper_logger.error(message);
@@ -279,6 +283,7 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.PURGE_STREAM, new OperationFunctionObject(purge_stream));
 	op_func_map.set(terms.OPERATIONS_ENUM.SET_CONFIGURATION, new OperationFunctionObject(config_utils.setConfiguration));
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_STATUS, new OperationFunctionObject(cluster_status.clusterStatus));
+	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_NETWORK, new OperationFunctionObject(cluster_network));
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_SET_ROUTES, new OperationFunctionObject(routes.setRoutes));
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_GET_ROUTES, new OperationFunctionObject(routes.getRoutes));
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_DELETE_ROUTES, new OperationFunctionObject(routes.deleteRoutes));

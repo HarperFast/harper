@@ -103,7 +103,7 @@ async function getHDBProcessInfo() {
 		let processes = await si.processes();
 
 		processes.list.forEach((process) => {
-			if (process.params.includes(terms.HDB_PROC_NAME)) {
+			if (process.params.includes(terms.HDB_PROC_NAME) || process.name.includes('harperdb')) {
 				harperdb_processes.core.push(process);
 			} else if (process.name === 'nats-server') {
 				harperdb_processes.clustering.push(process);

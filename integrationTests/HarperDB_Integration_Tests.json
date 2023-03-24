@@ -2922,6 +2922,12 @@
 											"",
 											"pm.test(\"Status code is 200\", function () {",
 											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Check job_id param is returned\", () =>{",
+											"    const response = pm.response.json();",
+											"    pm.expect(response).to.haveOwnProperty('job_id');",
+											"    pm.expect(response.message.split(' ')[4]).to.equal(response.job_id);",
 											"});"
 										],
 										"type": "text/javascript"

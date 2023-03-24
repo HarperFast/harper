@@ -328,6 +328,7 @@ const OPERATIONS_ENUM = {
 	CONFIGURE_CLUSTER: 'configure_cluster',
 	SET_CONFIGURATION: 'set_configuration',
 	CLUSTER_STATUS: 'cluster_status',
+	CLUSTER_NETWORK: 'cluster_network',
 	DROP_ATTRIBUTE: 'drop_attribute',
 	REMOVE_NODE: 'remove_node',
 	RESTART: 'restart',

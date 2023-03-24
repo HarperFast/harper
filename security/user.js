@@ -634,6 +634,10 @@ async function getClusterUser() {
 		return undefined;
 	}
 
+	if (cluster_user?.role?.role !== terms.ROLE_TYPES_ENUM.CLUSTER_USER) {
+		return undefined;
+	}
+
 	cluster_user.decrypt_hash = crypto_hash.decrypt(cluster_user.hash);
 	cluster_user.uri_encoded_d_hash = encodeURIComponent(cluster_user.decrypt_hash);
 	cluster_user.uri_encoded_name = encodeURIComponent(cluster_user.username);
