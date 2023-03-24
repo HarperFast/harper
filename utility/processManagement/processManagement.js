@@ -9,9 +9,9 @@ const pm2 = require('pm2');
 const services_config = require('./servicesConfig');
 const env_mangr = require('../environment/environmentManager');
 const hdb_logger = require('../../utility/logging/harper_logger');
-const config = require('.//servicesConfig');
 const clustering_utils = require('../clustering/clusterUtilities');
 const { startWorker, onMessageFromWorkers } = require('../../server/threads/manageThreads');
+const sys_info = require('../environment/systemInformation');
 const util = require('util');
 const child_process = require('child_process');
 const { execFile } = child_process;
@@ -161,6 +161,7 @@ function start(proc_config) {
 		process.on('exit', kill_children);
 		process.on('SIGINT', kill_children);
 		process.on('SIGQUIT', kill_children);
+		process.on('SIGTERM', kill_children);
 	}
 	child_processes.push(subprocess);
 }
@@ -305,7 +306,7 @@ function deleteProcess(service_name) {
  * @returns {Promise<void>}
  */
 async function restartHdb() {
-	await start(config.generateRestart());
+	await start(services_config.generateRestart());
 }
 
 /**
@@ -529,12 +530,13 @@ async function stopAllServices() {
 
 		// Kill processManagement daemon
 		await kill();
-		let processes = await si.processes();
+		let processes = await sys_info.getHDBProcessInfo();
+		processes.clustering.forEach((p) => {
+			exec(`kill ${p.pid}`);
+		});
 
-		processes.list.forEach((process) => {
-			if (process.params.includes(terms.HDB_PROC_NAME)) {
-				exec('kill', [process.pid]);
-			}
+		processes.core.forEach((p) => {
+			exec(`kill ${p.pid}`);
 		});
 	} catch (err) {
 		pm2.disconnect();
