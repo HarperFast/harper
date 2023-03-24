@@ -84,6 +84,7 @@ function onSocket(socket, send, request, user) {
 						});
 						try {
 							send(payload);
+							//console.log('sent', topic, message);
 						} catch (error) {
 							console.warn(error);
 							session.disconnect();
@@ -101,10 +102,10 @@ function onSocket(socket, send, request, user) {
 					const granted = [];
 					info('Received subscription request', packet.subscriptions);
 					for (const subscription of packet.subscriptions) {
-						granted.push(session.addSubscription(subscription) || 0);
+						granted.push((await session.addSubscription(subscription)) || 0);
 					}
 					await session.committed;
-					info('Sending suback');
+					info('Sending suback', packet.subscriptions[0].topic);
 					send(
 						generate({
 							// Send a subscription acknowledgment
@@ -162,6 +163,7 @@ function onSocket(socket, send, request, user) {
 					break;
 				case 'disconnect':
 					session.disconnect();
+					socket.end();
 					break;
 			}
 		} catch (error) {

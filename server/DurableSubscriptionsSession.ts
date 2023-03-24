@@ -4,7 +4,7 @@ import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 const DurableSession = table({
 	database: 'system',
 	table: 'hdb_durable_session',
-	attributes: [{ name: 'id', is_primary_key: true }],
+	attributes: [{ name: 'id', isPrimaryKey: true }],
 });
 
 /**
@@ -56,7 +56,7 @@ export class SubscriptionsSession {
 	constructor(session_id) {
 		this.sessionId = session_id;
 	}
-	addSubscription(subscription_request) {
+	async addSubscription(subscription_request) {
 		const { topic, qos, rh, startTime: start_time } = subscription_request;
 		const entry = resources.getMatch(topic);
 		let remaining_path = entry.remainingPath;
@@ -66,7 +66,7 @@ export class SubscriptionsSession {
 		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
 		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
 		if (existing_subscription) existing_subscription.end();
-		const subscription = entry.Resource.subscribe(remaining_path, {
+		const subscription = await entry.Resource.subscribe(remaining_path, {
 			listener: (id, message) => {
 				this.listener(entry.path + '/' + id, message, subscription);
 			},
@@ -105,8 +105,8 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		super(session_id);
 		this.sessionRecord = record || { id: session_id, subscriptions: [] };
 	}
-	addSubscription(subscription) {
-		super.addSubscription(subscription);
+	async addSubscription(subscription) {
+		await super.addSubscription(subscription);
 		const { topic, qos, startTime: start_time } = subscription;
 		if (qos > 0 && !start_time) {
 			// TODO: Add this to the session record with the correct timestamp and save it
