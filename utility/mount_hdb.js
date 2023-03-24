@@ -52,7 +52,7 @@ async function createLMDBTables() {
 			let create_table = new CreateTableObject(terms.SYSTEM_SCHEMA_NAME, table_name, hash_attribute);
 			create_table.attributes = system_schema[table_name].attributes;
 			let primary_key_attribute = create_table.attributes.find(({ attribute }) => attribute === hash_attribute);
-			primary_key_attribute.is_primary_key = true;
+			primary_key_attribute.isPrimaryKey = true;
 			let table = await bridge.createTable(table_name, create_table);
 		} catch (e) {
 			hdb_logger.error(`issue creating environment for ${terms.SYSTEM_SCHEMA_NAME}.${table_name}: ${e}`);

@@ -7,11 +7,17 @@ type SimpleRecord @table {
 	id: ID @primaryKey
 	name: String @indexed
 }
-type FourProp @table @allowRead(role: "cool-people") @allowWrite(role: "really-cool-people") {
+type FourProp @table {
 	id: ID @primaryKey
 	name: String @indexed
 	age: Int @indexed
 	title: String
+}
+
+type HasTimeStamps @table {
+	id: ID @primaryKey
+	created: number @creationDate
+	updated: number @updateDate
 }
 
 type Query {

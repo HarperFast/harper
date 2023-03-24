@@ -237,7 +237,7 @@ async function createMockDB(hash_attribute, schema, table, test_data) {
 			for (const attr in record) {
 				if (!unique_attributes.includes(attr)) {
 					unique_attributes.push(attr);
-					attributes.push({ attribute: attr, is_primary_key: attr === hash_attribute });
+					attributes.push({ attribute: attr, isPrimaryKey: attr === hash_attribute });
 				}
 			}
 		}

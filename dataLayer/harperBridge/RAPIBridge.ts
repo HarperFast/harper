@@ -11,7 +11,8 @@ import * as lmdb_check_new_attributes from './lmdbBridge/lmdbUtility/lmdbCheckFo
 import * as write_transaction from './lmdbBridge/lmdbUtility/lmdbWriteTransaction';
 import * as logger from '../../utility/logging/harper_logger';
 import * as SearchObject from '../SearchObject';
-const { HTTP_STATUS_CODES } = hdb_errors;
+const { HDB_ERROR_MSGS } = hdb_errors;
+const DEFAULT_DATABASE = 'data';
 /**
  * Currently we are extending LMDBBridge so we can use the LMDB methods as a fallback until all our RAPI methods are
  * implemented
@@ -20,14 +21,7 @@ export class RAPIBridge extends LMDBBridge {
 	async searchByConditions(search_object) {
 		const validation_error = search_validator(search_object, 'conditions');
 		if (validation_error) {
-			throw handleHDBError(
-				validation_error,
-				validation_error.message,
-				HTTP_STATUS_CODES.BAD_REQUEST,
-				undefined,
-				undefined,
-				true
-			);
+			throw handleHDBError(validation_error, validation_error.message, 400, undefined, undefined, true);
 		}
 
 		//set the operator to always be lowercase for later evaluations
@@ -49,11 +43,11 @@ export class RAPIBridge extends LMDBBridge {
 	 */
 	async createTable(table_system_data, table_create_obj) {
 		const attributes = table_create_obj.attributes || [
-			{ name: table_create_obj.hash_attribute, is_primary_key: true },
+			{ name: table_create_obj.hash_attribute, isPrimaryKey: true },
 			// TODO: __createdtime__, __updatedtime__
 		];
 		for (const attribute of attributes) {
-			if (attribute.name === table_create_obj.hash_attribute) attribute.is_primary_key = true;
+			if (attribute.name === table_create_obj.hash_attribute) attribute.isPrimaryKey = true;
 		}
 		return table({
 			database: table_create_obj.schema,
@@ -73,15 +67,6 @@ export class RAPIBridge extends LMDBBridge {
 
 		lmdbProcessRows(insert_obj, attributes, schema_table.primaryKey);
 
-		if (insert_obj.schema !== hdb_terms.SYSTEM_SCHEMA_NAME) {
-			if (!attributes.includes(hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME)) {
-				attributes.push(hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME);
-			}
-
-			if (!attributes.includes(hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME)) {
-				attributes.push(hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME);
-			}
-		}
 		let new_attributes;
 		if (insert_obj.auto_generate_indices)
 			new_attributes = await lmdb_check_new_attributes(insert_obj.hdb_auth_header, schema_table, attributes);
@@ -96,35 +81,27 @@ export class RAPIBridge extends LMDBBridge {
 			keys.push(record[Table.primaryKey]);
 		}
 		const results = (await txn.commit())[0];
-		const response = {
+		return {
 			txn_time: results.txnTime,
 			written_hashes: keys,
 			new_attributes,
 			skipped_hashes: [],
 		};
-		try {
-			await write_transaction(insert_obj, response);
-		} catch (e) {
-			logger.error(`unable to write transaction due to ${e.message}`);
-		}
-
-		return response;
 	}
 
+	async updateRecords(update_obj) {
+		update_obj.requires_existing = true;
+		return this.upsertRecords(update_obj);
+	}
+	async insertRecords(update_obj) {
+		update_obj.requires_no_existing = true;
+		return this.upsertRecords(update_obj);
+	}
 	async upsertRecords(upsert_obj) {
 		const { schema_table, attributes } = insertUpdateValidate(upsert_obj);
 
 		lmdbProcessRows(upsert_obj, attributes, schema_table.primaryKey);
 
-		if (upsert_obj.schema !== hdb_terms.SYSTEM_SCHEMA_NAME) {
-			if (!attributes.includes(hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME)) {
-				attributes.push(hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME);
-			}
-
-			if (!attributes.includes(hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME)) {
-				attributes.push(hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME);
-			}
-		}
 		let new_attributes;
 		if (upsert_obj.auto_generate_indices)
 			new_attributes = await lmdb_check_new_attributes(upsert_obj.hdb_auth_header, schema_table, attributes);
@@ -134,7 +111,15 @@ export class RAPIBridge extends LMDBBridge {
 			timestamp: upsert_obj.__origin?.timestamp,
 		};
 		const keys = [];
+		const skipped = [];
 		for (const record of upsert_obj.records) {
+			if (
+				(upsert_obj.requires_existing && !txn.get(record[Table.primaryKey])) ||
+				(upsert_obj.requires_no_existing && txn.get(record[Table.primaryKey]))
+			) {
+				skipped.push(record[Table.primaryKey]);
+				continue;
+			}
 			txn.put(record[Table.primaryKey], record, put_options);
 			keys.push(record[Table.primaryKey]);
 		}
@@ -143,7 +128,7 @@ export class RAPIBridge extends LMDBBridge {
 			txn_time: results.txnTime,
 			written_hashes: keys,
 			new_attributes,
-			skipped_hashes: [],
+			skipped_hashes: skipped,
 		};
 		try {
 			await write_transaction(upsert_obj, response);
@@ -153,14 +138,32 @@ export class RAPIBridge extends LMDBBridge {
 
 		return response;
 	}
+	/**
+	 * fetches records by their hash values and returns an Array of the results
+	 * @param {SearchByHashObject} search_object
+	 */
+	async searchByHash(search_object) {
+		const table_txn = getTableTxn(search_object);
+		let select = search_object.get_attributes;
+		if (select[0] === '*') select = table_txn.table.attributes.map((attribute) => attribute.name);
+		try {
+			return await Promise.all(
+				search_object.hash_values.map(async (key) => {
+					const record = await table_txn.get(key, { lazy: Boolean(select) });
+					const reduced_record = {};
+					for (const property of select) {
+						reduced_record[property] = record[property] ?? null;
+					}
+					return reduced_record;
+				})
+			);
+		} finally {
+			table_txn.commit();
+		}
+	}
 
 	async searchByValue(search_object: SearchObject) {
-		const schema = getDatabases()[search_object.schema || 'data'];
-		// TODO: fix validation/errors
-		if (!schema) throw new Error('no schema');
-		const table = schema[search_object.table];
-		if (!table) throw new Error('no table');
-		const table_txn = new table.Collection();
+		const table_txn = getTableTxn(search_object);
 		const conditions =
 			search_object.search_value == '*'
 				? []
@@ -171,10 +174,25 @@ export class RAPIBridge extends LMDBBridge {
 							get_attributes: search_object.get_attributes,
 						},
 				  ];
-		return table_txn.search({
-			limit: search_object.limit,
-			offset: search_object.offset,
-			conditions,
-		});
+		try {
+			return table_txn.search({
+				limit: search_object.limit,
+				offset: search_object.offset,
+				conditions,
+			});
+		} finally {
+			table_txn.commit();
+		}
 	}
+}
+
+function getTableTxn(operation_object) {
+	const database_name = operation_object.database || operation_object.schema || DEFAULT_DATABASE;
+	const tables = getDatabases()[database_name];
+	if (!tables) throw handleHDBError(new Error(), HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(database_name), 404);
+	const Table = tables[operation_object.table];
+	if (!Table) {
+		throw handleHDBError(new Error(), HDB_ERROR_MSGS.TABLE_NOT_FOUND(operation_object.table), 404);
+	}
+	return new Table();
 }

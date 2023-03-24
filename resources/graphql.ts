@@ -56,22 +56,26 @@ export async function handleFile(gql_content, url_path, file_path, resources) {
 							if (directive.name.value === 'primaryKey') {
 								if (has_primary_key) console.warn('Can not define two attributes as a primary key');
 								else {
-									attribute.is_primary_key = true;
+									attribute.isPrimaryKey = true;
 									has_primary_key = true;
 								}
 							} else if (directive.name.value === 'indexed') {
 								attribute.indexed = true;
+							} else if (directive.name.value === 'creationDate') {
+								type_def.creationDate = attribute.name;
+							} else if (directive.name.value === 'updateDate') {
+								type_def.updateDate = attribute.name;
 							}
 						}
 						if (!has_primary_key) {
 							const id_attribute = attributes.find((attribute) => attribute.name === 'id');
-							if (id_attribute) id_attribute.is_primary_key = true;
+							if (id_attribute) id_attribute.isPrimaryKey = true;
 							// Do we wait until we have auto-incrementing numbers before auto-adding a primary key?
 							else
 								attributes.push({
 									name: 'id',
 									type: 'ID',
-									is_primary_key: true,
+									isPrimaryKey: true,
 								});
 						}
 					}

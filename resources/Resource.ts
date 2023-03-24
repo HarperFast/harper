@@ -49,17 +49,17 @@ export class Resource implements ResourceInterface {
 	}
 
 	/**
-	 * Commit the transaction. This can involve several things based on what type of transaction:
-	 * Separate read and read write isolation: Finish the batch, end read transaction
-	 * Restartable/optimistic with full isolation: Acquire lock/ownership, complete transaction with optimistic checks, possibly return restart-required
-	 * Non-restartable across multiple env/dbs with full isolation: Wait on commit of async-transaction
+	 * Commit the resource transaction(s). This commits any transactions that have started as part of the resolution
+	 * of this resource, and frees any read transaction.
 	 */
-	commit(): Promise<boolean> {
+	commit(flush = true): Promise<{ txnTxn: number }[]> {
 		const commits = [];
 		for (const env_path in this.inUseEnvs) {
 			// TODO: maintain this array ourselves so we don't need to key-ify
 			const env_txn = this.inUseEnvs[env_path];
-			commits.push(env_txn.commit());
+			// TODO: If we have multiple commits in a single resource instance, need to maintain
+			// databases with waiting flushes to resolve at the end when a flush is requested.
+			commits.push(env_txn.commit(flush));
 		}
 		return Promise.all(commits);
 	}
@@ -169,6 +169,7 @@ export class Resource implements ResourceInterface {
 	}
 
 	static async publish(identifier: string | number, request?: any) {
+		//console.log('publish', identifier, require('worker_threads').threadId);
 		const resource = this.instantiate(identifier, request);
 		const user = request.user;
 		const checked = checkAllowed(resource.allowPublish?.(user), user, resource);

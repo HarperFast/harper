@@ -36,7 +36,7 @@ export class DatabaseTransaction {
 	/**
 	 * Resolves with information on the timestamp and success of the commit
 	 */
-	commit(): Promise<CommitResolution> {
+	commit(flush = true): Promise<CommitResolution> {
 		this.doneReading();
 		const remaining_conditions = this.inTwoPhase ? [] : this.conditions.slice(0).reverse();
 		let txn_time, resolution, write_resolution;
@@ -48,6 +48,7 @@ export class DatabaseTransaction {
 		}
 		let write_index = 0;
 		txn_time = getNextMonotonicTime();
+		let last_store;
 		const nextCondition = () => {
 			const write = this.writes[write_index++];
 			if (write) {
@@ -61,6 +62,7 @@ export class DatabaseTransaction {
 					const audit_record = write.commit(txn_time);
 					audit_record.username = this.username;
 					audit_record.lastVersion = write.lastVersion;
+					last_store = write.store;
 					this.auditStore.put([txn_time, write.store.tableId, write.key], audit_record);
 				}
 			}
@@ -75,12 +77,14 @@ export class DatabaseTransaction {
 		resolution = resolution || write_resolution;
 		return resolution?.then((resolution) => {
 			if (resolution) {
-				// now reset transactions tracking; this transaction be reused and committed again
-				this.conditions = [];
-				this.writes = [];
-				return {
-					txnTime: txn_time,
-				};
+				return last_store.flushed.then(() => {
+					// now reset transactions tracking; this transaction be reused and committed again
+					this.conditions = [];
+					this.writes = [];
+					return {
+						txnTime: txn_time,
+					};
+				});
 			} else {
 				return this.commit(); // try again
 			}

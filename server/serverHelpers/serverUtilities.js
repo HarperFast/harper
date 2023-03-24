@@ -57,11 +57,7 @@ const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
 const OperationFunctionObject = require('./OperationFunctionObject');
 
 function postWrite(request_body, result, nats_msg_header) {
-	return Promise.all([
-		transact_to_clustering_utils.postOperationHandler(request_body, result, nats_msg_header),
-		// wait for flush (some operations like create_schema don't specify a table)
-		request_body.table ? insert.flush(request_body) : null,
-	]);
+	return transact_to_clustering_utils.postOperationHandler(request_body, result, nats_msg_header);
 }
 /**
  * This will process a command message on this receiving node rather than sending it to a remote node.  NOTE: this function
@@ -97,19 +93,19 @@ async function processLocalTransaction(req, operation_function) {
 		post_op_function
 	);
 
-		if (typeof data !== 'object') {
-			data = { message: data };
-		}
-		if (data instanceof Error) {
-			throw data;
-		}
-		if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
-			global_schema.setSchemaDataToGlobal((err) => {
-				if (err) {
-					harper_logger.error(err);
-				}
-			});
-		}
+	if (typeof data !== 'object') {
+		data = { message: data };
+	}
+	if (data instanceof Error) {
+		throw data;
+	}
+	if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
+		global_schema.setSchemaDataToGlobal((err) => {
+			if (err) {
+				harper_logger.error(err);
+			}
+		});
+	}
 
 	return data;
 }

@@ -17,6 +17,7 @@ env_mngr.initSync();
 const lmdb_environment_utility = require('../utility/lmdb/environmentUtility');
 const search_utility = require('../utility/lmdb/searchUtility');
 const { getSchemaPath } = require('./harperBridge/lmdbBridge/lmdbUtility/initializePaths');
+const { getDatabases } = require('../resources/tableLoader');
 
 // Promisified functions
 let p_search_search_by_value = promisify(search.searchByValue);
@@ -171,6 +172,29 @@ async function descTable(describe_table_object, attr_perms) {
 	if (validation) {
 		throw validation;
 	}
+
+	let databases = getDatabases();
+	let tables = databases[schema];
+	if (!tables) {
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(describe_schema_object.schema),
+			HTTP_STATUS_CODES.NOT_FOUND
+		);
+	}
+	let table_obj = tables[table];
+	if (!table_obj)
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.TABLE_NOT_FOUND(describe_table_object.schema, describe_table_object.table),
+			HTTP_STATUS_CODES.NOT_FOUND
+		);
+
+	return {
+		name: table_obj.tableName,
+		attributes: table_obj.attributes,
+	};
+
 	if (schema === terms.SYSTEM_SCHEMA_NAME) {
 		return global.hdb_schema[terms.SYSTEM_SCHEMA_NAME][table];
 	}
@@ -185,7 +209,7 @@ async function descTable(describe_table_object, attr_perms) {
 		get_attributes: [terms.WILDCARD_SEARCH_VALUE],
 	};
 
-	let tables = Array.from(await p_search_search_by_value(table_search_obj));
+	tables = Array.from(await p_search_search_by_value(table_search_obj));
 
 	if (!tables || tables.length === 0) {
 		throw handleHDBError(
@@ -235,7 +259,15 @@ async function descTable(describe_table_object, attr_perms) {
 				table_result.record_count = dbi_stat.entryCount;
 				// do a reverse search of the updated timestamp index to find the very latest entry, and record that
 				// timestamp:
-				for (let { key } of search_utility.lessThan(env, table_result.hash_attribute, terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME, Infinity, true, 1, 0)) {
+				for (let { key } of search_utility.lessThan(
+					env,
+					table_result.hash_attribute,
+					terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME,
+					Infinity,
+					true,
+					1,
+					0
+				)) {
 					table_result.last_updated_record = key;
 				}
 			} catch (e) {
@@ -283,6 +315,32 @@ async function describeSchema(describe_schema_object) {
 	}
 	const schema_name = describe_schema_object.schema.toString();
 
+	let databases = getDatabases();
+	let schema = databases[schema_name];
+	if (!schema) {
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(describe_schema_object.schema),
+			HTTP_STATUS_CODES.NOT_FOUND
+		);
+	}
+	let results = {};
+	for (let table_name in schema) {
+		let table_perms;
+		if (schema_perms && schema_perms.tables[table_name]) {
+			table_perms = schema_perms.tables[table_name];
+		}
+		if (hdb_utils.isEmpty(table_perms) || table_perms.describe) {
+			let data = await descTable(
+				{ schema: describe_schema_object.schema, table: table_name },
+				table_perms ? table_perms.attribute_permissions : null
+			);
+			if (data) {
+				results[data.name] = data;
+			}
+		}
+	}
+	return results;
 	let table_search_obj = {
 		schema: terms.SYSTEM_SCHEMA_NAME,
 		table: terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME,

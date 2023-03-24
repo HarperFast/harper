@@ -59,7 +59,7 @@ export function makeTable(options) {
 	} = options;
 	if (!attributes) attributes = [];
 	if (audit_store) listenToCommits(audit_store);
-	const primary_key_attribute = attributes.find((attribute) => attribute.is_primary_key) || {};
+	const primary_key_attribute = attributes.find((attribute) => attribute.isPrimaryKey) || {};
 	return class Table extends Resource {
 		static primaryStore = primary_store;
 		static auditStore = audit_store;
@@ -67,7 +67,10 @@ export function makeTable(options) {
 		static tableName = table_name;
 		static indices = indices;
 		static envPath = primary_store.env.path;
+		static attributes = attributes;
 		static expirationTimer;
+		static creationDate?: string;
+		static updateDate?: string;
 		static sourcedFrom(Resource) {
 			// define a source for retrieving invalidated entries for caching purposes
 			this.Source = Resource;
@@ -108,6 +111,7 @@ export function makeTable(options) {
 			if (key === '' || key === '?')
 				// TODO: Should this require special permission?
 				key = null; // wildcard, get everything in table
+			//console.log('subscribe', identifier, require('worker_threads').threadId);
 			if (options?.listener && !options.noRetain && key != null) {
 				const result = await this.get(identifier, options);
 				const data = result?.data;
@@ -149,7 +153,7 @@ export function makeTable(options) {
 		lastModificationTime = 0;
 		static Source: { new (): ResourceInterface };
 
-		constructor(identifier, request, env_txn, lmdb_txn, parent) {
+		constructor(identifier, request, env_txn?, lmdb_txn?, parent?) {
 			// coerce if we know this is supposed to be a number
 			super(identifier, request);
 			if (primary_key_attribute.is_number && this.id != null) this.id = +this.id;
@@ -288,28 +292,32 @@ export function makeTable(options) {
 			}
 			if (!id) {
 				id = this.id;
-				if (!id)
-					id = record[primary_key] = randomUUID(); //uuid.v4();
+				if (!id) id = record[primary_key] = randomUUID(); //uuid.v4();
 			}
 			if (attributes && !options?.noValidation) {
 				let validation_errors;
 				for (let i = 0, l = attributes.length; i < l; i++) {
-					let attribute = attributes[i];
+					const attribute = attributes[i];
 					if (attribute.type) {
-						let value = record[attribute.name];
+						const value = record[attribute.name];
 						if (value != null) {
-							switch(attribute.type) {
-								case 'Int': case 'Float':
+							switch (attribute.type) {
+								case 'Int':
+								case 'Float':
 									if (typeof value !== 'number' || (attribute.type === 'Int' && value !== Math.floor(value)))
-										((validation_errors || (validation_errors = [])).push(`Property ${attribute.name} must be an ${attribute.type === 'Int' ? 'integer' : 'number'}`);
+										(validation_errors || (validation_errors = [])).push(
+											`Property ${attribute.name} must be an ${attribute.type === 'Int' ? 'integer' : 'number'}`
+										);
 									break;
 								case 'ID':
 									if (typeof value !== 'number' && typeof value !== 'string')
-										((validation_errors || (validation_errors = [])).push(`Property ${attribute.name} must be a string or number`);
+										(validation_errors || (validation_errors = [])).push(
+											`Property ${attribute.name} must be a string or number`
+										);
 									break;
 								case 'String':
 									if (typeof value !== 'string')
-										((validation_errors || (validation_errors = [])).push(`Property ${attribute.name} must be a string`);
+										(validation_errors || (validation_errors = [])).push(`Property ${attribute.name} must be a string`);
 							}
 						}
 					}
@@ -348,7 +356,8 @@ export function makeTable(options) {
 							lastUpdate: existing_entry.version,
 						};
 					}
-					let completion;
+					if (Table.updateDate) record[Table.updateDate] = txn_time;
+					if (Table.creationDate && !had_existing) record[Table.creationDate] = txn_time;
 
 					primary_store.put(id, record, txn_time);
 					// iterate the entries from the record
@@ -401,8 +410,7 @@ export function makeTable(options) {
 			if (typeof id === 'object') {
 				options = id;
 				id = this.id;
-			} else if (!id)
-				id = this.id;
+			} else if (!id) id = this.id;
 			const existing_entry = primary_store.getEntry(id);
 			const existing_record = existing_entry?.value;
 			if (!existing_record) return false;
@@ -410,7 +418,6 @@ export function makeTable(options) {
 				key: id,
 				store: primary_store,
 				commit: (txn_time) => {
-
 					for (let i = 0, l = indices.length; i < l; i++) {
 						const index = indices[i];
 						const existing_value = existing_record[id];
@@ -420,7 +427,7 @@ export function makeTable(options) {
 						if (values) {
 							if (LMDB_PREFETCH_WRITES)
 								index.prefetch(
-									values.map((v) => ({key: v, value: id})),
+									values.map((v) => ({ key: v, value: id })),
 									noop
 								);
 							for (let i = 0, l = values.length; i < l; i++) {
@@ -429,7 +436,7 @@ export function makeTable(options) {
 						}
 					}
 					primary_store.remove(id);
-				}
+				},
 			});
 		}
 		static Collection = class Collection extends Table {
@@ -576,11 +583,15 @@ export function makeTable(options) {
 		}
 		const index = indices[search_condition.attribute];
 		if (!index) {
-			throw handleHDBError(new Error(), `${search_condition.attribute} is not indexed, can not search for this attribute`, 404);
+			throw handleHDBError(
+				new Error(),
+				`${search_condition.attribute} is not indexed, can not search for this attribute`,
+				404
+			);
 		}
-		const is_primary_key = search_condition.attribute === primary_key;
-		const range_options = { start, end, inclusiveEnd, values: !is_primary_key };
-		if (is_primary_key) {
+		const isPrimaryKey = search_condition.attribute === primary_key;
+		const range_options = { start, end, inclusiveEnd, values: !isPrimaryKey };
+		if (isPrimaryKey) {
 			return index.getRange(range_options);
 		} else {
 			return index.getRange(range_options).map(({ value }) => value);
@@ -619,7 +630,8 @@ export function filterByType(search_object) {
 		case lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL:
 		case lmdb_terms.SEARCH_TYPES._GREATER_THAN_EQUAL:
 			return (record) => compareKeys(record[attribute], value) >= 0;
-		case lmdb_terms.SEARCH_TYPES.LESS_THAN: case 'lt':
+		case lmdb_terms.SEARCH_TYPES.LESS_THAN:
+		case 'lt':
 		case lmdb_terms.SEARCH_TYPES._LESS_THAN:
 			return (record) => compareKeys(record[attribute], value) < 0;
 		case lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL:

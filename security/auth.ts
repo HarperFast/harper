@@ -15,7 +15,7 @@ server.auth = findAndValidateUser;
 let session_table = table({
 	table: 'hdb_session',
 	database: 'system',
-	attributes: [{ name: 'id', is_primary_key: true }],
+	attributes: [{ name: 'id', isPrimaryKey: true }],
 });
 
 let authorization_cache = new Map();

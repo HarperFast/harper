@@ -250,10 +250,10 @@ export function table({ table: table_name, database: database_name, expiration, 
 		if (!audit_store && USE_AUDIT) {
 			audit_store = root_store.openDB(AUDIT_STORE_NAME, {});
 		}
-		primary_key_attribute = attributes.find((attribute) => attribute.is_primary_key);
+		primary_key_attribute = attributes.find((attribute) => attribute.isPrimaryKey);
 		primary_key = primary_key_attribute.name;
 		primary_key_attribute.is_hash_attribute = true;
-		const dbi_init = new OpenDBIObject(!primary_key_attribute.is_primary_key, primary_key_attribute.is_primary_key);
+		const dbi_init = new OpenDBIObject(!primary_key_attribute.isPrimaryKey, primary_key_attribute.isPrimaryKey);
 		const dbi_name = table_name + '/' + primary_key_attribute.name;
 		const primary_store = root_store.openDB(dbi_name, dbi_init);
 		if (!root_store.env.nextTableId) root_store.env.nextTableId = 1;
@@ -278,7 +278,7 @@ export function table({ table: table_name, database: database_name, expiration, 
 		// iterate through the attributes to ensure that we have all the dbis created and indexed
 		for (const attribute of attributes || []) {
 			// non-indexed attributes do not need a dbi
-			if (!attribute.indexed || attribute.is_primary_key) continue;
+			if (!attribute.indexed || attribute.isPrimaryKey) continue;
 			const dbi_name = table_name + '/' + attribute.name;
 			const dbi_init = new OpenDBIObject(true, false);
 			const dbi = root_store.openDB(dbi_name, dbi_init);
@@ -287,10 +287,10 @@ export function table({ table: table_name, database: database_name, expiration, 
 				startTxn();
 				const property = attribute.name;
 				// this means that a new attribute has been introduced that needs to be indexed
-				for (const entry of Table.primaryStore.getRange()) {
+				for (const entry of Table.primaryStore.getRange({ start: true })) {
 					const record = entry.value;
 					const value_to_index = record[property];
-					dbi.put(value_to_index, record[primary_key]);
+					//if (value_to_index != null) dbi.put(value_to_index, record[primary_key]);
 					// TODO: put in indexing code
 				}
 				dbis_db.put(dbi_name, attribute);

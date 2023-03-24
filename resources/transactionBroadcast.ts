@@ -180,6 +180,7 @@ function notifyFromTransactionData(path, audit_ids) {
 		if (txn_id !== getLastTxnId()) continue;
 
 	 */
+	subscriptions.auditStore.resetReadTxn();
 	for (const audit_id of audit_ids) {
 		const [txn_time, table_id, record_key] = audit_id;
 		last_time = txn_time;
@@ -198,7 +199,11 @@ function notifyFromTransactionData(path, audit_ids) {
 		if (!key_subscriptions) continue;
 		if (key_subscriptions) {
 			for (const subscription of key_subscriptions) {
-				if (subscription.startTime > txn_time) continue;
+				if (subscription.startTime - 2 > txn_time) {
+					// allow for a couple milliseconds of skew
+					console.log('omitting', record_key, subscription.startTime, txn_time);
+					continue;
+				}
 				try {
 					subscription.listener(record_key, audit_record);
 				} catch (error) {
@@ -246,22 +251,22 @@ export function listenToCommits(audit_store) {
 						transaction_buffers.push(last_uint32.buffer);
 					}
 				}
-				next = next.next;
-			} while (next !== last);
+			} while (next != last && (next = next.next));
 			// broadcast all the transaction buffers so they can be (sequentially) read and subscriptions messages
 			// delivered on all other threads
-			if (first_txn)
-				broadcast({
-					type: TRANSACTION_EVENT_TYPE,
-					path,
-					buffers: transaction_buffers,
-					auditIds: audit_ids,
-					//txnId,
-					//firstTxn: first_txn,
-					start,
-				});
+			//if (first_txn) {
+			broadcast({
+				type: TRANSACTION_EVENT_TYPE,
+				path,
+				buffers: transaction_buffers,
+				auditIds: audit_ids,
+				//txnId,
+				//firstTxn: first_txn,
+				start,
+			});
 			// and notify on our own thread too
 			notifyFromTransactionData(path, audit_ids);
+			//}
 		});
 	}
 }
