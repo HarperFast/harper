@@ -15457,6 +15457,75 @@
 					"response": []
 				},
 				{
+					"name": "Cluster network",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Cluster network returns nodes array', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response).to.haveOwnProperty('nodes');",
+									"    const node = response.nodes[0]",
+									"    pm.expect(node).to.haveOwnProperty('name');",
+									"    pm.expect(node).to.haveOwnProperty('response_time');",
+									"    pm.expect(node).to.haveOwnProperty('connected_nodes');",
+									"    pm.expect(node).to.haveOwnProperty('routes');",
+									"});",
+									""
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"cluster_network\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{NODE4_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "Create schema 'four' node 2",
 					"event": [
 						{
