@@ -11,6 +11,7 @@ const { server } = require('../Server');
 const { WebSocketServer } = require('ws');
 const { TLSSocket, createSecureContext } = require('tls');
 process.on('uncaughtException', (error) => {
+	if (error.code === 'ECONNRESET') return; // that's what network connections do
 	console.error('uncaughtException', error);
 	process.exit(100);
 });
