@@ -127,7 +127,7 @@ function readMetaDb(
 					audit_store.isLegacy = true;
 				}
 			} else {
-				audit_store = root_store.openDB(AUDIT_STORE_NAME, internal_dbi_init);
+				audit_store = root_store.auditStore = root_store.openDB(AUDIT_STORE_NAME, internal_dbi_init);
 			}
 		}
 
@@ -248,7 +248,7 @@ export function table({ table: table_name, database: database_name, expiration, 
 	} else {
 		let audit_store = root_store.auditStore;
 		if (!audit_store && USE_AUDIT) {
-			audit_store = root_store.openDB(AUDIT_STORE_NAME, {});
+			root_store.auditStore = audit_store = root_store.openDB(AUDIT_STORE_NAME, {});
 		}
 		primary_key_attribute = attributes.find((attribute) => attribute.isPrimaryKey);
 		primary_key = primary_key_attribute.name;

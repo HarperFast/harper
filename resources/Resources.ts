@@ -55,6 +55,12 @@ export class Resources extends Map<string, typeof Resource> {
 		return found_entry;
 	}
 
+	getResource(path: string) {
+		const entry = this.getMatch(path);
+		if (entry) {
+			return entry.remainingPath ? entry.Resource.getResource(entry.remainingPath) : entry.Resource;
+		}
+	}
 	setRepresentation(path, type, representation) {}
 }
 export let resources: Resources;

@@ -60,7 +60,8 @@ export function makeTable(options) {
 	if (!attributes) attributes = [];
 	if (audit_store) listenToCommits(audit_store);
 	const primary_key_attribute = attributes.find((attribute) => attribute.isPrimaryKey) || {};
-	return class Table extends Resource {
+	return class TableResource extends Resource {
+		static name = CamelCase(table_name); // just for display/debugging purposes
 		static primaryStore = primary_store;
 		static auditStore = audit_store;
 		static primaryKey = primary_key;
@@ -103,18 +104,24 @@ export function makeTable(options) {
 
 		/**
 		 * Make a subscription to a query, to get notified of any changes to the specified data
-		 * @param query
+		 * @param identifier
 		 * @param options
 		 */
 		static async subscribe(identifier, options) {
-			let key = typeof identifier !== 'object' ? identifier : identifier.conditions[0].attribute;
+			let key;
+			if (typeof identifier === 'object') {
+				if (options) key = identifier.conditions[0].attribute;
+				else {
+					options = identifier;
+					key = null;
+				}
+			} else key = identifier;
 			if (key === '' || key === '?')
 				// TODO: Should this require special permission?
 				key = null; // wildcard, get everything in table
 			//console.log('subscribe', identifier, require('worker_threads').threadId);
 			if (options?.listener && !options.noRetain && key != null) {
-				const result = await this.get(identifier, options);
-				const data = result?.data;
+				const data = await this.get(identifier, options);
 				if (data) {
 					options.listener(data[primary_key], data);
 				}
@@ -139,11 +146,11 @@ export function makeTable(options) {
 		static async dropTable() {
 			// TODO: remove all the dbi references
 			for (const key in indices) {
-				Table.dbisDB.remove(Table.tableName + '.' + key);
+				TableResource.dbisDB.remove(TableResource.tableName + '.' + key);
 				const index = indices[key];
 				index.drop();
 			}
-			return Table.dbisDB.committed;
+			return TableResource.dbisDB.committed;
 		}
 
 		table: any;
@@ -163,7 +170,7 @@ export function makeTable(options) {
 			}
 			this.envTxn = env_txn;
 			this.lmdbTxn = lmdb_txn;
-			this.inUseEnvs[Table.envPath] = env_txn;
+			this.inUseEnvs[TableResource.envPath] = env_txn;
 			this.parent = parent;
 		}
 		updateModificationTime(latest = Date.now()) {
@@ -356,8 +363,8 @@ export function makeTable(options) {
 							lastUpdate: existing_entry.version,
 						};
 					}
-					if (Table.updateDate) record[Table.updateDate] = txn_time;
-					if (Table.creationDate && !had_existing) record[Table.creationDate] = txn_time;
+					if (TableResource.updateDate) record[TableResource.updateDate] = txn_time;
+					if (TableResource.creationDate && !had_existing) record[TableResource.creationDate] = txn_time;
 
 					primary_store.put(id, record, txn_time);
 					// iterate the entries from the record
@@ -404,6 +411,7 @@ export function makeTable(options) {
 				},
 			});
 		}
+		static put = TableResource.prototype.put;
 
 		delete(id, options): boolean {
 			const env_txn = this.envTxn;
@@ -439,12 +447,16 @@ export function makeTable(options) {
 				},
 			});
 		}
-		static Collection = class Collection extends Table {
-			constructor(request) {
-				super(null, request);
-			}
-		};
-		search(query, options): AsyncIterable<any> {
+		static startTransaction(request) {
+			const TableTxn = super.startTransaction(request);
+			const env_txn = new DatabaseTransaction(primary_store, request?.user, audit_store);
+			TableTxn.envTxn = env_txn;
+			TableTxn.lmdbTxn = env_txn.getReadTxn();
+			TableTxn.inUseEnvs[TableResource.envPath] = env_txn;
+			return TableTxn;
+		}
+
+		static search(query, options): AsyncIterable<any> {
 			query.offset = Number.isInteger(query.offset) ? query.offset : 0;
 			let conditions = query.conditions || query;
 			for (const condition of conditions) {
@@ -528,8 +540,8 @@ export function makeTable(options) {
 			}
 			return records;
 		}
-		subscribe(query, options) {
-			return this.constructor.subscribe(query, options);
+		subscribe(options) {
+			return this.constructor.subscribe(this.id, options);
 		}
 
 		/**
@@ -652,4 +664,11 @@ export function snake_case(camelCase: string) {
 			.slice(1)
 			.replace(/[a-z][A-Z][a-z]/g, (letters) => letters[0] + '_' + letters[1].toLowerCase() + letters.slice(2))
 	);
+}
+
+export function CamelCase(snake_case) {
+	return snake_case
+		.split('_')
+		.map((part) => part[0].toUpperCase() + part.slice(1))
+		.join('');
 }

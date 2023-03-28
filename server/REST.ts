@@ -13,10 +13,9 @@ interface Response {
 	body?: any;
 }
 
-async function http(Resource, resource_path, next_path, request) {
+async function http(resource, resource_path, next_path, request) {
 	const method = request.method;
 	const start = performance.now();
-	let request_data;
 	try {
 		try {
 			if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
@@ -41,19 +40,39 @@ async function http(Resource, resource_path, next_path, request) {
 			throw error;
 		}
 
-		let resource_result = await Resource[method.toLowerCase()](next_path, request);
+		const updated_resource = await resource.accessInTransaction(request, (resource_access) => {
+			switch (method) {
+				case 'GET':
+					return resource_access.get();
+				case 'POST':
+					return resource_access.post(request.data);
+				case 'PUT':
+					return resource_access.put(request.data);
+				case 'DELETE':
+					return resource_access.delete();
+				case 'PATCH':
+					return resource_access.patch(request.data);
+				case 'HEAD':
+					resource_access.patch(request.data);
+					return;
+				case 'OPTIONS':
+					return; // used primarily for CORS, could return all methods
+				default:
+					throw new Error('Method not available');
+			}
+		});
+		let response_data = updated_resource.result;
 		//= await execute(Resource, method, next_path, request_data, request);
 		const if_match = request.headers['if-match'];
 		let status = 200;
-		if (!resource_result) resource_result = {};
-		if (if_match && resource_result.updated?.toString(36) == if_match) {
+		if (if_match && updated_resource.lastModificationTime?.toString(36) == if_match) {
 			//resource_result.cancel();
 			status = 304;
-			resource_result.data = undefined;
+			response_data = undefined;
 		}
 
 		const headers = {};
-		if (resource_result.updated) headers['ETag'] = resource_result.updated.toString(36);
+		if (updated_resource.lastModificationTime) headers['ETag'] = updated_resource.lastModificationTime.toString(36);
 		const execution_time = performance.now() - start;
 		headers['Server-Timing'] = `db;dur=${execution_time.toFixed(2)}`;
 		recordRequest(resource_path, execution_time);
@@ -64,10 +83,10 @@ async function http(Resource, resource_path, next_path, request) {
 		};
 		// TODO: Handle 201 Created
 
-		if (resource_result.data === undefined) {
-			if (response_object.status === 200) response_object.status = resource_result.updated ? 204 : 404;
+		if (response_data === undefined) {
+			if (response_object.status === 200) response_object.status = updated_resource.updated ? 204 : 404;
 		} else {
-			response_object.body = serialize(resource_result.data, request, response_object);
+			response_object.body = serialize(response_data, request, response_object);
 		}
 		return response_object;
 	} catch (error) {
@@ -165,9 +184,9 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 		}*/
 	options.server.http(async (request: Request, next_handler) => {
 		await startRequest(request);
-		const entry = resources.getMatch(request.pathname.slice(1));
-		if (entry) {
-			return http(entry.Resource, entry.path, entry.remainingPath, request);
+		const resource = resources.getResource(request.pathname.slice(1));
+		if (resource) {
+			return http(resource, resource.path, resource.remainingPath, request);
 		}
 		return next_handler(request);
 	});

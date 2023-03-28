@@ -98,6 +98,9 @@ export function startSocketServer(port = 0, session_affinity_identifier) {
 			});
 		}
 	).listen(port);
+	server.on('error', (error) => {
+		console.error('Error in socket server', error);
+	});
 	if (process.env._UNREF_SERVER) server.unref();
 	const pjson = require('../../../package.json');
 	harper_logger.info(`HarperDB ${pjson.version} Server running on port ${port}`);

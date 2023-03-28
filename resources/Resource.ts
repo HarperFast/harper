@@ -2,14 +2,9 @@ import { ResourceInterface } from './ResourceInterface';
 import { getTables } from './tableLoader';
 import { Table } from './Table';
 import { DatabaseTransaction } from './DatabaseTransaction';
+import { DefaultAccess } from './Access';
+
 let tables;
-const QUERY_PARSER = /([^?&|=<>!(),]+)([&|=<>!(),]*)/g;
-const SYMBOL_OPERATORS = {
-	'<': 'lt',
-	'<=': 'le',
-	'>': 'gt',
-	'>=': 'ge',
-};
 
 /**
  * This is the main class that can be extended for any resource in HarperDB and provides the essential reusable
@@ -63,6 +58,7 @@ export class Resource implements ResourceInterface {
 		}
 		return Promise.all(commits);
 	}
+	static commit = Resource.prototype.commit;
 	abort() {
 		for (const env_path in this.inUseEnvs) {
 			// TODO: maintain this array ourselves so we don't need to key-ify
@@ -77,44 +73,14 @@ export class Resource implements ResourceInterface {
 			env_txn.doneReading(); // done with the read snapshot txn
 		}
 	}
-	static async get(identifier: string | number, options?: any) {
-		const resource = this.instantiate(identifier, options);
-		let user;
-		let data;
-		if (options) {
-			user = options.user;
-			const checked = checkAllowed(resource.allowRead?.(user), user, resource);
-			if (checked?.then) await checked; // fast path to avoid await if not needed
+	static async get(identifier: string | number) {
+		if (identifier) {
+			return this.getResource(identifier, this.request).get();
 		}
-		if (options?.search)
-			return {
-				data: resource.search(this.parseQuery(options.search), options),
-			};
-		data = await resource.get();
-		if (resource.property) {
-			data = data[resource.property];
-		}
-		resource.commit();
-		return {
-			updated: resource.lastModificationTime,
-			data,
-		};
-	}
-	static async head(identifier: string | number, request?: any) {
-		const result = await this.get(identifier, request);
-		return {
-			updated: result.updated,
-			// no data, that is the point of a HEAD request
-		};
-	}
-	static async options(identifier: string | number, request?: any) {
-		return {
-			// mainly used for CORS
-		};
+		throw new Error('Not implemented');
 	}
 
-	static instantiate(identifier, request) {
-		if (identifier == null && this.Collection) return new this.Collection(request);
+	static getResource(identifier, request) {
 		let resource;
 		if (typeof identifier === 'string') {
 			const slash_index = identifier.indexOf?.('/');
@@ -126,126 +92,6 @@ export class Resource implements ResourceInterface {
 			}
 		} else resource = new this(identifier, request);
 		return resource;
-	}
-
-	static async put(identifier: string | number, request?: any) {
-		const resource = this.instantiate(identifier, request);
-		const user = request.user;
-		const checked = checkAllowed(resource.allowPut?.(user), user, resource);
-		if (checked?.then) await checked; // fast path to avoid await if not needed
-		const updated_data = await request.data;
-		resource.put(updated_data);
-		const txn = await resource.commit();
-		return {
-			updated: txn[0].txnTime,
-			data: updated_data,
-		};
-	}
-	static async patch(identifier: string | number, request?: any) {
-		const resource = this.instantiate(identifier, request);
-		const user = request.user;
-		const checked = checkAllowed(resource.allowPatch?.(user), user, resource);
-		const updates = await request.data;
-		const record = await resource.update();
-		for (const key in updates) {
-			record[key] = updates[key];
-		}
-		await resource.commit();
-	}
-	static async delete(identifier: string | number, request?: any) {
-		const resource = this.instantiate(identifier, request);
-		const user = request.user;
-		const checked = checkAllowed(resource.allowDelete?.(user), user, resource);
-		await resource.delete();
-		await resource.commit();
-	}
-	static async post(identifier: string | number, request?: any) {
-		const resource = this.instantiate(identifier, request);
-		const user = request.user;
-		const checked = checkAllowed(resource.allowPost?.(user), user, resource);
-		const new_object = await request.data;
-		await resource.create(identifier);
-		await resource.commit();
-	}
-
-	static async publish(identifier: string | number, request?: any) {
-		//console.log('publish', identifier, require('worker_threads').threadId);
-		const resource = this.instantiate(identifier, request);
-		const user = request.user;
-		const checked = checkAllowed(resource.allowPublish?.(user), user, resource);
-		const data = await request.data;
-		if (request.retain) {
-			// retain flag means we persist this message (for any future subscription starts), so treat it as the record itself
-			if (data === undefined) await resource.delete(identifier);
-			else await resource.put(data);
-		} else await resource.publish(data);
-		await resource.commit();
-		return true;
-	}
-
-	/**
-	 * This is responsible for taking a query string (from a get()) and converting it to a standard query object
-	 * structure
-	 * @param query_string
-	 */
-	static parseQuery(query_string: string) {
-		let match;
-		let attribute, comparison;
-		const conditions = [];
-		let offset, limit, sort, select;
-		// TODO: Use URLSearchParams with a fallback for when it can't parse everything (USP is very fast)
-		while ((match = QUERY_PARSER.exec(query_string))) {
-			let [, value, operator] = match;
-			switch (operator[0]) {
-				case ')':
-					// finish call
-					operator = operator.slice(1);
-					break;
-				case '=':
-					if (attribute) {
-						// a FIQL operator like =gt=
-						comparison = value;
-					} else {
-						comparison = 'equals';
-						attribute = decodeURIComponent(value);
-					}
-					break;
-				case '!':
-				// TODO: not-equal
-				case '<':
-				case '>':
-					comparison = SYMBOL_OPERATORS[operator];
-					attribute = decodeURIComponent(value);
-					break;
-				case undefined:
-				case '&':
-				case '|':
-					if (attribute) {
-						switch (attribute) {
-							case 'offset':
-								offset = +value;
-								break;
-							case 'limit':
-								limit = +value;
-								break;
-							default:
-								conditions.push({
-									type: comparison,
-									attribute,
-									value: decodeURIComponent(value),
-								});
-						}
-					}
-					attribute = undefined;
-			}
-		}
-		return {
-			offset,
-			limit,
-			sort,
-			select,
-			conditions,
-		};
 	}
 
 	/**
@@ -303,6 +149,35 @@ export class Resource implements ResourceInterface {
 		this.updateModificationTime();
 		return response;
 	}
+	static startTransaction(request) {
+		return class extends this {
+			static name = this.name + ' (txn)';
+			static inUseEnvs = {};
+			static inUseTables = {};
+		};
+	}
+	startTransaction(request) {
+		return this;
+	}
+	async accessInTransaction(request, action: (resource_access) => any) {
+		const txn = this.startTransaction(request);
+		let response_data;
+		try {
+			const resource_access = txn.access(request);
+			txn.result = await action(resource_access);
+		} finally {
+			await txn.commit();
+		}
+		return txn;
+	}
+	static accessInTransaction = Resource.prototype.accessInTransaction;
+	static access(request) {
+		return new this.Access(request, this);
+	}
+	access(request) {
+		return new this.constructor.Access(request, this);
+	}
+	static Access = DefaultAccess;
 }
 
 export function snake_case(camelCase: string) {

@@ -58,18 +58,25 @@ export class SubscriptionsSession {
 	}
 	async addSubscription(subscription_request) {
 		const { topic, qos, rh, startTime: start_time } = subscription_request;
-		const entry = resources.getMatch(topic);
-		let remaining_path = entry.remainingPath;
-		if (remaining_path === '+' || remaining_path === '#') remaining_path = '?'; // normalize wildcard
-		// If there are a large number of subscriptions, we could include a map of existing subscriptions
-		// to make this faster, but for a few subscriptions that would probably be slower.
-		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
+		const search_index = topic.indexOf('?');
+		let search, path;
+		if (search_index > -1) {
+			search = topic.slice(search_index);
+			path = topic.slice(0, search_index);
+		} else path = topic;
+		if (path.endsWith('+') || path.endsWith('#'))
+			// normalize wildcard
+			path = topic.slice(0, path.length - 1);
 		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
+		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
 		if (existing_subscription) existing_subscription.end();
-		const subscription = await entry.Resource.subscribe(remaining_path, {
+		const resource = resources.getResource(path);
+
+		const subscription = await resource.subscribe({
 			listener: (id, message) => {
-				this.listener(entry.path + '/' + id, message, subscription);
+				this.listener(search ? path + '/' + id : path, message);
 			},
+			search,
 			user: this.user,
 			startTime: start_time || getNextMonotonicTime(),
 			noRetain: rh,
@@ -81,10 +88,11 @@ export class SubscriptionsSession {
 		const { topic, payload } = message;
 		message.data = data;
 		message.user = this.user;
-		const entry = resources.getMatch(topic);
-		if (!entry) return false;
-		const remaining_path = entry.remainingPath;
-		return entry.Resource.publish(remaining_path, message);
+		const resource = resources.getResource(topic);
+		let response_data;
+		return resource.accessInTransaction(this, async (resource_access) => {
+			response_data = await resource_access.publish(data);
+		});
 	}
 	setListener(listener: (message) => any) {
 		this.listener = listener;

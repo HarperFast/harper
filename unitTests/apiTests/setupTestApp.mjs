@@ -44,7 +44,7 @@ export async function setupTestApp() {
 	const { startHTTPThreads } = require('../../server/threads/socketRouter');
 	await startHTTPThreads(config.threads || 0);
 	for (let i = 0; i < 20; i++) {
-		let object = {id: Math.round(random() * 1000000)};
+		let object = {id: Math.round(random() * 1000000).toString(36)};
 		for (let i = 0; i < 20; i++) {
 			if (random() > 0.1) {
 				object['prop' + i] =

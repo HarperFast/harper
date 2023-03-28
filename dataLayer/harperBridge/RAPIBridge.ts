@@ -71,7 +71,7 @@ export class RAPIBridge extends LMDBBridge {
 		if (insert_obj.auto_generate_indices)
 			new_attributes = await lmdb_check_new_attributes(insert_obj.hdb_auth_header, schema_table, attributes);
 		const Table = getDatabases()[insert_obj.schema][insert_obj.table];
-		const txn = new Table();
+		const txn = Table.startTransaction();
 		const put_options = {
 			timestamp: insert_obj.__origin?.timestamp,
 		};
@@ -106,7 +106,7 @@ export class RAPIBridge extends LMDBBridge {
 		if (upsert_obj.auto_generate_indices)
 			new_attributes = await lmdb_check_new_attributes(upsert_obj.hdb_auth_header, schema_table, attributes);
 		const Table = getDatabases()[upsert_obj.schema][upsert_obj.table];
-		const txn = new Table.Collection();
+		const txn = Table.startTransaction();
 		const put_options = {
 			timestamp: upsert_obj.__origin?.timestamp,
 		};
@@ -143,9 +143,9 @@ export class RAPIBridge extends LMDBBridge {
 	 * @param {SearchByHashObject} search_object
 	 */
 	async searchByHash(search_object) {
-		const table_txn = getTableTxn(search_object);
+		const table_txn = getTable(search_object).startTransaction();
 		let select = search_object.get_attributes;
-		if (select[0] === '*') select = table_txn.table.attributes.map((attribute) => attribute.name);
+		if (select[0] === '*') select = table_txn.attributes.map((attribute) => attribute.name);
 		try {
 			return await Promise.all(
 				search_object.hash_values.map(async (key) => {
@@ -163,7 +163,7 @@ export class RAPIBridge extends LMDBBridge {
 	}
 
 	async searchByValue(search_object: SearchObject) {
-		const table_txn = getTableTxn(search_object);
+		const table = getTable(search_object);
 		const conditions =
 			search_object.search_value == '*'
 				? []
@@ -174,25 +174,20 @@ export class RAPIBridge extends LMDBBridge {
 							get_attributes: search_object.get_attributes,
 						},
 				  ];
-		try {
-			return table_txn.search({
-				limit: search_object.limit,
-				offset: search_object.offset,
-				conditions,
-			});
-		} finally {
-			table_txn.commit();
-		}
+		return table.search({
+			limit: search_object.limit,
+			offset: search_object.offset,
+			conditions,
+		});
+	}
+	resetReadTxn(schema, table) {
+		getTable({ schema, table }).primaryKey.resetReadTxn();
 	}
 }
 
-function getTableTxn(operation_object) {
+function getTable(operation_object) {
 	const database_name = operation_object.database || operation_object.schema || DEFAULT_DATABASE;
 	const tables = getDatabases()[database_name];
 	if (!tables) throw handleHDBError(new Error(), HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(database_name), 404);
-	const Table = tables[operation_object.table];
-	if (!Table) {
-		throw handleHDBError(new Error(), HDB_ERROR_MSGS.TABLE_NOT_FOUND(operation_object.table), 404);
-	}
-	return new Table();
+	return tables[operation_object.table];
 }

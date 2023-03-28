@@ -37,6 +37,9 @@ export async function start({ server, port, webSocket, secure }) {
 				const { onMessage, onClose } = onSocket(socket, (message) => socket.write(message), null, user);
 				socket.on('data', onMessage);
 				socket.on('close', onClose);
+				socket.on('error', (error) => {
+					info('Socket error', error);
+				});
 			},
 			{ port: port || DEFAULT_MQTT_PORT, secure }
 		);
