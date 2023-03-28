@@ -94,6 +94,47 @@ describe('test MQTT connections and commands', () => {
 			});
 		});
 	});
+	it('subscribe twice', async function () {
+		this.timeout(10000);
+		let client = connect('mqtt://localhost:1883', {
+			clean: true,
+			clientId: 'test-client-sub2'
+		});
+		await new Promise((resolve, reject) => {
+			client.on('connect', resolve);
+			client.on('error', reject);
+		});
+		await new Promise((resolve, reject) => {
+			client.subscribe('SimpleRecord/22', {
+				qos: 1
+			}, function (err) {
+				console.log('subscribed', err);
+				if (err) reject(err);
+				else {
+					client.subscribe('SimpleRecord/22', {
+						qos: 1
+					}, function (err) {
+						console.log('subscribed again', err);
+						if (err) reject(err);
+						else resolve();
+					});
+				}
+			});
+		});
+		await new Promise((resolve, reject) => {
+			client.on('message', (topic, payload, packet) => {
+				let record = JSON.parse(payload, packet);
+				console.log('second', topic, record);
+				resolve();
+			});
+			client.publish('SimpleRecord/22', JSON.stringify({
+				name: 'This is a test again'
+			}), {
+				retain: false,
+				qos: 1,
+			});
+		});
+	});
 	it('subscribe to wildcard/full table', async function () {
 		this.timeout(10000);
 		await new Promise((resolve, reject) => {

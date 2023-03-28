@@ -32,20 +32,14 @@ const DurableSession = table({
  * @param session_id
  */
 export async function getSession({ clientId: session_id, clean: non_durable }) {
-	let session;
-	if (session_id) {
-		const session_record = !non_durable && (await DurableSession.get(session_id))?.data;
-		if (session_record) {
-			session = new DurableSubscriptionsSession(session_id, session_record);
-			// resuming a session, we need to resume each subscription
-			for (const subscription of session_record.subscriptions) {
-				session.addSubscription(subscription);
-			}
-		} else {
-			session = non_durable ? new SubscriptionsSession(session_id) : new DurableSubscriptionsSession(session_id);
+	if (session_id && !non_durable) {
+		const session = await DurableSession.getResource(session_id);
+		// resuming a session, we need to resume each subscription
+		for (const subscription of session.get('subscriptions') || []) {
+			session.addSubscription(subscription);
 		}
-	}
-	return session;
+		return session;
+	} else return new SubscriptionsSession(session_id);
 }
 
 export class SubscriptionsSession {

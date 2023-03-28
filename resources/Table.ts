@@ -60,7 +60,7 @@ export function makeTable(options) {
 	if (!attributes) attributes = [];
 	if (audit_store) listenToCommits(audit_store);
 	const primary_key_attribute = attributes.find((attribute) => attribute.isPrimaryKey) || {};
-	return class TableResource extends Resource {
+	class TableResource extends Resource {
 		static name = CamelCase(table_name); // just for display/debugging purposes
 		static primaryStore = primary_store;
 		static auditStore = audit_store;
@@ -151,6 +151,7 @@ export function makeTable(options) {
 		parent: Resource;
 		lmdbTxn: any;
 		record: any;
+		changes: any;
 		lastModificationTime = 0;
 		static Source: { new (): ResourceInterface };
 
@@ -293,9 +294,9 @@ export function makeTable(options) {
 				record = id;
 				id = this.id;
 			}
-			if (!id) {
+			if (id == null) {
 				id = this.id;
-				if (!id) id = record[primary_key] = randomUUID(); //uuid.v4();
+				if (id == null) id = record[primary_key] = randomUUID(); //uuid.v4();
 			}
 			if (attributes && !options?.noValidation) {
 				let validation_errors;
@@ -583,7 +584,27 @@ export function makeTable(options) {
 				},
 			});
 		}
-	};
+	}
+	const prototype = TableResource.prototype;
+	prototype.record = null;
+	prototype.changes = null;
+	for (const attribute of attributes) {
+		const name = attribute.name;
+		if (prototype[name] === undefined) {
+			Object.defineProperty(prototype, name, {
+				get() {
+					// TODO: Make an eval version of this that is faster
+					if (this.changes && this.changes[name] !== undefined) return this.changes[name];
+					return this.record?.[name];
+				},
+				set(value) {
+					if (!this.changes) this.changes = {};
+					this.changes[name] = value;
+				},
+			});
+		}
+	}
+	return TableResource;
 	function idsForCondition(search_condition) {
 		let start;
 		let end, inclusiveEnd, exclusiveStart, filter;
