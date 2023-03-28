@@ -111,6 +111,11 @@ async function generateNatsConfig(is_restart = false, process_name = undefined) 
 		hdb_users
 	);
 
+	if (CA_FILE == null) {
+		delete hub_config.tls.ca_file;
+		delete hub_config.leafnodes.tls.ca_file;
+	}
+
 	process_name = hdb_utils.isEmpty(process_name) ? undefined : process_name.toLowerCase();
 	if (process_name === undefined || process_name === hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB.toLowerCase()) {
 		await fs.writeJson(HUB_CONFIG_PATH, hub_config);
@@ -136,6 +141,10 @@ async function generateNatsConfig(is_restart = false, process_name = undefined) 
 		CA_FILE,
 		INSECURE
 	);
+
+	if (CA_FILE == null) {
+		delete leaf_config.tls.ca_file;
+	}
 
 	if (process_name === undefined || process_name === hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF.toLowerCase()) {
 		await fs.writeJson(LEAF_CONFIG_PATH, leaf_config);
