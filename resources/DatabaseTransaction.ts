@@ -3,6 +3,7 @@ import { DATA, OWN } from './WritableRecord';
 import { UPDATES_PROPERTY } from '../utility/hdbTerms';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 
+const MAX_RETRIES = 10;
 export class DatabaseTransaction {
 	conditions = []; // the set of reads that were made in this txn, that need to be verified to commit the writes
 	writes = []; // the set of writes to commit if the conditions are met
@@ -36,7 +37,7 @@ export class DatabaseTransaction {
 	/**
 	 * Resolves with information on the timestamp and success of the commit
 	 */
-	commit(flush = true): Promise<CommitResolution> {
+	commit(flush = true, retries = 0): Promise<CommitResolution> {
 		this.doneReading();
 		const remaining_conditions = this.inTwoPhase ? [] : this.conditions.slice(0).reverse();
 		let txn_time, resolution, write_resolution;
@@ -59,7 +60,7 @@ export class DatabaseTransaction {
 				resolution = resolution || condition_resolution;
 			} else {
 				for (const write of this.writes) {
-					const audit_record = write.commit(txn_time);
+					const audit_record = write.commit(txn_time, retries);
 					audit_record.username = this.username;
 					audit_record.lastVersion = write.lastVersion;
 					last_store = write.store;
@@ -86,7 +87,8 @@ export class DatabaseTransaction {
 					};
 				});
 			} else {
-				return this.commit(); // try again
+				if (++retries > MAX_RETRIES) throw new Error('Unable to optimistically update record');
+				return this.commit(flush, retries); // try again
 			}
 		});
 	}

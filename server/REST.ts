@@ -184,7 +184,7 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 		}*/
 	options.server.http(async (request: Request, next_handler) => {
 		await startRequest(request);
-		const resource = resources.getResource(request.pathname.slice(1));
+		const resource = await resources.getResource(request.pathname.slice(1));
 		if (resource) {
 			return http(resource, resource.path, resource.remainingPath, request);
 		}

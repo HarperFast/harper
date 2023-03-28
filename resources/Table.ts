@@ -119,20 +119,13 @@ export function makeTable(options) {
 			if (key === '' || key === '?')
 				// TODO: Should this require special permission?
 				key = null; // wildcard, get everything in table
-			//console.log('subscribe', identifier, require('worker_threads').threadId);
-			if (options?.listener && !options.noRetain && key != null) {
-				const data = await this.get(identifier, options);
-				if (data) {
-					options.listener(data[primary_key], data);
-				}
-			}
 			return addSubscription(
 				this,
 				key,
 				async (key, audit_record) => {
 					//let result = await this.get(key);
 					try {
-						options.listener(key, audit_record.value);
+						options.listener(audit_record.value, key);
 					} catch (error) {
 						console.error(error);
 					}
@@ -157,6 +150,7 @@ export function makeTable(options) {
 		envTxn: DatabaseTransaction;
 		parent: Resource;
 		lmdbTxn: any;
+		record: any;
 		lastModificationTime = 0;
 		static Source: { new (): ResourceInterface };
 
@@ -180,25 +174,27 @@ export function makeTable(options) {
 			}
 		}
 
+		loadDBRecord() {
+			// TODO: determine if we use lazy access properties
+			const entry = primary_store.getEntry(this.id, { transaction: this.envTxn.getReadTxn() });
+			if (entry) {
+				if (entry.version > this.lastModificationTime) this.updateModificationTime(entry.version);
+				this.record = entry.value;
+			}
+		}
+
 		/**
 		 * This retrieves the record as a frozen object for this resource. Alternately, provide a primary key (id) to
 		 * retrieve a different record from this table.
 		 * @param identifier
 		 */
 		async get(identifier?: string | number) {
-			// TODO: determine if we use lazy access properties
-			const env_txn = this.envTxn;
 			if (!identifier) identifier = this.id;
-			const entry = primary_store.getEntry(identifier, { transaction: env_txn.getReadTxn() });
-			if (!entry) {
+			if (!this.record) {
 				if (this.constructor.Source) return this.getFromSource(identifier);
 				return;
 			}
-			if (entry.version > this.lastModificationTime) {
-				this.updateModificationTime(entry.version);
-			}
-
-			const record = entry?.value;
+			const record = this.record;
 			if (record) {
 				record[TXN_KEY] = this;
 				const availability = record.__availability__;
@@ -209,7 +205,7 @@ export function makeTable(options) {
 						// TODO: Implement retrieval from other nodes once we have horizontal caching
 					}
 					if (this.constructor.Source) return this.getFromSource(identifier, record);
-				} else if (expiration_ms && expiration_ms < Date.now() - entry.version) {
+				} else if (expiration_ms && expiration_ms < Date.now() - this.lastModificationTime) {
 					// TTL/expiration has some open questions, is it tenable to do it with replication?
 					// What if there is no source?
 					if (this.constructor.Source) return this.getFromSource(identifier, record);
@@ -342,15 +338,19 @@ export function makeTable(options) {
 			env_txn.writes.push({
 				key: id,
 				store: primary_store,
-				commit: (txn_time) => {
-					const existing_entry = primary_store.getEntry(id);
-					let existing_record = existing_entry?.value;
+				commit: (txn_time, retry) => {
+					let existing_record = this.record;
+					if (retry) {
+						const existing_entry = primary_store.getEntry(id);
+						existing_record = existing_entry?.value;
+						this.updateModificationTime(existing_entry?.version);
+					}
 					const had_existing = existing_record;
 					if (!existing_record) {
 						existing_record = {};
 					}
 
-					if (existing_entry?.version > txn_time) {
+					if (this.lastModificationTime > txn_time) {
 						// This is not an error condition in our world of last-record-wins
 						// replication. If the existing record is newer than it just means the provided record
 						// is, well... older. And newer records are supposed to "win" over older records, and that
@@ -360,7 +360,7 @@ export function makeTable(options) {
 							operation: 'put',
 							value: record,
 							// TODO: What should this be?
-							lastUpdate: existing_entry.version,
+							lastUpdate: this.lastModificationTime,
 						};
 					}
 					if (TableResource.updateDate) record[TableResource.updateDate] = txn_time;
@@ -419,13 +419,17 @@ export function makeTable(options) {
 				options = id;
 				id = this.id;
 			} else if (!id) id = this.id;
-			const existing_entry = primary_store.getEntry(id);
-			const existing_record = existing_entry?.value;
-			if (!existing_record) return false;
+			if (!this.record) return false;
 			env_txn.writes.push({
 				key: id,
 				store: primary_store,
-				commit: (txn_time) => {
+				commit: (txn_time, retry) => {
+					let existing_record = this.record;
+					if (retry) {
+						const existing_entry = primary_store.getEntry(id);
+						existing_record = existing_entry?.value;
+						this.updateModificationTime(existing_entry?.version);
+					}
 					for (let i = 0, l = indices.length; i < l; i++) {
 						const index = indices[i];
 						const existing_value = existing_record[id];
@@ -541,7 +545,20 @@ export function makeTable(options) {
 			return records;
 		}
 		subscribe(options) {
-			return this.constructor.subscribe(this.id, options);
+			if (options?.listener && !options.noRetain && this.record) options.listener(this.record);
+			return addSubscription(
+				this.constructor,
+				this.id,
+				async (key, audit_record) => {
+					//let result = await this.get(key);
+					try {
+						options.listener(audit_record.value, key);
+					} catch (error) {
+						console.error(error);
+					}
+				},
+				options.startTime
+			);
 		}
 
 		/**

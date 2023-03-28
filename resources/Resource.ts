@@ -75,22 +75,26 @@ export class Resource implements ResourceInterface {
 	}
 	static async get(identifier: string | number) {
 		if (identifier) {
-			return this.getResource(identifier, this.request).get();
+			return (await this.getResource(identifier, this.request)).get();
 		}
 		throw new Error('Not implemented');
 	}
+	loadDBRecord() {
+		// nothing to be done by default, Table implements this
+	}
 
-	static getResource(identifier, request) {
+	static async getResource(path, request) {
 		let resource;
-		if (typeof identifier === 'string') {
-			const slash_index = identifier.indexOf?.('/');
+		if (typeof path === 'string') {
+			const slash_index = path.indexOf?.('/');
 			if (slash_index > -1) {
-				resource = new this(decodeURIComponent(identifier.slice(0, slash_index)), request);
-				resource.property = decodeURIComponent(identifier.slice(slash_index + 1));
+				resource = new this(decodeURIComponent(path.slice(0, slash_index)), request);
+				resource.property = decodeURIComponent(path.slice(slash_index + 1));
 			} else {
-				resource = new this(decodeURIComponent(identifier), request);
+				resource = new this(decodeURIComponent(path), request);
 			}
-		} else resource = new this(identifier, request);
+		} else resource = new this(path, request);
+		await resource.loadDBRecord();
 		return resource;
 	}
 
