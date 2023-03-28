@@ -108,6 +108,7 @@ function configValidator(config_json) {
 				certificateAuthority: pem_file_constraints,
 				privateKey: pem_file_constraints,
 				insecure: boolean.required(),
+				verify: boolean.optional(),
 			}),
 			user: string.optional().empty(null),
 		}).required();

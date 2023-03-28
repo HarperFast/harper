@@ -46,6 +46,7 @@ async function generateNatsConfig(is_restart = false, process_name = undefined) 
 	const KEY_FILE = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY);
 	const CA_FILE = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_TLS_CERT_AUTH);
 	const INSECURE = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_TLS_INSECURE);
+	const VERIFY = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_TLS_VERIFY);
 	const CLUSTERING_NODENAME = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_NODENAME);
 	const CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT = config_utils.getConfigFromFile(
 		CONFIG_PARAMS.CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT
@@ -101,6 +102,7 @@ async function generateNatsConfig(is_restart = false, process_name = undefined) 
 		KEY_FILE,
 		CA_FILE,
 		INSECURE,
+		VERIFY,
 		CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT,
 		config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NAME),
 		config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT),
