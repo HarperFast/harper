@@ -5,10 +5,11 @@ import { onMessageFromWorkers, broadcast } from '../server/threads/manageThreads
 import { MAXIMUM_KEY } from 'ordered-binary';
 import { tables } from './tableLoader';
 import { getLastTxnId } from 'lmdb';
+import { writeKey } from 'ordered-binary';
 const TRANSACTION_EVENT_TYPE = 'transaction';
-
+const FAILED_CONDITION = 0x4000000;
 let all_subscriptions;
-
+const test = Buffer.alloc(4096);
 /**
  * This module/function is responsible for the main work of tracking subscriptions and listening for new transactions
  * that have occurred on any thread, and then reading through the transaction log to notify listeners. This is
@@ -186,6 +187,8 @@ function notifyFromTransactionData(path, audit_ids) {
 		last_time = txn_time;
 		const table_subscriptions = subscriptions[table_id];
 		if (!table_subscriptions) continue;
+		writeKey(audit_id, test, 0);
+		console.log('audit_id', test.slice(0, 9));
 		const audit_record = subscriptions.auditStore.get(audit_id);
 		for (const subscription of table_subscriptions.allKeys) {
 			try {
@@ -243,6 +246,7 @@ export function listenToCommits(audit_store) {
 					first_txn = next.meta.key[0];
 					break;
 				}*/
+				if (next.flag & FAILED_CONDITION) continue;
 				if (next.meta && next.meta.store === audit_store && next.meta.key) audit_ids.push(next.meta.key);
 				if (next.uint32 !== last_uint32) {
 					last_uint32 = next.uint32;

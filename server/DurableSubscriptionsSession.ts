@@ -79,11 +79,11 @@ export class SubscriptionsSession {
 		this.subscriptions.push(subscription);
 	}
 	async publish(message, data) {
-		const { topic, payload } = message;
+		const { topic, retain, payload } = message;
 		message.data = data;
 		message.user = this.user;
 		const resource = await resources.getResource(topic);
-		return resource.accessInTransaction(this, async (resource_access) => {
+		return resource.accessInTransaction(message, async (resource_access) => {
 			return resource_access.publish(data);
 		});
 	}

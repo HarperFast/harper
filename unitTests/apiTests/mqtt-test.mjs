@@ -57,6 +57,52 @@ describe('test MQTT connections and commands', () => {
 			});
 		});
 	});
+	it('can repeatedly publish', async () => {
+		const vus = 1;
+		const tableName = 'SimpleRecord';
+		let intervals = [];
+		for(let x = 1; x < vus +1; x++) {
+			const topic = `${tableName}/${x}`;
+			const client = connect({
+				clientId: `vu${x}`,
+				host: 'localhost',
+				clean: true,
+				connectTimeout: 2000,
+				protocol: 'mqtt'
+			});
+			let interval;
+			client.on('connect', function (connack) {
+				console.log('connected', connack);
+				client.subscribe(topic, function (err) {
+					console.error(err);
+					if (!err) {
+						intervals.push(setInterval(() => {
+							client.publish(topic, JSON.stringify({name: 'radbot 9000', pub_time: Date.now()}), {
+								qos: 1,
+								retain: false
+							});
+						}, 1));
+					}
+				})
+			})
+
+			client.on('message', function (topic, message) {
+				let now = Date.now();
+				// message is Buffer
+				console.log(topic, message.toString())
+				let obj = JSON.parse(message.toString());
+				console.log(now - obj.pub_time);
+			});
+
+			client.on('error', function (error) {
+				// message is Buffer
+				console.error(error);
+			});
+		}
+		await new Promise(resolve => setTimeout(resolve, 100));
+		for (let interval of intervals)
+			clearInterval(interval);
+	});
 	it('subscribe to retained record with upsert operation', async function () {
 		//this.timeout(10000);
 		let path = 'SimpleRecord/77';

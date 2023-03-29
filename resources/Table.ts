@@ -13,6 +13,7 @@ import * as env_mngr from '../utility/environment/environmentManager';
 import { addSubscription, listenToCommits } from './transactionBroadcast';
 import { getWritableRecord } from './WritableRecord';
 import { handleHDBError } from '../utility/errors/hdbError';
+import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 
 const RANGE_ESTIMATE = 100000000;
 env_mngr.initSync();
@@ -180,6 +181,7 @@ export function makeTable(options) {
 			const entry = primary_store.getEntry(this.id, { transaction: this.envTxn.getReadTxn() });
 			if (entry) {
 				if (entry.version > this.lastModificationTime) this.updateModificationTime(entry.version);
+				this.version = entry.version;
 				this.record = entry.value;
 			}
 		}
@@ -339,6 +341,7 @@ export function makeTable(options) {
 			env_txn.writes.push({
 				key: id,
 				store: primary_store,
+				lastVersion: this.version,
 				commit: (txn_time, retry) => {
 					let existing_record = this.record;
 					if (retry) {
@@ -573,9 +576,12 @@ export function makeTable(options) {
 			this.envTxn.writes.push({
 				store: primary_store,
 				key: this.id,
-				commit: (txn_time) => {
+				commit: (txn_time, retries) => {
 					// just need to update the version number of the record so it points to the latest audit record
-					primary_store.put(this.id, asBinary(primary_store.getBinary(this.id)), txn_time);
+					// but have to update the version number of the record
+					// TODO: would be faster to have a dedicated lmdb-js for just updating the version number
+					const existing_record = retries > 0 ? primary_store.get(this.id) : this.record;
+					primary_store.put(this.id, existing_record ?? null, txn_time);
 					// messages are recorded in the audit entry
 					return {
 						operation: 'message',

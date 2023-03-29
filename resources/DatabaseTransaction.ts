@@ -53,9 +53,9 @@ export class DatabaseTransaction {
 		const nextCondition = () => {
 			const write = this.writes[write_index++];
 			if (write) {
-				const entry = write.store.getBinaryFast(write.key);
-				const version = entry ? getLastVersion() : null;
-				write.lastVersion = version;
+				const entry = write.store.getEntry(write.key);
+				// if the first optimistic attempt failed, we need to try again with the very latest version
+				const version = retries === 0 && write.lastVersion !== undefined ? write.lastVersion : entry?.version ?? null;
 				const condition_resolution = write.store.ifVersion(write.key, version, nextCondition);
 				resolution = resolution || condition_resolution;
 			} else {
@@ -87,7 +87,9 @@ export class DatabaseTransaction {
 					};
 				});
 			} else {
-				if (++retries > MAX_RETRIES) throw new Error('Unable to optimistically update record');
+				if (++retries > MAX_RETRIES) {
+					throw new Error('Unable to optimistically update record');
+				}
 				return this.commit(flush, retries); // try again
 			}
 		});
