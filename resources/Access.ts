@@ -1,4 +1,4 @@
-const QUERY_PARSER = /([^?&|=<>!(),]+)([&|=<>!(),]*)/g;
+const QUERY_PARSER = /([^?&|=<>!()]+)([&|=<>!()]*)/g;
 const SYMBOL_OPERATORS = {
 	'<': 'lt',
 	'<=': 'le',
@@ -112,6 +112,9 @@ export class DefaultAccess {
 								break;
 							case 'limit':
 								limit = +value;
+								break;
+							case 'select':
+								select = value.split(',');
 								break;
 							default:
 								conditions.push({

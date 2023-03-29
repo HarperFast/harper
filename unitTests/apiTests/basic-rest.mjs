@@ -127,10 +127,13 @@ describe('test REST calls', () => {
 		});
 
 		it('query with select', async () => {
-			let response = await axios('http://localhost:9926/FourProp?name=name4&select=age,id');
+			let response = await axios('http://localhost:9926/FourProp?age=lt=22&select=age,id');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 2);
-			assert.equal(response.data[1].age, 22);
+			assert.equal(response.data[1].age, 21);
+			assert.equal(response.data[1].id, 1);
+			assert.equal(response.data[0].name, undefined);
+			assert.equal(response.data[1].name, undefined);
 		});
 
 	});

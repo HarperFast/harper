@@ -546,6 +546,16 @@ export function makeTable(options) {
 					records = ids.map((id) => primary_store.get(id, { transaction: this.lmdbTxn, lazy: true }));
 				}
 			}
+			const select = query.select;
+			if (select)
+				records = records.map((record) => {
+					const selected = {};
+					for (let i = 0, l = select.length; i < l; i++) {
+						const key = select[i];
+						selected[key] = record[key];
+					}
+					return selected;
+				});
 			return records;
 		}
 		subscribe(options) {
