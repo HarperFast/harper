@@ -222,13 +222,6 @@ function doesPathExist(path_to_check) {
 function validatePemFile(value, helpers) {
 	if (value === null) return;
 
-	Joi.assert(
-		value,
-		string
-			.pattern(/^[\\\/]$|([\\\/][a-zA-Z_0-9\:-]+)+\.pem+$/)
-			.messages({ 'string.pattern.base': 'must be a valid directory path and specify a .pem file' })
-	);
-
 	const does_exist_msg = doesPathExist(value);
 	if (does_exist_msg) {
 		return helpers.message(does_exist_msg);

@@ -127,6 +127,7 @@ describe('Test bulkLoad.js', () => {
 			aws_secret_access_key: '54321key',
 			bucket: 'test_bucket',
 			key: 'test_file.csv',
+			region: 'us-east-2',
 		},
 	};
 

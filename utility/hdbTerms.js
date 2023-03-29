@@ -368,6 +368,7 @@ const S3_BUCKET_AUTH_KEYS = {
 	AWS_SECRET: 'aws_secret_access_key',
 	AWS_BUCKET: 'bucket',
 	AWS_FILE_KEY: 'key',
+	REGION: 'region',
 };
 
 // Defines valid SQL operations to be used in the processAST method - this ensure we have appropriate unit test coverage

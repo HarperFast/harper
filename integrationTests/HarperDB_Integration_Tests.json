@@ -26917,7 +26917,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"dogs.csv\"\n\t}\n}"
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data\",\n\t\t\"key\":\"non_public_folder/dogs.csv\",\n        \"region\": \"us-east-2\"\n\t}\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -27119,7 +27119,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"upsert\",\n\t\"schema\":\"dev\",\n\t\"table\":\"owner\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"owners_update.json\"\n\t}\n}"
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"upsert\",\n\t\"schema\":\"dev\",\n\t\"table\":\"owner\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data\",\n\t\t\"key\":\"non_public_folder/owners_update.json\",\n        \"region\": \"us-east-2\"\n\t}\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -27315,7 +27315,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"dev\",\n\t\"table\":\"owner\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"owners_update.json\"\n\t}\n}"
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"dev\",\n\t\"table\":\"owner\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data\",\n\t\t\"key\":\"non_public_folder/owners_update.json\",\n        \"region\": \"us-east-2\"\n\t}\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -27828,7 +27828,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"update\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"dogs.csv\"\n\t}\n}"
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"update\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data\",\n\t\t\"key\":\"non_public_folder/dogs.csv\",\n        \"region\": \"us-east-2\"\n\t}\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -36762,7 +36762,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"dogs\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"dogs.xlsx\"\n\t}\n}"
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"dogs\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data\",\n\t\t\"key\":\"non_public_folder/dogs.xlsx\",\n        \"region\": \"us-east-2\"\n\t}\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -36835,7 +36835,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"dogs\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"dogs.csv\"\n\t}\n}"
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"dogs\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data\",\n\t\t\"key\":\"non_public_folder/dogs.csv\",\n        \"region\": \"us-east-2\"\n\t}\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -37021,7 +37021,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"owners\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"owners.json\"\n\t}\n}"
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"owners\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data\",\n\t\t\"key\":\"non_public_folder/owners.json\",\n        \"region\": \"us-east-2\"\n\t}\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -37207,7 +37207,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"breed\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"breed.json\"\n\t}\n}"
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"breed\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data\",\n\t\t\"key\":\"non_public_folder/breed.json\",\n        \"region\": \"us-east-2\"\n\t}\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -37393,7 +37393,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"owners\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"does_not_exist.csv\"\n\t}\n}"
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"owners\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data\",\n\t\t\"key\":\"non_public_folder/does_not_exist.csv\",\n        \"region\": \"us-east-2\"\n\t}\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -37579,7 +37579,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"update\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"dogs\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"dogs_update.csv\"\n\t}\n}"
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"update\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"dogs\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data\",\n\t\t\"key\":\"non_public_folder/dogs_update.csv\",\n        \"region\": \"us-east-2\"\n\t}\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -37765,7 +37765,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"update\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"owners\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"owners_update.json\"\n\t}\n}"
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"update\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"owners\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data\",\n\t\t\"key\":\"non_public_folder/owners_update.json\",\n        \"region\": \"us-east-2\"\n\t}\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -37951,7 +37951,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"sensor\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"sensor_data.json\"\n\t}\n}"
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"sensor\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data\",\n\t\t\"key\":\"non_public_folder/sensor_data.json\",\n        \"region\": \"us-east-2\"\n\t}\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -38137,7 +38137,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"upsert\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"sensor\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"sensor_data.json\"\n\t}\n}"
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"upsert\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"sensor\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data\",\n\t\t\"key\":\"non_public_folder/sensor_data.json\",\n        \"region\": \"us-east-2\"\n\t}\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -38418,7 +38418,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"update\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"owners\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"does_not_exist_UPDATE.csv\"\n\t}\n}"
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"update\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"owners\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data\",\n\t\t\"key\":\"non_public_folder/does_not_exist_UPDATE.csv\",\n        \"region\": \"us-east-2\"\n\t}\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -38599,7 +38599,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"export_to_s3\",\n\t\"format\":\"csv\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"test_export\"\n\t},\n\t\"search_operation\":{\n\t\t\"operation\": \"sql\",\n\t\t\"sql\": \"SELECT * FROM S3_DATA.dogs LIMIT 1\"\n\t}\n}"
+									"raw": "{\n\t\"operation\":\"export_to_s3\",\n\t\"format\":\"csv\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data\",\n\t\t\"key\":\"non_public_folder/test_export\",\n        \"region\": \"us-east-2\"\n\t},\n\t\"search_operation\":{\n\t\t\"operation\": \"sql\",\n\t\t\"sql\": \"SELECT * FROM S3_DATA.dogs LIMIT 1\"\n\t}\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -39032,7 +39032,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"export_to_s3\",\n\t\"format\":\"csv\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"test_export_csv\"\n\t},\n\t\"search_operation\":{\n\t\t\"operation\": \"sql\",\n\t\t\"sql\": \"SELECT * FROM S3_DATA.s3_test\"\n\t}\n}"
+									"raw": "{\n\t\"operation\":\"export_to_s3\",\n\t\"format\":\"csv\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data\",\n\t\t\"key\":\"non_public_folder/test_export_csv\",\n        \"region\": \"us-east-2\"\n\t},\n\t\"search_operation\":{\n\t\t\"operation\": \"sql\",\n\t\t\"sql\": \"SELECT * FROM S3_DATA.s3_test\"\n\t}\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -39196,7 +39196,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"s3_test_csv_import\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"test_export_csv.csv\"\n\t}\n}"
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"s3_test_csv_import\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data\",\n\t\t\"key\":\"non_public_folder/test_export_csv.csv\",\n        \"region\": \"us-east-2\"\n\t}\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -39488,7 +39488,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"export_to_s3\",\n\t\"format\":\"json\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"test_export_json\"\n\t},\n\t\"search_operation\":{\n\t\t\"operation\": \"sql\",\n\t\t\"sql\": \"SELECT * FROM S3_DATA.s3_test\"\n\t}\n}"
+									"raw": "{\n\t\"operation\":\"export_to_s3\",\n\t\"format\":\"json\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data\",\n\t\t\"key\":\"non_public_folder/test_export_json\",\n        \"region\": \"us-east-2\"\n\t},\n\t\"search_operation\":{\n\t\t\"operation\": \"sql\",\n\t\t\"sql\": \"SELECT * FROM S3_DATA.s3_test\"\n\t}\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",
@@ -39652,7 +39652,7 @@
 								],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"s3_test_json_import\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"test_export_json.json\"\n\t}\n}"
+									"raw": "{\n\t\"operation\":\"import_from_s3\",\n\t\"action\": \"insert\",\n\t\"schema\":\"S3_DATA\",\n\t\"table\":\"s3_test_json_import\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data\",\n\t\t\"key\":\"non_public_folder/test_export_json.json\",\n        \"region\": \"us-east-2\"\n\t}\n}"
 								},
 								"url": {
 									"raw": "{{host}}:{{port}}",

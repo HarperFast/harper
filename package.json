@@ -53,6 +53,8 @@
     "coverage": "nyc --reporter=lcov npm test"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.299.0",
+    "@aws-sdk/lib-storage": "3.300.0",
     "@fastify/autoload": "~5.7.1",
     "@fastify/compress": "~6.2.0",
     "@fastify/cors": "~8.2.0",
@@ -67,7 +69,6 @@
     "@turf/helpers": "6.5.0",
     "@turf/length": "6.5.0",
     "alasql": "1.7.4",
-    "aws-sdk": "2.1340.0",
     "cbor-x": "1.5.1",
     "chalk": "4.1.2",
     "cli-progress": "3.12.0",

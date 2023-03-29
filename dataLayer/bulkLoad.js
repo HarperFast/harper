@@ -300,7 +300,7 @@ async function downloadFileFromS3(s3_file_name, json_message) {
 		await fs.mkdirp(TEMP_DOWNLOAD_DIR);
 		await fs.writeFile(`${TEMP_DOWNLOAD_DIR}/${s3_file_name}`, '', { flag: 'a+' });
 		let tempFileStream = await fs.createWriteStream(tempDownloadLocation);
-		let s3Stream = AWSConnector.getFileStreamFromS3(json_message);
+		let s3Stream = await AWSConnector.getFileStreamFromS3(json_message);
 
 		await new Promise((resolve, reject) => {
 			s3Stream.on('error', function (err) {
