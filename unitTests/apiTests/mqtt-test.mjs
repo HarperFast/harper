@@ -72,7 +72,6 @@ describe('test MQTT connections and commands', () => {
 			});
 			let interval;
 			client.on('connect', function (connack) {
-				console.log('connected', connack);
 				client.subscribe(topic, function (err) {
 					console.error(err);
 					if (!err) {
@@ -89,9 +88,7 @@ describe('test MQTT connections and commands', () => {
 			client.on('message', function (topic, message) {
 				let now = Date.now();
 				// message is Buffer
-				console.log(topic, message.toString())
 				let obj = JSON.parse(message.toString());
-				console.log(now - obj.pub_time);
 			});
 
 			client.on('error', function (error) {

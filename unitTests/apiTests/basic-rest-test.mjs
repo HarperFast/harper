@@ -21,7 +21,6 @@ describe('test REST calls', () => {
 		const headers = {
 			//authorization,
 		};
-		console.log('sending');
 		let response = await axios({
 			url: 'http://localhost:9926/VariedProps/' + available_records[1],
 			method: 'GET',
@@ -29,7 +28,6 @@ describe('test REST calls', () => {
 			headers,
 		});
 		assert.equal(response.status, 200);
-		// TODO: Ensure there is no __updatedtime__ or __createdtime__ or __updates___
 		let data = JSON.parse(response.data);
 		assert.equal(available_records[1], data.id);
 	});
@@ -38,7 +36,6 @@ describe('test REST calls', () => {
 			//authorization,
 			accept: 'application/cbor'
 		};
-		console.log('sending');
 		let response = await axios({
 			url: 'http://localhost:9926/VariedProps/' + available_records[1],
 			method: 'GET',
@@ -46,7 +43,6 @@ describe('test REST calls', () => {
 			headers,
 		});
 		assert.equal(response.status, 200);
-		// TODO: Ensure there is no __updatedtime__ or __createdtime__ or __updates___
 		let data = decode(response.data);
 		assert.equal(available_records[1], data.id);
 		response = await axios({

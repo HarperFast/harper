@@ -12,7 +12,7 @@ import * as lmdb_terms from '../utility/lmdb/terms';
 import * as env_mngr from '../utility/environment/environmentManager';
 import { addSubscription, listenToCommits } from './transactionBroadcast';
 import { getWritableRecord } from './WritableRecord';
-import { handleHDBError } from '../utility/errors/hdbError';
+import { handleHDBError, ClientError } from '../utility/errors/hdbError';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 
 const RANGE_ESTIMATE = 100000000;
@@ -332,7 +332,7 @@ export function makeTable(options) {
 					}
 				}
 				if (validation_errors) {
-					throw new Error(validation_errors.join('. '));
+					throw new ClientError(validation_errors.join('. '));
 				}
 			}
 			// use optimistic locking to only commit if the existing record state still holds true.

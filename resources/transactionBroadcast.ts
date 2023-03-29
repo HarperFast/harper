@@ -188,7 +188,6 @@ function notifyFromTransactionData(path, audit_ids) {
 		const table_subscriptions = subscriptions[table_id];
 		if (!table_subscriptions) continue;
 		writeKey(audit_id, test, 0);
-		console.log('audit_id', test.slice(0, 9));
 		const audit_record = subscriptions.auditStore.get(audit_id);
 		for (const subscription of table_subscriptions.allKeys) {
 			try {

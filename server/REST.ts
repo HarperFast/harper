@@ -4,6 +4,7 @@ import { createServer, ClientRequest, ServerOptions } from 'http';
 import { findAndValidateUser } from '../security/user';
 import { authentication } from '../security/auth';
 import { server } from './Server';
+import { ServerError, ClientError } from '../utility/errors/hdbError';
 import { Resources } from '../resources/Resources';
 
 interface Response {
@@ -28,9 +29,9 @@ async function http(resource, resource_path, next_path, request) {
 					request.body.on('error', reject);
 				}).then((body) => {
 					try {
-						return getDeserializer(request.headers['content-type'])(body);
+						return getDeserializer(request.headers['content-type'], body)(body);
 					} catch (error) {
-						// TODO: Convert to HDBError with error 400
+						throw new ClientError(error, 400);
 					}
 				});
 			}
@@ -58,21 +59,24 @@ async function http(resource, resource_path, next_path, request) {
 				case 'OPTIONS':
 					return; // used primarily for CORS, could return all methods
 				default:
-					throw new Error('Method not available');
+					throw new ServerError('Method not available', 501);
 			}
 		});
 		let response_data = updated_resource.result;
 		//= await execute(Resource, method, next_path, request_data, request);
 		const if_match = request.headers['if-match'];
 		let status = 200;
-		if (if_match && updated_resource.lastModificationTime?.toString(36) == if_match) {
+		if (if_match && (updated_resource.lastModificationTime * 1000).toString(36) == if_match) {
 			//resource_result.cancel();
 			status = 304;
 			response_data = undefined;
 		}
 
 		const headers = {};
-		if (updated_resource.lastModificationTime) headers['ETag'] = updated_resource.lastModificationTime.toString(36);
+		if (updated_resource.lastModificationTime) {
+			headers['ETag'] = (updated_resource.lastModificationTime * 1000).toString(36);
+			headers['Last-Modified'] = new Date(updated_resource.lastModificationTime).toUTCString();
+		}
 		const execution_time = performance.now() - start;
 		headers['Server-Timing'] = `db;dur=${execution_time.toFixed(2)}`;
 		recordRequest(resource_path, execution_time);
@@ -92,8 +96,8 @@ async function http(resource, resource_path, next_path, request) {
 	} catch (error) {
 		const execution_time = performance.now() - start;
 		recordRequest(resource_path, execution_time);
-		// do content negotiation on the error
-		console.error(error);
+		if (!error.http_resp_code) console.error(error);
+		// TODO: do content negotiation on the error
 		return {
 			status: error.http_resp_code || 500, // use specified error status, or default to generic server error
 			headers: {},

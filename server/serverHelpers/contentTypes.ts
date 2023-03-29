@@ -286,7 +286,7 @@ export function serializeMessage(message, request) {
 
 export function getDeserializer(content_type, body) {
 	if (!content_type) {
-		if (body[0] === 123) {
+		if (body?.[0] === 123) {
 			// left curly brace
 			return tryJSONParse;
 		}
