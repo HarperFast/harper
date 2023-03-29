@@ -78,6 +78,19 @@ export class SubscriptionsSession {
 		subscription.topic = topic;
 		this.subscriptions.push(subscription);
 	}
+	async removeSubscription(topic) {
+		const search_index = topic.indexOf('?');
+		let path;
+		if (search_index > -1) {
+			path = topic.slice(0, search_index);
+		} else path = topic;
+		if (path.endsWith('+') || path.endsWith('#'))
+			// normalize wildcard
+			path = topic.slice(0, path.length - 1);
+		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
+		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
+		if (existing_subscription) existing_subscription.end();
+	}
 	async publish(message, data) {
 		const { topic, retain, payload } = message;
 		message.data = data;

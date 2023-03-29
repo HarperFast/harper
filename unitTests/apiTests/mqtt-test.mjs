@@ -101,14 +101,13 @@ describe('test MQTT connections and commands', () => {
 			clearInterval(interval);
 	});
 	it('subscribe to retained record with upsert operation', async function () {
-		//this.timeout(10000);
 		let path = 'SimpleRecord/77';
+		let client
 		await new Promise((resolve, reject) => {
-			let client = connect('mqtt://localhost:1883');
+			client = connect('mqtt://localhost:1883');
 			client.on('connect', resolve);
 			client.on('error', reject);
 		});
-		console.log('connected');
 		await new Promise((resolve, reject) => {
 			client.subscribe(path, function (err) {
 				//console.log('subscribed', err);
@@ -118,7 +117,7 @@ describe('test MQTT connections and commands', () => {
 				}
 			});
 			client.once('message', (topic, payload, packet) => {
-				let record = decode(payload);
+				let record = JSON.parse(payload);
 				console.log(topic, record);
 				resolve();
 			});
@@ -136,9 +135,9 @@ describe('test MQTT connections and commands', () => {
 				reject(response);
 			});
 		});
+		client.end();
 	});
 	it('subscribe twice', async function () {
-		this.timeout(10000);
 		let client = connect('mqtt://localhost:1883', {
 			clean: true,
 			clientId: 'test-client-sub2'
@@ -151,13 +150,11 @@ describe('test MQTT connections and commands', () => {
 			client.subscribe('SimpleRecord/22', {
 				qos: 1
 			}, function (err) {
-				console.log('subscribed', err);
 				if (err) reject(err);
 				else {
 					client.subscribe('SimpleRecord/22', {
 						qos: 1
 					}, function (err) {
-						console.log('subscribed again', err);
 						if (err) reject(err);
 						else resolve();
 					});
@@ -177,6 +174,44 @@ describe('test MQTT connections and commands', () => {
 				qos: 1,
 			});
 		});
+		client.end();
+	});
+	it('subscribe and unsubscribe', async function () {
+		let client = connect('mqtt://localhost:1883', {
+			clean: true,
+			clientId: 'test-client-sub2'
+		});
+		await new Promise((resolve, reject) => {
+			client.on('connect', resolve);
+			client.on('error', reject);
+		});
+		await new Promise((resolve, reject) => {
+			client.subscribe('SimpleRecord/23', {
+				qos: 1
+			}, function (err) {
+				if (err) reject(err);
+				else {
+					client.unsubscribe('SimpleRecord/23', function (err) {
+						if (err) reject(err);
+						else resolve();
+					});
+				}
+			});
+		});
+		await new Promise((resolve, reject) => {
+			client.on('message', (topic, payload, packet) => {
+				let record = JSON.parse(payload, packet);
+				reject('Should not receive a message that we are unsubscribed to');
+			});
+			client.publish('SimpleRecord/23', JSON.stringify({
+				name: 'This is a test again'
+			}), {
+				retain: false,
+				qos: 1,
+			});
+			setTimeout(resolve, 50);
+		});
+		client.end();
 	});
 	it('subscribe to wildcard/full table', async function () {
 		this.timeout(10000);

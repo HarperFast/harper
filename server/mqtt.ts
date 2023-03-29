@@ -119,6 +119,21 @@ function onSocket(socket, send, request, user) {
 					);
 					info('Sent suback');
 					break;
+				case 'unsubscribe':
+					info('Received unsubscribe request', packet.unsubscriptions);
+					for (const subscription of packet.unsubscriptions) {
+						session.removeSubscription(subscription);
+					}
+					console.log('Sending unsuback', packet.unsubscriptions[0].topic);
+					send(
+						generate({
+							// Send a subscription acknowledgment
+							cmd: 'unsuback',
+							messageId: packet.messageId,
+						})
+					);
+					console.log('Sent unsuback');
+					break;
 				case 'publish':
 					// deserialize
 					const deserialize =
