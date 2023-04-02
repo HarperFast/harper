@@ -166,6 +166,7 @@ function buildServer(is_https) {
 		'/',
 		{
 			preValidation: [reqBodyValidationHandler, authHandler],
+			config: { isOperation: true },
 		},
 		async function (req, res) {
 			// if the operation is a restart, we have to tell the client not to use keep alive on this connection
