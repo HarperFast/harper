@@ -28,8 +28,8 @@ server.ws = onWebSocket;
 let ws_listeners = [],
 	ws_server,
 	ws_chain;
-let default_server,
-	http_chain,
+let default_server = {},
+	http_chain = {},
 	request_listeners = [],
 	http_responders = [];
 
@@ -178,32 +178,39 @@ function registerServer(server, port) {
 	server.on('unhandled', defaultNotFound);
 }
 function httpServer(listener, options) {
-	let port = options?.port || {};
-	if (!+port) {
+	let port = options?.port;
+	let port_num = +port;
+	if (!port_num) {
 		// if no port is provided, default to custom functions port
-		port = parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10);
+		port_num = parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10);
 	}
+	getHTTPServer(port_num);
 	if (typeof listener === 'function') {
-		getDefaultHTTPServer();
-		if (options?.requestOnly) request_listeners.push(listener);
-		else http_responders.push(listener);
-		http_chain = makeCallbackChain(request_listeners.concat(http_responders));
-		ws_chain = makeCallbackChain(request_listeners);
+		http_responders.push({ listener, port: port || port_num });
 	} else {
-		registerServer(listener, port);
+		registerServer(listener, port_num);
 	}
+	http_chain[port] = makeCallbackChain(http_responders, port_num);
+	ws_chain = makeCallbackChain(request_listeners, port_num);
 }
-function getDefaultHTTPServer() {
-	if (!default_server) {
-		default_server = createServer(async (node_request, node_response) => {
+function getHTTPServer(port) {
+	if (!default_server[port]) {
+		default_server[port] = createServer(async (node_request, node_response) => {
 			try {
 				let request = new Request(node_request);
 				// assign a more WHATWG compliant headers object, this is our real standard interface
-				//request.headers = new Headers(request.headers);
-				let response = await http_chain(request);
+				let response = await http_chain[port](request);
+				if (response.status === -1) {
+					// This means the HDB stack didn't handle the request, and we can then cascade the request
+					// to the server-level handler, forming the bridge to the slower legacy fastify framework that expects
+					// to interact with a node HTTP server object.
+					return default_server[port].emit('unhandled', node_request, node_response);
+				}
 				node_response.writeHead(response.status, response.headers);
 				let body = response.body;
+				// if it is a stream, pipe it
 				if (body?.pipe) body.pipe(node_response);
+				// else just send the buffer/string
 				else node_response.end(body);
 			} catch (error) {
 				node_response.writeHead(error.hdb_resp_code || 500);
@@ -211,31 +218,38 @@ function getDefaultHTTPServer() {
 				harper_logger.error(error);
 			}
 		});
-		registerServer(default_server);
+		registerServer(default_server[port], port);
 	}
-	return default_server;
+	return default_server[port];
 }
 
-function makeCallbackChain(listeners) {
-	let next_callback = notFound;
+function makeCallbackChain(responders, port_num) {
+	let next_callback = unhandled;
 	// go through the listeners in reverse order so each callback can be passed to the one before
 	// and then each middleware layer can call the next middleware layer
-	for (let i = listeners.length; i > 0; ) {
-		let listener = listeners[--i];
-		let callback = next_callback;
-		next_callback = (request) => {
-			// for listener only layers, the response through
-			return listener(request, callback);
-		};
+	for (let i = responders.length; i > 0; ) {
+		let { listener, port } = responders[--i];
+		if (port === port_num || port === 'all') {
+			let callback = next_callback;
+			next_callback = (request) => {
+				// for listener only layers, the response through
+				return listener(request, callback);
+			};
+		}
 	}
 	return next_callback;
 }
-const NOT_FOUND = {
-	status: 404,
+const UNHANDLED = {
+	status: -1,
 	body: 'Not found',
+	headers: {},
 };
-function notFound() {
-	return NOT_FOUND;
+function unhandled(request) {
+	if (request.user) {
+		// pass on authentication information to the next server
+		request[node_request_key].user = request.user;
+	}
+	return UNHANDLED;
 }
 function onRequest(listener, options) {
 	httpServer(listener, Object.assign({ requestOnly: true }, options));
@@ -261,11 +275,16 @@ function onSocket(listener, options) {
 	} else SERVERS[options.port] = listener;
 }
 function onWebSocket(listener, options) {
+	let port_num = +options?.port;
+	if (!port_num) {
+		// if no port is provided, default to custom functions port
+		port_num = parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10);
+	}
 	if (!ws_server) {
-		ws_server = new WebSocketServer({ server: getDefaultHTTPServer() });
+		ws_server = new WebSocketServer({ server: getHTTPServer(port_num) });
 		ws_server.on('connection', async (ws, node_request) => {
 			let request = new Request(node_request);
-			let chain_completion = ws_chain(request);
+			let chain_completion = http_chain[port_num](request);
 			let protocol = request.headers['sec-websocket-protocol'];
 			// TODO: select listener by protocol
 			for (let i = 0; i < ws_listeners.length; i++) {
@@ -275,24 +294,24 @@ function onWebSocket(listener, options) {
 		});
 	}
 	ws_listeners.push(listener);
-	ws_chain = makeCallbackChain(request_listeners);
+	http_chain = makeCallbackChain(http_responders, port_num);
 }
 function defaultNotFound(request, response) {
 	response.writeHead(404);
 	response.end('Not found\n');
 }
-
+const node_request_key = Symbol('node request');
 /**
  * We define our own request class, to ensure that it has integrity against leaks in a secure environment
- * and so for better conformance to WHATWG standards.
+ * and for better conformance to WHATWG standards.
  */
 class Request {
-	#node_request;
+	[node_request_key];
 	#body;
 	constructor(node_request) {
 		this.method = node_request.method;
 		let url = node_request.url;
-		this.#node_request = node_request;
+		this[node_request_key] = node_request;
 		let question_index = url.indexOf('?');
 		if (question_index > -1) {
 			this.pathname = url.slice(0, question_index);
@@ -308,16 +327,16 @@ class Request {
 		return this.protocol + '://' + this.host + this.pathname + this.search;
 	}
 	get protocol() {
-		return this.#node_request.socket.encrypted ? 'https' : 'http';
+		return this[node_request_key].socket.encrypted ? 'https' : 'http';
 	}
 	get ip() {
-		return this.#node_request.socket.remoteAddress;
+		return this[node_request_key].socket.remoteAddress;
 	}
 	get body() {
-		return this.#body || (this.#body = new RequestBody(this.#node_request));
+		return this.#body || (this.#body = new RequestBody(this[node_request_key]));
 	}
 	get host() {
-		return this.#node_request.authority || this.#node_request.headers.host;
+		return this[node_request_key].authority || this[node_request_key].headers.host;
 	}
 	get isAborted() {
 		// TODO: implement this

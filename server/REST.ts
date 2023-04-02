@@ -1,5 +1,5 @@
 import { serialize, serializeMessage, getDeserializer } from '../server/serverHelpers/contentTypes';
-import { recordRequest } from '../resources/analytics';
+import { recordAction } from '../resources/analytics';
 import { createServer, ClientRequest, ServerOptions } from 'http';
 import { findAndValidateUser } from '../security/user';
 import { authentication } from '../security/auth';
@@ -58,6 +58,8 @@ async function http(resource, resource_path, next_path, request) {
 					return;
 				case 'OPTIONS':
 					return; // used primarily for CORS, could return all methods
+				case 'CONNECT':
+					return; // websockets, nothing to do here
 				default:
 					throw new ServerError('Method not available', 501);
 			}
@@ -79,7 +81,7 @@ async function http(resource, resource_path, next_path, request) {
 		}
 		const execution_time = performance.now() - start;
 		headers['Server-Timing'] = `db;dur=${execution_time.toFixed(2)}`;
-		recordRequest(resource_path, execution_time);
+		recordAction(resource_path, execution_time);
 		const response_object = {
 			status,
 			headers,
@@ -95,7 +97,7 @@ async function http(resource, resource_path, next_path, request) {
 		return response_object;
 	} catch (error) {
 		const execution_time = performance.now() - start;
-		recordRequest(resource_path, execution_time);
+		recordAction(resource_path, execution_time);
 		if (!error.http_resp_code) console.error(error);
 		// TODO: do content negotiation on the error
 		return {

@@ -19,11 +19,11 @@ const CORE_PLUGINS = {
 };
 let loaded_server_modules = new Map();
 const default_server_modules = [
+	{ module: 'auth', port: 'all' },
 	{ module: 'mqtt', port: 1883 },
 	//{ module: 'mqtt', port: 8883, secure: true },
 	{ module: 'app-server', port: 9926 },
 	{ module: 'operations-server', port: 9925 },
-	{ module: 'auth' },
 ];
 
 /**
@@ -44,7 +44,7 @@ async function loadServerModules(server_modules = default_server_modules, is_wor
 			// start each server_module
 			if (isMainThread) {
 				if (server_module.startOnMainThread) await server_module.startOnMainThread(server_module_definition);
-				if (port && !ports_started.includes(port)) {
+				if (+port && !ports_started.includes(port)) {
 					// if there is a TCP port associated with the plugin, we set up the routing on the main thread for it
 					ports_started.push(port);
 					const session_affinity = env.get(hdb_terms.CONFIG_PARAMS.HTTP_SESSION_AFFINITY);

@@ -1,8 +1,8 @@
 import { dirname } from 'path';
-import fs from 'fs';
-
+import { existsSync } from 'fs';
 import fastify from 'fastify';
 import fastify_cors from '@fastify/cors';
+import * as request_time_plugin from './serverHelpers/requestTimePlugin';
 import autoload from '@fastify/autoload';
 import * as env from '../utility/environment/environmentManager';
 import { HDB_SETTINGS_NAMES, CONFIG_PARAMS } from '../utility/hdbTerms';
@@ -15,7 +15,7 @@ import * as getCORSOptions from './fastifyRoutes/helpers/getCORSOptions';
 import * as getHeaderTimeoutConfig from './fastifyRoutes/helpers/getHeaderTimeoutConfig';
 import { serverErrorHandler } from '../server/serverHelpers/serverHandlers';
 import { registerContentHandlers } from '../server/serverHelpers/contentTypes';
-import { server } from '../index';
+import { server } from './Server';
 const CF_ROUTES_DIR = env.get(HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 
 let fastify_server;
@@ -42,9 +42,11 @@ export async function handleFile(js_content, relative_path, file_path, project_n
 	}
 	const resolved_server = await fastify_server;
 	const route_folder = dirname(file_path);
+	let prefix = relative_path.replace(/\/routes\/.*/g, '');
+	if (prefix.startsWith('/')) prefix = prefix.slice(1);
 	if (!route_folders.has(route_folder)) {
 		route_folders.add(route_folder);
-		resolved_server.register(buildRouteFolder(route_folder, project_name));
+		resolved_server.register(buildRouteFolder(route_folder, prefix));
 	}
 }
 /**
@@ -128,7 +130,7 @@ function buildRouteFolder(routes_folder, project_name) {
 			harper_logger.info('Custom Functions starting buildRoutes');
 
 			harper_logger.trace('Loading fastify routes folder ' + routes_folder);
-			const set_up_routes = fs.existsSync(routes_folder);
+			const set_up_routes = existsSync(routes_folder);
 
 			// check for a routes folder and, if present, ingest each of the route files in the project's routes folder
 			if (set_up_routes) {
@@ -188,6 +190,7 @@ async function buildServer(is_https) {
 			done();
 		});
 
+		app.register(request_time_plugin);
 		await app.register(hdbCore);
 		await app.after();
 		registerContentHandlers(app);
