@@ -50,60 +50,27 @@ async function describeAll(op_obj) {
 			role_perms = op_obj.hdb_user.role.permission;
 			is_su = role_perms.super_user || role_perms.cluster_user;
 		}
-
-		let schema_search = {
-			schema: terms.SYSTEM_SCHEMA_NAME,
-			table: terms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME,
-			search_attribute: NAME_ATTRIBUTE_STRING,
-			search_value: terms.WILDCARD_SEARCH_VALUE,
-			get_attributes: [NAME_ATTRIBUTE_STRING],
-		};
-
-		let schemas = await p_search_search_by_value(schema_search);
-
+		let databases = getDatabases();
 		let schema_list = {};
-		let schema_perms = {};
-		for (let schema of schemas) {
-			schema_list[schema.name] = true;
-			if (!sys_call && !is_su) {
-				schema_perms[schema.name] = role_perms[schema.name].describe;
-			}
-		}
-
-		let table_search_obj = {
-			schema: terms.SYSTEM_SCHEMA_NAME,
-			table: terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME,
-			search_attribute: terms.ID_ATTRIBUTE_STRING,
-			search_value: terms.WILDCARD_SEARCH_VALUE,
-			get_attributes: [
-				HASH_ATTRIBUTE_STRING,
-				terms.ID_ATTRIBUTE_STRING,
-				NAME_ATTRIBUTE_STRING,
-				SCHEMA_ATTRIBUTE_STRING,
-			],
-		};
-
-		let tables = await p_search_search_by_value(table_search_obj);
-
 		let t_results = [];
-		for (let table of tables) {
-			try {
-				let desc;
-				if (sys_call || is_su) {
-					desc = await descTable({ schema: table.schema, table: table.name });
-				} else if (
-					role_perms &&
-					role_perms[table.schema].describe &&
-					role_perms[table.schema].tables[table.name].describe
-				) {
-					const t_attr_perms = role_perms[table.schema].tables[table.name].attribute_permissions;
-					desc = await descTable({ schema: table.schema, table: table.name }, t_attr_perms);
+		for (let schema in databases) {
+			schema_list[schema] = true;
+			let tables = databases[schema];
+			for (let table in tables) {
+				try {
+					let desc;
+					if (sys_call || is_su) {
+						desc = await descTable({ schema, table });
+					} else if (role_perms && role_perms[schema].describe && role_perms[schema].tables[table].describe) {
+						const t_attr_perms = role_perms[schema].tables[table].attribute_permissions;
+						desc = await descTable({ schema, table }, t_attr_perms);
+					}
+					if (desc) {
+						t_results.push(desc);
+					}
+				} catch (e) {
+					logger.error(e);
 				}
-				if (desc) {
-					t_results.push(desc);
-				}
-			} catch (e) {
-				logger.error(e);
 			}
 		}
 
@@ -191,6 +158,7 @@ async function descTable(describe_table_object, attr_perms) {
 		);
 
 	return {
+		schema,
 		name: table_obj.tableName,
 		attributes: table_obj.attributes,
 	};

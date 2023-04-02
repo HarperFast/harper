@@ -6,7 +6,7 @@ import { randomUUID } from 'crypto';
 import { ResourceInterface } from './ResourceInterface';
 import { workerData } from 'worker_threads';
 import { Resource } from './Resource';
-import { DatabaseTransaction } from './DatabaseTransaction';
+import { DatabaseTransaction, immediateTransaction } from './DatabaseTransaction';
 import { compareKeys, readKey } from 'ordered-binary';
 import * as lmdb_terms from '../utility/lmdb/terms';
 import * as env_mngr from '../utility/environment/environmentManager';
@@ -289,7 +289,7 @@ export function makeTable(options) {
 		 * @param options
 		 */
 		put(id, record, options): void {
-			const env_txn = this.envTxn;
+			const env_txn = this.envTxn || immediateTransaction;
 			if (typeof id === 'object') {
 				// id is optional
 				options = record;
@@ -298,6 +298,7 @@ export function makeTable(options) {
 			}
 			if (id == null) {
 				id = this.id;
+				if (id == null) id = record[primary_key];
 				if (id == null) id = record[primary_key] = randomUUID(); //uuid.v4();
 			}
 			if (attributes && !options?.noValidation) {
@@ -338,7 +339,7 @@ export function makeTable(options) {
 			// use optimistic locking to only commit if the existing record state still holds true.
 			// this is superior to using an async transaction since it doesn't require JS execution
 			//  during the write transaction.
-			env_txn.writes.push({
+			env_txn.addWrite({
 				key: id,
 				store: primary_store,
 				lastVersion: this.version,
@@ -424,7 +425,7 @@ export function makeTable(options) {
 				id = this.id;
 			} else if (!id) id = this.id;
 			if (!this.record) return false;
-			env_txn.writes.push({
+			env_txn.addWrite({
 				key: id,
 				store: primary_store,
 				commit: (txn_time, retry) => {
@@ -583,7 +584,7 @@ export function makeTable(options) {
 		 * @param options
 		 */
 		publish(message, options) {
-			this.envTxn.writes.push({
+			this.envTxn.addWrite({
 				store: primary_store,
 				key: this.id,
 				commit: (txn_time, retries) => {

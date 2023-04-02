@@ -9,6 +9,7 @@ const user_schema = require('../../security/user');
 const { validateEvent } = require('../threads/itc');
 const harperBridge = require('../../dataLayer/harperBridge/harperBridge');
 const process = require('process');
+const { resetDatabases } = require('../../resources/tableLoader');
 
 /**
  * This object/functions are passed to the ITC client instance and dynamically added as event handlers.
@@ -49,6 +50,7 @@ async function syncSchemaMetadata(msg) {
 		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME);
 		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME);
 		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME);
+		resetDatabases(); /*
 		if (global.hdb_schema !== undefined && typeof global.hdb_schema === 'object' && msg.operation !== undefined) {
 			switch (msg.operation) {
 				case 'drop_schema':
@@ -81,7 +83,7 @@ async function syncSchemaMetadata(msg) {
 			}
 		} else {
 			global_schema.setSchemaDataToGlobal(handleErrorCallback);
-		}
+		}*/
 	} catch (e) {
 		hdb_logger.error(e);
 	}

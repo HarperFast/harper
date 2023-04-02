@@ -10,6 +10,7 @@ const hdb_terms = require('../hdbTerms');
 const assignCMDENVVariables = require('../assignCmdEnvVariables');
 const os = require('os');
 const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
+
 const native_console_methods = {};
 for (let key in console) {
 	native_console_methods[key] = console[key];
@@ -204,7 +205,7 @@ function createLogRecord(level, args) {
 	let log_msg = '';
 	let length = args.length;
 	const last_arg = length - 1;
-	let tags = [ level ];
+	let tags = [level];
 	let x = 0;
 	let service_name;
 	if (typeof args[0] === 'object') {
@@ -216,7 +217,7 @@ function createLogRecord(level, args) {
 			x++;
 		}
 	}
-	tags.unshift(service_name || (SERVICE_NAME + '/' + threadId));
+	tags.unshift(service_name || SERVICE_NAME + '/' + threadId);
 	for (; x < length; x++) {
 		let arg = args[x];
 		if (arg instanceof Error && arg.stack) {

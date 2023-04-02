@@ -181,7 +181,7 @@ export class RAPIBridge extends LMDBBridge {
 		});
 	}
 	resetReadTxn(schema, table) {
-		getTable({ schema, table }).primaryKey.resetReadTxn();
+		getTable({ schema, table }).primaryStore.resetReadTxn();
 	}
 }
 

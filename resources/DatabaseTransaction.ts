@@ -29,6 +29,9 @@ export class DatabaseTransaction {
 			this.readTxn = null;
 		}
 	}
+	addWrite(operation) {
+		this.writes.push(operation);
+	}
 
 	recordRead(store, key, version, lock) {
 		this.conditions.push({ store, key, version, lock });
@@ -55,16 +58,21 @@ export class DatabaseTransaction {
 			if (write) {
 				const entry = write.store.getEntry(write.key);
 				// if the first optimistic attempt failed, we need to try again with the very latest version
-				const version = retries === 0 && write.lastVersion !== undefined ? write.lastVersion : entry?.version ?? null;
+				const version =
+					retries === 0 && write.lastVersion !== undefined
+						? write.lastVersion
+						: (write.lastVersion = entry?.version ?? null);
 				const condition_resolution = write.store.ifVersion(write.key, version, nextCondition);
 				resolution = resolution || condition_resolution;
 			} else {
 				for (const write of this.writes) {
 					const audit_record = write.commit(txn_time, retries);
-					audit_record.username = this.username;
-					audit_record.lastVersion = write.lastVersion;
 					last_store = write.store;
-					this.auditStore.put([txn_time, write.store.tableId, write.key], audit_record);
+					if (this.auditStore) {
+						audit_record.username = this.username;
+						audit_record.lastVersion = write.lastVersion;
+						this.auditStore.put([txn_time, write.store.tableId, write.key], audit_record);
+					}
 				}
 			}
 		};
@@ -105,3 +113,9 @@ interface CommitResolution {
 	txnTime: number;
 	resolution: boolean;
 }
+export class ImmediateTransaction {
+	addWrite(operation) {
+		operation.commit(getNextMonotonicTime(), 0);
+	}
+}
+export const immediateTransaction = new ImmediateTransaction();

@@ -99,6 +99,10 @@ export function getDatabases() {
 	}
 	return databases;
 }
+export function resetDatabases() {
+	loaded_databases = false;
+	getDatabases();
+}
 
 /**
  * This is responsible for reading the internal dbi to get a list of all the tables and their indexed or registered attributes
