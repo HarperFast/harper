@@ -80,29 +80,29 @@ describe('test REST calls', () => {
 	});
 	describe('querying with query parameters', function() {
 		it('do query by string property', async () => {
-			let response = await axios('http://localhost:9926/FourProp?name=name3');
+			let response = await axios('http://localhost:9926/FourProp/?name=name3');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 1);
 			assert.equal(response.data[0].name, 'name3');
 		});
 		it('do query by numeric property', async () => {
-			let response = await axios('http://localhost:9926/FourProp?age=25');
+			let response = await axios('http://localhost:9926/FourProp/?age=25');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 1);
 			assert.equal(response.data[0].age, 25);
 		});
 		it('do query by two properties with no match', async () => {
-			let response = await axios('http://localhost:9926/FourProp?name=name2&age=28');
+			let response = await axios('http://localhost:9926/FourProp/?name=name2&age=28');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 0);
 		});
 		it('do query by two properties with one match', async () => {
-			let response = await axios('http://localhost:9926/FourProp?name=name2&age=22');
+			let response = await axios('http://localhost:9926/FourProp/?name=name2&age=22');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 1);
 		});
 		it('do query for missing property', async () => {
-			let response = await axios('http://localhost:9926/FourProp?notaprop=22', {
+			let response = await axios('http://localhost:9926/FourProp/?notaprop=22', {
 				validateStatus: function (status) {
 					return true;
 				},
@@ -110,13 +110,13 @@ describe('test REST calls', () => {
 			assert.equal(response.status, 404);
 		});
 		it('do a less than query by numeric property', async () => {
-			let response = await axios('http://localhost:9926/FourProp?age=lt=25');
+			let response = await axios('http://localhost:9926/FourProp/?age=lt=25');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 5);
 			assert.equal(response.data[4].age, 24);
 		});
 		it('do a less than query by numeric property with limit and offset', async () => {
-			let response = await axios('http://localhost:9926/FourProp?age=lt=25&offset=1&limit=2');
+			let response = await axios('http://localhost:9926/FourProp/?age=lt=25&offset=1&limit=2');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 2);
 			assert.equal(response.data[1].age, 22);

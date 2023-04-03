@@ -165,7 +165,6 @@ export class Resource implements ResourceInterface {
 	}
 	async accessInTransaction(request, action: (resource_access) => any) {
 		const txn = this.startTransaction(request);
-		let response_data;
 		try {
 			const resource_access = txn.access(request);
 			txn.result = await action(resource_access);
@@ -182,6 +181,33 @@ export class Resource implements ResourceInterface {
 		return new this.constructor.Access(request, this);
 	}
 	static Access = DefaultAccess;
+
+	// Default permissions (super user only accesss):
+	static allowRead(user): boolean | object {
+		return user?.role.permission.super_user;
+	}
+	allowRead(user): boolean | object {
+		return this.constructor.allowRead(user);
+	}
+	static allowUpdate(): boolean | object {
+		// can not update the entire table by default
+		return false;
+	}
+	allowUpdate(user): boolean | object {
+		return user?.role.permission.super_user;
+	}
+	static allowCreate(user): boolean | object {
+		return user?.role.permission.super_user;
+	}
+	allowCreate(user): boolean | object {
+		return user?.role.permission.super_user;
+	}
+	static allowDelete(user): boolean | object {
+		return user?.role.permission.super_user;
+	}
+	allowDelete(user): boolean | object {
+		return user?.role.permission.super_user;
+	}
 }
 
 export function snake_case(camelCase: string) {

@@ -293,7 +293,7 @@ export function table({ table: table_name, database: database_name, expiration, 
 				// this means that a new attribute has been introduced that needs to be indexed
 				for (const entry of Table.primaryStore.getRange({ start: true })) {
 					const record = entry.value;
-					const value_to_index = record[property];
+					const value_to_index = record?.[property];
 					//if (value_to_index != null) dbi.put(value_to_index, record[primary_key]);
 					// TODO: put in indexing code
 				}

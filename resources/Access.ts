@@ -28,44 +28,64 @@ export class DefaultAccess {
 	get() {
 		// HTTP endpoint
 		const search = this.request.search;
-		return search ? this.resource.search(this.parseQuery(search)) : this.resource.get();
+		let query;
+		if (search) query = this.parseQuery(search);
+		// parse the query first and pass it to allowRead so it can inform attribute-level permissions
+		// and the permissions can modify the query, assigning a select for available attributes.
+		this.resource.saveUpdates = false; // by default modifications aren't saved, they just yield a different result from get
+		if (this.request) {
+			const allowed = this.resource.allowRead(this.request.user, query);
+			if (!allowed) {
+				throw new AccessError(this.user);
+			}
+			if (typeof allowed === 'object') query = allowed;
+		}
+		return this.resource.get(query);
 	}
-	update(updated_data) {
-		if (this.user.role.permission.super_user) {
+	async put(content) {
+		// TODO: May want to parse search/query part of URL and pass it through
+		const updated_data = await content;
+		if (this.resource.allowUpdate(this.request.user, updated_data)) {
 			return this.resource.update(updated_data);
 		} else {
 			throw new AccessError(this.user);
 		}
 	}
-	async put(content) {
-		return this.update(await content);
-	}
 	async patch(content) {
-		const writable_record = this.update();
-		for (const key in await content) {
-			writable_record[key] = content[key];
+		const updated_data = await content;
+		if (this.resource.allowUpdate(this.request.user, updated_data, true)) {
+			for (const key in updated_data) {
+				this.resource.set(key, updated_data[key]);
+			}
+		} else {
+			throw new AccessError(this.user);
 		}
 	}
 	async post(content) {
-		return this.create(await content);
-	}
-	create(content) {
-		if (this.user.role.permission.super_user) return this.resource.create(content);
-		throw new AccessError(this.user);
+		const data = await content;
+		if (this.resource.allowCreate(this.request.user, data)) return this.post(data);
+		else throw new AccessError(this.user);
 	}
 	delete() {
-		if (this.user.role.permission.super_user) return this.resource.delete();
+		if (this.resource.allowDelete(this.request.user)) return this.resource.delete();
 		else throw new AccessError(this.user);
 	}
 	async publish(content) {
-		if (!this.user.role.permission.super_user) throw new AccessError(this.user);
 		const data = await content;
 		//console.log('publish', identifier, require('worker_threads').threadId);
 		if (this.request.retain) {
 			// retain flag means we persist this message (for any future subscription starts), so treat it as the record itself
-			if (data === undefined) return await this.delete();
-			else return await this.update(data);
-		} else return this.resource.publish(data);
+			if (data === undefined) {
+				if (this.resource.allowDelete(this.request.user, data)) {
+					return this.delete();
+				}
+			} else if (this.resource.allowUpdate(this.request.user, data, true)) {
+				return this.resource.update(data);
+			}
+		} else {
+			if (this.resource.allowUpdate(this.request.user, {})) return this.resource.publish(data);
+		}
+		throw new AccessError(this.user);
 	}
 
 	/**

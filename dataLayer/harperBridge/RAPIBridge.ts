@@ -31,7 +31,7 @@ export class RAPIBridge extends LMDBBridge {
 		const resource_snapshot = new Resource();
 		const records = resource_snapshot
 			.useTable(search_object.table, search_object.schema)
-			.search(search_object, search_object);
+			.get(search_object, search_object);
 		records.onDone = () => resource_snapshot.doneReading();
 		return records;
 	}
@@ -174,7 +174,7 @@ export class RAPIBridge extends LMDBBridge {
 							get_attributes: search_object.get_attributes,
 						},
 				  ];
-		return table.search({
+		return table.get({
 			limit: search_object.limit,
 			offset: search_object.offset,
 			conditions,

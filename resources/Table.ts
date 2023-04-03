@@ -184,20 +184,11 @@ export function makeTable(options) {
 				this.version = entry.version;
 				this.record = entry.value;
 			}
-		}
-
-		/**
-		 * This retrieves the record as a frozen object for this resource. Alternately, provide a primary key (id) to
-		 * retrieve a different record from this table.
-		 * @param identifier
-		 */
-		async get(identifier?: string | number) {
-			if (!identifier) identifier = this.id;
-			if (!this.record) {
-				if (this.constructor.Source) return this.getFromSource(identifier);
-				return;
+			if (!entry) {
+				if (this.constructor.Source) this.record = this.getFromSource(this.id);
+				if (this.record?.then) return this.record;
 			}
-			const record = this.record;
+			/*
 			if (record) {
 				record[TXN_KEY] = this;
 				const availability = record.__availability__;
@@ -214,17 +205,138 @@ export function makeTable(options) {
 					if (this.constructor.Source) return this.getFromSource(identifier, record);
 				}
 				return record;
+			}*/
+		}
+
+		/**
+		 * This retrieves the record as a frozen object for this resource. Alternately, provide a property name to
+		 * retrieve the data
+		 * @param identifier
+		 */
+		async get(property?: string) {
+			const record = this.record;
+			if (property) {
+				if (this.changes && property in this.changes) return this.changes[property];
+				return record[property];
 			}
+			if (this.changes) return Object.assign(record, this.changes);
+			return record;
+		}
+
+		async set(property?: string, value: any) {
+			if (!this.changes) this.changes = {};
+			this.changes[property] = value;
 		}
 
 		/**
 		 * Determine if the user is allowed to get/read data from the current resource
-		 * @param user
+		 * @param user The current, authenticated user
+		 * @param query The parsed query from the search part of the URL
 		 */
-		allowGet(user) {
+		static allowRead(user, query) {
 			if (!user) return false;
 			const permission = user.role.permission;
-			return permission.super_user || permission[table_name]?.read;
+			if (permission.super_user) return true;
+			if (permission[table_name]?.read) {
+				const attribute_permissions = permission[table_name].attribute_permissions;
+				if (attribute_permissions) {
+					// if attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
+					if (!query) query = {};
+					const select = query.select;
+					if (select) {
+						const attrs_for_type = attributesAsObject(attribute_permissions, 'read');
+						query.select = select.filter((property) => attrs_for_type[property]);
+					} else {
+						query.select = attribute_permissions
+							.filter((attribute) => attribute.read)
+							.map((attribute) => attribute.attribute_name);
+					}
+					return query;
+				} else {
+					return true;
+				}
+			}
+		}
+
+		/**
+		 * Determine if the user is allowed to update data from the current resource
+		 * @param user The current, authenticated user
+		 * @param updated_data
+		 * @param partial_update
+		 */
+		allowUpdate(user, updated_data: {}, partial_update: boolean) {
+			if (!user) return false;
+			const permission = user.role.permission;
+			if (permission.super_user) return true;
+			if (permission[table_name]?.update) {
+				const attribute_permissions = permission[table_name].attribute_permissions;
+				if (attribute_permissions) {
+					// if attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
+					const attrs_for_type = attributesAsObject(attribute_permissions, 'update');
+					for (const key in updated_data) {
+						if (!attrs_for_type[key]) return false;
+					}
+					if (!partial_update) {
+						// if this is a full put operation that removes missing properties, we don't want to remove properties
+						// that the user doesn't have permission to remove
+						for (const permission of attribute_permissions) {
+							const key = permission.attribute_name;
+							if (!permission.update && !(key in updated_data)) {
+								updated_data[key] = this.get(key);
+							}
+						}
+					}
+				} else {
+					return true;
+				}
+			}
+		}
+		/**
+		 * Determine if the user is allowed to create new data in the current resource
+		 * @param user The current, authenticated user
+		 * @param updated_data
+		 */
+		allowCreate(user, updated_data: {}) {
+			// creating *within* a record resource just means we are adding some data to a current record, which is
+			// an update to the record, it is not an insert of a new record into the table, so not a table create operation
+			// so does not use table insert permissions
+			return this.allowUpdate(user, {});
+		}
+		/**
+		 * Determine if the user is allowed to create new data in the current resource
+		 * @param user The current, authenticated user
+		 * @param updated_data
+		 * @param partial_update
+		 */
+		static allowCreate(user, new_data: {}) {
+			if (!user) return false;
+			const permission = user.role.permission;
+			if (permission.super_user) return true;
+			if (permission[table_name]?.insert) {
+				const attribute_permissions = permission[table_name].attribute_permissions;
+				if (attribute_permissions) {
+					// if attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
+					const attrs_for_type = attributesAsObject(attribute_permissions, 'insert');
+					for (const key in new_data) {
+						if (!attrs_for_type[key]) return false;
+					}
+				} else {
+					return true;
+				}
+			}
+		}
+
+		/**
+		 * Determine if the user is allowed to delete from the current resource
+		 * @param user The current, authenticated user
+		 */
+		static allowDelete(user) {
+			if (!user) return false;
+			const permission = user.role.permission;
+			if (permission.super_user) return true;
+			if (permission[table_name]?.delete) {
+				return true;
+			}
 		}
 
 		/**
@@ -456,6 +568,7 @@ export function makeTable(options) {
 				},
 			});
 		}
+
 		static startTransaction(request) {
 			const TableTxn = super.startTransaction(request);
 			const env_txn = new DatabaseTransaction(primary_store, request?.user, audit_store);
@@ -465,7 +578,11 @@ export function makeTable(options) {
 			return TableTxn;
 		}
 
-		static search(query, options): AsyncIterable<any> {
+		static get(query, options): AsyncIterable<any> {
+			if (!query) {
+				// TODO: May have different semantics for /Table vs /Table/
+				query = []; // treat no query as a query for everything
+			}
 			query.offset = Number.isInteger(query.offset) ? query.offset : 0;
 			let conditions = query.conditions || query;
 			for (const condition of conditions) {
@@ -707,6 +824,17 @@ export function filterByType(search_object) {
 		default:
 			return Object.create(null);
 	}
+}
+
+function attributesAsObject(attribute_permissions, type) {
+	const attr_object = attribute_permissions.attr_object || (attribute_permissions.attr_object = {});
+	let attrs_for_type = attr_object[type];
+	if (attrs_for_type) return attrs_for_type;
+	attrs_for_type = attr_object[type] = Object.create(null);
+	for (const permission of attribute_permissions) {
+		attrs_for_type[permission.attribute_name] = permission[type];
+	}
+	return attrs_for_type;
 }
 
 function noop() {
