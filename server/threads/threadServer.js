@@ -190,7 +190,7 @@ function httpServer(listener, options) {
 	} else {
 		registerServer(listener, port_num);
 	}
-	http_chain[port] = makeCallbackChain(http_responders, port_num);
+	http_chain[port_num] = makeCallbackChain(http_responders, port_num);
 	ws_chain = makeCallbackChain(request_listeners, port_num);
 }
 function getHTTPServer(port) {
@@ -294,7 +294,7 @@ function onWebSocket(listener, options) {
 		});
 	}
 	ws_listeners.push(listener);
-	http_chain = makeCallbackChain(http_responders, port_num);
+	http_chain[port_num] = makeCallbackChain(http_responders, port_num);
 }
 function defaultNotFound(request, response) {
 	response.writeHead(404);

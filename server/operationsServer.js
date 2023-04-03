@@ -99,7 +99,7 @@ async function operationsServer() {
 			throw err;
 		}
 	} catch (err) {
-		console.error(`Failed to build server on ${process.pid}`);
+		console.error(`Failed to build server on ${process.pid}`, err);
 		harper_logger.fatal(err);
 		process.exit(1);
 	}

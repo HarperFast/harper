@@ -21,6 +21,7 @@ let loaded_server_modules = new Map();
 const default_server_modules = [
 	{ module: 'auth', port: 'all' },
 	{ module: 'mqtt', port: 1883 },
+	{ module: 'mqtt', webSocket: true },
 	//{ module: 'mqtt', port: 8883, secure: true },
 	{ module: 'app-server', port: 9926 },
 	{ module: 'operations-server', port: 9925 },
