@@ -203,7 +203,7 @@ function notifyFromTransactionData(path, audit_ids) {
 			for (const subscription of key_subscriptions) {
 				if (subscription.startTime - 2 > txn_time) {
 					// allow for a couple milliseconds of skew
-					console.log('omitting', record_key, subscription.startTime, txn_time);
+					info('omitting', record_key, subscription.startTime, txn_time);
 					continue;
 				}
 				try {
