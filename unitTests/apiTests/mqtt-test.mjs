@@ -27,11 +27,6 @@ describe('test MQTT connections and commands', () => {
 			client.on('error', reject);
 		});
 		client2 = connect('mqtt://localhost:1883', {
-			wsOptions: {
-				headers: {
-					Accept: 'application/json'
-				}
-			}
 		});
 
 		await new Promise((resolve, reject) => {

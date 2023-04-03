@@ -11,7 +11,7 @@ const DEFAULT_MQTT_PORT = 1883;
 const AUTHORIZE_LOCAL = true;
 export async function start({ server, port, webSocket, secure }) {
 	// here we basically normalize the different types of sockets to pass to our socket/message handler
-	if (webSocket !== false)
+	if (webSocket)
 		server.ws(
 			(ws, request, chain_completion) => {
 				const { onMessage, onClose } = onSocket(
@@ -25,7 +25,8 @@ export async function start({ server, port, webSocket, secure }) {
 			},
 			{ port, subProtocol: 'mqtt', secure }
 		); // if there is no port, we are piggy-backing off of default app http server
-	if (port || webSocket !== true)
+	if (!webSocket) {
+		if (!port) throw new Error('Must specify a port for MQTT');
 		// standard TCP socket
 		server.socket(
 			async (socket) => {
@@ -43,6 +44,7 @@ export async function start({ server, port, webSocket, secure }) {
 			},
 			{ port: port || DEFAULT_MQTT_PORT, secure }
 		);
+	}
 }
 
 function onSocket(socket, send, request, user) {
@@ -124,7 +126,6 @@ function onSocket(socket, send, request, user) {
 					for (const subscription of packet.unsubscriptions) {
 						session.removeSubscription(subscription);
 					}
-					console.log('Sending unsuback', packet.unsubscriptions[0].topic);
 					send(
 						generate({
 							// Send a subscription acknowledgment
@@ -132,7 +133,6 @@ function onSocket(socket, send, request, user) {
 							messageId: packet.messageId,
 						})
 					);
-					console.log('Sent unsuback');
 					break;
 				case 'publish':
 					// deserialize

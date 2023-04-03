@@ -44,11 +44,13 @@ export class DatabaseTransaction {
 		this.doneReading();
 		const remaining_conditions = this.inTwoPhase ? [] : this.conditions.slice(0).reverse();
 		let txn_time, resolution, write_resolution;
-		for (const { txn, record } of this.updatingRecords || []) {
-			// TODO: get the own properties, translate to a put and a correct replication operation/CRDT
-			const original = record[DATA];
-			const own = record[OWN];
-			write_resolution = txn.put(original[txn.constructor.primaryKey], Object.assign({}, original, own));
+		if (retries === 0) {
+			for (const { txn, record } of this.updatingRecords || []) {
+				// TODO: get the own properties, translate to a put and a correct replication operation/CRDT
+				const original = record[DATA];
+				const own = record[OWN];
+				write_resolution = txn.put(original[txn.constructor.primaryKey], Object.assign({}, original, own));
+			}
 		}
 		let write_index = 0;
 		txn_time = getNextMonotonicTime();
