@@ -568,6 +568,7 @@ export function makeTable(options) {
 				},
 			});
 		}
+		static delete = TableResource.prototype.delete;
 
 		static startTransaction(request) {
 			const TableTxn = super.startTransaction(request);

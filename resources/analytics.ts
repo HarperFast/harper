@@ -1,9 +1,11 @@
 import { isMainThread, parentPort, threadId } from 'worker_threads';
-import { messageTypeListener } from '../server/threads/manageThreads';
+import { messageTypeListener, getThreadInfo } from '../server/threads/manageThreads';
 import { table } from './tableLoader';
 import { getLogFilePath } from '../utility/logging/harper_logger';
 import { dirname, join } from 'path';
 import { open, appendFile, readFile, writeFile } from 'fs/promises';
+import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
+
 let active_actions = new Map<string, number[] & { occurred: number; count: number }>();
 
 /**
@@ -11,32 +13,32 @@ let active_actions = new Map<string, number[] & { occurred: number; count: numbe
  * @param path
  * @param value
  */
-export function recordAction(path, value) {
+export function recordAction(value, metric, path, method, type) {
 	// TODO: We may want to consider sampling a subset of queries if this has too high of overhead. It is primarily the sort operation that is expensive (computing median, p96, etc.)
-	let action = active_actions.get(path);
-	if (action) action.push(value);
-	else {
+	let key = metric + '-' + path;
+	if (method) key += '-' + method;
+	let action = active_actions.get(key);
+	if (action) {
+		action.push(value);
+		action.total += value;
+	} else {
 		action = [value];
-		active_actions.set(path, action);
+		action.total = value;
+		action.description = {
+			metric,
+			path,
+			method,
+			type,
+		};
+		active_actions.set(key, action);
 	}
 	if (!analytics_start) sendAnalytics();
 }
-export function recordActionBinary(path, value) {
-	let action = active_actions.get(path);
-	if (!action)
-		active_actions.set(
-			path,
-			(action = {
-				occurred: 0,
-				count: 0,
-			})
-		);
-	if (value) action.occurred++;
-	action.count++;
-	if (!analytics_start) sendAnalytics();
+export function recordActionBinary(value, metric, path, method, type) {
+	recordAction(value ? 1 : 0, metric, path, method, type);
 }
 let analytics_start = 0;
-const ANALYTICS_DELAY = 2000;
+const ANALYTICS_DELAY = 1000;
 const ANALYTICS_REPORT_TYPE = 'analytics-report';
 
 /**
@@ -47,60 +49,141 @@ function sendAnalytics() {
 	setTimeout(() => {
 		const period = performance.now() - analytics_start;
 		analytics_start = 0;
+		const metrics = [];
 		const report = {
 			time: Date.now(),
 			threadId,
+			metrics,
 		};
 		for (const [name, value] of active_actions) {
 			if (value.sort) {
 				value.sort();
 				const count = value.length;
 				// compute the stats
-				report[name] = {
-					median: value[count >> 1],
-					p95: value[Math.floor(count * 0.95)],
-					p90: value[Math.floor(count * 0.9)],
-					count,
-					period,
-				};
+				metrics.push(
+					Object.assign(value.description, {
+						median: value[count >> 1],
+						mean: value.total / count,
+						p95: value[Math.floor(count * 0.95)],
+						p90: value[Math.floor(count * 0.9)],
+						count,
+						period,
+					})
+				);
 			} else {
-				report[name] = value;
+				metrics.push(value);
 			}
 		}
+
 		active_actions = new Map();
-		// TODO: We could actually make this a fair bit more efficient by using a SharedArrayBuffer and each time
-		//  reserializing into the same SAB.
-		parentPort?.postMessage({
-			type: ANALYTICS_REPORT_TYPE,
-			report,
-		});
+		if (parentPort)
+			parentPort.postMessage({
+				type: ANALYTICS_REPORT_TYPE,
+				report,
+			});
+		else recordAnalytics({ report });
 	}, ANALYTICS_DELAY).unref();
 }
+const AGGREGATE_PREFIX = 'h-'; // we could have different levels of aggregation, but this denotes hourly aggregation
+async function aggregation(from_period, to_period = 3600000) {
+	let last_for_period;
+	// find the last entry for this period
+	for (const entry of AnalyticsTable.primaryStore.getRange({ start: AGGREGATE_PREFIX + 'z', reverse: true })) {
+		last_for_period = entry.value.time;
+		break;
+	}
+	// is it older than the period we are calculating?
+	if (Date.now() - to_period < last_for_period) return;
+	let first_for_period;
+	const aggregate_actions = new Map();
+	let last_time;
+	for (const { key, value } of AnalyticsTable.primaryStore.getRange({
+		start: last_for_period || false,
+		end: Infinity,
+	})) {
+		if (first_for_period) {
+			if (key > first_for_period + to_period) break; // outside the period of interest
+		} else first_for_period = key;
+		last_time = key;
+		const { metrics } = value;
+		for (const { path, method, type, metric, mean, count } of metrics) {
+			let key = metric + '-' + path;
+			if (method) key += '-' + method;
+			let action = aggregate_actions.get(key);
+			if (action) {
+				action.mean = (action.mean * action.count + mean * count) / (action.count += count);
+			} else {
+				action = {
+					metric,
+					path,
+					method,
+					type,
+					mean,
+					count,
+					period: to_period,
+				};
+				aggregate_actions.set(key, action);
+			}
+		}
+	}
+	for (const [key, value] of aggregate_actions) {
+		value.id = AGGREGATE_PREFIX + last_time;
+		AnalyticsTable.put(value);
+	}
+}
+
+const rest = () => new Promise(setImmediate);
+
+async function cleanup(expiration, period) {
+	const start = Date.now() - expiration;
+	for (const { key, value } of AnalyticsTable.primaryStore.getRange({ end: [period, start] })) {
+		AnalyticsTable.delete(key);
+	}
+}
+
+const AGGREGATE_PERIOD = 4000;
+const RAW_EXPIRATION = 10000;
+const AGGREGATE_EXPIRATION = 100000;
+let AnalyticsTable;
 if (isMainThread) {
-	const AnalyticsTable = table({
+	AnalyticsTable = table({
 		table: 'hdb_analytics',
 		database: 'system',
 		expiration: 864000,
 		attributes: [
 			{
-				name: 'time',
+				name: 'id',
 				isPrimaryKey: true,
 			},
 			{
 				name: 'action',
-				indexed: true,
 			},
 			{
 				name: 'values',
 			},
 		],
 	});
-	messageTypeListener(ANALYTICS_REPORT_TYPE, (message) => {
-		const report = message.report;
-		AnalyticsTable.put(report.time, report);
-		last_append = logAnalytics(report);
-		console.log(message);
-	});
+	messageTypeListener(ANALYTICS_REPORT_TYPE, recordAnalytics);
+	setInterval(async () => {
+		await aggregation(ANALYTICS_DELAY, AGGREGATE_PERIOD);
+		await cleanup(RAW_EXPIRATION, ANALYTICS_DELAY);
+		await cleanup(AGGREGATE_EXPIRATION, AGGREGATE_PERIOD);
+	}, AGGREGATE_PERIOD / 2);
+}
+function recordAnalytics(message) {
+	const report = message.report;
+	// Add system information stats as well
+	const worker_info = getThreadInfo().find((worker) => worker.threadId === report.threadId);
+	if (worker_info) {
+		report.metrics.push({
+			metric: 'cpu-memory',
+			...worker_info,
+		});
+	}
+	report.id = getNextMonotonicTime();
+	AnalyticsTable.put(report);
+	last_append = logAnalytics(report);
+	console.log(message);
 }
 let last_append;
 let analytics_log;

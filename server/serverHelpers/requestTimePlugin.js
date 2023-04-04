@@ -16,13 +16,18 @@ module.exports = fp(
 			let start_transfer = performance.now();
 			let config = reply.context.config;
 			let action;
+			let type;
+			let method;
 			if (config.isOperation) {
 				action = request.body?.operation;
+				type = 'operation';
 			} else {
-				action = config.url + '-' + config.method;
+				action = config.url;
+				type = 'fastify-route';
+				method = config.method;
 			}
-			recordAction(action + '-TTFB', response_time);
-			recordActionBinary(action + '-success', reply.raw.statusCode < 400);
+			recordAction(response_time, 'TTFB', action, method, type);
+			recordActionBinary(reply.raw.statusCode < 400, 'success', action, method, type);
 			let bytes_sent = ESTIMATED_HEADER_SIZE;
 			if (payload?.pipe) {
 				// if we are sending a stream, track the bytes sent and wait for when it completes
@@ -30,13 +35,13 @@ module.exports = fp(
 					bytes_sent += data.length;
 				});
 				payload.on('end', () => {
-					recordAction(action + '-transfer', performance.now() - start_transfer);
-					recordAction(action + '-bytes-sent', bytes_sent);
+					recordAction(performance.now() - start_transfer, 'transfer', action, method, type);
+					recordAction(bytes_sent, 'bytes-sent', action, method, type);
 				});
 			} else {
 				// otherwise just record bytes sent
 				bytes_sent += payload?.length || 0;
-				recordAction(action + '-bytes-sent', bytes_sent);
+				recordAction(bytes_sent, 'bytes-sent', action, method, type);
 			}
 			let rounded_time = response_time.toFixed(3);
 			reply.header('HDB-Response-Time', rounded_time);
