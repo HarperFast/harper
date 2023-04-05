@@ -68,7 +68,7 @@ const DEFAULT_RESOURCE_LOADERS = [
 		//path: '/', // from root path by default, like http://server/query
 	},
 	{
-		files: '*.js',
+		files: 'resources.js',
 		module: 'js-resource',
 		//path: '/', // from root path by default, like http://server/resource-name
 	},

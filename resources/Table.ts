@@ -621,9 +621,9 @@ export function makeTable(options) {
 			const first_search = conditions[0];
 			let records;
 			if (!first_search) {
-				records = primary_store.getRange({ start: false }).map(({ value }) => value);
+				records = primary_store.getRange({ start: false, transaction: this.lmdbTxn }).map(({ value }) => value);
 			} else {
-				let ids = idsForCondition(first_search);
+				let ids = idsForCondition(first_search, this.lmdbTxn);
 				// and then things diverge...
 				if (!query.operator || query.operator.toLowerCase() === 'and') {
 					// get the intersection of condition searches by using the indexed query for the first condition
@@ -648,7 +648,7 @@ export function makeTable(options) {
 					for (let i = 1; i < conditions.length; i++) {
 						const condition = conditions[i];
 						// might want to lazily execute this after getting to this point in the iteration
-						const next_ids = idsForCondition(condition);
+						const next_ids = idsForCondition(condition, this.lmdbTxn);
 						ids = ids.concat(next_ids);
 					}
 					const returned_ids = new Set();
@@ -740,7 +740,7 @@ export function makeTable(options) {
 		}
 	}
 	return TableResource;
-	function idsForCondition(search_condition) {
+	function idsForCondition(search_condition, transaction) {
 		let start;
 		let end, inclusiveEnd, exclusiveStart, filter;
 		switch (search_condition.type) {
@@ -775,7 +775,7 @@ export function makeTable(options) {
 			);
 		}
 		const isPrimaryKey = search_condition.attribute === primary_key;
-		const range_options = { start, end, inclusiveEnd, values: !isPrimaryKey };
+		const range_options = { start, end, inclusiveEnd, values: !isPrimaryKey, transaction };
 		if (isPrimaryKey) {
 			return index.getRange(range_options);
 		} else {

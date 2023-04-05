@@ -19,9 +19,8 @@ export async function secureImport(module_url) {
 	if (SECURE_JS) {
 		// note that we use a single compartment that is used by all the secure JS modules and we load it on-demand, only
 		// loading if necessary (since it is actually very heavy)
-		if (!compartment)
-			compartment = getCompartment(getGlobalVars);
-		let result = await (await compartment).import(module_url);
+		if (!compartment) compartment = getCompartment(getGlobalVars);
+		const result = await (await compartment).import(module_url);
 		return result.namespace;
 	} else {
 		return import(module_url);
@@ -31,41 +30,51 @@ export async function secureImport(module_url) {
 declare class Compartment extends CompartmentClass {}
 async function getCompartment(getGlobalVars) {
 	require('ses');
-	lockdown({ domainTaming: 'unsafe', consoleTaming: 'unsafe', errorTaming: 'unsafe', errorTrapping: 'none', stackFiltering: 'verbose' });
+	lockdown({
+		domainTaming: 'unsafe',
+		consoleTaming: 'unsafe',
+		errorTaming: 'unsafe',
+		errorTrapping: 'none',
+		stackFiltering: 'verbose',
+	});
 	const { StaticModuleRecord } = await import('@endo/static-module-record');
 
-	return compartment = new (Compartment as typeof CompartmentClass)(Object.assign({
-		console,
-		Math,
-		Date,
-		fetch: secureOnlyFetch,
-	}, getGlobalVars()), {
-		//harperdb: { Resource, tables, databases }
-	}, {
-		name: 'h-dapp',
-		resolveHook(module_specifier, module_referrer) {
-			if (module_specifier === 'harperdb')
-				return 'harperdb';
-			module_specifier = new URL(module_specifier, module_referrer).toString();
-			if (!extname(module_specifier))
-				module_specifier += '.js';
-			return module_specifier;
+	return (compartment = new (Compartment as typeof CompartmentClass)(
+		Object.assign(
+			{
+				console,
+				Math,
+				Date,
+				fetch: secureOnlyFetch,
+			},
+			getGlobalVars()
+		),
+		{
+			//harperdb: { Resource, tables, databases }
 		},
-		importHook: async (module_specifier) => {
-			if (module_specifier === 'harperdb') {
-				return {
-					imports: [],
-					exports: ['Resource','tables','databases'],
-					execute(exports) {
-						Object.assign(exports, { Resource, tables: tables, databases });
-					}
+		{
+			name: 'h-dapp',
+			resolveHook(module_specifier, module_referrer) {
+				if (module_specifier === 'harperdb') return 'harperdb';
+				module_specifier = new URL(module_specifier, module_referrer).toString();
+				if (!extname(module_specifier)) module_specifier += '.js';
+				return module_specifier;
+			},
+			importHook: async (module_specifier) => {
+				if (module_specifier === 'harperdb') {
+					return {
+						imports: [],
+						exports: ['Resource', 'tables', 'databases'],
+						execute(exports) {
+							Object.assign(exports, { Resource, tables: tables, databases });
+						},
+					};
 				}
-			}
-			let moduleText = await readFile(new URL(module_specifier), { encoding: 'utf-8'});
-			let smr = new StaticModuleRecord(moduleText, module_specifier);
-			return smr;
+				const moduleText = await readFile(new URL(module_specifier), { encoding: 'utf-8' });
+				return new StaticModuleRecord(moduleText, module_specifier);
+			},
 		}
-	});
+	));
 }
 
 /**
@@ -77,12 +86,10 @@ async function getCompartment(getGlobalVars) {
 function secureOnlyFetch(resource, options) {
 	// TODO: or maybe we should constrain by doing a DNS lookup and having disallow list of IP addresses that includes
 	// this server
-	let url = typeof resource === 'string' || resource.url;
-	if (new URL(url).protocol != 'https')
-		throw new Error('Only https is allowed in fetch');
+	const url = typeof resource === 'string' || resource.url;
+	if (new URL(url).protocol != 'https') throw new Error('Only https is allowed in fetch');
 	return fetch(resource, options);
 }
-
 
 /**
  * Get the set of global variables that should be available to the h-dapp modules
@@ -91,5 +98,5 @@ function getGlobalVars() {
 	return {
 		Resource,
 		tables: tables,
-	}
+	};
 }

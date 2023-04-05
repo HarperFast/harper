@@ -262,7 +262,7 @@ function checkForUpdatedConfig(config_doc, config_file_path) {
 	const root_path = config_doc.getIn(['rootPath']);
 	let update_file = false;
 	if (!config_doc.hasIn(['storage', 'path'])) {
-		config_doc.setIn(['storage', 'path'], path.join(root_path, hdb_terms.SCHEMA_DIR_NAME));
+		config_doc.setIn(['storage', 'path'], path.join(root_path, 'schema'));
 		update_file = true;
 	}
 

@@ -154,8 +154,9 @@ export class Resource implements ResourceInterface {
 		return response;
 	}
 	static startTransaction(request) {
+		const name = this.name + ' (txn)';
 		return class extends this {
-			static name = this.name + ' (txn)';
+			static name = name;
 			static inUseEnvs = {};
 			static inUseTables = {};
 		};
