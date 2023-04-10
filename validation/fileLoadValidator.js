@@ -49,7 +49,7 @@ const base_joi_schema = {
 	action: string.valid('insert', 'update', 'upsert'),
 };
 
-const { AWS_ACCESS_KEY, AWS_SECRET, AWS_BUCKET, AWS_FILE_KEY } = hdb_terms.S3_BUCKET_AUTH_KEYS;
+const { AWS_ACCESS_KEY, AWS_SECRET, AWS_BUCKET, AWS_FILE_KEY, REGION } = hdb_terms.S3_BUCKET_AUTH_KEYS;
 
 const s3_constraints = {
 	s3: {
@@ -71,6 +71,10 @@ const s3_constraints = {
 		presence: true,
 		type: 'String',
 		hasValidFileExt: ['.csv', '.json'],
+	},
+	[`s3.${REGION}`]: {
+		presence: true,
+		type: 'String',
 	},
 };
 
