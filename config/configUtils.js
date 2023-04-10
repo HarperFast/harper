@@ -276,6 +276,11 @@ function checkForUpdatedConfig(config_doc, config_file_path) {
 		update_file = true;
 	}
 
+	if (!config_doc.hasIn(['clustering', 'tls', 'verify'])) {
+		config_doc.setIn(['clustering', 'tls', 'verify'], true);
+		update_file = true;
+	}
+
 	if (update_file) {
 		logger.trace('Updating config file with missing config params');
 		fs.writeFileSync(config_file_path, String(config_doc));
