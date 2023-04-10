@@ -3,6 +3,8 @@
 const env = require('../utility/environment/environmentManager');
 env.initSync();
 
+// This unused restart require is here so that main thread loads ITC event listener defined in restart file. Do not remove.
+const restart = require('./restart');
 const terms = require('../utility/hdbTerms');
 const hdb_logger = require('../utility/logging/harper_logger');
 const fs = require('fs-extra');
@@ -16,7 +18,6 @@ const hdb_utils = require('../utility/common_utils');
 const config_utils = require('../config/configUtils');
 const assignCMDENVVariables = require('../utility/assignCmdEnvVariables');
 const nats_config = require('../server/nats/utility/natsConfig');
-const stop = require('./stop');
 const upgrade = require('./upgrade');
 const log_rotator = require('../utility/logging/logRotator');
 const minimist = require('minimist');
@@ -29,6 +30,7 @@ const {
 } = require('../server/threads/socketRouter');
 
 const hdbInfoController = require('../dataLayer/hdbInfoController');
+const { isMainThread } = require('worker_threads');
 
 const SYSTEM_SCHEMA = require('../json/systemSchema.json');
 const schema_describe = require('../dataLayer/schemaDescribe');
@@ -120,7 +122,7 @@ async function initialize(called_by_install = false, called_by_main = false) {
 	}
 
 	const clustering_enabled = hdb_utils.autoCastBoolean(env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY));
-	if (clustering_enabled) {
+	if (clustering_enabled && isMainThread) {
 		await nats_config.generateNatsConfig(called_by_main);
 	}
 }

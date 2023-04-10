@@ -85,6 +85,8 @@ const PROCESS_DESCRIPTORS_VALIDATE = {
 	'custom_functions': CUSTOM_FUNCTION_PROC_DESCRIPTOR,
 	'clustering': 'clustering',
 	'clustering config': 'clustering config',
+	'clustering_config': 'clustering_config',
+	'http_workers': 'http_workers',
 };
 
 // All the processes that make up clustering
