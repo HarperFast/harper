@@ -8,8 +8,6 @@ const LICENSE_PARAMS = {
 	company: undefined,
 	fingerprint: undefined,
 	ram_allocation: undefined, // in MB
-	storage_type: 'lmdb',
-	api_call: 1000000000 * 1000000000,
 	version: hdb_terms.LICENSE_VALUES.VERSION_DEFAULT,
 	exp_date: moment().add(DURATION, DURATION_UNIT).format('YYYY-MM-DD'),
 };
