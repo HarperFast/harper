@@ -40,21 +40,27 @@ export class DatabaseTransaction {
 	/**
 	 * Resolves with information on the timestamp and success of the commit
 	 */
-	commit(flush = true, retries = 0): Promise<CommitResolution> {
+	async commit(flush = true, retries = 0): Promise<CommitResolution> {
 		this.doneReading();
 		const remaining_conditions = this.inTwoPhase ? [] : this.conditions.slice(0).reverse();
-		let txn_time, resolution, write_resolution;
+		let resolution,
+			resource_resolutions,
+			completions = [];
 		if (retries === 0) {
-			for (const { txn, record } of this.updatingRecords || []) {
+			for (const { resource, record } of this.updatingRecords || []) {
 				// TODO: get the own properties, translate to a put and a correct replication operation/CRDT
 				const original = record[DATA];
 				const own = record[OWN];
-				write_resolution = txn.put(original[txn.constructor.primaryKey], Object.assign({}, original, own));
+				const resource_resolution = resource.put(Object.assign({}, original, own));
+				if (resource_resolution?.then) {
+					if (!resource_resolutions) resource_resolutions = [];
+					resource_resolutions.push(resource_resolution);
+				}
 			}
 		}
 		let write_index = 0;
-		txn_time = getNextMonotonicTime();
 		let last_store;
+		let txn_time;
 		const nextCondition = () => {
 			const write = this.writes[write_index++];
 			if (write) {
@@ -68,16 +74,22 @@ export class DatabaseTransaction {
 				resolution = resolution || condition_resolution;
 			} else {
 				for (const write of this.writes) {
-					const audit_record = write.commit(txn_time, retries);
+					const audit_record = write.commit(retries);
+					if (audit_record.completion) {
+						if (!completions) completions = [];
+						completions.push(audit_record.completion);
+						audit_record.completion = undefined;
+					}
 					last_store = write.store;
 					if (this.auditStore) {
 						audit_record.username = this.username;
 						audit_record.lastVersion = write.lastVersion;
-						this.auditStore.put([txn_time, write.store.tableId, write.key], audit_record);
+						this.auditStore.put([(txn_time = write.txnTime), write.store.tableId, write.key], audit_record);
 					}
 				}
 			}
 		};
+		if (resource_resolutions) await Promise.all(resource_resolutions);
 		nextCondition();
 		//this.auditStore.ifNoExists('txn_time-fix this', nextCondition);
 		// TODO: if any of these fail, restart this
@@ -85,10 +97,10 @@ export class DatabaseTransaction {
 		// listen... And then we can use it determine when the commit has been delivered to at least one other
 		// node
 
-		resolution = resolution || write_resolution;
 		return resolution?.then((resolution) => {
 			if (resolution) {
-				return last_store.flushed.then(() => {
+				completions.push(last_store.flushed);
+				return Promise.all(completions).then(() => {
 					// now reset transactions tracking; this transaction be reused and committed again
 					this.conditions = [];
 					this.writes = [];

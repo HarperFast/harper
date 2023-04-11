@@ -3,7 +3,7 @@ import { getTables } from './tableLoader';
 import { Table } from './Table';
 import { DatabaseTransaction } from './DatabaseTransaction';
 import { DefaultAccess } from './Access';
-
+import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 let tables;
 
 /**
@@ -20,11 +20,16 @@ export class Resource implements ResourceInterface {
 	property?: string;
 	lastModificationTime = 0;
 	inUseTables = {};
-	inUseEnvs = {};
-	constructor(identifier?, request?) {
+	transaction: [];
+	constructor(identifier?, request?, transaction?) {
 		this.id = identifier;
 		this.request = request;
 		this.user = request?.user;
+		if (!transaction) {
+			transaction = [];
+			transaction._txnTime = getNextMonotonicTime();
+		}
+		this.transaction = transaction;
 	}
 
 	getById(id: any, options?: any): Promise<{}> {
@@ -47,29 +52,31 @@ export class Resource implements ResourceInterface {
 	 * Commit the resource transaction(s). This commits any transactions that have started as part of the resolution
 	 * of this resource, and frees any read transaction.
 	 */
-	commit(flush = true): Promise<{ txnTxn: number }[]> {
+	async commit(flush = true): Promise<{ txnTxn: number }[]> {
 		const commits = [];
-		for (const env_path in this.inUseEnvs) {
-			// TODO: maintain this array ourselves so we don't need to key-ify
-			const env_txn = this.inUseEnvs[env_path];
-			// TODO: If we have multiple commits in a single resource instance, need to maintain
-			// databases with waiting flushes to resolve at the end when a flush is requested.
-			commits.push(env_txn.commit(flush));
+		// this can grow during the commit phase, so need to always check length
+		for (let i = 0; i < this.transaction.length; ) {
+			for (let l = this.transaction.length; i < l; i++) {
+				const txn = this.transaction[i];
+				// TODO: If we have multiple commits in a single resource instance, need to maintain
+				// databases with waiting flushes to resolve at the end when a flush is requested.
+				commits.push(txn.commit(flush));
+			}
+			await Promise.all(commits);
 		}
-		return Promise.all(commits);
 	}
 	static commit = Resource.prototype.commit;
 	abort() {
-		for (const env_path in this.inUseEnvs) {
+		for (const env_path in this.transaction) {
 			// TODO: maintain this array ourselves so we don't need to key-ify
-			const env_txn = this.inUseEnvs[env_path];
+			const env_txn = this.transaction[env_path];
 			env_txn.abort(); // done with the read snapshot txn
 		}
 	}
 	doneReading() {
-		for (const env_path in this.inUseEnvs) {
+		for (const env_path in this.transaction) {
 			// TODO: maintain this array ourselves so we don't need to key-ify
-			const env_txn = this.inUseEnvs[env_path];
+			const env_txn = this.transaction[env_path];
 			env_txn.doneReading(); // done with the read snapshot txn
 		}
 	}
@@ -80,20 +87,20 @@ export class Resource implements ResourceInterface {
 		throw new Error('Not implemented');
 	}
 	loadDBRecord() {
-		// nothing to be done by default, Table implements this
+		// nothing to be done by default, Table implements an actual real version of this
 	}
 
-	static async getResource(path, request) {
+	static async getResource(path, request, transaction) {
 		let resource;
 		if (typeof path === 'string') {
 			const slash_index = path.indexOf?.('/');
 			if (slash_index > -1) {
-				resource = new this(decodeURIComponent(path.slice(0, slash_index)), request);
+				resource = new this(decodeURIComponent(path.slice(0, slash_index)), request, transaction);
 				resource.property = decodeURIComponent(path.slice(slash_index + 1));
 			} else {
-				resource = new this(decodeURIComponent(path), request);
+				resource = new this(decodeURIComponent(path), request, transaction);
 			}
-		} else resource = new this(path, request);
+		} else resource = new this(path, request, transaction);
 		await resource.loadDBRecord();
 		return resource;
 	}
@@ -131,8 +138,8 @@ export class Resource implements ResourceInterface {
 		const key = schema_name ? schema_name + '/' + table_name : table_name;
 		const env_path = table.envPath;
 		const env_txn =
-			this.inUseEnvs[env_path] ||
-			(this.inUseEnvs[env_path] = new DatabaseTransaction(table.primaryStore, this.user, table.auditStore));
+			this.transaction[env_path] ||
+			(this.transaction[env_path] = new DatabaseTransaction(table.primaryStore, this.user, table.auditStore));
 		return (
 			this.inUseTables[key] ||
 			(this.inUseTables[key] = table.transaction(this.request, env_txn, env_txn.getReadTxn(), this))
@@ -155,9 +162,12 @@ export class Resource implements ResourceInterface {
 	}
 	static startTransaction(request) {
 		const name = this.name + ' (txn)';
+		const transaction = [];
+		transaction._txnTime = getNextMonotonicTime();
+
 		return class extends this {
 			static name = name;
-			static inUseEnvs = {};
+			static transaction = transaction;
 			static inUseTables = {};
 		};
 	}
@@ -165,14 +175,14 @@ export class Resource implements ResourceInterface {
 		return this;
 	}
 	async accessInTransaction(request, action: (resource_access) => any) {
-		const txn = this.startTransaction(request);
+		const transactional_resource = this.startTransaction(request);
 		try {
-			const resource_access = txn.access(request);
-			txn.result = await action(resource_access);
+			const resource_access = transactional_resource.access(request);
+			transactional_resource.result = await action(resource_access);
 		} finally {
-			await txn.commit();
+			await transactional_resource.commit();
 		}
-		return txn;
+		return transactional_resource;
 	}
 	static accessInTransaction = Resource.prototype.accessInTransaction;
 	static access(request) {

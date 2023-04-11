@@ -84,7 +84,8 @@ export async function authentication(request, next_handler) {
 				);
 			}
 			if (session_table.then) session_table = await session_table;
-			session_table.put(session_id, updated_session);
+			updated_session.id = session_id;
+			session_table.put(updated_session);
 		};
 		request.login = async function (user, password) {
 			request.user = await server.auth(user, password);

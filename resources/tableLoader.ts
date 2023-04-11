@@ -17,6 +17,7 @@ initSync();
 const USE_AUDIT = true; // TODO: Get this from config
 export const tables = null;
 export const databases = {};
+const table_listeners = [];
 let loaded_databases;
 const database_envs = new Map<string, any>();
 
@@ -65,7 +66,8 @@ export function getDatabases() {
 							join(schema_path, table_entry.name),
 							basename(table_entry.name, '.mdb'),
 							schema_entry.name,
-							audit_path
+							audit_path,
+							true
 						);
 					}
 				}
@@ -90,7 +92,7 @@ export function getDatabases() {
 					const table_config = table_configs[table_name];
 					const table_path = join(table_config.path, 'data.mdb');
 					if (existsSync(table_path)) {
-						readMetaDb(table_path, table_name, db_name);
+						readMetaDb(table_path, table_name, db_name, null, true);
 					}
 				}
 			}
@@ -114,7 +116,8 @@ function readMetaDb(
 	path: string,
 	default_table?: string,
 	schema_name: string = DEFAULT_DATABASE_NAME,
-	audit_path?: string
+	audit_path?: string,
+	is_legacy?: boolean
 ) {
 	const env_init = new OpenEnvironmentObject(path, false);
 	try {
@@ -175,9 +178,13 @@ function readMetaDb(
 						auditStore: audit_store,
 						tableName: table_name,
 						primaryKey: attribute.name,
+						databasePath: is_legacy ? schema_name + '/' + table_name : schema_name,
 						indices,
 						attributes,
 					}));
+					for (const listener of table_listeners) {
+						listener(table);
+					}
 				}
 			}
 		}
@@ -268,9 +275,13 @@ export function table({ table: table_name, database: database_name, expiration, 
 			auditStore: audit_store,
 			primaryKey: primary_key,
 			tableName: table_name,
+			databasePath: database_name,
 			indices: [],
 			attributes,
 		});
+		for (const listener of table_listeners) {
+			listener(Table);
+		}
 		dbis_db = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
 		startTxn();
 		dbis_db.put(dbi_name, primary_key_attribute);
@@ -316,4 +327,8 @@ export function table({ table: table_name, database: database_name, expiration, 
 			};
 		});
 	}
+}
+
+export function onNewTable(listener) {
+	table_listeners.push(listener);
 }

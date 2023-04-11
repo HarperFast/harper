@@ -3,6 +3,7 @@ const socket_router = require('./threads/socketRouter');
 const hdb_terms = require('../utility/hdbTerms');
 const operationsServer = require('./operationsServer');
 const auth = require('../security/auth');
+const natsReplicator = require('../server/nats/natsReplicator');
 const { getTables } = require('../resources/tableLoader');
 const { loadApplications } = require('../apps/applicationsLoader');
 const env = require('../utility/environment/environmentManager');
@@ -16,6 +17,7 @@ const CORE_PLUGINS = {
 	'operations-server': operationsServer,
 	'auth': auth,
 	mqtt,
+	'nats-replication': natsReplicator,
 };
 let loaded_server_modules = new Map();
 const default_server_modules = [
@@ -25,6 +27,7 @@ const default_server_modules = [
 	//{ module: 'mqtt', port: 8883, secure: true },
 	{ module: 'app-server', port: 9926 },
 	{ module: 'operations-server', port: 9925 },
+	//{ module: 'nats-replication' },
 ];
 
 /**

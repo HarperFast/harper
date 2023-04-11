@@ -31,7 +31,7 @@ interface Table {
 	primaryStore: Database;
 	auditStore: Database;
 	indices: Database[];
-	envPath: string;
+	databasePath: string;
 	tableName: string;
 	schemaName: string;
 	attributes: any[];
@@ -56,6 +56,7 @@ export function makeTable(options) {
 		tableName: table_name,
 		primaryStore: primary_store,
 		expirationMS: expiration_ms,
+		databasePath: database_path,
 		auditStore: audit_store,
 	} = options;
 	if (!attributes) attributes = [];
@@ -68,7 +69,7 @@ export function makeTable(options) {
 		static primaryKey = primary_key;
 		static tableName = table_name;
 		static indices = indices;
-		static envPath = primary_store.env.path;
+		static databasePath = database_path;
 		static attributes = attributes;
 		static expirationTimer;
 		static creationDate?: string;
@@ -134,9 +135,6 @@ export function makeTable(options) {
 				options.startTime
 			);
 		}
-		static transaction(env_transaction, lmdb_txn, parent_transaction) {
-			return new this(env_transaction, lmdb_txn, parent_transaction, {});
-		}
 		static async dropTable() {
 			// TODO: remove all the dbi references
 			for (const key in indices) {
@@ -161,12 +159,16 @@ export function makeTable(options) {
 			super(identifier, request);
 			if (primary_key_attribute.is_number && this.id != null) this.id = +this.id;
 			if (!env_txn) {
-				env_txn = new DatabaseTransaction(primary_store, request?.user, audit_store);
-				lmdb_txn = env_txn.getReadTxn();
+				env_txn = this.transaction[TableResource.databasePath];
+				if (!env_txn) {
+					env_txn = new DatabaseTransaction(primary_store, request?.user, audit_store);
+					lmdb_txn = env_txn.getReadTxn();
+					this.transaction[TableResource.databasePath] = env_txn;
+					this.transaction.push(env_txn);
+				}
 			}
 			this.envTxn = env_txn;
 			this.lmdbTxn = lmdb_txn;
-			this.inUseEnvs[TableResource.envPath] = env_txn;
 			this.parent = parent;
 		}
 		updateModificationTime(latest = Date.now()) {
@@ -184,9 +186,18 @@ export function makeTable(options) {
 				this.version = entry.version;
 				this.record = entry.value;
 			}
-			if (!entry) {
-				if (this.constructor.Source) this.record = this.getFromSource(this.id);
-				if (this.record?.then) return this.record;
+		}
+
+		/**
+		 * This retrieves the record as a frozen object for this resource. Alternately, provide a property name to
+		 * retrieve the data
+		 * @param identifier
+		 */
+		async get(property?: string) {
+			let record = this.record;
+			if (!record) {
+				if (this.constructor.Source?.prototype.get) this.record = this.getFromSource(this.id);
+				record = this.record?.then ? await this.record : this.record;
 			}
 			/*
 			if (record) {
@@ -206,15 +217,6 @@ export function makeTable(options) {
 				}
 				return record;
 			}*/
-		}
-
-		/**
-		 * This retrieves the record as a frozen object for this resource. Alternately, provide a property name to
-		 * retrieve the data
-		 * @param identifier
-		 */
-		async get(property?: string) {
-			const record = this.record;
 			if (property) {
 				if (this.changes && property in this.changes) return this.changes[property];
 				return record[property];
@@ -351,7 +353,7 @@ export function makeTable(options) {
 				const env_txn = this.envTxn;
 				// record in the list of updating records so it can be written to the database when we commit
 				if (!env_txn.updatingRecords) env_txn.updatingRecords = [];
-				env_txn.updatingRecords.push({ txn: this, record });
+				env_txn.updatingRecords.push({ resource: this, record });
 				return record;
 			};
 			// handle the case of the argument being a record
@@ -400,19 +402,30 @@ export function makeTable(options) {
 		 * @param record
 		 * @param options
 		 */
-		put(id, record, options): void {
-			const env_txn = this.envTxn || immediateTransaction;
+		static async put(id, record, options): void {
 			if (typeof id === 'object') {
 				// id is optional
 				options = record;
 				record = id;
-				id = this.id;
+				id = null;
 			}
-			if (id == null) {
-				id = this.id;
-				if (id == null) id = record[primary_key];
-				if (id == null) id = record[primary_key] = randomUUID(); //uuid.v4();
-			}
+			if (id == null) id = record[primary_key];
+			if (id == null) id = randomUUID(); //uuid.v4();
+			(await this.getResource(id, this.request, this.transaction)).put(record, options);
+		}
+		/**
+		 * Store the provided record data into the current resource. This is not written
+		 * until the corresponding transaction is committed. This will either immediately fail (synchronously) or always
+		 * succeed. That doesn't necessarily mean it will "win", another concurrent put could come "after" (monotonically,
+		 * even if not chronologically) this one.
+		 * @param record
+		 * @param options
+		 */
+		put(record, options): void {
+			const env_txn = this.envTxn || immediateTransaction;
+
+			record[primary_key] = this.id; // ensure that the id is in the record
+
 			if (attributes && !options?.noValidation) {
 				let validation_errors;
 				for (let i = 0, l = attributes.length; i < l; i++) {
@@ -448,15 +461,23 @@ export function makeTable(options) {
 					throw new ClientError(validation_errors.join('. '));
 				}
 			}
+			let source_completion;
+			if (!this.source && this.constructor.Source) {
+				this.source = this.constructor.Source.getResource(this.id, this.request, this.transaction);
+				source_completion = this.source.then((source) => source.put(record, { target: this }));
+			}
 			// use optimistic locking to only commit if the existing record state still holds true.
 			// this is superior to using an async transaction since it doesn't require JS execution
 			//  during the write transaction.
+			const txn_time = this.transaction._txnTime;
 			env_txn.addWrite({
-				key: id,
+				key: this.id,
 				store: primary_store,
+				txnTime: txn_time,
 				lastVersion: this.version,
-				commit: (txn_time, retry) => {
+				commit: (retry) => {
 					let existing_record = this.record;
+					let completion;
 					if (retry) {
 						const existing_entry = primary_store.getEntry(id);
 						existing_record = existing_entry?.value;
@@ -478,12 +499,13 @@ export function makeTable(options) {
 							value: record,
 							// TODO: What should this be?
 							lastUpdate: this.lastModificationTime,
+							completion,
 						};
 					}
 					if (TableResource.updateDate) record[TableResource.updateDate] = txn_time;
 					if (TableResource.creationDate && !had_existing) record[TableResource.creationDate] = txn_time;
 
-					primary_store.put(id, record, txn_time);
+					primary_store.put(this.id, record, txn_time);
 					// iterate the entries from the record
 					// for-in is about 5x as fast as for-of Object.entries, and this is extremely time sensitive since it can be
 					// inside a write transaction
@@ -501,22 +523,22 @@ export function makeTable(options) {
 						if (values) {
 							if (LMDB_PREFETCH_WRITES)
 								index.prefetch(
-									values.map((v) => ({ key: v, value: id })),
+									values.map((v) => ({ key: v, value: this.id })),
 									noop
 								);
 							for (let i = 0, l = values.length; i < l; i++) {
-								index.remove(values[i], id);
+								index.remove(values[i], this.id);
 							}
 						}
 						values = getIndexedValues(value);
 						if (values) {
 							if (LMDB_PREFETCH_WRITES)
 								index.prefetch(
-									values.map((v) => ({ key: v, value: id })),
+									values.map((v) => ({ key: v, value: this.id })),
 									noop
 								);
 							for (let i = 0, l = values.length; i < l; i++) {
-								index.put(values[i], id);
+								index.put(values[i], this.id);
 							}
 						}
 					}
@@ -524,11 +546,12 @@ export function makeTable(options) {
 						// return the audit record that should be recorded
 						operation: 'put',
 						value: record,
+						completion,
 					};
 				},
 			});
+			return source_completion;
 		}
-		static put = TableResource.prototype.put;
 
 		delete(id, options): boolean {
 			const env_txn = this.envTxn;
@@ -537,10 +560,13 @@ export function makeTable(options) {
 				id = this.id;
 			} else if (!id) id = this.id;
 			if (!this.record) return false;
+			const txn_time = this.transaction._txnTime;
 			env_txn.addWrite({
 				key: id,
 				store: primary_store,
-				commit: (txn_time, retry) => {
+				txnTime: txn_time,
+				lastVersion: this.version,
+				commit: (retry) => {
 					let existing_record = this.record;
 					if (retry) {
 						const existing_entry = primary_store.getEntry(id);
@@ -572,10 +598,11 @@ export function makeTable(options) {
 
 		static startTransaction(request) {
 			const TableTxn = super.startTransaction(request);
-			const env_txn = new DatabaseTransaction(primary_store, request?.user, audit_store);
-			TableTxn.envTxn = env_txn;
-			TableTxn.lmdbTxn = env_txn.getReadTxn();
-			TableTxn.inUseEnvs[TableResource.envPath] = env_txn;
+			const db_txn = new DatabaseTransaction(primary_store, request?.user, audit_store);
+			TableTxn.envTxn = db_txn;
+			TableTxn.lmdbTxn = db_txn.getReadTxn();
+			TableTxn.transaction[TableResource.databasePath] = db_txn;
+			TableTxn.transaction.push(db_txn);
 			return TableTxn;
 		}
 
@@ -702,10 +729,19 @@ export function makeTable(options) {
 		 * @param options
 		 */
 		publish(message, options) {
+			const txn_time = this.transaction._txnTime;
 			this.envTxn.addWrite({
 				store: primary_store,
 				key: this.id,
-				commit: (txn_time, retries) => {
+				txnTime: txn_time,
+				lastVersion: this.version,
+				commit: (retries) => {
+					let completion;
+					if (!this.source && this.constructor.Source) this.source = this.constructor.Source.getResource(id);
+					if (!retries && this.source) {
+						completion = this.source.publish?.(record);
+					}
+
 					// just need to update the version number of the record so it points to the latest audit record
 					// but have to update the version number of the record
 					// TODO: would be faster to have a dedicated lmdb-js for just updating the version number
@@ -715,6 +751,7 @@ export function makeTable(options) {
 					return {
 						operation: 'message',
 						value: message,
+						completion,
 					};
 				},
 			});
