@@ -1,11 +1,6 @@
 on:
-  push:
-    branches:
-      - "CORE-1759"
   pull_request:
     types: [opened, synchronize, reopened]
-    paths:
-      - 'utility/Docker/Dockerfile'
   schedule:
     - cron: '0 13 * * 1-5'
   workflow_dispatch:
