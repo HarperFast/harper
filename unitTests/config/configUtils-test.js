@@ -527,7 +527,7 @@ describe('Test configUtils module', () => {
 			operationsapi_authentication_refreshtokentimeout: '30d',
 			operationsapi_foreground: false,
 			operationsapi_network_cors: true,
-			operationsapi_network_corsaccesslist: ['https://studio.harperdb.io'],
+			operationsapi_network_corsaccesslist: ['*'],
 			operationsapi_network_headerstimeout: 60000,
 			operationsapi_network_https: false,
 			operationsapi_network_keepalivetimeout: 5000,
