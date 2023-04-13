@@ -19,7 +19,12 @@ function getCORSOptions() {
 			allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
 			credentials: false,
 		};
-		if (props_cors_accesslist && props_cors_accesslist.length > 0 && props_cors_accesslist[0] !== null) {
+		if (
+			props_cors_accesslist &&
+			props_cors_accesslist.length > 0 &&
+			props_cors_accesslist[0] !== null &&
+			props_cors_accesslist[0] !== '*'
+		) {
 			cors_options.origin = (origin, callback) => {
 				return callback(null, props_cors_accesslist.indexOf(origin) !== -1);
 			};
