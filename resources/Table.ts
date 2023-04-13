@@ -154,22 +154,17 @@ export function makeTable(options) {
 		lastModificationTime = 0;
 		static Source: { new (): ResourceInterface };
 
-		constructor(identifier, request, env_txn?, lmdb_txn?, parent?) {
+		constructor(identifier, request, transaction) {
 			// coerce if we know this is supposed to be a number
-			super(identifier, request);
+			super(identifier, request, transaction);
 			if (primary_key_attribute.is_number && this.id != null) this.id = +this.id;
-			if (!env_txn) {
-				env_txn = this.transaction[TableResource.databasePath];
-				if (!env_txn) {
-					env_txn = new DatabaseTransaction(primary_store, request?.user, audit_store);
-					lmdb_txn = env_txn.getReadTxn();
-					this.transaction[TableResource.databasePath] = env_txn;
-					this.transaction.push(env_txn);
-				}
+			this.envTxn = this.transaction[TableResource.databasePath];
+			if (!this.envTxn) {
+				this.envTxn = new DatabaseTransaction(primary_store, request?.user, audit_store);
+				this.transaction[TableResource.databasePath] = this.envTxn;
+				this.transaction.push(this.envTxn);
 			}
-			this.envTxn = env_txn;
-			this.lmdbTxn = lmdb_txn;
-			this.parent = parent;
+			this.lmdbTxn = this.envTxn.getReadTxn();
 		}
 		updateModificationTime(latest = Date.now()) {
 			if (latest > this.lastModificationTime) {
@@ -195,6 +190,7 @@ export function makeTable(options) {
 		 */
 		async get(property?: string) {
 			let record = this.record;
+			// TODO: Once we have asynchronous loads from the database, the record may be a promise, we might need to await it
 			if (!record) {
 				if (this.constructor.Source?.prototype.get) this.record = this.getFromSource(this.id);
 				record = this.record?.then ? await this.record : this.record;
@@ -411,7 +407,7 @@ export function makeTable(options) {
 			}
 			if (id == null) id = record[primary_key];
 			if (id == null) id = randomUUID(); //uuid.v4();
-			(await this.getResource(id, this.request, this.transaction)).put(record, options);
+			this.getResource(id, this.request, this.transaction).put(record, options);
 		}
 		/**
 		 * Store the provided record data into the current resource. This is not written
@@ -464,7 +460,7 @@ export function makeTable(options) {
 			let source_completion;
 			if (!this.source && this.constructor.Source) {
 				this.source = this.constructor.Source.getResource(this.id, this.request, this.transaction);
-				source_completion = this.source.then((source) => source.put(record, { target: this }));
+				source_completion = this.source.put(record, { target: this });
 			}
 			// use optimistic locking to only commit if the existing record state still holds true.
 			// this is superior to using an async transaction since it doesn't require JS execution
@@ -479,7 +475,7 @@ export function makeTable(options) {
 					let existing_record = this.record;
 					let completion;
 					if (retry) {
-						const existing_entry = primary_store.getEntry(id);
+						const existing_entry = primary_store.getEntry(this.id);
 						existing_record = existing_entry?.value;
 						this.updateModificationTime(existing_entry?.version);
 					}
@@ -606,12 +602,11 @@ export function makeTable(options) {
 			return TableTxn;
 		}
 
-		static get(query, options): AsyncIterable<any> {
-			if (!query) {
+		static search(query, options): AsyncIterable<any> {
+			if (query == null) {
 				// TODO: May have different semantics for /Table vs /Table/
 				query = []; // treat no query as a query for everything
 			}
-			query.offset = Number.isInteger(query.offset) ? query.offset : 0;
 			let conditions = query.conditions || query;
 			for (const condition of conditions) {
 				const attribute = attributes.find((attribute) => attribute.name == condition.attribute);
@@ -803,7 +798,7 @@ export function makeTable(options) {
 				end = search_condition.value;
 				inclusiveEnd = true;
 		}
-		const index = indices[search_condition.attribute];
+		const index = search_condition.attribute === primary_key ? primary_store : indices[search_condition.attribute];
 		if (!index) {
 			throw handleHDBError(
 				new Error(),

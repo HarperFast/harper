@@ -41,8 +41,13 @@ export async function authentication(request, next_handler) {
 	let session_id;
 	let session;
 	if (ENABLE_SESSIONS) {
-		session_id = cookie?.match(/(^|\s|;)hdb-session=(\w+)/)?.[2];
-		if (session_id) {
+		// we prefix the cookie name with the origin so that we can partition/separate session/authentications
+		// host, to protect against CSRF
+		const cookie_prefix = (origin ? '' : origin + '-') + 'hdb-session=';
+		const cookie_start = cookie?.indexOf(cookie_prefix);
+		if (cookie_start >= 0) {
+			const end = cookie.indexOf(';', cookie_start);
+			session_id = cookie.slice(cookie_start, end === -1 ? cookie.length : end);
 			if (session_table.then) session_table = await session_table;
 			session = session_table.get(session_id);
 		}

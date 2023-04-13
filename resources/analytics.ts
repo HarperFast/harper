@@ -141,7 +141,7 @@ async function cleanup(expiration, period) {
 	}
 }
 
-const AGGREGATE_PERIOD = 4000;
+const AGGREGATE_PERIOD = 40000000;
 const RAW_EXPIRATION = 10000;
 const AGGREGATE_EXPIRATION = 100000;
 let AnalyticsTable;

@@ -1,6 +1,6 @@
 'use strict';
 
-const { RAPIBridge } = require('./RAPIBridge');
+const { ResourceBridge } = require('./ResourceBridge');
 const env_mngr = require('../../utility/environment/environmentManager');
 env_mngr.initSync();
 
@@ -14,7 +14,7 @@ function getBridge() {
 	if (harper_bridge) {
 		return harper_bridge;
 	}
-	harper_bridge = new RAPIBridge();
+	harper_bridge = new ResourceBridge();
 	return harper_bridge;
 }
 

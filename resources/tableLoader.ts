@@ -155,6 +155,7 @@ function readMetaDb(
 		for (const [table_name, attributes] of tables_to_load) {
 			for (const attribute of attributes) {
 				const dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
+				attribute.attribute = attribute.name;
 				if (attribute.is_hash_attribute) {
 					let table_id = attribute.tableId;
 					if (table_id) {
@@ -251,7 +252,7 @@ export function table({ table: table_name, database: database_name, expiration, 
 			// there is some code that calls the attribute's name the attribute's attribute
 			attribute.name = attribute.attribute;
 			attribute.indexed = true;
-		}
+		} else attribute.attribute = attribute.name;
 	}
 	let txn_commit;
 	if (Table) {

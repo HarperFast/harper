@@ -162,7 +162,7 @@ async function addJob(json_body) {
 
 	let found_job = undefined;
 	try {
-		found_job = await p_search_by_value(search_obj);
+		found_job = Array.from(await p_search_by_value(search_obj));
 	} catch (e) {
 		let message = `There was an error inserting a new job: ${e}`;
 		log.error(message);
@@ -301,10 +301,6 @@ async function updateJob(job_object) {
 		job_object,
 	]);
 	let update_result = undefined;
-	try {
-		update_result = await p_insert_update(update_object);
-	} catch (e) {
-		throw new Error(e);
-	}
+	update_result = await p_insert_update(update_object);
 	return update_result;
 }

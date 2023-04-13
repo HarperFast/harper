@@ -54,6 +54,7 @@ export class Resource implements ResourceInterface {
 	 */
 	async commit(flush = true): Promise<{ txnTxn: number }[]> {
 		const commits = [];
+		let resolved;
 		// this can grow during the commit phase, so need to always check length
 		for (let i = 0; i < this.transaction.length; ) {
 			for (let l = this.transaction.length; i < l; i++) {
@@ -62,8 +63,9 @@ export class Resource implements ResourceInterface {
 				// databases with waiting flushes to resolve at the end when a flush is requested.
 				commits.push(txn.commit(flush));
 			}
-			await Promise.all(commits);
+			resolved = await Promise.all(commits);
 		}
+		return { txnTime: this.transaction._txnTime };
 	}
 	static commit = Resource.prototype.commit;
 	abort() {
@@ -80,17 +82,23 @@ export class Resource implements ResourceInterface {
 			env_txn.doneReading(); // done with the read snapshot txn
 		}
 	}
-	static async get(identifier: string | number) {
-		if (identifier) {
+	static async get(identifier: string | number): Promise<object>;
+	static async get(query: object): Promise<Iterable<object>>;
+	static async get(identifier: string | number | object) {
+		if (typeof identifier === 'string' || typeof identifier === 'number') {
 			return (await this.getResource(identifier, this.request)).get();
+		} else {
+			return this.search(identifier);
 		}
+	}
+	static async search(query: object): Promise<Iterable<object>> {
 		throw new Error('Not implemented');
 	}
 	loadDBRecord() {
 		// nothing to be done by default, Table implements an actual real version of this
 	}
 
-	static async getResource(path, request, transaction) {
+	static getResource(path, request, transaction) {
 		let resource;
 		if (typeof path === 'string') {
 			const slash_index = path.indexOf?.('/');
@@ -101,7 +109,7 @@ export class Resource implements ResourceInterface {
 				resource = new this(decodeURIComponent(path), request, transaction);
 			}
 		} else resource = new this(path, request, transaction);
-		await resource.loadDBRecord();
+		resource.loadDBRecord();
 		return resource;
 	}
 

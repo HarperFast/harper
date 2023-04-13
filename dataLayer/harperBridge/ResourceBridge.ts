@@ -17,7 +17,7 @@ const DEFAULT_DATABASE = 'data';
  * Currently we are extending LMDBBridge so we can use the LMDB methods as a fallback until all our RAPI methods are
  * implemented
  */
-export class RAPIBridge extends LMDBBridge {
+export class ResourceBridge extends LMDBBridge {
 	async searchByConditions(search_object) {
 		const validation_error = search_validator(search_object, 'conditions');
 		if (validation_error) {
@@ -80,7 +80,7 @@ export class RAPIBridge extends LMDBBridge {
 			txn.put(record[Table.primaryKey], record, put_options);
 			keys.push(record[Table.primaryKey]);
 		}
-		const results = (await txn.commit())[0];
+		const results = await txn.commit();
 		return {
 			txn_time: results.txnTime,
 			written_hashes: keys,
@@ -123,13 +123,14 @@ export class RAPIBridge extends LMDBBridge {
 			txn.put(record[Table.primaryKey], record, put_options);
 			keys.push(record[Table.primaryKey]);
 		}
-		const results = (await txn.commit())[0];
+		const results = await txn.commit();
 		const response = {
 			txn_time: results.txnTime,
 			written_hashes: keys,
 			new_attributes,
 			skipped_hashes: skipped,
 		};
+		console.log('wrote records', upsert_obj.records, results);
 		try {
 			await write_transaction(upsert_obj, response);
 		} catch (e) {
@@ -147,16 +148,20 @@ export class RAPIBridge extends LMDBBridge {
 		let select = search_object.get_attributes;
 		if (select[0] === '*') select = table_txn.attributes.map((attribute) => attribute.name);
 		try {
-			return await Promise.all(
-				search_object.hash_values.map(async (key) => {
-					const record = await table_txn.get(key, { lazy: Boolean(select) });
-					const reduced_record = {};
-					for (const property of select) {
-						reduced_record[property] = record[property] ?? null;
-					}
-					return reduced_record;
-				})
-			);
+			return (
+				await Promise.all(
+					search_object.hash_values.map(async (key) => {
+						const record = await table_txn.get(key, { lazy: Boolean(select) });
+						if (record) {
+							const reduced_record = {};
+							for (const property of select) {
+								reduced_record[property] = record[property] ?? null;
+							}
+							return reduced_record;
+						}
+					})
+				)
+			).filter((record) => record);
 		} finally {
 			table_txn.commit();
 		}
@@ -179,6 +184,14 @@ export class RAPIBridge extends LMDBBridge {
 			offset: search_object.offset,
 			conditions,
 		});
+	}
+	async getDataByValue(search_object: SearchObject) {
+		const map = new Map();
+		const table = getTable(search_object);
+		for (const record of await this.searchByValue(search_object)) {
+			map.set(record[table.primaryKey], record);
+		}
+		return map;
 	}
 	resetReadTxn(schema, table) {
 		getTable({ schema, table }).primaryStore.resetReadTxn();
