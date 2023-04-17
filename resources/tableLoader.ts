@@ -180,8 +180,11 @@ function readMetaDb(
 						tableName: table_name,
 						primaryKey: attribute.name,
 						databasePath: is_legacy ? schema_name + '/' + table_name : schema_name,
+						databaseName: schema_name,
 						indices,
 						attributes,
+						schemaDefined: attribute.schemaDefined,
+						dbisDB: dbis_store,
 					}));
 					for (const listener of table_listeners) {
 						listener(table);
@@ -202,6 +205,7 @@ interface TableDefinition {
 	path?: string;
 	expiration?: number;
 	attributes: any[];
+	schemaDefined: boolean;
 }
 
 const ROOT_STORE_KEY = Symbol('root-store');
@@ -236,7 +240,13 @@ export function database({ database: database_name, table: table_name }) {
  * @param attributes
  * @param audit
  */
-export function table({ table: table_name, database: database_name, expiration, attributes }: TableDefinition) {
+export function table({
+	table: table_name,
+	database: database_name,
+	expiration,
+	attributes,
+	schemaDefined: schema_defined,
+}: TableDefinition) {
 	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
 	const root_store = database({ database: database_name, table: table_name });
 	const tables = databases[database_name];
@@ -245,11 +255,12 @@ export function table({ table: table_name, database: database_name, expiration, 
 	let primary_key_attribute;
 	let indices;
 	let dbis_db;
+	if (schema_defined == undefined) schema_defined = true;
 	const internal_dbi_init = new OpenDBIObject(false);
 
 	for (const attribute of attributes) {
 		if (attribute.attribute) {
-			// there is some code that calls the attribute's name the attribute's attribute
+			// there is some legacy code that calls the attribute's name the attribute's attribute
 			attribute.name = attribute.attribute;
 			attribute.indexed = true;
 		} else attribute.attribute = attribute.name;
@@ -265,25 +276,29 @@ export function table({ table: table_name, database: database_name, expiration, 
 		primary_key_attribute = attributes.find((attribute) => attribute.isPrimaryKey);
 		primary_key = primary_key_attribute.name;
 		primary_key_attribute.is_hash_attribute = true;
+		primary_key_attribute.schemaDefined = schema_defined;
 		const dbi_init = new OpenDBIObject(!primary_key_attribute.isPrimaryKey, primary_key_attribute.isPrimaryKey);
 		const dbi_name = table_name + '/' + primary_key_attribute.name;
 		const primary_store = root_store.openDB(dbi_name, dbi_init);
 		if (!root_store.env.nextTableId) root_store.env.nextTableId = 1;
 		primary_store.tableId = root_store.env.nextTableId++;
 		primary_key_attribute.tableId = primary_store.tableId;
+		dbis_db = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
 		Table = tables[table_name] = makeTable({
 			primaryStore: primary_store,
 			auditStore: audit_store,
 			primaryKey: primary_key,
 			tableName: table_name,
 			databasePath: database_name,
+			databaseName: database_name,
 			indices: [],
 			attributes,
+			schemaDefined: schema_defined,
+			dbisDB: dbis_db,
 		});
 		for (const listener of table_listeners) {
 			listener(Table);
 		}
-		dbis_db = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
 		startTxn();
 		dbis_db.put(dbi_name, primary_key_attribute);
 	}
@@ -291,6 +306,7 @@ export function table({ table: table_name, database: database_name, expiration, 
 	dbis_db = dbis_db || root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
 	Table.dbisDB = dbis_db;
 	try {
+		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
 		// iterate through the attributes to ensure that we have all the dbis created and indexed
 		for (const attribute of attributes || []) {
 			// non-indexed attributes do not need a dbi

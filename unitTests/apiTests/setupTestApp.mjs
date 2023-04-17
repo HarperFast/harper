@@ -43,37 +43,41 @@ export async function setupTestApp() {
 	created_records = [];
 	const { startHTTPThreads } = require('../../server/threads/socketRouter');
 	await startHTTPThreads(config.threads || 0);
-	for (let i = 0; i < 20; i++) {
-		let object = {id: Math.round(random() * 1000000).toString(36)};
+	try {
 		for (let i = 0; i < 20; i++) {
-			if (random() > 0.1) {
-				object['prop' + i] =
-					random() < 0.3 ? Math.floor(random() * 400) / 2 :
-						random() < 0.3 ? makeString() : random() < 0.3 ? true : random() < 0.3 ? {sub: 'data'} : null;
+			let object = {id: Math.round(random() * 1000000).toString(36)};
+			for (let i = 0; i < 20; i++) {
+				if (random() > 0.1) {
+					object['prop' + i] =
+						random() < 0.3 ? Math.floor(random() * 400) / 2 :
+							random() < 0.3 ? makeString() : random() < 0.3 ? true : random() < 0.3 ? {sub: 'data'} : null;
+				}
 			}
+
+			let response = await axios.put('http://localhost:9926/VariedProps/' + object.id, encode(object), {
+				method: 'PUT',
+				responseType: 'arraybuffer',
+				headers,
+			});
+			created_records.push(object.id);
 		}
 
-		let response = await axios.put('http://localhost:9926/VariedProps/' + object.id, encode(object), {
-			method: 'PUT',
-			responseType: 'arraybuffer',
-			headers,
-		});
-		created_records.push(object.id);
+		for (let i = 0; i < 10; i++) {
+			let object = {
+				id: i,
+				name: 'name' + i,
+				age: 20 + i,
+				title: 'title' + i
+			};
+			let response = await axios.put('http://localhost:9926/FourProp/' + object.id, encode(object), {
+				method: 'PUT',
+				responseType: 'arraybuffer',
+				headers,
+			});
+		}
+	} catch(error) {
+		error.message += ': ' + error.response.data.toString();
+		throw error;
 	}
-
-	for (let i = 0; i < 10; i++) {
-		let object = {
-			id: i,
-			name: 'name' + i,
-			age: 20 + i,
-			title: 'title' + i
-		};
-		let response = await axios.put('http://localhost:9926/FourProp/' + object.id, encode(object), {
-			method: 'PUT',
-			responseType: 'arraybuffer',
-			headers,
-		});
-	}
-
 	return created_records;
 }

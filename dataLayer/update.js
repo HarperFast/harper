@@ -47,13 +47,13 @@ async function update({ statement, hdb_user }) {
 
 	let select_string = `SELECT ${table_info.hash_attribute} FROM ${from.toString()} ${where_string}`;
 	let search_statement = alasql.parse(select_string).statements[0];
-	let result = await transaction.writeTransaction(table_info.schema, table_info.name, async () => {
-		let records = await p_search(search_statement);
-		let new_records = buildUpdateRecords(update_record, records);
-		return updateRecords(table_clone, new_records, hdb_user);
-	});
-	await write.flush({ schema: table_info.schema, table: table_info.name });
-	return result;
+	//let result = await transaction.writeTransaction(table_info.schema, table_info.name, async () => {
+	let records = await p_search(search_statement);
+	let new_records = buildUpdateRecords(update_record, records);
+	return updateRecords(table_clone, new_records, hdb_user);
+	//});
+	//await write.flush({ schema: table_info.schema, table: table_info.name });
+	//return result;
 }
 
 /**

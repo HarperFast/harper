@@ -6,8 +6,6 @@ import { Resource } from '../../resources/Resource';
 import { table, getDatabases, database } from '../../resources/tableLoader';
 import * as insertUpdateValidate from './bridgeUtility/insertUpdateValidate';
 import * as lmdbProcessRows from './lmdbBridge/lmdbUtility/lmdbProcessRows';
-import * as hdb_terms from '../../utility/hdbTerms';
-import * as lmdb_check_new_attributes from './lmdbBridge/lmdbUtility/lmdbCheckForNewAttributes';
 import * as write_transaction from './lmdbBridge/lmdbUtility/lmdbWriteTransaction';
 import * as logger from '../../utility/logging/harper_logger';
 import * as SearchObject from '../SearchObject';
@@ -42,10 +40,16 @@ export class ResourceBridge extends LMDBBridge {
 	 * @param table_create_obj
 	 */
 	async createTable(table_system_data, table_create_obj) {
-		const attributes = table_create_obj.attributes || [
-			{ name: table_create_obj.hash_attribute, isPrimaryKey: true },
-			// TODO: __createdtime__, __updatedtime__
-		];
+		let attributes = table_create_obj.attributes;
+		const schema_defined = Boolean(attributes);
+		if (!attributes) {
+			// legacy default schema for tables created through operations API
+			attributes = [
+				{ name: table_create_obj.hash_attribute, isPrimaryKey: true },
+				{ name: '__createdtime__', indexed: true },
+				{ name: '__updatedtime__', indexed: true },
+			];
+		}
 		for (const attribute of attributes) {
 			if (attribute.name === table_create_obj.hash_attribute) attribute.isPrimaryKey = true;
 		}
@@ -53,6 +57,7 @@ export class ResourceBridge extends LMDBBridge {
 			database: table_create_obj.schema,
 			table: table_create_obj.table,
 			attributes,
+			schemaDefined: schema_defined,
 		});
 	}
 	async createSchema(create_schema_obj) {
@@ -62,38 +67,11 @@ export class ResourceBridge extends LMDBBridge {
 		});
 	}
 
-	async createRecords(insert_obj) {
-		const { schema_table, attributes } = insertUpdateValidate(insert_obj);
-
-		lmdbProcessRows(insert_obj, attributes, schema_table.primaryKey);
-
-		let new_attributes;
-		if (insert_obj.auto_generate_indices)
-			new_attributes = await lmdb_check_new_attributes(insert_obj.hdb_auth_header, schema_table, attributes);
-		const Table = getDatabases()[insert_obj.schema][insert_obj.table];
-		const txn = Table.startTransaction();
-		const put_options = {
-			timestamp: insert_obj.__origin?.timestamp,
-		};
-		const keys = [];
-		for (const record of insert_obj.records) {
-			txn.put(record[Table.primaryKey], record, put_options);
-			keys.push(record[Table.primaryKey]);
-		}
-		const results = await txn.commit();
-		return {
-			txn_time: results.txnTime,
-			written_hashes: keys,
-			new_attributes,
-			skipped_hashes: [],
-		};
-	}
-
 	async updateRecords(update_obj) {
 		update_obj.requires_existing = true;
 		return this.upsertRecords(update_obj);
 	}
-	async insertRecords(update_obj) {
+	async createRecords(update_obj) {
 		update_obj.requires_no_existing = true;
 		return this.upsertRecords(update_obj);
 	}
@@ -103,68 +81,99 @@ export class ResourceBridge extends LMDBBridge {
 		lmdbProcessRows(upsert_obj, attributes, schema_table.primaryKey);
 
 		let new_attributes;
-		if (upsert_obj.auto_generate_indices)
-			new_attributes = await lmdb_check_new_attributes(upsert_obj.hdb_auth_header, schema_table, attributes);
 		const Table = getDatabases()[upsert_obj.schema][upsert_obj.table];
-		const txn = Table.startTransaction();
-		const put_options = {
-			timestamp: upsert_obj.__origin?.timestamp,
-		};
-		const keys = [];
-		const skipped = [];
-		for (const record of upsert_obj.records) {
-			if (
-				(upsert_obj.requires_existing && !txn.get(record[Table.primaryKey])) ||
-				(upsert_obj.requires_no_existing && txn.get(record[Table.primaryKey]))
-			) {
-				skipped.push(record[Table.primaryKey]);
-				continue;
+		return Table.transact(async (txn_table) => {
+			if (!txn_table.schemaDefined) {
+				new_attributes = [];
+				for (const attribute of attributes) {
+					const existing_attribute = Table.attributes.find(
+						(existing_attribute) => existing_attribute.name == attribute
+					);
+					if (!existing_attribute) {
+						await txn_table.addAttribute({
+							name: attribute,
+							indexed: true,
+						});
+						new_attributes.push(attribute);
+					}
+				}
 			}
-			txn.put(record[Table.primaryKey], record, put_options);
-			keys.push(record[Table.primaryKey]);
-		}
-		const results = await txn.commit();
-		const response = {
-			txn_time: results.txnTime,
-			written_hashes: keys,
-			new_attributes,
-			skipped_hashes: skipped,
-		};
-		console.log('wrote records', upsert_obj.records, results);
-		try {
-			await write_transaction(upsert_obj, response);
-		} catch (e) {
-			logger.error(`unable to write transaction due to ${e.message}`);
-		}
-
-		return response;
+			const put_options = {
+				timestamp: upsert_obj.__origin?.timestamp,
+			};
+			const keys = [];
+			const skipped = [];
+			for (const record of upsert_obj.records) {
+				const existing_record = await txn_table.get(record[Table.primaryKey]);
+				if (
+					(upsert_obj.requires_existing && !existing_record) ||
+					(upsert_obj.requires_no_existing && existing_record)
+				) {
+					skipped.push(record[Table.primaryKey]);
+					continue;
+				}
+				for (const key in existing_record) {
+					// if the record is missing any properties, fill them in from the existing record
+					if (!Object.prototype.hasOwnProperty.call(record, key)) record[key] = existing_record[key];
+				}
+				await txn_table.put(record[Table.primaryKey], record, put_options);
+				keys.push(record[Table.primaryKey]);
+			}
+			return {
+				txn_time: txn_table.txnTime,
+				written_hashes: keys,
+				new_attributes,
+				skipped_hashes: skipped,
+			};
+		});
+	}
+	async deleteRecords(delete_obj) {
+		const Table = getDatabases()[delete_obj.schema][delete_obj.table];
+		return Table.transact(async (txn_table) => {
+			const ids = delete_obj.hash_values || delete_obj.records.map((record) => record[Table.primaryKey]);
+			const deleted = [];
+			const skipped = [];
+			for (const id of ids) {
+				if (await txn_table.delete(id)) deleted.push(id);
+				else skipped.push(id);
+			}
+			return createDeleteResponse(deleted, skipped, txn_table.txnTime);
+		});
 	}
 	/**
 	 * fetches records by their hash values and returns an Array of the results
 	 * @param {SearchByHashObject} search_object
 	 */
 	async searchByHash(search_object) {
-		const table_txn = getTable(search_object).startTransaction();
-		let select = search_object.get_attributes;
-		if (select[0] === '*') select = table_txn.attributes.map((attribute) => attribute.name);
-		try {
-			return (
-				await Promise.all(
-					search_object.hash_values.map(async (key) => {
-						const record = await table_txn.get(key, { lazy: Boolean(select) });
-						if (record) {
-							const reduced_record = {};
-							for (const property of select) {
-								reduced_record[property] = record[property] ?? null;
-							}
-							return reduced_record;
+		return getTable(search_object).transact((txn_table) => {
+			let select = search_object.get_attributes;
+			if (select[0] === '*') select = txn_table.attributes.map((attribute) => attribute.name);
+			return search_object.hash_values
+				.map(async (key) => {
+					const record = await txn_table.get(key, { lazy: Boolean(select) });
+					if (record) {
+						const reduced_record = {};
+						for (const property of select) {
+							reduced_record[property] = record[property] ?? null;
 						}
-					})
-				)
-			).filter((record) => record);
-		} finally {
-			table_txn.commit();
+						return reduced_record;
+					}
+				})
+				.filter((record) => record);
+		});
+	}
+
+	/**
+	 * Called by some SQL functions
+	 * @param search_object
+	 */
+	async getDataByHash(search_object) {
+		const map = new Map();
+		const table = getTable(search_object);
+		for (const record of await this.searchByHash(search_object)) {
+			map.set(record[table.primaryKey], record);
 		}
+		return map;
 	}
 
 	async searchByValue(search_object: SearchObject) {
@@ -179,7 +188,7 @@ export class ResourceBridge extends LMDBBridge {
 							get_attributes: search_object.get_attributes,
 						},
 				  ];
-		return table.get({
+		return table.search({
 			limit: search_object.limit,
 			offset: search_object.offset,
 			conditions,
@@ -203,4 +212,22 @@ function getTable(operation_object) {
 	const tables = getDatabases()[database_name];
 	if (!tables) throw handleHDBError(new Error(), HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(database_name), 404);
 	return tables[operation_object.table];
+}
+/**
+ * creates the response object for deletes based on the deleted & skipped hashes
+ * @param {[]} deleted - list of hash values successfully deleted
+ * @param {[]} skipped - list  of hash values which did not get deleted
+ * @param {number} txn_time - the transaction timestamp
+ * @returns {{skipped_hashes: [], deleted_hashes: [], message: string}}
+ */
+function createDeleteResponse(deleted, skipped, txn_time) {
+	const total = deleted.length + skipped.length;
+	const plural = total === 1 ? 'record' : 'records';
+
+	return {
+		message: `${deleted.length} of ${total} ${plural} successfully deleted`,
+		deleted_hashes: deleted,
+		skipped_hashes: skipped,
+		txn_time: txn_time,
+	};
 }

@@ -33,7 +33,8 @@ const DurableSession = table({
  */
 export async function getSession({ clientId: session_id, clean: non_durable }) {
 	if (session_id && !non_durable) {
-		const session = await DurableSession.getResource(session_id);
+		const session = DurableSession.getResource(session_id);
+		await session.loadRecord();
 		// resuming a session, we need to resume each subscription
 		for (const subscription of session.get('subscriptions') || []) {
 			session.addSubscription(subscription);
@@ -64,16 +65,18 @@ export class SubscriptionsSession {
 		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
 		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
 		if (existing_subscription) existing_subscription.end();
-		const resource = await resources.getResource(path);
-
-		const subscription = await resource.subscribe({
-			listener: (message, id) => {
-				this.listener(search ? path + '/' + id : path, message);
-			},
-			search,
-			user: this.user,
-			startTime: start_time || getNextMonotonicTime(),
-			noRetain: rh,
+		const resource = resources.getResource(path);
+		let subscription;
+		await resource.accessInTransaction(this, async (resource_access) => {
+			return (subscription = await resource_access.subscribe({
+				listener: (message, id) => {
+					this.listener(search ? path + '/' + id : path, message);
+				},
+				search,
+				user: this.user,
+				startTime: start_time || getNextMonotonicTime(),
+				noRetain: rh,
+			}));
 		});
 		subscription.topic = topic;
 		this.subscriptions.push(subscription);
@@ -95,7 +98,7 @@ export class SubscriptionsSession {
 		const { topic, retain, payload } = message;
 		message.data = data;
 		message.user = this.user;
-		const resource = await resources.getResource(topic);
+		const resource = resources.getResource(topic);
 		return resource.accessInTransaction(message, async (resource_access) => {
 			return resource_access.publish(data);
 		});

@@ -75,8 +75,9 @@ describe('test REST calls', () => {
 			responseType: 'arraybuffer',
 			headers,
 		});
-		console.log('decoded arraybuffer data:', decode(response.data));
-
+		assert.equal(response.status, 204);
+		response = await axios('http://localhost:9926/VariedProps/33');
+		assert.equal(response.data.name, 'new record');
 	});
 	describe('querying with query parameters', function() {
 		it('do query by string property', async () => {

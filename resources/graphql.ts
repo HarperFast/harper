@@ -61,10 +61,10 @@ export async function handleFile(gql_content, url_path, file_path, resources) {
 								}
 							} else if (directive.name.value === 'indexed') {
 								attribute.indexed = true;
-							} else if (directive.name.value === 'creationDate') {
-								type_def.creationDate = attribute.name;
-							} else if (directive.name.value === 'updateDate') {
-								type_def.updateDate = attribute.name;
+							} else if (directive.name.value === 'createdTime') {
+								attribute.assignCreatedTime = true;
+							} else if (directive.name.value === 'updatedTime') {
+								attribute.assignUpdatedTime = true;
 							}
 						}
 						if (!has_primary_key) {

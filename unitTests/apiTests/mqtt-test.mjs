@@ -125,9 +125,10 @@ describe('test MQTT connections and commands', () => {
 					name: 'test record from operation'
 				}]
 			}).then(response => {
-				console.log(response);
+				response.json().then(data=> {
+				console.log(data)});
 			}, response => {
-				reject(response);
+				reject(response.json());
 			});
 		});
 		client.end();

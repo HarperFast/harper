@@ -21,10 +21,11 @@ export class Resource implements ResourceInterface {
 	lastModificationTime = 0;
 	inUseTables = {};
 	transaction: [];
-	constructor(identifier?, request?, transaction?) {
+	constructor(identifier?, context?) {
 		this.id = identifier;
-		this.request = request;
-		this.user = request?.user;
+		this.request = context?.request;
+		this.user = this.request?.user;
+		let transaction = context?.transaction;
 		if (!transaction) {
 			transaction = [];
 			transaction._txnTime = getNextMonotonicTime();
@@ -86,30 +87,83 @@ export class Resource implements ResourceInterface {
 	static async get(query: object): Promise<Iterable<object>>;
 	static async get(identifier: string | number | object) {
 		if (typeof identifier === 'string' || typeof identifier === 'number') {
-			return (await this.getResource(identifier, this.request)).get();
+			const resource = this.getResource(identifier, this);
+			await resource.loadRecord();
+			return resource.get();
 		} else {
-			return this.search(identifier);
+			// could conditionally skip the mapping if get is not overriden
+			return this.transact(async (resource_txn) =>
+				(await resource_txn.search(identifier)).map((record) =>
+					resource_txn.resourceFromRecord(record, this.request).get()
+				)
+			);
 		}
 	}
+
+	/**
+	 * Store the provided record by the provided id. If no id is provided, it is auto-generated.
+	 * @param id?
+	 * @param record
+	 * @param options
+	 */
+	static async put(id, record, options): void {
+		if (typeof id === 'object') {
+			// id is optional
+			options = record;
+			record = id;
+			id = null;
+		}
+		if (id == null) id = record[this.primaryKey];
+		if (id == null) id = this.getNewId(); //uuid.v4();
+		const resource = this.getResource(id, this);
+		await resource.loadRecord();
+		resource.put(record, options);
+	}
+
+	static async delete(identifier: string | number | object) {
+		if (typeof identifier === 'string' || typeof identifier === 'number') {
+			const resource = this.getResource(identifier, this);
+			if (resource.delete.preload !== false) {
+				await resource.loadRecord();
+			}
+			return resource.delete();
+		} else {
+			this.transaction((resource_txn) => {
+				const completions = [];
+				if (this.prototype.delete.preload === false) identifier.select = [this.primaryKey];
+				for (const record of resource_txn.search(identifier)) {
+					const record_resource = new this(record[this.primaryKey], this.request, resource_txn.transaction);
+					record_resource.record = record;
+					completions.push(record_resource.delete());
+				}
+				return Promise.all(completions);
+			});
+		}
+	}
+
 	static async search(query: object): Promise<Iterable<object>> {
 		throw new Error('Not implemented');
 	}
-	loadDBRecord() {
+	async loadRecord() {
 		// nothing to be done by default, Table implements an actual real version of this
 	}
-
-	static getResource(path, request, transaction) {
+	static resourceFromRecord(record) {
+		const resource = new this(record[this.primaryKey]);
+		resource.record = record;
+		resource.transaction = this.transaction;
+		return resource;
+	}
+	static getResource(path: string, resource_info: object) {
 		let resource;
 		if (typeof path === 'string') {
 			const slash_index = path.indexOf?.('/');
 			if (slash_index > -1) {
-				resource = new this(decodeURIComponent(path.slice(0, slash_index)), request, transaction);
+				resource = new this(decodeURIComponent(path.slice(0, slash_index)), resource_info);
 				resource.property = decodeURIComponent(path.slice(slash_index + 1));
 			} else {
-				resource = new this(decodeURIComponent(path), request, transaction);
+				resource = new this(decodeURIComponent(path), resource_info);
 			}
-		} else resource = new this(path, request, transaction);
-		resource.loadDBRecord();
+		} else resource = new this(path, resource_info);
 		return resource;
 	}
 
@@ -168,29 +222,31 @@ export class Resource implements ResourceInterface {
 		this.updateModificationTime();
 		return response;
 	}
-	static startTransaction(request) {
+	static async transact(callback) {
 		const name = this.name + ' (txn)';
 		const transaction = [];
 		transaction._txnTime = getNextMonotonicTime();
 
-		return class extends this {
+		const txn_resource = class extends this {
 			static name = name;
 			static transaction = transaction;
 			static inUseTables = {};
 		};
+		try {
+			return await callback(txn_resource);
+		} finally {
+			await txn_resource.commit();
+		}
 	}
-	startTransaction(request) {
-		return this;
+	transact(callback) {
+		return callback(this);
 	}
 	async accessInTransaction(request, action: (resource_access) => any) {
-		const transactional_resource = this.startTransaction(request);
-		try {
+		return this.transact(async (transactional_resource) => {
 			const resource_access = transactional_resource.access(request);
 			transactional_resource.result = await action(resource_access);
-		} finally {
-			await transactional_resource.commit();
-		}
-		return transactional_resource;
+			return transactional_resource;
+		});
 	}
 	static accessInTransaction = Resource.prototype.accessInTransaction;
 	static access(request) {

@@ -25,7 +25,7 @@ export class DefaultAccess {
 	get user() {
 		return this.request.user;
 	}
-	get() {
+	async get() {
 		// HTTP endpoint
 		const search = this.request.search;
 		let query;
@@ -33,8 +33,9 @@ export class DefaultAccess {
 		// parse the query first and pass it to allowRead so it can inform attribute-level permissions
 		// and the permissions can modify the query, assigning a select for available attributes.
 		this.resource.saveUpdates = false; // by default modifications aren't saved, they just yield a different result from get
+		await this.resource.loadRecord?.();
 		if (this.request) {
-			const allowed = this.resource.allowRead(this.request.user, query);
+			const allowed = await this.resource.allowRead(this.request.user, query);
 			if (!allowed) {
 				throw new AccessError(this.user);
 			}
@@ -44,9 +45,11 @@ export class DefaultAccess {
 	}
 	async put(content) {
 		// TODO: May want to parse search/query part of URL and pass it through
+		await this.resource.loadRecord();
 		const updated_data = await content;
 		if (this.resource.allowUpdate(this.request.user, updated_data)) {
-			return this.resource.update(updated_data);
+			this.resource.updated = true;
+			return this.resource.put(updated_data);
 		} else {
 			throw new AccessError(this.user);
 		}
@@ -62,15 +65,19 @@ export class DefaultAccess {
 		}
 	}
 	async post(content) {
+		await this.resource.loadRecord();
 		const data = await content;
+		this.resource.updated = true;
 		if (this.resource.allowCreate(this.request.user, data)) return this.post(data);
 		else throw new AccessError(this.user);
 	}
-	delete() {
+	async delete() {
+		await this.resource.loadRecord();
 		if (this.resource.allowDelete(this.request.user)) return this.resource.delete();
 		else throw new AccessError(this.user);
 	}
 	async publish(content) {
+		await this.resource.loadRecord();
 		const data = await content;
 		//console.log('publish', identifier, require('worker_threads').threadId);
 		if (this.request.retain) {
@@ -86,6 +93,13 @@ export class DefaultAccess {
 			if (this.resource.allowUpdate(this.request.user, {})) return this.resource.publish(data);
 		}
 		throw new AccessError(this.user);
+	}
+	async subscribe(options) {
+		await this.resource.loadRecord?.();
+		//console.log('publish', identifier, require('worker_threads').threadId);
+		const allowed = await this.resource.allowRead(this.request.user, options.search);
+		if (!allowed) throw new AccessError(this.user);
+		return this.resource.subscribe(options);
 	}
 
 	/**

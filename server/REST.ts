@@ -189,8 +189,8 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 			loadDirectory(options?.path || process.cwd(), '', handlers);
 		}*/
 	options.server.http(async (request: Request, next_handler) => {
-		await startRequest(request);
-		const resource = resources.getResource(request.pathname.slice(1));
+		startRequest(request);
+		const resource = resources.getResource(request.pathname.slice(1), { request });
 		if (resource) {
 			return http(resource, resource.path, resource.remainingPath, request);
 		}
