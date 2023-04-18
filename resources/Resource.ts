@@ -1,6 +1,7 @@
 import { ResourceInterface } from './ResourceInterface';
 import { getTables } from './tableLoader';
 import { Table } from './Table';
+import { randomUUID } from 'crypto';
 import { DatabaseTransaction } from './DatabaseTransaction';
 import { DefaultAccess } from './Access';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
@@ -99,6 +100,9 @@ export class Resource implements ResourceInterface {
 			);
 		}
 	}
+	static getNewId() {
+		return randomUUID();
+	}
 
 	/**
 	 * Store the provided record by the provided id. If no id is provided, it is auto-generated.
@@ -116,19 +120,23 @@ export class Resource implements ResourceInterface {
 		if (id == null) id = record[this.primaryKey];
 		if (id == null) id = this.getNewId(); //uuid.v4();
 		const resource = this.getResource(id, this);
-		await resource.loadRecord();
-		resource.put(record, options);
+		return resource.transact(async (txn_resource) => {
+			await txn_resource.loadRecord();
+			return txn_resource.put(record, options);
+		});
 	}
 
 	static async delete(identifier: string | number | object) {
 		if (typeof identifier === 'string' || typeof identifier === 'number') {
 			const resource = this.getResource(identifier, this);
-			if (resource.delete.preload !== false) {
-				await resource.loadRecord();
-			}
-			return resource.delete();
+			return resource.transact(async (txn_resource) => {
+				if (txn_resource.delete.preload !== false) {
+					await txn_resource.loadRecord();
+				}
+				return txn_resource.delete();
+			});
 		} else {
-			this.transaction((resource_txn) => {
+			return this.transact((resource_txn) => {
 				const completions = [];
 				if (this.prototype.delete.preload === false) identifier.select = [this.primaryKey];
 				for (const record of resource_txn.search(identifier)) {
@@ -223,6 +231,7 @@ export class Resource implements ResourceInterface {
 		return response;
 	}
 	static async transact(callback) {
+		if (this.transaction) return callback(this);
 		const name = this.name + ' (txn)';
 		const transaction = [];
 		transaction._txnTime = getNextMonotonicTime();

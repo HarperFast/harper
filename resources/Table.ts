@@ -2,7 +2,6 @@ import { CONFIG_PARAMS, OPERATIONS_ENUM } from '../utility/hdbTerms';
 import { open, Database, asBinary } from 'lmdb';
 import { getIndexedValues } from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
-import { randomUUID } from 'crypto';
 import { ResourceInterface } from './ResourceInterface';
 import { workerData } from 'worker_threads';
 import { Resource } from './Resource';
@@ -178,7 +177,7 @@ export function makeTable(options) {
 
 		async loadRecord() {
 			// TODO: determine if we use lazy access properties
-			const env_txn = this.envTxn || this.transaction[database_path];
+			const env_txn = this.envTxn || this.transaction[database_path] || immediateTransaction;
 			const entry = primary_store.getEntry(this.id, { transaction: env_txn.getReadTxn() });
 			if (entry) {
 				if (entry.version > this.lastModificationTime) this.updateModificationTime(entry.version);
@@ -391,9 +390,6 @@ export function makeTable(options) {
 			primary_store.put(this.id, updated_record, { ifVersion: updated });
 			return updated_record;
 		}
-		static getNewId() {
-			return randomUUID();
-		}
 
 		/**
 		 * Store the provided record data into the current resource. This is not written
@@ -444,7 +440,7 @@ export function makeTable(options) {
 				}
 			}
 			let source_completion;
-			if (!this.source && this.constructor.Source?.prototype.put) {
+			if (this.constructor.Source?.prototype.put) {
 				this.source = await this.constructor.Source.getResource(this.id, this);
 				source_completion = this.source.put(record, { target: this });
 			}
@@ -534,51 +530,56 @@ export function makeTable(options) {
 			return source_completion;
 		}
 
-		delete(id, options): boolean {
+		async delete(options): boolean {
 			const env_txn = this.envTxn;
-			if (typeof id === 'object') {
-				options = id;
-				id = this.id;
-			} else if (!id) id = this.id;
 			if (!this.record) return false;
 			const txn_time = this.transaction._txnTime;
+			let source_completion;
+			if (this.constructor.Source?.prototype.delete) {
+				this.source = await this.constructor.Source.getResource(this.id, this);
+				source_completion = this.source.delete({ target: this });
+			}
 			env_txn.addWrite({
-				key: id,
+				key: this.id,
 				store: primary_store,
 				txnTime: txn_time,
 				lastVersion: this.version,
 				commit: (retry) => {
 					let existing_record = this.record;
 					if (retry) {
-						const existing_entry = primary_store.getEntry(id);
+						const existing_entry = primary_store.getEntry(this.id);
 						existing_record = existing_entry?.value;
 						this.updateModificationTime(existing_entry?.version);
 					}
 					for (let i = 0, l = indices.length; i < l; i++) {
 						const index = indices[i];
-						const existing_value = existing_record[id];
+						const existing_value = existing_record[this.id];
 
 						//if the update cleared out the attribute value we need to delete it from the index
 						const values = getIndexedValues(existing_value);
 						if (values) {
 							if (LMDB_PREFETCH_WRITES)
 								index.prefetch(
-									values.map((v) => ({ key: v, value: id })),
+									values.map((v) => ({ key: v, value: this.id })),
 									noop
 								);
 							for (let i = 0, l = values.length; i < l; i++) {
-								index.remove(values[i], id);
+								index.remove(values[i], this.id);
 							}
 						}
 					}
-					primary_store.remove(id);
+					primary_store.remove(this.id);
+					return {
+						// return the audit record that should be recorded
+						operation: 'delete',
+						completion: source_completion,
+					};
 				},
 			});
 			return true;
 		}
-		static delete = TableResource.prototype.delete;
-
 		static transact(callback) {
+			if (this.transaction) return callback(this);
 			return super.transact((TableTxn) => {
 				const db_txn = new DatabaseTransaction(primary_store, this.request?.user, audit_store);
 				TableTxn.envTxn = db_txn;
@@ -589,7 +590,7 @@ export function makeTable(options) {
 			});
 		}
 		async transact(callback) {
-			if (this.envTxn) return callback(this);
+			if (this.transaction) return callback(this);
 			this.envTxn = new DatabaseTransaction(primary_store, this.request?.user, audit_store);
 			this.transaction[TableResource.databasePath] = this.envTxn;
 			this.transaction.push(this.envTxn);
