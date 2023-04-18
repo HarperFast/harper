@@ -20,6 +20,7 @@ describe('Test restart module', () => {
 	let remove_nats_config_stub;
 	let restart_workers_stub;
 	let get_config_from_file;
+	let process_exit_stub;
 
 	before(() => {
 		is_service_reg_stub = sandbox.stub(process_man, 'isServiceRegistered');
@@ -30,6 +31,7 @@ describe('Test restart module', () => {
 		restart.__set__('restartWorkers', restart_workers_stub);
 		get_config_from_file = sandbox.stub(config_utils, 'getConfigFromFile').resolves(true);
 		env_mgr.setProperty('clustering_enabled', true);
+		process_exit_stub = sandbox.stub(process, 'exit').withArgs(0);
 	});
 	afterEach(() => {
 		sandbox.resetHistory();
@@ -139,17 +141,25 @@ describe('Test restart module', () => {
 		let update_local_stream_stub;
 		let close_connection_stub;
 		let get_hdb_process_stub;
+		let start_clustering_process_stub;
+		let start_clustering_threads_stub;
 
 		before(() => {
 			generate_nats_config_stub = sandbox.stub(nats_config, 'generateNatsConfig');
 			update_local_stream_stub = sandbox.stub(nats_utils, 'updateLocalStreams');
 			close_connection_stub = sandbox.stub(nats_utils, 'closeConnection');
 			get_hdb_process_stub = sandbox.stub(sys_info, 'getHDBProcessInfo').resolves({ clustering: [{ pid: 12345 }] });
+			start_clustering_process_stub = sandbox.stub(process_man, 'startClusteringProcesses');
+			start_clustering_threads_stub = sandbox.stub(process_man, 'startClusteringThreads');
 			restart.__set__('postDummyNatsMsg', post_dummy_msg_stub);
 		});
 
 		beforeEach(() => {
 			sandbox.resetHistory();
+		});
+
+		after(() => {
+			sandbox.restore();
 		});
 
 		it('Test clustering restart PM2 mode happy path ', async () => {
@@ -180,5 +190,12 @@ describe('Test restart module', () => {
 			expect(update_local_stream_stub.called).to.be.true;
 			expect(restart_workers_stub.called);
 		}).timeout(10000);
+
+		it('Test clustering is started if not running', async () => {
+			get_hdb_process_stub.resolves({ clustering: [] });
+			await restart_clustering();
+			expect(start_clustering_process_stub.called).to.be.true;
+			expect(start_clustering_threads_stub.called).to.be.true;
+		});
 	});
 });

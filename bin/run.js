@@ -68,9 +68,6 @@ async function initialize(called_by_install = false, called_by_main = false) {
 		}
 	}
 
-	// Set where the pm2.log file is created. This has to be done before processManagement is imported.
-	process.env.PM2_LOG_FILE_PATH = path.join(env.getHdbBasePath(), 'log', 'pm2.log');
-
 	// Requiring the processManagement mod will create the .pm2 dir. This code is here to allow install to set
 	// pm2 env vars before that is done.
 	if (pm2_utils === undefined) pm2_utils = require('../utility/processManagement/processManagement');
