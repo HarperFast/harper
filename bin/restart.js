@@ -68,6 +68,7 @@ async function restart(req) {
 
 	// PM2 Mode is when PM2 was used to start the main HDB process and the two clustering servers.
 	if (pm2_mode) {
+		process_man.enterPM2Mode();
 		hdb_logger.notify(RESTART_RESPONSE);
 		// If restart is called with cmd/env vars we create a backup of config and update config file.
 		const parsed_args = assignCMDENVVariables(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
@@ -82,9 +83,8 @@ async function restart(req) {
 
 	if (isMainThread) {
 		hdb_logger.notify(RESTART_RESPONSE);
-		if (config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
-			await restartClustering();
-		}
+		await restartClustering();
+
 		setTimeout(() => {
 			restartWorkers();
 		}, 50); // can't await this because it would deadlock on waiting for itself to finish
@@ -204,8 +204,13 @@ async function restartPM2Mode() {
 	// The timeout is there to wait for HDB to restart.
 	await hdb_utils.async_set_timeout(2000);
 	if (env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
-		await nats_config.removeNatsConfig(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB);
-		await nats_config.removeNatsConfig(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
+		await removeNatsConfig();
+	}
+
+	// Close the connection to the nats-server so that if stop/restart called from CLI process will exit.
+	if (called_from_cli) {
+		await nats_utils.closeConnection();
+		process.exit(0);
 	}
 }
 
@@ -215,38 +220,54 @@ async function restartPM2Mode() {
  * @returns {Promise<void>}
  */
 async function restartClustering() {
-	if (!env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) return;
+	if (!config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) return;
 
-	await postDummyNatsMsg();
-	await nats_config.generateNatsConfig(true);
+	// Check to see if clustering is running, if it's not we start it
+	const running_ps = await sys_info.getHDBProcessInfo();
+	if (running_ps.clustering.length === 0) {
+		hdb_logger.trace('Clustering not running, restart will start clustering services');
+		await nats_config.generateNatsConfig(true);
+		await process_man.startClusteringProcesses();
+		await process_man.startClusteringThreads();
+		await removeNatsConfig();
 
-	if (pm2_mode) {
-		hdb_logger.trace('Restart clustering restarting PM2 managed Hub and Leaf servers');
-		await process_man.restart(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB);
-		await process_man.restart(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
+		// Close the connection to the nats-server so that if stop/restart called from CLI process will exit.
+		if (called_from_cli) await nats_utils.closeConnection();
 	} else {
-		const proc = await sys_info.getHDBProcessInfo();
-		proc.clustering.forEach((p) => {
-			hdb_logger.trace('Restart clustering killing process pid', p.pid);
-			process.kill(p.pid);
-		});
-	}
-	// Give the clustering servers time to restart before moving on.
-	await hdb_utils.async_set_timeout(3000);
+		await postDummyNatsMsg();
+		await nats_config.generateNatsConfig(true);
 
+		if (pm2_mode) {
+			hdb_logger.trace('Restart clustering restarting PM2 managed Hub and Leaf servers');
+			await process_man.restart(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB);
+			await process_man.restart(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
+		} else {
+			const proc = await sys_info.getHDBProcessInfo();
+			proc.clustering.forEach((p) => {
+				hdb_logger.trace('Restart clustering killing process pid', p.pid);
+				process.kill(p.pid);
+			});
+		}
+		// Give the clustering servers time to restart before moving on.
+		await hdb_utils.async_set_timeout(3000);
+		await removeNatsConfig();
+
+		// Check to see if the node name or purge config has been updated,
+		// if it has we need to change config on any local streams.
+		await nats_utils.updateLocalStreams();
+
+		// Close the connection to the nats-server so that if stop/restart called from CLI process will exit.
+		if (called_from_cli) await nats_utils.closeConnection();
+
+		hdb_logger.trace('Restart clustering restarting ingest and reply service threads');
+		let ingestRestart = restartWorkers(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_INGEST_SERVICE);
+		let replyRestart = restartWorkers(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_REPLY_SERVICE);
+		await ingestRestart;
+		await replyRestart;
+	}
+}
+
+async function removeNatsConfig() {
 	await nats_config.removeNatsConfig(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB);
 	await nats_config.removeNatsConfig(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
-
-	// Check to see if the node name or purge config has been updated,
-	// if it has we need to change config on any local streams.
-	await nats_utils.updateLocalStreams();
-
-	// Close the connection to the nats-server so that if stop/restart called from CLI process will exit.
-	if (called_from_cli) await nats_utils.closeConnection();
-
-	hdb_logger.trace('Restart clustering restarting ingest and reply service threads');
-	let ingestRestart = restartWorkers(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_INGEST_SERVICE);
-	let replyRestart = restartWorkers(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_REPLY_SERVICE);
-	await ingestRestart;
-	await replyRestart;
 }
