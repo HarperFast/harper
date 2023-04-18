@@ -15,6 +15,7 @@ import { secureImport } from '../security/jsLoader';
 import { server } from '../server/Server';
 import { Resources } from '../resources/Resources';
 import { handleHDBError } from '../utility/errors/hdbError';
+import { Resource } from '../resources/Resource';
 const { readFile } = promises;
 
 const CONFIG_FILENAME = 'config.yaml';
@@ -110,47 +111,62 @@ export async function loadApplication(app_folder: string, resources: Resources) 
 		// iterate through the app handlers so they can each do their own loading process
 		for (let handler_config of config.resourceLoaders || DEFAULT_RESOURCE_LOADERS) {
 			if (typeof handler_config === 'string') handler_config = { module: handler_config };
-			// our own trusted modules can be directly retrieved from our map, otherwise use the (configurable) secure
-			// module loader
-			const module = TRUSTED_RESOURCE_LOADERS[handler_config.module] || (await secureImport(handler_config.module));
-			handler_modules.push(module);
-			let start_resolution = loaded_plugins.get(module);
-			// call the main start hook
-			if (!start_resolution) {
-				if (isMainThread) start_resolution = module.startOnMainThread?.({ server, resources });
-				if (resources.isWorker) start_resolution = module.start?.({ server, resources });
-				loaded_plugins.set(module, start_resolution);
-			}
-			await start_resolution;
-			// a loader is configured to specify a glob of files to be loaded, we pass each of those to the plugin
-			// handling files ourselves allows us to pass files to sandboxed modules that might not otherwise have
-			// access to the file system.
-			if (module.handleFile && handler_config.files) {
-				if (handler_config.files.includes('..')) throw handleHDBError('Can not reference parent directories');
-				const files = join(app_folder, handler_config.files);
-				for (const entry of await fg(files, { onlyFiles: false, objectMode: true })) {
-					const { path, dirent } = entry;
-					const relative_path = relative(app_folder, path);
-					const app_name = basename(app_folder);
-					let url_path = handler_config.path || '/';
-					url_path = url_path.startsWith('/')
-						? url_path
-						: url_path.startsWith('./')
-						? '/' + app_name + url_path.slice(2)
-						: url_path === '.'
-						? '/' + app_name
-						: '/' + app_name + '/' + url_path;
-					url_path += (url_path.endsWith('/') ? '' : '/') + relative_path;
-					if (dirent.isFile()) {
-						const contents = await readFile(path);
-						if (isMainThread) await module.setupFile?.(contents, url_path, path, resources);
-						if (resources.isWorker) await module.handleFile?.(contents, url_path, path, resources);
-					} else {
-						// some plugins may want to just handle whole directories
-						if (isMainThread) await module.setupDirectory?.(url_path, path, resources);
-						if (resources.isWorker) await module.handleDirectory?.(url_path, path, resources);
+			try {
+				// our own trusted modules can be directly retrieved from our map, otherwise use the (configurable) secure
+				// module loader
+				const module = TRUSTED_RESOURCE_LOADERS[handler_config.module] || (await secureImport(handler_config.module));
+				handler_modules.push(module);
+				let start_resolution = loaded_plugins.get(module);
+				// call the main start hook
+				if (!start_resolution) {
+					if (isMainThread) start_resolution = module.startOnMainThread?.({ server, resources });
+					if (resources.isWorker) start_resolution = module.start?.({ server, resources });
+					loaded_plugins.set(module, start_resolution);
+				}
+				await start_resolution;
+				// a loader is configured to specify a glob of files to be loaded, we pass each of those to the plugin
+				// handling files ourselves allows us to pass files to sandboxed modules that might not otherwise have
+				// access to the file system.
+				if (module.handleFile && handler_config.files) {
+					if (handler_config.files.includes('..')) throw handleHDBError('Can not reference parent directories');
+					const files = join(app_folder, handler_config.files);
+					for (const entry of await fg(files, { onlyFiles: false, objectMode: true })) {
+						const { path, dirent } = entry;
+						const relative_path = relative(app_folder, path);
+						const app_name = basename(app_folder);
+						let url_path = handler_config.path || '/';
+						url_path = url_path.startsWith('/')
+							? url_path
+							: url_path.startsWith('./')
+							? '/' + app_name + url_path.slice(2)
+							: url_path === '.'
+							? '/' + app_name
+							: '/' + app_name + '/' + url_path;
+						url_path += (url_path.endsWith('/') ? '' : '/') + relative_path;
+						try {
+							if (dirent.isFile()) {
+								const contents = await readFile(path);
+								if (isMainThread) await module.setupFile?.(contents, url_path, path, resources);
+								if (resources.isWorker) await module.handleFile?.(contents, url_path, path, resources);
+							} else {
+								// some plugins may want to just handle whole directories
+								if (isMainThread) await module.setupDirectory?.(url_path, path, resources);
+								if (resources.isWorker) await module.handleDirectory?.(url_path, path, resources);
+							}
+						} catch (error) {
+							console.error(
+								`Could not load ${dirent.isFile() ? 'file' : 'directory'} ${path} using ${
+									handler_config.module
+								} for application ${app_folder}`,
+								error
+							);
+							resources.set(handler_config.path || '/', new ErrorResource(error));
+						}
 					}
 				}
+			} catch (error) {
+				console.error(`Could not load handler ${handler_config.module} for application ${app_folder}`, error);
+				resources.set(handler_config.path || '/', new ErrorResource(error));
 			}
 		}
 		// Auto restart threads on changes to any app folder. TODO: Make this configurable
@@ -161,7 +177,34 @@ export async function loadApplication(app_folder: string, resources: Resources) 
 			});
 		}
 	} catch (error) {
-		// TODO: Put HTTP into error state which always returns error message
 		console.error(`Could not load application directory ${app_folder}`, error);
+		resources.set('', new ErrorResource(error));
+	}
+}
+class ErrorResource extends Resource {
+	constructor(public error) {
+		super();
+	}
+	get() {
+		throw this.error;
+	}
+	post() {
+		throw this.error;
+	}
+	put() {
+		throw this.error;
+	}
+	delete() {
+		throw this.error;
+	}
+	getResource() {
+		// all child paths resolve back to reporting this error
+		return this;
+	}
+	publish() {
+		throw this.error;
+	}
+	subscribe() {
+		throw this.error;
 	}
 }
