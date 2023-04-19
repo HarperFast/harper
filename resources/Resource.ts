@@ -26,12 +26,7 @@ export class Resource implements ResourceInterface {
 		this.id = identifier;
 		this.request = context?.request;
 		this.user = this.request?.user;
-		let transaction = context?.transaction;
-		if (!transaction) {
-			transaction = [];
-			transaction._txnTime = getNextMonotonicTime();
-		}
-		this.transaction = transaction;
+		this.transaction = context?.transaction;
 	}
 
 	getById(id: any, options?: any): Promise<{}> {
@@ -247,8 +242,16 @@ export class Resource implements ResourceInterface {
 			await txn_resource.commit();
 		}
 	}
-	transact(callback) {
-		return callback(this);
+	async transact(callback) {
+		if (this.transaction) return callback(this);
+		try {
+			const transaction = [];
+			transaction._txnTime = getNextMonotonicTime();
+			this.transaction = transaction;
+			return await callback(this);
+		} finally {
+			await this.commit();
+		}
 	}
 	async accessInTransaction(request, action: (resource_access) => any) {
 		return this.transact(async (transactional_resource) => {

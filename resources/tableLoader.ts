@@ -124,7 +124,7 @@ function readMetaDb(
 		const root_store = open(env_init);
 		database_envs.set(path, root_store);
 		const internal_dbi_init = new OpenDBIObject(false);
-		const dbis_store = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
+		const dbis_store = (root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init));
 		let audit_store;
 		if (USE_AUDIT) {
 			if (audit_path) {
@@ -283,7 +283,7 @@ export function table({
 		if (!root_store.env.nextTableId) root_store.env.nextTableId = 1;
 		primary_store.tableId = root_store.env.nextTableId++;
 		primary_key_attribute.tableId = primary_store.tableId;
-		dbis_db = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
+		dbis_db = root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
 		Table = tables[table_name] = makeTable({
 			primaryStore: primary_store,
 			auditStore: audit_store,
@@ -303,7 +303,7 @@ export function table({
 		dbis_db.put(dbi_name, primary_key_attribute);
 	}
 	indices = Table.indices;
-	dbis_db = dbis_db || root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
+	dbis_db = dbis_db || (root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init));
 	Table.dbisDB = dbis_db;
 	try {
 		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
@@ -344,6 +344,16 @@ export function table({
 			};
 		});
 	}
+}
+
+export function dropTableMeta({ table: table_name, database: database_name }) {
+	const root_store = database({ database: database_name, table: table_name });
+	const removals = [];
+	const dbis_db = root_store.dbisDb;
+	for (const key of dbis_db.getKeys({ start: table_name + '/', end: table_name + '0' })) {
+		removals.push(dbis_db.remove(key));
+	}
+	return Promise.all(removals);
 }
 
 export function onNewTable(listener) {

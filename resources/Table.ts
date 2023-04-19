@@ -83,6 +83,7 @@ export function makeTable(options) {
 		static createdTimeProperty = created_time_property;
 		static updatedTimeProperty = updated_time_property;
 		static schemaDefined = schema_defined;
+		static dbTxn = immediateTransaction;
 		static sourcedFrom(Resource) {
 			// define a source for retrieving invalidated entries for caching purposes
 			this.Source = Resource;
@@ -145,17 +146,32 @@ export function makeTable(options) {
 			);
 		}
 		static async dropTable() {
-			// TODO: remove all the dbi references
-			for (const key in indices) {
-				TableResource.dbisDB.remove(TableResource.tableName + '.' + key);
-				const index = indices[key];
-				index.drop();
+			if (database_name === database_path) {
+				// part of a database
+				for (const attribute in indices) {
+					dbis_db.remove(TableResource.tableName + '/' + attribute);
+					const index = indices[attribute];
+					index.drop();
+				}
+				primary_store.drop();
+				await dbis_db.committed;
+			} else {
+				// legacy table per database
+				await primary_store.close();
+				await fs.remove(data_path);
+				await fs.remove(
+					data_path === standard_path
+						? data_path + MDB_LOCK_FILE_SUFFIX
+						: path.join(path.dirname(data_path), MDB_LEGACY_LOCK_FILE_NAME)
+				); // I suspect we may have problems with this on Windows
 			}
-			return TableResource.dbisDB.committed;
+			signalling.signalSchemaChange(
+				new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, database_name, table_name)
+			);
 		}
 
 		table: any;
-		envTxn: DatabaseTransaction;
+		dbTxn: DatabaseTransaction;
 		parent: Resource;
 		lmdbTxn: any;
 		record: any;
@@ -166,6 +182,7 @@ export function makeTable(options) {
 		constructor(identifier, resource_info) {
 			// coerce if we know this is supposed to be a number
 			super(identifier, resource_info);
+			if (this.transaction) assignDBTxn(this);
 			if (primary_key_attribute.is_number && this.id != null) this.id = +this.id;
 		}
 		updateModificationTime(latest = Date.now()) {
@@ -177,7 +194,7 @@ export function makeTable(options) {
 
 		async loadRecord() {
 			// TODO: determine if we use lazy access properties
-			const env_txn = this.envTxn || this.transaction[database_path] || immediateTransaction;
+			const env_txn = this.dbTxn;
 			const entry = primary_store.getEntry(this.id, { transaction: env_txn.getReadTxn() });
 			if (entry) {
 				if (entry.version > this.lastModificationTime) this.updateModificationTime(entry.version);
@@ -348,7 +365,7 @@ export function makeTable(options) {
 			const start_updating = (record_data) => {
 				// maybe make this a map so if the record is already updating, return the same one
 				const record = getWritableRecord(record_data);
-				const env_txn = this.envTxn;
+				const env_txn = this.dbTxn;
 				// record in the list of updating records so it can be written to the database when we commit
 				if (!env_txn.updatingRecords) env_txn.updatingRecords = [];
 				env_txn.updatingRecords.push({ resource: this, record });
@@ -400,7 +417,7 @@ export function makeTable(options) {
 		 * @param options
 		 */
 		async put(record, options): void {
-			const env_txn = this.envTxn || this.transaction[database_path] || immediateTransaction;
+			const env_txn = this.dbTxn;
 
 			record[primary_key] = this.id; // ensure that the id is in the record
 
@@ -531,7 +548,7 @@ export function makeTable(options) {
 		}
 
 		async delete(options): boolean {
-			const env_txn = this.envTxn;
+			const env_txn = this.dbTxn;
 			if (!this.record) return false;
 			const txn_time = this.transaction._txnTime;
 			let source_completion;
@@ -581,28 +598,20 @@ export function makeTable(options) {
 		static transact(callback) {
 			if (this.transaction) return callback(this);
 			return super.transact((TableTxn) => {
-				const db_txn = new DatabaseTransaction(primary_store, this.request?.user, audit_store);
-				TableTxn.envTxn = db_txn;
-				TableTxn.lmdbTxn = db_txn.getReadTxn();
-				TableTxn.transaction[TableResource.databasePath] = db_txn;
-				TableTxn.transaction.push(db_txn);
+				assignDBTxn(TableTxn);
 				return callback(TableTxn);
 			});
 		}
-		async transact(callback) {
+		transact(callback) {
 			if (this.transaction) return callback(this);
-			this.envTxn = new DatabaseTransaction(primary_store, this.request?.user, audit_store);
-			this.transaction[TableResource.databasePath] = this.envTxn;
-			this.transaction.push(this.envTxn);
-			this.lmdbTxn = this.envTxn.getReadTxn();
-			try {
-				return await callback(this);
-			} finally {
-				await this.commit();
-			}
+			return super.transact(() => {
+				assignDBTxn(this);
+				return callback(this);
+			});
 		}
 
 		static search(query, options): AsyncIterable<any> {
+			if (!this.transaction) return this.transact((txn_resource) => txn_resource.search(query, options));
 			if (query == null) {
 				// TODO: May have different semantics for /Table vs /Table/
 				query = []; // treat no query as a query for everything
@@ -643,16 +652,18 @@ export function makeTable(options) {
 			const first_search = conditions[0];
 			let records;
 			if (!first_search) {
-				records = primary_store.getRange({ start: false, transaction: this.lmdbTxn }).map(({ value }) => value);
+				records = primary_store
+					.getRange({ start: false, transaction: this.dbTxn.getReadTxn() })
+					.map(({ value }) => value);
 			} else {
-				let ids = idsForCondition(first_search, this.lmdbTxn);
+				let ids = idsForCondition(first_search, this.dbTxn.getReadTxn());
 				// and then things diverge...
 				if (!query.operator || query.operator.toLowerCase() === 'and') {
 					// get the intersection of condition searches by using the indexed query for the first condition
 					// and then filtering by all subsequent conditions
 					const filters = conditions.slice(1).map(filterByType);
 					const filters_length = filters.length;
-					records = ids.map((id) => primary_store.get(id, { transaction: this.lmdbTxn, lazy: true }));
+					records = ids.map((id) => primary_store.get(id, { transaction: this.dbTxn.getReadTxn(), lazy: true }));
 					if (filters_length > 0)
 						records = records.filter((record) => {
 							for (let i = 0; i < filters_length; i++) {
@@ -670,7 +681,7 @@ export function makeTable(options) {
 					for (let i = 1; i < conditions.length; i++) {
 						const condition = conditions[i];
 						// might want to lazily execute this after getting to this point in the iteration
-						const next_ids = idsForCondition(condition, this.lmdbTxn);
+						const next_ids = idsForCondition(condition, this.dbTxn.getReadTxn());
 						ids = ids.concat(next_ids);
 					}
 					const returned_ids = new Set();
@@ -684,7 +695,7 @@ export function makeTable(options) {
 							return true;
 						})
 						.slice(offset, query.limit && query.limit + offset);
-					records = ids.map((id) => primary_store.get(id, { transaction: this.lmdbTxn, lazy: true }));
+					records = ids.map((id) => primary_store.get(id, { transaction: this.dbTxn.getReadTxn(), lazy: true }));
 				}
 			}
 			const select = query.select;
@@ -731,7 +742,7 @@ export function makeTable(options) {
 				source_completion = this.source.publish(message, { target: this });
 			}
 
-			this.envTxn.addWrite({
+			this.dbTxn.addWrite({
 				store: primary_store,
 				key: this.id,
 				txnTime: txn_time,
@@ -739,7 +750,7 @@ export function makeTable(options) {
 				commit: (retries) => {
 					// just need to update the version number of the record so it points to the latest audit record
 					// but have to update the version number of the record
-					// TODO: would be faster to have a dedicated lmdb-js for just updating the version number
+					// TODO: would be faster to have a dedicated lmdb-js function for just updating the version number
 					const existing_record = retries > 0 ? primary_store.get(this.id) : this.record;
 					primary_store.put(this.id, existing_record ?? null, txn_time);
 					// messages are recorded in the audit entry
@@ -767,6 +778,7 @@ export function makeTable(options) {
 	const prototype = TableResource.prototype;
 	prototype.record = null;
 	prototype.changes = null;
+	prototype.dbTxn = immediateTransaction;
 	for (const attribute of attributes) {
 		const name = attribute.name;
 		if (prototype[name] === undefined) {
@@ -825,6 +837,15 @@ export function makeTable(options) {
 		} else {
 			return index.getRange(range_options).map(({ value }) => value);
 		}
+	}
+	function assignDBTxn(resource) {
+		let db_txn = resource.transaction[database_path];
+		if (!db_txn) {
+			db_txn = new DatabaseTransaction(primary_store, resource.request?.user, audit_store);
+			resource.transaction[database_path] = db_txn;
+			resource.transaction.push(db_txn);
+		}
+		resource.dbTxn = db_txn;
 	}
 }
 /**

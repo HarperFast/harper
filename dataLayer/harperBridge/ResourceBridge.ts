@@ -3,7 +3,7 @@ import * as LMDBBridge from './lmdbBridge/LMDBBridge';
 import * as search_validator from '../../validation/searchValidator';
 import { handleHDBError, hdb_errors } from '../../utility/errors/hdbError';
 import { Resource } from '../../resources/Resource';
-import { table, getDatabases, database } from '../../resources/tableLoader';
+import { table, getDatabases, database, getTables } from '../../resources/tableLoader';
 import * as insertUpdateValidate from './bridgeUtility/insertUpdateValidate';
 import * as lmdbProcessRows from './lmdbBridge/lmdbUtility/lmdbProcessRows';
 import * as write_transaction from './lmdbBridge/lmdbUtility/lmdbWriteTransaction';
@@ -66,7 +66,9 @@ export class ResourceBridge extends LMDBBridge {
 			table: create_schema_obj.table,
 		});
 	}
-
+	dropTable(drop_table_object) {
+		return getTable(drop_table_object).dropTable();
+	}
 	async updateRecords(update_obj) {
 		update_obj.requires_existing = true;
 		return this.upsertRecords(update_obj);
