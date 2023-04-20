@@ -225,11 +225,11 @@ export class Resource implements ResourceInterface {
 		this.updateModificationTime();
 		return response;
 	}
-	static async transact(callback) {
+	static async transact(callback, options) {
 		if (this.transaction) return callback(this);
 		const name = this.name + ' (txn)';
 		const transaction = [];
-		transaction._txnTime = getNextMonotonicTime();
+		transaction._txnTime = options?.timestamp || getNextMonotonicTime();
 
 		const txn_resource = class extends this {
 			static name = name;
@@ -242,11 +242,11 @@ export class Resource implements ResourceInterface {
 			await txn_resource.commit();
 		}
 	}
-	async transact(callback) {
+	async transact(callback, options) {
 		if (this.transaction) return callback(this);
 		try {
 			const transaction = [];
-			transaction._txnTime = getNextMonotonicTime();
+			transaction._txnTime = options?.timestamp || getNextMonotonicTime();
 			this.transaction = transaction;
 			return await callback(this);
 		} finally {

@@ -84,7 +84,7 @@ class NATSTransaction {
 						db_path, //crypto_hash.createNatsTableStreamName(request_body.schema, request_body.table),
 						writes.meta, //nats_msg_header,
 						{
-							txnTime: this.transaction._txnTime,
+							timestamp: this.transaction._txnTime,
 							writes,
 						}
 					)

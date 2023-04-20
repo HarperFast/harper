@@ -140,7 +140,7 @@ function buildServer(is_https) {
 
 	app.register(function (instance, options, done) {
 		instance.setNotFoundHandler(function (request, reply) {
-			app.server.emit('unhandled', request.request, request.response);
+			app.server.emit('unhandled', request.raw, reply.raw);
 		});
 		done();
 	});

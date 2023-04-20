@@ -11,7 +11,7 @@ const { secureImport } = require('../security/jsLoader');
 const { resetResources } = require('../resources/Resources');
 const mqtt = require('./mqtt');
 const { server } = require('./Server');
-
+const { CONFIG_PARAMS } = hdb_terms;
 const CORE_PLUGINS = {
 	'app-server': {}, // this is intended to be the default http handler for http-based plugins
 	'operations-server': operationsServer,
@@ -25,12 +25,14 @@ const default_server_modules = [
 	{ module: 'mqtt', port: 1883 },
 	{ module: 'mqtt', webSocket: true },
 	//{ module: 'mqtt', port: 8883, secure: true },
-	{ module: 'app-server', port: 9926 },
-	{ module: 'operations-server', port: 9925 },
+	{ module: 'operations-server', port: env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT) || 9925 },
 ];
-if (env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
-	default_server_modules.push({ module: 'nats-replication' });
-}
+if (env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED))
+	default_server_modules.push({
+		module: 'app-server',
+		port: env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT) || 9926,
+	});
+if (env.get(CONFIG_PARAMS.CLUSTERING_ENABLED)) default_server_modules.push({ module: 'nats-replication' });
 /**
  * This is main entry point for loading the main set of global server modules that power HarperDB.
  * @param server_modules

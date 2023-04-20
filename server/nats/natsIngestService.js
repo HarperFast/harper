@@ -106,45 +106,53 @@ async function messageProcessor(msg) {
 		let single_table_operation = entry.operation;
 		if (single_table_operation) {
 			// this is a legacy message that operates on a single table
-			let { schema, table: table_name, records } = entry;
+			let { schema, table: table_name, records, timestamp } = entry;
 			let Table = getDatabases()[schema][table_name];
-			await Table.transact(async (txn_table) => {
-				switch (single_table_operation) {
-					case 'put':
-					case 'upsert':
-					case 'insert':
-					case 'update':
-						for (let record of records) {
-							await txn_table.put(record, entry.origin);
-						}
-						break;
-					case 'delete':
-						for (let record of records) {
-							await txn_table.delete(record, entry.origin);
-						}
-						break;
+			await Table.transact(
+				async (txn_table) => {
+					switch (single_table_operation) {
+						case 'put':
+						case 'upsert':
+						case 'insert':
+						case 'update':
+							for (let record of records) {
+								await txn_table.put(record, entry.origin);
+							}
+							break;
+						case 'delete':
+							for (let record of records) {
+								await txn_table.delete(record, entry.origin);
+							}
+							break;
+					}
+				},
+				{
+					timestamp,
 				}
-			});
+			);
 		} else {
-			let { txnTime: txn_time, writes } = entry;
+			let { timestamp, writes } = entry;
 			let dot_index = msg.subject.indexOf('.');
 			let schema = msg.subject.slice(dot_index + 1);
 			let first_table = writes[0].table;
 			let database = getDatabases()[schema];
 			let Table = database[first_table];
-			await Table.transact(async (txn_table) => {
-				for (let write of writes) {
-					let table = first_table === write.table ? txn_table : txn_table.useTable(write.table);
-					switch (write.operation) {
-						case 'put':
-							await table.put(write.record);
-							break;
-						case 'delete':
-							await table.delete(write.id);
-							break;
+			await Table.transact(
+				async (txn_table) => {
+					for (let write of writes) {
+						let table = first_table === write.table ? txn_table : txn_table.useTable(write.table);
+						switch (write.operation) {
+							case 'put':
+								await table.put(write.record);
+								break;
+							case 'delete':
+								await table.delete(write.id);
+								break;
+						}
 					}
-				}
-			});
+				},
+				{ timestamp }
+			);
 		}
 	} catch (e) {
 		harper_logger.error(e);
