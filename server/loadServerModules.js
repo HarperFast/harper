@@ -27,9 +27,10 @@ const default_server_modules = [
 	//{ module: 'mqtt', port: 8883, secure: true },
 	{ module: 'app-server', port: 9926 },
 	{ module: 'operations-server', port: 9925 },
-	//{ module: 'nats-replication' },
 ];
-
+if (env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+	default_server_modules.push({ module: 'nats-replication' });
+}
 /**
  * This is main entry point for loading the main set of global server modules that power HarperDB.
  * @param server_modules

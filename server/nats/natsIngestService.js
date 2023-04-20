@@ -3,7 +3,6 @@
 const util = require('util');
 const { toJsMsg } = require('nats');
 const { decode } = require('msgpackr');
-const global_schema = require('../../utility/globalSchema');
 const { isMainThread, parentPort } = require('worker_threads');
 const nats_utils = require('./utility/natsUtils');
 const nats_terms = require('./utility/natsTerms');
@@ -15,7 +14,7 @@ const transact_to_cluster_utilities = require('../../utility/clustering/transact
 const env_mgr = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 require('../threads/manageThreads');
-const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
+const { getDatabases } = require('../../resources/tableLoader');
 
 const SUBSCRIPTION_OPTIONS = {
 	durable: nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name,
@@ -47,7 +46,6 @@ module.exports = {
  */
 async function initialize() {
 	harper_logger.notify('Starting clustering ingest service.');
-	await p_schema_to_global();
 
 	const { connection, jsm, js } = await nats_utils.getNATSReferences();
 	nats_connection = connection;
@@ -104,9 +102,55 @@ async function messageProcessor(msg) {
 
 	harper_logger.trace('processing message:', entry, 'with sequence:', js_msg.seq);
 	harper_logger.trace(`messageProcessor nats msg id: ${js_msg.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID)}`);
+	try {
+		let single_table_operation = entry.operation;
+		if (single_table_operation) {
+			// this is a legacy message that operates on a single table
+			let { schema, table: table_name, records } = entry;
+			let Table = getDatabases()[schema][table_name];
+			await Table.transact(async (txn_table) => {
+				switch (single_table_operation) {
+					case 'put':
+					case 'upsert':
+					case 'insert':
+					case 'update':
+						for (let record of records) {
+							await txn_table.put(record, entry.origin);
+						}
+						break;
+					case 'delete':
+						for (let record of records) {
+							await txn_table.delete(record, entry.origin);
+						}
+						break;
+				}
+			});
+		} else {
+			let { txnTime: txn_time, writes } = entry;
+			let dot_index = msg.subject.indexOf('.');
+			let schema = msg.subject.slice(dot_index + 1);
+			let first_table = writes[0].table;
+			let database = getDatabases()[schema];
+			let Table = database[first_table];
+			await Table.transact(async (txn_table) => {
+				for (let write of writes) {
+					let table = first_table === write.table ? txn_table : txn_table.useTable(write.table);
+					switch (write.operation) {
+						case 'put':
+							await table.put(write.record);
+							break;
+						case 'delete':
+							await table.delete(write.id);
+							break;
+					}
+				}
+			});
+		}
+	} catch (e) {
+		harper_logger.error(e);
+	}
 
-	let operation_function = undefined;
-	const found_operation = server_utilities.getOperationFunction(entry);
+	/*	const found_operation = server_utilities.getOperationFunction(entry);
 	operation_function = found_operation.job_operation_function
 		? found_operation.job_operation_function
 		: found_operation.operation_function;
@@ -131,7 +175,7 @@ async function messageProcessor(msg) {
 	} catch (e) {
 		harper_logger.error(e);
 	}
-
+*/
 	// Ack to NATS to acknowledge the message has been processed
 	js_msg.ack();
 

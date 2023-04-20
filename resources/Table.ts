@@ -15,6 +15,7 @@ import { handleHDBError, ClientError } from '../utility/errors/hdbError';
 import * as OpenDBIObject from '../utility/lmdb/OpenDBIObject';
 import * as signalling from '../utility/signalling';
 import { SchemaEventMsg } from '../server/threads/itc';
+import { databases } from './tableLoader';
 
 const RANGE_ESTIMATE = 100000000;
 env_mngr.initSync();
@@ -146,6 +147,7 @@ export function makeTable(options) {
 			);
 		}
 		static async dropTable() {
+			delete databases[database_name][table_name];
 			if (database_name === database_path) {
 				// part of a database
 				for (const attribute in indices) {
@@ -153,6 +155,7 @@ export function makeTable(options) {
 					const index = indices[attribute];
 					index.drop();
 				}
+				dbis_db.remove(TableResource.tableName + '/' + primary_key);
 				primary_store.drop();
 				await dbis_db.committed;
 			} else {

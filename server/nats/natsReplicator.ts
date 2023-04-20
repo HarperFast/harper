@@ -71,6 +71,7 @@ class NATSTransaction {
 								operation: write.operation == 'put' ? 'upsert' : write.operation,
 								schema: db_path.split('/')[0],
 								table: write.table,
+								records: write.records,
 								__origin: {},
 							}
 						)
