@@ -132,10 +132,12 @@ async function messageProcessor(msg) {
 			);
 		} else {
 			let { timestamp, writes } = entry;
-			let dot_index = msg.subject.indexOf('.');
-			let schema = msg.subject.slice(dot_index + 1);
+			let first_dot_index = msg.subject.indexOf('.');
+			let second_dot_index = msg.subject.indexOf('.', first_dot_index + 1);
+			let schema = msg.subject.slice(first_dot_index + 1, second_dot_index);
 			let first_table = writes[0].table;
 			let database = getDatabases()[schema];
+			if (!database) throw new Error(`The database ${schema} was not found.`);
 			let Table = database[first_table];
 			await Table.transact(
 				async (txn_table) => {

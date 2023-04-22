@@ -3,12 +3,16 @@ import * as LMDBBridge from './lmdbBridge/LMDBBridge';
 import * as search_validator from '../../validation/searchValidator';
 import { handleHDBError, hdb_errors } from '../../utility/errors/hdbError';
 import { Resource } from '../../resources/Resource';
-import { table, getDatabases, database, getTables } from '../../resources/tableLoader';
+import { table, getDatabases, database, dropDatabase } from '../../resources/tableLoader';
 import * as insertUpdateValidate from './bridgeUtility/insertUpdateValidate';
 import * as lmdbProcessRows from './lmdbBridge/lmdbUtility/lmdbProcessRows';
 import * as write_transaction from './lmdbBridge/lmdbUtility/lmdbWriteTransaction';
 import * as logger from '../../utility/logging/harper_logger';
 import * as SearchObject from '../SearchObject';
+import { OPERATIONS_ENUM } from '../../utility/hdbTerms';
+import * as signalling from '../../utility/signalling';
+import { SchemaEventMsg } from '../../server/threads/itc';
+
 const { HDB_ERROR_MSGS } = hdb_errors;
 const DEFAULT_DATABASE = 'data';
 /**
@@ -60,14 +64,20 @@ export class ResourceBridge extends LMDBBridge {
 			schemaDefined: schema_defined,
 		});
 	}
+	dropTable(drop_table_object) {
+		return getTable(drop_table_object).dropTable();
+	}
 	async createSchema(create_schema_obj) {
 		return database({
 			database: create_schema_obj.schema,
-			table: create_schema_obj.table,
+			table: null,
 		});
 	}
-	dropTable(drop_table_object) {
-		return getTable(drop_table_object).dropTable();
+	async dropSchema(drop_schema_obj) {
+		await dropDatabase(drop_schema_obj.schema);
+		signalling.signalSchemaChange(
+			new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, drop_schema_obj.schema);
+		);
 	}
 	async updateRecords(update_obj) {
 		update_obj.requires_existing = true;
@@ -146,8 +156,8 @@ export class ResourceBridge extends LMDBBridge {
 	 * fetches records by their hash values and returns an Array of the results
 	 * @param {SearchByHashObject} search_object
 	 */
-	async searchByHash(search_object) {
-		return getTable(search_object).transact((txn_table) => {
+	searchByHash(search_object) {
+		return getTable(search_object).transactSync((txn_table) => {
 			let select = search_object.get_attributes;
 			if (select[0] === '*') select = txn_table.attributes.map((attribute) => attribute.name);
 			return search_object.hash_values
@@ -172,13 +182,13 @@ export class ResourceBridge extends LMDBBridge {
 	async getDataByHash(search_object) {
 		const map = new Map();
 		const table = getTable(search_object);
-		for (const record of await this.searchByHash(search_object)) {
+		for await (const record of this.searchByHash(search_object)) {
 			map.set(record[table.primaryKey], record);
 		}
 		return map;
 	}
 
-	async searchByValue(search_object: SearchObject) {
+	searchByValue(search_object: SearchObject) {
 		const table = getTable(search_object);
 		const conditions =
 			search_object.search_value == '*'
@@ -199,7 +209,7 @@ export class ResourceBridge extends LMDBBridge {
 	async getDataByValue(search_object: SearchObject) {
 		const map = new Map();
 		const table = getTable(search_object);
-		for (const record of await this.searchByValue(search_object)) {
+		for await (const record of this.searchByValue(search_object)) {
 			map.set(record[table.primaryKey], record);
 		}
 		return map;

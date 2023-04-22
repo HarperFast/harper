@@ -41,8 +41,8 @@ const npm_utilities = require('../../utility/npmUtilities');
 
 const operation_function_caller = require(`../../utility/OperationFunctionCaller`);
 
-const p_search_search_by_hash = util.promisify(search.searchByHash);
-const p_search_search_by_value = util.promisify(search.searchByValue);
+const p_search_search_by_hash = search.searchByHash;
+const p_search_search_by_value = search.searchByValue;
 const p_search_search = util.promisify(search.search);
 const p_sql_evaluate_sql = util.promisify(sql.evaluateSQL);
 

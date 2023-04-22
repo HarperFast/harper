@@ -605,6 +605,13 @@ export function makeTable(options) {
 				return callback(TableTxn);
 			});
 		}
+		static transactSync(callback) {
+			if (this.transaction) return callback(this);
+			return super.transactSync((TableTxn) => {
+				assignDBTxn(TableTxn);
+				return callback(TableTxn);
+			});
+		}
 		transact(callback) {
 			if (this.transaction) return callback(this);
 			return super.transact(() => {
@@ -614,7 +621,7 @@ export function makeTable(options) {
 		}
 
 		static search(query, options): AsyncIterable<any> {
-			if (!this.transaction) return this.transact((txn_resource) => txn_resource.search(query, options));
+			if (!this.transaction) return this.transactSync((txn_resource) => txn_resource.search(query, options));
 			if (query == null) {
 				// TODO: May have different semantics for /Table vs /Table/
 				query = []; // treat no query as a query for everything
@@ -651,22 +658,27 @@ export function makeTable(options) {
 				}
 				return condition.estimated_count; // use cached count
 			});
+			// we mark the read transaction as in use (necessary for a stable read
+			// transaction, and we really don't care if the
+			// counts are done in the same read transaction because they are just estimates) until the search
+			// results have been iterated and finished.
+			const read_txn = this.dbTxn.getReadTxn();
+			read_txn.use();
+
 			// both AND and OR start by getting an iterator for the ids for first condition
 			const first_search = conditions[0];
 			let records;
 			if (!first_search) {
-				records = primary_store
-					.getRange({ start: false, transaction: this.dbTxn.getReadTxn() })
-					.map(({ value }) => value);
+				records = primary_store.getRange({ start: false, transaction: read_txn }).map(({ value }) => value);
 			} else {
-				let ids = idsForCondition(first_search, this.dbTxn.getReadTxn());
+				let ids = idsForCondition(first_search, read_txn);
 				// and then things diverge...
 				if (!query.operator || query.operator.toLowerCase() === 'and') {
 					// get the intersection of condition searches by using the indexed query for the first condition
 					// and then filtering by all subsequent conditions
 					const filters = conditions.slice(1).map(filterByType);
 					const filters_length = filters.length;
-					records = ids.map((id) => primary_store.get(id, { transaction: this.dbTxn.getReadTxn(), lazy: true }));
+					records = ids.map((id) => primary_store.get(id, { transaction: read_txn, lazy: true }));
 					if (filters_length > 0)
 						records = records.filter((record) => {
 							for (let i = 0; i < filters_length; i++) {
@@ -684,7 +696,7 @@ export function makeTable(options) {
 					for (let i = 1; i < conditions.length; i++) {
 						const condition = conditions[i];
 						// might want to lazily execute this after getting to this point in the iteration
-						const next_ids = idsForCondition(condition, this.dbTxn.getReadTxn());
+						const next_ids = idsForCondition(condition, read_txn);
 						ids = ids.concat(next_ids);
 					}
 					const returned_ids = new Set();
@@ -698,7 +710,7 @@ export function makeTable(options) {
 							return true;
 						})
 						.slice(offset, query.limit && query.limit + offset);
-					records = ids.map((id) => primary_store.get(id, { transaction: this.dbTxn.getReadTxn(), lazy: true }));
+					records = ids.map((id) => primary_store.get(id, { transaction: read_txn, lazy: true }));
 				}
 			}
 			const select = query.select;
@@ -711,6 +723,9 @@ export function makeTable(options) {
 					}
 					return selected;
 				});
+			records.onDone = () => {
+				read_txn.done();
+			};
 			return records;
 		}
 		subscribe(options) {

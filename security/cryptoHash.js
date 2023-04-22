@@ -53,6 +53,7 @@ function decrypt(text) {
  * @returns {string}
  */
 function createNatsTableStreamName(schema, table) {
+	if (!table) return schema;
 	const full_name = `${schema}.${table}`;
 	let hash = hash_cache.get(full_name);
 	if (!hash) {

@@ -55,8 +55,8 @@ const USER_ATTRIBUTE_ALLOWLIST = {
 	password: true,
 };
 const password_hash_cache = new Map();
-const p_search_search_by_value = promisify(search.searchByValue);
-const p_search_search_by_hash = promisify(search.searchByHash);
+const p_search_search_by_value = search.searchByValue;
+const p_search_search_by_hash = search.searchByHash;
 const p_delete_delete = promisify(delete_.delete);
 
 async function addUser(user) {

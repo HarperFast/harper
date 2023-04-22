@@ -20,8 +20,8 @@ const { getSchemaPath } = require('./harperBridge/lmdbBridge/lmdbUtility/initial
 const { getDatabases } = require('../resources/tableLoader');
 
 // Promisified functions
-let p_search_search_by_value = promisify(search.searchByValue);
-let p_search_search_by_hash = promisify(search.searchByHash);
+let p_search_search_by_value = search.searchByValue;
+let p_search_search_by_hash = search.searchByHash;
 
 const NAME_ATTRIBUTE_STRING = 'name';
 const HASH_ATTRIBUTE_STRING = 'hash_attribute';

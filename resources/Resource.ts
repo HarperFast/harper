@@ -253,6 +253,17 @@ export class Resource implements ResourceInterface {
 			await this.commit();
 		}
 	}
+	static transactSync(callback, options) {
+		if (this.transaction) return callback(this);
+		try {
+			const transaction = [];
+			transaction._txnTime = options?.timestamp || getNextMonotonicTime();
+			this.transaction = transaction;
+			return callback(this);
+		} finally {
+			this.commit();
+		}
+	}
 	async accessInTransaction(request, action: (resource_access) => any) {
 		return this.transact(async (transactional_resource) => {
 			const resource_access = transactional_resource.access(request);

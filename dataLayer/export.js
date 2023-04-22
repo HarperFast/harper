@@ -27,8 +27,8 @@ const S3_JSON_EXPORT_CHUNK_SIZE = 1000;
 const LOCAL_JSON_EXPORT_SIZE = 1000;
 
 // Promisified function
-const p_search_by_hash = promisify(search.searchByHash);
-const p_search_by_value = promisify(search.searchByValue);
+const p_search_by_hash = search.searchByHash;
+const p_search_by_value = search.searchByValue;
 const p_sql = promisify(sql.evaluateSQL);
 const stream_finished = promisify(stream.finished);
 
@@ -310,7 +310,7 @@ async function export_to_s3(export_object) {
  */
 function toCsvStream(data) {
 	// ensure that we pass it an iterable
-	let read_stream = stream.Readable.from((data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) ? data : [data]);
+	let read_stream = stream.Readable.from(data?.[Symbol.iterator] || data?.[Symbol.asyncIterator] ? data : [data]);
 	let options = {};
 	let transform_options = { objectMode: true };
 	// Create a json2csv stream transform.

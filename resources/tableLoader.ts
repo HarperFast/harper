@@ -11,6 +11,8 @@ import { makeTable } from './Table';
 import * as OpenDBIObject from '../utility/lmdb/OpenDBIObject';
 import * as OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject';
 import { CONFIG_PARAMS, LEGACY_DATABASES_DIR_NAME } from '../utility/hdbTerms';
+import * as fs from 'fs-extra';
+
 const DEFAULT_DATABASE_NAME = 'data';
 initSync();
 
@@ -121,7 +123,9 @@ function readMetaDb(
 ) {
 	const env_init = new OpenEnvironmentObject(path, false);
 	try {
+		console.log('opening', env_init);
 		const root_store = open(env_init);
+		console.log('opened', env_init);
 		database_envs.set(path, root_store);
 		const internal_dbi_init = new OpenDBIObject(false);
 		const dbis_store = (root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init));
@@ -213,7 +217,7 @@ export function database({ database: database_name, table: table_name }) {
 	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
 	getDatabases();
 	const database = databases[database_name] || (databases[database_name] = Object.create(null));
-	const table_path = env_get(CONFIG_PARAMS.SCHEMAS)?.[database_name]?.tables?.[table_name]?.path;
+	const table_path = table_name && env_get(CONFIG_PARAMS.SCHEMAS)?.[database_name]?.tables?.[table_name]?.path;
 	const database_path =
 		table_path ||
 		env_get(CONFIG_PARAMS.SCHEMAS)?.[database_name]?.path ||
@@ -225,10 +229,20 @@ export function database({ database: database_name, table: table_name }) {
 	if (!root_store) {
 		// TODO: validate database name
 		const env_init = new OpenEnvironmentObject(path, false);
+		console.log('opening path', path);
 		root_store = open(env_init);
+		console.log('opened path', path);
 		database_envs.set(path, root_store);
 	}
 	return root_store;
+}
+
+export async function dropDatabase(database_name) {
+	if (!databases[database_name]) throw new Error('Schema does not exist');
+	const root_store = database({ database: database_name });
+	delete databases[database_name];
+	await root_store.close();
+	await fs.remove(root_store.path);
 }
 
 /**
@@ -283,6 +297,7 @@ export function table({
 		if (!root_store.env.nextTableId) root_store.env.nextTableId = 1;
 		primary_store.tableId = root_store.env.nextTableId++;
 		primary_key_attribute.tableId = primary_store.tableId;
+		console.log('opening internal dbi');
 		dbis_db = root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
 		Table = tables[table_name] = makeTable({
 			primaryStore: primary_store,
