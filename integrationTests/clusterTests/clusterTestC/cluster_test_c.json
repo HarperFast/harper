@@ -13827,7 +13827,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\": \"import_from_s3\",\n\t\"schema\": \"incredible_bulk\",\n\t\"table\": \"csv_s3_load\",\n    \t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{S3_KEY}}\",\n\t\t\"aws_secret_access_key\":\"{{S3_SECRET}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data/non_public_folder\",\n\t\t\"key\":\"dogs.csv\"\n\t}\n}",
+							"raw": "{\n\t\"operation\": \"import_from_s3\",\n\t\"schema\": \"incredible_bulk\",\n\t\"table\": \"csv_s3_load\",\n    \t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{S3_KEY}}\",\n\t\t\"aws_secret_access_key\":\"{{S3_SECRET}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data\",\n\t\t\"key\":\"non_public_folder/dogs.csv\",\n        \"region\": \"us-east-2\"\n\t}\n}",
 							"options": {
 								"raw": {
 									"language": "json"

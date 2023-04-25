@@ -944,67 +944,6 @@ describe('Test user.js', () => {
 		});
 	});
 
-	describe('Test nonEnterpriseFilter', function () {
-		let search_stub = undefined;
-		let search_orig = user.__get__('p_search_search_by_value');
-		let license_stub = undefined;
-		let sandbox = undefined;
-		let nonEnterpriseFilter = undefined;
-
-		beforeEach(function () {
-			// reset search_stub just in case.
-			search_stub = undefined;
-			// We are not testing these other functions, so we stub them.
-			// Need to clone these since the list_users function attaches the role into the user.
-			let role_search_response_clone = clone(TEST_LIST_USER_ROLE_SEARCH_RESPONSE);
-			let user_search_response_clone = clone(TEST_LIST_USER_SEARCH_RESPONSE);
-			search_stub = sinon.stub().onFirstCall().resolves([role_search_response_clone]);
-			search_stub.onSecondCall().resolves([user_search_response_clone]);
-			user.__set__('p_search_search_by_value', search_stub);
-			sandbox = sinon.createSandbox();
-
-			nonEnterpriseFilter = user.__get__('nonEnterpriseFilter');
-		});
-
-		afterEach(function () {
-			user.__set__('p_search_search_by_value', search_orig);
-			sandbox.restore();
-		});
-
-		it('Nominal test, expect non su user filtered', () => {
-			let error, res;
-			license_stub = sandbox.stub(license, 'getLicense').resolves({ enterprise: true });
-			try {
-				res = nonEnterpriseFilter(new Map(USER_SEARCH_RESULT));
-			} catch (err) {
-				error = err;
-			}
-			assert.strictEqual(res.size, USER_SEARCH_RESULT.size - 1, 'expected nothing filtered');
-		});
-
-		it('Nominal test, expect filtered', () => {
-			let error, res;
-			license_stub = sandbox.stub(license, 'getLicense').resolves({ enterprise: false });
-			try {
-				res = nonEnterpriseFilter(new Map(USER_SEARCH_RESULT));
-			} catch (err) {
-				error = err;
-			}
-			assert.strictEqual(res.size, USER_SEARCH_RESULT.size - 1, 'expected non su user filtered');
-		});
-
-		it('Invalid parameter, Expect empty array', () => {
-			let error, res;
-			license_stub = sandbox.stub(license, 'getLicense').resolves({ enterprise: true });
-			try {
-				res = nonEnterpriseFilter(null);
-			} catch (err) {
-				error = err;
-			}
-			assert.strictEqual(res.size, 0, 'expected empty array');
-		});
-	});
-
 	describe('Test appendSystemTablesToRole function', function () {
 		it('validate permissions are added for system tables.', function (done) {
 			let role_temp = test_utils.deepClone(VALID_ROLE);

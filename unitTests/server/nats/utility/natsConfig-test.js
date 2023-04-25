@@ -162,6 +162,7 @@ describe('Test natsConfig module', () => {
 		get_config_from_file_stub
 			.withArgs(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_PATH)
 			.returns(path.join(TEMP_TEST_CLUSTERING_DIR, 'leaf'));
+		get_config_from_file_stub.withArgs(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_VERIFY).returns(true);
 	});
 
 	afterEach(() => {
@@ -193,6 +194,7 @@ describe('Test natsConfig module', () => {
 				key_file: test_key_file_path,
 				ca_file: test_ca_file_path,
 				insecure: true,
+				verify: true,
 			},
 			leafnodes: {
 				port: 7714,
@@ -215,6 +217,7 @@ describe('Test natsConfig module', () => {
 					key_file: test_key_file_path,
 					ca_file: test_ca_file_path,
 					insecure: true,
+					verify: true,
 				},
 			},
 			accounts: {

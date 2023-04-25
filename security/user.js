@@ -441,11 +441,7 @@ async function listUsers() {
 			appendSystemTablesToRole(user.role);
 			user_map.set(user.username, user);
 		}
-		// No enterprise license limits roles to 2 (1 su, 1 cu).  If a license has expired, we need to allow the cluster role
-		// and the role with the most users.
-		if (!(await license.getLicense()).enterprise) {
-			return nonEnterpriseFilter(Array.from(user_map.values()));
-		}
+
 		return user_map;
 	} catch (err) {
 		logger.error('got an error listing users');
@@ -485,59 +481,6 @@ function appendSystemTablesToRole(user_role) {
 	} catch (err) {
 		logger.error(`Got an error trying to set system permissions.`);
 		logger.error(err);
-	}
-}
-
-/**
- * Should return Map of filtered users
- * @param search_results
- * @returns {Map<string, object>}
- */
-function nonEnterpriseFilter(search_results) {
-	try {
-		logger.info('No enterprise license found.  System is limited to 1 clustering role and 1 user role');
-		if (!search_results) {
-			return new Map();
-		}
-		let user_obj = Object.create(null);
-		let found_users = new Map();
-		// bucket users by role.  We will pick the role with the most users to enable
-		search_results.forEach((user, username) => {
-			if (
-				user.role &&
-				(user.role.permission.cluster_user === undefined || user.role.permission.cluster_user === false)
-			) {
-				// only add super users
-				if (user.role.permission.super_user === true) {
-					if (!user_obj[user.role.id]) {
-						user_obj[user.role.id] = new Map();
-					}
-					user_obj[user.role.id].set(user.username, user);
-				}
-			} else {
-				found_users.set(user.username, user);
-			}
-		});
-
-		let most_users_tuple = { role: undefined, count: 0 };
-		Object.keys(user_obj).forEach((role_id) => {
-			let curr_role = user_obj[role_id];
-			if (curr_role.size >= most_users_tuple.count) {
-				most_users_tuple.role = role_id;
-				most_users_tuple.count = curr_role.size;
-			}
-		});
-		if (most_users_tuple.role === undefined) {
-			logger.warn('No roles found with active users.');
-			return new Map();
-		}
-
-		found_users = new Map([...found_users, ...user_obj[most_users_tuple.role]]);
-		return found_users;
-	} catch (err) {
-		logger.error('error filtering users.');
-		logger.error(err);
-		return new Map();
 	}
 }
 

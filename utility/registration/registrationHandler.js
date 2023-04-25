@@ -87,18 +87,18 @@ async function parseLicense(license, company) {
 		throw new Error(`Invalid entries for License Key and Customer Company`);
 	}
 
-	console.log('Validating license input...');
+	log.info('Validating license input...');
 	let validation = hdb_license.validateLicense(license, company);
 
-	console.log(`checking for valid license...`);
+	log.info(`checking for valid license...`);
 	if (!validation.valid_license) {
 		throw new Error('Invalid license found.');
 	}
-	console.log(`checking valid license date...`);
+	log.info(`checking valid license date...`);
 	if (!validation.valid_date) {
 		throw new Error('This License has expired.');
 	}
-	console.log(`checking for valid machine license ${validation.valid_machine}`);
+	log.info(`checking for valid machine license ${validation.valid_machine}`);
 	if (!validation.valid_machine) {
 		throw new Error('This license is in use on another machine.');
 	}
@@ -165,7 +165,6 @@ async function getRegistrationInfo() {
 	const reg_info_obj = {
 		registered: false,
 		version: null,
-		storage_type: null,
 		ram_allocation: null,
 		license_expiration_date: null,
 	};
@@ -185,7 +184,6 @@ async function getRegistrationInfo() {
 
 	reg_info_obj.registered = license.enterprise;
 	reg_info_obj.version = version.version();
-	reg_info_obj.storage_type = terms.STORAGE_TYPES_ENUM.LMDB;
 	reg_info_obj.ram_allocation = license.ram_allocation;
 	if (isNaN(license.exp_date)) {
 		reg_info_obj.license_expiration_date = license.enterprise ? license.exp_date : null;

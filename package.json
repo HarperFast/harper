@@ -37,7 +37,7 @@
     "submodules": "git submodule update --init --recursive",
     "build": "eslint -c ./.eslintbuild bin/ dataLayer/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
     "pretty": "eslint --fix bin/ dataLayer/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
-    "test": "rimraf ./.nyc_output/* && node utility/devops/register.js --reset_license --storage_type=lmdb && npm run cover:logging && npm run cover:upgrade && npm run cover:nats && npm run cover:cfserver && npm run cover:lmdbbridge && npm run cover:lmdbutility && npm run cover:hdbserver &&  npm run cover:main && nyc merge .nyc_output coverage.json && node ./utility/devops/register.js --reset_license --storage_type=lmdb",
+    "test": "rimraf ./.nyc_output/* && node utility/devops/register.js --reset_license && npm run cover:logging && npm run cover:upgrade && npm run cover:nats && npm run cover:cfserver && npm run cover:lmdbbridge && npm run cover:lmdbutility && npm run cover:hdbserver &&  npm run cover:main && nyc merge .nyc_output coverage.json && node ./utility/devops/register.js --reset_license",
     "cover:main": "cd bin/ && nyc --no-clean --reporter=lcovonly ../node_modules/mocha/bin/_mocha '../unitTests/**/*.js' --config '../unitTests/.mocharc-main.json'",
     "cover:lmdbbridge": "cd bin/ && nyc --no-clean --reporter=lcovonly --retries 3 ../node_modules/mocha/bin/_mocha '../unitTests/dataLayer/harperBridge/lmdbBridge/**/*.js' --config '../unitTests/.mocharc.json'",
     "cover:lmdbutility": "cd bin/ && nyc --no-clean --reporter=lcovonly --retries 3 ../node_modules/mocha/bin/_mocha '../unitTests/utility/lmdb/**/*.js' --config '../unitTests/.mocharc.json'",
@@ -56,6 +56,8 @@
     "coverage": "nyc --reporter=lcov npm test"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.299.0",
+    "@aws-sdk/lib-storage": "3.300.0",
     "@endo/static-module-record": "^0.7.16",
     "@fastify/autoload": "~5.7.1",
     "@fastify/compress": "~6.2.0",
@@ -71,7 +73,6 @@
     "@turf/helpers": "6.5.0",
     "@turf/length": "6.5.0",
     "alasql": "1.7.4",
-    "aws-sdk": "2.1096.0",
     "cbor-x": "1.5.1",
     "chalk": "4.1.2",
     "cli-progress": "3.12.0",

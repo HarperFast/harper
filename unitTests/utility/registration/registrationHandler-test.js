@@ -182,7 +182,6 @@ describe(`Test getRegistrationInfo`, function () {
 
 		assert.equal(result.registered, test_license.enterprise, 'Expected value to be true');
 		assert.equal(result.version, test_version, `Expected value to be ${test_version}`);
-		assert.equal(result.storage_type, test_license.storage_type, `Expected value to be ${test_license.storage_type}`);
 		assert.equal(
 			result.license_expiration_date,
 			test_license.exp_date,

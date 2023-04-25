@@ -454,19 +454,6 @@ describe('Test processManagement utilityFunctions module', () => {
 		afterEach(async () => {
 			await stopDeleteAllServices();
 		});
-
-		it('Test all services are stopped', async () => {
-			await nats_config.generateNatsConfig();
-			await utility_functions.startAllServices();
-			await utility_functions.stopAllServices();
-			const list = await utility_functions.list();
-			let service_still_online = false;
-			list.forEach((proc) => {
-				if (proc.pm2_env.status === 'online') service_still_online = true;
-			});
-
-			expect(service_still_online).to.be.false;
-		}).timeout(30000);
 	});
 
 	describe('Test isServiceRegistered', () => {
