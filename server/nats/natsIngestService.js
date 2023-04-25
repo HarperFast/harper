@@ -11,6 +11,7 @@ const harper_logger = require('../../utility/logging/harper_logger');
 const server_utilities = require('../serverHelpers/serverUtilities');
 const operation_function_caller = require('../../utility/OperationFunctionCaller');
 const transact_to_cluster_utilities = require('../../utility/clustering/transactToClusteringUtilities');
+const { start } = require('./natsReplicator');
 const env_mgr = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 require('../threads/manageThreads');
@@ -20,7 +21,7 @@ const SUBSCRIPTION_OPTIONS = {
 	durable: nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name,
 	queue: nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_group,
 };
-
+start({});
 let nats_connection;
 let server_name;
 let js_manager;
@@ -94,7 +95,8 @@ async function messageProcessor(msg) {
 	const entry = decode(js_msg.data);
 
 	// If the msg origin header matches this node the msg can be ignored because it would have already been processed.
-	const origin = js_msg.headers.get(nats_terms.MSG_HEADERS.ORIGIN);
+	let nats_msg_header = js_msg.headers;
+	const origin = nats_msg_header.get(nats_terms.MSG_HEADERS.ORIGIN);
 	if (origin === env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME)) {
 		js_msg.ack();
 		return;
@@ -106,22 +108,32 @@ async function messageProcessor(msg) {
 		let single_table_operation = entry.operation;
 		if (single_table_operation) {
 			// this is a legacy message that operates on a single table
-			let { schema, table: table_name, records, timestamp } = entry;
+			let { schema, table: table_name, records, __origin } = entry;
+			let { timestamp, user } = __origin;
 			let Table = getDatabases()[schema][table_name];
 			await Table.transact(
 				async (txn_table) => {
+					let options = {
+						user,
+						nats_msg_header,
+					};
 					switch (single_table_operation) {
 						case 'put':
 						case 'upsert':
 						case 'insert':
 						case 'update':
 							for (let record of records) {
-								await txn_table.put(record, entry.origin);
+								await txn_table.put(record, options);
 							}
 							break;
 						case 'delete':
 							for (let record of records) {
-								await txn_table.delete(record, entry.origin);
+								await txn_table.delete(record, options);
+							}
+							break;
+						case 'publish':
+							for (let record of records) {
+								await txn_table.publish(record, options);
 							}
 							break;
 					}
@@ -131,24 +143,34 @@ async function messageProcessor(msg) {
 				}
 			);
 		} else {
-			let { timestamp, writes } = entry;
+			let { timestamp, user, writes } = entry;
 			let first_dot_index = msg.subject.indexOf('.');
 			let second_dot_index = msg.subject.indexOf('.', first_dot_index + 1);
 			let schema = msg.subject.slice(first_dot_index + 1, second_dot_index);
 			let first_table = writes[0].table;
 			let database = getDatabases()[schema];
 			if (!database) throw new Error(`The database ${schema} was not found.`);
+			let origin = msg.headers.get('origin');
+			console.log('ingest with origin', origin);
 			let Table = database[first_table];
 			await Table.transact(
 				async (txn_table) => {
+					let options = {
+						user,
+						nats_msg_header,
+					};
+
 					for (let write of writes) {
 						let table = first_table === write.table ? txn_table : txn_table.useTable(write.table);
 						switch (write.operation) {
 							case 'put':
-								await table.put(write.record);
+								await table.put(write.record, options);
+								break;
+							case 'publish':
+								await table.publish(write.record, options);
 								break;
 							case 'delete':
-								await table.delete(write.id);
+								await table.delete(write.id, options);
 								break;
 						}
 					}
@@ -188,6 +210,4 @@ async function messageProcessor(msg) {
 */
 	// Ack to NATS to acknowledge the message has been processed
 	js_msg.ack();
-
-	return result;
 }

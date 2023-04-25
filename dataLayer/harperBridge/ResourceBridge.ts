@@ -75,9 +75,7 @@ export class ResourceBridge extends LMDBBridge {
 	}
 	async dropSchema(drop_schema_obj) {
 		await dropDatabase(drop_schema_obj.schema);
-		signalling.signalSchemaChange(
-			new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, drop_schema_obj.schema);
-		);
+		signalling.signalSchemaChange(new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, drop_schema_obj.schema));
 	}
 	async updateRecords(update_obj) {
 		update_obj.requires_existing = true;
@@ -157,7 +155,7 @@ export class ResourceBridge extends LMDBBridge {
 	 * @param {SearchByHashObject} search_object
 	 */
 	searchByHash(search_object) {
-		return getTable(search_object).transactSync((txn_table) => {
+		return getTable(search_object).transact((txn_table) => {
 			let select = search_object.get_attributes;
 			if (select[0] === '*') select = txn_table.attributes.map((attribute) => attribute.name);
 			return search_object.hash_values

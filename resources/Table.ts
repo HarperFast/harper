@@ -462,7 +462,7 @@ export function makeTable(options) {
 			let source_completion;
 			if (this.constructor.Source?.prototype.put) {
 				this.source = await this.constructor.Source.getResource(this.id, this);
-				source_completion = this.source.put(record, { target: this });
+				source_completion = this.source.put(record, options);
 			}
 			// use optimistic locking to only commit if the existing record state still holds true.
 			// this is superior to using an async transaction since it doesn't require JS execution
@@ -605,13 +605,6 @@ export function makeTable(options) {
 				return callback(TableTxn);
 			});
 		}
-		static transactSync(callback) {
-			if (this.transaction) return callback(this);
-			return super.transactSync((TableTxn) => {
-				assignDBTxn(TableTxn);
-				return callback(TableTxn);
-			});
-		}
 		transact(callback) {
 			if (this.transaction) return callback(this);
 			return super.transact(() => {
@@ -621,7 +614,7 @@ export function makeTable(options) {
 		}
 
 		static search(query, options): AsyncIterable<any> {
-			if (!this.transaction) return this.transactSync((txn_resource) => txn_resource.search(query, options));
+			if (!this.transaction) return this.transact((txn_resource) => txn_resource.search(query, options));
 			if (query == null) {
 				// TODO: May have different semantics for /Table vs /Table/
 				query = []; // treat no query as a query for everything

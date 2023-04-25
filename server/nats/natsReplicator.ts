@@ -1,46 +1,96 @@
-import { databases, onNewTable } from '../../resources/tableLoader';
+import { databases, getDatabases, onNewTable } from '../../resources/tableLoader';
 import { Resource } from '../../resources/Resource';
 import { publishToStream } from './utility/natsUtils';
 import { SUBJECT_PREFIXES } from './utility/natsTerms';
+import { createNatsTableStreamName } from '../../security/cryptoHash';
 
-export async function start({ server, port }) {
-	for (const db_name in databases) {
+let publishing_databases = new Map();
+export async function start({}) {
+	await assignReplicationSource();
+}
+
+async function assignReplicationSource() {
+	publishing_databases = new Map();
+	for await (const node of getDatabases().system.hdb_nodes.search([])) {
+		const { subscriptions } = node;
+		for (const subscription of subscriptions) {
+			console.log(subscription);
+			if (!subscription.publish) continue;
+			const db = subscription.schema;
+			let publishing = publishing_databases.get(db);
+			if (!publishing) publishing_databases.set(db, (publishing = new Map()));
+			if (subscription.table) publishing.set(subscription.table, true);
+			else publishing.publishingDatabase = true;
+		}
+	}
+	for (const [db_name, publishing] of publishing_databases) {
 		const tables = databases[db_name];
-		for (const table_name in tables) {
-			const table = tables[table_name];
-			if (!table.Source) table.Source = getNATSReplicator(table_name, table.databasePath);
+		if (!tables) {
+			console.log(`database ${db_name} not found for replication`);
+			continue;
+		}
+		if (publishing.publishingDatabase) {
+			// if we are publishing the full database, assign as source of all the tables in the database
+			for (const table_name in tables) {
+				const table = tables[table_name];
+				if (!table.Source) table.Source = getNATSReplicator(table_name, db_name);
+			}
+		} else {
+			// otherwise just assign as source of tables that are actually publishing
+			for (const [table_name] of publishing) {
+				const table = tables[table_name];
+				if (!table.Source) table.Source = getNATSReplicator(table_name, db_name);
+			}
 		}
 	}
 	onNewTable((table) => {
 		if (!table.Source) table.Source = getNATSReplicator(table.tableName, table.databasePath);
+	});
+	databases.system.hdb_nodes.subscribe({
+		listener() {
+			assignReplicationSource();
+		},
 	});
 }
 
 function getNATSReplicator(table_name, db_path) {
 	return class NATSReplicator extends Resource {
 		put(record, options) {
+			// add this to the transaction
+			this.getNATSTransaction(options).addWrite(db_path, {
+				operation: 'put',
+				table: table_name,
+				record,
+				user: this.user,
+				meta: options,
+			});
+		}
+		delete(options) {
+			this.getNATSTransaction(options).addWrite(db_path, {
+				operation: 'delete',
+				table: table_name,
+				id: this.id,
+				user: this.user,
+				meta: options,
+			});
+		}
+		publish(message, options) {
+			this.getNATSTransaction(options).addWrite(db_path, {
+				operation: 'publish',
+				table: table_name,
+				record: message,
+				user: this.user,
+				meta: options,
+			});
+		}
+		getNATSTransaction(options) {
 			let nats_transaction = this.transaction.nats;
 			if (!nats_transaction)
 				this.transaction.push(
 					(nats_transaction = this.transaction.nats = new NATSTransaction(this.transaction, options))
 				);
-			// add this to the transaction
-			nats_transaction.addWrite(db_path, {
-				operation: 'put',
-				table: table_name,
-				record,
-				meta: options.meta,
-			});
+			return nats_transaction;
 		}
-		delete(options) {
-			nats_transaction.addWrite(db_path, {
-				operation: 'delete',
-				table: table_name,
-				id: this.id,
-				meta: options.meta,
-			});
-		}
-		publish() {}
 	};
 }
 
@@ -49,7 +99,7 @@ function getNATSReplicator(table_name, db_path) {
  */
 class NATSTransaction {
 	writes_by_path = new Map(); // TODO: short circuit of setting up a map if all the db paths are the same (99.9% of the time that will be the case)
-	constructor(protected transaction) {}
+	constructor(protected transaction, protected options) {}
 	addWrite(database_path, write) {
 		let writes_for_path = this.writes_by_path.get(database_path);
 		if (!writes_for_path) this.writes_by_path.set(database_path, (writes_for_path = []));
@@ -57,38 +107,52 @@ class NATSTransaction {
 	}
 	commit(flush) {
 		const promises = [];
-		for (const [db_path, writes] of this.writes_by_path) {
-			if (db_path.includes('/')) {
-				// legacy path
-				for (const write of writes) {
-					const schema = db_path.split('/')[0];
-					promises.push(
-						publishToStream(
-							`${SUBJECT_PREFIXES.TXN}.${db_path}`,
-							crypto_hash.createNatsTableStreamName(schema, write.table),
-							write.meta, //nats_msg_header,
-							{
-								operation: write.operation == 'put' ? 'upsert' : write.operation,
-								schema: db_path.split('/')[0],
-								table: write.table,
-								records: write.records,
-								__origin: {},
-							}
-						)
-					);
-				}
-			} else {
+		for (const [db, writes] of this.writes_by_path) {
+			const publishing = publishing_databases.get(db);
+			if (!publishing) continue;
+			if (publishing.publishingDatabase) {
 				promises.push(
 					publishToStream(
-						`${SUBJECT_PREFIXES.TXN}.${db_path}`,
-						db_path, //crypto_hash.createNatsTableStreamName(request_body.schema, request_body.table),
-						writes.meta, //nats_msg_header,
+						`${SUBJECT_PREFIXES.TXN}.${db}`,
+						db, //crypto_hash.createNatsTableStreamName(request_body.schema, request_body.table),
+						this.options.nats_msg_header,
 						{
 							timestamp: this.transaction._txnTime,
 							writes,
 						}
 					)
 				);
+			}
+			if (publishing.size > 0) {
+				const records_by_table = new Map();
+				for (const write of writes) {
+					const table = write.table;
+					if (publishing.has(table)) {
+						let records = records_by_table.get(table);
+						if (!records) {
+							records_by_table.set(table, (records = []));
+							records.operation = write.operation;
+						}
+						records.push(write.record || write.id);
+					}
+				}
+				for (const [table, records] of records_by_table) {
+					publishToStream(
+						`${SUBJECT_PREFIXES.TXN}.${db}`,
+						createNatsTableStreamName(db, table),
+						this.options.nats_msg_header,
+						{
+							operation: records.operation == 'put' ? 'upsert' : records.operation,
+							schema: db,
+							table,
+							records,
+							__origin: {
+								user: this.options.user,
+								timestamp: this.transaction._txnTime,
+							},
+						}
+					);
+				}
 			}
 		}
 		return Promise.all(promises);

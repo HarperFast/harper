@@ -69,9 +69,10 @@ export class Resource implements ResourceInterface {
 		for (const env_path in this.transaction) {
 			// TODO: maintain this array ourselves so we don't need to key-ify
 			const env_txn = this.transaction[env_path];
-			env_txn.abort(); // done with the read snapshot txn
+			env_txn.abort?.(); // done with the read snapshot txn
 		}
 	}
+	static abort = Resource.prototype.abort;
 	doneReading() {
 		for (const env_path in this.transaction) {
 			// TODO: maintain this array ourselves so we don't need to key-ify
@@ -225,7 +226,11 @@ export class Resource implements ResourceInterface {
 		this.updateModificationTime();
 		return response;
 	}
-	static async transact(callback, options) {
+	static set transaction(t) {
+		debugger;
+		throw new Error('Can not set transaction on base Resource class');
+	}
+	static transact(callback, options) {
 		if (this.transaction) return callback(this);
 		const name = this.name + ' (txn)';
 		const transaction = [];
@@ -237,9 +242,27 @@ export class Resource implements ResourceInterface {
 			static inUseTables = {};
 		};
 		try {
-			return await callback(txn_resource);
-		} finally {
-			await txn_resource.commit();
+			const result = callback(txn_resource);
+			if (result?.then)
+				return result?.then(
+					async (result) => {
+						await txn_resource.commit();
+						return result;
+					},
+					(error) => {
+						txn_resource.abort();
+						throw error;
+					}
+				);
+			else {
+				if (txn_resource.transaction.some((transaction) => transaction.hasWritesToCommit))
+					return txn_resource.commit().then(() => result);
+				txn_resource.abort();
+				return result;
+			}
+		} catch (error) {
+			txn_resource.abort();
+			throw error;
 		}
 	}
 	async transact(callback, options) {
@@ -251,17 +274,6 @@ export class Resource implements ResourceInterface {
 			return await callback(this);
 		} finally {
 			await this.commit();
-		}
-	}
-	static transactSync(callback, options) {
-		if (this.transaction) return callback(this);
-		try {
-			const transaction = [];
-			transaction._txnTime = options?.timestamp || getNextMonotonicTime();
-			this.transaction = transaction;
-			return callback(this);
-		} finally {
-			this.commit();
 		}
 	}
 	async accessInTransaction(request, action: (resource_access) => any) {

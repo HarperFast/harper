@@ -241,6 +241,7 @@ export async function dropDatabase(database_name) {
 	if (!databases[database_name]) throw new Error('Schema does not exist');
 	const root_store = database({ database: database_name });
 	delete databases[database_name];
+	database_envs.delete(database_name);
 	await root_store.close();
 	await fs.remove(root_store.path);
 }
