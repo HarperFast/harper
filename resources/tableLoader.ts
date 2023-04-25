@@ -10,15 +10,21 @@ import {
 import { makeTable } from './Table';
 import * as OpenDBIObject from '../utility/lmdb/OpenDBIObject';
 import * as OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject';
-import { CONFIG_PARAMS, LEGACY_DATABASES_DIR_NAME } from '../utility/hdbTerms';
+import { CONFIG_PARAMS, LEGACY_DATABASES_DIR_NAME, DATABASES_DIR_NAME } from '../utility/hdbTerms';
 import * as fs from 'fs-extra';
 
 const DEFAULT_DATABASE_NAME = 'data';
 initSync();
 
+interface Tables {
+	[table_name: string]: ReturnType<typeof makeTable>;
+}
+interface Databases {
+	[database_name: string]: Tables;
+}
 const USE_AUDIT = true; // TODO: Get this from config
-export const tables = null;
-export const databases = {};
+export const tables: Tables = null;
+export const databases: Databases = {};
 const table_listeners = [];
 let loaded_databases;
 const database_envs = new Map<string, any>();
@@ -26,7 +32,7 @@ const database_envs = new Map<string, any>();
 /**
  * This gets the set of tables from the default database ("data").
  */
-export function getTables() {
+export function getTables(): Tables {
 	return getDatabases().data || {};
 }
 
@@ -39,13 +45,15 @@ export function getTables() {
  * but in newer multi-table databases, there is one consistent, integrated audit table for the database since transactions
  * can span any tables in the database.
  */
-export function getDatabases() {
+export function getDatabases(): Databases {
 	if (loaded_databases) return databases;
 	loaded_databases = true;
-	const database_path =
+	let database_path = join(getHdbBasePath(), DATABASES_DIR_NAME);
+
+	database_path =
 		process.env.STORAGE_PATH ||
 		env_get(CONFIG_PARAMS.STORAGE_PATH) ||
-		join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME);
+		(existsSync(database_path) ? database_path : join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME));
 	// First load all the databases from our main database folder
 	// TODO: Load any databases defined with explicit storage paths from the config
 	if (existsSync(database_path)) {
@@ -212,18 +220,31 @@ interface TableDefinition {
 	schemaDefined: boolean;
 }
 
+function getDatabasePath({ database: database_name, table: table_name }) {
+	const database_path = join(getHdbBasePath(), DATABASES_DIR_NAME);
+	const table_path = table_name && env_get(CONFIG_PARAMS.SCHEMAS)?.[database_name]?.tables?.[table_name]?.path;
+	return (
+		table_path ||
+		env_get(CONFIG_PARAMS.SCHEMAS)?.[database_name]?.path ||
+		process.env.STORAGE_PATH ||
+		env_get(CONFIG_PARAMS.STORAGE_PATH) ||
+		(existsSync(database_path) ? database_path : join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME))
+	);
+}
+
 const ROOT_STORE_KEY = Symbol('root-store');
 export function database({ database: database_name, table: table_name }) {
 	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
 	getDatabases();
 	const database = databases[database_name] || (databases[database_name] = Object.create(null));
+	let database_path = join(getHdbBasePath(), DATABASES_DIR_NAME);
 	const table_path = table_name && env_get(CONFIG_PARAMS.SCHEMAS)?.[database_name]?.tables?.[table_name]?.path;
-	const database_path =
+	database_path =
 		table_path ||
 		env_get(CONFIG_PARAMS.SCHEMAS)?.[database_name]?.path ||
 		process.env.STORAGE_PATH ||
 		env_get(CONFIG_PARAMS.STORAGE_PATH) ||
-		join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME);
+		(existsSync(database_path) ? database_path : join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME));
 	const path = join(database_path, table_path ? 'data.mdb' : database_name + '.mdb');
 	let root_store = database_envs.get(path);
 	if (!root_store) {

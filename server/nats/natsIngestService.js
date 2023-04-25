@@ -150,8 +150,6 @@ async function messageProcessor(msg) {
 			let first_table = writes[0].table;
 			let database = getDatabases()[schema];
 			if (!database) throw new Error(`The database ${schema} was not found.`);
-			let origin = msg.headers.get('origin');
-			console.log('ingest with origin', origin);
 			let Table = database[first_table];
 			await Table.transact(
 				async (txn_table) => {

@@ -21,7 +21,7 @@ export class Resource implements ResourceInterface {
 	property?: string;
 	lastModificationTime = 0;
 	inUseTables = {};
-	transaction: [];
+	transaction: any;
 	constructor(identifier?, context?) {
 		this.id = identifier;
 		this.request = context?.request;
@@ -96,6 +96,8 @@ export class Resource implements ResourceInterface {
 			);
 		}
 	}
+	get(identifier: string | number | object): Promise<object>;
+	put(record: object, options?): Promise<object>;
 	static getNewId() {
 		return randomUUID();
 	}
@@ -230,13 +232,14 @@ export class Resource implements ResourceInterface {
 		debugger;
 		throw new Error('Can not set transaction on base Resource class');
 	}
-	static transact(callback, options) {
+	static transact(callback, options?) {
 		if (this.transaction) return callback(this);
 		const name = this.name + ' (txn)';
 		const transaction = [];
 		transaction._txnTime = options?.timestamp || getNextMonotonicTime();
 
 		const txn_resource = class extends this {
+			// @ts-ignore
 			static name = name;
 			static transaction = transaction;
 			static inUseTables = {};
@@ -265,7 +268,7 @@ export class Resource implements ResourceInterface {
 			throw error;
 		}
 	}
-	async transact(callback, options) {
+	async transact(callback, options?) {
 		if (this.transaction) return callback(this);
 		try {
 			const transaction = [];

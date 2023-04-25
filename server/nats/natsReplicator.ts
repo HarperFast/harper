@@ -5,7 +5,7 @@ import { SUBJECT_PREFIXES } from './utility/natsTerms';
 import { createNatsTableStreamName } from '../../security/cryptoHash';
 
 let publishing_databases = new Map();
-export async function start({}) {
+export async function start() {
 	await assignReplicationSource();
 }
 
@@ -84,8 +84,8 @@ function getNATSReplicator(table_name, db_path) {
 				record: message,
 			});
 		}
-		getNATSTransaction(options) {
-			let nats_transaction = this.transaction.nats;
+		getNATSTransaction(options): NATSTransaction {
+			let nats_transaction: NATSTransaction = this.transaction.nats;
 			if (!nats_transaction) {
 				this.transaction.push(
 					(nats_transaction = this.transaction.nats = new NATSTransaction(this.transaction, options))
@@ -101,6 +101,7 @@ function getNATSReplicator(table_name, db_path) {
  * Holds the set of writes that will be published as a transaction message across a NATS cluster
  */
 class NATSTransaction {
+	user: string;
 	writes_by_path = new Map(); // TODO: short circuit of setting up a map if all the db paths are the same (99.9% of the time that will be the case)
 	constructor(protected transaction, protected options) {}
 	addWrite(database_path, write) {
@@ -108,7 +109,7 @@ class NATSTransaction {
 		if (!writes_for_path) this.writes_by_path.set(database_path, (writes_for_path = []));
 		writes_for_path.push(write);
 	}
-	commit(flush) {
+	commit() {
 		const promises = [];
 		for (const [db, writes] of this.writes_by_path) {
 			const publishing = publishing_databases.get(db);

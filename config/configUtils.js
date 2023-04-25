@@ -260,7 +260,7 @@ function checkForUpdatedConfig(config_doc, config_file_path) {
 	const root_path = config_doc.getIn(['rootPath']);
 	let update_file = false;
 	if (!config_doc.hasIn(['storage', 'path'])) {
-		config_doc.setIn(['storage', 'path'], path.join(root_path, 'schema'));
+		config_doc.setIn(['storage', 'path'], path.join(root_path, 'database'));
 		update_file = true;
 	}
 
