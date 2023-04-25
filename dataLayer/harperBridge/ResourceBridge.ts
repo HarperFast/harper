@@ -93,6 +93,7 @@ export class ResourceBridge extends LMDBBridge {
 		let new_attributes;
 		const Table = getDatabases()[upsert_obj.schema][upsert_obj.table];
 		return Table.transact(async (txn_table) => {
+			txn_table.request = { user: upsert_obj.hdb_user?.username };
 			if (!txn_table.schemaDefined) {
 				new_attributes = [];
 				for (const attribute of attributes) {
@@ -108,9 +109,7 @@ export class ResourceBridge extends LMDBBridge {
 					}
 				}
 			}
-			const put_options = {
-				timestamp: upsert_obj.__origin?.timestamp,
-			};
+
 			const keys = [];
 			const skipped = [];
 			for (const record of upsert_obj.records) {
@@ -126,7 +125,7 @@ export class ResourceBridge extends LMDBBridge {
 					// if the record is missing any properties, fill them in from the existing record
 					if (!Object.prototype.hasOwnProperty.call(record, key)) record[key] = existing_record[key];
 				}
-				await txn_table.put(record[Table.primaryKey], record, put_options);
+				await txn_table.put(record[Table.primaryKey], record);
 				keys.push(record[Table.primaryKey]);
 			}
 			return {

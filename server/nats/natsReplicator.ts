@@ -61,8 +61,6 @@ function getNATSReplicator(table_name, db_path) {
 				operation: 'put',
 				table: table_name,
 				record,
-				user: this.user,
-				meta: options,
 			});
 		}
 		delete(options) {
@@ -70,8 +68,6 @@ function getNATSReplicator(table_name, db_path) {
 				operation: 'delete',
 				table: table_name,
 				id: this.id,
-				user: this.user,
-				meta: options,
 			});
 		}
 		publish(message, options) {
@@ -79,16 +75,16 @@ function getNATSReplicator(table_name, db_path) {
 				operation: 'publish',
 				table: table_name,
 				record: message,
-				user: this.user,
-				meta: options,
 			});
 		}
 		getNATSTransaction(options) {
 			let nats_transaction = this.transaction.nats;
-			if (!nats_transaction)
+			if (!nats_transaction) {
 				this.transaction.push(
 					(nats_transaction = this.transaction.nats = new NATSTransaction(this.transaction, options))
 				);
+				nats_transaction.user = this.user;
+			}
 			return nats_transaction;
 		}
 	};
@@ -115,9 +111,10 @@ class NATSTransaction {
 					publishToStream(
 						`${SUBJECT_PREFIXES.TXN}.${db}`,
 						db, //crypto_hash.createNatsTableStreamName(request_body.schema, request_body.table),
-						this.options.nats_msg_header,
+						this.options?.nats_msg_header,
 						{
 							timestamp: this.transaction._txnTime,
+							user: this.user,
 							writes,
 						}
 					)
@@ -140,14 +137,14 @@ class NATSTransaction {
 					publishToStream(
 						`${SUBJECT_PREFIXES.TXN}.${db}`,
 						createNatsTableStreamName(db, table),
-						this.options.nats_msg_header,
+						this.options?.nats_msg_header,
 						{
 							operation: records.operation == 'put' ? 'upsert' : records.operation,
 							schema: db,
 							table,
 							records,
 							__origin: {
-								user: this.options.user,
+								user: this.user,
 								timestamp: this.transaction._txnTime,
 							},
 						}
