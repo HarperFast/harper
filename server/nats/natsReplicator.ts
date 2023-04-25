@@ -10,7 +10,7 @@ export async function start() {
 }
 
 /**
- * This will assign the NATS replicator as a source to any tables that other nodes are subscribed to
+ * This will assign the NATS replicator as a source to any tables that have subscriptions to them (are publishing to other nodes)
  */
 async function assignReplicationSource() {
 	publishing_databases = new Map();
@@ -28,6 +28,7 @@ async function assignReplicationSource() {
 	for (const [db_name, publishing] of publishing_databases) {
 		const tables = databases[db_name];
 		if (!tables) {
+			// TODO: Do we auto-create the database?
 			console.log(`database ${db_name} not found for replication`);
 			continue;
 		}
@@ -58,27 +59,27 @@ async function assignReplicationSource() {
 /**
  * Get/create a NATS replication resource that can be assigned as a source to tables
  * @param table_name
- * @param db_path
+ * @param db_name
  */
-function getNATSReplicator(table_name, db_path) {
+function getNATSReplicator(table_name, db_name) {
 	return class NATSReplicator extends Resource {
 		put(record, options) {
 			// add this to the transaction
-			this.getNATSTransaction(options).addWrite(db_path, {
+			this.getNATSTransaction(options).addWrite(db_name, {
 				operation: 'put',
 				table: table_name,
 				record,
 			});
 		}
 		delete(options) {
-			this.getNATSTransaction(options).addWrite(db_path, {
+			this.getNATSTransaction(options).addWrite(db_name, {
 				operation: 'delete',
 				table: table_name,
 				id: this.id,
 			});
 		}
 		publish(message, options) {
-			this.getNATSTransaction(options).addWrite(db_path, {
+			this.getNATSTransaction(options).addWrite(db_name, {
 				operation: 'publish',
 				table: table_name,
 				record: message,
@@ -102,23 +103,23 @@ function getNATSReplicator(table_name, db_path) {
  */
 class NATSTransaction {
 	user: string;
-	writes_by_path = new Map(); // TODO: short circuit of setting up a map if all the db paths are the same (99.9% of the time that will be the case)
+	writes_by_db = new Map(); // TODO: short circuit of setting up a map if all the db paths are the same (99.9% of the time that will be the case)
 	constructor(protected transaction, protected options) {}
 	addWrite(database_path, write) {
-		let writes_for_path = this.writes_by_path.get(database_path);
-		if (!writes_for_path) this.writes_by_path.set(database_path, (writes_for_path = []));
+		let writes_for_path = this.writes_by_db.get(database_path);
+		if (!writes_for_path) this.writes_by_db.set(database_path, (writes_for_path = []));
 		writes_for_path.push(write);
 	}
 	commit() {
 		const promises = [];
-		for (const [db, writes] of this.writes_by_path) {
+		for (const [db, writes] of this.writes_by_db) {
 			const publishing = publishing_databases.get(db);
 			if (!publishing) continue;
 			if (publishing.publishingDatabase) {
 				promises.push(
 					publishToStream(
 						`${SUBJECT_PREFIXES.TXN}.${db}`,
-						db, //crypto_hash.createNatsTableStreamName(request_body.schema, request_body.table),
+						db, // Do we need createNatsTableStreamName for just a database name?
 						this.options?.nats_msg_header,
 						{
 							timestamp: this.transaction._txnTime,
