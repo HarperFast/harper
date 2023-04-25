@@ -49,6 +49,7 @@ export function getDatabases(): Databases {
 	if (loaded_databases) return databases;
 	loaded_databases = true;
 	let database_path = join(getHdbBasePath(), DATABASES_DIR_NAME);
+	const schema_configs = env_get(CONFIG_PARAMS.SCHEMAS) || {};
 
 	database_path =
 		process.env.STORAGE_PATH ||
@@ -58,8 +59,13 @@ export function getDatabases(): Databases {
 	// TODO: Load any databases defined with explicit storage paths from the config
 	if (existsSync(database_path)) {
 		for (const database_entry: DirEnt of readdirSync(database_path, { withFileTypes: true })) {
-			if (database_entry.isFile() && extname(database_entry.name).toLowerCase() === '.mdb') {
-				readMetaDb(join(database_path, database_entry.name), null, basename(database_entry.name, '.mdb'));
+			const db_name = basename(database_entry.name, '.mdb');
+			if (
+				database_entry.isFile() &&
+				extname(database_entry.name).toLowerCase() === '.mdb' &&
+				!schema_configs[db_name]?.path
+			) {
+				readMetaDb(join(database_path, database_entry.name), null, db_name);
 			}
 		}
 	}
@@ -84,7 +90,6 @@ export function getDatabases(): Databases {
 			}
 		}
 	}
-	const schema_configs = env_get(CONFIG_PARAMS.SCHEMAS);
 	if (schema_configs) {
 		for (const db_name in schema_configs) {
 			const schema_config = schema_configs[db_name];
@@ -131,9 +136,7 @@ function readMetaDb(
 ) {
 	const env_init = new OpenEnvironmentObject(path, false);
 	try {
-		console.log('opening', env_init);
 		const root_store = open(env_init);
-		console.log('opened', env_init);
 		database_envs.set(path, root_store);
 		const internal_dbi_init = new OpenDBIObject(false);
 		const dbis_store = (root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init));
@@ -220,23 +223,13 @@ interface TableDefinition {
 	schemaDefined: boolean;
 }
 
-function getDatabasePath({ database: database_name, table: table_name }) {
-	const database_path = join(getHdbBasePath(), DATABASES_DIR_NAME);
-	const table_path = table_name && env_get(CONFIG_PARAMS.SCHEMAS)?.[database_name]?.tables?.[table_name]?.path;
-	return (
-		table_path ||
-		env_get(CONFIG_PARAMS.SCHEMAS)?.[database_name]?.path ||
-		process.env.STORAGE_PATH ||
-		env_get(CONFIG_PARAMS.STORAGE_PATH) ||
-		(existsSync(database_path) ? database_path : join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME))
-	);
-}
-
 const ROOT_STORE_KEY = Symbol('root-store');
 export function database({ database: database_name, table: table_name }) {
 	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
 	getDatabases();
 	const database = databases[database_name] || (databases[database_name] = Object.create(null));
+	let root_store = database[ROOT_STORE_KEY];
+	if (root_store) return root_store;
 	let database_path = join(getHdbBasePath(), DATABASES_DIR_NAME);
 	const table_path = table_name && env_get(CONFIG_PARAMS.SCHEMAS)?.[database_name]?.tables?.[table_name]?.path;
 	database_path =
@@ -246,15 +239,14 @@ export function database({ database: database_name, table: table_name }) {
 		env_get(CONFIG_PARAMS.STORAGE_PATH) ||
 		(existsSync(database_path) ? database_path : join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME));
 	const path = join(database_path, table_path ? 'data.mdb' : database_name + '.mdb');
-	let root_store = database_envs.get(path);
+	root_store = database_envs.get(path);
 	if (!root_store) {
 		// TODO: validate database name
 		const env_init = new OpenEnvironmentObject(path, false);
-		console.log('opening path', path);
 		root_store = open(env_init);
-		console.log('opened path', path);
 		database_envs.set(path, root_store);
 	}
+	database[ROOT_STORE_KEY] = root_store;
 	return root_store;
 }
 
@@ -319,7 +311,6 @@ export function table({
 		if (!root_store.env.nextTableId) root_store.env.nextTableId = 1;
 		primary_store.tableId = root_store.env.nextTableId++;
 		primary_key_attribute.tableId = primary_store.tableId;
-		console.log('opening internal dbi');
 		dbis_db = root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
 		Table = tables[table_name] = makeTable({
 			primaryStore: primary_store,
