@@ -9,12 +9,14 @@ export async function start({}) {
 	await assignReplicationSource();
 }
 
+/**
+ * This will assign the NATS replicator as a source to any tables that other nodes are subscribed to
+ */
 async function assignReplicationSource() {
 	publishing_databases = new Map();
 	for await (const node of getDatabases().system.hdb_nodes.search([])) {
 		const { subscriptions } = node;
 		for (const subscription of subscriptions) {
-			console.log(subscription);
 			if (!subscription.publish) continue;
 			const db = subscription.schema;
 			let publishing = publishing_databases.get(db);
@@ -53,6 +55,11 @@ async function assignReplicationSource() {
 	});
 }
 
+/**
+ * Get/create a NATS replication resource that can be assigned as a source to tables
+ * @param table_name
+ * @param db_path
+ */
 function getNATSReplicator(table_name, db_path) {
 	return class NATSReplicator extends Resource {
 		put(record, options) {
