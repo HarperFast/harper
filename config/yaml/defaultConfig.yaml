@@ -80,6 +80,9 @@ operationsApi:
     certificate: null
     certificateAuthority: null
     privateKey: null
+mqtt:
+  port: 1883
+  webSocket: true
 http:
   threads: null
   sessionAffinity: null

@@ -13,7 +13,7 @@ export async function startHTTPThreads(thread_count = 2) {
 
 	if (thread_count === 0) {
 		direct_thread_server = require('./threadServer');
-		await loadServerModules(undefined, true);
+		await loadServerModules(true);
 		return Promise.resolve([]);
 	}
 	await loadServerModules();

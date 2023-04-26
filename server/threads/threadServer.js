@@ -34,7 +34,7 @@ let default_server = {},
 	http_responders = [];
 
 if (!isMainThread) {
-	loadServerModules(undefined, true).then(() => {
+	loadServerModules(true).then(() => {
 		parentPort
 			.on('message', (message) => {
 				const { port, fd, data } = message;

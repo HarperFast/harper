@@ -572,6 +572,9 @@ const CONFIG_PARAMS = {
 	STORAGE_PATH: 'storage_path',
 	STORAGE_AUDIT_PATH: 'storage_audit_path',
 	SCHEMAS: 'schemas',
+	MQTT_PORT: 'mqtt_port',
+	MQTT_WEBSOCKET: 'mqtt_webSocket',
+	SERVER_PLUGINS: 'serverPlugins',
 };
 
 const CONFIG_PARAM_MAP = {
@@ -691,6 +694,9 @@ const CONFIG_PARAM_MAP = {
 	operationsapi_root: CONFIG_PARAMS.ROOTPATH,
 	schemas: CONFIG_PARAMS.SCHEMAS,
 	storage_path: CONFIG_PARAMS.STORAGE_PATH,
+	mqtt_port: CONFIG_PARAMS.MQTT_PORT,
+	mqtt_websocket: CONFIG_PARAMS.MQTT_WEBSOCKET,
+	serverplugins: CONFIG_PARAMS.SERVER_PLUGINS,
 };
 for (let key in CONFIG_PARAMS) {
 	let name = CONFIG_PARAMS[key];
