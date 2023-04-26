@@ -20,18 +20,29 @@ const { CONFIG_PARAMS } = require('../utility/hdbTerms');
  */
 function getServerModules() {
 	const server_modules = [
-		{ module: 'operations-server', port: env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT), plugin: operationsServer },
+		{
+			module: 'operations-server',
+			port: env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT) || 9925,
+			plugin: operationsServer,
+		},
 		{
 			module: 'mqtt',
 			port: env.get(CONFIG_PARAMS.MQTT_PORT),
 			webSocket: env.get(CONFIG_PARAMS.MQTT_WEBSOCKET),
 			plugin: mqtt,
 		},
-		{ module: 'app-server', port: env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), plugin: {} },
 		{ module: 'auth', port: 'all' },
 	];
 
-	if (env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+	if (env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED)) {
+		server_modules.push({
+			module: 'app-server',
+			port: env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT) || 9926,
+			plugin: {},
+		});
+	}
+
+	if (env.get(CONFIG_PARAMS.CLUSTERING_ENABLED)) {
 		server_modules.push({ module: 'nats-replication', plugin: natsReplicator });
 	}
 
