@@ -517,10 +517,11 @@ function isClusterOperation(operation_name) {
  * @returns string returns a thrown message if schema and or table does not exist
  */
 function checkGlobalSchemaTable(schema_name, table_name) {
-	if (!global.hdb_schema[schema_name]) {
+	let databases = require('../resources/tableLoader').getDatabases();
+	if (!databases[schema_name]) {
 		return hdb_errors.HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schema_name);
 	}
-	if (!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]) {
+	if (!databases[schema_name][table_name]) {
 		return hdb_errors.HDB_ERROR_MSGS.TABLE_NOT_FOUND(schema_name, table_name);
 	}
 }
