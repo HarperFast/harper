@@ -50,6 +50,7 @@ const {
 const { PACKAGE_ROOT } = require('../../../utility/hdbTerms');
 
 const pkg_json = require('../../../package.json');
+const {recordAction} = require('../../../resources/analytics');
 
 const jc = JSONCodec();
 const HDB_CLUSTERING_FOLDER = 'clustering';
@@ -523,13 +524,15 @@ async function publishToStream(subject_name, stream_name, msg_header, message) {
 
 	try {
 		hdb_logger.trace(`publishToStream publishing to subject: ${subject}, data:`, message);
-		await js.publish(subject, encode(message), { headers: msg_header });
+		let encoded_message = encode(message);
+		recordAction(encoded_message.length, 'bytes-sent', subject_name, message.operation, 'replication');
+		await js.publish(subject, encoded_message, { headers: msg_header });
 	} catch (err) {
 		// If the stream doesn't exist it is created and published to
 		if (err.code && err.code.toString() === '503') {
 			hdb_logger.trace(`publishToStream creating stream: ${stream_name}`);
 			await createLocalStream(stream_name, [subject]);
-			await js.publish(subject, encode(message), { headers: msg_header });
+			await js.publish(subject, encoded_message, { headers: msg_header });
 		} else {
 			throw err;
 		}
