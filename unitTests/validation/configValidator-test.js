@@ -529,18 +529,6 @@ describe('Test configValidator module', () => {
 			does_path_exist_rw();
 		});
 
-		it('Test with incorrect pattern, returns error', () => {
-			let error;
-			try {
-				validate_pem_file('!.pem');
-			} catch (err) {
-				error = err;
-			}
-			const expected_error_message = 'must be a valid directory path and specify a .pem file';
-
-			expect(error.message).to.equal(expected_error_message);
-		});
-
 		it('Test it returns a helpers message if it doesnt exist', () => {
 			does_path_exist_stub.returns(true);
 			const message_stub = sinon.stub().callsFake(() => "Specified path '/totally/fake.pem' does not exist.");

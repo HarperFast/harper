@@ -7,11 +7,10 @@ const validation = require('../validation/role_validation');
 const signalling = require('../utility/signalling');
 const uuidV4 = require('uuid').v4;
 const util = require('util');
-const license = require('../utility/registration/hdb_license');
 const terms = require('../utility/hdbTerms');
 const hdb_utils = require('../utility/common_utils');
-const p_search_search_by_value = util.promisify(search.searchByValue);
-const p_search_search_by_hash = util.promisify(search.searchByHash);
+const p_search_search_by_value = search.searchByValue;
+const p_search_search_by_hash = search.searchByHash;
 const p_delete_delete = util.promisify(delete_.delete);
 const SearchObject = require('../dataLayer/SearchObject');
 const SearchByHashObject = require('../dataLayer/SearchByHashObject');
@@ -50,26 +49,6 @@ async function addRole(role) {
 	let validation_resp = validation.addRoleValidation(role);
 	if (validation_resp) {
 		throw validation_resp;
-	}
-
-	let license_details = await license.getLicense();
-	if (!license_details.enterprise) {
-		//look to see if there is already a cluster_user role
-		let roles = await listRoles();
-		let has_cluster_role = checkClusterUserRole(role, roles);
-		if (has_cluster_role) {
-			throw new Error(
-				`Your current license only supports ${terms.BASIC_LICENSE_MAX_CLUSTER_USER_ROLES} cluster_user role. ${terms.SUPPORT_HELP_MSG}`
-			);
-		}
-
-		if (roles.length >= 2) {
-			throw new Error(
-				`Your current license only supports ${
-					terms.BASIC_LICENSE_MAX_NON_CU_ROLES + terms.BASIC_LICENSE_MAX_CLUSTER_USER_ROLES
-				} roles.  ${terms.SUPPORT_HELP_MSG}`
-			);
-		}
 	}
 
 	role = scrubRoleDetails(role);
@@ -118,20 +97,6 @@ async function addRole(role) {
 
 	role = scrubRoleDetails(role);
 	return role;
-}
-
-function checkClusterUserRole(add_role, roles) {
-	let has_cluster_role = false;
-	if (add_role.permission.cluster_user === true) {
-		for (let x = 0; x < roles.length; x++) {
-			let role = roles[x];
-			let permission = role.permission;
-			if (!hdb_utils.isEmpty(permission) && permission.cluster_user === true) {
-				return true;
-			}
-		}
-	}
-	return has_cluster_role;
 }
 
 async function alterRole(role) {

@@ -29,6 +29,7 @@ clustering:
     certificateAuthority: null
     privateKey: null
     insecure: true
+    verify: true
   user: null
 customFunctions:
   enabled: true
@@ -69,7 +70,7 @@ operationsApi:
   network:
     cors: true
     corsAccessList:
-      - https://studio.harperdb.io
+      - "*"
     headersTimeout: 60000
     https: false
     keepAliveTimeout: 5000

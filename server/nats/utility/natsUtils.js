@@ -50,6 +50,7 @@ const {
 const { PACKAGE_ROOT } = require('../../../utility/hdbTerms');
 
 const pkg_json = require('../../../package.json');
+const {recordAction} = require('../../../resources/analytics');
 
 const jc = JSONCodec();
 const HDB_CLUSTERING_FOLDER = 'clustering';
@@ -523,13 +524,15 @@ async function publishToStream(subject_name, stream_name, msg_header, message) {
 
 	try {
 		hdb_logger.trace(`publishToStream publishing to subject: ${subject}, data:`, message);
-		await js.publish(subject, encode(message), { headers: msg_header });
+		let encoded_message = encode(message);
+		recordAction(encoded_message.length, 'bytes-sent', subject_name, message.operation, 'replication');
+		await js.publish(subject, encoded_message, { headers: msg_header });
 	} catch (err) {
 		// If the stream doesn't exist it is created and published to
 		if (err.code && err.code.toString() === '503') {
 			hdb_logger.trace(`publishToStream creating stream: ${stream_name}`);
 			await createLocalStream(stream_name, [subject]);
-			await js.publish(subject, encode(message), { headers: msg_header });
+			await js.publish(subject, encoded_message, { headers: msg_header });
 		} else {
 			throw err;
 		}
@@ -668,7 +671,7 @@ async function addSourceToWorkStream(node, work_queue_name, subscription) {
 	const start_time = subscription.start_time ? subscription.start_time : new Date(Date.now()).toISOString();
 	const { schema, table } = subscription;
 	// Name of remote stream to source from
-	const stream_name = crypto_hash.createNatsTableStreamName(schema, table);
+	const stream_name = table ? crypto_hash.createNatsTableStreamName(schema, table) : schema;
 
 	// Check to see if the source is being added to a local stream. Local streams require a slightly different config.
 	const is_local_stream = server_name === node;
@@ -977,7 +980,7 @@ async function getStreamInfo(stream_name) {
  * @returns {string}
  */
 function createSubjectName(schema, table, server) {
-	return `${nats_terms.SUBJECT_PREFIXES.TXN}.${schema}.${table}.${server}`;
+	return `${nats_terms.SUBJECT_PREFIXES.TXN}.${schema}${table ? '.' + table : ''}.${server}`;
 }
 
 /**

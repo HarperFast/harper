@@ -27,7 +27,7 @@ const TXN_KEY = Symbol('transaction');
 
 const INVALIDATED = 16;
 
-interface Table {
+export interface Table {
 	primaryStore: Database;
 	auditStore: Database;
 	indices: Database[];
@@ -120,7 +120,7 @@ export function makeTable(options) {
 		 * @param identifier
 		 * @param options
 		 */
-		static async subscribe(identifier, options) {
+		static async subscribe(identifier, options?) {
 			let key;
 			if (typeof identifier === 'object') {
 				if (options) key = identifier.conditions[0].attribute;
@@ -180,7 +180,7 @@ export function makeTable(options) {
 		record: any;
 		changes: any;
 		lastModificationTime = 0;
-		static Source: { new (): ResourceInterface };
+		static Source: typeof Resource;
 
 		constructor(identifier, resource_info) {
 			// coerce if we know this is supposed to be a number
@@ -230,14 +230,14 @@ export function makeTable(options) {
 		/**
 		 * This retrieves the record as a frozen object for this resource. Alternately, provide a property name to
 		 * retrieve the data
-		 * @param identifier
+		 * @param propertyOrQuery - If included, specifies a property to return or query to perform on the record
 		 */
-		async get(property?: string) {
+		async get(propertyOrQuery?: string | object) {
 			const record = this.record;
 			// TODO: Once we have asynchronous loads from the database, the record may be a promise, we might need to await it
-			if (property) {
-				if (this.changes && property in this.changes) return this.changes[property];
-				return record?.[property];
+			if (typeof propertyOrQuery === 'string') {
+				if (this.changes && propertyOrQuery in this.changes) return this.changes[propertyOrQuery];
+				return record?.[propertyOrQuery];
 			}
 			if (this.changes) return Object.assign(record || {}, this.changes);
 			return record;
@@ -459,10 +459,10 @@ export function makeTable(options) {
 					throw new ClientError(validation_errors.join('. '));
 				}
 			}
-			let source_completion;
 			if (this.constructor.Source?.prototype.put) {
-				this.source = await this.constructor.Source.getResource(this.id, this);
-				source_completion = this.source.put(record, { target: this });
+				const source = (this.source = this.constructor.Source.getResource(this.id, this));
+				await source.loadRecord();
+				await source.put(record, options);
 			}
 			// use optimistic locking to only commit if the existing record state still holds true.
 			// this is superior to using an async transaction since it doesn't require JS execution
@@ -498,7 +498,6 @@ export function makeTable(options) {
 							value: record,
 							// TODO: What should this be?
 							lastUpdate: this.lastModificationTime,
-							completion: source_completion,
 						};
 					}
 
@@ -543,22 +542,21 @@ export function makeTable(options) {
 						// return the audit record that should be recorded
 						operation: 'put',
 						value: record,
-						completion: source_completion,
 					};
 				},
 			});
-			return source_completion;
 		}
 
 		async delete(options): boolean {
 			const env_txn = this.dbTxn;
 			if (!this.record) return false;
 			const txn_time = this.transaction._txnTime;
-			let source_completion;
 			if (this.constructor.Source?.prototype.delete) {
-				this.source = await this.constructor.Source.getResource(this.id, this);
-				source_completion = this.source.delete({ target: this });
+				const source = (this.source = this.constructor.Source.getResource(this.id, this));
+				await source.loadRecord();
+				await source.delete(options);
 			}
+
 			env_txn.addWrite({
 				key: this.id,
 				store: primary_store,
@@ -592,7 +590,6 @@ export function makeTable(options) {
 					return {
 						// return the audit record that should be recorded
 						operation: 'delete',
-						completion: source_completion,
 					};
 				},
 			});
@@ -613,7 +610,7 @@ export function makeTable(options) {
 			});
 		}
 
-		static search(query, options): AsyncIterable<any> {
+		static search(query, options?): AsyncIterable<any> {
 			if (!this.transaction) return this.transact((txn_resource) => txn_resource.search(query, options));
 			if (query == null) {
 				// TODO: May have different semantics for /Table vs /Table/
@@ -651,22 +648,27 @@ export function makeTable(options) {
 				}
 				return condition.estimated_count; // use cached count
 			});
+			// we mark the read transaction as in use (necessary for a stable read
+			// transaction, and we really don't care if the
+			// counts are done in the same read transaction because they are just estimates) until the search
+			// results have been iterated and finished.
+			const read_txn = this.dbTxn.getReadTxn();
+			read_txn.use();
+
 			// both AND and OR start by getting an iterator for the ids for first condition
 			const first_search = conditions[0];
 			let records;
 			if (!first_search) {
-				records = primary_store
-					.getRange({ start: false, transaction: this.dbTxn.getReadTxn() })
-					.map(({ value }) => value);
+				records = primary_store.getRange({ start: false, transaction: read_txn }).map(({ value }) => value);
 			} else {
-				let ids = idsForCondition(first_search, this.dbTxn.getReadTxn());
+				let ids = idsForCondition(first_search, read_txn);
 				// and then things diverge...
 				if (!query.operator || query.operator.toLowerCase() === 'and') {
 					// get the intersection of condition searches by using the indexed query for the first condition
 					// and then filtering by all subsequent conditions
 					const filters = conditions.slice(1).map(filterByType);
 					const filters_length = filters.length;
-					records = ids.map((id) => primary_store.get(id, { transaction: this.dbTxn.getReadTxn(), lazy: true }));
+					records = ids.map((id) => primary_store.get(id, { transaction: read_txn, lazy: true }));
 					if (filters_length > 0)
 						records = records.filter((record) => {
 							for (let i = 0; i < filters_length; i++) {
@@ -684,7 +686,7 @@ export function makeTable(options) {
 					for (let i = 1; i < conditions.length; i++) {
 						const condition = conditions[i];
 						// might want to lazily execute this after getting to this point in the iteration
-						const next_ids = idsForCondition(condition, this.dbTxn.getReadTxn());
+						const next_ids = idsForCondition(condition, read_txn);
 						ids = ids.concat(next_ids);
 					}
 					const returned_ids = new Set();
@@ -698,7 +700,7 @@ export function makeTable(options) {
 							return true;
 						})
 						.slice(offset, query.limit && query.limit + offset);
-					records = ids.map((id) => primary_store.get(id, { transaction: this.dbTxn.getReadTxn(), lazy: true }));
+					records = ids.map((id) => primary_store.get(id, { transaction: read_txn, lazy: true }));
 				}
 			}
 			const select = query.select;
@@ -711,6 +713,9 @@ export function makeTable(options) {
 					}
 					return selected;
 				});
+			records.onDone = () => {
+				read_txn.done();
+			};
 			return records;
 		}
 		subscribe(options) {

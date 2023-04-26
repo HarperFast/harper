@@ -6,6 +6,9 @@ ARG HARPERDB_TARBALL
 EXPOSE 9925
 EXPOSE 9926
 
+# Install ps
+RUN apt-get update && apt-get install -y procps
+
 #Change node user and group to harperdb
 RUN usermod -d /home/harperdb -l harperdb node && \
     groupmod -n harperdb node && \

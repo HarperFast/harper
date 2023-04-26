@@ -17,6 +17,7 @@ const common_utils = require('../utility/common_utils');
 const harperBridge = require('./harperBridge/harperBridge');
 const hdbTerms = require('../utility/hdbTerms');
 const { hdb_errors } = require('../utility/errors/hdbError');
+const { databases } = require('../resources/tableLoader');
 
 const WHERE_CLAUSE_IS_NULL = 'IS NULL';
 const SEARCH_ERROR_MSG = 'There was a problem performing this search. Please check the logs and try again.';
@@ -157,7 +158,7 @@ class SQLSearch {
 		this.tables.forEach((table) => {
 			const schema_table = `${table.databaseid}_${table.as ? table.as : table.tableid}`;
 			this.data[schema_table] = {};
-			this.data[schema_table].__hash_name = global.hdb_schema[table.databaseid][table.tableid].hash_attribute;
+			this.data[schema_table].__hash_name = databases[table.databaseid][table.tableid].primaryKey;
 			this.data[schema_table].__merged_data = {};
 			this.data[schema_table].__merged_attributes = [];
 			this.data[schema_table].__merged_attr_map = {};
@@ -543,7 +544,7 @@ class SQLSearch {
 			//get unique ids of tables if there is no join or the where is performing an is null check
 			this.tables.forEach((table) => {
 				let hash_attribute = {
-					columnid: global.hdb_schema[table.databaseid][table.tableid].hash_attribute,
+					columnid: databases[table.databaseid][table.tableid].primaryKey,
 					tableid: table.tableid,
 				};
 				this._addFetchColumns([hash_attribute]);

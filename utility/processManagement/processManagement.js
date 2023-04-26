@@ -32,7 +32,6 @@ module.exports = {
 	startService,
 	getUniqueServicesList,
 	restartAllServices,
-	stopAllServices,
 	isServiceRegistered,
 	reloadStopStart,
 	restartHdb,
@@ -510,34 +509,6 @@ async function restartAllServices(excluding = []) {
 		if (restart_hdb) {
 			await reloadStopStart(hdb_terms.PROCESS_DESCRIPTORS.HDB);
 		}
-	} catch (err) {
-		pm2.disconnect();
-		throw err;
-	}
-}
-
-/**
- * stops all services then kills the processManagement daemon
- * @returns {Promise<void>}
- */
-async function stopAllServices() {
-	try {
-		const services = await getUniqueServicesList();
-		for (let x = 0, length = Object.values(services).length; x < length; x++) {
-			let service = Object.values(services)[x];
-			await stop(service.name);
-		}
-
-		// Kill processManagement daemon
-		await kill();
-		let processes = await sys_info.getHDBProcessInfo();
-		processes.clustering.forEach((p) => {
-			exec(`kill ${p.pid}`);
-		});
-
-		processes.core.forEach((p) => {
-			exec(`kill ${p.pid}`);
-		});
 	} catch (err) {
 		pm2.disconnect();
 		throw err;

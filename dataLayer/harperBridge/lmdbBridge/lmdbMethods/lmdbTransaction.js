@@ -2,6 +2,7 @@
 
 const { getSchemaPath } = require('../lmdbUtility/initializePaths');
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
+const { database } = require('../../../../resources/tableLoader');
 
 module.exports = {
 	writeTransaction,
@@ -15,7 +16,6 @@ module.exports = {
  * @returns {Promise<any>}
  */
 async function writeTransaction(schema, table, callback) {
-	let env_base_path = getSchemaPath(schema, table);
-	let environment = await environment_utility.openEnvironment(env_base_path, table);
-	return environment.transaction(callback);
+	let root_store = database({ database: schema, table });
+	return root_store.transaction(callback);
 }

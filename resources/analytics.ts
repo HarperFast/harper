@@ -9,7 +9,7 @@ import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 let active_actions = new Map<string, number[] & { occurred: number; count: number }>();
 
 /**
- * When an HTTP request (or any other type) is made, we record it here for analytics
+ * Record an action for analytics (like an HTTP request, replication, MQTT message)
  * @param path
  * @param value
  */
@@ -170,10 +170,17 @@ if (isMainThread) {
 		await cleanup(AGGREGATE_EXPIRATION, AGGREGATE_PERIOD);
 	}, AGGREGATE_PERIOD / 2);
 }
+let total_bytes_processed = 0;
 function recordAnalytics(message) {
 	const report = message.report;
 	// Add system information stats as well
 	const worker_info = getThreadInfo().find((worker) => worker.threadId === report.threadId);
+	for (const metric of report.metrics) {
+		if (metric.metric === 'bytes-sent') {
+			total_bytes_processed += metric.mean * metric.count;
+		}
+	}
+	report.totalBytesProcessed = total_bytes_processed;
 	if (worker_info) {
 		report.metrics.push({
 			metric: 'cpu-memory',

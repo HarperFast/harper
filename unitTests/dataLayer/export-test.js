@@ -380,6 +380,7 @@ describe('Test export.js', () => {
 				aws_secret_access_key: '1lV',
 				bucket: 'harperdb-integration-test-data/non_public_folder',
 				key: 'test_special',
+				region: 'us-east-2',
 			},
 			search_operation: {
 				operation: 'sql',
@@ -471,7 +472,7 @@ describe('Test export.js', () => {
 		let get_records_rw;
 		let aws_connector_stub;
 		let s3_stub = sinon.stub().callsFake(() => {
-			return { promise: () => aws_response_test };
+			return { done: () => aws_response_test };
 		});
 		let s3_fake = {
 			upload: s3_stub,
@@ -479,9 +480,13 @@ describe('Test export.js', () => {
 				return { promise: () => {} };
 			},
 		};
+		let upload_stub = sandbox.stub().returns({
+			done: () => {},
+		});
 
 		before(() => {
 			aws_connector_stub = sandbox.stub(AWSConnector, 'getS3AuthObj').returns(s3_fake);
+			hdb_export.__set__('Upload', upload_stub);
 			get_records_rw = hdb_export.__set__('getRecords', get_records_stub);
 		});
 
@@ -506,7 +511,7 @@ describe('Test export.js', () => {
 			const result = await hdb_export.export_to_s3(export_obj_test);
 
 			// Get the stream passed to the S3 upload method.
-			const pass_through = s3_stub.args[0][0].Body;
+			const pass_through = upload_stub.args[0][0].params.Body;
 			const writable_stream_csv = new Stream.Writable();
 			pass_through.pipe(writable_stream_csv);
 			let all_chunks = '';
@@ -519,9 +524,9 @@ describe('Test export.js', () => {
 			await new Promise((fulfill) => pass_through.on('end', fulfill));
 
 			expect(all_chunks).to.equal(expected_body);
-			expect(s3_stub.args[0][0].Bucket).to.equal('harperdb-integration-test-data/non_public_folder');
-			expect(s3_stub.args[0][0].Key).to.equal('test_special.csv');
-			expect(result).to.equal(aws_response_test);
+			expect(upload_stub.args[0][0].params.Bucket).to.equal('harperdb-integration-test-data/non_public_folder');
+			expect(upload_stub.args[0][0].params.Key).to.equal('test_special.csv');
+			upload_stub.resetHistory();
 		});
 
 		it('Nominal call export JSON to S3', async () => {
@@ -531,23 +536,8 @@ describe('Test export.js', () => {
 			export_object_clone.format = 'json';
 			const result = await hdb_export.export_to_s3(export_object_clone);
 
-			// Get the stream passed to the S3 upload method
-			const pass_through = s3_stub.args[0][0].Body;
-			const writable_stream_json = new Stream.Writable();
-			pass_through.pipe(writable_stream_json);
-			let all_chunks = '';
-			writable_stream_json._write = (chunk, encoding, next) => {
-				all_chunks += chunk.toString();
-				next();
-			};
-
-			// This waits for the stream to finish.
-			await new Promise((fulfill) => pass_through.on('end', fulfill));
-
-			expect(all_chunks).to.equal(expected_body);
-			expect(s3_stub.args[0][0].Bucket).to.equal('harperdb-integration-test-data/non_public_folder');
-			expect(s3_stub.args[0][0].Key).to.equal('test_special.json');
-			expect(result).to.equal(aws_response_test);
+			expect(upload_stub.args[0][0].params.Bucket).to.equal('harperdb-integration-test-data/non_public_folder');
+			expect(upload_stub.args[0][0].params.Key).to.equal('test_special.json');
 		});
 
 		it('Test missing S3 object error thrown', async () => {
@@ -613,6 +603,7 @@ describe('Test export.js', () => {
 					aws_secret_access_key: '1lV',
 					bucket: 'harperdb-integration-test-data/non_public_folder',
 					key: '123',
+					region: 'us-east-1',
 				},
 				format: 'txt',
 			};

@@ -6,6 +6,7 @@ import { findAndValidateUser, getSuperUser } from '../security/user';
 import { serializeMessage, getDeserializer } from './serverHelpers/contentTypes';
 import { info } from '../utility/logging/harper_logger';
 import { threadId } from 'worker_threads';
+import { recordAction } from '../resources/analytics';
 
 const DEFAULT_MQTT_PORT = 1883;
 const AUTHORIZE_LOCAL = true;
@@ -56,6 +57,7 @@ function onSocket(socket, send, request, user) {
 	function onClose() {
 		session.disconnect();
 	}
+
 	parser.on('packet', async (packet) => {
 		if (user?.then) user = await user;
 		try {
@@ -88,8 +90,10 @@ function onSocket(socket, send, request, user) {
 							payload: serialize(message),
 						});
 						try {
+							const slash_index = topic.indexOf('/', 1);
+							const general_topic = slash_index > 0 ? topic.slice(0, slash_index) : topic;
 							send(payload);
-							//console.log('sent', topic, message);
+							recordAction(payload.length, 'bytes-sent', general_topic, 'deliver', 'mqtt');
 						} catch (error) {
 							console.warn(error);
 							session.disconnect();
@@ -111,14 +115,14 @@ function onSocket(socket, send, request, user) {
 					}
 					await session.committed;
 					info('Sending suback', packet.subscriptions[0].topic);
-					send(
-						generate({
-							// Send a subscription acknowledgment
-							cmd: 'suback',
-							granted,
-							messageId: packet.messageId,
-						})
-					);
+					const payload = generate({
+						// Send a subscription acknowledgment
+						cmd: 'suback',
+						granted,
+						messageId: packet.messageId,
+					});
+					send(payload);
+					recordAction(payload.length, 'bytes-sent', null, 'suback', 'mqtt');
 					info('Sent suback');
 					break;
 				case 'unsubscribe':
@@ -146,34 +150,34 @@ function onSocket(socket, send, request, user) {
 					} catch (error) {
 						console.warn(error);
 						if (packet.qos > 0) {
-							return send(
-								generate({
-									// Send a subscription acknowledgment
-									cmd: 'puback',
-									messageId: packet.messageId,
-									reasonCode: 0x80, // unspecified error
-								})
-							);
+							const payload = generate({
+								// Send a publish acknowledgment
+								cmd: 'puback',
+								messageId: packet.messageId,
+								reasonCode: 0x80, // unspecified error
+							});
+							send(payload);
+							recordAction(payload.length, 'bytes-sent', null, 'puback', 'mqtt');
 						}
 					}
 					if (packet.qos > 0) {
+						let payload;
 						if (published === false)
-							return send(
-								generate({
-									// Send a subscription acknowledgment
-									cmd: 'puback',
-									messageId: packet.messageId,
-									reasonCode: 0x90, // Topic name invalid
-								})
-							);
-						send(
-							generate({
-								// Send a subscription acknowledgment
+							payload = generate({
+								// Send a publish acknowledgment
+								cmd: 'puback',
+								messageId: packet.messageId,
+								reasonCode: 0x90, // Topic name invalid
+							});
+						else
+							payload = generate({
+								// Send a publish acknowledgment
 								cmd: 'puback',
 								messageId: packet.messageId,
 								reasonCode: 0, // success
-							})
-						);
+							});
+						send(payload);
+						recordAction(payload.length, 'bytes-sent', null, 'puback', 'mqtt');
 					}
 					break;
 				case 'pingreq':

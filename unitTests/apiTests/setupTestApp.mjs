@@ -76,7 +76,7 @@ export async function setupTestApp() {
 			});
 		}
 	} catch(error) {
-		error.message += ': ' + error.response.data.toString();
+		error.message += ': ' + error.response?.data.toString();
 		throw error;
 	}
 	return created_records;

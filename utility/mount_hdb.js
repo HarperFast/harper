@@ -13,7 +13,6 @@ module.exports = mountHdb;
 
 async function mountHdb(hdb_path) {
 	hdb_logger.trace('Mounting HarperDB');
-	let system_schema_path = path.join(hdb_path, terms.DATABASES_DIR_NAME, terms.SYSTEM_SCHEMA_NAME);
 
 	makeDirectory(hdb_path);
 	makeDirectory(path.join(hdb_path, 'backup'));
@@ -22,8 +21,7 @@ async function mountHdb(hdb_path) {
 	makeDirectory(path.join(hdb_path, 'keys', terms.LICENSE_FILE_NAME));
 	makeDirectory(path.join(hdb_path, 'log'));
 	makeDirectory(path.join(hdb_path, 'doc'));
-	makeDirectory(path.join(hdb_path, 'schema'));
-	makeDirectory(system_schema_path);
+	makeDirectory(path.join(hdb_path, 'database'));
 	makeDirectory(path.join(hdb_path, terms.TRANSACTIONS_DIR_NAME));
 	makeDirectory(path.join(hdb_path, 'clustering', 'leaf'));
 	makeDirectory(path.join(hdb_path, 'custom_functions'));

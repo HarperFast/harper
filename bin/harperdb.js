@@ -106,8 +106,7 @@ function harperDBService() {
 			case SERVICE_ACTIONS_ENUM.STOP:
 				// The require is here to better control the flow of imports when this module is called.
 				const stop = require('./stop');
-				stop
-					.stop()
+				stop()
 					.then(() => {
 						process.exit(0);
 					})
@@ -117,15 +116,13 @@ function harperDBService() {
 				break;
 			case SERVICE_ACTIONS_ENUM.RESTART:
 				// The require is here to better control the flow of imports when this module is called.
-				const stop_for_restart = require('./stop');
-				stop_for_restart
-					.restartProcesses()
+				const restart = require('./restart');
+				restart
+					.restart({})
 					.then()
 					.catch((restart_err) => {
 						logger.error(restart_err);
-						console.error(
-							'There was an error restarting harperdb.  Please stop manually with harperdb stop and start again.'
-						);
+						console.error(`There was an error restarting harperdb. ${restart_err}`);
 						process.exit(1);
 					});
 				break;

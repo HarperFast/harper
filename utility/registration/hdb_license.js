@@ -83,8 +83,6 @@ function validateLicense(license_key, company) {
 		valid_date: false,
 		valid_machine: false,
 		exp_date: null,
-		storage_type: terms.STORAGE_TYPES_ENUM.LMDB,
-		api_call: terms.LICENSE_VALUES.API_CALL_DEFAULT,
 		ram_allocation: terms.RAM_ALLOCATION_ENUM.DEFAULT,
 		version: terms.LICENSE_VALUES.VERSION_DEFAULT,
 	};
@@ -145,9 +143,7 @@ function validateLicense(license_key, company) {
 		if (isNaN(decrypted)) {
 			try {
 				license_obj = JSON.parse(decrypted);
-				license_validation_object.api_call = license_obj.api_call;
 				license_validation_object.version = license_obj.version;
-				license_validation_object.storage_type = license_obj.storage_type;
 				license_validation_object.exp_date = license_obj.exp_date;
 
 				if (isNaN(license_validation_object.exp_date)) {
@@ -214,7 +210,6 @@ function checkOldLicense(license, fingerprint) {
  */
 function licenseSearch() {
 	let license_values = new License();
-	license_values.api_call = 0;
 	let licenses = [];
 
 	try {
@@ -243,24 +238,17 @@ function licenseSearch() {
 			) {
 				license_values.exp_date =
 					license_validation.exp_date > license_values.exp_date ? license_validation.exp_date : license_values.exp_date;
-				license_values.api_call += license_validation.api_call;
 				license_values.ram_allocation = license_validation.ram_allocation;
-				license_values.storage_type = license_validation.storage_type;
 				license_values.enterprise = true;
 			}
 		} catch (e) {
 			log.error('There was an error parsing the license string.');
 			log.error(e);
-			license_values.api_call = terms.LICENSE_VALUES.API_CALL_DEFAULT;
 			license_values.ram_allocation = terms.RAM_ALLOCATION_ENUM.DEFAULT;
-			license_values.storage_type = terms.STORAGE_TYPES_ENUM.LMDB;
 			license_values.enterprise = false;
 		}
 	}
 
-	if (license_values.api_call === 0) {
-		license_values.api_call = terms.LICENSE_VALUES.API_CALL_DEFAULT;
-	}
 	current_license = license_values;
 	return license_values;
 }

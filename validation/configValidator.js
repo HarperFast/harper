@@ -108,6 +108,7 @@ function configValidator(config_json) {
 				certificateAuthority: pem_file_constraints,
 				privateKey: pem_file_constraints,
 				insecure: boolean.required(),
+				verify: boolean.optional(),
 			}),
 			user: string.optional().empty(null),
 		}).required();
@@ -224,13 +225,6 @@ function doesPathExist(path_to_check) {
 
 function validatePemFile(value, helpers) {
 	if (value === null) return;
-
-	Joi.assert(
-		value,
-		string
-			.pattern(/^[\\\/]$|([\\\/][a-zA-Z_0-9\:-]+)+\.pem+$/)
-			.messages({ 'string.pattern.base': 'must be a valid directory path and specify a .pem file' })
-	);
 
 	const does_exist_msg = doesPathExist(value);
 	if (does_exist_msg) {

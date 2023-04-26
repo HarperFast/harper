@@ -27,7 +27,7 @@ const terms = require('../../utility/hdbTerms');
 const { hdb_errors, handleHDBError } = require('../../utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
 const reg = require('../../utility/registration/registrationHandler');
-const stop = require('../../bin/stop');
+const restart = require('../../bin/restart');
 const util = require('util');
 const insert = require('../../dataLayer/insert');
 const global_schema = require('../../utility/globalSchema');
@@ -41,8 +41,8 @@ const npm_utilities = require('../../utility/npmUtilities');
 
 const operation_function_caller = require(`../../utility/OperationFunctionCaller`);
 
-const p_search_search_by_hash = util.promisify(search.searchByHash);
-const p_search_search_by_value = util.promisify(search.searchByValue);
+const p_search_search_by_hash = search.searchByHash;
+const p_search_search_by_value = search.searchByValue;
 const p_search_search = util.promisify(search.search);
 const p_sql_evaluate_sql = util.promisify(sql.evaluateSQL);
 
@@ -305,8 +305,8 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.GET_FINGERPRINT, new OperationFunctionObject(reg.getFingerprint));
 	op_func_map.set(terms.OPERATIONS_ENUM.SET_LICENSE, new OperationFunctionObject(reg.setLicense));
 	op_func_map.set(terms.OPERATIONS_ENUM.GET_REGISTRATION_INFO, new OperationFunctionObject(reg.getRegistrationInfo));
-	op_func_map.set(terms.OPERATIONS_ENUM.RESTART, new OperationFunctionObject(stop.restart));
-	op_func_map.set(terms.OPERATIONS_ENUM.RESTART_SERVICE, new OperationFunctionObject(stop.restartService));
+	op_func_map.set(terms.OPERATIONS_ENUM.RESTART, new OperationFunctionObject(restart.restart));
+	op_func_map.set(terms.OPERATIONS_ENUM.RESTART_SERVICE, new OperationFunctionObject(restart.restartService));
 	op_func_map.set(terms.OPERATIONS_ENUM.CATCHUP, new OperationFunctionObject(catchup));
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.SYSTEM_INFORMATION,

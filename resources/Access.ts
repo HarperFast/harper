@@ -1,3 +1,5 @@
+import { Resource } from './Resource';
+
 const QUERY_PARSER = /([^?&|=<>!()]+)([&|=<>!()]*)/g;
 const SYMBOL_OPERATORS = {
 	'<': 'lt',
@@ -21,7 +23,7 @@ class AccessError extends Error {
 }
 
 export class DefaultAccess {
-	constructor(public request, public resource) {}
+	constructor(public request, public resource: Resource) {}
 	get user() {
 		return this.request.user;
 	}
@@ -45,21 +47,24 @@ export class DefaultAccess {
 	}
 	async put(content) {
 		// TODO: May want to parse search/query part of URL and pass it through
+		const search = this.request.search;
+		let query;
+		if (search) query = this.parseQuery(search);
 		await this.resource.loadRecord();
 		const updated_data = await content;
 		if (this.resource.allowUpdate(this.request.user, updated_data)) {
 			this.resource.updated = true;
-			return this.resource.put(updated_data);
+			return this.resource.put(updated_data, query);
 		} else {
 			throw new AccessError(this.user);
 		}
 	}
 	async patch(content) {
+		await this.resource.loadRecord();
 		const updated_data = await content;
-		if (this.resource.allowUpdate(this.request.user, updated_data, true)) {
-			for (const key in updated_data) {
-				this.resource.set(key, updated_data[key]);
-			}
+		if (this.resource.allowUpdate(this.request.user, updated_data)) {
+			this.resource.updated = true;
+			return this.resource.put(updated_data, { select: Object.keys(updated_data) });
 		} else {
 			throw new AccessError(this.user);
 		}

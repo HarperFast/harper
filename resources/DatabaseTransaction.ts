@@ -32,6 +32,9 @@ export class DatabaseTransaction {
 	addWrite(operation) {
 		this.writes.push(operation);
 	}
+	get hasWritesToCommit() {
+		return this.writes.length > 0 || this.updatingRecords?.length > 0;
+	}
 
 	recordRead(store, key, version, lock) {
 		this.conditions.push({ store, key, version, lock });

@@ -27,8 +27,8 @@ const { handleHDBError, hdb_errors } = require('../../utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
 
 //Promisified functions
-const p_search_by_value = promisify(search.searchByValue);
-const p_search_search_by_hash = promisify(search.searchByHash);
+const p_search_by_value = search.searchByValue;
+const p_search_search_by_hash = search.searchByHash;
 const p_insert = insert.insert;
 const p_sql_evaluate = promisify(hdb_sql.evaluateSQL);
 const p_insert_update = insert.update;

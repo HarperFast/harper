@@ -106,12 +106,7 @@ async function csvDataLoad(json_message, nats_msg_header) {
 			parse_results.data
 		);
 
-		bulk_load_result = await op_func_caller.callOperationFunctionAsAwait(
-			callBulkFileLoad,
-			converted_msg,
-			postCSVLoadFunction.bind(null, parse_results.meta.fields),
-			nats_msg_header
-		);
+		bulk_load_result = await op_func_caller.callOperationFunctionAsAwait(callBulkFileLoad, converted_msg, null);
 
 		if (bulk_load_result.message === CSV_NO_RECORDS_MSG) {
 			return CSV_NO_RECORDS_MSG;
@@ -300,7 +295,7 @@ async function downloadFileFromS3(s3_file_name, json_message) {
 		await fs.mkdirp(TEMP_DOWNLOAD_DIR);
 		await fs.writeFile(`${TEMP_DOWNLOAD_DIR}/${s3_file_name}`, '', { flag: 'a+' });
 		let tempFileStream = await fs.createWriteStream(tempDownloadLocation);
-		let s3Stream = AWSConnector.getFileStreamFromS3(json_message);
+		let s3Stream = await AWSConnector.getFileStreamFromS3(json_message);
 
 		await new Promise((resolve, reject) => {
 			s3Stream.on('error', function (err) {
@@ -523,7 +518,7 @@ async function insertChunk(json_message, insert_results, reject, results, parser
 		let bulk_load_chunk_result = await op_func_caller.callOperationFunctionAsAwait(
 			callBulkFileLoad,
 			converted_msg,
-			postCSVLoadFunction.bind(null, fields)
+			null
 		);
 		insert_results.records += bulk_load_chunk_result.records;
 		insert_results.number_written += bulk_load_chunk_result.number_written;
@@ -771,54 +766,6 @@ async function bulkFileLoad(records, schema, table, action) {
 		};
 	} catch (err) {
 		throw buildTopLevelErrMsg(err);
-	}
-}
-
-async function postCSVLoadFunction(fields, orig_bulk_msg, result, nats_msg_header) {
-	try {
-		if (orig_bulk_msg.data.length === 0) {
-			return;
-		}
-
-		if (!env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
-			return;
-		}
-
-		let unparse_results = papa_parse.unparse(orig_bulk_msg.data, {
-			header: true,
-			skipEmptyLines: true,
-			columns: fields,
-		});
-
-		let username = undefined;
-		if (orig_bulk_msg.hdb_user && orig_bulk_msg.hdb_user.username) {
-			username = orig_bulk_msg.hdb_user.username;
-		}
-
-		let transaction = {
-			operation: 'csv_data_load',
-			action: orig_bulk_msg.action ? orig_bulk_msg.action : 'insert',
-			schema: orig_bulk_msg.schema,
-			table: orig_bulk_msg.table,
-			data: unparse_results,
-			__origin: new ClusteringOriginObject(
-				result.txn_time,
-				username,
-				env.get(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY)
-			),
-		};
-
-		await nats_utils.publishToStream(
-			`${nats_terms.SUBJECT_PREFIXES.TXN}.${orig_bulk_msg.schema}.${orig_bulk_msg.table}`,
-			crypto_hash.createNatsTableStreamName(orig_bulk_msg.schema, orig_bulk_msg.table),
-			nats_msg_header,
-			transaction
-		);
-
-		delete result.new_attributes;
-	} catch (err) {
-		// If an error occurs after the CSV load has happened we don't want to interfere with the original operation so the error is just logged.
-		logger.error(err);
 	}
 }
 

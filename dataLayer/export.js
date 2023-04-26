@@ -5,7 +5,6 @@ const sql = require('../sqlTranslator/index');
 const AWSConnector = require('../utility/AWS/AWSConnector');
 const { AsyncParser, Transform } = require('json2csv');
 const stream = require('stream');
-const events = require('events');
 const hdb_utils = require('../utility/common_utils');
 const fs = require('fs-extra');
 const path = require('path');
@@ -15,6 +14,7 @@ const hdb_common = require('../utility/common_utils');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const { streamAsJSON } = require('../server/serverHelpers/JSONStream');
+const { Upload } = require('@aws-sdk/lib-storage');
 
 const VALID_SEARCH_OPERATIONS = ['search_by_value', 'search_by_hash', 'sql'];
 const VALID_EXPORT_FORMATS = ['json', 'csv'];
@@ -27,8 +27,8 @@ const S3_JSON_EXPORT_CHUNK_SIZE = 1000;
 const LOCAL_JSON_EXPORT_SIZE = 1000;
 
 // Promisified function
-const p_search_by_hash = promisify(search.searchByHash);
-const p_search_by_value = promisify(search.searchByValue);
+const p_search_by_hash = search.searchByHash;
+const p_search_by_value = search.searchByValue;
 const p_sql = promisify(sql.evaluateSQL);
 const stream_finished = promisify(stream.finished);
 
@@ -221,6 +221,10 @@ async function export_to_s3(export_object) {
 		throw handleHDBError(new Error(), HDB_ERROR_MSGS.MISSING_VALUE('key'), HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
+	if (hdb_utils.isEmptyOrZeroLength(export_object.s3.region)) {
+		throw handleHDBError(new Error(), HDB_ERROR_MSGS.MISSING_VALUE('region'), HTTP_STATUS_CODES.BAD_REQUEST);
+	}
+
 	let error_message = exportCoreValidation(export_object);
 	if (!hdb_utils.isEmpty(error_message)) {
 		throw handleHDBError(new Error(), error_message, HTTP_STATUS_CODES.BAD_REQUEST);
@@ -238,7 +242,11 @@ async function export_to_s3(export_object) {
 	}
 
 	let s3_upload_results = undefined;
-	let s3 = AWSConnector.getS3AuthObj(export_object.s3.aws_access_key_id, export_object.s3.aws_secret_access_key);
+	let s3 = await AWSConnector.getS3AuthObj(
+		export_object.s3.aws_access_key_id,
+		export_object.s3.aws_secret_access_key,
+		export_object.s3.region
+	);
 	let s3_name;
 	let pass_through = new stream.PassThrough();
 
@@ -291,16 +299,13 @@ async function export_to_s3(export_object) {
 		throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_VALUE('format'), HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	try {
-		//The AWS API supports promises with the promise() ending.
-		s3_upload_results = await s3
-			.upload({ Bucket: export_object.s3.bucket, Key: s3_name, Body: pass_through })
-			.promise();
-	} catch (err) {
-		hdb_logger.error(err);
-		throw err;
-	}
-	return s3_upload_results;
+	// Multipart upload to S3
+	// https://github.com/aws/aws-sdk-js-v3/tree/main/lib/lib-storage
+	const parallel_upload = new Upload({
+		client: s3,
+		params: { Bucket: export_object.s3.bucket, Key: s3_name, Body: pass_through },
+	});
+	return parallel_upload.done();
 }
 
 /**
@@ -310,7 +315,7 @@ async function export_to_s3(export_object) {
  */
 function toCsvStream(data) {
 	// ensure that we pass it an iterable
-	let read_stream = stream.Readable.from((data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) ? data : [data]);
+	let read_stream = stream.Readable.from(data?.[Symbol.iterator] || data?.[Symbol.asyncIterator] ? data : [data]);
 	let options = {};
 	let transform_options = { objectMode: true };
 	// Create a json2csv stream transform.

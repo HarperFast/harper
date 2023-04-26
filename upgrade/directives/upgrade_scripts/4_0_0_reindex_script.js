@@ -7,7 +7,6 @@ const { insertRecords } = require('../../../utility/lmdb/writeUtility');
 const lmdb_common = require('../../../utility/lmdb/commonUtility');
 const lmdb_terms = require('../../../utility/lmdb/terms');
 const hdb_common = require('../../../utility/common_utils');
-const { STORAGE_TYPES_ENUM } = require('../../../utility/hdbTerms');
 const logger = require('../../../utility/logging/harper_logger');
 const hdb_util = require('../../../utility/common_utils');
 const fs = require('fs-extra');

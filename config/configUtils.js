@@ -115,22 +115,20 @@ function setSchemasConfig(config_doc, schema_conf_json) {
 			const schema = Object.keys(schema_conf)[0];
 			if (schema_conf[schema].hasOwnProperty(SCHEMAS_PARAM_CONFIG.TABLES)) {
 				for (const table in schema_conf[schema][SCHEMAS_PARAM_CONFIG.TABLES]) {
-					const table_path_var = schema_conf[schema][SCHEMAS_PARAM_CONFIG.TABLES][table].hasOwnProperty(
-						SCHEMAS_PARAM_CONFIG.PATH
-					)
-						? SCHEMAS_PARAM_CONFIG.PATH
-						: SCHEMAS_PARAM_CONFIG.AUDIT_PATH;
-					const table_path = schema_conf[schema][SCHEMAS_PARAM_CONFIG.TABLES][table][table_path_var];
-					const keys = [CONFIG_PARAMS.SCHEMAS, schema, SCHEMAS_PARAM_CONFIG.TABLES, table, table_path_var];
-					config_doc.hasIn(keys) ? config_doc.setIn(keys, table_path) : config_doc.addIn(keys, table_path);
+					// Table path var can be 'path' or 'auditPath'
+					for (const table_path_var in schema_conf[schema][SCHEMAS_PARAM_CONFIG.TABLES][table]) {
+						const table_path = schema_conf[schema][SCHEMAS_PARAM_CONFIG.TABLES][table][table_path_var];
+						const keys = [CONFIG_PARAMS.SCHEMAS, schema, SCHEMAS_PARAM_CONFIG.TABLES, table, table_path_var];
+						config_doc.hasIn(keys) ? config_doc.setIn(keys, table_path) : config_doc.addIn(keys, table_path);
+					}
 				}
 			} else {
-				const schema_path_var = schema_conf[schema].hasOwnProperty(SCHEMAS_PARAM_CONFIG.PATH)
-					? SCHEMAS_PARAM_CONFIG.PATH
-					: SCHEMAS_PARAM_CONFIG.AUDIT_PATH;
-				const schema_path = schema_conf[schema][schema_path_var];
-				const keys = [CONFIG_PARAMS.SCHEMAS, schema, schema_path_var];
-				config_doc.hasIn(keys) ? config_doc.setIn(keys, schema_path) : config_doc.addIn(keys, schema_path);
+				// Schema path var can be 'path' or 'auditPath'
+				for (const schema_path_var in schema_conf[schema]) {
+					const schema_path = schema_conf[schema][schema_path_var];
+					const keys = [CONFIG_PARAMS.SCHEMAS, schema, schema_path_var];
+					config_doc.hasIn(keys) ? config_doc.setIn(keys, schema_path) : config_doc.addIn(keys, schema_path);
+				}
 			}
 		}
 	} catch (err) {
@@ -262,7 +260,7 @@ function checkForUpdatedConfig(config_doc, config_file_path) {
 	const root_path = config_doc.getIn(['rootPath']);
 	let update_file = false;
 	if (!config_doc.hasIn(['storage', 'path'])) {
-		config_doc.setIn(['storage', 'path'], path.join(root_path, 'schema'));
+		config_doc.setIn(['storage', 'path'], path.join(root_path, 'database'));
 		update_file = true;
 	}
 
@@ -273,6 +271,11 @@ function checkForUpdatedConfig(config_doc, config_file_path) {
 
 	if (!config_doc.hasIn(['logging', 'rotation', 'path'])) {
 		config_doc.setIn(['logging', 'rotation', 'path'], path.join(root_path, 'log'));
+		update_file = true;
+	}
+
+	if (!config_doc.hasIn(['clustering', 'tls', 'verify'])) {
+		config_doc.setIn(['clustering', 'tls', 'verify'], true);
 		update_file = true;
 	}
 
