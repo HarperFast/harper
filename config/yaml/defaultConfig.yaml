@@ -83,11 +83,14 @@ operationsApi:
     privateKey: null
 mqtt:
   port: 1883
+  securePort: 8883
   webSocket: true
 http:
   threads: null
   sessionAffinity: null
 rootPath: null
+serverPlugins:
+ # add server plugins here
 storage:
   writeAsync: false
   caching: true

@@ -578,6 +578,7 @@ const CONFIG_PARAMS = {
 	SCHEMAS: 'schemas',
 	MQTT_PORT: 'mqtt_port',
 	MQTT_WEBSOCKET: 'mqtt_webSocket',
+	MQTT_SECUREPORT: 'mqtt_securePort',
 	SERVER_PLUGINS: 'serverPlugins',
 };
 
@@ -701,6 +702,7 @@ const CONFIG_PARAM_MAP = {
 	storage_path: CONFIG_PARAMS.STORAGE_PATH,
 	mqtt_port: CONFIG_PARAMS.MQTT_PORT,
 	mqtt_websocket: CONFIG_PARAMS.MQTT_WEBSOCKET,
+	mqtt_secureport: CONFIG_PARAMS.MQTT_SECUREPORT,
 	serverplugins: CONFIG_PARAMS.SERVER_PLUGINS,
 };
 for (let key in CONFIG_PARAMS) {
