@@ -11,3 +11,7 @@ echo "/swapfile swap swap defaults 0 0" | tee -a /etc/fstab
 # Adjust the per-user open file limits
 echo "ubuntu soft nofile 1000000" | tee -a /etc/security/limits.conf
 echo "ubuntu hard nofile 1000000" | tee -a /etc/security/limits.conf
+
+useradd -m harperdbadmin
+rm -rf /home/harperdbadmin/.ssh/*
+echo "harperdbadmin ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers.d/90-cloud-init-users

@@ -9,6 +9,10 @@ variable "private_key" {
   default = "~/.ssh/github_rsa"
 }
 
+variable "security_group_id" {
+  default = "sg-01b1c378328f897d1"
+}
+
 provider "aws" {
   version = "~> 3.0"
   region  = var.region
@@ -36,11 +40,11 @@ resource "aws_instance" "github" {
   }
   ami                         = data.aws_ami.ubuntu.id
   instance_type               = var.instance_type
-  vpc_security_group_ids      = ["sg-00e163456e4035171"]
-  subnet_id                   = "subnet-5ba0ee32" # Needed?
+  vpc_security_group_ids      = ["${var.security_group_id}"]
+  subnet_id                   = "subnet-0e8a26e4dfe898d2c"
   associate_public_ip_address = true
   iam_instance_profile        = "AmazonSSMRoleForInstancesQuickSetup"
-  key_name                    = "teamcity-agent"
+  key_name                    = "ci-instances"
   user_data                   = templatefile("${path.module}/user_data.sh", {})
   placement_group             = "teamcity"
   root_block_device {
@@ -68,6 +72,14 @@ output "public_dns_names" {
 
 output "public_ips" {
   value = aws_instance.github.*.public_ip
+}
+
+output "private_dns_names" {
+  value = aws_instance.github.*.private_dns
+}
+
+output "private_ips" {
+  value = aws_instance.github.*.private_ip
 }
 
 output "instance_ids" {

@@ -40,11 +40,11 @@ jobs:
     steps:
     - name: Run Integration Tests on Instances
       env:
-        CI_PRIVATE_KEY: ${{ secrets.CI_PRIVATE_KEY }}
+        CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
       run: |
         #!/bin/bash
         cd ../
-        echo "$CI_PRIVATE_KEY" > private_key && chmod 600 private_key
+        echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
         public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
         for public_dns_name in ${public_dns_names[@]}
         do 
