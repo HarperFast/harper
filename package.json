@@ -1,6 +1,6 @@
 {
   "name": "harperdb",
-  "version": "4.1.0-rc.7",
+  "version": "4.1.0",
   "description": "HarperDB is a distributed SQL & NoSQL data platform focused on speed, flexibility, and ease of use.",
   "keywords": [
     "database",
