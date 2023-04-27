@@ -86,10 +86,10 @@ function getNATSReplicator(table_name, db_name) {
 			});
 		}
 		getNATSTransaction(options): NATSTransaction {
-			let nats_transaction: NATSTransaction = this.transaction.nats;
+			let nats_transaction: NATSTransaction = this.transactions.nats;
 			if (!nats_transaction) {
-				this.transaction.push(
-					(nats_transaction = this.transaction.nats = new NATSTransaction(this.transaction, options))
+				this.transactions.push(
+					(nats_transaction = this.transactions.nats = new NATSTransaction(this.transactions, options))
 				);
 				nats_transaction.user = this.user;
 			}
@@ -122,7 +122,7 @@ class NATSTransaction {
 						db, // Do we need createNatsTableStreamName for just a database name?
 						this.options?.nats_msg_header,
 						{
-							timestamp: this.transaction._txnTime,
+							timestamp: this.transaction.timestamp,
 							user: this.user,
 							writes,
 						}
@@ -154,7 +154,7 @@ class NATSTransaction {
 							records,
 							__origin: {
 								user: this.user,
-								timestamp: this.transaction._txnTime,
+								timestamp: this.transaction.timestamp,
 							},
 						}
 					);

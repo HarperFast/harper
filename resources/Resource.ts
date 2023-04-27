@@ -2,7 +2,7 @@ import { ResourceInterface } from './ResourceInterface';
 import { getTables } from './tableLoader';
 import { Table } from './Table';
 import { randomUUID } from 'crypto';
-import { DatabaseTransaction } from './DatabaseTransaction';
+import { DatabaseTransaction, Transaction } from './DatabaseTransaction';
 import { DefaultAccess } from './Access';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 let tables;
@@ -21,12 +21,13 @@ export class Resource implements ResourceInterface {
 	property?: string;
 	lastModificationTime = 0;
 	inUseTables = {};
-	transaction: any;
+	transactions: Transaction[] & { timestamp: number };
+	static transactions: Transaction[] & { timestamp: number };
 	constructor(identifier?, context?) {
 		this.id = identifier;
 		this.request = context?.request;
 		this.user = this.request?.user;
-		this.transaction = context?.transaction;
+		this.transactions = context?.transactions;
 	}
 
 	getById(id: any, options?: any): Promise<{}> {
@@ -49,35 +50,30 @@ export class Resource implements ResourceInterface {
 	 * Commit the resource transaction(s). This commits any transactions that have started as part of the resolution
 	 * of this resource, and frees any read transaction.
 	 */
-	async commit(flush = true): Promise<{ txnTxn: number }[]> {
+	async commit(flush = true): Promise<{ txnTime: number }> {
 		const commits = [];
-		let resolved;
 		// this can grow during the commit phase, so need to always check length
-		for (let i = 0; i < this.transaction.length; ) {
-			for (let l = this.transaction.length; i < l; i++) {
-				const txn = this.transaction[i];
+		for (let i = 0; i < this.transactions.length; ) {
+			for (let l = this.transactions.length; i < l; i++) {
+				const txn = this.transactions[i];
 				// TODO: If we have multiple commits in a single resource instance, need to maintain
 				// databases with waiting flushes to resolve at the end when a flush is requested.
 				commits.push(txn.commit(flush));
 			}
-			resolved = await Promise.all(commits);
+			await Promise.all(commits);
 		}
-		return { txnTime: this.transaction._txnTime };
+		return { txnTime: this.transactions.timestamp };
 	}
 	static commit = Resource.prototype.commit;
 	abort() {
-		for (const env_path in this.transaction) {
-			// TODO: maintain this array ourselves so we don't need to key-ify
-			const env_txn = this.transaction[env_path];
-			env_txn.abort?.(); // done with the read snapshot txn
+		for (const txn of this.transactions) {
+			txn.abort?.();
 		}
 	}
 	static abort = Resource.prototype.abort;
 	doneReading() {
-		for (const env_path in this.transaction) {
-			// TODO: maintain this array ourselves so we don't need to key-ify
-			const env_txn = this.transaction[env_path];
-			env_txn.doneReading(); // done with the read snapshot txn
+		for (const txn of this.transactions) {
+			txn.doneReading?.();
 		}
 	}
 	static async get(identifier: string | number): Promise<object>;
@@ -156,7 +152,7 @@ export class Resource implements ResourceInterface {
 	static resourceFromRecord(record) {
 		const resource = new this(record[this.primaryKey]);
 		resource.record = record;
-		resource.transaction = this.transaction;
+		resource.transactions = this.transactions;
 		return resource;
 	}
 	static getResource(path: string, resource_info: object) {
@@ -206,8 +202,8 @@ export class Resource implements ResourceInterface {
 		const key = schema_name ? schema_name + '/' + table_name : table_name;
 		const env_path = table.envPath;
 		const env_txn =
-			this.transaction[env_path] ||
-			(this.transaction[env_path] = new DatabaseTransaction(table.primaryStore, this.user, table.auditStore));
+			this.transactions[env_path] ||
+			(this.transactions[env_path] = new DatabaseTransaction(table.primaryStore, this.user, table.auditStore));
 		return (
 			this.inUseTables[key] ||
 			(this.inUseTables[key] = table.transaction(this.request, env_txn, env_txn.getReadTxn(), this))
@@ -233,15 +229,15 @@ export class Resource implements ResourceInterface {
 		throw new Error('Can not set transaction on base Resource class');
 	}
 	static transact(callback, options?) {
-		if (this.transaction) return callback(this);
+		if (this.transactions) return callback(this);
 		const name = this.name + ' (txn)';
-		const transaction = [];
-		transaction._txnTime = options?.timestamp || getNextMonotonicTime();
+		const transactions = [];
+		transactions.timestamp = options?.timestamp || getNextMonotonicTime();
 
 		const txn_resource = class extends this {
 			// @ts-ignore
 			static name = name;
-			static transaction = transaction;
+			static transactions = transactions;
 			static inUseTables = {};
 		};
 		try {
@@ -258,7 +254,7 @@ export class Resource implements ResourceInterface {
 					}
 				);
 			else {
-				if (txn_resource.transaction.some((transaction) => transaction.hasWritesToCommit))
+				if (txn_resource.transactions.some((transaction) => transaction.hasWritesToCommit))
 					return txn_resource.commit().then(() => result);
 				txn_resource.abort();
 				return result;
@@ -269,11 +265,11 @@ export class Resource implements ResourceInterface {
 		}
 	}
 	async transact(callback, options?) {
-		if (this.transaction) return callback(this);
+		if (this.transactions) return callback(this);
 		try {
-			const transaction = [];
-			transaction._txnTime = options?.timestamp || getNextMonotonicTime();
-			this.transaction = transaction;
+			const transactions = [];
+			transactions.timestamp = options?.timestamp || getNextMonotonicTime();
+			this.transactions = transactions;
 			return await callback(this);
 		} finally {
 			await this.commit();

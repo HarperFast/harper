@@ -6,6 +6,7 @@ const clone = require('clone');
 const common_utils = require('../utility/common_utils');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
+const { databases } = require('../resources/tableLoader');
 
 //exclusion list for validation on group bys
 const custom_aggregators = ['DISTINCT_ARRAY'];
@@ -97,11 +98,11 @@ class SelectValidator {
 			throw `schema not defined for table ${table.tableid}`;
 		}
 
-		if (!global.hdb_schema[table.databaseid]) {
+		if (!databases[table.databaseid]) {
 			throw handleHDBError(new Error(), HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(table.databaseid), HTTP_STATUS_CODES.NOT_FOUND);
 		}
 
-		if (!global.hdb_schema[table.databaseid][table.tableid]) {
+		if (!databases[table.databaseid][table.tableid]) {
 			throw handleHDBError(
 				new Error(),
 				HDB_ERROR_MSGS.TABLE_NOT_FOUND(table.databaseid, table.tableid),
@@ -110,7 +111,7 @@ class SelectValidator {
 		}
 
 		//let the_table = clone(table);
-		let schema_table = global.hdb_schema[table.databaseid][table.tableid];
+		let schema_table = databases[table.databaseid][table.tableid];
 		/*TODO rather than putting every attribute in an array we will create a Map there will be a map element for every table and every table alias
  (this will create duplicate map elements) this will have downstream effects in comparison functions like findColumn*/
 		schema_table.attributes.forEach((attribute) => {

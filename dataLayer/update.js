@@ -66,7 +66,7 @@ function createUpdateRecord(columns) {
 
 		columns.forEach((column) => {
 			if ('value' in column.expression) {
-				record[column.column.columnid] = column.expression.value;
+				record[column.column.columnid] = column.expression.value ?? null;
 			} else {
 				record[column.column.columnid] = alasql.compile(
 					`SELECT ${column.expression.toString()} AS [${terms.FUNC_VAL}] FROM ?`

@@ -4,7 +4,7 @@ import { UPDATES_PROPERTY } from '../utility/hdbTerms';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 
 const MAX_RETRIES = 10;
-export class DatabaseTransaction {
+export class DatabaseTransaction implements Transaction {
 	conditions = []; // the set of reads that were made in this txn, that need to be verified to commit the writes
 	writes = []; // the set of writes to commit if the conditions are met
 	updatingRecords?: any[];
@@ -130,6 +130,10 @@ export class DatabaseTransaction {
 interface CommitResolution {
 	txnTime: number;
 	resolution: boolean;
+}
+export interface Transaction {
+	commit(flush?: boolean): Promise<CommitResolution>;
+	abort?(flush?: boolean): any;
 }
 export class ImmediateTransaction {
 	addWrite(operation) {

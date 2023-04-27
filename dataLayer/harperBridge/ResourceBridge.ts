@@ -121,9 +121,21 @@ export class ResourceBridge extends LMDBBridge {
 					skipped.push(record[Table.primaryKey]);
 					continue;
 				}
-				for (const key in existing_record) {
-					// if the record is missing any properties, fill them in from the existing record
-					if (!Object.prototype.hasOwnProperty.call(record, key)) record[key] = existing_record[key];
+				for (const key in record) {
+					let value = record[key];
+					if (typeof value === 'function') {
+						const value_results = value([[existing_record]]);
+						if (Array.isArray(value_results)) {
+							value = value_results[0].func_val;
+							record[key] = value;
+						}
+					}
+				}
+				if (existing_record) {
+					for (const key in existing_record) {
+						// if the record is missing any properties, fill them in from the existing record
+						if (!Object.prototype.hasOwnProperty.call(record, key)) record[key] = existing_record[key];
+					}
 				}
 				await txn_table.put(record[Table.primaryKey], record);
 				keys.push(record[Table.primaryKey]);
@@ -154,22 +166,7 @@ export class ResourceBridge extends LMDBBridge {
 	 * @param {SearchByHashObject} search_object
 	 */
 	searchByHash(search_object) {
-		return getTable(search_object).transact((txn_table) => {
-			let select = search_object.get_attributes;
-			if (select[0] === '*') select = txn_table.attributes.map((attribute) => attribute.name);
-			return search_object.hash_values
-				.map(async (key) => {
-					const record = await txn_table.get(key, { lazy: Boolean(select) });
-					if (record) {
-						const reduced_record = {};
-						for (const property of select) {
-							reduced_record[property] = record[property] ?? null;
-						}
-						return reduced_record;
-					}
-				})
-				.filter((record) => record);
-		});
+		return getRecords(search_object);
 	}
 
 	/**
@@ -178,14 +175,14 @@ export class ResourceBridge extends LMDBBridge {
 	 */
 	async getDataByHash(search_object) {
 		const map = new Map();
-		const table = getTable(search_object);
-		for await (const record of this.searchByHash(search_object)) {
-			map.set(record[table.primaryKey], record);
+		search_object._returnKeyValue = true;
+		for await (const { key, value } of getRecords(search_object, true)) {
+			map.set(key, value);
 		}
 		return map;
 	}
 
-	searchByValue(search_object: SearchObject) {
+	searchByValue(search_object: SearchObject, comparator?) {
 		const table = getTable(search_object);
 		const conditions =
 			search_object.search_value == '*'
@@ -195,6 +192,7 @@ export class ResourceBridge extends LMDBBridge {
 							attribute: search_object.search_attribute,
 							value: search_object.search_value,
 							get_attributes: search_object.get_attributes,
+							comparator,
 						},
 				  ];
 		return table.search({
@@ -203,10 +201,10 @@ export class ResourceBridge extends LMDBBridge {
 			conditions,
 		});
 	}
-	async getDataByValue(search_object: SearchObject) {
+	async getDataByValue(search_object: SearchObject, comparator) {
 		const map = new Map();
 		const table = getTable(search_object);
-		for await (const record of this.searchByValue(search_object)) {
+		for await (const record of this.searchByValue(search_object, comparator)) {
 			map.set(record[table.primaryKey], record);
 		}
 		return map;
@@ -216,6 +214,42 @@ export class ResourceBridge extends LMDBBridge {
 	}
 }
 
+/**
+ * Iterator for asynchronous getting ids from an array
+ */
+async function* getRecords(search_object, return_key_value?) {
+	let select = search_object.get_attributes;
+	const table = getTable(search_object);
+	let lazy;
+	if (select[0] === '*') select = table.attributes.map((attribute) => attribute.name);
+	else if (select.length < 3) lazy = true;
+	let txn_table;
+	let resolve_txn;
+	// we need to get the transaction and ensure that the transaction spans the entire duration
+	// of the iteration
+	table.transact(
+		(txn) =>
+			new Promise((resolve) => {
+				txn_table = txn;
+				resolve_txn = resolve;
+			})
+	);
+	try {
+		for (const id of search_object.hash_values) {
+			const record = await txn_table.get(id, { lazy });
+			if (record) {
+				const reduced_record = {};
+				for (const property of select) {
+					reduced_record[property] = record[property] ?? null;
+				}
+				if (return_key_value) yield { key: id, value: reduced_record };
+				else yield reduced_record;
+			}
+		}
+	} finally {
+		resolve_txn();
+	}
+}
 function getTable(operation_object) {
 	const database_name = operation_object.database || operation_object.schema || DEFAULT_DATABASE;
 	const tables = getDatabases()[database_name];

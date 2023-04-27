@@ -185,7 +185,7 @@ export function makeTable(options) {
 		constructor(identifier, resource_info) {
 			// coerce if we know this is supposed to be a number
 			super(identifier, resource_info);
-			if (this.transaction) assignDBTxn(this);
+			if (this.transactions) assignDBTxn(this);
 			if (primary_key_attribute.is_number && this.id != null) this.id = +this.id;
 		}
 		updateModificationTime(latest = Date.now()) {
@@ -467,7 +467,7 @@ export function makeTable(options) {
 			// use optimistic locking to only commit if the existing record state still holds true.
 			// this is superior to using an async transaction since it doesn't require JS execution
 			//  during the write transaction.
-			const txn_time = this.transaction._txnTime;
+			const txn_time = this.transactions.timestamp;
 			if (TableResource.updatedTimeProperty) record[TableResource.updatedTimeProperty] = txn_time;
 			if (TableResource.createdTimeProperty && !this.record) record[TableResource.createdTimeProperty] = txn_time;
 			env_txn.addWrite({
@@ -550,7 +550,7 @@ export function makeTable(options) {
 		async delete(options): boolean {
 			const env_txn = this.dbTxn;
 			if (!this.record) return false;
-			const txn_time = this.transaction._txnTime;
+			const txn_time = this.transactions.timestamp;
 			if (this.constructor.Source?.prototype.delete) {
 				const source = (this.source = this.constructor.Source.getResource(this.id, this));
 				await source.loadRecord();
@@ -596,14 +596,14 @@ export function makeTable(options) {
 			return true;
 		}
 		static transact(callback) {
-			if (this.transaction) return callback(this);
+			if (this.transactions) return callback(this);
 			return super.transact((TableTxn) => {
 				assignDBTxn(TableTxn);
 				return callback(TableTxn);
 			});
 		}
 		transact(callback) {
-			if (this.transaction) return callback(this);
+			if (this.transactions) return callback(this);
 			return super.transact(() => {
 				assignDBTxn(this);
 				return callback(this);
@@ -611,7 +611,7 @@ export function makeTable(options) {
 		}
 
 		static search(query, options?): AsyncIterable<any> {
-			if (!this.transaction) return this.transact((txn_resource) => txn_resource.search(query, options));
+			if (!this.transactions) return this.transact((txn_resource) => txn_resource.search(query, options));
 			if (query == null) {
 				// TODO: May have different semantics for /Table vs /Table/
 				query = []; // treat no query as a query for everything
@@ -632,7 +632,7 @@ export function makeTable(options) {
 			conditions = sortBy(conditions, (condition) => {
 				if (condition.estimated_count === undefined) {
 					// skip if it is cached
-					const search_type = condition.type;
+					const search_type = condition.comparator || condition.search_type;
 					if (search_type === lmdb_terms.SEARCH_TYPES.EQUALS) {
 						// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
 						const index = indices[condition.attribute];
@@ -743,7 +743,7 @@ export function makeTable(options) {
 		 * @param options
 		 */
 		async publish(message, options) {
-			const txn_time = this.transaction._txnTime;
+			const txn_time = this.transactions.timestamp;
 			let source_completion;
 			if (!this.source && this.constructor.Source?.prototype.publish) {
 				this.source = await this.constructor.Source.getResource(this.id, this);
@@ -807,7 +807,8 @@ export function makeTable(options) {
 	function idsForCondition(search_condition, transaction) {
 		let start;
 		let end, inclusiveEnd, exclusiveStart, filter;
-		switch (search_condition.type) {
+		const comparator = search_condition.comparator;
+		switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
 			case 'lt':
 				start = true;
 				end = search_condition.value;
@@ -847,11 +848,11 @@ export function makeTable(options) {
 		}
 	}
 	function assignDBTxn(resource) {
-		let db_txn = resource.transaction[database_path];
+		let db_txn = resource.transactions.find((txn) => txn.dbPath === database_path);
 		if (!db_txn) {
 			db_txn = new DatabaseTransaction(primary_store, resource.request?.user, audit_store);
-			resource.transaction[database_path] = db_txn;
-			resource.transaction.push(db_txn);
+			db_txn.dbPath = database_path;
+			resource.transactions.push(db_txn);
 		}
 		resource.dbTxn = db_txn;
 	}
@@ -862,7 +863,7 @@ export function makeTable(options) {
  * @returns {({}) => boolean}
  */
 export function filterByType(search_object) {
-	const search_type = search_object.type;
+	const search_type = search_object.operation;
 	const attribute = search_object.attribute;
 	const value = search_object.value;
 
@@ -910,6 +911,16 @@ function attributesAsObject(attribute_permissions, type) {
 	}
 	return attrs_for_type;
 }
+const ALTERNATE_COMPARATOR_NAMES = {
+	'greater_than': 'gt',
+	'greater_than_equal': 'gte',
+	'less_than': 'lt',
+	'less_than_equal': 'lte',
+	'>': 'gt',
+	'>=': 'gte',
+	'<': 'lt',
+	'<=': 'lte',
+};
 
 function noop() {
 	// prefetch callback
