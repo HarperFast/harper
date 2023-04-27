@@ -13,6 +13,12 @@ on:
       installType:
         type: string
         default: "buildPackage"
+      httpsOn:
+        type: boolean
+        default: false
+      generatePassword:
+        type: boolean
+        default: false
 name: Install and Register HDB on instances
 jobs:
   installAndRegister:
@@ -25,12 +31,20 @@ jobs:
         HDB_ADMIN_PASSWORD: ${{ secrets.HDB_ADMIN_PASSWORD }}
         CLUSTERING_USERNAME: ${{ secrets.CLUSTERING_USERNAME }}
         CLUSTERING_PASSWORD: ${{ secrets.CLUSTERING_PASSWORD }}
-        CI_PRIVATE_KEY: ${{ secrets.CI_PRIVATE_KEY }}
+        CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
       run: |
         #!/bin/bash
         pwd
         cd ../
-        echo "$CI_PRIVATE_KEY" > private_key && chmod 600 private_key
+        echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
+
+        if [[ ${{ inputs.generatePassword }} == "true" ]]
+        then
+          export HDB_ADMIN_PASSWORD="$(openssl rand -base64 24)"
+          export CLUSTERING_PASSWORD="$(openssl rand -base64 24)"
+          echo "!!!HDB_ADMIN_PASSWORD: $HDB_ADMIN_PASSWORD"
+          echo "!!!CLUSTERING_PASSWORD: $CLUSTERING_PASSWORD"
+        fi
 
         public_dns_names="${{ inputs.publicDns }}"
         echo ${public_dns_names[@]}
@@ -66,7 +80,7 @@ jobs:
 
           echo "HarperDB install..."
           cd /home/ubuntu/harperdb/bin
-          node harperdb.js run --TC_AGREEMENT yes --HDB_ROOT /home/ubuntu/hdb --HDB_ADMIN_USERNAME $HDB_ADMIN_USERNAME --HDB_ADMIN_PASSWORD $HDB_ADMIN_PASSWORD --NODE_NAME $(echo "$public_dns_name" | cut -d '.' -f 1) --CLUSTERING_PORT 12345 --CLUSTERING_USER $CLUSTERING_USERNAME --CLUSTERING_PASSWORD $CLUSTERING_PASSWORD --CLUSTERING true --SERVER_PORT 9925 --CUSTOM_FUNCTIONS true --CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT 12345 --LOGGING_LEVEL trace
+          node harperdb.js run --TC_AGREEMENT yes --HDB_ROOT /home/ubuntu/hdb --HDB_ADMIN_USERNAME $HDB_ADMIN_USERNAME --HDB_ADMIN_PASSWORD $HDB_ADMIN_PASSWORD --NODE_NAME $(echo "$public_dns_name" | cut -d '.' -f 1) --CLUSTERING_PORT 12345 --CLUSTERING_USER $CLUSTERING_USERNAME --CLUSTERING_PASSWORD $CLUSTERING_PASSWORD --CLUSTERING true --SERVER_PORT 9925 --CUSTOM_FUNCTIONS true --CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT 12345 --LOGGING_LEVEL trace --OPERATIONSAPI_NETWORK_HTTPS ${{ inputs.httpsOn }} --CUSTOMFUNCTIONS_NETWORK_HTTPS ${{ inputs.httpsOn }}
           
           echo "Register HarperDB..."
           cd /home/ubuntu/harperdb/utility/devops
@@ -81,7 +95,7 @@ jobs:
           npm --loglevel=error install -g harperdb-${{ inputs.harperdbVersion }}.tgz --legacy-peer-deps
 
           echo "HarperDB install..."
-          harperdb start --TC_AGREEMENT yes --HDB_ROOT /home/ubuntu/hdb --HDB_ADMIN_USERNAME $HDB_ADMIN_USERNAME --HDB_ADMIN_PASSWORD $HDB_ADMIN_PASSWORD --NODE_NAME $(echo "$public_dns_name" | cut -d '.' -f 1) --CLUSTERING_PORT 12345 --CLUSTERING_USER $CLUSTERING_USERNAME --CLUSTERING_PASSWORD $CLUSTERING_PASSWORD --CLUSTERING true --SERVER_PORT 9925 --CUSTOM_FUNCTIONS true --CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT 12345 --HARPERDB_FINGERPRINT '${{ secrets.HDB_FINGERPRINT }}' --HARPERDB_LICENSE '${{ secrets.HDB_LICENSE }}' --LOGGING_LEVEL trace
+          harperdb start --TC_AGREEMENT yes --HDB_ROOT /home/ubuntu/hdb --HDB_ADMIN_USERNAME $HDB_ADMIN_USERNAME --HDB_ADMIN_PASSWORD $HDB_ADMIN_PASSWORD --NODE_NAME $(echo "$public_dns_name" | cut -d '.' -f 1) --CLUSTERING_PORT 12345 --CLUSTERING_USER $CLUSTERING_USERNAME --CLUSTERING_PASSWORD $CLUSTERING_PASSWORD --CLUSTERING true --SERVER_PORT 9925 --CUSTOM_FUNCTIONS true --CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT 12345 --HARPERDB_FINGERPRINT '${{ secrets.HDB_FINGERPRINT }}' --HARPERDB_LICENSE '${{ secrets.HDB_LICENSE }}' --LOGGING_LEVEL trace --OPERATIONSAPI_NETWORK_HTTPS ${{ inputs.httpsOn }} --CUSTOMFUNCTIONS_NETWORK_HTTPS ${{ inputs.httpsOn }}
         
         elif [ "${{ inputs.installType }}" == 'none' ];
         then

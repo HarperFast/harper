@@ -12,11 +12,11 @@ jobs:
     steps:
     - name: Download Logs
       env:
-          CI_PRIVATE_KEY: ${{ secrets.CI_PRIVATE_KEY }}
+          CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
       run: |
         #!/bin/bash
         cd ..
-        echo "$CI_PRIVATE_KEY" > private_key && chmod 600 private_key
+        echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
         mkdir logs-artifact
         public_dns_names="${{ inputs.publicDns }}"
         for public_dns_name in ${public_dns_names[@]}
