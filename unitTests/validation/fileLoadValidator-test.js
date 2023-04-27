@@ -112,6 +112,7 @@ describe('Test fileLoadValidator module', () => {
 			aws_secret_access_key: '54321key',
 			bucket: 'test_bucket',
 			key: 'test_file.csv',
+			region: 'us-east-2',
 		},
 	};
 
@@ -196,7 +197,7 @@ describe('Test fileLoadValidator module', () => {
 
 			expect(result).to.be.instanceof(Error);
 			expect(result.message).to.equal(
-				"S3 can't be blank,S3 aws access key id can't be blank,S3 aws secret access key can't be blank,S3 bucket can't be blank,S3 key can't be blank"
+				"S3 can't be blank,S3 aws access key id can't be blank,S3 aws secret access key can't be blank,S3 bucket can't be blank,S3 key can't be blank,S3 region can't be blank"
 			);
 		});
 

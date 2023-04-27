@@ -18,6 +18,7 @@ const remove_node = require('../../utility/clustering/removeNode');
 const configure_cluster = require('../../utility/clustering/configureCluster');
 const purge_stream = require('../../utility/clustering/purgeStream');
 const cluster_status = require('../../utility/clustering/clusterStatus');
+const cluster_network = require('../../utility/clustering/clusterNetwork');
 const routes = require('../../utility/clustering/routes');
 const export_ = require('../../dataLayer/export');
 const op_auth = require('../../utility/operation_authorization');
@@ -26,7 +27,7 @@ const terms = require('../../utility/hdbTerms');
 const { hdb_errors, handleHDBError } = require('../../utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
 const reg = require('../../utility/registration/registrationHandler');
-const stop = require('../../bin/stop');
+const restart = require('../../bin/restart');
 const util = require('util');
 const insert = require('../../dataLayer/insert');
 const global_schema = require('../../utility/globalSchema');
@@ -97,19 +98,19 @@ async function processLocalTransaction(req, operation_function) {
 		post_op_function
 	);
 
-		if (typeof data !== 'object') {
-			data = { message: data };
-		}
-		if (data instanceof Error) {
-			throw data;
-		}
-		if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
-			global_schema.setSchemaDataToGlobal((err) => {
-				if (err) {
-					harper_logger.error(err);
-				}
-			});
-		}
+	if (typeof data !== 'object') {
+		data = { message: data };
+	}
+	if (data instanceof Error) {
+		throw data;
+	}
+	if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
+		global_schema.setSchemaDataToGlobal((err) => {
+			if (err) {
+				harper_logger.error(err);
+			}
+		});
+	}
 
 	return data;
 }
@@ -233,7 +234,10 @@ async function executeJob(json) {
 		let job_runner_message = new job_runner.RunnerMessage(new_job_object, json);
 		await job_runner.parseMessage(job_runner_message);
 
-		return `Starting job with id ${new_job_object.id}`;
+		return {
+			message: `Starting job with id ${new_job_object.id}`,
+			job_id: new_job_object.id,
+		};
 	} catch (err) {
 		let message = `There was an error executing job: ${err.http_resp_msg ? err.http_resp_msg : err}`;
 		harper_logger.error(message);
@@ -283,6 +287,7 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.PURGE_STREAM, new OperationFunctionObject(purge_stream));
 	op_func_map.set(terms.OPERATIONS_ENUM.SET_CONFIGURATION, new OperationFunctionObject(config_utils.setConfiguration));
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_STATUS, new OperationFunctionObject(cluster_status.clusterStatus));
+	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_NETWORK, new OperationFunctionObject(cluster_network));
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_SET_ROUTES, new OperationFunctionObject(routes.setRoutes));
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_GET_ROUTES, new OperationFunctionObject(routes.getRoutes));
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_DELETE_ROUTES, new OperationFunctionObject(routes.deleteRoutes));
@@ -304,8 +309,8 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.GET_FINGERPRINT, new OperationFunctionObject(reg.getFingerprint));
 	op_func_map.set(terms.OPERATIONS_ENUM.SET_LICENSE, new OperationFunctionObject(reg.setLicense));
 	op_func_map.set(terms.OPERATIONS_ENUM.GET_REGISTRATION_INFO, new OperationFunctionObject(reg.getRegistrationInfo));
-	op_func_map.set(terms.OPERATIONS_ENUM.RESTART, new OperationFunctionObject(stop.restart));
-	op_func_map.set(terms.OPERATIONS_ENUM.RESTART_SERVICE, new OperationFunctionObject(stop.restartService));
+	op_func_map.set(terms.OPERATIONS_ENUM.RESTART, new OperationFunctionObject(restart.restart));
+	op_func_map.set(terms.OPERATIONS_ENUM.RESTART_SERVICE, new OperationFunctionObject(restart.restartService));
 	op_func_map.set(terms.OPERATIONS_ENUM.CATCHUP, new OperationFunctionObject(catchup));
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.SYSTEM_INFORMATION,

@@ -85,6 +85,8 @@ const PROCESS_DESCRIPTORS_VALIDATE = {
 	'custom_functions': CUSTOM_FUNCTION_PROC_DESCRIPTOR,
 	'clustering': 'clustering',
 	'clustering config': 'clustering config',
+	'clustering_config': 'clustering_config',
+	'http_workers': 'http_workers',
 };
 
 // All the processes that make up clustering
@@ -325,6 +327,7 @@ const OPERATIONS_ENUM = {
 	CONFIGURE_CLUSTER: 'configure_cluster',
 	SET_CONFIGURATION: 'set_configuration',
 	CLUSTER_STATUS: 'cluster_status',
+	CLUSTER_NETWORK: 'cluster_network',
 	DROP_ATTRIBUTE: 'drop_attribute',
 	REMOVE_NODE: 'remove_node',
 	RESTART: 'restart',
@@ -368,6 +371,7 @@ const S3_BUCKET_AUTH_KEYS = {
 	AWS_SECRET: 'aws_secret_access_key',
 	AWS_BUCKET: 'bucket',
 	AWS_FILE_KEY: 'key',
+	REGION: 'region',
 };
 
 // Defines valid SQL operations to be used in the processAST method - this ensure we have appropriate unit test coverage
@@ -517,6 +521,7 @@ const CONFIG_PARAMS = {
 	CLUSTERING_TLS_PRIVATEKEY: 'clustering_tls_privateKey',
 	CLUSTERING_TLS_CERT_AUTH: 'clustering_tls_certificateAuthority',
 	CLUSTERING_TLS_INSECURE: 'clustering_tls_insecure',
+	CLUSTERING_TLS_VERIFY: 'clustering_tls_verify',
 	CLUSTERING_LOGLEVEL: 'clustering_logLevel',
 	CUSTOMFUNCTIONS_ENABLED: 'customFunctions_enabled',
 	CUSTOMFUNCTIONS_NETWORK_PORT: 'customFunctions_network_port',
@@ -643,6 +648,7 @@ const CONFIG_PARAM_MAP = {
 	clustering_tls_privatekey: CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY,
 	clustering_tls_certificateauthority: CONFIG_PARAMS.CLUSTERING_TLS_CERT_AUTH,
 	clustering_tls_insecure: CONFIG_PARAMS.CLUSTERING_TLS_INSECURE,
+	clustering_tls_verify: CONFIG_PARAMS.CLUSTERING_TLS_VERIFY,
 	clustering_loglevel: CONFIG_PARAMS.CLUSTERING_LOGLEVEL,
 	customfunctions_enabled: CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED,
 	customfunctions_network_port: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT,
@@ -736,13 +742,7 @@ const CLUSTER_CONNECTION_DIRECTION_ENUM = {
 	INBOUND: 'INBOUND',
 };
 
-const STORAGE_TYPES_ENUM = {
-	FILE_SYSTEM: 'fs',
-	LMDB: 'lmdb',
-};
-
 const LICENSE_VALUES = {
-	API_CALL_DEFAULT: 10000,
 	VERSION_DEFAULT: '2.2.0',
 };
 
@@ -955,7 +955,6 @@ module.exports = {
 	ORIGINATOR_SET_VALUE,
 	LICENSE_VALUES,
 	RAM_ALLOCATION_ENUM,
-	STORAGE_TYPES_ENUM,
 	TIME_STAMP_NAMES_ENUM,
 	TIME_STAMP_NAMES,
 	PERMS_UPDATE_RELEASE_TIMESTAMP,

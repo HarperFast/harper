@@ -9,9 +9,9 @@ const pm2 = require('pm2');
 const services_config = require('./servicesConfig');
 const env_mangr = require('../environment/environmentManager');
 const hdb_logger = require('../../utility/logging/harper_logger');
-const config = require('.//servicesConfig');
 const clustering_utils = require('../clustering/clusterUtilities');
 const { startWorker, onMessageFromWorkers } = require('../../server/threads/manageThreads');
+const sys_info = require('../environment/systemInformation');
 const util = require('util');
 const child_process = require('child_process');
 const { execFile } = child_process;
@@ -32,7 +32,6 @@ module.exports = {
 	startService,
 	getUniqueServicesList,
 	restartAllServices,
-	stopAllServices,
 	isServiceRegistered,
 	reloadStopStart,
 	restartHdb,
@@ -161,6 +160,7 @@ function start(proc_config) {
 		process.on('exit', kill_children);
 		process.on('SIGINT', kill_children);
 		process.on('SIGQUIT', kill_children);
+		process.on('SIGTERM', kill_children);
 	}
 	child_processes.push(subprocess);
 }
@@ -305,7 +305,7 @@ function deleteProcess(service_name) {
  * @returns {Promise<void>}
  */
 async function restartHdb() {
-	await start(config.generateRestart());
+	await start(services_config.generateRestart());
 }
 
 /**
@@ -509,33 +509,6 @@ async function restartAllServices(excluding = []) {
 		if (restart_hdb) {
 			await reloadStopStart(hdb_terms.PROCESS_DESCRIPTORS.HDB);
 		}
-	} catch (err) {
-		pm2.disconnect();
-		throw err;
-	}
-}
-
-/**
- * stops all services then kills the processManagement daemon
- * @returns {Promise<void>}
- */
-async function stopAllServices() {
-	try {
-		const services = await getUniqueServicesList();
-		for (let x = 0, length = Object.values(services).length; x < length; x++) {
-			let service = Object.values(services)[x];
-			await stop(service.name);
-		}
-
-		// Kill processManagement daemon
-		await kill();
-		let processes = await si.processes();
-
-		processes.list.forEach((process) => {
-			if (process.params.includes(terms.HDB_PROC_NAME)) {
-				exec('kill', [process.pid]);
-			}
-		});
 	} catch (err) {
 		pm2.disconnect();
 		throw err;

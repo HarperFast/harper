@@ -256,7 +256,9 @@ describe('test lmdbWriteTransaction module', () => {
 
 		afterEach(async () => {
 			await env.close();
-			await fs.remove(BASE_PATH);
+			try {
+				await fs.remove(BASE_PATH);
+			} catch(error) {}
 			global.lmdb_map = undefined;
 		});
 

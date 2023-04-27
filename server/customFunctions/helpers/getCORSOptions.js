@@ -16,16 +16,17 @@ function getCORSOptions() {
 	if (props_cors) {
 		cors_options = {
 			origin: true,
-			allowedHeaders: ['Content-Type', 'Authorization'],
+			allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
 			credentials: false,
 		};
-		if (props_cors_accesslist && props_cors_accesslist.length > 0 && props_cors_accesslist[0] !== null) {
-			let accesslist = props_cors_accesslist.split(',');
+		if (
+			props_cors_accesslist &&
+			props_cors_accesslist.length > 0 &&
+			props_cors_accesslist[0] !== null &&
+			props_cors_accesslist[0] !== '*'
+		) {
 			cors_options.origin = (origin, callback) => {
-				if (accesslist.indexOf(origin) !== -1) {
-					return callback(null, true);
-				}
-				return callback(new Error(`domain ${origin} is not on access list`));
+				return callback(null, props_cors_accesslist.indexOf(origin) !== -1);
 			};
 		}
 	}

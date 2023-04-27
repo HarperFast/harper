@@ -14,6 +14,7 @@ class HubConfigObject {
 		key_file,
 		ca_file,
 		insecure,
+		verify,
 		leafnodes_port,
 		cluster_name,
 		cluster_port,
@@ -34,6 +35,7 @@ class HubConfigObject {
 			key_file,
 			ca_file,
 			insecure,
+			verify,
 		};
 		this.leafnodes = {
 			port: leafnodes_port,
@@ -53,6 +55,7 @@ class HubConfigObject {
 				key_file,
 				ca_file,
 				insecure,
+				verify,
 			},
 		};
 		this.accounts = {

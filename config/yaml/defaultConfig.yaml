@@ -29,11 +29,12 @@ clustering:
     certificateAuthority: null
     privateKey: null
     insecure: true
+    verify: true
   user: null
 customFunctions:
   enabled: true
   network:
-    cors: true
+    cors: false
     corsAccessList:
       - null
     headersTimeout: 60000
@@ -69,7 +70,7 @@ operationsApi:
   network:
     cors: true
     corsAccessList:
-      - null
+      - "*"
     headersTimeout: 60000
     https: false
     keepAliveTimeout: 5000

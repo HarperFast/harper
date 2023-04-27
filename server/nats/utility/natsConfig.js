@@ -46,6 +46,7 @@ async function generateNatsConfig(is_restart = false, process_name = undefined) 
 	const KEY_FILE = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY);
 	const CA_FILE = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_TLS_CERT_AUTH);
 	const INSECURE = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_TLS_INSECURE);
+	const VERIFY = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_TLS_VERIFY);
 	const CLUSTERING_NODENAME = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_NODENAME);
 	const CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT = config_utils.getConfigFromFile(
 		CONFIG_PARAMS.CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT
@@ -59,7 +60,9 @@ async function generateNatsConfig(is_restart = false, process_name = undefined) 
 	const cluster_username = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_USER);
 	const cluster_user = await user.getClusterUser();
 	if (hdb_utils.isEmpty(cluster_user) || cluster_user.active !== true) {
-		generateNatsConfigError(`invalid cluster user '${cluster_username}'`);
+		generateNatsConfigError(
+			`Invalid cluster user '${cluster_username}'. A valid user with the role 'cluster_user' must be defined under clustering.user in harperdb-config.yaml`
+		);
 	}
 
 	if (!is_restart) {
@@ -99,6 +102,7 @@ async function generateNatsConfig(is_restart = false, process_name = undefined) 
 		KEY_FILE,
 		CA_FILE,
 		INSECURE,
+		VERIFY,
 		CLUSTERING_HUBSERVER_LEAFNODES_NETWORK_PORT,
 		config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NAME),
 		config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT),
@@ -106,6 +110,11 @@ async function generateNatsConfig(is_restart = false, process_name = undefined) 
 		sys_users,
 		hdb_users
 	);
+
+	if (CA_FILE == null) {
+		delete hub_config.tls.ca_file;
+		delete hub_config.leafnodes.tls.ca_file;
+	}
 
 	process_name = hdb_utils.isEmpty(process_name) ? undefined : process_name.toLowerCase();
 	if (process_name === undefined || process_name === hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB.toLowerCase()) {
@@ -132,6 +141,10 @@ async function generateNatsConfig(is_restart = false, process_name = undefined) 
 		CA_FILE,
 		INSECURE
 	);
+
+	if (CA_FILE == null) {
+		delete leaf_config.tls.ca_file;
+	}
 
 	if (process_name === undefined || process_name === hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF.toLowerCase()) {
 		await fs.writeJson(LEAF_CONFIG_PATH, leaf_config);

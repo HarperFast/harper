@@ -352,7 +352,8 @@ describe('Test natsUtils module', () => {
 		}).timeout(TEST_TIMEOUT);
 
 		it('Test getServerList returns a list with the test server in it', async () => {
-			const result = await nats_utils.getServerList();
+			env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT, 9991);
+			const result = await nats_utils.getServerList(2000);
 			expect(result[0].server.name).to.equal('testLeafServer-leaf');
 		}).timeout(TEST_TIMEOUT);
 

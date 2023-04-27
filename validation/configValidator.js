@@ -58,7 +58,7 @@ function configValidator(config_json) {
 		.messages({ 'string.pattern.base': '{:#label} invalid, must not contain ., * or >' })
 		.empty(null)
 		.required();
-	const clustering_stream_path_constraints = Joi.custom(validatePath).empty(null).default(setDefaultRoot);
+	const clustering_stream_path_constraints = Joi.string().empty(null).default(setDefaultRoot);
 	const storage_path_constraints = Joi.custom(validatePath).empty(null).default(setDefaultRoot);
 
 	const clustering_enabled = config_json.clustering?.enabled;
@@ -95,9 +95,9 @@ function configValidator(config_json) {
 				}).required(),
 				streams: Joi.object({
 					// Max age must be above duplicate_window stream setting
-					maxAge: number.min(120).allow(null).required(),
-					maxBytes: number.min(1).allow(null).required(),
-					maxMsgs: number.min(1).allow(null).required(),
+					maxAge: number.min(120).allow(null).optional(),
+					maxBytes: number.min(1).allow(null).optional(),
+					maxMsgs: number.min(1).allow(null).optional(),
 					path: clustering_stream_path_constraints,
 				}).required(),
 			}).required(),
@@ -108,6 +108,7 @@ function configValidator(config_json) {
 				certificateAuthority: pem_file_constraints,
 				privateKey: pem_file_constraints,
 				insecure: boolean.required(),
+				verify: boolean.optional(),
 			}),
 			user: string.optional().empty(null),
 		}).required();
@@ -220,13 +221,6 @@ function doesPathExist(path_to_check) {
 
 function validatePemFile(value, helpers) {
 	if (value === null) return;
-
-	Joi.assert(
-		value,
-		string
-			.pattern(/^[\\\/]$|([\\\/][a-zA-Z_0-9\:-]+)+\.pem+$/)
-			.messages({ 'string.pattern.base': 'must be a valid directory path and specify a .pem file' })
-	);
 
 	const does_exist_msg = doesPathExist(value);
 	if (does_exist_msg) {

@@ -1,7 +1,6 @@
 const validator = require('../validationWrapper');
 const validate = require('validate.js');
 const moment = require('moment');
-const terms = require('../../utility/hdbTerms');
 
 validate.extend(validate.validators.datetime, {
 	// The value is guaranteed not to be null or undefined but otherwise it
@@ -29,19 +28,6 @@ const constraints = {
 	},
 	fingerprint: {
 		presence: true,
-	},
-	storage_type: {
-		presence: true,
-		inclusion: {
-			within: [terms.STORAGE_TYPES_ENUM.LMDB],
-		},
-	},
-	api_call: {
-		presence: true,
-		numericality: {
-			onlyInteger: true,
-			greaterThan: 0,
-		},
 	},
 	ram_allocation: {
 		presence: true,
