@@ -616,6 +616,7 @@ export function makeTable(options) {
 				// TODO: May have different semantics for /Table vs /Table/
 				query = []; // treat no query as a query for everything
 			}
+			const reverse = query.reverse;
 			let conditions = query.conditions || query;
 			for (const condition of conditions) {
 				const attribute = attributes.find((attribute) => attribute.name == condition.attribute);
@@ -659,9 +660,13 @@ export function makeTable(options) {
 			const first_search = conditions[0];
 			let records;
 			if (!first_search) {
-				records = primary_store.getRange({ start: false, transaction: read_txn }).map(({ value }) => value);
+				records = primary_store
+					.getRange(
+						reverse ? { end: false, reverse: true, transaction: read_txn } : { start: false, transaction: read_txn }
+					)
+					.map(({ value }) => value);
 			} else {
-				let ids = idsForCondition(first_search, read_txn);
+				let ids = idsForCondition(first_search, read_txn, reverse);
 				// and then things diverge...
 				if (!query.operator || query.operator.toLowerCase() === 'and') {
 					// get the intersection of condition searches by using the indexed query for the first condition
@@ -676,33 +681,31 @@ export function makeTable(options) {
 							}
 							return true;
 						});
-					if (query.offset || query.limit !== undefined)
-						records = records.slice(
-							query.offset,
-							query.limit !== undefined ? (query.offset || 0) + query.limit : undefined
-						);
 				} else {
 					//get the union of ids from all condition searches
 					for (let i = 1; i < conditions.length; i++) {
 						const condition = conditions[i];
 						// might want to lazily execute this after getting to this point in the iteration
-						const next_ids = idsForCondition(condition, read_txn);
+						const next_ids = idsForCondition(condition, read_txn, reverse);
 						ids = ids.concat(next_ids);
 					}
 					const returned_ids = new Set();
 					const offset = query.offset || 0;
-					ids = ids
-						.filter((id) => {
-							if (returned_ids.has(id))
-								// skip duplicates
-								return false;
-							returned_ids.add(id);
-							return true;
-						})
-						.slice(offset, query.limit && query.limit + offset);
+					ids = ids.filter((id) => {
+						if (returned_ids.has(id))
+							// skip duplicates
+							return false;
+						returned_ids.add(id);
+						return true;
+					});
 					records = ids.map((id) => primary_store.get(id, { transaction: read_txn, lazy: true }));
 				}
 			}
+			if (query.offset || query.limit !== undefined)
+				records = records.slice(
+					query.offset,
+					query.limit !== undefined ? (query.offset || 0) + query.limit : undefined
+				);
 			const select = query.select;
 			if (select)
 				records = records.map((record) => {
@@ -804,7 +807,7 @@ export function makeTable(options) {
 		}
 	}
 	return TableResource;
-	function idsForCondition(search_condition, transaction) {
+	function idsForCondition(search_condition, transaction, reverse) {
 		let start;
 		let end, inclusiveEnd, exclusiveStart, filter;
 		const comparator = search_condition.comparator;
@@ -831,6 +834,14 @@ export function makeTable(options) {
 				end = search_condition.value;
 				inclusiveEnd = true;
 		}
+		if (reverse) {
+			let new_end = start;
+			start = end;
+			end = new_end;
+			new_end = !exclusiveStart;
+			exclusiveStart = !inclusiveEnd;
+			inclusiveEnd = new_end;
+		}
 		const index = search_condition.attribute === primary_key ? primary_store : indices[search_condition.attribute];
 		if (!index) {
 			throw handleHDBError(
@@ -840,7 +851,7 @@ export function makeTable(options) {
 			);
 		}
 		const isPrimaryKey = search_condition.attribute === primary_key;
-		const range_options = { start, end, inclusiveEnd, values: !isPrimaryKey, transaction };
+		const range_options = { start, end, inclusiveEnd, exclusiveStart, values: !isPrimaryKey, transaction, reverse };
 		if (isPrimaryKey) {
 			return index.getRange(range_options);
 		} else {

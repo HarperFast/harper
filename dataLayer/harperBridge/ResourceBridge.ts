@@ -198,6 +198,7 @@ export class ResourceBridge extends LMDBBridge {
 		return table.search({
 			limit: search_object.limit,
 			offset: search_object.offset,
+			reverse: search_object.reverse,
 			conditions,
 		});
 	}
