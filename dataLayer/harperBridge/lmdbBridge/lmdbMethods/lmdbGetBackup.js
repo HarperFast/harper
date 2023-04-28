@@ -17,6 +17,7 @@ async function getBackup(get_backup_obj) {
 	let env_base_path = path.join(getBaseSchemaPath(), get_backup_obj.schema.toString());
 	let env = await environment_utility.openEnvironment(env_base_path, get_backup_obj.table);
 	let fd = openSync(env.path);
+	const backup_date = new Date().toISOString();
 	return env.transaction(() => {
 		let metaBuffers = Buffer.alloc(META_SIZE);
 		readSync(fd, metaBuffers, 0, META_SIZE); // sync, need to do this as fast as possible since we are in a write txn
@@ -35,6 +36,7 @@ async function getBackup(get_backup_obj) {
 		stream.headers = new Map();
 		stream.headers.set('content-type', 'application/octet-stream');
 		stream.headers.set('content-disposition', `attachment; filename="${get_backup_obj.table}"`);
+		stream.headers.set('date', backup_date);
 		return stream;
 	});
 }
