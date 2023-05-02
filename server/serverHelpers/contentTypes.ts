@@ -57,26 +57,32 @@ media_types.set('text/event-stream', {
 	// Server-Sent Events (SSE)
 	serializeStream: function (iterable) {
 		// create a readable stream that we use to stream out events from our subscription
+		let serialize = this.serialize;
 		return Readable.from(
 			(async function* () {
 				for await (const message of iterable) {
 					// TODO: if we can skip messages, use back-pressure and allow messages to be skipped
-					if (message.data || message.event) {
-						if (message.event) yield 'event: ' + message.event + '\n\n';
-						if (message.data) {
-							let data = message.data;
-							if (typeof data === 'object') data = JSON.stringify(data);
-							yield 'data: ' + data + '\n\n';
-						}
-						if (message.id) yield 'id: ' + message.id + '\n\n';
-						if (message.retry) yield 'retry: ' + message.retry + '\n\n';
-					} else {
-						yield 'data: ' + message + '\n\n';
-					}
+					yield serialize(message);
 				}
 			})()
 		);
 	},
+	serialize: function(message) {
+		if (message.data || message.event) {
+			let serialized = '';
+			if (message.event) serialized += 'event: ' + message.event + '\n';
+			if (message.data) {
+				let data = message.data;
+				if (typeof data === 'object') data = JSON.stringify(data);
+				serialized += 'data: ' + data + '\n';
+			}
+			if (message.id) serialized += 'id: ' + message.id + '\n';
+			if (message.retry) serialized += 'retry: ' + message.retry + '\n';
+			return serialized + '\n';
+		} else {
+			return 'data: ' + message + '\n\n';
+		}
+	}
 	q: 0.8,
 });
 // TODO: Support this as well:

@@ -25,7 +25,6 @@ export async function secureImport(module_url) {
 		return result.namespace;
 	} else {
 		return import(module_url);
-		return require('../unitTests/testApp/resources'); // require(module_url.replace(/\.js$/, ''));
 	}
 }
 

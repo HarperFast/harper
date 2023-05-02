@@ -182,22 +182,23 @@ export class Resource implements ResourceInterface {
 	subscribe(query: any, options?: {}) {
 		// not implemented
 	}
-
-	connect(query: any, options?: {}) {
+	static subscribe = Resource.prototype.subscribe;
+	connect(query?: {}) {
 		// convert subscription to an (async) iterator
-		if (!options) options = {};
-
 		const iterable = new IterableEventQueue();
 		if (query?.subscribe !== false) {
 			// subscribing is the default action, but can be turned off
-			options.listener = (message) => {
-				iterable.emit('data', message);
+			const options = {
+				listener: (message) => {
+					iterable.send(message);
+				},
 			};
 			const subscription = this.subscribe(query, options);
 			iterable.on('close', () => subscription.end());
 		}
 		return iterable;
 	}
+	static connect = Resource.prototype.connect;
 
 	/**
 	 * This used to indicate that this resource will use another resource to compute its data. Doing this will include

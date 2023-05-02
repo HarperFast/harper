@@ -1,11 +1,8 @@
 import { getMockLMDBPath } from '../test_utils.js';
 import { fileURLToPath } from 'url';
-import installer from '../../utility/install/installer.js';
 import axios from 'axios';
-import { decode, encode, DecoderStream } from 'cbor-x';
+import { encode } from 'cbor-x';
 import { createRequire } from 'module';
-import env from '../../utility/environment/environmentManager.js';
-import hdb_terms from '../../utility/hdbTerms.js';
 const require = createRequire(import.meta.url);
 const config = {};
 
