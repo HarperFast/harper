@@ -20,3 +20,10 @@ apt-get update && apt-get -y upgrade
 apt-key adv --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
 echo "deb https://dl.k6.io/deb stable main" | tee /etc/apt/sources.list.d/k6.list
 apt-get update && apt-get install -y git k6
+
+useradd -m harperdbadmin
+rm -rf /home/harperdbadmin/.ssh/*
+sed -i "s/sudo, //" /etc/cloud/cloud.cfg
+sed -i "s/sudo:/#sudo:/" /etc/cloud/cloud.cfg
+deluser ubuntu sudo
+sed -i "s/ubuntu/harperdbadmin/" /etc/sudoers.d/90-cloud-init-users

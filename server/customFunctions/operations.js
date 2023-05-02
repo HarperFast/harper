@@ -6,11 +6,14 @@ const path = require('path');
 const tar = require('tar-fs');
 const uuidV4 = require('uuid').v4;
 const normalize = require('normalize-path');
+const { parentPort } = require('worker_threads');
 
 const validator = require('./operationsValidation');
 const log = require('../../utility/logging/harper_logger');
 const terms = require('../../utility/hdbTerms');
 const env = require('../../utility/environment/environmentManager');
+const config_utils = require('../../config/configUtils');
+const hdb_utils = require('../../utility/common_utils');
 const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
 const { handleHDBError, hdb_errors } = require('../../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
@@ -268,6 +271,24 @@ function dropCustomFunctionProject(req) {
 	const cf_dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 	const { project } = req;
 
+	let apps = env.get(terms.CONFIG_PARAMS.APPS);
+	if (!hdb_utils.isEmptyOrZeroLength(apps)) {
+		let app_found = false;
+		for (const [i, app] of apps.entries()) {
+			if (app.name === project) {
+				apps.splice(i, 1);
+				app_found = true;
+				break;
+			}
+		}
+
+		if (app_found) {
+			config_utils.updateConfigValue(terms.CONFIG_PARAMS.APPS, apps);
+
+			return `Successfully deleted project: ${project}`;
+		}
+	}
+
 	try {
 		const project_dir = path.join(cf_dir, project);
 		fs.rmSync(project_dir, { recursive: true });
@@ -284,10 +305,11 @@ function dropCustomFunctionProject(req) {
 }
 
 /**
- * Tar a project folder from the custom_functions folder
- *
- * @param {NodeObject} req
- * @returns Object package info: { project, payload, file }
+ * Packages a CF project into a tar file and also returns the base64 encode of said tar file.
+ * Will copy the project into a temp dir call 'package', this is done because when npm installing tar
+ * files the contents of the tar need to be in a dir called package. Deploy CF project uses npm install.
+ * @param req
+ * @returns {Promise<{file: string, payload: *, project}>}
  */
 async function packageCustomFunctionProject(req) {
 	if (req.project) {
@@ -302,34 +324,27 @@ async function packageCustomFunctionProject(req) {
 	log.trace(`packaging custom function project`);
 	const cf_dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 	const { project } = req;
-	const path_to_project = path.join(cf_dir, project);
-	const project_hash = uuidV4();
+	const path_to_project = await fs.realpath(path.join(cf_dir, project));
 
-	// check if the project exists
-	const projectExists = fs.existsSync(path_to_project);
+	// npm requires the contents of a module to be in a 'package' directory.
+	const tmp_project_dir = path.join(TMP_PATH, project);
+	const tmp_package_dir = path.join(tmp_project_dir, 'package');
+	fs.ensureDirSync(tmp_package_dir);
+	await fs.copy(path_to_project, tmp_package_dir, { overwrite: true });
 
-	if (!projectExists) {
-		const err_string = `Unable to locate custom function project: ${project}`;
-		log.error(err_string);
-		throw err_string;
-	}
-
-	fs.ensureDirSync(TMP_PATH);
-
-	const file = path.join(TMP_PATH, `${project_hash}.tar`);
-
+	const file = path.join(TMP_PATH, `${project}.tar`);
 	let tar_opts = {};
 	if (req.skip_node_modules === true || req.skip_node_modules === 'true') {
 		// Create options for tar module that will exclude the CF projects node_modules directory.
 		tar_opts = {
 			ignore: (name) => {
-				return name.includes(path.join(path_to_project, 'node_modules'));
+				return name.includes(path.join(tmp_package_dir, 'node_modules'));
 			},
 		};
 	}
 
 	// pack the directory
-	tar.pack(path_to_project, tar_opts).pipe(fs.createWriteStream(file));
+	tar.pack(tmp_project_dir, tar_opts).pipe(fs.createWriteStream(file, { overwrite: true }));
 
 	// wait for a second
 	// eslint-disable-next-line no-magic-numbers
@@ -338,11 +353,10 @@ async function packageCustomFunctionProject(req) {
 	// read the output into base64
 	const payload = fs.readFileSync(file, { encoding: 'base64' });
 
-	// delete the file
-	fs.unlinkSync(file);
+	await fs.remove(tmp_project_dir);
 
 	// return the package payload as base64-encoded string
-	return { project, payload, file };
+	return { project, file, payload };
 }
 
 /**
@@ -364,32 +378,67 @@ async function deployCustomFunctionProject(req) {
 
 	log.trace(`deploying custom function project`);
 	const cf_dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
-	const { project, payload } = req;
-	const path_to_project = path.join(cf_dir, project);
+	const { project, payload, package: pkg, bypass_apps } = req;
 
-	// check if the project exists, if it doesn't, create it.
-	await fs.ensureDir(path_to_project);
+	if (bypass_apps !== true) {
+		let new_app = {
+			name: project,
+		};
 
-	// Create a temp file to store project tar in. Check that is doesn't already exist, if it does create another path and test.
-	let temp_file_path;
-	let temp_file_exists;
-	do {
-		temp_file_path = path.join(TMP_PATH, uuidV4() + '.tar');
-		temp_file_exists = await fs.pathExists(temp_file_path);
-	} while (temp_file_exists);
+		if (payload) {
+			const path_to_project_tar = path.join(cf_dir, project + '.tar');
+			await fs.outputFile(path_to_project_tar, payload, { encoding: 'base64' });
+			new_app.package = path_to_project_tar;
+		} else if (pkg) {
+			new_app.package = pkg;
+		} else {
+			throw new Error("'payload' or 'package' must be provided");
+		}
 
-	// pack the directory
-	await fs.outputFile(temp_file_path, payload, { encoding: 'base64' });
+		// Adds package to harperdb-config and then relies on restart to call install on the new app
+		let apps = env.get(terms.CONFIG_PARAMS.APPS);
+		if (apps === undefined) apps = [];
 
-	// extract the reconstituted file to the proper project directory
-	const stream = fs.createReadStream(temp_file_path);
-	stream.pipe(tar.extract(path_to_project));
-	await new Promise((resolve) => stream.on('end', resolve));
+		let app_already_exists = false;
+		for (const app of apps) {
+			if (app.name === new_app.name) {
+				app.package = new_app.package;
+				app_already_exists = true;
+			}
+		}
 
-	// delete the file
-	await fs.unlink(temp_file_path);
+		if (!app_already_exists) {
+			apps.push(new_app);
+		}
 
-	// return the package payload as base64-encoded string
+		config_utils.updateConfigValue(terms.CONFIG_PARAMS.APPS, apps);
+	} else {
+		// If they are bypassing apps we do not add the deployment to the apps config, it goes directly so the custom functions dir
+		if (pkg) throw new Error('bypass_apps is not available when deploying from package');
+		const path_to_project = path.join(cf_dir, project);
+		// check if the project exists, if it doesn't, create it.
+		await fs.ensureDir(path_to_project);
+
+		// Create a temp file to store project tar in. Check that is doesn't already exist, if it does create another path and test.
+		let temp_file_path;
+		let temp_file_exists;
+		do {
+			temp_file_path = path.join(TMP_PATH, uuidV4() + '.tar');
+			temp_file_exists = await fs.pathExists(temp_file_path);
+		} while (temp_file_exists);
+
+		// pack the directory
+		await fs.outputFile(temp_file_path, payload, { encoding: 'base64' });
+
+		// extract the reconstituted file to the proper project directory
+		const stream = fs.createReadStream(temp_file_path);
+		stream.pipe(tar.extract(path_to_project));
+		await new Promise((resolve) => stream.on('end', resolve));
+
+		// delete the file
+		await fs.unlink(temp_file_path);
+	}
+
 	return `Successfully deployed project: ${project}`;
 }
 
