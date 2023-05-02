@@ -1,0 +1,18 @@
+# Clone HarperDB node configuration file. Refer to https://harperdb.io/docs/reference/configuration-file/
+---
+database:
+  excludeSchemas:
+    - schema: devo
+  excludeTables:
+    - schema: prod
+      table: dog
+apps:
+  cloneNodeModules: false
+  excludeApps:
+    - name: test_projectB
+plugins:
+  excludePlugins:
+    - name: cool-plugin
+clustering:
+  publishToLeaderNode: true
+  subscribeToLeaderNode: true
