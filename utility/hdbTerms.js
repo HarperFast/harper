@@ -573,6 +573,8 @@ const CONFIG_PARAMS = {
 	STORAGE_PATH: 'storage_path',
 	STORAGE_AUDIT_PATH: 'storage_audit_path',
 	SCHEMAS: 'schemas',
+	APPS: 'apps',
+	IGNORE_SCRIPTS: 'ignoreScripts',
 };
 
 const CONFIG_PARAM_MAP = {
@@ -693,6 +695,8 @@ const CONFIG_PARAM_MAP = {
 	operationsapi_root: CONFIG_PARAMS.ROOTPATH,
 	schemas: CONFIG_PARAMS.SCHEMAS,
 	storage_path: CONFIG_PARAMS.STORAGE_PATH,
+	apps: CONFIG_PARAMS.APPS,
+	ignorescripts: CONFIG_PARAMS.IGNORE_SCRIPTS,
 };
 for (let key in CONFIG_PARAMS) {
 	let name = CONFIG_PARAMS[key];
