@@ -5,6 +5,7 @@ import { randomUUID } from 'crypto';
 import { DatabaseTransaction, Transaction } from './DatabaseTransaction';
 import { DefaultAccess } from './Access';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
+import { IterableEventQueue } from './IterableEventQueue';
 let tables;
 
 /**
@@ -146,9 +147,13 @@ export class Resource implements ResourceInterface {
 	static async search(query: object): Promise<Iterable<object>> {
 		throw new Error('Not implemented');
 	}
-	async loadRecord() {
+	loadRecord() {
 		// nothing to be done by default, Table implements an actual real version of this
 	}
+	static loadRecord() {
+		// nothing to be done by default, Table implements an actual real version of this
+	}
+
 	static resourceFromRecord(record) {
 		const resource = new this(record[this.primaryKey]);
 		resource.record = record;
@@ -175,7 +180,23 @@ export class Resource implements ResourceInterface {
 	 * @param options
 	 */
 	subscribe(query: any, options?: {}) {
-		throw new Error('Not implemented');
+		// not implemented
+	}
+
+	connect(query: any, options?: {}) {
+		// convert subscription to an (async) iterator
+		if (!options) options = {};
+
+		const iterable = new IterableEventQueue();
+		if (query?.subscribe !== false) {
+			// subscribing is the default action, but can be turned off
+			options.listener = (message) => {
+				iterable.emit('data', message);
+			};
+			const subscription = this.subscribe(query, options);
+			iterable.on('close', () => subscription.end());
+		}
+		return iterable;
 	}
 
 	/**

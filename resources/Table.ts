@@ -6,7 +6,7 @@ import { ResourceInterface } from './ResourceInterface';
 import { workerData } from 'worker_threads';
 import { Resource } from './Resource';
 import { DatabaseTransaction, immediateTransaction } from './DatabaseTransaction';
-import { compareKeys, readKey } from 'ordered-binary';
+import { compareKeys, readKey, MAXIMUM_KEY } from 'ordered-binary';
 import * as lmdb_terms from '../utility/lmdb/terms';
 import * as env_mngr from '../utility/environment/environmentManager';
 import { addSubscription, listenToCommits } from './transactionBroadcast';

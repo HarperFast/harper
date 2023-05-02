@@ -1,11 +1,9 @@
 import { serialize, serializeMessage, getDeserializer } from '../server/serverHelpers/contentTypes';
 import { recordAction } from '../resources/analytics';
-import { createServer, ClientRequest, ServerOptions } from 'http';
-import { findAndValidateUser } from '../security/user';
-import { authentication } from '../security/auth';
-import { server } from './Server';
+import { ServerOptions } from 'http';
 import { ServerError, ClientError } from '../utility/errors/hdbError';
 import { Resources } from '../resources/Resources';
+import { IterableEventQueue } from '../resources/IterableEventQueue';
 
 interface Response {
 	status?: number;
@@ -59,7 +57,8 @@ async function http(resource, resource_path, next_path, request) {
 				case 'OPTIONS':
 					return; // used primarily for CORS, could return all methods
 				case 'CONNECT':
-					return; // websockets, nothing to do here
+					// websockets? and event-stream
+					return resource_access.connect();
 				default:
 					throw new ServerError('Method not available', 501);
 			}
@@ -177,18 +176,15 @@ function checkAllowed(method_allowed, user, resource): void | Promise<void> {
 let started;
 let resources: Resources;
 
-const connection_count = 0;
+let connection_count = 0;
 let printing_connection_count;
 
 export function start(options: ServerOptions & { path: string; port: number; server: any; resources: any }) {
 	if (started) return;
 	started = true;
 	resources = options.resources;
-	/*	if (!handlers) {
-			handlers = new Map();
-			loadDirectory(options?.path || process.cwd(), '', handlers);
-		}*/
 	options.server.http(async (request: Request, next_handler) => {
+		if (request.isWebSocket) return;
 		startRequest(request);
 		const resource = resources.getResource(request.pathname.slice(1), { request });
 		if (resource) {
@@ -196,7 +192,7 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 		}
 		return next_handler(request);
 	});
-	/*options.server.ws(async (ws, request, chain_completion) => {
+	options.server.ws(async (ws, request, chain_completion) => {
 		connection_count++;
 		if (!printing_connection_count) {
 			setTimeout(() => {
@@ -206,18 +202,37 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 			printing_connection_count = true;
 		}
 		startRequest(request);
+		const resource = resources.getResource(request.pathname.slice(1), { request });
+		if (!resource) ws.send(serializeMessage(`No resource was found to handle ${request.pathname}`, request));
+		const incoming_messages = new IterableEventQueue();
+		// TODO: We should set a lower keep-alive ws.socket.setKeepAlive(600000);
 		ws.on('error', console.error);
+		let deserializer;
 		ws.on('message', function message(body) {
-			// await chain_completion;
-			let data = request.deserialize(body);
-			let entry = resources.getMatch(request.url + '/' + (data.path ?? ''));
-			if (entry) {
-				return wsMessage(entry.Resource, entry.path, entry.remainingPath, data, request, ws);
-			}
-			console.error('no handler: %s', data);
+			if (!deserializer) deserializer = getDeserializer(request.headers['content-type'], body);
+			const data = deserializer(body);
+			incoming_messages.emit('data', data);
 		});
-		ws.on('close', () => connection_count--);
-	});*/
+		let iterator;
+		ws.on('close', () => {
+			//connection_count--
+			incoming_messages.emit('close');
+			if (iterator) iterator.return();
+		});
+		await chain_completion;
+		const updated_resource = await resource.accessInTransaction(request, (resource_access) => {
+			const stream = resource_access.connect(incoming_messages);
+			console.log({ stream });
+			return stream;
+		});
+		iterator = updated_resource.result[Symbol.asyncIterator]();
+
+		let result;
+		while (!(result = await iterator.next()).done) {
+			ws.send(serializeMessage(result.value, request));
+		}
+		ws.close();
+	});
 
 	function startRequest(request) {
 		// TODO: check rate limiting here?
@@ -230,7 +245,7 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 			if (accept) request.headers.accept = accept;
 		}
 		if (request.headers.accept === 'text/event-stream') {
-			request.method = 'GET-SUB';
+			request.method = 'CONNECT';
 		}
 	}
 }

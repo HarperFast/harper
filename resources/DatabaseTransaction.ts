@@ -101,7 +101,6 @@ export class DatabaseTransaction implements Transaction {
 		// node
 
 		return resolution?.then((resolution) => {
-			console.log({ resolution });
 			if (resolution) {
 				completions.push(last_store.flushed);
 				return Promise.all(completions).then(() => {

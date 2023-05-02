@@ -4,8 +4,9 @@ import { Compartment as CompartmentClass } from 'ses';
 import { readFile } from 'fs/promises';
 import { extname } from 'path';
 
+console.log('jsLoader');
 // TODO: Make this configurable
-const SECURE_JS = true;
+const SECURE_JS = false;
 
 let compartment;
 
@@ -24,11 +25,14 @@ export async function secureImport(module_url) {
 		return result.namespace;
 	} else {
 		return import(module_url);
+		return require('../unitTests/testApp/resources'); // require(module_url.replace(/\.js$/, ''));
 	}
 }
 
 declare class Compartment extends CompartmentClass {}
 async function getCompartment(getGlobalVars) {
+	console.log('import lmdb', await import('lmdb'));
+	const { StaticModuleRecord } = await import('@endo/static-module-record');
 	require('ses');
 	lockdown({
 		domainTaming: 'unsafe',
@@ -37,7 +41,6 @@ async function getCompartment(getGlobalVars) {
 		errorTrapping: 'none',
 		stackFiltering: 'verbose',
 	});
-	const { StaticModuleRecord } = await import('@endo/static-module-record');
 
 	return (compartment = new (Compartment as typeof CompartmentClass)(
 		Object.assign(

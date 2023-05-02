@@ -136,7 +136,7 @@ const rest = () => new Promise(setImmediate);
 
 async function cleanup(expiration, period) {
 	const start = Date.now() - expiration;
-	for (const { key, value } of AnalyticsTable.primaryStore.getRange({ end: [period, start] })) {
+	for (const { key, value } of AnalyticsTable.primaryStore.getRange({ start: false, end: [period, start] })) {
 		AnalyticsTable.delete(key);
 	}
 }

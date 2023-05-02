@@ -106,6 +106,14 @@ export class DefaultAccess {
 		if (!allowed) throw new AccessError(this.user);
 		return this.resource.subscribe(options);
 	}
+	async connect(incoming_messages) {
+		await this.resource.loadRecord();
+		const allowed = await this.resource.allowRead(this.request.user);
+		if (!allowed) {
+			throw new AccessError(this.user);
+		}
+		return this.resource.connect(incoming_messages);
+	}
 
 	/**
 	 * This is responsible for taking a query string (from a get()) and converting it to a standard query object

@@ -39,7 +39,6 @@ if (env.get(CONFIG_PARAMS.CLUSTERING_ENABLED)) default_server_modules.push({ mod
  * @returns {Promise<void>}
  */
 async function loadServerModules(server_modules = default_server_modules, is_worker_thread = false) {
-	let tables = getTables();
 	let ports_started = [];
 	let resources = resetResources();
 	resources.isWorker = is_worker_thread;

@@ -104,6 +104,7 @@ export async function authentication(request, next_handler) {
 		}
 	}
 	const response = await next_handler(request);
+	if (!response) return response;
 	if (response.status === 401) {
 		if (
 			headers['user-agent']?.startsWith('Mozilla') &&

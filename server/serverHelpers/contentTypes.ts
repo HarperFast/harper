@@ -2,7 +2,7 @@ import { streamAsJSON } from './JSONStream';
 import { toCsvStream } from '../../dataLayer/export';
 import { pack, unpack, encodeIter } from 'msgpackr';
 import { decode, encode, EncoderStream } from 'cbor-x';
-import { createBrotliCompress, brotliCompress } from 'zlib';
+import { createBrotliCompress, brotliCompress, constants } from 'zlib';
 import { Readable } from 'stream';
 import { server, ContentTypeHandler } from '../Server';
 
@@ -55,15 +55,27 @@ media_types.set('text/plain', {
 });
 media_types.set('text/event-stream', {
 	// Server-Sent Events (SSE)
-	serializeStream: function (subscription) {
+	serializeStream: function (iterable) {
 		// create a readable stream that we use to stream out events from our subscription
-		const stream = new Readable({});
-		// TODO: if we can skip messages, use back-pressure and allow messages to be skipped
-		subscription.listener = (data) => {
-			stream.push(data);
-		};
-		stream.on('end', () => subscription.end());
-		return stream;
+		return Readable.from(
+			(async function* () {
+				for await (const message of iterable) {
+					// TODO: if we can skip messages, use back-pressure and allow messages to be skipped
+					if (message.data || message.event) {
+						if (message.event) yield 'event: ' + message.event + '\n\n';
+						if (message.data) {
+							let data = message.data;
+							if (typeof data === 'object') data = JSON.stringify(data);
+							yield 'data: ' + data + '\n\n';
+						}
+						if (message.id) yield 'id: ' + message.id + '\n\n';
+						if (message.retry) yield 'retry: ' + message.retry + '\n\n';
+					} else {
+						yield 'data: ' + message + '\n\n';
+					}
+				}
+			})()
+		);
 	},
 	q: 0.8,
 });
@@ -254,7 +266,11 @@ export function serialize(response_data, request, response_object) {
 			if (compress) {
 				response_object.headers['Content-Encoding'] = 'br';
 				// TODO: Use the fastest setting here and only do it if load is low
-				stream = stream.pipe(createBrotliCompress());
+				stream = stream.pipe(
+					createBrotliCompress({
+						//flush: constants.BROTLI_OPERATION_FLUSH,
+					})
+				);
 			}
 			return stream;
 		}

@@ -30,7 +30,8 @@ export async function handleFile(js, url_path, file_path, resources) {
 			handler.init = () => {
 				// TODO: Allow for an initialization routine?
 			};*/
-			resources.set(dirname(url_path) + '/' + name, exported_class);
+			// treat the default export as the root path
+			resources.set(dirname(url_path) + (name === 'default' ? '' : '/' + name), exported_class);
 		}
 	}
 	return handlers;

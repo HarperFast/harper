@@ -42,7 +42,7 @@ export async function setupTestApp() {
 	process.env._UNREF_SERVER = true; // unref the server so when we are done nothing should block us from exiting
 	created_records = [];
 	const { startHTTPThreads } = require('../../server/threads/socketRouter');
-	await startHTTPThreads(config.threads || 0);
+	await startHTTPThreads(config.threads || 1);
 	try {
 		for (let i = 0; i < 20; i++) {
 			let object = {id: Math.round(random() * 1000000).toString(36)};

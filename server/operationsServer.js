@@ -6,7 +6,6 @@ env.initSync();
 const terms = require('../utility/hdbTerms');
 const util = require('util');
 const harper_logger = require('../utility/logging/harper_logger');
-const { streamAsJSON } = require('./serverHelpers/JSONStream');
 const fs = require('fs');
 const fastify = require('fastify');
 
@@ -21,9 +20,7 @@ const global_schema = require('../utility/globalSchema');
 const common_utils = require('../utility/common_utils');
 const user_schema = require('../security/user');
 const hdb_license = require('../utility/registration/hdb_license');
-const { isMainThread } = require('worker_threads');
 const { server: server_registration } = require('../server/Server');
-const { toCsvStream } = require('../dataLayer/export');
 const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
 const {
@@ -234,8 +231,12 @@ function getCORSOpts() {
 			allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
 			credentials: false,
 		};
-		if (props_cors_accesslist && props_cors_accesslist.length > 0 && props_cors_accesslist[0] !== null &&
-			props_cors_accesslist[0] !== '*') {
+		if (
+			props_cors_accesslist &&
+			props_cors_accesslist.length > 0 &&
+			props_cors_accesslist[0] !== null &&
+			props_cors_accesslist[0] !== '*'
+		) {
 			cors_options.origin = (origin, callback) => {
 				return callback(null, props_cors_accesslist.indexOf(origin) !== -1);
 			};

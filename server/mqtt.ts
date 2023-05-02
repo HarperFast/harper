@@ -5,7 +5,6 @@ import { getSession, DurableSubscriptionsSession } from './DurableSubscriptionsS
 import { findAndValidateUser, getSuperUser } from '../security/user';
 import { serializeMessage, getDeserializer } from './serverHelpers/contentTypes';
 import { info } from '../utility/logging/harper_logger';
-import { threadId } from 'worker_threads';
 import { recordAction } from '../resources/analytics';
 
 const DEFAULT_MQTT_PORT = 1883;
@@ -15,14 +14,16 @@ export async function start({ server, port, webSocket, secure }) {
 	if (webSocket)
 		server.ws(
 			(ws, request, chain_completion) => {
-				const { onMessage, onClose } = onSocket(
-					ws,
-					(message) => ws.send(message),
-					request,
-					Promise.resolve(chain_completion).then(() => request?.user)
-				);
-				ws.on('message', onMessage);
-				ws.on('close', onClose);
+				if (ws.protocol === 'mqtt') {
+					const { onMessage, onClose } = onSocket(
+						ws,
+						(message) => ws.send(message),
+						request,
+						Promise.resolve(chain_completion).then(() => request?.user)
+					);
+					ws.on('message', onMessage);
+					ws.on('close', onClose);
+				}
 			},
 			{ port, subProtocol: 'mqtt', secure }
 		); // if there is no port, we are piggy-backing off of default app http server

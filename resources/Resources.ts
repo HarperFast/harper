@@ -71,6 +71,7 @@ export class Resources extends Map<string, typeof Resource> {
 			return entry.remainingPath ? entry.Resource.getResource(entry.remainingPath, resource_info) : entry.Resource;
 		}
 	}
+	executeResource(path: string, callback) {}
 	setRepresentation(path, type, representation) {}
 }
 export let resources: Resources;
