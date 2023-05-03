@@ -190,7 +190,7 @@ function recordAnalytics(message) {
 	report.id = getNextMonotonicTime();
 	AnalyticsTable.put(report);
 	last_append = logAnalytics(report);
-	console.log(message);
+	//console.log(message);
 }
 let last_append;
 let analytics_log;

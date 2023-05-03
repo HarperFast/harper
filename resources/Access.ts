@@ -73,7 +73,7 @@ export class DefaultAccess {
 		await this.resource.loadRecord();
 		const data = await content;
 		this.resource.updated = true;
-		if (this.resource.allowCreate(this.request.user, data)) return this.post(data);
+		if (this.resource.allowCreate(this.request.user, data)) return this.resource.post(data);
 		else throw new AccessError(this.user);
 	}
 	async delete() {

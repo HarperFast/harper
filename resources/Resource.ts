@@ -94,6 +94,7 @@ export class Resource implements ResourceInterface {
 		}
 	}
 	get(identifier: string | number | object): Promise<object>;
+	get(): Promise<object>;
 	put(record: object, options?): Promise<object>;
 	static getNewId() {
 		return randomUUID();

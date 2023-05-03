@@ -88,6 +88,7 @@ export function makeTable(options) {
 		static sourcedFrom(Resource) {
 			// define a source for retrieving invalidated entries for caching purposes
 			this.Source = Resource;
+			return this;
 		}
 		/**
 		 * Set TTL expiration for records in this table
@@ -198,13 +199,15 @@ export function makeTable(options) {
 		async loadRecord() {
 			// TODO: determine if we use lazy access properties
 			const env_txn = this.dbTxn;
-			const entry = primary_store.getEntry(this.id, { transaction: env_txn.getReadTxn() });
+			let entry = primary_store.getEntry(this.id, { transaction: env_txn.getReadTxn() });
 			if (entry) {
 				if (entry.version > this.lastModificationTime) this.updateModificationTime(entry.version);
 				this.version = entry.version;
 				this.record = entry.value;
-			} else {
-				if (this.constructor.Source?.prototype.get) this.record = this.getFromSource(this.id);
+				if (this.version < 0 || this.record.__invalidated__) entry = null;
+			}
+			if (!entry) {
+				if (this.constructor.Source?.prototype.get) this.record = this.getFromSource(this.record, this.version);
 				return this.record; // might be a promise
 			}
 			/*
@@ -386,29 +389,33 @@ export function makeTable(options) {
 		/**
 		 * This will be used to record that a record is being resolved
 		 */
-		static async getFromSource(identifier: string | number, record?: any) {
-			if (!record) record = {};
-			const availability = record.__availability__ || {};
-			availability.resolving = true;
-			record.__availability__ = availability;
-			// TODO: We want to eventually use a "direct write" method to directly write to the availability portion
-			// of the record in place in the database. In the meantime, should probably use an ifVersion
-			primary_store.put(identifier, record);
-			const source = new this.Source();
-			const updated_record = await source.get(identifier);
-			const updated = source.lastModificationTime;
-			if (updated) {
-				updated_record.__updated__ = updated;
-			}
-			updated_record.__availability__ = {
-				residence: [
-					/*here*/
-				],
-				cached: true,
-			};
-			updated_record[primary_key] = identifier;
-			primary_store.put(this.id, updated_record, { ifVersion: updated });
+		async getFromSource(existing_record, existing_version) {
+			const invalidated_record = { __invalidated__: true };
+			if (this.record) Object.assign(invalidated_record, existing_record);
+			const source = new this.constructor.Source(this.id, this);
+			// TODO: We want to eventually use a "direct write" method to directly write to the locations
+			// of the record in place in the database, which requires a reserved space in the random access structures
+			// it is important to remember that this is _NOT_ part of the current transaction; nothing is changing
+			// with the canonical data, we are simply fulfilling our local copy of the canonical data, but still don't
+			// want a timestamp later than the current transaction
+			const version = existing_version || source.lastModificationTime || this.transactions.timestamp;
+			primary_store.put(this.id, invalidated_record, version, existing_version);
+			await source.loadRecord();
+			const updated_record = await source.get();
+			if (updated_record) {
+				updated_record[primary_key] = this.id;
+				// don't wait on this, we don't actually care if it fails, that just means there is even
+				// a newer entry going in the cache in the future
+				primary_store.put(this.id, updated_record, version, existing_version);
+			} else primary_store.remove(this.id, existing_version);
 			return updated_record;
+		}
+		invalidate(partial_record) {
+			if (!partial_record && Object.keys(indices).length > 0) partial_record = {};
+			if (partial_record) {
+				partial_record.__invalidated__ = true;
+				this.#writePut(partial_record);
+			} else this.#writeDelete();
 		}
 
 		/**
@@ -420,8 +427,6 @@ export function makeTable(options) {
 		 * @param options
 		 */
 		async put(record, options): void {
-			const env_txn = this.dbTxn;
-
 			record[primary_key] = this.id; // ensure that the id is in the record
 
 			if (attributes && !options?.noValidation) {
@@ -464,6 +469,11 @@ export function makeTable(options) {
 				await source.loadRecord();
 				await source.put(record, options);
 			}
+			this.#writePut(record);
+		}
+		#writePut(record) {
+			const env_txn = this.dbTxn;
+
 			// use optimistic locking to only commit if the existing record state still holds true.
 			// this is superior to using an async transaction since it doesn't require JS execution
 			//  during the write transaction.
@@ -502,42 +512,7 @@ export function makeTable(options) {
 					}
 
 					primary_store.put(this.id, record, txn_time);
-					// iterate the entries from the record
-					// for-in is about 5x as fast as for-of Object.entries, and this is extremely time sensitive since it can be
-					// inside a write transaction
-					// TODO: Make an array version of indices that is faster
-					for (const key in indices) {
-						const index = indices[key];
-						const value = record[key];
-						const existing_value = existing_record[key];
-						if (value === existing_value) {
-							continue;
-						}
-
-						//if the update cleared out the attribute value we need to delete it from the index
-						let values = getIndexedValues(existing_value);
-						if (values) {
-							if (LMDB_PREFETCH_WRITES)
-								index.prefetch(
-									values.map((v) => ({ key: v, value: this.id })),
-									noop
-								);
-							for (let i = 0, l = values.length; i < l; i++) {
-								index.remove(values[i], this.id);
-							}
-						}
-						values = getIndexedValues(value);
-						if (values) {
-							if (LMDB_PREFETCH_WRITES)
-								index.prefetch(
-									values.map((v) => ({ key: v, value: this.id })),
-									noop
-								);
-							for (let i = 0, l = values.length; i < l; i++) {
-								index.put(values[i], this.id);
-							}
-						}
-					}
+					updateIndices(this.id, existing_record, record);
 					return {
 						// return the audit record that should be recorded
 						operation: 'put',
@@ -548,15 +523,17 @@ export function makeTable(options) {
 		}
 
 		async delete(options): boolean {
-			const env_txn = this.dbTxn;
 			if (!this.record) return false;
-			const txn_time = this.transactions.timestamp;
 			if (this.constructor.Source?.prototype.delete) {
 				const source = (this.source = this.constructor.Source.getResource(this.id, this));
 				await source.loadRecord();
 				await source.delete(options);
 			}
-
+			this.#writeDelete();
+		}
+		#writeDelete() {
+			const env_txn = this.dbTxn;
+			const txn_time = this.transactions.timestamp;
 			env_txn.addWrite({
 				key: this.id,
 				store: primary_store,
@@ -569,23 +546,7 @@ export function makeTable(options) {
 						existing_record = existing_entry?.value;
 						this.updateModificationTime(existing_entry?.version);
 					}
-					for (let i = 0, l = indices.length; i < l; i++) {
-						const index = indices[i];
-						const existing_value = existing_record[this.id];
-
-						//if the update cleared out the attribute value we need to delete it from the index
-						const values = getIndexedValues(existing_value);
-						if (values) {
-							if (LMDB_PREFETCH_WRITES)
-								index.prefetch(
-									values.map((v) => ({ key: v, value: this.id })),
-									noop
-								);
-							for (let i = 0, l = values.length; i < l; i++) {
-								index.remove(values[i], this.id);
-							}
-						}
-					}
+					updateIndices(this.id, existing_record);
 					primary_store.remove(this.id);
 					return {
 						// return the audit record that should be recorded
@@ -867,7 +828,46 @@ export function makeTable(options) {
 		}
 		resource.dbTxn = db_txn;
 	}
+	function updateIndices(id, existing_record, record?) {
+		// iterate the entries from the record
+		// for-in is about 5x as fast as for-of Object.entries, and this is extremely time sensitive since it can be
+		// inside a write transaction
+		// TODO: Make an array version of indices that is faster
+		for (const key in indices) {
+			const index = indices[key];
+			const value = record?.[key];
+			const existing_value = existing_record?.[key];
+			if (value === existing_value) {
+				continue;
+			}
+
+			//if the update cleared out the attribute value we need to delete it from the index
+			let values = getIndexedValues(existing_value);
+			if (values) {
+				if (LMDB_PREFETCH_WRITES)
+					index.prefetch(
+						values.map((v) => ({ key: v, value: id })),
+						noop
+					);
+				for (let i = 0, l = values.length; i < l; i++) {
+					index.remove(values[i], id);
+				}
+			}
+			values = getIndexedValues(value);
+			if (values) {
+				if (LMDB_PREFETCH_WRITES)
+					index.prefetch(
+						values.map((v) => ({ key: v, value: id })),
+						noop
+					);
+				for (let i = 0, l = values.length; i < l; i++) {
+					index.put(values[i], id);
+				}
+			}
+		}
+	}
 }
+
 /**
  *
  * @param {SearchObject} search_object
@@ -949,5 +949,11 @@ export function CamelCase(snake_case) {
 	return snake_case
 		.split('_')
 		.map((part) => part[0].toUpperCase() + part.slice(1))
+		.join('');
+}
+export function lowerCamelCase(snake_case) {
+	return snake_case
+		.split('_')
+		.map((part, i) => (i === 0 ? part : part[0].toUpperCase() + part.slice(1)))
 		.join('');
 }
