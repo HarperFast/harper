@@ -1,5 +1,4 @@
-import { Resource } from 'harperdb';
-
+import { Resource, tables } from 'harperdb';
 export class Echo extends Resource {
 	static async connect(incoming_messages) {
 		if (incoming_messages) {
@@ -23,8 +22,15 @@ export class Echo extends Resource {
 		}
 	}
 	get() {
-		return this.id;
+		return {
+			change: 'this',
+			id: this.id,
+		};
 	}
 }
-
-console.log('resources');
+class SimpleCacheSource extends tables.FourProp {}
+export class SimpleCache extends tables.SimpleCache.sourcedFrom(SimpleCacheSource) {
+	post(data) {
+		if (data.invalidate) this.invalidate({});
+	}
+}

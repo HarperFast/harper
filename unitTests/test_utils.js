@@ -16,7 +16,7 @@ const SysUserObject = require('../server/nats/utility/SysUserObject');
 const HdbUserObject = require('../server/nats/utility/HdbUserObject');
 const systemSchema = require('../json/systemSchema.json');
 const env = require('../utility/environment/environmentManager');
-const { table: ensure_table } = require('../resources/tableLoader');
+const { table: ensure_table, resetDatabases } = require('../resources/tableLoader');
 const terms = require('../utility/hdbTerms');
 const nats_terms = rewire('../server/nats/utility/natsTerms');
 const crypto_hash = require('../security/cryptoHash');
@@ -175,6 +175,7 @@ function getMockLMDBPath() {
 	let lmdb_path = path.join(UNIT_TEST_DIR, ENV_DIR_NAME, process.pid.toString());
 	env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, lmdb_path);
 	env.setProperty(terms.CONFIG_PARAMS.SCHEMAS, { data: { path: lmdb_path } });
+	resetDatabases();
 	return lmdb_path;
 }
 

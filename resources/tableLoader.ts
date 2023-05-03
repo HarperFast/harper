@@ -7,7 +7,7 @@ import {
 	getBaseSchemaPath,
 	getTransactionAuditStoreBasePath,
 } from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths';
-import { makeTable } from './Table';
+import { makeTable, CamelCase, lowerCamelCase } from './Table';
 import * as OpenDBIObject from '../utility/lmdb/OpenDBIObject';
 import * as OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject';
 import { CONFIG_PARAMS, LEGACY_DATABASES_DIR_NAME, DATABASES_DIR_NAME } from '../utility/hdbTerms';
@@ -23,8 +23,8 @@ interface Databases {
 	[database_name: string]: Tables;
 }
 const USE_AUDIT = true; // TODO: Get this from config
-export const tables: Tables = null;
-export const databases: Databases = {};
+export let tables: Tables = {};
+export let databases: Databases = {};
 const table_listeners = [];
 let loaded_databases;
 const database_envs = new Map<string, any>();
@@ -33,7 +33,8 @@ const database_envs = new Map<string, any>();
  * This gets the set of tables from the default database ("data").
  */
 export function getTables(): Tables {
-	return getDatabases().data || {};
+	if (!loaded_databases) getDatabases();
+	return tables || {};
 }
 
 /**
@@ -47,10 +48,12 @@ export function getTables(): Tables {
  */
 export function getDatabases(): Databases {
 	if (loaded_databases) return databases;
+	databases = {};
 	loaded_databases = true;
 	let database_path = join(getHdbBasePath(), DATABASES_DIR_NAME);
 	const schema_configs = env_get(CONFIG_PARAMS.SCHEMAS) || {};
-
+	// not sure why this doesn't work with the environmemt manager
+	if (process.env.SCHEMAS_DATA_PATH) schema_configs.data = { path: process.env.SCHEMAS_DATA_PATH };
 	database_path =
 		process.env.STORAGE_PATH ||
 		env_get(CONFIG_PARAMS.STORAGE_PATH) ||
@@ -114,6 +117,7 @@ export function getDatabases(): Databases {
 			//TODO: Iterate configured table paths
 		}
 	}
+	tables = databases.data || {};
 	return databases;
 }
 export function resetDatabases() {
@@ -166,7 +170,8 @@ function readMetaDb(
 			attributes.push(value);
 			value.key = key;
 		}
-		const tables = databases[schema_name] || (databases[schema_name] = Object.create(null));
+		const tables =
+			databases[schema_name] || (databases[schema_name] = databases[lowerCamelCase(schema_name)] = Object.create(null));
 		for (const [table_name, attributes] of tables_to_load) {
 			for (const attribute of attributes) {
 				const dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
@@ -189,18 +194,21 @@ function readMetaDb(
 							indices[attribute.name] = root_store.openDB(attribute.key, dbi_init);
 						}
 					}
-					const table = (tables[table_name] = makeTable({
-						primaryStore: primary_store,
-						auditStore: audit_store,
-						tableName: table_name,
-						primaryKey: attribute.name,
-						databasePath: is_legacy ? schema_name + '/' + table_name : schema_name,
-						databaseName: schema_name,
-						indices,
-						attributes,
-						schemaDefined: attribute.schemaDefined,
-						dbisDB: dbis_store,
-					}));
+					const table =
+						(tables[CamelCase(table_name)] =
+						tables[table_name] =
+							makeTable({
+								primaryStore: primary_store,
+								auditStore: audit_store,
+								tableName: table_name,
+								primaryKey: attribute.name,
+								databasePath: is_legacy ? schema_name + '/' + table_name : schema_name,
+								databaseName: schema_name,
+								indices,
+								attributes,
+								schemaDefined: attribute.schemaDefined,
+								dbisDB: dbis_store,
+							}));
 					for (const listener of table_listeners) {
 						listener(table);
 					}
@@ -227,7 +235,9 @@ const ROOT_STORE_KEY = Symbol('root-store');
 export function database({ database: database_name, table: table_name }) {
 	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
 	getDatabases();
-	const database = databases[database_name] || (databases[database_name] = Object.create(null));
+	const database =
+		databases[database_name] ||
+		(databases[database_name] = databases[lowerCamelCase(database_name)] = Object.create(null));
 	let root_store = database[ROOT_STORE_KEY];
 	if (root_store) return root_store;
 	let database_path = join(getHdbBasePath(), DATABASES_DIR_NAME);
@@ -312,18 +322,21 @@ export function table({
 		primary_store.tableId = root_store.env.nextTableId++;
 		primary_key_attribute.tableId = primary_store.tableId;
 		dbis_db = root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
-		Table = tables[table_name] = makeTable({
-			primaryStore: primary_store,
-			auditStore: audit_store,
-			primaryKey: primary_key,
-			tableName: table_name,
-			databasePath: database_name,
-			databaseName: database_name,
-			indices: [],
-			attributes,
-			schemaDefined: schema_defined,
-			dbisDB: dbis_db,
-		});
+		Table =
+			tables[CamelCase(table_name)] =
+			tables[table_name] =
+				makeTable({
+					primaryStore: primary_store,
+					auditStore: audit_store,
+					primaryKey: primary_key,
+					tableName: table_name,
+					databasePath: database_name,
+					databaseName: database_name,
+					indices: [],
+					attributes,
+					schemaDefined: schema_defined,
+					dbisDB: dbis_db,
+				});
 		for (const listener of table_listeners) {
 			listener(Table);
 		}

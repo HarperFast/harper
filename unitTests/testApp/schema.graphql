@@ -19,6 +19,9 @@ type HasTimeStamps @table {
 	created: number @creationDate
 	updated: number @updateDate
 }
+type SimpleCache @table {
+	id: ID @primaryKey
+}
 
 type Query {
 	VariedProps: VariedProps
