@@ -13,6 +13,7 @@ const env_mgr = require('../../environment/environmentManager');
 const hdb_log = require('../../logging/harper_logger');
 const config_utils = require('../../../config/configUtils');
 const add_node = require('../../clustering/addNode');
+const { deployCustomFunctionProject } = require('../../../server/customFunctions/operations');
 const {
 	getSchemaPath,
 	getSystemSchemaPath,
@@ -52,18 +53,25 @@ async function cloneNode() {
 }
 
 async function cloneApps() {
-	let leader_apps = await httpReq({ operation: 'get_custom_functions' });
+	let leader_apps = await httpReq({ operation: OPERATIONS_ENUM.GET_CUSTOM_FUNCTIONS });
 	leader_apps = await leader_apps.json();
 
-	// If there is excludeApps in clone config reference it against all the leader apps and remove any apps that should be excluded from clone.
-	if (clone_node_config?.apps?.excludeApps) {
-		for (const exclude_app of clone_node_config.apps.excludeApps) {
-			if (exclude_app?.name == null) continue;
-			if (leader_apps[exclude_app?.name]) delete leader_apps[exclude_app.name];
+	if (leader_apps)
+		if (clone_node_config?.apps?.excludeApps) {
+			// If there is excludeApps in clone config reference it against all the leader apps and remove any apps that should be excluded from clone.
+			for (const exclude_app of clone_node_config.apps.excludeApps) {
+				if (exclude_app?.name == null) continue;
+				if (leader_apps[exclude_app?.name]) delete leader_apps[exclude_app.name];
+			}
 		}
-	}
 
-	console.log(leader_apps);
+	const skip_node_modules = clone_node_config?.apps?.skipNodeModules !== false;
+	for (const project in leader_apps) {
+		console.info('Cloning and deploying custom function/app: ' + project);
+		let pkg = await httpReq({ operation: OPERATIONS_ENUM.PACKAGE_CUSTOM_FUNCTION_PROJECT, project, skip_node_modules });
+		const { payload } = await pkg.json();
+		await deployCustomFunctionProject({ project, payload });
+	}
 }
 async function clusterTables() {
 	if (leader_clustering_enabled) {
@@ -84,7 +92,7 @@ async function clusterTables() {
 // TODO: exclude tables?
 // TODO: how is this called? how are params passed
 async function cloneConfig() {
-	let leader_config = await httpReq({ operation: 'get_configuration' });
+	let leader_config = await httpReq({ operation: OPERATIONS_ENUM.GET_CONFIGURATION });
 	leader_config = await leader_config.json();
 	leader_clustering_enabled = leader_config?.clustering?.enabled;
 	leader_node_name = leader_config?.clustering?.nodeName;
@@ -110,7 +118,7 @@ async function cloneConfig() {
 
 async function cloneTables() {
 	// Get all the non-system schema/table from leader node
-	let leader_schemas = await httpReq({ operation: 'describe_all' });
+	let leader_schemas = await httpReq({ operation: OPERATIONS_ENUM.DESCRIBE_ALL });
 	leader_schemas = await leader_schemas.json();
 
 	// If there is excludeSchemas in clone config search for value in leader schema description and delete if found, so it's not cloned.
@@ -133,7 +141,11 @@ async function cloneTables() {
 	//TODO: check for a 200 response before cloning table
 	for (const sys_table of SYSTEM_TABLES_TO_CLONE) {
 		hdb_log.info(`Cloning system table: ${sys_table} from node: ${url}`);
-		const sys_backup = await httpReq({ operation: 'get_backup', schema: SYSTEM_SCHEMA_NAME, table: sys_table });
+		const sys_backup = await httpReq({
+			operation: OPERATIONS_ENUM.GET_BACKUP,
+			schema: SYSTEM_SCHEMA_NAME,
+			table: sys_table,
+		});
 		const sys_schema_path = getSystemSchemaPath();
 		await ensureDir(sys_schema_path);
 		await pipeline(sys_backup.body, createWriteStream(join(sys_schema_path, sys_table + '.mdb'), { overwrite: true }));
@@ -147,7 +159,7 @@ async function cloneTables() {
 			const leader_record_count = leader_schemas[schema][table]['record_count'];
 
 			// Stream table backup from leader node to this node.
-			const backup = await httpReq({ operation: 'get_backup', schema, table });
+			const backup = await httpReq({ operation: OPERATIONS_ENUM.GET_BACKUP, schema, table });
 			const schema_path = getSchemaPath(schema, table);
 			await ensureDir(schema_path);
 			const backup_date = new Date(backup.headers.get('date'));

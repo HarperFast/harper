@@ -7,7 +7,7 @@ database:
     - schema: prod
       table: dog
 apps:
-  cloneNodeModules: false
+  skipNodeModules: true
   excludeApps:
     - name: test_projectB
 plugins:

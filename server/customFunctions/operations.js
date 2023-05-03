@@ -309,7 +309,7 @@ function dropCustomFunctionProject(req) {
  * Will copy the project into a temp dir call 'package', this is done because when npm installing tar
  * files the contents of the tar need to be in a dir called package. Deploy CF project uses npm install.
  * @param req
- * @returns {Promise<{file: string, payload: *, project}>}
+ * @returns {Promise<{ payload: *, project}>}
  */
 async function packageCustomFunctionProject(req) {
 	if (req.project) {
@@ -354,16 +354,16 @@ async function packageCustomFunctionProject(req) {
 	const payload = fs.readFileSync(file, { encoding: 'base64' });
 
 	await fs.remove(tmp_project_dir);
+	await fs.remove(file);
 
 	// return the package payload as base64-encoded string
-	return { project, file, payload };
+	return { project, payload };
 }
 
 /**
- * Tar a project folder from the custom_functions folder
- *
- * @param {NodeObject} req
- * @returns {string}
+ * Deploys a custom function
+ * @param req
+ * @returns {Promise<string>}
  */
 async function deployCustomFunctionProject(req) {
 	isCFEnabled();
