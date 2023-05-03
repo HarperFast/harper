@@ -2,9 +2,8 @@ import { EventEmitter } from 'events';
 
 export class IterableEventQueue extends EventEmitter {
 	resolveNext: Function;
-	queue: [];
-	nextMessage: any;
-	listener: Function;
+	queue: any[];
+	hasDataListeners: boolean;
 	[Symbol.asyncIterator]() {
 		const iterator = new EventQueueIterator();
 		iterator.queue = this;
@@ -17,25 +16,29 @@ export class IterableEventQueue extends EventEmitter {
 		if (this.resolveNext) {
 			this.resolveNext({ value: message });
 			this.resolveNext = null;
+		} else if (this.hasDataListeners) {
+			this.emit('data', message);
 		} else {
-			if (this.nextMessage) {
-				if (!this.queue) this.queue = [];
-				this.queue.push(message);
-			} else this.nextMessage = message;
+			if (!this.queue) this.queue = [];
+			this.queue.push(message);
 		}
 	}
 	getNextMessage() {
-		const message = this.nextMessage;
-		if (message && this.queue) this.nextMessage = this.queue.shift();
-		else this.nextMessage = null;
-		return message;
+		return this.queue?.shift();
+	}
+	on(event_name, listener) {
+		if (event_name === 'data' && !this.hasDataListeners) {
+			this.hasDataListeners = true;
+			while (this.queue?.length > 0) listener(this.queue.shift());
+		}
+		return super.on(event_name, listener);
 	}
 }
 
 class EventQueueIterator {
 	queue: IterableEventQueue;
 	push(message) {
-		this.listener(message);
+		this.queue.send(message);
 	}
 	next() {
 		const message = this.queue.getNextMessage();
@@ -47,10 +50,17 @@ class EventQueueIterator {
 			return new Promise((resolve) => (this.queue.resolveNext = resolve));
 		}
 	}
-	return() {
+	return(value) {
 		this.queue.emit('close');
+		return {
+			value,
+			done: true,
+		};
 	}
-	throw() {
-		this.queue.emit('close');
+	throw(error) {
+		this.queue.emit('close', error);
+		return {
+			done: true,
+		};
 	}
 }

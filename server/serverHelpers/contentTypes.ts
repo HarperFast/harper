@@ -57,15 +57,9 @@ media_types.set('text/event-stream', {
 	// Server-Sent Events (SSE)
 	serializeStream: function (iterable) {
 		// create a readable stream that we use to stream out events from our subscription
-		const serialize = this.serialize;
-		return Readable.from(
-			(async function* () {
-				for await (const message of iterable) {
-					// TODO: if we can skip messages, use back-pressure and allow messages to be skipped
-					yield serialize(message);
-				}
-			})()
-		);
+		return Readable.from(transformIterable(iterable, this.serialize)).on('close', () => {
+			console.log('close in content types');
+		});
 	},
 	serialize: function (message) {
 		if (message.data || message.event) {
@@ -347,4 +341,33 @@ function tryJSONParse(input) {
 	} catch (error) {
 		return input;
 	}
+}
+
+function transformIterable(iterable, transform) {
+	return {
+		[Symbol.asyncIterator]() {
+			const iterator = iterable[Symbol.asyncIterator] ? iterable[Symbol.asyncIterator]() : iterable[Symbol.iterator]();
+			return {
+				next() {
+					const step = iterator.next();
+					if (step.then) {
+						return step.then((step) => ({
+							value: transform(step.value),
+							done: step.done,
+						}));
+					}
+					return {
+						value: transform(step.value),
+						done: step.done,
+					};
+				},
+				return(value) {
+					return iterator.return(value);
+				},
+				throw(error) {
+					return iterator.throw(error);
+				},
+			};
+		},
+	};
 }

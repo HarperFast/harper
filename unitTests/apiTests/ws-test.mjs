@@ -22,7 +22,6 @@ describe('test WebSockets connections and messaging', () => {
 			ws1.on('open', resolve);
 			ws1.on('error', reject);
 		});
-		console.log('connected');
 	});
 	it('ping echo server', async function () {
 		this.timeout(10000);

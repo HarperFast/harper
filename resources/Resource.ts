@@ -195,7 +195,7 @@ export class Resource implements ResourceInterface {
 				},
 			};
 			const subscription = this.subscribe(query, options);
-			iterable.on('close', () => subscription.end());
+			iterable.on('close', () => subscription?.end());
 		}
 		return iterable;
 	}

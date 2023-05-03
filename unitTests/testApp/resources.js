@@ -12,12 +12,15 @@ export class Echo extends Resource {
 			// for server sent events, just send greetings, and try using super.connect
 			let outgoing_messages = super.connect();
 			outgoing_messages.send('greetings');
-			setTimeout(() => {
+			let timer = setTimeout(() => {
 				outgoing_messages.send({
 					event: 'another-message',
 					data: 'hello again',
 				});
 			}, 10);
+			outgoing_messages.on('close', () => {
+				clearTimeout(timer);
+			});
 			return outgoing_messages;
 		}
 	}
