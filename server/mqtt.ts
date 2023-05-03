@@ -9,7 +9,7 @@ import { recordAction } from '../resources/analytics';
 
 const DEFAULT_MQTT_PORT = 1883;
 const AUTHORIZE_LOCAL = true;
-export async function start({ server, port, webSocket, secure }) {
+export async function start({ server, port, webSocket, securePort }) {
 	// here we basically normalize the different types of sockets to pass to our socket/message handler
 	if (webSocket)
 		server.ws(
@@ -25,7 +25,7 @@ export async function start({ server, port, webSocket, secure }) {
 					ws.on('close', onClose);
 				}
 			},
-			{ port, subProtocol: 'mqtt', secure }
+			{ port: port || securePort, subProtocol: 'mqtt' }
 		); // if there is no port, we are piggy-backing off of default app http server
 	if (!webSocket) {
 		if (!port) throw new Error('Must specify a port for MQTT');
@@ -44,7 +44,7 @@ export async function start({ server, port, webSocket, secure }) {
 					info('Socket error', error);
 				});
 			},
-			{ port: port || DEFAULT_MQTT_PORT, secure }
+			{ port: port || DEFAULT_MQTT_PORT, securePort }
 		);
 	}
 }

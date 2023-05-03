@@ -26,7 +26,8 @@ describe('test MQTT connections and commands', () => {
 			client.on('connect', resolve);
 			client.on('error', reject);
 		});
-		client2 = connect('mqtt://localhost:1883', {
+		client2 = connect('mqtts://localhost:8883', {
+			rejectUnauthorized: false,
 		});
 
 		await new Promise((resolve, reject) => {

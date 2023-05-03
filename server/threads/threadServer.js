@@ -2,6 +2,7 @@
 const { isMainThread, parentPort, threadId } = require('worker_threads');
 const { Socket, createServer: createSocketServer } = require('net');
 const { createServer, IncomingMessage } = require('http');
+const { readFileSync } = require('fs');
 const harper_logger = require('../../utility/logging/harper_logger');
 const { join } = require('path');
 const hdb_utils = require('../../utility/common_utils');
@@ -9,12 +10,13 @@ const env = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 const { server } = require('../Server');
 const { WebSocketServer } = require('ws');
-const { TLSSocket, createSecureContext } = require('tls');
+const { TLSSocket, createServer: createSecureSocketServer } = require('tls');
 process.on('uncaughtException', (error) => {
 	if (error.code === 'ECONNRESET') return; // that's what network connections do
 	console.error('uncaughtException', error);
 	process.exit(100);
 });
+const { HDB_SETTINGS_NAMES, CONFIG_PARAMS } = terms;
 env.initSync();
 const SERVERS = {};
 exports.registerServer = registerServer;
@@ -247,25 +249,32 @@ function unhandled(request) {
 function onRequest(listener, options) {
 	httpServer(listener, Object.assign({ requestOnly: true }, options));
 }
+
 /**
  * Direct socket listener
  * @param listener
  * @param options
  */
 function onSocket(listener, options) {
-	if (options.secure) {
-		const secureContext = createSecureContext({
-			// TODO: Get the certificates
-		});
-		const TLS_options = {
-			isServer: true,
-			secureContext,
+	if (options.securePort) {
+		const privateKey = env.get('customfunctions_tls_privatekey');
+		const certificate = env.get('customfunctions_tls_certificate');
+		const certificateAuthority = env.get('customfunctions_tls_certificateauthority');
+
+		let socket_server = createSecureSocketServer(
+			{
+				key: readFileSync(privateKey),
+				// if they have a CA, we append it, so it is included
+				cert: readFileSync(certificate) + (certificateAuthority ? '\n\n' + readFileSync(certificateAuthority) : ''),
+			},
+			listener
+		);
+
+		SERVERS[options.securePort] = (socket) => {
+			socket_server.emit('connection', socket);
 		};
-		SERVERS[options.port] = (socket) => {
-			// TODO: Do we need to wait for secureConnect to notify listener?
-			listener(new TLSSocket(socket, TLS_options));
-		};
-	} else SERVERS[options.port] = listener;
+	}
+	if (options.port) SERVERS[options.port] = listener;
 }
 function onWebSocket(listener, options) {
 	let port_num = +options?.port;
@@ -283,7 +292,16 @@ function onWebSocket(listener, options) {
 			// TODO: select listener by protocol
 			for (let i = 0; i < ws_listeners.length; i++) {
 				let handler = ws_listeners[i];
-				if (handler.protocol === protocol || handler.protocol === '*') handler.listener(ws, request, chain_completion);
+				if (handler.protocol) {
+					// if we have a handler for a specific protocol, allow it to select on that protocol
+					// to the exclusion of other handlers
+					if (handler.protocol === protocol) {
+						handler.listener(ws, request, chain_completion);
+						break;
+					}
+				} else {
+					handler.listener(ws, request, chain_completion);
+				}
 			}
 		});
 	}

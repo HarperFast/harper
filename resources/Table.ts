@@ -724,7 +724,7 @@ export function makeTable(options) {
 					// but have to update the version number of the record
 					// TODO: would be faster to have a dedicated lmdb-js function for just updating the version number
 					const existing_record = retries > 0 ? primary_store.get(this.id) : this.record;
-					primary_store.put(this.id, existing_record ?? null, txn_time);
+					primary_store.put(this.id, existing_record ?? {}, txn_time);
 					// messages are recorded in the audit entry
 					return {
 						operation: 'message',

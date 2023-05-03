@@ -22,7 +22,7 @@ const CORE_PLUGINS = {
 let loaded_server_modules = new Map();
 const default_server_modules = [
 	{ module: 'auth', port: 'all' },
-	{ module: 'mqtt', port: 1883 },
+	{ module: 'mqtt', port: 1883, securePort: 8883 },
 	{ module: 'mqtt', webSocket: true },
 	//{ module: 'mqtt', port: 8883, secure: true },
 	{ module: 'operations-server', port: env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT) || 9925 },
@@ -44,18 +44,20 @@ async function loadServerModules(server_modules = default_server_modules, is_wor
 	getTables();
 	resources.isWorker = is_worker_thread;
 	for (let server_module_definition of default_server_modules) {
-		let { module: module_id, port } = server_module_definition;
+		let { module: module_id, port, securePort } = server_module_definition;
 		// use predefined core plugins or use the secure/sandbox loader (if configured)
 		let server_module = CORE_PLUGINS[module_id] || (await secureImport(module_id));
 		try {
 			// start each server_module
 			if (isMainThread) {
 				if (server_module.startOnMainThread) await server_module.startOnMainThread(server_module_definition);
-				if (+port && !ports_started.includes(port)) {
-					// if there is a TCP port associated with the plugin, we set up the routing on the main thread for it
-					ports_started.push(port);
-					const session_affinity = env.get(hdb_terms.CONFIG_PARAMS.HTTP_SESSION_AFFINITY);
-					socket_router.startSocketServer(port, session_affinity);
+				for (let possible_port of [port, securePort]) {
+					if (+possible_port && !ports_started.includes(possible_port)) {
+						// if there is a TCP port associated with the plugin, we set up the routing on the main thread for it
+						ports_started.push(possible_port);
+						const session_affinity = env.get(hdb_terms.CONFIG_PARAMS.HTTP_SESSION_AFFINITY);
+						socket_router.startSocketServer(possible_port, session_affinity);
+					}
 				}
 			}
 			if (is_worker_thread && server_module.start)

@@ -22,7 +22,7 @@ interface Server {
 }
 interface ServerOptions {
 	port?: number;
-	secure?: any;
+	securePort?: number;
 }
 interface WebSocketOptions extends ServerOptions {
 	subProtocol: string;
