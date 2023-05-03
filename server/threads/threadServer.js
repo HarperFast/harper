@@ -1,16 +1,15 @@
 'use strict';
 const { isMainThread, parentPort, threadId } = require('worker_threads');
-const { Socket, createServer: createSocketServer } = require('net');
-const { createServer, IncomingMessage } = require('http');
+const { Socket } = require('net');
+const { createServer } = require('http');
+const { createServer: createSecureServer } = require('https');
 const { readFileSync } = require('fs');
 const harper_logger = require('../../utility/logging/harper_logger');
-const { join } = require('path');
-const hdb_utils = require('../../utility/common_utils');
 const env = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 const { server } = require('../Server');
 const { WebSocketServer } = require('ws');
-const { TLSSocket, createServer: createSecureSocketServer } = require('tls');
+const { createServer: createSecureSocketServer } = require('tls');
 process.on('uncaughtException', (error) => {
 	if (error.code === 'ECONNRESET') return; // that's what network connections do
 	console.error('uncaughtException', error);
@@ -188,31 +187,51 @@ function httpServer(listener, options) {
 	http_chain[port_num] = makeCallbackChain(http_responders, port_num);
 	ws_chain = makeCallbackChain(request_listeners, port_num);
 }
-function getHTTPServer(port) {
+function getHTTPServer(port, secure) {
 	if (!default_server[port]) {
-		default_server[port] = createServer(async (node_request, node_response) => {
-			try {
-				let request = new Request(node_request);
-				// assign a more WHATWG compliant headers object, this is our real standard interface
-				let response = await http_chain[port](request);
-				if (response.status === -1) {
-					// This means the HDB stack didn't handle the request, and we can then cascade the request
-					// to the server-level handler, forming the bridge to the slower legacy fastify framework that expects
-					// to interact with a node HTTP server object.
-					return default_server[port].emit('unhandled', node_request, node_response);
+		let options = {};
+		if (secure) {
+			const privateKey = env.get('customfunctions_tls_privatekey');
+			const certificate = env.get('customfunctions_tls_certificate');
+			const certificateAuthority = env.get('customfunctions_tls_certificateauthority');
+
+			options = {
+				key: readFileSync(privateKey),
+				// if they have a CA, we append it, so it is included
+				cert: readFileSync(certificate) + (certificateAuthority ? '\n\n' + readFileSync(certificateAuthority) : ''),
+			};
+		}
+		default_server[port] = (secure ? createSecureServer : createServer)(
+			options,
+			async (node_request, node_response) => {
+				try {
+					let request = new Request(node_request);
+					// assign a more WHATWG compliant headers object, this is our real standard interface
+					let response = await http_chain[port](request);
+					if (response.status === -1) {
+						// This means the HDB stack didn't handle the request, and we can then cascade the request
+						// to the server-level handler, forming the bridge to the slower legacy fastify framework that expects
+						// to interact with a node HTTP server object.
+						return default_server[port].emit('unhandled', node_request, node_response);
+					}
+					node_response.writeHead(response.status, response.headers);
+					let body = response.body;
+					// if it is a stream, pipe it
+					if (body?.pipe) {
+						body.pipe(node_response);
+						node_response.on('close', () => {
+							body.destroy();
+						});
+					}
+					// else just send the buffer/string
+					else node_response.end(body);
+				} catch (error) {
+					node_response.writeHead(error.hdb_resp_code || 500);
+					node_response.end(error.toString());
+					harper_logger.error(error);
 				}
-				node_response.writeHead(response.status, response.headers);
-				let body = response.body;
-				// if it is a stream, pipe it
-				if (body?.pipe) body.pipe(node_response);
-				// else just send the buffer/string
-				else node_response.end(body);
-			} catch (error) {
-				node_response.writeHead(error.hdb_resp_code || 500);
-				node_response.end(error.toString());
-				harper_logger.error(error);
 			}
-		});
+		);
 		registerServer(default_server[port], port);
 	}
 	return default_server[port];
