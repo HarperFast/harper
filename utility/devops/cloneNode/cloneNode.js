@@ -1,6 +1,7 @@
 'use strict';
 
 const fetch = require('node-fetch');
+const https = require('https');
 const fs = require('fs-extra');
 const YAML = require('yaml');
 const { pipeline } = require('stream/promises');
@@ -39,13 +40,14 @@ let leader_clustering_enabled;
 let leader_node_name;
 let subscriptions;
 let clone_node_config;
+let leader_config;
 
 async function cloneNode() {
 	console.info('Cloning node: ' + url);
 	clone_node_config = YAML.parseDocument(fs.readFileSync(CLONE_CONFIG_PATH, 'utf8'), { simpleKeys: true }).toJSON();
 
 	// await cloneTables();
-	// await cloneConfig();
+	await cloneConfig();
 	await cloneApps();
 
 	hdb_log.info('Successfully cloned node: ' + url);
@@ -53,6 +55,8 @@ async function cloneNode() {
 }
 
 async function cloneApps() {
+	const leader_config_apps = leader_config?.apps ?? [];
+	const leader_cf_root = leader_config?.customFunctions?.root;
 	let leader_apps = await httpReq({ operation: OPERATIONS_ENUM.GET_CUSTOM_FUNCTIONS });
 	leader_apps = await leader_apps.json();
 
@@ -65,12 +69,40 @@ async function cloneApps() {
 			}
 		}
 
+	// Loop through the result from get_custom_functions. If the function is referenced in the leader
+	// apps config AND it is located in the leaders CF root, package & deploy it to this node.
+	// If the function exits but is not referenced in the leader app config, package & deploy it but
+	// exclude it from the apps config on this node. Any apps that are in leader app config but don't reside
+	// in the leader CF root are ignored. These can be deployed when npm install is run in a later step on this node.
 	const skip_node_modules = clone_node_config?.apps?.skipNodeModules !== false;
 	for (const project in leader_apps) {
+		let app_deployed = false;
+		for (const app of leader_config_apps) {
+			if (app.name === project && app.package.includes(leader_cf_root)) {
+				let pkg = await httpReq({
+					operation: OPERATIONS_ENUM.PACKAGE_CUSTOM_FUNCTION_PROJECT,
+					project,
+					skip_node_modules,
+				});
+				const { payload } = await pkg.json();
+				await deployCustomFunctionProject({ project, payload });
+				app_deployed = true;
+				break;
+			} else if (app.name === project) {
+				app_deployed = true;
+			}
+		}
+
+		if (!app_deployed) {
+			let pkg = await httpReq({
+				operation: OPERATIONS_ENUM.PACKAGE_CUSTOM_FUNCTION_PROJECT,
+				project,
+				skip_node_modules,
+			});
+			const { payload } = await pkg.json();
+			await deployCustomFunctionProject({ project, payload, bypass_apps: true });
+		}
 		console.info('Cloning and deploying custom function/app: ' + project);
-		let pkg = await httpReq({ operation: OPERATIONS_ENUM.PACKAGE_CUSTOM_FUNCTION_PROJECT, project, skip_node_modules });
-		const { payload } = await pkg.json();
-		await deployCustomFunctionProject({ project, payload });
 	}
 }
 async function clusterTables() {
@@ -92,7 +124,7 @@ async function clusterTables() {
 // TODO: exclude tables?
 // TODO: how is this called? how are params passed
 async function cloneConfig() {
-	let leader_config = await httpReq({ operation: OPERATIONS_ENUM.GET_CONFIGURATION });
+	leader_config = await httpReq({ operation: OPERATIONS_ENUM.GET_CONFIGURATION });
 	leader_config = await leader_config.json();
 	leader_clustering_enabled = leader_config?.clustering?.enabled;
 	leader_node_name = leader_config?.clustering?.nodeName;
@@ -111,7 +143,36 @@ async function cloneConfig() {
 		}
 	}
 
-	//TODO: get plugins and apps
+	if (leader_config?.apps && Array.isArray(leader_config?.apps)) {
+		let exclude_apps = clone_node_config?.apps?.excludeApps;
+		// Convert array of excluded apps to object where app name is key, for easy searching.
+		exclude_apps = exclude_apps
+			? exclude_apps.reduce((obj, item) => {
+					return { ...obj, [item['name']]: true };
+			  }, {})
+			: [];
+
+		const apps = env_mgr.get(CONFIG_PARAMS.APPS) ?? [];
+		const cloned_apps = [];
+		for (const app of leader_config.apps) {
+			if (exclude_apps[app.name]) continue;
+			// Remove any duplicate app config that might exist between leader and this node. Leader apps take priority.
+			for (const [i, existing_app] of apps.entries()) {
+				if (existing_app.name === app.name) {
+					apps.splice(i, 1);
+					break;
+				}
+			}
+
+			cloned_apps.push(app);
+		}
+
+		config_update[CONFIG_PARAMS.APPS] = Array.isArray(apps) ? apps.concat(cloned_apps) : cloned_apps;
+	}
+
+	console.log(config_update);
+
+	//TODO: get plugins
 
 	if (!_.isEmpty(config_update)) await config_utils.updateConfigValue(undefined, undefined, config_update);
 }
@@ -197,6 +258,10 @@ async function cloneTables() {
 }
 
 async function httpReq(req) {
+	const https_agent = new https.Agent({
+		rejectUnauthorized: clone_node_config?.httpsRejectUnauthorized ?? true,
+	});
+
 	const auth = Buffer.from(username + ':' + password).toString('base64');
 	return await fetch(url, {
 		method: 'POST',
@@ -205,6 +270,7 @@ async function httpReq(req) {
 			'Authorization': 'Basic ' + auth,
 		},
 		body: JSON.stringify(req),
+		agent: https_agent,
 	});
 }
 

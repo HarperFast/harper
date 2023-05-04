@@ -10,9 +10,11 @@ apps:
   skipNodeModules: true
   excludeApps:
     - name: test_projectB
+    - name: david
 plugins:
   excludePlugins:
     - name: cool-plugin
 clustering:
   publishToLeaderNode: true
   subscribeToLeaderNode: true
+httpsRejectUnauthorized: false
