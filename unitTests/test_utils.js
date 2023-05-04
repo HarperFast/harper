@@ -1,4 +1,5 @@
 'use strict';
+require('./fixRewire');
 const path = require('path');
 const fs = require('fs-extra');
 const sinon = require('sinon');
@@ -762,6 +763,8 @@ function setFakeClusterUser() {
 	env.setProperty(terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT, 9991);
 	env.setProperty(terms.CONFIG_PARAMS.CLUSTERING_USER, 'test_cluster_user');
 	env.setProperty(terms.CONFIG_PARAMS.CLUSTERING_NODENAME, 'testLeafServer');
+	const nats_terms = rewire('../server/nats/utility/natsTerms');
+
 	leaf_server_term_rw = nats_terms.__set__('NATS_CONFIG_FILES', NATS_TEST_CONFIG_FILES);
 
 	const get_config_from_file_stub = sandbox.stub(config_utils, 'getConfigFromFile');

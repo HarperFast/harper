@@ -40,7 +40,7 @@ export async function setupTestApp() {
 	created_records = [];
 
 	const { startHTTPThreads } = require('../../server/threads/socketRouter');
-	await startHTTPThreads(config.threads || 1);
+	await startHTTPThreads(config.threads || 0);
 	try {
 		for (let i = 0; i < 20; i++) {
 			let object = {id: Math.round(random() * 1000000).toString(36)};
