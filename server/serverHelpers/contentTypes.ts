@@ -57,9 +57,7 @@ media_types.set('text/event-stream', {
 	// Server-Sent Events (SSE)
 	serializeStream: function (iterable) {
 		// create a readable stream that we use to stream out events from our subscription
-		return Readable.from(transformIterable(iterable, this.serialize)).on('close', () => {
-			console.log('close in content types');
-		});
+		return Readable.from(transformIterable(iterable, this.serialize));
 	},
 	serialize: function (message) {
 		if (message.data || message.event) {

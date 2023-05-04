@@ -4,7 +4,6 @@ import { Compartment as CompartmentClass } from 'ses';
 import { readFile } from 'fs/promises';
 import { extname } from 'path';
 
-console.log('jsLoader');
 // TODO: Make this configurable
 const SECURE_JS = false;
 

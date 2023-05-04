@@ -238,6 +238,7 @@ export function database({ database: database_name, table: table_name }) {
 	const database =
 		databases[database_name] ||
 		(databases[database_name] = databases[lowerCamelCase(database_name)] = Object.create(null));
+	if (database_name === 'data') tables = databases.data;
 	let root_store = database[ROOT_STORE_KEY];
 	if (root_store) return root_store;
 	let database_path = join(getHdbBasePath(), DATABASES_DIR_NAME);
