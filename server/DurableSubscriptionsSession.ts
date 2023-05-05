@@ -65,9 +65,8 @@ export class SubscriptionsSession {
 		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
 		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
 		if (existing_subscription) existing_subscription.end();
-		const resource = resources.getResource(path);
 		let subscription;
-		await resource.accessInTransaction(this, async (resource_access) => {
+		const resource = await resources.call(path, this, async (resource_access) => {
 			return (subscription = await resource_access.subscribe({
 				listener: (update, id) => {
 					this.listener(search ? path + '/' + id : path, update.value);
@@ -98,8 +97,7 @@ export class SubscriptionsSession {
 		const { topic, retain, payload } = message;
 		message.data = data;
 		message.user = this.user;
-		const resource = resources.getResource(topic);
-		return resource.accessInTransaction(message, async (resource_access) => {
+		return resources.call(topic, message, async (resource_access) => {
 			return resource_access.publish(data);
 		});
 	}

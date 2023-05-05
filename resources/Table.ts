@@ -90,7 +90,7 @@ export function makeTable(options) {
 			this.Source = Resource;
 			(async () => {
 				try {
-					let subscription = await Resource.subscribe({
+					const subscription = await Resource.subscribe?.({
 						// this is used to indicate that all threads are (presumably) making this subscription
 						// and we do not need to propagate events across threads (more efficient)
 						crossThreads: false,
@@ -257,14 +257,14 @@ export function makeTable(options) {
 		 * retrieve the data
 		 * @param propertyOrQuery - If included, specifies a property to return or query to perform on the record
 		 */
-		async get(propertyOrQuery?: string | object) {
+		get(propertyOrQuery?: string | object) {
 			const record = this.record;
-			// TODO: Once we have asynchronous loads from the database, the record may be a promise, we might need to await it
 			if (typeof propertyOrQuery === 'string') {
 				if (this.changes && propertyOrQuery in this.changes) return this.changes[propertyOrQuery];
 				return record?.[propertyOrQuery];
 			}
-			if (this.changes) return Object.assign(record || {}, this.changes);
+			// if there is no record, we want to return undefined, but if there are changes and a record, merge them
+			if (this.changes && record) return Object.assign(record, this.changes);
 			return record;
 		}
 
@@ -749,7 +749,7 @@ export function makeTable(options) {
 					// but have to update the version number of the record
 					// TODO: would be faster to have a dedicated lmdb-js function for just updating the version number
 					const existing_record = retries > 0 ? primary_store.get(this.id) : this.record;
-					primary_store.put(this.id, existing_record ?? {}, txn_time);
+					primary_store.put(this.id, existing_record ?? null, txn_time);
 					// messages are recorded in the audit entry
 					return {
 						operation: 'message',
@@ -899,7 +899,7 @@ export function makeTable(options) {
  * @returns {({}) => boolean}
  */
 export function filterByType(search_object) {
-	const search_type = search_object.operation;
+	const search_type = search_object.comparator;
 	const attribute = search_object.attribute;
 	const value = search_object.value;
 

@@ -122,7 +122,7 @@ export class DefaultAccess {
 	 */
 	parseQuery(query_string: string) {
 		let match;
-		let attribute, comparison;
+		let attribute, comparator;
 		const conditions = [];
 		let offset, limit, sort, select;
 		// TODO: Use URLSearchParams with a fallback for when it can't parse everything (USP is very fast)
@@ -136,9 +136,9 @@ export class DefaultAccess {
 				case '=':
 					if (attribute) {
 						// a FIQL operator like =gt=
-						comparison = value;
+						comparator = value;
 					} else {
-						comparison = 'equals';
+						comparator = 'equals';
 						attribute = decodeURIComponent(value);
 					}
 					break;
@@ -146,7 +146,7 @@ export class DefaultAccess {
 				// TODO: not-equal
 				case '<':
 				case '>':
-					comparison = SYMBOL_OPERATORS[operator];
+					comparator = SYMBOL_OPERATORS[operator];
 					attribute = decodeURIComponent(value);
 					break;
 				case undefined:
@@ -165,7 +165,7 @@ export class DefaultAccess {
 								break;
 							default:
 								conditions.push({
-									type: comparison,
+									comparator: comparator,
 									attribute,
 									value: decodeURIComponent(value),
 								});

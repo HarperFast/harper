@@ -21,6 +21,7 @@
     "radar/no-useless-catch": "off",
     "radar/no-identical-functions": "off",
     "radar/no-duplicated-branches": "off",
-    "radar/no-redundant-jump": "off"
+    "radar/no-redundant-jump": "off",
+    "@typescript-eslint/no-explicit-any": "off"
   }
 }

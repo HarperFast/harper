@@ -12,34 +12,36 @@ interface Response {
 	body?: any;
 }
 
-async function http(resource, resource_path, next_path, request) {
+async function http(request, next_handler) {
 	const method = request.method;
 	const start = performance.now();
+	let resource_path;
 	try {
-		try {
-			if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
-				// TODO: Support convert to async iterator in some cases?
-				// TODO: Support cancelation (if the request otherwise fails or takes too many bytes)
-				request.data = new Promise((resolve, reject) => {
-					const buffers = [];
-					request.body.on('data', (data) => buffers.push(data));
-					request.body.on('end', () => resolve(Buffer.concat(buffers)));
-					request.body.on('error', reject);
-				}).then((body) => {
-					try {
-						return getDeserializer(request.headers['content-type'], body)(body);
-					} catch (error) {
-						throw new ClientError(error, 400);
-					}
-				});
+		const resource = await resources.call(request.pathname.slice(1), request, (resource_access, path) => {
+			resource_path = path;
+			try {
+				if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
+					// TODO: Support convert to async iterator in some cases?
+					// TODO: Support cancelation (if the request otherwise fails or takes too many bytes)
+					request.data = new Promise((resolve, reject) => {
+						const buffers = [];
+						request.body.on('data', (data) => buffers.push(data));
+						request.body.on('end', () => resolve(Buffer.concat(buffers)));
+						request.body.on('error', reject);
+					}).then((body) => {
+						try {
+							return getDeserializer(request.headers['content-type'], body)(body);
+						} catch (error) {
+							throw new ClientError(error, 400);
+						}
+					});
+				}
+			} catch (error) {
+				// TODO: Convert to HDBError
+				error.status = 400;
+				throw error;
 			}
-		} catch (error) {
-			// TODO: Convert to HDBError
-			error.status = 400;
-			throw error;
-		}
 
-		const updated_resource = await resource.accessInTransaction(request, (resource_access) => {
 			switch (method) {
 				case 'GET':
 					return resource_access.get();
@@ -63,20 +65,21 @@ async function http(resource, resource_path, next_path, request) {
 					throw new ServerError('Method not available', 501);
 			}
 		});
-		let response_data = updated_resource.result;
+		if (!resource) return next_handler(request);
+		let response_data = resource.result;
 		//= await execute(Resource, method, next_path, request_data, request);
 		const if_match = request.headers['if-match'];
 		let status = 200;
-		if (if_match && (updated_resource.lastModificationTime * 1000).toString(36) == if_match) {
+		if (if_match && (resource.lastModificationTime * 1000).toString(36) == if_match) {
 			//resource_result.cancel();
 			status = 304;
 			response_data = undefined;
 		}
 
 		const headers = {};
-		if (updated_resource.lastModificationTime) {
-			headers['ETag'] = (updated_resource.lastModificationTime * 1000).toString(36);
-			headers['Last-Modified'] = new Date(updated_resource.lastModificationTime).toUTCString();
+		if (resource.lastModificationTime) {
+			headers['ETag'] = (resource.lastModificationTime * 1000).toString(36);
+			headers['Last-Modified'] = new Date(resource.lastModificationTime).toUTCString();
 		}
 		const execution_time = performance.now() - start;
 		headers['Server-Timing'] = `db;dur=${execution_time.toFixed(2)}`;
@@ -89,7 +92,7 @@ async function http(resource, resource_path, next_path, request) {
 		// TODO: Handle 201 Created
 
 		if (response_data === undefined) {
-			if (response_object.status === 200) response_object.status = updated_resource.updated ? 204 : 404;
+			if (response_object.status === 200) response_object.status = resource.updated ? 204 : 404;
 		} else {
 			response_object.body = serialize(response_data, request, response_object);
 		}
@@ -186,11 +189,7 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 	options.server.http(async (request: Request, next_handler) => {
 		if (request.isWebSocket) return;
 		startRequest(request);
-		const resource = resources.getResource(request.pathname.slice(1), { request });
-		if (resource) {
-			return http(resource, resource.path, resource.remainingPath, request);
-		}
-		return next_handler(request);
+		return http(request, next_handler);
 	});
 	options.server.ws(async (ws, request, chain_completion) => {
 		connection_count++;
@@ -202,8 +201,6 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 			printing_connection_count = true;
 		}
 		startRequest(request);
-		const resource = resources.getResource(request.pathname.slice(1), { request });
-		if (!resource) ws.send(serializeMessage(`No resource was found to handle ${request.pathname}`, request));
 		const incoming_messages = new IterableEventQueue();
 		// TODO: We should set a lower keep-alive ws.socket.setKeepAlive(600000);
 		ws.on('error', console.error);
@@ -220,12 +217,12 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 			if (iterator) iterator.return();
 		});
 		await chain_completion;
-		const updated_resource = await resource.accessInTransaction(request, (resource_access) => {
-			const stream = resource_access.connect(incoming_messages);
-			console.log({ stream });
-			return stream;
+		const resource = await resources.call(request.pathname.slice(1), request, (resource_access) => {
+			return resource_access.connect(incoming_messages);
 		});
-		iterator = updated_resource.result[Symbol.asyncIterator]();
+		if (!resource) ws.send(serializeMessage(`No resource was found to handle ${request.pathname}`, request));
+
+		iterator = resource.result[Symbol.asyncIterator]();
 
 		let result;
 		while (!(result = await iterator.next()).done) {
