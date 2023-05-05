@@ -180,10 +180,8 @@ export class Resource implements ResourceInterface {
 	 * @param query
 	 * @param options
 	 */
-	subscribe(query: any, options?: {}) {
-		// not implemented
-	}
-	static subscribe = Resource.prototype.subscribe;
+	subscribe(query: any, options?: {}): AsyncIterable<any>;
+	static subscribe(query: any, options?: {}): AsyncIterable<any>;
 	connect(query?: {}) {
 		// convert subscription to an (async) iterator
 		const iterable = new IterableEventQueue();
@@ -194,7 +192,7 @@ export class Resource implements ResourceInterface {
 					iterable.send(message);
 				},
 			};
-			const subscription = this.subscribe(query, options);
+			const subscription = this.subscribe?.(query, options);
 			iterable.on('close', () => subscription?.end());
 		}
 		return iterable;

@@ -138,6 +138,9 @@ export class ImmediateTransaction {
 	addWrite(operation) {
 		operation.commit(getNextMonotonicTime(), 0);
 	}
+	get timestamp() {
+		return getNextMonotonicTime();
+	}
 	getReadTxn() {} // no transaction means read latest
 }
 export const immediateTransaction = new ImmediateTransaction();

@@ -30,4 +30,15 @@ describe('test REST calls with cache table', () => {
 		assert.equal(response.data.id, 3);
 		assert.equal(response.data.name, 'name3');
 	});
+	it('change source and get', async () => {
+		let response = await axios('http://localhost:9926/FourProp/3');
+		let data = response.data;
+		data.name = 'name change'
+		response = await axios.put('http://localhost:9926/FourProp/3', data);
+		assert.equal(response.status, 204);
+		response = await axios('http://localhost:9926/SimpleCache/3');
+		assert.equal(response.status, 200);
+		assert.equal(response.data.id, 3);
+		assert.equal(response.data.name, 'name change');
+	});
 });

@@ -31,6 +31,7 @@ export class Echo extends Resource {
 		};
 	}
 }
+
 class SimpleCacheSource extends tables.FourProp {}
 export class SimpleCache extends tables.SimpleCache.sourcedFrom(SimpleCacheSource) {
 	post(data) {

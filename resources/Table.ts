@@ -88,6 +88,26 @@ export function makeTable(options) {
 		static sourcedFrom(Resource) {
 			// define a source for retrieving invalidated entries for caching purposes
 			this.Source = Resource;
+			(async () => {
+				try {
+					let subscription = await Resource.subscribe({
+						// this is used to indicate that all threads are (presumably) making this subscription
+						// and we do not need to propagate events across threads (more efficient)
+						crossThreads: false,
+						// this is used to indicate that we want, if possible, immediate notification of writes
+						// within the process (not supported yet)
+						inTransactionUpdates: true,
+					});
+
+					for await (const event of subscription) {
+						const updated_resource = new this(event.id, event.source);
+						if (event.operation === 'put') updated_resource.#writePut(event.value);
+						else if (event.operation === 'delete') updated_resource.#writeDelete();
+					}
+				} catch (error) {
+					console.error(error);
+				}
+			})();
 			return this;
 		}
 		/**
@@ -133,19 +153,21 @@ export function makeTable(options) {
 			if (key === '' || key === '?')
 				// TODO: Should this require special permission?
 				key = null; // wildcard, get everything in table
-			return addSubscription(
+			const subscription = addSubscription(
 				this,
 				key,
-				async (key, audit_record) => {
+				function (id, audit_record) {
 					//let result = await this.get(key);
 					try {
-						options.listener(audit_record.value, key);
+						this.send({ id, ...audit_record });
 					} catch (error) {
 						console.error(error);
 					}
 				},
 				options.startTime
 			);
+			if (options.listener) subscription.on('data', options.listener);
+			return subscription;
 		}
 		static async dropTable() {
 			delete databases[database_name][table_name];
@@ -472,12 +494,12 @@ export function makeTable(options) {
 			this.#writePut(record);
 		}
 		#writePut(record) {
-			const env_txn = this.dbTxn;
+			const env_txn = this.dbTxn || immediateTransaction;
 
 			// use optimistic locking to only commit if the existing record state still holds true.
 			// this is superior to using an async transaction since it doesn't require JS execution
 			//  during the write transaction.
-			const txn_time = this.transactions.timestamp;
+			const txn_time = this.transactions?.timestamp || immediateTransaction.timestamp;
 			if (TableResource.updatedTimeProperty) record[TableResource.updatedTimeProperty] = txn_time;
 			if (TableResource.createdTimeProperty && !this.record) record[TableResource.createdTimeProperty] = txn_time;
 			env_txn.addWrite({
@@ -683,20 +705,23 @@ export function makeTable(options) {
 			return records;
 		}
 		subscribe(options) {
-			if (options?.listener && !options.noRetain && this.record) options.listener(this.record);
-			return addSubscription(
+			const subscription = addSubscription(
 				this.constructor,
 				this.id,
-				async (key, audit_record) => {
+				function (id, audit_record) {
 					//let result = await this.get(key);
 					try {
-						options.listener(audit_record.value, key);
+						console.log({ audit_record });
+						this.send({ id, ...audit_record });
 					} catch (error) {
 						console.error(error);
 					}
 				},
 				options.startTime
 			);
+			if (options.listener) subscription.on('data', options.listener);
+			if (!options.noRetain && this.record) subscription.send({ value: this.record });
+			return subscription;
 		}
 
 		/**

@@ -69,8 +69,8 @@ export class SubscriptionsSession {
 		let subscription;
 		await resource.accessInTransaction(this, async (resource_access) => {
 			return (subscription = await resource_access.subscribe({
-				listener: (message, id) => {
-					this.listener(search ? path + '/' + id : path, message);
+				listener: (update, id) => {
+					this.listener(search ? path + '/' + id : path, update.value);
 				},
 				search,
 				user: this.user,

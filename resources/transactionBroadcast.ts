@@ -6,6 +6,7 @@ import { MAXIMUM_KEY } from 'ordered-binary';
 import { tables } from './tableLoader';
 import { getLastTxnId } from 'lmdb';
 import { writeKey } from 'ordered-binary';
+import { IterableEventQueue } from './IterableEventQueue';
 const TRANSACTION_EVENT_TYPE = 'transaction';
 const FAILED_CONDITION = 0x4000000;
 let all_subscriptions;
@@ -72,11 +73,12 @@ export function addSubscription(table, key, listener?: (key) => any, start_time:
  * This is the class that is returned from subscribe calls and provide the interface to set a callback, end the
  * subscription and get the initial state.
  */
-class Subscription {
+class Subscription extends IterableEventQueue {
 	listener: (key) => any;
 	subscriptions: [];
 	startTime?: number;
 	constructor(listener) {
+		super();
 		this.listener = listener;
 	}
 	end() {
@@ -171,7 +173,7 @@ function notifyFromTransactionDataSharedBuffers(path, buffers, flag_position) {
 }
 
 let last_time = Date.now();
-function notifyFromTransactionData(path, audit_ids) {
+function notifyFromTransactionData(path, audit_ids, same_thread?) {
 	if (!all_subscriptions) return;
 	const subscriptions = all_subscriptions[path];
 	if (!subscriptions) return; // if no subscriptions to this env path, don't need to read anything
@@ -191,6 +193,7 @@ function notifyFromTransactionData(path, audit_ids) {
 		const audit_record = subscriptions.auditStore.get(audit_id);
 		for (const subscription of table_subscriptions.allKeys) {
 			try {
+				if (subscription.crossThreads === false && !same_thread) continue;
 				subscription.listener(record_key, audit_record);
 			} catch (error) {
 				console.error(error);
@@ -207,6 +210,7 @@ function notifyFromTransactionData(path, audit_ids) {
 					continue;
 				}
 				try {
+					if (subscription.crossThreads === false && !same_thread) continue;
 					subscription.listener(record_key, audit_record);
 				} catch (error) {
 					console.error(error);
@@ -268,7 +272,7 @@ export function listenToCommits(audit_store) {
 				start,
 			});
 			// and notify on our own thread too
-			notifyFromTransactionData(path, audit_ids);
+			notifyFromTransactionData(path, audit_ids, true);
 			//}
 		});
 	}
