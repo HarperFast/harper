@@ -42,10 +42,10 @@ jobs:
         path: utility/Docker
     - name: Run Tests
       env:
-        CI_PRIVATE_KEY: ${{ secrets.CI_PRIVATE_KEY }}
+        CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
       run: |
         #!/bin/bash
-        echo "$CI_PRIVATE_KEY" > private_key && chmod 600 private_key
+        echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
         public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
         public_dns_names=($public_dns_names)
         public_dns_name="${public_dns_names[0]}"

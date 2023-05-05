@@ -37,6 +37,7 @@ const schema_describe = require('../dataLayer/schemaDescribe');
 const lmdb_create_txn_environment = require('../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsAuditEnvironment');
 const CreateTableObject = require('../dataLayer/CreateTableObject');
 const hdb_terms = require('../utility/hdbTerms');
+const install_apps = require('../server/customFunctions/installApps');
 let pm2_utils;
 
 // These may change to match unix return codes (i.e. 0, 1)

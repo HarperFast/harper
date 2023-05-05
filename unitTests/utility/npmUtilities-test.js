@@ -8,6 +8,7 @@ const { expect } = chai;
 const sinon = require('sinon');
 const rewire = require('rewire');
 const npm_utils = rewire('../../utility/npmUtilities');
+const env_mgr = require('../../utility/environment/environmentManager');
 const test_utils = require('../test_utils');
 test_utils.changeProcessToBinDir();
 const COOL_PROJECT_NAME = 'cool project';
@@ -630,4 +631,34 @@ describe('test auditModules', () => {
 		check_project_paths_restore();
 		cf_routes_dir_restore();
 	}).timeout(60000);
+});
+
+describe('Test install all, uninstall and link functions', () => {
+	const sandbox = sinon.createSandbox();
+	const run_command_stub = sandbox.stub();
+
+	before(() => {
+		env_mgr.setProperty('rootPath', 'unit/test');
+		npm_utils.__set__('runCommand', run_command_stub);
+	});
+
+	afterEach(() => {
+		sandbox.resetHistory();
+	});
+
+	it('Test installAllRootModules happy path', async () => {
+		await npm_utils.installAllRootModules();
+		expect(run_command_stub.args[1]).to.eql(['npm install', 'unit/test']);
+	});
+
+	it('Test uninstallRootModule happy path', async () => {
+		await npm_utils.uninstallRootModule('test-me');
+		expect(run_command_stub.args[0]).to.eql(['npm uninstall test-me', 'unit/test']);
+	});
+
+	it('Test linkHarperdb happy path', async () => {
+		await npm_utils.linkHarperdb();
+		expect(run_command_stub.args[1][0]).to.include('npm link');
+		expect(run_command_stub.args[1][1]).to.eql('unit/test');
+	});
 });

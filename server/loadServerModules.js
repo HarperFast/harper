@@ -11,6 +11,7 @@ const { secureImport } = require('../security/jsLoader');
 const { resetResources } = require('../resources/Resources');
 const mqtt = require('./mqtt');
 const { server } = require('./Server');
+const install_apps = require('../apps/installApps');
 const { CONFIG_PARAMS } = hdb_terms;
 const CORE_PLUGINS = {
 	'app-server': {}, // this is intended to be the default http handler for http-based plugins
@@ -39,6 +40,8 @@ if (env.get(CONFIG_PARAMS.CLUSTERING_ENABLED)) default_server_modules.push({ mod
  * @returns {Promise<void>}
  */
 async function loadServerModules(server_modules = default_server_modules, is_worker_thread = false) {
+	if (isMainThread) await install_apps();
+
 	let ports_started = [];
 	let resources = resetResources();
 	getTables();
