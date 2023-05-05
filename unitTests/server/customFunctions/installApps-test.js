@@ -7,7 +7,7 @@ const sinon = require('sinon');
 const fs = require('fs-extra');
 const env_mgr = require('../../../utility/environment/environmentManager');
 const npm_utils = require('../../../utility/npmUtilities');
-const install_apps = require('../../../server/customFunctions/installApps');
+const install_apps = require('../../../apps/installApps');
 
 const fake_apps = [
 	{

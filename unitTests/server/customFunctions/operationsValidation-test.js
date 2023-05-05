@@ -6,7 +6,7 @@ const fs = require('fs-extra');
 const { expect } = chai;
 const rewire = require('rewire');
 const env_mangr = require('../../../utility/environment/environmentManager');
-const validator = rewire('../../../server/fastifyRoutes/operationsValidation');
+const validator = rewire('../../../apps/operationsValidation');
 
 describe('Test operationsValidation module', () => {
 	const sandbox = sinon.createSandbox();

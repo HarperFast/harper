@@ -14,7 +14,8 @@ export async function start() {
  */
 async function assignReplicationSource() {
 	publishing_databases = new Map();
-	for await (const node of getDatabases().system.hdb_nodes.search([])) {
+	const hdb_nodes = getDatabases().system.hdb_nodes;
+	for await (const node of hdb_nodes.search([])) {
 		const { subscriptions } = node;
 		for (const subscription of subscriptions) {
 			if (!subscription.publish) continue;

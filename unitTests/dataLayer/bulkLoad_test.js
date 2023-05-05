@@ -79,11 +79,6 @@ const CSV_URL_MESSAGE = {
 	csv_url: '',
 };
 
-// Used to stub the post function used to send to cluster.
-function postCSVLoadFunction_stub(orig_bulk_msg, result, orig_req) {
-	return result;
-}
-
 async function stubHOC(func, args) {
 	const stub_obj = { job_operation_function: func };
 	return await callStubFunc(stub_obj, args);
@@ -1094,42 +1089,6 @@ describe('Test bulkLoad.js', () => {
 
 			expect(error.message).to.equal('Somethings wrong');
 			expect(error).to.be.instanceof(Error);
-		});
-	});
-
-	describe('test postCSVLoadFunction', async () => {
-		let sandbox = sinon.createSandbox();
-		let publish_to_stream_stub;
-		let expected_result = {
-			records: 2,
-			number_written: 3,
-		};
-
-		let postCSVLoadFunction = bulkLoad_rewire.__get__('postCSVLoadFunction');
-		beforeEach(() => {
-			publish_to_stream_stub = sandbox.stub(nats_utils, 'publishToStream').resolves();
-		});
-
-		afterEach(() => {
-			sandbox.restore();
-		});
-
-		it('nominal case, see sent to cluster', async () => {
-			env.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED, true);
-			let msg = test_utils.deepClone(json_message_fake);
-			msg.transact_to_cluster = true;
-			let msg_with_originator = test_utils.deepClone(json_message_fake);
-			msg_with_originator.__originator = { ORIGINATOR_NAME: 111 };
-			let result = await postCSVLoadFunction(['blah'], msg, expected_result, msg_with_originator);
-			assert.strictEqual(publish_to_stream_stub.calledOnce, true, 'expected publishToStream to be called');
-		});
-
-		it('nominal case, see not sent to cluster', async () => {
-			env.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED, false);
-			let msg_with_originator = test_utils.deepClone(json_message_fake);
-			msg_with_originator.__originator = { ORIGINATOR_NAME: 111 };
-			let result = await postCSVLoadFunction(['blah'], json_message_fake, expected_result, msg_with_originator);
-			assert.strictEqual(publish_to_stream_stub.notCalled, true, 'expected publishToStream to NOT be called');
 		});
 	});
 });
