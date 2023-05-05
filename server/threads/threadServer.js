@@ -34,41 +34,39 @@ let default_server = {},
 	http_responders = [];
 
 if (!isMainThread) {
-	require('../loadServerModules')
-		.loadServerModules(undefined, true)
-		.then(() => {
-			parentPort
-				.on('message', (message) => {
-					const { port, fd, data } = message;
-					if (fd) {
-						// Create a socket from the file descriptor for the socket that was routed to us.
-						deliverSocket(fd, port, data);
-					} else if (message.requestId) {
-						// Windows doesn't support passing file descriptors, so we have to resort to manually proxying the socket
-						// data for each request
-						proxyRequest(message);
-					} else if (message.type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
-						// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
-						// then let the event loop complete
-						for (let port in SERVERS) {
-							// TODO: If fastify has fielded a route and messed up the closing, then have to manually exit the
-							//  process otherwise we can use a graceful exit
-							// if (SERVERS[server_type].hasRequests)
-							SERVERS[port] // TODO: Should we try to interact with fastify here?
-								.close?.(() => {
-									setTimeout(() => {
-										console.error('Had to forcefully exit the thread');
-										process.exit(0);
-									}, 2000).unref();
-								});
-							SERVERS[port].closeIdleConnections?.();
-						}
+	loadServerModules(true).then(() => {
+		parentPort
+			.on('message', (message) => {
+				const { port, fd, data } = message;
+				if (fd) {
+					// Create a socket from the file descriptor for the socket that was routed to us.
+					deliverSocket(fd, port, data);
+				} else if (message.requestId) {
+					// Windows doesn't support passing file descriptors, so we have to resort to manually proxying the socket
+					// data for each request
+					proxyRequest(message);
+				} else if (message.type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
+					// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
+					// then let the event loop complete
+					for (let port in SERVERS) {
+						// TODO: If fastify has fielded a route and messed up the closing, then have to manually exit the
+						//  process otherwise we can use a graceful exit
+						// if (SERVERS[server_type].hasRequests)
+						SERVERS[port] // TODO: Should we try to interact with fastify here?
+							.close?.(() => {
+								setTimeout(() => {
+									console.error('Had to forcefully exit the thread');
+									process.exit(0);
+								}, 2000).unref();
+							});
+						SERVERS[port].closeIdleConnections?.();
 					}
-				})
-				.ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
-			// notify that we are now ready to start receiving requests
-			parentPort.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
-		});
+				}
+			})
+			.ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
+		// notify that we are now ready to start receiving requests
+		parentPort.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
+	});
 }
 
 function deliverSocket(fd, port, data) {

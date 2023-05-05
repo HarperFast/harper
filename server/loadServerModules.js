@@ -11,45 +11,68 @@ const { secureImport } = require('../security/jsLoader');
 const { resetResources } = require('../resources/Resources');
 const mqtt = require('./mqtt');
 const { server } = require('./Server');
-const install_apps = require('../apps/installApps');
-const { CONFIG_PARAMS } = hdb_terms;
-const CORE_PLUGINS = {
-	'app-server': {}, // this is intended to be the default http handler for http-based plugins
-	'operations-server': operationsServer,
-	'auth': auth,
-	mqtt,
-	'nats-replication': natsReplicator,
-};
-let loaded_server_modules = new Map();
-const default_server_modules = [
-	{ module: 'auth', port: 'all' },
-	{ module: 'mqtt', port: 1883, securePort: 8883 },
-	{ module: 'mqtt', webSocket: true },
-	//{ module: 'mqtt', port: 8883, secure: true },
-	{ module: 'operations-server', port: env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT) || 9925 },
-];
-if (env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED))
-	default_server_modules.push({
-		module: 'app-server',
-		port: env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT) || 9926,
-	});
-if (env.get(CONFIG_PARAMS.CLUSTERING_ENABLED)) default_server_modules.push({ module: 'nats-replication' });
+const config_utils = require('../config/configUtils');
+const { CONFIG_PARAMS } = require('../utility/hdbTerms');
+
+/**
+ * Gets all default and custom server modules from harperdb-config
+ * @returns {[{server_mods}]}
+ */
+function getServerModules() {
+	const server_modules = [
+		{
+			module: 'operations-server',
+			port: env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT) || 9925,
+			plugin: operationsServer,
+		},
+		{
+			module: 'mqtt',
+			port: env.get(CONFIG_PARAMS.MQTT_PORT),
+			webSocket: env.get(CONFIG_PARAMS.MQTT_WEBSOCKET),
+			plugin: mqtt,
+		},
+		{ module: 'auth', port: 'all' },
+	];
+
+	if (env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED)) {
+		server_modules.push({
+			module: 'app-server',
+			port: env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT) || 9926,
+			plugin: {},
+		});
+	}
+
+	if (env.get(CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+		server_modules.push({ module: 'nats-replication', plugin: natsReplicator });
+	}
+
+	const plugins_config = config_utils.readConfigFile()[CONFIG_PARAMS.SERVER_PLUGINS];
+	for (const plugin in plugins_config) {
+		server_modules.push({
+			module: plugin,
+			...plugins_config[plugin],
+		});
+	}
+
+	return server_modules;
+}
+
 /**
  * This is main entry point for loading the main set of global server modules that power HarperDB.
- * @param server_modules
  * @returns {Promise<void>}
  */
-async function loadServerModules(server_modules = default_server_modules, is_worker_thread = false) {
+async function loadServerModules(is_worker_thread = false) {
 	if (isMainThread) await install_apps();
 
 	let ports_started = [];
 	let resources = resetResources();
 	getTables();
 	resources.isWorker = is_worker_thread;
-	for (let server_module_definition of default_server_modules) {
-		let { module: module_id, port, securePort } = server_module_definition;
+	const server_modules = getServerModules();
+	for (let server_module_definition of server_modules) {
+		let { module: module_id, port, securePort, plugin } = server_module_definition;
 		// use predefined core plugins or use the secure/sandbox loader (if configured)
-		let server_module = CORE_PLUGINS[module_id] || (await secureImport(module_id));
+		let server_module = plugin || (await secureImport(module_id));
 		try {
 			// start each server_module
 			if (isMainThread) {
@@ -80,4 +103,5 @@ async function loadServerModules(server_modules = default_server_modules, is_wor
 	}
 	if (all_ready.length > 0) await Promise.all(all_ready);
 }
+
 module.exports.loadServerModules = loadServerModules;

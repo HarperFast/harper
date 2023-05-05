@@ -186,6 +186,11 @@ function configValidator(config_json) {
 			}),
 		}).required(),
 		rootPath: string.pattern(/^[\\\/]$|([\\\/][a-zA-Z_0-9\:-]+)+$/, 'directory path').required(),
+		mqtt: Joi.object({
+			port: port_constraints,
+			securePort: port_constraints,
+			webSocket: boolean.optional(),
+		}),
 		http: Joi.object({
 			threads: threads_constraints,
 		}).required(),
