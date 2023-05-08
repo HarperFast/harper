@@ -71,8 +71,10 @@ Module._findPath = function (request, paths, isMain) {
 		} else {
 			alternate = join(PACKAGE_ROOT, TS_DIRECTORY, path);
 		}
-		let filename = join(alternate, request) + '.js';
+		let base_filename = join(alternate, request);
+		let filename = base_filename + '.js';
 		if (existsSync(filename)) return filename;
+		if (base_filename.includes('.') && existsSync(base_filename)) return base_filename;
 	}
 	return findPath(request, paths, isMain);
 };

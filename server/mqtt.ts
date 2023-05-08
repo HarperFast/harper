@@ -25,11 +25,10 @@ export async function start({ server, port, webSocket, securePort }) {
 					ws.on('close', onClose);
 				}
 			},
-			{ port: port || securePort, subProtocol: 'mqtt' }
+			{ subProtocol: 'mqtt' }
 		); // if there is no port, we are piggy-backing off of default app http server
-	if (!webSocket) {
-		if (!port) throw new Error('Must specify a port for MQTT');
-		// standard TCP socket
+	// standard TCP socket
+	if (port || securePort) {
 		server.socket(
 			async (socket) => {
 				let user;
@@ -44,7 +43,7 @@ export async function start({ server, port, webSocket, securePort }) {
 					info('Socket error', error);
 				});
 			},
-			{ port: port || DEFAULT_MQTT_PORT, securePort }
+			{ port, securePort }
 		);
 	}
 }

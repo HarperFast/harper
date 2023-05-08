@@ -9,11 +9,12 @@ const { loadApplications } = require('../apps/applicationsLoader');
 const env = require('../utility/environment/environmentManager');
 const { secureImport } = require('../security/jsLoader');
 const { resetResources } = require('../resources/Resources');
+const install_apps = require('../apps/installApps');
 const mqtt = require('./mqtt');
 const { server } = require('./Server');
 const config_utils = require('../config/configUtils');
 const { CONFIG_PARAMS } = require('../utility/hdbTerms');
-
+let loaded_server_modules = new Map();
 /**
  * Gets all default and custom server modules from harperdb-config
  * @returns {[{server_mods}]}
@@ -28,10 +29,11 @@ function getServerModules() {
 		{
 			module: 'mqtt',
 			port: env.get(CONFIG_PARAMS.MQTT_PORT),
+			securePort: env.get(CONFIG_PARAMS.MQTT_SECUREPORT),
 			webSocket: env.get(CONFIG_PARAMS.MQTT_WEBSOCKET),
 			plugin: mqtt,
 		},
-		{ module: 'auth', port: 'all' },
+		{ module: 'auth', port: 'all', plugin: auth },
 	];
 
 	if (env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED)) {

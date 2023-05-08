@@ -1,6 +1,6 @@
 const system_schema = require('../json/systemSchema.json');
 const { callbackify, promisify } = require('util');
-const { databases } = require('../resources/tableLoader');
+const { getDatabases } = require('../resources/tableLoader');
 
 module.exports = {
 	setSchemaDataToGlobal: setSchemaDataToGlobal,
@@ -17,19 +17,8 @@ let c_schema_describe_all = callbackify(schema.describeAll);
 let c_schema_describe_table = callbackify(schema.describeTable);
 
 function setSchemaDataToGlobal(callback) {
-	c_schema_describe_all(null, (err, data) => {
-		if (err) {
-			callback(err);
-			return;
-		}
-
-		if (!data.system) {
-			data['system'] = system_schema;
-		}
-
-		global.hdb_schema = data;
-		callback(null, null);
-	});
+	global.hdb_schema = getDatabases();
+	if (callback) callback();
 }
 
 function returnSchema(schema_name, table_name) {
@@ -41,7 +30,7 @@ function returnSchema(schema_name, table_name) {
 }
 
 function getTableSchema(schema_name, table_name, callback) {
-	let database = databases[schema_name];
+	let database = getDatabases()[schema_name];
 	if (!database) {
 		return callback(`schema ${schema_name} does not exist`);
 	}

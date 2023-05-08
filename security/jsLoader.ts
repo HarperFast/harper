@@ -29,7 +29,6 @@ export async function secureImport(module_url) {
 
 declare class Compartment extends CompartmentClass {}
 async function getCompartment(getGlobalVars) {
-	console.log('import lmdb', await import('lmdb'));
 	const { StaticModuleRecord } = await import('@endo/static-module-record');
 	require('ses');
 	lockdown({

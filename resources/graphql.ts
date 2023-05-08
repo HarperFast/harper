@@ -27,7 +27,7 @@ export async function handleFile(gql_content, url_path, file_path, resources) {
 			case Kind.OBJECT_TYPE_DEFINITION:
 				const type_name = definition.name.value;
 				// use type name as the default table (converted to snake case)
-				const type_def = { table: null, database: null, attributes: [], table: null };
+				const type_def = { table: null, database: null, attributes: [] };
 				types.set(type_name, type_def);
 				for (const directive of definition.directives) {
 					if (directive.name.value === 'table') {

@@ -26,47 +26,49 @@ server.request = onRequest;
 server.socket = onSocket;
 server.ws = onWebSocket;
 let ws_listeners = [],
-	ws_server,
+	ws_servers = [],
 	ws_chain;
-let default_server = {},
+let http_servers = {},
 	http_chain = {},
 	request_listeners = [],
 	http_responders = [];
 
 if (!isMainThread) {
-	loadServerModules(true).then(() => {
-		parentPort
-			.on('message', (message) => {
-				const { port, fd, data } = message;
-				if (fd) {
-					// Create a socket from the file descriptor for the socket that was routed to us.
-					deliverSocket(fd, port, data);
-				} else if (message.requestId) {
-					// Windows doesn't support passing file descriptors, so we have to resort to manually proxying the socket
-					// data for each request
-					proxyRequest(message);
-				} else if (message.type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
-					// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
-					// then let the event loop complete
-					for (let port in SERVERS) {
-						// TODO: If fastify has fielded a route and messed up the closing, then have to manually exit the
-						//  process otherwise we can use a graceful exit
-						// if (SERVERS[server_type].hasRequests)
-						SERVERS[port] // TODO: Should we try to interact with fastify here?
-							.close?.(() => {
-								setTimeout(() => {
-									console.error('Had to forcefully exit the thread');
-									process.exit(0);
-								}, 2000).unref();
-							});
-						SERVERS[port].closeIdleConnections?.();
+	require('../loadServerModules')
+		.loadServerModules(true)
+		.then(() => {
+			parentPort
+				.on('message', (message) => {
+					const { port, fd, data } = message;
+					if (fd) {
+						// Create a socket from the file descriptor for the socket that was routed to us.
+						deliverSocket(fd, port, data);
+					} else if (message.requestId) {
+						// Windows doesn't support passing file descriptors, so we have to resort to manually proxying the socket
+						// data for each request
+						proxyRequest(message);
+					} else if (message.type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
+						// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
+						// then let the event loop complete
+						for (let port in SERVERS) {
+							// TODO: If fastify has fielded a route and messed up the closing, then have to manually exit the
+							//  process otherwise we can use a graceful exit
+							// if (SERVERS[server_type].hasRequests)
+							SERVERS[port] // TODO: Should we try to interact with fastify here?
+								.close?.(() => {
+									setTimeout(() => {
+										console.error('Had to forcefully exit the thread');
+										process.exit(0);
+									}, 2000).unref();
+								});
+							SERVERS[port].closeIdleConnections?.();
+						}
 					}
-				}
-			})
-			.ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
-		// notify that we are now ready to start receiving requests
-		parentPort.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
-	});
+				})
+				.ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
+			// notify that we are now ready to start receiving requests
+			parentPort.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
+		});
 }
 
 function deliverSocket(fd, port, data) {
@@ -91,7 +93,7 @@ function deliverSocket(fd, port, data) {
 				} else if (retries < 5) retry(retries + 1);
 				else {
 					harper_logger.error(`Server on port ${port} was not registered`);
-					socket.close();
+					socket.destroy();
 				}
 			}, 1000);
 		};
@@ -169,24 +171,32 @@ function registerServer(server, port) {
 	}
 	server.on('unhandled', defaultNotFound);
 }
-function httpServer(listener, options) {
-	let port = options?.port;
-	let port_num = +port;
-	if (!port_num) {
+function getPorts(options) {
+	let ports = [];
+	let port_num = parseInt(options?.securePort);
+	if (port_num) ports.push(port_num);
+	port_num = parseInt(options?.port);
+	if (port_num) ports.push(port_num);
+	if (ports.length === 0) {
 		// if no port is provided, default to custom functions port
-		port_num = parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10);
+		ports = [parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10)];
 	}
-	getHTTPServer(port_num);
-	if (typeof listener === 'function') {
-		http_responders.push({ listener, port: port || port_num });
-	} else {
-		registerServer(listener, port_num);
+	return ports;
+}
+function httpServer(listener, options) {
+	for (let port_num of getPorts(options)) {
+		getHTTPServer(port_num);
+		if (typeof listener === 'function') {
+			http_responders.push({ listener, port: options?.port || port_num });
+		} else {
+			registerServer(listener, port_num);
+		}
+		http_chain[port_num] = makeCallbackChain(http_responders, port_num);
+		ws_chain = makeCallbackChain(request_listeners, port_num);
 	}
-	http_chain[port_num] = makeCallbackChain(http_responders, port_num);
-	ws_chain = makeCallbackChain(request_listeners, port_num);
 }
 function getHTTPServer(port, secure) {
-	if (!default_server[port]) {
+	if (!http_servers[port]) {
 		let options = {};
 		if (secure) {
 			const privateKey = env.get('customfunctions_tls_privatekey');
@@ -199,40 +209,37 @@ function getHTTPServer(port, secure) {
 				cert: readFileSync(certificate) + (certificateAuthority ? '\n\n' + readFileSync(certificateAuthority) : ''),
 			};
 		}
-		default_server[port] = (secure ? createSecureServer : createServer)(
-			options,
-			async (node_request, node_response) => {
-				try {
-					let request = new Request(node_request);
-					// assign a more WHATWG compliant headers object, this is our real standard interface
-					let response = await http_chain[port](request);
-					if (response.status === -1) {
-						// This means the HDB stack didn't handle the request, and we can then cascade the request
-						// to the server-level handler, forming the bridge to the slower legacy fastify framework that expects
-						// to interact with a node HTTP server object.
-						return default_server[port].emit('unhandled', node_request, node_response);
-					}
-					node_response.writeHead(response.status, response.headers);
-					let body = response.body;
-					// if it is a stream, pipe it
-					if (body?.pipe) {
-						body.pipe(node_response);
-						node_response.on('close', () => {
-							body.destroy();
-						});
-					}
-					// else just send the buffer/string
-					else node_response.end(body);
-				} catch (error) {
-					node_response.writeHead(error.hdb_resp_code || 500);
-					node_response.end(error.toString());
-					harper_logger.error(error);
+		http_servers[port] = (secure ? createSecureServer : createServer)(options, async (node_request, node_response) => {
+			try {
+				let request = new Request(node_request);
+				// assign a more WHATWG compliant headers object, this is our real standard interface
+				let response = await http_chain[port](request);
+				if (response.status === -1) {
+					// This means the HDB stack didn't handle the request, and we can then cascade the request
+					// to the server-level handler, forming the bridge to the slower legacy fastify framework that expects
+					// to interact with a node HTTP server object.
+					return http_servers[port].emit('unhandled', node_request, node_response);
 				}
+				node_response.writeHead(response.status, response.headers);
+				let body = response.body;
+				// if it is a stream, pipe it
+				if (body?.pipe) {
+					body.pipe(node_response);
+					node_response.on('close', () => {
+						body.destroy();
+					});
+				}
+				// else just send the buffer/string
+				else node_response.end(body);
+			} catch (error) {
+				node_response.writeHead(error.hdb_resp_code || 500);
+				node_response.end(error.toString());
+				harper_logger.error(error);
 			}
-		);
-		registerServer(default_server[port], port);
+		});
+		registerServer(http_servers[port], port);
 	}
-	return default_server[port];
+	return http_servers[port];
 }
 
 function makeCallbackChain(responders, port_num) {
@@ -294,37 +301,34 @@ function onSocket(listener, options) {
 	if (options.port) SERVERS[options.port] = listener;
 }
 function onWebSocket(listener, options) {
-	let port_num = +options?.port;
-	if (!port_num) {
-		// if no port is provided, default to custom functions port
-		port_num = parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10);
-	}
-	if (!ws_server) {
-		ws_server = new WebSocketServer({ server: getHTTPServer(port_num) });
-		ws_server.on('connection', async (ws, node_request) => {
-			let request = new Request(node_request);
-			request.isWebSocket = true;
-			let chain_completion = http_chain[port_num](request);
-			let protocol = request.headers['sec-websocket-protocol'] || '';
-			// TODO: select listener by protocol
-			for (let i = 0; i < ws_listeners.length; i++) {
-				let handler = ws_listeners[i];
-				if (handler.protocol) {
-					// if we have a handler for a specific protocol, allow it to select on that protocol
-					// to the exclusion of other handlers
-					if (handler.protocol === protocol) {
+	for (let port_num of getPorts(options)) {
+		if (!ws_servers[port_num]) {
+			ws_servers[port_num] = new WebSocketServer({ server: getHTTPServer(port_num) });
+			ws_servers[port_num].on('connection', async (ws, node_request) => {
+				let request = new Request(node_request);
+				request.isWebSocket = true;
+				let chain_completion = http_chain[port_num](request);
+				let protocol = request.headers['sec-websocket-protocol'] || '';
+				// TODO: select listener by protocol
+				for (let i = 0; i < ws_listeners.length; i++) {
+					let handler = ws_listeners[i];
+					if (handler.protocol) {
+						// if we have a handler for a specific protocol, allow it to select on that protocol
+						// to the exclusion of other handlers
+						if (handler.protocol === protocol) {
+							handler.listener(ws, request, chain_completion);
+							break;
+						}
+					} else {
 						handler.listener(ws, request, chain_completion);
-						break;
 					}
-				} else {
-					handler.listener(ws, request, chain_completion);
 				}
-			}
-		});
+			});
+		}
+		let protocol = options?.subProtocol || '';
+		ws_listeners.push({ listener, protocol });
+		http_chain[port_num] = makeCallbackChain(http_responders, port_num);
 	}
-	let protocol = options?.subProtocol || '';
-	ws_listeners.push({ listener, protocol });
-	http_chain[port_num] = makeCallbackChain(http_responders, port_num);
 }
 function defaultNotFound(request, response) {
 	response.writeHead(404);

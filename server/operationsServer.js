@@ -21,7 +21,6 @@ const common_utils = require('../utility/common_utils');
 const user_schema = require('../security/user');
 const hdb_license = require('../utility/registration/hdb_license');
 const { server: server_registration } = require('../server/Server');
-const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
 
 const {
 	authHandler,
@@ -108,7 +107,7 @@ async function operationsServer() {
  */
 async function setUp() {
 	harper_logger.trace('Configuring HarperDB process.');
-	await p_schema_to_global();
+	global_schema.setSchemaDataToGlobal();
 	await user_schema.setUsersToGlobal();
 	await hdb_license.getLicense();
 }

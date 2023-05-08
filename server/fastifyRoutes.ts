@@ -2,7 +2,7 @@ import { dirname } from 'path';
 import { existsSync } from 'fs';
 import fastify from 'fastify';
 import fastify_cors from '@fastify/cors';
-import * as request_time_plugin from './serverHelpers/requestTimePlugin';
+import request_time_plugin from './serverHelpers/requestTimePlugin';
 import autoload from '@fastify/autoload';
 import * as env from '../utility/environment/environmentManager';
 import { HDB_SETTINGS_NAMES, CONFIG_PARAMS } from '../utility/hdbTerms';
@@ -10,9 +10,9 @@ import * as harper_logger from '../utility/logging/harper_logger';
 import * as hdbCore from './fastifyRoutes/plugins/hdbCore';
 import * as user_schema from '../security/user';
 import { isMainThread } from 'worker_threads';
-import * as getServerOptions from './fastifyRoutes/helpers/getServerOptions';
-import * as getCORSOptions from './fastifyRoutes/helpers/getCORSOptions';
-import * as getHeaderTimeoutConfig from './fastifyRoutes/helpers/getHeaderTimeoutConfig';
+import getServerOptions from './fastifyRoutes/helpers/getServerOptions';
+import getCORSOptions from './fastifyRoutes/helpers/getCORSOptions';
+import getHeaderTimeoutConfig from './fastifyRoutes/helpers/getHeaderTimeoutConfig';
 import { serverErrorHandler } from '../server/serverHelpers/serverHandlers';
 import { registerContentHandlers } from '../server/serverHelpers/contentTypes';
 import { server } from './Server';
@@ -70,7 +70,7 @@ async function customFunctionsServer() {
 		const is_https =
 			props_http_secure_on &&
 			(props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL);
-
+		let server;
 		try {
 			//generate a Fastify server instance
 			server = buildServer(is_https);
@@ -166,42 +166,36 @@ function buildRouteFolder(routes_folder, project_name) {
  * @returns {FastifyInstance}
  */
 async function buildServer(is_https) {
-	try {
-		harper_logger.info(`Custom Functions starting buildServer.`);
-		const server_opts = getServerOptions(is_https);
+	harper_logger.info(`Custom Functions starting buildServer.`);
+	const server_opts = getServerOptions(is_https);
 
-		const app = fastify(server_opts);
-		//Fastify does not set this property in the initial app construction
-		app.server.headersTimeout = getHeaderTimeoutConfig();
+	const app = fastify(server_opts);
+	//Fastify does not set this property in the initial app construction
+	app.server.headersTimeout = getHeaderTimeoutConfig();
 
-		//set top-level error handler for server - all errors caught/thrown within the API will bubble up to this handler so they
-		// can be handled in a coordinated way
-		app.setErrorHandler(serverErrorHandler);
+	//set top-level error handler for server - all errors caught/thrown within the API will bubble up to this handler so they
+	// can be handled in a coordinated way
+	app.setErrorHandler(serverErrorHandler);
 
-		const cors_options = getCORSOptions();
-		if (cors_options) {
-			app.register(fastify_cors, cors_options);
-		}
-
-		app.register(function (instance, options, done) {
-			instance.setNotFoundHandler(function (request, reply) {
-				app.server.emit('unhandled', request.raw, reply.raw);
-			});
-			done();
-		});
-
-		app.register(request_time_plugin);
-		await app.register(hdbCore);
-		await app.after();
-		registerContentHandlers(app);
-
-		harper_logger.info(`Custom Functions completed buildServer.`);
-		return app;
-	} catch (err) {
-		harper_logger.error(`Custom Functions process ${process.pid} buildServer error: ${err}`);
-		harper_logger.fatal(err);
-		process.exit(1);
+	const cors_options = getCORSOptions();
+	if (cors_options) {
+		app.register(fastify_cors, cors_options);
 	}
+
+	app.register(function (instance, options, done) {
+		instance.setNotFoundHandler(function (request, reply) {
+			app.server.emit('unhandled', request.raw, reply.raw);
+		});
+		done();
+	});
+
+	app.register(request_time_plugin);
+	await app.register(hdbCore);
+	await app.after();
+	registerContentHandlers(app);
+
+	harper_logger.info(`Custom Functions completed buildServer.`);
+	return app;
 }
 
 export function ready() {

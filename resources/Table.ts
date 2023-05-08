@@ -12,7 +12,7 @@ import * as env_mngr from '../utility/environment/environmentManager';
 import { addSubscription, listenToCommits } from './transactionBroadcast';
 import { getWritableRecord } from './WritableRecord';
 import { handleHDBError, ClientError } from '../utility/errors/hdbError';
-import * as OpenDBIObject from '../utility/lmdb/OpenDBIObject';
+import OpenDBIObject from '../utility/lmdb/OpenDBIObject';
 import * as signalling from '../utility/signalling';
 import { SchemaEventMsg } from '../server/threads/itc';
 import { databases } from './tableLoader';
@@ -226,7 +226,7 @@ export function makeTable(options) {
 				if (entry.version > this.lastModificationTime) this.updateModificationTime(entry.version);
 				this.version = entry.version;
 				this.record = entry.value;
-				if (this.version < 0 || this.record.__invalidated__) entry = null;
+				if (this.version < 0 || this.record?.__invalidated__) entry = null;
 			}
 			if (!entry) {
 				if (this.constructor.Source?.prototype.get) this.record = this.getFromSource(this.record, this.version);

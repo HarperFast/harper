@@ -8,8 +8,8 @@ import {
 	getTransactionAuditStoreBasePath,
 } from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths';
 import { makeTable, CamelCase, lowerCamelCase } from './Table';
-import * as OpenDBIObject from '../utility/lmdb/OpenDBIObject';
-import * as OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject';
+import OpenDBIObject from '../utility/lmdb/OpenDBIObject';
+import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject';
 import { CONFIG_PARAMS, LEGACY_DATABASES_DIR_NAME, DATABASES_DIR_NAME } from '../utility/hdbTerms';
 import * as fs from 'fs-extra';
 
