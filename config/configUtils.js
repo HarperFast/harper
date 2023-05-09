@@ -72,7 +72,8 @@ function createConfigFile(args) {
 
 		if (config_param !== undefined) {
 			const split_param = config_param.split('_');
-			const value = castConfigValue(config_param, args[arg]);
+			let value = castConfigValue(config_param, args[arg]);
+			if (config_param === 'rootPath' && value?.endsWith('/')) value = value.slice(0, -1);
 			try {
 				config_doc.setIn([...split_param], value);
 			} catch (err) {
@@ -374,7 +375,8 @@ function updateConfigValue(param, value, parsed_args = undefined, create_backup 
 
 			if (config_param !== undefined) {
 				const split_param = config_param.split('_');
-				const new_value = castConfigValue(config_param, parsed_args[arg]);
+				let new_value = castConfigValue(config_param, parsed_args[arg]);
+				if (config_param === 'rootPath' && new_value?.endsWith('/')) new_value = new_value.slice(0, -1);
 				try {
 					config_doc.setIn([...split_param], new_value);
 				} catch (err) {
