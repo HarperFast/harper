@@ -50,17 +50,18 @@ export function getDatabases(): Databases {
 	if (loaded_databases) return databases;
 	databases = {};
 	loaded_databases = true;
-	let database_path = join(getHdbBasePath(), DATABASES_DIR_NAME);
+	let database_path = getHdbBasePath() && join(getHdbBasePath(), DATABASES_DIR_NAME);
 	const schema_configs = env_get(CONFIG_PARAMS.SCHEMAS) || {};
 	// not sure why this doesn't work with the environmemt manager
 	if (process.env.SCHEMAS_DATA_PATH) schema_configs.data = { path: process.env.SCHEMAS_DATA_PATH };
 	database_path =
 		process.env.STORAGE_PATH ||
 		env_get(CONFIG_PARAMS.STORAGE_PATH) ||
-		(existsSync(database_path) ? database_path : join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME));
-	// First load all the databases from our main database folder
-	// TODO: Load any databases defined with explicit storage paths from the config
+		(database_path && (existsSync(database_path) ? database_path : join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME)));
+	if (!database_path) return;
 	if (existsSync(database_path)) {
+		// First load all the databases from our main database folder
+		// TODO: Load any databases defined with explicit storage paths from the config
 		for (const database_entry: DirEnt of readdirSync(database_path, { withFileTypes: true })) {
 			const db_name = basename(database_entry.name, '.mdb');
 			if (
