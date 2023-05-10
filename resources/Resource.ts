@@ -114,12 +114,23 @@ export class Resource implements ResourceInterface {
 			id = null;
 		}
 		if (id == null) id = record[this.primaryKey];
-		if (id == null) id = this.getNewId(); //uuid.v4();
+		if (id == null) return this.create(record, options);
 		const resource = this.getResource(id, this);
 		return resource.transact(async (txn_resource) => {
 			await txn_resource.loadRecord();
 			return txn_resource.put(record, options);
 		});
+	}
+	static async create(record, options?): void {
+		const id = this.getNewId(); //uuid.v4();
+		const resource = this.getResource(id, this);
+		return resource.transact(async (txn_resource) => {
+			await txn_resource.put(record, options);
+			return id;
+		});
+	}
+	static post(new_record) {
+		return this.create(new_record);
 	}
 
 	static async delete(identifier: string | number | object) {
@@ -192,7 +203,7 @@ export class Resource implements ResourceInterface {
 					iterable.send(message);
 				},
 			};
-			const subscription = this.subscribe?.(query, options);
+			const subscription = this.subscribe?.(options);
 			iterable.on('close', () => subscription?.end());
 		}
 		return iterable;

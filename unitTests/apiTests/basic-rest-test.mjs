@@ -79,6 +79,16 @@ describe('test REST calls', () => {
 		response = await axios('http://localhost:9926/VariedProps/33');
 		assert.equal(response.data.name, 'new record');
 	});
+	it('POST a new record', async () => {
+		const headers = {
+			//authorization,
+		};
+		let response = await axios.post('http://localhost:9926/VariedProps/', {
+			name: 'new record without an id',
+		});
+		assert.equal(response.status, 200);
+		assert.equal(typeof response.data, 'string');
+	});
 	describe('querying with query parameters', function() {
 		it('do query by string property', async () => {
 			let response = await axios('http://localhost:9926/FourProp/?name=name3');

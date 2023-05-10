@@ -14,7 +14,6 @@ describe('test WebSockets connections and messaging', () => {
 	let available_records;
 	let ws1;
 	before(async function() {
-		this.timeout(10000);
 		available_records = await setupTestApp();
 		ws1 = new WebSocket('ws://localhost:9926/Echo');
 
@@ -24,7 +23,6 @@ describe('test WebSockets connections and messaging', () => {
 		});
 	});
 	it('ping echo server', async function () {
-		this.timeout(10000);
 		let resolver;
 		ws1.send(JSON.stringify({
 			action: 'ping',
@@ -45,7 +43,6 @@ describe('test WebSockets connections and messaging', () => {
 		assert.equal(message.action, 'another ping');
 	});
 	it('ping echo EventSource', async function () {
-		this.timeout(10000);
 		let event_source = new EventSource('http://localhost:9926/Echo');
 		let greetings_message;
 
@@ -64,5 +61,22 @@ describe('test WebSockets connections and messaging', () => {
 		assert.equal(greetings_message, 'greetings');
 		assert.equal(message.data, 'hello again');
 	});
-
+	it('default subscribe on WS', async function() {
+		let ws2 = new WebSocket('ws://localhost:9926/SimpleRecord/5');
+		await new Promise((resolve, reject) => {
+			ws2.on('open', resolve);
+			ws2.on('error', reject);
+		});
+		let message = await new Promise(async resolve => {
+			ws2.on('message', message => {
+				resolve(JSON.parse(message));
+			});
+			let response = await axios.put('http://localhost:9926/SimpleRecord/5', {
+				id: 5,
+				name: 'new name',
+			});
+			assert.equal(response.status, 204);
+		});
+		assert.equal(message.value.name, 'new name');
+	});
 });

@@ -101,6 +101,7 @@ export function makeTable(options) {
 
 					for await (const event of subscription) {
 						const updated_resource = new this(event.id, event.source);
+
 						if (event.operation === 'put') updated_resource.#writePut(event.value);
 						else if (event.operation === 'delete') updated_resource.#writeDelete();
 					}
@@ -117,7 +118,7 @@ export function makeTable(options) {
 		static setTTLExpiration(expiration_time) {
 			// we set up a timer to remove expired entries. we only want the timer/reaper to run in one thread,
 			// so we use the first one
-			if (workerData?.isFirst) {
+			if (workerData?.workerIndex === 0) {
 				if (!this.expirationTimer) {
 					const expiration_ms = expiration_time * 1000;
 					this.expirationTimer = setInterval(() => {
