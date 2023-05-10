@@ -86,7 +86,7 @@ function sendAnalytics() {
 }
 const AGGREGATE_PREFIX = 'h-'; // we could have different levels of aggregation, but this denotes hourly aggregation
 async function aggregation(from_period, to_period = 3600000) {
-	let AnalyticsTable = getAnalyticsTable();
+	const AnalyticsTable = getAnalyticsTable();
 	let last_for_period;
 	// find the last entry for this period
 	for (const entry of AnalyticsTable.primaryStore.getRange({ start: AGGREGATE_PREFIX + 'z', reverse: true })) {
@@ -136,7 +136,7 @@ async function aggregation(from_period, to_period = 3600000) {
 const rest = () => new Promise(setImmediate);
 
 async function cleanup(expiration, period) {
-	let AnalyticsTable = getAnalyticsTable();
+	const AnalyticsTable = getAnalyticsTable();
 	const start = Date.now() - expiration;
 	for (const { key, value } of AnalyticsTable.primaryStore.getRange({ start: false, end: [period, start] })) {
 		AnalyticsTable.delete(key);
@@ -148,23 +148,27 @@ const RAW_EXPIRATION = 10000;
 const AGGREGATE_EXPIRATION = 100000;
 let AnalyticsTable;
 function getAnalyticsTable() {
-	return AnalyticsTable || (AnalyticsTable = table({
-		table: 'hdb_analytics',
-		database: 'system',
-		expiration: 864000,
-		attributes: [
-			{
-				name: 'id',
-				isPrimaryKey: true,
-			},
-			{
-				name: 'action',
-			},
-			{
-				name: 'values',
-			},
-		],
-	}));
+	return (
+		AnalyticsTable ||
+		(AnalyticsTable = table({
+			table: 'hdb_analytics',
+			database: 'system',
+			expiration: 864000,
+			attributes: [
+				{
+					name: 'id',
+					isPrimaryKey: true,
+				},
+				{
+					name: 'action',
+				},
+				{
+					name: 'values',
+				},
+			],
+		}))
+	);
+}
 if (isMainThread) {
 	messageTypeListener(ANALYTICS_REPORT_TYPE, recordAnalytics);
 	setInterval(async () => {
