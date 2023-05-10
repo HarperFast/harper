@@ -8,12 +8,19 @@ const { pipeline } = require('stream/promises');
 const { writeFileSync, mkdirpSync, createWriteStream, ensureDir } = require('fs-extra');
 const { join } = require('path');
 const _ = require('lodash');
+const zlib = require('zlib');
+const util = require('util');
+const gunzip = util.promisify(zlib.gunzip);
 const { openEnvironment } = require('../../lmdb/environmentUtility');
 const { statDBI } = require('../../lmdb/environmentUtility');
 const env_mgr = require('../../environment/environmentManager');
 const hdb_log = require('../../logging/harper_logger');
 const config_utils = require('../../../config/configUtils');
 const add_node = require('../../clustering/addNode');
+const { restart } = require('../../../bin/restart');
+const hdb_utils = require('../../common_utils');
+const nats_utils = require('../../../server/nats/utility/natsUtils');
+const global_schema = require('../../globalSchema');
 const { deployCustomFunctionProject } = require('../../../server/customFunctions/operations');
 const {
 	getSchemaPath,
@@ -23,6 +30,7 @@ const hdb_terms = require('../../hdbTerms');
 const { SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME, CONFIG_PARAMS, OPERATIONS_ENUM } = hdb_terms;
 hdb_log.setLogLevel(hdb_terms.LOG_LEVELS.INFO);
 
+const WAIT_FOR_RESTART_TIME = 10000;
 const CLONE_CONFIG_PATH = join(__dirname, 'clone-node-config.yaml');
 const SYSTEM_TABLES_TO_CLONE = [
 	SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME,
@@ -35,20 +43,24 @@ const SYSTEM_TABLES_TO_CLONE = [
 const username = process.env.HDB_LEADER_USERNAME;
 const password = process.env.HDB_LEADER_PASSWORD;
 const url = process.env.HDB_LEADER_URL;
+const clustering_host = process.env.HDB_CLUSTERING_HOST;
 
 let leader_clustering_enabled;
-let leader_node_name;
-let subscriptions;
 let clone_node_config;
 let leader_config;
+let leader_schemas;
 
+//TODO: Check that hdb is running
+//TODO: improve error logging - maybe try/catch and log each block?
 async function cloneNode() {
 	console.info('Cloning node: ' + url);
 	clone_node_config = YAML.parseDocument(fs.readFileSync(CLONE_CONFIG_PATH, 'utf8'), { simpleKeys: true }).toJSON();
 
-	// await cloneTables();
-	await cloneConfig();
-	await cloneApps();
+	await cloneTables();
+	//await cloneConfig();
+	// await cloneApps();
+
+	//await clusterTables();
 
 	hdb_log.info('Successfully cloned node: ' + url);
 	console.log('Successfully cloned node: ' + url);
@@ -57,7 +69,7 @@ async function cloneNode() {
 async function cloneApps() {
 	const leader_config_apps = leader_config?.apps ?? [];
 	const leader_cf_root = leader_config?.customFunctions?.root;
-	let leader_apps = await httpReq({ operation: OPERATIONS_ENUM.GET_CUSTOM_FUNCTIONS });
+	let leader_apps = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_CUSTOM_FUNCTIONS });
 	leader_apps = await leader_apps.json();
 
 	if (leader_apps)
@@ -70,16 +82,17 @@ async function cloneApps() {
 		}
 
 	// Loop through the result from get_custom_functions. If the function is referenced in the leader
-	// apps config AND it is located in the leaders CF root, package & deploy it to this node.
+	// apps config AND it is located in the leaders CF root, package & deploy it to clone node.
 	// If the function exits but is not referenced in the leader app config, package & deploy it but
-	// exclude it from the apps config on this node. Any apps that are in leader app config but don't reside
-	// in the leader CF root are ignored. These can be deployed when npm install is run in a later step on this node.
+	// exclude it from the apps config on clone node. Any apps that are in leader app config but don't reside
+	// in the leader CF root are ignored. These can be deployed when npm install is run in a later step on clone node.
 	const skip_node_modules = clone_node_config?.apps?.skipNodeModules !== false;
 	for (const project in leader_apps) {
 		let app_deployed = false;
 		for (const app of leader_config_apps) {
 			if (app.name === project && app.package.includes(leader_cf_root)) {
-				let pkg = await httpReq({
+				console.info('Cloning and deploying custom function/app: ' + project);
+				let pkg = await leaderHttpReq({
 					operation: OPERATIONS_ENUM.PACKAGE_CUSTOM_FUNCTION_PROJECT,
 					project,
 					skip_node_modules,
@@ -94,7 +107,8 @@ async function cloneApps() {
 		}
 
 		if (!app_deployed) {
-			let pkg = await httpReq({
+			console.info('Cloning and deploying custom function/app: ' + project);
+			let pkg = await leaderHttpReq({
 				operation: OPERATIONS_ENUM.PACKAGE_CUSTOM_FUNCTION_PROJECT,
 				project,
 				skip_node_modules,
@@ -102,45 +116,88 @@ async function cloneApps() {
 			const { payload } = await pkg.json();
 			await deployCustomFunctionProject({ project, payload, bypass_apps: true });
 		}
-		console.info('Cloning and deploying custom function/app: ' + project);
 	}
 }
-async function clusterTables() {
-	if (leader_clustering_enabled) {
-		if (subscriptions) {
-			const add_node_req = {
-				operation: OPERATIONS_ENUM.ADD_NODE,
-				node_name: leader_node_name,
-				subscriptions,
-			};
 
-			await add_node(add_node_req); //TODO: expand add node to work on system tables
+// TODO: HDB needs to be running for this to work
+async function clusterTables() {
+	// If clustering is not enabled on leader or clone node do not cluster tables.
+	//if (!leader_clustering_enabled || !env_mgr.get(CONFIG_PARAMS.CLUSTERING_ENABLED)) return;
+	const subscribe = clone_node_config?.clustering?.subscribeToLeaderNode === true;
+	const publish = clone_node_config?.clustering?.publishToLeaderNode === true;
+
+	console.info(await restart({ operation: OPERATIONS_ENUM.RESTART }));
+	await hdb_utils.async_set_timeout(WAIT_FOR_RESTART_TIME);
+
+	await global_schema.setSchemaDataToGlobalAsync();
+
+	const subscriptions = [];
+	const sys_schema_path = getSystemSchemaPath();
+	for (const sys_table of SYSTEM_TABLES_TO_CLONE) {
+		const db_file_stat = await fs.stat(join(sys_schema_path, sys_table + '.mdb'));
+		subscriptions.push({
+			schema: SYSTEM_SCHEMA_NAME,
+			table: sys_table,
+			subscribe,
+			publish,
+			start_time: db_file_stat.mtime.toISOString(),
+		});
+	}
+
+	for (const schema in leader_schemas) {
+		for (const table in leader_schemas[schema]) {
+			const schema_path = getSchemaPath(schema, table);
+			const db_file_stat = await fs.stat(join(schema_path, table + '.mdb'));
+			subscriptions.push({
+				schema,
+				table,
+				subscribe,
+				publish,
+				start_time: db_file_stat.mtime.toISOString(),
+			});
 		}
 	}
+
+	await add_node(
+		{
+			operation: OPERATIONS_ENUM.ADD_NODE,
+			node_name: leader_config?.clustering?.nodeName,
+			subscriptions,
+		},
+		true
+	);
+
+	await nats_utils.closeConnection();
 }
 // TODO: throw error if cant reach leader node
 // TODO: get apps and plugins from config
 // TODO: Whats the situation on logging? more less?
 // TODO: exclude tables?
 // TODO: how is this called? how are params passed
+// TODO: add zip to backup - well I think it will if you tell it to (accept-encoding: gzip), right? it should be going through the fastify compression layer,
 async function cloneConfig() {
-	leader_config = await httpReq({ operation: OPERATIONS_ENUM.GET_CONFIGURATION });
+	leader_config = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_CONFIGURATION });
 	leader_config = await leader_config.json();
 	leader_clustering_enabled = leader_config?.clustering?.enabled;
-	leader_node_name = leader_config?.clustering?.nodeName;
 	let config_update = {};
 
 	if (leader_clustering_enabled) {
+		if (clustering_host == null) throw new Error(`'HDB_CLUSTERING_HOST' must be defined`);
+
 		const leader_routes = leader_config?.clustering?.hubServer?.cluster?.network?.routes;
+		const leader_clustering_port = leader_config?.clustering?.hubServer?.cluster?.network?.port;
 		config_update[CONFIG_PARAMS.CLUSTERING_USER] = leader_config?.clustering?.user;
 
-		// If the leader node has routes set in its config, concat them with any routes on this node and update config
-		if (Array.isArray(leader_routes)) {
-			const routes = env_mgr.get(CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_ROUTES);
-			config_update[CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_ROUTES] = Array.isArray(routes)
-				? routes.concat(leader_routes)
-				: leader_routes;
-		}
+		// Add the leader host/port to clone node routes config
+		let routes = env_mgr.get(CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_ROUTES);
+		Array.isArray(routes)
+			? routes.push({ host: clustering_host, port: leader_clustering_port })
+			: (routes = [{ host: clustering_host, port: leader_clustering_port }]);
+
+		// If the leader node has routes set in its config, concat them with any routes on clone node.
+		if (Array.isArray(leader_routes)) routes.concat(leader_routes);
+
+		config_update[CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_ROUTES] = routes;
 	}
 
 	if (leader_config?.apps && Array.isArray(leader_config?.apps)) {
@@ -156,7 +213,7 @@ async function cloneConfig() {
 		const cloned_apps = [];
 		for (const app of leader_config.apps) {
 			if (exclude_apps[app.name]) continue;
-			// Remove any duplicate app config that might exist between leader and this node. Leader apps take priority.
+			// Remove any duplicate app config that might exist between leader and clone node. Leader apps take priority.
 			for (const [i, existing_app] of apps.entries()) {
 				if (existing_app.name === app.name) {
 					apps.splice(i, 1);
@@ -167,7 +224,8 @@ async function cloneConfig() {
 			cloned_apps.push(app);
 		}
 
-		config_update[CONFIG_PARAMS.APPS] = Array.isArray(apps) ? apps.concat(cloned_apps) : cloned_apps;
+		if (apps.length !== 0)
+			config_update[CONFIG_PARAMS.APPS] = Array.isArray(apps) ? apps.concat(cloned_apps) : cloned_apps;
 	}
 
 	console.log(config_update);
@@ -179,7 +237,7 @@ async function cloneConfig() {
 
 async function cloneTables() {
 	// Get all the non-system schema/table from leader node
-	let leader_schemas = await httpReq({ operation: OPERATIONS_ENUM.DESCRIBE_ALL });
+	leader_schemas = await leaderHttpReq({ operation: OPERATIONS_ENUM.DESCRIBE_ALL });
 	leader_schemas = await leader_schemas.json();
 
 	// If there is excludeSchemas in clone config search for value in leader schema description and delete if found, so it's not cloned.
@@ -194,23 +252,34 @@ async function cloneTables() {
 	if (clone_node_config?.database?.excludeTables) {
 		for (const exclude_table of clone_node_config.database.excludeTables) {
 			if (exclude_table?.schema == null) continue;
-			if (leader_schemas[exclude_table?.schema][exclude_table?.table])
+			if (leader_schemas[exclude_table?.schema]?.[exclude_table?.table])
 				delete leader_schemas[exclude_table.schema][exclude_table.table];
 		}
 	}
 
 	//TODO: check for a 200 response before cloning table
+
+	// The describe_all req to the leader node won't return system tables, for that reason they are handled separately.
 	for (const sys_table of SYSTEM_TABLES_TO_CLONE) {
 		hdb_log.info(`Cloning system table: ${sys_table} from node: ${url}`);
-		const sys_backup = await httpReq({
-			operation: OPERATIONS_ENUM.GET_BACKUP,
-			schema: SYSTEM_SCHEMA_NAME,
-			table: sys_table,
-		});
+		const sys_backup = await leaderHttpReq(
+			{
+				operation: OPERATIONS_ENUM.GET_BACKUP,
+				schema: SYSTEM_SCHEMA_NAME,
+				table: sys_table,
+			},
+			true
+		);
 		const sys_schema_path = getSystemSchemaPath();
 		await ensureDir(sys_schema_path);
-		await pipeline(sys_backup.body, createWriteStream(join(sys_schema_path, sys_table + '.mdb'), { overwrite: true }));
+		const sys_db_path = join(sys_schema_path, sys_table + '.mdb');
+		await pipeline(sys_backup.body, createWriteStream(sys_db_path, { overwrite: true }));
+
+		// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
+		await fs.utimes(sys_db_path, Date.now(), new Date(sys_backup.headers.get('date')));
 	}
+
+	const def = zlib.createDeflate();
 
 	for (const schema in leader_schemas) {
 		for (const table in leader_schemas[schema]) {
@@ -219,8 +288,8 @@ async function cloneTables() {
 			const primary_key = leader_schemas[schema][table]['hash_attribute'];
 			const leader_record_count = leader_schemas[schema][table]['record_count'];
 
-			// Stream table backup from leader node to this node.
-			const backup = await httpReq({ operation: OPERATIONS_ENUM.GET_BACKUP, schema, table });
+			// Stream table backup from leader node to clone node.
+			const backup = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_BACKUP, schema, table }, true);
 			const schema_path = getSchemaPath(schema, table);
 			await ensureDir(schema_path);
 			const backup_date = new Date(backup.headers.get('date'));
@@ -228,7 +297,9 @@ async function cloneTables() {
 			// Stream the backup to a file with temp name consisting of <timestamp>-<table name>, this is done so that if clone
 			// fails during this step half cloned db files can easily be identified.
 			const temp_db_path = join(schema_path, `${backup_date.getTime()}-${table}.mdb`);
-			await pipeline(backup.body, createWriteStream(temp_db_path));
+
+			const unzip = zlib.createGunzip();
+			await pipeline(backup.body, unzip, createWriteStream(temp_db_path, { overwrite: true }));
 
 			// Once the clone of a db file is completed it is renamed to its permanent name
 			const db_path = join(schema_path, table + '.mdb');
@@ -249,28 +320,34 @@ async function cloneTables() {
 				leader_record_count >= record_count * 1.05
 			) {
 				throw new Error(
-					`Something has gone wrong. The record count for leader table '${table}' is inconsistent with the record count on this node. 
-					Leader node record count: ${leader_record_count}. This nodes record count: ${record_count}`
+					`Something has gone wrong. The record count for leader table '${table}' is inconsistent with the record count on clone node. 
+					Leader node record count: ${leader_record_count}. Clone nodes record count: ${record_count}`
 				);
 			}
 		}
 	}
 }
 
-async function httpReq(req) {
+async function leaderHttpReq(req, get_backup = false) {
 	const https_agent = new https.Agent({
 		rejectUnauthorized: clone_node_config?.httpsRejectUnauthorized ?? true,
 	});
 
 	const auth = Buffer.from(username + ':' + password).toString('base64');
+	const headers = { Authorization: 'Basic ' + auth };
+	if (get_backup) {
+		headers['Content-Type'] = 'application/json';
+		headers['Accept-Encoding'] = 'gzip';
+	} else {
+		headers['Content-Type'] = 'application/json';
+	}
+
 	return await fetch(url, {
 		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			'Authorization': 'Basic ' + auth,
-		},
+		headers,
 		body: JSON.stringify(req),
 		agent: https_agent,
+		compress: true,
 	});
 }
 

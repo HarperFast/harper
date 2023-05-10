@@ -1,4 +1,4 @@
-# Clone HarperDB node configuration file. Refer to https://harperdb.io/docs/reference/configuration-file/
+# Clone HarperDB node configuration file. Refer to TODO - add ref to config for this
 ---
 database:
   excludeSchemas:
@@ -11,10 +11,12 @@ apps:
   excludeApps:
     - name: test_projectB
     - name: david
+    - name: test_projectBB
+    - name: test_projectA
 plugins:
   excludePlugins:
     - name: cool-plugin
 clustering:
-  publishToLeaderNode: true
+  publishToLeaderNode: false
   subscribeToLeaderNode: true
 httpsRejectUnauthorized: false
