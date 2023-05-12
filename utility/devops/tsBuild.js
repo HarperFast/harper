@@ -1,6 +1,6 @@
 const fg = require('fast-glob');
 const { statSync, existsSync } = require('fs');
-const { execSync, execFileSync, spawnSync } = require('child_process');
+const { spawnSync } = require('child_process');
 const { isMainThread } = require('worker_threads');
 const { join, relative } = require('path');
 const { PACKAGE_ROOT } = require('../hdbTerms');
