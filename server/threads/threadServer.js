@@ -187,7 +187,7 @@ function httpServer(listener, options) {
 	for (let port_num of getPorts(options)) {
 		getHTTPServer(port_num);
 		if (typeof listener === 'function') {
-			http_responders.push({ listener, port: options?.port || port_num });
+			http_responders[options?.preHook ? 'unshift' : 'push']({ listener, port: options?.port || port_num });
 		} else {
 			registerServer(listener, port_num);
 		}
@@ -220,14 +220,15 @@ function getHTTPServer(port, secure) {
 					// to interact with a node HTTP server object.
 					return http_servers[port].emit('unhandled', node_request, node_response);
 				}
-				node_response.writeHead(response.status, response.headers);
+				if (!response.handlesHeaders) node_response.writeHead(response.status || 200, response.headers);
 				let body = response.body;
 				// if it is a stream, pipe it
 				if (body?.pipe) {
 					body.pipe(node_response);
-					node_response.on('close', () => {
-						body.destroy();
-					});
+					if (body.destroy)
+						node_response.on('close', () => {
+							body.destroy();
+						});
 				}
 				// else just send the buffer/string
 				else node_response.end(body);

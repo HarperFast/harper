@@ -12,6 +12,7 @@ import OpenDBIObject from '../utility/lmdb/OpenDBIObject';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject';
 import { CONFIG_PARAMS, LEGACY_DATABASES_DIR_NAME, DATABASES_DIR_NAME } from '../utility/hdbTerms';
 import * as fs from 'fs-extra';
+import { _assignProperty } from '../index';
 
 const DEFAULT_DATABASE_NAME = 'data';
 initSync();
@@ -48,7 +49,7 @@ export function getTables(): Tables {
  */
 export function getDatabases(): Databases {
 	if (loaded_databases) return databases;
-	databases = {};
+	_assignProperty('databases', (databases = {}));
 	loaded_databases = true;
 	let database_path = getHdbBasePath() && join(getHdbBasePath(), DATABASES_DIR_NAME);
 	const schema_configs = env_get(CONFIG_PARAMS.SCHEMAS) || {};
@@ -118,7 +119,7 @@ export function getDatabases(): Databases {
 			//TODO: Iterate configured table paths
 		}
 	}
-	tables = databases.data || {};
+	_assignProperty('tables', (tables = databases.data || {}));
 	return databases;
 }
 export function resetDatabases() {
@@ -239,7 +240,7 @@ export function database({ database: database_name, table: table_name }) {
 	const database =
 		databases[database_name] ||
 		(databases[database_name] = databases[lowerCamelCase(database_name)] = Object.create(null));
-	if (database_name === 'data') tables = databases.data;
+	if (database_name === 'data') _assignProperty('tables', (tables = databases.data));
 	let root_store = database[ROOT_STORE_KEY];
 	if (root_store) return root_store;
 	let database_path = join(getHdbBasePath(), DATABASES_DIR_NAME);

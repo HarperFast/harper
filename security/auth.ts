@@ -117,10 +117,15 @@ export async function authentication(request, next_handler) {
 		} // the HTTP specified way of indicating HTTP authentication methods supported:
 		else response.headers['WWW-Authenticate'] = 'Basic';
 	}
-	for (let i = 0, l = response_headers.length; i < l; ) {
-		const name = response_headers[i++];
-		const value = response_headers[i++];
-		response.headers[name] = value;
+	const l = response_headers.length;
+	if (l > 0) {
+		let headers = response.headers;
+		if (!headers) response.headers = headers = {};
+		for (let i = 0; i < l; ) {
+			const name = response_headers[i++];
+			const value = response_headers[i++];
+			headers[name] = value;
+		}
 	}
 	return response;
 }

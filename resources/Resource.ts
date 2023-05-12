@@ -6,6 +6,7 @@ import { DatabaseTransaction, Transaction } from './DatabaseTransaction';
 import { DefaultAccess } from './Access';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { IterableEventQueue } from './IterableEventQueue';
+import { _assignProperty } from '../index';
 let tables;
 
 /**
@@ -350,6 +351,8 @@ export class Resource implements ResourceInterface {
 		return user?.role.permission.super_user;
 	}
 }
+
+_assignProperty('Resource', Resource);
 
 export function snake_case(camelCase: string) {
 	return (

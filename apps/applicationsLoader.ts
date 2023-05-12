@@ -9,6 +9,7 @@ import * as js_handler from '../resources/jsResource';
 import * as login from '../resources/login';
 import * as REST from '../server/REST';
 import * as fastify_routes_handler from '../server/fastifyRoutes';
+import * as staticFiles from '../server/static';
 import fg from 'fast-glob';
 import { watchDir, restartWorkers } from '../server/threads/manageThreads';
 import { secureImport } from '../security/jsLoader';
@@ -55,6 +56,7 @@ const TRUSTED_RESOURCE_LOADERS = {
 	'js-resource': js_handler,
 	'fastify-routes': fastify_routes_handler,
 	login,
+	'static': staticFiles,
 	/*
 	static: ...
 	login: ...
@@ -103,27 +105,23 @@ export async function loadApplication(app_folder: string, resources: Resources) 
 		const config_path = join(app_folder, CONFIG_FILENAME);
 		let config;
 		if (existsSync(config_path)) {
-			config = parseDocument(readFileSync(app_folder, 'utf8'), { simpleKeys: true }).toJSON();
+			config = parseDocument(readFileSync(config_path, 'utf8'), { simpleKeys: true }).toJSON();
 		} else {
 			config = {};
 		}
 		const handler_modules = [];
 		// iterate through the app handlers so they can each do their own loading process
-		for (let handler_config of config.resourceLoaders || DEFAULT_RESOURCE_LOADERS) {
+		for (let handler_config of config.loaders || DEFAULT_RESOURCE_LOADERS) {
 			if (typeof handler_config === 'string') handler_config = { module: handler_config };
 			try {
 				// our own trusted modules can be directly retrieved from our map, otherwise use the (configurable) secure
 				// module loader
-				const module = TRUSTED_RESOURCE_LOADERS[handler_config.module] || (await secureImport(handler_config.module));
+				let module = TRUSTED_RESOURCE_LOADERS[handler_config.module] || (await secureImport(handler_config.module));
 				handler_modules.push(module);
-				let start_resolution = loaded_plugins.get(module);
 				// call the main start hook
-				if (!start_resolution) {
-					if (isMainThread) start_resolution = module.startOnMainThread?.({ server, resources });
-					if (resources.isWorker) start_resolution = module.start?.({ server, resources });
-					loaded_plugins.set(module, start_resolution);
-				}
-				await start_resolution;
+				if (isMainThread)
+					module = (await module.startOnMainThread?.({ server, resources, ...handler_config })) || module;
+				if (resources.isWorker) module = (await module.start?.({ server, resources, ...handler_config })) || module;
 				// a loader is configured to specify a glob of files to be loaded, we pass each of those to the plugin
 				// handling files ourselves allows us to pass files to sandboxed modules that might not otherwise have
 				// access to the file system.

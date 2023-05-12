@@ -1,0 +1,16 @@
+loaders:
+  - module: REST
+  - module: graphql-schema
+    files: '*.graphql'
+  # path: / # exported queries are on the root path by default
+  - module: js-resource
+    files: resources.js
+  # path: / # exported resources are on the root path by default, like http://server/resource-name
+  - module: fastify-routes
+    files: routes/*.js
+    path: . # relative to the app-name, like  http://server/app-name/route-name
+  - module: static
+    root: web
+    files: web/**
+  #- module: login
+    #path: /
