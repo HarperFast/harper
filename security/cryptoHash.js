@@ -53,8 +53,7 @@ function decrypt(text) {
  * @returns {string}
  */
 function createNatsTableStreamName(schema, table) {
-	if (!table) return schema;
-	const full_name = `${schema}.${table}`;
+	const full_name = table ? `${schema}.${table}` : schema;
 	let hash = hash_cache.get(full_name);
 	if (!hash) {
 		hash = crypto.createHash('md5').update(`${schema}.${table}`).digest('hex');

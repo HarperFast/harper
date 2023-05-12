@@ -1,4 +1,4 @@
-import { startWorker, setMonitorListener } from './manageThreads';
+import { startWorker, setMonitorListener, setMainIsWorker } from './manageThreads';
 import { createServer } from 'net';
 import * as env from '../../utility/environment/environmentManager';
 import * as hdb_terms from '../../utility/hdbTerms';
@@ -12,6 +12,7 @@ export async function startHTTPThreads(thread_count = 2) {
 	const { loadServerModules } = require('../loadServerModules');
 
 	if (thread_count === 0) {
+		setMainIsWorker(true);
 		direct_thread_server = require('./threadServer');
 		await loadServerModules(true);
 		return Promise.resolve([]);

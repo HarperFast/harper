@@ -15,11 +15,17 @@ import { SchemaEventMsg } from '../../server/threads/itc';
 
 const { HDB_ERROR_MSGS } = hdb_errors;
 const DEFAULT_DATABASE = 'data';
+let bridge: ResourceBridge;
 /**
  * Currently we are extending LMDBBridge so we can use the LMDB methods as a fallback until all our RAPI methods are
  * implemented
  */
 export class ResourceBridge extends LMDBBridge {
+	constructor(props) {
+		super(props);
+		bridge = this;
+	}
+
 	async searchByConditions(search_object) {
 		const validation_error = search_validator(search_object, 'conditions');
 		if (validation_error) {
@@ -83,7 +89,7 @@ export class ResourceBridge extends LMDBBridge {
 	}
 	async createRecords(update_obj) {
 		update_obj.requires_no_existing = true;
-		return this.upsertRecords(update_obj);
+		return bridge.upsertRecords(update_obj);
 	}
 	async upsertRecords(upsert_obj) {
 		const { schema_table, attributes } = insertUpdateValidate(upsert_obj);

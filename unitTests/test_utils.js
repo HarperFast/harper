@@ -29,6 +29,7 @@ const { createTable, createRecords } = require('../dataLayer/harperBridge/harper
 const nats_utils = require('../server/nats/utility/natsUtils');
 const config_utils = require('../config/configUtils');
 const user = require('../security/user');
+const { isMainThread } = require('worker_threads');
 let lmdb_schema_env = undefined;
 let lmdb_table_env = undefined;
 let lmdb_attribute_env = undefined;
@@ -175,8 +176,13 @@ function getMockTestPath() {
 function getMockLMDBPath() {
 	let lmdb_path = path.join(UNIT_TEST_DIR, ENV_DIR_NAME, process.pid.toString());
 	env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, lmdb_path);
-	env.setProperty(terms.CONFIG_PARAMS.SCHEMAS, { data: { path: lmdb_path } });
+	env.setProperty(terms.CONFIG_PARAMS.SCHEMAS, { data: { path: lmdb_path }, dev: { path: lmdb_path } });
 	resetDatabases();
+	if (isMainThread) {
+		process.on('exit', function () {
+			tearDownMockDB();
+		});
+	}
 	return lmdb_path;
 }
 

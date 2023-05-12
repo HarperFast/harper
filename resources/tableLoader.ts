@@ -229,7 +229,7 @@ interface TableDefinition {
 	path?: string;
 	expiration?: number;
 	attributes: any[];
-	schemaDefined: boolean;
+	schemaDefined?: boolean;
 }
 
 const ROOT_STORE_KEY = Symbol('root-store');
@@ -313,7 +313,7 @@ export function table({
 		if (!audit_store && USE_AUDIT) {
 			root_store.auditStore = audit_store = root_store.openDB(AUDIT_STORE_NAME, {});
 		}
-		primary_key_attribute = attributes.find((attribute) => attribute.isPrimaryKey);
+		primary_key_attribute = attributes.find((attribute) => attribute.isPrimaryKey) || { name: 'id' };
 		primary_key = primary_key_attribute.name;
 		primary_key_attribute.is_hash_attribute = true;
 		primary_key_attribute.schemaDefined = schema_defined;

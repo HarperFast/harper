@@ -32,12 +32,27 @@ module.exports = {
 	setMonitorListener,
 	onMessageFromWorkers,
 	broadcast,
-	messageTypeListener
+	messageTypeListener,
+	getWorkerIndex,
+	setMainIsWorker,
 };
+let isMainWorker;
+function getWorkerIndex() {
+	return workerData ? workerData.workerIndex : isMainWorker ? 0 : undefined;
+}
+function setMainIsWorker(isWorker) {
+	isMainWorker = isWorker;
+}
 let messageTypeListeners = {
-	[RESTART_TYPE](message) { restartWorkers(message.workerType) },
-	[REQUEST_THREAD_INFO](message, worker) { sendThreadInfo(worker); },
-	[RESOURCE_REPORT] (message, worker) { recordResourceReport(worker, message); },
+	[RESTART_TYPE](message) {
+		restartWorkers(message.workerType);
+	},
+	[REQUEST_THREAD_INFO](message, worker) {
+		sendThreadInfo(worker);
+	},
+	[RESOURCE_REPORT](message, worker) {
+		recordResourceReport(worker, message);
+	},
 };
 function startWorker(path, options = {}) {
 	const license = hdb_license.licenseSearch();
@@ -87,8 +102,7 @@ function startWorker(path, options = {}) {
 				execArgv: ['--enable-source-maps'],
 				argv: process.argv.slice(2),
 				// pass these in synchronously to the worker so it has them on startup:
-				workerData: { addPorts: ports_to_send,
-					workerIndex: options.workerIndex, name: options.name },
+				workerData: { addPorts: ports_to_send, workerIndex: options.workerIndex, name: options.name },
 				transferList: ports_to_send,
 			},
 			options
@@ -328,10 +342,10 @@ if (isMainThread) {
 	let before_restart, queued_restart;
 	const watch_dir = async (dir, before_restart_callback) => {
 		if (before_restart_callback) before_restart = before_restart_callback;
-		for (let entry of await readdir(dir, {withFileTypes: true})) {
+		for (let entry of await readdir(dir, { withFileTypes: true })) {
 			if (entry.isDirectory()) watch_dir(join(dir, entry.name));
 		}
-		for await (let {eventType, filename} of watch(dir)) {
+		for await (let { eventType, filename } of watch(dir)) {
 			if (extname(filename) === '.ts' || extname(filename) === '.js') {
 				if (queued_restart) clearTimeout(queued_restart);
 				queued_restart = setTimeout(async () => {

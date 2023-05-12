@@ -16,20 +16,25 @@ const env_mgr = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 require('../threads/manageThreads');
 const { getDatabases } = require('../../resources/tableLoader');
+const crypto_hash = require('../../security/cryptoHash');
+const { publishToStream } = nats_utils;
 
 const SUBSCRIPTION_OPTIONS = {
 	durable: nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name,
 	queue: nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_group,
 };
-start({});
+
 let nats_connection;
 let server_name;
 let js_manager;
 let js_client;
+let initialized;
 
 module.exports = {
 	initialize,
 	workQueueListener,
+	setSubscription,
+	setIgnoreOrigin,
 };
 
 /**
@@ -46,6 +51,7 @@ module.exports = {
  * @returns {Promise<void>}
  */
 async function initialize() {
+	initialized = true;
 	harper_logger.notify('Starting clustering ingest service.');
 
 	const { connection, jsm, js } = await nats_utils.getNATSReferences();
@@ -54,23 +60,37 @@ async function initialize() {
 	js_manager = jsm;
 	js_client = js;
 }
+const database_subscriptions = new Map();
+function setSubscription(database, table, subscription) {
+	let table_subscriptions = database_subscriptions.get(database);
+	if (!table_subscriptions) database_subscriptions.set(database, (table_subscriptions = new Map()));
+	table_subscriptions.set(table, subscription);
+	if (!initialized) {
+		initialize().then(workQueueListener);
+	}
+}
+let ignore_origin;
+function setIgnoreOrigin(value) {
+	ignore_origin = value;
+}
 const MAX_CONCURRENCY = 100;
 const outstanding_operations = new Array(MAX_CONCURRENCY);
 let operation_index = 0;
 /**
- * Uses an internal Nats consumer to subscribe to the  of messages from the work queue and process each one.
+ * Uses an internal Nats consumer to subscribe to the stream of messages from the work queue and process each one.
  * @returns {Promise<void>}
  */
-async function workQueueListener() {
+async function workQueueListener(signal) {
 	const sub = nats_connection.subscribe(
 		`${nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_subject}.${nats_connection.info.server_name}`,
 		SUBSCRIPTION_OPTIONS
 	);
+	if (signal) signal.abort = () => sub.close();
 
 	for await (const message of sub) {
 		// ring style queue for awaiting operations for concurrency. await the entry from 100 operations ago:
 		await outstanding_operations[operation_index];
-		outstanding_operations[operation_index] = messageProcessor(message).catch((error) => {
+		outstanding_operations[operation_index] = messageProcessor(message, signal).catch((error) => {
 			harper_logger.error(error);
 		});
 		if (++operation_index >= MAX_CONCURRENCY) operation_index = 0;
@@ -86,7 +106,15 @@ if (!isMainThread) {
 	});
 }
 /**
- * receives a message & processes it as an HDB operation
+ * Processes a message from the NATS work queue and delivers to through the table subscription to the NATS
+ * cluster which effectively acts as a source for tables. When a table makes a subscriptions, the subscription
+ * events are considered to be notifications; they don't go through higher level put/delete/publish methods
+ * because they should not go through validation or user-defined logic, they represent after-the-fact replication
+ * of updates that have already been made. This also means that subscription events are written at a lower level
+ * than the source delegation where replication occurs, which nicely avoids echoing to subscription events to
+ * sources. However, in NATS we are actually using echo to (potentially) route messages to other nodes. So we
+ * actually perform the echo in here. This has the advantage of being able to reuse the encoded message and
+ * encapsulating the header information.
  * @param msg
  * @returns {Promise<{}>}
  */
@@ -97,7 +125,7 @@ async function messageProcessor(msg) {
 	// If the msg origin header matches this node the msg can be ignored because it would have already been processed.
 	let nats_msg_header = js_msg.headers;
 	const origin = nats_msg_header.get(nats_terms.MSG_HEADERS.ORIGIN);
-	if (origin === env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME)) {
+	if (origin === env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME) && !ignore_origin) {
 		js_msg.ack();
 		return;
 	}
@@ -106,42 +134,55 @@ async function messageProcessor(msg) {
 	harper_logger.trace(`messageProcessor nats msg id: ${js_msg.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID)}`);
 	try {
 		let single_table_operation = entry.operation;
+		let onCommit;
+		let completion = new Promise((resolve) => (onCommit = resolve));
+		let database_name;
 		if (single_table_operation) {
 			// this is a legacy message that operates on a single table
-			let { schema, table: table_name, records, __origin } = entry;
-			let { timestamp, user } = __origin;
-			let Table = getDatabases()[schema][table_name];
-			await Table.transact(
-				async (txn_table) => {
-					let options = {
-						user,
-						nats_msg_header,
-					};
-					switch (single_table_operation) {
-						case 'put':
-						case 'upsert':
-						case 'insert':
-						case 'update':
-							for (let record of records) {
-								await txn_table.put(record, options);
-							}
-							break;
-						case 'delete':
-							for (let record of records) {
-								await txn_table.delete(record, options);
-							}
-							break;
-						case 'publish':
-							for (let record of records) {
-								await txn_table.publish(record, options);
-							}
-							break;
-					}
-				},
-				{
-					timestamp,
+			let { schema, table: table_name, records, writes, __origin } = entry;
+			database_name = schema;
+			let { timestamp, user } = __origin || {};
+			let options = {
+				user,
+				nats_msg_header,
+			};
+			let subscription = database_subscriptions.get(schema)?.get(table_name);
+			if (!subscription) {
+				// TODO: create table
+				return console.error('Missing table', table_name);
+			}
+			if (records) {
+				if (records.length === 1)
+					subscription.send({
+						operation: convertOperation(single_table_operation),
+						value: records[0],
+						timestamp,
+						table: table_name,
+						onCommit,
+						__origin,
+					});
+				else {
+					subscription.send({
+						operation: 'transaction',
+						writes: records.map((record) => ({
+							operation: convertOperation(single_table_operation),
+							value: record,
+						})),
+						table: table_name,
+						timestamp,
+						onCommit,
+						__origin,
+					});
 				}
-			);
+			} else {
+				subscription.send({
+					operation: 'transaction',
+					writes,
+					timestamp,
+					onCommit,
+					__origin,
+				});
+			}
 		} else {
 			let { timestamp, user, writes } = entry;
 			let first_dot_index = msg.subject.indexOf('.');
@@ -151,61 +192,52 @@ async function messageProcessor(msg) {
 			let database = getDatabases()[schema];
 			if (!database) throw new Error(`The database ${schema} was not found.`);
 			let Table = database[first_table];
-			await Table.transact(
-				async (txn_table) => {
-					let options = {
-						user,
-						nats_msg_header,
-					};
+			if (writes)
+				await Table.transact(
+					async (txn_table) => {
+						let options = {
+							user,
+							nats_msg_header,
+						};
 
-					for (let write of writes) {
-						let table = first_table === write.table ? txn_table : txn_table.useTable(write.table);
-						switch (write.operation) {
-							case 'put':
-								await table.put(write.record, options);
-								break;
-							case 'publish':
-								await table.publish(write.record, options);
-								break;
-							case 'delete':
-								await table.delete(write.id, options);
-								break;
+						for (let write of writes) {
+							let table = first_table === write.table ? txn_table : txn_table.useTable(write.table);
+							switch (write.operation) {
+								case 'put':
+									await table.put(write.record, options);
+									break;
+								case 'publish':
+									await table.publish(write.record, options);
+									break;
+								case 'delete':
+									await table.delete(write.id, options);
+									break;
+							}
 						}
-					}
-				},
-				{ timestamp }
-			);
+					},
+					{ timestamp }
+				);
 		}
+		// echo the message to any other nodes
+		publishToStream(
+			`${nats_terms.SUBJECT_PREFIXES.TXN}.${database_name}`,
+			crypto_hash.createNatsTableStreamName(database_name),
+			js_msg.headers,
+			js_msg.data
+		); // use the already-encoded message
+		await completion;
 	} catch (e) {
 		harper_logger.error(e);
 	}
-
-	/*	const found_operation = server_utilities.getOperationFunction(entry);
-	operation_function = found_operation.job_operation_function
-		? found_operation.job_operation_function
-		: found_operation.operation_function;
-
-	// Run the HDB transaction.
-	// csv loading and other jobs need to use a different postOp handler
-	let result;
-	try {
-		if (found_operation.job_operation_function) {
-			result = await operation_function(entry, js_msg.headers);
-		} else {
-			entry[hdb_terms.CLUSTERING_FLAG] = true;
-
-			result = await operation_function_caller.callOperationFunctionAsAwait(
-				operation_function,
-				entry,
-				transact_to_cluster_utilities.postOperationHandler,
-				js_msg.headers
-			);
-		}
-		harper_logger.debug(result);
-	} catch (e) {
-		harper_logger.error(e);
-	}
-*/
 	// Ack to NATS to acknowledge the message has been processed
 	js_msg.ack();
+}
+function convertOperation(operation) {
+	switch (operation) {
+		case 'insert':
+		case 'upsert':
+		case 'update':
+			return 'put';
+	}
+	return operation;
 }

@@ -3,11 +3,15 @@ import { Resource } from '../../resources/Resource';
 import { publishToStream } from './utility/natsUtils';
 import { SUBJECT_PREFIXES } from './utility/natsTerms';
 import { createNatsTableStreamName } from '../../security/cryptoHash';
+import { IterableEventQueue } from '../../resources/IterableEventQueue';
+import { getWorkerIndex } from '../threads/manageThreads';
+import { setSubscription } from './natsIngestService';
 
 let publishing_databases = new Map();
 export async function start() {
 	await assignReplicationSource();
 }
+const MAX_INGEST_THREADS = 2;
 
 /**
  * This will assign the NATS replicator as a source to any tables that have subscriptions to them (are publishing to other nodes)
@@ -37,18 +41,18 @@ async function assignReplicationSource() {
 			// if we are publishing the full database, assign as source of all the tables in the database
 			for (const table_name in tables) {
 				const table = tables[table_name];
-				if (!table.Source) table.Source = getNATSReplicator(table_name, db_name);
+				if (!table.Source) table.sourcedFrom(getNATSReplicator(table_name, db_name));
 			}
 		} else {
 			// otherwise just assign as source of tables that are actually publishing
 			for (const [table_name] of publishing) {
 				const table = tables[table_name];
-				if (!table.Source) table.Source = getNATSReplicator(table_name, db_name);
+				if (!table.Source) table.sourcedFrom(getNATSReplicator(table_name, db_name));
 			}
 		}
 	}
 	onNewTable((table) => {
-		if (!table.Source) table.Source = getNATSReplicator(table.tableName, table.databasePath);
+		if (!table.Source) table.sourcedFrom(getNATSReplicator(table.tableName, table.databasePath));
 	});
 	databases.system.hdb_nodes.subscribe({
 		listener() {
@@ -62,7 +66,7 @@ async function assignReplicationSource() {
  * @param table_name
  * @param db_name
  */
-function getNATSReplicator(table_name, db_name) {
+export function getNATSReplicator(table_name, db_name) {
 	return class NATSReplicator extends Resource {
 		put(record, options) {
 			// add this to the transaction
@@ -95,6 +99,13 @@ function getNATSReplicator(table_name, db_name) {
 				nats_transaction.user = this.user;
 			}
 			return nats_transaction;
+		}
+		static subscribe() {
+			if (getWorkerIndex() < MAX_INGEST_THREADS) {
+				const subscription = new IterableEventQueue();
+				setSubscription(db_name, table_name, subscription);
+				return subscription;
+			}
 		}
 	};
 }

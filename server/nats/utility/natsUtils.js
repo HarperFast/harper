@@ -521,10 +521,11 @@ async function publishToStream(subject_name, stream_name, msg_header, message) {
 	const { js } = await getNATSReferences();
 	const nats_server = await getJsmServerName();
 	const subject = `${subject_name}.${nats_server}`;
+	let encoded_message = message instanceof Uint8Array ? message :// already encoded
+		encode(message);
 
 	try {
 		hdb_logger.trace(`publishToStream publishing to subject: ${subject}, data:`, message);
-		let encoded_message = encode(message);
 		recordAction(encoded_message.length, 'bytes-sent', subject_name, message.operation, 'replication');
 		await js.publish(subject, encoded_message, { headers: msg_header });
 	} catch (err) {

@@ -136,7 +136,7 @@ export interface Transaction {
 }
 export class ImmediateTransaction {
 	addWrite(operation) {
-		operation.commit(getNextMonotonicTime(), 0);
+		operation.commit();
 	}
 	get timestamp() {
 		return getNextMonotonicTime();

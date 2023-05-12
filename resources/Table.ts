@@ -89,6 +89,26 @@ export function makeTable(options) {
 			// define a source for retrieving invalidated entries for caching purposes
 			this.Source = Resource;
 			(async () => {
+				const writeUpdate = (event, source, resource) => {
+					const value = event.value;
+					const Table = databases[database_name][event.table];
+					if (TableResource !== Table) {
+						const id = event.id || value[Table.primaryKey];
+						resource = resource.use(Table, id);
+					}
+					console.log(event);
+					switch (event.operation) {
+						case 'put':
+							return resource.#writePut(value);
+						case 'delete':
+							return resource.#writeDelete();
+						case 'publish':
+							return resource.publish(value);
+						default:
+							console.error('Unknown operation', event);
+					}
+				};
+
 				try {
 					const subscription = await Resource.subscribe?.({
 						// this is used to indicate that all threads are (presumably) making this subscription
@@ -97,13 +117,23 @@ export function makeTable(options) {
 						// this is used to indicate that we want, if possible, immediate notification of writes
 						// within the process (not supported yet)
 						inTransactionUpdates: true,
+						// supports transaction operations
+						supportsTransactions: true,
 					});
 
 					for await (const event of subscription) {
-						const updated_resource = new this(event.id, event.source);
-
-						if (event.operation === 'put') updated_resource.#writePut(event.value);
-						else if (event.operation === 'delete') updated_resource.#writeDelete();
+						const source = event.__origin;
+						const first_record = event.operation === 'transaction' ? event.writes[0].value : event.value;
+						const id = first_record[primary_key];
+						const resource = new this(id, source);
+						const commit = resource.transact(() => {
+							if (event.operation === 'transaction') {
+								for (const write of event.writes) {
+									writeUpdate(write, source, resource);
+								}
+							} else writeUpdate(event, source, resource);
+						});
+						if (event.onCommit) commit.then(event.onCommit);
 					}
 				} catch (error) {
 					console.error(error);
@@ -222,7 +252,7 @@ export function makeTable(options) {
 		async loadRecord() {
 			// TODO: determine if we use lazy access properties
 			const env_txn = this.dbTxn;
-			let entry = primary_store.getEntry(this.id, { transaction: env_txn.getReadTxn() });
+			let entry = primary_store.getEntry(this.id, { transaction: env_txn?.getReadTxn() });
 			if (entry) {
 				if (entry.version > this.lastModificationTime) this.updateModificationTime(entry.version);
 				this.version = entry.version;
