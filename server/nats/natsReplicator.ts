@@ -33,7 +33,7 @@ async function assignReplicationSource() {
 	for (const [db_name, publishing] of publishing_databases) {
 		const tables = databases[db_name];
 		if (!tables) {
-			// TODO: Do we auto-create the database?
+			// TODO: Do we auto-create the table?
 			console.log(`database ${db_name} not found for replication`);
 			continue;
 		}

@@ -148,7 +148,6 @@ async function messageProcessor(msg) {
 			};
 			let subscription = database_subscriptions.get(schema)?.get(table_name);
 			if (!subscription) {
-				// TODO: create table
 				return console.error('Missing table', table_name);
 			}
 			if (records) {
@@ -190,8 +189,8 @@ async function messageProcessor(msg) {
 			let schema = msg.subject.slice(first_dot_index + 1, second_dot_index);
 			let first_table = writes[0].table;
 			let database = getDatabases()[schema];
-			if (!database) throw new Error(`The database ${schema} was not found.`);
-			let Table = database[first_table];
+			let Table = database?.[first_table];
+			if (!Table) Table = table();
 			if (writes)
 				await Table.transact(
 					async (txn_table) => {

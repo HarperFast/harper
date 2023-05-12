@@ -145,6 +145,8 @@ describe('Test natsIngestService module', () => {
 			await setupTestStreamAndSource();
 			// This first publish should not show up in queue because of the filterSubject on the sub
 			await nats_ingest_service.initialize();
+			// I don't understand why the work queue can't handle more than one message if headers are provided
+			// lots of hacks here to deal with the mysterious behavior.
 			require('../../../server/nats/natsIngestService').setIgnoreOrigin(true);
 			await nats_utils.publishToStream('msgid.dev.hippopotamus', STREAM_NAME, undefined, [test_operation_1]);
 			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, undefined, test_operation_2);
