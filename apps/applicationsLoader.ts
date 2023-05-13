@@ -130,6 +130,7 @@ export async function loadApplication(app_folder: string, resources: Resources) 
 				if (isMainThread)
 					module = (await module.startOnMainThread?.({ server, resources, ...handler_config })) || module;
 				if (resources.isWorker) module = (await module.start?.({ server, resources, ...handler_config })) || module;
+				loaded_plugins.set(module, true);
 				// a loader is configured to specify a glob of files to be loaded, we pass each of those to the plugin
 				// handling files ourselves allows us to pass files to sandboxed modules that might not otherwise have
 				// access to the file system.
