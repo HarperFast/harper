@@ -1,9 +1,9 @@
-import { readdirSync, promises, readFileSync, existsSync } from 'fs';
+import { readdirSync, promises, readFileSync, existsSync, symlinkSync, mkdirSync } from 'fs';
 import { join, relative, basename } from 'path';
 import { isMainThread } from 'worker_threads';
 import { parseDocument } from 'yaml';
 import * as env from '../utility/environment/environmentManager';
-import { HDB_SETTINGS_NAMES, CONFIG_PARAMS } from '../utility/hdbTerms';
+import { HDB_SETTINGS_NAMES, PACKAGE_ROOT } from '../utility/hdbTerms';
 import * as graphql_handler from '../resources/graphql';
 import * as js_handler from '../resources/jsResource';
 import * as login from '../resources/login';
@@ -17,6 +17,8 @@ import { server } from '../server/Server';
 import { Resources } from '../resources/Resources';
 import { handleHDBError } from '../utility/errors/hdbError';
 import { Resource } from '../resources/Resource';
+import { linkHarperdb } from '../utility/npmUtilities';
+
 const { readFile } = promises;
 
 const CONFIG_FILENAME = 'config.yaml';
@@ -43,6 +45,12 @@ export function loadApplications(loaded_plugin_modules?: Map<any, any>, loaded_r
 		cfs_loaded.push(loadApplication(app_folder, resources));
 	}
 	if (process.env.RUN_HDB_APP) {
+		const app_node_modules = join(process.env.RUN_HDB_APP, 'node_modules');
+		const harperdb_package = join(process.env.RUN_HDB_APP, 'node_modules', 'harperdb');
+		if (!existsSync(harperdb_package)) {
+			if (!existsSync(app_node_modules)) mkdirSync(app_node_modules);
+			symlinkSync(PACKAGE_ROOT, harperdb_package);
+		}
 		cfs_loaded.push(loadApplication(process.env.RUN_HDB_APP, resources));
 	}
 	return Promise.all(cfs_loaded).then(() => {

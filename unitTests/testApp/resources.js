@@ -1,6 +1,5 @@
-import * as harperdb from 'harperdb';
 import { Resource, tables } from 'harperdb';
-console.log({ harperdb });
+
 export class Echo extends Resource {
 	static async connect(incoming_messages) {
 		if (incoming_messages) {
