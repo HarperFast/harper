@@ -9,6 +9,8 @@ const path = require('path');
 const os = require('os');
 const { PACKAGE_ROOT } = require('../utility/hdbTerms');
 const check_node = require('../launchServiceScripts/utility/checkNodeVersion');
+const env = require('../utility/environment/environmentManager');
+const socket_router = require('../server/threads/socketRouter');
 const { SERVICE_ACTIONS_ENUM } = hdb_terms;
 
 harperDBService();
@@ -69,6 +71,9 @@ function harperDBService() {
 
 		let result = undefined;
 		switch (service) {
+			case SERVICE_ACTIONS_ENUM.DEBUG:
+				require('inspector').open(9229, null, true);
+				socket_router.debugMode = true;
 			case SERVICE_ACTIONS_ENUM.RUN:
 				// Run a specific application folder
 				let app_folder = process.argv[3];
@@ -157,6 +162,8 @@ Usage: harperdb [command]
 With no command, harperdb will simply run HarperDB (in the foreground) 
 
 Commands:
+  run <path> - Run the application in the specified path
+  debug <path> - Debug the application in the specified path
   version - Print the version
   start - Starts a separate background process for harperdb and CLI will exit
   stop - Stop the harperdb background process

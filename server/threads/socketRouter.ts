@@ -7,11 +7,12 @@ import { unlinkSync, existsSync } from 'fs';
 const workers = [];
 env.initSync();
 let direct_thread_server;
+export let debugMode;
 
 export async function startHTTPThreads(thread_count = 2) {
 	const { loadServerModules } = require('../loadServerModules');
 
-	if (thread_count === 0) {
+	if (thread_count === 0 || debugMode) {
 		setMainIsWorker(true);
 		direct_thread_server = require('./threadServer');
 		await loadServerModules(true);
