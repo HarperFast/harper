@@ -72,8 +72,9 @@ function harperDBService() {
 		let result = undefined;
 		switch (service) {
 			case SERVICE_ACTIONS_ENUM.DEBUG:
-				require('inspector').open(9229, null, true);
+				require('inspector').open(9229);
 				socket_router.debugMode = true;
+			// fall through
 			case SERVICE_ACTIONS_ENUM.RUN:
 				// Run a specific application folder
 				let app_folder = process.argv[3];
