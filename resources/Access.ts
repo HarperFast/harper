@@ -1,4 +1,4 @@
-import { Resource } from './Resource';
+import { Resource, SAVE_UPDATES_PROPERTY } from './Resource';
 
 const QUERY_PARSER = /([^?&|=<>!()]+)([&|=<>!()]*)/g;
 const SYMBOL_OPERATORS = {
@@ -34,7 +34,7 @@ export class DefaultAccess {
 		if (search) query = this.parseQuery(search);
 		// parse the query first and pass it to allowRead so it can inform attribute-level permissions
 		// and the permissions can modify the query, assigning a select for available attributes.
-		this.resource.saveUpdates = false; // by default modifications aren't saved, they just yield a different result from get
+		this.resource[SAVE_UPDATES_PROPERTY] = false; // by default modifications aren't saved, they just yield a different result from get
 		await this.resource.loadRecord?.();
 		if (this.request) {
 			const allowed = await this.resource.allowRead(this.request.user, query);

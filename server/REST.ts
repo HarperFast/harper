@@ -1,8 +1,9 @@
 import { serialize, serializeMessage, getDeserializer } from '../server/serverHelpers/contentTypes';
-import { recordAction } from '../resources/analytics';
+import { recordAction, recordActionBinary } from '../resources/analytics';
 import { ServerOptions } from 'http';
 import { ServerError, ClientError } from '../utility/errors/hdbError';
 import { Resources } from '../resources/Resources';
+import { LAST_MODIFICATION_PROPERTY } from '../resources/Resource';
 import { IterableEventQueue } from '../resources/IterableEventQueue';
 
 interface Response {
@@ -17,7 +18,7 @@ async function http(request, next_handler) {
 	const start = performance.now();
 	let resource_path;
 	try {
-		const resource = await resources.call(request.pathname.slice(1), request, (resource_access, path) => {
+		let response_data = await resources.call(request.pathname.slice(1), request, (resource_access, path) => {
 			resource_path = path;
 			try {
 				if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
@@ -65,43 +66,44 @@ async function http(request, next_handler) {
 					throw new ServerError('Method not available', 501);
 			}
 		});
-		if (!resource) return next_handler(request);
-		let response_data = resource.result;
-		//= await execute(Resource, method, next_path, request_data, request);
-		const if_match = request.headers['if-match'];
-		let status = 200;
-		if (if_match && (resource.lastModificationTime * 1000).toString(36) == if_match) {
-			//resource_result.cancel();
-			status = 304;
-			response_data = undefined;
-		}
-
-		const headers = {};
-		if (resource.lastModificationTime) {
-			headers['ETag'] = (resource.lastModificationTime * 1000).toString(36);
-			headers['Last-Modified'] = new Date(resource.lastModificationTime).toUTCString();
-		}
+		if (resource_path === undefined) return next_handler(request); // no resource handler found
 		const execution_time = performance.now() - start;
-		headers['Server-Timing'] = `db;dur=${execution_time.toFixed(2)}`;
-		recordAction(resource_path, execution_time);
+		const headers = {
+			'Server-Timing': `db;dur=${execution_time.toFixed(2)}`,
+		};
+		let status = 200;
+		let lastModification;
+		if (response_data == undefined) {
+			status = method === 'GET' || method === 'HEAD' ? 404 : 204;
+		} else if ((lastModification = response_data[LAST_MODIFICATION_PROPERTY])) {
+			const if_match = request.headers['if-match'];
+			if (if_match && (lastModification * 1000).toString(36) == if_match) {
+				//resource_result.cancel();
+				status = 304;
+				response_data = undefined;
+			} else {
+				headers['ETag'] = (lastModification * 1000).toString(36);
+				headers['Last-Modified'] = new Date(lastModification).toUTCString();
+			}
+		}
 		const response_object = {
 			status,
 			headers,
 			body: undefined,
 		};
+		recordAction('TTFB', execution_time, resource_path, method);
+		recordActionBinary(status < 400, 'success', resource_path, method);
 		// TODO: Handle 201 Created
 
-		if (response_data === undefined) {
-			if (response_object.status === 200) response_object.status = resource.updated ? 204 : 404;
-		} else {
+		if (response_data !== undefined) {
 			response_object.body = serialize(response_data, request, response_object);
 		}
 		return response_object;
 	} catch (error) {
 		const execution_time = performance.now() - start;
-		recordAction(resource_path, execution_time);
+		recordAction('TTFB', execution_time, resource_path, method);
+		recordActionBinary(false, 'success', resource_path, method);
 		if (!error.http_resp_code) console.error(error);
-		// TODO: do content negotiation on the error
 		return {
 			status: error.http_resp_code || 500, // use specified error status, or default to generic server error
 			headers: {},
@@ -217,16 +219,20 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 			if (iterator) iterator.return();
 		});
 		await chain_completion;
-		const resource = await resources.call(request.pathname.slice(1), request, (resource_access) => {
+		let resource_found;
+		const response_stream = await resources.call(request.pathname.slice(1), request, (resource_access, path) => {
+			resource_found = true;
 			return resource_access.connect(incoming_messages);
 		});
-		if (!resource) ws.send(serializeMessage(`No resource was found to handle ${request.pathname}`, request));
+		if (!resource_found) {
+			ws.send(serializeMessage(`No resource was found to handle ${request.pathname}`, request));
+		} else {
+			iterator = response_stream[Symbol.asyncIterator]();
 
-		iterator = resource.result[Symbol.asyncIterator]();
-
-		let result;
-		while (!(result = await iterator.next()).done) {
-			ws.send(serializeMessage(result.value, request));
+			let result;
+			while (!(result = await iterator.next()).done) {
+				ws.send(serializeMessage(result.value, request));
+			}
 		}
 		ws.close();
 	});

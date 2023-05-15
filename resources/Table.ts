@@ -4,7 +4,15 @@ import { getIndexedValues } from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
 import { ResourceInterface } from './ResourceInterface';
 import { workerData } from 'worker_threads';
-import { Resource } from './Resource';
+import {
+	CONTEXT_PROPERTY,
+	TRANSACTIONS_PROPERTY,
+	ID_PROPERTY,
+	LAST_MODIFICATION_PROPERTY,
+	RECORD_PROPERTY,
+	Resource,
+	copyRecord,
+} from './Resource';
 import { DatabaseTransaction, immediateTransaction } from './DatabaseTransaction';
 import { compareKeys, readKey, MAXIMUM_KEY } from 'ordered-binary';
 import * as lmdb_terms from '../utility/lmdb/terms';
@@ -22,6 +30,8 @@ env_mngr.initSync();
 const b = Buffer.alloc(1);
 const LMDB_PREFETCH_WRITES = env_mngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 
+const DB_TXN_PROPERTY = Symbol('dbTxn');
+const VERSION_PROPERTY = Symbol.for('version');
 const LAZY_PROPERTY_ACCESS = { lazy: true };
 const TXN_KEY = Symbol('transaction');
 
@@ -91,10 +101,12 @@ export function makeTable(options) {
 			(async () => {
 				const writeUpdate = (event, source, resource) => {
 					const value = event.value;
-					const Table = databases[database_name][event.table];
-					if (TableResource !== Table) {
-						const id = event.id || value[Table.primaryKey];
-						resource = resource.use(Table, id);
+					if (event.table) {
+						const Table = databases[database_name][event.table];
+						if (TableResource !== Table) {
+							const id = event.id || value[Table.primaryKey];
+							resource = resource.use(Table, id);
+						}
 					}
 					console.log(event);
 					switch (event.operation) {
@@ -228,41 +240,39 @@ export function makeTable(options) {
 		}
 
 		table: any;
-		dbTxn: DatabaseTransaction;
+		[DB_TXN_PROPERTY]: DatabaseTransaction;
 		parent: Resource;
-		lmdbTxn: any;
-		record: any;
-		changes: any;
-		lastModificationTime = 0;
 		static Source: typeof Resource;
 
 		constructor(identifier, resource_info) {
 			// coerce if we know this is supposed to be a number
 			super(identifier, resource_info);
-			if (this.transactions) assignDBTxn(this);
-			if (primary_key_attribute.is_number && this.id != null) this.id = +this.id;
+			if (this[TRANSACTIONS_PROPERTY]) assignDBTxn(this);
+			if (primary_key_attribute.is_number && this[ID_PROPERTY] != null) this[ID_PROPERTY] = +this[ID_PROPERTY];
 		}
 		updateModificationTime(latest = Date.now()) {
-			if (latest > this.lastModificationTime) {
-				this.lastModificationTime = latest;
+			if (latest > this[LAST_MODIFICATION_PROPERTY]) {
+				this[LAST_MODIFICATION_PROPERTY] = latest;
 				if (this.parent?.updateModificationTime) this.parent.updateModificationTime(latest);
 			}
 		}
 
 		async loadRecord() {
 			// TODO: determine if we use lazy access properties
-			const env_txn = this.dbTxn;
-			let entry = primary_store.getEntry(this.id, { transaction: env_txn?.getReadTxn() });
+			const env_txn = this[DB_TXN_PROPERTY];
+			let entry = primary_store.getEntry(this[ID_PROPERTY], { transaction: env_txn?.getReadTxn() });
+			let record;
 			if (entry) {
-				if (entry.version > this.lastModificationTime) this.updateModificationTime(entry.version);
-				this.version = entry.version;
-				this.record = entry.value;
-				if (this.version < 0 || this.record?.__invalidated__) entry = null;
+				if (entry.version > this[LAST_MODIFICATION_PROPERTY]) this.updateModificationTime(entry.version);
+				this[VERSION_PROPERTY] = entry.version;
+				record = entry.value;
+				if (this[VERSION_PROPERTY] < 0 || this.__invalidated__) entry = null;
 			}
 			if (!entry) {
-				if (this.constructor.Source?.prototype.get) this.record = this.getFromSource(this.record, this.version);
-				return this.record; // might be a promise
+				if (this.constructor.Source?.prototype.get) record = await this.getFromSource(record, this[VERSION_PROPERTY]);
 			}
+			copyRecord(record, this);
+
 			/*
 			if (record) {
 				record[TXN_KEY] = this;
@@ -274,7 +284,7 @@ export function makeTable(options) {
 						// TODO: Implement retrieval from other nodes once we have horizontal caching
 					}
 					if (this.constructor.Source) return this.getFromSource(identifier, record);
-				} else if (expiration_ms && expiration_ms < Date.now() - this.lastModificationTime) {
+				} else if (expiration_ms && expiration_ms < Date.now() - this[LAST_MODIFICATION_PROPERTY]) {
 					// TTL/expiration has some open questions, is it tenable to do it with replication?
 					// What if there is no source?
 					if (this.constructor.Source) return this.getFromSource(identifier, record);
@@ -289,19 +299,10 @@ export function makeTable(options) {
 		 * @param propertyOrQuery - If included, specifies a property to return or query to perform on the record
 		 */
 		get(propertyOrQuery?: string | object) {
-			const record = this.record;
 			if (typeof propertyOrQuery === 'string') {
-				if (this.changes && propertyOrQuery in this.changes) return this.changes[propertyOrQuery];
-				return record?.[propertyOrQuery];
+				return this[propertyOrQuery];
 			}
-			// if there is no record, we want to return undefined, but if there are changes and a record, merge them
-			if (this.changes && record) return Object.assign(record, this.changes);
-			return record;
-		}
-
-		async set(property?: string, value: any) {
-			if (!this.changes) this.changes = {};
-			this.changes[property] = value;
+			return this;
 		}
 
 		/**
@@ -424,7 +425,7 @@ export function makeTable(options) {
 			const start_updating = (record_data) => {
 				// maybe make this a map so if the record is already updating, return the same one
 				const record = getWritableRecord(record_data);
-				const env_txn = this.dbTxn;
+				const env_txn = this[DB_TXN_PROPERTY];
 				// record in the list of updating records so it can be written to the database when we commit
 				if (!env_txn.updatingRecords) env_txn.updatingRecords = [];
 				env_txn.updatingRecords.push({ resource: this, record });
@@ -445,22 +446,22 @@ export function makeTable(options) {
 		async getFromSource(existing_record, existing_version) {
 			const invalidated_record = { __invalidated__: true };
 			if (this.record) Object.assign(invalidated_record, existing_record);
-			const source = new this.constructor.Source(this.id, this);
+			const source = new this.constructor.Source(this[ID_PROPERTY], this);
 			// TODO: We want to eventually use a "direct write" method to directly write to the locations
 			// of the record in place in the database, which requires a reserved space in the random access structures
 			// it is important to remember that this is _NOT_ part of the current transaction; nothing is changing
 			// with the canonical data, we are simply fulfilling our local copy of the canonical data, but still don't
 			// want a timestamp later than the current transaction
-			const version = existing_version || source.lastModificationTime || this.transactions.timestamp;
-			primary_store.put(this.id, invalidated_record, version, existing_version);
+			const version = existing_version || source[LAST_MODIFICATION_PROPERTY] || this[TRANSACTIONS_PROPERTY].timestamp;
+			primary_store.put(this[ID_PROPERTY], invalidated_record, version, existing_version);
 			await source.loadRecord();
 			const updated_record = await source.get();
 			if (updated_record) {
-				updated_record[primary_key] = this.id;
+				updated_record[primary_key] = this[ID_PROPERTY];
 				// don't wait on this, we don't actually care if it fails, that just means there is even
 				// a newer entry going in the cache in the future
-				primary_store.put(this.id, updated_record, version, existing_version);
-			} else primary_store.remove(this.id, existing_version);
+				primary_store.put(this[ID_PROPERTY], updated_record, version, existing_version);
+			} else primary_store.remove(this[ID_PROPERTY], existing_version);
 			return updated_record;
 		}
 		invalidate(partial_record) {
@@ -479,8 +480,8 @@ export function makeTable(options) {
 		 * @param record
 		 * @param options
 		 */
-		async put(record, options): void {
-			record[primary_key] = this.id; // ensure that the id is in the record
+		async put(record, options): Promise<void> {
+			record[primary_key] = this[ID_PROPERTY]; // ensure that the id is in the record
 
 			if (attributes && !options?.noValidation) {
 				let validation_errors;
@@ -518,30 +519,32 @@ export function makeTable(options) {
 				}
 			}
 			if (this.constructor.Source?.prototype.put) {
-				const source = (this.source = this.constructor.Source.getResource(this.id, this));
+				const source = (this.source = this.constructor.Source.getResource(this[ID_PROPERTY], this));
 				await source.loadRecord();
 				await source.put(record, options);
 			}
 			this.#writePut(record);
+			// TODO: only do this if we are in a custom function
+			copyRecord(record, this);
 		}
 		#writePut(record) {
-			const env_txn = this.dbTxn || immediateTransaction;
+			const env_txn = this[DB_TXN_PROPERTY] || immediateTransaction;
 
 			// use optimistic locking to only commit if the existing record state still holds true.
 			// this is superior to using an async transaction since it doesn't require JS execution
 			//  during the write transaction.
-			const txn_time = this.transactions?.timestamp || immediateTransaction.timestamp;
+			const txn_time = this[TRANSACTIONS_PROPERTY]?.timestamp || immediateTransaction.timestamp;
 			if (TableResource.updatedTimeProperty) record[TableResource.updatedTimeProperty] = txn_time;
 			if (TableResource.createdTimeProperty && !this.record) record[TableResource.createdTimeProperty] = txn_time;
 			env_txn.addWrite({
-				key: this.id,
+				key: this[ID_PROPERTY],
 				store: primary_store,
 				txnTime: txn_time,
-				lastVersion: this.version,
+				lastVersion: this[VERSION_PROPERTY],
 				commit: (retry) => {
 					let existing_record = this.record;
 					if (retry) {
-						const existing_entry = primary_store.getEntry(this.id);
+						const existing_entry = primary_store.getEntry(this[ID_PROPERTY]);
 						existing_record = existing_entry?.value;
 						this.updateModificationTime(existing_entry?.version);
 					}
@@ -550,7 +553,7 @@ export function makeTable(options) {
 						existing_record = {};
 					}
 
-					if (this.lastModificationTime > txn_time) {
+					if (this[LAST_MODIFICATION_PROPERTY] > txn_time) {
 						// This is not an error condition in our world of last-record-wins
 						// replication. If the existing record is newer than it just means the provided record
 						// is, well... older. And newer records are supposed to "win" over older records, and that
@@ -560,12 +563,12 @@ export function makeTable(options) {
 							operation: 'put',
 							value: record,
 							// TODO: What should this be?
-							lastUpdate: this.lastModificationTime,
+							lastUpdate: this[LAST_MODIFICATION_PROPERTY],
 						};
 					}
 
-					primary_store.put(this.id, record, txn_time);
-					updateIndices(this.id, existing_record, record);
+					primary_store.put(this[ID_PROPERTY], record, txn_time);
+					updateIndices(this[ID_PROPERTY], existing_record, record);
 					return {
 						// return the audit record that should be recorded
 						operation: 'put',
@@ -575,32 +578,32 @@ export function makeTable(options) {
 			});
 		}
 
-		async delete(options): boolean {
+		async delete(options): Promise<boolean> {
 			if (!this.record) return false;
 			if (this.constructor.Source?.prototype.delete) {
-				const source = (this.source = this.constructor.Source.getResource(this.id, this));
+				const source = (this.source = this.constructor.Source.getResource(this[ID_PROPERTY], this));
 				await source.loadRecord();
 				await source.delete(options);
 			}
-			this.#writeDelete();
+			return this.#writeDelete();
 		}
 		#writeDelete() {
-			const env_txn = this.dbTxn;
-			const txn_time = this.transactions.timestamp;
+			const env_txn = this[DB_TXN_PROPERTY];
+			const txn_time = this[TRANSACTIONS_PROPERTY].timestamp;
 			env_txn.addWrite({
-				key: this.id,
+				key: this[ID_PROPERTY],
 				store: primary_store,
 				txnTime: txn_time,
-				lastVersion: this.version,
+				lastVersion: this[VERSION_PROPERTY],
 				commit: (retry) => {
 					let existing_record = this.record;
 					if (retry) {
-						const existing_entry = primary_store.getEntry(this.id);
+						const existing_entry = primary_store.getEntry(this[ID_PROPERTY]);
 						existing_record = existing_entry?.value;
 						this.updateModificationTime(existing_entry?.version);
 					}
-					updateIndices(this.id, existing_record);
-					primary_store.remove(this.id);
+					updateIndices(this[ID_PROPERTY], existing_record);
+					primary_store.remove(this[ID_PROPERTY]);
 					return {
 						// return the audit record that should be recorded
 						operation: 'delete',
@@ -610,14 +613,14 @@ export function makeTable(options) {
 			return true;
 		}
 		static transact(callback) {
-			if (this.transactions) return callback(this);
+			if (this[TRANSACTIONS_PROPERTY]) return callback(this);
 			return super.transact((TableTxn) => {
 				assignDBTxn(TableTxn);
 				return callback(TableTxn);
 			});
 		}
 		transact(callback) {
-			if (this.transactions) return callback(this);
+			if (this[TRANSACTIONS_PROPERTY]) return callback(this);
 			return super.transact(() => {
 				assignDBTxn(this);
 				return callback(this);
@@ -625,7 +628,7 @@ export function makeTable(options) {
 		}
 
 		static search(query, options?): AsyncIterable<any> {
-			if (!this.transactions) return this.transact((txn_resource) => txn_resource.search(query, options));
+			if (!this[TRANSACTIONS_PROPERTY]) return this.transact((txn_resource) => txn_resource.search(query, options));
 			if (query == null) {
 				// TODO: May have different semantics for /Table vs /Table/
 				query = []; // treat no query as a query for everything
@@ -667,7 +670,7 @@ export function makeTable(options) {
 			// transaction, and we really don't care if the
 			// counts are done in the same read transaction because they are just estimates) until the search
 			// results have been iterated and finished.
-			const read_txn = this.dbTxn.getReadTxn();
+			const read_txn = this[DB_TXN_PROPERTY].getReadTxn();
 			read_txn.use();
 
 			// both AND and OR start by getting an iterator for the ids for first condition
@@ -738,11 +741,10 @@ export function makeTable(options) {
 		subscribe(options) {
 			const subscription = addSubscription(
 				this.constructor,
-				this.id,
+				this[ID_PROPERTY],
 				function (id, audit_record) {
 					//let result = await this.get(key);
 					try {
-						console.log({ audit_record });
 						this.send({ id, ...audit_record });
 					} catch (error) {
 						console.error(error);
@@ -751,7 +753,8 @@ export function makeTable(options) {
 				options.startTime
 			);
 			if (options.listener) subscription.on('data', options.listener);
-			if (!options.noRetain && this.record) subscription.send({ value: this.record });
+			// if retain and it exists, send the first value (we may want an actual exists() method for this)
+			if (!options.noRetain && this[RECORD_PROPERTY]) subscription.send({ value: this });
 			return subscription;
 		}
 
@@ -763,24 +766,24 @@ export function makeTable(options) {
 		 * @param options
 		 */
 		async publish(message, options) {
-			const txn_time = this.transactions.timestamp;
+			const txn_time = this[TRANSACTIONS_PROPERTY].timestamp;
 			let source_completion;
 			if (!this.source && this.constructor.Source?.prototype.publish) {
-				this.source = await this.constructor.Source.getResource(this.id, this);
+				this.source = await this.constructor.Source.getResource(this[ID_PROPERTY], this);
 				source_completion = this.source.publish(message, { target: this });
 			}
 
-			this.dbTxn.addWrite({
+			this[DB_TXN_PROPERTY].addWrite({
 				store: primary_store,
-				key: this.id,
+				key: this[ID_PROPERTY],
 				txnTime: txn_time,
-				lastVersion: this.version,
+				lastVersion: this[VERSION_PROPERTY],
 				commit: (retries) => {
 					// just need to update the version number of the record so it points to the latest audit record
 					// but have to update the version number of the record
 					// TODO: would be faster to have a dedicated lmdb-js function for just updating the version number
-					const existing_record = retries > 0 ? primary_store.get(this.id) : this.record;
-					primary_store.put(this.id, existing_record ?? null, txn_time);
+					const existing_record = retries > 0 ? primary_store.get(this[ID_PROPERTY]) : this.record;
+					primary_store.put(this[ID_PROPERTY], existing_record ?? null, txn_time);
 					// messages are recorded in the audit entry
 					return {
 						operation: 'message',
@@ -804,25 +807,7 @@ export function makeTable(options) {
 		static async removeAttribute(name) {}
 	}
 	const prototype = TableResource.prototype;
-	prototype.record = null;
-	prototype.changes = null;
-	prototype.dbTxn = immediateTransaction;
-	for (const attribute of attributes) {
-		const name = attribute.name;
-		if (prototype[name] === undefined) {
-			Object.defineProperty(prototype, name, {
-				get() {
-					// TODO: Make an eval version of this that is faster
-					if (this.changes && this.changes[name] !== undefined) return this.changes[name];
-					return this.record?.[name];
-				},
-				set(value) {
-					if (!this.changes) this.changes = {};
-					this.changes[name] = value;
-				},
-			});
-		}
-	}
+	prototype[DB_TXN_PROPERTY] = immediateTransaction;
 	return TableResource;
 	function idsForCondition(search_condition, transaction, reverse) {
 		let start;
@@ -876,13 +861,13 @@ export function makeTable(options) {
 		}
 	}
 	function assignDBTxn(resource) {
-		let db_txn = resource.transactions.find((txn) => txn.dbPath === database_path);
+		let db_txn = resource[TRANSACTIONS_PROPERTY].find((txn) => txn.dbPath === database_path);
 		if (!db_txn) {
-			db_txn = new DatabaseTransaction(primary_store, resource.request?.user, audit_store);
+			db_txn = new DatabaseTransaction(primary_store, resource[CONTEXT_PROPERTY]?.user, audit_store);
 			db_txn.dbPath = database_path;
-			resource.transactions.push(db_txn);
+			resource[TRANSACTIONS_PROPERTY].push(db_txn);
 		}
-		resource.dbTxn = db_txn;
+		resource[DB_TXN_PROPERTY] = db_txn;
 	}
 	function updateIndices(id, existing_record, record?) {
 		// iterate the entries from the record

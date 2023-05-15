@@ -5,9 +5,9 @@ exports.databases = {};
 exports.user = undefined;
 exports.server = {};
 exports.config = {};
-exports._assignProperty = (name, value) => {
+exports._assignPackageExport = (name, value) => {
 	exports[name] = value;
-}
+};
 /*exports.Resource = require('./resources/Resource').Resource;
 const table_loader = require('./resources/tableLoader');
 exports.tables = table_loader.tables;

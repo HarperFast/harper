@@ -13,7 +13,7 @@ let active_actions = new Map<string, number[] & { occurred: number; count: numbe
  * @param path
  * @param value
  */
-export function recordAction(value, metric, path, method, type) {
+export function recordAction(value, metric, path?, method?, type?) {
 	// TODO: We may want to consider sampling a subset of queries if this has too high of overhead. It is primarily the sort operation that is expensive (computing median, p96, etc.)
 	let key = metric + '-' + path;
 	if (method) key += '-' + method;
@@ -34,7 +34,7 @@ export function recordAction(value, metric, path, method, type) {
 	}
 	if (!analytics_start) sendAnalytics();
 }
-export function recordActionBinary(value, metric, path, method, type) {
+export function recordActionBinary(value, metric, path, method, type?) {
 	recordAction(value ? 1 : 0, metric, path, method, type);
 }
 let analytics_start = 0;

@@ -6,8 +6,16 @@ import { DatabaseTransaction, Transaction } from './DatabaseTransaction';
 import { DefaultAccess } from './Access';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { IterableEventQueue } from './IterableEventQueue';
-import { _assignProperty } from '../index';
+import { _assignPackageExport } from '../index';
 let tables;
+
+export const CONTEXT_PROPERTY = Symbol.for('context');
+export const USER_PROPERTY = Symbol.for('user');
+export const ID_PROPERTY = Symbol.for('id');
+export const LAST_MODIFICATION_PROPERTY = Symbol.for('lastModificationTime');
+export const TRANSACTIONS_PROPERTY = Symbol('transactions');
+export const SAVE_UPDATES_PROPERTY = Symbol('saveUpdates');
+export const RECORD_PROPERTY = Symbol('storedRecord');
 
 /**
  * This is the main class that can be extended for any resource in HarperDB and provides the essential reusable
@@ -17,19 +25,18 @@ let tables;
  * data aggregation, processing, or monitoring.
  */
 export class Resource implements ResourceInterface {
-	request: any;
-	user: any;
-	id: any;
+	[CONTEXT_PROPERTY]: any;
+	[USER_PROPERTY]: any;
+	[ID_PROPERTY]: any;
 	property?: string;
-	lastModificationTime = 0;
-	inUseTables = {};
-	transactions: Transaction[] & { timestamp: number };
+	[LAST_MODIFICATION_PROPERTY] = 0;
+	[TRANSACTIONS_PROPERTY]: Transaction[] & { timestamp: number };
 	static transactions: Transaction[] & { timestamp: number };
-	constructor(identifier?, context?) {
-		this.id = identifier;
-		this.request = context?.request;
-		this.user = this.request?.user;
-		this.transactions = context?.transactions;
+	constructor(identifier?, source?) {
+		this[ID_PROPERTY] = identifier;
+		this[CONTEXT_PROPERTY] = source?.[CONTEXT_PROPERTY];
+		this[USER_PROPERTY] = this[CONTEXT_PROPERTY]?.user;
+		this[TRANSACTIONS_PROPERTY] = source?.[TRANSACTIONS_PROPERTY];
 	}
 
 	getById(id: any, options?: any): Promise<{}> {
@@ -43,8 +50,8 @@ export class Resource implements ResourceInterface {
 	 * @param latest
 	 */
 	updateModificationTime(latest = Date.now()) {
-		if (latest > this.lastModificationTime) {
-			this.lastModificationTime = latest;
+		if (latest > this[LAST_MODIFICATION_PROPERTY]) {
+			this[LAST_MODIFICATION_PROPERTY] = latest;
 		}
 	}
 
@@ -55,26 +62,26 @@ export class Resource implements ResourceInterface {
 	async commit(flush = true): Promise<{ txnTime: number }> {
 		const commits = [];
 		// this can grow during the commit phase, so need to always check length
-		for (let i = 0; i < this.transactions.length; ) {
-			for (let l = this.transactions.length; i < l; i++) {
-				const txn = this.transactions[i];
+		for (let i = 0; i < this[TRANSACTIONS_PROPERTY].length; ) {
+			for (let l = this[TRANSACTIONS_PROPERTY].length; i < l; i++) {
+				const txn = this[TRANSACTIONS_PROPERTY][i];
 				// TODO: If we have multiple commits in a single resource instance, need to maintain
 				// databases with waiting flushes to resolve at the end when a flush is requested.
 				commits.push(txn.commit(flush));
 			}
 			await Promise.all(commits);
 		}
-		return { txnTime: this.transactions.timestamp };
+		return { txnTime: this[TRANSACTIONS_PROPERTY].timestamp };
 	}
 	static commit = Resource.prototype.commit;
 	abort() {
-		for (const txn of this.transactions) {
+		for (const txn of this[TRANSACTIONS_PROPERTY]) {
 			txn.abort?.();
 		}
 	}
 	static abort = Resource.prototype.abort;
 	doneReading() {
-		for (const txn of this.transactions) {
+		for (const txn of this[TRANSACTIONS_PROPERTY]) {
 			txn.doneReading?.();
 		}
 	}
@@ -89,7 +96,7 @@ export class Resource implements ResourceInterface {
 			// could conditionally skip the mapping if get is not overriden
 			return this.transact(async (resource_txn) =>
 				(await resource_txn.search(identifier)).map((record) =>
-					resource_txn.resourceFromRecord(record, this.request).get()
+					resource_txn.resourceFromRecord(record, this[CONTEXT_PROPERTY]).get()
 				)
 			);
 		}
@@ -148,7 +155,7 @@ export class Resource implements ResourceInterface {
 				const completions = [];
 				if (this.prototype.delete.preload === false) identifier.select = [this.primaryKey];
 				for (const record of resource_txn.search(identifier)) {
-					const record_resource = new this(record[this.primaryKey], this.request, resource_txn.transaction);
+					const record_resource = new this(record[this.primaryKey], this[CONTEXT_PROPERTY], resource_txn.transaction);
 					record_resource.record = record;
 					completions.push(record_resource.delete());
 				}
@@ -169,8 +176,8 @@ export class Resource implements ResourceInterface {
 
 	static resourceFromRecord(record) {
 		const resource = new this(record[this.primaryKey]);
-		resource.record = record;
-		resource.transactions = this.transactions;
+		copyRecord(record, resource);
+		resource[TRANSACTIONS_PROPERTY] = this[TRANSACTIONS_PROPERTY];
 		return resource;
 	}
 	static getResource(path: string, resource_info: object) {
@@ -220,7 +227,7 @@ export class Resource implements ResourceInterface {
 	use(ResourceToUse: typeof Resource, identifier: string | number) {
 		const Used = this.useTable(ResourceToUse.tableName, ResourceToUse.schemaName);
 		if (identifier == null) return Used;
-		return new Used(identifier, this.request);
+		return new Used(identifier, this[CONTEXT_PROPERTY]);
 	}
 	update(keyOrRecord) {
 		throw new Error('Not implemented');
@@ -228,18 +235,14 @@ export class Resource implements ResourceInterface {
 	useTable(table_name: string, schema_name?: string): ResourceInterface {
 		if (!tables) tables = getTables();
 		const schema_object = schema_name ? tables[schema_name] : tables;
-		const table_txn = this.inUseTables[table_name];
-		if (table_txn) return table_txn;
 		const table: Table = schema_object?.[table_name];
 		if (!table) return;
 		const key = schema_name ? schema_name + '/' + table_name : table_name;
 		const env_path = table.envPath;
 		const env_txn =
-			this.transactions[env_path] ||
-			(this.transactions[env_path] = new DatabaseTransaction(table.primaryStore, this.user, table.auditStore));
-		return (
-			this.inUseTables[key] ||
-			(this.inUseTables[key] = table.transaction(this.request, env_txn, env_txn.getReadTxn(), this))
+			this[TRANSACTIONS_PROPERTY][env_path] ||
+			(this[TRANSACTIONS_PROPERTY][env_path] = new DatabaseTransaction(table.primaryStore, this[USER_PROPERTY], table.auditStore));
+		return table.transaction(this[CONTEXT_PROPERTY], env_txn, env_txn.getReadTxn(), this);
 		);
 	}
 	async fetch(input: RequestInfo | URL, init?: RequestInit) {
@@ -262,7 +265,7 @@ export class Resource implements ResourceInterface {
 		throw new Error('Can not set transaction on base Resource class');
 	}
 	static transact(callback, options?) {
-		if (this.transactions) return callback(this);
+		if (this[TRANSACTIONS_PROPERTY]) return callback(this);
 		const name = this.name + ' (txn)';
 		const transactions = [];
 		transactions.timestamp = options?.timestamp || getNextMonotonicTime();
@@ -270,8 +273,7 @@ export class Resource implements ResourceInterface {
 		const txn_resource = class extends this {
 			// @ts-ignore
 			static name = name;
-			static transactions = transactions;
-			static inUseTables = {};
+			static [TRANSACTIONS_PROPERTY] = transactions;
 		};
 		try {
 			const result = callback(txn_resource);
@@ -287,7 +289,7 @@ export class Resource implements ResourceInterface {
 					}
 				);
 			else {
-				if (txn_resource.transactions.some((transaction) => transaction.hasWritesToCommit))
+				if (txn_resource[TRANSACTIONS_PROPERTY].some((transaction) => transaction.hasWritesToCommit))
 					return txn_resource.commit().then(() => result);
 				txn_resource.abort();
 				return result;
@@ -298,11 +300,11 @@ export class Resource implements ResourceInterface {
 		}
 	}
 	async transact(callback, options?) {
-		if (this.transactions) return callback(this);
+		if (this[TRANSACTIONS_PROPERTY]) return callback(this);
 		try {
 			const transactions = [];
 			transactions.timestamp = options?.timestamp || getNextMonotonicTime();
-			this.transactions = transactions;
+			this[TRANSACTIONS_PROPERTY] = transactions;
 			return await callback(this);
 		} finally {
 			await this.commit();
@@ -311,8 +313,7 @@ export class Resource implements ResourceInterface {
 	async accessInTransaction(request, action: (resource_access) => any) {
 		return this.transact(async (transactional_resource) => {
 			const resource_access = transactional_resource.access(request);
-			transactional_resource.result = await action(resource_access);
-			return transactional_resource;
+			return action(resource_access);
 		});
 	}
 	static accessInTransaction = Resource.prototype.accessInTransaction;
@@ -352,7 +353,7 @@ export class Resource implements ResourceInterface {
 	}
 }
 
-_assignProperty('Resource', Resource);
+_assignPackageExport('Resource', Resource);
 
 export function snake_case(camelCase: string) {
 	return (
@@ -379,5 +380,13 @@ function checkAllowed(method_allowed, user, resource): void | Promise<void> {
 			// TODO: Optionally allow a Location header to redirect to
 		}
 		throw error;
+	}
+}
+
+export function copyRecord(record, target_resource) {
+	target_resource[RECORD_PROPERTY] = record;
+	for (let key in record) {
+		// TODO: handle sub-objects, arrays
+		target_resource[key] = record[key];
 	}
 }

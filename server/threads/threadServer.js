@@ -187,7 +187,7 @@ function httpServer(listener, options) {
 	for (let port_num of getPorts(options)) {
 		getHTTPServer(port_num);
 		if (typeof listener === 'function') {
-			http_responders[options?.preHook ? 'unshift' : 'push']({ listener, port: options?.port || port_num });
+			http_responders[options?.runFirst ? 'unshift' : 'push']({ listener, port: options?.port || port_num });
 		} else {
 			registerServer(listener, port_num);
 		}

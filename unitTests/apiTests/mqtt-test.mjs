@@ -36,7 +36,6 @@ describe('test MQTT connections and commands', () => {
 		});
 	});
 	it('subscribe to retained/persisted record', async function () {
-		this.timeout(10000);
 		let path = 'VariedProps/' + available_records[1];
 		await new Promise((resolve, reject) => {
 			client.subscribe(path, function (err) {
