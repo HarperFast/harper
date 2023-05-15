@@ -22,17 +22,26 @@ on:
       instanceNamePrefix:
         default: ""
         type: string
+      securityGroupId:
+        default: "sg-01b1c378328f897d1"
+        type: string
     outputs: 
       publicDnsNames:
         value: ${{jobs.createInstances.outputs.publicDnsNames}}
       publicIps:
         value: ${{jobs.createInstances.outputs.publicIps}}
+      privateDnsNames:
+        value: ${{jobs.createInstances.outputs.privateDnsNames}}
+      privateIps:
+        value: ${{jobs.createInstances.outputs.privateIps}}
 name: Create Ec2 Instances
 jobs:
   createInstances:
     outputs:
       publicDnsNames: ${{ steps.createInstances.outputs.PUBLIC_DNS_NAMES}}
       publicIps: ${{ steps.createInstances.outputs.PUBLIC_IPS}}
+      privateDnsNames: ${{ steps.createInstances.outputs.PRIVATE_DNS_NAMES}}
+      privateIps: ${{ steps.createInstances.outputs.PRIVATE_IPS}}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -56,14 +65,14 @@ jobs:
       env:
         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        CI_PRIVATE_KEY: ${{ secrets.CI_PRIVATE_KEY }}
+        CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
       run: |
         #!/bin/bash
         set -x
         cd ../
         mkdir terraform
         cd terraform
-        echo "$CI_PRIVATE_KEY" > private_key && chmod 600 private_key
+        echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
         mkdir upload
         cp ../harperdb/utility/devops/terraform/instance.tf .
         mv ../harperdb/utility/devops/scripts/user_data.sh .
@@ -95,12 +104,16 @@ jobs:
         fi
 
         terraform init
-        terraform apply -var='private_key=./private_key' -var='region=us-east-2' -var='instance_count=${{ inputs.instanceCount }}' -var='instance_name_prefix=GitHub-'"${workflow_name}"'-'"$bonus_name_prefix"'${{github.run_number}}' -var='instance_type=${{ inputs.instanceType }}' -var='github_workflow_name='"${workflow_name}"'' -var='github_run_number=${{github.run_number}}' -var='volume_size=${{ inputs.volumeSize }}' -auto-approve
+        terraform apply -var='private_key=./private_key' -var='region=us-east-2' -var='instance_count=${{ inputs.instanceCount }}' -var='instance_name_prefix=GitHub-'"${workflow_name}"'-'"$bonus_name_prefix"'${{github.run_number}}' -var='instance_type=${{ inputs.instanceType }}' -var='github_workflow_name='"${workflow_name}"'' -var='github_run_number=${{github.run_number}}' -var='volume_size=${{ inputs.volumeSize }}' -var='security_group_id=${{ inputs.securityGroupId }}' -auto-approve
         mapfile -t public_dns_names <<< $(terraform output -json | jq -r '.public_dns_names.value[]')
         mapfile -t public_ips <<< $(terraform output -json | jq -r '.public_ips.value[]')
+        mapfile -t private_dns_names <<< $(terraform output -json | jq -r '.private_dns_names.value[]')
+        mapfile -t private_ips <<< $(terraform output -json | jq -r '.private_ips.value[]')
 
         echo "PUBLIC_DNS_NAMES=${public_dns_names[@]}" >> $GITHUB_OUTPUT
         echo "PUBLIC_IPS=${public_ips[@]}" >> $GITHUB_OUTPUT
+        echo "PRIVATE_DNS_NAMES=${private_dns_names[@]}" >> $GITHUB_OUTPUT
+        echo "PRIVATE_IPS=${private_ips[@]}" >> $GITHUB_OUTPUT
 
         mkdir ../harperdb/tfstate/
         mv terraform.tfstate ../harperdb/tfstate/
@@ -114,6 +127,10 @@ jobs:
         retention-days: 1
     - name: 'Destroy Instances'
       if: ${{ failure() }}
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
       run: |
         #!/bin/bash
         cd ../terraform

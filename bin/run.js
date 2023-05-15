@@ -37,6 +37,7 @@ const schema_describe = require('../dataLayer/schemaDescribe');
 const lmdb_create_txn_environment = require('../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsAuditEnvironment');
 const CreateTableObject = require('../dataLayer/CreateTableObject');
 const hdb_terms = require('../utility/hdbTerms');
+const install_apps = require('../server/customFunctions/installApps');
 let pm2_utils;
 
 // These may change to match unix return codes (i.e. 0, 1)
@@ -193,6 +194,8 @@ async function main(called_by_install = false) {
 				SESSION_AFFINITY
 			);
 			if (custom_func_enabled) {
+				if (isMainThread) await install_apps();
+
 				startSocketServer(
 					terms.SERVICES.CUSTOM_FUNCTIONS,
 					parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10),

@@ -23,6 +23,7 @@ jobs:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       callingWorkflow: ${{ github.workflow }}
       instanceNamePrefix: ${{ inputs.instanceNamePrefix }}
+      securityGroupId: "sg-00d03df84388398fd"
     secrets: inherit
   registerInstances:
     needs: 
@@ -33,6 +34,8 @@ jobs:
       publicDns: ${{ needs.createInstances.outputs.publicDnsNames }}
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       nodeVersion: ${{ needs.build.outputs.nodeVersion }}
+      httpsOn: true
+      generatePassword: true
     secrets: inherit
   destroyInstances:
     if: ${{ failure() }}

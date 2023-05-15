@@ -198,6 +198,7 @@ function configValidator(config_json) {
 			path: storage_path_constraints,
 			prefetchWrites: boolean.optional(),
 		}).required(),
+		ignoreScripts: boolean.optional(),
 	});
 
 	// Not using the validation wrapper here because we need the result if validation is successful because

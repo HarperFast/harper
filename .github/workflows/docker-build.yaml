@@ -19,22 +19,16 @@ jobs:
     - uses: actions/download-artifact@v3
       with:
         name: harperdb-${{ inputs.harperdbVersion }}.tgz
-        path: utility/Docker
+        path: ./
     - name: "Build Docker Image"
-      run: |
-        cd utility/Docker
-        docker buildx build \
-          --build-arg NODE_VERSION=${{ inputs.nodeVersion }} \
-          --build-arg HARPERDB_TARBALL=harperdb-${{ inputs.harperdbVersion }}.tgz \
-          --platform linux/amd64 \
-          --no-cache \
-          -o type=docker,dest=docker-harperdb_${{ inputs.harperdbVersion }}.tar \
-          --tag harperdb/harperdb:${{ inputs.harperdbVersion }} .
-
-          ls
+      env:
+        HARPERDB_VERSION: ${{ inputs.harperdbVersion }}
+        NODE_VERSION: ${{ inputs.nodeVersion }}
+        PUBLISH: "tar"
+      run: ./.github/scripts/docker-publish.sh
     - name: 'Upload Artifact'
       uses: actions/upload-artifact@v3
       with:
         name: docker-harperdb_${{ inputs.harperdbVersion }}.tar
-        path: utility/Docker/docker-harperdb_${{ inputs.harperdbVersion }}.tar
+        path: docker-harperdb_${{ inputs.harperdbVersion }}.tar
         retention-days: 1

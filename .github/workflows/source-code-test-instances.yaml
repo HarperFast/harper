@@ -37,6 +37,7 @@ jobs:
       installType: "sourceCode"
       callingWorkflow: ${{ github.workflow }}
       instanceNamePrefix: ${{ inputs.instanceNamePrefix }}
+      securityGroupId: "sg-00d03df84388398fd"
     secrets: inherit
   registerInstances:
     needs: 
@@ -48,6 +49,8 @@ jobs:
       harperdbVersion: ${{ needs.getNodeVersion.outputs.harperdbVersion }}
       nodeVersion: ${{ needs.getNodeVersion.outputs.nodeVersion }}
       installType: "sourceCode"
+      httpsOn: true
+      generatePassword: true
     secrets: inherit
   destroyInstances:
     if: ${{ failure() }}

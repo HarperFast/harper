@@ -20,7 +20,41 @@ const NPM_INSTALL_DRY_RUN_COMMAND = `${NPM_INSTALL_COMMAND} --dry-run`;
 module.exports = {
 	installModules,
 	auditModules,
+	installAllRootModules,
+	uninstallRootModule,
+	linkHarperdb,
 };
+
+/**
+ * Runs npm install in the HDB root path.
+ * @param ignore_scripts - tell npm to not run any scripts that might exist in a package.json
+ * @returns {Promise<void>}
+ */
+async function installAllRootModules(ignore_scripts = false) {
+	await checkNPMInstalled();
+	await runCommand(
+		ignore_scripts ? 'npm install --ignore-scripts' : 'npm install',
+		env.get(terms.CONFIG_PARAMS.ROOTPATH)
+	);
+}
+
+/**
+ * Uninstall a HDB root module
+ * @param pkg_name
+ * @returns {Promise<void>}
+ */
+async function uninstallRootModule(pkg_name) {
+	await runCommand(`npm uninstall ${pkg_name}`, env.get(terms.CONFIG_PARAMS.ROOTPATH));
+}
+
+/**
+ * Create a symlink of HarperDB app in the node_modules
+ * @returns {Promise<void>}
+ */
+async function linkHarperdb() {
+	await checkNPMInstalled();
+	await runCommand(`npm link ${terms.PACKAGE_ROOT}`, env.get(terms.CONFIG_PARAMS.ROOTPATH));
+}
 
 /**
  * Runs a bash script in a new shell
@@ -31,10 +65,11 @@ module.exports = {
 async function runCommand(command, cwd = undefined) {
 	const { stdout, stderr } = await p_exec(command, { cwd });
 
-	if (stderr) {
+	if (stderr && !stderr.includes('Debugger listening')) {
 		throw new Error(stderr.replace('\n', ''));
 	}
 
+	harper_logger.trace(stdout, stderr);
 	return stdout.replace('\n', '');
 }
 
