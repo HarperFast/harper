@@ -1,6 +1,6 @@
 'use strict';
 
-const search = require('.//search');
+const search = require('./search');
 const global_schema = require('../utility/globalSchema');
 const logger = require('../utility/logging/harper_logger');
 const write = require('./insert');

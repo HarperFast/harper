@@ -140,7 +140,7 @@ export class Resource implements ResourceInterface {
 		} else this[name] = value;
 	}
 
-	put(record: object, options?): Promise<object>;
+	put(record: object, options?): Promise<void>;
 	static getNewId() {
 		return randomUUID();
 	}

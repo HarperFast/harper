@@ -52,6 +52,7 @@ export class DatabaseTransaction implements Transaction {
 			for (const resource of this.updatingResources || []) {
 				// eventually we need CRDT handling for changes
 				let resource_resolution;
+				// TODO: We don't want to go through the public put() method, but still want validation
 				if (resource[EXPLICIT_CHANGES_PROPERTY]) {
 					const updating_record = Object.assign({}, resource[EXPLICIT_CHANGES_PROPERTY], resource);
 					resource_resolution = resource.put(updating_record, { noCopy: true });

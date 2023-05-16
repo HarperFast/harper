@@ -124,6 +124,12 @@ describe('test REST calls', () => {
 			assert.equal(response.data.length, 5);
 			assert.equal(response.data[4].age, 24);
 		});
+		it('do a less than query or equal by numeric property', async () => {
+			let response = await axios('http://localhost:9926/FourProp/?age=lte=25');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.length, 6);
+			assert.equal(response.data[5].age, 25);
+		});
 		it('do a less than query by numeric property with limit and offset', async () => {
 			let response = await axios('http://localhost:9926/FourProp/?age=lt=25&offset=1&limit=2');
 			assert.equal(response.status, 200);
@@ -140,6 +146,5 @@ describe('test REST calls', () => {
 			assert.equal(response.data[0].name, undefined);
 			assert.equal(response.data[1].name, undefined);
 		});
-
 	});
 });

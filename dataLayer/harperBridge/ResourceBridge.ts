@@ -197,16 +197,16 @@ export class ResourceBridge extends LMDBBridge {
 						{
 							attribute: search_object.search_attribute,
 							value: search_object.search_value,
-							get_attributes: search_object.get_attributes,
 							comparator,
 						},
 				  ];
-		return table.search({
-			limit: search_object.limit,
-			offset: search_object.offset,
-			reverse: search_object.reverse,
-			conditions,
-		});
+		conditions.limit = search_object.limit;
+		conditions.offset = search_object.offset;
+		if (search_object.get_attributes && search_object.get_attributes[0] !== '*')
+			conditions.select = search_object.get_attributes;
+		conditions.reverse = search_object.reverse;
+
+		return table.search(conditions);
 	}
 	async getDataByValue(search_object: SearchObject, comparator) {
 		const map = new Map();

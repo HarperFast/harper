@@ -10,7 +10,6 @@ const SYMBOL_OPERATORS = {
 
 class AccessError extends Error {
 	constructor(user) {
-		super();
 		if (user) {
 			super('Unauthorized access to resource');
 			this.status = 403;
@@ -154,13 +153,16 @@ export class DefaultAccess {
 					if (attribute) {
 						switch (attribute) {
 							case 'offset':
-								offset = +value;
+								conditions.offset = +value;
 								break;
 							case 'limit':
-								limit = +value;
+								conditions.limit = +value;
 								break;
 							case 'select':
-								select = value.split(',');
+								conditions.select = value.split(',');
+								break;
+							case 'sort':
+								conditions.sort = value.split(',');
 								break;
 							default:
 								conditions.push({
@@ -173,12 +175,6 @@ export class DefaultAccess {
 					attribute = undefined;
 			}
 		}
-		return {
-			offset,
-			limit,
-			sort,
-			select,
-			conditions,
-		};
+		return conditions;
 	}
 }

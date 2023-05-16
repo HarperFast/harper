@@ -456,7 +456,7 @@ export function makeTable(options) {
 		 * @param record
 		 * @param options
 		 */
-		async put(record, options): Promise<void> {
+		async put(record, options?): Promise<void> {
 			record[primary_key] = this[ID_PROPERTY]; // ensure that the id is in the record
 
 			if (attributes && !options?.noValidation) {
@@ -610,38 +610,44 @@ export function makeTable(options) {
 				query = []; // treat no query as a query for everything
 			}
 			const reverse = query.reverse;
-			let conditions = query.conditions || query;
+			let conditions = query.length >= 0 ? query : Array.from(query);
+
 			for (const condition of conditions) {
-				const attribute = attributes.find((attribute) => attribute.name == condition.attribute);
+				const attribute_name = condition[0] ?? condition.attribute;
+				const attribute = attributes.find((attribute) => attribute.name == attribute_name);
 				if (!attribute) {
-					throw handleHDBError(new Error(), `${condition.attribute} is not a defined attribute`, 404);
+					throw handleHDBError(new Error(), `${attribute_name} is not a defined attribute`, 404);
 				}
-				if (attribute.is_number)
+				if (attribute.is_number) {
 					// convert to a number if that is expected
-					condition.value = +condition.value;
+					if (condition[1] === undefined) condition.value = parseFloat(condition.value);
+					else condition[1] = parseFloat(condition[1]);
+				}
 			}
-			// Sort the conditions by narrowest to broadest. Note that we want to do this both for intersection where
+			// Sort the query by narrowest to broadest. Note that we want to do this both for intersection where
 			// it allows us to do minimal filtering, and for union where we can return the fastest results first
 			// in an iterator/stream.
-			conditions = sortBy(conditions, (condition) => {
-				if (condition.estimated_count === undefined) {
-					// skip if it is cached
-					const search_type = condition.comparator || condition.search_type;
-					if (search_type === lmdb_terms.SEARCH_TYPES.EQUALS) {
-						// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
-						const index = indices[condition.attribute];
-						condition.estimated_count = index ? index.getValuesCount(condition.value) : Infinity;
-					} else if (
-						search_type === lmdb_terms.SEARCH_TYPES.CONTAINS ||
-						search_type === lmdb_terms.SEARCH_TYPES.ENDS_WITH
-					)
-						condition.estimated_count = Infinity;
-					// this search types can't/doesn't use indices, so try do them last
-					// for range queries (betweens, starts-with, greater, etc.), just arbitrarily guess
-					else condition.estimated_count = RANGE_ESTIMATE;
-				}
-				return condition.estimated_count; // use cached count
-			});
+
+			if (conditions.length > 1)
+				conditions = sortBy(conditions, (condition) => {
+					if (condition.estimated_count === undefined) {
+						// skip if it is cached
+						const search_type = condition.comparator || condition.search_type;
+						if (search_type === lmdb_terms.SEARCH_TYPES.EQUALS) {
+							// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
+							const index = indices[condition[0] ?? condition.attribute];
+							condition.estimated_count = index ? index.getValuesCount(condition[1] ?? condition.value) : Infinity;
+						} else if (
+							search_type === lmdb_terms.SEARCH_TYPES.CONTAINS ||
+							search_type === lmdb_terms.SEARCH_TYPES.ENDS_WITH
+						)
+							condition.estimated_count = Infinity;
+						// this search types can't/doesn't use indices, so try do them last
+						// for range queries (betweens, starts-with, greater, etc.), just arbitrarily guess
+						else condition.estimated_count = RANGE_ESTIMATE;
+					}
+					return condition.estimated_count; // use cached count
+				});
 			// we mark the read transaction as in use (necessary for a stable read
 			// transaction, and we really don't care if the
 			// counts are done in the same read transaction because they are just estimates) until the search
@@ -659,7 +665,7 @@ export function makeTable(options) {
 					)
 					.map(({ value }) => value);
 			} else {
-				let ids = idsForCondition(first_search, read_txn, reverse);
+				let ids = idsForCondition(first_search, read_txn, reverse === true);
 				// and then things diverge...
 				if (!query.operator || query.operator.toLowerCase() === 'and') {
 					// get the intersection of condition searches by using the indexed query for the first condition
@@ -790,29 +796,30 @@ export function makeTable(options) {
 	return TableResource;
 	function idsForCondition(search_condition, transaction, reverse) {
 		let start;
-		let end, inclusiveEnd, exclusiveStart, filter;
+		let end, inclusiveEnd, exclusiveStart;
+		const value = search_condition[1] ?? search_condition.value;
 		const comparator = search_condition.comparator;
 		switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
 			case 'lt':
 				start = true;
-				end = search_condition.value;
+				end = value;
 				break;
 			case 'lte':
 				start = true;
-				end = search_condition.value;
+				end = value;
 				inclusiveEnd = true;
 				break;
 			case 'gt':
-				start = search_condition.value;
+				start = value;
 				exclusiveStart = true;
 				break;
 			case 'gte':
-				start = search_condition.value;
+				start = value;
 				break;
 			case lmdb_terms.SEARCH_TYPES.EQUALS:
 			case undefined:
-				start = search_condition.value;
-				end = search_condition.value;
+				start = value;
+				end = value;
 				inclusiveEnd = true;
 		}
 		if (reverse) {
@@ -823,15 +830,12 @@ export function makeTable(options) {
 			exclusiveStart = !inclusiveEnd;
 			inclusiveEnd = new_end;
 		}
-		const index = search_condition.attribute === primary_key ? primary_store : indices[search_condition.attribute];
+		const attribute_name = search_condition[0] ?? search_condition.attribute;
+		const index = attribute_name === primary_key ? primary_store : indices[attribute_name];
 		if (!index) {
-			throw handleHDBError(
-				new Error(),
-				`${search_condition.attribute} is not indexed, can not search for this attribute`,
-				404
-			);
+			throw handleHDBError(new Error(), `${attribute_name} is not indexed, can not search for this attribute`, 404);
 		}
-		const isPrimaryKey = search_condition.attribute === primary_key;
+		const isPrimaryKey = attribute_name === primary_key;
 		const range_options = { start, end, inclusiveEnd, exclusiveStart, values: !isPrimaryKey, transaction, reverse };
 		if (isPrimaryKey) {
 			return index.getRange(range_options);
@@ -895,8 +899,8 @@ export function makeTable(options) {
  */
 export function filterByType(search_object) {
 	const search_type = search_object.comparator;
-	const attribute = search_object.attribute;
-	const value = search_object.value;
+	const attribute = search_object[0] ?? search_object.attribute;
+	const value = search_object[1] ?? search_object.value;
 
 	switch (search_type) {
 		case lmdb_terms.SEARCH_TYPES.EQUALS:
