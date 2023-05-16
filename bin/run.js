@@ -322,6 +322,7 @@ async function openCreateAuditEnvironment(schema, table_name) {
 module.exports = {
 	launch,
 	main,
+	isHdbInstalled,
 };
 
 /**

@@ -2,21 +2,23 @@
 ---
 database:
   excludeSchemas:
-    - schema: devo
+    - schema:
   excludeTables:
-    - schema: prod
-      table: dog
+    - schema:
+      table:
 apps:
   skipNodeModules: true
   excludeApps:
-    - name: test_projectB
-    - name: david
-    - name: test_projectBB
-    - name: test_projectA
+    - name:
 plugins:
   excludePlugins:
-    - name: cool-plugin
+    - name:
 clustering:
-  publishToLeaderNode: false
+  nodeName:
+  publishToLeaderNode: true
   subscribeToLeaderNode: true
 httpsRejectUnauthorized: false
+rootPath:
+operationsApi:
+  network:
+    port: 9925

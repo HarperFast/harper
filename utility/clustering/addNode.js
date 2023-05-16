@@ -31,11 +31,10 @@ module.exports = addNode;
 async function addNode(req, skip_validation = false) {
 	hdb_logger.trace('addNode called with:', req);
 	clustering_utils.checkClusteringEnabled();
-	//TODO: Check - do we want to always allow system tables to be added?
-	// const validation = addUpdateNodeValidator(req);
-	// if (validation) {
-	// 	throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
-	// }
+	const validation = addUpdateNodeValidator(req);
+	if (validation) {
+		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
+	}
 
 	const remote_node_name = req.node_name;
 	// Skip option is here to accommodate upgrades from pre 4.0.0 HDB versions.
