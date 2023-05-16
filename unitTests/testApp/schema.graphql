@@ -16,8 +16,16 @@ type FourProp @table {
 
 type HasTimeStamps @table {
 	id: ID @primaryKey
-	created: number @creationDate
-	updated: number @updateDate
+	created: Int @creationDate
+	updated: Int @updateDate
+}
+type SomeObject {
+	name: String
+}
+type SubObject @table {
+	id: ID @primaryKey
+	subObject: SomeObject
+	subArray: [SomeObject]
 }
 type SimpleCache @table {
 	id: ID @primaryKey

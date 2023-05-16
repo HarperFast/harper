@@ -1,5 +1,5 @@
 import { asBinary, Database, getLastVersion, RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
-import { DATA, OWN } from './WritableRecord';
+import { EXPLICIT_CHANGES_PROPERTY } from './Resource';
 import { UPDATES_PROPERTY } from '../utility/hdbTerms';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 
@@ -7,7 +7,7 @@ const MAX_RETRIES = 10;
 export class DatabaseTransaction implements Transaction {
 	conditions = []; // the set of reads that were made in this txn, that need to be verified to commit the writes
 	writes = []; // the set of writes to commit if the conditions are met
-	updatingRecords?: any[];
+	updatingResources?: any[];
 	fullIsolation = false;
 	username: string;
 	inTwoPhase?: boolean;
@@ -33,7 +33,7 @@ export class DatabaseTransaction implements Transaction {
 		this.writes.push(operation);
 	}
 	get hasWritesToCommit() {
-		return this.writes.length > 0 || this.updatingRecords?.length > 0;
+		return this.writes.length > 0 || this.updatingResources?.length > 0;
 	}
 
 	recordRead(store, key, version, lock) {
@@ -45,16 +45,17 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	async commit(flush = true, retries = 0): Promise<CommitResolution> {
 		this.doneReading();
-		const remaining_conditions = this.inTwoPhase ? [] : this.conditions.slice(0).reverse();
 		let resolution,
 			resource_resolutions,
 			completions = [];
 		if (retries === 0) {
-			for (const { resource, record } of this.updatingRecords || []) {
-				// TODO: get the own properties, translate to a put and a correct replication operation/CRDT
-				const original = record[DATA];
-				const own = record[OWN];
-				const resource_resolution = resource.put(Object.assign({}, original, own));
+			for (const resource of this.updatingResources || []) {
+				// eventually we need CRDT handling for changes
+				let resource_resolution;
+				if (resource[EXPLICIT_CHANGES_PROPERTY]) {
+					const updating_record = Object.assign({}, resource[EXPLICIT_CHANGES_PROPERTY], resource);
+					resource_resolution = resource.put(updating_record, { noCopy: true });
+				} else resource_resolution = resource.put(resource, { noCopy: true });
 				if (resource_resolution?.then) {
 					if (!resource_resolutions) resource_resolutions = [];
 					resource_resolutions.push(resource_resolution);

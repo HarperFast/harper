@@ -409,23 +409,11 @@ export function makeTable(options) {
 		 * once the corresponding transaction is committed. These changes can (eventually) include CRDT type operations.
 		 * @param record This can be a record returned from get or a record id.
 		 */
-		update(record) {
-			const start_updating = (record_data) => {
-				// maybe make this a map so if the record is already updating, return the same one
-				const record = getWritableRecord(record_data);
-				const env_txn = this[DB_TXN_PROPERTY];
-				// record in the list of updating records so it can be written to the database when we commit
-				if (!env_txn.updatingRecords) env_txn.updatingRecords = [];
-				env_txn.updatingRecords.push({ resource: this, record });
-				return record;
-			};
-			// handle the case of the argument being a record
-			if (typeof record === 'object' && record) {
-				return start_updating(record);
-			} else {
-				// handle the case of the argument being a key
-				return this.get(record).then(start_updating);
-			}
+		update() {
+			const env_txn = this[DB_TXN_PROPERTY];
+			// record in the list of updating records so it can be written to the database when we commit
+			if (!env_txn.updatingResources) env_txn.updatingResources = [];
+			env_txn.updatingResources.push(this);
 		}
 
 		/**
@@ -513,7 +501,7 @@ export function makeTable(options) {
 			}
 			this.#writePut(record);
 			// TODO: only do this if we are in a custom function
-			copyRecord(record, this);
+			if (!options?.noCopy) copyRecord(record, this);
 		}
 		#writePut(record) {
 			const env_txn = this[DB_TXN_PROPERTY] || immediateTransaction;

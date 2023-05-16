@@ -8,12 +8,29 @@ import { setupTestApp } from './setupTestApp.mjs';
 import why_is_node_running from 'why-is-node-still-running';
 const { authorization, url } = getVariables();
 
-describe('test REST calls', () => {
+describe('test REST with property updates', () => {
 	let available_records;
 	before(async () => {
 		available_records = await setupTestApp();
 	});
 
+	it('post with sub-property manipulation', async () => {
+		let response = await axios.put('http://localhost:9926/SubObject/5', {
+			id: 5,
+			subObject: { name: 'a sub-object'},
+			subArray: [{ name: 'a sub-object of an array'}],
+		});
+		assert.equal(response.status, 204);
+		response = await axios.post('http://localhost:9926/SubObject/5', {
+			subPropertyValue: 'a new value',
+			subArrayItem: 'a new item',
+		});
+		assert.equal(response.status, 200);
+		response = await axios.get('http://localhost:9926/SubObject/5');
+		assert.equal(response.status, 200);
+		assert.equal(response.data.subObject.subProperty, 'a new value');
+		assert.equal(response.data.subArray[1], 'a new item');
+	});
 	it('put with wrong type on attribute', async () => {
 		const headers = {
 			//authorization,

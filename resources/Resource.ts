@@ -16,6 +16,7 @@ export const LAST_MODIFICATION_PROPERTY = Symbol.for('lastModificationTime');
 export const TRANSACTIONS_PROPERTY = Symbol('transactions');
 export const SAVE_UPDATES_PROPERTY = Symbol('saveUpdates');
 export const RECORD_PROPERTY = Symbol('storedRecord');
+export const EXPLICIT_CHANGES_PROPERTY = Symbol.for('explicitChanges');
 
 /**
  * This is the main class that can be extended for any resource in HarperDB and provides the essential reusable
@@ -102,22 +103,41 @@ export class Resource implements ResourceInterface {
 		}
 	}
 
-	doesExist(): boolean
+	doesExist(): boolean;
 	/**
 	 * This retrieves the data of this resource. By default, with no argument, just return `this`.
 	 * @param query - If included, specifies a query to perform on the record
 	 */
 	get(query?: object): Promise<object | void> | object | void {
-		if (this.doesExist?.() !== false) {
+		if (typeof this.doesExist !== 'function' || this.doesExist()) {
 			if (query?.select) {
-				let selected_data = {};
-				for (let property of query.select) {
-					selected_data[property] = this[property];
+				const selected_data = {};
+				for (const property of query.select) {
+					const value = this[property];
+					if (typeof value === 'function') selected_data[property] = this[EXPLICIT_CHANGES_PROPERTY]?.[property];
+					else selected_data[property] = this[property];
 				}
 				return selected_data;
+			} else if (this[EXPLICIT_CHANGES_PROPERTY]) {
+				const aggregated_data = {};
+				for (const property in this) aggregated_data[property] = this[property];
+				for (const key in this[EXPLICIT_CHANGES_PROPERTY])
+					aggregated_data[property] = this[EXPLICIT_CHANGES_PROPERTY][property];
+				return aggregated_data;
 			}
 			return this;
 		}
+	}
+	getProperty(name) {
+		const value = this[name];
+		if (typeof value === 'function') return this[EXPLICIT_CHANGES_PROPERTY]?.[name];
+		return value;
+	}
+	setProperty(name, value) {
+		if (typeof this[name] === 'function') {
+			const explicit_changes = this[EXPLICIT_CHANGES_PROPERTY] || (this[EXPLICIT_CHANGES_PROPERTY] = {});
+			explicit_changes[name] = value;
+		} else this[name] = value;
 	}
 
 	put(record: object, options?): Promise<object>;
@@ -258,9 +278,12 @@ export class Resource implements ResourceInterface {
 		const env_path = table.envPath;
 		const env_txn =
 			this[TRANSACTIONS_PROPERTY][env_path] ||
-			(this[TRANSACTIONS_PROPERTY][env_path] = new DatabaseTransaction(table.primaryStore, this[USER_PROPERTY], table.auditStore));
+			(this[TRANSACTIONS_PROPERTY][env_path] = new DatabaseTransaction(
+				table.primaryStore,
+				this[USER_PROPERTY],
+				table.auditStore
+			));
 		return table.transaction(this[CONTEXT_PROPERTY], env_txn, env_txn.getReadTxn(), this);
-		);
 	}
 	async fetch(input: RequestInfo | URL, init?: RequestInit) {
 		const response = await fetch(input, init);
@@ -400,10 +423,52 @@ function checkAllowed(method_allowed, user, resource): void | Promise<void> {
 	}
 }
 
+// Copy a record into a resource, using copy-on-write for nested objects/arrays
 export function copyRecord(record, target_resource) {
 	target_resource[RECORD_PROPERTY] = record;
-	for (let key in record) {
-		// TODO: handle sub-objects, arrays
-		target_resource[key] = record[key];
+	for (const key in record) {
+		// do not override existing methods
+		if (target_resource[key] === undefined) {
+			const value = record[key];
+			// use copy-on-write for sub-objects
+			if (typeof value === 'object' && value) setSubObject(target_resource, key, value);
+			// primitives can be directly copied
+			else target_resource[key] = value;
+		}
 	}
+}
+const NOT_COPIED_YET = {};
+const copy_enabled = true;
+function setSubObject(target_resource, key, stored_value) {
+	let value = NOT_COPIED_YET;
+	Object.defineProperty(target_resource, key, {
+		get() {
+			if (value === NOT_COPIED_YET && copy_enabled) {
+				switch (stored_value.constructor) {
+					case Object:
+						copyRecord(stored_value, (value = new UpdatableObject()));
+						break;
+					case Array:
+						copyArray(stored_value, (value = new UpdatableArray()));
+						break;
+					default:
+						value = stored_value;
+				}
+			}
+			return value;
+		},
+		set(new_value) {
+			value = new_value;
+		},
+		enumerable: true,
+	});
+}
+class UpdatableObject {
+	// eventually provide CRDT functions here like add, subtract
+}
+class UpdatableArray extends Array {
+	// eventually provide CRDT tracking for push, unshift, pop, etc.
+}
+function copyArray(stored_array, target_array) {
+	for (let i = 0, l = stored_array.length; i < l; i++) target_array[i] = stored_array[i];
 }

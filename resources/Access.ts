@@ -53,7 +53,6 @@ export class DefaultAccess {
 		await this.resource.loadRecord();
 		const updated_data = await content;
 		if (this.resource.allowUpdate(this.request.user, updated_data)) {
-			this.resource.updated = true;
 			return this.resource.put(updated_data, query);
 		} else {
 			throw new AccessError(this.user);
@@ -63,7 +62,6 @@ export class DefaultAccess {
 		await this.resource.loadRecord();
 		const updated_data = await content;
 		if (this.resource.allowUpdate(this.request.user, updated_data)) {
-			this.resource.updated = true;
 			return this.resource.put(updated_data, { select: Object.keys(updated_data) });
 		} else {
 			throw new AccessError(this.user);
@@ -72,9 +70,10 @@ export class DefaultAccess {
 	async post(content) {
 		await this.resource.loadRecord();
 		const data = await content;
-		this.resource.updated = true;
-		if (this.resource.allowCreate(this.request.user, data)) return this.resource.post(data);
-		else throw new AccessError(this.user);
+		if (this.resource.allowCreate(this.request.user, data)) {
+			this.resource.update?.();
+			return this.resource.post(data);
+		} else throw new AccessError(this.user);
 	}
 	async delete() {
 		await this.resource.loadRecord();

@@ -33,6 +33,17 @@ export class Echo extends Resource {
 	}
 }
 
+export class SubObject extends tables.SubObject {
+	get(query) {
+		this.addedProperty = true;
+		return super.get(query);
+	}
+	post(data) {
+		this.subObject.subProperty = data.subPropertyValue;
+		this.subArray.push(data.subArrayItem);
+		return 'success';
+	}
+}
 class SimpleCacheSource extends tables.FourProp {}
 export class SimpleCache extends tables.SimpleCache.sourcedFrom(SimpleCacheSource) {
 	post(data) {
