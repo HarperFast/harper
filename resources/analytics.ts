@@ -175,7 +175,7 @@ if (isMainThread) {
 		await aggregation(ANALYTICS_DELAY, AGGREGATE_PERIOD);
 		await cleanup(RAW_EXPIRATION, ANALYTICS_DELAY);
 		await cleanup(AGGREGATE_EXPIRATION, AGGREGATE_PERIOD);
-	}, AGGREGATE_PERIOD / 2);
+	}, AGGREGATE_PERIOD / 2).unref();
 }
 let total_bytes_processed = 0;
 function recordAnalytics(message) {

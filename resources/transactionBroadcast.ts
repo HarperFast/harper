@@ -54,7 +54,8 @@ export function addSubscription(table, key, listener?: (key) => any, start_time:
 	subscription.startTime = start_time;
 	if (key == null) {
 		table_subscriptions.allKeys.push(subscription);
-		subscription.subscriptions = table_subscriptions;
+		subscription.subscriptions = table_subscriptions.allKeys;
+		subscription.subscriptions.tables = table_subscriptions;
 		return subscription;
 	}
 	let subscriptions: any[] = table_subscriptions.get(key);
@@ -88,8 +89,10 @@ class Subscription extends IterableEventQueue {
 			const table_subscriptions = this.subscriptions.tables;
 			// TODO: Handle cleanup of wildcard
 			const key = this.subscriptions.key;
-			table_subscriptions.delete(key);
-			if (table_subscriptions.size === 0) {
+			if (key !== undefined)
+				// otherwise it is allKeys
+				table_subscriptions.delete(key);
+			if (table_subscriptions.size === 0 && table_subscriptions.allKeys.length === 0) {
 				const env_subscriptions = table_subscriptions.envs;
 				const dbi = table_subscriptions.dbi;
 				delete env_subscriptions[dbi];

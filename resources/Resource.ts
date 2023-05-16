@@ -101,8 +101,25 @@ export class Resource implements ResourceInterface {
 			);
 		}
 	}
-	get(identifier: string | number | object): Promise<object>;
-	get(): Promise<object>;
+
+	doesExist(): boolean
+	/**
+	 * This retrieves the data of this resource. By default, with no argument, just return `this`.
+	 * @param query - If included, specifies a query to perform on the record
+	 */
+	get(query?: object): Promise<object | void> | object | void {
+		if (this.doesExist?.() !== false) {
+			if (query?.select) {
+				let selected_data = {};
+				for (let property of query.select) {
+					selected_data[property] = this[property];
+				}
+				return selected_data;
+			}
+			return this;
+		}
+	}
+
 	put(record: object, options?): Promise<object>;
 	static getNewId() {
 		return randomUUID();

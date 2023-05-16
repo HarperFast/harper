@@ -294,18 +294,6 @@ export function makeTable(options) {
 		}
 
 		/**
-		 * This retrieves the record as a frozen object for this resource. Alternately, provide a property name to
-		 * retrieve the data
-		 * @param propertyOrQuery - If included, specifies a property to return or query to perform on the record
-		 */
-		get(propertyOrQuery?: string | object) {
-			if (typeof propertyOrQuery === 'string') {
-				return this[propertyOrQuery];
-			}
-			return this;
-		}
-
-		/**
 		 * Determine if the user is allowed to get/read data from the current resource
 		 * @param user The current, authenticated user
 		 * @param query The parsed query from the search part of the URL
@@ -753,9 +741,12 @@ export function makeTable(options) {
 				options.startTime
 			);
 			if (options.listener) subscription.on('data', options.listener);
-			// if retain and it exists, send the first value (we may want an actual exists() method for this)
-			if (!options.noRetain && this[RECORD_PROPERTY]) subscription.send({ value: this });
+			// if retain and it exists, send the first value
+			if (!options.noRetain && this.doesExist()) subscription.send({ value: this });
 			return subscription;
+		}
+		doesExist() {
+			return Boolean(this[RECORD_PROPERTY]);
 		}
 
 		/**

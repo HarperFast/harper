@@ -345,7 +345,7 @@ if (isMainThread) {
 		for (let entry of await readdir(dir, { withFileTypes: true })) {
 			if (entry.isDirectory()) watch_dir(join(dir, entry.name));
 		}
-		for await (let { eventType, filename } of watch(dir)) {
+		for await (let { eventType, filename } of watch(dir, { persistent: false })) {
 			if (extname(filename) === '.ts' || extname(filename) === '.js') {
 				if (queued_restart) clearTimeout(queued_restart);
 				queued_restart = setTimeout(async () => {

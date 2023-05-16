@@ -134,5 +134,5 @@ export function start({ server, port }) {
 	// keep it cleaned out periodically
 	setInterval(() => {
 		authorization_cache = new Map();
-	}, AUTHORIZATION_TTL);
+	}, AUTHORIZATION_TTL).unref();
 }

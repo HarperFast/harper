@@ -12,7 +12,7 @@ const { authorization, url } = getVariables();
 
 describe('test WebSockets connections and messaging', () => {
 	let available_records;
-	let ws1;
+	let ws1, ws2;
 	before(async function() {
 		available_records = await setupTestApp();
 		ws1 = new WebSocket('ws://localhost:9926/Echo');
@@ -21,6 +21,10 @@ describe('test WebSockets connections and messaging', () => {
 			ws1.on('open', resolve);
 			ws1.on('error', reject);
 		});
+	});
+	after(function() {
+		ws1.close();
+		if (ws2) ws2.close();
 	});
 	it('ping echo server', async function () {
 		let resolver;
@@ -62,7 +66,7 @@ describe('test WebSockets connections and messaging', () => {
 		assert.equal(message.data, 'hello again');
 	});
 	it('default subscribe on WS', async function() {
-		let ws2 = new WebSocket('ws://localhost:9926/SimpleRecord/5');
+		ws2 = new WebSocket('ws://localhost:9926/SimpleRecord/5');
 		await new Promise((resolve, reject) => {
 			ws2.on('open', resolve);
 			ws2.on('error', reject);

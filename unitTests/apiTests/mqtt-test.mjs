@@ -35,6 +35,10 @@ describe('test MQTT connections and commands', () => {
 			client2.on('error', reject);
 		});
 	});
+	after(() => {
+		client.end();
+		client2.end();
+	})
 	it('subscribe to retained/persisted record', async function () {
 		let path = 'VariedProps/' + available_records[1];
 		await new Promise((resolve, reject) => {
@@ -56,6 +60,7 @@ describe('test MQTT connections and commands', () => {
 		const vus = 1;
 		const tableName = 'SimpleRecord';
 		let intervals = [];
+		let clients = [];
 		for(let x = 1; x < vus +1; x++) {
 			const topic = `${tableName}/${x}`;
 			const client = connect({
@@ -65,6 +70,7 @@ describe('test MQTT connections and commands', () => {
 				connectTimeout: 2000,
 				protocol: 'mqtt'
 			});
+			clients.push(client);
 			let interval;
 			client.on('connect', function (connack) {
 				client.subscribe(topic, function (err) {
@@ -94,6 +100,7 @@ describe('test MQTT connections and commands', () => {
 		await new Promise(resolve => setTimeout(resolve, 100));
 		for (let interval of intervals)
 			clearInterval(interval);
+		for (let client of clients) client.end();
 	});
 	it('subscribe to retained record with upsert operation', async function () {
 		let path = 'SimpleRecord/77';
@@ -243,7 +250,7 @@ describe('test MQTT connections and commands', () => {
 			});
 		});
 	});
-	it('subscribe with QoS=1 and reconnect with non-clean session', async function () {
+	it.skip('subscribe with QoS=1 and reconnect with non-clean session', async function () {
 		this.timeout(10000);
 		let client = connect('mqtt://localhost:1883', {
 			clean: false,

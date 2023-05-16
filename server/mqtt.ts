@@ -185,7 +185,8 @@ function onSocket(socket, send, request, user) {
 					break;
 				case 'disconnect':
 					session.disconnect();
-					socket.end();
+					if (socket.close) socket.close();
+					else socket.end();
 					break;
 			}
 		} catch (error) {
