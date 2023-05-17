@@ -1,8 +1,12 @@
 on:
+  push:
+    branches:
+      - main
+      - "release_*"
   pull_request:
     types: [opened, synchronize, reopened]
   schedule:
-    - cron: '0 13 * * 1-5'
+    - cron: '12 13 * * 1-5'
   workflow_dispatch:
   workflow_call:
 name: "Run Docker Cluster Tests C"
@@ -79,7 +83,7 @@ jobs:
     secrets: inherit
   sendSlackMessage:
     runs-on: ubuntu-latest
-    if: ${{ failure() && github.event_name == 'schedule' }}
+    if: ${{ failure() && (github.event_name == 'schedule' || github.event_name == 'push') }}
     needs:
       - destroyInstances
       - runTests
