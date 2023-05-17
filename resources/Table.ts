@@ -132,20 +132,21 @@ export function makeTable(options) {
 						// supports transaction operations
 						supportsTransactions: true,
 					});
-
-					for await (const event of subscription) {
-						const source = event.__origin;
-						const first_record = event.operation === 'transaction' ? event.writes[0].value : event.value;
-						const id = first_record[primary_key];
-						const resource = new this(id, source);
-						const commit = resource.transact(() => {
-							if (event.operation === 'transaction') {
-								for (const write of event.writes) {
-									writeUpdate(write, source, resource);
-								}
-							} else writeUpdate(event, source, resource);
-						});
-						if (event.onCommit) commit.then(event.onCommit);
+					if (subscription) {
+						for await (const event of subscription) {
+							const source = event.__origin;
+							const first_record = event.operation === 'transaction' ? event.writes[0].value : event.value;
+							const id = first_record[primary_key];
+							const resource = new this(id, source);
+							const commit = resource.transact(() => {
+								if (event.operation === 'transaction') {
+									for (const write of event.writes) {
+										writeUpdate(write, source, resource);
+									}
+								} else writeUpdate(event, source, resource);
+							});
+							if (event.onCommit) commit.then(event.onCommit);
+						}
 					}
 				} catch (error) {
 					console.error(error);
@@ -421,7 +422,7 @@ export function makeTable(options) {
 		 */
 		async getFromSource(existing_record, existing_version) {
 			const invalidated_record = { __invalidated__: true };
-			if (this.record) Object.assign(invalidated_record, existing_record);
+			if (this[RECORD_PROPERTY]) Object.assign(invalidated_record, existing_record);
 			const source = new this.constructor.Source(this[ID_PROPERTY], this);
 			// TODO: We want to eventually use a "direct write" method to directly write to the locations
 			// of the record in place in the database, which requires a reserved space in the random access structures
@@ -511,14 +512,15 @@ export function makeTable(options) {
 			//  during the write transaction.
 			const txn_time = this[TRANSACTIONS_PROPERTY]?.timestamp || immediateTransaction.timestamp;
 			if (TableResource.updatedTimeProperty) record[TableResource.updatedTimeProperty] = txn_time;
-			if (TableResource.createdTimeProperty && !this.record) record[TableResource.createdTimeProperty] = txn_time;
+			if (TableResource.createdTimeProperty && !this[RECORD_PROPERTY])
+				record[TableResource.createdTimeProperty] = txn_time;
+			let existing_record = this[RECORD_PROPERTY];
 			env_txn.addWrite({
 				key: this[ID_PROPERTY],
 				store: primary_store,
 				txnTime: txn_time,
 				lastVersion: this[VERSION_PROPERTY],
 				commit: (retry) => {
-					let existing_record = this.record;
 					if (retry) {
 						const existing_entry = primary_store.getEntry(this[ID_PROPERTY]);
 						existing_record = existing_entry?.value;
@@ -555,7 +557,7 @@ export function makeTable(options) {
 		}
 
 		async delete(options): Promise<boolean> {
-			if (!this.record) return false;
+			if (!this[RECORD_PROPERTY]) return false;
 			if (this.constructor.Source?.prototype.delete) {
 				const source = (this.source = this.constructor.Source.getResource(this[ID_PROPERTY], this));
 				await source.loadRecord();
@@ -572,7 +574,7 @@ export function makeTable(options) {
 				txnTime: txn_time,
 				lastVersion: this[VERSION_PROPERTY],
 				commit: (retry) => {
-					let existing_record = this.record;
+					let existing_record = this[RECORD_PROPERTY];
 					if (retry) {
 						const existing_entry = primary_store.getEntry(this[ID_PROPERTY]);
 						existing_record = existing_entry?.value;
@@ -609,7 +611,7 @@ export function makeTable(options) {
 				// TODO: May have different semantics for /Table vs /Table/
 				query = []; // treat no query as a query for everything
 			}
-			const reverse = query.reverse;
+			const reverse = query.reverse === true;
 			let conditions = query.length >= 0 ? query : Array.from(query);
 
 			for (const condition of conditions) {
@@ -665,7 +667,7 @@ export function makeTable(options) {
 					)
 					.map(({ value }) => value);
 			} else {
-				let ids = idsForCondition(first_search, read_txn, reverse === true);
+				let ids = idsForCondition(first_search, read_txn, reverse);
 				// and then things diverge...
 				if (!query.operator || query.operator.toLowerCase() === 'and') {
 					// get the intersection of condition searches by using the indexed query for the first condition
@@ -767,7 +769,7 @@ export function makeTable(options) {
 					// just need to update the version number of the record so it points to the latest audit record
 					// but have to update the version number of the record
 					// TODO: would be faster to have a dedicated lmdb-js function for just updating the version number
-					const existing_record = retries > 0 ? primary_store.get(this[ID_PROPERTY]) : this.record;
+					const existing_record = retries > 0 ? primary_store.get(this[ID_PROPERTY]) : this[RECORD_PROPERTY];
 					primary_store.put(this[ID_PROPERTY], existing_record ?? null, txn_time);
 					// messages are recorded in the audit entry
 					return {
