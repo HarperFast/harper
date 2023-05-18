@@ -30,6 +30,7 @@ const nats_utils = require('../server/nats/utility/natsUtils');
 const config_utils = require('../config/configUtils');
 const user = require('../security/user');
 const { isMainThread } = require('worker_threads');
+const { getDatabases } = require('../resources/tableLoader');
 let lmdb_schema_env = undefined;
 let lmdb_table_env = undefined;
 let lmdb_attribute_env = undefined;
@@ -322,6 +323,9 @@ async function tearDownMockDB(envs = undefined, partial_teardown = false) {
 function setGlobalSchema(hash_attribute, schema, table, attributes_keys) {
 	const attributes = attributes_keys.map((attr_key) => ({ attribute: attr_key }));
 	const table_id = uuid();
+	let databases = getDatabases();
+	if (!databases[schema]) databases[schema] = {};
+	databases[schema][table] = { attributes };
 	if (global.hdb_schema === undefined) {
 		global.hdb_schema = {
 			[schema]: {

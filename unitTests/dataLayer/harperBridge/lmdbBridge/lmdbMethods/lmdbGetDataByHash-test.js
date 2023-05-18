@@ -12,10 +12,11 @@ const TRANSACTIONS_NAME = 'transactions';
 const BASE_TXN_PATH = path.join(BASE_PATH, TRANSACTIONS_NAME);
 
 const rewire = require('rewire');
-const lmdb_create_records = rewire('../../../../../dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateRecords');
-const lmdb_get_data_by_hash = require('../../../../../dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbGetDataByHash');
-const lmdb_create_schema = require('../../../../../dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateSchema');
-const lmdb_create_table = require('../../../../../dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
+const harperBridge = require('../../../../../dataLayer/harperBridge/harperBridge');
+const lmdb_create_schema = harperBridge.createSchema;
+const lmdb_create_table = harperBridge.createTable;
+const lmdb_create_records = harperBridge.createRecords;
+const lmdb_get_data_by_hash = harperBridge.getDataByHash;
 const environment_utility = rewire('../../../../../utility/lmdb/environmentUtility');
 const SearchByHashObject = require('../../../../../dataLayer/SearchByHashObject');
 const assert = require('assert');
@@ -106,7 +107,7 @@ describe('Test lmdbGetDataByHash module', () => {
 	});
 
 	describe('Test lmdbGetDataByHash function', () => {
-		beforeEach(async () => {
+		before(async () => {
 			global.hdb_schema = {
 				[SCHEMA_TABLE_TEST.schema]: {
 					[SCHEMA_TABLE_TEST.name]: {
@@ -144,7 +145,7 @@ describe('Test lmdbGetDataByHash module', () => {
 			await lmdb_create_records(insert_obj);
 		});
 
-		afterEach(async () => {
+		after(async () => {
 			let env = await environment_utility.openEnvironment(
 				path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_A.schema),
 				CREATE_TABLE_OBJ_TEST_A.table
@@ -222,7 +223,7 @@ describe('Test lmdbGetDataByHash module', () => {
 			exp_obj.__createdtime__ = TIMESTAMP;
 			exp_obj.height = null;
 			let expected_result = test_utils.assignObjectToMap({
-				8: test_utils.assignObjecttoNullObject(exp_obj),
+				8: exp_obj,
 			});
 
 			let search_obj = new SearchByHashObject('dev', 'dog', [8], ALL_FETCH_ATTRIBUTES);
@@ -233,7 +234,7 @@ describe('Test lmdbGetDataByHash module', () => {
 
 		it('test finding 1 row some attributes', async () => {
 			let expected_result = test_utils.assignObjectToMap({
-				8: test_utils.assignObjecttoNullObject({ name: 'Harper' }),
+				8: { name: 'Harper' },
 			});
 
 			let search_obj = new SearchByHashObject('dev', 'dog', [8], ['name']);
@@ -244,8 +245,8 @@ describe('Test lmdbGetDataByHash module', () => {
 
 		it('test finding multiple rows row, some attributes', async () => {
 			let expected_result = test_utils.assignObjectToMap({
-				8: test_utils.assignObjecttoNullObject({ id: 8, height: null }),
-				10: test_utils.assignObjecttoNullObject({ id: 10, height: 145 }),
+				8: { id: 8, height: null },
+				10: { id: 10, height: 145 },
 			});
 
 			let search_obj = new SearchByHashObject('dev', 'dog', [10, 8], ['id', 'height']);

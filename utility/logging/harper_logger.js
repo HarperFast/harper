@@ -13,7 +13,7 @@ const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
 
 const native_console_methods = {};
 for (let key in console) {
-	native_console_methods[key] = console[key];
+	if (!native_console_methods[key]) native_console_methods[key] = console[key];
 }
 const LOG_LEVEL_HIERARCHY = {
 	notify: 7,
@@ -255,7 +255,8 @@ function logStdErr(log) {
 
 function logToFile(log) {
 	openLogFile();
-	fs.appendFileSync(log_fd, log);
+	if (log_fd) fs.appendFileSync(log_fd, log);
+	else native_console_methods.log(log);
 }
 
 function closeLogFile() {
@@ -267,7 +268,12 @@ function closeLogFile() {
 
 function openLogFile() {
 	if (!log_fd) {
-		log_fd = fs.openSync(log_file_path, 'a');
+		try {
+			if (!log_file_path) debugger;
+			log_fd = fs.openSync(log_file_path, 'a');
+		} catch (error) {
+			native_console_methods.error(error);
+		}
 		setTimeout(() => {
 			closeLogFile();
 		}, CLOSE_LOG_FD_TIMEOUT).unref(); // periodically time it out so we can reset it in case the file has been moved (log rotation or by user) or deleted.

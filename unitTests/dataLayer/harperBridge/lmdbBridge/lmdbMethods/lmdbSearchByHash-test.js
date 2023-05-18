@@ -12,10 +12,11 @@ const TRANSACTIONS_NAME = 'transactions';
 const BASE_TXN_PATH = path.join(BASE_PATH, TRANSACTIONS_NAME);
 
 const rewire = require('rewire');
-const lmdb_create_records = rewire('../../../../../dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateRecords');
-const lmdb_search_by_hash = require('../../../../../dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbSearchByHash');
-const lmdb_create_schema = require('../../../../../dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateSchema');
-const lmdb_create_table = require('../../../../../dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
+const bridge = require('../../../../../dataLayer/harperBridge/harperBridge');
+const lmdb_create_records = bridge.createRecords;
+const lmdb_search_by_hash = bridge.searchByHash;
+const lmdb_create_schema = bridge.createSchema;
+const lmdb_create_table = bridge.createTable;
 const environment_utility = rewire('../../../../../utility/lmdb/environmentUtility');
 const SearchByHashObject = require('../../../../../dataLayer/SearchByHashObject');
 const assert = require('assert');
@@ -23,6 +24,7 @@ const fs = require('fs-extra');
 const sinon = require('sinon');
 const systemSchema = require('../../../../../json/systemSchema');
 const common = require('../../../../../utility/lmdb/commonUtility');
+const { resetDatabases } = require('../../../../../resources/tableLoader');
 
 const TIMESTAMP = Date.now();
 const HASH_ATTRIBUTE_NAME = 'id';
@@ -106,7 +108,7 @@ describe('Test lmdbSearchDataByHash module', () => {
 	});
 
 	describe('Test lmdbGetDataByHash function', () => {
-		beforeEach(async () => {
+		before(async () => {
 			global.hdb_schema = {
 				[SCHEMA_TABLE_TEST.schema]: {
 					[SCHEMA_TABLE_TEST.name]: {
@@ -142,9 +144,10 @@ describe('Test lmdbSearchDataByHash module', () => {
 
 			let insert_obj = test_utils.deepClone(INSERT_OBJECT_TEST);
 			await lmdb_create_records(insert_obj);
+			resetDatabases();
 		});
 
-		afterEach(async () => {
+		after(async () => {
 			let env = await environment_utility.openEnvironment(
 				path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_A.schema),
 				CREATE_TABLE_OBJ_TEST_A.table
@@ -168,44 +171,40 @@ describe('Test lmdbSearchDataByHash module', () => {
 		});
 
 		it('test validation', async () => {
-			await test_utils.assertErrorAsync(
+			await toArrayWithAssertError(
 				lmdb_search_by_hash,
 				[{}],
 				new Error("'schema' is required. 'table' is required. 'hash_values' is required. 'get_attributes' is required")
 			);
 
 			let search_obj = new SearchByHashObject('dev');
-			await test_utils.assertErrorAsync(
+			await toArrayWithAssertError(
 				lmdb_search_by_hash,
 				[search_obj],
 				new Error("'table' is required. 'hash_values' is required. 'get_attributes' is required")
 			);
 
 			search_obj = new SearchByHashObject('dev', 'dog');
-			await test_utils.assertErrorAsync(
+			await toArrayWithAssertError(
 				lmdb_search_by_hash,
 				[search_obj],
 				new Error("'hash_values' is required. 'get_attributes' is required")
 			);
 
 			search_obj = new SearchByHashObject('dev', 'dog', [8]);
-			await test_utils.assertErrorAsync(lmdb_search_by_hash, [search_obj], new Error("'get_attributes' is required"));
+			await toArrayWithAssertError(lmdb_search_by_hash, [search_obj], new Error("'get_attributes' is required"));
 
 			search_obj = new SearchByHashObject('dev', 'dog', [8], ALL_FETCH_ATTRIBUTES);
-			await test_utils.assertErrorAsync(lmdb_search_by_hash, [search_obj], undefined);
+			await toArrayWithAssertError(lmdb_search_by_hash, [search_obj], undefined);
 
 			search_obj = new SearchByHashObject('dev', 'dog', 8, ALL_FETCH_ATTRIBUTES);
-			await test_utils.assertErrorAsync(lmdb_search_by_hash, [search_obj], new Error("'hash_values' must be an array"));
+			await toArrayWithAssertError(lmdb_search_by_hash, [search_obj], new Error("'hash_values' must be an array"));
 
 			search_obj = new SearchByHashObject('dev', 'dog', [8], 'test');
-			await test_utils.assertErrorAsync(
-				lmdb_search_by_hash,
-				[search_obj],
-				new Error("'get_attributes' must be an array")
-			);
+			await toArrayWithAssertError(lmdb_search_by_hash, [search_obj], new Error("'get_attributes' must be an array"));
 
 			search_obj = new SearchByHashObject('dev', 'dog', [8], []);
-			await test_utils.assertErrorAsync(
+			await toArrayWithAssertError(
 				lmdb_search_by_hash,
 				[search_obj],
 				new Error("'get_attributes' must contain at least 1 item")
@@ -217,33 +216,43 @@ describe('Test lmdbSearchDataByHash module', () => {
 			exp_obj.__updatedtime__ = TIMESTAMP;
 			exp_obj.__createdtime__ = TIMESTAMP;
 			exp_obj.height = null;
-			let expected_result = [test_utils.assignObjecttoNullObject(exp_obj)];
+			let expected_result = [Object.assign({}, exp_obj)];
 
 			let search_obj = new SearchByHashObject('dev', 'dog', [8], ALL_FETCH_ATTRIBUTES);
-			let results = await test_utils.assertErrorAsync(lmdb_search_by_hash, [search_obj], undefined);
+			let results = await toArrayWithAssertError(lmdb_search_by_hash, [search_obj], undefined);
 
 			assert.deepStrictEqual(results, expected_result);
 		});
 
 		it('test finding 1 row some attributes', async () => {
-			let expected_result = [test_utils.assignObjecttoNullObject({ name: 'Harper' })];
+			let expected_result = [Object.assign({}, { name: 'Harper' })];
 
 			let search_obj = new SearchByHashObject('dev', 'dog', [8], ['name']);
-			let results = await test_utils.assertErrorAsync(lmdb_search_by_hash, [search_obj], undefined);
+			let results = await toArrayWithAssertError(lmdb_search_by_hash, [search_obj], undefined);
 
 			assert.deepStrictEqual(results, expected_result);
 		});
 
 		it('test finding multiple rows row, some attributes', async () => {
-			let expected_result = [
-				test_utils.assignObjecttoNullObject({ id: 10, height: 145 }),
-				test_utils.assignObjecttoNullObject({ id: 8, height: null }),
-			];
+			let expected_result = [Object.assign({}, { id: 10, height: 145 }), Object.assign({}, { id: 8, height: null })];
 
 			let search_obj = new SearchByHashObject('dev', 'dog', [10, 8], ['id', 'height']);
-			let results = await test_utils.assertErrorAsync(lmdb_search_by_hash, [search_obj], undefined);
+			let results = await toArrayWithAssertError(lmdb_search_by_hash, [search_obj], undefined);
 
 			assert.deepStrictEqual(results, expected_result);
 		});
 	});
 });
+async function toArrayWithAssertError(test_func, args, error_object, message) {
+	let response = await test_utils.assertErrorAsync(test_func, args, error_object, message);
+	response = await response;
+	if (response && response[Symbol.asyncIterator] && !response[Symbol.iterator]) {
+		// requires async iteration to access elements
+		let array = [];
+		for await (let element of response) {
+			array.push(element);
+		}
+		return array;
+	}
+	return response;
+}

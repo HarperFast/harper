@@ -10,7 +10,9 @@ const DBIDefinition = require('./DBIDefinition');
 const OpenDBIObject = require('./OpenDBIObject');
 const OpenEnvironmentObject = require('./OpenEnvironmentObject');
 const lmdb_terms = require('./terms');
-const { table } = require('../../resources/tableLoader');
+const hdb_terms = require('../hdbTerms');
+const { table, resetDatabases } = require('../../resources/tableLoader');
+const env_mngr = require('../environment/environmentManager');
 
 const INTERNAL_DBIS_NAME = lmdb_terms.INTERNAL_DBIS_NAME;
 const DBI_DEFINITION_NAME = lmdb_terms.DBI_DEFINITION_NAME;
@@ -133,7 +135,18 @@ function validateEnvDBIName(env, dbi_name) {
  */
 async function createEnvironment(base_path, env_name, is_txn = false, is_v3 = false) {
 	pathEnvNameValidation(base_path, env_name);
+	let db_name = path.basename(base_path);
+
 	env_name = env_name.toString();
+	let schemas_config = env_mngr.get(hdb_terms.CONFIG_PARAMS.SCHEMAS);
+	if (!schemas_config) env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.SCHEMAS, (schemas_config = {}));
+	if (!schemas_config[db_name]) schemas_config[db_name] = {};
+	schemas_config[db_name].path = base_path;
+	/*return table({
+		table: env_name,
+		database: db_name,
+		attributes: [{ name: 'id', isPrimaryKey: true }],
+	});*/
 	try {
 		await validateEnvironmentPath(base_path, env_name, is_v3);
 		//if no error is thrown the environment already exists so we return the handle to that environment
@@ -156,12 +169,13 @@ async function createEnvironment(base_path, env_name, is_txn = false, is_v3 = fa
 			}
 			let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
 			env[lmdb_terms.ENVIRONMENT_NAME_KEY] = full_name;
-			//global.lmdb_map[full_name] = env;
-			table({
+			global.lmdb_map[full_name] = env;
+			/*table({
 				table: env_name,
 				database: path.parse(base_path).name,
 				path: environment_path,
-			});
+				attributes: [{ name: 'id', isPrimaryKey: true }],
+			});*/
 
 			return env;
 		}
@@ -170,6 +184,16 @@ async function createEnvironment(base_path, env_name, is_txn = false, is_v3 = fa
 }
 
 async function copyEnvironment(base_path, env_name, destination_path, compact_environment = true) {
+	pathEnvNameValidation(base_path, env_name);
+	env_name = env_name.toString();
+	let environment_path = path.join(base_path, env_name);
+	return table({
+		table: env_name,
+		database: path.parse(base_path).name,
+		path: environment_path,
+		attributes: [{ name: 'id', isPrimaryKey: true }],
+	});
+
 	let env = await openEnvironment(base_path, env_name);
 
 	if (destination_path === undefined) {
@@ -365,12 +389,14 @@ function getDBIDefinition(env, dbi_name) {
  * @param {Boolean} is_hash_attribute - defines if the dbi being created is the hash_attribute fro the environment / table
  * @returns {*} - reference to the dbi
  */
-function createDBI(env, dbi_name, dup_sort, is_hash_attribute = false) {
+function createDBI(env, dbi_name, dup_sort, is_hash_attribute = !dup_sort) {
 	validateEnvDBIName(env, dbi_name);
 	dbi_name = dbi_name.toString();
 	if (dbi_name === INTERNAL_DBIS_NAME) {
 		throw new Error(LMDB_ERRORS.CANNOT_CREATE_INTERNAL_DBIS_NAME);
 	}
+	/*if (is_hash_attribute) return; // should already be created
+	return env.addAttribute({ name: dbi_name, indexed: true });*/
 
 	try {
 		//first check if the dbi exists
@@ -506,6 +532,7 @@ function dropDBI(env, dbi_name) {
  * @param {Array.<String>} write_attributes - list of all attributes to write to the database
  */
 function initializeDBIs(env, hash_attribute, write_attributes) {
+	let created_attributes;
 	for (let x = 0; x < write_attributes.length; x++) {
 		let attribute = write_attributes[x];
 
@@ -518,12 +545,14 @@ function initializeDBIs(env, hash_attribute, write_attributes) {
 				//if not opened, create it
 				if (e.message === LMDB_ERRORS.DBI_DOES_NOT_EXIST) {
 					createDBI(env, attribute, attribute !== hash_attribute, attribute === hash_attribute);
+					created_attributes = true;
 				} else {
 					throw e;
 				}
 			}
 		}
 	}
+	if (created_attributes) resetDatabases();
 }
 
 module.exports = {

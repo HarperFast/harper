@@ -18,13 +18,14 @@ const environment_utility = rewire('../../../../../utility/lmdb/environmentUtili
 const lmdb_terms = require('../../../../../utility/lmdb/terms');
 const write_utility = require('../../../../../utility/lmdb/writeUtility');
 const SearchObject = require('../../../../../dataLayer/SearchObject');
-const lmdb_search = rewire('../../../../../dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbSearchByValue');
+const lmdb_search = require('../../../../../dataLayer/harperBridge/harperBridge').searchByValue;
 const hdb_terms = require('../../../../../utility/hdbTerms');
 const assert = require('assert');
 const fs = require('fs-extra');
 const sinon = require('sinon');
 const systemSchema = require('../../../../../json/systemSchema');
 const common = require('../../../../../utility/lmdb/commonUtility');
+const { databases, resetDatabases } = require('../../../../../resources/tableLoader');
 
 const TIMESTAMP = Date.now();
 
@@ -55,7 +56,7 @@ describe('test lmdbSearchByValue module', () => {
 			await fs.mkdirp(SYSTEM_SCHEMA_PATH);
 			await fs.mkdirp(DEV_SCHEMA_PATH);
 
-			global.hdb_schema = {
+			Object.assign(databases, {
 				dev: {
 					test: {
 						attributes: [
@@ -71,7 +72,7 @@ describe('test lmdbSearchByValue module', () => {
 					},
 				},
 				system: systemSchema,
-			};
+			});
 
 			env = await environment_utility.createEnvironment(DEV_SCHEMA_PATH, 'test');
 			await environment_utility.createDBI(env, 'id', false);
@@ -82,7 +83,7 @@ describe('test lmdbSearchByValue module', () => {
 			await environment_utility.createDBI(env, 'temperature_str', true);
 			await environment_utility.createDBI(env, 'state', true);
 			await environment_utility.createDBI(env, 'city', true);
-
+			resetDatabases();
 			await write_utility.insertRecords(
 				env,
 				'id',
@@ -150,7 +151,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (data.state === 'CO') {
-					expected.push(test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT));
+					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
 				}
 			});
 
@@ -171,7 +172,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (parseInt(data.temperature) === 10) {
-					expected.push(test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT));
+					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
 				}
 			});
 
@@ -192,7 +193,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (parseInt(data.id) === 10) {
-					expected.push(test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT));
+					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
 				}
 			});
 
@@ -1961,7 +1962,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (data.city.includes('bert') === true) {
-					expected.push(test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT));
+					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
 				}
 			});
 
@@ -1982,7 +1983,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature.toString().includes(0)) {
-					expected.push(test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT));
+					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
 				}
 			});
 
@@ -2003,7 +2004,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (data.city.endsWith('land')) {
-					expected.push(test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT));
+					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
 				}
 			});
 
@@ -2024,7 +2025,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature.toString().endsWith(2)) {
-					expected.push(test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT));
+					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
 				}
 			});
 
@@ -2045,7 +2046,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (data.city.startsWith('South')) {
-					expected.push(test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT));
+					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
 				}
 			});
 
@@ -2065,7 +2066,7 @@ describe('test lmdbSearchByValue module', () => {
 		it('test searchall', async () => {
 			let expected = [];
 			test_data.forEach((data) => {
-				expected.push(test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT));
+				expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', '*', 'id', ['*']);
@@ -2085,7 +2086,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature > 25) {
-					expected.push(test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT));
+					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
 				}
 			});
 
@@ -2112,7 +2113,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature >= 40) {
-					expected.push(test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT));
+					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
 				}
 			});
 
@@ -2139,7 +2140,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature < 25) {
-					expected.push(test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT));
+					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
 				}
 			});
 
@@ -2166,7 +2167,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature <= 40) {
-					expected.push(test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT));
+					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
 				}
 			});
 
@@ -2193,7 +2194,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature >= 40 && data.temperature <= 66) {
-					expected.push(test_utils.assignObjecttoNullObject(data, TIMESTAMP_OBJECT));
+					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
 				}
 			});
 
