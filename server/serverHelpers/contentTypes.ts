@@ -5,12 +5,15 @@ import { decode, encode, EncoderStream } from 'cbor-x';
 import { createBrotliCompress, brotliCompress, constants } from 'zlib';
 import { Readable } from 'stream';
 import { server, ContentTypeHandler } from '../Server';
+import { _assignPackageExport } from '../../index';
 
 server.contentType = function (mime_type: string, handler: ContentTypeHandler) {
 	media_types.set(mime_type, handler);
 };
 
 const media_types = new Map();
+export const contentTypes = media_types;
+_assignPackageExport('contentTypes', contentTypes);
 // TODO: Make these monomorphic for faster access. And use a Map
 media_types.set('application/json', {
 	serializeStream: streamAsJSON,
@@ -215,7 +218,7 @@ export function findBestSerializer(incoming_message) {
 				serializer() {
 					this.code(406).send(
 						'No supported content types found in Accept header, supported types include: ' +
-							Object.keys(media_types).join(', ')
+							Array.from(media_types.keys()).join(', ')
 					);
 				},
 			};
@@ -312,9 +315,12 @@ export function getDeserializer(content_type, body) {
 		parameters = content_type.slice(parameters_start + 1);
 		content_type = content_type.slice(0, parameters_start);
 	}
-	return media_types.get(content_type)?.deserialize || deserializeUnknownType(content_type, parameters);
+	return media_types.get(content_type)?.deserialize || deserializerUnknownType(content_type, parameters);
 }
-function deserializeUnknownType(content_type, parameters) {
+function deserializerNoContentType() {
+	let isJSON;
+}
+function deserializerUnknownType(content_type, parameters) {
 	// TODO: store the content-disposition too
 	if (content_type.startsWith('text/')) {
 		// convert the data to a string since it is text (using the provided charset if specified)

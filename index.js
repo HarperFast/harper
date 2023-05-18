@@ -5,6 +5,7 @@ exports.databases = {};
 exports.user = undefined;
 exports.server = {};
 exports.config = {};
+exports.contentTypes = null;
 exports._assignPackageExport = (name, value) => {
 	exports[name] = value;
 };
