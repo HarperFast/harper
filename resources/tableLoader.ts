@@ -102,7 +102,7 @@ export function getDatabases(): Databases {
 			if (existsSync(database_path)) {
 				for (const database_entry: DirEnt of readdirSync(database_path, { withFileTypes: true })) {
 					if (database_entry.isFile() && extname(database_entry.name).toLowerCase() === '.mdb') {
-						readMetaDb(join(database_path, database_entry.name), null, db_name);
+						readMetaDb(join(database_path, database_entry.name), basename(database_entry.name, '.mdb'), db_name);
 					}
 				}
 			}
