@@ -16,9 +16,23 @@ const {
 async function hdbCore(server) {
 	server.decorate('hdbCore', {
 		preValidation: [reqBodyValidationHandler, authHandler],
-		request: handlePostRequest,
-		requestWithoutAuthentication: (request) => handlePostRequest(request, true),
+		request: (request) => convertAsyncIterators(handlePostRequest(request)),
+		requestWithoutAuthentication: (request) => convertAsyncIterators(handlePostRequest(request, true)),
 	});
+}
+// We convert responses that can only be asynchronously iterated to (promises of) arrays for
+// backwards compatibility, we do not assume custom functions can handle these.
+async function convertAsyncIterators(response) {
+	response = await response;
+	if (response && response[Symbol.asyncIterator] && !response[Symbol.iterator]) {
+		// requires async iteration to access elements
+		let array = [];
+		for await (let element of response) {
+			array.push(element);
+		}
+		return array;
+	}
+	return response;
 }
 
 module.exports = fp(hdbCore);
