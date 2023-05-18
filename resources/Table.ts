@@ -717,6 +717,7 @@ export function makeTable(options) {
 					}
 					return selected;
 				});
+			else records = records.map((record) => (record.toJSON ? record.toJSON() : record)); // get the full record, not the lazy record
 			records.onDone = () => {
 				read_txn.done();
 			};
@@ -784,9 +785,11 @@ export function makeTable(options) {
 			// TODO: validation
 			this.attributes.push(attribute);
 			await dbis_db.put(this.tableName + '/' + attribute.name, attribute);
-			const dbi_name = table_name + '/' + attribute.name;
-			const dbi_init = new OpenDBIObject(true, false);
-			if (attribute.indexed) this.indices[attribute.name] = this.primaryStore.openDB(dbi_name, dbi_init);
+			if (attribute.indexed) {
+				const dbi_name = table_name + '/' + attribute.name;
+				const dbi_init = new OpenDBIObject(true, false);
+				this.indices[attribute.name] = this.primaryStore.openDB(dbi_name, dbi_init);
+			}
 			signalling.signalSchemaChange(
 				new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_ATTRIBUTE, database_name, table_name, attribute.name)
 			);

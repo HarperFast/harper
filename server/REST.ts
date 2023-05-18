@@ -22,20 +22,12 @@ async function http(request, next_handler) {
 			resource_path = path;
 			try {
 				if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
-					// TODO: Support convert to async iterator in some cases?
 					// TODO: Support cancelation (if the request otherwise fails or takes too many bytes)
-					request.data = new Promise((resolve, reject) => {
-						const buffers = [];
-						request.body.on('data', (data) => buffers.push(data));
-						request.body.on('end', () => resolve(Buffer.concat(buffers)));
-						request.body.on('error', reject);
-					}).then((body) => {
-						try {
-							return getDeserializer(request.headers['content-type'], body)(body);
-						} catch (error) {
-							throw new ClientError(error, 400);
-						}
-					});
+					try {
+						request.data = getDeserializer(request.headers['content-type'], true)(request.body);
+					} catch (error) {
+						throw new ClientError(error, 400);
+					}
 				}
 			} catch (error) {
 				// TODO: Convert to HDBError
@@ -208,7 +200,7 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 		ws.on('error', console.error);
 		let deserializer;
 		ws.on('message', function message(body) {
-			if (!deserializer) deserializer = getDeserializer(request.headers['content-type'], body);
+			if (!deserializer) deserializer = getDeserializer(request.headers['content-type']);
 			const data = deserializer(body);
 			incoming_messages.push(data);
 		});

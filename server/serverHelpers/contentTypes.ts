@@ -102,14 +102,25 @@ media_types.set('application/x-www-form-urlencoded', {
 		return usp.toString();
 	},
 });
-media_types.set('*/*', {
+const generic_handler = {
 	type: 'application/json',
 	serializeStream: streamAsJSON,
 	serialize: JSON.stringify,
-	deserialize: JSON.parse,
+	deserialize: tryJSONParse,
 	q: 0.8,
-});
-
+};
+media_types.set('*/*', generic_handler);
+media_types.set('', generic_handler);
+// try to JSON parse, but since we don't know for sure, this will return the body
+// otherwise
+function tryJSONParse(input) {
+	try {
+		if (input?.[0] === 123) return JSON.parse(input);
+		else return input;
+	} catch (error) {
+		return input;
+	}
+}
 const PUBLIC_ENCODE_OPTIONS = {
 	useRecords: false,
 };
@@ -301,24 +312,29 @@ export function serializeMessage(message, request) {
 	return serialize(message);
 }
 
-export function getDeserializer(content_type, body) {
-	if (!content_type) {
-		if (body?.[0] === 123) {
-			// left curly brace
-			return tryJSONParse;
-		}
-		return (data) => ({ contentType: '', data });
-	}
+function streamToBuffer(stream) {
+	return new Promise((resolve, reject) => {
+		const buffers = [];
+		stream.on('data', (data) => buffers.push(data));
+		stream.on('end', () => resolve(Buffer.concat(buffers)));
+		stream.on('error', reject);
+	});
+}
+export function getDeserializer(content_type, streaming) {
+	if (!content_type) content_type = '';
 	const parameters_start = content_type.indexOf(';');
 	let parameters;
 	if (parameters_start > -1) {
 		parameters = content_type.slice(parameters_start + 1);
 		content_type = content_type.slice(0, parameters_start);
 	}
+	const preferred_handler = media_types.get(content_type);
+	if (streaming) {
+		if (preferred_handler?.deserializeStream) return preferred_handler.deserializeStream;
+		const deserialize = media_types.get(content_type)?.deserialize || deserializerUnknownType(content_type, parameters);
+		return (stream) => streamToBuffer(stream).then(deserialize);
+	}
 	return media_types.get(content_type)?.deserialize || deserializerUnknownType(content_type, parameters);
-}
-function deserializerNoContentType() {
-	let isJSON;
 }
 function deserializerUnknownType(content_type, parameters) {
 	// TODO: store the content-disposition too
@@ -335,15 +351,6 @@ function deserializerUnknownType(content_type, parameters) {
 	} else {
 		// else record the type and binary data as a pair
 		return (data) => ({ contentType: content_type, data });
-	}
-}
-// try to JSON parse, but since we don't know for sure, this will return the body
-// otherwise
-function tryJSONParse(input) {
-	try {
-		return JSON.parse(input);
-	} catch (error) {
-		return input;
 	}
 }
 
