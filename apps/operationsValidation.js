@@ -42,7 +42,7 @@ function checkProjectExists(check_exists, project, helpers) {
 			return project;
 		}
 
-		if (check_exists) {
+		if (!check_exists) {
 			return project;
 		}
 

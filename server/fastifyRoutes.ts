@@ -55,7 +55,7 @@ export async function handleFile(js_content, relative_path, file_path, project_n
  *
  * @returns {Promise<void>}
  */
-async function customFunctionsServer() {
+export async function customFunctionsServer() {
 	try {
 		// Instantiate new instance of HDB IPC client and assign it to global.
 
@@ -73,7 +73,7 @@ async function customFunctionsServer() {
 		let server;
 		try {
 			//generate a Fastify server instance
-			server = buildServer(is_https);
+			server = fastify_server = await buildServer(is_https);
 		} catch (err) {
 			harper_logger.error(`Custom Functions buildServer error: ${err}`);
 			throw err;
@@ -84,21 +84,6 @@ async function customFunctionsServer() {
 			await server.ready();
 		} catch (err) {
 			harper_logger.error(`Custom Functions server.ready() error: ${err}`);
-			throw err;
-		}
-
-		try {
-			//now that server is fully loaded/ready, start listening on port provided in config settings
-			harper_logger.info(`Custom Functions process starting on port ${props_server_port}`);
-			httpServer(server.server, props_server_port);
-			if (!server.server.closeIdleConnections) {
-				// before Node v18, closeIdleConnections is not available, and we have to setup a listener for fastify
-				// to handle closing by setting up the dynamic port
-				await server.listen({ port: 0, host: '::' });
-			}
-		} catch (err) {
-			server.close();
-			harper_logger.error(`Custom Functions server.listen() error: ${err}`);
 			throw err;
 		}
 	} catch (err) {
@@ -115,7 +100,7 @@ async function customFunctionsServer() {
 async function setUp() {
 	try {
 		harper_logger.info('Custom Functions starting configuration.');
-		await p_schema_to_global();
+		//await p_schema_to_global();
 		await user_schema.setUsersToGlobal();
 		harper_logger.info('Custom Functions completed configuration.');
 	} catch (e) {

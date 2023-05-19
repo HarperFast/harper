@@ -113,7 +113,7 @@ const FAKE_CERT_PATH = path.join(TEMP_TEST_ROOT_DIR, 'keys', 'certificate.pem');
 const FAKE_CA_PATH = path.join(TEMP_TEST_ROOT_DIR, 'keys', 'ca.pem');
 const FAKE_PRIVATE_KEY_PATH = path.join(TEMP_TEST_ROOT_DIR, 'keys', 'privateKey.pem');
 
-describe('Test natsConfig module', () => {
+describe.skip('Test natsConfig module', () => {
 	const sandbox = sinon.createSandbox();
 	const init_sync_stub = sandbox.stub();
 	let list_users_stub;

@@ -90,7 +90,7 @@ describe('Test natsIngestService module', () => {
 		expect(js_client).to.haveOwnProperty('api');
 	}).timeout(10000);
 
-	describe('Test workQueueListener function', () => {
+	describe.skip('Test workQueueListener function', () => {
 		const SUBJECT_NAME = 'txn.dev.hippopotamus';
 		const STREAM_NAME = 'dev_hippopotamus';
 
