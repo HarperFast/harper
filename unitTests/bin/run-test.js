@@ -94,7 +94,6 @@ describe('Test run module', () => {
 	describe('Test run function', () => {
 		const is_hdb_installed_stub = sandbox.stub();
 		const create_log_file_stub = sandbox.stub();
-		const check_trans_log_env_exists_stub = sandbox.stub();
 		const check_jwt_tokens_stub = sandbox.stub();
 		const install_stub = sandbox.stub();
 		let is_hdb_installed_rw;
@@ -108,7 +107,6 @@ describe('Test run module', () => {
 			run_rw.__set__('check_jwt_tokens', check_jwt_tokens_stub);
 			run_rw.__set__('hdb_logger.createLogFile', create_log_file_stub);
 			is_hdb_installed_rw = run_rw.__set__('isHdbInstalled', is_hdb_installed_stub);
-			check_audit_log_env_exists_rw = run_rw.__set__('checkAuditLogEnvironmentsExist', check_trans_log_env_exists_stub);
 			install_rw = run_rw.__set__('install', install_stub);
 			get_ver_update_info_stub = sandbox.stub(hdbInfoController, 'getVersionUpdateInfo');
 			upgrade_stub = sandbox.stub(upgrade, 'upgrade');
@@ -121,7 +119,6 @@ describe('Test run module', () => {
 
 		after(() => {
 			is_hdb_installed_rw();
-			check_audit_log_env_exists_rw();
 			install_rw();
 			const service_index = process.argv.indexOf('--service');
 			if (service_index > -1) process.argv.splice(service_index, 1);
@@ -135,8 +132,6 @@ describe('Test run module', () => {
 			is_hdb_installed_stub.resolves(true);
 			get_ver_update_info_stub.resolves(undefined);
 			await run();
-
-			expect(check_trans_log_env_exists_stub).to.have.been.called;
 		});
 
 		it('Test upgrade is called if upgrade version permits', async () => {
@@ -388,8 +383,9 @@ describe('Test run module', () => {
 			expect(open_create_trans_env_stub.getCall(6).args).to.eql(['system', 'hdb_license']);
 			expect(open_create_trans_env_stub.getCall(7).args).to.eql(['system', 'hdb_info']);
 			expect(open_create_trans_env_stub.getCall(8).args).to.eql(['system', 'hdb_nodes']);
-			expect(open_create_trans_env_stub.getCall(9).args).to.eql(['system', 'hdb_temp']);
-			expect(open_create_trans_env_stub.getCall(10).args).to.eql(['northnwd', 'customers']);
+			expect(open_create_trans_env_stub.getCall(9).args).to.eql(['system', 'hdb_analytics']);
+			expect(open_create_trans_env_stub.getCall(10).args).to.eql(['system', 'hdb_temp']);
+			expect(open_create_trans_env_stub.getCall(11).args).to.eql(['northnwd', 'customers']);
 			expect(log_info_stub.getCall(0).firstArg).to.equal('Checking Transaction Audit Environments exist');
 			expect(log_info_stub.getCall(1).firstArg).to.equal('Finished checking Transaction Audit Environments exist');
 		});
