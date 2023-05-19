@@ -13,6 +13,7 @@ const validator = require('../../validation/validationWrapper');
 let file_load_validator = rewire('../../validation/fileLoadValidator');
 const common_utils = require('../../utility/common_utils');
 const log = require('../../utility/logging/harper_logger');
+const { getDatabases } = require('../../resources/tableLoader');
 
 const FAKE_FILE_PATH = '/thisfilepath/wont/exist.csv';
 const LONG_STRING =
@@ -231,10 +232,8 @@ describe('Test fileLoadValidator module', () => {
 		});
 
 		it('should return null w/ valid s3FileObject', () => {
-			global.hdb_schema = {
-				hats: {
-					fordogs: {},
-				},
+			getDatabases().hats = {
+				fordogs: {},
 			};
 			const test_obj = test_util.deepClone(s3_object);
 			let result = file_load_validator.s3FileObject(test_obj);

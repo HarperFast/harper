@@ -265,7 +265,7 @@ describe('Test configValidator module', () => {
 					rootPath: path.join(__dirname, '/carrot'),
 					storage: {
 						writeAsync: true,
-						path: path.join(__dirname, '/carrot/schema'),
+						path: path.join(__dirname, '/carrot/database'),
 					},
 				},
 			};
@@ -385,7 +385,7 @@ describe('Test configValidator module', () => {
 			validate_pem_file_rw();
 		});
 
-		it('Test fastifyRoutes, fastifyRoutes.network in config_schema with bad values', () => {
+		it('Test customFunctions, customFunctions.network in config_schema with bad values', () => {
 			let bad_config_obj = test_utils.deepClone(FAKE_CONFIG);
 			bad_config_obj.customFunctions.enabled = 'tree';
 			bad_config_obj.customFunctions.network.cors = 5;
@@ -398,12 +398,12 @@ describe('Test configValidator module', () => {
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'fastifyRoutes.enabled' must be a boolean. 'fastifyRoutes.network.cors' must be a boolean. 'fastifyRoutes.network.corsAccessList' must be an array. 'fastifyRoutes.network.headersTimeout' must be greater than or equal to 1. 'fastifyRoutes.network.https' must be a boolean. 'fastifyRoutes.network.keepAliveTimeout' must be a number. 'fastifyRoutes.network.port' must be a number. 'fastifyRoutes.network.timeout' must be a number";
+				"'customFunctions.enabled' must be a boolean. 'customFunctions.network.cors' must be a boolean. 'customFunctions.network.corsAccessList' must be an array. 'customFunctions.network.headersTimeout' must be greater than or equal to 1. 'customFunctions.network.https' must be a boolean. 'customFunctions.network.keepAliveTimeout' must be a number. 'customFunctions.network.port' must be a number. 'customFunctions.network.timeout' must be a number";
 
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
 
-		it('Test fastifyRoutes.nodeEnv/processes/root in config_schema with bad values', () => {
+		it('Test customFunctions.nodeEnv/processes/root in config_schema with bad values', () => {
 			let bad_config_obj = test_utils.deepClone(FAKE_CONFIG);
 			bad_config_obj.customFunctions.nodeEnv = 'testing';
 			bad_config_obj.http.threads = [2];
@@ -411,8 +411,8 @@ describe('Test configValidator module', () => {
 
 			const schema = configValidator(bad_config_obj);
 			const expected_error_message =
-				"'fastifyRoutes.nodeEnv' must be one of [production, development]." +
-				" 'fastifyRoutes.root' with value '/!' fails to match the directory path pattern. 'http.threads' must be a number";
+				"'customFunctions.nodeEnv' must be one of [production, development]." +
+				" 'customFunctions.root' with value '/!' fails to match the directory path pattern. 'http.threads' must be a number";
 
 			expect(schema.error.message).to.eql(expected_error_message);
 		});
@@ -620,7 +620,7 @@ describe('Test configValidator module', () => {
 				error = err;
 			}
 
-			expect(error.message).to.equal('Error setting default root for: fastifyRoutes.root. HDB root is not defined');
+			expect(error.message).to.equal('Error setting default root for: customFunctions.root. HDB root is not defined');
 		});
 
 		it('Test error throws if config param isnt real', () => {
@@ -639,7 +639,7 @@ describe('Test configValidator module', () => {
 			);
 		});
 
-		it('Test that if fastifyRoutes.root is undefined, one is created', () => {
+		it('Test that if customFunctions.root is undefined, one is created', () => {
 			hdb_root_rw = config_val.__set__('hdb_root', HDB_ROOT);
 			const helpers = { state: { path: ['customFunctions', 'root'] } };
 			const result = set_default_root(parent, helpers);
