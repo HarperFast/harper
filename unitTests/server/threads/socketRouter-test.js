@@ -1,3 +1,4 @@
+require('../../../utility/devops/tsBuild');
 const {
 	startHTTPThreads,
 	startSocketServer,
@@ -11,19 +12,20 @@ const assert = require('assert');
 
 describe('Socket Router', () => {
 	let workers, server;
-	before(function () {
-		workers = startHTTPThreads(4);
+	before(async function () {
+		this.timeout(5000);
+		workers = await startHTTPThreads(4);
 	});
 	it('Start HTTP threads and delegate evenly by most idle', function () {
-		server = startSocketServer(terms.SERVICES.HDB_CORE, 0);
+		server = startSocketServer(8925, 0);
 
 		for (let worker of workers) {
 			worker.socketsRouted = 0;
-			worker.postMessage = function ({ type, fd }) {
+			worker.postMessage = function ({ port, fd }) {
 				// stub this and don't send to real worker, just count messages
-				if (type !== 'added-port') {
+				if (port) {
 					this.socketsRouted++;
-					assert.equal(type, terms.SERVICES.HDB_CORE);
+					assert.equal(port, 8925);
 					assert.equal(fd, 1);
 				}
 			};

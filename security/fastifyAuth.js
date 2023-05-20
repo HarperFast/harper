@@ -32,7 +32,7 @@ passport.deserializeUser(function (user, done) {
 });
 
 function authorize(req, res, next) {
-	if (req.raw.user !== undefined) return next(null, req.raw.user);
+	if (req.raw?.user !== undefined) return next(null, req.raw.user);
 	let strategy;
 	let token;
 	if (req.headers && req.headers.authorization) {

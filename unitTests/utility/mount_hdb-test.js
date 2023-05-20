@@ -57,10 +57,9 @@ describe('test mount_hdb module', () => {
 		expect(make_dir_stub.getCall(4).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}keys${SEP}.license`);
 		expect(make_dir_stub.getCall(5).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}log`);
 		expect(make_dir_stub.getCall(6).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}doc`);
-		expect(make_dir_stub.getCall(7).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}schema`);
-		expect(make_dir_stub.getCall(8).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}schema${SEP}system`);
-		expect(make_dir_stub.getCall(9).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}transactions`);
-		expect(make_dir_stub.getCall(10).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}clustering${SEP}leaf`);
+		expect(make_dir_stub.getCall(7).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}database`);
+		expect(make_dir_stub.getCall(8).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}transactions`);
+		expect(make_dir_stub.getCall(9).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}clustering${SEP}leaf`);
 		expect(create_lmdb_tables_stub.called).to.be.true;
 		mk_dir_rw();
 		create_lmdb_table_rw();
@@ -95,7 +94,7 @@ describe('test mount_hdb module', () => {
 				let all_dbis;
 				let error;
 				try {
-					env = await environment_utility.openEnvironment(SYSTEM_SCHEMA_PATH, table_name);
+					env = await environment_utility.openEnvironment(BASE_SCHEMA_PATH, 'system');
 					all_dbis = environment_utility.listDBIs(env);
 				} catch (e) {
 					error = e;
@@ -104,7 +103,7 @@ describe('test mount_hdb module', () => {
 				assert.notDeepStrictEqual(env, undefined);
 				assert.notDeepStrictEqual(all_dbis, undefined);
 				system_schema[table_name].attributes.forEach((attribute) => {
-					assert(all_dbis.indexOf(attribute.attribute) >= 0);
+					assert(all_dbis.some((dbi) => dbi.indexOf(attribute.attribute) >= 0));
 				});
 			}
 		}).timeout(20000);

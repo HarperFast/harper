@@ -51,7 +51,7 @@ export async function startHTTPThreads(thread_count = 2) {
 					function onMessage(message) {
 						if (message.type === hdb_terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STARTED) {
 							worker.removeListener('message', onMessage);
-							resolve();
+							resolve(worker);
 						}
 					}
 					worker.on('message', onMessage);
