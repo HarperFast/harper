@@ -173,6 +173,7 @@ function initTestEnvironment(test_config_obj = {}) {
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY, true);
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY, '1231412de213');
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, path.join(props_path, 'envDir'));
+		setProperty(hdb_terms.CONFIG_PARAMS.STORAGE_PATH, path.join(props_path, 'envDir'));
 		setProperty(
 			hdb_terms.HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY,
 			common_utils.isEmpty(https_enabled) ? true : https_enabled

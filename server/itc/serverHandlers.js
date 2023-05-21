@@ -102,8 +102,13 @@ function handleErrorCallback(err) {
  */
 async function userHandler(event) {
 	try {
-		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.USER_TABLE_NAME);
-		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME);
+		try {
+			harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.USER_TABLE_NAME);
+			harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME);
+		} catch (error) {
+			// this can happen during tests, best to ignore
+			hdb_logger.warn(error);
+		}
 		const validate = validateEvent(event);
 		if (validate) {
 			hdb_logger.error(validate);
