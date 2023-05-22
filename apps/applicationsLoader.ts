@@ -36,13 +36,15 @@ let resources;
 export function loadApplications(loaded_plugin_modules?: Map<any, any>, loaded_resources?: Resources) {
 	if (loaded_resources) resources = loaded_resources;
 	if (loaded_plugin_modules) loaded_plugins = loaded_plugin_modules;
-	const cf_folders = readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
 	const cfs_loaded = [];
-	for (const app_entry of cf_folders) {
-		if (!app_entry.isDirectory() && !app_entry.isSymbolicLink()) return;
-		const app_name = app_entry.name;
-		const app_folder = join(CF_ROUTES_DIR, app_name);
-		cfs_loaded.push(loadApplication(app_folder, resources));
+	if (existsSync(CF_ROUTES_DIR)) {
+		const cf_folders = readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
+		for (const app_entry of cf_folders) {
+			if (!app_entry.isDirectory() && !app_entry.isSymbolicLink()) return;
+			const app_name = app_entry.name;
+			const app_folder = join(CF_ROUTES_DIR, app_name);
+			cfs_loaded.push(loadApplication(app_folder, resources));
+		}
 	}
 	if (process.env.RUN_HDB_APP) {
 		const app_node_modules = join(process.env.RUN_HDB_APP, 'node_modules');
