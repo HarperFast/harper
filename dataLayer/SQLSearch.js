@@ -17,7 +17,7 @@ const common_utils = require('../utility/common_utils');
 const harperBridge = require('./harperBridge/harperBridge');
 const hdbTerms = require('../utility/hdbTerms');
 const { hdb_errors } = require('../utility/errors/hdbError');
-const { getDatabases } = require('../resources/tableLoader');
+const { getDatabases } = require('../resources/databases');
 
 const WHERE_CLAUSE_IS_NULL = 'IS NULL';
 const SEARCH_ERROR_MSG = 'There was a problem performing this search. Please check the logs and try again.';

@@ -2,7 +2,7 @@
 
 const schema_describe = require('../dataLayer/schemaDescribe');
 const { hdb_errors } = require('../utility/errors/hdbError');
-const { getDatabases } = require('../resources/tableLoader');
+const { getDatabases } = require('../resources/databases');
 
 module.exports = {
 	checkSchemaExists,

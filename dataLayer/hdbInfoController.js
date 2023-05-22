@@ -20,7 +20,7 @@ const version = require('../bin/version');
 const log = require('../utility/logging/harper_logger');
 const hdb_utils = require('../utility/common_utils');
 const global_schema = require('../utility/globalSchema');
-const tableLoader = require('../resources/tableLoader');
+const tableLoader = require('../resources/databases');
 const directiveManager = require('../upgrade/directives/directivesController');
 
 let p_search_search_by_value = search.searchByValue;

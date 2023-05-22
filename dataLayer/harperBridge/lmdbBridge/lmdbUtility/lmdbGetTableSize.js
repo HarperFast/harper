@@ -5,7 +5,7 @@ const lmdb_terms = require('../../../../utility/lmdb/terms');
 const lmdb_environment_utility = require('../../../../utility/lmdb/environmentUtility');
 const log = require('../../../../utility/logging/harper_logger');
 const { getSchemaPath, getTransactionAuditStorePath } = require('./initializePaths');
-const { database } = require('../../../../resources/tableLoader');
+const { database } = require('../../../../resources/databases');
 
 module.exports = lmdbGetTableSize;
 

@@ -1,6 +1,6 @@
 const system_schema = require('../json/systemSchema.json');
 const { callbackify, promisify } = require('util');
-const { getDatabases } = require('../resources/tableLoader');
+const { getDatabases } = require('../resources/databases');
 
 module.exports = {
 	setSchemaDataToGlobal: setSchemaDataToGlobal,

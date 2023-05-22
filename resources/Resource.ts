@@ -1,5 +1,5 @@
 import { ResourceInterface } from './ResourceInterface';
-import { getTables } from './tableLoader';
+import { getTables } from './databases';
 import { Table } from './Table';
 import { randomUUID } from 'crypto';
 import { DatabaseTransaction, Transaction } from './DatabaseTransaction';

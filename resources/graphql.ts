@@ -1,4 +1,4 @@
-import { table } from './tableLoader';
+import { table } from './databases';
 import { isMainThread } from 'worker_threads';
 import { dirname } from 'path';
 import { snake_case } from './Table';

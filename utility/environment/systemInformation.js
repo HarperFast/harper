@@ -13,7 +13,7 @@ env.initSync();
 const SystemInformationObject = require('./SystemInformationObject');
 const { openEnvironment } = require('../lmdb/environmentUtility');
 const { getSchemaPath } = require('../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
-const { database } = require('../../resources/tableLoader');
+const { database } = require('../../resources/databases');
 
 //this will hold the system_information which is static to improve performance
 let system_information_cache = undefined;

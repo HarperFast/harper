@@ -9,7 +9,7 @@ const user_schema = require('../../security/user');
 const { validateEvent } = require('../threads/itc');
 const harperBridge = require('../../dataLayer/harperBridge/harperBridge');
 const process = require('process');
-const { resetDatabases } = require('../../resources/tableLoader');
+const { resetDatabases } = require('../../resources/databases');
 
 /**
  * This object/functions are passed to the ITC client instance and dynamically added as event handlers.

@@ -1,4 +1,4 @@
-import { databases, getDatabases, onNewTable } from '../../resources/tableLoader';
+import { databases, getDatabases, onNewTable } from '../../resources/databases';
 import { Resource } from '../../resources/Resource';
 import { publishToStream } from './utility/natsUtils';
 import { SUBJECT_PREFIXES } from './utility/natsTerms';

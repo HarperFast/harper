@@ -15,7 +15,7 @@ const hdb_logger = require('../../../utility/logging/harper_logger');
 const server_utilities = require('../../../server/serverHelpers/serverUtilities');
 const operation_function_caller = require('../../../utility/OperationFunctionCaller');
 const nats_ingest_service = rewire('../../../server/nats/natsIngestService');
-const { table } = require('../../../resources/tableLoader');
+const { table } = require('../../../resources/databases');
 const { getNATSReplicator } = require('../../../server/nats/natsReplicator');
 const { setMainIsWorker } = require('../../../server/threads/manageThreads');
 

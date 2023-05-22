@@ -24,7 +24,7 @@ const fs = require('fs-extra');
 const sinon = require('sinon');
 const systemSchema = require('../../../../../json/systemSchema');
 const common = require('../../../../../utility/lmdb/commonUtility');
-const { resetDatabases } = require('../../../../../resources/tableLoader');
+const { resetDatabases } = require('../../../../../resources/databases');
 
 const TIMESTAMP = Date.now();
 const HASH_ATTRIBUTE_NAME = 'id';

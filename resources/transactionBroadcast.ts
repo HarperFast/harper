@@ -3,7 +3,7 @@ import { info } from '../utility/logging/harper_logger';
 import { threadId } from 'worker_threads';
 import { onMessageFromWorkers, broadcast } from '../server/threads/manageThreads';
 import { MAXIMUM_KEY } from 'ordered-binary';
-import { tables } from './tableLoader';
+import { tables } from './databases';
 import { getLastTxnId } from 'lmdb';
 import { writeKey } from 'ordered-binary';
 import { IterableEventQueue } from './IterableEventQueue';

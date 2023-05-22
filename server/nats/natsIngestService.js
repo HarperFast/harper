@@ -15,7 +15,7 @@ const { start } = require('./natsReplicator');
 const env_mgr = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 require('../threads/manageThreads');
-const { getDatabases } = require('../../resources/tableLoader');
+const { getDatabases } = require('../../resources/databases');
 const crypto_hash = require('../../security/cryptoHash');
 const { publishToStream } = nats_utils;
 

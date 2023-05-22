@@ -11,7 +11,7 @@ const OpenDBIObject = require('./OpenDBIObject');
 const OpenEnvironmentObject = require('./OpenEnvironmentObject');
 const lmdb_terms = require('./terms');
 const hdb_terms = require('../hdbTerms');
-const { table, resetDatabases } = require('../../resources/tableLoader');
+const { table, resetDatabases } = require('../../resources/databases');
 const env_mngr = require('../environment/environmentManager');
 
 const INTERNAL_DBIS_NAME = lmdb_terms.INTERNAL_DBIS_NAME;

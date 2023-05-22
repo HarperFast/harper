@@ -1,5 +1,5 @@
 import { Resource } from '../resources/Resource';
-import { tables, databases } from '../resources/tableLoader';
+import { tables, databases } from '../resources/databases';
 import { Compartment as CompartmentClass } from 'ses';
 import { readFile } from 'fs/promises';
 import { extname } from 'path';

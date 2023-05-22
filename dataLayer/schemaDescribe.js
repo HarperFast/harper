@@ -17,7 +17,7 @@ env_mngr.initSync();
 const lmdb_environment_utility = require('../utility/lmdb/environmentUtility');
 const search_utility = require('../utility/lmdb/searchUtility');
 const { getSchemaPath } = require('./harperBridge/lmdbBridge/lmdbUtility/initializePaths');
-const { getDatabases } = require('../resources/tableLoader');
+const { getDatabases } = require('../resources/databases');
 
 // Promisified functions
 let p_search_search_by_value = search.searchByValue;

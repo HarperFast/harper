@@ -1,6 +1,6 @@
 import { isMainThread, parentPort, threadId } from 'worker_threads';
 import { messageTypeListener, getThreadInfo } from '../server/threads/manageThreads';
-import { table } from './tableLoader';
+import { table } from './databases';
 import { getLogFilePath } from '../utility/logging/harper_logger';
 import { dirname, join } from 'path';
 import { open, appendFile, readFile, writeFile } from 'fs/promises';

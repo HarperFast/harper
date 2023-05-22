@@ -2,7 +2,7 @@ import { findAndValidateUser, getSuperUser } from './user';
 import { server } from '../server/Server';
 import { resources } from '../resources/Resources';
 import { validateOperationToken } from './tokenAuthentication';
-import { table } from '../resources/tableLoader';
+import { table } from '../resources/databases';
 import { v4 as uuid } from 'uuid';
 import * as env from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../utility/hdbTerms';

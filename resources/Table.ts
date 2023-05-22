@@ -23,7 +23,7 @@ import { handleHDBError, ClientError } from '../utility/errors/hdbError';
 import OpenDBIObject from '../utility/lmdb/OpenDBIObject';
 import * as signalling from '../utility/signalling';
 import { SchemaEventMsg } from '../server/threads/itc';
-import { databases } from './tableLoader';
+import { databases } from './databases';
 
 const RANGE_ESTIMATE = 100000000;
 env_mngr.initSync();

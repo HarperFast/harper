@@ -1,4 +1,4 @@
-import { table } from '../resources/tableLoader';
+import { table } from '../resources/databases';
 import { resources } from '../resources/Resources';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 const DurableSession = table({

@@ -2,7 +2,7 @@
 
 const { getSchemaPath } = require('../lmdbUtility/initializePaths');
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
-const { database } = require('../../../../resources/tableLoader');
+const { database } = require('../../../../resources/databases');
 
 module.exports = {
 	writeTransaction,

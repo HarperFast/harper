@@ -10,7 +10,7 @@ exports._assignPackageExport = (name, value) => {
 	exports[name] = value;
 };
 /*exports.Resource = require('./resources/Resource').Resource;
-const table_loader = require('./resources/tableLoader');
+const table_loader = require('./resources/databases');
 exports.tables = table_loader.tables;
 Object.defineProperty(exports, 'tables', { get: function () { return table_loader.tables; } });
 Object.defineProperty(exports, 'databases', { get: function () { return table_loader.databases; } });
