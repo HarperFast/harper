@@ -173,7 +173,7 @@ async function messageProcessor(msg) {
 						__origin,
 					});
 				}
-			} else {
+			} else if (writes) {
 				subscription.send({
 					operation: 'transaction',
 					writes,
@@ -181,7 +181,7 @@ async function messageProcessor(msg) {
 					onCommit,
 					__origin,
 				});
-			}
+			} else subscription.send(entry);
 		} else {
 			let { timestamp, user, writes } = entry;
 			let first_dot_index = msg.subject.indexOf('.');

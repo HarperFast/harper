@@ -41,18 +41,18 @@ async function assignReplicationSource() {
 			// if we are publishing the full database, assign as source of all the tables in the database
 			for (const table_name in tables) {
 				const table = tables[table_name];
-				if (!table.Source) table.sourcedFrom(getNATSReplicator(table_name, db_name));
+				setNATSReplicator(table_name, db_name, table);
 			}
 		} else {
 			// otherwise just assign as source of tables that are actually publishing
 			for (const [table_name] of publishing) {
 				const table = tables[table_name];
-				if (!table.Source) table.sourcedFrom(getNATSReplicator(table_name, db_name));
+				setNATSReplicator(table_name, db_name, table);
 			}
 		}
 	}
 	onNewTable((table) => {
-		if (!table.Source) table.sourcedFrom(getNATSReplicator(table.tableName, table.databasePath));
+		setNATSReplicator(table.tableName, table.databasePath, table);
 	});
 	databases.system.hdb_nodes.subscribe({
 		listener() {
@@ -66,48 +66,62 @@ async function assignReplicationSource() {
  * @param table_name
  * @param db_name
  */
-export function getNATSReplicator(table_name, db_name) {
-	return class NATSReplicator extends Resource {
-		put(record, options) {
-			// add this to the transaction
-			this.getNATSTransaction(options).addWrite(db_name, {
-				operation: 'put',
-				table: table_name,
-				record,
-			});
+export function setNATSReplicator(table_name, db_name, Table) {
+	if (table.Source) return;
+	publishToStream(
+		`${SUBJECT_PREFIXES.TXN}.${db_name}`,
+		createNatsTableStreamName(db_name, table_name),
+		Table.origin?.nats_msg_header,
+		{
+			operation: 'define_table',
+			table: Table.tableName,
+			attributes: Table.attributes,
 		}
-		delete(options) {
-			this.getNATSTransaction(options).addWrite(db_name, {
-				operation: 'delete',
-				table: table_name,
-				id: this.id,
-			});
-		}
-		publish(message, options) {
-			this.getNATSTransaction(options).addWrite(db_name, {
-				operation: 'publish',
-				table: table_name,
-				record: message,
-			});
-		}
-		getNATSTransaction(options): NATSTransaction {
-			let nats_transaction: NATSTransaction = this.transactions.nats;
-			if (!nats_transaction) {
-				this.transactions.push(
-					(nats_transaction = this.transactions.nats = new NATSTransaction(this.transactions, options))
-				);
-				nats_transaction.user = this.user;
+	);
+
+	Table.sourcedFrom(
+		class NATSReplicator extends Resource {
+			put(record, options) {
+				// add this to the transaction
+				this.getNATSTransaction(options).addWrite(db_name, {
+					operation: 'put',
+					table: table_name,
+					record,
+				});
 			}
-			return nats_transaction;
-		}
-		static subscribe() {
-			if (getWorkerIndex() < MAX_INGEST_THREADS) {
-				const subscription = new IterableEventQueue();
-				setSubscription(db_name, table_name, subscription);
-				return subscription;
+			delete(options) {
+				this.getNATSTransaction(options).addWrite(db_name, {
+					operation: 'delete',
+					table: table_name,
+					id: this.id,
+				});
+			}
+			publish(message, options) {
+				this.getNATSTransaction(options).addWrite(db_name, {
+					operation: 'publish',
+					table: table_name,
+					record: message,
+				});
+			}
+			getNATSTransaction(options): NATSTransaction {
+				let nats_transaction: NATSTransaction = this.transactions.nats;
+				if (!nats_transaction) {
+					this.transactions.push(
+						(nats_transaction = this.transactions.nats = new NATSTransaction(this.transactions, options))
+					);
+					nats_transaction.user = this.user;
+				}
+				return nats_transaction;
+			}
+			static subscribe() {
+				if (getWorkerIndex() < MAX_INGEST_THREADS) {
+					const subscription = new IterableEventQueue();
+					setSubscription(db_name, table_name, subscription);
+					return subscription;
+				}
 			}
 		}
-	};
+	);
 }
 
 /**

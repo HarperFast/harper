@@ -23,7 +23,7 @@ import { handleHDBError, ClientError } from '../utility/errors/hdbError';
 import OpenDBIObject from '../utility/lmdb/OpenDBIObject';
 import * as signalling from '../utility/signalling';
 import { SchemaEventMsg } from '../server/threads/itc';
-import { databases } from './databases';
+import { databases, table } from './databases';
 
 const RANGE_ESTIMATE = 100000000;
 env_mngr.initSync();
@@ -143,6 +143,9 @@ export function makeTable(options) {
 									for (const write of event.writes) {
 										writeUpdate(write, source, resource);
 									}
+								} else if (event.operation === 'define_table') {
+									// ensure table exists
+									table(event);
 								} else writeUpdate(event, source, resource);
 							});
 							if (event.onCommit) commit.then(event.onCommit);
@@ -512,9 +515,12 @@ export function makeTable(options) {
 			//  during the write transaction.
 			const txn_time = this[TRANSACTIONS_PROPERTY]?.timestamp || immediateTransaction.timestamp;
 			if (TableResource.updatedTimeProperty) record[TableResource.updatedTimeProperty] = txn_time;
-			if (TableResource.createdTimeProperty && !this[RECORD_PROPERTY])
-				record[TableResource.createdTimeProperty] = txn_time;
 			let existing_record = this[RECORD_PROPERTY];
+			if (TableResource.createdTimeProperty) {
+				if (existing_record)
+					record[TableResource.createdTimeProperty] = existing_record[TableResource.createdTimeProperty];
+				else record[TableResource.createdTimeProperty] = txn_time;
+			}
 			env_txn.addWrite({
 				key: this[ID_PROPERTY],
 				store: primary_store,

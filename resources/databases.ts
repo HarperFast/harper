@@ -320,6 +320,7 @@ export function table({
 	expiration,
 	attributes,
 	schemaDefined: schema_defined,
+	origin,
 }: TableDefinition) {
 	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
 	const root_store = database({ database: database_name, table: table_name });
@@ -339,6 +340,7 @@ export function table({
 			attribute.indexed = true;
 		} else attribute.attribute = attribute.name;
 	}
+	let has_changes;
 	let txn_commit;
 	if (Table) {
 		primary_key = Table.primaryKey;
@@ -374,9 +376,7 @@ export function table({
 				dbisDB: dbis_db,
 			})
 		);
-		for (const listener of table_listeners) {
-			listener(Table);
-		}
+		has_changes = true;
 		startTxn();
 		dbis_db.put(dbi_name, primary_key_attribute);
 	}
@@ -403,12 +403,19 @@ export function table({
 					//if (value_to_index != null) dbi.put(value_to_index, record[primary_key]);
 					// TODO: put in indexing code
 				}
+				has_changes = true;
 				dbis_db.put(dbi_name, attribute);
 			}
 			indices[attribute.name] = dbi;
 		}
 	} finally {
 		if (txn_commit) txn_commit();
+	}
+	Table.origin = origin;
+	if (has_changes) {
+		for (const listener of table_listeners) {
+			listener(Table);
+		}
 	}
 	if (expiration) Table.setTTLExpiration(+expiration);
 	return Table;
