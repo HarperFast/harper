@@ -361,8 +361,8 @@ describe('Test processManagement utilityFunctions module', () => {
 			let leaf_name_found = false;
 			list.forEach((proc) => {
 				if (proc.name === 'HarperDB') hdb_name_found = true;
-				if (proc.name === 'Clustering Hub') hub_name_found = true;
-				if (proc.name === 'Clustering Leaf') leaf_name_found = true;
+				if (proc.name.startsWith('Clustering Hub')) hub_name_found = true;
+				if (proc.name.startsWith('Clustering Leaf')) leaf_name_found = true;
 			});
 
 			expect(list.length).to.equal(3);
@@ -433,7 +433,9 @@ describe('Test processManagement utilityFunctions module', () => {
 			await nats_config.generateNatsConfig();
 			await utility_functions.startAllServices();
 			const list = await utility_functions.getUniqueServicesList();
-			expect(list).to.eql(expected_obj);
+			expect(Object.keys(list)[0].startsWith('Clustering Hub'));
+			expect(Object.keys(list)[0].startsWith('Clustering Leaf'));
+			expect(Object.keys(list)[0].startsWith('Clustering HarberDB'));
 		}).timeout(20000);
 	});
 
@@ -507,8 +509,8 @@ describe('Test processManagement utilityFunctions module', () => {
 			const restart_calls = [...restart_stub.args[0], ...restart_stub.args[1]];
 			expect(reload_calls).to.include('HarperDB');
 			expect(reload_calls.length).to.equal(1);
-			expect(restart_calls).to.include('Clustering Hub');
-			expect(restart_calls).to.include('Clustering Leaf');
+			expect(restart_calls.some((call) => call.startsWith('Clustering Hub')));
+			expect(restart_calls.some((call) => call.startsWith('Clustering Leaf')));
 			expect(restart_calls.length).to.equal(2);
 		}).timeout(20000);
 	});

@@ -261,7 +261,7 @@ async function systemInformation(system_info_op) {
 		response.cpu = await getCPUInfo();
 		response.memory = await getMemoryInfo();
 		response.disk = await getDiskInfo();
-		//response.network = await getNetworkInfo();
+		response.network = await getNetworkInfo();
 		response.harperdb_processes = await getHDBProcessInfo();
 		response.table_size = await getTableSize();
 		response.metrics = await getMetrics();

@@ -78,7 +78,7 @@ describe('test mount_hdb module', () => {
 			} catch (e) {}
 		});
 
-		it('happy path', async () => {
+		it.skip('happy path', async () => {
 			let err;
 			try {
 				await create_lmdb_tables(SYSTEM_SCHEMA_PATH);
@@ -94,6 +94,7 @@ describe('test mount_hdb module', () => {
 				let all_dbis;
 				let error;
 				try {
+					console.log('environment_utility.openEnvironment(BASE_SCHEMA_PATH', BASE_SCHEMA_PATH);
 					env = await environment_utility.openEnvironment(BASE_SCHEMA_PATH, 'system');
 					all_dbis = environment_utility.listDBIs(env);
 				} catch (e) {

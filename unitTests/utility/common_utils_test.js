@@ -736,7 +736,8 @@ describe('Test common_utils module', () => {
 		});
 	});
 
-	describe('Test checkSchemaTableExist', () => {
+	// we don't use hdb_schema anymore
+	describe.skip('Test checkSchemaTableExist', () => {
 		let test_obj = {
 			schema: 'sensor_data',
 			table: 'temperature',
