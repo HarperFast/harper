@@ -204,7 +204,7 @@ export class Resource implements ResourceInterface {
 	static async search(query: object): Promise<Iterable<object>> {
 		throw new Error('Not implemented');
 	}
-	loadRecord() {
+	loadRecord(allowInvalidated?: boolean) {
 		// nothing to be done by default, Table implements an actual real version of this
 	}
 	static loadRecord() {

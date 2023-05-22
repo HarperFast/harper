@@ -258,7 +258,7 @@ export function makeTable(options) {
 			}
 		}
 
-		async loadRecord() {
+		async loadRecord(allow_invalidated?: boolean) {
 			// TODO: determine if we use lazy access properties
 			const env_txn = this[DB_TXN_PROPERTY];
 			let entry = primary_store.getEntry(this[ID_PROPERTY], { transaction: env_txn?.getReadTxn() });
@@ -269,7 +269,7 @@ export function makeTable(options) {
 				record = entry.value;
 				if (this[VERSION_PROPERTY] < 0 || this.__invalidated__) entry = null;
 			}
-			if (!entry) {
+			if (!entry && !allow_invalidated) {
 				if (this.constructor.Source?.prototype.get) record = await this.getFromSource(record, this[VERSION_PROPERTY]);
 			}
 			copyRecord(record, this);

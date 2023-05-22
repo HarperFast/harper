@@ -49,7 +49,7 @@ export class DefaultAccess {
 		const search = this.request.search;
 		let query;
 		if (search) query = this.parseQuery(search);
-		await this.resource.loadRecord();
+		await this.resource.loadRecord(true);
 		const updated_data = await content;
 		if (this.resource.allowUpdate(this.request.user, updated_data)) {
 			return this.resource.put(updated_data, query);
@@ -75,12 +75,12 @@ export class DefaultAccess {
 		} else throw new AccessError(this.user);
 	}
 	async delete() {
-		await this.resource.loadRecord();
+		await this.resource.loadRecord(true);
 		if (this.resource.allowDelete(this.request.user)) return this.resource.delete();
 		else throw new AccessError(this.user);
 	}
 	async publish(content) {
-		await this.resource.loadRecord();
+		await this.resource.loadRecord(true);
 		const data = await content;
 		//console.log('publish', identifier, require('worker_threads').threadId);
 		if (this.request.retain) {
