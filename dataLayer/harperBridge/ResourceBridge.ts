@@ -211,6 +211,13 @@ export class ResourceBridge extends LMDBBridge {
 	async getDataByValue(search_object: SearchObject, comparator) {
 		const map = new Map();
 		const table = getTable(search_object);
+		if (
+			search_object.get_attributes &&
+			!search_object.get_attributes.includes(table.primaryKey) &&
+			search_object.get_attributes[0] !== '*'
+		)
+			// ensure that we get the primary key so we can make a mapping
+			search_object.get_attributes.push(table.primaryKey);
 		for await (const record of this.searchByValue(search_object, comparator)) {
 			map.set(record[table.primaryKey], record);
 		}

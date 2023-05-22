@@ -24,12 +24,14 @@ interface Databases {
 	[database_name: string]: Tables;
 }
 const USE_AUDIT = true; // TODO: Get this from config
-export let tables: Tables = {};
-export let databases: Databases = {};
+export const tables: Tables = Object.create(null);
+export const databases: Databases = Object.create(null);
+_assignPackageExport('databases', databases);
+_assignPackageExport('tables', tables);
 const table_listeners = [];
 let loaded_databases;
 const database_envs = new Map<string, any>();
-
+let defined_databases;
 /**
  * This gets the set of tables from the default database ("data").
  */
@@ -49,8 +51,8 @@ export function getTables(): Tables {
  */
 export function getDatabases(): Databases {
 	if (loaded_databases) return databases;
-	_assignPackageExport('databases', (databases = {}));
 	loaded_databases = true;
+	defined_databases = new Map();
 	let database_path = getHdbBasePath() && join(getHdbBasePath(), DATABASES_DIR_NAME);
 	const schema_configs = env_get(CONFIG_PARAMS.SCHEMAS) || {};
 	// not sure why this doesn't work with the environmemt manager
@@ -119,7 +121,18 @@ export function getDatabases(): Databases {
 			//TODO: Iterate configured table paths
 		}
 	}
-	_assignPackageExport('tables', (tables = databases.data || {}));
+	// now remove any databases or tables that have been removed
+	for (const db_name in databases) {
+		const defined_tables = defined_databases.get(db_name);
+		if (defined_tables) {
+			const tables = databases[db_name];
+			for (const table_name in tables) {
+				if (!defined_tables.has(table_name)) delete tables[table_name];
+			}
+			delete tables[DEFINED_TABLES];
+		} else delete databases[db_name];
+	}
+	defined_databases = null;
 	return databases;
 }
 export function resetDatabases() {
@@ -172,8 +185,7 @@ function readMetaDb(
 			attributes.push(value);
 			value.key = key;
 		}
-		const tables =
-			databases[schema_name] || (databases[schema_name] = databases[lowerCamelCase(schema_name)] = Object.create(null));
+		const tables = ensureDB(schema_name);
 		for (const [table_name, attributes] of tables_to_load) {
 			for (const attribute of attributes) {
 				const dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
@@ -196,21 +208,22 @@ function readMetaDb(
 							indices[attribute.name] = root_store.openDB(attribute.key, dbi_init);
 						}
 					}
-					const table =
-						(tables[CamelCase(table_name)] =
-						tables[table_name] =
-							makeTable({
-								primaryStore: primary_store,
-								auditStore: audit_store,
-								tableName: table_name,
-								primaryKey: attribute.name,
-								databasePath: is_legacy ? schema_name + '/' + table_name : schema_name,
-								databaseName: schema_name,
-								indices,
-								attributes,
-								schemaDefined: attribute.schemaDefined,
-								dbisDB: dbis_store,
-							}));
+					const table = setTable(
+						tables,
+						table_name,
+						makeTable({
+							primaryStore: primary_store,
+							auditStore: audit_store,
+							tableName: table_name,
+							primaryKey: attribute.name,
+							databasePath: is_legacy ? schema_name + '/' + table_name : schema_name,
+							databaseName: schema_name,
+							indices,
+							attributes,
+							schemaDefined: attribute.schemaDefined,
+							dbisDB: dbis_store,
+						})
+					);
 					for (const listener of table_listeners) {
 						listener(table);
 					}
@@ -232,15 +245,35 @@ interface TableDefinition {
 	attributes: any[];
 	schemaDefined?: boolean;
 }
-
+const DEFINED_TABLES = Symbol('defined-tables');
+function ensureDB(database_name) {
+	let db_tables = databases[database_name];
+	if (!db_tables) {
+		if (database_name === 'data') db_tables = databases[database_name] = tables;
+		else db_tables = databases[database_name] = databases[lowerCamelCase(database_name)] = Object.create(null);
+	}
+	if (!db_tables[DEFINED_TABLES] && defined_databases) {
+		const defined_tables = new Set(); // we create this so we can determine what was found in a reset and remove any removed dbs/tables
+		db_tables[DEFINED_TABLES] = defined_tables;
+		defined_databases.set(database_name, defined_tables);
+		defined_databases.set(lowerCamelCase(database_name), defined_tables);
+	}
+	return db_tables;
+}
+function setTable(tables, table_name, Table) {
+	tables[CamelCase(table_name)] = tables[table_name] = Table;
+	const defined_tables = tables[DEFINED_TABLES];
+	if (defined_tables) {
+		defined_tables.add(CamelCase(table_name));
+		defined_tables.add(table_name);
+	}
+	return Table;
+}
 const ROOT_STORE_KEY = Symbol('root-store');
 export function database({ database: database_name, table: table_name }) {
 	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
 	getDatabases();
-	const database =
-		databases[database_name] ||
-		(databases[database_name] = databases[lowerCamelCase(database_name)] = Object.create(null));
-	if (database_name === 'data') _assignPackageExport('tables', (tables = databases.data));
+	const database = ensureDB(database_name);
 	let root_store = database[ROOT_STORE_KEY];
 	if (root_store) return root_store;
 	let database_path = join(getHdbBasePath(), DATABASES_DIR_NAME);
@@ -325,21 +358,22 @@ export function table({
 		primary_store.tableId = root_store.env.nextTableId++;
 		primary_key_attribute.tableId = primary_store.tableId;
 		dbis_db = root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
-		Table =
-			tables[CamelCase(table_name)] =
-			tables[table_name] =
-				makeTable({
-					primaryStore: primary_store,
-					auditStore: audit_store,
-					primaryKey: primary_key,
-					tableName: table_name,
-					databasePath: database_name,
-					databaseName: database_name,
-					indices: [],
-					attributes,
-					schemaDefined: schema_defined,
-					dbisDB: dbis_db,
-				});
+		Table = setTable(
+			tables,
+			table_name,
+			makeTable({
+				primaryStore: primary_store,
+				auditStore: audit_store,
+				primaryKey: primary_key,
+				tableName: table_name,
+				databasePath: database_name,
+				databaseName: database_name,
+				indices: [],
+				attributes,
+				schemaDefined: schema_defined,
+				dbisDB: dbis_db,
+			})
+		);
 		for (const listener of table_listeners) {
 			listener(Table);
 		}
