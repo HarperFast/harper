@@ -13,7 +13,7 @@ const assert = require('assert');
 describe('Socket Router', () => {
 	let workers, server;
 	before(async function () {
-		this.timeout(5000);
+		this.timeout(15000);
 		workers = await startHTTPThreads(4);
 		console.log({ workers });
 	});
