@@ -35,10 +35,6 @@ describe('test MQTT connections and commands', () => {
 			client2.on('error', reject);
 		});
 	});
-	after(() => {
-		client.end();
-		client2.end();
-	})
 	it('subscribe to retained/persisted record', async function () {
 		let path = 'VariedProps/' + available_records[1];
 		await new Promise((resolve, reject) => {
@@ -250,7 +246,7 @@ describe('test MQTT connections and commands', () => {
 			});
 		});
 	});
-	it.skip('subscribe with QoS=1 and reconnect with non-clean session', async function () {
+	it('subscribe with QoS=1 and reconnect with non-clean session', async function () {
 		this.timeout(10000);
 		let client = connect('mqtt://localhost:1883', {
 			clean: false,
@@ -261,7 +257,7 @@ describe('test MQTT connections and commands', () => {
 			client.on('error', reject);
 		});
 		await new Promise((resolve, reject) => {
-			client.subscribe('SimpleRecord/+', {
+			client.subscribe('SimpleRecord/41', {
 				qos: 1
 			}, function (err) {
 				console.log('subscribed', err);
@@ -270,17 +266,32 @@ describe('test MQTT connections and commands', () => {
 					resolve();
 				}
 			});
+		});
+		client.end();
+		client = connect('mqtt://localhost:1883', {
+			clean: false,
+			clientId: 'test-client1'
 		});
 		await new Promise((resolve, reject) => {
-			client.subscribe('SimpleRecord/+', {
-				qos: 1
-			}, function (err) {
-				console.log('subscribed', err);
-				if (err) reject(err);
-				else {
-					resolve();
-				}
+			client.on('connect', resolve);
+			client.on('error', reject);
+		});
+		await new Promise((resolve, reject) => {
+			client.on('message', (topic, payload, packet) => {
+				let record = JSON.parse(payload, packet);
+				console.log('after reconnect', topic, record);
+				resolve();
+			});
+
+			client.publish('SimpleRecord/41', JSON.stringify({
+				name: 'This is a test of durable session'
+			}), {
+				qos: 1,
 			});
 		});
+	});
+	after(() => {
+		client.end();
+		client2.end();
 	});
 });

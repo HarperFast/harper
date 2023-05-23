@@ -30,26 +30,27 @@ const DurableSession = table({
  * this by querying the audit log, but we will need to ensure the audit log is enabled on any tables/records that receive
  * subscriptions.
  * @param session_id
+ * @param user
+ * @param non_durable
  */
-export async function getSession({ clientId: session_id, clean: non_durable }) {
+export async function getSession({ clientId: session_id, user, clean: non_durable }) {
 	if (session_id && !non_durable) {
-		const session = DurableSession.getResource(session_id);
-		await session.loadRecord();
-		// resuming a session, we need to resume each subscription
-		for (const subscription of session.get('subscriptions') || []) {
-			session.addSubscription(subscription);
-		}
+		const session_resource = DurableSession.getResource(session_id);
+		await session_resource.loadRecord();
+		const session = new DurableSubscriptionsSession(session_id, user, session_resource);
+		await session.resume();
 		return session;
-	} else return new SubscriptionsSession(session_id);
+	} else return new SubscriptionsSession(session_id, user);
 }
 
-export class SubscriptionsSession {
+class SubscriptionsSession {
 	listener: (message, subscription) => any;
 	sessionId: any;
 	user: any;
 	subscriptions = [];
-	constructor(session_id) {
+	constructor(session_id, user) {
 		this.sessionId = session_id;
+		this.user = user;
 	}
 	async addSubscription(subscription_request) {
 		const { topic, qos, rh, startTime: start_time } = subscription_request;
@@ -116,17 +117,27 @@ export class SubscriptionsSession {
 }
 export class DurableSubscriptionsSession extends SubscriptionsSession {
 	sessionRecord: any;
-	constructor(session_id, record?) {
-		super(session_id);
+	constructor(session_id, user, record?) {
+		super(session_id, user);
 		this.sessionRecord = record || { id: session_id, subscriptions: [] };
 	}
+	async resume() {
+		// resuming a session, we need to resume each subscription
+		for (const subscription of this.sessionRecord.subscriptions || []) {
+			await this.resumeSubscription(subscription);
+		}
+	}
+	resumeSubscription(subscription) {
+		return super.addSubscription(subscription);
+	}
 	async addSubscription(subscription) {
-		await super.addSubscription(subscription);
+		await this.resumeSubscription(subscription);
 		const { topic, qos, startTime: start_time } = subscription;
 		if (qos > 0 && !start_time) {
 			// TODO: Add this to the session record with the correct timestamp and save it
+			if (!this.sessionRecord.subscriptions) this.sessionRecord.subscriptions = [];
 			this.sessionRecord.subscriptions.push({ topic, qos, startTime: Date.now() });
-			DurableSession.put(this.sessionRecord.id, this.sessionRecord);
+			DurableSession.put(this.sessionId, this.sessionRecord);
 		}
 		return subscription.qos;
 	}

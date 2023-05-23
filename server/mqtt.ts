@@ -80,9 +80,8 @@ function onSocket(socket, send, request, user) {
 						);
 
 					// TODO: Do we want to prefix the user name to the client id (to prevent collisions when poor ids are used)
-					session = await getSession(packet);
+					session = await getSession({ user, ...packet });
 					// TODO: Handle the will & testament, and possibly use the will's content type as a hint for expected contet
-					session.user = user;
 					session.setListener((topic, message) => {
 						const payload = generate({
 							cmd: 'publish',
@@ -141,8 +140,7 @@ function onSocket(socket, send, request, user) {
 				case 'publish':
 					// deserialize
 					const deserialize =
-						socket.deserialize ||
-						(socket.deserialize = getDeserializer(request?.headers['content-type'], packet.payload));
+						socket.deserialize || (socket.deserialize = getDeserializer(request?.headers['content-type']));
 					const data = packet.payload.length > 0 ? deserialize(packet.payload) : undefined; // zero payload length maps to a delete
 					let published;
 					try {

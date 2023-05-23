@@ -29,7 +29,6 @@ export class Resource implements ResourceInterface {
 	[CONTEXT_PROPERTY]: any;
 	[USER_PROPERTY]: any;
 	[ID_PROPERTY]: any;
-	property?: string;
 	[LAST_MODIFICATION_PROPERTY] = 0;
 	[TRANSACTIONS_PROPERTY]: Transaction[] & { timestamp: number };
 	static transactions: Transaction[] & { timestamp: number };
@@ -151,7 +150,7 @@ export class Resource implements ResourceInterface {
 	 * @param record
 	 * @param options
 	 */
-	static async put(id, record, options): void {
+	static async put(id, record, options?): void {
 		if (typeof id === 'object') {
 			// id is optional
 			options = record;

@@ -243,9 +243,7 @@ export function makeTable(options) {
 			);
 		}
 
-		table: any;
 		[DB_TXN_PROPERTY]: DatabaseTransaction;
-		parent: Resource;
 		static Source: typeof Resource;
 
 		constructor(identifier, resource_info) {
@@ -415,6 +413,7 @@ export function makeTable(options) {
 		 */
 		update() {
 			const env_txn = this[DB_TXN_PROPERTY];
+			if (!env_txn) throw new Error('Can not update a table resource outside of a transaction');
 			// record in the list of updating records so it can be written to the database when we commit
 			if (!env_txn.updatingResources) env_txn.updatingResources = [];
 			env_txn.updatingResources.push(this);
@@ -861,7 +860,7 @@ export function makeTable(options) {
 			db_txn.dbPath = database_path;
 			resource[TRANSACTIONS_PROPERTY].push(db_txn);
 		}
-		resource[DB_TXN_PROPERTY] = db_txn;
+		return (resource[DB_TXN_PROPERTY] = db_txn);
 	}
 	function updateIndices(id, existing_record, record?) {
 		// iterate the entries from the record
