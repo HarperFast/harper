@@ -18,7 +18,6 @@ import { compareKeys, readKey, MAXIMUM_KEY } from 'ordered-binary';
 import * as lmdb_terms from '../utility/lmdb/terms';
 import * as env_mngr from '../utility/environment/environmentManager';
 import { addSubscription, listenToCommits } from './transactionBroadcast';
-import { getWritableRecord } from './WritableRecord';
 import { handleHDBError, ClientError } from '../utility/errors/hdbError';
 import OpenDBIObject from '../utility/lmdb/OpenDBIObject';
 import * as signalling from '../utility/signalling';
@@ -32,10 +31,8 @@ const LMDB_PREFETCH_WRITES = env_mngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 
 const DB_TXN_PROPERTY = Symbol('dbTxn');
 const VERSION_PROPERTY = Symbol.for('version');
+const TABLE_PUBLISH_ID = Symbol('table-publish-id');
 const LAZY_PROPERTY_ACCESS = { lazy: true };
-const TXN_KEY = Symbol('transaction');
-
-const INVALIDATED = 16;
 
 export interface Table {
 	primaryStore: Database;
@@ -81,8 +78,9 @@ export function makeTable(options) {
 		if (attribute.assignUpdatedTime || attribute.name === '__updatedtime__') updated_time_property = attribute.name;
 		if (attribute.isPrimaryKey) primary_key_attribute = attribute;
 	}
+	const TableName = CamelCase(table_name);
 	class TableResource extends Resource {
-		static name = CamelCase(table_name); // just for display/debugging purposes
+		static name = TableName; // just for display/debugging purposes
 		static primaryStore = primary_store;
 		static auditStore = audit_store;
 		static primaryKey = primary_key;
@@ -108,7 +106,6 @@ export function makeTable(options) {
 							resource = resource.use(Table, id);
 						}
 					}
-					console.log(event);
 					switch (event.operation) {
 						case 'put':
 							return resource.#writePut(value);
@@ -407,16 +404,31 @@ export function makeTable(options) {
 		}
 
 		/**
-		 * Start updating a record. The returned record will be "writable" record, which records changes which are written
+		 * Start updating a record. The returned resource will record changes which are written
 		 * once the corresponding transaction is committed. These changes can (eventually) include CRDT type operations.
 		 * @param record This can be a record returned from get or a record id.
 		 */
-		update() {
+		update(arg) {
+			if (typeof arg === 'function') {
+				return this.transact(() => {
+					this.update();
+					arg();
+				});
+			}
 			const env_txn = this[DB_TXN_PROPERTY];
 			if (!env_txn) throw new Error('Can not update a table resource outside of a transaction');
 			// record in the list of updating records so it can be written to the database when we commit
-			if (!env_txn.updatingResources) env_txn.updatingResources = [];
-			env_txn.updatingResources.push(this);
+			if (arg === false) {
+				const existing_index = env_txn.updatingResources.indexOf(this);
+				if (existing_index > -1) env_txn.updatingResources.splice(existing_index, 1);
+				return this;
+			}
+			if (!env_txn.updatingResources) env_txn.updatingResources = [this];
+			else if (env_txn.updatingResources.indexOf(this) === -1) env_txn.updatingResources.push(this);
+			if (typeof arg === 'object' && arg) {
+				Object.assign(this, arg);
+			}
+			return this;
 		}
 
 		/**
@@ -571,8 +583,8 @@ export function makeTable(options) {
 			return this.#writeDelete();
 		}
 		#writeDelete() {
-			const env_txn = this[DB_TXN_PROPERTY];
-			const txn_time = this[TRANSACTIONS_PROPERTY].timestamp;
+			const env_txn = this[DB_TXN_PROPERTY] || immediateTransaction;
+			const txn_time = this[TRANSACTIONS_PROPERTY]?.timestamp || immediateTransaction.timestamp;
 			env_txn.addWrite({
 				key: this[ID_PROPERTY],
 				store: primary_store,
@@ -729,19 +741,38 @@ export function makeTable(options) {
 			return records;
 		}
 		subscribe(options) {
+			if (!audit_store) throw new Error('Can not subscribe to a table without an audit log');
 			const subscription = addSubscription(
 				this.constructor,
 				this[ID_PROPERTY],
-				function (id, audit_record) {
+				function (id, audit_record, timestamp) {
 					//let result = await this.get(key);
 					try {
-						this.send({ id, ...audit_record });
+						this.send({ id, timestamp, ...audit_record });
 					} catch (error) {
 						console.error(error);
 					}
 				},
 				options.startTime
 			);
+			if (options.startTime) {
+				const version = this[VERSION_PROPERTY];
+				if (options.startTime < version) {
+					// start time specified, get the audit history for this record
+					const history = [];
+					let next_version = version;
+					do {
+						const audit_entry = audit_store.get([next_version, table_id, this[ID_PROPERTY]]);
+						if (audit_entry) {
+							history.push(audit_entry);
+							next_version = audit_entry.lastVersion;
+						} else break;
+					} while (next_version > options.startTime);
+					for (let i = history.length; i > 0; ) {
+						subscription.send(history[--i]);
+					}
+				}
+			}
 			if (options.listener) subscription.on('data', options.listener);
 			// if retain and it exists, send the first value
 			if (!options.noRetain && this.doesExist()) subscription.send({ value: this });
@@ -785,6 +816,10 @@ export function makeTable(options) {
 					};
 				},
 			});
+		}
+		static async publish(message, options?) {
+			const publishing_resource = new this(TABLE_PUBLISH_ID, this);
+			return publishing_resource.publish(message, options);
 		}
 		static async addAttribute(attribute) {
 			// TODO: validation

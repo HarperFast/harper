@@ -162,7 +162,16 @@ export class DefaultAccess {
 								conditions.select = value.split(',');
 								break;
 							case 'sort':
-								conditions.sort = value.split(',');
+								conditions.sort = value.split(',').map((direction) => {
+									switch (direction[0]) {
+										case '-':
+											return { attribute: direction.slice(1), descending: true };
+										case '+':
+											return { attribute: direction.slice(1), descending: false };
+										default:
+											return { attribute: direction, descending: false };
+									}
+								});
 								break;
 							default:
 								conditions.push({
