@@ -162,8 +162,7 @@ describe('test MQTT connections and commands', () => {
 		});
 		await new Promise((resolve, reject) => {
 			client.on('message', (topic, payload, packet) => {
-				let record = JSON.parse(payload, packet);
-				console.log('second', topic, record);
+				let record = JSON.parse(payload);
 				resolve();
 			});
 			client.publish('SimpleRecord/22', JSON.stringify({
@@ -199,7 +198,7 @@ describe('test MQTT connections and commands', () => {
 		});
 		await new Promise((resolve, reject) => {
 			client.on('message', (topic, payload, packet) => {
-				let record = JSON.parse(payload, packet);
+				let record = JSON.parse(payload);
 				reject('Should not receive a message that we are unsubscribed to');
 			});
 			client.publish('SimpleRecord/23', JSON.stringify({
@@ -213,7 +212,6 @@ describe('test MQTT connections and commands', () => {
 		client.end();
 	});
 	it('subscribe to wildcard/full table', async function () {
-		this.timeout(10000);
 		await new Promise((resolve, reject) => {
 			client2.subscribe('SimpleRecord/+', function (err) {
 				console.log('subscribed', err);
@@ -226,9 +224,9 @@ describe('test MQTT connections and commands', () => {
 		let message_count = 0;
 		await new Promise((resolve, reject) => {
 			client2.on('message', (topic, payload, packet) => {
-				let record = JSON.parse(payload, packet);
-				console.log('second', topic, record);
-				if (++message_count == 2)
+				let record = JSON.parse(payload);
+				console.log('received', topic, record);
+				if (++message_count == 3)
 					resolve();
 			});
 			client2.publish('SimpleRecord/44', JSON.stringify({
@@ -244,17 +242,29 @@ describe('test MQTT connections and commands', () => {
 				retain: true,
 				qos: 1,
 			});
+
+			client.publish('SimpleRecord', JSON.stringify({
+				name: 'This is a test to the generic table topic'
+			}), {
+				qos: 1,
+			});
 		});
 	});
 	it('subscribe with QoS=1 and reconnect with non-clean session', async function () {
-		this.timeout(10000);
+		// this first connection is a tear down to remove any previous durable session with this id
 		let client = connect('mqtt://localhost:1883', {
-			clean: false,
+			clean: true,
 			clientId: 'test-client1'
 		});
 		await new Promise((resolve, reject) => {
 			client.on('connect', resolve);
 			client.on('error', reject);
+		});
+		await client.end();
+		await delay(10);
+		client = connect('mqtt://localhost:1883', {
+			clean: false,
+			clientId: 'test-client1'
 		});
 		await new Promise((resolve, reject) => {
 			client.subscribe('SimpleRecord/41', {
@@ -267,7 +277,8 @@ describe('test MQTT connections and commands', () => {
 				}
 			});
 		});
-		client.end();
+		await client.end();
+		await delay(10);
 		client = connect('mqtt://localhost:1883', {
 			clean: false,
 			clientId: 'test-client1'
@@ -278,20 +289,43 @@ describe('test MQTT connections and commands', () => {
 		});
 		await new Promise((resolve, reject) => {
 			client.on('message', (topic, payload, packet) => {
-				let record = JSON.parse(payload, packet);
-				console.log('after reconnect', topic, record);
+				let record = JSON.parse(payload);
 				resolve();
 			});
 
 			client.publish('SimpleRecord/41', JSON.stringify({
-				name: 'This is a test of durable session'
+				name: 'This is a test of durable session with subscriptions restarting'
 			}), {
 				qos: 1,
 			});
 		});
+		client.end();
+		await delay(10);
+		await client2.publish('SimpleRecord/41', JSON.stringify({
+			name: 'This is a test of publishing to a disconnected durable session'
+		}), {
+			qos: 1,
+		});
+		await delay(10);
+		client = connect('mqtt://localhost:1883', {
+			clean: false,
+			clientId: 'test-client1'
+		});
+		await new Promise((resolve, reject) => {
+			client.on('error', reject);
+			client.on('message', (topic, payload, packet) => {
+				let record = JSON.parse(payload);
+				expect(record.name.includes('disconnected'));
+				resolve();
+			});
+		});
+
 	});
 	after(() => {
 		client.end();
 		client2.end();
 	});
 });
+function delay(ms) {
+	return new Promise(resolve => setTimeout(resolve, ms));
+}

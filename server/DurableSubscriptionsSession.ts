@@ -33,27 +33,49 @@ const DurableSession = table({
  * @param user
  * @param non_durable
  */
-export async function getSession({ clientId: session_id, user, clean: non_durable }) {
+export async function getSession({
+	clientId: session_id,
+	user,
+	listener,
+	clean: non_durable,
+}: {
+	clientId;
+	user;
+	listener: Function;
+	clean?: boolean;
+}) {
+	let session;
 	if (session_id && !non_durable) {
 		const session_resource = DurableSession.getResource(session_id);
 		await session_resource.loadRecord();
-		const session = new DurableSubscriptionsSession(session_id, user, session_resource);
+		session = new DurableSubscriptionsSession(session_id, user, session_resource);
+		session.listener = listener;
 		await session.resume();
-		return session;
-	} else return new SubscriptionsSession(session_id, user);
+	} else {
+		if (session_id) {
+			// connecting with a clean session and session id is how durable sessions are deleted
+			const session_resource = await DurableSession.get(session_id);
+			if (session_resource) session_resource.delete();
+		}
+		session = new SubscriptionsSession(session_id, user);
+		session.listener = listener;
+	}
+	return session;
 }
+let next_message_id = 1;
 
 class SubscriptionsSession {
-	listener: (message, subscription) => any;
+	listener: (message, subscription, timestamp, qos) => any;
 	sessionId: any;
 	user: any;
 	subscriptions = [];
+	awaitingAcks: Map<number, any>;
 	constructor(session_id, user) {
 		this.sessionId = session_id;
 		this.user = user;
 	}
-	async addSubscription(subscription_request) {
-		const { topic, qos, rh, startTime: start_time } = subscription_request;
+	async addSubscription(subscription_request, needs_ack) {
+		const { topic, noRetain: rh, startTime: start_time } = subscription_request;
 		const search_index = topic.indexOf('?');
 		let search, path;
 		if (search_index > -1) {
@@ -70,16 +92,27 @@ class SubscriptionsSession {
 		const resource = await resources.call(path, this, async (resource_access) => {
 			return (subscription = await resource_access.subscribe({
 				listener: (update, id) => {
-					this.listener(search ? path + '/' + id : path, update.value);
+					let message_id;
+					if (needs_ack) {
+						update.topic = topic;
+						message_id = this.needsAcknowledge(update);
+					}
+					this.listener(search ? path + '/' + id : path, update.value, message_id, subscription_request);
 				},
 				search,
 				user: this.user,
-				startTime: start_time || getNextMonotonicTime(),
+				startTime: start_time,
 				noRetain: rh,
 			}));
 		});
 		subscription.topic = topic;
 		this.subscriptions.push(subscription);
+	}
+	needsAcknowledge(update) {
+		return next_message_id++;
+	}
+	acknowledge(message_id) {
+		// nothing to do in a clean session
 	}
 	async removeSubscription(topic) {
 		const search_index = topic.indexOf('?');
@@ -105,9 +138,6 @@ class SubscriptionsSession {
 	setListener(listener: (message) => any) {
 		this.listener = listener;
 	}
-	acknowledge() {
-		// TODO: Increment the timestamp for the corresponding subscription, possibly recording any interim unacked messages
-	}
 	disconnect() {
 		for (const subscription of this.subscriptions) {
 			subscription.end();
@@ -124,14 +154,43 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	async resume() {
 		// resuming a session, we need to resume each subscription
 		for (const subscription of this.sessionRecord.subscriptions || []) {
-			await this.resumeSubscription(subscription);
+			await this.resumeSubscription({ noRetain: true, ...subscription }, true);
 		}
 	}
-	resumeSubscription(subscription) {
-		return super.addSubscription(subscription);
+	resumeSubscription(subscription, needs_ack) {
+		return super.addSubscription(subscription, true);
 	}
-	async addSubscription(subscription) {
-		await this.resumeSubscription(subscription);
+	needsAcknowledge(update) {
+		if (!this.awaitingAcks) this.awaitingAcks = new Map();
+		const message_id = next_message_id++;
+		this.awaitingAcks.set(message_id, update);
+		return message_id;
+	}
+	acknowledge(message_id) {
+		const update = this.awaitingAcks.get(message_id);
+		this.awaitingAcks.delete(message_id);
+		const topic = update.topic;
+		for (const [, remaining_update] of this.awaitingAcks) {
+			if (remaining_update.topic === topic) {
+				if (remaining_update.timestamp < update.timestamp) {
+					// TODO: Record this update as an out-of-order ack
+					return;
+				}
+			}
+		}
+		this.sessionRecord.update(() => {
+			for (const subscription of this.sessionRecord.subscriptions) {
+				if (subscription.topic === topic) {
+					subscription.startTime = update.timestamp;
+				}
+			}
+		});
+		this.awaitingAcks.lastTime = Math.max(this.awaitingAcks.lastTime || 0, update.timestamp);
+		// TODO: Increment the timestamp for the corresponding subscription, possibly recording any interim unacked messages
+	}
+
+	async addSubscription(subscription, needs_ack) {
+		await this.resumeSubscription(subscription, needs_ack);
 		const { topic, qos, startTime: start_time } = subscription;
 		if (qos > 0 && !start_time) {
 			// TODO: Add this to the session record with the correct timestamp and save it

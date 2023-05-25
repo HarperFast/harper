@@ -57,10 +57,12 @@ function onSocket(socket, send, request, user) {
 	function onClose() {
 		session.disconnect();
 	}
+	let awaiting_acks: Map;
 
 	parser.on('packet', async (packet) => {
 		if (user?.then) user = await user;
 		try {
+			let payload;
 			switch (packet.cmd) {
 				case 'connect':
 					if (packet.username) {
@@ -78,25 +80,29 @@ function onSocket(socket, send, request, user) {
 								returnCode: 0x86, // bad username or password
 							})
 						);
-
 					// TODO: Do we want to prefix the user name to the client id (to prevent collisions when poor ids are used)
-					session = await getSession({ user, ...packet });
 					// TODO: Handle the will & testament, and possibly use the will's content type as a hint for expected contet
-					session.setListener((topic, message) => {
-						const payload = generate({
-							cmd: 'publish',
-							topic,
-							payload: serialize(message),
-						});
-						try {
-							const slash_index = topic.indexOf('/', 1);
-							const general_topic = slash_index > 0 ? topic.slice(0, slash_index) : topic;
-							send(payload);
-							recordAction(payload.length, 'bytes-sent', general_topic, 'deliver', 'mqtt');
-						} catch (error) {
-							console.warn(error);
-							session.disconnect();
-						}
+					session = await getSession({
+						user,
+						...packet,
+						listener: (topic, message, message_id, subscription) => {
+							const payload = generate({
+								cmd: 'publish',
+								topic,
+								payload: serialize(message),
+								messageId: message_id,
+								qos: subscription.qos,
+							});
+							try {
+								const slash_index = topic.indexOf('/', 1);
+								const general_topic = slash_index > 0 ? topic.slice(0, slash_index) : topic;
+								send(payload);
+								recordAction(payload.length, 'bytes-sent', general_topic, 'deliver', 'mqtt');
+							} catch (error) {
+								console.warn(error);
+								session.disconnect();
+							}
+						},
 					});
 					send(
 						generate({
@@ -110,11 +116,11 @@ function onSocket(socket, send, request, user) {
 					const granted = [];
 					info('Received subscription request', packet.subscriptions);
 					for (const subscription of packet.subscriptions) {
-						granted.push((await session.addSubscription(subscription)) || 0);
+						granted.push((await session.addSubscription(subscription, subscription.qos >= 1)) || 0);
 					}
 					await session.committed;
 					info('Sending suback', packet.subscriptions[0].topic);
-					const payload = generate({
+					payload = generate({
 						// Send a subscription acknowledgment
 						cmd: 'suback',
 						granted,
@@ -159,24 +165,34 @@ function onSocket(socket, send, request, user) {
 						}
 					}
 					if (packet.qos > 0) {
-						let payload;
-						if (published === false)
-							payload = generate({
-								// Send a publish acknowledgment
-								cmd: 'puback',
-								messageId: packet.messageId,
-								reasonCode: 0x90, // Topic name invalid
-							});
-						else
-							payload = generate({
-								// Send a publish acknowledgment
-								cmd: 'puback',
-								messageId: packet.messageId,
-								reasonCode: 0, // success
-							});
+						payload = generate({
+							// Send a publish acknowledgment
+							cmd: 'puback',
+							messageId: packet.messageId,
+							reasonCode:
+								published === false
+									? 0x90 // Topic name invalid
+									: 0, //success
+						});
 						send(payload);
 						recordAction(payload.length, 'bytes-sent', null, 'puback', 'mqtt');
 					}
+					break;
+				case 'pubrec':
+					payload = generate({
+						// Send a publish acknowledgment
+						cmd: 'pubrel',
+						messageId: packet.messageId,
+						reasonCode:
+							published === false
+								? 0x90 // Topic name invalid
+								: 0, //success
+					});
+					send(payload);
+					break;
+				case 'pubcomp':
+				case 'puback':
+					session.acknowledge(packet.messageId);
 					break;
 				case 'pingreq':
 					send(generate({ cmd: 'pingresp' }));

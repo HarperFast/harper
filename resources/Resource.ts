@@ -371,9 +371,8 @@ export class Resource implements ResourceInterface {
 	allowRead(user): boolean | object {
 		return this.constructor.allowRead(user);
 	}
-	static allowUpdate(): boolean | object {
-		// can not update the entire table by default
-		return false;
+	static allowUpdate(user): boolean | object {
+		return user?.role.permission.super_user;
 	}
 	allowUpdate(user): boolean | object {
 		return user?.role.permission.super_user;
@@ -469,5 +468,14 @@ class UpdatableArray extends Array {
 	// eventually provide CRDT tracking for push, unshift, pop, etc.
 }
 function copyArray(stored_array, target_array) {
-	for (let i = 0, l = stored_array.length; i < l; i++) target_array[i] = stored_array[i];
+	for (let i = 0, l = stored_array.length; i < l; i++) {
+		let value = stored_array[i];
+		// copy sub-objects (it assumed we don't really need to lazily access entries in an array,
+		// if an array is accessed, probably all elements in array will be accessed
+		if (typeof value === 'object' && value) {
+			if (value.constructor === Object) copyRecord(value, (value = new UpdatableObject()));
+			else if (value.constructor === Array) copyArray(value, (value = new UpdatableArray()));
+		}
+		target_array[i] = value;
+	}
 }

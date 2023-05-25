@@ -214,7 +214,7 @@ function notifyFromTransactionData(path, audit_ids, same_thread?) {
 				}
 				try {
 					if (subscription.crossThreads === false && !same_thread) continue;
-					subscription.listener(record_key, audit_record);
+					subscription.listener(record_key, audit_record, txn_time);
 				} catch (error) {
 					console.error(error);
 					info(error);
