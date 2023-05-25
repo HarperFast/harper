@@ -40,7 +40,7 @@ export function loadApplications(loaded_plugin_modules?: Map<any, any>, loaded_r
 	if (existsSync(CF_ROUTES_DIR)) {
 		const cf_folders = readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
 		for (const app_entry of cf_folders) {
-			if (!app_entry.isDirectory() && !app_entry.isSymbolicLink()) return;
+			if (!app_entry.isDirectory() && !app_entry.isSymbolicLink()) continue;
 			const app_name = app_entry.name;
 			const app_folder = join(CF_ROUTES_DIR, app_name);
 			cfs_loaded.push(loadApplication(app_folder, resources));
