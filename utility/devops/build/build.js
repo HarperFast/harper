@@ -27,15 +27,20 @@ let entry_modules = [
 	'utility/scripts/restartHdb.js',
 ];
 for (let entry_module of entry_modules) {
-	esbuild.build({
-		entryPoints: [entry_module],
-		bundle: true,
-		platform: 'node',
-		minify: true,
-		keepNames: true,
-		external,
-		outfile: path.join('npm_pack', entry_module),
-	});
+	let outfile = path.join('npm_pack', entry_module);
+	esbuild
+		.build({
+			entryPoints: [entry_module],
+			bundle: true,
+			platform: 'node',
+			minify: true,
+			keepNames: true,
+			external,
+			outfile,
+		})
+		.then(() => {
+			fs.writeFileSync(outfile, fs.readFileSync(outfile, 'utf8').replaceAll('../../index', '../index'));
+		});
 }
 
 (async () => {
