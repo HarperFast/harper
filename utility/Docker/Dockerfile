@@ -2,12 +2,24 @@ ARG NODE_VERSION
 FROM node:$NODE_VERSION-bullseye-slim
 ARG HARPERDB_TARBALL
 
+# RH Container Certification
+LABEL name="harperdb"
+LABEL vendor="HarperDB"
+LABEL version="1.0"
+LABEL release=$HARPERDB_VERSION
+LABEL summary="short summary"
+LABEL description="long description"
+
 #Expose HarperDB ports
 EXPOSE 9925
 EXPOSE 9926
 
 # Install ps
 RUN apt-get update && apt-get install -y procps
+
+# add Licensing files
+RUN mkdir /licenses
+COPY utility/Docker/licenses/* /licenses/.
 
 #Change node user and group to harperdb
 RUN usermod -d /home/harperdb -l harperdb node && \

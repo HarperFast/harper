@@ -1,0 +1,66 @@
+FROM registry.access.redhat.com/ubi8/nodejs-18:latest
+ARG HARPERDB_TARBALL
+ARG HARPERDB_VERSION
+
+# RHCC Metadata
+LABEL name="harperdb-openshift"
+LABEL vendor="HarperDB"
+LABEL version="4.1.0"
+LABEL release=$HARPERDB_VERSION
+LABEL summary="HarperDB is a turn-key solution for the collection, distribution, and analysis of data."
+LABEL description="HarperDB is a turn-key solution for the collection, distribution, and analysis of data throughout your organization. Projects that have historically taken months (or even years) of consulting, configuration, and custom development can be completed in days or weeks with HarperDB."
+
+#Expose HarperDB ports
+EXPOSE 9925
+EXPOSE 9926
+EXPOSE 9932
+
+# for install only
+USER root
+
+# install deps
+RUN dnf install --assumeyes hostname && dnf clean all
+
+# RHCC Licensing files
+RUN mkdir /licenses
+COPY utility/Docker/licenses/* /licenses/.
+
+# Create symlink for compatibility
+RUN ln -s ${HOME} /home/harperdb
+
+#Copy HarperDB tarball
+COPY $HARPERDB_TARBALL .
+
+#Create installation directory, .harperdb directory and hdb_boot_properties.file
+RUN mkdir -p /home/harperdb/hdb && \
+    mkdir /home/harperdb/.harperdb && \
+    touch /home/harperdb/.harperdb/hdb_boot_properties.file && \
+    echo $'settings_path = /home/harperdb/hdb/harperdb-config.yaml\ninstall_user = default' > /home/harperdb/.harperdb/hdb_boot_properties.file
+
+#Create mount point
+VOLUME /home/harperdb/hdb
+
+# fix permissions -- requires root group
+RUN chown -R default:root /home/harperdb /home/harperdb/.harperdb
+
+#Set HarperDB installation parameters
+ENV TC_AGREEMENT=yes
+ENV ROOTPATH=/home/harperdb/hdb
+ENV OPERATIONSAPI_NETWORK_PORT=9925
+ENV HDB_ADMIN_USERNAME=HDB_ADMIN
+ENV HDB_ADMIN_PASSWORD=password
+ENV LOGGING_STDSTREAMS=true
+
+#Set the user for the below instructions (respected by RUN, CMD, ENTRYPOINT only)
+USER default
+
+#Set the  working directory for the below instructions
+WORKDIR /home/harperdb/
+
+#Install HarperDB package and clean up tarball
+RUN npm install $HARPERDB_TARBALL && \
+    npm cache clean --force && \
+    rm -f $HARPERDB_TARBALL
+
+#If no arguments are passed to docker run, execute HarperDB
+CMD ["harperdb"]
