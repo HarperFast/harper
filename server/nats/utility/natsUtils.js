@@ -531,9 +531,20 @@ async function publishToStream(subject_name, stream_name, msg_header, message) {
 	} catch (err) {
 		// If the stream doesn't exist it is created and published to
 		if (err.code && err.code.toString() === '503') {
-			hdb_logger.trace(`publishToStream creating stream: ${stream_name}`);
-			await createLocalStream(stream_name, [subject]);
-			await js.publish(subject, encoded_message, { headers: msg_header });
+			return exclusiveLock(async () => {
+				// try again once we have the lock
+				try {
+					await js.publish(subject, encoded_message, {headers: msg_header});
+				} catch(error) {
+					if (err.code && err.code.toString() === '503') {
+						console.log(`publishToStream creating stream: ${stream_name}`);
+						await createLocalStream(stream_name, [subject]);
+						await js.publish(subject, encoded_message, { headers: msg_header });
+					} else {
+						throw err;
+					}
+				}
+			});
 		} else {
 			throw err;
 		}
@@ -880,10 +891,7 @@ async function updateWorkStream(subscription, node_name) {
 
 	// Nats has trouble concurrently updating a work stream. This code uses transaction locking to ensure that
 	// all updateWorkStream calls run synchronously.
-	await transaction.writeTransaction(
-		hdb_terms.SYSTEM_SCHEMA_NAME,
-		hdb_terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME,
-		async () => {
+	await exclusiveLock(async () => {
 			// The connection between nodes can only be a "pull" relationship. This means we only care about the subscribe param.
 			// If a node is publishing to another node that publishing relationship is setup by have the opposite node subscribe to the node that is publishing.
 			if (subscription.subscribe === true) {
@@ -899,6 +907,11 @@ async function updateWorkStream(subscription, node_name) {
 	);
 }
 
+function exclusiveLock(callback) {
+	return transaction.writeTransaction(
+		hdb_terms.SYSTEM_SCHEMA_NAME,
+		hdb_terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME, callback);
+}
 /**
  * Creates a local stream for a table.
  * @param schema
