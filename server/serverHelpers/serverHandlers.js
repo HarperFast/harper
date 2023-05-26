@@ -25,8 +25,8 @@ function handleServerUncaughtException(err) {
 function serverErrorHandler(error, req, resp) {
 	harper_logger[error.logLevel || 'error'](error);
 	if (error.http_resp_code) {
-		if (typeof error.http_resp_msg === 'string') {
-			return resp.code(error.http_resp_code).send({ error: error.http_resp_msg });
+		if (typeof error.http_resp_msg !== 'object') {
+			return resp.code(error.http_resp_code).send({ error: error.http_resp_msg || error.message });
 		}
 		return resp.code(error.http_resp_code).send(error.http_resp_msg);
 	}

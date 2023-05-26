@@ -822,7 +822,9 @@ export function makeTable(options) {
 			return publishing_resource.publish(message, options);
 		}
 		static async addAttribute(attribute) {
-			// TODO: validation
+			if (!attribute.name) throw new ClientError('Attribute name is required');
+			if (attribute.name.match(/[`/]/))
+				throw new ClientError('Attribute names cannot include backticks or forward slashes');
 			this.attributes.push(attribute);
 			await dbis_db.put(this.tableName + '/' + attribute.name, attribute);
 			if (attribute.indexed) {
