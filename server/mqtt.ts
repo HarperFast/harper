@@ -6,8 +6,8 @@ import { findAndValidateUser, getSuperUser } from '../security/user';
 import { serializeMessage, getDeserializer } from './serverHelpers/contentTypes';
 import { info } from '../utility/logging/harper_logger';
 import { recordAction } from '../resources/analytics';
+import { server } from '../server/Server';
 
-const DEFAULT_MQTT_PORT = 1883;
 const AUTHORIZE_LOCAL = true;
 export async function start({ server, port, webSocket, securePort }) {
 	// here we basically normalize the different types of sockets to pass to our socket/message handler
@@ -50,7 +50,8 @@ export async function start({ server, port, webSocket, securePort }) {
 
 function onSocket(socket, send, request, user) {
 	let session: DurableSubscriptionsSession;
-	const parser = makeParser({ protocolVersion: 4 });
+	const mqtt_options = { protocolVersion: 4 };
+	const parser = makeParser({ protocolVersion: 5 });
 	function onMessage(data) {
 		parser.parse(data);
 	}
@@ -65,56 +66,77 @@ function onSocket(socket, send, request, user) {
 			let payload;
 			switch (packet.cmd) {
 				case 'connect':
+					mqtt_options.protocolVersion = packet.protocolVersion;
 					if (packet.username) {
 						try {
-							user = findAndValidateUser(packet.username, packet.password.toString());
+							user = server.auth(packet.username, packet.password.toString());
 						} catch (error) {
-							console.warn(error);
+							return send(
+								generate(
+									{
+										// Send a connection acknowledgment with indication of auth failure
+										cmd: 'connack',
+										reasonCode: 0x86,
+										returnCode: 0x86, // bad username or password
+									},
+									mqtt_options
+								)
+							);
 						}
 					}
 					if (!user)
 						return send(
-							generate({
-								// Send a connection acknowledgment with indication of auth failure
-								cmd: 'connack',
-								returnCode: 0x86, // bad username or password
-							})
+							generate(
+								{
+									// Send a connection acknowledgment with indication of auth failure
+									cmd: 'connack',
+									reasonCode: 0x86,
+									returnCode: 0x86, // bad username or password
+								},
+								mqtt_options
+							)
 						);
 					// TODO: Do we want to prefix the user name to the client id (to prevent collisions when poor ids are used)
 					// TODO: Handle the will & testament, and possibly use the will's content type as a hint for expected content
-					send(
-						generate({
-							// Send a connection acknowledgment
-							cmd: 'connack',
-							sessionPresent: false, // TODO: Determine this from existence of a durable session
-							returnCode: 0, // success
-						})
-					);
 					session = await getSession({
 						user,
 						...packet,
-						listener: (topic, message, message_id, subscription) => {
-							packet.myId = packet.myId || Math.random();
-							console.log('publish to ', topic, message_id, subscription.qos, message, packet);
-							const payload = generate({
+					});
+					send(
+						generate(
+							{
+								// Send a connection acknowledgment
+								cmd: 'connack',
+								sessionPresent: session.sessionWasPresent,
+								reasonCode: 0,
+								returnCode: 0, // success
+							},
+							mqtt_options
+						)
+					);
+					session.setListener((topic, message, message_id, subscription) => {
+						packet.myId = packet.myId || Math.random();
+						const payload = generate(
+							{
 								cmd: 'publish',
 								topic,
 								payload: serialize(message),
-								messageId: message_id,
+								messageId: message_id || Math.floor(Math.random() * 100),
 								qos: subscription.qos,
-							});
-							try {
-								const slash_index = topic.indexOf('/', 1);
-								const general_topic = slash_index > 0 ? topic.slice(0, slash_index) : topic;
-								send(payload);
-								//else setImmediate(() => send(payload));
-								recordAction(payload.length, 'bytes-sent', general_topic, 'deliver', 'mqtt');
-							} catch (error) {
-								console.warn(error);
-								session.disconnect();
-							}
-						},
+							},
+							mqtt_options
+						);
+						try {
+							const slash_index = topic.indexOf('/', 1);
+							const general_topic = slash_index > 0 ? topic.slice(0, slash_index) : topic;
+							send(payload);
+							recordAction(payload.length, 'bytes-sent', general_topic, 'deliver', 'mqtt');
+						} catch (error) {
+							console.warn(error);
+							session.disconnect();
+						}
 					});
+					if (session.sessionWasPresent) await session.resume();
 					break;
 				case 'subscribe':
 					const granted = [];
@@ -124,12 +146,15 @@ function onSocket(socket, send, request, user) {
 					}
 					await session.committed;
 					info('Sending suback', packet.subscriptions[0].topic);
-					payload = generate({
-						// Send a subscription acknowledgment
-						cmd: 'suback',
-						granted,
-						messageId: packet.messageId,
-					});
+					payload = generate(
+						{
+							// Send a subscription acknowledgment
+							cmd: 'suback',
+							granted,
+							messageId: packet.messageId,
+						},
+						mqtt_options
+					);
 					send(payload);
 					recordAction(payload.length, 'bytes-sent', null, 'suback', 'mqtt');
 					info('Sent suback');
@@ -140,11 +165,14 @@ function onSocket(socket, send, request, user) {
 						session.removeSubscription(subscription);
 					}
 					send(
-						generate({
-							// Send a subscription acknowledgment
-							cmd: 'unsuback',
-							messageId: packet.messageId,
-						})
+						generate(
+							{
+								// Send a subscription acknowledgment
+								cmd: 'unsuback',
+								messageId: packet.messageId,
+							},
+							mqtt_options
+						)
 					);
 					break;
 				case 'publish':
@@ -158,40 +186,49 @@ function onSocket(socket, send, request, user) {
 					} catch (error) {
 						console.warn(error);
 						if (packet.qos > 0) {
-							const payload = generate({
-								// Send a publish acknowledgment
-								cmd: 'puback',
-								messageId: packet.messageId,
-								reasonCode: 0x80, // unspecified error
-							});
+							const payload = generate(
+								{
+									// Send a publish acknowledgment
+									cmd: 'puback',
+									messageId: packet.messageId,
+									reasonCode: 0x80, // unspecified error
+								},
+								mqtt_options
+							);
 							send(payload);
 							recordAction(payload.length, 'bytes-sent', null, 'puback', 'mqtt');
 						}
 					}
 					if (packet.qos > 0) {
-						payload = generate({
-							// Send a publish acknowledgment
-							cmd: 'puback',
-							messageId: packet.messageId,
-							reasonCode:
-								published === false
-									? 0x90 // Topic name invalid
-									: 0, //success
-						});
+						payload = generate(
+							{
+								// Send a publish acknowledgment
+								cmd: 'puback',
+								messageId: packet.messageId,
+								reasonCode:
+									published === false
+										? 0x90 // Topic name invalid
+										: 0, //success
+							},
+							mqtt_options
+						);
 						send(payload);
 						recordAction(payload.length, 'bytes-sent', null, 'puback', 'mqtt');
 					}
 					break;
 				case 'pubrec':
-					payload = generate({
-						// Send a publish acknowledgment
-						cmd: 'pubrel',
-						messageId: packet.messageId,
-						reasonCode:
-							published === false
-								? 0x90 // Topic name invalid
-								: 0, //success
-					});
+					payload = generate(
+						{
+							// Send a publish acknowledgment
+							cmd: 'pubrel',
+							messageId: packet.messageId,
+							reasonCode:
+								published === false
+									? 0x90 // Topic name invalid
+									: 0, //success
+						},
+						mqtt_options
+					);
 					send(payload);
 					break;
 				case 'pubcomp':
@@ -199,7 +236,7 @@ function onSocket(socket, send, request, user) {
 					session.acknowledge(packet.messageId);
 					break;
 				case 'pingreq':
-					send(generate({ cmd: 'pingresp' }));
+					send(generate({ cmd: 'pingresp' }, mqtt_options));
 					break;
 				case 'disconnect':
 					session.disconnect();
@@ -210,10 +247,13 @@ function onSocket(socket, send, request, user) {
 		} catch (error) {
 			console.error(error);
 			send(
-				generate({
-					// Send a subscription acknowledgment
-					cmd: 'disconnect',
-				})
+				generate(
+					{
+						// Send a subscription acknowledgment
+						cmd: 'disconnect',
+					},
+					mqtt_options
+				)
 			);
 		}
 		function serialize(data) {

@@ -49,8 +49,7 @@ export async function getSession({
 		const session_resource = DurableSession.getResource(session_id);
 		await session_resource.loadRecord();
 		session = new DurableSubscriptionsSession(session_id, user, session_resource);
-		session.listener = listener;
-		await session.resume();
+		if (session_resource.doesExist()) session.sessionWasPresent = true;
 	} else {
 		if (session_id) {
 			// connecting with a clean session and session id is how durable sessions are deleted
@@ -58,7 +57,6 @@ export async function getSession({
 			if (session_resource) session_resource.delete();
 		}
 		session = new SubscriptionsSession(session_id, user);
-		session.listener = listener;
 	}
 	return session;
 }
@@ -70,6 +68,7 @@ class SubscriptionsSession {
 	user: any;
 	subscriptions = [];
 	awaitingAcks: Map<number, any>;
+	sessionWasPresent: boolean;
 	constructor(session_id, user) {
 		this.sessionId = session_id;
 		this.user = user;
@@ -97,7 +96,6 @@ class SubscriptionsSession {
 						update.topic = topic;
 						message_id = this.needsAcknowledge(update);
 					}
-					console.log('sending to id', path, update.value);
 					this.listener(search ? path + '/' + id : path, update.value, message_id, subscription_request);
 				},
 				search,
@@ -108,6 +106,9 @@ class SubscriptionsSession {
 		});
 		subscription.topic = topic;
 		this.subscriptions.push(subscription);
+	}
+	resume() {
+		// nothing to do in a clean session
 	}
 	needsAcknowledge(update) {
 		return next_message_id++;

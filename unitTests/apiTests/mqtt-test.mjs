@@ -27,12 +27,18 @@ describe('test MQTT connections and commands', () => {
 			client.on('error', reject);
 		});
 		client2 = connect('mqtts://localhost:8883', {
+			protocolVersion: 5,
 			rejectUnauthorized: false,
 		});
-
 		await new Promise((resolve, reject) => {
-			client2.on('connect', resolve);
-			client2.on('error', reject);
+			client2.on('connect', (connack) => {
+				console.log(connack);
+				resolve();
+			});
+			client2.on('error', (error) => {
+				console.error(error);
+				reject(error);
+			});
 		});
 	});
 	it('subscribe to retained/persisted record', async function () {
@@ -213,7 +219,7 @@ describe('test MQTT connections and commands', () => {
 	});
 	it('subscribe to wildcard/full table', async function () {
 		await new Promise((resolve, reject) => {
-			client2.subscribe('SimpleRecord/+', function (err) {
+			client2.subscribe('SimpleRecord/+',function (err) {
 				console.log('subscribed', err);
 				if (err) reject(err);
 				else {
@@ -225,7 +231,6 @@ describe('test MQTT connections and commands', () => {
 		await new Promise((resolve, reject) => {
 			client2.on('message', (topic, payload, packet) => {
 				let record = JSON.parse(payload);
-				console.log('received', topic, record);
 				if (++message_count == 3)
 					resolve();
 			});
