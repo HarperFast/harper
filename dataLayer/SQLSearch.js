@@ -1348,9 +1348,11 @@ class SQLSearch {
 
 				for (const [hash_val, record] of matching_data) {
 					if (!this.data[schema_table].__merged_data[hash_val]) {
+						if (record[attribute.attribute] === undefined) record[attribute.attribute] = null;
 						this.data[schema_table].__merged_data[hash_val] = Object.assign({}, fetch_attributes_objs[schema_table]);
 					}
-					this.data[schema_table].__merged_data[hash_val][alias_map[attribute.attribute]] = record[attribute.attribute];
+					this.data[schema_table].__merged_data[hash_val][alias_map[attribute.attribute]] =
+						record[attribute.attribute] ?? null;
 				}
 			} catch (err) {
 				log.error('There was an error when processing this SQL operation.  Check your logs');
