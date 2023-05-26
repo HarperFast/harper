@@ -339,6 +339,47 @@ describe('test MQTT connections and commands', () => {
 		});
 		client.end();
 	});
+	it('subscribe with QoS=2', async function () {
+		// this first connection is a tear down to remove any previous durable session with this id
+		let client = connect('mqtt://localhost:1883', {
+			clean: true,
+			clientId: 'test-client1'
+		});
+		await new Promise((resolve, reject) => {
+			client.on('connect', resolve);
+			client.on('error', reject);
+		});
+		await client.end();
+		await delay(10);
+		client = connect('mqtt://localhost:1883', {
+			clean: false,
+			clientId: 'test-client1'
+		});
+		await new Promise((resolve, reject) => {
+			client.subscribe('SimpleRecord/41', {
+				qos: 2
+			}, function (err) {
+				console.log('subscribed', err);
+				if (err) reject(err);
+				else {
+					resolve();
+				}
+			});
+		});
+		await new Promise((resolve, reject) => {
+			client.on('message', (topic, payload, packet) => {
+				let record = JSON.parse(payload);
+				resolve();
+			});
+
+			client.publish('SimpleRecord/41', JSON.stringify({
+				name: 'This is a test of a message with qos 2'
+			}), {
+				qos: 2,
+			});
+		});
+		client.end();
+	});
 	after(() => {
 		client.end();
 		client2.end();
