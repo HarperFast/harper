@@ -78,7 +78,7 @@ function harperDBService() {
 			case SERVICE_ACTIONS_ENUM.RUN:
 				// Run a specific application folder
 				let app_folder = process.argv[3];
-				process.env.RUN_HDB_APP = app_folder;
+				if (app_folder[0] !== '-') process.env.RUN_HDB_APP = app_folder;
 				require('./run').main();
 				break;
 			case SERVICE_ACTIONS_ENUM.START:

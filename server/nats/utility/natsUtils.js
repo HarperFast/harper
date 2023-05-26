@@ -537,7 +537,7 @@ async function publishToStream(subject_name, stream_name, msg_header, message) {
 					await js.publish(subject, encoded_message, {headers: msg_header});
 				} catch(error) {
 					if (err.code && err.code.toString() === '503') {
-						console.log(`publishToStream creating stream: ${stream_name}`);
+						hdb_logger.trace(`publishToStream creating stream: ${stream_name}`);
 						await createLocalStream(stream_name, [subject]);
 						await js.publish(subject, encoded_message, { headers: msg_header });
 					} else {

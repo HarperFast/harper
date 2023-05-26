@@ -80,7 +80,7 @@ jobs:
 
           echo "HarperDB install..."
           cd /home/ubuntu/harperdb/bin
-          node harperdb.js run --TC_AGREEMENT yes --HDB_ROOT /home/ubuntu/hdb --HDB_ADMIN_USERNAME $HDB_ADMIN_USERNAME --HDB_ADMIN_PASSWORD $HDB_ADMIN_PASSWORD --NODE_NAME $(echo "$public_dns_name" | cut -d '.' -f 1) --CLUSTERING_PORT 12345 --CLUSTERING_USER $CLUSTERING_USERNAME --CLUSTERING_PASSWORD $CLUSTERING_PASSWORD --CLUSTERING true --SERVER_PORT 9925 --CUSTOM_FUNCTIONS true --CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT 12345 --LOGGING_LEVEL trace --OPERATIONSAPI_NETWORK_HTTPS ${{ inputs.httpsOn }} --CUSTOMFUNCTIONS_NETWORK_HTTPS ${{ inputs.httpsOn }}
+          node harperdb.js start --TC_AGREEMENT yes --HDB_ROOT /home/ubuntu/hdb --HDB_ADMIN_USERNAME $HDB_ADMIN_USERNAME --HDB_ADMIN_PASSWORD $HDB_ADMIN_PASSWORD --NODE_NAME $(echo "$public_dns_name" | cut -d '.' -f 1) --CLUSTERING_PORT 12345 --CLUSTERING_USER $CLUSTERING_USERNAME --CLUSTERING_PASSWORD $CLUSTERING_PASSWORD --CLUSTERING true --SERVER_PORT 9925 --CUSTOM_FUNCTIONS true --CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT 12345 --LOGGING_LEVEL trace --OPERATIONSAPI_NETWORK_HTTPS ${{ inputs.httpsOn }} --CUSTOMFUNCTIONS_NETWORK_HTTPS ${{ inputs.httpsOn }}
           
           echo "Register HarperDB..."
           cd /home/ubuntu/harperdb/utility/devops
