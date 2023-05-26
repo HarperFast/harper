@@ -104,7 +104,7 @@ async function restart(req) {
  * @returns {Promise<string>}
  */
 async function restartService(req) {
-	const { service } = req;
+	let { service } = req;
 	if (hdb_terms.PROCESS_DESCRIPTORS_VALIDATE[service] === undefined) {
 		throw handleHDBError(new Error(), INVALID_SERVICE_ERR, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
@@ -115,6 +115,7 @@ async function restartService(req) {
 			type: hdb_terms.ITC_EVENT_TYPES.RESTART,
 			workerType: service,
 		});
+		if (service === 'custom_functions') service = 'Custom Functions';
 		return `Restarting ${service}`;
 	}
 
@@ -172,7 +173,7 @@ async function restartService(req) {
 		if (called_from_cli) console.error(err_msg);
 		return err_msg;
 	}
-
+	if (service === 'custom_functions') service = 'Custom Functions';
 	return `Restarting ${service}`;
 }
 
