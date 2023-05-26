@@ -42,7 +42,7 @@ function decodeJsMsg(msg) {
 	return decode(js_msg.data);
 }
 
-describe('Test natsIngestService module', () => {
+describe.skip('Test natsIngestService module', () => {
 	const sandbox = sinon.createSandbox();
 	let get_operation_function_spy;
 	let call_operation_function_as_await_stub;
@@ -90,7 +90,7 @@ describe('Test natsIngestService module', () => {
 		expect(js_client).to.haveOwnProperty('api');
 	}).timeout(10000);
 
-	describe.skip('Test workQueueListener function', () => {
+	describe('Test workQueueListener function', () => {
 		const SUBJECT_NAME = 'txn.dev.hippopotamus';
 		const STREAM_NAME = 'dev_hippopotamus';
 

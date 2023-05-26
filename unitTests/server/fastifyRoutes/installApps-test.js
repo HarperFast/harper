@@ -1,5 +1,5 @@
 'use strict';
-
+/*
 const rewire = require('rewire');
 const chai = require('chai');
 const { expect } = chai;
@@ -330,3 +330,4 @@ describe.skip('Test installApps module', () => {
 		expect(res_2).to.equal('unit/test/node_modules/dogs');
 	});
 });
+*/
