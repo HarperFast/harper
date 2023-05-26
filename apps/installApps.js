@@ -28,6 +28,10 @@ async function installApps() {
 		dependencies: {},
 	};
 
+	const node_mods_path = path.join(root_path, 'node_modules');
+	await fs.ensureDir(node_mods_path);
+	await fs.ensureSymlink(hdb_terms.PACKAGE_ROOT, path.join(node_mods_path, 'harperdb'), { overwrite: true });
+
 	let install_pkg_json;
 	let install_pkg_json_exists = true;
 	let update_occurred = false;
@@ -42,7 +46,8 @@ async function installApps() {
 	if (!hdb_utils.isEmptyOrZeroLength(apps)) {
 		// Build package.json from all apps entries in harperdb-config
 		for (const { name, package: pkg } of apps) {
-			pkg_json.dependencies[name] = pkg;
+			const { dep_name, version } = constructAppDep(name, pkg);
+			pkg_json.dependencies[dep_name] = version;
 		}
 
 		// If there is no install-package.json file go ahead and write package.json and npm install it
@@ -54,8 +59,9 @@ async function installApps() {
 
 		// Loop through apps in config and see if they are defined in installed-package, if they are check that the pkg in app matches what's in installed-package file.
 		for (const { name, package: pkg } of apps) {
-			const installed_pkg = install_pkg_json.dependencies[name];
-			if (installed_pkg === undefined || installed_pkg !== pkg) {
+			const { dep_name, version } = constructAppDep(name, pkg);
+			const installed_pkg = install_pkg_json.dependencies[dep_name];
+			if (installed_pkg === undefined || installed_pkg !== version) {
 				update_occurred = true;
 				break;
 			}
@@ -64,10 +70,25 @@ async function installApps() {
 
 	// Loop through the existing installed deps and check to see if they exist in the new package.json, if they don't then need to be uninstalled.
 	for (const pkg in install_pkg_json.dependencies) {
-		if (pkg_json.dependencies[pkg] === undefined) {
+		const { dep_name } = constructAppDep(undefined, pkg);
+		if (pkg_json.dependencies[dep_name] === undefined) {
 			hdb_log.notify('Removing app', pkg);
-			await npm_utils.uninstallRootModule(install_pkg_json.dependencies[pkg]);
-			await fs.unlink(path.join(cf_root, pkg));
+			const pkg_path = getPkgPath(pkg, constructAppName(pkg), root_path);
+			const all_app_symlinks = await fs.readdir(cf_root, {
+				withFileTypes: true,
+			});
+
+			// Loop through the contents of the CF root and unlink the symlink that matches the app we are removing/uninstalling
+			// Later on when npm install is run the module will be removed
+			for (const app_link of all_app_symlinks) {
+				if (!app_link.isSymbolicLink()) continue;
+				const target = await fs.realpath(path.join(cf_root, app_link.name));
+				if (target === pkg_path) {
+					await fs.unlink(path.join(cf_root, app_link.name));
+					break;
+				}
+			}
+
 			update_occurred = true;
 		}
 	}
@@ -76,6 +97,66 @@ async function installApps() {
 		hdb_log.notify('Updating apps.');
 		// Write package.json, call npm install and then move package.json -> installed-packages.json then symlink apps to the CF folder
 		await installPackages(pkg_json_path, pkg_json, install_pkg_json_path, apps, root_path);
+	}
+}
+
+/**
+ * The package version can be part of the package name, this function will separate the package value into name and version.
+ * @param name
+ * @param pkg
+ * @returns {{dep_name, version: string}|{dep_name, version}|{dep_name: *, version: *}|{dep_name: string, version: *}}
+ */
+function constructAppDep(name, pkg) {
+	// Decide if the package value is referencing and actual NPM module
+	if (pkg.startsWith('@') || (!pkg.startsWith('@') && !pkg.includes('/'))) {
+		// If package doesn't have an @ or starts with one and doesn't have another denoting version add pkg to deps.
+		if (!pkg.includes('@') || (pkg.startsWith('@') && pkg.match(/@/g).length === 1)) {
+			// This will download the most recent version.
+			return { dep_name: pkg, version: '*' };
+		}
+
+		// If we get here, the package is referencing a specific version.
+		const pkg_parts = pkg.split('@');
+		if (pkg.startsWith('@')) {
+			return { dep_name: `@${pkg_parts[1]}`, version: pkg_parts.slice(-1)[0] };
+		} else {
+			return { dep_name: pkg_parts[0], version: pkg_parts.slice(-1)[0] };
+		}
+	}
+
+	if (!name) throw new Error(`'name' is required for app: ${pkg}`);
+
+	return { dep_name: name, version: pkg };
+}
+
+/**
+ * App dame is optional NPM mods, if its not included we extract a name from the package value.
+ * @param pkg
+ * @returns {*}
+ */
+function constructAppName(pkg) {
+	// Matches pkg values like `lmdb`
+	if (!pkg.includes('@') && !pkg.includes('/')) {
+		// Name is unmodified pkg value `lmdb`
+		return pkg;
+		// Matches pkg values like `lodash@^4.17.18`
+	} else if (pkg.includes('@') && !pkg.includes('/')) {
+		// Name becomes `lodash`
+		return pkg.split('@')[0];
+	} else {
+		// Matches pkg values like `@fastify/compress` or `@fastify/error@2.0.0`
+		// Name becomes `compress` or `error`
+		return pkg.split(/@|\//)[2];
+	}
+}
+
+function getPkgPath(pkg, name, root_path) {
+	const node_mods_path = path.join(root_path, 'node_modules');
+	if (pkg.startsWith('@')) {
+		const pkg_parts = pkg.split(/@|\//);
+		return path.join(node_mods_path, '@' + pkg_parts[1], pkg_parts[2]);
+	} else {
+		return path.join(node_mods_path, name);
 	}
 }
 
@@ -93,13 +174,25 @@ async function installPackages(pkg_json_path, pkg_json, install_pkg_json_path, a
 	const cf_root = eng_mgr.get(hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT);
 	await fs.writeFile(pkg_json_path, JSON.stringify(pkg_json, null, '  '));
 	await npm_utils.installAllRootModules(eng_mgr.get(hdb_terms.CONFIG_PARAMS.IGNORE_SCRIPTS) === true);
-	await npm_utils.linkHarperdb();
 	await fs.move(pkg_json_path, install_pkg_json_path, { overwrite: true });
 
 	if (!hdb_utils.isEmptyOrZeroLength(apps)) {
 		// Create symlink from app in node mods folder to the CF folder
-		for (const { name } of apps) {
-			await fs.ensureSymlink(path.join(root_path, 'node_modules', name), path.join(cf_root, name), { overwrite: true });
+		for (let { name, package: pkg } of apps) {
+			// If no name is provided we generate one.
+			if (!name) {
+				name = constructAppName(pkg);
+			}
+
+			try {
+				await fs.ensureSymlink(getPkgPath(pkg, name, root_path), path.join(cf_root, name), { overwrite: true });
+			} catch (err) {
+				if (err.code === hdb_terms.NODE_ERROR_CODES.EEXIST) {
+					throw new Error(
+						`When creating a symlink for package '${pkg}' an error occurred due to a file already existing with part of its name. Please set a 'name' for this package in harperdb-config.yaml to avoid any naming collisions.`
+					);
+				} else throw err;
+			}
 		}
 	}
 }
