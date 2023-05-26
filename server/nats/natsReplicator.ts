@@ -67,7 +67,7 @@ async function assignReplicationSource() {
  * @param db_name
  */
 export function setNATSReplicator(table_name, db_name, Table) {
-	if (table.Source) return;
+	if (Table.Source) return;
 	publishToStream(
 		`${SUBJECT_PREFIXES.TXN}.${db_name}`,
 		createNatsTableStreamName(db_name, table_name),
