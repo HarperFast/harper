@@ -798,6 +798,7 @@ const WEBSOCKET_CLOSE_CODE_DESCRIPTION_LOOKUP = {
 const NODE_ERROR_CODES = {
 	ENOENT: 'ENOENT', // No such file or directory.
 	EACCES: 'EACCES', // Permission denied.
+	EEXIST: 'EEXIST', // File already exists.
 };
 
 const TIME_STAMP_NAMES_ENUM = {
