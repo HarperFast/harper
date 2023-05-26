@@ -16,7 +16,7 @@ const server_utilities = require('../../../server/serverHelpers/serverUtilities'
 const operation_function_caller = require('../../../utility/OperationFunctionCaller');
 const nats_ingest_service = rewire('../../../server/nats/natsIngestService');
 const { table } = require('../../../resources/databases');
-const { getNATSReplicator } = require('../../../server/nats/natsReplicator');
+const { setNATSReplicator } = require('../../../server/nats/natsReplicator');
 const { setMainIsWorker } = require('../../../server/threads/manageThreads');
 
 const TEST_TIMEOUT = 30000;
@@ -63,7 +63,7 @@ describe('Test natsIngestService module', () => {
 			database: 'dev',
 			attributes: [{ name: 'name', isPrimaryKey: true }],
 		});
-		Hippopotamus.sourcedFrom(getNATSReplicator('hippopotamus', 'dev'));
+		setNATSReplicator('hippopotamus', 'dev', Hippopotamus);
 	});
 
 	after(async function () {

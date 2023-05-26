@@ -227,6 +227,7 @@ async function executeJob(json) {
 	try {
 		result = await jobs.addJob(json);
 		new_job_object = result.createdJob;
+		harper_logger.info('addJob result', result);
 		let job_runner_message = new job_runner.RunnerMessage(new_job_object, json);
 		await job_runner.parseMessage(job_runner_message);
 
