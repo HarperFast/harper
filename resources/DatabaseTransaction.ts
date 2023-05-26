@@ -55,7 +55,7 @@ export class DatabaseTransaction implements Transaction {
 				// TODO: We don't want to go through the public put() method, but still want validation
 				if (resource[EXPLICIT_CHANGES_PROPERTY]) {
 					const updating_record = Object.assign({}, resource[EXPLICIT_CHANGES_PROPERTY], resource);
-					resource_resolution = resource.put(updating_record, { noCopy: true });
+					resource_resolution = resource.put(updating_record, { noCopy: true, onlyChanges: true });
 				} else resource_resolution = resource.put(resource, { noCopy: true });
 				if (resource_resolution?.then) {
 					if (!resource_resolutions) resource_resolutions = [];

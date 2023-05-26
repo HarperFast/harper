@@ -81,11 +81,21 @@ function onSocket(socket, send, request, user) {
 							})
 						);
 					// TODO: Do we want to prefix the user name to the client id (to prevent collisions when poor ids are used)
-					// TODO: Handle the will & testament, and possibly use the will's content type as a hint for expected contet
+					// TODO: Handle the will & testament, and possibly use the will's content type as a hint for expected content
+					send(
+						generate({
+							// Send a connection acknowledgment
+							cmd: 'connack',
+							sessionPresent: false, // TODO: Determine this from existence of a durable session
+							returnCode: 0, // success
+						})
+					);
 					session = await getSession({
 						user,
 						...packet,
 						listener: (topic, message, message_id, subscription) => {
+							packet.myId = packet.myId || Math.random();
+							console.log('publish to ', topic, message_id, subscription.qos, message, packet);
 							const payload = generate({
 								cmd: 'publish',
 								topic,
@@ -97,6 +107,7 @@ function onSocket(socket, send, request, user) {
 								const slash_index = topic.indexOf('/', 1);
 								const general_topic = slash_index > 0 ? topic.slice(0, slash_index) : topic;
 								send(payload);
+								//else setImmediate(() => send(payload));
 								recordAction(payload.length, 'bytes-sent', general_topic, 'deliver', 'mqtt');
 							} catch (error) {
 								console.warn(error);
@@ -104,13 +115,6 @@ function onSocket(socket, send, request, user) {
 							}
 						},
 					});
-					send(
-						generate({
-							// Send a connection acknowledgment
-							cmd: 'connack',
-							returnCode: 0, // success
-						})
-					);
 					break;
 				case 'subscribe':
 					const granted = [];

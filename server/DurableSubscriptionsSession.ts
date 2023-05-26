@@ -97,6 +97,7 @@ class SubscriptionsSession {
 						update.topic = topic;
 						message_id = this.needsAcknowledge(update);
 					}
+					console.log('sending to id', path, update.value);
 					this.listener(search ? path + '/' + id : path, update.value, message_id, subscription_request);
 				},
 				search,
@@ -163,7 +164,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	needsAcknowledge(update) {
 		if (!this.awaitingAcks) this.awaitingAcks = new Map();
 		const message_id = next_message_id++;
-		this.awaitingAcks.set(message_id, update);
+		this.awaitingAcks.set(message_id, { topic: update.topic, timestamp: update.timestamp });
 		return message_id;
 	}
 	acknowledge(message_id) {
@@ -173,6 +174,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		for (const [, remaining_update] of this.awaitingAcks) {
 			if (remaining_update.topic === topic) {
 				if (remaining_update.timestamp < update.timestamp) {
+					remaining_update.timestamp = update.timestamp;
 					// TODO: Record this update as an out-of-order ack
 					return;
 				}
@@ -185,7 +187,6 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				}
 			}
 		});
-		this.awaitingAcks.lastTime = Math.max(this.awaitingAcks.lastTime || 0, update.timestamp);
 		// TODO: Increment the timestamp for the corresponding subscription, possibly recording any interim unacked messages
 	}
 

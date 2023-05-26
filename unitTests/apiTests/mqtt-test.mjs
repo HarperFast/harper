@@ -267,7 +267,7 @@ describe('test MQTT connections and commands', () => {
 			clientId: 'test-client1'
 		});
 		await new Promise((resolve, reject) => {
-			client.subscribe('SimpleRecord/41', {
+			client.subscribe(['SimpleRecord/41', 'SimpleRecord/42'], {
 				qos: 1
 			}, function (err) {
 				console.log('subscribed', err);
@@ -301,8 +301,18 @@ describe('test MQTT connections and commands', () => {
 		});
 		client.end();
 		await delay(10);
-		await client2.publish('SimpleRecord/41', JSON.stringify({
+		client2.publish('SimpleRecord/41', JSON.stringify({
 			name: 'This is a test of publishing to a disconnected durable session'
+		}), {
+			qos: 1,
+		});
+		client2.publish('SimpleRecord/42', JSON.stringify({
+			name: 'This is a test of publishing to a disconnected durable session 2'
+		}), {
+			qos: 1,
+		});
+		await client2.publish('SimpleRecord/42', JSON.stringify({
+			name: 'This is a test of publishing to a disconnected durable session 3'
 		}), {
 			qos: 1,
 		});
@@ -312,14 +322,17 @@ describe('test MQTT connections and commands', () => {
 			clientId: 'test-client1'
 		});
 		await new Promise((resolve, reject) => {
+			let count = 0;
 			client.on('error', reject);
 			client.on('message', (topic, payload, packet) => {
 				let record = JSON.parse(payload);
+				console.log('after second reconnect', record);
 				expect(record.name.includes('disconnected'));
-				resolve();
+				if (++count === 3)
+					resolve();
 			});
 		});
-
+		client.end();
 	});
 	after(() => {
 		client.end();
