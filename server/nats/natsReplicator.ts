@@ -19,7 +19,7 @@ const MAX_INGEST_THREADS = 2;
 async function assignReplicationSource() {
 	publishing_databases = new Map();
 	const hdb_nodes = getDatabases().system.hdb_nodes;
-	for await (const node of hdb_nodes.search([])) {
+	for await (const node of await hdb_nodes.search([])) {
 		const { subscriptions } = node;
 		for (const subscription of subscriptions) {
 			if (!subscription.publish) continue;
@@ -30,6 +30,7 @@ async function assignReplicationSource() {
 			else publishing.publishingDatabase = true;
 		}
 	}
+	console.log({ publishing_databases });
 	for (const [db_name, publishing] of publishing_databases) {
 		const tables = databases[db_name];
 		if (!tables) {
