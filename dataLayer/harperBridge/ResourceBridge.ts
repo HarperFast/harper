@@ -1,7 +1,7 @@
 'use strict';
 import LMDBBridge from './lmdbBridge/LMDBBridge';
 import search_validator from '../../validation/searchValidator';
-import { handleHDBError, hdb_errors } from '../../utility/errors/hdbError';
+import { handleHDBError, ClientError, hdb_errors } from '../../utility/errors/hdbError';
 import { Resource } from '../../resources/Resource';
 import { table, getDatabases, database, dropDatabase } from '../../resources/databases';
 import insertUpdateValidate from './bridgeUtility/insertUpdateValidate';
@@ -190,6 +190,9 @@ export class ResourceBridge extends LMDBBridge {
 
 	searchByValue(search_object: SearchObject, comparator?) {
 		const table = getTable(search_object);
+		if (!table) {
+			throw new ClientError(`Table ${search_object.table} not found`);
+		}
 		const conditions =
 			search_object.search_value == '*'
 				? []
