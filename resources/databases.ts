@@ -137,7 +137,16 @@ export function getDatabases(): Databases {
 }
 export function resetDatabases() {
 	loaded_databases = false;
+	for (const [, store] of database_envs) {
+		store.needsDeletion = true;
+	}
 	getDatabases();
+	for (const [path, store] of database_envs) {
+		if (store.needsDeletion) {
+			store.close();
+			database_envs.delete(path);
+		}
+	}
 }
 
 /**
@@ -155,8 +164,12 @@ function readMetaDb(
 ) {
 	const env_init = new OpenEnvironmentObject(path, false);
 	try {
-		const root_store = open(env_init);
-		database_envs.set(path, root_store);
+		let root_store = database_envs.get(path);
+		if (root_store) root_store.needsDeletion = false;
+		else {
+			root_store = open(env_init);
+			database_envs.set(path, root_store);
+		}
 		const internal_dbi_init = new OpenDBIObject(false);
 		const dbis_store = (root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init));
 		let audit_store;
@@ -251,7 +264,13 @@ function ensureDB(database_name) {
 	let db_tables = databases[database_name];
 	if (!db_tables) {
 		if (database_name === 'data') db_tables = databases[database_name] = tables;
-		else db_tables = databases[database_name] = databases[lowerCamelCase(database_name)] = Object.create(null);
+		else {
+			db_tables = databases[database_name] = Object.create(null);
+			Object.defineProperty(databases, lowerCamelCase(database_name), {
+				value: db_tables,
+				configurable: true, // no enum
+			});
+		}
 	}
 	if (!db_tables[DEFINED_TABLES] && defined_databases) {
 		const defined_tables = new Set(); // we create this so we can determine what was found in a reset and remove any removed dbs/tables
@@ -262,7 +281,12 @@ function ensureDB(database_name) {
 	return db_tables;
 }
 function setTable(tables, table_name, Table) {
-	tables[CamelCase(table_name)] = tables[table_name] = Table;
+	tables[table_name] = Table;
+	// make the aliases non-enumerable
+	Object.defineProperty(tables, CamelCase(table_name), {
+		value: Table,
+		configurable: true,
+	});
 	const defined_tables = tables[DEFINED_TABLES];
 	if (defined_tables) {
 		defined_tables.add(CamelCase(table_name));
@@ -301,7 +325,7 @@ export async function dropDatabase(database_name) {
 	if (!databases[database_name]) throw new Error('Schema does not exist');
 	const root_store = database({ database: database_name });
 	delete databases[database_name];
-	database_envs.delete(database_name);
+	database_envs.delete(root_store.path);
 	await root_store.close();
 	await fs.remove(root_store.path);
 }
