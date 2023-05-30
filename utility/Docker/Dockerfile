@@ -2,13 +2,26 @@ ARG NODE_VERSION
 FROM node:$NODE_VERSION-bullseye-slim
 ARG HARPERDB_TARBALL
 
-# RH Container Certification
-LABEL name="harperdb"
+# metadata for labels
+ARG BUILD_DATE
+ARG VCS_REF
+ARG VCS_TYPE=git
+
+# for use in labels
+ENV SUMMARY="HarperDB is a turn-key solution for the collection, distribution, and analysis of data."
+ENV DESCRIPTION="HarperDB is a turn-key solution for the collection, distribution, and analysis of data throughout your organization. Projects that have historically taken months (or even years) of consulting, configuration, and custom development can be completed in days or weeks with HarperDB."
+
+# useful metadata
+LABEL name="harperdb/harperdb-openshift"
 LABEL vendor="HarperDB"
-LABEL version="1.0"
-LABEL release=$HARPERDB_VERSION
-LABEL summary="short summary"
-LABEL description="long description"
+LABEL version=${HARPERDB_VERSION}
+LABEL release=${HARPERDB_VERSION}
+LABEL maintainer="support@harperdb.io"
+LABEL summary="${SUMMARY}"
+LABEL description="${DESCRIPTION}"
+LABEL help="https://docs.harperdb.io/docs/"
+LABEL url="https://hub.docker.com/r/harperdb/harperdb-openshift"
+LABEL usage="https://hub.docker.com/r/harperdb/harperdb-openshift"
 
 #Expose HarperDB ports
 EXPOSE 9925

@@ -1,38 +1,52 @@
-FROM registry.access.redhat.com/ubi8/nodejs-18:latest
+FROM registry.access.redhat.com/ubi9/nodejs-18:latest
+
 ARG HARPERDB_TARBALL
 ARG HARPERDB_VERSION
 
-# RHCC Metadata
-LABEL name="harperdb-openshift"
+# metadata for labels
+ARG BUILD_DATE
+ARG VCS_REF
+ARG VCS_TYPE=git
+
+# for use in labels
+ENV SUMMARY="HarperDB is a turn-key solution for the collection, distribution, and analysis of data."
+ENV DESCRIPTION="HarperDB is a turn-key solution for the collection, distribution, and analysis of data throughout your organization. Projects that have historically taken months (or even years) of consulting, configuration, and custom development can be completed in days or weeks with HarperDB."
+
+# useful metadata
+LABEL name="harperdb/harperdb-openshift"
 LABEL vendor="HarperDB"
-LABEL version="4.1.0"
-LABEL release=$HARPERDB_VERSION
+LABEL version=${HARPERDB_VERSION}
+LABEL release=${HARPERDB_VERSION}
 LABEL maintainer="support@harperdb.io"
-LABEL summary="HarperDB is a turn-key solution for the collection, distribution, and analysis of data."
-LABEL description="HarperDB is a turn-key solution for the collection, distribution, and analysis of data throughout your organization. Projects that have historically taken months (or even years) of consulting, configuration, and custom development can be completed in days or weeks with HarperDB."
+LABEL summary="${SUMMARY}"
+LABEL description="${DESCRIPTION}"
+LABEL help="https://docs.harperdb.io/docs/"
+LABEL url="https://hub.docker.com/r/harperdb/harperdb-openshift"
+LABEL usage="https://hub.docker.com/r/harperdb/harperdb-openshift"
 
-# extra stuff we need to overwrite for redhat
-LABEL "io.k8s.description"="HarperDB is a turn-key solution for the collection, distribution, and analysis of data throughout your organization. Projects that have historically taken months (or even years) of consulting, configuration, and custom development can be completed in days or weeks with HarperDB."
-LABEL "io.k8s.display-name"="HarperDB"
+# pull from gha build
+LABEL build-date="${BUILD_DATE}"
+LABEL vcs-ref="${VCS_REF}"
+LABEL vcs-type="${VCS_TYPE}"
 
+# inherited labels we need to overwrite
+LABEL io.k8s.description="${DESCRIPTION}"
+LABEL io.k8s.display-name="HarperDB"
+LABEL io.openshift.expose-services="9925:HTTP,9926:HTTP,9932:TCP"
+LABEL io.openshift.tags="harperdb"
+LABEL com.redhat.component="harperdb-container"
 
-# overwrite some labels
-LABEL "url" -
-LABEL "usage" -
-LABEL "io.openshift.expose-services"=""
-LABEL "com.redhat.component"=""
-LABEL "com.redhat.deployments-dir"=""
-LABEL "com.redhat.dev-mode"=""
-LABEL "com.redhat.dev-mode.port"=""
-LABEL "com.redhat.license_terms"=""
-LABEL "help"=""
-LABEL "io.buildah.version"=""
-LABEL "io.buildpacks.stack.id"=""
-LABEL "io.openshift.s2i.scripts-url"=""
-LABEL "io.openshift.tags"=""
-LABEL "io.s2i.scripts-url"=""
-LABEL "vcs-ref"=""
-LABEL "vcs-type"=""
+# redhat labels we are allowing throug (except dev-mode.port)
+LABEL com.redhat.dev-mode.port="DEBUG_PORT:NA"
+# LABEL com.redhat.deployments-dir=""
+# LABEL com.redhat.dev-mode=""
+# LABEL com.redhat.license_terms=""
+
+# labels we don't want
+LABEL io.buildah.version=""
+LABEL io.buildpacks.stack.id=""
+LABEL io.openshift.s2i.scripts-url=""
+LABEL io.s2i.scripts-url=""
 
 #Expose HarperDB ports
 EXPOSE 9925
@@ -74,9 +88,6 @@ ENV OPERATIONSAPI_NETWORK_PORT=9925
 ENV HDB_ADMIN_USERNAME=HDB_ADMIN
 ENV HDB_ADMIN_PASSWORD=password
 ENV LOGGING_STDSTREAMS=true
-# these need to be overwritten because redhat
-ENV SUMMARY="HarperDB is a turn-key solution for the collection, distribution, and analysis of data."
-ENV DESCRIPTION="HarperDB is a turn-key solution for the collection, distribution, and analysis of data throughout your organization. Projects that have historically taken months (or even years) of consulting, configuration, and custom development can be completed in days or weeks with HarperDB."
 
 #Set the user for the below instructions (respected by RUN, CMD, ENTRYPOINT only)
 USER default

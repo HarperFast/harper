@@ -30,6 +30,8 @@ docker buildx build \
   --file ${DOCKERFILE} \
   --build-arg NODE_VERSION=${NODE_VERSION} \
   --build-arg HARPERDB_TARBALL=harperdb-${HARPERDB_VERSION}.tgz \
+  --build-arg VCS_REF=`git rev-parse HEAD` \
+  --build-arg BUILD_DATE=`date -u +%FT%T` \
   --platform ${docker_platform} \
   --no-cache \
   --output ${docker_output} \
