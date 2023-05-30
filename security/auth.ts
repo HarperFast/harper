@@ -62,7 +62,8 @@ export async function authentication(request, next_handler) {
 			switch (strategy) {
 				case 'Basic':
 					const [username, password] = atob(credentials).split(':');
-					new_user = await server.auth(username, password);
+					// legacy support for passing in blank username and password to indicate no auth
+					new_user = username || password ? await server.auth(username, password) : null;
 					break;
 				case 'Bearer':
 					new_user = await validateOperationToken(credentials);

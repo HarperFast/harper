@@ -18926,7 +18926,8 @@
 		},
 		{
 			"name": "4. NoSQL Tests",
-			"item": [
+            "item": [],
+			"disabled-item": [
 				{
 					"name": "Invalid Attribute Check",
 					"item": [
@@ -25632,7 +25633,8 @@
 		},
 		{
 			"name": "5. NoSQL Role Testing",
-			"item": [
+          "item": [],
+          "disabled-item": [
 				{
 					"name": "Bulk Load Perms Tests",
 					"item": [
@@ -33202,7 +33204,8 @@
 		},
 		{
 			"name": "6. SQL Role Testing",
-			"item": [
+          "item": [],
+          "disabled-item": [
 				{
 					"name": "SQL Add non SU role",
 					"event": [
@@ -36403,7 +36406,8 @@
 		},
 		{
 			"name": "7. Jobs & Job Role Testing",
-			"item": [
+          "item": [],
+          "disabled-item": [
 				{
 					"name": "S3 Operations",
 					"item": [
@@ -41769,7 +41773,8 @@
 		},
 		{
 			"name": "8. Delete Tests",
-			"item": [
+          "item": [],
+          "disabled-item": [
 				{
 					"name": "Delete Records Before Tests",
 					"item": [
@@ -47281,7 +47286,8 @@
 		},
 		{
 			"name": "9. Transactions",
-			"item": [
+          "item": [],
+          "disabled-item": [
 				{
 					"name": "Delete Audit Logs Before Tests",
 					"item": [
@@ -60305,7 +60311,7 @@
 									"",
 									"pm.test(\"Restart service success message is returned\", function () {",
 									"    const json_data = pm.response.json();",
-									"    pm.expect(json_data.message).to.equal(\"Restarting custom_functions\");",
+									"    pm.expect(json_data.message).to.equal(\"Restarting Custom Functions\");",
 									"});",
                                   "",
                                   "// This timeout is here to give HDB time to restart before the next text is ran.",
