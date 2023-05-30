@@ -69,7 +69,7 @@ function onSocket(socket, send, request, user) {
 					mqtt_options.protocolVersion = packet.protocolVersion;
 					if (packet.username) {
 						try {
-							user = server.auth(packet.username, packet.password.toString());
+							user = await server.auth(packet.username, packet.password.toString());
 						} catch (error) {
 							return sendPacket({
 								// Send a connection acknowledgment with indication of auth failure
