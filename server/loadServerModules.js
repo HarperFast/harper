@@ -80,11 +80,15 @@ async function loadServerModules(is_worker_thread = false) {
 			if (isMainThread) {
 				if (server_module.startOnMainThread) await server_module.startOnMainThread(server_module_definition);
 				for (let possible_port of [port, securePort]) {
-					if (+possible_port && !ports_started.includes(possible_port)) {
-						// if there is a TCP port associated with the plugin, we set up the routing on the main thread for it
-						ports_started.push(possible_port);
-						const session_affinity = env.get(hdb_terms.CONFIG_PARAMS.HTTP_SESSION_AFFINITY);
-						socket_router.startSocketServer(possible_port, session_affinity);
+					try {
+						if (+possible_port && !ports_started.includes(possible_port)) {
+							// if there is a TCP port associated with the plugin, we set up the routing on the main thread for it
+							ports_started.push(possible_port);
+							const session_affinity = env.get(hdb_terms.CONFIG_PARAMS.HTTP_SESSION_AFFINITY);
+							socket_router.startSocketServer(possible_port, session_affinity);
+						}
+					} catch (error) {
+						console.error('Error listening on socket', possible_port, error, module_id);
 					}
 				}
 			}
@@ -94,7 +98,7 @@ async function loadServerModules(is_worker_thread = false) {
 				await server_module.start({ server, resources, ...server_module_definition });
 			loaded_server_modules.set(server_module, true);
 		} catch (error) {
-			console.error('Error loading server_module', error, module_id);
+			console.error('Error loading extension', error, module_id);
 		}
 	}
 	// once the global plugins are loaded, we now load all the applications (and their plugins)

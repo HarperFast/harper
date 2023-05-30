@@ -112,7 +112,17 @@ export class DefaultAccess {
 		}
 		return this.resource.connect(incoming_messages);
 	}
-
+	async query(content) {
+		this.resource[SAVE_UPDATES_PROPERTY] = false; // by default modifications aren't saved, they just yield a different result from get
+		await this.resource.loadRecord?.();
+		let query = await content;
+		const allowed = await this.resource.allowRead(this.request.user, query);
+		if (!allowed) {
+			throw new AccessError(this.user);
+		}
+		if (typeof allowed === 'object') query = allowed;
+		return this.resource.get(query);
+	}
 	/**
 	 * This is responsible for taking a query string (from a get()) and converting it to a standard query object
 	 * structure

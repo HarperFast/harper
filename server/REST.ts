@@ -18,25 +18,21 @@ async function http(request, next_handler) {
 	const start = performance.now();
 	let resource_path;
 	try {
+		const headers = {};
 		let response_data = await resources.call(request.pathname.slice(1), request, (resource_access, path) => {
 			resource_path = path;
-			try {
-				if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
-					// TODO: Support cancelation (if the request otherwise fails or takes too many bytes)
-					try {
-						request.data = getDeserializer(request.headers['content-type'], true)(request.body);
-					} catch (error) {
-						throw new ClientError(error, 400);
-					}
+			if (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'QUERY') {
+				// TODO: Support cancelation (if the request otherwise fails or takes too many bytes)
+				try {
+					request.data = getDeserializer(request.headers['content-type'], true)(request.body);
+				} catch (error) {
+					throw new ClientError(error, 400);
 				}
-			} catch (error) {
-				// TODO: Convert to HDBError
-				error.status = 400;
-				throw error;
 			}
 
 			switch (method) {
 				case 'GET':
+				case 'HEAD':
 					return resource_access.get();
 				case 'POST':
 					return resource_access.post(request.data);
@@ -46,23 +42,26 @@ async function http(request, next_handler) {
 					return resource_access.delete();
 				case 'PATCH':
 					return resource_access.patch(request.data);
-				case 'HEAD':
-					resource_access.patch(request.data);
+				case 'OPTIONS': // used primarily for CORS
+					headers.Allow = 'GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS, TRACe, QUERY, COPY, MOVE';
 					return;
-				case 'OPTIONS':
-					return; // used primarily for CORS, could return all methods
 				case 'CONNECT':
 					// websockets? and event-stream
 					return resource_access.connect();
+				case 'TRACE':
+					return 'HarperDB is the terminating server';
+				case 'QUERY':
+					return resource_access.query(request.data);
+				case 'COPY': // methods suggested from webdav RFC 4918
+					return resource_access.copy(request.headers.destination);
+				case 'MOVE':
+					return resource_access.move(request.headers.destination);
 				default:
 					throw new ServerError('Method not available', 501);
 			}
 		});
 		if (resource_path === undefined) return next_handler(request); // no resource handler found
 		const execution_time = performance.now() - start;
-		const headers = {
-			'Server-Timing': `db;dur=${execution_time.toFixed(2)}`,
-		};
 		let status = 200;
 		let lastModification;
 		if (response_data == undefined) {
@@ -83,12 +82,14 @@ async function http(request, next_handler) {
 			headers,
 			body: undefined,
 		};
+		headers['Server-Timing'] = `db;dur=${execution_time.toFixed(2)}`;
 		recordAction('TTFB', execution_time, resource_path, method);
 		recordActionBinary(status < 400, 'success', resource_path, method);
 		// TODO: Handle 201 Created
 
 		if (response_data !== undefined) {
 			response_object.body = serialize(response_data, request, response_object);
+			if (method === 'HEAD') response_object.body = undefined; // we want everything else to be the same as GET, but then omit the body
 		}
 		return response_object;
 	} catch (error) {
