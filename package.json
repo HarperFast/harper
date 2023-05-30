@@ -166,9 +166,6 @@
     "eslint-plugin-radar": {
       "eslint": "8.22.0"
     },
-    "lmdb": {
-      "msgpackr": "1.8.4"
-    },
     "newman-reporter-html": {
       "newman": "5.3.2"
     }
