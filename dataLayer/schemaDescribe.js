@@ -134,7 +134,6 @@ async function descTable(describe_table_object, attr_perms) {
 		table_attr_perms = describe_table_object.hdb_user.role.permission[schema].tables[table].attribute_permissions;
 	}
 
-	let table_result = {};
 	let validation = validator.describe_table(describe_table_object);
 	if (validation) {
 		throw validation;
@@ -157,94 +156,28 @@ async function descTable(describe_table_object, attr_perms) {
 			HTTP_STATUS_CODES.NOT_FOUND
 		);
 
-	return {
+	let table_result = {
 		schema,
 		name: table_obj.tableName,
 		attributes: table_obj.attributes,
 	};
+	// Nats/clustering stream names are hashed to ensure constant length alphanumeric values.
+	// String will always hash to the same value.
+	table_result.clustering_stream_name = crypto_hash.createNatsTableStreamName(table_result.schema, table_result.name);
 
-	if (schema === terms.SYSTEM_SCHEMA_NAME) {
-		return global.hdb_schema[terms.SYSTEM_SCHEMA_NAME][table];
-	}
-
-	let table_search_obj = {
-		schema: terms.SYSTEM_SCHEMA_NAME,
-		table: terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME,
-		hash_attribute: terms.SYSTEM_TABLE_HASH_ATTRIBUTES.TABLE_TABLE_HASH_ATTRIBUTE,
-		search_attribute: NAME_ATTRIBUTE_STRING,
-		search_value: table,
-		hash_values: [],
-		get_attributes: [terms.WILDCARD_SEARCH_VALUE],
-	};
-
-	tables = Array.from(await p_search_search_by_value(table_search_obj));
-
-	if (!tables || tables.length === 0) {
-		throw handleHDBError(
-			new Error(),
-			HDB_ERROR_MSGS.TABLE_NOT_FOUND(describe_table_object.schema, describe_table_object.table),
-			HTTP_STATUS_CODES.NOT_FOUND
-		);
-	}
-
-	for await (let table1 of tables) {
-		try {
-			if (table1.schema !== schema) {
-				continue;
+	try {
+		let audit_store = table_obj.auditStore;
+		if (audit_store) {
+			for (let key of audit_store.getKeys({ reverse: true, limit: 1 })) {
+				table_result.last_updated_record = key[0];
 			}
-			table_result = table1;
-
-			if (!table_result.hash_attribute) {
-				throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_TABLE_ERR(table_result));
+		} else if (table_obj.indices.__updatedtime__) {
+			for (let key of table_obj.indices.__updatedtime__.get().getKeys({ reverse: true, limit: 1 })) {
+				table_result.last_updated_record = key[0];
 			}
-
-			let attribute_search_obj = {
-				schema: terms.SYSTEM_SCHEMA_NAME,
-				table: terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME,
-				hash_attribute: terms.SYSTEM_TABLE_HASH_ATTRIBUTES.ATTRIBUTE_TABLE_HASH_ATTRIBUTE,
-				search_attribute: SCHEMA_TABLE_ATTRIBUTE_STRING,
-				search_value: schema + '.' + table,
-				get_attributes: [ATTRIBUTE_NAME_STRING],
-			};
-
-			let attributes = Array.from(await p_search_search_by_value(attribute_search_obj));
-			attributes = _.uniqBy(attributes, (attribute) => attribute.attribute);
-
-			if (table_attr_perms && table_attr_perms.length > 0) {
-				attributes = getAttrsByPerms(table_attr_perms);
-			}
-
-			table_result.attributes = attributes;
-
-			// Nats/clustering stream names are hashed to ensure constant length alphanumeric values.
-			// String will always hash to the same value.
-			table_result.clustering_stream_name = crypto_hash.createNatsTableStreamName(table1.schema, table1.name);
-
-			try {
-				let schema_path = getSchemaPath(table_result.schema, table_result.name);
-				let env = await lmdb_environment_utility.openEnvironment(schema_path, table_result.name);
-				let dbi_stat = lmdb_environment_utility.statDBI(env, table_result.hash_attribute);
-				table_result.record_count = dbi_stat.entryCount;
-				// do a reverse search of the updated timestamp index to find the very latest entry, and record that
-				// timestamp:
-				for (let { key } of search_utility.lessThan(
-					env,
-					table_result.hash_attribute,
-					terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME,
-					Infinity,
-					true,
-					1,
-					0
-				)) {
-					table_result.last_updated_record = key;
-				}
-			} catch (e) {
-				logger.warn(`unable to stat table dbi due to ${e}`);
-			}
-		} catch (err) {
-			logger.error(`There was an error getting attributes for table '${table1.name}'`);
-			logger.error(err);
 		}
+	} catch (e) {
+		logger.warn(`unable to stat table dbi due to ${e}`);
 	}
 	return table_result;
 }

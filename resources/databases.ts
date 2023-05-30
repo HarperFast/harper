@@ -196,7 +196,7 @@ function readMetaDb(
 			let attributes = tables_to_load.get(table_name);
 			if (!attributes) tables_to_load.set(table_name, (attributes = []));
 			attributes.push(value);
-			value.key = key;
+			Object.defineProperty(value, 'key', { value: key, configurable: true });
 		}
 		const tables = ensureDB(schema_name);
 		for (const [table_name, attributes] of tables_to_load) {
@@ -263,13 +263,24 @@ const DEFINED_TABLES = Symbol('defined-tables');
 function ensureDB(database_name) {
 	let db_tables = databases[database_name];
 	if (!db_tables) {
-		if (database_name === 'data') db_tables = databases[database_name] = tables;
-		else {
-			db_tables = databases[database_name] = Object.create(null);
-			Object.defineProperty(databases, lowerCamelCase(database_name), {
-				value: db_tables,
+		if (database_name === 'data')
+			// preserve the data tables objet
+			db_tables = databases[database_name] = tables;
+		if (database_name === 'system')
+			// make system non-enumerable
+			Object.defineProperty(databases, 'system', {
+				value: (db_tables = Object.create(null)),
 				configurable: true, // no enum
 			});
+		else {
+			db_tables = databases[database_name] = Object.create(null);
+			const databaseName = lowerCamelCase(database_name);
+			if (databaseName !== database_name) {
+				Object.defineProperty(databases, databaseName, {
+					value: db_tables,
+					configurable: true, // no enum
+				});
+			}
 		}
 	}
 	if (!db_tables[DEFINED_TABLES] && defined_databases) {
