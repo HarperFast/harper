@@ -13,6 +13,7 @@ const UpdateRemoteResponseObject = require('./UpdateRemoteResponseObject');
 const hdb_utils = require('../common_utils');
 const env_manager = require('../environment/environmentManager');
 const { cloneDeep } = require('lodash');
+const { broadcast } = require('../../server/threads/manageThreads');
 
 module.exports = updateRemoteSource;
 
@@ -110,6 +111,9 @@ async function updateRemoteSource(request) {
 		// Regardless of if record exists or not we add/update its system_info param.
 		upsert_record.system_info = system_info;
 		await cluster_utils.upsertNodeRecord(upsert_record);
+		broadcast({
+			type: 'nats_update',
+		});
 
 		return new UpdateRemoteResponseObject(
 			nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.SUCCESS,

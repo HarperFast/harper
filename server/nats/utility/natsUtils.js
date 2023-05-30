@@ -683,8 +683,7 @@ async function addSourceToWorkStream(node, work_queue_name, subscription) {
 	const start_time = subscription.start_time ? subscription.start_time : new Date(Date.now()).toISOString();
 	const { schema, table } = subscription;
 	// Name of remote stream to source from
-	const stream_name = table ? crypto_hash.createNatsTableStreamName(schema, table) : schema;
-
+	const stream_name = crypto_hash.createNatsTableStreamName(schema, table);
 	// Check to see if the source is being added to a local stream. Local streams require a slightly different config.
 	const is_local_stream = server_name === node;
 

@@ -15,7 +15,7 @@ const { start } = require('./natsReplicator');
 const env_mgr = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 require('../threads/manageThreads');
-const { getDatabases } = require('../../resources/databases');
+const { getDatabases, table } = require('../../resources/databases');
 const crypto_hash = require('../../security/cryptoHash');
 const { publishToStream } = nats_utils;
 
@@ -186,11 +186,12 @@ async function messageProcessor(msg) {
 			let { timestamp, user, writes } = entry;
 			let first_dot_index = msg.subject.indexOf('.');
 			let second_dot_index = msg.subject.indexOf('.', first_dot_index + 1);
-			let schema = msg.subject.slice(first_dot_index + 1, second_dot_index);
+			let database_name = msg.subject.slice(first_dot_index + 1, second_dot_index);
 			let first_table = writes[0].table;
-			let database = getDatabases()[schema];
-			let Table = database?.[first_table];
-			if (!Table) Table = table();
+			let database = getDatabases()[database_name];
+			if (!database) throw new Error(`Database ${database_name} not found`);
+			let Table = database[first_table];
+			if (!Table) throw new Error(`Table ${first_table} not found in database ${database_name}`);
 			if (writes)
 				await Table.transact(
 					async (txn_table) => {
@@ -224,7 +225,8 @@ async function messageProcessor(msg) {
 			js_msg.headers,
 			js_msg.data
 		); // use the already-encoded message
-		await completion;
+		// onCommit is not being called, but not sure if we really need to do this
+		// await completion;
 	} catch (e) {
 		harper_logger.error(e);
 	}

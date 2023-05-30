@@ -63,25 +63,34 @@ export class ResourceBridge extends LMDBBridge {
 		for (const attribute of attributes) {
 			if (attribute.name === table_create_obj.hash_attribute) attribute.isPrimaryKey = true;
 		}
-		return table({
+		table({
 			database: table_create_obj.schema,
 			table: table_create_obj.table,
 			attributes,
 			schemaDefined: schema_defined,
 		});
+		signalling.signalSchemaChange(
+			new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_TABLE, table_create_obj.schema, table_create_obj.table)
+		);
 	}
 	dropTable(drop_table_object) {
-		return getTable(drop_table_object).dropTable();
+		getTable(drop_table_object).dropTable();
+		signalling.signalSchemaChange(
+			new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, drop_table_object.schema, drop_table_object.table)
+		);
 	}
-	async createSchema(create_schema_obj) {
-		return database({
+	createSchema(create_schema_obj) {
+		database({
 			database: create_schema_obj.schema,
 			table: null,
 		});
+		signalling.signalSchemaChange(
+			new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_SCHEMA, create_schema_obj.schema)
+		);
 	}
 	async dropSchema(drop_schema_obj) {
 		await dropDatabase(drop_schema_obj.schema);
-		signalling.signalSchemaChange(new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, drop_schema_obj.schema));
+		signalling.signalSchemaChange(new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, drop_schema_obj.schema));
 	}
 	async updateRecords(update_obj) {
 		update_obj.requires_existing = true;
@@ -227,7 +236,7 @@ export class ResourceBridge extends LMDBBridge {
 		return map;
 	}
 	resetReadTxn(schema, table) {
-		getTable({ schema, table }).primaryStore.resetReadTxn();
+		getTable({ schema, table })?.primaryStore.resetReadTxn();
 	}
 }
 

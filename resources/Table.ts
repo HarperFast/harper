@@ -268,7 +268,8 @@ export function makeTable(options) {
 				if (this[VERSION_PROPERTY] < 0 || this.__invalidated__) entry = null;
 			}
 			if (!entry && !allow_invalidated) {
-				if (this.constructor.Source?.prototype.get) record = await this.getFromSource(record, this[VERSION_PROPERTY]);
+				const get = this.constructor.Source?.prototype.get;
+				if (get && !get.doesNotLoad) record = await this.getFromSource(record, this[VERSION_PROPERTY]);
 			}
 			copyRecord(record, this);
 

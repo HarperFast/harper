@@ -57,7 +57,6 @@ async function initialize() {
 async function handleRequest(sub) {
 	for await (const msg of sub) {
 		const msg_data = decode(msg.data);
-		harper_logger.trace('Received request:', msg_data);
 		let reply;
 
 		switch (msg_data.operation) {

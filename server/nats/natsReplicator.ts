@@ -1,27 +1,31 @@
 import { databases, getDatabases, onNewTable } from '../../resources/databases';
-import { Resource } from '../../resources/Resource';
+import { Resource, TRANSACTIONS_PROPERTY } from '../../resources/Resource';
 import { publishToStream } from './utility/natsUtils';
 import { SUBJECT_PREFIXES } from './utility/natsTerms';
 import { createNatsTableStreamName } from '../../security/cryptoHash';
 import { IterableEventQueue } from '../../resources/IterableEventQueue';
 import { getWorkerIndex } from '../threads/manageThreads';
 import { setSubscription } from './natsIngestService';
+import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility';
+import { onMessageFromWorkers } from '../../server/threads/manageThreads';
+import { threadId } from 'worker_threads';
+import initializeReplyService from './natsReplyService';
 
 let publishing_databases = new Map();
 export async function start() {
 	await assignReplicationSource();
 }
 const MAX_INGEST_THREADS = 2;
-
+let immediateNATSTransaction, subscribed_to_nodes;
 /**
  * This will assign the NATS replicator as a source to any tables that have subscriptions to them (are publishing to other nodes)
  */
 async function assignReplicationSource() {
 	publishing_databases = new Map();
 	const hdb_nodes = getDatabases().system.hdb_nodes;
-	for await (const node of await hdb_nodes.search([])) {
+	for await (const node of hdb_nodes.search([])) {
 		const { subscriptions } = node;
-		for (const subscription of subscriptions) {
+		for (const subscription of subscriptions || []) {
 			if (!subscription.publish) continue;
 			const db = subscription.schema;
 			let publishing = publishing_databases.get(db);
@@ -30,7 +34,6 @@ async function assignReplicationSource() {
 			else publishing.publishingDatabase = true;
 		}
 	}
-	console.log({ publishing_databases });
 	for (const [db_name, publishing] of publishing_databases) {
 		const tables = databases[db_name];
 		if (!tables) {
@@ -53,15 +56,17 @@ async function assignReplicationSource() {
 		}
 	}
 	onNewTable((table) => {
-		setNATSReplicator(table.tableName, table.databasePath, table);
+		if (publishing_databases.get(table.schemaName)?.publishingDatabase)
+			setNATSReplicator(table.tableName, table.schemaName, table);
 	});
-	databases.system.hdb_nodes.subscribe({
-		listener() {
-			assignReplicationSource();
-		},
-	});
+	if (subscribed_to_nodes) return;
+	subscribed_to_nodes = true;
 }
-
+onMessageFromWorkers((event) => {
+	if (event.type === 'nats_update') {
+		assignReplicationSource();
+	}
+});
 /**
  * Get/create a NATS replication resource that can be assigned as a source to tables
  * @param table_name
@@ -69,16 +74,17 @@ async function assignReplicationSource() {
  */
 export function setNATSReplicator(table_name, db_name, Table) {
 	if (Table.Source) return;
-	publishToStream(
-		`${SUBJECT_PREFIXES.TXN}.${db_name}`,
-		createNatsTableStreamName(db_name, table_name),
-		Table.origin?.nats_msg_header,
-		{
-			operation: 'define_table',
-			table: Table.tableName,
-			attributes: Table.attributes,
-		}
-	);
+	if (false && publishing_databases.get(db_name)?.publishingDatabase)
+		publishToStream(
+			`${SUBJECT_PREFIXES.TXN}.${db_name}`,
+			createNatsTableStreamName(db_name, table_name),
+			Table.origin?.nats_msg_header,
+			{
+				operation: 'define_table',
+				table: Table.tableName,
+				attributes: Table.attributes,
+			}
+		);
 
 	Table.sourcedFrom(
 		class NATSReplicator extends Resource {
@@ -105,12 +111,15 @@ export function setNATSReplicator(table_name, db_name, Table) {
 				});
 			}
 			getNATSTransaction(options): NATSTransaction {
-				let nats_transaction: NATSTransaction = this.transactions.nats;
+				let nats_transaction: NATSTransaction = this[TRANSACTIONS_PROPERTY]?.nats;
 				if (!nats_transaction) {
-					this.transactions.push(
-						(nats_transaction = this.transactions.nats = new NATSTransaction(this.transactions, options))
-					);
-					nats_transaction.user = this.user;
+					if (this[TRANSACTIONS_PROPERTY]) {
+						this[TRANSACTIONS_PROPERTY].push(
+							(nats_transaction = this[TRANSACTIONS_PROPERTY].nats =
+								new NATSTransaction(this[TRANSACTIONS_PROPERTY], options))
+						);
+						nats_transaction.user = this.user;
+					} else nats_transaction = immediateNATSTransaction;
 				}
 				return nats_transaction;
 			}
@@ -131,7 +140,7 @@ export function setNATSReplicator(table_name, db_name, Table) {
 class NATSTransaction {
 	user: string;
 	writes_by_db = new Map(); // TODO: short circuit of setting up a map if all the db paths are the same (99.9% of the time that will be the case)
-	constructor(protected transaction, protected options) {}
+	constructor(protected transaction, protected options?) {}
 	addWrite(database_path, write) {
 		let writes_for_path = this.writes_by_db.get(database_path);
 		if (!writes_for_path) this.writes_by_db.set(database_path, (writes_for_path = []));
@@ -146,7 +155,7 @@ class NATSTransaction {
 				promises.push(
 					publishToStream(
 						`${SUBJECT_PREFIXES.TXN}.${db}`,
-						db, // Do we need createNatsTableStreamName for just a database name?
+						createNatsTableStreamName(db), // Do we need createNatsTableStreamName for just a database name?
 						this.options?.nats_msg_header,
 						{
 							timestamp: this.transaction.timestamp,
@@ -191,3 +200,18 @@ class NATSTransaction {
 		return Promise.all(promises);
 	}
 }
+class ImmmediateNATSTransaction extends NATSTransaction {
+	constructor() {
+		super({
+			get timestamp() {
+				return getNextMonotonicTime();
+			},
+		});
+	}
+
+	addWrite(database_path, write) {
+		super.addWrite(database_path, write);
+		this.commit();
+	}
+}
+immediateNATSTransaction = new ImmmediateNATSTransaction();

@@ -365,11 +365,11 @@ export class Resource implements ResourceInterface {
 	static Access = DefaultAccess;
 
 	// Default permissions (super user only accesss):
-	static allowRead(user): boolean | object {
+	static allowRead(user, query?: object): boolean | object {
 		return user?.role.permission.super_user;
 	}
-	allowRead(user): boolean | object {
-		return this.constructor.allowRead(user);
+	allowRead(user, query?: object): boolean | object {
+		return this.constructor.allowRead(user, query);
 	}
 	static allowUpdate(user): boolean | object {
 		return user?.role.permission.super_user;
@@ -390,7 +390,7 @@ export class Resource implements ResourceInterface {
 		return user?.role.permission.super_user;
 	}
 }
-
+Resource.prototype.get.doesNotLoad = true; // the default get implementation does not actually load anything
 _assignPackageExport('Resource', Resource);
 
 export function snake_case(camelCase: string) {
