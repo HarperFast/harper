@@ -85,6 +85,7 @@ mqtt:
   port: 1883
   securePort: 8883
   webSocket: true
+  requireAuthentication: true
 http:
   threads: null
   sessionAffinity: null

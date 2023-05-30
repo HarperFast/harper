@@ -31,6 +31,7 @@ function getServerModules() {
 			port: env.get(CONFIG_PARAMS.MQTT_PORT),
 			securePort: env.get(CONFIG_PARAMS.MQTT_SECUREPORT),
 			webSocket: env.get(CONFIG_PARAMS.MQTT_WEBSOCKET),
+			requireAuthentication: env.get(CONFIG_PARAMS.MQTT_REQUIREAUTHENTICATION),
 			plugin: mqtt,
 		},
 		{ module: 'auth', port: 'all', plugin: auth },

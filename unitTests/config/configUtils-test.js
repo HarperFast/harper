@@ -364,6 +364,7 @@ describe('Test configUtils module', () => {
 					port: 1883,
 					securePort: 8883,
 					webSocket: true,
+					requireAuthentication: true,
 				},
 				operationsApi: {
 					authentication: {
@@ -448,6 +449,7 @@ describe('Test configUtils module', () => {
 				logging_stdstreams: true,
 				mqtt_port: 1883,
 				mqtt_secureport: 8883,
+				mqtt_requireauthentication: true,
 				mqtt_websocket: true,
 				operationsapi_authentication_operationtokentimeout: '2d',
 				operationsapi_authentication_refreshtokentimeout: '31d',
@@ -535,6 +537,7 @@ describe('Test configUtils module', () => {
 			logging_stdstreams: false,
 			mqtt_port: 1883,
 			mqtt_secureport: 8883,
+			mqtt_requireauthentication: true,
 			mqtt_websocket: true,
 			operationsapi_authentication_operationtokentimeout: '1d',
 			operationsapi_authentication_refreshtokentimeout: '30d',

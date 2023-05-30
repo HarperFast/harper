@@ -190,6 +190,7 @@ function configValidator(config_json) {
 			port: port_constraints,
 			securePort: port_constraints,
 			webSocket: boolean.optional(),
+			requireAuthentication: boolean.optional(),
 		}),
 		http: Joi.object({
 			threads: threads_constraints,

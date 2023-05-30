@@ -10,7 +10,7 @@ import { server } from '../server/Server';
 import { pack } from 'msgpackr';
 
 const AUTHORIZE_LOCAL = true;
-export async function start({ server, port, webSocket, securePort }) {
+export async function start({ server, port, webSocket, securePort, requireAuthentication }) {
 	// here we basically normalize the different types of sockets to pass to our socket/message handler
 	if (webSocket)
 		server.ws(
@@ -20,7 +20,8 @@ export async function start({ server, port, webSocket, securePort }) {
 						ws,
 						(message) => ws.send(message),
 						request,
-						Promise.resolve(chain_completion).then(() => request?.user)
+						Promise.resolve(chain_completion).then(() => request?.user),
+						requireAuthentication
 					);
 					ws.on('message', onMessage);
 					ws.on('close', onClose);
@@ -37,7 +38,13 @@ export async function start({ server, port, webSocket, securePort }) {
 					user = await getSuperUser();
 				}
 
-				const { onMessage, onClose } = onSocket(socket, (message) => socket.write(message), null, user);
+				const { onMessage, onClose } = onSocket(
+					socket,
+					(message) => socket.write(message),
+					null,
+					user,
+					requireAuthentication
+				);
 				socket.on('data', onMessage);
 				socket.on('close', onClose);
 				socket.on('error', (error) => {
@@ -49,7 +56,7 @@ export async function start({ server, port, webSocket, securePort }) {
 	}
 }
 
-function onSocket(socket, send, request, user) {
+function onSocket(socket, send, request, user, requireAuthentication) {
 	let session: DurableSubscriptionsSession;
 	const mqtt_options = { protocolVersion: 4 };
 	const parser = makeParser({ protocolVersion: 5 });
@@ -79,7 +86,7 @@ function onSocket(socket, send, request, user) {
 							});
 						}
 					}
-					if (!user)
+					if (!user && requireAuthentication)
 						return sendPacket({
 							// Send a connection acknowledgment with indication of auth failure
 							cmd: 'connack',
