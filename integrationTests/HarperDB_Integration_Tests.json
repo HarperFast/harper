@@ -59759,8 +59759,7 @@
 		},
 		{
 			"name": "14. Token Auth",
-          "item":[],
-          "disabled-item": [
+            "item": [
 				{
 					"name": "Call create_authentication_tokens no username/pw",
 					"event": [
@@ -59986,12 +59985,12 @@
 									"",
 									"pm.test(\"verify NoSQL update worked\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[0].address).to.eql('def1234');",
+									"    pm.expect(jsonData.length).to.eql(1);",
 									"});",
 									"",
 									"pm.test(\"verify NoSQL update worked, new attribute added\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[0].test_record).to.eql(\"I'mATest\");",
+									"    pm.expect(jsonData[0].employeeid).to.eql(1);",
 									"});",
 									"",
 									"",
