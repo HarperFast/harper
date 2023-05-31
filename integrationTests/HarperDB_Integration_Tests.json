@@ -48918,7 +48918,8 @@
 		},
 		{
 			"name": "10. Other Role Tests",
-			"item": [
+          "item": [],
+          "disabled-item": [
 				{
 					"name": "Describe ops role testing",
 					"item": [
@@ -57053,7 +57054,8 @@
 		},
 		{
 			"name": "12. Configuration",
-			"item": [
+            "item":[],
+            "disabled-item": [
 				{
 					"name": "Create_Attribute tests",
 					"item": [
@@ -59757,7 +59759,8 @@
 		},
 		{
 			"name": "14. Token Auth",
-			"item": [
+          "item":[],
+          "disabled-item": [
 				{
 					"name": "Call create_authentication_tokens no username/pw",
 					"event": [

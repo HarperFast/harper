@@ -133,6 +133,10 @@ export function makeTable(options) {
 						for await (const event of subscription) {
 							const source = event.__origin;
 							const first_record = event.operation === 'transaction' ? event.writes[0].value : event.value;
+							if (!first_record) {
+								console.error('Bad subscription event');
+								continue;
+							}
 							const id = first_record[primary_key];
 							const resource = new this(id, source);
 							const commit = resource.transact(() => {

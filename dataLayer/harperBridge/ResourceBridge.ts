@@ -73,6 +73,17 @@ export class ResourceBridge extends LMDBBridge {
 			new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_TABLE, table_create_obj.schema, table_create_obj.table)
 		);
 	}
+	async createAttribute(create_attribute_obj) {
+		await getTable(create_attribute_obj).addAttribute({
+			name: create_attribute_obj.attribute,
+			indexed: create_attribute_obj.indexed ?? true,
+		});
+		return `attribute ${create_attribute_obj.schema}.${create_attribute_obj.table}.${create_attribute_obj.attribute} successfully created.`;
+	}
+	async dropAttribute(drop_attribute_obj) {
+		await getTable(drop_attribute_obj).removeAttribute(drop_attribute_obj.attribute);
+		return `successfully deleted ${drop_attribute_obj.schema}.${drop_attribute_obj.table}.${drop_attribute_obj.attribute}`;
+	}
 	dropTable(drop_table_object) {
 		getTable(drop_table_object).dropTable();
 		signalling.signalSchemaChange(
