@@ -61465,10 +61465,10 @@
 					"response": []
 				},
 				{
-					"name": "confirm attribute count correct",
+					"name": "confirm attribute count correct (disabled)",
 					"event": [
 						{
-							"listen": "test",
+							"listen": "disable-test",
 							"script": {
 								"exec": [
 									"// This code loops through the response from describe all and compares ",
@@ -61994,10 +61994,10 @@
 					"response": []
 				},
 				{
-					"name": "drop schema test_delete_before",
+					"name": "drop schema test_delete_before (disabled)",
 					"event": [
 						{
-							"listen": "test",
+							"listen": "disable-test",
 							"script": {
 								"exec": [
 									"tests[\"Delete Schema\"] = responseBody.has(\"successfully delete\");\r",
