@@ -30,7 +30,15 @@ async function installApps() {
 
 	const node_mods_path = path.join(root_path, 'node_modules');
 	await fs.ensureDir(node_mods_path);
-	await fs.ensureSymlink(hdb_terms.PACKAGE_ROOT, path.join(node_mods_path, 'harperdb'), { overwrite: true });
+	const harperdb_link_path = path.join(node_mods_path, 'harperdb');
+	try {
+		await fs.ensureSymlink(hdb_terms.PACKAGE_ROOT, harperdb_link_path);
+	} catch (err) {
+		if (err.code === hdb_terms.NODE_ERROR_CODES.EEXIST) {
+			await fs.unlink(harperdb_link_path);
+			await fs.ensureSymlink(hdb_terms.PACKAGE_ROOT, harperdb_link_path);
+		} else throw err;
+	}
 
 	let install_pkg_json;
 	let install_pkg_json_exists = true;
@@ -185,7 +193,7 @@ async function installPackages(pkg_json_path, pkg_json, install_pkg_json_path, a
 			}
 
 			try {
-				await fs.ensureSymlink(getPkgPath(pkg, name, root_path), path.join(cf_root, name), { overwrite: true });
+				await fs.ensureSymlink(getPkgPath(pkg, name, root_path), path.join(cf_root, name));
 			} catch (err) {
 				if (err.code === hdb_terms.NODE_ERROR_CODES.EEXIST) {
 					throw new Error(
