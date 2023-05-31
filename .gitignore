@@ -6,12 +6,14 @@ hdb/*
 logs/*
 !logs/README.md
 .nyc_output/*
-.vs_code/*
+.vscode/*
 /bin/coverage/*
 coverage/*
 hdb_boot_properties.file
 *test_export.json.json
 /unitTests/envDir/*
+/unitTests/apiTests/envDir/*
+/unitTests/testApp/node_modules/*
 /unitTests/server/nats/tempTestDir/*
 coverage.json
 unitTests/server/nats/tempTestDir/*
