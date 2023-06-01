@@ -174,25 +174,30 @@ function registerServer(server, port) {
 function getPorts(options) {
 	let ports = [];
 	let port_num = parseInt(options?.securePort);
-	if (port_num) ports.push(port_num);
+	if (port_num) ports.push({ port: port_num, secure: true });
 	port_num = parseInt(options?.port);
-	if (port_num) ports.push(port_num);
+	if (port_num) ports.push({ port: port_num, secure: false });
 	if (ports.length === 0) {
 		// if no port is provided, default to custom functions port
-		ports = [parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10)];
+		ports = [
+			{
+				port: parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10),
+				secure: env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_HTTPS),
+			},
+		];
 	}
 	return ports;
 }
 function httpServer(listener, options) {
-	for (let port_num of getPorts(options)) {
-		getHTTPServer(port_num);
+	for (let { port, secure } of getPorts(options)) {
+		getHTTPServer(port, secure);
 		if (typeof listener === 'function') {
-			http_responders[options?.runFirst ? 'unshift' : 'push']({ listener, port: options?.port || port_num });
+			http_responders[options?.runFirst ? 'unshift' : 'push']({ listener, port: options?.port || port });
 		} else {
-			registerServer(listener, port_num);
+			registerServer(listener, port);
 		}
-		http_chain[port_num] = makeCallbackChain(http_responders, port_num);
-		ws_chain = makeCallbackChain(request_listeners, port_num);
+		http_chain[port] = makeCallbackChain(http_responders, port);
+		ws_chain = makeCallbackChain(request_listeners, port);
 	}
 }
 function getHTTPServer(port, secure) {
@@ -302,9 +307,9 @@ function onSocket(listener, options) {
 	if (options.port) SERVERS[options.port] = listener;
 }
 function onWebSocket(listener, options) {
-	for (let port_num of getPorts(options)) {
+	for (let { port: port_num, secure } of getPorts(options)) {
 		if (!ws_servers[port_num]) {
-			ws_servers[port_num] = new WebSocketServer({ server: getHTTPServer(port_num) });
+			ws_servers[port_num] = new WebSocketServer({ server: getHTTPServer(port_num, secure) });
 			ws_servers[port_num].on('connection', async (ws, node_request) => {
 				let request = new Request(node_request);
 				request.isWebSocket = true;
