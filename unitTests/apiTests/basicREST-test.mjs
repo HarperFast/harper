@@ -147,4 +147,5 @@ describe('test REST calls', () => {
 			assert.equal(response.data[1].name, undefined);
 		});
 	});
+
 });

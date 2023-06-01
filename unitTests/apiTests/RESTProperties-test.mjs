@@ -51,4 +51,36 @@ describe('test REST with property updates', () => {
 		assert(response.data.includes('Property name must be a string'));
 		assert(response.data.includes('Property age must be an integer'));
 	});
+	describe('check operations', function() {
+		it('search_by_value returns all attributes', async function() {
+			let response = await axios.post('http://localhost:9925', {
+				operation: 'search_by_value',
+				schema: 'data',
+				table: 'four_prop',
+				search_attribute: 'id',
+				search_value: '*',
+				get_attributes: '*',
+			})
+			assert.equal(response.data[0].title, 'title0');
+		});
+		it('sql returns all attributes of four property object', async function() {
+			let response = await axios.post('http://localhost:9925', {
+				operation: 'sql',
+				sql: 'SELECT * FROM data.four_prop',
+			})
+			assert.equal(response.data[0].title, 'title0');
+		});
+		it('sql returns all attributes of four property object', async function() {
+			let response = await axios.put('http://localhost:9926/SubObject/6', {
+				id: 6,
+				subObject: { name: 'another sub-object'},
+				subArray: [{ name: 'another sub-object of an array'}],
+			});
+			response = await axios.post('http://localhost:9925', {
+				operation: 'sql',
+				sql: 'SELECT * FROM data.sub_object',
+			})
+			assert.equal(response.data[0].subObject.name, 'another sub-object');
+		});
+	});
 });
