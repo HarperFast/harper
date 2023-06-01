@@ -1,5 +1,5 @@
 'use strict';
-/*
+
 const rewire = require('rewire');
 const chai = require('chai');
 const { expect } = chai;
@@ -7,7 +7,7 @@ const sinon = require('sinon');
 const fs = require('fs-extra');
 const env_mgr = require('../../../utility/environment/environmentManager');
 const npm_utils = require('../../../utility/npmUtilities');
-const install_apps = require('../../../apps/installApps');
+const install_apps = rewire('../../../apps/installApps');
 
 const fake_apps = [
 	{
@@ -45,7 +45,7 @@ const fake_installed_package_json = {
 	},
 };
 
-describe.skip('Test installApps module', () => {
+describe('Test installApps module', () => {
 	const sandbox = sinon.createSandbox();
 	const constructAppDep = install_apps.__get__('constructAppDep');
 	const constructAppName = install_apps.__get__('constructAppName');
@@ -115,23 +115,14 @@ describe.skip('Test installApps module', () => {
 		expect(ensure_sym_link.getCall(1).args).to.eql([
 			'unit-test/node_modules/unit_test_package1',
 			'unit-test-cf/unit_test_package1',
-			{
-				overwrite: true,
-			},
 		]);
 		expect(ensure_sym_link.getCall(2).args).to.eql([
 			'unit-test/node_modules/unit_test_package2',
 			'unit-test-cf/unit_test_package2',
-			{
-				overwrite: true,
-			},
 		]);
 		expect(ensure_sym_link.getCall(3).args).to.eql([
 			'unit-test/node_modules/unit_test_package3',
 			'unit-test-cf/unit_test_package3',
-			{
-				overwrite: true,
-			},
 		]);
 	});
 
@@ -166,31 +157,16 @@ describe.skip('Test installApps module', () => {
 		expect(ensure_sym_link.getCall(1).args).to.eql([
 			'unit-test/node_modules/unit_test_package1',
 			'unit-test-cf/unit_test_package1',
-			{
-				overwrite: true,
-			},
 		]);
 		expect(ensure_sym_link.getCall(2).args).to.eql([
 			'unit-test/node_modules/unit_test_package2',
 			'unit-test-cf/unit_test_package2',
-			{
-				overwrite: true,
-			},
 		]);
 		expect(ensure_sym_link.getCall(3).args).to.eql([
 			'unit-test/node_modules/unit_test_package3',
 			'unit-test-cf/unit_test_package3',
-			{
-				overwrite: true,
-			},
 		]);
-		expect(ensure_sym_link.getCall(4).args).to.eql([
-			'unit-test/node_modules/HarperDB',
-			'unit-test-cf/HarperDB',
-			{
-				overwrite: true,
-			},
-		]);
+		expect(ensure_sym_link.getCall(4).args).to.eql(['unit-test/node_modules/HarperDB', 'unit-test-cf/HarperDB']);
 		fake_apps.pop();
 	});
 
@@ -232,9 +208,6 @@ describe.skip('Test installApps module', () => {
 		expect(ensure_sym_link.getCall(1).args).to.eql([
 			'unit-test/node_modules/unit_test_package1',
 			'unit-test-cf/unit_test_package1',
-			{
-				overwrite: true,
-			},
 		]);
 	});
 
@@ -270,9 +243,6 @@ describe.skip('Test installApps module', () => {
 		expect(ensure_sym_link.getCall(1).args).to.eql([
 			'unit-test/node_modules/unit_test_package1',
 			'unit-test-cf/unit_test_package1',
-			{
-				overwrite: true,
-			},
 		]);
 	});
 
@@ -330,4 +300,3 @@ describe.skip('Test installApps module', () => {
 		expect(res_2).to.equal('unit/test/node_modules/dogs');
 	});
 });
-*/

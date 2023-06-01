@@ -1,6 +1,5 @@
 'use strict';
 
-const util = require('util');
 const { toJsMsg } = require('nats');
 const { decode } = require('msgpackr');
 const { isMainThread, parentPort } = require('worker_threads');
@@ -8,14 +7,9 @@ const nats_utils = require('./utility/natsUtils');
 const nats_terms = require('./utility/natsTerms');
 const hdb_terms = require('../../utility/hdbTerms');
 const harper_logger = require('../../utility/logging/harper_logger');
-const server_utilities = require('../serverHelpers/serverUtilities');
-const operation_function_caller = require('../../utility/OperationFunctionCaller');
-const transact_to_cluster_utilities = require('../../utility/clustering/transactToClusteringUtilities');
-const { start } = require('./natsReplicator');
 const env_mgr = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 require('../threads/manageThreads');
-const { getDatabases, table } = require('../../resources/databases');
 const crypto_hash = require('../../security/cryptoHash');
 const { publishToStream } = nats_utils;
 
@@ -90,7 +84,7 @@ async function workQueueListener(signal) {
 	for await (const message of sub) {
 		// ring style queue for awaiting operations for concurrency. await the entry from 100 operations ago:
 		await outstanding_operations[operation_index];
-		outstanding_operations[operation_index] = messageProcessor(message, signal).catch((error) => {
+		outstanding_operations[operation_index] = messageProcessor(message).catch((error) => {
 			harper_logger.error(error);
 		});
 		if (++operation_index >= MAX_CONCURRENCY) operation_index = 0;
@@ -147,10 +141,6 @@ async function messageProcessor(msg) {
 		if (!records) records = ids;
 		let completion = new Promise((resolve) => (onCommit = resolve));
 		let { timestamp, user } = __origin || {};
-		let options = {
-			user,
-			nats_msg_header,
-		};
 		let subscription = database_subscriptions.get(database_name)?.get(table_name);
 		if (!subscription) {
 			throw new Error('Missing table for replication message', table_name);

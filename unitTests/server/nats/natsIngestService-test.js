@@ -42,7 +42,7 @@ function decodeJsMsg(msg) {
 	return decode(js_msg.data);
 }
 
-describe.skip('Test natsIngestService module', () => {
+describe('Test natsIngestService module', () => {
 	const sandbox = sinon.createSandbox();
 	let get_operation_function_spy;
 	let call_operation_function_as_await_stub;
