@@ -47,12 +47,6 @@ export function loadApplications(loaded_plugin_modules?: Map<any, any>, loaded_r
 		}
 	}
 	if (process.env.RUN_HDB_APP) {
-		const app_node_modules = join(process.env.RUN_HDB_APP, 'node_modules');
-		const harperdb_package = join(process.env.RUN_HDB_APP, 'node_modules', 'harperdb');
-		if (!existsSync(harperdb_package)) {
-			if (!existsSync(app_node_modules)) mkdirSync(app_node_modules);
-			symlinkSync(PACKAGE_ROOT, harperdb_package);
-		}
 		cfs_loaded.push(loadApplication(process.env.RUN_HDB_APP, resources));
 	}
 	return Promise.all(cfs_loaded).then(() => {

@@ -9,6 +9,7 @@ exports.contentTypes = null;
 exports._assignPackageExport = (name, value) => {
 	exports[name] = value;
 };
+global.harperdb = exports;
 /*exports.Resource = require('./resources/Resource').Resource;
 const table_loader = require('./resources/databases');
 exports.tables = table_loader.tables;

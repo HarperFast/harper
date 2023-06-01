@@ -1,4 +1,4 @@
-import { Resource, tables } from 'harperdb';
+const { Resource, tables } = harperdb;
 
 export class Echo extends Resource {
 	static async connect(incoming_messages) {
