@@ -36,7 +36,7 @@ async function sendOperationTransaction(request_body, hashes_to_send, origin, na
 		);
 		await nats_utils.publishToStream(
 			`${nats_terms.SUBJECT_PREFIXES.TXN}.${request_body.schema}`,
-			request_body.schema,//crypto_hash.createNatsTableStreamName(request_body.schema, request_body.table),
+			crypto_hash.createNatsTableStreamName(request_body.schema, request_body.table),
 			nats_msg_header,
 			transaction_msg
 		);

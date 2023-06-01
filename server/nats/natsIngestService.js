@@ -133,95 +133,64 @@ async function messageProcessor(msg) {
 	harper_logger.trace('processing message:', entry, 'with sequence:', js_msg.seq);
 	harper_logger.trace(`messageProcessor nats msg id: ${js_msg.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID)}`);
 	try {
-		let single_table_operation = entry.operation;
+		let {
+			operation,
+			schema: database_name,
+			next: next_write,
+			table: table_name,
+			records,
+			ids,
+			writes,
+			__origin,
+		} = entry;
 		let onCommit;
+		if (!records) records = ids;
 		let completion = new Promise((resolve) => (onCommit = resolve));
-		let database_name;
-		if (single_table_operation) {
-			// this is a legacy message that operates on a single table
-			let { schema, table: table_name, records, writes, __origin } = entry;
-			database_name = schema;
-			let { timestamp, user } = __origin || {};
-			let options = {
-				user,
-				nats_msg_header,
-			};
-			let subscription = database_subscriptions.get(schema)?.get(table_name);
-			if (!subscription) {
-				return console.error('Missing table', table_name);
-			}
-			if (records) {
-				if (records.length === 1)
-					subscription.send({
-						operation: convertOperation(single_table_operation),
-						value: records[0],
-						timestamp,
-						table: table_name,
-						onCommit,
-						__origin,
-					});
-				else {
-					subscription.send({
-						operation: 'transaction',
-						writes: records.map((record) => ({
-							operation: convertOperation(single_table_operation),
-							value: record,
-						})),
-						table: table_name,
-						timestamp,
-						onCommit,
-						__origin,
-					});
-				}
-			} else if (writes) {
-				subscription.send({
-					operation: 'transaction',
-					writes,
-					timestamp,
-					onCommit,
-					__origin,
+		let { timestamp, user } = __origin || {};
+		let options = {
+			user,
+			nats_msg_header,
+		};
+		let subscription = database_subscriptions.get(database_name)?.get(table_name);
+		if (!subscription) {
+			throw new Error('Missing table for replication message', table_name);
+		}
+		if (records.length === 1 && !next_write)
+			subscription.send({
+				operation: convertOperation(operation),
+				value: records[0],
+				timestamp,
+				table: table_name,
+				onCommit,
+				__origin,
+			});
+		else {
+			let writes = records.map((record) => ({
+				operation: convertOperation(operation),
+				value: record,
+			}));
+			while (next_write) {
+				writes.push({
+					operation: next_write.operation,
+					value: next_write.record,
+					table: next_write.table,
 				});
-			} else subscription.send(entry);
-		} else {
-			let { timestamp, user, writes } = entry;
-			let first_dot_index = msg.subject.indexOf('.');
-			let second_dot_index = msg.subject.indexOf('.', first_dot_index + 1);
-			let database_name = msg.subject.slice(first_dot_index + 1, second_dot_index);
-			let first_table = writes[0].table;
-			let database = getDatabases()[database_name];
-			if (!database) throw new Error(`Database ${database_name} not found`);
-			let Table = database[first_table];
-			if (!Table) throw new Error(`Table ${first_table} not found in database ${database_name}`);
-			if (writes)
-				await Table.transact(
-					async (txn_table) => {
-						let options = {
-							user,
-							nats_msg_header,
-						};
+				next_write = next_write.next;
+			}
 
-						for (let write of writes) {
-							let table = first_table === write.table ? txn_table : txn_table.useTable(write.table);
-							switch (write.operation) {
-								case 'put':
-									await table.put(write.record, options);
-									break;
-								case 'publish':
-									await table.publish(write.record, options);
-									break;
-								case 'delete':
-									await table.delete(write.id, options);
-									break;
-							}
-						}
-					},
-					{ timestamp }
-				);
+			subscription.send({
+				operation: 'transaction',
+				writes,
+				table: table_name,
+				timestamp,
+				onCommit,
+				__origin,
+			});
 		}
 		// echo the message to any other nodes
 		publishToStream(
-			`${nats_terms.SUBJECT_PREFIXES.TXN}.${database_name}`,
-			crypto_hash.createNatsTableStreamName(database_name),
+			msg.subject.split('.').slice(0, -1).join('.'), // remove the node name
+			crypto_hash.createNatsTableStreamName(database_name, table_name),
 			js_msg.headers,
 			js_msg.data
 		); // use the already-encoded message

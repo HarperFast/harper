@@ -1,5 +1,5 @@
 import { databases, getDatabases, onNewTable } from '../../resources/databases';
-import { Resource, TRANSACTIONS_PROPERTY } from '../../resources/Resource';
+import { Resource, TRANSACTIONS_PROPERTY, USER_PROPERTY } from '../../resources/Resource';
 import { publishToStream } from './utility/natsUtils';
 import { SUBJECT_PREFIXES } from './utility/natsTerms';
 import { createNatsTableStreamName } from '../../security/cryptoHash';
@@ -7,13 +7,15 @@ import { IterableEventQueue } from '../../resources/IterableEventQueue';
 import { getWorkerIndex } from '../threads/manageThreads';
 import { setSubscription } from './natsIngestService';
 import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility';
+import env from '../../utility/environment/environmentManager';
+import hdb_terms from '../../utility/hdbTerms';
 import { onMessageFromWorkers } from '../../server/threads/manageThreads';
 import { threadId } from 'worker_threads';
 import initializeReplyService from './natsReplyService';
 
 let publishing_databases = new Map();
 export async function start() {
-	await assignReplicationSource();
+	if (env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) await assignReplicationSource();
 }
 const MAX_INGEST_THREADS = 2;
 let immediateNATSTransaction, subscribed_to_nodes;
@@ -21,47 +23,21 @@ let immediateNATSTransaction, subscribed_to_nodes;
  * This will assign the NATS replicator as a source to any tables that have subscriptions to them (are publishing to other nodes)
  */
 async function assignReplicationSource() {
+	const databases = getDatabases();
+	for (const database_name in databases) {
+		const database = databases[database_name];
+		for (const table_name in database) {
+			const Table = database[table_name];
+			setNATSReplicator(table_name, database_name, Table);
+		}
+	}
 	publishing_databases = new Map();
-	const hdb_nodes = getDatabases().system.hdb_nodes;
-	for await (const node of hdb_nodes.search([])) {
-		const { subscriptions } = node;
-		for (const subscription of subscriptions || []) {
-			if (!subscription.publish) continue;
-			const db = subscription.schema;
-			let publishing = publishing_databases.get(db);
-			if (!publishing) publishing_databases.set(db, (publishing = new Map()));
-			if (subscription.table) publishing.set(subscription.table, true);
-			else publishing.publishingDatabase = true;
-		}
-	}
-	for (const [db_name, publishing] of publishing_databases) {
-		const tables = databases[db_name];
-		if (!tables) {
-			// TODO: Do we auto-create the table?
-			console.log(`database ${db_name} not found for replication`);
-			continue;
-		}
-		if (publishing.publishingDatabase) {
-			// if we are publishing the full database, assign as source of all the tables in the database
-			for (const table_name in tables) {
-				const table = tables[table_name];
-				setNATSReplicator(table_name, db_name, table);
-			}
-		} else {
-			// otherwise just assign as source of tables that are actually publishing
-			for (const [table_name] of publishing) {
-				const table = tables[table_name];
-				setNATSReplicator(table_name, db_name, table);
-			}
-		}
-	}
 	onNewTable((table) => {
-		if (publishing_databases.get(table.schemaName)?.publishingDatabase)
-			setNATSReplicator(table.tableName, table.schemaName, table);
+		setNATSReplicator(table.tableName, table.databaseName, table);
 	});
 	if (subscribed_to_nodes) return;
 	subscribed_to_nodes = true;
-}
+} /*
 onMessageFromWorkers((event) => {
 	if (event.type === 'nats_update') {
 		assignReplicationSource();
@@ -73,18 +49,20 @@ onMessageFromWorkers((event) => {
  * @param db_name
  */
 export function setNATSReplicator(table_name, db_name, Table) {
+	if (!Table) {
+		return console.error(`Attempt to replicate non-existent table ${table_name} from database ${db_name}`);
+	}
 	if (Table.Source) return;
-	if (false && publishing_databases.get(db_name)?.publishingDatabase)
-		publishToStream(
-			`${SUBJECT_PREFIXES.TXN}.${db_name}`,
-			createNatsTableStreamName(db_name, table_name),
-			Table.origin?.nats_msg_header,
-			{
-				operation: 'define_table',
-				table: Table.tableName,
-				attributes: Table.attributes,
-			}
-		);
+	/*	publishToStream(
+		`${SUBJECT_PREFIXES.TXN}.${db_name}.__dbi__`,
+		createNatsTableStreamName(db_name),
+		Table.origin?.nats_msg_header,
+		{
+			operation: 'define_table',
+			table: Table.tableName,
+			attributes: Table.attributes,
+		}
+	);*/
 
 	Table.sourcedFrom(
 		class NATSReplicator extends Resource {
@@ -118,7 +96,7 @@ export function setNATSReplicator(table_name, db_name, Table) {
 							(nats_transaction = this[TRANSACTIONS_PROPERTY].nats =
 								new NATSTransaction(this[TRANSACTIONS_PROPERTY], options))
 						);
-						nats_transaction.user = this.user;
+						nats_transaction.user = this[USER_PROPERTY];
 					} else nats_transaction = immediateNATSTransaction;
 				}
 				return nats_transaction;
@@ -149,53 +127,42 @@ class NATSTransaction {
 	commit() {
 		const promises = [];
 		for (const [db, writes] of this.writes_by_db) {
-			const publishing = publishing_databases.get(db);
-			if (!publishing) continue;
-			if (publishing.publishingDatabase) {
-				promises.push(
-					publishToStream(
-						`${SUBJECT_PREFIXES.TXN}.${db}`,
-						createNatsTableStreamName(db), // Do we need createNatsTableStreamName for just a database name?
-						this.options?.nats_msg_header,
-						{
-							timestamp: this.transaction.timestamp,
+			const records = [];
+			let transaction_event;
+			let last_write_event;
+			for (const write of writes) {
+				const table = write.table;
+				const operation = write.operation == 'put' ? 'upsert' : write.operation;
+				if (!transaction_event) {
+					last_write_event = transaction_event = {
+						operation,
+						schema: db,
+						table,
+						[operation === 'delete' ? 'ids' : 'records']: records,
+						__origin: {
 							user: this.user,
-							writes,
-						}
-					)
-				);
-			}
-			if (publishing.size > 0) {
-				const records_by_table = new Map();
-				for (const write of writes) {
-					const table = write.table;
-					if (publishing.has(table)) {
-						let records = records_by_table.get(table);
-						if (!records) {
-							records_by_table.set(table, (records = []));
-							records.operation = write.operation;
-						}
-						records.push(write.record || write.id);
-					}
+							timestamp: this.transaction.timestamp,
+						},
+					};
 				}
-				for (const [table, records] of records_by_table) {
-					publishToStream(
-						`${SUBJECT_PREFIXES.TXN}.${db}`,
-						createNatsTableStreamName(db, table),
-						this.options?.nats_msg_header,
-						{
-							operation: records.operation == 'put' ? 'upsert' : records.operation,
-							schema: db,
-							table,
-							records,
-							__origin: {
-								user: this.user,
-								timestamp: this.transaction.timestamp,
-							},
-						}
-					);
+				if (transaction_event.table === table && transaction_event.operation === operation) {
+					records.push(write.record || write.id);
+				} else {
+					last_write_event = last_write_event.next = {
+						operation,
+						table,
+						record: write.record || write.id,
+					};
 				}
 			}
+			promises.push(
+				publishToStream(
+					`${SUBJECT_PREFIXES.TXN}.${db}.${transaction_event.table}` /* + (Math.floor(Math.random() * 4) || '')*/,
+					createNatsTableStreamName(db, transaction_event.table),
+					this.options?.nats_msg_header,
+					transaction_event
+				)
+			);
 		}
 		return Promise.all(promises);
 	}

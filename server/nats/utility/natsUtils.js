@@ -308,7 +308,6 @@ async function createLocalStream(stream_name, subjects) {
 	max_msgs = max_msgs === null ? -1 : max_msgs; // -1 is unlimited
 	let max_bytes = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXBYTES);
 	max_bytes = max_bytes === null ? -1 : max_bytes; // -1 is unlimited
-
 	await jsm.streams.add({
 		name: stream_name,
 		storage: StorageType.File,
@@ -538,7 +537,9 @@ async function publishToStream(subject_name, stream_name, msg_header, message) {
 				} catch(error) {
 					if (err.code && err.code.toString() === '503') {
 						hdb_logger.trace(`publishToStream creating stream: ${stream_name}`);
-						await createLocalStream(stream_name, [subject]);
+						let subject_parts = subject.split('.');
+						subject_parts[2] = '*'
+						await createLocalStream(stream_name, [subject] /*[subject_parts.join('.')]*/);
 						await js.publish(subject, encoded_message, { headers: msg_header });
 					} else {
 						throw err;
@@ -721,7 +722,7 @@ async function addSourceToWorkStream(node, work_queue_name, subscription) {
 	let new_source = {
 		name: stream_name,
 		opt_start_time: start_time,
-		filter_subject: `${nats_terms.SUBJECT_PREFIXES.TXN}.>`,
+		filter_subject: table ? `${nats_terms.SUBJECT_PREFIXES.TXN}.${schema}.${table}.>` : `${nats_terms.SUBJECT_PREFIXES.TXN}.>`,
 	};
 
 	if (!is_local_stream) {
