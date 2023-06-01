@@ -69,6 +69,7 @@ module.exports = {
 	closeLogFile,
 	getLogFilePath: () => log_file_path,
 	OUTPUTS,
+	AuthAuditLog,
 };
 
 /**
@@ -459,4 +460,13 @@ function getDefaultConfig() {
 		console.error('Error accessing default config file for logging');
 		console.error(err);
 	}
+}
+
+function AuthAuditLog(username, status, type, originating_ip, request_method, path) {
+	this.username = username;
+	this.status = status;
+	this.type = type;
+	this.originating_ip = originating_ip;
+	this.request_method = request_method;
+	this.path = path;
 }

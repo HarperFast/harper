@@ -5,7 +5,9 @@ import { validateOperationToken } from './tokenAuthentication';
 import { table } from '../resources/databases';
 import { v4 as uuid } from 'uuid';
 import * as env from '../utility/environment/environmentManager';
-import { CONFIG_PARAMS } from '../utility/hdbTerms';
+import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms';
+import { loggerWithTag, AuthAuditLog } from '../utility/logging/harper_logger.js';
+const auth_event_log = loggerWithTag('auth-event');
 env.initSync();
 
 const props_cors_accesslist = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORSACCESSLIST);
@@ -19,9 +21,6 @@ let session_table = table({
 });
 
 let authorization_cache = new Map();
-const AUTHORIZATION_TTL = 5000;
-const AUTHORIZE_LOCAL = true;
-const ENABLE_SESSIONS = true;
 // TODO: Make this not return a promise if it can be fulfilled synchronously (from cache)
 export async function authentication(request, next_handler) {
 	const headers = request.headers;
@@ -31,7 +30,8 @@ export async function authentication(request, next_handler) {
 	const response_headers = [];
 	if ((origin && props_cors && props_cors_accesslist.includes(origin)) || props_cors_accesslist.includes('*')) {
 		response_headers.push('Access-Control-Allow-Origin', origin);
-		if (ENABLE_SESSIONS) response_headers.push('Access-Control-Allow-Credentials', 'true');
+		if (env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS))
+			response_headers.push('Access-Control-Allow-Credentials', 'true');
 		if (request.method === 'OPTIONS') {
 			// preflight request
 			response_headers.push('Access-Control-Allow-Method', 'POST, GET, PUT, DELETE, PATCH, OPTIONS');
@@ -40,7 +40,7 @@ export async function authentication(request, next_handler) {
 	}
 	let session_id;
 	let session;
-	if (ENABLE_SESSIONS) {
+	if (env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS)) {
 		// we prefix the cookie name with the origin so that we can partition/separate session/authentications
 		// host, to protect against CSRF
 		const cookie_prefix = (origin ? '' : origin + '-') + 'hdb-session=';
@@ -54,31 +54,70 @@ export async function authentication(request, next_handler) {
 		request.session = session || (session = {});
 	}
 	request.user = null;
+
+	const authAuditLog = (username, status, strategy) => {
+		const log = new AuthAuditLog(
+			username,
+			status,
+			AUTH_AUDIT_TYPES.AUTHENTICATION,
+			request.headers['x-forwarded-for'] ?? request.ip,
+			request.method,
+			request.pathname
+		);
+		log.auth_strategy = strategy;
+		if (session_id) log.session_id = session_id;
+		if (request.headers['referer']) log.referer = request.headers['referer'];
+		if (request.headers['origin']) log.origin = request.headers['origin'];
+
+		if (status === AUTH_AUDIT_STATUS.SUCCESS) auth_event_log.notify(log);
+		else auth_event_log.error(log);
+	};
+
 	let new_user;
 	if (authorization) {
 		let new_user = authorization_cache.get(authorization);
 		if (!new_user) {
 			const [strategy, credentials] = authorization.split(' ');
-			switch (strategy) {
-				case 'Basic':
-					const [username, password] = atob(credentials).split(':');
-					// legacy support for passing in blank username and password to indicate no auth
-					new_user = username || password ? await server.auth(username, password) : null;
-					break;
-				case 'Bearer':
-					new_user = await validateOperationToken(credentials);
-					break;
+			let username, password;
+			try {
+				switch (strategy) {
+					case 'Basic':
+						[username, password] = atob(credentials).split(':');
+						// legacy support for passing in blank username and password to indicate no auth
+						new_user = username || password ? await server.auth(username, password) : null;
+						break;
+					case 'Bearer':
+						new_user = await validateOperationToken(credentials);
+						break;
+				}
+			} catch (err) {
+				if (env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED)) {
+					const failed_attempt = authorization_cache.get(credentials);
+					if (!failed_attempt) {
+						authorization_cache.set(credentials, credentials);
+						authAuditLog(username, AUTH_AUDIT_STATUS.FAILURE, strategy);
+					}
+				}
+
+				throw err;
 			}
+
 			authorization_cache.set(authorization, new_user);
+			if (env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL))
+				authAuditLog(new_user.username, AUTH_AUDIT_STATUS.SUCCESS, strategy);
 		}
+
 		request.user = new_user;
 	} else if (session?.user) {
 		// or should this be cached in the session?
 		request.user = await server.auth(session.user);
-	} else if (AUTHORIZE_LOCAL && (request.ip.includes('127.0.0.1') || request.ip == '::1')) {
+	} else if (
+		env.get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) &&
+		(request.ip.includes('127.0.0.1') || request.ip == '::1')
+	) {
 		request.user = new_user = await getSuperUser();
 	}
-	if (ENABLE_SESSIONS) {
+	if (env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS)) {
 		request.session.update = async function (updated_session) {
 			if (!session_id) {
 				session_id = uuid();
@@ -135,5 +174,5 @@ export function start({ server, port }) {
 	// keep it cleaned out periodically
 	setInterval(() => {
 		authorization_cache = new Map();
-	}, AUTHORIZATION_TTL).unref();
+	}, env.get(CONFIG_PARAMS.AUTHENTICATION_CACHETTL)).unref();
 }

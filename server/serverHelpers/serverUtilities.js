@@ -140,8 +140,16 @@ function chooseOperation(json) {
 			if (!json.bypass_auth) {
 				let ast_perm_check = sql.checkASTPermissions(json, parsed_sql_object);
 				if (ast_perm_check) {
-					harper_logger.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.search_operation}`);
-					throw handleHDBError(new Error(), ast_perm_check, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN);
+					harper_logger.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
+					harper_logger.warn(`User '${json.hdb_user.username}' is not permitted to ${json.operation}`);
+					throw handleHDBError(
+						new Error(),
+						ast_perm_check,
+						hdb_errors.HTTP_STATUS_CODES.FORBIDDEN,
+						undefined,
+						undefined,
+						true
+					);
 				}
 			}
 			//we need to bypass permission checks to allow the create_authorization_tokens
@@ -156,7 +164,17 @@ function chooseOperation(json) {
 
 			if (verify_perms_result) {
 				harper_logger.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
-				throw handleHDBError(new Error(), verify_perms_result, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN);
+				harper_logger.warn(
+					`User '${operation_json.hdb_user.username}' is not permitted to ${operation_json.operation}`
+				);
+				throw handleHDBError(
+					new Error(),
+					verify_perms_result,
+					hdb_errors.HTTP_STATUS_CODES.FORBIDDEN,
+					undefined,
+					false,
+					true
+				);
 			}
 		}
 	} catch (err) {

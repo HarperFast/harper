@@ -21,6 +21,7 @@ let loaded_server_modules = new Map();
  */
 function getServerModules() {
 	const server_modules = [
+		{ module: 'auth', port: 'all', plugin: auth },
 		{
 			module: 'operations-server',
 			port: env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT) || 9925,
@@ -34,7 +35,6 @@ function getServerModules() {
 			requireAuthentication: env.get(CONFIG_PARAMS.MQTT_REQUIREAUTHENTICATION),
 			plugin: mqtt,
 		},
-		{ module: 'auth', port: 'all', plugin: auth },
 	];
 
 	if (env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED)) {

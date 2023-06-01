@@ -1,5 +1,11 @@
 # HarperDB configuration file. Refer to https://harperdb.io/docs/reference/configuration-file/
 ---
+authentication:
+  authorizeLocal: true
+  cacheTTL: 30000
+  enableSessions: true
+  operationTokenTimeout: 1d
+  refreshTokenTimeout: 30d
 clustering:
   enabled: false
   hubServer:
@@ -51,6 +57,9 @@ customFunctions:
 localStudio:
   enabled: false
 logging:
+  auditAuthEvents:
+    logFailed: false
+    logSuccessful: false
   auditLog: false
   file: true
   level: error
@@ -63,9 +72,6 @@ logging:
     path: null
   stdStreams: false
 operationsApi:
-  authentication:
-    operationTokenTimeout: 1d
-    refreshTokenTimeout: 30d
   foreground: false
   network:
     cors: true

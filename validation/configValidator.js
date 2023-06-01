@@ -126,6 +126,13 @@ function configValidator(config_json) {
 	}
 
 	const config_schema = Joi.object({
+		authentication: Joi.object({
+			authorizeLocal: boolean.required(),
+			cacheTTL: number.required(),
+			enableSessions: boolean.required(),
+			operationTokenTimeout: Joi.required(),
+			refreshTokenTimeout: Joi.required(),
+		}).required(),
 		clustering: clustering_validation_schema,
 		customFunctions: Joi.object({
 			enabled: enabled_constraints,
@@ -150,6 +157,10 @@ function configValidator(config_json) {
 			enabled: enabled_constraints,
 		}).required(),
 		logging: Joi.object({
+			auditAuthEvents: Joi.object({
+				logFailed: boolean.required(),
+				logSuccessful: boolean.required(),
+			}),
 			file: boolean.required(),
 			level: Joi.valid('notify', 'fatal', 'error', 'warn', 'info', 'debug', 'trace'),
 			rotation: Joi.object({
@@ -164,10 +175,6 @@ function configValidator(config_json) {
 			auditLog: boolean.required(),
 		}).required(),
 		operationsApi: Joi.object({
-			authentication: Joi.object({
-				operationTokenTimeout: Joi.required(),
-				refreshTokenTimeout: Joi.required(),
-			}).required(),
 			foreground: boolean.required(),
 			network: Joi.object({
 				cors: boolean.required(),

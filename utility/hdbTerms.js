@@ -506,6 +506,11 @@ const HDB_SETTINGS_NAMES_REVERSE_LOOKUP = _.invert(HDB_SETTINGS_NAMES);
 
 // If a param is added to config it must also be added here.
 const CONFIG_PARAMS = {
+	AUTHENTICATION_AUTHORIZELOCAL: 'authentication_authorizeLocal',
+	AUTHENTICATION_CACHETTL: 'authentication_cacheTTL',
+	AUTHENTICATION_ENABLESESSIONS: 'authentication_enableSessions',
+	AUTHENTICATION_OPERATIONTOKENTIMEOUT: 'authentication_operationTokenTimeout',
+	AUTHENTICATION_REFRESHTOKENTIMEOUT: 'authentication_refreshTokenTimeout',
 	CLUSTERING_USER: 'clustering_user',
 	CLUSTERING_ENABLED: 'clustering_enabled',
 	CLUSTERING_HUBSERVER_CLUSTER_NAME: 'clustering_hubServer_cluster_name',
@@ -552,6 +557,8 @@ const CONFIG_PARAMS = {
 	LOGGING_ROTATION_PATH: 'logging_rotation_path',
 	LOGGING_STDSTREAMS: 'logging_stdStreams',
 	LOGGING_AUDITLOG: 'logging_auditLog',
+	LOGGING_AUDITAUTHEVENTS_LOGFAILED: 'logging_auditAuthEvents_logFailed',
+	LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL: 'logging_auditAuthEvents_logSuccessful',
 	OPERATIONSAPI_AUTHENTICATION_OPERATIONTOKENTIMEOUT: 'operationsApi_authentication_operationTokenTimeout',
 	OPERATIONSAPI_AUTHENTICATION_REFRESHTOKENTIMEOUT: 'operationsApi_authentication_refreshTokenTimeout',
 	OPERATIONSAPI_FOREGROUND: 'operationsApi_foreground',
@@ -624,10 +631,10 @@ const CONFIG_PARAM_MAP = {
 	server_headers_timeout: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_HEADERSTIMEOUT,
 	disable_transaction_log_key: CONFIG_PARAMS.LOGGING_AUDITLOG,
 	disable_transaction_log: CONFIG_PARAMS.LOGGING_AUDITLOG,
-	operation_token_timeout_key: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_OPERATIONTOKENTIMEOUT,
-	operation_token_timeout: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_OPERATIONTOKENTIMEOUT,
-	refresh_token_timeout_key: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_REFRESHTOKENTIMEOUT,
-	refresh_token_timeout: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_REFRESHTOKENTIMEOUT,
+	operation_token_timeout_key: CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT,
+	operation_token_timeout: CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT,
+	refresh_token_timeout_key: CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT,
+	refresh_token_timeout: CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT,
 	custom_functions_enabled_key: CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED,
 	custom_functions: CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED,
 	custom_functions_port_key: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT,
@@ -687,6 +694,8 @@ const CONFIG_PARAM_MAP = {
 	logging_rotation_path: CONFIG_PARAMS.LOGGING_ROTATION_PATH,
 	logging_stdstreams: CONFIG_PARAMS.LOGGING_STDSTREAMS,
 	logging_auditlog: CONFIG_PARAMS.LOGGING_AUDITLOG,
+	logging_auditauthevents_logfailed: CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED,
+	logging_auditauthevents_logsuccessful: CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL,
 	operationsapi_authentication_operationtokentimeout: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_OPERATIONTOKENTIMEOUT,
 	operationsapi_authentication_refreshtokentimeout: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_REFRESHTOKENTIMEOUT,
 	operationsapi_foreground: CONFIG_PARAMS.OPERATIONSAPI_FOREGROUND,
@@ -911,6 +920,16 @@ const PM2_PROCESS_STATUSES = {
 
 const PRE_4_0_0_VERSION = '3.x.x';
 
+const AUTH_AUDIT_STATUS = {
+	SUCCESS: 'success',
+	FAILURE: 'failure',
+};
+
+const AUTH_AUDIT_TYPES = {
+	AUTHENTICATION: 'authentication',
+	AUTHORIZATION: 'authorization',
+};
+
 module.exports = {
 	LOCAL_HARPERDB_OPERATIONS,
 	HDB_SUPPORT_ADDRESS,
@@ -1034,5 +1053,7 @@ module.exports = {
 	PRE_4_0_0_VERSION,
 	SCHEMAS_PARAM_CONFIG,
 	METADATA_PROPERTY,
+	AUTH_AUDIT_STATUS,
+	AUTH_AUDIT_TYPES,
 };
 require('./devops/tsBuild');
