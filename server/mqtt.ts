@@ -8,6 +8,10 @@ import { info } from '../utility/logging/harper_logger';
 import { recordAction } from '../resources/analytics';
 import { server } from '../server/Server';
 import { pack } from 'msgpackr';
+import { get } from '../utility/environment/environmentManager.js';
+import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms';
+import { loggerWithTag, AuthAuditLog } from '../utility/logging/harper_logger.js';
+const auth_event_log = loggerWithTag('auth-event');
 
 const AUTHORIZE_LOCAL = true;
 export async function start({ server, port, webSocket, securePort, requireAuthentication }) {
@@ -77,7 +81,26 @@ function onSocket(socket, send, request, user, requireAuthentication) {
 					if (packet.username) {
 						try {
 							user = await server.auth(packet.username, packet.password.toString());
+							if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL)) {
+								auth_event_log.notify({
+									username: user.username,
+									status: AUTH_AUDIT_STATUS.SUCCESS,
+									type: AUTH_AUDIT_TYPES.AUTHENTICATION,
+									auth_strategy: 'MQTT',
+									remote_address: socket.remoteAddress,
+								});
+							}
 						} catch (error) {
+							if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED)) {
+								auth_event_log.error({
+									username: user.username,
+									status: AUTH_AUDIT_STATUS.FAILURE,
+									type: AUTH_AUDIT_TYPES.AUTHENTICATION,
+									auth_strategy: 'mqtt',
+									remote_address: socket.remoteAddress,
+								});
+							}
+
 							return sendPacket({
 								// Send a connection acknowledgment with indication of auth failure
 								cmd: 'connack',

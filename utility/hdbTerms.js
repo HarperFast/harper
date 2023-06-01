@@ -696,8 +696,8 @@ const CONFIG_PARAM_MAP = {
 	logging_auditlog: CONFIG_PARAMS.LOGGING_AUDITLOG,
 	logging_auditauthevents_logfailed: CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED,
 	logging_auditauthevents_logsuccessful: CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL,
-	operationsapi_authentication_operationtokentimeout: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_OPERATIONTOKENTIMEOUT,
-	operationsapi_authentication_refreshtokentimeout: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_REFRESHTOKENTIMEOUT,
+	operationsapi_authentication_operationtokentimeout: CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT,
+	operationsapi_authentication_refreshtokentimeout: CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT,
 	operationsapi_foreground: CONFIG_PARAMS.OPERATIONSAPI_FOREGROUND,
 	operationsapi_tls_certificate: CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATE,
 	operationsapi_network_cors: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS,
@@ -720,6 +720,11 @@ const CONFIG_PARAM_MAP = {
 	mqtt_secureport: CONFIG_PARAMS.MQTT_SECUREPORT,
 	mqtt_requireauthentication: CONFIG_PARAMS.MQTT_REQUIREAUTHENTICATION,
 	serverplugins: CONFIG_PARAMS.SERVER_PLUGINS,
+	authentication_authorizelocal: CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL,
+	authentication_cachettl: CONFIG_PARAMS.AUTHENTICATION_CACHETTL,
+	authentication_enablesessions: CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS,
+	authentication_operationtokentimeout: CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT,
+	authentication_refreshtokentimeout: CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT,
 };
 for (let key in CONFIG_PARAMS) {
 	let name = CONFIG_PARAMS[key];
