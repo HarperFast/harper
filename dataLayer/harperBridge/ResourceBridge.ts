@@ -2,7 +2,7 @@
 import LMDBBridge from './lmdbBridge/LMDBBridge';
 import search_validator from '../../validation/searchValidator';
 import { handleHDBError, ClientError, hdb_errors } from '../../utility/errors/hdbError';
-import { Resource } from '../../resources/Resource';
+import { CONTEXT_PROPERTY, Resource, USER_PROPERTY } from '../../resources/Resource';
 import { table, getDatabases, database, dropDatabase } from '../../resources/databases';
 import insertUpdateValidate from './bridgeUtility/insertUpdateValidate';
 import lmdbProcessRows from './lmdbBridge/lmdbUtility/lmdbProcessRows';
@@ -119,7 +119,8 @@ export class ResourceBridge extends LMDBBridge {
 		let new_attributes;
 		const Table = getDatabases()[upsert_obj.schema][upsert_obj.table];
 		return Table.transact(async (txn_table) => {
-			txn_table.request = { user: upsert_obj.hdb_user?.username };
+			txn_table[CONTEXT_PROPERTY] = upsert_obj.request;
+			txn_table[USER_PROPERTY] = upsert_obj.hdb_user;
 			if (!txn_table.schemaDefined) {
 				new_attributes = [];
 				for (const attribute of attributes) {

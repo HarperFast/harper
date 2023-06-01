@@ -40,7 +40,7 @@ export interface Table {
 	indices: Database[];
 	databasePath: string;
 	tableName: string;
-	schemaName: string;
+	databaseName: string;
 	attributes: any[];
 	primaryKey: string;
 	subscriptions: Map<any, Function[]>;
@@ -87,6 +87,7 @@ export function makeTable(options) {
 		static tableName = table_name;
 		static indices = indices;
 		static databasePath = database_path;
+		static databaseName = database_name;
 		static attributes = attributes;
 		static expirationTimer;
 		static createdTimeProperty = created_time_property;
