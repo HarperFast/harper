@@ -31,7 +31,6 @@ const LMDB_PREFETCH_WRITES = env_mngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 
 const DB_TXN_PROPERTY = Symbol('dbTxn');
 const VERSION_PROPERTY = Symbol.for('version');
-const TABLE_PUBLISH_ID = Symbol('table-publish-id');
 const LAZY_PROPERTY_ACCESS = { lazy: true };
 
 export interface Table {
@@ -113,7 +112,7 @@ export function makeTable(options) {
 						case 'delete':
 							return resource.#writeDelete();
 						case 'publish':
-							return resource.publish(value);
+							return resource.#writePublish(value);
 						default:
 							console.error('Unknown operation', event);
 					}
@@ -205,16 +204,25 @@ export function makeTable(options) {
 			const subscription = addSubscription(
 				this,
 				key,
-				function (id, audit_record) {
+				function (id, audit_record, timestamp) {
 					//let result = await this.get(key);
 					try {
-						this.send({ id, ...audit_record });
+						this.send({ id, timestamp, ...audit_record });
 					} catch (error) {
 						console.error(error);
 					}
 				},
 				options.startTime
 			);
+			if (options.startTime) {
+				// start time specified, get the audit history for this time range
+				for (const { key, value } of audit_store.getRange({ start: [options.startTime, Number.MAX_SAFE_INTEGER] })) {
+					const [timestamp, audit_table_id, id] = key;
+					if (audit_table_id !== table_id) continue;
+					subscription.send({ id, timestamp, ...value });
+				}
+			}
+
 			if (options.listener) subscription.on('data', options.listener);
 			return subscription;
 		}
@@ -761,6 +769,7 @@ export function makeTable(options) {
 				},
 				options.startTime
 			);
+			const id = this[ID_PROPERTY];
 			if (options.startTime) {
 				const version = this[VERSION_PROPERTY];
 				if (options.startTime < version) {
@@ -768,9 +777,9 @@ export function makeTable(options) {
 					const history = [];
 					let next_version = version;
 					do {
-						const audit_entry = audit_store.get([next_version, table_id, this[ID_PROPERTY]]);
+						const audit_entry = audit_store.get([next_version, table_id, id]);
 						if (audit_entry) {
-							history.push(audit_entry);
+							history.push({ id, timestamp: next_version, ...audit_entry });
 							next_version = audit_entry.lastVersion;
 						} else break;
 					} while (next_version > options.startTime);
@@ -781,7 +790,8 @@ export function makeTable(options) {
 			}
 			if (options.listener) subscription.on('data', options.listener);
 			// if retain and it exists, send the first value
-			if (!options.noRetain && this.doesExist()) subscription.send({ value: this });
+			if (!options.noRetain && this.doesExist())
+				subscription.send({ id, timestamp: this[VERSION_PROPERTY], value: this });
 			return subscription;
 		}
 		doesExist() {
@@ -796,35 +806,37 @@ export function makeTable(options) {
 		 * @param options
 		 */
 		async publish(message, options) {
-			const txn_time = this[TRANSACTIONS_PROPERTY].timestamp;
-			let source_completion;
 			if (!this.source && this.constructor.Source?.prototype.publish) {
-				this.source = await this.constructor.Source.getResource(this[ID_PROPERTY], this);
-				source_completion = this.source.publish(message, { target: this });
+				this.source = this.constructor.Source.getResource(this[ID_PROPERTY], this);
+				await this.source.publish(message, { target: this });
 			}
+			this.#writePublish(message);
+		}
+		#writePublish(message) {
+			const txn_time = this[TRANSACTIONS_PROPERTY].timestamp;
+			const id = this[ID_PROPERTY] || null;
 
 			this[DB_TXN_PROPERTY].addWrite({
 				store: primary_store,
-				key: this[ID_PROPERTY],
+				key: id,
 				txnTime: txn_time,
 				lastVersion: this[VERSION_PROPERTY],
 				commit: (retries) => {
 					// just need to update the version number of the record so it points to the latest audit record
 					// but have to update the version number of the record
 					// TODO: would be faster to have a dedicated lmdb-js function for just updating the version number
-					const existing_record = retries > 0 ? primary_store.get(this[ID_PROPERTY]) : this[RECORD_PROPERTY];
-					primary_store.put(this[ID_PROPERTY], existing_record ?? null, txn_time);
+					const existing_record = retries > 0 ? primary_store.get(id) : this[RECORD_PROPERTY];
+					primary_store.put(id, existing_record ?? null, txn_time);
 					// messages are recorded in the audit entry
 					return {
 						operation: 'message',
 						value: message,
-						completion: source_completion,
 					};
 				},
 			});
 		}
 		static async publish(message, options?) {
-			const publishing_resource = new this(TABLE_PUBLISH_ID, this);
+			const publishing_resource = new this(null, this);
 			return publishing_resource.publish(message, options);
 		}
 		static async addAttribute(attribute) {

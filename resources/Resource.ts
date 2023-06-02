@@ -62,16 +62,20 @@ export class Resource implements ResourceInterface {
 	async commit(flush = true): Promise<{ txnTime: number }> {
 		const commits = [];
 		// this can grow during the commit phase, so need to always check length
-		for (let i = 0; i < this[TRANSACTIONS_PROPERTY].length; ) {
-			for (let l = this[TRANSACTIONS_PROPERTY].length; i < l; i++) {
-				const txn = this[TRANSACTIONS_PROPERTY][i];
-				// TODO: If we have multiple commits in a single resource instance, need to maintain
-				// databases with waiting flushes to resolve at the end when a flush is requested.
-				commits.push(txn.commit(flush));
+		try {
+			for (let i = 0; i < this[TRANSACTIONS_PROPERTY].length; ) {
+				for (let l = this[TRANSACTIONS_PROPERTY].length; i < l; i++) {
+					const txn = this[TRANSACTIONS_PROPERTY][i];
+					// TODO: If we have multiple commits in a single resource instance, need to maintain
+					// databases with waiting flushes to resolve at the end when a flush is requested.
+					commits.push(txn.commit(flush));
+				}
+				await Promise.all(commits);
 			}
-			await Promise.all(commits);
+			return { txnTime: this[TRANSACTIONS_PROPERTY].timestamp };
+		} finally {
+			this[TRANSACTIONS_PROPERTY] = null;
 		}
-		return { txnTime: this[TRANSACTIONS_PROPERTY].timestamp };
 	}
 	static commit = Resource.prototype.commit;
 	abort() {
@@ -351,6 +355,10 @@ export class Resource implements ResourceInterface {
 	}
 	async accessInTransaction(request, action: (resource_access) => any) {
 		return this.transact(async (transactional_resource) => {
+			if (request) {
+				transactional_resource[CONTEXT_PROPERTY] = request;
+				transactional_resource[USER_PROPERTY] = request.user;
+			}
 			const resource_access = transactional_resource.access(request);
 			return action(resource_access);
 		});

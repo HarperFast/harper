@@ -197,7 +197,7 @@ function notifyFromTransactionData(path, audit_ids, same_thread?) {
 		for (const subscription of table_subscriptions.allKeys) {
 			try {
 				if (subscription.crossThreads === false && !same_thread) continue;
-				subscription.listener(record_key, audit_record);
+				subscription.listener(record_key, audit_record, txn_time);
 			} catch (error) {
 				console.error(error);
 				info(error);
@@ -253,7 +253,11 @@ export function listenToCommits(audit_store) {
 					break;
 				}*/
 				if (next.flag & FAILED_CONDITION) continue;
-				if (next.meta && next.meta.store === audit_store && next.meta.key) audit_ids.push(next.meta.key);
+				let key;
+				if (next.meta && next.meta.store === audit_store && (key = next.meta.key)) {
+					if (typeof key[2] === 'symbol') key[2] = null;
+					audit_ids.push(key);
+				}
 				if (next.uint32 !== last_uint32) {
 					last_uint32 = next.uint32;
 					if (last_uint32) {

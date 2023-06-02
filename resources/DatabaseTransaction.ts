@@ -69,14 +69,16 @@ export class DatabaseTransaction implements Transaction {
 		const nextCondition = () => {
 			const write = this.writes[write_index++];
 			if (write) {
-				const entry = write.store.getEntry(write.key);
-				// if the first optimistic attempt failed, we need to try again with the very latest version
-				const version =
-					retries === 0 && write.lastVersion !== undefined
-						? write.lastVersion
-						: (write.lastVersion = entry?.version ?? null);
-				const condition_resolution = write.store.ifVersion(write.key, version, nextCondition);
-				resolution = resolution || condition_resolution;
+				if (write.key) {
+					const entry = write.store.getEntry(write.key);
+					// if the first optimistic attempt failed, we need to try again with the very latest version
+					const version =
+						retries === 0 && write.lastVersion !== undefined
+							? write.lastVersion
+							: (write.lastVersion = entry?.version ?? null);
+					const condition_resolution = write.store.ifVersion(write.key, version, nextCondition);
+					resolution = resolution || condition_resolution;
+				} else nextCondition();
 			} else {
 				for (const write of this.writes) {
 					const audit_record = write.commit(retries);

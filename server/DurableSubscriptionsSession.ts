@@ -86,7 +86,10 @@ class SubscriptionsSession {
 			path = topic.slice(0, path.length - 1);
 		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
 		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
-		if (existing_subscription) existing_subscription.end();
+		if (existing_subscription) {
+			existing_subscription.end();
+			this.subscriptions.splice(this.subscriptions.indexOf(existing_subscription), 1);
+		}
 		let subscription;
 		const resource = await resources.call(path, this, async (resource_access) => {
 			return (subscription = await resource_access.subscribe({
@@ -105,6 +108,7 @@ class SubscriptionsSession {
 			}));
 		});
 		subscription.topic = topic;
+		subscription.qos = subscription_request.qos;
 		this.subscriptions.push(subscription);
 	}
 	resume() {
@@ -182,11 +186,16 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			}
 		}
 		this.sessionRecord.update(() => {
-			for (const subscription of this.sessionRecord.subscriptions) {
+			for (const subscription of this.subscriptions) {
 				if (subscription.topic === topic) {
 					subscription.startTime = update.timestamp;
 				}
 			}
+			this.sessionRecord.subscriptions = this.subscriptions.map((subscription) => ({
+				qos: subscription.qos,
+				topic: subscription.topic,
+				startTime: subscription.startTime,
+			}));
 		});
 		// TODO: Increment the timestamp for the corresponding subscription, possibly recording any interim unacked messages
 	}
@@ -195,9 +204,15 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		await this.resumeSubscription(subscription, needs_ack);
 		const { topic, qos, startTime: start_time } = subscription;
 		if (qos > 0 && !start_time) {
-			// TODO: Add this to the session record with the correct timestamp and save it
-			if (!this.sessionRecord.subscriptions) this.sessionRecord.subscriptions = [];
-			this.sessionRecord.subscriptions.push({ topic, qos, startTime: Date.now() });
+			this.sessionRecord.subscriptions = this.subscriptions.map((subscription) => {
+				let start_time = subscription.startTime;
+				if (!start_time) start_time = subscription.startTime = getNextMonotonicTime();
+				return {
+					qos: subscription.qos,
+					topic: subscription.topic,
+					startTime: start_time,
+				};
+			});
 			DurableSession.put(this.sessionId, this.sessionRecord);
 		}
 		return subscription.qos;
