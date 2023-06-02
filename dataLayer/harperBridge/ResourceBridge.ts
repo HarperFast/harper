@@ -119,7 +119,9 @@ export class ResourceBridge extends LMDBBridge {
 		let new_attributes;
 		const Table = getDatabases()[upsert_obj.schema][upsert_obj.table];
 		return Table.transact(async (txn_table) => {
-			txn_table[CONTEXT_PROPERTY] = upsert_obj.request;
+			txn_table[CONTEXT_PROPERTY] = {
+				user: upsert_obj.hdb_user,
+			};
 			txn_table[USER_PROPERTY] = upsert_obj.hdb_user;
 			if (!txn_table.schemaDefined) {
 				new_attributes = [];

@@ -139,10 +139,8 @@ class NATSTransaction {
 						schema: db,
 						table,
 						[operation === 'delete' ? 'ids' : 'records']: records,
-						__origin: {
-							user: this.user,
-							timestamp: this.transaction.timestamp,
-						},
+						user: this.user.username,
+						timestamp: this.transaction.timestamp,
 					};
 				}
 				if (transaction_event.table === table && transaction_event.operation === operation) {
