@@ -139,7 +139,7 @@ class NATSTransaction {
 						schema: db,
 						table,
 						[operation === 'delete' ? 'ids' : 'records']: records,
-						user: this.user.username,
+						user: this.user?.username,
 						timestamp: this.transaction.timestamp,
 					};
 				}
