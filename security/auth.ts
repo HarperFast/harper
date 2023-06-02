@@ -102,7 +102,7 @@ export async function authentication(request, next_handler) {
 
 				return {
 					status: 401,
-					body: serializeMessage(err.toString(), request),
+					body: serializeMessage({ error: err.message }, request),
 				};
 			}
 
