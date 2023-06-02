@@ -160,6 +160,8 @@ async function descTable(describe_table_object, attr_perms) {
 		schema,
 		name: table_obj.tableName,
 		attributes: table_obj.attributes,
+		hash_attribute: table_obj.attributes.find((attribute) => attribute.isPrimaryKey || attribute.is_hash_attribute)
+			?.name,
 	};
 	// Nats/clustering stream names are hashed to ensure constant length alphanumeric values.
 	// String will always hash to the same value.
@@ -242,61 +244,4 @@ async function describeSchema(describe_schema_object) {
 		}
 	}
 	return results;
-	let table_search_obj = {
-		schema: terms.SYSTEM_SCHEMA_NAME,
-		table: terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME,
-		hash_attribute: terms.SYSTEM_TABLE_HASH_ATTRIBUTES.TABLE_TABLE_HASH_ATTRIBUTE,
-		search_attribute: SCHEMA_ATTRIBUTE_STRING,
-		search_value: schema_name,
-		hash_values: [],
-		get_attributes: [HASH_ATTRIBUTE_STRING, terms.ID_ATTRIBUTE_STRING, NAME_ATTRIBUTE_STRING, SCHEMA_ATTRIBUTE_STRING],
-	};
-
-	let tables = Array.from(await p_search_search_by_value(table_search_obj));
-
-	if (tables && tables.length < 1) {
-		let schema_search_obj = {
-			schema: terms.SYSTEM_SCHEMA_NAME,
-			table: terms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME,
-			hash_attribute: terms.SYSTEM_TABLE_HASH_ATTRIBUTES.SCHEMA_TABLE_HASH_ATTRIBUTE,
-			hash_values: [schema_name],
-			get_attributes: [NAME_ATTRIBUTE_STRING],
-		};
-
-		let schema = Array.from(await p_search_search_by_hash(schema_search_obj));
-		if (schema && schema.length < 1) {
-			throw handleHDBError(
-				new Error(),
-				HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(describe_schema_object.schema),
-				HTTP_STATUS_CODES.NOT_FOUND
-			);
-		} else {
-			return {};
-		}
-	} else {
-		let results = {};
-		await Promise.all(
-			tables.map(async (table) => {
-				try {
-					let table_perms;
-					if (schema_perms && schema_perms.tables[table.name]) {
-						table_perms = schema_perms.tables[table.name];
-					}
-					if (hdb_utils.isEmpty(table_perms) || table_perms.describe) {
-						let data = await descTable(
-							{ schema: describe_schema_object.schema, table: table.name },
-							table_perms ? table_perms.attribute_permissions : null
-						);
-						if (data) {
-							results[data.name] = data;
-						}
-					}
-				} catch (err) {
-					logger.error(`Error describing schema table '${describe_schema_object.schema}.${table}'`);
-					logger.error(err);
-				}
-			})
-		);
-		return results;
-	}
 }

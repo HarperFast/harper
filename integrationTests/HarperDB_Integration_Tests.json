@@ -59759,8 +59759,7 @@
 		},
 		{
 			"name": "14. Token Auth",
-          "item": [],
-            "disable-item": [
+          "item": [
 				{
 					"name": "Call create_authentication_tokens no username/pw",
 					"event": [
@@ -59791,10 +59790,6 @@
 							{
 								"key": "Content-Type",
 								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic YWRtaW46MTQwMA=="
 							}
 						],
 						"body": {
@@ -59842,10 +59837,6 @@
 							{
 								"key": "Content-Type",
 								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic YWRtaW46MTQwMA=="
 							}
 						],
 						"body": {
@@ -59893,10 +59884,6 @@
 							{
 								"key": "Content-Type",
 								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic YWRtaW46MTQwMA=="
 							}
 						],
 						"body": {
@@ -59952,10 +59939,6 @@
 							{
 								"key": "Content-Type",
 								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic YWRtaW46MTQwMA=="
 							}
 						],
 						"body": {
@@ -60022,10 +60005,6 @@
 							{
 								"key": "Content-Type",
 								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic YWRtaW46MTQwMA=="
 							}
 						],
 						"body": {
@@ -60087,10 +60066,6 @@
 							{
 								"key": "Content-Type",
 								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic YWRtaW46MTQwMA=="
 							}
 						],
 						"body": {
@@ -60155,10 +60130,6 @@
 							{
 								"key": "Content-Type",
 								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic YWRtaW46MTQwMA=="
 							}
 						],
 						"body": {
@@ -60218,10 +60189,6 @@
 							{
 								"key": "Content-Type",
 								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic YWRtaW46MTQwMA=="
 							}
 						],
 						"body": {
@@ -61222,7 +61189,7 @@
 									"});",
 									"",
 									"// Deploy will restart, wait for that to complete.",
-									"setTimeout(()=>{}, 5000)"
+									"setTimeout(()=>{}, 15000)"
 								],
 								"type": "text/javascript"
 							}
