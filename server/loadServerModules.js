@@ -24,7 +24,8 @@ function getServerModules() {
 		{ module: 'auth', port: 'all', plugin: auth },
 		{
 			module: 'operations-server',
-			port: env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT) || 9925,
+			[env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_HTTPS) ? 'securePort' : 'port']:
+				env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT) || 9925,
 			plugin: operationsServer,
 		},
 		{
@@ -40,7 +41,8 @@ function getServerModules() {
 	if (env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED)) {
 		server_modules.push({
 			module: 'app-server',
-			port: env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT) || 9926,
+			[env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_HTTPS) ? 'securePort' : 'port']:
+				env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT) || 9926,
 			plugin: {},
 		});
 	}

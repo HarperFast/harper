@@ -55,7 +55,7 @@ module.exports = {
  * Builds a HarperDB server.
  * @returns {Promise<void>}
  */
-async function operationsServer() {
+async function operationsServer(options) {
 	try {
 		harper_logger.info('In Fastify server' + process.cwd());
 		harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
@@ -67,7 +67,6 @@ async function operationsServer() {
 		await setUp();
 
 		const props_http_secure_on = env.get(PROPS_HTTP_SECURE_ON_KEY);
-		const props_server_port = env.get(PROPS_SERVER_PORT_KEY);
 		const is_https =
 			props_http_secure_on &&
 			(props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL);
@@ -78,11 +77,10 @@ async function operationsServer() {
 		//make sure the process waits for the server to be fully instantiated before moving forward
 		await server.ready();
 
-		const server_type = is_https ? 'HTTPS' : 'HTTP';
 		try {
 			// now that server is fully loaded/ready, start listening on port provided in config settings or just use
 			// zero to wait for sockets from the main thread
-			server_registration.http(server.server, { port: props_server_port });
+			server_registration.http(server.server, options);
 			if (!server.server.closeIdleConnections) {
 				// before Node v18, closeIdleConnections is not available, and we have to setup a listener for fastify
 				// to handle closing by setting up the dynamic port
