@@ -10,6 +10,7 @@ const terms = require('../../utility/hdbTerms');
 const { server } = require('../Server');
 const { WebSocketServer } = require('ws');
 const { createServer: createSecureSocketServer } = require('tls');
+
 process.on('uncaughtException', (error) => {
 	if (error.code === 'ECONNRESET') return; // that's what network connections do
 	console.error('uncaughtException', error);
@@ -238,7 +239,7 @@ function getHTTPServer(port, secure) {
 				// else just send the buffer/string
 				else node_response.end(body);
 			} catch (error) {
-				node_response.writeHead(error.hdb_resp_code || 500);
+				node_response.writeHead(error.http_resp_code || 500);
 				node_response.end(error.toString());
 				harper_logger.error(error);
 			}

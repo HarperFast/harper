@@ -7,6 +7,7 @@ import { v4 as uuid } from 'uuid';
 import * as env from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms';
 import { loggerWithTag, AuthAuditLog } from '../utility/logging/harper_logger.js';
+import { serializeMessage } from '../server/serverHelpers/contentTypes';
 const auth_event_log = loggerWithTag('auth-event');
 env.initSync();
 
@@ -99,7 +100,10 @@ export async function authentication(request, next_handler) {
 					}
 				}
 
-				throw err;
+				return {
+					status: 401,
+					body: serializeMessage(err.toString(), request),
+				};
 			}
 
 			authorization_cache.set(authorization, new_user);
