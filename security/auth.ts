@@ -1,7 +1,7 @@
 import { findAndValidateUser, getSuperUser } from './user';
 import { server } from '../server/Server';
 import { resources } from '../resources/Resources';
-import { validateOperationToken } from './tokenAuthentication';
+import { validateOperationToken, validateRefreshToken } from './tokenAuthentication';
 import { table } from '../resources/databases';
 import { v4 as uuid } from 'uuid';
 import * as env from '../utility/environment/environmentManager';
@@ -88,7 +88,23 @@ export async function authentication(request, next_handler) {
 						new_user = username || password ? await server.auth(username, password) : null;
 						break;
 					case 'Bearer':
-						new_user = await validateOperationToken(credentials);
+						try {
+							new_user = await validateOperationToken(credentials);
+						} catch (error) {
+							if (error.message === 'invalid token') {
+								// see if they provided a refresh token; we can allow that and pass it on to operations API
+								try {
+									new_user = await validateRefreshToken(credentials);
+									return {
+										// we explicitly declare we don't want to handle this because the operations
+										// API has its own logic for handling this
+										status: -1,
+									};
+								} catch (refresh_error) {
+									throw error;
+								}
+							}
+						}
 						break;
 				}
 			} catch (err) {

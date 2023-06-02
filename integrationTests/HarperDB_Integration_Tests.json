@@ -60174,7 +60174,7 @@
 							"oauth2": [
 								{
 									"key": "accessToken",
-									"value": "{{operation_token}}",
+									"value": "bad token",
 									"type": "string"
 								},
 								{
