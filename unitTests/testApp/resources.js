@@ -1,5 +1,3 @@
-const { Resource, tables } = harperdb;
-
 export class Echo extends Resource {
 	static async connect(incoming_messages) {
 		if (incoming_messages) {

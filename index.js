@@ -1,15 +1,14 @@
 'use strict';
-exports.Resource = undefined;
-exports.tables = {};
-exports.databases = {};
-exports.user = undefined;
-exports.server = {};
-exports.config = {};
-exports.contentTypes = null;
+global.Resource = exports.Resource = undefined;
+global.tables = exports.tables = {};
+global.databases = {};
+global.user = exports.user = undefined;
+global.server = exports.server = {};
+global.config = exports.config = {};
+global.contentTypes = exports.contentTypes = null;
 exports._assignPackageExport = (name, value) => {
-	exports[name] = value;
+	global[name] = exports[name] = value;
 };
-global.harperdb = exports;
 /*exports.Resource = require('./resources/Resource').Resource;
 const table_loader = require('./resources/databases');
 exports.tables = table_loader.tables;
