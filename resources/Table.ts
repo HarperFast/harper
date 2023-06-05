@@ -686,7 +686,7 @@ export function makeTable(options) {
 					)
 					.map(({ value }) => value);
 			} else {
-				let ids = idsForCondition(first_search, read_txn, reverse, TableResource, conditions.allowFullScan);
+				let ids = idsForCondition(first_search, read_txn, reverse, TableResource, query.allowFullScan);
 				// and then things diverge...
 				if (!query.operator || query.operator.toLowerCase() === 'and') {
 					// get the intersection of condition searches by using the indexed query for the first condition
@@ -706,7 +706,7 @@ export function makeTable(options) {
 					for (let i = 1; i < conditions.length; i++) {
 						const condition = conditions[i];
 						// might want to lazily execute this after getting to this point in the iteration
-						const next_ids = idsForCondition(condition, read_txn, reverse, TableResource, conditions.allowFullScan);
+						const next_ids = idsForCondition(condition, read_txn, reverse, TableResource, query.allowFullScan);
 						ids = ids.concat(next_ids);
 					}
 					const returned_ids = new Set();

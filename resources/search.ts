@@ -80,9 +80,9 @@ export function idsForCondition(search_condition, transaction, reverse, Table, a
 }
 const ALTERNATE_COMPARATOR_NAMES = {
 	'greater_than': 'gt',
-	'greater_than_equal': 'gte',
+	'greater_than_equal': 'ge',
 	'less_than': 'lt',
-	'less_than_equal': 'lte',
+	'less_than_equal': 'le',
 	'>': 'gt',
 	'>=': 'ge',
 	'<': 'lt',
@@ -104,10 +104,10 @@ export function filterByType(search_condition) {
 		case lmdb_terms.SEARCH_TYPES.EQUALS:
 			return (record) => record[attribute] === value;
 		case lmdb_terms.SEARCH_TYPES.CONTAINS:
-			return (record) => record[attribute].toString().includes(value);
+			return (record) => record[attribute]?.toString().includes(value);
 		case lmdb_terms.SEARCH_TYPES.ENDS_WITH:
 		case lmdb_terms.SEARCH_TYPES._ENDS_WITH:
-			return (record) => record[attribute].toString().endsWith(value);
+			return (record) => record[attribute]?.toString().endsWith(value);
 		case lmdb_terms.SEARCH_TYPES.STARTS_WITH:
 		case lmdb_terms.SEARCH_TYPES._STARTS_WITH:
 			return (record) => typeof record[attribute] === 'string' && record[attribute].startsWith(value);
