@@ -2,8 +2,9 @@ const _ = require('lodash'),
 	validator = require('./validationWrapper');
 const Joi = require('joi');
 const hdb_utils = require('../utility/common_utils');
-const { hdb_schema_table, checkValidTable} = require('./common_validators');
+const { hdb_schema_table, checkValidTable } = require('./common_validators');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
+const { getDatabases } = require('../resources/databases');
 const { HTTP_STATUS_CODES } = hdb_errors;
 
 const search_by_hashes_schema = Joi.object({
@@ -76,19 +77,14 @@ module.exports = function (search_object, type) {
 			let errors;
 			addError(checkValidTable('schema', search_object.schema));
 			addError(checkValidTable('table', search_object.table));
-			if (!search_object.hash_values)
-				addError(`'hash_values' is required`);
-			else if (!Array.isArray(search_object.hash_values))
-				addError(`'hash_values' must be an array`);
-			else if (!search_object.hash_values.every(value => typeof value === 'string' || typeof value === 'number'))
+			if (!search_object.hash_values) addError(`'hash_values' is required`);
+			else if (!Array.isArray(search_object.hash_values)) addError(`'hash_values' must be an array`);
+			else if (!search_object.hash_values.every((value) => typeof value === 'string' || typeof value === 'number'))
 				addError(`'hash_values' must be strings or numbers`);
-			if (!search_object.get_attributes)
-				addError(`'get_attributes' is required`);
-			else if (!Array.isArray(search_object.get_attributes))
-				addError(`'get_attributes' must be an array`);
-			else if (search_object.get_attributes.length === 0)
-				addError(`'get_attributes' must contain at least 1 item`);
-			else if (!search_object.get_attributes.every(value => typeof value === 'string' || typeof value === 'number'))
+			if (!search_object.get_attributes) addError(`'get_attributes' is required`);
+			else if (!Array.isArray(search_object.get_attributes)) addError(`'get_attributes' must be an array`);
+			else if (search_object.get_attributes.length === 0) addError(`'get_attributes' must contain at least 1 item`);
+			else if (!search_object.get_attributes.every((value) => typeof value === 'string' || typeof value === 'number'))
 				addError(`'get_attributes' must be strings or numbers`);
 			function addError(error) {
 				if (errors) errors += '. ' + error;
@@ -112,7 +108,7 @@ module.exports = function (search_object, type) {
 			return handleHDBError(new Error(), check_schema_table, HTTP_STATUS_CODES.NOT_FOUND);
 		}
 
-		let table_schema = global.hdb_schema[search_object.schema][search_object.table];
+		let table_schema = getDatabases()[search_object.schema][search_object.table];
 		let all_table_attributes = table_schema.attributes;
 
 		//this clones the get_attributes array

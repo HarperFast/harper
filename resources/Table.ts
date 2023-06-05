@@ -17,7 +17,6 @@ import {
 	EXPLICIT_CHANGES_PROPERTY,
 } from './Resource';
 import { DatabaseTransaction, immediateTransaction } from './DatabaseTransaction';
-import { compareKeys, readKey, MAXIMUM_KEY } from 'ordered-binary';
 import * as lmdb_terms from '../utility/lmdb/terms';
 import * as env_mngr from '../utility/environment/environmentManager';
 import { addSubscription, listenToCommits } from './transactionBroadcast';
@@ -26,6 +25,7 @@ import OpenDBIObject from '../utility/lmdb/OpenDBIObject';
 import * as signalling from '../utility/signalling';
 import { SchemaEventMsg } from '../server/threads/itc';
 import { databases, table } from './databases';
+import { idsForCondition, filterByType } from './search';
 
 const RANGE_ESTIMATE = 100000000;
 env_mngr.initSync();
@@ -686,7 +686,7 @@ export function makeTable(options) {
 					)
 					.map(({ value }) => value);
 			} else {
-				let ids = idsForCondition(first_search, read_txn, reverse);
+				let ids = idsForCondition(first_search, read_txn, reverse, TableResource, conditions.allowFullScan);
 				// and then things diverge...
 				if (!query.operator || query.operator.toLowerCase() === 'and') {
 					// get the intersection of condition searches by using the indexed query for the first condition
@@ -706,7 +706,7 @@ export function makeTable(options) {
 					for (let i = 1; i < conditions.length; i++) {
 						const condition = conditions[i];
 						// might want to lazily execute this after getting to this point in the iteration
-						const next_ids = idsForCondition(condition, read_txn, reverse);
+						const next_ids = idsForCondition(condition, read_txn, reverse, TableResource, conditions.allowFullScan);
 						ids = ids.concat(next_ids);
 					}
 					const returned_ids = new Set();
@@ -888,55 +888,6 @@ export function makeTable(options) {
 	prototype[DB_TXN_PROPERTY] = immediateTransaction;
 	prototype[INCREMENTAL_UPDATE] = true; // default behavior
 	return TableResource;
-	function idsForCondition(search_condition, transaction, reverse) {
-		let start;
-		let end, inclusiveEnd, exclusiveStart;
-		const value = search_condition[1] ?? search_condition.value;
-		const comparator = search_condition.comparator;
-		switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
-			case 'lt':
-				start = true;
-				end = value;
-				break;
-			case 'lte':
-				start = true;
-				end = value;
-				inclusiveEnd = true;
-				break;
-			case 'gt':
-				start = value;
-				exclusiveStart = true;
-				break;
-			case 'gte':
-				start = value;
-				break;
-			case lmdb_terms.SEARCH_TYPES.EQUALS:
-			case undefined:
-				start = value;
-				end = value;
-				inclusiveEnd = true;
-		}
-		if (reverse) {
-			let new_end = start;
-			start = end;
-			end = new_end;
-			new_end = !exclusiveStart;
-			exclusiveStart = !inclusiveEnd;
-			inclusiveEnd = new_end;
-		}
-		const attribute_name = search_condition[0] ?? search_condition.attribute;
-		const index = attribute_name === primary_key ? primary_store : indices[attribute_name];
-		if (!index) {
-			throw handleHDBError(new Error(), `${attribute_name} is not indexed, can not search for this attribute`, 404);
-		}
-		const isPrimaryKey = attribute_name === primary_key;
-		const range_options = { start, end, inclusiveEnd, exclusiveStart, values: !isPrimaryKey, transaction, reverse };
-		if (isPrimaryKey) {
-			return index.getRange(range_options);
-		} else {
-			return index.getRange(range_options).map(({ value }) => value);
-		}
-	}
 	function assignDBTxn(resource) {
 		let db_txn = resource[TRANSACTIONS_PROPERTY].find((txn) => txn.dbPath === database_path);
 		if (!db_txn) {
@@ -986,50 +937,6 @@ export function makeTable(options) {
 	}
 }
 
-/**
- *
- * @param {SearchObject} search_object
- * @returns {({}) => boolean}
- */
-export function filterByType(search_object) {
-	const search_type = search_object.comparator;
-	const attribute = search_object[0] ?? search_object.attribute;
-	const value = search_object[1] ?? search_object.value;
-
-	switch (search_type) {
-		case lmdb_terms.SEARCH_TYPES.EQUALS:
-			return (record) => record[attribute] === value;
-		case lmdb_terms.SEARCH_TYPES.CONTAINS:
-			return (record) => typeof record[attribute] === 'string' && record[attribute].includes(value);
-		case lmdb_terms.SEARCH_TYPES.ENDS_WITH:
-		case lmdb_terms.SEARCH_TYPES._ENDS_WITH:
-			return (record) => typeof record[attribute] === 'string' && record[attribute].endsWith(value);
-		case lmdb_terms.SEARCH_TYPES.STARTS_WITH:
-		case lmdb_terms.SEARCH_TYPES._STARTS_WITH:
-			return (record) => typeof record[attribute] === 'string' && record[attribute].startsWith(value);
-		case lmdb_terms.SEARCH_TYPES.BETWEEN:
-			return (record) => {
-				const value = record[attribute];
-				return compareKeys(value, value[0]) >= 0 && compareKeys(value, value[1]) <= 0;
-			};
-		case lmdb_terms.SEARCH_TYPES.GREATER_THAN:
-		case lmdb_terms.SEARCH_TYPES._GREATER_THAN:
-			return (record) => compareKeys(record[attribute], value) > 0;
-		case lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL:
-		case lmdb_terms.SEARCH_TYPES._GREATER_THAN_EQUAL:
-			return (record) => compareKeys(record[attribute], value) >= 0;
-		case lmdb_terms.SEARCH_TYPES.LESS_THAN:
-		case 'lt':
-		case lmdb_terms.SEARCH_TYPES._LESS_THAN:
-			return (record) => compareKeys(record[attribute], value) < 0;
-		case lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL:
-		case lmdb_terms.SEARCH_TYPES._LESS_THAN_EQUAL:
-			return (record) => compareKeys(record[attribute], value) <= 0;
-		default:
-			return Object.create(null);
-	}
-}
-
 function attributesAsObject(attribute_permissions, type) {
 	const attr_object = attribute_permissions.attr_object || (attribute_permissions.attr_object = {});
 	let attrs_for_type = attr_object[type];
@@ -1040,17 +947,6 @@ function attributesAsObject(attribute_permissions, type) {
 	}
 	return attrs_for_type;
 }
-const ALTERNATE_COMPARATOR_NAMES = {
-	'greater_than': 'gt',
-	'greater_than_equal': 'gte',
-	'less_than': 'lt',
-	'less_than_equal': 'lte',
-	'>': 'gt',
-	'>=': 'gte',
-	'<': 'lt',
-	'<=': 'lte',
-};
-
 function noop() {
 	// prefetch callback
 }

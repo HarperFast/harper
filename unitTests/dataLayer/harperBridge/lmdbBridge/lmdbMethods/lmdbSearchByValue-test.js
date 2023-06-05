@@ -2029,7 +2029,7 @@ describe('test lmdbSearchByValue module', () => {
 				}
 			});
 
-			let search_object = new SearchObject('dev', 'test', 'temperature', '%2', 'id', ['*']);
+			let search_object = new SearchObject('dev', 'test', 'temperature', '*2', 'id', ['*']);
 			let results = orderedArray(await test_utils.assertErrorAsync(lmdb_search, [search_object], undefined));
 			assert.deepEqual(results.length, expected.length);
 

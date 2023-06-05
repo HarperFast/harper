@@ -9,7 +9,11 @@ import lmdbProcessRows from './lmdbBridge/lmdbUtility/lmdbProcessRows';
 import * as write_transaction from './lmdbBridge/lmdbUtility/lmdbWriteTransaction';
 import * as logger from '../../utility/logging/harper_logger';
 import SearchObject from '../SearchObject';
-import { OPERATIONS_ENUM } from '../../utility/hdbTerms';
+import {
+	OPERATIONS_ENUM,
+	VALUE_SEARCH_COMPARATORS,
+	VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP,
+} from '../../utility/hdbTerms';
 import * as signalling from '../../utility/signalling';
 import { SchemaEventMsg } from '../../server/threads/itc';
 
@@ -31,17 +35,26 @@ export class ResourceBridge extends LMDBBridge {
 		if (validation_error) {
 			throw handleHDBError(validation_error, validation_error.message, 400, undefined, undefined, true);
 		}
+		const table = getTable(search_object);
+		if (!table) {
+			throw new ClientError(`Table ${search_object.table} not found`);
+		}
 
+		const conditions = search_object.conditions.map((condition) => ({
+			attribute: condition.search_attribute,
+			comparator: condition.search_type,
+			value: condition.search_value,
+		}));
 		//set the operator to always be lowercase for later evaluations
-		search_object.operator = search_object.operator ? search_object.operator.toLowerCase() : undefined;
+		conditions.operator = search_object.operator ? search_object.operator.toLowerCase() : undefined;
+		conditions.limit = search_object.limit;
+		conditions.offset = search_object.offset;
+		if (search_object.get_attributes && search_object.get_attributes[0] !== '*')
+			conditions.select = search_object.get_attributes;
+		conditions.reverse = search_object.reverse;
+		conditions.allowFullScan = true;
 
-		search_object.offset = Number.isInteger(search_object.offset) ? search_object.offset : 0;
-		const resource_snapshot = new Resource();
-		const records = resource_snapshot
-			.useTable(search_object.table, search_object.schema)
-			.get(search_object, search_object);
-		records.onDone = () => resource_snapshot.doneReading();
-		return records;
+		return table.search(conditions);
 	}
 	/**
 	 * Writes new table data to the system tables creates the environment file and creates two datastores to track created and updated
@@ -213,17 +226,43 @@ export class ResourceBridge extends LMDBBridge {
 	}
 
 	searchByValue(search_object: SearchObject, comparator?) {
+		if (comparator && VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[comparator] === undefined) {
+			throw new Error(`Value search comparator - ${comparator} - is not valid`);
+		}
+		const validation_error = search_validator(search_object, 'value');
+		if (validation_error) {
+			throw validation_error;
+		}
+
 		const table = getTable(search_object);
 		if (!table) {
 			throw new ClientError(`Table ${search_object.table} not found`);
 		}
+		let value = search_object.search_value;
+		if (value.includes?.('*')) {
+			if (value.startsWith('*')) {
+				if (value.endsWith('*')) {
+					if (value !== '*') {
+						comparator = 'contains';
+						value = value.slice(1, -1);
+					}
+				} else {
+					comparator = 'ends_with';
+					value = value.slice(1);
+				}
+			} else if (value.endsWith('*')) {
+				comparator = 'starts_with';
+				value = value.slice(0, -1);
+			}
+		}
+		if (comparator === VALUE_SEARCH_COMPARATORS.BETWEEN) value = [value, search_object.end_value];
 		const conditions =
-			search_object.search_value == '*'
+			value === '*'
 				? []
 				: [
 						{
 							attribute: search_object.search_attribute,
-							value: search_object.search_value,
+							value,
 							comparator,
 						},
 				  ];
@@ -232,6 +271,7 @@ export class ResourceBridge extends LMDBBridge {
 		if (search_object.get_attributes && search_object.get_attributes[0] !== '*')
 			conditions.select = search_object.get_attributes;
 		conditions.reverse = search_object.reverse;
+		conditions.allowFullScan = true;
 
 		return table.search(conditions);
 	}

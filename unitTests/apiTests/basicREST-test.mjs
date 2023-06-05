@@ -125,7 +125,7 @@ describe('test REST calls', () => {
 			assert.equal(response.data[4].age, 24);
 		});
 		it('do a less than query or equal by numeric property', async () => {
-			let response = await axios('http://localhost:9926/FourProp/?age=lte=25');
+			let response = await axios('http://localhost:9926/FourProp/?age=le=25');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 6);
 			assert.equal(response.data[5].age, 25);

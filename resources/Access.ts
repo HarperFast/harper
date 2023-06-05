@@ -143,8 +143,8 @@ export class DefaultAccess {
 					break;
 				case '=':
 					if (attribute) {
-						// a FIQL operator like =gt=
-						comparator = value;
+						// a FIQL operator like =gt= (and don't allow just any string)
+						if (value.length <= 2) comparator = value;
 					} else {
 						comparator = 'equals';
 						attribute = decodeURIComponent(value);
@@ -156,6 +156,14 @@ export class DefaultAccess {
 				case '>':
 					comparator = SYMBOL_OPERATORS[operator];
 					attribute = decodeURIComponent(value);
+					break;
+				case '*':
+					conditions.push({
+						comparator: 'starts_with',
+						attribute,
+						value: decodeURIComponent(value),
+					});
+					attribute = null;
 					break;
 				case undefined:
 				case '&':
