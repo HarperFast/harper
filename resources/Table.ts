@@ -12,6 +12,9 @@ import {
 	RECORD_PROPERTY,
 	Resource,
 	copyRecord,
+	withoutCopying,
+	NOT_COPIED_YET,
+	EXPLICIT_CHANGES_PROPERTY,
 } from './Resource';
 import { DatabaseTransaction, immediateTransaction } from './DatabaseTransaction';
 import { compareKeys, readKey, MAXIMUM_KEY } from 'ordered-binary';
@@ -31,6 +34,7 @@ const LMDB_PREFETCH_WRITES = env_mngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 
 const DB_TXN_PROPERTY = Symbol('dbTxn');
 const VERSION_PROPERTY = Symbol.for('version');
+const INCREMENTAL_UPDATE = Symbol.for('incremental-update');
 const LAZY_PROPERTY_ACCESS = { lazy: true };
 
 export interface Table {
@@ -108,7 +112,7 @@ export function makeTable(options) {
 					}
 					switch (event.operation) {
 						case 'put':
-							return resource.#writePut(value);
+							return resource.#writeUpdate(value);
 						case 'delete':
 							return resource.#writeDelete();
 						case 'publish':
@@ -439,6 +443,7 @@ export function makeTable(options) {
 			}
 			if (!env_txn.updatingResources) env_txn.updatingResources = [this];
 			else if (env_txn.updatingResources.indexOf(this) === -1) env_txn.updatingResources.push(this);
+			this.#writeUpdate(this);
 			if (typeof arg === 'object' && arg) {
 				Object.assign(this, arg);
 			}
@@ -473,7 +478,7 @@ export function makeTable(options) {
 			if (!partial_record && Object.keys(indices).length > 0) partial_record = {};
 			if (partial_record) {
 				partial_record.__invalidated__ = true;
-				this.#writePut(partial_record);
+				this.#writeUpdate(partial_record);
 			} else this.#writeDelete();
 		}
 
@@ -487,79 +492,56 @@ export function makeTable(options) {
 		 */
 		async put(record, options?): Promise<void> {
 			record[primary_key] = this[ID_PROPERTY]; // ensure that the id is in the record
-
-			if (attributes && !options?.noValidation) {
-				let validation_errors;
-				for (let i = 0, l = attributes.length; i < l; i++) {
-					const attribute = attributes[i];
-					if (attribute.type) {
-						const value = record[attribute.name];
-						if (value != null) {
-							switch (attribute.type) {
-								case 'Int':
-								case 'Float':
-									if (typeof value !== 'number' || (attribute.type === 'Int' && value !== Math.floor(value)))
-										(validation_errors || (validation_errors = [])).push(
-											`Property ${attribute.name} must be an ${attribute.type === 'Int' ? 'integer' : 'number'}`
-										);
-									break;
-								case 'ID':
-									if (typeof value !== 'number' && typeof value !== 'string')
-										(validation_errors || (validation_errors = [])).push(
-											`Property ${attribute.name} must be a string or number`
-										);
-									break;
-								case 'String':
-									if (typeof value !== 'string')
-										(validation_errors || (validation_errors = [])).push(`Property ${attribute.name} must be a string`);
-							}
-						}
-					}
-					if (attribute.required && record[attribute.name] == null) {
-						(validation_errors || (validation_errors = [])).push(`Property ${attribute.name} is required`);
-					}
-				}
-				if (validation_errors) {
-					throw new ClientError(validation_errors.join('. '));
-				}
-			}
 			if (this.constructor.Source?.prototype.put) {
 				const source = (this.source = this.constructor.Source.getResource(this[ID_PROPERTY], this));
 				await source.loadRecord();
 				await source.put(record, options);
 			}
-			this.#writePut(record);
+			this.#writeUpdate(record);
 			// TODO: only do this if we are in a custom function
 			if (!options?.noCopy) copyRecord(record, this);
 		}
-		#writePut(record) {
+		#writeUpdate(record) {
 			const env_txn = this[DB_TXN_PROPERTY] || immediateTransaction;
 
 			// use optimistic locking to only commit if the existing record state still holds true.
 			// this is superior to using an async transaction since it doesn't require JS execution
 			//  during the write transaction.
 			const txn_time = this[TRANSACTIONS_PROPERTY]?.timestamp || immediateTransaction.timestamp;
-			if (TableResource.updatedTimeProperty) record[TableResource.updatedTimeProperty] = txn_time;
 			let existing_record = this[RECORD_PROPERTY];
-			if (TableResource.createdTimeProperty) {
-				if (existing_record)
-					record[TableResource.createdTimeProperty] = existing_record[TableResource.createdTimeProperty];
-				else record[TableResource.createdTimeProperty] = txn_time;
-			}
+			let is_unchanged;
 			env_txn.addWrite({
 				key: this[ID_PROPERTY],
 				store: primary_store,
 				txnTime: txn_time,
 				lastVersion: this[VERSION_PROPERTY],
+				validate: () => {
+					this.validate(record);
+				},
 				commit: (retry) => {
 					if (retry) {
+						if (is_unchanged) return;
 						const existing_entry = primary_store.getEntry(this[ID_PROPERTY]);
 						existing_record = existing_entry?.value;
 						this.updateModificationTime(existing_entry?.version);
-					}
-					const had_existing = existing_record;
-					if (!existing_record) {
-						existing_record = {};
+					} else {
+						if (record[EXPLICIT_CHANGES_PROPERTY]) {
+							record = Object.assign({}, record, record[EXPLICIT_CHANGES_PROPERTY]);
+						}
+						if (record[INCREMENTAL_UPDATE]) {
+							is_unchanged = withoutCopying(() => isEqual(this, existing_record));
+							if (is_unchanged) return;
+						}
+						if (TableResource.updatedTimeProperty) record[TableResource.updatedTimeProperty] = txn_time;
+						if (TableResource.createdTimeProperty) {
+							if (existing_record)
+								record[TableResource.createdTimeProperty] = existing_record[TableResource.createdTimeProperty];
+							else record[TableResource.createdTimeProperty] = txn_time;
+						}
+						const had_existing = existing_record;
+						if (!existing_record) {
+							existing_record = {};
+						}
 					}
 
 					if (this[LAST_MODIFICATION_PROPERTY] > txn_time) {
@@ -821,7 +803,11 @@ export function makeTable(options) {
 				key: id,
 				txnTime: txn_time,
 				lastVersion: this[VERSION_PROPERTY],
+				validate: () => {
+					this.validate(message);
+				},
 				commit: (retries) => {
+					this.validate(message);
 					// just need to update the version number of the record so it points to the latest audit record
 					// but have to update the version number of the record
 					// TODO: would be faster to have a dedicated lmdb-js function for just updating the version number
@@ -835,6 +821,42 @@ export function makeTable(options) {
 				},
 			});
 		}
+		validate(record) {
+			let validation_errors;
+			for (let i = 0, l = attributes.length; i < l; i++) {
+				const attribute = attributes[i];
+				if (attribute.type) {
+					const value = record[attribute.name];
+					if (value != null) {
+						switch (attribute.type) {
+							case 'Int':
+							case 'Float':
+								if (typeof value !== 'number' || (attribute.type === 'Int' && value !== Math.floor(value)))
+									(validation_errors || (validation_errors = [])).push(
+										`Property ${attribute.name} must be an ${attribute.type === 'Int' ? 'integer' : 'number'}`
+									);
+								break;
+							case 'ID':
+								if (typeof value !== 'number' && typeof value !== 'string')
+									(validation_errors || (validation_errors = [])).push(
+										`Property ${attribute.name} must be a string or number`
+									);
+								break;
+							case 'String':
+								if (typeof value !== 'string')
+									(validation_errors || (validation_errors = [])).push(`Property ${attribute.name} must be a string`);
+						}
+					}
+				}
+				if (attribute.required && record[attribute.name] == null) {
+					(validation_errors || (validation_errors = [])).push(`Property ${attribute.name} is required`);
+				}
+			}
+			if (validation_errors) {
+				throw new ClientError(validation_errors.join('. '));
+			}
+		}
+
 		static async publish(message, options?) {
 			const publishing_resource = new this(null, this);
 			return publishing_resource.publish(message, options);
@@ -858,6 +880,7 @@ export function makeTable(options) {
 	}
 	const prototype = TableResource.prototype;
 	prototype[DB_TXN_PROPERTY] = immediateTransaction;
+	prototype[INCREMENTAL_UPDATE] = true; // default behavior
 	return TableResource;
 	function idsForCondition(search_condition, transaction, reverse) {
 		let start;
@@ -1024,6 +1047,40 @@ const ALTERNATE_COMPARATOR_NAMES = {
 
 function noop() {
 	// prefetch callback
+}
+function isEqual(a, b) {
+	let count = 0;
+	for (const key in a) {
+		const valueA = a[key];
+		if (valueA === NOT_COPIED_YET) continue; // if it was not copied yet, it can't be different
+		const valueB = b[key];
+		if (valueA !== valueB) return false;
+		if (valueA && typeof valueA === 'object') {
+			if (valueA instanceof Array) {
+				if (!isEqualArray(valueA, valueB)) return false;
+			} else {
+				if (!isEqual(valueA, valueB)) return false;
+			}
+		}
+		count++;
+	}
+	return count === Object.keys(b).length;
+}
+function isEqualArray(a, b) {
+	if (a.length !== b.length) return false;
+	for (let i = 0; i < a.length; i++) {
+		const valueA = a[i];
+		const valueB = b[i];
+		if (valueA !== valueB) return false;
+		if (valueA && typeof valueA === 'object') {
+			if (valueA instanceof Array) {
+				if (!isEqualArray(valueA, valueB)) return false;
+			} else {
+				if (!isEqual(valueA, valueB)) return false;
+			}
+		}
+	}
+	return true;
 }
 export function snake_case(camelCase: string) {
 	return (

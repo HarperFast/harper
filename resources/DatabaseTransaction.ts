@@ -40,6 +40,11 @@ export class DatabaseTransaction implements Transaction {
 		this.conditions.push({ store, key, version, lock });
 	}
 
+	validate() {
+		for (const write of this.writes || []) {
+			write.validate?.();
+		}
+	}
 	/**
 	 * Resolves with information on the timestamp and success of the commit
 	 */
@@ -66,6 +71,9 @@ export class DatabaseTransaction implements Transaction {
 		let write_index = 0;
 		let last_store;
 		let txn_time;
+		for (const write of this.writes) {
+			write.validate?.();
+		}
 		const nextCondition = () => {
 			const write = this.writes[write_index++];
 			if (write) {

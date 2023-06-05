@@ -63,6 +63,10 @@ export class Resource implements ResourceInterface {
 		const commits = [];
 		// this can grow during the commit phase, so need to always check length
 		try {
+			for (let i = 0; i < this[TRANSACTIONS_PROPERTY].length; i++) {
+				const txn = this[TRANSACTIONS_PROPERTY][i];
+				txn.validate?.();
+			}
 			for (let i = 0; i < this[TRANSACTIONS_PROPERTY].length; ) {
 				for (let l = this[TRANSACTIONS_PROPERTY].length; i < l; i++) {
 					const txn = this[TRANSACTIONS_PROPERTY][i];
@@ -443,8 +447,8 @@ export function copyRecord(record, target_resource) {
 		}
 	}
 }
-const NOT_COPIED_YET = {};
-const copy_enabled = true;
+export const NOT_COPIED_YET = {};
+let copy_enabled = true;
 function setSubObject(target_resource, key, stored_value) {
 	let value = NOT_COPIED_YET;
 	Object.defineProperty(target_resource, key, {
@@ -468,6 +472,12 @@ function setSubObject(target_resource, key, stored_value) {
 		},
 		enumerable: true,
 	});
+}
+export function withoutCopying(callback) {
+	copy_enabled = false;
+	const result = callback();
+	copy_enabled = true;
+	return result;
 }
 class UpdatableObject {
 	// eventually provide CRDT functions here like add, subtract

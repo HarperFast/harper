@@ -1,7 +1,6 @@
 import { table } from './databases';
 import { isMainThread } from 'worker_threads';
 import { dirname } from 'path';
-import { snake_case } from './Table';
 import { createRequire } from 'module';
 /**
  * This is the entry point for handling GraphQL schemas (and server-side defined queries, eventually). This will be
@@ -26,7 +25,7 @@ export async function handleFile(gql_content, url_path, file_path, resources) {
 		switch (definition.kind) {
 			case Kind.OBJECT_TYPE_DEFINITION:
 				const type_name = definition.name.value;
-				// use type name as the default table (converted to snake case)
+				// use type name as the default table
 				const type_def = { table: null, database: null, attributes: [] };
 				types.set(type_name, type_def);
 				for (const directive of definition.directives) {
@@ -35,7 +34,7 @@ export async function handleFile(gql_content, url_path, file_path, resources) {
 							type_def[arg.name.value] = (arg.value as StringValueNode).value;
 						}
 						if (type_def.schema) type_def.database = type_def.schema;
-						if (!type_def.table) type_def.table = snake_case(type_name);
+						if (!type_def.table) type_def.table = type_name;
 					}
 					if (directive.name.value === 'sealed') {
 						type_def.sealed = true;
