@@ -125,6 +125,7 @@ class NATSTransaction {
 		writes_for_path.push(write);
 	}
 	commit() {
+		const node_name = env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 		const promises = [];
 		for (const [db, writes] of this.writes_by_db) {
 			const records = [];
@@ -138,9 +139,12 @@ class NATSTransaction {
 						operation,
 						schema: db,
 						table,
-						[operation === 'delete' ? 'ids' : 'records']: records,
-						user: this.user?.username,
-						timestamp: this.transaction.timestamp,
+						[operation === 'delete' ? 'hash_values' : 'records']: records,
+						__origin: {
+							user: this.user?.username,
+							timestamp: this.transaction.timestamp,
+							node_name,
+						},
 					};
 				}
 				if (transaction_event.table === table && transaction_event.operation === operation) {

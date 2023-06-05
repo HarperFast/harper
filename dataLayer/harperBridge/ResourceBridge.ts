@@ -118,64 +118,65 @@ export class ResourceBridge extends LMDBBridge {
 
 		let new_attributes;
 		const Table = getDatabases()[upsert_obj.schema][upsert_obj.table];
-		return Table.transact(async (txn_table) => {
-			txn_table[CONTEXT_PROPERTY] = {
-				user: upsert_obj.hdb_user,
-			};
-			txn_table[USER_PROPERTY] = upsert_obj.hdb_user;
-			if (!txn_table.schemaDefined) {
-				new_attributes = [];
-				for (const attribute of attributes) {
-					const existing_attribute = Table.attributes.find(
-						(existing_attribute) => existing_attribute.name == attribute
-					);
-					if (!existing_attribute) {
-						await txn_table.addAttribute({
-							name: attribute,
-							indexed: true,
-						});
-						new_attributes.push(attribute);
-					}
-				}
-			}
-
-			const keys = [];
-			const skipped = [];
-			for (const record of upsert_obj.records) {
-				const existing_record = await txn_table.get(record[Table.primaryKey]);
-				if (
-					(upsert_obj.requires_existing && !existing_record) ||
-					(upsert_obj.requires_no_existing && existing_record)
-				) {
-					skipped.push(record[Table.primaryKey]);
-					continue;
-				}
-				for (const key in record) {
-					let value = record[key];
-					if (typeof value === 'function') {
-						const value_results = value([[existing_record]]);
-						if (Array.isArray(value_results)) {
-							value = value_results[0].func_val;
-							record[key] = value;
+		return Table.transact(
+			async (txn_table) => {
+				if (!txn_table.schemaDefined) {
+					new_attributes = [];
+					for (const attribute of attributes) {
+						const existing_attribute = Table.attributes.find(
+							(existing_attribute) => existing_attribute.name == attribute
+						);
+						if (!existing_attribute) {
+							await txn_table.addAttribute({
+								name: attribute,
+								indexed: true,
+							});
+							new_attributes.push(attribute);
 						}
 					}
 				}
-				if (existing_record) {
-					for (const key in existing_record) {
-						// if the record is missing any properties, fill them in from the existing record
-						if (!Object.prototype.hasOwnProperty.call(record, key)) record[key] = existing_record[key];
+
+				const keys = [];
+				const skipped = [];
+				for (const record of upsert_obj.records) {
+					const existing_record = await txn_table.get(record[Table.primaryKey]);
+					if (
+						(upsert_obj.requires_existing && !existing_record) ||
+						(upsert_obj.requires_no_existing && existing_record)
+					) {
+						skipped.push(record[Table.primaryKey]);
+						continue;
 					}
+					for (const key in record) {
+						let value = record[key];
+						if (typeof value === 'function') {
+							const value_results = value([[existing_record]]);
+							if (Array.isArray(value_results)) {
+								value = value_results[0].func_val;
+								record[key] = value;
+							}
+						}
+					}
+					if (existing_record) {
+						for (const key in existing_record) {
+							// if the record is missing any properties, fill them in from the existing record
+							if (!Object.prototype.hasOwnProperty.call(record, key)) record[key] = existing_record[key];
+						}
+					}
+					await txn_table.put(record[Table.primaryKey], record);
+					keys.push(record[Table.primaryKey]);
 				}
-				await txn_table.put(record[Table.primaryKey], record);
-				keys.push(record[Table.primaryKey]);
+				return {
+					txn_time: txn_table.txnTime,
+					written_hashes: keys,
+					new_attributes,
+					skipped_hashes: skipped,
+				};
+			},
+			{
+				user: upsert_obj.hdb_user,
 			}
-			return {
-				txn_time: txn_table.txnTime,
-				written_hashes: keys,
-				new_attributes,
-				skipped_hashes: skipped,
-			};
-		});
+		);
 	}
 	async deleteRecords(delete_obj) {
 		const Table = getDatabases()[delete_obj.schema][delete_obj.table];

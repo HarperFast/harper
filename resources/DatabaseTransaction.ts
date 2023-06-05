@@ -16,7 +16,7 @@ export class DatabaseTransaction implements Transaction {
 	readTxn: LMDBTransaction;
 	constructor(lmdb_db, user, audit_store) {
 		this.lmdbDb = lmdb_db;
-		this.username = user?.name;
+		this.username = user?.username;
 		this.auditStore = audit_store;
 	}
 	getReadTxn() {
@@ -97,7 +97,7 @@ export class DatabaseTransaction implements Transaction {
 					}
 					last_store = write.store;
 					if (this.auditStore) {
-						audit_record.username = this.username;
+						audit_record.user = this.username;
 						audit_record.lastVersion = write.lastVersion;
 						this.auditStore.put([(txn_time = write.txnTime), write.store.tableId, write.key], audit_record);
 					}

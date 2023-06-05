@@ -133,14 +133,13 @@ async function messageProcessor(msg) {
 			next: next_write,
 			table: table_name,
 			records,
-			ids,
-			writes,
-			__origin,
+			hash_values: ids,
+			__origin: origin,
 		} = entry;
 		let onCommit;
 		if (!records) records = ids;
 		let completion = new Promise((resolve) => (onCommit = resolve));
-		let { timestamp, user } = __origin || {};
+		let { timestamp, user } = origin || {};
 		let subscription = database_subscriptions.get(database_name)?.get(table_name);
 		if (!subscription) {
 			throw new Error('Missing table for replication message', table_name);
@@ -152,7 +151,7 @@ async function messageProcessor(msg) {
 				timestamp,
 				table: table_name,
 				onCommit,
-				__origin,
+				user,
 			});
 		else {
 			let writes = records.map((record) => ({
@@ -174,7 +173,7 @@ async function messageProcessor(msg) {
 				table: table_name,
 				timestamp,
 				onCommit,
-				__origin,
+				user,
 			});
 		}
 		// echo the message to any other nodes

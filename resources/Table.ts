@@ -101,7 +101,7 @@ export function makeTable(options) {
 			// define a source for retrieving invalidated entries for caching purposes
 			this.Source = Resource;
 			(async () => {
-				const writeUpdate = (event, source, resource) => {
+				const writeUpdate = (event, resource) => {
 					const value = event.value;
 					if (event.table) {
 						const Table = databases[database_name][event.table];
@@ -135,23 +135,29 @@ export function makeTable(options) {
 					});
 					if (subscription) {
 						for await (const event of subscription) {
-							const source = event.__origin;
 							const first_record = event.operation === 'transaction' ? event.writes[0].value : event.value;
 							if (!first_record) {
 								console.error('Bad subscription event');
 								continue;
 							}
-							const id = first_record[primary_key];
-							const resource = new this(id, source);
+							const id = typeof first_record === 'object' ? first_record[primary_key] : first_record;
+							const resource = new this(id, {
+								[CONTEXT_PROPERTY]: {
+									user: {
+										username: event.user,
+									},
+								},
+							});
 							const commit = resource.transact(() => {
+								resource[TRANSACTIONS_PROPERTY].timestamp = event.timestamp;
 								if (event.operation === 'transaction') {
 									for (const write of event.writes) {
-										writeUpdate(write, source, resource);
+										writeUpdate(write, resource);
 									}
 								} else if (event.operation === 'define_table') {
 									// ensure table exists
 									table(event);
-								} else writeUpdate(event, source, resource);
+								} else writeUpdate(event, resource);
 							});
 							if (event.onCommit) commit.then(event.onCommit);
 						}
@@ -603,12 +609,12 @@ export function makeTable(options) {
 			});
 			return true;
 		}
-		static transact(callback) {
+		static transact(callback, options?) {
 			if (this[TRANSACTIONS_PROPERTY]) return callback(this);
 			return super.transact((TableTxn) => {
 				assignDBTxn(TableTxn);
 				return callback(TableTxn);
-			});
+			}, options);
 		}
 		transact(callback) {
 			if (this[TRANSACTIONS_PROPERTY]) return callback(this);

@@ -321,6 +321,7 @@ export class Resource implements ResourceInterface {
 			// @ts-ignore
 			static name = name;
 			static [TRANSACTIONS_PROPERTY] = transactions;
+			static [CONTEXT_PROPERTY] = options;
 		};
 		try {
 			const result = callback(txn_resource);
