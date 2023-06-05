@@ -14,11 +14,16 @@ import {
 	VALUE_SEARCH_COMPARATORS,
 	VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP,
 } from '../../utility/hdbTerms';
+import { SEARCH_TYPES } from '../../utility/lmdb/terms';
 import * as signalling from '../../utility/signalling';
 import { SchemaEventMsg } from '../../server/threads/itc';
+import { chunkDeletes } from './lmdbBridge/lmdbMethods/lmdbDeleteRecordsBefore';
+import { async_set_timeout } from '../../utility/common_utils';
 
 const { HDB_ERROR_MSGS } = hdb_errors;
 const DEFAULT_DATABASE = 'data';
+const DELETE_CHUNK = 10000;
+const DELETE_PAUSE_MS = 10;
 let bridge: ResourceBridge;
 /**
  * Currently we are extending LMDBBridge so we can use the LMDB methods as a fallback until all our RAPI methods are
@@ -209,6 +214,43 @@ export class ResourceBridge extends LMDBBridge {
 			}
 		);
 	}
+
+	async deleteRecordsBefore(delete_obj) {
+		const Table = getDatabases()[delete_obj.schema][delete_obj.table];
+		const created_time_prop = Table.createdTimeProperty;
+		if (!created_time_prop) {
+			throw new ClientError(
+				`Table must have a '__createdtime__' column or @creationDate timestamp defined to perform this operation`
+			);
+		}
+
+		let records_to_delete = await Table.search([
+			{ attribute: created_time_prop, value: delete_obj.date, comparator: SEARCH_TYPES.GREATER_THAN },
+		]);
+
+		const deleted_ids = [];
+		const skipped_ids = [];
+		records_to_delete = Array.from(records_to_delete);
+		for (let i = 0, length = records_to_delete.length; i < length; i += DELETE_CHUNK) {
+			const chunk = records_to_delete.slice(i, i + DELETE_CHUNK);
+			const ids = [];
+			for (let x = 0, chunk_length = chunk.length; x < chunk_length; x++) {
+				ids.push(chunk[x][Table.primaryKey]);
+			}
+
+			const delete_res = await this.deleteRecords({
+				schema: delete_obj.schema,
+				table: delete_obj.table,
+				hash_values: ids,
+			});
+			deleted_ids.push(...delete_res.deleted_hashes);
+			skipped_ids.push(...delete_res.skipped_hashes);
+			await async_set_timeout(DELETE_PAUSE_MS);
+		}
+
+		return createDeleteResponse(deleted_ids, skipped_ids, undefined);
+	}
+
 	/**
 	 * fetches records by their hash values and returns an Array of the results
 	 * @param {SearchByHashObject} search_object

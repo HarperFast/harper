@@ -15,7 +15,7 @@ const p_timeout = promisify(setTimeout);
 const DELETE_CHUNK = 10000;
 const DELETE_PAUSE_MS = 10;
 
-module.exports = lmdbDeleteRecordsBefore;
+module.exports = { lmdbDeleteRecordsBefore, chunkDeletes };
 
 /**
  * Deletes all records in a schema.table that fall behind a passed date.

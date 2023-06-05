@@ -36012,9 +36012,8 @@
 			]
 		},
 		{
-			"name": "7. Jobs & Job Role Testing",
-          "item": [],
-          "disabled-item": [
+          "name": "7. Jobs & Job Role Testing",
+          "item": [
 				{
 					"name": "S3 Operations",
 					"item": [
