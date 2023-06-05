@@ -7,7 +7,7 @@ import {
 	getBaseSchemaPath,
 	getTransactionAuditStoreBasePath,
 } from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths';
-import { makeTable, CamelCase, lowerCamelCase } from './Table';
+import { makeTable } from './Table';
 import OpenDBIObject from '../utility/lmdb/OpenDBIObject';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject';
 import { CONFIG_PARAMS, LEGACY_DATABASES_DIR_NAME, DATABASES_DIR_NAME } from '../utility/hdbTerms';
@@ -262,7 +262,6 @@ interface TableDefinition {
 const DEFINED_TABLES = Symbol('defined-tables');
 function ensureDB(database_name) {
 	let db_tables = databases[database_name];
-	const databaseName = lowerCamelCase(database_name);
 	if (!db_tables) {
 		if (database_name === 'data')
 			// preserve the data tables objet
@@ -275,34 +274,19 @@ function ensureDB(database_name) {
 			});
 		else {
 			db_tables = databases[database_name] = Object.create(null);
-			if (databaseName !== database_name) {
-				Object.defineProperty(databases, databaseName, {
-					value: db_tables,
-					configurable: true, // no enum
-				});
-			}
 		}
 	}
 	if (!db_tables[DEFINED_TABLES] && defined_databases) {
 		const defined_tables = new Set(); // we create this so we can determine what was found in a reset and remove any removed dbs/tables
 		db_tables[DEFINED_TABLES] = defined_tables;
 		defined_databases.set(database_name, defined_tables);
-		defined_databases.set(databaseName, defined_tables);
 	}
 	return db_tables;
 }
 function setTable(tables, table_name, Table) {
 	tables[table_name] = Table;
-	const TableName = CamelCase(table_name);
-	// make the aliases non-enumerable
-	if (TableName !== table_name)
-		Object.defineProperty(tables, TableName, {
-			value: Table,
-			configurable: true,
-		});
 	const defined_tables = tables[DEFINED_TABLES];
 	if (defined_tables) {
-		defined_tables.add(TableName);
 		defined_tables.add(table_name);
 	}
 	return Table;
