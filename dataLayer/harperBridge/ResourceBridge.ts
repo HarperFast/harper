@@ -199,7 +199,7 @@ export class ResourceBridge extends LMDBBridge {
 		const created_time_prop = Table.createdTimeProperty;
 		if (!created_time_prop) {
 			throw new ClientError(
-				`Table must have a '__createdtime__' column or @creationDate timestamp defined to perform this operation`
+				`Table must have a '__createdtime__' attribute or @creationDate timestamp defined to perform this operation`
 			);
 		}
 
@@ -210,22 +210,45 @@ export class ResourceBridge extends LMDBBridge {
 		const deleted_ids = [];
 		const skipped_ids = [];
 		records_to_delete = Array.from(records_to_delete);
-		for (let i = 0, length = records_to_delete.length; i < length; i += DELETE_CHUNK) {
-			const chunk = records_to_delete.slice(i, i + DELETE_CHUNK);
-			const ids = [];
-			for (let x = 0, chunk_length = chunk.length; x < chunk_length; x++) {
-				ids.push(chunk[x][Table.primaryKey]);
-			}
 
-			const delete_res = await this.deleteRecords({
-				schema: delete_obj.schema,
-				table: delete_obj.table,
-				hash_values: ids,
-			});
-			deleted_ids.push(...delete_res.deleted_hashes);
-			skipped_ids.push(...delete_res.skipped_hashes);
-			await async_set_timeout(DELETE_PAUSE_MS);
+		let i = 0;
+		const records_length = records_to_delete.length;
+		for (const record of records_to_delete) {
+			const chunk = records_to_delete.slice(i, i + DELETE_CHUNK);
+			if (i % DELETE_CHUNK === 0 || records_length === i) {
+				const ids = [];
+				for (let x = 0, chunk_length = chunk.length; x < chunk_length; x++) {
+					ids.push(chunk[x][Table.primaryKey]);
+				}
+
+				const delete_res = await this.deleteRecords({
+					schema: delete_obj.schema,
+					table: delete_obj.table,
+					hash_values: ids,
+				});
+				deleted_ids.push(...delete_res.deleted_hashes);
+				skipped_ids.push(...delete_res.skipped_hashes);
+				await async_set_timeout(DELETE_PAUSE_MS);
+			}
+			i++;
 		}
+
+		// for (let i = 0, length = records_to_delete.length; i < length; i += DELETE_CHUNK) {
+		// 	const chunk = records_to_delete.slice(i, i + DELETE_CHUNK);
+		// 	const ids = [];
+		// 	for (let x = 0, chunk_length = chunk.length; x < chunk_length; x++) {
+		// 		ids.push(chunk[x][Table.primaryKey]);
+		// 	}
+		//
+		// 	const delete_res = await this.deleteRecords({
+		// 		schema: delete_obj.schema,
+		// 		table: delete_obj.table,
+		// 		hash_values: ids,
+		// 	});
+		// 	deleted_ids.push(...delete_res.deleted_hashes);
+		// 	skipped_ids.push(...delete_res.skipped_hashes);
+		// 	await async_set_timeout(DELETE_PAUSE_MS);
+		// }
 
 		return createDeleteResponse(deleted_ids, skipped_ids, undefined);
 	}
