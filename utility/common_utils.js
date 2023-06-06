@@ -511,7 +511,7 @@ function isClusterOperation(operation_name) {
 }
 
 /**
- * Checks the global hdb_schema for a schema and table
+ * Checks the global databases for a schema and table
  * @param schema_name
  * @param table_name
  * @returns string returns a thrown message if schema and or table does not exist
@@ -777,7 +777,8 @@ function autoCastBoolean(boolean) {
  * Gets a tables hash attribute from the global schema
  */
 function getTableHashAttribute(schema, table) {
-	return global.hdb_schema?.[schema]?.[table]?.hash_attribute;
+	const {getDatabases} = require('../resources/databases');
+	return getDatabases()[schema]?.[table]?.primaryKey;
 }
 
 /**
@@ -786,7 +787,8 @@ function getTableHashAttribute(schema, table) {
  * @returns {boolean} - returns true if schema exists
  */
 function doesSchemaExist(schema) {
-	return global?.hdb_schema?.[schema] !== undefined;
+	const {getDatabases} = require('../resources/databases');
+	return getDatabases()[schema] !== undefined;
 }
 
 /**
@@ -796,7 +798,8 @@ function doesSchemaExist(schema) {
  * @returns {boolean} - returns true if table exists
  */
 function doesTableExist(schema, table) {
-	return global?.hdb_schema?.[schema]?.[table] !== undefined;
+	const {getDatabases} = require('../resources/databases');
+	return getDatabases()[schema]?.[table] !== undefined;
 }
 
 /**
