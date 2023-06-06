@@ -952,18 +952,18 @@ function noop() {
 }
 function isEqual(a, b) {
 	let count = 0;
+	if ((a && typeof a) !== (b && typeof b)) return false;
 	for (const key in a) {
 		const valueA = a[key];
 		if (valueA === NOT_COPIED_YET) continue; // if it was not copied yet, it can't be different
 		const valueB = b[key];
-		if (valueA !== valueB) return false;
-		if (valueA && typeof valueA === 'object') {
+		if (valueA && typeof valueA === 'object' && valueB && typeof valueB === 'object') {
 			if (valueA instanceof Array) {
 				if (!isEqualArray(valueA, valueB)) return false;
 			} else {
 				if (!isEqual(valueA, valueB)) return false;
 			}
-		}
+		} else if (valueA !== valueB) return false;
 		count++;
 	}
 	return count === Object.keys(b).length;
@@ -973,14 +973,13 @@ function isEqualArray(a, b) {
 	for (let i = 0; i < a.length; i++) {
 		const valueA = a[i];
 		const valueB = b[i];
-		if (valueA !== valueB) return false;
-		if (valueA && typeof valueA === 'object') {
+		if (valueA && typeof valueA === 'object' && valueB && typeof valueB === 'object') {
 			if (valueA instanceof Array) {
 				if (!isEqualArray(valueA, valueB)) return false;
 			} else {
 				if (!isEqual(valueA, valueB)) return false;
 			}
-		}
+		} else if (valueA !== valueB) return false;
 	}
 	return true;
 }
