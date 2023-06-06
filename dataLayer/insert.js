@@ -208,21 +208,16 @@ async function upsertData(upsert_object) {
 		throw handleHDBError(new Error(), invalid_schema_table_msg, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	try {
-		let bridge_upsert_result = await harperBridge.upsertRecords(upsert_object);
+	let bridge_upsert_result = await harperBridge.upsertRecords(upsert_object);
 
-		return returnObject(
-			UPSERT_ACTION,
-			bridge_upsert_result.written_hashes,
-			upsert_object,
-			[],
-			bridge_upsert_result.new_attributes,
-			bridge_upsert_result.txn_time
-		);
-	} catch (err) {
-		const log_msg = `There was an error during an upsert op: ${err}`;
-		throw handleHDBError(err, null, null, log.ERR, log_msg);
-	}
+	return returnObject(
+		UPSERT_ACTION,
+		bridge_upsert_result.written_hashes,
+		upsert_object,
+		[],
+		bridge_upsert_result.new_attributes,
+		bridge_upsert_result.txn_time
+	);
 }
 
 /**

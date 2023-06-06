@@ -193,22 +193,31 @@ export class ResourceBridge extends LMDBBridge {
 	}
 	async deleteRecords(delete_obj) {
 		const Table = getDatabases()[delete_obj.schema][delete_obj.table];
-		return Table.transact(async (txn_table) => {
-			const ids = delete_obj.hash_values || delete_obj.records.map((record) => record[Table.primaryKey]);
-			const deleted = [];
-			const skipped = [];
-			for (const id of ids) {
-				if (await txn_table.delete(id)) deleted.push(id);
-				else skipped.push(id);
+		return Table.transact(
+			async (txn_table) => {
+				const ids = delete_obj.hash_values || delete_obj.records.map((record) => record[Table.primaryKey]);
+				const deleted = [];
+				const skipped = [];
+				for (const id of ids) {
+					if (await txn_table.delete(id)) deleted.push(id);
+					else skipped.push(id);
+				}
+				return createDeleteResponse(deleted, skipped, txn_table.txnTime);
+			},
+			{
+				user: delete_obj.hdb_user,
 			}
-			return createDeleteResponse(deleted, skipped, txn_table.txnTime);
-		});
+		);
 	}
 	/**
 	 * fetches records by their hash values and returns an Array of the results
 	 * @param {SearchByHashObject} search_object
 	 */
 	searchByHash(search_object) {
+		const validation_error = search_validator(search_object, 'hashes');
+		if (validation_error) {
+			throw validation_error;
+		}
 		return getRecords(search_object);
 	}
 
@@ -301,6 +310,9 @@ export class ResourceBridge extends LMDBBridge {
 async function* getRecords(search_object, return_key_value?) {
 	let select = search_object.get_attributes;
 	const table = getTable(search_object);
+	if (!table) {
+		throw new ClientError(`Table ${search_object.table} not found`);
+	}
 	let lazy;
 	if (select[0] === '*') select = table.attributes.map((attribute) => attribute.name);
 	else if (select.length < 3) lazy = true;
