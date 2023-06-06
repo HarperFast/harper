@@ -4,13 +4,11 @@ import { parser as makeParser, generate } from 'mqtt-packet';
 import { getSession, DurableSubscriptionsSession } from './DurableSubscriptionsSession';
 import { findAndValidateUser, getSuperUser } from '../security/user';
 import { serializeMessage, getDeserializer } from './serverHelpers/contentTypes';
-import { info } from '../utility/logging/harper_logger';
 import { recordAction } from '../resources/analytics';
 import { server } from '../server/Server';
-import { pack } from 'msgpackr';
 import { get } from '../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms';
-import { loggerWithTag, AuthAuditLog } from '../utility/logging/harper_logger.js';
+import { loggerWithTag, error as log_error, info } from '../utility/logging/harper_logger.js';
 const auth_event_log = loggerWithTag('auth-event');
 
 const AUTHORIZE_LOCAL = true;
@@ -144,7 +142,7 @@ function onSocket(socket, send, request, user, requireAuthentication) {
 								general_topic
 							);
 						} catch (error) {
-							console.warn(error);
+							log_error(error);
 							session.disconnect();
 						}
 					});
@@ -154,7 +152,14 @@ function onSocket(socket, send, request, user, requireAuthentication) {
 					const granted = [];
 					info('Received subscription request', packet.subscriptions);
 					for (const subscription of packet.subscriptions) {
-						granted.push((await session.addSubscription(subscription, subscription.qos >= 1)) || 0);
+						let granted_qos;
+						try {
+							granted_qos = (await session.addSubscription(subscription, subscription.qos >= 1)) || 0;
+						} catch (error) {
+							log_error(error);
+							granted_qos = 0x80; // failure
+						}
+						granted.push(granted_qos);
 					}
 					await session.committed;
 					info('Sending suback', packet.subscriptions[0].topic);

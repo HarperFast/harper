@@ -81,9 +81,12 @@ class SubscriptionsSession {
 			search = topic.slice(search_index);
 			path = topic.slice(0, search_index);
 		} else path = topic;
+		if (!path) throw new Error('No topic provided');
 		if (path.endsWith('+') || path.endsWith('#'))
 			// normalize wildcard
 			path = topic.slice(0, path.length - 1);
+		const levels = path.split('/').length;
+		if (levels > 2) throw new Error('Only two level topics (of the form "table/id") are supported');
 		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
 		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
 		if (existing_subscription) {
@@ -137,9 +140,15 @@ class SubscriptionsSession {
 		const { topic, retain, payload } = message;
 		message.data = data;
 		message.user = this.user;
-		return resources.call(topic, message, async (resource_access) => {
+		let resource_found;
+		const levels = topic.split('/').length;
+		if (levels > 2) throw new Error('Only two level topics (of the form "table/id") are supported');
+		const publish_result = resources.call(topic, message, async (resource_access) => {
+			resource_found = true;
 			return resource_access.publish(data);
 		});
+		if (!resource_found) throw new Error('There is no resource or table for the ${topic} topic');
+		return publish_result;
 	}
 	setListener(listener: (message) => any) {
 		this.listener = listener;

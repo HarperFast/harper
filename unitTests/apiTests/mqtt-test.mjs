@@ -128,7 +128,7 @@ describe('test MQTT connections and commands', () => {
 			callOperation({
 				"operation": "upsert",
 				"schema": "data",
-				"table": "simple_record",
+				"table": "SimpleRecord",
 				"records": [{
 					id: '77',
 					name: 'test record from operation'
