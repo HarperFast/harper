@@ -1,5 +1,5 @@
 import { databases, getDatabases, onNewTable } from '../../resources/databases';
-import { Resource, TRANSACTIONS_PROPERTY, USER_PROPERTY } from '../../resources/Resource';
+import { ID_PROPERTY, Resource, TRANSACTIONS_PROPERTY, USER_PROPERTY } from '../../resources/Resource';
 import { publishToStream } from './utility/natsUtils';
 import { SUBJECT_PREFIXES } from './utility/natsTerms';
 import { createNatsTableStreamName } from '../../security/cryptoHash';
@@ -78,7 +78,7 @@ export function setNATSReplicator(table_name, db_name, Table) {
 				this.getNATSTransaction(options).addWrite(db_name, {
 					operation: 'delete',
 					table: table_name,
-					id: this.id,
+					id: this[ID_PROPERTY],
 				});
 			}
 			publish(message, options) {

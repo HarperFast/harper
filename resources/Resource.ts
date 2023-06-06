@@ -98,6 +98,7 @@ export class Resource implements ResourceInterface {
 	static async get(identifier: string | number | object) {
 		if (typeof identifier === 'string' || typeof identifier === 'number') {
 			const resource = this.getResource(identifier, this);
+			this[TRANSACTIONS_PROPERTY];
 			await resource.loadRecord();
 			return resource.get();
 		} else {
