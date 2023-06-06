@@ -235,7 +235,7 @@ async function restartClustering() {
 		// Close the connection to the nats-server so that if stop/restart called from CLI process will exit.
 		if (called_from_cli) await nats_utils.closeConnection();
 	} else {
-		await postDummyNatsMsg();
+		//await postDummyNatsMsg();
 		await nats_config.generateNatsConfig(true);
 
 		if (pm2_mode) {
