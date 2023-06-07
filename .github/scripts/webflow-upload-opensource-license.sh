@@ -191,3 +191,4 @@ echo "${patch_data}" | \
     --header 'content-type: application/json' \
     --data @-
 
+[[ "${publish}" -eq "false" ]] && echo "${patch_data}"

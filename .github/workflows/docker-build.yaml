@@ -15,28 +15,30 @@ on:
         required: false
         type: string
         default: 'harperdb/harperdb'
-name: Docker Build
+name: "Docker Build"
 jobs:
   dockerBuild:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
     - uses: actions/checkout@v3
-    - name: "Setup Docker buildx"
-      uses: docker/setup-buildx-action@v2
     - name: "Get Latest License Files"
       run: .github/scripts/get-license-files.sh
-    - name: "Get harperdb/harperdb_opensource_license_generator"
+    - name: "Get HarperDB/harperdb_open_source_license_generator.git"
       uses: actions/checkout@v3
       with:
-        repository: harperdb/harperdb_opensource_license_generator
-        ssh-key: ${{ secrets.HDB_LICENSE_GENERATOR_RO }}
+        repository: "HarperDB/harperdb_open_source_license_generator.git"
+        path: "harperdb_open_source_license_generator"
+        ref: "master"
     - uses: actions/setup-node@v3
     - name: "Generate license file"
       env:
-        project_path: "${{ GITHUB_WORKSPACE }}"
-        output_file: "${{ GITHUB_WORKSPACE }}/utility/Docker/licenses/open-source-licenses-notices.md"
-      run: node harperdb_opensource_license_generator/index.js
+        project_path: "."
+        output_file: "utility/Docker/licenses/open-source-licenses-notices.md"
+        template_file: "harperdb_open_source_license_generator/template.txt"
+      run: npm install harperdb_open_source_license_generator/ && node harperdb_open_source_license_generator/index.js
+    - name: "Setup Docker buildx"
+      uses: docker/setup-buildx-action@v2
     - uses: actions/download-artifact@v3
       with:
         name: harperdb-${{ inputs.harperdbVersion }}.tgz
