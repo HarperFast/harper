@@ -25240,8 +25240,7 @@
 		},
 		{
 			"name": "5. NoSQL Role Testing",
-          "item": [],
-          "disabled-item": [
+            "item": [
 				{
 					"name": "Bulk Load Perms Tests",
 					"item": [
