@@ -102,15 +102,14 @@ export function makeTable(options) {
 			// define a source for retrieving invalidated entries for caching purposes
 			this.Source = Resource;
 			(async () => {
-				const writeUpdate = (event, resource) => {
+				const writeUpdate = async (event, first_resource, resource) => {
 					const value = event.value;
-					if (event.table) {
+					if (event.table && !resource) {
 						const Table = databases[database_name][event.table];
-						if (TableResource !== Table) {
-							const id = event.id || value[Table.primaryKey];
-							resource = resource.use(Table, id);
-						}
+						const id = event.id || value[Table.primaryKey];
+						resource = first_resource.use(Table).getResource(id, first_resource);
 					}
+					await resource.loadRecord(true);
 					switch (event.operation) {
 						case 'put':
 							return resource.#writeUpdate(value, { isNotification: true });
@@ -137,29 +136,33 @@ export function makeTable(options) {
 					if (subscription) {
 						for await (const event of subscription) {
 							try {
-								const first_record = event.operation === 'transaction' ? event.writes[0].value : event.value;
-								if (!first_record) {
+								const first_write = event.operation === 'transaction' ? event.writes[0].value : event.value;
+								if (!first_write) {
 									console.error('Bad subscription event');
 									continue;
 								}
-								const id = event.id || (typeof first_record === 'object' ? first_record[primary_key] : first_record);
-								const resource = new this(id, {
+								const id = first_write.id !== undefined ? first_write.id : first_write.value?.[primary_key];
+								const first_resource = new this(id, {
 									[CONTEXT_PROPERTY]: {
 										user: {
 											username: event.user,
 										},
 									},
 								});
-								const commit = resource.transact(() => {
-									resource[TRANSACTIONS_PROPERTY].timestamp = event.timestamp;
+								const commit = first_resource.transact((first_resource) => {
+									first_resource[TRANSACTIONS_PROPERTY].timestamp = event.timestamp;
 									if (event.operation === 'transaction') {
+										const promises = [];
+										let resource = first_resource;
 										for (const write of event.writes) {
-											writeUpdate(write, resource);
+											promises.push(writeUpdate(write, first_resource, resource));
+											resource = null;
 										}
+										return Promise.all(promises);
 									} else if (event.operation === 'define_table') {
 										// ensure table exists
 										table(event);
-									} else writeUpdate(event, resource);
+									} else writeUpdate(event, first_resource, first_resource);
 								});
 								if (event.onCommit) commit.then(event.onCommit);
 							} catch (error) {

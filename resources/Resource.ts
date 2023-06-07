@@ -18,6 +18,7 @@ export const SAVE_UPDATES_PROPERTY = Symbol('save-updates');
 export const RESOURCE_CACHE = Symbol('resource-cache');
 export const RECORD_PROPERTY = Symbol('stored-record');
 export const EXPLICIT_CHANGES_PROPERTY = Symbol.for('explicit-changes');
+export const USED_RESOURCES = Symbol('used-resources');
 
 /**
  * This is the main class that can be extended for any resource in HarperDB and provides the essential reusable
@@ -280,9 +281,16 @@ export class Resource implements ResourceInterface {
 	 * @param ResourceToUse
 	 */
 	use(ResourceToUse: typeof Resource, identifier: string | number) {
-		const Used = this.useTable(ResourceToUse.tableName, ResourceToUse.schemaName);
-		if (identifier == null) return Used;
-		return new Used(identifier, this[CONTEXT_PROPERTY]);
+		let used_resources = this[USED_RESOURCES];
+		if (used_resources) {
+			const used = used_resources.find((used) => used === Resource || ResourceToUse.isPrototypeOf(used));
+			if (used) return used;
+		} else this[USED_RESOURCES] = used_resources = [];
+		const txn_resource = ResourceToUse.deriveWithTransactions(this[TRANSACTIONS_PROPERTY], this[CONTEXT_PROPERTY]);
+		used_resources.push(txn_resource);
+		txn_resource[USED_RESOURCES] = used_resources;
+		if (identifier) return txn_resource.get(identifier);
+		return txn_resource;
 	}
 	update(keyOrRecord) {
 		throw new Error('Not implemented');
@@ -319,21 +327,23 @@ export class Resource implements ResourceInterface {
 		return response;
 	}
 	static set transaction(t) {
-		debugger;
 		throw new Error('Can not set transaction on base Resource class');
 	}
-	static transact(callback, options?) {
-		if (this[TRANSACTIONS_PROPERTY]) return callback(this);
+	static deriveWithTransactions(transactions, options) {
 		const name = this.name + ' (txn)';
-		const transactions = [];
-		transactions.timestamp = options?.timestamp || getNextMonotonicTime();
-
-		const txn_resource = class extends this {
+		return class extends this {
 			// @ts-ignore
 			static name = name;
 			static [TRANSACTIONS_PROPERTY] = transactions;
 			static [CONTEXT_PROPERTY] = options;
 		};
+	}
+	static transact(callback, options?) {
+		if (this[TRANSACTIONS_PROPERTY]) return callback(this);
+		const transactions = [];
+		transactions.timestamp = options?.timestamp || getNextMonotonicTime();
+
+		const txn_resource = this.deriveWithTransactions(transactions, options);
 		try {
 			const result = callback(txn_resource);
 			if (result?.then)

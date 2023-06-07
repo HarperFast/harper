@@ -168,7 +168,7 @@ async function descTable(describe_table_object, attr_perms) {
 	table_result.clustering_stream_name = crypto_hash.createNatsTableStreamName(table_result.schema, table_result.name);
 
 	try {
-		table_result.record_count = table_obj.primaryStore.getStats().entryCount;
+		table_result.record_count = Math.max(table_obj.primaryStore.getStats().entryCount - 1, 0);
 		let audit_store = table_obj.auditStore;
 		if (audit_store) {
 			for (let key of audit_store.getKeys({ reverse: true, limit: 1 })) {
