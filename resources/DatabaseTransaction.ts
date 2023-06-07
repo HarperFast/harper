@@ -3,6 +3,7 @@ import { EXPLICIT_CHANGES_PROPERTY } from './Resource';
 import { UPDATES_PROPERTY } from '../utility/hdbTerms';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 
+export const COMPLETION = Symbol('completion');
 const MAX_RETRIES = 10;
 export class DatabaseTransaction implements Transaction {
 	conditions = []; // the set of reads that were made in this txn, that need to be verified to commit the writes
@@ -53,21 +54,6 @@ export class DatabaseTransaction implements Transaction {
 		let resolution,
 			resource_resolutions,
 			completions = [];
-		if (retries === 0) {
-			for (const resource of this.updatingResources || []) {
-				// eventually we need CRDT handling for changes
-				let resource_resolution;
-				// TODO: We don't want to go through the public put() method, but still want validation
-				if (resource[EXPLICIT_CHANGES_PROPERTY]) {
-					const updating_record = Object.assign({}, resource[EXPLICIT_CHANGES_PROPERTY], resource);
-					resource_resolution = resource.put(updating_record, { noCopy: true, onlyChanges: true });
-				} else resource_resolution = resource.put(resource, { noCopy: true });
-				if (resource_resolution?.then) {
-					if (!resource_resolutions) resource_resolutions = [];
-					resource_resolutions.push(resource_resolution);
-				}
-			}
-		}
 		let write_index = 0;
 		let last_store;
 		let txn_time;
@@ -90,10 +76,9 @@ export class DatabaseTransaction implements Transaction {
 			} else {
 				for (const write of this.writes) {
 					const audit_record = write.commit(retries);
-					if (audit_record.completion) {
+					if (audit_record[COMPLETION]) {
 						if (!completions) completions = [];
-						completions.push(audit_record.completion);
-						audit_record.completion = undefined;
+						completions.push(audit_record[COMPLETION]);
 					}
 					last_store = write.store;
 					if (this.auditStore) {

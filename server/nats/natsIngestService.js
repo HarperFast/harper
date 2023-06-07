@@ -2,7 +2,7 @@
 
 const { toJsMsg } = require('nats');
 const { decode } = require('msgpackr');
-const { isMainThread, parentPort } = require('worker_threads');
+const { isMainThread, parentPort, threadId } = require('worker_threads');
 const nats_utils = require('./utility/natsUtils');
 const nats_terms = require('./utility/natsTerms');
 const hdb_terms = require('../../utility/hdbTerms');
@@ -148,20 +148,23 @@ async function messageProcessor(msg) {
 			subscription.send({
 				operation: convertOperation(operation),
 				value: records[0],
+				id: ids?.[0],
 				timestamp,
 				table: table_name,
 				onCommit,
 				user,
 			});
 		else {
-			let writes = records.map((record) => ({
+			let writes = records.map((record, i) => ({
 				operation: convertOperation(operation),
 				value: record,
+				id: ids?.[i],
 			}));
 			while (next_write) {
 				writes.push({
 					operation: next_write.operation,
 					value: next_write.record,
+					id: next_write.id,
 					table: next_write.table,
 				});
 				next_write = next_write.next;

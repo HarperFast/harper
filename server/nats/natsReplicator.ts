@@ -85,6 +85,7 @@ export function setNATSReplicator(table_name, db_name, Table) {
 				this.getNATSTransaction(options).addWrite(db_name, {
 					operation: 'publish',
 					table: table_name,
+					id: this[ID_PROPERTY],
 					record: message,
 				});
 			}
@@ -129,6 +130,7 @@ class NATSTransaction {
 		const promises = [];
 		for (const [db, writes] of this.writes_by_db) {
 			const records = [];
+			const ids = [];
 			let transaction_event;
 			let last_write_event;
 			for (const write of writes) {
@@ -139,21 +141,29 @@ class NATSTransaction {
 						operation,
 						schema: db,
 						table,
-						[operation === 'delete' ? 'hash_values' : 'records']: records,
 						__origin: {
 							user: this.user?.username,
 							timestamp: this.transaction.timestamp,
 							node_name,
 						},
 					};
+					if (operation === 'delete') transaction_event.hash_values = ids;
+					else if (operation === 'publish') {
+						transaction_event.hash_values = ids;
+						transaction_event.records = records;
+					} else {
+						transaction_event.records = records;
+					}
 				}
 				if (transaction_event.table === table && transaction_event.operation === operation) {
-					records.push(write.record || write.id);
+					records.push(write.record);
+					ids.push(write.id);
 				} else {
 					last_write_event = last_write_event.next = {
 						operation,
 						table,
-						record: write.record || write.id,
+						id: write.id,
+						record: write.record,
 					};
 				}
 			}

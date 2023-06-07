@@ -16,7 +16,7 @@ import {
 	NOT_COPIED_YET,
 	EXPLICIT_CHANGES_PROPERTY,
 } from './Resource';
-import { DatabaseTransaction, immediateTransaction } from './DatabaseTransaction';
+import { COMPLETION, DatabaseTransaction, immediateTransaction } from './DatabaseTransaction';
 import * as lmdb_terms from '../utility/lmdb/terms';
 import * as env_mngr from '../utility/environment/environmentManager';
 import { addSubscription, listenToCommits } from './transactionBroadcast';
@@ -32,9 +32,10 @@ env_mngr.initSync();
 const b = Buffer.alloc(1);
 const LMDB_PREFETCH_WRITES = env_mngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 
-const DB_TXN_PROPERTY = Symbol('dbTxn');
+const DB_TXN_PROPERTY = Symbol('db-txn');
 const VERSION_PROPERTY = Symbol.for('version');
 const INCREMENTAL_UPDATE = Symbol.for('incremental-update');
+const SOURCE_PROPERTY = Symbol('source-resource');
 const LAZY_PROPERTY_ACCESS = { lazy: true };
 
 export interface Table {
@@ -112,7 +113,7 @@ export function makeTable(options) {
 					}
 					switch (event.operation) {
 						case 'put':
-							return resource.#writeUpdate(value);
+							return resource.#writeUpdate(value, { isNotification: true });
 						case 'delete':
 							return resource.#writeDelete();
 						case 'publish':
@@ -135,31 +136,36 @@ export function makeTable(options) {
 					});
 					if (subscription) {
 						for await (const event of subscription) {
-							const first_record = event.operation === 'transaction' ? event.writes[0].value : event.value;
-							if (!first_record) {
-								console.error('Bad subscription event');
-								continue;
-							}
-							const id = typeof first_record === 'object' ? first_record[primary_key] : first_record;
-							const resource = new this(id, {
-								[CONTEXT_PROPERTY]: {
-									user: {
-										username: event.user,
+							try {
+								const first_record = event.operation === 'transaction' ? event.writes[0].value : event.value;
+								if (!first_record) {
+									console.error('Bad subscription event');
+									continue;
+								}
+								const id = event.id || (typeof first_record === 'object' ? first_record[primary_key] : first_record);
+								if (!id) return console.error('No id for record');
+								const resource = new this(id, {
+									[CONTEXT_PROPERTY]: {
+										user: {
+											username: event.user,
+										},
 									},
-								},
-							});
-							const commit = resource.transact(() => {
-								resource[TRANSACTIONS_PROPERTY].timestamp = event.timestamp;
-								if (event.operation === 'transaction') {
-									for (const write of event.writes) {
-										writeUpdate(write, resource);
-									}
-								} else if (event.operation === 'define_table') {
-									// ensure table exists
-									table(event);
-								} else writeUpdate(event, resource);
-							});
-							if (event.onCommit) commit.then(event.onCommit);
+								});
+								const commit = resource.transact(() => {
+									resource[TRANSACTIONS_PROPERTY].timestamp = event.timestamp;
+									if (event.operation === 'transaction') {
+										for (const write of event.writes) {
+											writeUpdate(write, resource);
+										}
+									} else if (event.operation === 'define_table') {
+										// ensure table exists
+										table(event);
+									} else writeUpdate(event, resource);
+								});
+								if (event.onCommit) commit.then(event.onCommit);
+							} catch (error) {
+								console.error('error in subscription handler', error);
+							}
 						}
 					}
 				} catch (error) {
@@ -444,16 +450,15 @@ export function makeTable(options) {
 			if (!env_txn) throw new Error('Can not update a table resource outside of a transaction');
 			// record in the list of updating records so it can be written to the database when we commit
 			if (arg === false) {
-				const existing_index = env_txn.updatingResources.indexOf(this);
-				if (existing_index > -1) env_txn.updatingResources.splice(existing_index, 1);
+				// TODO: Remove from transaction
 				return this;
 			}
-			if (!env_txn.updatingResources) env_txn.updatingResources = [this];
-			else if (env_txn.updatingResources.indexOf(this) === -1) env_txn.updatingResources.push(this);
-			this.#writeUpdate(this);
+
 			if (typeof arg === 'object' && arg) {
-				Object.assign(this, arg);
-			}
+				arg[primary_key] = this[ID_PROPERTY]; // ensure that the id is in the record
+				this.#writeUpdate(arg);
+				//Object.assign(this, arg);
+			} else this.#writeUpdate(this);
 			return this;
 		}
 
@@ -499,16 +504,11 @@ export function makeTable(options) {
 		 */
 		async put(record, options?): Promise<void> {
 			record[primary_key] = this[ID_PROPERTY]; // ensure that the id is in the record
-			if (this.constructor.Source?.prototype.put) {
-				const source = (this.source = this.constructor.Source.getResource(this[ID_PROPERTY], this));
-				await source.loadRecord();
-				await source.put(record, options);
-			}
 			this.#writeUpdate(record);
 			// TODO: only do this if we are in a custom function
 			if (!options?.noCopy) copyRecord(record, this);
 		}
-		#writeUpdate(record) {
+		#writeUpdate(record, options?) {
 			const env_txn = this[DB_TXN_PROPERTY] || immediateTransaction;
 
 			// use optimistic locking to only commit if the existing record state still holds true.
@@ -526,6 +526,7 @@ export function makeTable(options) {
 					this.validate(record);
 				},
 				commit: (retry) => {
+					let completion;
 					if (retry) {
 						if (is_unchanged) return;
 						const existing_entry = primary_store.getEntry(this[ID_PROPERTY]);
@@ -535,16 +536,25 @@ export function makeTable(options) {
 						if (record[EXPLICIT_CHANGES_PROPERTY]) {
 							record = Object.assign({}, record, record[EXPLICIT_CHANGES_PROPERTY]);
 						}
-						if (record[INCREMENTAL_UPDATE]) {
-							is_unchanged = withoutCopying(() => isEqual(this, existing_record));
-							if (is_unchanged) return;
+						if (!options?.isNotification) {
+							if (record[INCREMENTAL_UPDATE]) {
+								is_unchanged = withoutCopying(() => isEqual(this, existing_record));
+								if (is_unchanged) return;
+							}
+							if (TableResource.updatedTimeProperty) record[TableResource.updatedTimeProperty] = txn_time;
+							if (TableResource.createdTimeProperty) {
+								if (existing_record)
+									record[TableResource.createdTimeProperty] = existing_record[TableResource.createdTimeProperty];
+								else record[TableResource.createdTimeProperty] = txn_time;
+							}
+							if (this.constructor.Source?.prototype.put) {
+								const source = (this[SOURCE_PROPERTY] = this.constructor.Source.getResource(this[ID_PROPERTY], this));
+								completion = source.loadRecord();
+								if (completion?.then) completion = completion.then(() => source.put(record, options));
+								else completion = source.put(record, options);
+							}
 						}
-						if (TableResource.updatedTimeProperty) record[TableResource.updatedTimeProperty] = txn_time;
-						if (TableResource.createdTimeProperty) {
-							if (existing_record)
-								record[TableResource.createdTimeProperty] = existing_record[TableResource.createdTimeProperty];
-							else record[TableResource.createdTimeProperty] = txn_time;
-						}
+
 						const had_existing = existing_record;
 						if (!existing_record) {
 							existing_record = {};
@@ -571,6 +581,7 @@ export function makeTable(options) {
 						// return the audit record that should be recorded
 						operation: 'put',
 						value: record,
+						[COMPLETION]: completion,
 					};
 				},
 			});
@@ -579,7 +590,7 @@ export function makeTable(options) {
 		async delete(options): Promise<boolean> {
 			if (!this[RECORD_PROPERTY]) return false;
 			if (this.constructor.Source?.prototype.delete) {
-				const source = (this.source = this.constructor.Source.getResource(this[ID_PROPERTY], this));
+				const source = (this[SOURCE_PROPERTY] = this.constructor.Source.getResource(this[ID_PROPERTY], this));
 				await source.loadRecord();
 				await source.delete(options);
 			}
@@ -795,9 +806,9 @@ export function makeTable(options) {
 		 * @param options
 		 */
 		async publish(message, options) {
-			if (!this.source && this.constructor.Source?.prototype.publish) {
-				this.source = this.constructor.Source.getResource(this[ID_PROPERTY], this);
-				await this.source.publish(message, { target: this });
+			if (!this[SOURCE_PROPERTY] && this.constructor.Source?.prototype.publish) {
+				this[SOURCE_PROPERTY] = this.constructor.Source.getResource(this[ID_PROPERTY], this);
+				await this[SOURCE_PROPERTY].publish(message, { target: this });
 			}
 			this.#writePublish(message);
 		}
