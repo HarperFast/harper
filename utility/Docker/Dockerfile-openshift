@@ -20,7 +20,7 @@ LABEL release=${HARPERDB_VERSION}
 LABEL maintainer="support@harperdb.io"
 LABEL summary="${SUMMARY}"
 LABEL description="${DESCRIPTION}"
-LABEL help="https://docs.harperdb.io/docs/"
+LABEL help="https://docs.harperdb.io/"
 LABEL url="https://hub.docker.com/r/harperdb/harperdb-openshift"
 LABEL usage="https://hub.docker.com/r/harperdb/harperdb-openshift"
 

@@ -26,6 +26,17 @@ jobs:
       uses: docker/setup-buildx-action@v2
     - name: "Get Latest License Files"
       run: .github/scripts/get-license-files.sh
+    - name: "Get harperdb/harperdb_opensource_license_generator"
+      uses: actions/checkout@v3
+      with:
+        repository: harperdb/harperdb_opensource_license_generator
+        ssh-key: ${{ secrets.HDB_LICENSE_GENERATOR_RO }}
+    - uses: actions/setup-node@v3
+    - name: "Generate license file"
+      env:
+        project_path: "${{ GITHUB_WORKSPACE }}"
+        output_file: "${{ GITHUB_WORKSPACE }}/utility/Docker/licenses/open-source-licenses-notices.md"
+      run: node harperdb_opensource_license_generator/index.js
     - uses: actions/download-artifact@v3
       with:
         name: harperdb-${{ inputs.harperdbVersion }}.tgz

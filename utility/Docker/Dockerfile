@@ -12,16 +12,16 @@ ENV SUMMARY="HarperDB is a turn-key solution for the collection, distribution, a
 ENV DESCRIPTION="HarperDB is a turn-key solution for the collection, distribution, and analysis of data throughout your organization. Projects that have historically taken months (or even years) of consulting, configuration, and custom development can be completed in days or weeks with HarperDB."
 
 # useful metadata
-LABEL name="harperdb/harperdb-openshift"
+LABEL name="harperdb/harperdb"
 LABEL vendor="HarperDB"
 LABEL version=${HARPERDB_VERSION}
 LABEL release=${HARPERDB_VERSION}
 LABEL maintainer="support@harperdb.io"
 LABEL summary="${SUMMARY}"
 LABEL description="${DESCRIPTION}"
-LABEL help="https://docs.harperdb.io/docs/"
-LABEL url="https://hub.docker.com/r/harperdb/harperdb-openshift"
-LABEL usage="https://hub.docker.com/r/harperdb/harperdb-openshift"
+LABEL help="https://docs.harperdb.io/"
+LABEL url="https://hub.docker.com/r/harperdb/harperdb"
+LABEL usage="https://hub.docker.com/r/harperdb/harperdb"
 
 #Expose HarperDB ports
 EXPOSE 9925

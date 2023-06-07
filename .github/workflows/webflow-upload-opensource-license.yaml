@@ -1,0 +1,40 @@
+on:
+  push:
+    branches:
+      - main
+      - release_*
+    inputs:
+      publish:
+        required: true
+        type: string
+        default: true
+  workflow_call:
+    inputs:
+      publish:
+        required: true
+        type: string
+        default: false
+name: "Webflow - Update Open Source Licenses Page"
+jobs:
+  generate and upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v2
+      - name: "Get harperdb/harperdb_opensource_license_generator"
+        uses: actions/checkout@v3
+        with:
+          repository: harperdb/harperdb_opensource_license_generator
+          ssh-key: ${{ secrets.HDB_LICENSE_GENERATOR_RO }}
+      - uses: actions/setup-node@v3
+      - name: "Generate license file"
+        env:
+          project_path: "${{ GITHUB_WORKSPACE }}"
+          output_file: "${{ GITHUB_WORKSPACE }}/license.md"
+        run: node harperdb_opensource_license_generator/index.js
+      - name: "Get Latest License Files"
+        env:
+          PUBLISH: "${{ input.publish }}"
+          LICENSE_FILE: "${{ GITHUB_WORKSPACE }}/license.md"
+          TOKEN: "${{ secrets.webflow_api_token }}"
+        run: .github/scripts/webflow-upload-opensource-license.sh

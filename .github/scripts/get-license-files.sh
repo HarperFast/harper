@@ -42,7 +42,7 @@ cp LICENSE ${LICENSES_DIR}/end-user-license-agreement.md
 # the following can be scraped from our website
 docs=(
   terms-of-use
-  open-source-licenses-notices
+#  open-source-licenses-notices < now created in gha
 )
 
 for doc in ${docs[@]}; do
