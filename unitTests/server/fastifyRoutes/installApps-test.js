@@ -92,6 +92,7 @@ describe('Test installApps module', () => {
 
 	after(() => {
 		sandbox.restore();
+		env_mgr.setProperty('apps', undefined);
 	});
 
 	it('Test if no apps installed all apps are installed', async () => {
