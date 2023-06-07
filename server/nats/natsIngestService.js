@@ -187,13 +187,18 @@ async function messageProcessor(msg) {
 				user,
 			});
 		}
-		// echo the message to any other nodes
-		/*publishToStream(
-			msg.subject.split('.').slice(0, -1).join('.'), // remove the node name
-			crypto_hash.createNatsTableStreamName(database_name, table_name),
-			js_msg.headers,
-			js_msg.data
-		); // use the already-encoded message*/
+
+		if (env_mgr.get(terms.CONFIG_PARAMS.CLUSTERING_REPUBLISHMESSAGES) !== false) {
+			// echo the message to any other nodes
+			// use the already-encoded message
+			publishToStream(
+				msg.subject.split('.').slice(0, -1).join('.'), // remove the node name
+				crypto_hash.createNatsTableStreamName(database_name, table_name),
+				js_msg.headers,
+				js_msg.data
+			);
+		}
+
 		// onCommit is not being called, but not sure if we really need to do this
 		// await completion;
 	} catch (e) {
