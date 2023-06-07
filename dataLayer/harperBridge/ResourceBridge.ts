@@ -2,22 +2,17 @@
 import LMDBBridge from './lmdbBridge/LMDBBridge';
 import search_validator from '../../validation/searchValidator';
 import { handleHDBError, ClientError, hdb_errors } from '../../utility/errors/hdbError';
-import { CONTEXT_PROPERTY, Resource, USER_PROPERTY } from '../../resources/Resource';
 import { table, getDatabases, database, dropDatabase } from '../../resources/databases';
 import insertUpdateValidate from './bridgeUtility/insertUpdateValidate';
 import lmdbProcessRows from './lmdbBridge/lmdbUtility/lmdbProcessRows';
-import * as write_transaction from './lmdbBridge/lmdbUtility/lmdbWriteTransaction';
-import * as logger from '../../utility/logging/harper_logger';
 import SearchObject from '../SearchObject';
 import {
 	OPERATIONS_ENUM,
 	VALUE_SEARCH_COMPARATORS,
 	VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP,
 } from '../../utility/hdbTerms';
-import { SEARCH_TYPES } from '../../utility/lmdb/terms';
 import * as signalling from '../../utility/signalling';
 import { SchemaEventMsg } from '../../server/threads/itc';
-import { async_set_timeout } from '../../utility/common_utils';
 import { async_set_timeout } from '../../utility/common_utils';
 
 const { HDB_ERROR_MSGS } = hdb_errors;
