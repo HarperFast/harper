@@ -643,7 +643,7 @@ describe('Test natsUtils module', () => {
 			expect(wq_stream.config.sources[0].external.api).to.equal('$JS.unit_test_node.API');
 			expect(wq_stream.config.sources[0].external.deliver).to.equal('');
 			expect(wq_stream.config.sources[0].opt_start_time).to.not.be.undefined;
-			expect(wq_stream.config.sources[0].filter_subject).to.equal('txn.>');
+			expect(wq_stream.config.sources[0].filter_subject).to.equal('txn.devTest.Chicken1.>');
 
 			await jsm.consumers.delete('__HARPERDB_WORK_QUEUE__', 'HDB_WORK_QUEUE');
 			await nats_utils.deleteLocalStream('__HARPERDB_WORK_QUEUE__');
