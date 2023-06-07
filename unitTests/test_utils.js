@@ -325,7 +325,7 @@ function setGlobalSchema(hash_attribute, schema, table, attributes_keys) {
 	const table_id = uuid();
 	let databases = getDatabases();
 	if (!databases[schema]) databases[schema] = {};
-	databases[schema][table] = { attributes };
+	databases[schema][table] = { attributes, primaryKey: hash_attribute };
 	if (global.hdb_schema === undefined) {
 		global.hdb_schema = {
 			[schema]: {
