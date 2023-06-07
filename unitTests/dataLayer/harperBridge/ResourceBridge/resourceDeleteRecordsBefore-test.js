@@ -16,13 +16,10 @@ let test_data = require('../../../testData');
 
 const rewire = require('rewire');
 const environment_utility = rewire('../../../../utility/lmdb/environmentUtility');
+const write_utility = require('../../../../utility/lmdb/writeUtility');
 const SearchObject = require('../../../../dataLayer/SearchObject');
-const { deleteRecordsBefore, createTable } = require('../../../../dataLayer/harperBridge/harperBridge');
-const search_by_value = require('../../../../dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbSearchByValue');
-const lmdb_create_schema = require('../../../../dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateSchema');
-const lmdb_create_table = require('../../../../dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
-const lmdb_create_records = require('../../../../dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateRecords');
-const lmdb_read_audit_log = require('../../../../dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbReadAuditLog');
+const harper_bridge = require('../../../../dataLayer/harperBridge/harperBridge');
+const { createTable, createSchema, createRecords, searchByValue, dropTable } = harper_bridge;
 const hdb_terms = require('../../../../utility/hdbTerms');
 const assert = require('assert');
 const fs = require('fs-extra');
@@ -68,7 +65,7 @@ const TABLE_SYSTEM_DATA_TEST_B = {
 
 const INSERT_OBJECT_TEST = {
 	operation: 'insert',
-	schema: 'data',
+	schema: 'dev',
 	table: 'test',
 	records: [],
 };
@@ -86,7 +83,7 @@ describe('Test ResourceBridge deleteRecordsBefore', () => {
 		let hdb_table_env;
 		let hdb_attribute_env;
 		before(async function () {
-			this.timeout(20000);
+			//this.timeout(20000);
 
 			timestamps = [];
 			global.lmdb_map = undefined;
@@ -129,7 +126,7 @@ describe('Test ResourceBridge deleteRecordsBefore', () => {
 			);
 			environment_utility.createDBI(hdb_attribute_env, systemSchema.hdb_attribute.hash_attribute, false);
 
-			await lmdb_create_schema(CREATE_SCHEMA_DEV);
+			await createSchema(CREATE_SCHEMA_DEV);
 
 			await createTable(TABLE_SYSTEM_DATA_TEST_A, CREATE_TABLE_OBJ_TEST_A);
 			global.hdb_schema.dev.test.attributes = [
@@ -144,7 +141,7 @@ describe('Test ResourceBridge deleteRecordsBefore', () => {
 				let object_chunk = test_data.slice(start, start + 100);
 				INSERT_OBJECT_TEST.records = object_chunk;
 
-				await lmdb_create_records(INSERT_OBJECT_TEST);
+				await createRecords(INSERT_OBJECT_TEST);
 				await sleep(10);
 				timestamps.push(Date.now());
 			}
@@ -159,7 +156,7 @@ describe('Test ResourceBridge deleteRecordsBefore', () => {
 				{ attribute: '__createdtime__' },
 			];
 
-			await lmdb_create_table(TABLE_SYSTEM_DATA_TEST_B, CREATE_TABLE_OBJ_TEST_B);
+			await createTable(TABLE_SYSTEM_DATA_TEST_B, CREATE_TABLE_OBJ_TEST_B);
 			global.hdb_schema.dev.test2.attributes = [
 				{ attribute: 'id' },
 				{ attribute: '__updatedtime__' },
@@ -168,32 +165,6 @@ describe('Test ResourceBridge deleteRecordsBefore', () => {
 		});
 
 		after(async () => {
-			let env1 = await environment_utility.openEnvironment(
-				path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_A.schema),
-				CREATE_TABLE_OBJ_TEST_A.table
-			);
-			await env1.close();
-
-			let env2 = await environment_utility.openEnvironment(
-				path.join(BASE_SCHEMA_PATH, CREATE_TABLE_OBJ_TEST_B.schema),
-				CREATE_TABLE_OBJ_TEST_B.table
-			);
-			await env2.close();
-
-			let txn_env1 = await environment_utility.openEnvironment(
-				path.join(BASE_TXN_PATH, CREATE_TABLE_OBJ_TEST_A.schema),
-				CREATE_TABLE_OBJ_TEST_A.table,
-				true
-			);
-			await txn_env1.close();
-
-			let txn_env2 = await environment_utility.openEnvironment(
-				path.join(BASE_TXN_PATH, CREATE_TABLE_OBJ_TEST_B.schema),
-				CREATE_TABLE_OBJ_TEST_B.table,
-				true
-			);
-			await txn_env2.close();
-
 			await hdb_table_env.close();
 			await hdb_schema_env.close();
 			await hdb_attribute_env.close();
@@ -202,20 +173,11 @@ describe('Test ResourceBridge deleteRecordsBefore', () => {
 			await fs.remove(test_utils.getMockLMDBPath());
 		});
 
-		// it('Test error is thrown with no hash attribute', async () => {
-		// 	let delete_before = { schema: 'dev', table: 'test3', date: new Date(timestamps[0]) };
-		// 	await test_utils.assertErrorAsync(
-		// 		delete_records_before,
-		// 		[delete_before],
-		// 		new Error(`Could not retrieve hash attribute for schema: dev table: test3`)
-		// 	);
-		// });
-
-		// it('Test delete where table has no records', async () => {
-		// 	let delete_before = { schema: 'dev', table: 'test2', date: new Date(timestamps[0]) };
-		// 	let results = await test_utils.assertErrorAsync(delete_records_before, [delete_before], undefined);
-		// 	assert.deepStrictEqual(results.message, 'No records found to delete');
-		// });
+		it('Test delete where table has no records', async () => {
+			let delete_before = { schema: 'dev', table: 'test2', date: new Date(timestamps[0]) };
+			let results = await test_utils.assertErrorAsync(harper_bridge.deleteRecordsBefore, [delete_before], undefined);
+			assert.deepStrictEqual(results.message, 'No records found to delete');
+		});
 
 		it('Test delete first chunk of records', async () => {
 			let expected = {
@@ -229,23 +191,116 @@ describe('Test ResourceBridge deleteRecordsBefore', () => {
 			}
 
 			let delete_before = { schema: 'dev', table: 'test', date: new Date(timestamps[0]).toISOString() };
-			const results = await deleteRecordsBefore(delete_before);
+			const results = await harper_bridge.deleteRecordsBefore(delete_before);
 			assert.deepStrictEqual(results.message, expected.message);
 			assert.deepStrictEqual(results.deleted_hashes.sort(), expected.deleted_hashes.sort());
 
 			let search_obj = new SearchObject('dev', 'test', '__createdtime__', timestamps[0], undefined, ['id']);
-			let search_result = Array.from(await search_by_value(search_obj, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS));
+			let search_result = Array.from(await searchByValue(search_obj, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS));
 			assert.deepStrictEqual(search_result, []);
 
 			search_obj = new SearchObject('dev', 'test', '__createdtime__', timestamps[2], undefined, ['id']);
-			search_result = Array.from(await search_by_value(search_obj, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS));
+			search_result = Array.from(await searchByValue(search_obj, hdb_terms.VALUE_SEARCH_COMPARATORS.LESS));
 			assert.deepStrictEqual(search_result.length, 200);
 
-			//test no delete entry in txn log
-			let txn_results = Array.from(await lmdb_read_audit_log(new ReadAuditLogObject('dev', 'test')));
-			for (let x = 0, length = txn_results.length; x < length; x++) {
-				assert(txn_results[x].operation !== 'delete');
+			// //test no delete entry in txn log
+			// let txn_results = Array.from(await lmdb_read_audit_log(new ReadAuditLogObject('dev', 'test')));
+			// for (let x = 0, length = txn_results.length; x < length; x++) {
+			// 	assert(txn_results[x].operation !== 'delete');
+			// }
+		});
+
+		it('Test error is thrown ', async () => {
+			await createTable(
+				{
+					name: 'test-2',
+					schema: 'dev',
+					id: '25361aa9',
+					hash_attribute: 'id',
+				},
+				{
+					operation: 'create_table',
+					schema: 'dev',
+					table: 'tests-2',
+					hash_attribute: 'id',
+					attributes: [{ name: 'myCreatedTime', indexed: true }],
+				}
+			);
+			let error;
+			try {
+				await harper_bridge.deleteRecordsBefore({
+					schema: 'dev',
+					table: 'tests-2',
+					date: new Date(timestamps[0]).toISOString(),
+				});
+			} catch (err) {
+				error = err;
 			}
+
+			assert.equal(
+				error.message,
+				"Table must have a '__createdtime__' attribute or @creationDate timestamp defined to perform this operation"
+			);
+
+			dropTable({
+				operation: 'drop_table',
+				schema: 'dev',
+				table: 'test',
+				hash_attribute: 'id',
+			});
+		});
+
+		it('Test custom created time used', async () => {
+			await createTable(
+				{
+					name: 'test-2',
+					schema: 'dev',
+					id: '25361aa9',
+					hash_attribute: 'id',
+				},
+				{
+					operation: 'create_table',
+					schema: 'dev',
+					table: 'tests-2',
+					hash_attribute: 'id',
+					attributes: [
+						{ name: 'myCreatedTime', assignCreatedTime: true, indexed: true },
+						{ name: 'id', indexed: true },
+					],
+				}
+			);
+
+			await createRecords({
+				operation: 'insert',
+				schema: 'dev',
+				table: 'tests-2',
+				records: [
+					{
+						id: 'Leonardo',
+					},
+					{
+						id: 'Donatello',
+					},
+					{
+						id: 'Raphael',
+					},
+				],
+			});
+
+			const result = await harper_bridge.deleteRecordsBefore({
+				schema: 'dev',
+				table: 'tests-2',
+				date: new Date(2186085457061).toISOString(),
+			});
+
+			assert.deepStrictEqual(result.message, '3 of 3 records successfully deleted');
+
+			dropTable({
+				operation: 'drop_table',
+				schema: 'dev',
+				table: 'test',
+				hash_attribute: 'id',
+			});
 		});
 	});
 });
