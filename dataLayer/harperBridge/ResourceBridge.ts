@@ -14,8 +14,10 @@ import {
 	VALUE_SEARCH_COMPARATORS,
 	VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP,
 } from '../../utility/hdbTerms';
+import { SEARCH_TYPES } from '../../utility/lmdb/terms';
 import * as signalling from '../../utility/signalling';
 import { SchemaEventMsg } from '../../server/threads/itc';
+import { async_set_timeout } from '../../utility/common_utils';
 import { async_set_timeout } from '../../utility/common_utils';
 
 const { HDB_ERROR_MSGS } = hdb_errors;
