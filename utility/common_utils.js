@@ -778,7 +778,8 @@ function autoCastBoolean(boolean) {
  */
 function getTableHashAttribute(schema, table) {
 	const {getDatabases} = require('../resources/databases');
-	return getDatabases()[schema]?.[table]?.primaryKey;
+	let table_obj = getDatabases()[schema]?.[table];
+	return table_obj?.primaryKey || table_obj?.hash_attribute;
 }
 
 /**

@@ -11,6 +11,7 @@ const hdb_utils = require('../../../utility/common_utils');
 const hdb_logger = require('../../../utility/logging/harper_logger');
 const env_manager = require('../../../utility/environment/environmentManager');
 const hdb_terms = require('../../../utility/hdbTerms');
+const { getDatabases } = require('../../../resources/databases');
 const updateRemoteSource = rewire('../../../utility/clustering/updateRemoteSource');
 
 describe('Test updateRemoteSource module', () => {
@@ -89,6 +90,8 @@ describe('Test updateRemoteSource module', () => {
 		create_schema_stub = sandbox.stub();
 		const create_schema_rw = updateRemoteSource.__set__('schema_mod.createSchema', create_schema_stub);
 		test_utils.setGlobalSchema('number', 'dog', 'poodle', ['number']);
+		delete getDatabases().breed;
+		delete getDatabases().country;
 		const expected_node_record = [
 			{
 				name: 'cowabunga',

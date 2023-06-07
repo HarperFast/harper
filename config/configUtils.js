@@ -163,7 +163,7 @@ function getDefaultConfig(param) {
  * @returns {undefined|*}
  */
 function getConfigValue(param) {
-	if (hdb_utils.isEmpty(param)) {
+	if (param == null) {
 		logger.error(EMPTY_GET_VALUE);
 		return undefined;
 	}
