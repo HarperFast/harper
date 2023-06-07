@@ -103,6 +103,7 @@ function configValidator(config_json) {
 			}).required(),
 			logLevel: Joi.valid('error', 'warn', 'info', 'debug', 'trace'),
 			nodeName: nats_term_constraints,
+			republishMessages: boolean.required(),
 			tls: Joi.object({
 				certificate: pem_file_constraints,
 				certificateAuthority: pem_file_constraints,

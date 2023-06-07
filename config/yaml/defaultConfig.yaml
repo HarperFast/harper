@@ -30,6 +30,7 @@ clustering:
       path: null
   logLevel: error
   nodeName: null
+  republishMessages: true
   tls:
     certificate: null
     certificateAuthority: null
