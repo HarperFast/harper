@@ -136,7 +136,7 @@ export function makeTable(options) {
 					if (subscription) {
 						for await (const event of subscription) {
 							try {
-								const first_write = event.operation === 'transaction' ? event.writes[0].value : event.value;
+								const first_write = event.operation === 'transaction' ? event.writes[0] : event;
 								if (!first_write) {
 									console.error('Bad subscription event');
 									continue;
