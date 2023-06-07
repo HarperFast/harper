@@ -817,7 +817,7 @@ export function makeTable(options) {
 					this.validate(message);
 					// just need to update the version number of the record so it points to the latest audit record
 					// but have to update the version number of the record
-					// TODO: would be faster to have a dedicated lmdb-js function for just updating the version number
+					// TODO: would be faster to use getBinaryFast here and not have the record loaded
 					const existing_record = retries > 0 ? primary_store.get(id) : this[RECORD_PROPERTY];
 					primary_store.put(id, existing_record ?? null, txn_time);
 					// messages are recorded in the audit entry
