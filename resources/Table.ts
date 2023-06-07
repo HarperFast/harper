@@ -143,7 +143,6 @@ export function makeTable(options) {
 									continue;
 								}
 								const id = event.id || (typeof first_record === 'object' ? first_record[primary_key] : first_record);
-								if (!id) return console.error('No id for record');
 								const resource = new this(id, {
 									[CONTEXT_PROPERTY]: {
 										user: {
