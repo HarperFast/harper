@@ -281,6 +281,7 @@ export function makeTable(options) {
 
 		async loadRecord(allow_invalidated?: boolean) {
 			// TODO: determine if we use lazy access properties
+			if (this.hasOwnProperty(RECORD_PROPERTY)) return; // already loaded, don't reload, current version may have modifications
 			const env_txn = this[DB_TXN_PROPERTY];
 			let entry = primary_store.getEntry(this[ID_PROPERTY], { transaction: env_txn?.getReadTxn() });
 			let record;

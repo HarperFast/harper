@@ -197,6 +197,10 @@ function notifyFromTransactionData(path, audit_ids, same_thread?) {
 		for (const subscription of table_subscriptions.allKeys) {
 			try {
 				if (subscription.crossThreads === false && !same_thread) continue;
+				if (!audit_record) {
+					// No audit record found?
+					continue;
+				}
 				subscription.listener(record_key, audit_record, txn_time);
 			} catch (error) {
 				console.error(error);

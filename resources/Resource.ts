@@ -12,11 +12,12 @@ let tables;
 export const CONTEXT_PROPERTY = Symbol.for('context');
 export const USER_PROPERTY = Symbol.for('user');
 export const ID_PROPERTY = Symbol.for('id');
-export const LAST_MODIFICATION_PROPERTY = Symbol.for('lastModificationTime');
+export const LAST_MODIFICATION_PROPERTY = Symbol.for('last-modification-time');
 export const TRANSACTIONS_PROPERTY = Symbol('transactions');
-export const SAVE_UPDATES_PROPERTY = Symbol('saveUpdates');
-export const RECORD_PROPERTY = Symbol('storedRecord');
-export const EXPLICIT_CHANGES_PROPERTY = Symbol.for('explicitChanges');
+export const SAVE_UPDATES_PROPERTY = Symbol('save-updates');
+export const RESOURCE_CACHE = Symbol('resource-cache');
+export const RECORD_PROPERTY = Symbol('stored-record');
+export const EXPLICIT_CHANGES_PROPERTY = Symbol.for('explicit-changes');
 
 /**
  * This is the main class that can be extended for any resource in HarperDB and provides the essential reusable
@@ -98,7 +99,6 @@ export class Resource implements ResourceInterface {
 	static async get(identifier: string | number | object) {
 		if (typeof identifier === 'string' || typeof identifier === 'number') {
 			const resource = this.getResource(identifier, this);
-			this[TRANSACTIONS_PROPERTY];
 			await resource.loadRecord();
 			return resource.get();
 		} else {
@@ -230,11 +230,21 @@ export class Resource implements ResourceInterface {
 		if (typeof path === 'string') {
 			const slash_index = path.indexOf?.('/');
 			if (slash_index > -1) {
+				// for a property reference resource
 				resource = new this(decodeURIComponent(path.slice(0, slash_index)), resource_info);
 				resource.property = decodeURIComponent(path.slice(slash_index + 1));
-			} else {
-				resource = new this(decodeURIComponent(path), resource_info);
+				return resource;
 			}
+			path = decodeURIComponent(path);
+		}
+		if (this[TRANSACTIONS_PROPERTY]) {
+			let resource_cache;
+			if (this.hasOwnProperty(RESOURCE_CACHE)) {
+				resource_cache = this[RESOURCE_CACHE];
+				resource = resource_cache.get(path);
+				if (resource) return resource;
+			} else resource_cache = this[RESOURCE_CACHE] = new Map();
+			resource_cache.set(path, (resource = new this(path, resource_info)));
 		} else resource = new this(path, resource_info);
 		return resource;
 	}
