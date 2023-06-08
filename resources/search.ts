@@ -41,6 +41,7 @@ export function idsForCondition(search_condition, transaction, reverse, Table, a
 			end = value;
 			inclusiveEnd = true;
 			break;
+		case 'ne':
 		case 'contains':
 		case 'ends_with':
 			// we have to revert to full table scan here
@@ -83,6 +84,7 @@ const ALTERNATE_COMPARATOR_NAMES = {
 	'greater_than_equal': 'ge',
 	'less_than': 'lt',
 	'less_than_equal': 'le',
+	'not_equal': 'ne',
 	'>': 'gt',
 	'>=': 'ge',
 	'<': 'lt',
@@ -132,6 +134,8 @@ export function filterByType(search_condition) {
 		case lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL:
 		case lmdb_terms.SEARCH_TYPES._LESS_THAN_EQUAL:
 			return (record) => compareKeys(record[attribute], value) <= 0;
+		case 'ne':
+			return (record) => record[attribute] !== value;
 		default:
 			return; // Object.create(null);
 	}

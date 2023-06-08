@@ -6,6 +6,7 @@ const SYMBOL_OPERATORS = {
 	'<=': 'le',
 	'>': 'gt',
 	'>=': 'ge',
+	'!=': 'ne',
 };
 
 class AccessError extends Error {
