@@ -439,7 +439,7 @@ export function makeTable(options) {
 		/**
 		 * Start updating a record. The returned resource will record changes which are written
 		 * once the corresponding transaction is committed. These changes can (eventually) include CRDT type operations.
-		 * @param record This can be a record returned from get or a record id.
+		 * @param arg This can be a record to update the current resource with.
 		 */
 		update(arg) {
 			if (typeof arg === 'function') {
@@ -458,9 +458,14 @@ export function makeTable(options) {
 
 			if (typeof arg === 'object' && arg) {
 				arg[primary_key] = this[ID_PROPERTY]; // ensure that the id is in the record
-				this.#writeUpdate(arg);
-				//Object.assign(this, arg);
-			} else this.#writeUpdate(this);
+				for (const key in this) {
+					if (arg[key] === undefined) delete this[key];
+				}
+				for (const key in arg) {
+					this[key] = arg[key];
+				}
+			}
+			this.#writeUpdate(this);
 			return this;
 		}
 
@@ -505,10 +510,8 @@ export function makeTable(options) {
 		 * @param options
 		 */
 		async put(record, options?): Promise<void> {
-			record[primary_key] = this[ID_PROPERTY]; // ensure that the id is in the record
-			this.#writeUpdate(record);
-			// TODO: only do this if we are in a custom function
-			if (!options?.noCopy) copyRecord(record, this);
+			// TODO: only do this if we are in a custom function, otherwise directly call #writeUpdate
+			this.update(record);
 		}
 		#writeUpdate(record, options?) {
 			const env_txn = this[DB_TXN_PROPERTY] || immediateTransaction;
@@ -563,18 +566,18 @@ export function makeTable(options) {
 						}
 					}
 
-					if (this[LAST_MODIFICATION_PROPERTY] > txn_time) {
+					if (this[VERSION_PROPERTY] > txn_time) {
 						// This is not an error condition in our world of last-record-wins
 						// replication. If the existing record is newer than it just means the provided record
 						// is, well... older. And newer records are supposed to "win" over older records, and that
 						// is normal, non-error behavior. So we still record an audit entry
-						return {
+						return; /*{
 							// return the audit record that should be recorded
 							operation: 'put',
 							value: record,
 							// TODO: What should this be?
 							lastUpdate: this[LAST_MODIFICATION_PROPERTY],
-						};
+						};*/
 					}
 
 					primary_store.put(this[ID_PROPERTY], record, txn_time);
@@ -613,6 +616,9 @@ export function makeTable(options) {
 						existing_record = existing_entry?.value;
 						this.updateModificationTime(existing_entry?.version);
 					}
+					if (this[VERSION_PROPERTY] > txn_time)
+						// a newer record exists locally
+						return;
 					updateIndices(this[ID_PROPERTY], existing_record);
 					primary_store.remove(this[ID_PROPERTY]);
 					return {
