@@ -493,6 +493,7 @@ function setSubObject(target_resource, key, stored_value) {
 			value = new_value;
 		},
 		enumerable: true,
+		configurable: true,
 	});
 }
 export function withoutCopying(callback) {
