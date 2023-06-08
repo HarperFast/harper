@@ -220,7 +220,7 @@ function getTableAttrPerms(table_perms, table_schema) {
 			return acc;
 		}, {});
 
-		const table_hash = table_schema.primaryKey;
+		const table_hash = table_schema.primaryKey || table_schema.hash_attribute;
 		const hash_attr_perm = !!attr_r_map[table_hash];
 		//We need to check if all attribute permissions passed for a table are false because, if so, we do not need to
 		// force read permission for the table's hash value.  If they are not and the hash value is not included in the
