@@ -76,15 +76,17 @@ export class DatabaseTransaction implements Transaction {
 			} else {
 				for (const write of this.writes) {
 					const audit_record = write.commit(retries);
-					if (audit_record[COMPLETION]) {
-						if (!completions) completions = [];
-						completions.push(audit_record[COMPLETION]);
-					}
-					last_store = write.store;
-					if (this.auditStore) {
-						audit_record.user = this.username;
-						audit_record.lastVersion = write.lastVersion;
-						this.auditStore.put([(txn_time = write.txnTime), write.store.tableId, write.key], audit_record);
+					if (audit_record) {
+						if (audit_record[COMPLETION]) {
+							if (!completions) completions = [];
+							completions.push(audit_record[COMPLETION]);
+						}
+						last_store = write.store;
+						if (this.auditStore) {
+							audit_record.user = this.username;
+							audit_record.lastVersion = write.lastVersion;
+							this.auditStore.put([(txn_time = write.txnTime), write.store.tableId, write.key], audit_record);
+						}
 					}
 				}
 			}
