@@ -101,7 +101,7 @@ export class DatabaseTransaction implements Transaction {
 
 		return resolution?.then((resolution) => {
 			if (resolution) {
-				completions.push(last_store.flushed);
+				if (last_store) completions.push(last_store.flushed);
 				return Promise.all(completions).then(() => {
 					// now reset transactions tracking; this transaction be reused and committed again
 					this.conditions = [];
