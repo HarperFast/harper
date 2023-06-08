@@ -17,7 +17,7 @@ let publishing_databases = new Map();
 export async function start() {
 	if (env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) await assignReplicationSource();
 }
-const MAX_INGEST_THREADS = 2;
+const MAX_INGEST_THREADS = 1;
 let immediateNATSTransaction, subscribed_to_nodes;
 /**
  * This will assign the NATS replicator as a source to any tables that have subscriptions to them (are publishing to other nodes)
