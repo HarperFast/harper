@@ -86,6 +86,8 @@ export async function customFunctionsServer() {
 			harper_logger.error(`Custom Functions server.ready() error: ${err}`);
 			throw err;
 		}
+		// fastify can't clean up properly
+		server.server.cantCleanupProperly = true;
 	} catch (err) {
 		harper_logger.error(`Custom Functions ${process.pid} Error: ${err}`);
 		harper_logger.error(err);

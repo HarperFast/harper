@@ -55,14 +55,24 @@ if (!isMainThread) {
 							// TODO: If fastify has fielded a route and messed up the closing, then have to manually exit the
 							//  process otherwise we can use a graceful exit
 							// if (SERVERS[server_type].hasRequests)
-							SERVERS[port] // TODO: Should we try to interact with fastify here?
+							const server = SERVERS[port];
+							server // TODO: Should we try to interact with fastify here?
 								.close?.(() => {
-									setTimeout(() => {
-										console.error('Had to forcefully exit the thread');
-										process.exit(0);
-									}, 2000).unref();
+									// if we are cleaning up after fastify, it will fail to release all its refs
+									// and so normally we have to kill the thread forcefully, unfortunately.
+									// If that is the case, do it relatively quickly, there is no sense in waiting
+									// otherwise we can expect a more graceful exit and only forcefully exit after
+									// a longer timeout (and log it as warning since it would be unusual).
+									setTimeout(
+										() => {
+											if (!server.cantCleanupProperly)
+												harper_logger.warn('Had to forcefully exit the thread', threadId);
+											process.exit(0);
+										},
+										server.cantCleanupProperly ? 500 : 5000
+									).unref();
 								});
-							SERVERS[port].closeIdleConnections?.();
+							server.closeIdleConnections?.();
 						}
 					}
 				})
@@ -165,7 +175,12 @@ function registerServer(server, port) {
 		// server and if doesn't handle the request, cascade to next server (until finally we 404)
 		let last_server = existing_server.lastServer || existing_server;
 		last_server.off('unhandled', defaultNotFound);
-		last_server.on('unhandled', (request, response) => server.emit('request', request, response));
+		last_server.on('unhandled', (request, response) => {
+			// fastify can't clean up properly, and as soon as we have received a fastify request, must mark our mode
+			// as such
+			if (server.cantCleanupProperly) existing_server.cantCleanupProperly = true;
+			server.emit('request', request, response);
+		});
 		existing_server.lastServer = server;
 	} else {
 		SERVERS[port] = server;

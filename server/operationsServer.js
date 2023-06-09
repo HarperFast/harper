@@ -77,6 +77,8 @@ async function operationsServer(options) {
 		//make sure the process waits for the server to be fully instantiated before moving forward
 		await server.ready();
 
+		// fastify can't clean up properly
+		server.server.cantCleanupProperly = true;
 		try {
 			// now that server is fully loaded/ready, start listening on port provided in config settings or just use
 			// zero to wait for sockets from the main thread
