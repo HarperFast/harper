@@ -133,9 +133,10 @@ export class DefaultAccess {
 		let match;
 		let attribute, comparator;
 		const conditions = [];
-		let offset, limit, sort, select;
+		let offset, limit, sort, select, last_index;
 		// TODO: Use URLSearchParams with a fallback for when it can't parse everything (USP is very fast)
 		while ((match = QUERY_PARSER.exec(query_string))) {
+			last_index = QUERY_PARSER.lastIndex;
 			let [, value, operator] = match;
 			switch (operator[0]) {
 				case ')':
@@ -169,40 +170,41 @@ export class DefaultAccess {
 				case undefined:
 				case '&':
 				case '|':
-					if (attribute) {
-						switch (attribute) {
-							case 'offset':
-								conditions.offset = +value;
-								break;
-							case 'limit':
-								conditions.limit = +value;
-								break;
-							case 'select':
-								conditions.select = value.split(',');
-								break;
-							case 'sort':
-								conditions.sort = value.split(',').map((direction) => {
-									switch (direction[0]) {
-										case '-':
-											return { attribute: direction.slice(1), descending: true };
-										case '+':
-											return { attribute: direction.slice(1), descending: false };
-										default:
-											return { attribute: direction, descending: false };
-									}
-								});
-								break;
-							default:
-								conditions.push({
-									comparator: comparator,
-									attribute,
-									value: decodeURIComponent(value),
-								});
-						}
+					switch (attribute) {
+						case 'offset':
+							conditions.offset = +value;
+							break;
+						case 'limit':
+							conditions.limit = +value;
+							break;
+						case 'select':
+							conditions.select = value.split(',');
+							break;
+						case 'sort':
+							conditions.sort = value.split(',').map((direction) => {
+								switch (direction[0]) {
+									case '-':
+										return { attribute: direction.slice(1), descending: true };
+									case '+':
+										return { attribute: direction.slice(1), descending: false };
+									default:
+										return { attribute: direction, descending: false };
+								}
+							});
+							break;
+						case undefined:
+							throw new Error('Unable to parse query');
+						default:
+							conditions.push({
+								comparator: comparator,
+								attribute,
+								value: decodeURIComponent(value),
+							});
 					}
 					attribute = undefined;
 			}
 		}
+		if (last_index !== query_string.length) throw new Error('Unable to parse query');
 		return conditions;
 	}
 }
