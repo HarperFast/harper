@@ -159,9 +159,12 @@ export function makeTable(options) {
 											resource = null;
 										}
 										return Promise.all(promises);
-									} else if (event.operation === 'define_table') {
+									} else if (event.operation === 'define_schema') {
 										// ensure table exists
-										table(event);
+										table({ table: table_name, database: database_name, attributes: event.attributes });
+										signalling.signalSchemaChange(
+											new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_TABLE, database_name, table_name)
+										);
 									} else writeUpdate(event, first_resource, first_resource);
 								});
 								if (event.onCommit) commit.then(event.onCommit);
@@ -919,6 +922,7 @@ export function makeTable(options) {
 			signalling.signalSchemaChange(
 				new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_ATTRIBUTE, database_name, table_name, attribute.name)
 			);
+			this.Source?.defineSchema?.(this);
 		}
 		static async removeAttribute(name) {}
 	}

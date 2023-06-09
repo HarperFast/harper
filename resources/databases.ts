@@ -437,7 +437,7 @@ export function table({
 	Table.origin = origin;
 	if (has_changes) {
 		for (const listener of table_listeners) {
-			listener(Table);
+			listener(Table, true);
 		}
 	}
 	if (expiration) Table.setTTLExpiration(+expiration);

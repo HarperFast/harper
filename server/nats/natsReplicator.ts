@@ -32,8 +32,21 @@ async function assignReplicationSource() {
 		}
 	}
 	publishing_databases = new Map();
-	onNewTable((table) => {
-		setNATSReplicator(table.tableName, table.databaseName, table);
+	onNewTable((Table, is_changed) => {
+		if (Table?.Source) return;
+		setNATSReplicator(Table.tableName, Table.databaseName, Table);
+		if (is_changed)
+			publishToStream(
+				`${SUBJECT_PREFIXES.TXN}.${Table.databaseName}.${Table.tableName}`,
+				createNatsTableStreamName(Table.databaseName, Table.tableName),
+				undefined,
+				{
+					operation: 'define_schema',
+					schema: Table.databaseName,
+					table: Table.tableName,
+					attributes: Table.attributes,
+				}
+			);
 	});
 	if (subscribed_to_nodes) return;
 	subscribed_to_nodes = true;
@@ -53,16 +66,6 @@ export function setNATSReplicator(table_name, db_name, Table) {
 		return console.error(`Attempt to replicate non-existent table ${table_name} from database ${db_name}`);
 	}
 	if (Table.Source) return;
-	/*	publishToStream(
-		`${SUBJECT_PREFIXES.TXN}.${db_name}.__dbi__`,
-		createNatsTableStreamName(db_name),
-		Table.origin?.nats_msg_header,
-		{
-			operation: 'define_table',
-			table: Table.tableName,
-			attributes: Table.attributes,
-		}
-	);*/
 
 	Table.sourcedFrom(
 		class NATSReplicator extends Resource {
@@ -88,6 +91,19 @@ export function setNATSReplicator(table_name, db_name, Table) {
 					id: this[ID_PROPERTY],
 					record: message,
 				});
+			}
+			static defineSchema({ attributes }) {
+				publishToStream(
+					`${SUBJECT_PREFIXES.TXN}.${db_name}.${table_name}`,
+					createNatsTableStreamName(db_name, table_name),
+					undefined,
+					{
+						operation: 'define_schema',
+						schema: db_name,
+						table: table_name,
+						attributes,
+					}
+				);
 			}
 			getNATSTransaction(options): NATSTransaction {
 				let nats_transaction: NATSTransaction = this[TRANSACTIONS_PROPERTY]?.nats;
@@ -169,9 +185,9 @@ class NATSTransaction {
 			}
 			promises.push(
 				publishToStream(
-					`${SUBJECT_PREFIXES.TXN}.${db}.${transaction_event.table}` /* + (Math.floor(Math.random() * 4) || '')*/,
+					`${SUBJECT_PREFIXES.TXN}.${db}.${transaction_event.table}`,
 					createNatsTableStreamName(db, transaction_event.table),
-					this.options?.nats_msg_header,
+					undefined,
 					transaction_event
 				)
 			);

@@ -144,7 +144,8 @@ async function messageProcessor(msg) {
 		if (!subscription) {
 			throw new Error('Missing table for replication message', table_name);
 		}
-		if (records.length === 1 && !next_write)
+		if (operation === 'define_schema') subscription.send(entry);
+		else if (records.length === 1 && !next_write)
 			// with a single record update, we can send this directly as a single event to our subscriber (the table
 			// subscriber)
 			subscription.send({
