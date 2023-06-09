@@ -7,6 +7,7 @@ const global_schema = require('../../utility/globalSchema');
 const user = require('../../security/user');
 const promisify = require('util').promisify;
 const server_utils = require('../serverHelpers/serverUtilities');
+const { start: startNATS } = require('../nats/natsReplicator');
 const moment = require('moment');
 const jobs = require('./jobs');
 const { cloneDeep } = require('lodash');
@@ -23,7 +24,7 @@ const JOB_ID = JOB_NAME.substring(4);
 	let job_obj = { id: JOB_ID, request: undefined };
 	try {
 		harper_logger.notify('Starting job:', JOB_ID);
-
+		startNATS();
 		global_schema.setSchemaDataToGlobal();
 		await user.setUsersToGlobal();
 

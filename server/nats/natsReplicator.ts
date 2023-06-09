@@ -14,15 +14,15 @@ import { threadId } from 'worker_threads';
 import initializeReplyService from './natsReplyService';
 
 let publishing_databases = new Map();
-export async function start() {
-	if (env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) await assignReplicationSource();
+export function start() {
+	if (env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) assignReplicationSource();
 }
 const MAX_INGEST_THREADS = 1;
 let immediateNATSTransaction, subscribed_to_nodes;
 /**
  * This will assign the NATS replicator as a source to any tables that have subscriptions to them (are publishing to other nodes)
  */
-async function assignReplicationSource() {
+function assignReplicationSource() {
 	const databases = getDatabases();
 	for (const database_name in databases) {
 		const database = databases[database_name];
