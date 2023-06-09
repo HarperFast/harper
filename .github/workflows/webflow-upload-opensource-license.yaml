@@ -11,9 +11,6 @@ on:
         options:
           - true
           - false
-  pull_request:
-    types: [ opened, synchronize, reopened ]
-
 name: "Webflow - Update Open Source Licenses Page"
 jobs:
   generate:
