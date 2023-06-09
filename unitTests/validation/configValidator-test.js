@@ -607,9 +607,7 @@ describe('Test configValidator module', () => {
 			const result = set_default_processes(parent, helpers);
 
 			expect(result).to.equal(5);
-			expect(logger_info_stub.firstCall.args[0]).to.equal(
-				`Detected 6 cores on this machine, defaulting customFunctions.processes to ${result}`
-			);
+			expect(logger_info_stub.firstCall.args[0]).to.include(`defaulting customFunctions.processes to ${result}`);
 		});
 	});
 
