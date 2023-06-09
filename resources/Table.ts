@@ -3,7 +3,8 @@ import { open, Database, asBinary, SKIP } from 'lmdb';
 import { getIndexedValues } from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
 import { ResourceInterface } from './ResourceInterface';
-import { workerData } from 'worker_threads';
+import { workerData, threadId } from 'worker_threads';
+import { messageTypeListener } from '../server/threads/manageThreads';
 import {
 	CONTEXT_PROPERTY,
 	TRANSACTIONS_PROPERTY,
@@ -32,6 +33,7 @@ env_mngr.initSync();
 const b = Buffer.alloc(1);
 const LMDB_PREFETCH_WRITES = env_mngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 
+const DELETION_COUNT_KEY = Symbol.for('deletions');
 const DB_TXN_PROPERTY = Symbol('db-txn');
 const VERSION_PROPERTY = Symbol.for('version');
 const INCREMENTAL_UPDATE = Symbol.for('incremental-update');
@@ -75,6 +77,8 @@ export function makeTable(options) {
 	let { attributes } = options;
 	if (!attributes) attributes = [];
 	if (audit_store) listenToCommits(audit_store);
+	let deletion_count = 0;
+	let pending_deletion_count_write;
 	let primary_key_attribute = {};
 	let created_time_property, updated_time_property;
 	for (const attribute of attributes) {
@@ -624,6 +628,7 @@ export function makeTable(options) {
 						return;
 					updateIndices(this[ID_PROPERTY], existing_record);
 					primary_store.put(this[ID_PROPERTY], null, txn_time);
+					if (!retry) record_deletion();
 					return {
 						// return the audit record that should be recorded
 						operation: 'delete',
@@ -925,6 +930,15 @@ export function makeTable(options) {
 			this.Source?.defineSchema?.(this);
 		}
 		static async removeAttribute(name) {}
+		static getRecordCount() {
+			// iterate through the metadata entries to exclude their count and exclude the deletion counts
+			let excluded_count = 0;
+			for (const { key, value } of primary_store.getRange({ end: false })) {
+				excluded_count++;
+				if (key[0]?.description === 'deletions') excluded_count += value || 0;
+			}
+			return primary_store.getStats().entryCount - excluded_count;
+		}
 	}
 	const prototype = TableResource.prototype;
 	prototype[DB_TXN_PROPERTY] = immediateTransaction;
@@ -975,6 +989,19 @@ export function makeTable(options) {
 					index.put(values[i], id);
 				}
 			}
+		}
+	}
+	/*
+	Here we write the deletion count for our thread id
+	 */
+	function record_deletion() {
+		if (!deletion_count) deletion_count = primary_store.get([DELETION_COUNT_KEY, threadId]) || 0;
+		deletion_count++;
+		if (!pending_deletion_count_write) {
+			pending_deletion_count_write = setTimeout(() => {
+				pending_deletion_count_write = null;
+				primary_store.put([DELETION_COUNT_KEY, threadId], deletion_count);
+			}, 50);
 		}
 	}
 }
