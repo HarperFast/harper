@@ -35,18 +35,7 @@ function assignReplicationSource() {
 	onNewTable((Table, is_changed) => {
 		if (Table?.Source) return;
 		setNATSReplicator(Table.tableName, Table.databaseName, Table);
-		if (is_changed)
-			publishToStream(
-				`${SUBJECT_PREFIXES.TXN}.${Table.databaseName}.${Table.tableName}`,
-				createNatsTableStreamName(Table.databaseName, Table.tableName),
-				undefined,
-				{
-					operation: 'define_schema',
-					schema: Table.databaseName,
-					table: Table.tableName,
-					attributes: Table.attributes,
-				}
-			);
+		if (is_changed) publishSchema(Table);
 	});
 	if (subscribed_to_nodes) return;
 	subscribed_to_nodes = true;
@@ -92,18 +81,8 @@ export function setNATSReplicator(table_name, db_name, Table) {
 					record: message,
 				});
 			}
-			static defineSchema({ attributes }) {
-				publishToStream(
-					`${SUBJECT_PREFIXES.TXN}.${db_name}.${table_name}`,
-					createNatsTableStreamName(db_name, table_name),
-					undefined,
-					{
-						operation: 'define_schema',
-						schema: db_name,
-						table: table_name,
-						attributes,
-					}
-				);
+			static defineSchema(Table) {
+				publishSchema(Table);
 			}
 			getNATSTransaction(options): NATSTransaction {
 				let nats_transaction: NATSTransaction = this[TRANSACTIONS_PROPERTY]?.nats;
@@ -128,7 +107,24 @@ export function setNATSReplicator(table_name, db_name, Table) {
 		}
 	);
 }
-
+function publishSchema(Table) {
+	const node_name = env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
+	publishToStream(
+		`${SUBJECT_PREFIXES.TXN}.${Table.databaseName}.${Table.tableName}`,
+		createNatsTableStreamName(Table.databaseName, Table.tableName),
+		undefined,
+		{
+			operation: 'define_schema',
+			schema: Table.databaseName,
+			table: Table.tableName,
+			attributes: Table.attributes,
+			__origin: {
+				timestamp: Date.now(),
+				node_name,
+			},
+		}
+	);
+}
 /**
  * Holds the set of writes that will be published as a transaction message across a NATS cluster
  */

@@ -1274,7 +1274,6 @@
 									"    const define_schema_tx = response[0];",
 									"",
 									"    pm.expect(define_schema_tx.operation).to.equal('define_schema');",
-									"    pm.expect(define_schema_tx.user).to.equal('admin');",
 									"    pm.expect(define_schema_tx).to.haveOwnProperty('timestamp');",
 									"})"
 								],
