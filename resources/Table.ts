@@ -1,5 +1,5 @@
 import { CONFIG_PARAMS, OPERATIONS_ENUM } from '../utility/hdbTerms';
-import { open, Database, asBinary } from 'lmdb';
+import { open, Database, asBinary, SKIP } from 'lmdb';
 import { getIndexedValues } from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
 import { ResourceInterface } from './ResourceInterface';
@@ -620,7 +620,7 @@ export function makeTable(options) {
 						// a newer record exists locally
 						return;
 					updateIndices(this[ID_PROPERTY], existing_record);
-					primary_store.remove(this[ID_PROPERTY]);
+					primary_store.put(this[ID_PROPERTY], null, txn_time);
 					return {
 						// return the audit record that should be recorded
 						operation: 'delete',
@@ -680,7 +680,8 @@ export function makeTable(options) {
 							condition.estimated_count = index ? index.getValuesCount(condition[1] ?? condition.value) : Infinity;
 						} else if (
 							search_type === lmdb_terms.SEARCH_TYPES.CONTAINS ||
-							search_type === lmdb_terms.SEARCH_TYPES.ENDS_WITH
+							search_type === lmdb_terms.SEARCH_TYPES.ENDS_WITH ||
+							search_type === 'ne'
 						)
 							condition.estimated_count = Infinity;
 						// this search types can't/doesn't use indices, so try do them last
@@ -704,7 +705,8 @@ export function makeTable(options) {
 					.getRange(
 						reverse ? { end: false, reverse: true, transaction: read_txn } : { start: false, transaction: read_txn }
 					)
-					.map(({ value }) => value);
+					.map(({ value }) => value /* TODO: Use skip instead of filter once lmdb update is published ?? SKIP*/)
+					.filter((record) => record);
 			} else {
 				let ids = idsForCondition(first_search, read_txn, reverse, TableResource, query.allowFullScan);
 				// and then things diverge...
@@ -713,7 +715,15 @@ export function makeTable(options) {
 					// and then filtering by all subsequent conditions
 					const filters = conditions.slice(1).map(filterByType);
 					const filters_length = filters.length;
-					records = ids.map((id) => primary_store.get(id, { transaction: read_txn, lazy: true }));
+					records = ids
+						.map(
+							(id) =>
+								primary_store.get(id, {
+									transaction: read_txn,
+									lazy: true,
+								}) /* TODO: Use skip instead of filter once lmdb update is published ?? SKIP*/
+						)
+						.filter((record) => record);
 					if (filters_length > 0)
 						records = records.filter((record) => {
 							for (let i = 0; i < filters_length; i++) {
@@ -738,7 +748,15 @@ export function makeTable(options) {
 						returned_ids.add(id);
 						return true;
 					});
-					records = ids.map((id) => primary_store.get(id, { transaction: read_txn, lazy: true }));
+					records = ids
+						.map(
+							(id) =>
+								primary_store.get(id, {
+									transaction: read_txn,
+									lazy: true,
+								}) /* TODO: Use skip instead of filter once lmdb update is published ?? SKIP*/
+						)
+						.filter((record) => record);
 				}
 			}
 			if (query.offset || query.limit !== undefined)
