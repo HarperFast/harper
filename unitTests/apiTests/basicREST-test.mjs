@@ -118,6 +118,11 @@ describe('test REST calls', () => {
 			});
 			assert.equal(response.status, 404);
 		});
+		it('do query by starts with', async () => {
+			let response = await axios('http://localhost:9926/FourProp/?name=name*');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.length, 10);
+		});
 		it('do a less than query by numeric property', async () => {
 			let response = await axios('http://localhost:9926/FourProp/?age=lt=25');
 			assert.equal(response.status, 200);

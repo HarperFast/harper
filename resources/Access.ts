@@ -1,6 +1,6 @@
 import { Resource, SAVE_UPDATES_PROPERTY } from './Resource';
 
-const QUERY_PARSER = /([^?&|=<>!()]+)([&|=<>!()]*)/g;
+const QUERY_PARSER = /([^?&|=<>!()*]+)([&|=<>!()*]*)/g;
 const SYMBOL_OPERATORS = {
 	'<': 'lt',
 	'<=': 'le',

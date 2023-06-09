@@ -514,7 +514,7 @@ export function makeTable(options) {
 		 */
 		async put(record, options?): Promise<void> {
 			// TODO: only do this if we are in a custom function, otherwise directly call #writeUpdate
-			return this.update(record);
+			this.update(record);
 		}
 		#writeUpdate(record, options?) {
 			const env_txn = this[DB_TXN_PROPERTY] || immediateTransaction;
