@@ -31,20 +31,20 @@ jobs:
       - name: "Generate license file"
         env:
           project_path: "."
-          output_file: "utility/Docker/licenses/open-source-licenses-notices.md"
+          output_file: "open-source-licenses-notices.md"
           template_file: "harperdb_open_source_license_generator/template.txt"
         run: npm install harperdb_open_source_license_generator/ && node harperdb_open_source_license_generator/index.js
       - name: "Push Draft: open-source-licenses-notices"
         if: github.ref != 'refs/heads/main' && github.event_name != 'pull_request'
         env:
           PUBLISH: "${{ inputs.publish }}"
-          LICENSE_FILE: "utility/Docker/licenses/open-source-licenses-notices.md"
+          LICENSE_FILE: "open-source-licenses-notices.md"
           TOKEN: "${{ secrets.webflow_api_token }}"
         run: .github/scripts/webflow-upload-opensource-license.sh
       - name: "Push Live: open-source-licenses-notices"
         if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
         env:
           PUBLISH: ${{ github.ref == 'refs/heads/main' && 'true' || 'false' }}
-          LICENSE_FILE: "utility/Docker/licenses/open-source-licenses-notices.md"
+          LICENSE_FILE: "open-source-licenses-notices.md"
           TOKEN: "${{ secrets.webflow_api_token }}"
         run: .github/scripts/webflow-upload-opensource-license.sh
