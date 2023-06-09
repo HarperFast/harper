@@ -4,6 +4,7 @@ const fs = require('fs-extra');
 const Joi = require('joi');
 const os = require('os');
 const { boolean, string, number, array } = Joi.types();
+const { totalmem } = require('os');
 const path = require('path');
 const hdb_logger = require('../utility/logging/harper_logger');
 const hdb_utils = require('../utility/common_utils');
@@ -277,7 +278,12 @@ function setDefaultThreads(parent, helpers) {
 	let num_processes = processors - 1;
 	// But if only two or less processors, keep two processes so we have some level of concurrency fairness
 	if (num_processes <= 2) num_processes = 2;
-	hdb_logger.info(`Detected ${processors} cores on this machine, defaulting ${config_param} to ${num_processes}`);
+	let available_memory = process.constrainedMemory?.() || totalmem(); // used constrained memory if it is available
+	// and lower than total memory
+	available_memory = Math.round(Math.min(available_memory, totalmem()) / 1000000);
+	// (available memory -750MB) / 300MB
+	num_processes = Math.max(Math.min(num_processes, Math.round((available_memory - 750) / 300)), 1);
+	hdb_logger.info(`Detected ${processors} cores and ${available_memory}MB on this machine, defaulting ${config_param} to ${num_processes}`);
 	return num_processes;
 }
 
