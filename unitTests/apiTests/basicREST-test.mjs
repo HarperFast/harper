@@ -123,6 +123,16 @@ describe('test REST calls', () => {
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 10);
 		});
+		it('do query by starts with and ends with', async () => {
+			let response = await axios('http://localhost:9926/FourProp/?name=name*&name=*4');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.length, 1);
+		});
+		it('do query with contains', async () => {
+			let response = await axios('http://localhost:9926/FourProp/?name=name*&name=*4*');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.length, 1);
+		});
 		it('do a less than query by numeric property', async () => {
 			let response = await axios('http://localhost:9926/FourProp/?age=lt=25');
 			assert.equal(response.status, 200);
@@ -135,8 +145,14 @@ describe('test REST calls', () => {
 			assert.equal(response.data.length, 6);
 			assert.equal(response.data[5].age, 25);
 		});
-		it('do a less than query or equal and not-equal by numeric property', async () => {
+		it('do a less than query or equal and FIQL not-equal by numeric property', async () => {
 			let response = await axios('http://localhost:9926/FourProp/?age=ne=22&age=le=25');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.length, 5);
+			assert.equal(response.data[4].age, 25);
+		});
+		it('do a less than query or equal and not-equal by numeric property', async () => {
+			let response = await axios('http://localhost:9926/FourProp/?age!=22&age=le=25');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 5);
 			assert.equal(response.data[4].age, 25);

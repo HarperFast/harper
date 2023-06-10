@@ -138,7 +138,7 @@ export class DefaultAccess {
 		while ((match = QUERY_PARSER.exec(query_string))) {
 			last_index = QUERY_PARSER.lastIndex;
 			let [, value, operator] = match;
-			switch (operator[0]) {
+			switch (operator) {
 				case ')':
 					// finish call
 					operator = operator.slice(1);
@@ -152,21 +152,28 @@ export class DefaultAccess {
 						attribute = decodeURIComponent(value);
 					}
 					break;
-				case '!':
-				// TODO: not-equal
+				case '!=':
 				case '<':
+				case '<=':
 				case '>':
+				case '>=':
 					comparator = SYMBOL_OPERATORS[operator];
 					attribute = decodeURIComponent(value);
 					break;
+				case '=*':
+					comparator = 'ends_with';
+					attribute = decodeURIComponent(value);
+					break;
 				case '*':
+				case '*&':
 					conditions.push({
-						comparator: 'starts_with',
+						comparator: comparator === 'ends_with' ? 'contains' : 'starts_with',
 						attribute,
 						value: decodeURIComponent(value),
 					});
 					attribute = null;
 					break;
+				case '':
 				case undefined:
 				case '&':
 				case '|':
@@ -202,6 +209,9 @@ export class DefaultAccess {
 							});
 					}
 					attribute = undefined;
+					break;
+				default:
+					throw new Error(`Unknown operator ${operator} in query`);
 			}
 		}
 		if (last_index !== query_string.length) throw new Error('Unable to parse query');
