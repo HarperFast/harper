@@ -4,6 +4,7 @@ const hdb_utils = require('../../../utility/common_utils');
 const log = require('../../../utility/logging/harper_logger');
 const insert_validator = require('../../../validation/insertValidator');
 const { getDatabases } = require('../../../resources/databases');
+const { ClientError } = require('../../../utility/errors/hdbError');
 
 module.exports = insertUpdateValidate;
 
@@ -19,22 +20,22 @@ function insertUpdateValidate(write_object) {
 	// invalid values.
 
 	if (hdb_utils.isEmpty(write_object)) {
-		throw new Error('invalid update parameters defined.');
+		throw new ClientError('invalid update parameters defined.');
 	}
 	if (hdb_utils.isEmptyOrZeroLength(write_object.schema)) {
-		throw new Error('invalid schema specified.');
+		throw new ClientError('invalid schema specified.');
 	}
 	if (hdb_utils.isEmptyOrZeroLength(write_object.table)) {
-		throw new Error('invalid table specified.');
+		throw new ClientError('invalid table specified.');
 	}
 
 	if (!Array.isArray(write_object.records)) {
-		throw new Error('records must be an array');
+		throw new ClientError('records must be an array');
 	}
 
 	let schema_table = getDatabases()[write_object.schema]?.[write_object.table];
 	if (hdb_utils.isEmpty(schema_table)) {
-		throw new Error(`could not retrieve schema:${write_object.schema} and table ${write_object.table}`);
+		throw new ClientError(`could not retrieve schema:${write_object.schema} and table ${write_object.table}`);
 	}
 
 	let hash_attribute = schema_table.primaryKey;
@@ -49,7 +50,7 @@ function insertUpdateValidate(write_object) {
 	write_object.records.forEach((record) => {
 		if (is_update && hdb_utils.isEmptyOrZeroLength(record[hash_attribute])) {
 			log.error('a valid hash attribute must be provided with update record:', record);
-			throw new Error('a valid hash attribute must be provided with update record, check log for more info');
+			throw new ClientError('a valid hash attribute must be provided with update record, check log for more info');
 		}
 
 		if (
@@ -57,7 +58,7 @@ function insertUpdateValidate(write_object) {
 			(record[hash_attribute] === 'null' || record[hash_attribute] === 'undefined')
 		) {
 			log.error(`a valid hash value must be provided with ${write_object.operation} record:`, record);
-			throw new Error(
+			throw new ClientError(
 				`Invalid hash value: '${record[hash_attribute]}' is not a valid hash attribute value, check log for more info`
 			);
 		}
