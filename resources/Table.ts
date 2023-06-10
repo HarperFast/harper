@@ -528,6 +528,7 @@ export function makeTable(options) {
 			//  during the write transaction.
 			const txn_time = this[TRANSACTIONS_PROPERTY]?.timestamp || immediateTransaction.timestamp;
 			let existing_record = this[RECORD_PROPERTY];
+			this[RECORD_PROPERTY] = record;
 			let is_unchanged;
 			env_txn.addWrite({
 				key: this[ID_PROPERTY],
