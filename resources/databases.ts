@@ -15,6 +15,7 @@ import * as fs from 'fs-extra';
 import { _assignPackageExport } from '../index';
 
 const DEFAULT_DATABASE_NAME = 'data';
+const DEFINED_TABLES = Symbol('defined-tables');
 initSync();
 
 interface Tables {
@@ -153,12 +154,12 @@ export function resetDatabases() {
  * This is responsible for reading the internal dbi to get a list of all the tables and their indexed or registered attributes
  * @param path
  * @param default_table
- * @param schema_name
+ * @param database_name
  */
 function readMetaDb(
 	path: string,
 	default_table?: string,
-	schema_name: string = DEFAULT_DATABASE_NAME,
+	database_name: string = DEFAULT_DATABASE_NAME,
 	audit_path?: string,
 	is_legacy?: boolean
 ) {
@@ -171,9 +172,10 @@ function readMetaDb(
 			database_envs.set(path, root_store);
 		}
 		const internal_dbi_init = new OpenDBIObject(false);
-		const dbis_store = (root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init));
-		let audit_store;
-		if (USE_AUDIT) {
+		const dbis_store =
+			root_store.dbisDb || (root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init));
+		let audit_store = root_store.auditStore;
+		if (USE_AUDIT && !audit_store) {
 			if (audit_path) {
 				if (existsSync(audit_path)) {
 					env_init.path = audit_path;
@@ -187,59 +189,82 @@ function readMetaDb(
 
 		const tables_to_load = new Map();
 		for (const { key, value } of dbis_store.getRange({ start: false })) {
-			let [table_name, attribute] = key.toString().split('/');
-			if (!attribute) {
-				attribute = table_name;
+			let [table_name, attribute_name] = key.toString().split('/');
+			if (!attribute_name) {
+				attribute_name = table_name;
 				table_name = default_table;
-				value.name = attribute;
+				value.name = attribute_name;
 			}
 			let attributes = tables_to_load.get(table_name);
 			if (!attributes) tables_to_load.set(table_name, (attributes = []));
 			attributes.push(value);
 			Object.defineProperty(value, 'key', { value: key, configurable: true });
 		}
-		const tables = ensureDB(schema_name);
+		const tables = ensureDB(database_name);
+		const existing_defined_tables = tables[DEFINED_TABLES];
 		for (const [table_name, attributes] of tables_to_load) {
 			for (const attribute of attributes) {
-				const dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
+				// find the primary key attribute as that defines the table itself
 				attribute.attribute = attribute.name;
 				if (attribute.is_hash_attribute) {
-					let table_id = attribute.tableId;
-					if (table_id) {
-						if (table_id >= (root_store.nextTableId || 0)) root_store.nextTableId = table_id + 1;
+					// if the table has already been defined, use that class, don't create a new one
+					let table = existing_defined_tables?.get(table_name);
+					let indices = {},
+						existing_attributes = [];
+					let table_id;
+					let primary_store;
+					if (table) {
+						indices = table.indices;
+						existing_attributes = table.attributes;
 					} else {
-						if (!root_store.nextTableId) root_store.nextTableId = 1;
-						attribute.tableId = table_id = root_store.nextTableId++;
-						dbis_store.putSync(attribute.key, attribute);
+						table_id = attribute.tableId;
+						if (table_id) {
+							if (table_id >= (root_store.nextTableId || 0)) root_store.nextTableId = table_id + 1;
+						} else {
+							if (!root_store.nextTableId) root_store.nextTableId = 1;
+							attribute.tableId = table_id = root_store.nextTableId++;
+							dbis_store.putSync(attribute.key, attribute);
+						}
+						const dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
+						primary_store = root_store.openDB(attribute.key, dbi_init);
+						primary_store.tableId = table_id;
 					}
-					const primary_store = root_store.openDB(attribute.key, dbi_init);
-					primary_store.tableId = table_id;
-					const indices = {};
 					for (const attribute of attributes) {
+						// now load the non-primary keys, opening the dbs as necessary for indices
 						if (!attribute.is_hash_attribute) {
-							const dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
-							indices[attribute.name] = root_store.openDB(attribute.key, dbi_init);
+							if (!indices[attribute.name]) {
+								const dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
+								indices[attribute.name] = root_store.openDB(attribute.key, dbi_init);
+							}
+							const existing_attribute = existing_attributes.find(
+								(existing_attribute) => existing_attribute.name === attribute.name
+							);
+							if (existing_attribute)
+								existing_attributes.splice(existing_attributes.indexOf(existing_attribute), 1, attribute);
+							else existing_attributes.push(attribute);
 						}
 					}
-					const table = setTable(
-						tables,
-						table_name,
-						makeTable({
-							primaryStore: primary_store,
-							auditStore: audit_store,
-							tableName: table_name,
-							tableId: table_id,
-							primaryKey: attribute.name,
-							databasePath: is_legacy ? schema_name + '/' + table_name : schema_name,
-							databaseName: schema_name,
-							indices,
-							attributes,
-							schemaDefined: attribute.schemaDefined,
-							dbisDB: dbis_store,
-						})
-					);
-					for (const listener of table_listeners) {
-						listener(table);
+					if (!table) {
+						table = setTable(
+							tables,
+							table_name,
+							makeTable({
+								primaryStore: primary_store,
+								auditStore: audit_store,
+								tableName: table_name,
+								tableId: table_id,
+								primaryKey: attribute.name,
+								databasePath: is_legacy ? database_name + '/' + table_name : database_name,
+								databaseName: database_name,
+								indices,
+								attributes,
+								schemaDefined: attribute.schemaDefined,
+								dbisDB: dbis_store,
+							})
+						);
+						for (const listener of table_listeners) {
+							listener(table);
+						}
 					}
 				}
 			}
@@ -259,7 +284,6 @@ interface TableDefinition {
 	attributes: any[];
 	schemaDefined?: boolean;
 }
-const DEFINED_TABLES = Symbol('defined-tables');
 function ensureDB(database_name) {
 	let db_tables = databases[database_name];
 	if (!db_tables) {
@@ -277,7 +301,7 @@ function ensureDB(database_name) {
 		}
 	}
 	if (!db_tables[DEFINED_TABLES] && defined_databases) {
-		const defined_tables = new Set(); // we create this so we can determine what was found in a reset and remove any removed dbs/tables
+		const defined_tables = new Map(); // we create this so we can determine what was found in a reset and remove any removed dbs/tables
 		db_tables[DEFINED_TABLES] = defined_tables;
 		defined_databases.set(database_name, defined_tables);
 	}
@@ -287,7 +311,7 @@ function setTable(tables, table_name, Table) {
 	tables[table_name] = Table;
 	const defined_tables = tables[DEFINED_TABLES];
 	if (defined_tables) {
-		defined_tables.add(table_name);
+		defined_tables.set(table_name, Table);
 	}
 	return Table;
 }
