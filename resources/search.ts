@@ -1,6 +1,7 @@
-import { handleHDBError, ClientError } from '../utility/errors/hdbError';
+import { ClientError } from '../utility/errors/hdbError';
 import * as lmdb_terms from '../utility/lmdb/terms';
-import { compareKeys, readKey, MAXIMUM_KEY } from 'ordered-binary';
+import { compareKeys } from 'ordered-binary';
+import { SKIP } from 'lmdb';
 
 export function idsForCondition(search_condition, transaction, reverse, Table, allow_full_scan) {
 	const attribute_name = search_condition[0] ?? search_condition.attribute;
@@ -66,10 +67,11 @@ export function idsForCondition(search_condition, transaction, reverse, Table, a
 		if (!filter) {
 			throw new ClientError(`Unknown search operator ${search_condition.comparator}`);
 		}
+		// for filter operations, we intentionally yield the event turn so that scanning queries
+		// do not hog resources
 		return Table.primaryStore
 			.getRange({ start: true, transaction, reverse })
-			.filter(({ value }) => filter(value))
-			.map(({ key }) => key);
+			.map(({ key, value }) => new Promise((resolve) => setImmediate(() => resolve(filter(value) ? SKIP : key))));
 	}
 	const is_primary_key = attribute_name === Table.primaryKey;
 	const range_options = { start, end, inclusiveEnd, exclusiveStart, values: !is_primary_key, transaction, reverse };
@@ -93,7 +95,7 @@ const ALTERNATE_COMPARATOR_NAMES = {
 };
 
 /**
- *
+ * Create a filter based on the search condition that can be used to test each supplied record.
  * @param {SearchObject} search_condition
  * @returns {({}) => boolean}
  */

@@ -705,17 +705,21 @@ export function makeTable(options) {
 			// results have been iterated and finished.
 			const read_txn = this[DB_TXN_PROPERTY].getReadTxn();
 			read_txn.use();
-
+			const select = query.select;
 			// both AND and OR start by getting an iterator for the ids for first condition
 			const first_search = conditions[0];
 			let records;
 			if (!first_search) {
 				records = primary_store
 					.getRange(
-						reverse ? { end: false, reverse: true, transaction: read_txn } : { start: false, transaction: read_txn }
+						reverse
+							? { end: false, reverse: true, transaction: read_txn, lazy: select?.length < 4 }
+							: { start: false, transaction: read_txn, lazy: select?.length < 4 }
 					)
-					.map(({ value }) => value /* TODO: Use skip instead of filter once lmdb update is published ?? SKIP*/)
-					.filter((record) => record);
+					.map(({ value }) => {
+						if (!value) return SKIP;
+						return new Promise((resolve) => setImmediate(() => resolve(doSelect(value))));
+					});
 			} else {
 				let ids = idsForCondition(first_search, read_txn, reverse, TableResource, query.allowFullScan);
 				// and then things diverge...
@@ -723,23 +727,7 @@ export function makeTable(options) {
 					// get the intersection of condition searches by using the indexed query for the first condition
 					// and then filtering by all subsequent conditions
 					const filters = conditions.slice(1).map(filterByType);
-					const filters_length = filters.length;
-					records = ids
-						.map(
-							(id) =>
-								primary_store.get(id, {
-									transaction: read_txn,
-									lazy: true,
-								}) /* TODO: Use skip instead of filter once lmdb update is published ?? SKIP*/
-						)
-						.filter((record) => record);
-					if (filters_length > 0)
-						records = records.filter((record) => {
-							for (let i = 0; i < filters_length; i++) {
-								if (!filters[i](record)) return false; // didn't match filters
-							}
-							return true;
-						});
+					records = idsToRecords(ids, filters);
 				} else {
 					//get the union of ids from all condition searches
 					for (let i = 1; i < conditions.length; i++) {
@@ -757,15 +745,7 @@ export function makeTable(options) {
 						returned_ids.add(id);
 						return true;
 					});
-					records = ids
-						.map(
-							(id) =>
-								primary_store.get(id, {
-									transaction: read_txn,
-									lazy: true,
-								}) /* TODO: Use skip instead of filter once lmdb update is published ?? SKIP*/
-						)
-						.filter((record) => record);
+					records = idsToRecords(ids);
 				}
 			}
 			if (query.offset || query.limit !== undefined)
@@ -773,20 +753,44 @@ export function makeTable(options) {
 					query.offset,
 					query.limit !== undefined ? (query.offset || 0) + query.limit : undefined
 				);
-			const select = query.select;
-			if (select)
-				records = records.map((record) => {
+			records.onDone = () => {
+				read_txn.done();
+			};
+			function idsToRecords(ids, filters?) {
+				const filters_length = filters?.length;
+				const lazy = filters_length > 0 || select?.length < 4;
+				return ids.map(
+					// for filter operations, we intentionally use async and yield the event turn so that scanning queries
+					// do not hog resources and give more processing opportunity for more efficient index-driven queries.
+					// this also gives an opportunity to prefetch and ensure any page faults happen in a different thread
+					(id) =>
+						new Promise((resolve) =>
+							primary_store.prefetch([id], () => {
+								const record = primary_store.get(id, {
+									transaction: read_txn,
+									lazy,
+								});
+								if (!record) return SKIP;
+								for (let i = 0; i < filters_length; i++) {
+									if (!filters[i](record)) return resolve(SKIP); // didn't match filters
+								}
+								resolve(doSelect(record));
+							})
+						)
+				);
+			}
+			function doSelect(record) {
+				if (select) {
 					const selected = {};
 					for (let i = 0, l = select.length; i < l; i++) {
 						const key = select[i];
 						selected[key] = record[key];
 					}
 					return selected;
-				});
-			else records = records.map((record) => (record.toJSON ? record.toJSON() : record)); // get the full record, not the lazy record
-			records.onDone = () => {
-				read_txn.done();
-			};
+				}
+				// get the full record, not the lazy record
+				return record.toJSON ? record.toJSON() : record;
+			}
 			return records;
 		}
 		subscribe(options) {
