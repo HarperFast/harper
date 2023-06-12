@@ -21331,8 +21331,8 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"Status code is 500\", function () {",
-									"    pm.response.to.have.status(500);",
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
 									"});",
 									"",
 									"pm.test(\"Valid error message is recieved\", function () {",
@@ -21401,8 +21401,8 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"Status code is 500\", function () {",
-									"    pm.response.to.have.status(500);",
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
 									"});",
 									"",
 									"pm.test(\"Valid error message is recieved\", function () {",
@@ -21471,8 +21471,8 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"Status code is 500\", function () {",
-									"    pm.response.to.have.status(500);",
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
 									"});",
 									"",
 									"pm.test(\"Valid error message is recieved\", function () {",
