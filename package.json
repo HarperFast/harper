@@ -53,7 +53,7 @@
     "coverage": "nyc --reporter=lcov npm test"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "3.299.0",
+    "@aws-sdk/client-s3": "3.335.0",
     "@aws-sdk/lib-storage": "3.335.0",
     "@aws-sdk/abort-controller": "3.0.0",
     "@fastify/autoload": "~5.7.1",
