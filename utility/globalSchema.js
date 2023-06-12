@@ -1,6 +1,6 @@
 const system_schema = require('../json/systemSchema.json');
 const { callbackify, promisify } = require('util');
-const dbs = require('../resources/databases');
+const { getDatabases } = require('../resources/databases');
 
 module.exports = {
 	setSchemaDataToGlobal: setSchemaDataToGlobal,
@@ -17,7 +17,7 @@ let c_schema_describe_all = callbackify(schema.describeAll);
 let c_schema_describe_table = callbackify(schema.describeTable);
 
 function setSchemaDataToGlobal(callback) {
-	global.hdb_schema = dbs.getDatabases();
+	global.hdb_schema = getDatabases();
 	if (callback) callback();
 }
 
