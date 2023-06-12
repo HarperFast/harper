@@ -61,7 +61,11 @@ export class DatabaseTransaction implements Transaction {
 			write.validate?.();
 		}
 		const nextCondition = () => {
-			const write = this.writes[write_index++];
+			let write = this.writes[write_index++];
+			if (write_index > 30) {
+				console.warn('Too many writes to pre-condition all of them');
+				write = null;
+			}
 			if (write) {
 				if (write.key) {
 					const entry = write.store.getEntry(write.key);
