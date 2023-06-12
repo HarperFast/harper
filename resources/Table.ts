@@ -16,6 +16,7 @@ import {
 	withoutCopying,
 	NOT_COPIED_YET,
 	EXPLICIT_CHANGES_PROPERTY,
+	USER_PROPERTY,
 } from './Resource';
 import { COMPLETION, DatabaseTransaction, immediateTransaction } from './DatabaseTransaction';
 import * as lmdb_terms from '../utility/lmdb/terms';
@@ -28,6 +29,7 @@ import { SchemaEventMsg } from '../server/threads/itc';
 import { databases, table } from './databases';
 import { idsForCondition, filterByType } from './search';
 
+let server_utilities;
 const RANGE_ESTIMATE = 100000000;
 env_mngr.initSync();
 const b = Buffer.alloc(1);
@@ -507,6 +509,13 @@ export function makeTable(options) {
 				this.#writeUpdate(partial_record);
 			} else this.#writeDelete();
 		}
+		async operation(operation) {
+			operation.hdb_user = this[USER_PROPERTY];
+			operation.table ||= TableResource.tableName;
+			operation.schema ||= TableResource.databaseName;
+			const operation_function = server_utilities.chooseOperation(operation);
+			return server_utilities.processLocalTransaction({ body: operation }, operation_function);
+		}
 
 		/**
 		 * Store the provided record data into the current resource. This is not written
@@ -706,10 +715,10 @@ export function makeTable(options) {
 			const read_txn = this[DB_TXN_PROPERTY].getReadTxn();
 			read_txn.use();
 			const select = query.select;
-			// both AND and OR start by getting an iterator for the ids for first condition
 			const first_search = conditions[0];
 			let records;
 			if (!first_search) {
+				// if not conditions at all, just return entire table, iteratively
 				records = primary_store
 					.getRange(
 						reverse
@@ -718,9 +727,10 @@ export function makeTable(options) {
 					)
 					.map(({ value }) => {
 						if (!value) return SKIP;
-						return new Promise((resolve) => setImmediate(() => resolve(doSelect(value))));
+						return new Promise((resolve) => setImmediate(() => resolve(selectProperties(value))));
 					});
 			} else {
+				// both AND and OR start by getting an iterator for the ids for first condition
 				let ids = idsForCondition(first_search, read_txn, reverse, TableResource, query.allowFullScan);
 				// and then things diverge...
 				if (!query.operator || query.operator.toLowerCase() === 'and') {
@@ -737,7 +747,6 @@ export function makeTable(options) {
 						ids = ids.concat(next_ids);
 					}
 					const returned_ids = new Set();
-					const offset = query.offset || 0;
 					ids = ids.filter((id) => {
 						if (returned_ids.has(id))
 							// skip duplicates
@@ -757,6 +766,7 @@ export function makeTable(options) {
 				read_txn.done();
 			};
 			function idsToRecords(ids, filters?) {
+				// TODO: Test and ensure that we break out of these loops when a connection is lost
 				const filters_length = filters?.length;
 				const lazy = filters_length > 0 || select?.length < 4;
 				return ids.map(
@@ -774,12 +784,12 @@ export function makeTable(options) {
 								for (let i = 0; i < filters_length; i++) {
 									if (!filters[i](record)) return resolve(SKIP); // didn't match filters
 								}
-								resolve(doSelect(record));
+								resolve(selectProperties(record));
 							})
 						)
 				);
 			}
-			function doSelect(record) {
+			function selectProperties(record) {
 				if (select) {
 					const selected = {};
 					for (let i = 0, l = select.length; i < l; i++) {
@@ -965,9 +975,10 @@ export function makeTable(options) {
 		// TODO: Make an array version of indices that is faster
 		for (const key in indices) {
 			const index = indices[key];
+			const is_indexing = index.isIndexing;
 			const value = record?.[key];
 			const existing_value = existing_record?.[key];
-			if (value === existing_value) {
+			if (value === existing_value && !is_indexing) {
 				continue;
 			}
 
@@ -1077,4 +1088,7 @@ export function lowerCamelCase(snake_case) {
 		.split('_')
 		.map((part, i) => (i === 0 ? part : part[0].toUpperCase() + part.slice(1)))
 		.join('');
+}
+export function setServerUtilities(utilities) {
+	server_utilities = utilities;
 }

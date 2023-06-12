@@ -81,7 +81,7 @@ export async function handleFile(gql_content, url_path, file_path, resources) {
 					type_def.attributes = attributes;
 					// with graphql database definitions, this is a declaration that the table should exist and that it
 					// should be created if it does not exist
-					type_def.tableClass = await table(type_def);
+					type_def.tableClass = table(type_def);
 				}
 				if (type_name === 'Query') {
 					for (const field of definition.fields) {

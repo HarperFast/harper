@@ -22,6 +22,7 @@ const REQUEST_THREAD_INFO = 'request_thread_info';
 const RESOURCE_REPORT = 'resource_report';
 const THREAD_INFO = 'thread_info';
 const ADDED_PORT = 'added-port';
+const ACKNOWLEDGEMENT = 'ack';
 let getThreadInfo;
 
 module.exports = {
@@ -32,6 +33,7 @@ module.exports = {
 	setMonitorListener,
 	onMessageFromWorkers,
 	broadcast,
+	broadcastWithAcknowledgement,
 	messageTypeListener,
 	getWorkerIndex,
 	setMainIsWorker,
@@ -52,6 +54,13 @@ let messageTypeListeners = {
 	},
 	[RESOURCE_REPORT](message, worker) {
 		recordResourceReport(worker, message);
+	},
+	[ACKNOWLEDGEMENT](message) {
+		let completion = awaiting_responses.get(message.id);
+		if (completion) {
+			awaiting_responses.delete(message.id);
+			completion();
+		}
 	},
 };
 function startWorker(path, options = {}) {
@@ -226,6 +235,30 @@ function broadcast(message) {
 	}
 }
 
+const awaiting_responses = new Map();
+let next_id = 1;
+function broadcastWithAcknowledgement(message) {
+	return new Promise((resolve) => {
+		let waiting_count = 0;
+		for (let port of connected_ports) {
+			try {
+				const ack_handler = () => {
+					if (--waiting_count === 0) resolve();
+					port.off('exit', ack_handler);
+				};
+				awaiting_responses.set((message.requestId = next_id++), ack_handler);
+				port.postMessage(message);
+				port.on('exit', ack_handler);
+				waiting_count++;
+			} catch (error) {
+				harper_logger.error(`Unable to send message to worker`, error);
+			}
+		}
+		if (waiting_count === 0) resolve();
+	});
+}
+messageTypeListeners;
+
 function sendThreadInfo(target_worker) {
 	target_worker.postMessage({
 		type: THREAD_INFO,
@@ -329,7 +362,7 @@ function addPort(port, keep_ref) {
 				addPort(message.port);
 			} else {
 				for (let listener of message_listeners) {
-					listener(message);
+					listener(message, port);
 				}
 			}
 		})

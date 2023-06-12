@@ -200,6 +200,9 @@ class ErrorResource extends Resource {
 	delete() {
 		throw this.error;
 	}
+	connect() {
+		throw this.error;
+	}
 	getResource() {
 		// all child paths resolve back to reporting this error
 		return this;

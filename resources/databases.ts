@@ -13,6 +13,10 @@ import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject';
 import { CONFIG_PARAMS, LEGACY_DATABASES_DIR_NAME, DATABASES_DIR_NAME } from '../utility/hdbTerms';
 import * as fs from 'fs-extra';
 import { _assignPackageExport } from '../index';
+import { getIndexedValues } from '../utility/lmdb/commonUtility';
+import * as signalling from '../utility/signalling';
+import { SchemaEventMsg } from '../server/threads/itc';
+import * as harper_logger from '../utility/logging/harper_logger';
 
 const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
@@ -148,6 +152,7 @@ export function resetDatabases() {
 			database_envs.delete(path);
 		}
 	}
+	return databases;
 }
 
 /**
@@ -399,6 +404,10 @@ export function table({
 		primary_key = primary_key_attribute.name;
 		primary_key_attribute.is_hash_attribute = true;
 		primary_key_attribute.schemaDefined = schema_defined;
+		if (origin) {
+			if (!primary_key_attribute.origins) primary_key_attribute.origins = [origin];
+			else if (!primary_key_attribute.origins.includes(origin)) primary_key_attribute.origins.push(origin);
+		}
 		const dbi_init = new OpenDBIObject(!primary_key_attribute.isPrimaryKey, primary_key_attribute.isPrimaryKey);
 		const dbi_name = table_name + '/' + primary_key_attribute.name;
 		const primary_store = root_store.openDB(dbi_name, dbi_init);
@@ -430,6 +439,7 @@ export function table({
 	indices = Table.indices;
 	dbis_db = dbis_db || (root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init));
 	Table.dbisDB = dbis_db;
+	const attributes_to_index = [];
 	try {
 		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
 		// iterate through the attributes to ensure that we have all the dbis created and indexed
@@ -437,26 +447,30 @@ export function table({
 			// non-indexed attributes do not need a dbi
 			if (!attribute.indexed || attribute.isPrimaryKey) continue;
 			const dbi_name = table_name + '/' + attribute.name;
+			Object.defineProperty(attribute, 'key', { value: dbi_name, configurable: true });
 			const dbi_init = new OpenDBIObject(true, false);
 			const dbi = root_store.openDB(dbi_name, dbi_init);
-			const dbi_descriptor = dbis_db.get(dbi_name);
-			if (!dbi_descriptor) {
+			let dbi_descriptor = dbis_db.get(dbi_name);
+			if (!dbi_descriptor || (dbi_descriptor.indexingPID && dbi_descriptor.indexingPID !== process.pid)) {
 				startTxn();
-				const property = attribute.name;
-				// this means that a new attribute has been introduced that needs to be indexed
-				for (const entry of Table.primaryStore.getRange({ start: true })) {
-					const record = entry.value;
-					const value_to_index = record?.[property];
-					//if (value_to_index != null) dbi.put(value_to_index, record[primary_key]);
-					// TODO: put in indexing code
+				dbi_descriptor = dbis_db.get(dbi_name);
+				if (!dbi_descriptor || (dbi_descriptor.indexingPID && dbi_descriptor.indexingPID !== process.pid)) {
+					has_changes = true;
+					attribute.lastIndexedKey = dbi_descriptor?.lastIndexedKey || false;
+					attribute.indexingPID = process.pid;
+					Object.defineProperty(attribute, 'dbi', { value: dbi });
+					dbis_db.put(dbi_name, attribute);
+					attributes_to_index.push(attribute);
 				}
-				has_changes = true;
-				dbis_db.put(dbi_name, attribute);
 			}
+			dbi.isIndexing = Boolean(attribute.indexingPID);
 			indices[attribute.name] = dbi;
 		}
 	} finally {
 		if (txn_commit) txn_commit();
+	}
+	if (attributes_to_index.length > 0) {
+		Table.indexingOperation = runIndexing(Table, attributes_to_index);
 	}
 	Table.origin = origin;
 	if (has_changes) {
@@ -465,6 +479,7 @@ export function table({
 		}
 	}
 	if (expiration) Table.setTTLExpiration(+expiration);
+
 	return Table;
 	function startTxn() {
 		if (txn_commit) return;
@@ -477,6 +492,85 @@ export function table({
 		});
 	}
 }
+const MAX_OUTSTANDING_INDEXING = 1000;
+const MIN_OUTSTANDING_INDEXING = 10;
+async function runIndexing(Table, attributes) {
+	try {
+		await signalling.signalSchemaChange(
+			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName)
+		);
+		const attributes_length = attributes.length;
+		let last_resolution;
+		let outstanding = 0;
+		// this means that a new attribute has been introduced that needs to be indexed
+		for (const { key, value: record, version } of Table.primaryStore.getRange({
+			start: attributes[0].lastIndexedKey, // TODO: Choose the lowest key of the attributes
+			lazy: attributes_length < 4,
+			versions: true,
+			snapshot: false, // don't hold a read transaction this whole time
+		})) {
+			if (!record) continue; // deletion entry
+			let indexed = 0;
+			outstanding++;
+			// every index operation needs to be guarded by the version still be the same. If it has already changed before
+			// we index, that's fine because indexing is idempotent, we can just put the same values again. If it changes
+			// during the indexing, the indexing here will fail. This is also fine because it means the other thread will have
+			// performed indexing and we don't need to do anything further
+			last_resolution = Table.primaryStore.ifVersion(key, version, () => {
+				for (let i = 0; i < attributes_length; i++) {
+					const attribute = attributes[i];
+					const property = attribute.name;
+					const values = getIndexedValues(record[property]);
+					if (values) {
+						/*					if (LMDB_PREFETCH_WRITES)
+												index.prefetch(
+													values.map((v) => ({ key: v, value: id })),
+													noop
+												);*/
+						for (let i = 0, l = values.length; i < l; i++) {
+							attribute.dbi.put(values[i], key);
+						}
+					}
+				}
+			});
+			last_resolution.then(
+				() => outstanding--,
+				(error) => {
+					outstanding--;
+					harper_logger.error(error);
+				}
+			);
+			if (++indexed % 100 === 0) {
+				// occasionally update our progress so if we crash, we can resume
+				for (const attribute of attributes) {
+					attribute.lastIndexedKey = key;
+					Table.dbisDB.put(attribute.key, attribute);
+				}
+			}
+			if (outstanding > MAX_OUTSTANDING_INDEXING) await last_resolution;
+			else if (outstanding > MIN_OUTSTANDING_INDEXING) await new Promise((resolve) => setImmediate(resolve)); // yield event turn, don't want to use all computation
+		}
+		// update the attributes to indicate that we are finished
+		for (const attribute of attributes) {
+			delete attribute.lastIndexedKey;
+			delete attribute.indexingPID;
+			attribute.dbi.isIndexing = false;
+			last_resolution = Table.dbisDB.put(attribute.key, attribute);
+		}
+		await last_resolution;
+		// now notify all the threads that we are done and the index is ready to use
+		await signalling.signalSchemaChange(
+			new SchemaEventMsg(process.pid, 'indexing-finished', Table.databaseName, Table.tableName)
+		);
+	} catch (error) {
+		harper_logger.error('Error in indexing', error);
+	}
+}
+/**
+ * Once an origin has fully declared all the tables for a database, this can be run to remove any tables or attributes
+ * that are unused.
+ */
+function cleanupDatabase(origin) {}
 
 export function dropTableMeta({ table: table_name, database: database_name }) {
 	const root_store = database({ database: database_name, table: table_name });

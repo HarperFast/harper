@@ -117,7 +117,7 @@ function publishSchema(Table) {
 			operation: 'define_schema',
 			schema: Table.databaseName,
 			table: Table.tableName,
-			attributes: Table.attributes,
+			attributes: Table.attributes, // TODO: Probably be best to only propagate attribute's with indexing if the it has an operation origin
 			__origin: {
 				timestamp: Date.now(),
 				node_name,

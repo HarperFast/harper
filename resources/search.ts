@@ -59,10 +59,13 @@ export function idsForCondition(search_condition, transaction, reverse, Table, a
 	}
 	const index = attribute_name === Table.primaryKey ? Table.primaryStore : Table.indices[attribute_name];
 
-	if (!index || need_full_scan) {
+	if (!index || index.isIndexing || need_full_scan) {
 		// no indexed searching available, need a full scan
 		if (!allow_full_scan)
-			throw new ClientError(`${attribute_name} is not indexed, can not search for this attribute`, 404);
+			throw new ClientError(
+				`"${attribute_name}" is not indexed${index?.isIndexing ? ' yet' : ''}, can not search for this attribute`,
+				404
+			);
 		const filter = filterByType(search_condition);
 		if (!filter) {
 			throw new ClientError(`Unknown search operator ${search_condition.comparator}`);

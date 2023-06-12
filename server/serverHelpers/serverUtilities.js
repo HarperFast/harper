@@ -38,6 +38,7 @@ const token_authentication = require('../../security/tokenAuthentication');
 const config_utils = require('../../config/configUtils');
 const transaction_log = require('../../utility/logging/transactionLog');
 const npm_utilities = require('../../utility/npmUtilities');
+const { setServerUtilities } = require('../../resources/Table');
 
 const operation_function_caller = require(`../../utility/OperationFunctionCaller`);
 
@@ -118,6 +119,7 @@ module.exports = {
 	getOperationFunction,
 	processLocalTransaction,
 };
+setServerUtilities(module.exports);
 
 function chooseOperation(json) {
 	let getOpResult;

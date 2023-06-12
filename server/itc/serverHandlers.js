@@ -50,7 +50,12 @@ async function syncSchemaMetadata(msg) {
 		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME);
 		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME);
 		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME);
-		resetDatabases(); /*
+		let databases = resetDatabases();
+		if (msg.table && msg.database)
+			// wait for a write to finish to ensure all writes have been written
+			await databases[msg.database][msg.table].put(Symbol.for('write-verify'), null);
+
+		/*
 		if (global.hdb_schema !== undefined && typeof global.hdb_schema === 'object' && msg.operation !== undefined) {
 			switch (msg.operation) {
 				case 'drop_schema':
