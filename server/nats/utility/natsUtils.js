@@ -515,6 +515,17 @@ async function* viewStreamIterator(stream_name, start_time = undefined, max = un
  */
 async function publishToStream(subject_name, stream_name, msg_header, message) {
 	hdb_logger.trace(`publishToStream called with subject: ${subject_name}, stream: ${stream_name}, entries:`, message);
+	let republish_msg = true;
+
+	// If there is a msg header we can assume this is a republish.
+	if (
+		env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_REPUBLISHMESSAGES) === false &&
+		msg_header &&
+		msg_header.has(nats_terms.MSG_HEADERS.NATS_MSG_ID)
+	) {
+		republish_msg = false;
+	}
+
 	msg_header = addNatsMsgHeader(message, msg_header);
 
 	const { js } = await getNATSReferences();
@@ -523,13 +534,13 @@ async function publishToStream(subject_name, stream_name, msg_header, message) {
 
 	try {
 		hdb_logger.trace(`publishToStream publishing to subject: ${subject}, data:`, message);
-		await js.publish(subject, encode(message), { headers: msg_header });
+		if (republish_msg) await js.publish(subject, encode(message), { headers: msg_header });
 	} catch (err) {
 		// If the stream doesn't exist it is created and published to
 		if (err.code && err.code.toString() === '503') {
 			hdb_logger.trace(`publishToStream creating stream: ${stream_name}`);
 			await createLocalStream(stream_name, [subject]);
-			await js.publish(subject, encode(message), { headers: msg_header });
+			if (republish_msg) await js.publish(subject, encode(message), { headers: msg_header });
 		} else {
 			throw err;
 		}

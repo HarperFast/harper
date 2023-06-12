@@ -20,8 +20,8 @@
   "engines": {
     "node": ">=14.0.0",
     "preferred-node": "18.15.0",
-    "go-lang": "1.19.6",
-    "nats-server": "2.9.15"
+    "go-lang": "1.19.9",
+    "nats-server": "2.9.17"
   },
   "homepage": "https://www.harperdb.io/",
   "bugs": "support@harperdb.io",
@@ -93,7 +93,7 @@
     "mkcert": "1.5.1",
     "moment": "2.29.4",
     "msgpackr": "1.8.5",
-    "nats": "2.12.1",
+    "nats": "2.14.0",
     "needle": "3.2.0",
     "node-stream-zip": "1.15.0",
     "normalize-path": "^3.0.0",
