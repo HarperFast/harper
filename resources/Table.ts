@@ -780,7 +780,7 @@ export function makeTable(options) {
 									transaction: read_txn,
 									lazy,
 								});
-								if (!record) return SKIP;
+								if (!record) return resolve(SKIP);
 								for (let i = 0; i < filters_length; i++) {
 									if (!filters[i](record)) return resolve(SKIP); // didn't match filters
 								}
@@ -932,6 +932,8 @@ export function makeTable(options) {
 			if (!attribute.name) throw new ClientError('Attribute name is required');
 			if (attribute.name.match(/[`/]/))
 				throw new ClientError('Attribute names cannot include backticks or forward slashes');
+
+			//TODO: use databases code for adding index
 			this.attributes.push(attribute);
 			await dbis_db.put(this.tableName + '/' + attribute.name, attribute);
 			if (attribute.indexed) {

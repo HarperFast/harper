@@ -60,7 +60,7 @@ export async function setupTestApp() {
 			created_records.push(object.id);
 		}
 
-		for (let i = 0; i < 10; i++) {
+		for (let i = 0; i < 15; i++) {
 			let object = {
 				id: i,
 				name: 'name' + i,
@@ -72,6 +72,10 @@ export async function setupTestApp() {
 				responseType: 'arraybuffer',
 				headers,
 			});
+			if (i >= 10) {
+				// make sure deletion works properly for searches as well
+				await axios.delete('http://localhost:9926/FourProp/' + object.id);
+			}
 		}
 	} catch(error) {
 		error.message += ': ' + error.response?.data.toString();
