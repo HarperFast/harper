@@ -74,7 +74,7 @@ export function idsForCondition(search_condition, transaction, reverse, Table, a
 		// do not hog resources
 		return Table.primaryStore
 			.getRange({ start: true, transaction, reverse })
-			.map(({ key, value }) => new Promise((resolve) => setImmediate(() => resolve(filter(value) ? SKIP : key))));
+			.map(({ key, value }) => new Promise((resolve) => setImmediate(() => resolve(filter(value) ? key : SKIP))));
 	}
 	const is_primary_key = attribute_name === Table.primaryKey;
 	const range_options = { start, end, inclusiveEnd, exclusiveStart, values: !is_primary_key, transaction, reverse };
