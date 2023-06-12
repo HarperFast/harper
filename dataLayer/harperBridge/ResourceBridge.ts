@@ -255,7 +255,7 @@ export class ResourceBridge extends LMDBBridge {
 			delete_called = true;
 		};
 
-		for (const records of records_to_delete) {
+		for await (const records of records_to_delete) {
 			ids.push(records[Table.primaryKey]);
 			i++;
 			if (i % DELETE_CHUNK === 0) {
