@@ -55,13 +55,6 @@ let messageTypeListeners = {
 	[RESOURCE_REPORT](message, worker) {
 		recordResourceReport(worker, message);
 	},
-	[ACKNOWLEDGEMENT](message) {
-		let completion = awaiting_responses.get(message.id);
-		if (completion) {
-			awaiting_responses.delete(message.id);
-			completion();
-		}
-	},
 };
 function startWorker(path, options = {}) {
 	const license = hdb_license.licenseSearch();
@@ -257,7 +250,6 @@ function broadcastWithAcknowledgement(message) {
 		if (waiting_count === 0) resolve();
 	});
 }
-messageTypeListeners;
 
 function sendThreadInfo(target_worker) {
 	target_worker.postMessage({
@@ -358,8 +350,13 @@ function addPort(port, keep_ref) {
 	connected_ports.push(port);
 	port
 		.on('message', (message) => {
-			if (message.type === ADDED_PORT) {
-				addPort(message.port);
+			if (message.type === ADDED_PORT) addPort(message.port);
+			else if (message.type === ACKNOWLEDGEMENT) {
+				let completion = awaiting_responses.get(message.id);
+				if (completion) {
+					awaiting_responses.delete(message.id);
+					completion();
+				}
 			} else {
 				for (let listener of message_listeners) {
 					listener(message, port);

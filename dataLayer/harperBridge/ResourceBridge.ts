@@ -108,7 +108,7 @@ export class ResourceBridge extends LMDBBridge {
 			database: create_schema_obj.schema,
 			table: null,
 		});
-		signalling.signalSchemaChange(
+		return signalling.signalSchemaChange(
 			new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_SCHEMA, create_schema_obj.schema)
 		);
 	}

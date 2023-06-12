@@ -221,6 +221,7 @@ function readMetaDb(
 					if (table) {
 						indices = table.indices;
 						existing_attributes = table.attributes;
+						table.schemaVersion++;
 					} else {
 						table_id = attribute.tableId;
 						if (table_id) {
@@ -267,6 +268,7 @@ function readMetaDb(
 								dbisDB: dbis_store,
 							})
 						);
+						table.schemaVersion = 1;
 						for (const listener of table_listeners) {
 							listener(table);
 						}
@@ -432,6 +434,7 @@ export function table({
 				dbisDB: dbis_db,
 			})
 		);
+		Table.schemaVersion = 1;
 		has_changes = true;
 		startTxn();
 		dbis_db.put(dbi_name, primary_key_attribute);
@@ -469,6 +472,7 @@ export function table({
 	} finally {
 		if (txn_commit) txn_commit();
 	}
+	if (has_changes) Table.schemaVersion++;
 	if (attributes_to_index.length > 0) {
 		Table.indexingOperation = runIndexing(Table, attributes_to_index);
 	}
@@ -496,6 +500,7 @@ const MAX_OUTSTANDING_INDEXING = 1000;
 const MIN_OUTSTANDING_INDEXING = 10;
 async function runIndexing(Table, attributes) {
 	try {
+		const schema_version = Table.schemaVersion;
 		await signalling.signalSchemaChange(
 			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName)
 		);
@@ -510,6 +515,7 @@ async function runIndexing(Table, attributes) {
 			snapshot: false, // don't hold a read transaction this whole time
 		})) {
 			if (!record) continue; // deletion entry
+			if (Table.schemaVersion !== schema_version) return; // break out if there are any schema changes and let someone else pick it up
 			let indexed = 0;
 			outstanding++;
 			// every index operation needs to be guarded by the version still be the same. If it has already changed before
