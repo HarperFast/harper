@@ -94,7 +94,31 @@ export class ResourceBridge extends LMDBBridge {
 		return `attribute ${create_attribute_obj.schema}.${create_attribute_obj.table}.${create_attribute_obj.attribute} successfully created.`;
 	}
 	async dropAttribute(drop_attribute_obj) {
-		await getTable(drop_attribute_obj).removeAttribute(drop_attribute_obj.attribute);
+		const Table = getTable(drop_attribute_obj);
+		await Table.removeAttribute(drop_attribute_obj.attribute);
+		if (!Table.schemaDefined) {
+			// legacy behavior of deleting all the property values
+			const property = drop_attribute_obj.attribute;
+			let resolution;
+			const deleteRecord = (key, record, version): Promise<void> => {
+				record = Object.assign({}, record);
+				delete record[property];
+				return Table.primaryStore
+					.ifVersion(key, version, () => Table.primaryStore.put(key, record, version))
+					.then((success) => {
+						if (!success) {
+							// try again with the latest record
+							const { value: record, version } = Table.primaryStore.getEntry(key);
+							return deleteRecord(key, record, version);
+						}
+					});
+			};
+			for (const { key, value: record, version } of Table.primaryStore.getRange({ start: true, versions: true })) {
+				resolution = deleteRecord(key, record, version);
+				await new Promise((resolve) => setImmediate(resolve));
+			}
+			await resolution;
+		}
 		return `successfully deleted ${drop_attribute_obj.schema}.${drop_attribute_obj.table}.${drop_attribute_obj.attribute}`;
 	}
 	dropTable(drop_table_object) {

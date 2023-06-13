@@ -16,6 +16,7 @@ import { _assignPackageExport } from '../index';
 import { getIndexedValues } from '../utility/lmdb/commonUtility';
 import * as signalling from '../utility/signalling';
 import { SchemaEventMsg } from '../server/threads/itc';
+import { workerData } from 'worker_threads';
 import * as harper_logger from '../utility/logging/harper_logger';
 
 const DEFAULT_DATABASE_NAME = 'data';
@@ -397,6 +398,7 @@ export function table({
 	let txn_commit;
 	if (Table) {
 		primary_key = Table.primaryKey;
+		Table.attributes.splice(0, Table.attributes.length, ...attributes);
 	} else {
 		let audit_store = root_store.auditStore;
 		if (!audit_store && USE_AUDIT) {
@@ -442,6 +444,23 @@ export function table({
 	indices = Table.indices;
 	dbis_db = dbis_db || (root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init));
 	Table.dbisDB = dbis_db;
+	const indices_to_remove = [];
+	for (const { key, value } of dbis_db.getRange({ start: true })) {
+		let [attribute_table_name, attribute_name] = key.toString().split('/');
+		if (attribute_name) {
+			if (attribute_table_name !== table_name) continue;
+		} else {
+			attribute_name = attribute_table_name;
+		}
+		const existing_attribute = attributes.find((attribute) => attribute.name === attribute_name);
+		if (!existing_attribute?.indexed && value.indexed) {
+			startTxn();
+			has_changes = true;
+			dbis_db.remove(key);
+			const index_dbi = Table.indices[attribute_table_name];
+			if (index_dbi) indices_to_remove.push(index_dbi);
+		}
+	}
 	const attributes_to_index = [];
 	try {
 		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
@@ -454,27 +473,35 @@ export function table({
 			const dbi_init = new OpenDBIObject(true, false);
 			const dbi = root_store.openDB(dbi_name, dbi_init);
 			let dbi_descriptor = dbis_db.get(dbi_name);
-			if (!dbi_descriptor || (dbi_descriptor.indexingPID && dbi_descriptor.indexingPID !== process.pid)) {
-				startTxn();
-				dbi_descriptor = dbis_db.get(dbi_name);
+			if (schema_defined) {
 				if (!dbi_descriptor || (dbi_descriptor.indexingPID && dbi_descriptor.indexingPID !== process.pid)) {
-					has_changes = true;
-					attribute.lastIndexedKey = dbi_descriptor?.lastIndexedKey || false;
-					attribute.indexingPID = process.pid;
-					Object.defineProperty(attribute, 'dbi', { value: dbi });
-					dbis_db.put(dbi_name, attribute);
-					attributes_to_index.push(attribute);
+					startTxn();
+					dbi_descriptor = dbis_db.get(dbi_name);
+					if (
+						!dbi_descriptor ||
+						(dbi_descriptor.indexingPID && dbi_descriptor.indexingPID !== process.pid) ||
+						dbi_descriptor.workerIndex === workerData.workerIndex
+					) {
+						has_changes = true;
+						attribute.lastIndexedKey = dbi_descriptor?.lastIndexedKey || false;
+						attribute.indexingPID = process.pid;
+						dbi.isIndexing = true;
+						Object.defineProperty(attribute, 'dbi', { value: dbi });
+						dbis_db.put(dbi_name, attribute);
+						attributes_to_index.push(attribute);
+					}
 				}
+			} else {
+				dbis_db.put(dbi_name, attribute);
 			}
-			dbi.isIndexing = Boolean(attribute.indexingPID);
 			indices[attribute.name] = dbi;
 		}
 	} finally {
 		if (txn_commit) txn_commit();
 	}
 	if (has_changes) Table.schemaVersion++;
-	if (attributes_to_index.length > 0) {
-		Table.indexingOperation = runIndexing(Table, attributes_to_index);
+	if (attributes_to_index.length > 0 || indices_to_remove.length > 0) {
+		Table.indexingOperation = runIndexing(Table, attributes_to_index, indices_to_remove);
 	}
 	Table.origin = origin;
 	if (has_changes) {
@@ -498,70 +525,75 @@ export function table({
 }
 const MAX_OUTSTANDING_INDEXING = 1000;
 const MIN_OUTSTANDING_INDEXING = 10;
-async function runIndexing(Table, attributes) {
+async function runIndexing(Table, attributes, indicesToRemove) {
 	try {
 		const schema_version = Table.schemaVersion;
 		await signalling.signalSchemaChange(
 			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName)
 		);
-		const attributes_length = attributes.length;
 		let last_resolution;
-		let outstanding = 0;
-		// this means that a new attribute has been introduced that needs to be indexed
-		for (const { key, value: record, version } of Table.primaryStore.getRange({
-			start: attributes[0].lastIndexedKey, // TODO: Choose the lowest key of the attributes
-			lazy: attributes_length < 4,
-			versions: true,
-			snapshot: false, // don't hold a read transaction this whole time
-		})) {
-			if (!record) continue; // deletion entry
-			if (Table.schemaVersion !== schema_version) return; // break out if there are any schema changes and let someone else pick it up
-			let indexed = 0;
-			outstanding++;
-			// every index operation needs to be guarded by the version still be the same. If it has already changed before
-			// we index, that's fine because indexing is idempotent, we can just put the same values again. If it changes
-			// during the indexing, the indexing here will fail. This is also fine because it means the other thread will have
-			// performed indexing and we don't need to do anything further
-			last_resolution = Table.primaryStore.ifVersion(key, version, () => {
-				for (let i = 0; i < attributes_length; i++) {
-					const attribute = attributes[i];
-					const property = attribute.name;
-					const values = getIndexedValues(record[property]);
-					if (values) {
-						/*					if (LMDB_PREFETCH_WRITES)
-												index.prefetch(
-													values.map((v) => ({ key: v, value: id })),
-													noop
-												);*/
-						for (let i = 0, l = values.length; i < l; i++) {
-							attribute.dbi.put(values[i], key);
+		for (const index of indicesToRemove) {
+			last_resolution = index.drop();
+		}
+		const attributes_length = attributes.length;
+		if (attributes_length > 0) {
+			let outstanding = 0;
+			// this means that a new attribute has been introduced that needs to be indexed
+			for (const { key, value: record, version } of Table.primaryStore.getRange({
+				start: attributes[0].lastIndexedKey, // TODO: Choose the lowest key of the attributes
+				lazy: attributes_length < 4,
+				versions: true,
+				snapshot: false, // don't hold a read transaction this whole time
+			})) {
+				if (!record) continue; // deletion entry
+				if (Table.schemaVersion !== schema_version) return; // break out if there are any schema changes and let someone else pick it up
+				let indexed = 0;
+				outstanding++;
+				// every index operation needs to be guarded by the version still be the same. If it has already changed before
+				// we index, that's fine because indexing is idempotent, we can just put the same values again. If it changes
+				// during the indexing, the indexing here will fail. This is also fine because it means the other thread will have
+				// performed indexing and we don't need to do anything further
+				last_resolution = Table.primaryStore.ifVersion(key, version, () => {
+					for (let i = 0; i < attributes_length; i++) {
+						const attribute = attributes[i];
+						const property = attribute.name;
+						const values = getIndexedValues(record[property]);
+						if (values) {
+							/*					if (LMDB_PREFETCH_WRITES)
+													index.prefetch(
+														values.map((v) => ({ key: v, value: id })),
+														noop
+													);*/
+							for (let i = 0, l = values.length; i < l; i++) {
+								attribute.dbi.put(values[i], key);
+							}
 						}
 					}
+				});
+				last_resolution.then(
+					() => outstanding--,
+					(error) => {
+						outstanding--;
+						harper_logger.error(error);
+					}
+				);
+				if (++indexed % 100 === 0) {
+					// occasionally update our progress so if we crash, we can resume
+					for (const attribute of attributes) {
+						attribute.lastIndexedKey = key;
+						Table.dbisDB.put(attribute.key, attribute);
+					}
 				}
-			});
-			last_resolution.then(
-				() => outstanding--,
-				(error) => {
-					outstanding--;
-					harper_logger.error(error);
-				}
-			);
-			if (++indexed % 100 === 0) {
-				// occasionally update our progress so if we crash, we can resume
-				for (const attribute of attributes) {
-					attribute.lastIndexedKey = key;
-					Table.dbisDB.put(attribute.key, attribute);
-				}
+				if (outstanding > MAX_OUTSTANDING_INDEXING) await last_resolution;
+				else if (outstanding > MIN_OUTSTANDING_INDEXING) await new Promise((resolve) => setImmediate(resolve)); // yield event turn, don't want to use all computation
 			}
-			if (outstanding > MAX_OUTSTANDING_INDEXING) await last_resolution;
-			else if (outstanding > MIN_OUTSTANDING_INDEXING) await new Promise((resolve) => setImmediate(resolve)); // yield event turn, don't want to use all computation
-		}
-		// update the attributes to indicate that we are finished
-		for (const attribute of attributes) {
-			delete attribute.lastIndexedKey;
-			delete attribute.indexingPID;
-			attribute.dbi.isIndexing = false;
-			last_resolution = Table.dbisDB.put(attribute.key, attribute);
+			// update the attributes to indicate that we are finished
+			for (const attribute of attributes) {
+				delete attribute.lastIndexedKey;
+				delete attribute.indexingPID;
+				attribute.dbi.isIndexing = false;
+				last_resolution = Table.dbisDB.put(attribute.key, attribute);
+			}
 		}
 		await last_resolution;
 		// now notify all the threads that we are done and the index is ready to use

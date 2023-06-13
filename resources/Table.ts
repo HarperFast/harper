@@ -933,20 +933,17 @@ export function makeTable(options) {
 			if (attribute.name.match(/[`/]/))
 				throw new ClientError('Attribute names cannot include backticks or forward slashes');
 
-			//TODO: use databases code for adding index
-			this.attributes.push(attribute);
-			await dbis_db.put(this.tableName + '/' + attribute.name, attribute);
-			if (attribute.indexed) {
-				const dbi_name = table_name + '/' + attribute.name;
-				const dbi_init = new OpenDBIObject(true, false);
-				this.indices[attribute.name] = this.primaryStore.openDB(dbi_name, dbi_init);
-			}
-			signalling.signalSchemaChange(
-				new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_ATTRIBUTE, database_name, table_name, attribute.name)
-			);
+			const new_attributes = attributes.slice(0);
+			new_attributes.push(attribute);
+			table({ table: table_name, database: database_name, schemaDefined: schema_defined, attributes: new_attributes });
 			this.Source?.defineSchema?.(this);
+			return TableResource.indexingOperation;
 		}
-		static async removeAttribute(name) {}
+		static async removeAttribute(name) {
+			const new_attributes = attributes.filter((attribute) => attribute.name !== name);
+			table({ table: table_name, database: database_name, schemaDefined: schema_defined, attributes: new_attributes });
+			return TableResource.indexingOperation;
+		}
 		static getRecordCount() {
 			// iterate through the metadata entries to exclude their count and exclude the deletion counts
 			let excluded_count = 0;
