@@ -539,6 +539,7 @@ export function makeTable(options) {
 			let existing_record = this[RECORD_PROPERTY];
 			this[RECORD_PROPERTY] = record;
 			let is_unchanged;
+			let record_prepared;
 			env_txn.addWrite({
 				key: this[ID_PROPERTY],
 				store: primary_store,
@@ -554,7 +555,9 @@ export function makeTable(options) {
 						const existing_entry = primary_store.getEntry(this[ID_PROPERTY]);
 						existing_record = existing_entry?.value;
 						this.updateModificationTime(existing_entry?.version);
-					} else {
+					}
+					if (!record_prepared) {
+						record_prepared = true;
 						if (record[EXPLICIT_CHANGES_PROPERTY]) {
 							record = Object.assign({}, record, record[EXPLICIT_CHANGES_PROPERTY]);
 						}
@@ -575,11 +578,6 @@ export function makeTable(options) {
 								if (completion?.then) completion = completion.then(() => source.put(record, options));
 								else completion = source.put(record, options);
 							}
-						}
-
-						const had_existing = existing_record;
-						if (!existing_record) {
-							existing_record = {};
 						}
 					}
 
