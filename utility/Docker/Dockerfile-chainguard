@@ -1,10 +1,37 @@
 FROM cgr.dev/chainguard/node:latest
-ARG HARPERDB_TARBALL
 
-#Expose HarperDB ports
+ARG HARPERDB_TARBALL
+ARG HARPERDB_VERSION
+
+# metadata for labels
+ARG BUILD_DATE
+ARG VCS_REF
+ARG VCS_TYPE=git
+
+# for use in labels
+ENV SUMMARY="HarperDB is a turn-key solution for the collection, distribution, and analysis of data."
+ENV DESCRIPTION="HarperDB is a turn-key solution for the collection, distribution, and analysis of data throughout your organization. Projects that have historically taken months (or even years) of consulting, configuration, and custom development can be completed in days or weeks with HarperDB."
+
+# useful metadata
+LABEL name="harperdb/harperdb-openshift"
+LABEL vendor="HarperDB"
+LABEL version=${HARPERDB_VERSION}
+LABEL release=${HARPERDB_VERSION}
+LABEL maintainer="support@harperdb.io"
+LABEL summary="${SUMMARY}"
+LABEL description="${DESCRIPTION}"
+LABEL help="https://docs.harperdb.io/"
+LABEL url="https://hub.docker.com/r/harperdb/harperdb"
+LABEL usage="https://hub.docker.com/r/harperdb/harperdb"
+
+# expose HarperDB ports
 EXPOSE 9925
 EXPOSE 9926
 EXPOSE 9932
+
+# add Licensing files
+RUN mkdir /app/licenses
+COPY utility/Docker/licenses/* /app/licenses/.
 
 #Copy HarperDB tarball
 COPY ./$HARPERDB_TARBALL /app/.
