@@ -4,7 +4,8 @@ import { UPDATES_PROPERTY } from '../utility/hdbTerms';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 
 export const COMPLETION = Symbol('completion');
-const MAX_RETRIES = 10;
+const MAX_OPTIMISTIC_RETRIES = 2;
+const MAX_OPTIMISTIC_SIZE = 100;
 export class DatabaseTransaction implements Transaction {
 	conditions = []; // the set of reads that were made in this txn, that need to be verified to commit the writes
 	writes = []; // the set of writes to commit if the conditions are met
@@ -60,12 +61,24 @@ export class DatabaseTransaction implements Transaction {
 		for (const write of this.writes) {
 			write.validate?.();
 		}
-		const nextCondition = () => {
-			let write = this.writes[write_index++];
-			if (write_index > 30) {
-				console.warn('Too many writes to pre-condition all of them');
-				write = null;
+		const doWrite = (write) => {
+			const audit_record = write.commit(retries);
+			if (audit_record) {
+				if (audit_record[COMPLETION]) {
+					if (!completions) completions = [];
+					completions.push(audit_record[COMPLETION]);
+				}
+				last_store = write.store;
+				if (this.auditStore) {
+					audit_record.user = this.username;
+					audit_record.lastVersion = write.lastVersion;
+					this.auditStore.put([(txn_time = write.txnTime), write.store.tableId, write.key], audit_record);
+				}
 			}
+		};
+		// this uses optimistic locking to submit a transaction, conditioning each write on the expected version
+		const nextCondition = () => {
+			const write = this.writes[write_index++];
 			if (write) {
 				if (write.key) {
 					const entry = write.store.getEntry(write.key);
@@ -79,24 +92,23 @@ export class DatabaseTransaction implements Transaction {
 				} else nextCondition();
 			} else {
 				for (const write of this.writes) {
-					const audit_record = write.commit(retries);
-					if (audit_record) {
-						if (audit_record[COMPLETION]) {
-							if (!completions) completions = [];
-							completions.push(audit_record[COMPLETION]);
-						}
-						last_store = write.store;
-						if (this.auditStore) {
-							audit_record.user = this.username;
-							audit_record.lastVersion = write.lastVersion;
-							this.auditStore.put([(txn_time = write.txnTime), write.store.tableId, write.key], audit_record);
-						}
-					}
+					doWrite(write);
 				}
 			}
 		};
 		if (resource_resolutions) await Promise.all(resource_resolutions);
-		nextCondition();
+		if (this.writes.length < MAX_OPTIMISTIC_SIZE >> retries) nextCondition();
+		else {
+			// if it is too big to expect optimistic writes to work, or we have done too many retries we use
+			// a real LMDB transaction to get exclusive access to reading and writing
+			retries = 1; // we go into retry mode so that each commit action reloads the latest data while in the transaction
+			resolution = this.writes[0].store.transaction(() => {
+				for (const write of this.writes) {
+					doWrite(write);
+				}
+				return true; // success. always success
+			});
+		}
 		//this.auditStore.ifNoExists('txn_time-fix this', nextCondition);
 		// TODO: if any of these fail, restart this
 		// TODO: This is where we write to the SharedArrayBuffer so that subscribers from other threads can
@@ -115,10 +127,7 @@ export class DatabaseTransaction implements Transaction {
 					};
 				});
 			} else {
-				if (++retries > MAX_RETRIES) {
-					throw new Error('Unable to optimistically update record');
-				}
-				return this.commit(flush, retries); // try again
+				return this.commit(flush, retries + 1); // try again
 			}
 		});
 	}
