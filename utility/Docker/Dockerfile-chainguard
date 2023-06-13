@@ -1,5 +1,7 @@
 FROM cgr.dev/chainguard/node:latest
+
 ARG HARPERDB_TARBALL
+ARG HARPERDB_VERSION
 
 # metadata for labels
 ARG BUILD_DATE
