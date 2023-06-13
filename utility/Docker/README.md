@@ -52,6 +52,7 @@ docker run -d \
   -v <host directory>:/home/harperdb/hdb \
   -e HDB_ADMIN_USERNAME=HDB_ADMIN \
   -e HDB_ADMIN_PASSWORD=password \
+  -e HTTP_THREADS=4 \
   -p 9925:9925 \
   -p 9926:9926 \
   harperdb/harperdb
@@ -63,6 +64,7 @@ docker run -d \
   -v <host directory>:/home/harperdb/hdb \
   -e HDB_ADMIN_USERNAME=HDB_ADMIN \
   -e HDB_ADMIN_PASSWORD=password \
+  -e HTTP_THREADS=4 \
   -e OPERATIONSAPI_NETWORK_HTTPS=true \
   -e CUSTOMFUNCTIONS_NETWORK_HTTPS=true \
   -e CLUSTERING_ENABLED=true \
