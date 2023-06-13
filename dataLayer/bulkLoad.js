@@ -31,7 +31,7 @@ const crypto_hash = require('../security/cryptoHash');
 const CSV_NO_RECORDS_MSG = 'No records parsed from csv file.';
 const TEMP_DOWNLOAD_DIR = `${env.get('HDB_ROOT')}/tmp`;
 const { schema_regex } = require('../validation/common_validators');
-const HIGHWATERMARK = 1024 * 1024 * 5;
+const HIGHWATERMARK = 1024 * 1024 * 2;
 const MAX_JSON_ARRAY_SIZE = 5000;
 
 const ACCEPTABLE_URL_CONTENT_TYPE_ENUM = {
