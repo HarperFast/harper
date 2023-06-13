@@ -49,6 +49,7 @@ module.exports = {
 	getClusteringRoutes,
 	initOldConfig,
 	getConfigFromFile,
+	getConfigFilePath,
 };
 
 /**
@@ -179,7 +180,7 @@ function getConfigValue(param) {
 	return flat_config_obj[param_map.toLowerCase()];
 }
 
-function getConfigFilePath(boot_props_file_path) {
+function getConfigFilePath(boot_props_file_path = hdb_utils.getPropsFilePath()) {
 	const cmd_args = minimist(process.argv);
 	if (cmd_args.ROOTPATH) return path.join(cmd_args.ROOTPATH, hdb_terms.HDB_CONFIG_FILE);
 	const hdb_properties = PropertiesReader(boot_props_file_path);

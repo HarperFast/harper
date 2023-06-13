@@ -5,7 +5,7 @@ const operationsServer = require('./operationsServer');
 const auth = require('../security/auth');
 const natsReplicator = require('../server/nats/natsReplicator');
 const { getTables } = require('../resources/databases');
-const { loadApplications } = require('../apps/applicationsLoader');
+const { loadApplications, loadComponent } = require('../apps/applicationsLoader');
 const env = require('../utility/environment/environmentManager');
 const { secureImport } = require('../security/jsLoader');
 const { resetResources } = require('../resources/Resources');
@@ -14,6 +14,8 @@ const mqtt = require('./mqtt');
 const { server } = require('./Server');
 const config_utils = require('../config/configUtils');
 const { CONFIG_PARAMS } = require('../utility/hdbTerms');
+const { join, dirname } = require('path');
+const { parseDocument } = require('yaml');
 let loaded_server_modules = new Map();
 /**
  * Gets all default and custom server modules from harperdb-config
@@ -73,8 +75,36 @@ async function loadServerModules(is_worker_thread = false) {
 	let resources = resetResources();
 	getTables();
 	resources.isWorker = is_worker_thread;
+	await loadComponent(config_utils.getConfigFilePath(), resources, 'hdb', true);
 	const server_modules = getServerModules();
-	for (let server_module_definition of server_modules) {
+	const components = config_utils.readConfigFile();
+	for (let component_name in components) {
+		let component_definition = components[component_name];
+		const pkg = component_definition.package;
+		if (pkg) {
+			let config_path;
+			try {
+				config_path = require.resolve(join(component_definition.package, 'config.yaml'));
+			} catch (error) {
+				// if the config.yaml is not found, that's fine
+				if (error.code !== 'MODULE_NOT_FOUND') {
+					harper_logger.error(`Error finding config at ${config_path}`, error);
+				}
+			}
+			if (config_path) {
+				try {
+					let config_yaml = parseYamlDoc(config_path);
+					const config = config_yaml.toJSON();
+					const component_path = dirname(config_path);
+					if (!loaded_server_modules.has(component_path)) {
+						startComponents(config, component_path);
+					}
+				} catch (error) {
+					harper_logger.error(`Error loading config at ${config_path}`, error);
+				}
+			}
+		}
+
 		let { module: module_id, port, securePort, plugin } = server_module_definition;
 		// use predefined core plugins or use the secure/sandbox loader (if configured)
 		let server_module = plugin || (await secureImport(module_id));
@@ -114,3 +144,6 @@ async function loadServerModules(is_worker_thread = false) {
 }
 
 module.exports.loadServerModules = loadServerModules;
+function parseYamlDoc(file_path) {
+	return YAML.parseDocument(fs.readFileSync(file_path, 'utf8'), { simpleKeys: true });
+}
