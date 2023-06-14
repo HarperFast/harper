@@ -400,7 +400,7 @@ async function viewStream(stream_name, start_time = undefined, max = undefined) 
 	try {
 		await jsm.consumers.add(stream_name, consumer_config);
 
-		const sub_config = { timeout: 2000 };
+		const sub_config = { timeout: 20000 };
 		if (max) sub_config.max = max;
 		const sub = await connection.subscribe(consumer_name, sub_config);
 
@@ -514,7 +514,7 @@ async function* viewStreamIterator(stream_name, start_time = undefined, max = un
  * @returns {Promise<void>}
  */
 async function publishToStream(subject_name, stream_name, msg_header, message) {
-	hdb_logger.trace(`publishToStream called with subject: ${subject_name}, stream: ${stream_name}, entries:`, message);
+	hdb_logger.trace(`publishToStream called with subject: ${subject_name}, stream: ${stream_name}, entries:`, message.operation);
 	msg_header = addNatsMsgHeader(message, msg_header);
 
 	const { js } = await getNATSReferences();
@@ -524,7 +524,7 @@ async function publishToStream(subject_name, stream_name, msg_header, message) {
 		encode(message);
 
 	try {
-		hdb_logger.trace(`publishToStream publishing to subject: ${subject}, data:`, message);
+		hdb_logger.trace(`publishToStream publishing to subject: ${subject}`);
 		recordAction(encoded_message.length, 'bytes-sent', subject_name, message.operation, 'replication');
 		await js.publish(subject, encoded_message, { headers: msg_header });
 	} catch (err) {
