@@ -64,7 +64,7 @@ RUN mkdir /licenses
 COPY utility/Docker/licenses/* /licenses/.
 
 # Create symlink for compatibility
-RUN ln -s ${HOME} /home/harperdb
+RUN ln -s ${HOME} /home/harperdb && chmod -R u=rwx /home/harperdb
 
 #Copy HarperDB tarball
 COPY $HARPERDB_TARBALL .
