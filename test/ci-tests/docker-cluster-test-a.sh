@@ -1,5 +1,4 @@
 #!/bin/bash
-set -x 
 
 docker_image="${DOCKER_IMAGE:-harperdb/harperdb}"
 
