@@ -37,6 +37,7 @@ module.exports = {
 	messageTypeListener,
 	getWorkerIndex,
 	setMainIsWorker,
+	restartNumber: 1,
 };
 let isMainWorker;
 function getWorkerIndex() {
@@ -107,7 +108,12 @@ function startWorker(path, options = {}) {
 				execArgv: ['--enable-source-maps'],
 				argv: process.argv.slice(2),
 				// pass these in synchronously to the worker so it has them on startup:
-				workerData: { addPorts: ports_to_send, workerIndex: options.workerIndex, name: options.name },
+				workerData: {
+					addPorts: ports_to_send,
+					workerIndex: options.workerIndex,
+					name: options.name,
+					restartNumber: module.exports.restartNumber,
+				},
 				transferList: ports_to_send,
 			},
 			options
@@ -161,6 +167,7 @@ const OVERLAPPING_RESTART_TYPES = [hdb_terms.THREAD_TYPES.HTTP];
 
 async function restartWorkers(name = null, max_workers_down = 2, start_replacement_threads = true) {
 	if (isMainThread) {
+		module.exports.restartNumber++;
 		if (max_workers_down < 1) {
 			// we accept a ratio of workers, and compute absolute maximum being down at a time from the total number of
 			// threads
@@ -172,6 +179,7 @@ async function restartWorkers(name = null, max_workers_down = 2, start_replaceme
 		for (let worker of workers.slice(0)) {
 			if ((name && worker.name !== name) || worker.wasShutdown) continue; // filter by type, if specified
 			worker.postMessage({
+				restartNumber: module.exports.restartNumber,
 				type: hdb_terms.ITC_EVENT_TYPES.SHUTDOWN,
 			});
 			worker.wasShutdown = true;
@@ -394,6 +402,7 @@ if (isMainThread) {
 	parentPort.on('message', async (message) => {
 		const { type } = message;
 		if (type === hdb_terms.ITC_EVENT_TYPES.SHUTDOWN) {
+			module.exports.restartNumber = message.restartNumber;
 			parentPort.unref(); // remove this handle
 			setTimeout(() => {
 				harper_logger.warn('Thread did not voluntarily terminate', threadId);

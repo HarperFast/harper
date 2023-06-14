@@ -18,6 +18,7 @@ import * as signalling from '../utility/signalling';
 import { SchemaEventMsg } from '../server/threads/itc';
 import { workerData } from 'worker_threads';
 import * as harper_logger from '../utility/logging/harper_logger';
+import * as manage_threads from '../server/threads/manageThreads';
 
 const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
@@ -383,7 +384,7 @@ export function table({
 	let primary_key;
 	let primary_key_attribute;
 	let indices;
-	let dbis_db;
+	let attributes_dbi;
 	if (schema_defined == undefined) schema_defined = true;
 	const internal_dbi_init = new OpenDBIObject(false);
 
@@ -418,7 +419,7 @@ export function table({
 		if (!root_store.env.nextTableId) root_store.env.nextTableId = 1;
 		primary_store.tableId = root_store.env.nextTableId++;
 		primary_key_attribute.tableId = primary_store.tableId;
-		dbis_db = root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
+		attributes_dbi = root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
 		Table = setTable(
 			tables,
 			table_name,
@@ -433,30 +434,30 @@ export function table({
 				indices: [],
 				attributes,
 				schemaDefined: schema_defined,
-				dbisDB: dbis_db,
+				dbisDB: attributes_dbi,
 			})
 		);
 		Table.schemaVersion = 1;
 		has_changes = true;
 		startTxn();
-		dbis_db.put(dbi_name, primary_key_attribute);
+		attributes_dbi.put(dbi_name, primary_key_attribute);
 	}
 	indices = Table.indices;
-	dbis_db = dbis_db || (root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init));
-	Table.dbisDB = dbis_db;
+	attributes_dbi = attributes_dbi || (root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init));
+	Table.dbisDB = attributes_dbi;
 	const indices_to_remove = [];
-	for (const { key, value } of dbis_db.getRange({ start: true })) {
+	for (const { key, value } of attributes_dbi.getRange({ start: true })) {
 		let [attribute_table_name, attribute_name] = key.toString().split('/');
 		if (attribute_name) {
 			if (attribute_table_name !== table_name) continue;
 		} else {
 			attribute_name = attribute_table_name;
 		}
-		const existing_attribute = attributes.find((attribute) => attribute.name === attribute_name);
-		if (!existing_attribute?.indexed && value.indexed) {
+		const attribute = attributes.find((attribute) => attribute.name === attribute_name);
+		if (!attribute?.indexed && value.indexed) {
 			startTxn();
 			has_changes = true;
-			dbis_db.remove(key);
+			attributes_dbi.remove(key);
 			const index_dbi = Table.indices[attribute_table_name];
 			if (index_dbi) indices_to_remove.push(index_dbi);
 		}
@@ -466,35 +467,47 @@ export function table({
 		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
 		// iterate through the attributes to ensure that we have all the dbis created and indexed
 		for (const attribute of attributes || []) {
+			if (attribute.isPrimaryKey) continue; // primary key can't change
 			// non-indexed attributes do not need a dbi
-			if (!attribute.indexed || attribute.isPrimaryKey) continue;
-			const dbi_name = table_name + '/' + attribute.name;
-			Object.defineProperty(attribute, 'key', { value: dbi_name, configurable: true });
-			const dbi_init = new OpenDBIObject(true, false);
-			const dbi = root_store.openDB(dbi_name, dbi_init);
-			let dbi_descriptor = dbis_db.get(dbi_name);
-			if (schema_defined) {
-				if (!dbi_descriptor || (dbi_descriptor.indexingPID && dbi_descriptor.indexingPID !== process.pid)) {
+			const dbi_key = table_name + '/' + attribute.name;
+			Object.defineProperty(attribute, 'key', { value: dbi_key, configurable: true });
+			let attribute_descriptor = attributes_dbi.get(dbi_key);
+			if (attribute_descriptor?.attribute) attribute_descriptor.indexed = true; // legacy descriptor
+			const changed =
+				!attribute_descriptor ||
+				attribute_descriptor.type !== attribute.type ||
+				attribute_descriptor.indexed !== attribute.indexed;
+			if (attribute.indexed) {
+				const dbi_init = new OpenDBIObject(true, false);
+				const dbi = root_store.openDB(dbi_key, dbi_init);
+				if (
+					changed ||
+					(attribute_descriptor.indexingPID && attribute_descriptor.indexingPID !== process.pid) ||
+					attribute_descriptor.restartNumber < workerData.restartNumber
+				) {
+					has_changes = true;
 					startTxn();
-					dbi_descriptor = dbis_db.get(dbi_name);
+					attribute_descriptor = attributes_dbi.get(dbi_key);
 					if (
-						!dbi_descriptor ||
-						(dbi_descriptor.indexingPID && dbi_descriptor.indexingPID !== process.pid) ||
-						dbi_descriptor.workerIndex === workerData.workerIndex
+						changed ||
+						(attribute_descriptor.indexingPID && attribute_descriptor.indexingPID !== process.pid) ||
+						attribute_descriptor.restartNumber < workerData.restartNumber
 					) {
 						has_changes = true;
-						attribute.lastIndexedKey = dbi_descriptor?.lastIndexedKey || false;
+						attribute.lastIndexedKey = attribute_descriptor?.lastIndexedKey || false;
 						attribute.indexingPID = process.pid;
 						dbi.isIndexing = true;
 						Object.defineProperty(attribute, 'dbi', { value: dbi });
-						dbis_db.put(dbi_name, attribute);
 						attributes_to_index.push(attribute);
 					}
+					attributes_dbi.put(dbi_key, attribute);
 				}
-			} else {
-				dbis_db.put(dbi_name, attribute);
+				indices[attribute.name] = dbi;
+			} else if (changed) {
+				has_changes = true;
+				startTxn();
+				attributes_dbi.put(dbi_key, attribute);
 			}
-			indices[attribute.name] = dbi;
 		}
 	} finally {
 		if (txn_commit) txn_commit();
@@ -502,7 +515,11 @@ export function table({
 	if (has_changes) Table.schemaVersion++;
 	if (attributes_to_index.length > 0 || indices_to_remove.length > 0) {
 		Table.indexingOperation = runIndexing(Table, attributes_to_index, indices_to_remove);
-	}
+	} else if (has_changes)
+		signalling.signalSchemaChange(
+			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName)
+		);
+
 	Table.origin = origin;
 	if (has_changes) {
 		for (const listener of table_listeners) {
@@ -535,6 +552,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 		for (const index of indicesToRemove) {
 			last_resolution = index.drop();
 		}
+		let interrupted;
 		const attributes_length = attributes.length;
 		if (attributes_length > 0) {
 			let outstanding = 0;
@@ -577,12 +595,16 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 						harper_logger.error(error);
 					}
 				);
-				if (++indexed % 100 === 0) {
+				if (workerData.restartNumber !== manage_threads.restartNumber) {
+					interrupted = true;
+				}
+				if (++indexed % 100 === 0 || interrupted) {
 					// occasionally update our progress so if we crash, we can resume
 					for (const attribute of attributes) {
 						attribute.lastIndexedKey = key;
 						Table.dbisDB.put(attribute.key, attribute);
 					}
+					if (interrupted) return;
 				}
 				if (outstanding > MAX_OUTSTANDING_INDEXING) await last_resolution;
 				else if (outstanding > MIN_OUTSTANDING_INDEXING) await new Promise((resolve) => setImmediate(resolve)); // yield event turn, don't want to use all computation
