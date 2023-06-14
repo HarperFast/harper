@@ -18,13 +18,17 @@ import { Resources } from '../resources/Resources';
 import { handleHDBError } from '../utility/errors/hdbError';
 import { Resource } from '../resources/Resource';
 import { table } from '../resources/databases';
-import socket_router from '../server/threads/socketRouter';
+import { startSocketServer } from '../server/threads/socketRouter';
+import * as operationsServer from '../server/operationsServer';
+import * as auth from '../security/auth';
+import * as natsReplicator from '../server/nats/natsReplicator';
+import * as mqtt from '../server/mqtt';
 
 const { readFile } = promises;
 
 const CONFIG_FILENAME = 'config.yaml';
 const CF_ROUTES_DIR = env.get(HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
-let loaded_plugins = new Map<any, any>();
+let loaded_components = new Map<any, any>();
 let watches_setup;
 let resources;
 
@@ -36,7 +40,7 @@ let resources;
  */
 export function loadApplications(loaded_plugin_modules?: Map<any, any>, loaded_resources?: Resources) {
 	if (loaded_resources) resources = loaded_resources;
-	if (loaded_plugin_modules) loaded_plugins = loaded_plugin_modules;
+	if (loaded_plugin_modules) loaded_components = loaded_plugin_modules;
 	const cfs_loaded = [];
 	if (existsSync(CF_ROUTES_DIR)) {
 		const cf_folders = readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
@@ -63,6 +67,11 @@ const TRUSTED_RESOURCE_LOADERS = {
 	fastifyRoutes: fastify_routes_handler,
 	login,
 	static: staticFiles,
+	operationsApi: operationsServer,
+	customFunctions: {},
+	clustering: natsReplicator,
+	authentication: auth,
+	mqtt,
 	/*
 	static: ...
 	login: ...
@@ -102,24 +111,21 @@ const POSSIBLE_ROOT_FILES = ['config.yaml', 'package.json', 'schema.graphql', 'r
 const ports_started = [];
 /**
  * Load a component from the specified directory
- * @param component_folder
+ * @param component_path
  * @param resources
  * @param origin
  * @param ports_allowed
+ * @param provided_loaded_components
  */
 export async function loadComponent(
 	component_path: string,
 	resources: Resources,
 	origin: string,
-	ports_allowed: boolean,
-	loaded_modules: Map
+	ports_allowed?: boolean,
+	provided_loaded_components?: Map
 ) {
 	let component_folder;
-	let wait_for_ready;
-	if (!loaded_modules) {
-		loaded_modules = new Map();
-		wait_for_ready = true;
-	}
+	if (provided_loaded_components) loaded_components = provided_loaded_components;
 	try {
 		let config;
 		if (component_path.endsWith('config.yaml')) {
@@ -182,10 +188,10 @@ export async function loadComponent(
 									// if there is a TCP port associated with the plugin, we set up the routing on the main thread for it
 									ports_started.push(possible_port);
 									const session_affinity = env.get(CONFIG_PARAMS.HTTP_SESSION_AFFINITY);
-									socket_router.startSocketServer(possible_port, session_affinity);
+									startSocketServer(possible_port, session_affinity);
 								}
 							} catch (error) {
-								console.error('Error listening on socket', possible_port, error, module_id);
+								console.error('Error listening on socket', possible_port, error, component_name);
 							}
 						}
 					}
@@ -194,7 +200,7 @@ export async function loadComponent(
 					extension_module =
 						(await extension_module.start?.({ server, ensureTable, resources, ...component_config })) ||
 						extension_module;
-				loaded_plugins.set(extension_module, true);
+				loaded_components.set(extension_module, true);
 				// a loader is configured to specify a glob of files to be loaded, we pass each of those to the plugin
 				// handling files ourselves allows us to pass files to sandboxed modules that might not otherwise have
 				// access to the file system.
