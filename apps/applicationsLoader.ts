@@ -19,6 +19,7 @@ import { handleHDBError } from '../utility/errors/hdbError';
 import { Resource } from '../resources/Resource';
 import { table } from '../resources/databases';
 import { startSocketServer } from '../server/threads/socketRouter';
+import { getHdbBasePath } from '../utility/environment/environmentManager';
 import * as operationsServer from '../server/operationsServer';
 import * as auth from '../security/auth';
 import * as natsReplicator from '../server/nats/natsReplicator';
@@ -109,6 +110,7 @@ const DEFAULT_CONFIG = {
 
 const POSSIBLE_ROOT_FILES = ['config.yaml', 'package.json', 'schema.graphql', 'resources.js', ''];
 const ports_started = [];
+const loaded_paths = new Map();
 /**
  * Load a component from the specified directory
  * @param component_path
@@ -118,46 +120,44 @@ const ports_started = [];
  * @param provided_loaded_components
  */
 export async function loadComponent(
-	component_path: string,
+	folder: string,
 	resources: Resources,
 	origin: string,
-	ports_allowed?: boolean,
+	is_root?: boolean,
 	provided_loaded_components?: Map
 ) {
-	let component_folder;
+	if (loaded_paths.has(folder)) return;
+	loaded_paths.set(folder, true);
 	if (provided_loaded_components) loaded_components = provided_loaded_components;
 	try {
 		let config;
-		if (component_path.endsWith('config.yaml')) {
-			component_folder = dirname(component_path);
-			config = parseDocument(readFileSync(component_path, 'utf8'), { simpleKeys: true }).toJSON();
+		const config_path = join(folder, is_root ? 'harperdb-config.yaml' : 'config.yaml');
+		if (existsSync(config_path)) {
+			config = parseDocument(readFileSync(config_path, 'utf8'), { simpleKeys: true }).toJSON();
 		} else {
-			component_folder = component_path;
 			config = DEFAULT_CONFIG;
 		}
 		const handler_modules = [];
 		// iterate through the app handlers so they can each do their own loading process
 		for (const component_name in config) {
 			const component_config = config[component_name];
+			if (!component_config) continue;
 			let extension_module;
 			const pkg = component_config.package;
 			if (pkg) {
+				let container_folder = folder;
 				let component_path;
-				for (const root_file of POSSIBLE_ROOT_FILES) {
-					try {
-						const root_path = require.resolve(join(pkg, root_file));
-						component_path = root_file === 'config.yaml' ? root_path : dirname(root_path);
+				while (!existsSync((component_path = join(container_folder, 'node_modules', component_name)))) {
+					container_folder = dirname(container_folder);
+					if (container_folder.length < getHdbBasePath().length) {
+						component_path = null;
 						break;
-					} catch (error) {
-						if (error.code !== 'MODULE_NOT_FOUND') {
-							throw error;
-						}
 					}
 				}
 				if (component_path) {
 					extension_module = await loadComponent(component_path, resources, origin, false);
 				} else {
-					throw new Error(`Unable to find package ${pkg}`);
+					throw new Error(`Unable to find package ${component_name}:${pkg}`);
 				}
 			} else extension_module = TRUSTED_RESOURCE_LOADERS[component_name];
 			if (!extension_module) continue;
@@ -170,18 +170,24 @@ export async function loadComponent(
 					return table(options);
 				};
 				// call the main start hook
+				const network =
+					component_config.network || ((component_config.port || component_config.securePort) && component_config);
+				const securePort =
+					network?.securePort ||
+					// legacy support for switching to securePort
+					(network?.https && network.port);
+				const port = !network?.https && network?.port;
 				if (isMainThread) {
 					extension_module =
-						(await extension_module.startOnMainThread?.({ server, ensureTable, resources, ...component_config })) ||
-						extension_module;
-					const network =
-						component_config.network || ((component_config.port || component_config.securePort) && component_config);
-					if (ports_allowed && network) {
-						const securePort =
-							network.securePort ||
-							// legacy support for switching to securePort
-							(network.https && network.port);
-						const port = !network.https && network.port;
+						(await extension_module.startOnMainThread?.({
+							server,
+							ensureTable,
+							port,
+							securePort,
+							resources,
+							...component_config,
+						})) || extension_module;
+					if (is_root && network) {
 						for (const possible_port of [port, securePort]) {
 							try {
 								if (+possible_port && !ports_started.includes(possible_port)) {
@@ -198,19 +204,25 @@ export async function loadComponent(
 				}
 				if (resources.isWorker)
 					extension_module =
-						(await extension_module.start?.({ server, ensureTable, resources, ...component_config })) ||
-						extension_module;
+						(await extension_module.start?.({
+							server,
+							ensureTable,
+							port,
+							securePort,
+							resources,
+							...component_config,
+						})) || extension_module;
 				loaded_components.set(extension_module, true);
 				// a loader is configured to specify a glob of files to be loaded, we pass each of those to the plugin
 				// handling files ourselves allows us to pass files to sandboxed modules that might not otherwise have
 				// access to the file system.
 				if (extension_module.handleFile && component_config.files) {
 					if (component_config.files.includes('..')) throw handleHDBError('Can not reference parent directories');
-					const files = join(component_folder, component_config.files);
+					const files = join(folder, component_config.files);
 					for (const entry of await fg(files, { onlyFiles: false, objectMode: true })) {
 						const { path, dirent } = entry;
-						const relative_path = relative(component_folder, path);
-						const app_name = basename(component_folder);
+						const relative_path = relative(folder, path);
+						const app_name = basename(folder);
 						let url_path = component_config.path || '/';
 						url_path = url_path.startsWith('/')
 							? url_path
@@ -234,7 +246,7 @@ export async function loadComponent(
 							console.error(
 								`Could not load ${dirent.isFile() ? 'file' : 'directory'} ${path} using ${
 									component_config.module
-								} for application ${component_folder}`,
+								} for application ${folder}`,
 								error
 							);
 							resources.set(component_config.path || '/', new ErrorResource(error));
@@ -242,22 +254,22 @@ export async function loadComponent(
 					}
 				}
 			} catch (error) {
-				console.error(`Could not load handler ${component_config.module} for application ${component_folder}`, error);
+				console.error(`Could not load component ${component_name} for application ${folder}`, error);
 				resources.set(component_config.path || '/', new ErrorResource(error));
 			}
 		}
 		// Auto restart threads on changes to any app folder. TODO: Make this configurable
 		if (isMainThread && !watches_setup) {
-			watchDir(component_folder, () => {
+			watchDir(folder, () => {
 				loadApplications();
 				restartWorkers();
 			});
 		}
 		if (config.extensionModule) {
-			return await secureImport(join(component_folder, config.extensionModule));
+			return await secureImport(join(folder, config.extensionModule));
 		}
 	} catch (error) {
-		console.error(`Could not load application directory ${component_folder}`, error);
+		console.error(`Could not load application directory ${folder}`, error);
 		resources.set('', new ErrorResource(error));
 	}
 }

@@ -76,7 +76,7 @@ async function loadServerModules(is_worker_thread = false) {
 	getTables();
 	resources.isWorker = is_worker_thread;
 	// the HarperDB root component
-	await loadComponent(config_utils.getConfigFilePath(), resources, 'hdb', true, loaded_components);
+	await loadComponent(dirname(config_utils.getConfigFilePath()), resources, 'hdb', true, loaded_components);
 	// once the global plugins are loaded, we now load all the CF and run applications (and their components)
 	await loadApplications(loaded_components, resources);
 	let all_ready = [];
