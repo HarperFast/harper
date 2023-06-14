@@ -27,9 +27,6 @@ sudo docker run -d --restart no --network ClstrTestA --name ClstrTestA5 -e HDB_A
 
 sleep 30s
 
-sudo docker ps
-sudo docker logs ClstrTestA1
-
 # Install newman and newman reporters on first container
 sudo docker exec ClstrTestA1 /bin/bash -c 'cat /home/harperdb/hdb/harperdb-config.yaml| grep nodeName'
 sudo docker exec ClstrTestA1 /bin/bash -c 'npm install -g newman newman-reporter-teamcity newman-reporter-html newman-reporter-htmlextra'
