@@ -8,7 +8,7 @@ on:
     paths:
       - 'utility/Docker/Dockerfile-openshift'
   schedule:
-    - cron: '1 13 * * 1-5'
+    - cron: '1 14 * * 1-5'
   workflow_dispatch:
 name: "Run Docker CI Tests for Openshift"
 jobs:
