@@ -13422,7 +13422,7 @@
 									"    request_count++",
 									"    pm.environment.set('JOB_STATUS_COUNT', request_count);",
 									"    console.log(`Waiting for \"${test_name}\" to complete`);",
-									"    setTimeout(() => {}, 2000);",
+									"    setTimeout(() => {}, 20000);",
 									"    postman.setNextRequest(pm.info.requestId);",
 									"} else {",
 									"    pm.environment.set('JOB_STATUS_COUNT', 0);",
