@@ -5,8 +5,8 @@ docker_image="${DOCKER_IMAGE:-harperdb/harperdb}"
 
 # Install and start docker
 DEBIAN_FRONTEND=noninteractive
-sudo apt-get update
-sudo apt install -y docker.io
+sudo apt-get -qq update
+sudo apt-get -qq install -y docker.io
 
 sudo systemctl start docker
 sleep 25
@@ -61,14 +61,14 @@ mkdir -p $artifact_dir/ClstrTestB3/
 mkdir -p $artifact_dir/ClstrTestB4/
 
 # Copy log and config files from containers
-sudo docker cp ClstrTestB1:/home/harperdb/hdb/harperdb-config.yaml $artifact_dir/ClstrTestB1/
-sudo docker cp ClstrTestB2:/home/harperdb/hdb/harperdb-config.yaml $artifact_dir/ClstrTestB2/
-sudo docker cp ClstrTestB3:/home/harperdb/hdb/harperdb-config.yaml $artifact_dir/ClstrTestB3/
-sudo docker cp ClstrTestB4:/home/harperdb/hdb/harperdb-config.yaml $artifact_dir/ClstrTestB4/
-sudo docker cp ClstrTestB1:/home/harperdb/hdb/log/ $artifact_dir/ClstrTestB1/
-sudo docker cp ClstrTestB2:/home/harperdb/hdb/log/ $artifact_dir/ClstrTestB2/
-sudo docker cp ClstrTestB3:/home/harperdb/hdb/log/ $artifact_dir/ClstrTestB3/
-sudo docker cp ClstrTestB4:/home/harperdb/hdb/log/ $artifact_dir/ClstrTestB4/
+sudo docker cp --follow-link ClstrTestB1:/home/harperdb/hdb/harperdb-config.yaml $artifact_dir/ClstrTestB1/
+sudo docker cp --follow-link ClstrTestB2:/home/harperdb/hdb/harperdb-config.yaml $artifact_dir/ClstrTestB2/
+sudo docker cp --follow-link ClstrTestB3:/home/harperdb/hdb/harperdb-config.yaml $artifact_dir/ClstrTestB3/
+sudo docker cp --follow-link ClstrTestB4:/home/harperdb/hdb/harperdb-config.yaml $artifact_dir/ClstrTestB4/
+sudo docker cp --follow-link ClstrTestB1:/home/harperdb/hdb/log/ $artifact_dir/ClstrTestB1/
+sudo docker cp --follow-link ClstrTestB2:/home/harperdb/hdb/log/ $artifact_dir/ClstrTestB2/
+sudo docker cp --follow-link ClstrTestB3:/home/harperdb/hdb/log/ $artifact_dir/ClstrTestB3/
+sudo docker cp --follow-link ClstrTestB4:/home/harperdb/hdb/log/ $artifact_dir/ClstrTestB4/
 
 # Capture sudo docker logs
 sudo docker logs ClstrTestB1 > $artifact_dir/ClstrTestB1/docker_log.log
@@ -77,8 +77,8 @@ sudo docker logs ClstrTestB3 > $artifact_dir/ClstrTestB3/docker_log.log
 sudo docker logs ClstrTestB4 > $artifact_dir/ClstrTestB4/docker_log.log
 
 # Capture newman reports
-sudo docker cp ClstrTestB1:/home/harperdb/harperdb/integrationTests/newman/report.html $artifact_dir
-sudo docker cp ClstrTestB1:/home/harperdb/harperdb/integrationTests/newman/extra_report.html $artifact_dir
+sudo docker cp --follow-link ClstrTestB1:/home/harperdb/harperdb/integrationTests/newman/report.html $artifact_dir
+sudo docker cp --follow-link ClstrTestB1:/home/harperdb/harperdb/integrationTests/newman/extra_report.html $artifact_dir
 
 # Chown so we can scp
 sudo chown -R ubuntu:ubuntu $artifact_dir 
