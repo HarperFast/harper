@@ -49,8 +49,7 @@ export class ResourceBridge extends LMDBBridge {
 		conditions.operator = search_object.operator ? search_object.operator.toLowerCase() : undefined;
 		conditions.limit = search_object.limit;
 		conditions.offset = search_object.offset;
-		if (search_object.get_attributes && search_object.get_attributes[0] !== '*')
-			conditions.select = search_object.get_attributes;
+		conditions.select = getSelect(search_object, table);
 		conditions.reverse = search_object.reverse;
 		conditions.allowFullScan = true;
 
@@ -364,8 +363,7 @@ export class ResourceBridge extends LMDBBridge {
 				  ];
 		conditions.limit = search_object.limit;
 		conditions.offset = search_object.offset;
-		if (search_object.get_attributes && search_object.get_attributes[0] !== '*')
-			conditions.select = search_object.get_attributes;
+		conditions.select = getSelect(search_object, table);
 		conditions.reverse = search_object.reverse;
 		conditions.allowFullScan = true;
 
@@ -391,18 +389,27 @@ export class ResourceBridge extends LMDBBridge {
 	}
 }
 
+function getSelect({ get_attributes }, table) {
+	if (get_attributes) {
+		if (get_attributes[0] === '*') {
+			if (table.schemaDefined) return;
+			else get_attributes = table.attributes.map((attribute) => attribute.name);
+		}
+		get_attributes.forceNulls = true;
+		return get_attributes;
+	}
+}
 /**
  * Iterator for asynchronous getting ids from an array
  */
 async function* getRecords(search_object, return_key_value?) {
-	let select = search_object.get_attributes;
 	const table = getTable(search_object);
+	const select = getSelect(search_object, table);
 	if (!table) {
 		throw new ClientError(`Table ${search_object.table} not found`);
 	}
 	let lazy;
-	if (select[0] === '*') select = table.attributes.map((attribute) => attribute.name);
-	else if (select.length < 3) lazy = true;
+	if (select && table.attributes.length - select.length > 2 && select.length < 5) lazy = true;
 	let txn_table;
 	let resolve_txn;
 	// we need to get the transaction and ensure that the transaction spans the entire duration
@@ -416,7 +423,7 @@ async function* getRecords(search_object, return_key_value?) {
 	);
 	try {
 		for (const id of search_object.hash_values) {
-			const record = await txn_table.get(id, { lazy });
+			const record = await txn_table.get(id, { lazy, select });
 			if (record) {
 				const reduced_record = {};
 				for (const property of select) {

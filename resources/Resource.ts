@@ -121,17 +121,18 @@ export class Resource implements ResourceInterface {
 		if (typeof this.doesExist !== 'function' || this.doesExist()) {
 			if (query?.select) {
 				const selected_data = {};
+				const forceNulls = query.select.forceNulls;
 				for (const property of query.select) {
-					const value = this[property];
-					if (typeof value === 'function') selected_data[property] = this[EXPLICIT_CHANGES_PROPERTY]?.[property];
-					else selected_data[property] = this[property];
+					let value = this[property];
+					if (typeof value === 'function') value = this[EXPLICIT_CHANGES_PROPERTY]?.[property];
+					if (value === undefined && forceNulls) value = null;
+					selected_data[property] = value;
 				}
 				return selected_data;
 			} else if (this[EXPLICIT_CHANGES_PROPERTY]) {
 				const aggregated_data = {};
 				for (const property in this) aggregated_data[property] = this[property];
-				for (const key in this[EXPLICIT_CHANGES_PROPERTY])
-					aggregated_data[property] = this[EXPLICIT_CHANGES_PROPERTY][property];
+				for (const key in this[EXPLICIT_CHANGES_PROPERTY]) aggregated_data[key] = this[EXPLICIT_CHANGES_PROPERTY][key];
 				return aggregated_data;
 			}
 			return this;

@@ -11,7 +11,7 @@ const search_by_hashes_schema = Joi.object({
 	schema: hdb_schema_table,
 	table: hdb_schema_table,
 	hash_values: Joi.array().min(0).items(Joi.alternatives(Joi.string(), Joi.number())).required(),
-	get_attributes: Joi.array().min(1).items(hdb_schema_table).required(),
+	get_attributes: Joi.array().min(1).items(hdb_schema_table).optional(),
 });
 
 const search_by_value_schema = Joi.object({
@@ -19,7 +19,7 @@ const search_by_value_schema = Joi.object({
 	table: hdb_schema_table,
 	search_attribute: hdb_schema_table,
 	search_value: Joi.any().required(),
-	get_attributes: Joi.array().min(1).items(hdb_schema_table).required(),
+	get_attributes: Joi.array().min(1).items(hdb_schema_table).optional(),
 	desc: Joi.bool(),
 	limit: Joi.number().integer().min(1),
 	offset: Joi.number().integer().min(0),
@@ -31,7 +31,7 @@ const search_by_conditions_schema = Joi.object({
 	operator: Joi.string().valid('and', 'or').default('and').lowercase(),
 	offset: Joi.number().integer().min(0),
 	limit: Joi.number().integer().min(1),
-	get_attributes: Joi.array().min(1).items(hdb_schema_table).required(),
+	get_attributes: Joi.array().min(1).items(hdb_schema_table).optional(),
 	conditions: Joi.array()
 		.min(1)
 		.items(
@@ -112,7 +112,7 @@ module.exports = function (search_object, type) {
 		let all_table_attributes = table_schema.attributes;
 
 		//this clones the get_attributes array
-		let check_attributes = [...search_object.get_attributes];
+		let check_attributes = search_object.get_attributes ? [...search_object.get_attributes] : [];
 
 		if (type === 'value') {
 			check_attributes.push(search_object.search_attribute);

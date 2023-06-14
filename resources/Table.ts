@@ -576,11 +576,6 @@ export function makeTable(options) {
 								else completion = source.put(record, options);
 							}
 						}
-
-						const had_existing = existing_record;
-						if (!existing_record) {
-							existing_record = {};
-						}
 					}
 
 					if (this[VERSION_PROPERTY] > txn_time) {
@@ -792,9 +787,11 @@ export function makeTable(options) {
 			function selectProperties(record) {
 				if (select) {
 					const selected = {};
+					const forceNulls = select.forceNulls;
 					for (let i = 0, l = select.length; i < l; i++) {
 						const key = select[i];
-						selected[key] = record[key];
+						if (record.hasOwnProperty(key)) selected[key] = record[key];
+						else if (forceNulls) selected[key] = null;
 					}
 					return selected;
 				}
