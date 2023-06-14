@@ -97,11 +97,11 @@ export class Resource implements ResourceInterface {
 	}
 	static async get(identifier: string | number): Promise<object>;
 	static async get(query: object): Promise<Iterable<object>>;
-	static async get(identifier: string | number | object) {
+	static async get(identifier: string | number | object, query) {
 		if (typeof identifier === 'string' || typeof identifier === 'number') {
 			const resource = this.getResource(identifier, this);
 			await resource.loadRecord();
-			return resource.get();
+			return resource.get(query);
 		} else {
 			// could conditionally skip the mapping if get is not overriden
 			return this.transact(async (resource_txn) =>

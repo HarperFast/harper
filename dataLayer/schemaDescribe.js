@@ -144,7 +144,7 @@ async function descTable(describe_table_object, attr_perms) {
 	if (!tables) {
 		throw handleHDBError(
 			new Error(),
-			HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(describe_schema_object.schema),
+			HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(describe_table_object.schema),
 			HTTP_STATUS_CODES.NOT_FOUND
 		);
 	}

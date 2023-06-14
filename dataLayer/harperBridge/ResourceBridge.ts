@@ -423,15 +423,7 @@ async function* getRecords(search_object, return_key_value?) {
 	);
 	try {
 		for (const id of search_object.hash_values) {
-			const record = await txn_table.get(id, { lazy, select });
-			if (record) {
-				const reduced_record = {};
-				for (const property of select) {
-					reduced_record[property] = record[property] ?? null;
-				}
-				if (return_key_value) yield { key: id, value: reduced_record };
-				else yield reduced_record;
-			}
+			yield await txn_table.get(id, { lazy, select });
 		}
 	} finally {
 		resolve_txn();
