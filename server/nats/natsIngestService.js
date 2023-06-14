@@ -124,8 +124,6 @@ async function messageProcessor(msg) {
 		return;
 	}
 
-	harper_logger.trace('processing message:', entry, 'with sequence:', js_msg.seq);
-	harper_logger.trace(`messageProcessor nats msg id: ${js_msg.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID)}`);
 	try {
 		let {
 			operation,
@@ -136,6 +134,16 @@ async function messageProcessor(msg) {
 			hash_values: ids,
 			__origin: origin,
 		} = entry;
+		harper_logger.trace(
+			'processing message:',
+			operation,
+			database_name,
+			table_name,
+			(records ? 'records: ' + records.length : '') + (ids ? 'ids:' + ids.length : ''),
+			'with' + ' sequence:',
+			js_msg.seq
+		);
+		harper_logger.trace(`messageProcessor nats msg id: ${js_msg.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID)}`);
 		let onCommit;
 		if (!records) records = ids;
 		let completion = new Promise((resolve) => (onCommit = resolve));
