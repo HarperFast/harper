@@ -5,7 +5,7 @@ const operationsServer = require('./operationsServer');
 const auth = require('../security/auth');
 const natsReplicator = require('../server/nats/natsReplicator');
 const { getTables } = require('../resources/databases');
-const { loadApplications } = require('../apps/applicationsLoader');
+const { loadApplications, loadComponent } = require('../apps/applicationsLoader');
 const env = require('../utility/environment/environmentManager');
 const { secureImport } = require('../security/jsLoader');
 const { resetResources } = require('../resources/Resources');
@@ -14,7 +14,9 @@ const mqtt = require('./mqtt');
 const { server } = require('./Server');
 const config_utils = require('../config/configUtils');
 const { CONFIG_PARAMS } = require('../utility/hdbTerms');
-let loaded_server_modules = new Map();
+const { join, dirname } = require('path');
+const { parseDocument } = require('yaml');
+let loaded_components = new Map();
 /**
  * Gets all default and custom server modules from harperdb-config
  * @returns {[{server_mods}]}
@@ -73,44 +75,18 @@ async function loadServerModules(is_worker_thread = false) {
 	let resources = resetResources();
 	getTables();
 	resources.isWorker = is_worker_thread;
-	const server_modules = getServerModules();
-	for (let server_module_definition of server_modules) {
-		let { module: module_id, port, securePort, plugin } = server_module_definition;
-		// use predefined core plugins or use the secure/sandbox loader (if configured)
-		let server_module = plugin || (await secureImport(module_id));
-		try {
-			// start each server_module
-			if (isMainThread) {
-				if (server_module.startOnMainThread) await server_module.startOnMainThread(server_module_definition);
-				for (let possible_port of [port, securePort]) {
-					try {
-						if (+possible_port && !ports_started.includes(possible_port)) {
-							// if there is a TCP port associated with the plugin, we set up the routing on the main thread for it
-							ports_started.push(possible_port);
-							const session_affinity = env.get(hdb_terms.CONFIG_PARAMS.HTTP_SESSION_AFFINITY);
-							socket_router.startSocketServer(possible_port, session_affinity);
-						}
-					} catch (error) {
-						console.error('Error listening on socket', possible_port, error, module_id);
-					}
-				}
-			}
-			if (is_worker_thread && server_module.start)
-				// on child threads, we can connect to a port that the main thread is routing
-				// (we can't start our own)
-				await server_module.start({ server, resources, ...server_module_definition });
-			loaded_server_modules.set(server_module, true);
-		} catch (error) {
-			console.error('Error loading extension', error, module_id);
-		}
-	}
-	// once the global plugins are loaded, we now load all the applications (and their plugins)
-	await loadApplications(loaded_server_modules, resources);
+	// the HarperDB root component
+	await loadComponent(dirname(config_utils.getConfigFilePath()), resources, 'hdb', true, loaded_components);
+	// once the global plugins are loaded, we now load all the CF and run applications (and their components)
+	await loadApplications(loaded_components, resources);
 	let all_ready = [];
-	for (let [server_module] of loaded_server_modules) {
+	for (let [server_module] of loaded_components) {
 		if (server_module.ready) all_ready.push(server_module.ready());
 	}
 	if (all_ready.length > 0) await Promise.all(all_ready);
 }
 
 module.exports.loadServerModules = loadServerModules;
+function parseYamlDoc(file_path) {
+	return YAML.parseDocument(fs.readFileSync(file_path, 'utf8'), { simpleKeys: true });
+}

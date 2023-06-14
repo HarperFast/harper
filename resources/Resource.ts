@@ -97,11 +97,11 @@ export class Resource implements ResourceInterface {
 	}
 	static async get(identifier: string | number): Promise<object>;
 	static async get(query: object): Promise<Iterable<object>>;
-	static async get(identifier: string | number | object) {
+	static async get(identifier: string | number | object, query) {
 		if (typeof identifier === 'string' || typeof identifier === 'number') {
 			const resource = this.getResource(identifier, this);
 			await resource.loadRecord();
-			return resource.get();
+			return resource.get(query);
 		} else {
 			// could conditionally skip the mapping if get is not overriden
 			return this.transact(async (resource_txn) =>
@@ -121,17 +121,18 @@ export class Resource implements ResourceInterface {
 		if (typeof this.doesExist !== 'function' || this.doesExist()) {
 			if (query?.select) {
 				const selected_data = {};
+				const forceNulls = query.select.forceNulls;
 				for (const property of query.select) {
-					const value = this[property];
-					if (typeof value === 'function') selected_data[property] = this[EXPLICIT_CHANGES_PROPERTY]?.[property];
-					else selected_data[property] = this[property];
+					let value = this[property];
+					if (typeof value === 'function') value = this[EXPLICIT_CHANGES_PROPERTY]?.[property];
+					if (value === undefined && forceNulls) value = null;
+					selected_data[property] = value;
 				}
 				return selected_data;
 			} else if (this[EXPLICIT_CHANGES_PROPERTY]) {
 				const aggregated_data = {};
 				for (const property in this) aggregated_data[property] = this[property];
-				for (const key in this[EXPLICIT_CHANGES_PROPERTY])
-					aggregated_data[property] = this[EXPLICIT_CHANGES_PROPERTY][property];
+				for (const key in this[EXPLICIT_CHANGES_PROPERTY]) aggregated_data[key] = this[EXPLICIT_CHANGES_PROPERTY][key];
 				return aggregated_data;
 			}
 			return this;

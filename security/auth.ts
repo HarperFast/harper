@@ -190,7 +190,7 @@ export async function authentication(request, next_handler) {
 	return response;
 }
 export function start({ server, port }) {
-	server.request(authentication, { port: port || 'all-http' });
+	server.request(authentication, { port: port || 'all' });
 	// keep it cleaned out periodically
 	setInterval(() => {
 		authorization_cache = new Map();

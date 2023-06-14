@@ -53,7 +53,7 @@ async function handleGetJob(json_body) {
 		return result;
 	} catch (err) {
 		let message = `There was an error getting job: ${err}`;
-		log.error(message);
+		log.error('There was an error getting job', err);
 		throw new Error(message);
 	}
 }

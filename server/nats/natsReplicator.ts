@@ -20,7 +20,11 @@ export function start() {
 const MAX_INGEST_THREADS = 1;
 let immediateNATSTransaction, subscribed_to_nodes;
 /**
- * This will assign the NATS replicator as a source to any tables that have subscriptions to them (are publishing to other nodes)
+ * Replication functions by acting as a "source" for tables. With replicated tables, the local tables are considered
+ * a "cache" of the cluster's data. The tables don't resolve gets to the cluster, but they do propagate
+ * writes and subscribe to the cluster.
+ * This function will assign the NATS replicator as a source to all tables don't have an otherwise defined source (basically
+ * any tables that aren't caching tables for another source).
  */
 function assignReplicationSource() {
 	const databases = getDatabases();
@@ -84,6 +88,13 @@ export function setNATSReplicator(table_name, db_name, Table) {
 			static defineSchema(Table) {
 				publishSchema(Table);
 			}
+
+			/**
+			 * This gets the NATS transaction object for the current overall transaction. This will
+			 * accumulate any writes that occur during a transaction, and allow them to be aggregated
+			 * into a replication message that encompasses all the writes of a transaction.
+			 * @param options
+			 */
 			getNATSTransaction(options): NATSTransaction {
 				let nats_transaction: NATSTransaction = this[TRANSACTIONS_PROPERTY]?.nats;
 				if (!nats_transaction) {
@@ -97,6 +108,13 @@ export function setNATSReplicator(table_name, db_name, Table) {
 				}
 				return nats_transaction;
 			}
+
+			/**
+			 * This subscribes to the NATS ingest service so that incoming NATS messages are delivered
+			 * to tables as subscription events. Subscription events are notifications rather than
+			 * requests for data changes, so they circumvent the validation and replication layers
+			 * of the table classes.
+			 */
 			static subscribe() {
 				if (getWorkerIndex() < MAX_INGEST_THREADS) {
 					const subscription = new IterableEventQueue();
@@ -107,6 +125,11 @@ export function setNATSReplicator(table_name, db_name, Table) {
 		}
 	);
 }
+
+/**
+ * Publish/replicate an updated schema for this table, to the cluster.
+ * @param Table
+ */
 function publishSchema(Table) {
 	const node_name = env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 	publishToStream(
@@ -137,6 +160,11 @@ class NATSTransaction {
 		if (!writes_for_path) this.writes_by_db.set(database_path, (writes_for_path = []));
 		writes_for_path.push(write);
 	}
+
+	/**
+	 * Once a transaction is completed, we put all the accumulated writes into a single NATS
+	 * message and publish it to the cluster
+	 */
 	commit() {
 		const node_name = env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 		const promises = [];
@@ -191,6 +219,11 @@ class NATSTransaction {
 		return Promise.all(promises);
 	}
 }
+
+/**
+ * This is used in situations where there is no overarching transaction and we just need to immediately
+ * publish the write as a message (no future commit to wait for)
+ */
 class ImmmediateNATSTransaction extends NATSTransaction {
 	constructor() {
 		super({

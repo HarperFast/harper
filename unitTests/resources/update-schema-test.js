@@ -1,9 +1,11 @@
 const { getMockLMDBPath } = require('../test_utils');
-const { handleFile } = require('../../resources/graphql');
+const { start } = require('../../resources/graphql');
+const { table } = require('../../resources/databases');
 const assert = require('assert');
 const test_data = require('../testData');
 describe('Update Schema', () => {
 	let workers, server;
+	const { handleFile } = start({ ensureTable: table });
 	before(async function () {
 		this.timeout(15000);
 		let path = getMockLMDBPath();
