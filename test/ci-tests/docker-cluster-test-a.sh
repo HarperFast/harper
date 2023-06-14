@@ -52,7 +52,7 @@ sudo docker exec ClstrTestA1 /bin/bash -c 'sed -in "s/ClstrTestANode5/ClstrTestA
 sudo docker exec ClstrTestA1 /bin/bash -c 'sed -in "s/ubuntu/harperdb/" ~/harperdb/integrationTests/clusterTests/clusterTestA/Five_node_cluster_tests_env_var.postman_environment.json'
 
 # Run cluster tests from first container
-sudo docker exec ClstrTestA1 /bin/bash -c 'cd ~/harperdb/integrationTests/ && newman run clusterTests/clusterTestA/Five_Node_Cluster.postman_collection.json -e clusterTests/clusterTestA/Five_node_cluster_tests_env_var.postman_environment.json --reporters teamcity,cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html  --delay-request 125 --insecure --reporter-cli-show-timestamps'
+sudo docker exec ClstrTestA1 /bin/bash -c 'cd ~/harperdb/integrationTests/ && newman run clusterTests/clusterTestA/Five_Node_Cluster.postman_collection.json -e clusterTests/clusterTestA/Five_node_cluster_tests_env_var.postman_environment.json --reporters teamcity,cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html  --delay-request 2000 --insecure --reporter-cli-show-timestamps'
 test_status=$?
 
 artifact_dir="artifact"
