@@ -28,3 +28,4 @@ ts-build
 *.jsc
 
 harperdb-*.tgz
+utility/Docker/licenses

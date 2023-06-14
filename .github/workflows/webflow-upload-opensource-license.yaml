@@ -1,0 +1,47 @@
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      publish:
+        required: true
+        type: string
+        default: false
+        options:
+          - true
+          - false
+name: "Webflow - Update Open Source Licenses Page"
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v3
+      - name: "Get harperdb/harperdb_open_source_license_generator"
+        uses: actions/checkout@v3
+        with:
+          repository: "HarperDB/harperdb_open_source_license_generator.git"
+          path: "harperdb_open_source_license_generator"
+          ref: "master"
+      - uses: actions/setup-node@v3
+      - name: "Generate license file"
+        env:
+          project_path: "."
+          output_file: "open-source-licenses-notices.md"
+          template_file: "harperdb_open_source_license_generator/template.txt"
+        run: npm install harperdb_open_source_license_generator/ && node harperdb_open_source_license_generator/index.js
+      - name: "Push Draft: open-source-licenses-notices"
+        if: github.ref != 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          PUBLISH: "${{ inputs.publish }}"
+          LICENSE_FILE: "open-source-licenses-notices.md"
+          TOKEN: "${{ secrets.webflow_api_token }}"
+        run: .github/scripts/webflow-upload-opensource-license.sh
+      - name: "Push Live: open-source-licenses-notices"
+        if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
+        env:
+          PUBLISH: ${{ github.ref == 'refs/heads/main' && 'true' || 'false' }}
+          LICENSE_FILE: "open-source-licenses-notices.md"
+          TOKEN: "${{ secrets.webflow_api_token }}"
+        run: .github/scripts/webflow-upload-opensource-license.sh

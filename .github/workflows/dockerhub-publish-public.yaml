@@ -1,5 +1,14 @@
 on:
   workflow_dispatch:
+    inputs:
+      dockerFile:
+        required: false
+        type: string
+        default: 'utility/Docker/Dockerfile'
+      dockerImage:
+        required: false
+        type: string
+        default: 'harperdb/harperdb'
 name: DockerHub Publish Public
 jobs:
   build:
@@ -28,5 +37,7 @@ jobs:
       env:
         HARPERDB_VERSION: ${{ needs.build.outputs.harperdbVersion }}
         NODE_VERSION: ${{ needs.build.outputs.nodeVersion }}
+        DOCKERFILE: ${{ inputs.dockerFile }}
+        DOCKER_IMAGE: ${{ inputs.dockerImage }}
         PUBLISH: "public"
       run: ./.github/scripts/docker-publish.sh
