@@ -193,9 +193,9 @@ if (isMainThread) {
 }
 let total_bytes_processed = 0;
 const last_utilizations = new Map();
-function recordAnalytics(message, worker) {
+function recordAnalytics(message, worker?) {
 	const report = message.report;
-	report.threadId = worker.threadId || threadId;
+	report.threadId = worker?.threadId || threadId;
 	// Add system information stats as well
 	for (const metric of report.metrics) {
 		if (metric.metric === 'bytes-sent') {
