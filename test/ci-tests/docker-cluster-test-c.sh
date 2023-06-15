@@ -56,7 +56,7 @@ sudo docker cp test/ ClstrTestC3:/home/harperdb/harperdb/
 sudo docker cp test/ ClstrTestC4:/home/harperdb/harperdb/
 
 # Run cluster tests from first container
-sudo docker exec ClstrTestA1 --user root /bin/bash -c 'mkdir ~/harperdb/integrationTests/newman && chmod 777 ~/harperdb/integrationTests/newman'
+sudo docker exec --user root ClstrTestC1 /bin/bash -c 'mkdir -p ~/harperdb/integrationTests/newman && chmod 777 ~/harperdb/integrationTests/newman'
 sudo docker exec ClstrTestC1 /bin/bash -c 'cd ~/harperdb/integrationTests/ && newman run clusterTests/clusterTestC/cluster_test_c.json -e clusterTests/clusterTestC/cluster_test_c_env.json --reporters cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html  --delay-request 1000 --insecure --reporter-cli-show-timestamps'
 test_status=$?
 
