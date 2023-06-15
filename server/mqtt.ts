@@ -4,7 +4,7 @@ import { parser as makeParser, generate } from 'mqtt-packet';
 import { getSession, DurableSubscriptionsSession } from './DurableSubscriptionsSession';
 import { findAndValidateUser, getSuperUser } from '../security/user';
 import { serializeMessage, getDeserializer } from './serverHelpers/contentTypes';
-import { recordAction } from '../resources/analytics';
+import { recordAction, addAnalyticsListener } from '../resources/analytics';
 import { server } from '../server/Server';
 import { get } from '../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms';
@@ -14,6 +14,7 @@ const auth_event_log = loggerWithTag('auth-event');
 const AUTHORIZE_LOCAL = true;
 export async function start({ server, port, webSocket, securePort, requireAuthentication }) {
 	// here we basically normalize the different types of sockets to pass to our socket/message handler
+	const mqtt_settings = (server.mqtt = { requireAuthentication });
 	if (webSocket)
 		server.ws(
 			(ws, request, chain_completion) => {
@@ -23,7 +24,7 @@ export async function start({ server, port, webSocket, securePort, requireAuthen
 						(message) => ws.send(message),
 						request,
 						Promise.resolve(chain_completion).then(() => request?.user),
-						requireAuthentication
+						mqtt_settings
 					);
 					ws.on('message', onMessage);
 					ws.on('close', onClose);
@@ -40,13 +41,7 @@ export async function start({ server, port, webSocket, securePort, requireAuthen
 					user = await getSuperUser();
 				}
 
-				const { onMessage, onClose } = onSocket(
-					socket,
-					(message) => socket.write(message),
-					null,
-					user,
-					requireAuthentication
-				);
+				const { onMessage, onClose } = onSocket(socket, (message) => socket.write(message), null, user, mqtt_settings);
 				socket.on('data', onMessage);
 				socket.on('close', onClose);
 				socket.on('error', (error) => {
@@ -57,8 +52,19 @@ export async function start({ server, port, webSocket, securePort, requireAuthen
 		);
 	}
 }
-
-function onSocket(socket, send, request, user, requireAuthentication) {
+let adding_metrics,
+	number_of_connections = 0;
+function onSocket(socket, send, request, user, mqtt_settings) {
+	if (!adding_metrics) {
+		adding_metrics = true;
+		addAnalyticsListener((metrics) => {
+			metrics.push({
+				metric: 'mqtt-connections',
+				connections: number_of_connections,
+			});
+		});
+	}
+	number_of_connections++;
 	let session: DurableSubscriptionsSession;
 	const mqtt_options = { protocolVersion: 4 };
 	const parser = makeParser({ protocolVersion: 5 });
@@ -66,9 +72,9 @@ function onSocket(socket, send, request, user, requireAuthentication) {
 		parser.parse(data);
 	}
 	function onClose() {
+		number_of_connections--;
 		session.disconnect();
 	}
-	let awaiting_acks: Map;
 
 	parser.on('packet', async (packet) => {
 		if (user?.then) user = await user;
@@ -107,19 +113,31 @@ function onSocket(socket, send, request, user, requireAuthentication) {
 							});
 						}
 					}
-					if (!user && requireAuthentication)
+					if (!user && mqtt_settings.requireAuthentication)
 						return sendPacket({
 							// Send a connection acknowledgment with indication of auth failure
 							cmd: 'connack',
 							reasonCode: 0x86,
 							returnCode: 0x86, // bad username or password
 						});
-					// TODO: Do we want to prefix the user name to the client id (to prevent collisions when poor ids are used)
-					// TODO: Handle the will & testament, and possibly use the will's content type as a hint for expected content
-					session = await getSession({
-						user,
-						...packet,
-					});
+					try {
+						// TODO: Do we want to prefix the user name to the client id (to prevent collisions when poor ids are used) or is this sufficient?
+						mqtt_settings.authorizeClient?.(packet, user);
+
+						// TODO: Handle the will & testament, and possibly use the will's content type as a hint for expected content
+						session = await getSession({
+							user,
+							...packet,
+						});
+					} catch (error) {
+						log_error(error);
+						return sendPacket({
+							// Send a connection acknowledgment with indication of auth failure
+							cmd: 'connack',
+							reasonCode: error.code || 0x80,
+							returnCode: error.code || 0x80, // generic error
+						});
+					}
 					sendPacket({
 						// Send a connection acknowledgment
 						cmd: 'connack',

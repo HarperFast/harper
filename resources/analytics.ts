@@ -40,7 +40,10 @@ export function recordActionBinary(value, metric, path, method, type?) {
 let analytics_start = 0;
 const ANALYTICS_DELAY = 1000;
 const ANALYTICS_REPORT_TYPE = 'analytics-report';
-
+const analytics_listeners = [];
+export function addAnalyticsListener(callback) {
+	analytics_listeners.push(callback);
+}
 /**
  * Periodically send analytics data back to the main thread for storage
  */
@@ -74,7 +77,15 @@ function sendAnalytics() {
 				metrics.push(value);
 			}
 		}
-
+		const memory_usage = process.memoryUsage();
+		metrics.push({
+			metric: 'memory',
+			threadId,
+			...memory_usage,
+		});
+		for (const listener of analytics_listeners) {
+			listener(metrics);
+		}
 		active_actions = new Map();
 		if (parentPort)
 			parentPort.postMessage({
@@ -84,12 +95,13 @@ function sendAnalytics() {
 		else recordAnalytics({ report });
 	}, ANALYTICS_DELAY).unref();
 }
-const AGGREGATE_PREFIX = 'h-'; // we could have different levels of aggregation, but this denotes hourly aggregation
+const AGGREGATE_PREFIX = 'hour-'; // we could have different levels of aggregation, but this denotes hourly aggregation
 async function aggregation(from_period, to_period = 3600000) {
 	const AnalyticsTable = getAnalyticsTable();
 	let last_for_period;
 	// find the last entry for this period
 	for (const entry of AnalyticsTable.primaryStore.getRange({ start: AGGREGATE_PREFIX + 'z', reverse: true })) {
+		if (!entry.value) continue;
 		last_for_period = entry.value.time;
 		break;
 	}
@@ -102,6 +114,7 @@ async function aggregation(from_period, to_period = 3600000) {
 		start: last_for_period || false,
 		end: Infinity,
 	})) {
+		if (!value) continue;
 		if (first_for_period) {
 			if (key > first_for_period + to_period) break; // outside the period of interest
 		} else first_for_period = key;
@@ -126,9 +139,10 @@ async function aggregation(from_period, to_period = 3600000) {
 				aggregate_actions.set(key, action);
 			}
 		}
+		await rest();
 	}
 	for (const [key, value] of aggregate_actions) {
-		value.id = AGGREGATE_PREFIX + last_time;
+		value.id = AGGREGATE_PREFIX + last_time + '-' + key;
 		AnalyticsTable.put(value);
 	}
 }
@@ -137,14 +151,14 @@ const rest = () => new Promise(setImmediate);
 
 async function cleanup(expiration, period) {
 	const AnalyticsTable = getAnalyticsTable();
-	const start = Date.now() - expiration;
-	for (const { key, value } of AnalyticsTable.primaryStore.getRange({ start: false, end: [period, start] })) {
+	const end = Date.now() - expiration;
+	for (const key of AnalyticsTable.primaryStore.getKeys({ start: false, end })) {
 		AnalyticsTable.delete(key);
 	}
 }
 
-const AGGREGATE_PERIOD = 40000000;
-const RAW_EXPIRATION = 10000;
+const AGGREGATE_PERIOD = 20000;
+const RAW_EXPIRATION = 3600000;
 const AGGREGATE_EXPIRATION = 100000;
 let AnalyticsTable;
 function getAnalyticsTable() {
@@ -174,25 +188,27 @@ if (isMainThread) {
 	setInterval(async () => {
 		await aggregation(ANALYTICS_DELAY, AGGREGATE_PERIOD);
 		await cleanup(RAW_EXPIRATION, ANALYTICS_DELAY);
-		await cleanup(AGGREGATE_EXPIRATION, AGGREGATE_PERIOD);
+		//await cleanup(AGGREGATE_EXPIRATION, AGGREGATE_PERIOD);
 	}, AGGREGATE_PERIOD / 2).unref();
 }
 let total_bytes_processed = 0;
-function recordAnalytics(message) {
+const last_utilizations = new Map();
+function recordAnalytics(message, worker) {
 	const report = message.report;
+	report.threadId = worker.threadId || threadId;
 	// Add system information stats as well
-	const worker_info = getThreadInfo().find((worker) => worker.threadId === report.threadId);
 	for (const metric of report.metrics) {
 		if (metric.metric === 'bytes-sent') {
 			total_bytes_processed += metric.mean * metric.count;
 		}
 	}
 	report.totalBytesProcessed = total_bytes_processed;
-	if (worker_info) {
+	if (worker) {
 		report.metrics.push({
-			metric: 'cpu-memory',
-			...worker_info,
+			metric: 'utilization',
+			...worker.performance.eventLoopUtilization(last_utilizations.get(worker)),
 		});
+		last_utilizations.set(worker, worker.performance.eventLoopUtilization());
 	}
 	report.id = getNextMonotonicTime();
 	getAnalyticsTable().put(report);
