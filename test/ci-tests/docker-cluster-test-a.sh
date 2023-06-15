@@ -30,6 +30,14 @@ sleep 30s
 sudo docker exec ClstrTestA1 /bin/bash -c 'cat /home/harperdb/hdb/harperdb-config.yaml| grep nodeName'
 sudo docker exec ClstrTestA1 /bin/bash -c 'npm install -g newman newman-reporter-teamcity newman-reporter-html newman-reporter-htmlextra'
 
+# modify integrationTests folder before copy
+sed -in "s/ClstrTestANode1/ClstrTestA1/" integrationTests/clusterTests/clusterTestA/Five_node_cluster_tests_env_var.postman_environment.json
+sed -in "s/ClstrTestANode2/ClstrTestA2/" integrationTests/clusterTests/clusterTestA/Five_node_cluster_tests_env_var.postman_environment.json
+sed -in "s/ClstrTestANode3/ClstrTestA3/" integrationTests/clusterTests/clusterTestA/Five_node_cluster_tests_env_var.postman_environment.json
+sed -in "s/ClstrTestANode4/ClstrTestA4/" integrationTests/clusterTests/clusterTestA/Five_node_cluster_tests_env_var.postman_environment.json
+sed -in "s/ClstrTestANode5/ClstrTestA5/" integrationTests/clusterTests/clusterTestA/Five_node_cluster_tests_env_var.postman_environment.json
+sed -in "s/ubuntu/harperdb/" integrationTests/clusterTests/clusterTestA/Five_node_cluster_tests_env_var.postman_environment.json
+
 # Copy integrationTests folder to first container
 sudo docker exec ClstrTestA1 /bin/bash -c 'mkdir /home/harperdb/harperdb/'
 sudo docker cp integrationTests/ ClstrTestA1:/home/harperdb/harperdb/
@@ -45,13 +53,6 @@ sudo docker cp test/ ClstrTestA2:/home/harperdb/harperdb/
 sudo docker cp test/ ClstrTestA3:/home/harperdb/harperdb/
 sudo docker cp test/ ClstrTestA4:/home/harperdb/harperdb/
 sudo docker cp test/ ClstrTestA5:/home/harperdb/harperdb/
-
-sudo docker exec ClstrTestA1 /bin/bash -c 'sed -in "s/ClstrTestANode1/ClstrTestA1/" ~/harperdb/integrationTests/clusterTests/clusterTestA/Five_node_cluster_tests_env_var.postman_environment.json'
-sudo docker exec ClstrTestA1 /bin/bash -c 'sed -in "s/ClstrTestANode2/ClstrTestA2/" ~/harperdb/integrationTests/clusterTests/clusterTestA/Five_node_cluster_tests_env_var.postman_environment.json'
-sudo docker exec ClstrTestA1 /bin/bash -c 'sed -in "s/ClstrTestANode3/ClstrTestA3/" ~/harperdb/integrationTests/clusterTests/clusterTestA/Five_node_cluster_tests_env_var.postman_environment.json'
-sudo docker exec ClstrTestA1 /bin/bash -c 'sed -in "s/ClstrTestANode4/ClstrTestA4/" ~/harperdb/integrationTests/clusterTests/clusterTestA/Five_node_cluster_tests_env_var.postman_environment.json'
-sudo docker exec ClstrTestA1 /bin/bash -c 'sed -in "s/ClstrTestANode5/ClstrTestA5/" ~/harperdb/integrationTests/clusterTests/clusterTestA/Five_node_cluster_tests_env_var.postman_environment.json'
-sudo docker exec ClstrTestA1 /bin/bash -c 'sed -in "s/ubuntu/harperdb/" ~/harperdb/integrationTests/clusterTests/clusterTestA/Five_node_cluster_tests_env_var.postman_environment.json'
 
 # Run cluster tests from first container
 sudo docker exec ClstrTestA1 /bin/bash -c 'cd ~/harperdb/integrationTests/ && newman run clusterTests/clusterTestA/Five_Node_Cluster.postman_collection.json -e clusterTests/clusterTestA/Five_node_cluster_tests_env_var.postman_environment.json --reporters teamcity,cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html  --delay-request 125 --insecure --reporter-cli-show-timestamps'
