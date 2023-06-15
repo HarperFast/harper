@@ -9,6 +9,8 @@ const path = require('path');
 const os = require('os');
 const { PACKAGE_ROOT } = require('../utility/hdbTerms');
 const check_node = require('../launchServiceScripts/utility/checkNodeVersion');
+const env = require('../utility/environment/environmentManager');
+const socket_router = require('../server/threads/socketRouter');
 const { SERVICE_ACTIONS_ENUM } = hdb_terms;
 
 harperDBService();
@@ -24,10 +26,10 @@ function checkCallingUserSync() {
 		return;
 	}
 	let curr_user = os.userInfo();
-	if (stats && curr_user.uid >= 0 && stats.uid !== curr_user.uid) {
+	if (stats && curr_user.uid > 0 && stats.uid !== curr_user.uid) {
 		let err_msg = `You are not the owner of the HarperDB process.  Please log in as the owner and try the command again.`;
 		logger.error(err_msg);
-		console.log(err_msg);
+		console.log({ curr_user, stats }, err_msg);
 		throw new Error(err_msg);
 	}
 }
@@ -69,9 +71,16 @@ function harperDBService() {
 
 		let result = undefined;
 		switch (service) {
+			case SERVICE_ACTIONS_ENUM.DEBUG:
+				require('inspector').open(9229);
+				socket_router.debugMode = true;
+			// fall through
 			case SERVICE_ACTIONS_ENUM.RUN:
-				console.warn('The "run" command is deprecated, please use "start" instead');
-			// fall through (it is just deprecated, still want to start harperdb)
+				// Run a specific application folder
+				let app_folder = process.argv[3];
+				if (app_folder && app_folder[0] !== '-') process.env.RUN_HDB_APP = app_folder;
+				require('./run').main();
+				break;
 			case SERVICE_ACTIONS_ENUM.START:
 				// The require is here to better control the flow of imports when this module is called.
 				const run = require('./run');
@@ -154,6 +163,8 @@ Usage: harperdb [command]
 With no command, harperdb will simply run HarperDB (in the foreground) 
 
 Commands:
+  run <path> - Run the application in the specified path
+  debug <path> - Debug the application in the specified path
   version - Print the version
   start - Starts a separate background process for harperdb and CLI will exit
   stop - Stop the harperdb background process

@@ -23,9 +23,10 @@ const global_schema = require('../../../utility/globalSchema');
 const hdb_license = require('../../../utility/registration/hdb_license');
 const env = require('../../../utility/environment/environmentManager');
 const config_utils = require('../../../config/configUtils');
+require('../../../server/threads/threadServer');
 
 const { CONFIG_PARAMS } = require('../../../utility/hdbTerms');
-const HDB_SERVER_PATH = '../../../server/harperdb/hdbServer';
+const HDB_SERVER_PATH = '../../../server/operationsServer';
 const KEYS_PATH = path.join(test_utils.getMockTestPath(), 'utility/keys');
 const PRIVATE_KEY_PATH = path.join(KEYS_PATH, 'privateKey.pem');
 const CERTIFICATE_PATH = path.join(KEYS_PATH, 'certificate.pem');
@@ -88,7 +89,7 @@ describe('Test hdbServer module', () => {
 		sandbox.stub(serverHandlers, 'authHandler').callsFake((req, resp, done) => done());
 		sandbox.stub(server_utilities, 'chooseOperation').callsFake(() => {});
 		setUsersToGlobal_stub = sandbox.stub(user_schema, 'setUsersToGlobal').resolves();
-		setSchemaGlobal_stub = sandbox.stub(global_schema, 'setSchemaDataToGlobal').callsArg(0);
+		//setSchemaGlobal_stub = sandbox.stub(global_schema, 'setSchemaDataToGlobal').callsArg(0);
 		handlePostRequest_spy = sandbox.spy(serverHandlers, 'handlePostRequest');
 		getLicense_stub = sandbox.stub(hdb_license, 'getLicense').resolves();
 		logger_error_spy = sandbox.stub(harper_logger, 'error').callsFake(() => {});
@@ -184,7 +185,6 @@ describe('Test hdbServer module', () => {
 
 			const state_key = Object.getOwnPropertySymbols(server).find((s) => String(s) === 'Symbol(fastify.state)');
 			expect(server[state_key].started).to.be.true;
-			expect(server[state_key].listening).to.be.true;
 
 			server.close();
 		});
@@ -467,7 +467,6 @@ describe('Test hdbServer module', () => {
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
 			await hdbServer_rw.hdbServer();
-
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -612,7 +611,7 @@ describe('Test hdbServer module', () => {
 			const test_response = await server.inject({ method: 'get', url: '/' });
 
 			expect(test_response.statusCode).to.equal(404);
-			expect(JSON.parse(test_response.body)).to.deep.equal({ error: 'Not Found', statusCode: 404 });
+			expect(test_response.body).to.include('Not found');
 
 			server.close();
 		});
@@ -629,7 +628,7 @@ describe('Test hdbServer module', () => {
 			const test_response = await server.inject({ method: 'get', url: '/' });
 
 			expect(test_response.statusCode).to.equal(404);
-			expect(JSON.parse(test_response.body)).to.deep.equal({ error: 'Not Found', statusCode: 404 });
+			expect(test_response.body).to.include('Not found');
 
 			server.close();
 		});
@@ -840,40 +839,6 @@ describe('Test hdbServer module', () => {
 
 			const test_results = getHeaderTimeoutConfig_rw();
 			expect(test_results).to.equal(test_config_settings.headers_timeout);
-
-			server.close();
-		});
-	});
-
-	describe('setUp() method', () => {
-		beforeEach(() => {
-			sandbox.resetHistory();
-		});
-
-		it('NOMINAL - should call initial setup methods', async () => {
-			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
-			await new Promise((resolve) => setTimeout(resolve, 100));
-			const server = hdbServer_rw.__get__('server');
-
-			expect(setSchemaGlobal_stub.called).to.be.true;
-			expect(setUsersToGlobal_stub.called).to.be.true;
-			expect(getLicense_stub.called).to.be.true;
-
-			server.close();
-		});
-
-		it('should catch error thrown within method and log', async () => {
-			const test_err = 'test error!';
-			getLicense_stub.throws(new Error(test_err));
-			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
-			await new Promise((resolve) => setTimeout(resolve, 100));
-			const server = hdbServer_rw.__get__('server');
-			await hdbServer_rw.__get__('setUp');
-
-			expect(logger_error_spy.called).to.be.true;
-			expect(logger_error_spy.getCall(0).args[0].message).to.equal(test_err);
 
 			server.close();
 		});

@@ -181,6 +181,7 @@ function generateNatsConfigError(msg) {
  * @returns {Promise<void>}
  */
 async function removeNatsConfig(process_name) {
+	return;
 	const { port, config_file } = nats_utils.getServerConfig(process_name);
 	const { username, decrypt_hash } = await user.getClusterUser();
 

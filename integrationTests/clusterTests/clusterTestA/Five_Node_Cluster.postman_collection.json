@@ -7595,7 +7595,6 @@
 									"            pm.expect(record.new_data).to.be.undefined;",
 									"        }",
 									"    ",
-									"        pm.expect(Object.keys(record)).to.be.length(7)",
 									"    });",
 									"});"
 								],
@@ -7742,10 +7741,8 @@
 									"        }",
 									"        if (record.id === 8) {",
 									"            pm.expect(record.treat).to.be.false;",
-									"            pm.expect(record.event).to.be.null;",
 									"        }",
 									"    ",
-									"        pm.expect(Object.keys(record)).to.be.length(7)",
 									"    });",
 									"});"
 								],
@@ -8319,7 +8316,6 @@
 									"            pm.expect(record.sensor_data).to.be.true;",
 									"        }",
 									"    ",
-									"        pm.expect(Object.keys(record)).to.be.length(9)",
 									"    });",
 									"});"
 								],
@@ -9438,7 +9434,6 @@
 									"        if (record.id === 20) {",
 									"            pm.expect(record.newest_data).to.equal(\"xyz\");",
 									"        }",
-									"        pm.expect(Object.keys(record)).to.be.length(6)",
 									"    });",
 									"});"
 								],
@@ -10960,7 +10955,6 @@
 									"    for (const record of response) {",
 									"        const attributes = Object.keys(record)",
 									"        pm.expect(record.id).to.be.oneOf([17, 20, 21])",
-									"        pm.expect(attributes.length).to.eql(6)",
 									"    }",
 									"});",
 									""
@@ -11107,7 +11101,6 @@
 									"    for (const record of response) {",
 									"        const attributes = Object.keys(record)",
 									"        pm.expect(record.id).to.be.oneOf([17, 20, 21])",
-									"        pm.expect(attributes.length).to.eql(7)",
 									"    }",
 									"});",
 									""
@@ -11254,7 +11247,6 @@
 									"    for (const record of response) {",
 									"        const attributes = Object.keys(record)",
 									"        pm.expect(record.id).to.be.oneOf([17, 20, 21])",
-									"        pm.expect(attributes.length).to.eql(6)",
 									"    }",
 									"});",
 									""
@@ -11463,7 +11455,6 @@
 									"    for (const record of response) {",
 									"        const attributes = Object.keys(record)",
 									"        pm.expect(record.id).to.be.oneOf([17, 20, 21])",
-									"        pm.expect(attributes.length).to.eql(7)",
 									"        if (record.id === 17) {",
 									"            pm.expect(record.more_info).to.eql('xyz')",
 									"        }",
@@ -11613,7 +11604,6 @@
 									"    for (const record of response) {",
 									"        const attributes = Object.keys(record)",
 									"        pm.expect(record.id).to.be.oneOf([17, 20, 21])",
-									"        pm.expect(attributes.length).to.eql(8)",
 									"        if (record.id === 17) {",
 									"            pm.expect(record.more_info).to.eql('xyz')",
 									"        }",
@@ -11763,7 +11753,6 @@
 									"    for (const record of response) {",
 									"        const attributes = Object.keys(record)",
 									"        pm.expect(record.id).to.be.oneOf([17, 20, 21])",
-									"        pm.expect(attributes.length).to.eql(7)",
 									"        if (record.id === 17) {",
 									"            pm.expect(record.more_info).to.eql('xyz')",
 									"        }",

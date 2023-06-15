@@ -4,6 +4,7 @@ const fs = require('fs-extra');
 const Joi = require('joi');
 const os = require('os');
 const { boolean, string, number, array } = Joi.types();
+const { totalmem } = require('os');
 const path = require('path');
 const hdb_logger = require('../utility/logging/harper_logger');
 const hdb_utils = require('../utility/common_utils');
@@ -47,7 +48,7 @@ function configValidator(config_json) {
 
 	const enabled_constraints = boolean.required();
 	const node_env_constraints = Joi.valid('production', 'development').required();
-	const threads_constraints = number.min(1).max(1000).empty(null).default(setDefaultThreads);
+	const threads_constraints = number.min(0).max(1000).empty(null).default(setDefaultThreads);
 	const root_constraints = string
 		.pattern(/^[\\\/]$|([\\\/][a-zA-Z_0-9\:-]+)+$/, 'directory path')
 		.empty(null)
@@ -103,6 +104,7 @@ function configValidator(config_json) {
 			}).required(),
 			logLevel: Joi.valid('error', 'warn', 'info', 'debug', 'trace'),
 			nodeName: nats_term_constraints,
+			republishMessages: boolean.required(),
 			tls: Joi.object({
 				certificate: pem_file_constraints,
 				certificateAuthority: pem_file_constraints,
@@ -126,6 +128,13 @@ function configValidator(config_json) {
 	}
 
 	const config_schema = Joi.object({
+		authentication: Joi.object({
+			authorizeLocal: boolean.required(),
+			cacheTTL: number.required(),
+			enableSessions: boolean.required(),
+			operationTokenTimeout: Joi.required(),
+			refreshTokenTimeout: Joi.required(),
+		}).required(),
 		clustering: clustering_validation_schema,
 		customFunctions: Joi.object({
 			enabled: enabled_constraints,
@@ -150,6 +159,10 @@ function configValidator(config_json) {
 			enabled: enabled_constraints,
 		}).required(),
 		logging: Joi.object({
+			auditAuthEvents: Joi.object({
+				logFailed: boolean.required(),
+				logSuccessful: boolean.required(),
+			}),
 			file: boolean.required(),
 			level: Joi.valid('notify', 'fatal', 'error', 'warn', 'info', 'debug', 'trace'),
 			rotation: Joi.object({
@@ -164,10 +177,6 @@ function configValidator(config_json) {
 			auditLog: boolean.required(),
 		}).required(),
 		operationsApi: Joi.object({
-			authentication: Joi.object({
-				operationTokenTimeout: Joi.required(),
-				refreshTokenTimeout: Joi.required(),
-			}).required(),
 			foreground: boolean.required(),
 			network: Joi.object({
 				cors: boolean.required(),
@@ -186,6 +195,12 @@ function configValidator(config_json) {
 			}),
 		}).required(),
 		rootPath: string.pattern(/^[\\\/]$|([\\\/][a-zA-Z_0-9\:-]+)+$/, 'directory path').required(),
+		mqtt: Joi.object({
+			port: port_constraints,
+			securePort: port_constraints,
+			webSocket: boolean.optional(),
+			requireAuthentication: boolean.optional(),
+		}),
 		http: Joi.object({
 			threads: threads_constraints,
 		}).required(),
@@ -277,7 +292,12 @@ function setDefaultThreads(parent, helpers) {
 	let num_processes = processors - 1;
 	// But if only two or less processors, keep two processes so we have some level of concurrency fairness
 	if (num_processes <= 2) num_processes = 2;
-	hdb_logger.info(`Detected ${processors} cores on this machine, defaulting ${config_param} to ${num_processes}`);
+	let available_memory = process.constrainedMemory?.() || totalmem(); // used constrained memory if it is available
+	// and lower than total memory
+	available_memory = Math.round(Math.min(available_memory, totalmem()) / 1000000);
+	// (available memory -750MB) / 300MB
+	num_processes = Math.max(Math.min(num_processes, Math.round((available_memory - 750) / 300)), 1);
+	hdb_logger.info(`Detected ${processors} cores and ${available_memory}MB on this machine, defaulting ${config_param} to ${num_processes}`);
 	return num_processes;
 }
 
@@ -307,7 +327,9 @@ function setDefaultRoot(parent, helpers) {
 		case 'clustering.leafServer.streams.path':
 			return path.join(hdb_root, 'clustering', 'leaf');
 		case 'storage.path':
-			return path.join(hdb_root, hdb_terms.SCHEMA_DIR_NAME);
+			const legacy_storage_path = path.join(hdb_root, hdb_terms.LEGACY_DATABASES_DIR_NAME);
+			if (fs.existsSync(legacy_storage_path)) return legacy_storage_path;
+			return path.join(hdb_root, hdb_terms.DATABASES_DIR_NAME);
 		case 'logging.rotation.path':
 			return path.join(hdb_root, DEFAULT_LOG_FOLDER);
 		default:

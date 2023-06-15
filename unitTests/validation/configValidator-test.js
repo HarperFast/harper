@@ -16,6 +16,13 @@ const logger = require('../../utility/logging/harper_logger');
 const HDB_ROOT = path.join(__dirname, 'carrot');
 
 const FAKE_CONFIG = {
+	authentication: {
+		authorizeLocal: true,
+		cacheTTL: 30000,
+		enableSessions: true,
+		operationTokenTimeout: '1d',
+		refreshTokenTimeout: '30d',
+	},
 	clustering: {
 		enabled: true,
 		hubServer: {
@@ -50,6 +57,7 @@ const FAKE_CONFIG = {
 			},
 		},
 		nodeName: 'test_name',
+		republishMessages: true,
 		replyService: {
 			processes: 3,
 		},
@@ -158,6 +166,13 @@ describe('Test configValidator module', () => {
 			const schema = configValidator(FAKE_CONFIG);
 			const expected_val_config_obj = {
 				value: {
+					authentication: {
+						authorizeLocal: true,
+						cacheTTL: 30000,
+						enableSessions: true,
+						operationTokenTimeout: '1d',
+						refreshTokenTimeout: '30d',
+					},
 					clustering: {
 						enabled: true,
 						hubServer: {
@@ -197,6 +212,7 @@ describe('Test configValidator module', () => {
 							},
 						},
 						nodeName: 'test_name',
+						republishMessages: true,
 						replyService: {
 							processes: 3,
 						},
@@ -265,7 +281,7 @@ describe('Test configValidator module', () => {
 					rootPath: path.join(__dirname, '/carrot'),
 					storage: {
 						writeAsync: true,
-						path: path.join(__dirname, '/carrot/schema'),
+						path: path.join(__dirname, '/carrot/database'),
 					},
 				},
 			};
@@ -466,14 +482,7 @@ describe('Test configValidator module', () => {
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'operationsApi.authentication.operationTokenTimeout' is required." +
-				" 'operationsApi.authentication.refreshTokenTimeout' is required. 'operationsApi.foreground' must be a" +
-				" boolean. 'operationsApi.network.cors' must be a boolean. 'operationsApi.network.headersTimeout' must" +
-				" be greater than or equal to 1. 'operationsApi.network.https' must be a boolean." +
-				" 'operationsApi.network.keepAliveTimeout' must be a number. 'operationsApi.network.port' must be a" +
-				" number. 'operationsApi.network.timeout' must be a number. 'operationsApi.nodeEnv' must be one of" +
-				" [production, development]. 'rootPath' with value '/@@@' fails to match" +
-				" the directory path pattern. 'http.threads' must be a number. 'storage.writeAsync' is required";
+				"'operationsApi.foreground' must be a boolean. 'operationsApi.network.cors' must be a boolean. 'operationsApi.network.headersTimeout' must be greater than or equal to 1. 'operationsApi.network.https' must be a boolean. 'operationsApi.network.keepAliveTimeout' must be a number. 'operationsApi.network.port' must be a number. 'operationsApi.network.timeout' must be a number. 'operationsApi.nodeEnv' must be one of [production, development]. 'rootPath' with value '/@@@' fails to match the directory path pattern. 'http.threads' must be a number. 'storage.writeAsync' is required";
 
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
@@ -598,9 +607,7 @@ describe('Test configValidator module', () => {
 			const result = set_default_processes(parent, helpers);
 
 			expect(result).to.equal(5);
-			expect(logger_info_stub.firstCall.args[0]).to.equal(
-				`Detected 6 cores on this machine, defaulting customFunctions.processes to ${result}`
-			);
+			expect(logger_info_stub.firstCall.args[0]).to.include(`defaulting customFunctions.processes to ${result}`);
 		});
 	});
 

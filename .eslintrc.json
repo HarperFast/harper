@@ -4,11 +4,13 @@
     "node": true,
     "mocha": true
   },
-  "extends": ["eslint:recommended", "plugin:prettier/recommended", "plugin:radar/recommended"],
-  "plugins": ["radar"],
+  "extends": ["eslint:recommended", "plugin:prettier/recommended", "plugin:radar/recommended", "plugin:@typescript-eslint/recommended"],
+  "plugins": ["radar", "@typescript-eslint"],
+  "parser": "@typescript-eslint/parser",
   "parserOptions": {
     "sourceType": "module",
-    "ecmaVersion": 2018
+    "project": true,
+    "ecmaVersion": 2019
   },
   "rules": {
     "no-unused-vars": "off",
@@ -19,6 +21,7 @@
     "radar/no-useless-catch": "off",
     "radar/no-identical-functions": "off",
     "radar/no-duplicated-branches": "off",
-    "radar/no-redundant-jump": "off"
+    "radar/no-redundant-jump": "off",
+    "@typescript-eslint/no-explicit-any": "off"
   }
 }

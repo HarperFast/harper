@@ -7,11 +7,9 @@ const lmdb_terms = require('../../../../utility/lmdb/terms');
 const hdb_terms = require('../../../../utility/hdbTerms');
 const system_schema = require('../../../../json/systemSchema.json');
 const LMDB_ERRORS = require('../../../../utility/errors/commonErrors').LMDB_ERRORS_ENUM;
-const { compareKeys } = require('ordered-binary');
 const { getSchemaPath } = require('./initializePaths');
 
 const WILDCARDS = hdb_terms.SEARCH_WILDCARDS;
-
 
 /**
  * gets the search_type & based on the size of the dbi being searched will either perform an in process search or launch a new process to perform a search
@@ -63,27 +61,26 @@ async function executeSearch(search_object, search_type, hash_attribute, return_
 	if (fetch_more === false) {
 		let attribute = search_object.search_attribute;
 		if (attribute === hash_attribute) {
-			if (return_map)
-				return createMapFromIterable(search_results, () => true);
-			return search_results.map(entry => ({ [hash_attribute]: entry.key }));
+			if (return_map) return createMapFromIterable(search_results, () => true);
+			return search_results.map((entry) => ({ [hash_attribute]: entry.key }));
 		}
 		let toObject = (entry) => ({
 			[hash_attribute]: entry.value,
 			[attribute]: entry.key,
 		});
-		if (return_map)
-			return createMapFromIterable(search_results, toObject);
+		if (return_map) return createMapFromIterable(search_results, toObject);
 		return search_results.map(toObject);
 	}
 
-	let ids = search_object.search_attribute === hash_attribute ?
-		search_results.map(entry => entry.key) : search_results.map(entry => entry.value);
+	let ids =
+		search_object.search_attribute === hash_attribute
+			? search_results.map((entry) => entry.key)
+			: search_results.map((entry) => entry.value);
 	if (return_map === true) {
 		return search_utility.batchSearchByHashToMap(transaction, hash_attribute, search_object.get_attributes, ids);
 	}
 
 	return search_utility.batchSearchByHash(transaction, hash_attribute, search_object.get_attributes, ids);
-
 }
 
 /**
@@ -156,17 +153,37 @@ function searchByType(transactionOrEnv, search_object, search_type, hash_attribu
 			);
 			break;
 		case lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH:
-			return search_utility.batchSearchByHash(transactionOrEnv, search_object.search_attribute, search_object.get_attributes, [
-				search_object.search_value,
-			]);
+			return search_utility.batchSearchByHash(
+				transactionOrEnv,
+				search_object.search_attribute,
+				search_object.get_attributes,
+				[search_object.search_value]
+			);
 		case lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH_TO_MAP:
-			return search_utility.batchSearchByHashToMap(transactionOrEnv, search_object.search_attribute, search_object.get_attributes, [
-				search_object.search_value,
-			]);
+			return search_utility.batchSearchByHashToMap(
+				transactionOrEnv,
+				search_object.search_attribute,
+				search_object.get_attributes,
+				[search_object.search_value]
+			);
 		case lmdb_terms.SEARCH_TYPES.SEARCH_ALL:
-			return search_utility.searchAll(transactionOrEnv, hash_attribute, search_object.get_attributes, reverse, limit, offset);
+			return search_utility.searchAll(
+				transactionOrEnv,
+				hash_attribute,
+				search_object.get_attributes,
+				reverse,
+				limit,
+				offset
+			);
 		case lmdb_terms.SEARCH_TYPES.SEARCH_ALL_TO_MAP:
-			return search_utility.searchAllToMap(transactionOrEnv, hash_attribute, search_object.get_attributes, reverse, limit, offset);
+			return search_utility.searchAllToMap(
+				transactionOrEnv,
+				hash_attribute,
+				search_object.get_attributes,
+				reverse,
+				limit,
+				offset
+			);
 		case lmdb_terms.SEARCH_TYPES.BETWEEN:
 			search_results = search_utility.between(
 				transactionOrEnv,
@@ -233,52 +250,6 @@ function searchByType(transactionOrEnv, search_object, search_type, hash_attribu
 
 	return search_results;
 }
-
-/**
- *
- * @param {SearchObject} search_object
- * @returns {({}) => boolean}
- */
-function filterByType(search_object) {
-	const search_type = search_object.search_type;
-	const attribute = search_object.search_attribute;
-	const search_value = search_object.search_value;
-
-	switch (search_type) {
-		case lmdb_terms.SEARCH_TYPES.EQUALS:
-			return (record) => record[attribute] === search_value;
-		case lmdb_terms.SEARCH_TYPES.CONTAINS:
-			return (record) => typeof record[attribute] === 'string' && record[attribute].includes(search_value);
-		case lmdb_terms.SEARCH_TYPES.ENDS_WITH:
-		case lmdb_terms.SEARCH_TYPES._ENDS_WITH:
-			return (record) => typeof record[attribute] === 'string' && record[attribute].endsWith(search_value);
-		case lmdb_terms.SEARCH_TYPES.STARTS_WITH:
-		case lmdb_terms.SEARCH_TYPES._STARTS_WITH:
-			return (record) => typeof record[attribute] === 'string' && record[attribute].startsWith(search_value);
-		case lmdb_terms.SEARCH_TYPES.BETWEEN:
-			return (record) => {
-				let value = record[attribute];
-				return compareKeys(value, search_value[0]) >= 0 && compareKeys(value, search_value[1]) <= 0;
-			};
-		case lmdb_terms.SEARCH_TYPES.GREATER_THAN:
-		case lmdb_terms.SEARCH_TYPES._GREATER_THAN:
-			return (record) => compareKeys(record[attribute], search_value) > 0;
-		case lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL:
-		case lmdb_terms.SEARCH_TYPES._GREATER_THAN_EQUAL:
-			return (record) => compareKeys(record[attribute], search_value) >= 0;
-		case lmdb_terms.SEARCH_TYPES.LESS_THAN:
-		case lmdb_terms.SEARCH_TYPES._LESS_THAN:
-			return (record) => compareKeys(record[attribute], search_value) < 0;
-		case lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL:
-		case lmdb_terms.SEARCH_TYPES._LESS_THAN_EQUAL:
-			return (record) => compareKeys(record[attribute], search_value) <= 0;
-		default:
-			return Object.create(null);
-	}
-}
-
-
-
 
 /**
  *
@@ -399,5 +370,5 @@ module.exports = {
 	createSearchTypeFromSearchObject,
 	prepSearch,
 	searchByType,
-	filterByType,
+	//	filterByType,
 };

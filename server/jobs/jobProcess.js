@@ -6,8 +6,8 @@ const harper_logger = require('../../utility/logging/harper_logger');
 const global_schema = require('../../utility/globalSchema');
 const user = require('../../security/user');
 const promisify = require('util').promisify;
-const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 const server_utils = require('../serverHelpers/serverUtilities');
+const { start: startNATS } = require('../nats/natsReplicator');
 const moment = require('moment');
 const jobs = require('./jobs');
 const { cloneDeep } = require('lodash');
@@ -24,8 +24,8 @@ const JOB_ID = JOB_NAME.substring(4);
 	let job_obj = { id: JOB_ID, request: undefined };
 	try {
 		harper_logger.notify('Starting job:', JOB_ID);
-
-		await p_schema_to_global();
+		startNATS();
+		global_schema.setSchemaDataToGlobal();
 		await user.setUsersToGlobal();
 
 		// When the job record is first inserted in hdb_job table by HDB, the incoming API request is included, this is

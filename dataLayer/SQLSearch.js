@@ -17,6 +17,7 @@ const common_utils = require('../utility/common_utils');
 const harperBridge = require('./harperBridge/harperBridge');
 const hdbTerms = require('../utility/hdbTerms');
 const { hdb_errors } = require('../utility/errors/hdbError');
+const { getDatabases } = require('../resources/databases');
 
 const WHERE_CLAUSE_IS_NULL = 'IS NULL';
 const SEARCH_ERROR_MSG = 'There was a problem performing this search. Please check the logs and try again.';
@@ -157,7 +158,7 @@ class SQLSearch {
 		this.tables.forEach((table) => {
 			const schema_table = `${table.databaseid}_${table.as ? table.as : table.tableid}`;
 			this.data[schema_table] = {};
-			this.data[schema_table].__hash_name = global.hdb_schema[table.databaseid][table.tableid].hash_attribute;
+			this.data[schema_table].__hash_name = getDatabases()[table.databaseid][table.tableid].primaryKey;
 			this.data[schema_table].__merged_data = {};
 			this.data[schema_table].__merged_attributes = [];
 			this.data[schema_table].__merged_attr_map = {};
@@ -229,11 +230,9 @@ class SQLSearch {
 					continue;
 				}
 				//Specifically a slash delimited string for consistency
-				let attribute_key = [
-					found_column.table.databaseid,
-					found_column.table.tableid,
-					found_column.attribute,
-				].join('/');
+				let attribute_key = [found_column.table.databaseid, found_column.table.tableid, found_column.attribute].join(
+					'/'
+				);
 
 				// Check for value range search first
 				if (!common_utils.isEmpty(hdbTerms.VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[node.op])) {
@@ -276,9 +275,7 @@ class SQLSearch {
 					switch (node.op) {
 						case '=':
 							if (!common_utils.isEmpty(node.right.value) || !common_utils.isEmpty(node.left.value)) {
-								values.add(
-									!common_utils.isEmpty(node.right.value) ? node.right.value : node.left.value
-								);
+								values.add(!common_utils.isEmpty(node.right.value) ? node.right.value : node.left.value);
 							} else {
 								ignore = true;
 							}
@@ -547,7 +544,7 @@ class SQLSearch {
 			//get unique ids of tables if there is no join or the where is performing an is null check
 			this.tables.forEach((table) => {
 				let hash_attribute = {
-					columnid: global.hdb_schema[table.databaseid][table.tableid].hash_attribute,
+					columnid: getDatabases()[table.databaseid][table.tableid].primaryKey,
 					tableid: table.tableid,
 				};
 				this._addFetchColumns([hash_attribute]);
@@ -604,11 +601,7 @@ class SQLSearch {
 			};
 			let is_hash = false;
 			//Specifically a slash delimited string for consistency
-			let object_path = [
-				attribute.table.databaseid,
-				attribute.table.tableid,
-				attribute.attribute,
-			].join('/');
+			let object_path = [attribute.table.databaseid, attribute.table.tableid, attribute.attribute].join('/');
 
 			//check if this attribute is the hash attribute for a table, if it is we need to read the files from the __hdh_hash
 			// folder, otherwise pull from the value index
@@ -651,7 +644,7 @@ class SQLSearch {
 								exact_search_object.search_value = value;
 								const attribute_values = await harperBridge.getDataByValue(exact_search_object);
 
-								for (const [ hash_val, record ] of attribute_values) {
+								for (const [hash_val, record] of attribute_values) {
 									if (!this.data[schema_table].__merged_data[hash_val]) {
 										this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
 										this._updateMergedAttribute(
@@ -695,14 +688,14 @@ class SQLSearch {
 							const matching_data = await harperBridge.getDataByValue(search_object, comp.operation);
 
 							if (is_hash) {
-								for (const [ hash_val ] of matching_data) {
+								for (const [hash_val] of matching_data) {
 									if (!this.data[schema_table].__merged_data[hash_val]) {
 										this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
 										this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
 									}
 								}
 							} else {
-								for (const [ hash_val, record ] of matching_data) {
+								for (const [hash_val, record] of matching_data) {
 									if (!this.data[schema_table].__merged_data[hash_val]) {
 										this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
 										this._updateMergedAttribute(
@@ -737,30 +730,20 @@ class SQLSearch {
 						const matching_data = await harperBridge.getDataByValue(search_object);
 
 						if (is_hash) {
-							for (const [ hash_val ] of matching_data) {
+							for (const [hash_val] of matching_data) {
 								if (!this.data[schema_table].__merged_data[hash_val]) {
 									this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
 									this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
 								}
 							}
 						} else {
-							for (const [ hash_val, record ] of matching_data) {
+							for (const [hash_val, record] of matching_data) {
 								if (!this.data[schema_table].__merged_data[hash_val]) {
 									this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
-									this._updateMergedAttribute(
-										schema_table,
-										hash_val,
-										attribute.attribute,
-										record[attribute.attribute]
-									);
+									this._updateMergedAttribute(schema_table, hash_val, attribute.attribute, record[attribute.attribute]);
 									this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
 								} else {
-									this._updateMergedAttribute(
-										schema_table,
-										hash_val,
-										attribute.attribute,
-										record[attribute.attribute]
-									);
+									this._updateMergedAttribute(schema_table, hash_val, attribute.attribute, record[attribute.attribute]);
 								}
 							}
 						}
@@ -1023,7 +1006,10 @@ class SQLSearch {
 
 			hash_attributes.forEach((hash) => {
 				let keys = Object.keys(this.data[`${hash.schema}_${hash.table}`].__merged_data);
-				let delete_keys = _.difference(keys, [...hash.keys].map(key => key.toString()));
+				let delete_keys = _.difference(
+					keys,
+					[...hash.keys].map((key) => key.toString())
+				);
 				for (let i = 0, len = delete_keys.length; i < len; i++) {
 					const key = delete_keys[i];
 					delete this.data[`${hash.schema}_${hash.table}`].__merged_data[key];
@@ -1360,12 +1346,13 @@ class SQLSearch {
 				search_object.search_value = '*';
 				const matching_data = await harperBridge.getDataByValue(search_object);
 
-				for (const [ hash_val, record ] of matching_data) {
+				for (const [hash_val, record] of matching_data) {
 					if (!this.data[schema_table].__merged_data[hash_val]) {
+						if (record[attribute.attribute] === undefined) record[attribute.attribute] = null;
 						this.data[schema_table].__merged_data[hash_val] = Object.assign({}, fetch_attributes_objs[schema_table]);
 					}
 					this.data[schema_table].__merged_data[hash_val][alias_map[attribute.attribute]] =
-						record[attribute.attribute];
+						record[attribute.attribute] ?? null;
 				}
 			} catch (err) {
 				log.error('There was an error when processing this SQL operation.  Check your logs');

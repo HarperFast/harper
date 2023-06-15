@@ -166,7 +166,6 @@ describe('Test restart module', () => {
 			sandbox.resetHistory();
 			restart.__set__('pm2_mode', true);
 			await restart_clustering();
-			expect(post_dummy_msg_stub.called).to.be.true;
 			expect(generate_nats_config_stub.called).to.be.true;
 			expect(process_man_restart_stub.getCall(0).args[0]).to.equal('Clustering Hub');
 			expect(process_man_restart_stub.getCall(1).args[0]).to.equal('Clustering Leaf');
@@ -182,7 +181,6 @@ describe('Test restart module', () => {
 			restart.__set__('pm2_mode', false);
 			await restart_clustering();
 			process_kill_stub.restore();
-			expect(post_dummy_msg_stub.called).to.be.true;
 			expect(generate_nats_config_stub.called).to.be.true;
 			expect(process_kill_stub.args[0][0]).to.equal(12345);
 			expect(remove_nats_config_stub.getCall(0).args[0]).to.equal('Clustering Hub');

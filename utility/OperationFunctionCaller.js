@@ -64,6 +64,22 @@ async function callOperationFunctionAsAwait(
 		log.error(err);
 		throw err;
 	}
+
+	// The result from insert, update, or upsert contains a properties new_attributes/txn_time. It is used by postOperationHandler to propagate
+	// attribute metadata across the cluster. After the property has been used we no longer need it and do not want the API returning it,
+	// therefore we delete it from the result.
+	if (
+		function_input.operation === terms.OPERATIONS_ENUM.INSERT ||
+		function_input.operation === terms.OPERATIONS_ENUM.UPDATE ||
+		function_input.operation === terms.OPERATIONS_ENUM.UPSERT
+	) {
+		delete result.new_attributes;
+		delete result.txn_time;
+	} else if (function_input.operation === terms.OPERATIONS_ENUM.DELETE) {
+		delete result.txn_time;
+	}
+
+	return result;
 }
 
 module.exports = {

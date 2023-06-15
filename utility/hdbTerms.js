@@ -2,13 +2,15 @@
 
 const path = require('path');
 const fs = require('fs');
+const { relative, join } = path;
+const { existsSync } = fs;
 /**
  * Finds and returns the package root directory
  * @returns {string}
  */
 function getHDBPackageRoot() {
 	let dir = __dirname;
-	while (!fs.existsSync(path.join(dir, 'package.json'))) {
+	while (!existsSync(path.join(dir, 'package.json'))) {
 		let parent = path.dirname(dir);
 		if (parent === dir) throw new Error('Could not find package root');
 		dir = parent;
@@ -164,7 +166,8 @@ const RESTART_TIMEOUT_MS = 60000;
 const HDB_FILE_PERMISSIONS = 0o700;
 const BLOB_FOLDER_NAME = 'blob';
 const HDB_TRASH_DIR = 'trash';
-const SCHEMA_DIR_NAME = 'schema';
+const DATABASES_DIR_NAME = 'database';
+const LEGACY_DATABASES_DIR_NAME = 'schema';
 const TRANSACTIONS_DIR_NAME = 'transactions';
 const LIMIT_COUNT_NAME = '.count';
 const ID_ATTRIBUTE_STRING = 'id';
@@ -423,6 +426,7 @@ LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.DEPLOY_CUSTOM_FUNCTION_PROJECT] =
 	OPERATIONS_ENUM.DEPLOY_CUSTOM_FUNCTION_PROJECT;
 
 const SERVICE_ACTIONS_ENUM = {
+	DEBUG: 'debug',
 	RUN: 'run',
 	START: 'start',
 	INSTALL: 'install',
@@ -503,6 +507,11 @@ const HDB_SETTINGS_NAMES_REVERSE_LOOKUP = _.invert(HDB_SETTINGS_NAMES);
 
 // If a param is added to config it must also be added here.
 const CONFIG_PARAMS = {
+	AUTHENTICATION_AUTHORIZELOCAL: 'authentication_authorizeLocal',
+	AUTHENTICATION_CACHETTL: 'authentication_cacheTTL',
+	AUTHENTICATION_ENABLESESSIONS: 'authentication_enableSessions',
+	AUTHENTICATION_OPERATIONTOKENTIMEOUT: 'authentication_operationTokenTimeout',
+	AUTHENTICATION_REFRESHTOKENTIMEOUT: 'authentication_refreshTokenTimeout',
 	CLUSTERING_USER: 'clustering_user',
 	CLUSTERING_ENABLED: 'clustering_enabled',
 	CLUSTERING_HUBSERVER_CLUSTER_NAME: 'clustering_hubServer_cluster_name',
@@ -523,6 +532,7 @@ const CONFIG_PARAMS = {
 	CLUSTERING_TLS_INSECURE: 'clustering_tls_insecure',
 	CLUSTERING_TLS_VERIFY: 'clustering_tls_verify',
 	CLUSTERING_LOGLEVEL: 'clustering_logLevel',
+	CLUSTERING_REPUBLISHMESSAGES: 'clustering_republishMessages',
 	CUSTOMFUNCTIONS_ENABLED: 'customFunctions_enabled',
 	CUSTOMFUNCTIONS_NETWORK_PORT: 'customFunctions_network_port',
 	CUSTOMFUNCTIONS_TLS_CERTIFICATE: 'customFunctions_tls_certificate',
@@ -549,6 +559,8 @@ const CONFIG_PARAMS = {
 	LOGGING_ROTATION_PATH: 'logging_rotation_path',
 	LOGGING_STDSTREAMS: 'logging_stdStreams',
 	LOGGING_AUDITLOG: 'logging_auditLog',
+	LOGGING_AUDITAUTHEVENTS_LOGFAILED: 'logging_auditAuthEvents_logFailed',
+	LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL: 'logging_auditAuthEvents_logSuccessful',
 	OPERATIONSAPI_AUTHENTICATION_OPERATIONTOKENTIMEOUT: 'operationsApi_authentication_operationTokenTimeout',
 	OPERATIONSAPI_AUTHENTICATION_REFRESHTOKENTIMEOUT: 'operationsApi_authentication_refreshTokenTimeout',
 	OPERATIONSAPI_FOREGROUND: 'operationsApi_foreground',
@@ -576,6 +588,11 @@ const CONFIG_PARAMS = {
 	SCHEMAS: 'schemas',
 	APPS: 'apps',
 	IGNORE_SCRIPTS: 'ignoreScripts',
+	MQTT_PORT: 'mqtt_port',
+	MQTT_WEBSOCKET: 'mqtt_webSocket',
+	MQTT_SECUREPORT: 'mqtt_securePort',
+	MQTT_REQUIREAUTHENTICATION: 'mqtt_requireAuthentication',
+	SERVER_PLUGINS: 'serverPlugins',
 };
 
 const CONFIG_PARAM_MAP = {
@@ -616,10 +633,10 @@ const CONFIG_PARAM_MAP = {
 	server_headers_timeout: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_HEADERSTIMEOUT,
 	disable_transaction_log_key: CONFIG_PARAMS.LOGGING_AUDITLOG,
 	disable_transaction_log: CONFIG_PARAMS.LOGGING_AUDITLOG,
-	operation_token_timeout_key: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_OPERATIONTOKENTIMEOUT,
-	operation_token_timeout: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_OPERATIONTOKENTIMEOUT,
-	refresh_token_timeout_key: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_REFRESHTOKENTIMEOUT,
-	refresh_token_timeout: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_REFRESHTOKENTIMEOUT,
+	operation_token_timeout_key: CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT,
+	operation_token_timeout: CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT,
+	refresh_token_timeout_key: CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT,
+	refresh_token_timeout: CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT,
 	custom_functions_enabled_key: CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED,
 	custom_functions: CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED,
 	custom_functions_port_key: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT,
@@ -652,6 +669,7 @@ const CONFIG_PARAM_MAP = {
 	clustering_tls_insecure: CONFIG_PARAMS.CLUSTERING_TLS_INSECURE,
 	clustering_tls_verify: CONFIG_PARAMS.CLUSTERING_TLS_VERIFY,
 	clustering_loglevel: CONFIG_PARAMS.CLUSTERING_LOGLEVEL,
+	clustering_republishmessages: CONFIG_PARAMS.CLUSTERING_REPUBLISHMESSAGES,
 	customfunctions_enabled: CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED,
 	customfunctions_network_port: CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT,
 	customfunctions_tls_certificate: CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_CERTIFICATE,
@@ -679,8 +697,10 @@ const CONFIG_PARAM_MAP = {
 	logging_rotation_path: CONFIG_PARAMS.LOGGING_ROTATION_PATH,
 	logging_stdstreams: CONFIG_PARAMS.LOGGING_STDSTREAMS,
 	logging_auditlog: CONFIG_PARAMS.LOGGING_AUDITLOG,
-	operationsapi_authentication_operationtokentimeout: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_OPERATIONTOKENTIMEOUT,
-	operationsapi_authentication_refreshtokentimeout: CONFIG_PARAMS.OPERATIONSAPI_AUTHENTICATION_REFRESHTOKENTIMEOUT,
+	logging_auditauthevents_logfailed: CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED,
+	logging_auditauthevents_logsuccessful: CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL,
+	operationsapi_authentication_operationtokentimeout: CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT,
+	operationsapi_authentication_refreshtokentimeout: CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT,
 	operationsapi_foreground: CONFIG_PARAMS.OPERATIONSAPI_FOREGROUND,
 	operationsapi_tls_certificate: CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATE,
 	operationsapi_network_cors: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS,
@@ -698,6 +718,16 @@ const CONFIG_PARAM_MAP = {
 	storage_path: CONFIG_PARAMS.STORAGE_PATH,
 	apps: CONFIG_PARAMS.APPS,
 	ignorescripts: CONFIG_PARAMS.IGNORE_SCRIPTS,
+	mqtt_port: CONFIG_PARAMS.MQTT_PORT,
+	mqtt_websocket: CONFIG_PARAMS.MQTT_WEBSOCKET,
+	mqtt_secureport: CONFIG_PARAMS.MQTT_SECUREPORT,
+	mqtt_requireauthentication: CONFIG_PARAMS.MQTT_REQUIREAUTHENTICATION,
+	serverplugins: CONFIG_PARAMS.SERVER_PLUGINS,
+	authentication_authorizelocal: CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL,
+	authentication_cachettl: CONFIG_PARAMS.AUTHENTICATION_CACHETTL,
+	authentication_enablesessions: CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS,
+	authentication_operationtokentimeout: CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT,
+	authentication_refreshtokentimeout: CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT,
 };
 for (let key in CONFIG_PARAMS) {
 	let name = CONFIG_PARAMS[key];
@@ -799,12 +829,14 @@ const WEBSOCKET_CLOSE_CODE_DESCRIPTION_LOOKUP = {
 const NODE_ERROR_CODES = {
 	ENOENT: 'ENOENT', // No such file or directory.
 	EACCES: 'EACCES', // Permission denied.
+	EEXIST: 'EEXIST', // File already exists.
 };
 
 const TIME_STAMP_NAMES_ENUM = {
 	CREATED_TIME: '__createdtime__',
 	UPDATED_TIME: '__updatedtime__',
 };
+const METADATA_PROPERTY = Symbol('metadata');
 const CLUSTERING_FLAG = '__clustering__';
 
 const TIME_STAMP_NAMES = Object.values(TIME_STAMP_NAMES_ENUM);
@@ -896,6 +928,16 @@ const PM2_PROCESS_STATUSES = {
 
 const PRE_4_0_0_VERSION = '3.x.x';
 
+const AUTH_AUDIT_STATUS = {
+	SUCCESS: 'success',
+	FAILURE: 'failure',
+};
+
+const AUTH_AUDIT_TYPES = {
+	AUTHENTICATION: 'authentication',
+	AUTHORIZATION: 'authorization',
+};
+
 module.exports = {
 	LOCAL_HARPERDB_OPERATIONS,
 	HDB_SUPPORT_ADDRESS,
@@ -939,7 +981,8 @@ module.exports = {
 	REG_KEY_FILE_NAME,
 	RESTART_TIMEOUT_MS,
 	HDB_FILE_PERMISSIONS,
-	SCHEMA_DIR_NAME,
+	DATABASES_DIR_NAME,
+	LEGACY_DATABASES_DIR_NAME,
 	TRANSACTIONS_DIR_NAME,
 	LIMIT_COUNT_NAME,
 	ID_ATTRIBUTE_STRING,
@@ -1017,4 +1060,8 @@ module.exports = {
 	PACKAGE_ROOT,
 	PRE_4_0_0_VERSION,
 	SCHEMAS_PARAM_CONFIG,
+	METADATA_PROPERTY,
+	AUTH_AUDIT_STATUS,
+	AUTH_AUDIT_TYPES,
 };
+require('./devops/tsBuild');

@@ -53,8 +53,8 @@ async function reviewSubscriptions(subs, remote_node_name) {
 
 		const schema_exists_locally = hdb_utils.doesSchemaExist(schema_req);
 		const schema_exists_remote = remote_describe_all[schema_req] !== undefined;
-		const table_exists_locally = hdb_utils.doesTableExist(schema_req, table_req);
-		const table_exists_remote = remote_describe_all?.[schema_req]?.[table_req] !== undefined;
+		const table_exists_locally = table_req ? hdb_utils.doesTableExist(schema_req, table_req) : true;
+		const table_exists_remote = table_req ? remote_describe_all?.[schema_req]?.[table_req] !== undefined : true;
 
 		// If schema/table don't exist on either nodes, skip the sub.
 		// This should ensure nothing is created if schema exists but no tables do.

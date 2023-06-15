@@ -99,7 +99,7 @@ async function createTableStructure(create_table_object) {
 
 	validation.validateTableResidence(create_table_object.residence);
 
-	let invalid_schema_msg = await schema_metadata_validator.checkSchemaExists(create_table_object.schema);
+	/*let invalid_schema_msg = await schema_metadata_validator.checkSchemaExists(create_table_object.schema);
 	if (invalid_schema_msg) {
 		throw handleHDBError(
 			new Error(),
@@ -109,7 +109,7 @@ async function createTableStructure(create_table_object) {
 			invalid_schema_msg,
 			true
 		);
-	}
+	}*/
 
 	let invalid_table_msg = await schema_metadata_validator.checkSchemaTableExists(
 		create_table_object.schema,

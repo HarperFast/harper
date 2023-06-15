@@ -1,5 +1,6 @@
 const system_schema = require('../json/systemSchema.json');
 const { callbackify, promisify } = require('util');
+const { getDatabases } = require('../resources/databases');
 
 module.exports = {
 	setSchemaDataToGlobal: setSchemaDataToGlobal,
@@ -16,19 +17,8 @@ let c_schema_describe_all = callbackify(schema.describeAll);
 let c_schema_describe_table = callbackify(schema.describeTable);
 
 function setSchemaDataToGlobal(callback) {
-	c_schema_describe_all(null, (err, data) => {
-		if (err) {
-			callback(err);
-			return;
-		}
-
-		if (!data.system) {
-			data['system'] = system_schema;
-		}
-
-		global.hdb_schema = data;
-		callback(null, null);
-	});
+	global.hdb_schema = getDatabases();
+	if (callback) callback();
 }
 
 function returnSchema(schema_name, table_name) {
@@ -40,23 +30,19 @@ function returnSchema(schema_name, table_name) {
 }
 
 function getTableSchema(schema_name, table_name, callback) {
-	if (!global.hdb_schema || !global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]) {
-		setTableDataToGlobal(schema_name, table_name, (err) => {
-			if (err) {
-				return callback(err);
-			}
-
-			if (!global.hdb_schema[schema_name]) {
-				return callback(`schema ${schema_name} does not exist`);
-			}
-			if (!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]) {
-				return callback(`table ${schema_name}.${table_name} does not exist`);
-			}
-			callback(null, returnSchema(schema_name, table_name));
-		});
-	} else {
-		callback(null, returnSchema(schema_name, table_name));
+	let database = getDatabases()[schema_name];
+	if (!database) {
+		return callback(`schema ${schema_name} does not exist`);
 	}
+	let table = database[table_name];
+	if (!table) {
+		return callback(`table ${schema_name}.${table_name} does not exist`);
+	}
+	return callback(null, {
+		schema: schema_name,
+		name: table_name,
+		hash_attribute: table.primaryKey,
+	});
 }
 
 function setTableDataToGlobal(schema_name, table, callback) {

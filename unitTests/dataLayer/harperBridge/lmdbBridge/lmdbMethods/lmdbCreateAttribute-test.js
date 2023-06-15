@@ -12,11 +12,10 @@ const BASE_TXN_PATH = path.join(BASE_PATH, 'transactions');
 const BASE_TEST_PATH = path.join(BASE_SCHEMA_PATH, LMDB_TEST_FOLDER_NAME);
 
 const rewire = require('rewire');
-const lmdb_create_schema = require('../../../../../dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateSchema');
-const lmdb_create_table = rewire('../../../../../dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
-const lmdb_create_attribute = rewire(
-	'../../../../../dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateAttribute'
-);
+const harperBridge = require('../../../../../dataLayer/harperBridge/harperBridge');
+const lmdb_create_schema = harperBridge.createSchema;
+const lmdb_create_table = harperBridge.createTable;
+const lmdb_create_attribute = harperBridge.createAttribute;
 const environment_utility = rewire('../../../../../utility/lmdb/environmentUtility');
 const search_utility = require('../../../../../utility/lmdb/searchUtility');
 const systemSchema = require('../../../../../json/systemSchema');

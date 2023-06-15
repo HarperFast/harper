@@ -69,6 +69,7 @@ let hdb_root = undefined;
  */
 
 module.exports = install;
+install.createSuperUser = createSuperUser;
 
 /**
  * Calls all the functions that are needed to install HarperDB.
@@ -542,7 +543,8 @@ async function createAdminUser(role, admin_user) {
 	try {
 		role_response = await role_ops.addRole(role);
 	} catch (err) {
-		throw new Error(`Error creating role - ${err}`);
+		err.message += 'Error creating role';
+		throw err;
 	}
 
 	if (admin_user) {
@@ -550,7 +552,8 @@ async function createAdminUser(role, admin_user) {
 			admin_user.role = role_response.role;
 			await user_ops.addUser(admin_user);
 		} catch (err) {
-			throw new Error(`Error creating user - ${err}`);
+			err.message = `Error creating user - ${err}`;
+			throw err;
 		}
 	}
 }

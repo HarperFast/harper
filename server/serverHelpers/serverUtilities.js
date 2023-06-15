@@ -9,7 +9,7 @@ const delete_ = require('../../dataLayer/delete');
 const read_audit_log = require('../../dataLayer/readAuditLog');
 const user = require('../../security/user');
 const role = require('../../security/role');
-const custom_function_operations = require('./../customFunctions/operations');
+const custom_function_operations = require('../../apps/operations');
 const harper_logger = require('../../utility/logging/harper_logger');
 const read_log = require('../../utility/logging/readLog');
 const add_node = require('../../utility/clustering/addNode');
@@ -38,11 +38,12 @@ const token_authentication = require('../../security/tokenAuthentication');
 const config_utils = require('../../config/configUtils');
 const transaction_log = require('../../utility/logging/transactionLog');
 const npm_utilities = require('../../utility/npmUtilities');
+const { setServerUtilities } = require('../../resources/Table');
 
 const operation_function_caller = require(`../../utility/OperationFunctionCaller`);
 
-const p_search_search_by_hash = util.promisify(search.searchByHash);
-const p_search_search_by_value = util.promisify(search.searchByValue);
+const p_search_search_by_hash = search.searchByHash;
+const p_search_search_by_value = search.searchByValue;
 const p_search_search = util.promisify(search.search);
 const p_sql_evaluate_sql = util.promisify(sql.evaluateSQL);
 
@@ -58,11 +59,7 @@ const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
 const OperationFunctionObject = require('./OperationFunctionObject');
 
 function postWrite(request_body, result, nats_msg_header) {
-	return Promise.all([
-		transact_to_clustering_utils.postOperationHandler(request_body, result, nats_msg_header),
-		// wait for flush (some operations like create_schema don't specify a table)
-		request_body.table ? insert.flush(request_body) : null,
-	]);
+	return transact_to_clustering_utils.postOperationHandler(request_body, result, nats_msg_header);
 }
 /**
  * This will process a command message on this receiving node rather than sending it to a remote node.  NOTE: this function
@@ -91,7 +88,7 @@ async function processLocalTransaction(req, operation_function) {
 		harper_logger.error(e);
 	}
 
-	let post_op_function = terms.CLUSTER_OPERATIONS[req.body.operation] === undefined ? null : postWrite;
+	let post_op_function = null; //terms.CLUSTER_OPERATIONS[req.body.operation] === undefined ? null : postWrite;
 	let data = await operation_function_caller.callOperationFunctionAsAwait(
 		operation_function,
 		req.body,
@@ -122,6 +119,7 @@ module.exports = {
 	getOperationFunction,
 	processLocalTransaction,
 };
+setServerUtilities(module.exports);
 
 function chooseOperation(json) {
 	let getOpResult;
@@ -144,8 +142,16 @@ function chooseOperation(json) {
 			if (!json.bypass_auth) {
 				let ast_perm_check = sql.checkASTPermissions(json, parsed_sql_object);
 				if (ast_perm_check) {
-					harper_logger.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.search_operation}`);
-					throw handleHDBError(new Error(), ast_perm_check, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN);
+					harper_logger.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
+					harper_logger.warn(`User '${json.hdb_user.username}' is not permitted to ${json.operation}`);
+					throw handleHDBError(
+						new Error(),
+						ast_perm_check,
+						hdb_errors.HTTP_STATUS_CODES.FORBIDDEN,
+						undefined,
+						undefined,
+						true
+					);
 				}
 			}
 			//we need to bypass permission checks to allow the create_authorization_tokens
@@ -160,7 +166,17 @@ function chooseOperation(json) {
 
 			if (verify_perms_result) {
 				harper_logger.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
-				throw handleHDBError(new Error(), verify_perms_result, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN);
+				harper_logger.warn(
+					`User '${operation_json.hdb_user.username}' is not permitted to ${operation_json.operation}`
+				);
+				throw handleHDBError(
+					new Error(),
+					verify_perms_result,
+					hdb_errors.HTTP_STATUS_CODES.FORBIDDEN,
+					undefined,
+					false,
+					true
+				);
 			}
 		}
 	} catch (err) {
@@ -231,6 +247,7 @@ async function executeJob(json) {
 	try {
 		result = await jobs.addJob(json);
 		new_job_object = result.createdJob;
+		harper_logger.info('addJob result', result);
 		let job_runner_message = new job_runner.RunnerMessage(new_job_object, json);
 		await job_runner.parseMessage(job_runner_message);
 

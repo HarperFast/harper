@@ -1,0 +1,229 @@
+import { table } from '../resources/databases';
+import { resources } from '../resources/Resources';
+import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
+const DurableSession = table({
+	database: 'system',
+	table: 'hdb_durable_session',
+	attributes: [{ name: 'id', isPrimaryKey: true }],
+});
+
+/**
+ * This is used for durable sessions, that is sessions in MQTT that are not "clean" sessions (and with QoS >= 1
+ * subscriptions) and durable AMQP queues, with real-time communication and reliable delivery that requires tracking
+ * delivery and acknowledgement. This particular function is used to start or retrieve such a session.
+ * A session can be durable (maintains state) or clean (no state). A durable session is stored in a system table as a
+ * record that holds a list of subscriptions (topic and QoS), the timestamp of last message, and any unacked messages
+ * before the timestamp. Once this is returned, it makes the subscription "live", actively routing data through it. Any
+ * catch-up from topics, that is subscriptions to records, need to be performed first.
+ * The structure is designed such that no changes need to be made to it while it is at "rest". That means that if there
+ * are no active listeners to this session, no active processing of subscriptions and matching messages needs to be
+ * performed. All subscription handling can be resumed when the session is reconnected, and can be performed on the
+ * node that is active. The timestamps indicate all updates that need to be retrieved prior to being live again.
+ * Note, that this could be contrasted with a continuously active session or queue, that is continually monitoring
+ * for published messages on subscribed topics. This would require a continuous process to perform routing, and on
+ * a distributed network, it could be extremely difficult and unclear who should manage and handle this. This would also
+ * involve extra overhead when sessions are not active, and may never be accessed again. With our approach, an
+ * abandoned durable session can simply sit idle with no resources taken, and optionally expired by simply deleting the
+ * session record at some point.
+ * However, because resuming durable sessions requires catch-up on subscriptions, this means we must have facilities in
+ * place for being able to query for the log of changes/messages on each of the subscribed records of interest. We do
+ * this by querying the audit log, but we will need to ensure the audit log is enabled on any tables/records that receive
+ * subscriptions.
+ * @param session_id
+ * @param user
+ * @param non_durable
+ */
+export async function getSession({
+	clientId: session_id,
+	user,
+	listener,
+	clean: non_durable,
+}: {
+	clientId;
+	user;
+	listener: Function;
+	clean?: boolean;
+}) {
+	let session;
+	if (session_id && !non_durable) {
+		const session_resource = DurableSession.getResource(session_id);
+		await session_resource.loadRecord();
+		session = new DurableSubscriptionsSession(session_id, user, session_resource);
+		if (session_resource.doesExist()) session.sessionWasPresent = true;
+	} else {
+		if (session_id) {
+			// connecting with a clean session and session id is how durable sessions are deleted
+			const session_resource = await DurableSession.get(session_id);
+			if (session_resource) session_resource.delete();
+		}
+		session = new SubscriptionsSession(session_id, user);
+	}
+	return session;
+}
+let next_message_id = 1;
+
+class SubscriptionsSession {
+	listener: (message, subscription, timestamp, qos) => any;
+	sessionId: any;
+	user: any;
+	subscriptions = [];
+	awaitingAcks: Map<number, any>;
+	sessionWasPresent: boolean;
+	constructor(session_id, user) {
+		this.sessionId = session_id;
+		this.user = user;
+	}
+	async addSubscription(subscription_request, needs_ack) {
+		const { topic, noRetain: rh, startTime: start_time } = subscription_request;
+		const search_index = topic.indexOf('?');
+		let search, path;
+		if (search_index > -1) {
+			search = topic.slice(search_index);
+			path = topic.slice(0, search_index);
+		} else path = topic;
+		if (!path) throw new Error('No topic provided');
+		if (path.endsWith('+') || path.endsWith('#'))
+			// normalize wildcard
+			path = topic.slice(0, path.length - 1);
+		const levels = path.split('/').length;
+		if (levels > 2) throw new Error('Only two level topics (of the form "table/id") are supported');
+		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
+		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
+		if (existing_subscription) {
+			existing_subscription.end();
+			this.subscriptions.splice(this.subscriptions.indexOf(existing_subscription), 1);
+		}
+		let subscription;
+		const resource = await resources.call(path, this, async (resource_access) => {
+			return (subscription = await resource_access.subscribe({
+				listener: (update, id) => {
+					let message_id;
+					if (needs_ack) {
+						update.topic = topic;
+						message_id = this.needsAcknowledge(update);
+					}
+					this.listener(search ? path + '/' + id : path, update.value, message_id, subscription_request);
+				},
+				search,
+				user: this.user,
+				startTime: start_time,
+				noRetain: rh,
+			}));
+		});
+		subscription.topic = topic;
+		subscription.qos = subscription_request.qos;
+		this.subscriptions.push(subscription);
+	}
+	resume() {
+		// nothing to do in a clean session
+	}
+	needsAcknowledge(update) {
+		return next_message_id++;
+	}
+	acknowledge(message_id) {
+		// nothing to do in a clean session
+	}
+	async removeSubscription(topic) {
+		const search_index = topic.indexOf('?');
+		let path;
+		if (search_index > -1) {
+			path = topic.slice(0, search_index);
+		} else path = topic;
+		if (path.endsWith('+') || path.endsWith('#'))
+			// normalize wildcard
+			path = topic.slice(0, path.length - 1);
+		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
+		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
+		if (existing_subscription) existing_subscription.end();
+	}
+	async publish(message, data) {
+		const { topic, retain, payload } = message;
+		message.data = data;
+		message.user = this.user;
+		let resource_found;
+		const levels = topic.split('/').length;
+		if (levels > 2) throw new Error('Only two level topics (of the form "table/id") are supported');
+		const publish_result = resources.call(topic, message, async (resource_access) => {
+			resource_found = true;
+			return resource_access.publish(data);
+		});
+		if (!resource_found) throw new Error('There is no resource or table for the ${topic} topic');
+		return publish_result;
+	}
+	setListener(listener: (message) => any) {
+		this.listener = listener;
+	}
+	disconnect() {
+		for (const subscription of this.subscriptions) {
+			subscription.end();
+		}
+		this.subscriptions = [];
+	}
+}
+export class DurableSubscriptionsSession extends SubscriptionsSession {
+	sessionRecord: any;
+	constructor(session_id, user, record?) {
+		super(session_id, user);
+		this.sessionRecord = record || { id: session_id, subscriptions: [] };
+	}
+	async resume() {
+		// resuming a session, we need to resume each subscription
+		for (const subscription of this.sessionRecord.subscriptions || []) {
+			await this.resumeSubscription({ noRetain: true, ...subscription }, true);
+		}
+	}
+	resumeSubscription(subscription, needs_ack) {
+		return super.addSubscription(subscription, true);
+	}
+	needsAcknowledge(update) {
+		if (!this.awaitingAcks) this.awaitingAcks = new Map();
+		const message_id = next_message_id++;
+		this.awaitingAcks.set(message_id, { topic: update.topic, timestamp: update.timestamp });
+		return message_id;
+	}
+	acknowledge(message_id) {
+		const update = this.awaitingAcks.get(message_id);
+		this.awaitingAcks.delete(message_id);
+		const topic = update.topic;
+		for (const [, remaining_update] of this.awaitingAcks) {
+			if (remaining_update.topic === topic) {
+				if (remaining_update.timestamp < update.timestamp) {
+					remaining_update.timestamp = update.timestamp;
+					// TODO: Record this update as an out-of-order ack
+					return;
+				}
+			}
+		}
+		this.sessionRecord.update(() => {
+			for (const subscription of this.subscriptions) {
+				if (subscription.topic === topic) {
+					subscription.startTime = update.timestamp;
+				}
+			}
+			this.sessionRecord.subscriptions = this.subscriptions.map((subscription) => ({
+				qos: subscription.qos,
+				topic: subscription.topic,
+				startTime: subscription.startTime,
+			}));
+		});
+		// TODO: Increment the timestamp for the corresponding subscription, possibly recording any interim unacked messages
+	}
+
+	async addSubscription(subscription, needs_ack) {
+		await this.resumeSubscription(subscription, needs_ack);
+		const { topic, qos, startTime: start_time } = subscription;
+		if (qos > 0 && !start_time) {
+			this.sessionRecord.subscriptions = this.subscriptions.map((subscription) => {
+				let start_time = subscription.startTime;
+				if (!start_time) start_time = subscription.startTime = getNextMonotonicTime();
+				return {
+					qos: subscription.qos,
+					topic: subscription.topic,
+					startTime: start_time,
+				};
+			});
+			DurableSession.put(this.sessionId, this.sessionRecord);
+		}
+		return subscription.qos;
+	}
+}

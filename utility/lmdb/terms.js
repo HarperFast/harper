@@ -1,6 +1,7 @@
 'use strict';
 
 const INTERNAL_DBIS_NAME = '__dbis__';
+const AUDIT_STORE_NAME = '__txns__';
 const ENVIRONMENT_NAME_KEY = '__environment_name__';
 const DBI_DEFINITION_NAME = '__dbi_defintion__';
 //LMDB has a 1978 byte limit for keys, but we try to retain plenty of padding so we don't have to calculate encoded byte length
@@ -43,6 +44,7 @@ const TRANSACTIONS_DBI_NAMES_ENUM = {
 const TRANSACTIONS_DBIS = Object.values(TRANSACTIONS_DBI_NAMES_ENUM);
 
 module.exports = {
+	AUDIT_STORE_NAME,
 	INTERNAL_DBIS_NAME,
 	DBI_DEFINITION_NAME,
 	SEARCH_TYPES,
@@ -51,5 +53,5 @@ module.exports = {
 	ENVIRONMENT_NAME_KEY,
 	TRANSACTIONS_DBI_NAMES_ENUM,
 	TRANSACTIONS_DBIS,
-	OVERFLOW_MARKER
+	OVERFLOW_MARKER,
 };

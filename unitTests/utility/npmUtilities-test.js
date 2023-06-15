@@ -285,268 +285,269 @@ describe('test checkProjectPaths function', () => {
 		cf_routes_dir_restore();
 	});
 });
+if (process.env.FULL_TEST) {
+	// too slow to run each time
+	describe('test installModules function', () => {
+		const sandbox = sinon.createSandbox();
+		const install_modules = npm_utils.__get__('installModules');
 
-describe('test installModules function', () => {
-	const sandbox = sinon.createSandbox();
-	const install_modules = npm_utils.__get__('installModules');
+		beforeEach(async () => {
+			await fs.remove(MOCK_CF_DIR_PATH);
+			await fs.mkdirp(COOL_PROJECT_PATH);
+			await fs.mkdirp(BAD_PROJECT_PATH);
 
-	beforeEach(async () => {
-		await fs.remove(MOCK_CF_DIR_PATH);
-		await fs.mkdirp(COOL_PROJECT_PATH);
-		await fs.mkdirp(BAD_PROJECT_PATH);
-
-		await fs.writeJson(COOL_PACKAGE_JSON_PATH, COOL_PROJECT_PACKAGE_JSON);
-		await fs.writeJson(BAD_PACKAGE_JSON_PATH, BAD_PROJECT_PACKAGE_JSON);
-	});
-
-	after(async () => {});
-
-	afterEach(async () => {
-		sandbox.restore();
-		await fs.remove(MOCK_CF_DIR_PATH);
-	});
-
-	it('test mock happy path, no dry run', async () => {
-		let cf_routes_dir_restore = npm_utils.__set__('CF_ROUTES_DIR', MOCK_CF_DIR_PATH);
-		let path_join_spy = sandbox.spy(npm_utils.__get__('path'), 'join');
-		let run_command_stub = sandbox.stub();
-		run_command_stub.onCall(0).callsFake(async () => {
-			return { stdout: '{ "success": true }' };
+			await fs.writeJson(COOL_PACKAGE_JSON_PATH, COOL_PROJECT_PACKAGE_JSON);
+			await fs.writeJson(BAD_PACKAGE_JSON_PATH, BAD_PROJECT_PACKAGE_JSON);
 		});
 
-		run_command_stub.onCall(1).callsFake(async () => {
-			throw new Error('npm bad stuff');
+		after(async () => {});
+
+		afterEach(async () => {
+			sandbox.restore();
+			await fs.remove(MOCK_CF_DIR_PATH);
 		});
 
-		let check_npm_installed_stub = sandbox.stub().callsFake(async (cmd, cwd) => {
-			return true;
-		});
+		it('test mock happy path, no dry run', async () => {
+			let cf_routes_dir_restore = npm_utils.__set__('CF_ROUTES_DIR', MOCK_CF_DIR_PATH);
+			let path_join_spy = sandbox.spy(npm_utils.__get__('path'), 'join');
+			let run_command_stub = sandbox.stub();
+			run_command_stub.onCall(0).callsFake(async () => {
+				return { stdout: '{ "success": true }' };
+			});
 
-		let check_project_paths_stub = sandbox.stub().callsFake(async (cmd, cwd) => {
-			return;
-		});
+			run_command_stub.onCall(1).callsFake(async () => {
+				throw new Error('npm bad stuff');
+			});
 
-		let run_command_restore = npm_utils.__set__('p_exec', run_command_stub);
-		let check_npm_installed_restore = npm_utils.__set__('checkNPMInstalled', check_npm_installed_stub);
-		let check_project_paths_restore = npm_utils.__set__('checkProjectPaths', check_project_paths_stub);
+			let check_npm_installed_stub = sandbox.stub().callsFake(async (cmd, cwd) => {
+				return true;
+			});
 
-		let error;
-		let result;
-		try {
-			result = await install_modules({ projects: [COOL_PROJECT_NAME, BAD_PROJECT_NAME] });
-		} catch (e) {
-			error = e;
-		}
+			let check_project_paths_stub = sandbox.stub().callsFake(async (cmd, cwd) => {
+				return;
+			});
 
-		expect(error).is.equal(undefined);
-		expect(result).to.eql({
-			'bad project': { npm_error: 'npm bad stuff', npm_output: null },
-			'cool project': {
-				npm_error: null,
-				npm_output: {
-					success: true,
+			let run_command_restore = npm_utils.__set__('p_exec', run_command_stub);
+			let check_npm_installed_restore = npm_utils.__set__('checkNPMInstalled', check_npm_installed_stub);
+			let check_project_paths_restore = npm_utils.__set__('checkProjectPaths', check_project_paths_stub);
+
+			let error;
+			let result;
+			try {
+				result = await install_modules({ projects: [COOL_PROJECT_NAME, BAD_PROJECT_NAME] });
+			} catch (e) {
+				error = e;
+			}
+
+			expect(error).is.equal(undefined);
+			expect(result).to.eql({
+				'bad project': { npm_error: 'npm bad stuff', npm_output: null },
+				'cool project': {
+					npm_error: null,
+					npm_output: {
+						success: true,
+					},
 				},
-			},
+			});
+
+			expect(path_join_spy.callCount).is.equal(2);
+			expect(path_join_spy.firstCall.args).to.eql([MOCK_CF_DIR_PATH, COOL_PROJECT_NAME]);
+			expect(path_join_spy.secondCall.args).to.eql([MOCK_CF_DIR_PATH, BAD_PROJECT_NAME]);
+
+			expect(run_command_stub.callCount).is.equal(2);
+			expect(await run_command_stub.firstCall.returnValue).is.eql({ stdout: '{ "success": true }' });
+			let err;
+			try {
+				await run_command_stub.secondCall.returnValue;
+			} catch (e) {
+				err = e;
+			}
+			expect(err.message).is.equal('npm bad stuff');
+
+			expect(run_command_stub.firstCall.args).to.eql(['npm install --omit=dev --json', { cwd: COOL_PROJECT_PATH }]);
+			expect(run_command_stub.secondCall.args).to.eql(['npm install --omit=dev --json', { cwd: BAD_PROJECT_PATH }]);
+
+			check_npm_installed_restore();
+			check_project_paths_restore();
+			cf_routes_dir_restore();
+			run_command_restore();
 		});
 
-		expect(path_join_spy.callCount).is.equal(2);
-		expect(path_join_spy.firstCall.args).to.eql([MOCK_CF_DIR_PATH, COOL_PROJECT_NAME]);
-		expect(path_join_spy.secondCall.args).to.eql([MOCK_CF_DIR_PATH, BAD_PROJECT_NAME]);
+		it('test real happy path, no dry run', async () => {
+			let cf_routes_dir_restore = npm_utils.__set__('CF_ROUTES_DIR', MOCK_CF_DIR_PATH);
+			let path_join_spy = sandbox.spy(npm_utils.__get__('path'), 'join');
+			let run_command_spy = sandbox.spy(npm_utils.__get__('p_exec'));
 
-		expect(run_command_stub.callCount).is.equal(2);
-		expect(await run_command_stub.firstCall.returnValue).is.eql({ stdout: '{ "success": true }' });
-		let err;
-		try {
-			await run_command_stub.secondCall.returnValue;
-		} catch (e) {
-			err = e;
-		}
-		expect(err.message).is.equal('npm bad stuff');
+			let check_npm_installed_stub = sandbox.stub().callsFake(async (cmd, cwd) => {
+				return true;
+			});
 
-		expect(run_command_stub.firstCall.args).to.eql(['npm install --omit=dev --json', { cwd: COOL_PROJECT_PATH }]);
-		expect(run_command_stub.secondCall.args).to.eql(['npm install --omit=dev --json', { cwd: BAD_PROJECT_PATH }]);
+			let check_project_paths_stub = sandbox.stub().callsFake(async (cmd, cwd) => {
+				return;
+			});
 
-		check_npm_installed_restore();
-		check_project_paths_restore();
-		cf_routes_dir_restore();
-		run_command_restore();
+			let check_npm_installed_restore = npm_utils.__set__('checkNPMInstalled', check_npm_installed_stub);
+			let check_project_paths_restore = npm_utils.__set__('checkProjectPaths', check_project_paths_stub);
+
+			let error;
+			let result;
+			try {
+				result = await install_modules({ projects: [COOL_PROJECT_NAME, BAD_PROJECT_NAME] });
+			} catch (e) {
+				error = e;
+			}
+			expect(error).is.equal(undefined);
+			// if you are getting an error here on Windows due to a warning about --local --global flags,
+			// you may need to run this:
+			// https://www.npmjs.com/package/npm-windows-upgrade
+			expect(result['cool project'].npm_output).is.not.equal(null);
+			expect(result['bad project'].npm_output).is.equal(null);
+			expect(result['bad project'].npm_error).is.not.equal(null);
+
+			//tes cool project dayjs exists
+			let access_err;
+			let dayjs_path = path.join(COOL_PROJECT_PATH, 'node_modules', 'dayjs');
+			try {
+				await fs.access(dayjs_path);
+			} catch (e) {
+				access_err = e;
+			}
+			expect(access_err).is.equal(undefined);
+
+			//test bad project node_modules does not exist
+			let node_modules_path = path.join(BAD_PROJECT_PATH, 'node_modules');
+			try {
+				await fs.access(node_modules_path);
+			} catch (e) {
+				access_err = e;
+			}
+			expect(access_err).is.not.equal(undefined);
+
+			check_npm_installed_restore();
+			check_project_paths_restore();
+			cf_routes_dir_restore();
+		}).timeout(60000);
+
+		it('test mock happy path, with dry run', async () => {
+			let cf_routes_dir_restore = npm_utils.__set__('CF_ROUTES_DIR', MOCK_CF_DIR_PATH);
+			let path_join_spy = sandbox.spy(npm_utils.__get__('path'), 'join');
+			let run_command_stub = sandbox.stub();
+			run_command_stub.onCall(0).callsFake(async () => {
+				return { stdout: '{ "success": true }' };
+			});
+
+			run_command_stub.onCall(1).callsFake(async () => {
+				throw new Error('npm bad stuff');
+			});
+
+			let check_npm_installed_stub = sandbox.stub().callsFake(async (cmd, cwd) => {
+				return true;
+			});
+
+			let check_project_paths_stub = sandbox.stub().callsFake(async (cmd, cwd) => {
+				return;
+			});
+
+			let run_command_restore = npm_utils.__set__('p_exec', run_command_stub);
+			let check_npm_installed_restore = npm_utils.__set__('checkNPMInstalled', check_npm_installed_stub);
+			let check_project_paths_restore = npm_utils.__set__('checkProjectPaths', check_project_paths_stub);
+
+			let error;
+			let result;
+			try {
+				result = await install_modules({ projects: ['cool project', 'bad project'], dry_run: true });
+			} catch (e) {
+				error = e;
+			}
+
+			expect(error).is.equal(undefined);
+			expect(result).to.eql({
+				'cool project': { npm_output: { success: true }, npm_error: null },
+				'bad project': { npm_output: null, npm_error: 'npm bad stuff' },
+			});
+
+			expect(path_join_spy.callCount).is.equal(2);
+			expect(path_join_spy.firstCall.args).to.eql([MOCK_CF_DIR_PATH, 'cool project']);
+			expect(path_join_spy.secondCall.args).to.eql([MOCK_CF_DIR_PATH, 'bad project']);
+
+			expect(run_command_stub.callCount).is.equal(2);
+			expect(await run_command_stub.firstCall.returnValue).is.eql({ stdout: '{ "success": true }' });
+			let err;
+			try {
+				await run_command_stub.secondCall.returnValue;
+			} catch (e) {
+				err = e;
+			}
+			expect(err.message).is.equal('npm bad stuff');
+
+			expect(run_command_stub.firstCall.args).to.eql([
+				'npm install --omit=dev --json --dry-run',
+				{ cwd: COOL_PROJECT_PATH },
+			]);
+			expect(run_command_stub.secondCall.args).to.eql([
+				'npm install --omit=dev --json --dry-run',
+				{ cwd: BAD_PROJECT_PATH },
+			]);
+
+			check_npm_installed_restore();
+			check_project_paths_restore();
+			cf_routes_dir_restore();
+			run_command_restore();
+		}).timeout(20000);
+
+		it('test real happy path, with dry run', async () => {
+			let cf_routes_dir_restore = npm_utils.__set__('CF_ROUTES_DIR', MOCK_CF_DIR_PATH);
+			let path_join_spy = sandbox.spy(npm_utils.__get__('path'), 'join');
+			let run_command_spy = sandbox.spy(npm_utils.__get__('p_exec'));
+
+			let check_npm_installed_stub = sandbox.stub().callsFake(async (cmd, cwd) => {
+				return true;
+			});
+
+			let check_project_paths_stub = sandbox.stub().callsFake(async (cmd, cwd) => {
+				return;
+			});
+
+			let check_npm_installed_restore = npm_utils.__set__('checkNPMInstalled', check_npm_installed_stub);
+			let check_project_paths_restore = npm_utils.__set__('checkProjectPaths', check_project_paths_stub);
+
+			let error;
+			let result;
+			try {
+				result = await install_modules({ projects: [COOL_PROJECT_NAME, BAD_PROJECT_NAME], dry_run: true });
+			} catch (e) {
+				error = e;
+			}
+			expect(error).is.equal(undefined);
+			expect(result['cool project'].npm_output).is.not.equal(null);
+			expect(result['bad project'].npm_output).is.equal(null);
+			expect(result['bad project'].npm_error).is.not.equal(null);
+
+			//tes cool project dayjs does not exists
+			let access_err;
+			let dayjs_path = path.join(COOL_PROJECT_PATH, 'node_modules', 'dayjs');
+			try {
+				await fs.access(dayjs_path);
+			} catch (e) {
+				access_err = e;
+			}
+			expect(access_err).is.not.equal(undefined);
+
+			//test bad project node_modules does not exist
+			let node_modules_path = path.join(BAD_PROJECT_PATH, 'node_modules');
+			try {
+				await fs.access(node_modules_path);
+			} catch (e) {
+				access_err = e;
+			}
+			expect(access_err).is.not.equal(undefined);
+
+			check_npm_installed_restore();
+			check_project_paths_restore();
+			cf_routes_dir_restore();
+		}).timeout(20000);
 	});
-
-	it('test real happy path, no dry run', async () => {
-		let cf_routes_dir_restore = npm_utils.__set__('CF_ROUTES_DIR', MOCK_CF_DIR_PATH);
-		let path_join_spy = sandbox.spy(npm_utils.__get__('path'), 'join');
-		let run_command_spy = sandbox.spy(npm_utils.__get__('p_exec'));
-
-		let check_npm_installed_stub = sandbox.stub().callsFake(async (cmd, cwd) => {
-			return true;
-		});
-
-		let check_project_paths_stub = sandbox.stub().callsFake(async (cmd, cwd) => {
-			return;
-		});
-
-		let check_npm_installed_restore = npm_utils.__set__('checkNPMInstalled', check_npm_installed_stub);
-		let check_project_paths_restore = npm_utils.__set__('checkProjectPaths', check_project_paths_stub);
-
-		let error;
-		let result;
-		try {
-			result = await install_modules({ projects: [COOL_PROJECT_NAME, BAD_PROJECT_NAME] });
-		} catch (e) {
-			error = e;
-		}
-		expect(error).is.equal(undefined);
-		// if you are getting an error here on Windows due to a warning about --local --global flags,
-		// you may need to run this:
-		// https://www.npmjs.com/package/npm-windows-upgrade
-		expect(result['cool project'].npm_output).is.not.equal(null);
-		expect(result['bad project'].npm_output).is.equal(null);
-		expect(result['bad project'].npm_error).is.not.equal(null);
-
-		//tes cool project dayjs exists
-		let access_err;
-		let dayjs_path = path.join(COOL_PROJECT_PATH, 'node_modules', 'dayjs');
-		try {
-			await fs.access(dayjs_path);
-		} catch (e) {
-			access_err = e;
-		}
-		expect(access_err).is.equal(undefined);
-
-		//test bad project node_modules does not exist
-		let node_modules_path = path.join(BAD_PROJECT_PATH, 'node_modules');
-		try {
-			await fs.access(node_modules_path);
-		} catch (e) {
-			access_err = e;
-		}
-		expect(access_err).is.not.equal(undefined);
-
-		check_npm_installed_restore();
-		check_project_paths_restore();
-		cf_routes_dir_restore();
-	}).timeout(60000);
-
-	it('test mock happy path, with dry run', async () => {
-		let cf_routes_dir_restore = npm_utils.__set__('CF_ROUTES_DIR', MOCK_CF_DIR_PATH);
-		let path_join_spy = sandbox.spy(npm_utils.__get__('path'), 'join');
-		let run_command_stub = sandbox.stub();
-		run_command_stub.onCall(0).callsFake(async () => {
-			return { stdout: '{ "success": true }' };
-		});
-
-		run_command_stub.onCall(1).callsFake(async () => {
-			throw new Error('npm bad stuff');
-		});
-
-		let check_npm_installed_stub = sandbox.stub().callsFake(async (cmd, cwd) => {
-			return true;
-		});
-
-		let check_project_paths_stub = sandbox.stub().callsFake(async (cmd, cwd) => {
-			return;
-		});
-
-		let run_command_restore = npm_utils.__set__('p_exec', run_command_stub);
-		let check_npm_installed_restore = npm_utils.__set__('checkNPMInstalled', check_npm_installed_stub);
-		let check_project_paths_restore = npm_utils.__set__('checkProjectPaths', check_project_paths_stub);
-
-		let error;
-		let result;
-		try {
-			result = await install_modules({ projects: ['cool project', 'bad project'], dry_run: true });
-		} catch (e) {
-			error = e;
-		}
-
-		expect(error).is.equal(undefined);
-		expect(result).to.eql({
-			'cool project': { npm_output: { success: true }, npm_error: null },
-			'bad project': { npm_output: null, npm_error: 'npm bad stuff' },
-		});
-
-		expect(path_join_spy.callCount).is.equal(2);
-		expect(path_join_spy.firstCall.args).to.eql([MOCK_CF_DIR_PATH, 'cool project']);
-		expect(path_join_spy.secondCall.args).to.eql([MOCK_CF_DIR_PATH, 'bad project']);
-
-		expect(run_command_stub.callCount).is.equal(2);
-		expect(await run_command_stub.firstCall.returnValue).is.eql({ stdout: '{ "success": true }' });
-		let err;
-		try {
-			await run_command_stub.secondCall.returnValue;
-		} catch (e) {
-			err = e;
-		}
-		expect(err.message).is.equal('npm bad stuff');
-
-		expect(run_command_stub.firstCall.args).to.eql([
-			'npm install --omit=dev --json --dry-run',
-			{ cwd: COOL_PROJECT_PATH },
-		]);
-		expect(run_command_stub.secondCall.args).to.eql([
-			'npm install --omit=dev --json --dry-run',
-			{ cwd: BAD_PROJECT_PATH },
-		]);
-
-		check_npm_installed_restore();
-		check_project_paths_restore();
-		cf_routes_dir_restore();
-		run_command_restore();
-	}).timeout(20000);
-
-	it('test real happy path, with dry run', async () => {
-		let cf_routes_dir_restore = npm_utils.__set__('CF_ROUTES_DIR', MOCK_CF_DIR_PATH);
-		let path_join_spy = sandbox.spy(npm_utils.__get__('path'), 'join');
-		let run_command_spy = sandbox.spy(npm_utils.__get__('p_exec'));
-
-		let check_npm_installed_stub = sandbox.stub().callsFake(async (cmd, cwd) => {
-			return true;
-		});
-
-		let check_project_paths_stub = sandbox.stub().callsFake(async (cmd, cwd) => {
-			return;
-		});
-
-		let check_npm_installed_restore = npm_utils.__set__('checkNPMInstalled', check_npm_installed_stub);
-		let check_project_paths_restore = npm_utils.__set__('checkProjectPaths', check_project_paths_stub);
-
-		let error;
-		let result;
-		try {
-			result = await install_modules({ projects: [COOL_PROJECT_NAME, BAD_PROJECT_NAME], dry_run: true });
-		} catch (e) {
-			error = e;
-		}
-		expect(error).is.equal(undefined);
-		expect(result['cool project'].npm_output).is.not.equal(null);
-		expect(result['bad project'].npm_output).is.equal(null);
-		expect(result['bad project'].npm_error).is.not.equal(null);
-
-		//tes cool project dayjs does not exists
-		let access_err;
-		let dayjs_path = path.join(COOL_PROJECT_PATH, 'node_modules', 'dayjs');
-		try {
-			await fs.access(dayjs_path);
-		} catch (e) {
-			access_err = e;
-		}
-		expect(access_err).is.not.equal(undefined);
-
-		//test bad project node_modules does not exist
-		let node_modules_path = path.join(BAD_PROJECT_PATH, 'node_modules');
-		try {
-			await fs.access(node_modules_path);
-		} catch (e) {
-			access_err = e;
-		}
-		expect(access_err).is.not.equal(undefined);
-
-		check_npm_installed_restore();
-		check_project_paths_restore();
-		cf_routes_dir_restore();
-	}).timeout(20000);
-});
-
+}
 describe('test modulesValidator', () => {
 	const sandbox = sinon.createSandbox();
 	const validator = npm_utils.__get__('modulesValidator');
@@ -576,63 +577,64 @@ describe('test modulesValidator', () => {
 	});
 });
 
-describe('test auditModules', () => {
-	const sandbox = sinon.createSandbox();
-	const install_modules = npm_utils.__get__('installModules');
-	const audit_modules = npm_utils.__get__('auditModules');
+if (process.env.FULL_TEST) {
+	describe('test auditModules', () => {
+		const sandbox = sinon.createSandbox();
+		const install_modules = npm_utils.__get__('installModules');
+		const audit_modules = npm_utils.__get__('auditModules');
 
-	beforeEach(async () => {
-		await fs.remove(MOCK_CF_DIR_PATH);
-		await fs.mkdirp(COOL_PROJECT_PATH);
-		await fs.mkdirp(BAD_PROJECT_PATH);
+		beforeEach(async () => {
+			await fs.remove(MOCK_CF_DIR_PATH);
+			await fs.mkdirp(COOL_PROJECT_PATH);
+			await fs.mkdirp(BAD_PROJECT_PATH);
 
-		await fs.writeJson(COOL_PACKAGE_JSON_PATH, COOL_PROJECT_PACKAGE_JSON);
-		await fs.writeJson(BAD_PACKAGE_JSON_PATH, BAD_PROJECT_PACKAGE_JSON);
-	});
-
-	after(async () => {});
-
-	afterEach(async () => {
-		sandbox.restore();
-		await fs.remove(MOCK_CF_DIR_PATH);
-	});
-
-	it('test real happy path', async () => {
-		let cf_routes_dir_restore = npm_utils.__set__('CF_ROUTES_DIR', MOCK_CF_DIR_PATH);
-
-		await install_modules({ projects: [COOL_PROJECT_NAME, BAD_PROJECT_NAME] });
-
-		let check_npm_installed_stub = sandbox.stub().callsFake(async (cmd, cwd) => {
-			return true;
+			await fs.writeJson(COOL_PACKAGE_JSON_PATH, COOL_PROJECT_PACKAGE_JSON);
+			await fs.writeJson(BAD_PACKAGE_JSON_PATH, BAD_PROJECT_PACKAGE_JSON);
 		});
 
-		let check_project_paths_stub = sandbox.stub().callsFake(async (cmd, cwd) => {
-			return;
+		after(async () => {});
+
+		afterEach(async () => {
+			sandbox.restore();
+			await fs.remove(MOCK_CF_DIR_PATH);
 		});
 
-		let check_npm_installed_restore = npm_utils.__set__('checkNPMInstalled', check_npm_installed_stub);
-		let check_project_paths_restore = npm_utils.__set__('checkProjectPaths', check_project_paths_stub);
+		it('test real happy path', async () => {
+			let cf_routes_dir_restore = npm_utils.__set__('CF_ROUTES_DIR', MOCK_CF_DIR_PATH);
 
-		let error;
-		let result;
-		try {
-			result = await audit_modules({ projects: [COOL_PROJECT_NAME, BAD_PROJECT_NAME] });
-		} catch (e) {
-			error = e;
-		}
+			await install_modules({ projects: [COOL_PROJECT_NAME, BAD_PROJECT_NAME] });
 
-		expect(error).is.equal(undefined);
-		expect(result['cool project'].npm_error).is.equal(null);
-		expect(result['cool project'].npm_output).is.not.equal(null);
-		expect(result['bad project'].npm_output).is.equal(null);
-		expect(result['bad project'].npm_error).is.not.equal(null);
+			let check_npm_installed_stub = sandbox.stub().callsFake(async (cmd, cwd) => {
+				return true;
+			});
 
-		check_npm_installed_restore();
-		check_project_paths_restore();
-		cf_routes_dir_restore();
-	}).timeout(60000);
-});
+			let check_project_paths_stub = sandbox.stub().callsFake(async (cmd, cwd) => {
+				return;
+			});
 
+			let check_npm_installed_restore = npm_utils.__set__('checkNPMInstalled', check_npm_installed_stub);
+			let check_project_paths_restore = npm_utils.__set__('checkProjectPaths', check_project_paths_stub);
+
+			let error;
+			let result;
+			try {
+				result = await audit_modules({ projects: [COOL_PROJECT_NAME, BAD_PROJECT_NAME] });
+			} catch (e) {
+				error = e;
+			}
+
+			expect(error).is.equal(undefined);
+			expect(result['cool project'].npm_error).is.equal(null);
+			expect(result['cool project'].npm_output).is.not.equal(null);
+			expect(result['bad project'].npm_output).is.equal(null);
+			expect(result['bad project'].npm_error).is.not.equal(null);
+
+			check_npm_installed_restore();
+			check_project_paths_restore();
+			cf_routes_dir_restore();
+		}).timeout(60000);
+	});
+}
 describe('Test install all, uninstall and link functions', () => {
 	const sandbox = sinon.createSandbox();
 	const run_command_stub = sandbox.stub();

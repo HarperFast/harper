@@ -3,7 +3,7 @@ const test_utils = require('../test_utils');
 test_utils.preTestPrep();
 const assert = require('assert');
 const rewire = require('rewire');
-const auth = rewire('../../security/auth');
+const auth = rewire('../../security/fastifyAuth');
 const token_auth = rewire('../../security/tokenAuthentication');
 const password_function = require('../../utility/password');
 const hdb_error = require('../../utility/errors/hdbError').handleHDBError;

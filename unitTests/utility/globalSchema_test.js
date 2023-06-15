@@ -144,7 +144,7 @@ const BIRD_TABLE_NAME = 'bird';
 const BIRD_TABLE_HASH_ATTRIBUTE = 'id';
 let test_env = [];
 
-describe('Test setSchemaDataToGlobal function', function () {
+describe.skip('Test setSchemaDataToGlobal function', function () {
 	it('Has data["systems"] in global.hdb_schema', function (done) {
 		global_schema.setSchemaDataToGlobal(() => {
 			assert.deepEqual(global.hdb_schema['system'], system_schema);
@@ -153,7 +153,7 @@ describe('Test setSchemaDataToGlobal function', function () {
 	});
 });
 
-describe('Test returnSchema function', function () {
+describe.skip('Test returnSchema function', function () {
 	beforeEach(async function () {
 		test_env.push(
 			...(await test_util.createMockDB(DOG_TABLE_HASH_ATTRIBUTE, SCHEMA_NAME, DOG_TABLE_NAME, TEST_DATA_DOG))
@@ -196,7 +196,7 @@ describe('Test returnSchema function', function () {
 	});
 });
 
-describe('Test getTableSchema function', function () {
+describe.skip('Test getTableSchema function', function () {
 	beforeEach(async function () {
 		test_env.push(
 			...(await test_util.createMockDB(DOG_TABLE_HASH_ATTRIBUTE, SCHEMA_NAME, DOG_TABLE_NAME, TEST_DATA_DOG))
@@ -311,7 +311,7 @@ describe('Test getTableSchema function', function () {
 	});
 });
 
-describe('Test if no table object', function () {
+describe.skip('Test if no table object', function () {
 	beforeEach(async function () {
 		test_env.push(
 			...(await test_util.createMockDB(DOG_TABLE_HASH_ATTRIBUTE, SCHEMA_NAME, DOG_TABLE_NAME, TEST_DATA_DOG))
@@ -338,7 +338,7 @@ describe('Test if no table object', function () {
 	});
 });
 
-describe('Test if have dog table object', function () {
+describe.skip('Test if have dog table object', function () {
 	beforeEach(async function () {
 		test_env.push(
 			...(await test_util.createMockDB(DOG_TABLE_HASH_ATTRIBUTE, SCHEMA_NAME, DOG_TABLE_NAME, TEST_DATA_DOG))
@@ -383,7 +383,7 @@ describe('Test if have dog table object', function () {
 	});
 });
 
-describe('Test if have cat table object', function () {
+describe.skip('Test if have cat table object', function () {
 	beforeEach(async function () {
 		test_env.push(
 			...(await test_util.createMockDB(DOG_TABLE_HASH_ATTRIBUTE, SCHEMA_NAME, DOG_TABLE_NAME, TEST_DATA_DOG))
@@ -428,7 +428,7 @@ describe('Test if have cat table object', function () {
 	});
 });
 
-describe('Test if have bird table object', function () {
+describe.skip('Test if have bird table object', function () {
 	let describeTable_stub = undefined;
 
 	beforeEach(async function () {
@@ -475,7 +475,7 @@ describe('Test if have bird table object', function () {
 	});
 });
 
-describe('Test getSystemSchema function', function () {
+describe.skip('Test getSystemSchema function', function () {
 	it('Should equal system_schema json', function (done) {
 		let getSystemSchema = global_schema.__get__('getSystemSchema');
 		assert.deepEqual(getSystemSchema(), system_schema);

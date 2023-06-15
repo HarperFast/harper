@@ -1,0 +1,194 @@
+'use strict';
+
+const Joi = require('joi');
+const fs = require('fs-extra');
+const path = require('path');
+const validator = require('../validation/validationWrapper');
+const env_mangr = require('../utility/environment/environmentManager');
+const hdb_terms = require('../utility/hdbTerms');
+const hdb_logger = require('../utility/logging/harper_logger');
+const { hdb_errors } = require('../utility/errors/hdbError');
+const { HDB_ERROR_MSGS } = hdb_errors;
+
+// File name can only be alphanumeric, dash and underscores
+const PROJECT_FILE_NAME_REGEX = /^[a-zA-Z0-9-_]+$/;
+
+module.exports = {
+	getDropCustomFunctionValidator,
+	setCustomFunctionValidator,
+	addCustomFunctionProjectValidator,
+	dropCustomFunctionProjectValidator,
+	packageCustomFunctionProjectValidator,
+	deployCustomFunctionProjectValidator,
+};
+
+/**
+ * Check to see if a project dir exists in the custom functions dir.
+ * @param check_exists - determine if validator returns error if exists or vice versa
+ * @param project
+ * @param helpers
+ * @returns {*}
+ */
+function checkProjectExists(check_exists, project, helpers) {
+	try {
+		const cf_dir = env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+		const project_dir = path.join(cf_dir, project);
+
+		if (!fs.existsSync(project_dir)) {
+			if (check_exists) {
+				return helpers.message(HDB_ERROR_MSGS.NO_PROJECT);
+			}
+
+			return project;
+		}
+
+		if (check_exists) {
+			return project;
+		}
+
+		return helpers.message(HDB_ERROR_MSGS.PROJECT_EXISTS);
+	} catch (err) {
+		hdb_logger.error(err);
+		return helpers.message(HDB_ERROR_MSGS.VALIDATION_ERR);
+	}
+}
+
+/**
+ * Check the custom functions dir to see if a file exists.
+ * @param project
+ * @param type
+ * @param file
+ * @param helpers
+ * @returns {*}
+ */
+function checkFileExists(project, type, file, helpers) {
+	try {
+		const cf_dir = env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+		const file_path = path.join(cf_dir, project, type, file + '.js');
+		if (!fs.existsSync(file_path)) {
+			return helpers.message(HDB_ERROR_MSGS.NO_FILE);
+		}
+
+		return file;
+	} catch (err) {
+		hdb_logger.error(err);
+		return helpers.message(HDB_ERROR_MSGS.VALIDATION_ERR);
+	}
+}
+
+/**
+ * Used to validate getCustomFunction and dropCustomFunction
+ * @param req
+ * @returns {*}
+ */
+function getDropCustomFunctionValidator(req) {
+	const get_func_schema = Joi.object({
+		project: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.custom(checkProjectExists.bind(null, true))
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
+		type: Joi.string().valid('helpers', 'routes').required(),
+		file: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.custom(checkFileExists.bind(null, req.project, req.type))
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_FILE_NAME }),
+	});
+
+	return validator.validateBySchema(req, get_func_schema);
+}
+
+/**
+ * Validate setCustomFunction requests.
+ * @param req
+ * @returns {*}
+ */
+function setCustomFunctionValidator(req) {
+	const set_func_schema = Joi.object({
+		project: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.custom(checkProjectExists.bind(null, true))
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
+		type: Joi.string().valid('helpers', 'routes').required(),
+		file: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_FILE_NAME }),
+		function_content: Joi.string().required(),
+	});
+
+	return validator.validateBySchema(req, set_func_schema);
+}
+
+/**
+ * Validate addCustomFunctionProject requests.
+ * @param req
+ * @returns {*}
+ */
+function addCustomFunctionProjectValidator(req) {
+	const add_func_schema = Joi.object({
+		project: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.custom(checkProjectExists.bind(null, false))
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
+	});
+
+	return validator.validateBySchema(req, add_func_schema);
+}
+
+/**
+ * Validate dropCustomFunctionProject requests.
+ * @param req
+ * @returns {*}
+ */
+function dropCustomFunctionProjectValidator(req) {
+	const drop_func_schema = Joi.object({
+		project: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.custom(checkProjectExists.bind(null, true))
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
+	});
+
+	return validator.validateBySchema(req, drop_func_schema);
+}
+
+/**
+ * Validate packageCustomFunctionProject requests.
+ * @param req
+ * @returns {*}
+ */
+function packageCustomFunctionProjectValidator(req) {
+	const package_proj_schema = Joi.object({
+		project: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.custom(checkProjectExists.bind(null, true))
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
+		skip_node_modules: Joi.boolean(),
+	});
+
+	return validator.validateBySchema(req, package_proj_schema);
+}
+
+/**
+ * Validate deployCustomFunctionProject requests.
+ * @param req
+ * @returns {*}
+ */
+function deployCustomFunctionProjectValidator(req) {
+	const deploy_proj_schema = Joi.object({
+		project: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
+		payload: Joi.string().optional().messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PACKAGE }),
+		package: Joi.string().optional(),
+		bypass_apps: Joi.boolean().optional(),
+	});
+
+	return validator.validateBySchema(req, deploy_proj_schema);
+}

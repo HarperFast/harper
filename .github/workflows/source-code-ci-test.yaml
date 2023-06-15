@@ -4,10 +4,11 @@ on:
   push:
     branches:
       - main
+      - "release_*"
   pull_request:
     types: [opened, synchronize, reopened]
   schedule:
-    - cron: '0 13 * * 1-5'
+    - cron: '14 13 * * 1-5'
   workflow_dispatch:
 name: Run Source Code CI Tests
 jobs:

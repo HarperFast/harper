@@ -15,6 +15,7 @@ const is_number = require('is-number');
 const _ = require('lodash');
 const { hdb_errors } = require('./errors/hdbError');
 
+
 const async_set_timeout = require('util').promisify(setTimeout);
 const HDB_PROC_START_TIMEOUT = 100;
 const CHECK_PROCS_LOOP_LIMIT = 5;
@@ -510,16 +511,17 @@ function isClusterOperation(operation_name) {
 }
 
 /**
- * Checks the global hdb_schema for a schema and table
+ * Checks the global databases for a schema and table
  * @param schema_name
  * @param table_name
  * @returns string returns a thrown message if schema and or table does not exist
  */
 function checkGlobalSchemaTable(schema_name, table_name) {
-	if (!global.hdb_schema[schema_name]) {
+	let databases = require('../resources/databases').getDatabases();
+	if (!databases[schema_name]) {
 		return hdb_errors.HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schema_name);
 	}
-	if (!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]) {
+	if (!databases[schema_name][table_name]) {
 		return hdb_errors.HDB_ERROR_MSGS.TABLE_NOT_FOUND(schema_name, table_name);
 	}
 }
@@ -659,7 +661,8 @@ function checkSchemaTableExist(schema, table) {
  * @returns {string}
  */
 function checkSchemaExists(schema) {
-	if (!global.hdb_schema[schema]) {
+	const { getDatabases } = require('../resources/databases');
+	if (!getDatabases()[schema]) {
 		return hdb_errors.HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schema);
 	}
 }
@@ -671,7 +674,8 @@ function checkSchemaExists(schema) {
  * @returns {string}
  */
 function checkTableExists(schema, table) {
-	if (!global.hdb_schema[schema][table]) {
+	const { getDatabases } = require('../resources/databases');
+	if (!getDatabases()[schema][table]) {
 		return hdb_errors.HDB_ERROR_MSGS.TABLE_NOT_FOUND(schema, table);
 	}
 }
@@ -773,7 +777,9 @@ function autoCastBoolean(boolean) {
  * Gets a tables hash attribute from the global schema
  */
 function getTableHashAttribute(schema, table) {
-	return global.hdb_schema?.[schema]?.[table]?.hash_attribute;
+	const {getDatabases} = require('../resources/databases');
+	let table_obj = getDatabases()[schema]?.[table];
+	return table_obj?.primaryKey || table_obj?.hash_attribute;
 }
 
 /**
@@ -782,7 +788,8 @@ function getTableHashAttribute(schema, table) {
  * @returns {boolean} - returns true if schema exists
  */
 function doesSchemaExist(schema) {
-	return global?.hdb_schema?.[schema] !== undefined;
+	const {getDatabases} = require('../resources/databases');
+	return getDatabases()[schema] !== undefined;
 }
 
 /**
@@ -792,7 +799,8 @@ function doesSchemaExist(schema) {
  * @returns {boolean} - returns true if table exists
  */
 function doesTableExist(schema, table) {
-	return global?.hdb_schema?.[schema]?.[table] !== undefined;
+	const {getDatabases} = require('../resources/databases');
+	return getDatabases()[schema]?.[table] !== undefined;
 }
 
 /**

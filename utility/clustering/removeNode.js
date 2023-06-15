@@ -14,6 +14,7 @@ const { RemotePayloadObject } = require('./RemotePayloadObject');
 const { NodeSubscription } = require('./NodeObject');
 const DeleteObject = require('../../dataLayer/DeleteObject');
 const _delete = require('../../dataLayer/delete');
+const {broadcast} = require('../../server/threads/manageThreads');
 
 const node_name = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 
@@ -75,6 +76,9 @@ async function removeNode(req) {
 	]);
 	await _delete.deleteRecord(delete_qry);
 
+	broadcast({
+		type: 'nats_update',
+	});
 	// If an error is received from the remote node let user know.
 	if (reply?.status === nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.ERROR || remote_node_error) {
 		hdb_logger.error('Error returned from remote node:', remote_node_name, reply?.message);

@@ -31,7 +31,13 @@ const UPDATED_TIME_ATTRIBUTE_NAME = hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME
  * @param {boolean|number} timestamp
  * @returns {Promise<InsertRecordsResponseObject>}
  */
-async function insertRecords(env, hash_attribute, write_attributes, records, timestamp = common.getNextMonotonicTime()) {
+async function insertRecords(
+	env,
+	hash_attribute,
+	write_attributes,
+	records,
+	timestamp = common.getNextMonotonicTime()
+) {
 	validateWrite(env, hash_attribute, write_attributes, records);
 
 	initializeTransaction(env, hash_attribute, write_attributes);
@@ -165,7 +171,13 @@ function initializeTransaction(env, hash_attribute, write_attributes) {
  * @param {boolean|number} timestamp
  * @returns {Promise<UpdateRecordsResponseObject>}
  */
-async function updateRecords(env, hash_attribute, write_attributes, records, timestamp = common.getNextMonotonicTime()) {
+async function updateRecords(
+	env,
+	hash_attribute,
+	write_attributes,
+	records,
+	timestamp = common.getNextMonotonicTime()
+) {
 	//validate
 	validateWrite(env, hash_attribute, write_attributes, records);
 
@@ -205,7 +217,13 @@ async function updateRecords(env, hash_attribute, write_attributes, records, tim
  * @param {boolean|number} timestamp
  * @returns {Promise<UpdateRecordsResponseObject>}
  */
-async function upsertRecords(env, hash_attribute, write_attributes, records, timestamp = common.getNextMonotonicTime()) {
+async function upsertRecords(
+	env,
+	hash_attribute,
+	write_attributes,
+	records,
+	timestamp = common.getNextMonotonicTime()
+) {
 	//validate
 	try {
 		validateWrite(env, hash_attribute, write_attributes, records);
@@ -266,15 +284,7 @@ async function finalizeWrite(puts, keys, records, result, timestamp, remove_indi
  * @param {boolean} Require existing record
  * @param {number} timestamp
  */
-function updateUpsertRecord(
-	env,
-	hash_attribute,
-	record,
-	hash_value,
-	result,
-	must_exist = false,
-	timestamp
-) {
+function updateUpsertRecord(env, hash_attribute, record, hash_value, result, must_exist = false, timestamp) {
 	let primary_dbi = env.dbis[hash_attribute];
 	let existing_entry = primary_dbi.getEntry(hash_value);
 	let existing_record = existing_entry?.value;

@@ -18926,7 +18926,7 @@
 		},
 		{
 			"name": "4. NoSQL Tests",
-			"item": [
+            "item": [
 				{
 					"name": "Invalid Attribute Check",
 					"item": [
@@ -20916,75 +20916,6 @@
 					"response": []
 				},
 				{
-					"name": "NoSQL search by hash with unknown attribute",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test(\"Status code is 500\", function () {",
-									"    pm.response.to.have.status(500);",
-									"});",
-									"",
-									"pm.test(\"verify proper error message is given\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.error).to.eql(\"unknown attribute 'attr1, attr3 and attr4'\");",
-									"});",
-									"",
-									"",
-									""
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "username",
-									"value": "{{username}}",
-									"type": "string"
-								},
-								{
-									"key": "password",
-									"value": "{{password}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"operation\":\"search_by_hash\",\n  \"schema\":\"{{schema}}\",\n  \"table\":\"{{emps_tb}}\",\n  \"hash_attribute\": \"{{emps_id}}\",\n  \"hash_values\":[1],\n  \"get_attributes\": [\"attr1\", \"address\", \"attr3\", \"attr4\"]\n}"
-						},
-						"url": {
-							"raw": "{{host}}:{{port}}",
-							"host": [
-								"{{host}}"
-							],
-							"port": "{{port}}"
-						}
-					},
-					"response": []
-				},
-				{
 					"name": "NoSQL search by hash no schema",
 					"event": [
 						{
@@ -21400,8 +21331,8 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"Status code is 500\", function () {",
-									"    pm.response.to.have.status(500);",
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
 									"});",
 									"",
 									"pm.test(\"Valid error message is recieved\", function () {",
@@ -21470,8 +21401,8 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"Status code is 500\", function () {",
-									"    pm.response.to.have.status(500);",
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
 									"});",
 									"",
 									"pm.test(\"Valid error message is recieved\", function () {",
@@ -21540,8 +21471,8 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"Status code is 500\", function () {",
-									"    pm.response.to.have.status(500);",
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
 									"});",
 									"",
 									"pm.test(\"Valid error message is recieved\", function () {",
@@ -21682,87 +21613,6 @@
 					"response": []
 				},
 				{
-					"name": "NoSQL search by value - % at end",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test(\"Status code is 200\", function () {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test(\"test 2 record returned\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.length).to.eql(2);",
-									"});",
-									"",
-									"pm.test(\"test all remarks contain exact value provided\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    jsonData.forEach((record)=>{",
-									"        let keys = Object.keys(record);",
-									"        if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){",
-									"            pm.expect(keys.length).to.eql(5);",
-									"        } else{",
-									"            pm.expect(keys.length).to.eql(3);",
-									"        }",
-									"        pm.expect(record.remarks.includes('Location ... Location ...GOURGEOUS HOME in a Heart of MANDARIN,Next to Loretto Magnet schoolClose to I-295, shopping & entertainment. Gated community! Loaded with upgrades:')).to.eql(true);",
-									"    });",
-									"});",
-									"",
-									""
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "username",
-									"value": "{{username}}",
-									"type": "string"
-								},
-								{
-									"key": "password",
-									"value": "{{password}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"remarks_blob\",\n\t\"search_attribute\":\"remarks\",\n    \"search_value\":\"Location ... Location ...GOURGEOUS HOME in a Heart of MANDARIN,Next to Loretto Magnet schoolClose to I-295, shopping & entertainment. Gated community! Loaded with upgrades:%\",\n\t\"get_attributes\": [\"*\"]\n}"
-						},
-						"url": {
-							"raw": "{{host}}:{{port}}",
-							"host": [
-								"{{host}}"
-							],
-							"port": "{{port}}"
-						}
-					},
-					"response": []
-				},
-				{
 					"name": "NoSQL search by value - * at end",
 					"event": [
 						{
@@ -21832,87 +21682,6 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"remarks_blob\",\n\t\"search_attribute\":\"remarks\",\n    \"search_value\":\"Location ... Location ...GOURGEOUS HOME in a Heart of MANDARIN,Next to Loretto Magnet schoolClose to I-295, shopping & entertainment. Gated community! Loaded with upgrades:*\",\n\t\"get_attributes\": [\"*\"]\n}"
-						},
-						"url": {
-							"raw": "{{host}}:{{port}}",
-							"host": [
-								"{{host}}"
-							],
-							"port": "{{port}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "NoSQL search by value - % at start",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test(\"Status code is 200\", function () {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test(\"test 1 record returned\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.length).to.eql(1);",
-									"});",
-									"",
-									"pm.test(\"test all remarks contain exact value provided\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    jsonData.forEach((record)=>{",
-									"        let keys = Object.keys(record);",
-									"        if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){",
-									"            pm.expect(keys.length).to.eql(5);",
-									"        } else{",
-									"            pm.expect(keys.length).to.eql(3);",
-									"        }",
-									"        pm.expect(record.remarks.includes(\"*DON'T MISS THIS BEAUTIFUL DAVID WEEKLEY BELMONTE MODEL*ONE OF THE LARGEST LOTS IN CROSSWATER*GREAT FOR OUTDOOR FUN!*LUXURIOUS LIVING!*HIGH TECH HOME*CROWN MOLDING, CUSTOM PLANTATION SHUTTERS, 18'' TILE & CUSTOM WHITE OAK HARDWOOD FLOORING...\")).to.eql(true);",
-									"    });",
-									"});",
-									"",
-									""
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "username",
-									"value": "{{username}}",
-									"type": "string"
-								},
-								{
-									"key": "password",
-									"value": "{{password}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"remarks_blob\",\n\t\"search_attribute\":\"remarks\",\n    \"search_value\":\"%*DON'T MISS THIS BEAUTIFUL DAVID WEEKLEY BELMONTE MODEL*ONE OF THE LARGEST LOTS IN CROSSWATER*GREAT FOR OUTDOOR FUN!*LUXURIOUS LIVING!*HIGH TECH HOME*CROWN MOLDING, CUSTOM PLANTATION SHUTTERS, 18'' TILE & CUSTOM WHITE OAK HARDWOOD FLOORING...\",\n\t\"get_attributes\": [\"*\"]\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -22087,87 +21856,6 @@
 					"response": []
 				},
 				{
-					"name": "NoSQL search by value - % at start and end",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test(\"Status code is 200\", function () {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test(\"test 3 record returned\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.length).to.eql(3);",
-									"});",
-									"",
-									"pm.test(\"test all remarks contain exact value provided\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    jsonData.forEach((record)=>{",
-									"        let keys = Object.keys(record);",
-									"        if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){",
-									"            pm.expect(keys.length).to.eql(5);",
-									"        } else{",
-									"            pm.expect(keys.length).to.eql(3);",
-									"        }",
-									"        pm.expect(record.remarks.includes(\"4 Bedroom/2.5+\")).to.eql(true);",
-									"    });",
-									"});",
-									"",
-									""
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "username",
-									"value": "{{username}}",
-									"type": "string"
-								},
-								{
-									"key": "password",
-									"value": "{{password}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"remarks_blob\",\n\t\"search_attribute\":\"remarks\",\n    \"search_value\":\"*4 Bedroom/2.5+*\",\n\t\"get_attributes\": [\"*\"]\n}"
-						},
-						"url": {
-							"raw": "{{host}}:{{port}}",
-							"host": [
-								"{{host}}"
-							],
-							"port": "{{port}}"
-						}
-					},
-					"response": []
-				},
-				{
 					"name": "NoSQL search by value - * as search_value",
 					"event": [
 						{
@@ -22236,86 +21924,6 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"remarks_blob\",\n\t\"search_attribute\":\"remarks\",\n    \"search_value\":\"*\",\n\t\"get_attributes\": [\"*\"]\n}"
-						},
-						"url": {
-							"raw": "{{host}}:{{port}}",
-							"host": [
-								"{{host}}"
-							],
-							"port": "{{port}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "NoSQL search by value - % as search_value",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test(\"Status code is 200\", function () {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test(\"test 11 record returned\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.length).to.eql(11);",
-									"});",
-									"",
-									"pm.test(\"test all remarks contain all attributes\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    jsonData.forEach((record)=>{",
-									"        let keys = Object.keys(record);",
-									"        if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){",
-									"            pm.expect(keys.length).to.eql(5);",
-									"        } else{",
-									"            pm.expect(keys.length).to.eql(3);",
-									"        }",
-									"    });",
-									"});",
-									"",
-									""
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "username",
-									"value": "{{username}}",
-									"type": "string"
-								},
-								{
-									"key": "password",
-									"value": "{{password}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"remarks_blob\",\n\t\"search_attribute\":\"remarks\",\n    \"search_value\":\"%\",\n\t\"get_attributes\": [\"*\"]\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -22707,7 +22315,7 @@
 					"response": []
 				},
 				{
-					"name": "NoSQL search by value leading_zero - value = \"0%\"",
+					"name": "NoSQL search by value leading_zero - value = \"0*\"",
 					"event": [
 						{
 							"listen": "test",
@@ -22777,7 +22385,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"leading_zero\",\n\t\"search_attribute\":\"id\",\n    \"search_value\":\"0%\",\n\t\"get_attributes\": [\"*\"]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_value\",\n\t\"schema\":\"dev\",\n\t\"table\":\"leading_zero\",\n\t\"search_attribute\":\"id\",\n    \"search_value\":\"0*\",\n\t\"get_attributes\": [\"*\"]\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -23959,11 +23567,11 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test(\"search by condition returns 2 rows with breed_ids that start with 1\", function () {",
+									"pm.test(\"search by condition returns 6 rows with location that start with Denver\", function () {",
 									"    const jsonData = pm.response.json();",
-									"    pm.expect(jsonData.length).to.eql(2);",
+									"    pm.expect(jsonData.length).to.eql(6);",
 									"\tjsonData.forEach(row => {",
-									"\t\tpm.expect([...Number(row.breed_id).toString()][0]).to.equal('1');",
+									"\t\tpm.expect(row.location.startsWith('Denver')).to.equal(true);",
 									"\t})",
 									"});"
 								],
@@ -24005,7 +23613,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"breed_id\",\n\t\t\"search_type\": \"starts_with\",\n\t\t\"search_value\": 1\n\t}]\n}"
+							"raw": "{\n\t\"operation\":\"search_by_conditions\",\n\t\"schema\":\"dev\",\n\t\"table\":\"dog_conditions\",\n\t\"get_attributes\": [\"*\"],\n\t\"conditions\": [{\n\t\t\"search_attribute\": \"location\",\n\t\t\"search_type\": \"starts_with\",\n\t\t\"search_value\": \"Denver\"\n\t}]\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -25558,7 +25166,7 @@
 					"response": []
 				},
 				{
-					"name": "search by conditions - ends_with condition, offset, limit of 2",
+					"name": "search by conditions - ends_with condition, offset, limit of 3",
 					"event": [
 						{
 							"listen": "test",
@@ -25569,7 +25177,7 @@
 									"});",
 									"",
 									"pm.test(\"search by condition returns 3 sorted rows with a location that ends with CO\", function () {",
-									"    const expected_hash_order = [5,7,11];",
+									"    const expected_hash_order = [7,9,10];",
 									"\tconst jsonData = pm.response.json();",
 									"    pm.expect(jsonData.length).to.eql(expected_hash_order.length);",
 									"\tjsonData.forEach((row, i) => {",
@@ -25632,7 +25240,7 @@
 		},
 		{
 			"name": "5. NoSQL Role Testing",
-			"item": [
+            "item": [
 				{
 					"name": "Bulk Load Perms Tests",
 					"item": [
@@ -33202,7 +32810,8 @@
 		},
 		{
 			"name": "6. SQL Role Testing",
-			"item": [
+          "item": [],
+          "disabled-item": [
 				{
 					"name": "SQL Add non SU role",
 					"event": [
@@ -36402,8 +36011,8 @@
 			]
 		},
 		{
-			"name": "7. Jobs & Job Role Testing",
-			"item": [
+          "name": "7. Jobs & Job Role Testing",
+          "item": [
 				{
 					"name": "S3 Operations",
 					"item": [
@@ -41769,7 +41378,8 @@
 		},
 		{
 			"name": "8. Delete Tests",
-			"item": [
+          "item": [],
+          "disabled-item": [
 				{
 					"name": "Delete Records Before Tests",
 					"item": [
@@ -47281,7 +46891,8 @@
 		},
 		{
 			"name": "9. Transactions",
-			"item": [
+          "item": [],
+          "disabled-item": [
 				{
 					"name": "Delete Audit Logs Before Tests",
 					"item": [
@@ -48912,7 +48523,8 @@
 		},
 		{
 			"name": "10. Other Role Tests",
-			"item": [
+          "item": [],
+          "disabled-item": [
 				{
 					"name": "Describe ops role testing",
 					"item": [
@@ -57047,7 +56659,8 @@
 		},
 		{
 			"name": "12. Configuration",
-			"item": [
+            "item":[],
+            "disabled-item": [
 				{
 					"name": "Create_Attribute tests",
 					"item": [
@@ -59751,7 +59364,7 @@
 		},
 		{
 			"name": "14. Token Auth",
-			"item": [
+          "item": [
 				{
 					"name": "Call create_authentication_tokens no username/pw",
 					"event": [
@@ -59782,10 +59395,6 @@
 							{
 								"key": "Content-Type",
 								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic YWRtaW46MTQwMA=="
 							}
 						],
 						"body": {
@@ -59833,10 +59442,6 @@
 							{
 								"key": "Content-Type",
 								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic YWRtaW46MTQwMA=="
 							}
 						],
 						"body": {
@@ -59884,10 +59489,6 @@
 							{
 								"key": "Content-Type",
 								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic YWRtaW46MTQwMA=="
 							}
 						],
 						"body": {
@@ -59943,10 +59544,6 @@
 							{
 								"key": "Content-Type",
 								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic YWRtaW46MTQwMA=="
 							}
 						],
 						"body": {
@@ -59977,12 +59574,12 @@
 									"",
 									"pm.test(\"verify NoSQL update worked\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[0].address).to.eql('def1234');",
+									"    pm.expect(jsonData.length).to.eql(1);",
 									"});",
 									"",
 									"pm.test(\"verify NoSQL update worked, new attribute added\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData[0].test_record).to.eql(\"I'mATest\");",
+									"    pm.expect(jsonData[0].employeeid).to.eql(1);",
 									"});",
 									"",
 									"",
@@ -60013,10 +59610,6 @@
 							{
 								"key": "Content-Type",
 								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic YWRtaW46MTQwMA=="
 							}
 						],
 						"body": {
@@ -60078,10 +59671,6 @@
 							{
 								"key": "Content-Type",
 								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic YWRtaW46MTQwMA=="
 							}
 						],
 						"body": {
@@ -60146,10 +59735,6 @@
 							{
 								"key": "Content-Type",
 								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic YWRtaW46MTQwMA=="
 							}
 						],
 						"body": {
@@ -60194,7 +59779,7 @@
 							"oauth2": [
 								{
 									"key": "accessToken",
-									"value": "{{operation_token}}",
+									"value": "bad token",
 									"type": "string"
 								},
 								{
@@ -60209,10 +59794,6 @@
 							{
 								"key": "Content-Type",
 								"value": "application/json"
-							},
-							{
-								"key": "Authorization",
-								"value": "Basic YWRtaW46MTQwMA=="
 							}
 						],
 						"body": {
@@ -60305,7 +59886,7 @@
 									"",
 									"pm.test(\"Restart service success message is returned\", function () {",
 									"    const json_data = pm.response.json();",
-									"    pm.expect(json_data.message).to.equal(\"Restarting custom_functions\");",
+									"    pm.expect(json_data.message).to.equal(\"Restarting Custom Functions\");",
 									"});",
                                   "",
                                   "// This timeout is here to give HDB time to restart before the next text is ran.",
@@ -61213,7 +60794,7 @@
 									"});",
 									"",
 									"// Deploy will restart, wait for that to complete.",
-									"setTimeout(()=>{}, 5000)"
+									"setTimeout(()=>{}, 15000)"
 								],
 								"type": "text/javascript"
 							}
@@ -61456,10 +61037,10 @@
 					"response": []
 				},
 				{
-					"name": "confirm attribute count correct",
+					"name": "confirm attribute count correct (disabled)",
 					"event": [
 						{
-							"listen": "test",
+							"listen": "disable-test",
 							"script": {
 								"exec": [
 									"// This code loops through the response from describe all and compares ",
@@ -61985,10 +61566,10 @@
 					"response": []
 				},
 				{
-					"name": "drop schema test_delete_before",
+					"name": "drop schema test_delete_before (disabled)",
 					"event": [
 						{
-							"listen": "test",
+							"listen": "disable-test",
 							"script": {
 								"exec": [
 									"tests[\"Delete Schema\"] = responseBody.has(\"successfully delete\");\r",

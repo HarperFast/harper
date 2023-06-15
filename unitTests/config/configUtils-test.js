@@ -36,6 +36,7 @@ const TEST_ARGS = {
 	CLUSTERING_NETWORK_PORT: '54321',
 	CLUSTERING_NETWORK_SELFSIGNEDSSLCERTS: true,
 	CLUSTERING_NODENAME: 'test_node_name',
+	CLUSTERING_REPUBLISHMESSAGES: true,
 	CUSTOMFUNCTIONS_ENABLED: true,
 	CUSTOMFUNCTIONS_NETWORK_PORT: '9936',
 	CUSTOMFUNCTIONS_NETWORK_CORS: false,
@@ -62,8 +63,8 @@ const TEST_ARGS = {
 	LOGGING_ROTATION_PATH: 'lets/send/log/here',
 	LOGGING_STDSTREAMS: true,
 	LOGGING_AUDITLOG: true,
-	OPERATIONSAPI_AUTHENTICATION_OPERATIONTOKENTIMEOUT: '2d',
-	OPERATIONSAPI_AUTHENTICATION_REFRESHTOKENTIMEOUT: '31d',
+	AUTHENTICATION_OPERATIONTOKENTIMEOUT: '2d',
+	AUTHENTICATION_REFRESHTOKENTIMEOUT: '31d',
 	OPERATIONSAPI_FOREGROUND: true,
 	OPERATIONSAPI_NETWORK_CORS: false,
 	OPERATIONSAPI_NETWORK_CORSACCESSLIST: '["test1", "test2"]',
@@ -278,6 +279,13 @@ describe('Test configUtils module', () => {
 
 		it('Test that given args are updated in new config file', () => {
 			const expected_config = {
+				authentication: {
+					authorizeLocal: true,
+					cacheTTL: 30000,
+					enableSessions: true,
+					operationTokenTimeout: '2d',
+					refreshTokenTimeout: '31d',
+				},
 				clustering: {
 					enabled: true,
 					hubServer: {
@@ -311,6 +319,7 @@ describe('Test configUtils module', () => {
 					},
 					logLevel: 'error',
 					nodeName: 'test_node_name',
+					republishMessages: true,
 					tls: {
 						certificate: TEST_CERT,
 						certificateAuthority: null,
@@ -347,6 +356,10 @@ describe('Test configUtils module', () => {
 					enabled: true,
 				},
 				logging: {
+					auditAuthEvents: {
+						logFailed: false,
+						logSuccessful: false,
+					},
 					auditLog: true,
 					file: false,
 					level: 'notify',
@@ -360,11 +373,13 @@ describe('Test configUtils module', () => {
 					root: path.join(DIRNAME, '/testlogging'),
 					stdStreams: true,
 				},
+				mqtt: {
+					port: 1883,
+					securePort: 8883,
+					webSocket: true,
+					requireAuthentication: true,
+				},
 				operationsApi: {
-					authentication: {
-						operationTokenTimeout: '2d',
-						refreshTokenTimeout: '31d',
-					},
 					foreground: true,
 					network: {
 						cors: false,
@@ -383,6 +398,7 @@ describe('Test configUtils module', () => {
 					},
 				},
 				rootPath: path.join(DIRNAME, '/yaml'),
+				serverPlugins: null,
 				storage: {
 					writeAsync: true,
 					overlappingSync: false,
@@ -394,6 +410,11 @@ describe('Test configUtils module', () => {
 				},
 			};
 			const expected_flat_config = {
+				authentication_authorizelocal: true,
+				authentication_cachettl: 30000,
+				authentication_enablesessions: true,
+				authentication_operationtokentimeout: '2d',
+				authentication_refreshtokentimeout: '31d',
 				clustering_enabled: true,
 				clustering_hubserver_cluster_name: 'testHarperDB',
 				clustering_hubserver_cluster_network_port: 9933,
@@ -408,6 +429,7 @@ describe('Test configUtils module', () => {
 				clustering_leafserver_streams_path: null,
 				clustering_loglevel: 'error',
 				clustering_nodename: 'test_node_name',
+				clustering_republishmessages: true,
 				clustering_tls_certificate: TEST_CERT,
 				clustering_tls_certificateauthority: null,
 				clustering_tls_privatekey: TEST_PRIVATE_KEY,
@@ -430,6 +452,8 @@ describe('Test configUtils module', () => {
 				http_threads: 4,
 				http_sessionaffinity: null,
 				localstudio_enabled: true,
+				logging_auditauthevents_logfailed: false,
+				logging_auditauthevents_logsuccessful: false,
 				logging_auditlog: true,
 				logging_file: false,
 				logging_level: 'notify',
@@ -440,8 +464,10 @@ describe('Test configUtils module', () => {
 				logging_rotation_path: 'lets/send/log/here',
 				logging_root: path.join(DIRNAME, '/testlogging'),
 				logging_stdstreams: true,
-				operationsapi_authentication_operationtokentimeout: '2d',
-				operationsapi_authentication_refreshtokentimeout: '31d',
+				mqtt_port: 1883,
+				mqtt_secureport: 8883,
+				mqtt_requireauthentication: true,
+				mqtt_websocket: true,
 				operationsapi_foreground: true,
 				operationsapi_network_cors: false,
 				operationsapi_network_corsaccesslist: ['test1', 'test2'],
@@ -459,6 +485,7 @@ describe('Test configUtils module', () => {
 				storage_noreadahead: false,
 				storage_prefetchwrites: false,
 				storage_path: 'users/unit_test/path',
+				serverplugins: null,
 				operationsapi_tls_certificate: TEST_CERT,
 				operationsapi_tls_certificateauthority: null,
 				operationsapi_tls_privatekey: TEST_PRIVATE_KEY,
@@ -477,6 +504,11 @@ describe('Test configUtils module', () => {
 
 	describe('Test getDefaultConfig function', () => {
 		const expected_flat_default_config_obj = {
+			authentication_authorizelocal: true,
+			authentication_cachettl: 30000,
+			authentication_enablesessions: true,
+			authentication_operationtokentimeout: '1d',
+			authentication_refreshtokentimeout: '30d',
 			clustering_enabled: false,
 			clustering_hubserver_cluster_name: 'harperdb',
 			clustering_hubserver_cluster_network_port: 9932,
@@ -491,6 +523,7 @@ describe('Test configUtils module', () => {
 			clustering_leafserver_streams_path: null,
 			clustering_loglevel: 'error',
 			clustering_nodename: null,
+			clustering_republishmessages: true,
 			clustering_tls_certificate: null,
 			clustering_tls_certificateauthority: null,
 			clustering_tls_privatekey: null,
@@ -513,6 +546,8 @@ describe('Test configUtils module', () => {
 			http_threads: null,
 			http_sessionaffinity: null,
 			localstudio_enabled: false,
+			logging_auditauthevents_logfailed: false,
+			logging_auditauthevents_logsuccessful: false,
 			logging_auditlog: false,
 			logging_file: true,
 			logging_level: 'error',
@@ -523,8 +558,10 @@ describe('Test configUtils module', () => {
 			logging_rotation_maxsize: null,
 			logging_rotation_path: null,
 			logging_stdstreams: false,
-			operationsapi_authentication_operationtokentimeout: '1d',
-			operationsapi_authentication_refreshtokentimeout: '30d',
+			mqtt_port: 1883,
+			mqtt_secureport: 8883,
+			mqtt_requireauthentication: true,
+			mqtt_websocket: true,
 			operationsapi_foreground: false,
 			operationsapi_network_cors: true,
 			operationsapi_network_corsaccesslist: ['*'],
@@ -535,6 +572,7 @@ describe('Test configUtils module', () => {
 			operationsapi_network_timeout: 120000,
 			operationsapi_nodeenv: 'production',
 			rootpath: null,
+			serverplugins: null,
 			storage_writeasync: false,
 			storage_caching: true,
 			storage_compression: false,
@@ -1334,6 +1372,8 @@ describe('Test configUtils module', () => {
 			';Settings for the HarperDB process.': '',
 		};
 		const EXPECTED_CONFIG_OBJ = {
+			authentication_operationtokentimeout: '1d',
+			authentication_refreshtokentimeout: '30d',
 			rootpath: path.join(__dirname, '../../'),
 			operationsapi_network_port: 9925,
 			operationsapi_tls_certificate: path.join(__dirname, '../../keys/certificate.pem'),
@@ -1348,8 +1388,6 @@ describe('Test configUtils module', () => {
 			operationsapi_network_keepalivetimeout: 5000,
 			operationsapi_network_headerstimeout: 60000,
 			logging_auditlog: false,
-			operationsapi_authentication_operationtokentimeout: '1d',
-			operationsapi_authentication_refreshtokentimeout: '30d',
 			customfunctions_enabled: false,
 			customfunctions_network_port: 9926,
 			customfunctions_root: path.join(__dirname, '../../custom_functions'),

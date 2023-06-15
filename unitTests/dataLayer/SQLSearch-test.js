@@ -109,7 +109,7 @@ function sortTestRows(test_results) {
 	});
 }
 
-describe('Test FileSystem Class', function () {
+describe('Test SQL Engine', function () {
 	this.timeout(0);
 
 	before(async function () {

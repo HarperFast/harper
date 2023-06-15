@@ -12,6 +12,7 @@ const UpdateRemoteResponseObject = require('./UpdateRemoteResponseObject');
 const { NodeSubscription } = require('./NodeObject');
 const DeleteObject = require('../../dataLayer/DeleteObject');
 const _delete = require('../../dataLayer/delete');
+const { broadcast } = require('../../server/threads/manageThreads');
 
 const node_name = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 
@@ -59,6 +60,9 @@ async function removeRemoteSource(req) {
 			remote_node,
 		]);
 		await _delete.deleteRecord(delete_qry);
+		broadcast({
+			type: 'nats_update',
+		});
 
 		return new UpdateRemoteResponseObject(
 			nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.SUCCESS,

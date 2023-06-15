@@ -10,6 +10,7 @@ module.exports = {
 	addUser,
 	alterUser,
 	dropUser,
+	getSuperUser,
 	userInfo,
 	listUsers,
 	listUsersExternal,
@@ -41,10 +42,13 @@ const config_utils = require('../config/configUtils');
 const env = require('../utility/environment/environmentManager');
 const license = require('../utility/registration/hdb_license');
 const systemSchema = require('../json/systemSchema');
+const { table } = require('../resources/databases');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdb_errors;
 const { UserEventMsg } = require('../server/threads/itc');
 const _ = require('lodash');
+const { _assignPackageExport } = require('../index');
+_assignPackageExport('user', findAndValidateUser);
 
 const USER_ATTRIBUTE_ALLOWLIST = {
 	username: true,
@@ -53,8 +57,8 @@ const USER_ATTRIBUTE_ALLOWLIST = {
 	password: true,
 };
 const password_hash_cache = new Map();
-const p_search_search_by_value = promisify(search.searchByValue);
-const p_search_search_by_hash = promisify(search.searchByHash);
+const p_search_search_by_value = search.searchByValue;
+const p_search_search_by_hash = search.searchByHash;
 const p_delete_delete = promisify(delete_.delete);
 
 async function addUser(user) {
@@ -550,6 +554,15 @@ async function findAndValidateUser(username, pw, validate_password = true) {
 			);
 	}
 	return user;
+}
+
+async function getSuperUser() {
+	if (!global.hdb_users) {
+		await setUsersToGlobal();
+	}
+	for (let [username, user] of global.hdb_users) {
+		if (user.role.role === 'super_user') return user;
+	}
 }
 
 /**

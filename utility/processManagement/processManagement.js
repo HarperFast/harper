@@ -566,9 +566,6 @@ async function startClusteringProcesses() {
  * @returns {Promise<void>}
  */
 async function startClusteringThreads() {
-	ingestWorker = startWorker(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_INGEST_SERVICE, {
-		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_INGEST_SERVICE,
-	});
 	replyWorker = startWorker(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_REPLY_SERVICE, {
 		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE,
 	});
@@ -595,7 +592,7 @@ async function startClusteringThreads() {
 async function stopClustering() {
 	for (const proc in hdb_terms.CLUSTERING_PROCESSES) {
 		if (proc === hdb_terms.CLUSTERING_PROCESSES.CLUSTERING_INGEST_PROC_DESCRIPTOR) {
-			await ingestWorker.terminate();
+			// TODO: send a broadcast so worker threads that are doing subscribers can stop their subscription
 		} else if (proc === hdb_terms.CLUSTERING_PROCESSES.CLUSTERING_REPLY_SERVICE_DESCRIPTOR) {
 			await replyWorker.terminate();
 		} else {

@@ -106,7 +106,7 @@
 		},
 		{
 			"key": "JOB_STATUS_RETRY_MAX",
-			"value": "10",
+			"value": "30",
 			"type": "default",
 			"enabled": true
 		},

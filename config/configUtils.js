@@ -49,6 +49,7 @@ module.exports = {
 	getClusteringRoutes,
 	initOldConfig,
 	getConfigFromFile,
+	getConfigFilePath,
 };
 
 /**
@@ -72,7 +73,8 @@ function createConfigFile(args) {
 
 		if (config_param !== undefined) {
 			const split_param = config_param.split('_');
-			const value = castConfigValue(config_param, args[arg]);
+			let value = castConfigValue(config_param, args[arg]);
+			if (config_param === 'rootPath' && value?.endsWith('/')) value = value.slice(0, -1);
 			try {
 				config_doc.setIn([...split_param], value);
 			} catch (err) {
@@ -162,7 +164,7 @@ function getDefaultConfig(param) {
  * @returns {undefined|*}
  */
 function getConfigValue(param) {
-	if (hdb_utils.isEmpty(param)) {
+	if (param == null) {
 		logger.error(EMPTY_GET_VALUE);
 		return undefined;
 	}
@@ -178,7 +180,7 @@ function getConfigValue(param) {
 	return flat_config_obj[param_map.toLowerCase()];
 }
 
-function getConfigFilePath(boot_props_file_path) {
+function getConfigFilePath(boot_props_file_path = hdb_utils.getPropsFilePath()) {
 	const cmd_args = minimist(process.argv);
 	if (cmd_args.ROOTPATH) return path.join(cmd_args.ROOTPATH, hdb_terms.HDB_CONFIG_FILE);
 	const hdb_properties = PropertiesReader(boot_props_file_path);
@@ -260,7 +262,7 @@ function checkForUpdatedConfig(config_doc, config_file_path) {
 	const root_path = config_doc.getIn(['rootPath']);
 	let update_file = false;
 	if (!config_doc.hasIn(['storage', 'path'])) {
-		config_doc.setIn(['storage', 'path'], path.join(root_path, hdb_terms.SCHEMA_DIR_NAME));
+		config_doc.setIn(['storage', 'path'], path.join(root_path, 'database'));
 		update_file = true;
 	}
 
@@ -306,7 +308,7 @@ function validateConfig(config_doc) {
 	config_doc.setIn(['logging', 'rotation', 'path'], validation.value.logging.rotation.path);
 	config_doc.setIn(
 		['clustering', 'leafServer', 'streams', 'path'],
-		validation.value.clustering.leafServer.streams.path
+		validation.value.clustering.leafServer.streams?.path
 	);
 }
 
@@ -374,7 +376,8 @@ function updateConfigValue(param, value, parsed_args = undefined, create_backup 
 
 			if (config_param !== undefined) {
 				const split_param = config_param.split('_');
-				const new_value = castConfigValue(config_param, parsed_args[arg]);
+				let new_value = castConfigValue(config_param, parsed_args[arg]);
+				if (config_param === 'rootPath' && new_value?.endsWith('/')) new_value = new_value.slice(0, -1);
 				try {
 					config_doc.setIn([...split_param], new_value);
 				} catch (err) {

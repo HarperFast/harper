@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const env_mgr = require('../utility/environment/environmentManager');
 const CRYPTO_ALGORITHM = 'aes-256-cbc';
 const KEY_BYTE_LENGTH = 32;
 const IV_BYTE_LENGTH = 16;
@@ -48,15 +49,16 @@ function decrypt(text) {
  * Hashes the schema and table names to create a unique alphanumeric hash that will always
  * be the same length and the same value. Caches hash if not already cached.
  * Note - this function is in this file to avoid circular dependencies.
- * @param schema
+ * @param database
  * @param table
  * @returns {string}
  */
-function createNatsTableStreamName(schema, table) {
-	const full_name = `${schema}.${table}`;
+function createNatsTableStreamName(database, table) {
+	// TODO: Real config here
+	const full_name = env_mgr.get('database_streams') ? database : `${database}.${table}`;
 	let hash = hash_cache.get(full_name);
 	if (!hash) {
-		hash = crypto.createHash('md5').update(`${schema}.${table}`).digest('hex');
+		hash = crypto.createHash('md5').update(full_name).digest('hex');
 		hash_cache.set(full_name, hash);
 	}
 

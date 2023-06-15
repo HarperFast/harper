@@ -42,6 +42,23 @@ class HdbError extends Error {
 		}
 	}
 }
+class ClientError extends Error {
+	constructor(message, status_code) {
+		if (message instanceof Error) {
+			message.http_resp_code = status_code || 400;
+			return message;
+		}
+		super(message);
+		this.http_resp_code = status_code || 400;
+	}
+}
+
+class ServerError extends Error {
+	constructor(message, status_code) {
+		super(message);
+		this.http_resp_code = status_code || 500;
+	}
+}
 
 /**
  * This handler method is used to effectively evaluate caught errors and either translates them into a custom HdbError or,
@@ -85,6 +102,8 @@ function isHDBError(e) {
 module.exports = {
 	isHDBError,
 	handleHDBError,
+	ClientError,
+	ServerError,
 	//Including common hdb_errors here so that they can be brought into modules on the same line where the handler method is brought in
 	hdb_errors,
 };

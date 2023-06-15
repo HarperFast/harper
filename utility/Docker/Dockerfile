@@ -1,6 +1,29 @@
 ARG NODE_VERSION
 FROM node:$NODE_VERSION-bullseye-slim
+
 ARG HARPERDB_TARBALL
+ARG HARPERDB_VERSION
+
+# metadata for labels
+ARG BUILD_DATE
+ARG VCS_REF
+ARG VCS_TYPE=git
+
+# for use in labels
+ENV SUMMARY="HarperDB is a turn-key solution for the collection, distribution, and analysis of data."
+ENV DESCRIPTION="HarperDB is a turn-key solution for the collection, distribution, and analysis of data throughout your organization. Projects that have historically taken months (or even years) of consulting, configuration, and custom development can be completed in days or weeks with HarperDB."
+
+# useful metadata
+LABEL name="harperdb/harperdb"
+LABEL vendor="HarperDB"
+LABEL version=${HARPERDB_VERSION}
+LABEL release=${HARPERDB_VERSION}
+LABEL maintainer="support@harperdb.io"
+LABEL summary="${SUMMARY}"
+LABEL description="${DESCRIPTION}"
+LABEL help="https://docs.harperdb.io/"
+LABEL url="https://hub.docker.com/r/harperdb/harperdb"
+LABEL usage="https://hub.docker.com/r/harperdb/harperdb"
 
 #Expose HarperDB ports
 EXPOSE 9925
@@ -8,6 +31,10 @@ EXPOSE 9926
 
 # Install ps
 RUN apt-get update && apt-get install -y procps
+
+# add Licensing files
+RUN mkdir /licenses
+COPY utility/Docker/licenses/* /licenses/.
 
 #Change node user and group to harperdb
 RUN usermod -d /home/harperdb -l harperdb node && \

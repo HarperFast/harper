@@ -9,6 +9,7 @@ const user_schema = require('../../security/user');
 const { validateEvent } = require('../threads/itc');
 const harperBridge = require('../../dataLayer/harperBridge/harperBridge');
 const process = require('process');
+const { resetDatabases } = require('../../resources/databases');
 
 /**
  * This object/functions are passed to the ITC client instance and dynamically added as event handlers.
@@ -49,6 +50,12 @@ async function syncSchemaMetadata(msg) {
 		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME);
 		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME);
 		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME);
+		let databases = resetDatabases();
+		if (msg.table && msg.database)
+			// wait for a write to finish to ensure all writes have been written
+			await databases[msg.database][msg.table].put(Symbol.for('write-verify'), null);
+
+		/*
 		if (global.hdb_schema !== undefined && typeof global.hdb_schema === 'object' && msg.operation !== undefined) {
 			switch (msg.operation) {
 				case 'drop_schema':
@@ -81,7 +88,7 @@ async function syncSchemaMetadata(msg) {
 			}
 		} else {
 			global_schema.setSchemaDataToGlobal(handleErrorCallback);
-		}
+		}*/
 	} catch (e) {
 		hdb_logger.error(e);
 	}
@@ -100,8 +107,13 @@ function handleErrorCallback(err) {
  */
 async function userHandler(event) {
 	try {
-		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.USER_TABLE_NAME);
-		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME);
+		try {
+			harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.USER_TABLE_NAME);
+			harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME);
+		} catch (error) {
+			// this can happen during tests, best to ignore
+			hdb_logger.warn(error);
+		}
 		const validate = validateEvent(event);
 		if (validate) {
 			hdb_logger.error(validate);

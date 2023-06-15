@@ -37,7 +37,6 @@ const schema_describe = require('../dataLayer/schemaDescribe');
 const lmdb_create_txn_environment = require('../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsAuditEnvironment');
 const CreateTableObject = require('../dataLayer/CreateTableObject');
 const hdb_terms = require('../utility/hdbTerms');
-const install_apps = require('../server/customFunctions/installApps');
 let pm2_utils;
 
 // These may change to match unix return codes (i.e. 0, 1)
@@ -63,7 +62,7 @@ async function initialize(called_by_install = false, called_by_main = false) {
 		try {
 			await install();
 		} catch (err) {
-			console.error(INSTALL_ERR);
+			console.error(INSTALL_ERR, err);
 			hdb_logger.error(err);
 			process.exit(1);
 		}
@@ -107,7 +106,7 @@ async function initialize(called_by_install = false, called_by_main = false) {
 	}
 
 	check_jwt_tokens();
-	await checkAuditLogEnvironmentsExist();
+	//await checkAuditLogEnvironmentsExist();
 	writeLicenseFromVars();
 
 	// Check user has required permissions to start HDB.
@@ -187,21 +186,6 @@ async function main(called_by_install = false) {
 			}
 		} else {
 			startHTTPThreads(env.get(hdb_terms.CONFIG_PARAMS.HTTP_THREADS));
-			const SESSION_AFFINITY = env.get(hdb_terms.CONFIG_PARAMS.HTTP_SESSION_AFFINITY);
-			startSocketServer(
-				terms.SERVICES.HDB_CORE,
-				parseInt(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT), 10),
-				SESSION_AFFINITY
-			);
-			if (custom_func_enabled) {
-				if (isMainThread) await install_apps();
-
-				startSocketServer(
-					terms.SERVICES.CUSTOM_FUNCTIONS,
-					parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10),
-					SESSION_AFFINITY
-				);
-			}
 			if (start_clustering) {
 				if (!is_scripted) await pm2_utils.startClusteringProcesses();
 				await pm2_utils.startClusteringThreads();

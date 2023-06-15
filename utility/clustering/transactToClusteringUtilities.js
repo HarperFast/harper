@@ -12,6 +12,7 @@ env.initSync();
 
 module.exports = {
 	postOperationHandler,
+	sendOperationTransaction,
 };
 
 /**
@@ -30,11 +31,11 @@ async function sendOperationTransaction(request_body, hashes_to_send, origin, na
 	const transaction_msg = convertCRUDOperationToTransaction(request_body, hashes_to_send, origin);
 	if (transaction_msg) {
 		harper_logger.trace(
-			`sendOperationTransaction publishing to schema ${request_body.schema} table ${request_body.table} following transaction:`,
+			`sendOperationTransaction publishing to schema ${request_body.schema} following transaction:`,
 			transaction_msg
 		);
 		await nats_utils.publishToStream(
-			`${nats_terms.SUBJECT_PREFIXES.TXN}.${request_body.schema}.${request_body.table}`,
+			`${nats_terms.SUBJECT_PREFIXES.TXN}.${request_body.schema}`,
 			crypto_hash.createNatsTableStreamName(request_body.schema, request_body.table),
 			nats_msg_header,
 			transaction_msg

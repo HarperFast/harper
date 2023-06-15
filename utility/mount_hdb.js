@@ -4,7 +4,7 @@ const { mkdirpSync } = require('fs-extra');
 const path = require('path');
 const terms = require('../utility/hdbTerms');
 const hdb_logger = require('../utility/logging/harper_logger');
-const lmdb_environment_utility = require('../utility/lmdb/environmentUtility');
+const bridge = require('../dataLayer/harperBridge/harperBridge');
 const system_schema = require('../json/systemSchema');
 const init_paths = require('../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
 
@@ -12,7 +12,6 @@ module.exports = mountHdb;
 
 async function mountHdb(hdb_path) {
 	hdb_logger.trace('Mounting HarperDB');
-	let system_schema_path = path.join(hdb_path, terms.SCHEMA_DIR_NAME, terms.SYSTEM_SCHEMA_NAME);
 
 	makeDirectory(hdb_path);
 	makeDirectory(path.join(hdb_path, 'backup'));
@@ -21,8 +20,7 @@ async function mountHdb(hdb_path) {
 	makeDirectory(path.join(hdb_path, 'keys', terms.LICENSE_FILE_NAME));
 	makeDirectory(path.join(hdb_path, 'log'));
 	makeDirectory(path.join(hdb_path, 'doc'));
-	makeDirectory(path.join(hdb_path, 'schema'));
-	makeDirectory(system_schema_path);
+	makeDirectory(path.join(hdb_path, 'database'));
 	makeDirectory(path.join(hdb_path, terms.TRANSACTIONS_DIR_NAME));
 	makeDirectory(path.join(hdb_path, 'clustering', 'leaf'));
 	makeDirectory(path.join(hdb_path, 'custom_functions'));
@@ -36,44 +34,23 @@ async function mountHdb(hdb_path) {
  */
 async function createLMDBTables() {
 	// eslint-disable-next-line global-require
-	let lmdb_create_table;
-	// eslint-disable-next-line global-require
 	const CreateTableObject = require('../dataLayer/CreateTableObject');
 
 	let tables = Object.keys(system_schema);
 
 	for (let x = 0; x < tables.length; x++) {
 		let table_name = tables[x];
-		let table_env;
 		let hash_attribute = system_schema[table_name].hash_attribute;
 		try {
-			const schema_path = init_paths.initSystemSchemaPaths(terms.SYSTEM_SCHEMA_NAME, table_name);
-			lmdb_create_table =
-				lmdb_create_table ?? require('../dataLayer/harperBridge/lmdbBridge/lmdbMethods/lmdbCreateTable');
+			init_paths.initSystemSchemaPaths(terms.SYSTEM_SCHEMA_NAME, table_name);
 			let create_table = new CreateTableObject(terms.SYSTEM_SCHEMA_NAME, table_name, hash_attribute);
-			await lmdb_create_table(undefined, create_table);
-			table_env = await lmdb_environment_utility.openEnvironment(schema_path, table_name);
+			create_table.attributes = system_schema[table_name].attributes;
+			let primary_key_attribute = create_table.attributes.find(({ attribute }) => attribute === hash_attribute);
+			primary_key_attribute.isPrimaryKey = true;
+			await bridge.createTable(table_name, create_table);
 		} catch (e) {
 			hdb_logger.error(`issue creating environment for ${terms.SYSTEM_SCHEMA_NAME}.${table_name}: ${e}`);
 			throw e;
-		}
-
-		//create all dbis
-		let attributes = system_schema[table_name].attributes;
-		for (let y = 0; y < attributes.length; y++) {
-			let attribute_name = attributes[y].attribute;
-			try {
-				if (terms.TIME_STAMP_NAMES.indexOf(attribute_name) >= 0) {
-					await lmdb_environment_utility.createDBI(table_env, attribute_name, true);
-				} else if (attribute_name === hash_attribute) {
-					await lmdb_environment_utility.createDBI(table_env, attribute_name, false, true);
-				} else {
-					await lmdb_environment_utility.createDBI(table_env, attribute_name, true, false);
-				}
-			} catch (e) {
-				hdb_logger.error(`issue creating dbi for ${terms.SYSTEM_SCHEMA_NAME}.${table_name}.${attribute_name}: ${e}`);
-				throw e;
-			}
 		}
 	}
 }

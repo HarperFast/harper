@@ -25,7 +25,7 @@ function getBaseSchemaPath() {
 
 	if (env.getHdbBasePath() !== undefined) {
 		BASE_SCHEMA_PATH =
-			env.get(CONFIG_PARAMS.STORAGE_PATH) || path.join(env.getHdbBasePath(), hdb_terms.SCHEMA_DIR_NAME);
+			env.get(CONFIG_PARAMS.STORAGE_PATH) || path.join(env.getHdbBasePath(), hdb_terms.DATABASES_DIR_NAME);
 		return BASE_SCHEMA_PATH;
 	}
 }
@@ -152,6 +152,7 @@ module.exports = {
 	getBaseSchemaPath,
 	getSystemSchemaPath,
 	getTransactionAuditStorePath,
+	getTransactionAuditStoreBasePath,
 	getSchemaPath,
 	initSystemSchemaPaths,
 	resetPaths

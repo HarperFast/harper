@@ -101,7 +101,7 @@ describe('Test upgrade.js', () => {
 		});
 
 		it('Exception case - should catch exception and exit process if hdb_express is running', async () => {
-			find_ps_stub.withArgs('hdbServer.js').resolves([]);
+			find_ps_stub.withArgs('operationsServer.js').resolves([]);
 			find_ps_stub.withArgs('hdb_express').resolves(['process']);
 			await checkIfRunning_rw();
 			find_ps_stub.reset();

@@ -1,6 +1,6 @@
 'use strict';
 
-const search = require('.//search');
+const search = require('./search');
 const global_schema = require('../utility/globalSchema');
 const logger = require('../utility/logging/harper_logger');
 const write = require('./insert');
@@ -47,13 +47,13 @@ async function update({ statement, hdb_user }) {
 
 	let select_string = `SELECT ${table_info.hash_attribute} FROM ${from.toString()} ${where_string}`;
 	let search_statement = alasql.parse(select_string).statements[0];
-	let result = await transaction.writeTransaction(table_info.schema, table_info.name, async () => {
-		let records = await p_search(search_statement);
-		let new_records = buildUpdateRecords(update_record, records);
-		return updateRecords(table_clone, new_records, hdb_user);
-	});
-	await write.flush({ schema: table_info.schema, table: table_info.name });
-	return result;
+	//let result = await transaction.writeTransaction(table_info.schema, table_info.name, async () => {
+	let records = await p_search(search_statement);
+	let new_records = buildUpdateRecords(update_record, records);
+	return updateRecords(table_clone, new_records, hdb_user);
+	//});
+	//await write.flush({ schema: table_info.schema, table: table_info.name });
+	//return result;
 }
 
 /**
@@ -66,7 +66,7 @@ function createUpdateRecord(columns) {
 
 		columns.forEach((column) => {
 			if ('value' in column.expression) {
-				record[column.column.columnid] = column.expression.value;
+				record[column.column.columnid] = column.expression.value ?? null;
 			} else {
 				record[column.column.columnid] = alasql.compile(
 					`SELECT ${column.expression.toString()} AS [${terms.FUNC_VAL}] FROM ?`

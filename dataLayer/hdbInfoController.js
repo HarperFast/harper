@@ -20,10 +20,10 @@ const version = require('../bin/version');
 const log = require('../utility/logging/harper_logger');
 const hdb_utils = require('../utility/common_utils');
 const global_schema = require('../utility/globalSchema');
+const tableLoader = require('../resources/databases');
 const directiveManager = require('../upgrade/directives/directivesController');
 
-let p_search_search_by_value = util.promisify(search.searchByValue);
-let p_setSchemaDataToGlobal = util.promisify(global_schema.setSchemaDataToGlobal);
+let p_search_search_by_value = search.searchByValue;
 
 const HDB_INFO_SEARCH_ATTRIBUTE = 'info_id';
 
@@ -53,7 +53,7 @@ async function insertHdbInstallInfo(new_version_string) {
 		hdb_terms.SYSTEM_TABLE_HASH_ATTRIBUTES.INFO_TABLE_ATTRIBUTE,
 		[info_table_insert_object]
 	);
-	await p_setSchemaDataToGlobal();
+	global_schema.setSchemaDataToGlobal();
 	return insert.insert(insert_object);
 }
 
@@ -194,7 +194,7 @@ async function getVersionUpdateInfo() {
 			}
 		}
 
-		await p_setSchemaDataToGlobal();
+		global_schema.setSchemaDataToGlobal();
 		checkIfInstallIsSupported(data_version);
 
 		if (upgrade_version.toString() === data_version.toString()) {
@@ -235,7 +235,7 @@ function checkIfInstallIsSupported(data_v_num) {
 		'In order to upgrade to this version, you must do a fresh install. If you need support, ' +
 		`please contact ${hdb_terms.HDB_SUPPORT_ADDRESS}`;
 
-	if (!global.hdb_schema.system.hasOwnProperty('hdb_info')) {
+	if (!('hdb_info' in tableLoader.databases.system)) {
 		console.log(err_msg);
 		throw new Error(err_msg);
 	}

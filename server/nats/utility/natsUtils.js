@@ -50,6 +50,7 @@ const {
 const { PACKAGE_ROOT } = require('../../../utility/hdbTerms');
 
 const pkg_json = require('../../../package.json');
+const {recordAction} = require('../../../resources/analytics');
 
 const jc = JSONCodec();
 const HDB_CLUSTERING_FOLDER = 'clustering';
@@ -307,7 +308,6 @@ async function createLocalStream(stream_name, subjects) {
 	max_msgs = max_msgs === null ? -1 : max_msgs; // -1 is unlimited
 	let max_bytes = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXBYTES);
 	max_bytes = max_bytes === null ? -1 : max_bytes; // -1 is unlimited
-
 	await jsm.streams.add({
 		name: stream_name,
 		storage: StorageType.File,
@@ -400,7 +400,7 @@ async function viewStream(stream_name, start_time = undefined, max = undefined) 
 	try {
 		await jsm.consumers.add(stream_name, consumer_config);
 
-		const sub_config = { timeout: 2000 };
+		const sub_config = { timeout: 20000 };
 		if (max) sub_config.max = max;
 		const sub = await connection.subscribe(consumer_name, sub_config);
 
@@ -514,22 +514,38 @@ async function* viewStreamIterator(stream_name, start_time = undefined, max = un
  * @returns {Promise<void>}
  */
 async function publishToStream(subject_name, stream_name, msg_header, message) {
-	hdb_logger.trace(`publishToStream called with subject: ${subject_name}, stream: ${stream_name}, entries:`, message);
+	hdb_logger.trace(`publishToStream called with subject: ${subject_name}, stream: ${stream_name}, entries:`, message.operation);
 	msg_header = addNatsMsgHeader(message, msg_header);
 
 	const { js } = await getNATSReferences();
 	const nats_server = await getJsmServerName();
 	const subject = `${subject_name}.${nats_server}`;
+	let encoded_message = message instanceof Uint8Array ? message :// already encoded
+		encode(message);
 
 	try {
-		hdb_logger.trace(`publishToStream publishing to subject: ${subject}, data:`, message);
-		await js.publish(subject, encode(message), { headers: msg_header });
+		hdb_logger.trace(`publishToStream publishing to subject: ${subject}`);
+		recordAction(encoded_message.length, 'bytes-sent', subject_name, message.operation, 'replication');
+		await js.publish(subject, encoded_message, { headers: msg_header });
 	} catch (err) {
 		// If the stream doesn't exist it is created and published to
 		if (err.code && err.code.toString() === '503') {
-			hdb_logger.trace(`publishToStream creating stream: ${stream_name}`);
-			await createLocalStream(stream_name, [subject]);
-			await js.publish(subject, encode(message), { headers: msg_header });
+			return exclusiveLock(async () => {
+				// try again once we have the lock
+				try {
+					await js.publish(subject, encoded_message, {headers: msg_header});
+				} catch(error) {
+					if (err.code && err.code.toString() === '503') {
+						hdb_logger.trace(`publishToStream creating stream: ${stream_name}`);
+						let subject_parts = subject.split('.');
+						subject_parts[2] = '*'
+						await createLocalStream(stream_name, [subject] /*[subject_parts.join('.')]*/);
+						await js.publish(subject, encoded_message, { headers: msg_header });
+					} else {
+						throw err;
+					}
+				}
+			});
 		} else {
 			throw err;
 		}
@@ -669,7 +685,6 @@ async function addSourceToWorkStream(node, work_queue_name, subscription) {
 	const { schema, table } = subscription;
 	// Name of remote stream to source from
 	const stream_name = crypto_hash.createNatsTableStreamName(schema, table);
-
 	// Check to see if the source is being added to a local stream. Local streams require a slightly different config.
 	const is_local_stream = server_name === node;
 
@@ -707,7 +722,7 @@ async function addSourceToWorkStream(node, work_queue_name, subscription) {
 	let new_source = {
 		name: stream_name,
 		opt_start_time: start_time,
-		filter_subject: `${nats_terms.SUBJECT_PREFIXES.TXN}.>`,
+		filter_subject: table ? `${nats_terms.SUBJECT_PREFIXES.TXN}.${schema}.${table}.>` : `${nats_terms.SUBJECT_PREFIXES.TXN}.>`,
 	};
 
 	if (!is_local_stream) {
@@ -766,10 +781,10 @@ async function removeSourceFromWorkStream(node, work_queue_name, subscription) {
  * @param {String} subject - the subject the request broadcast upon
  * @param {String|Object} data - the data being sent in the request
  * @param {String} [reply] - the subject name that the receiver will use to reply back - optional (defaults to createInbox())
- * @param {Number} [timeout] - how long to wait for a response - optional (defaults to 2000 ms)
+ * @param {Number} [timeout] - how long to wait for a response - optional (defaults to 20000 ms)
  * @returns {Promise<*>}
  */
-async function request(subject, data, timeout = 2000, reply = createInbox()) {
+async function request(subject, data, timeout = 20000, reply = createInbox()) {
 	if (!hdb_utils.isObject(data)) {
 		throw new Error('data param must be an object');
 	}
@@ -876,10 +891,7 @@ async function updateWorkStream(subscription, node_name) {
 
 	// Nats has trouble concurrently updating a work stream. This code uses transaction locking to ensure that
 	// all updateWorkStream calls run synchronously.
-	await transaction.writeTransaction(
-		hdb_terms.SYSTEM_SCHEMA_NAME,
-		hdb_terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME,
-		async () => {
+	await exclusiveLock(async () => {
 			// The connection between nodes can only be a "pull" relationship. This means we only care about the subscribe param.
 			// If a node is publishing to another node that publishing relationship is setup by have the opposite node subscribe to the node that is publishing.
 			if (subscription.subscribe === true) {
@@ -895,6 +907,11 @@ async function updateWorkStream(subscription, node_name) {
 	);
 }
 
+function exclusiveLock(callback) {
+	return transaction.writeTransaction(
+		hdb_terms.SYSTEM_SCHEMA_NAME,
+		hdb_terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME, callback);
+}
 /**
  * Creates a local stream for a table.
  * @param schema
@@ -977,7 +994,7 @@ async function getStreamInfo(stream_name) {
  * @returns {string}
  */
 function createSubjectName(schema, table, server) {
-	return `${nats_terms.SUBJECT_PREFIXES.TXN}.${schema}.${table}.${server}`;
+	return `${nats_terms.SUBJECT_PREFIXES.TXN}.${schema}${table ? '.' + table : ''}.${server}`;
 }
 
 /**

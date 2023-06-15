@@ -1,8 +1,12 @@
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      - 'utility/Docker/Dockerfile'
+  push:
+    branches:
+      - main
+      - "release_*"
+  #pull_request:
+   # types: [opened, synchronize, reopened]
+   # paths:
+   #   - 'utility/Docker/Dockerfile'
   schedule:
     - cron: '0 13 * * 1-5'
   workflow_dispatch:
@@ -80,7 +84,7 @@ jobs:
         retention-days: 1
   sendSlackMessage:
     runs-on: ubuntu-latest
-    if: ${{ failure() && github.event_name == 'schedule' }}
+    if: ${{ failure() && (github.event_name == 'schedule' || github.event_name == 'push') }}
     needs:
       - runTests
       - dockerBuild

@@ -10,7 +10,7 @@ const { Readable } = require('stream');
 const os = require('os');
 const util = require('util');
 
-const auth = require('../../security/auth');
+const auth = require('../../security/fastifyAuth');
 const p_authorize = util.promisify(auth.authorize);
 const server_utilities = require('./serverUtilities');
 const { Gzip } = require('zlib');
@@ -27,8 +27,8 @@ function handleServerUncaughtException(err) {
 function serverErrorHandler(error, req, resp) {
 	harper_logger[error.logLevel || 'error'](error);
 	if (error.http_resp_code) {
-		if (typeof error.http_resp_msg === 'string') {
-			return resp.code(error.http_resp_code).send({ error: error.http_resp_msg });
+		if (typeof error.http_resp_msg !== 'object') {
+			return resp.code(error.http_resp_code).send({ error: error.http_resp_msg || error.message });
 		}
 		return resp.code(error.http_resp_code).send(error.http_resp_msg);
 	}

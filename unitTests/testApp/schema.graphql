@@ -1,0 +1,38 @@
+type VariedProps @table @endpoint {
+	id: ID @primaryKey
+	name: String @indexed
+}
+
+type SimpleRecord @table {
+	id: ID @primaryKey
+	name: String @indexed
+}
+type FourProp @table {
+	id: ID @primaryKey
+	name: String @indexed
+	age: Int @indexed
+	title: String
+}
+
+type HasTimeStamps @table {
+	id: ID @primaryKey
+	created: Int @creationDate
+	updated: Int @updateDate
+}
+type SomeObject {
+	name: String
+}
+type SubObject @table {
+	id: ID @primaryKey
+	subObject: SomeObject
+	subArray: [SomeObject]
+}
+type SimpleCache @table {
+	id: ID @primaryKey
+}
+
+type Query {
+	VariedProps: VariedProps
+	SimpleRecord: SimpleRecord
+	FourProp: FourProp
+}

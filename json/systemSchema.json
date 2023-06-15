@@ -235,6 +235,22 @@
       }
     ]
   },
+  "hdb_analytics":{
+    "hash_attribute": "id",
+    "name": "hdb_analytics",
+    "schema": "system",
+    "attributes":[
+      {
+        "attribute":"id"
+      },
+      {
+        "attribute":"time"
+      },
+      {
+        "attribute": "metrics"
+      }
+    ]
+  },
   "hdb_temp":{
     "hash_attribute": "id",
     "name": "hdb_temp",
