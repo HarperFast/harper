@@ -100,7 +100,6 @@
     "mqtt-packet": "~8.1.2",
     "msgpackr": "1.9.5",
     "nats": "2.14.0",
-    "msgpackr": "1.9.2",
     "needle": "3.2.0",
     "node-stream-zip": "1.15.0",
     "normalize-path": "^3.0.0",
