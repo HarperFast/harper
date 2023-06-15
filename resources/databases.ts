@@ -483,7 +483,7 @@ export function table({
 				if (
 					changed ||
 					(attribute_descriptor.indexingPID && attribute_descriptor.indexingPID !== process.pid) ||
-					attribute_descriptor.restartNumber < workerData.restartNumber
+					attribute_descriptor.restartNumber < workerData?.restartNumber
 				) {
 					has_changes = true;
 					startTxn();
@@ -491,7 +491,7 @@ export function table({
 					if (
 						changed ||
 						(attribute_descriptor.indexingPID && attribute_descriptor.indexingPID !== process.pid) ||
-						attribute_descriptor.restartNumber < workerData.restartNumber
+						attribute_descriptor.restartNumber < workerData?.restartNumber
 					) {
 						has_changes = true;
 						attribute.lastIndexedKey = attribute_descriptor?.lastIndexedKey || false;

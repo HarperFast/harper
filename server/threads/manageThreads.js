@@ -243,13 +243,24 @@ function broadcastWithAcknowledgement(message) {
 		let waiting_count = 0;
 		for (let port of connected_ports) {
 			try {
+				let request_id = next_id++;
+				harper_logger.trace('send', request_id);
 				const ack_handler = () => {
-					if (--waiting_count === 0) resolve();
-					port.off('exit', ack_handler);
+					awaiting_responses.delete(request_id);
+					harper_logger.trace('ack_handler', waiting_count, request_id);
+					if (--waiting_count === 0) {
+						resolve();
+					}
+					port.off(port.close ? 'close' : 'exit', ack_handler);
+					if (--port.refCount === 0) {
+						port.unref();
+					}
 				};
-				awaiting_responses.set((message.requestId = next_id++), ack_handler);
+				port.ref();
+				port.refCount = (port.refCount || 0) + 1;
+				awaiting_responses.set((message.requestId = request_id), ack_handler);
+				port.on(port.close ? 'close' : 'exit', ack_handler);
 				port.postMessage(message);
-				port.on('exit', ack_handler);
 				waiting_count++;
 			} catch (error) {
 				harper_logger.error(`Unable to send message to worker`, error);
@@ -362,7 +373,6 @@ function addPort(port, keep_ref) {
 			else if (message.type === ACKNOWLEDGEMENT) {
 				let completion = awaiting_responses.get(message.id);
 				if (completion) {
-					awaiting_responses.delete(message.id);
 					completion();
 				}
 			} else {
@@ -377,7 +387,8 @@ function addPort(port, keep_ref) {
 		.on('exit', () => {
 			connected_ports.splice(connected_ports.indexOf(port), 1);
 		});
-	if (!keep_ref) port.unref();
+	if (keep_ref) port.refCount = 100;
+	else port.unref();
 }
 if (isMainThread) {
 	let before_restart, queued_restart;
