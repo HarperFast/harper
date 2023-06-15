@@ -150,7 +150,8 @@ export function resetDatabases() {
 	getDatabases();
 	for (const [path, store] of database_envs) {
 		if (store.needsDeletion) {
-			store.close();
+			console.log('closing store due to no longer be referenced', path, require('worker_threads').threadId);
+			///store.close();
 			database_envs.delete(path);
 		}
 	}
@@ -356,6 +357,7 @@ export async function dropDatabase(database_name) {
 	const root_store = database({ database: database_name });
 	delete databases[database_name];
 	database_envs.delete(root_store.path);
+	console.log('closing store due to dropping', root_store.path);
 	await root_store.close();
 	await fs.remove(root_store.path);
 }
