@@ -267,6 +267,7 @@ export function makeTable(options) {
 				await dbis_db.committed;
 			} else {
 				// legacy table per database
+				console.log('legacy dropTable');
 				await primary_store.close();
 				await fs.remove(data_path);
 				await fs.remove(
@@ -928,19 +929,21 @@ export function makeTable(options) {
 			const publishing_resource = new this(null, this);
 			return publishing_resource.publish(message, options);
 		}
-		static async addAttribute(attribute) {
-			if (!attribute.name) throw new ClientError('Attribute name is required');
-			if (attribute.name.match(/[`/]/))
-				throw new ClientError('Attribute names cannot include backticks or forward slashes');
-
+		static async addAttributes(attributes) {
 			const new_attributes = attributes.slice(0);
-			new_attributes.push(attribute);
+			for (const attribute of attributes) {
+				if (!attribute.name) throw new ClientError('Attribute name is required');
+				if (attribute.name.match(/[`/]/))
+					throw new ClientError('Attribute names cannot include backticks or forward slashes');
+
+				new_attributes.push(attribute);
+			}
 			table({ table: table_name, database: database_name, schemaDefined: schema_defined, attributes: new_attributes });
 			this.Source?.defineSchema?.(this);
 			return TableResource.indexingOperation;
 		}
-		static async removeAttribute(name) {
-			const new_attributes = attributes.filter((attribute) => attribute.name !== name);
+		static async removeAttributes(names: string[]) {
+			const new_attributes = attributes.filter((attribute) => !names.includes(attribute.name));
 			table({ table: table_name, database: database_name, schemaDefined: schema_defined, attributes: new_attributes });
 			return TableResource.indexingOperation;
 		}

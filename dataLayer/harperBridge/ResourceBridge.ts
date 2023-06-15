@@ -86,10 +86,10 @@ export class ResourceBridge extends LMDBBridge {
 		);
 	}
 	async createAttribute(create_attribute_obj) {
-		await getTable(create_attribute_obj).addAttribute({
+		await getTable(create_attribute_obj).addAttributes([{
 			name: create_attribute_obj.attribute,
 			indexed: create_attribute_obj.indexed ?? true,
-		});
+		}]);
 		return `attribute ${create_attribute_obj.schema}.${create_attribute_obj.table}.${create_attribute_obj.attribute} successfully created.`;
 	}
 	async dropAttribute(drop_attribute_obj) {
@@ -158,17 +158,19 @@ export class ResourceBridge extends LMDBBridge {
 			async (txn_table) => {
 				if (!txn_table.schemaDefined) {
 					new_attributes = [];
-					for (const attribute of attributes) {
+					for (const attribute_name of attributes) {
 						const existing_attribute = Table.attributes.find(
-							(existing_attribute) => existing_attribute.name == attribute
+							(existing_attribute) => existing_attribute.name == attribute_name
 						);
 						if (!existing_attribute) {
-							await txn_table.addAttribute({
-								name: attribute,
-								indexed: true,
-							});
-							new_attributes.push(attribute);
+							new_attributes.push(attribute_name);
 						}
+					}
+					if (new_attributes.length > 0) {
+						await txn_table.addAttributes(new_attributes.map((name) => ({
+							name,
+							indexed: true,
+						}));
 					}
 				}
 
