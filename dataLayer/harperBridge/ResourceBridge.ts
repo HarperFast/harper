@@ -86,10 +86,12 @@ export class ResourceBridge extends LMDBBridge {
 		);
 	}
 	async createAttribute(create_attribute_obj) {
-		await getTable(create_attribute_obj).addAttributes([{
-			name: create_attribute_obj.attribute,
-			indexed: create_attribute_obj.indexed ?? true,
-		}]);
+		await getTable(create_attribute_obj).addAttributes([
+			{
+				name: create_attribute_obj.attribute,
+				indexed: create_attribute_obj.indexed ?? true,
+			},
+		]);
 		return `attribute ${create_attribute_obj.schema}.${create_attribute_obj.table}.${create_attribute_obj.attribute} successfully created.`;
 	}
 	async dropAttribute(drop_attribute_obj) {
@@ -167,10 +169,12 @@ export class ResourceBridge extends LMDBBridge {
 						}
 					}
 					if (new_attributes.length > 0) {
-						await txn_table.addAttributes(new_attributes.map((name) => ({
-							name,
-							indexed: true,
-						}));
+						await txn_table.addAttributes(
+							new_attributes.map((name) => ({
+								name,
+								indexed: true,
+							}))
+						);
 					}
 				}
 
