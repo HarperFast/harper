@@ -30,6 +30,19 @@ sleep 30s
 sudo docker exec ClstrTestC1 /bin/bash -c 'cat /home/harperdb/hdb/harperdb-config.yaml| grep nodeName'
 sudo docker exec ClstrTestC1 /bin/bash -c 'npm install -g newman newman-reporter-teamcity newman-reporter-html newman-reporter-htmlextra'
 
+# modify integrationTests folder before copy
+sed -in "s/TEST_C_NODE1_HOST/ClstrTestC1/" integrationTests/clusterTests/clusterTestC/cluster_test_c_env.json
+sed -in "s/TEST_C_NODE2_HOST/ClstrTestC2/" integrationTests/clusterTests/clusterTestC/cluster_test_c_env.json
+sed -in "s/TEST_C_NODE3_HOST/ClstrTestC3/" integrationTests/clusterTests/clusterTestC/cluster_test_c_env.json
+sed -in "s/TEST_C_NODE4_HOST/ClstrTestC4/" integrationTests/clusterTests/clusterTestC/cluster_test_c_env.json
+
+sed -in "s/TEST_C_NODE1_NAME/ClstrTestC1/" integrationTests/clusterTests/clusterTestC/cluster_test_c_env.json
+sed -in "s/TEST_C_NODE2_NAME/ClstrTestC2/" integrationTests/clusterTests/clusterTestC/cluster_test_c_env.json
+sed -in "s/TEST_C_NODE3_NAME/ClstrTestC3/" integrationTests/clusterTests/clusterTestC/cluster_test_c_env.json
+sed -in "s/TEST_C_NODE4_NAME/ClstrTestC4/" integrationTests/clusterTests/clusterTestC/cluster_test_c_env.json
+
+sed -in "s/ubuntu/harperdb/" integrationTests/clusterTests/clusterTestC/cluster_test_c_env.json
+
 # Copy integrationTests folder to first container
 sudo docker exec ClstrTestC1 /bin/bash -c 'mkdir /home/harperdb/harperdb/'
 sudo docker cp integrationTests/ ClstrTestC1:/home/harperdb/harperdb/
@@ -42,18 +55,6 @@ sudo docker cp test/ ClstrTestC1:/home/harperdb/harperdb/
 sudo docker cp test/ ClstrTestC2:/home/harperdb/harperdb/
 sudo docker cp test/ ClstrTestC3:/home/harperdb/harperdb/
 sudo docker cp test/ ClstrTestC4:/home/harperdb/harperdb/
-
-sudo docker exec ClstrTestC1 /bin/bash -c 'sed -in "s/TEST_C_NODE1_HOST/ClstrTestC1/" ~/harperdb/integrationTests/clusterTests/clusterTestC/cluster_test_c_env.json'
-sudo docker exec ClstrTestC1 /bin/bash -c 'sed -in "s/TEST_C_NODE2_HOST/ClstrTestC2/" ~/harperdb/integrationTests/clusterTests/clusterTestC/cluster_test_c_env.json'
-sudo docker exec ClstrTestC1 /bin/bash -c 'sed -in "s/TEST_C_NODE3_HOST/ClstrTestC3/" ~/harperdb/integrationTests/clusterTests/clusterTestC/cluster_test_c_env.json'
-sudo docker exec ClstrTestC1 /bin/bash -c 'sed -in "s/TEST_C_NODE4_HOST/ClstrTestC4/" ~/harperdb/integrationTests/clusterTests/clusterTestC/cluster_test_c_env.json'
-
-sudo docker exec ClstrTestC1 /bin/bash -c 'sed -in "s/TEST_C_NODE1_NAME/ClstrTestC1/" ~/harperdb/integrationTests/clusterTests/clusterTestC/cluster_test_c_env.json'
-sudo docker exec ClstrTestC1 /bin/bash -c 'sed -in "s/TEST_C_NODE2_NAME/ClstrTestC2/" ~/harperdb/integrationTests/clusterTests/clusterTestC/cluster_test_c_env.json'
-sudo docker exec ClstrTestC1 /bin/bash -c 'sed -in "s/TEST_C_NODE3_NAME/ClstrTestC3/" ~/harperdb/integrationTests/clusterTests/clusterTestC/cluster_test_c_env.json'
-sudo docker exec ClstrTestC1 /bin/bash -c 'sed -in "s/TEST_C_NODE4_NAME/ClstrTestC4/" ~/harperdb/integrationTests/clusterTests/clusterTestC/cluster_test_c_env.json'
-
-sudo docker exec ClstrTestC1 /bin/bash -c 'sed -in "s/ubuntu/harperdb/" ~/harperdb/integrationTests/clusterTests/clusterTestC/cluster_test_c_env.json'
 
 # Run cluster tests from first container
 sudo docker exec ClstrTestC1 /bin/bash -c 'cd ~/harperdb/integrationTests/ && newman run clusterTests/clusterTestC/cluster_test_c.json -e clusterTests/clusterTestC/cluster_test_c_env.json --reporters cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html  --delay-request 1000 --insecure --reporter-cli-show-timestamps'
