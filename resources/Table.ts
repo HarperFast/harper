@@ -929,9 +929,9 @@ export function makeTable(options) {
 			const publishing_resource = new this(null, this);
 			return publishing_resource.publish(message, options);
 		}
-		static async addAttributes(attributes) {
+		static async addAttributes(attributes_to_add) {
 			const new_attributes = attributes.slice(0);
-			for (const attribute of attributes) {
+			for (const attribute of attributes_to_add) {
 				if (!attribute.name) throw new ClientError('Attribute name is required');
 				if (attribute.name.match(/[`/]/))
 					throw new ClientError('Attribute names cannot include backticks or forward slashes');
