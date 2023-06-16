@@ -59,7 +59,7 @@
     "@fastify/autoload": "~5.7.1",
     "@fastify/compress": "~6.4.0",
     "@fastify/cors": "~8.2.0",
-    "@fastify/static": "~6.9.0",
+    "@fastify/static": "~6.10.2",
     "@turf/area": "6.5.0",
     "@turf/boolean-contains": "6.5.0",
     "@turf/boolean-disjoint": "6.5.0",
