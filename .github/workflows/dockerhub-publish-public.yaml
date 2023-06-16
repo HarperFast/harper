@@ -1,14 +1,5 @@
 on:
   workflow_dispatch:
-    inputs:
-      dockerFile:
-        required: false
-        type: string
-        default: 'utility/Docker/Dockerfile'
-      dockerImage:
-        required: false
-        type: string
-        default: 'harperdb/harperdb'
 name: DockerHub Publish Public
 jobs:
   build:
@@ -20,6 +11,21 @@ jobs:
     timeout-minutes: 20
     steps:
     - uses: actions/checkout@v3
+    - name: "Get Latest License Files"
+      run: .github/scripts/get-license-files.sh
+    - name: "Get HarperDB/harperdb_open_source_license_generator.git"
+      uses: actions/checkout@v3
+      with:
+        repository: "HarperDB/harperdb_open_source_license_generator.git"
+        path: "harperdb_open_source_license_generator"
+        ref: "master"
+    - uses: actions/setup-node@v3
+    - name: "Generate license file"
+      env:
+        project_path: "."
+        output_file: "utility/Docker/licenses/open-source-licenses-notices.md"
+        template_file: "harperdb_open_source_license_generator/template.txt"
+      run: npm install harperdb_open_source_license_generator/ && node harperdb_open_source_license_generator/index.js
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v2
     - name: "Setup Docker buildx"
@@ -33,11 +39,19 @@ jobs:
       with:
         name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
         path: ./
-    - name: "Build Docker Image and Publish"
+    - name: "Publish harperdb/harperdb to Dockerhub"
       env:
         HARPERDB_VERSION: ${{ needs.build.outputs.harperdbVersion }}
         NODE_VERSION: ${{ needs.build.outputs.nodeVersion }}
-        DOCKERFILE: ${{ inputs.dockerFile }}
-        DOCKER_IMAGE: ${{ inputs.dockerImage }}
+        DOCKERFILE: 'utility/Docker/Dockerfile'
+        DOCKER_IMAGE: 'harperdb/harperdb'
+        PUBLISH: "public"
+      run: ./.github/scripts/docker-publish.sh
+    - name: "Publish harperdb/harperdb-openshift to Dockerhub"
+      env:
+        HARPERDB_VERSION: ${{ needs.build.outputs.harperdbVersion }}
+        NODE_VERSION: ${{ needs.build.outputs.nodeVersion }}
+        DOCKERFILE: 'utility/Docker/Dockerfile-openshift'
+        DOCKER_IMAGE: 'harperdb/harperdb-openshift'
         PUBLISH: "public"
       run: ./.github/scripts/docker-publish.sh
