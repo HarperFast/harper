@@ -166,11 +166,21 @@ export function makeTable(options) {
 										}
 										return Promise.all(promises);
 									} else if (event.operation === 'define_schema') {
-										// ensure table exists
-										table({ table: table_name, database: database_name, attributes: event.attributes });
-										signalling.signalSchemaChange(
-											new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_TABLE, database_name, table_name)
-										);
+										// ensure table has the provided attributes
+										const updated_attributes = this.attributes.slice(0);
+										let has_changes;
+										for (const attribute of event.attributes) {
+											if (!updated_attributes.find((existing) => existing.name === attribute.name)) {
+												updated_attributes.push(attribute);
+												has_changes = true;
+											}
+										}
+										if (has_changes) {
+											table({ table: table_name, database: database_name, attributes: updated_attributes });
+											signalling.signalSchemaChange(
+												new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_TABLE, database_name, table_name)
+											);
+										}
 									} else writeUpdate(event, first_resource, first_resource);
 								});
 								if (event.onCommit) commit.then(event.onCommit);
@@ -905,9 +915,16 @@ export function makeTable(options) {
 									);
 								break;
 							case 'ID':
-								if (typeof value !== 'number' && typeof value !== 'string')
+								if (
+									!(
+										typeof value === 'number' ||
+										typeof value === 'string' ||
+										(value?.length > 0 &&
+											value.every?.((value) => typeof value === 'number' || typeof value === 'string'))
+									)
+								)
 									(validation_errors || (validation_errors = [])).push(
-										`Property ${attribute.name} must be a string or number`
+										`Property ${attribute.name} must be a string, number, or an array (of strings and numbers)`
 									);
 								break;
 							case 'String':
