@@ -95,10 +95,15 @@ export class Resource implements ResourceInterface {
 			txn.doneReading?.();
 		}
 	}
-	static async get(identifier: string | number): Promise<object>;
+	static async get(identifier: string | number | (string | number)[]): Promise<object>;
 	static async get(query: object): Promise<Iterable<object>>;
-	static async get(identifier: string | number | object, query) {
-		if (typeof identifier === 'string' || typeof identifier === 'number') {
+	static async get(identifier: string | number | (string | number)[] | object, query) {
+		if (
+			typeof identifier === 'string' ||
+			typeof identifier === 'number' ||
+			typeof identifier?.[0] === 'string' ||
+			typeof identifier?.[0] === 'number'
+		) {
 			const resource = this.getResource(identifier, this);
 			await resource.loadRecord();
 			return resource.get(query);
