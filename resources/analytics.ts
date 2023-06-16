@@ -96,7 +96,7 @@ function sendAnalytics() {
 	}, ANALYTICS_DELAY).unref();
 }
 const AGGREGATE_PREFIX = 'min-'; // we could have different levels of aggregation, but this denotes hourly aggregation
-async function aggregation(from_period, to_period = 3600000) {
+async function aggregation(from_period, to_period = 60000) {
 	const AnalyticsTable = getAnalyticsTable();
 	let last_for_period;
 	// find the last entry for this period
