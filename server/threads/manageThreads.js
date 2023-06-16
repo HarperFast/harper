@@ -46,8 +46,11 @@ function startWorker(path, options = {}) {
 	// 16 threads: 20% of total memory per thread
 	// 64 threads: 11% of total memory per thread
 	// (and then limit to their license limit, if they have one)
+	let available_memory = process.constrainedMemory?.() || totalmem(); // used constrained memory if it is available
+	// and lower than total memory
+	available_memory = Math.min(available_memory, totalmem());
 	const max_old_memory = Math.min(
-		Math.max(Math.floor(totalmem() / MB / (1 + THREAD_COUNT / 4)), 512),
+		Math.max(Math.floor(available_memory / MB / (1 + THREAD_COUNT / 4)), 512),
 		licensed_memory || Infinity
 	);
 	// Max young memory space (semi-space for scavenger) is 1/128 of max memory (limited to 16-64). For most of our m5

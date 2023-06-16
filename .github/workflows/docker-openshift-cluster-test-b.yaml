@@ -49,6 +49,7 @@ jobs:
     - name: Run Tests
       env:
         CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
+        DOCKER_IMAGE: 'harperdb/harperdb-openshift'
       run: |
         #!/bin/bash
         echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
@@ -59,7 +60,7 @@ jobs:
         mkdir logs-artifact
 
         ssh -i private_key -o ConnectTimeout=10 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
-          "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/docker-cluster-test-b.sh && /home/ubuntu/harperdb/test/ci-tests/docker-cluster-test-b.sh ${{ needs.build.outputs.harperdbVersion }}"
+          "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/docker-cluster-test-b.sh && DOCKER_IMAGE=${DOCKER_IMAGE} /home/ubuntu/harperdb/test/ci-tests/docker-cluster-test-b.sh ${{ needs.build.outputs.harperdbVersion }}"
     - name: 'Download Logs'
       if: always()
       run: |

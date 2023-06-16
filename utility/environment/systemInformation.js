@@ -224,7 +224,7 @@ async function getMetrics() {
 		let table_stats = (schema_stats[schema_name] = {});
 		for (let table_name in schemas[schema_name]) {
 			try {
-				let schema_path = getSchemaPath(schema_path, table_name);
+				let schema_path = getSchemaPath(schema_name, table_name);
 				let env = await openEnvironment(schema_path, table_name);
 				let stats = env.getStats();
 				table_stats[table_name] = {
