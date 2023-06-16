@@ -251,12 +251,29 @@ export function makeTable(options) {
 				},
 				options.startTime
 			);
-			if (options.startTime) {
+			const start_time = options.startTime;
+			const count = options.previousCount;
+			if (start_time) {
+				if (count)
+					throw new ClientError('startTime and previousCount can not be combined for a table level subscription');
 				// start time specified, get the audit history for this time range
-				for (const { key, value } of audit_store.getRange({ start: [options.startTime, Number.MAX_SAFE_INTEGER] })) {
+				for (const { key, value } of audit_store.getRange({ start: [start_time, Number.MAX_SAFE_INTEGER] })) {
 					const [timestamp, audit_table_id, id] = key;
 					if (audit_table_id !== table_id) continue;
 					subscription.send({ id, timestamp, ...value });
+					await new Promise((resolve) => setImmediate(resolve)); // yield for fairness
+				}
+			} else if (count) {
+				const history = [];
+				// we are collecting the history in reverse order to get the right count, then reversing to send
+				for (const { key, value } of audit_store.getRange({ start: 'z', reverse: true, limit: count })) {
+					const [timestamp, audit_table_id, id] = key;
+					if (audit_table_id !== table_id) continue;
+					history.push({ id, timestamp, ...value });
+					await new Promise((resolve) => setImmediate(resolve)); // yield for fairness
+				}
+				for (let i = history.length; i > 0; ) {
+					subscription.send(history[--i]);
 				}
 			}
 
@@ -814,7 +831,7 @@ export function makeTable(options) {
 			}
 			return records;
 		}
-		subscribe(options) {
+		async subscribe(options) {
 			if (!audit_store) throw new Error('Can not subscribe to a table without an audit log');
 			const subscription = addSubscription(
 				this.constructor,
@@ -830,26 +847,32 @@ export function makeTable(options) {
 				options.startTime
 			);
 			const id = this[ID_PROPERTY];
-			if (options.startTime) {
-				const version = this[VERSION_PROPERTY];
-				if (options.startTime < version) {
-					// start time specified, get the audit history for this record
-					const history = [];
-					let next_version = version;
-					do {
-						const audit_entry = audit_store.get([next_version, table_id, id]);
-						if (audit_entry) {
-							history.push({ id, timestamp: next_version, ...audit_entry });
-							next_version = audit_entry.lastVersion;
-						} else break;
-					} while (next_version > options.startTime);
-					for (let i = history.length; i > 0; ) {
-						subscription.send(history[--i]);
-					}
+			let count = options.previousCount;
+			if (count > 1000) count = 1000; // don't allow too many, we have to hold these in memory
+			let start_time = options.startTime;
+			if (count && !start_time) start_time = 0;
+			const version = this[VERSION_PROPERTY];
+			if (start_time < version) {
+				options.noRetain = true; // we are sending the current version from history, so don't double send
+				// start time specified, get the audit history for this record
+				const history = [];
+				let next_version = version;
+				do {
+					const key = [next_version, table_id, id];
+					await audit_store.prefetch([key]); // do it asynchronously for better fairness/concurrency and avoid page faults
+					const audit_entry = audit_store.get(key);
+					if (audit_entry) {
+						history.push({ id, timestamp: next_version, ...audit_entry });
+						next_version = audit_entry.lastVersion;
+					} else break;
+					if (count) count--;
+				} while (next_version >= start_time && count !== 0);
+				for (let i = history.length; i > 0; ) {
+					subscription.send(history[--i]);
 				}
 			}
 			if (options.listener) subscription.on('data', options.listener);
-			// if retain and it exists, send the first value
+			// if retain and it exists, send the current value first
 			if (!options.noRetain && this.doesExist())
 				subscription.send({ id, timestamp: this[VERSION_PROPERTY], value: this });
 			return subscription;
