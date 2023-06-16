@@ -55,6 +55,7 @@ function sendAnalytics() {
 		const metrics = [];
 		const report = {
 			time: Date.now(),
+			period,
 			threadId,
 			metrics,
 		};
@@ -70,7 +71,6 @@ function sendAnalytics() {
 						p95: value[Math.floor(count * 0.95)],
 						p90: value[Math.floor(count * 0.9)],
 						count,
-						period,
 					})
 				);
 			} else {
@@ -95,7 +95,7 @@ function sendAnalytics() {
 		else recordAnalytics({ report });
 	}, ANALYTICS_DELAY).unref();
 }
-const AGGREGATE_PREFIX = 'hour-'; // we could have different levels of aggregation, but this denotes hourly aggregation
+const AGGREGATE_PREFIX = 'min-'; // we could have different levels of aggregation, but this denotes hourly aggregation
 async function aggregation(from_period, to_period = 3600000) {
 	const AnalyticsTable = getAnalyticsTable();
 	let last_for_period;
@@ -120,22 +120,23 @@ async function aggregation(from_period, to_period = 3600000) {
 		} else first_for_period = key;
 		last_time = key;
 		const { metrics } = value;
-		for (const { path, method, type, metric, mean, count } of metrics) {
+		for (const entry of metrics) {
+			let { path, method, type, metric, count, ...measures } = entry;
+			if (!count) count = 1;
 			let key = metric + '-' + path;
 			if (method) key += '-' + method;
 			let action = aggregate_actions.get(key);
 			if (action) {
-				action.mean = (action.mean * action.count + mean * count) / (action.count += count);
+				for (const measure_name in measures) {
+					const value = measures[measure_name];
+					if (typeof value === 'number') {
+						const action_count = action.count || 1;
+						action[measure_name] =
+							(action[measure_name] * action_count + value * count) / (action.count = action_count + count);
+					}
+				}
 			} else {
-				action = {
-					metric,
-					path,
-					method,
-					type,
-					mean,
-					count,
-					period: to_period,
-				};
+				action = Object.assign({ period: to_period }, entry);
 				aggregate_actions.set(key, action);
 			}
 		}
