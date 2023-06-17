@@ -136,8 +136,8 @@ describe('test MQTT connections and commands', () => {
 			}).then(response => {
 				response.json().then(data=> {
 				console.log(data)});
-			}, response => {
-				reject(response.json());
+			}, error => {
+				reject(error);
 			});
 		});
 		client.end();
@@ -379,6 +379,32 @@ describe('test MQTT connections and commands', () => {
 			});
 		});
 		client.end();
+	});
+	it('subscribe with history', async function () {
+		// this first connection is a tear down to remove any previous durable session with this id
+		let client = connect('mqtt://localhost:1883', {
+			clean: true,
+			clientId: 'test-client1'
+		});
+		await new Promise((resolve, reject) => {
+			client.on('connect', resolve);
+			client.on('error', reject);
+		});
+		let messages = [];
+		client.on('message', (topic, payload, packet) => {
+			messages.push(topic, payload.length > 0 ? JSON.parse(payload) : 'deleted');
+		});
+		await new Promise((resolve, reject) => {
+			client.subscribe('FourPropWithHistory/', {
+				qos: 1
+			}, function (err) {
+				if (err) reject(err);
+				else {
+					setTimeout(resolve, 1000);
+				}
+			});
+		});
+		console.log(messages);
 	});
 	after(() => {
 		client.end();

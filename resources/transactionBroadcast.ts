@@ -211,8 +211,7 @@ function notifyFromTransactionData(path, audit_ids, same_thread?) {
 		if (!key_subscriptions) continue;
 		if (key_subscriptions) {
 			for (const subscription of key_subscriptions) {
-				if (subscription.startTime - 2 > txn_time) {
-					// allow for a couple milliseconds of skew
+				if (subscription.startTime >= txn_time) {
 					info('omitting', record_key, subscription.startTime, txn_time);
 					continue;
 				}

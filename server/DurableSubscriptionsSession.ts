@@ -94,15 +94,15 @@ class SubscriptionsSession {
 			this.subscriptions.splice(this.subscriptions.indexOf(existing_subscription), 1);
 		}
 		let subscription;
-		const resource = await resources.call(path, this, async (resource_access) => {
+		const resource = await resources.call(path, this, async (resource_access, resource_path) => {
 			return (subscription = await resource_access.subscribe({
-				listener: (update, id) => {
+				listener: (update) => {
 					let message_id;
 					if (needs_ack) {
 						update.topic = topic;
 						message_id = this.needsAcknowledge(update);
 					}
-					this.listener(search ? path + '/' + id : path, update.value, message_id, subscription_request);
+					this.listener(resource_path + '/' + (update.id ?? ''), update.value, message_id, subscription_request);
 				},
 				search,
 				user: this.user,

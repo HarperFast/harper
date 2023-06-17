@@ -252,7 +252,7 @@ export function makeTable(options) {
 				options.startTime
 			);
 			const start_time = options.startTime;
-			const count = options.previousCount;
+			let count = options.previousCount;
 			if (start_time) {
 				if (count)
 					throw new ClientError('startTime and previousCount can not be combined for a table level subscription');
@@ -261,20 +261,25 @@ export function makeTable(options) {
 					const [timestamp, audit_table_id, id] = key;
 					if (audit_table_id !== table_id) continue;
 					subscription.send({ id, timestamp, ...value });
-					await new Promise((resolve) => setImmediate(resolve)); // yield for fairness
+					// TODO: Would like to do this asynchronously, but would need to catch up on anything published during iteration
+					//await new Promise((resolve) => setImmediate(resolve)); // yield for fairness
+					subscription.startTime = timestamp; // update so don't double send
 				}
 			} else if (count) {
 				const history = [];
 				// we are collecting the history in reverse order to get the right count, then reversing to send
-				for (const { key, value } of audit_store.getRange({ start: 'z', reverse: true, limit: count })) {
+				for (const { key, value } of audit_store.getRange({ start: 'z', reverse: true })) {
 					const [timestamp, audit_table_id, id] = key;
 					if (audit_table_id !== table_id) continue;
 					history.push({ id, timestamp, ...value });
-					await new Promise((resolve) => setImmediate(resolve)); // yield for fairness
+					if (--count <= 0) break;
+					// TODO: Would like to do this asynchronously, but would need to catch up on anything published during iteration
+					//await new Promise((resolve) => setImmediate(resolve)); // yield for fairness
 				}
 				for (let i = history.length; i > 0; ) {
 					subscription.send(history[--i]);
 				}
+				if (history[0]) subscription.startTime = history[0].timestamp;// update so don't double send
 			}
 
 			if (options.listener) subscription.on('data', options.listener);
@@ -859,17 +864,19 @@ export function makeTable(options) {
 				let next_version = version;
 				do {
 					const key = [next_version, table_id, id];
-					await audit_store.prefetch([key]); // do it asynchronously for better fairness/concurrency and avoid page faults
+					//TODO: Would like to do this asynchronously, but we will need to run catch after this to ensure we didn't miss anything
+					//await audit_store.prefetch([key]); // do it asynchronously for better fairness/concurrency and avoid page faults
 					const audit_entry = audit_store.get(key);
 					if (audit_entry) {
 						history.push({ id, timestamp: next_version, ...audit_entry });
 						next_version = audit_entry.lastVersion;
 					} else break;
 					if (count) count--;
-				} while (next_version >= start_time && count !== 0);
+				} while (next_version > start_time && count !== 0);
 				for (let i = history.length; i > 0; ) {
 					subscription.send(history[--i]);
 				}
+				subscription.startTime = version; // make sure we don't re-broadcast the current version that we already sent
 			}
 			if (options.listener) subscription.on('data', options.listener);
 			// if retain and it exists, send the current value first

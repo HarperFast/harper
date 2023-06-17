@@ -51,3 +51,13 @@ export class SimpleCache extends tables.SimpleCache.sourcedFrom(SimpleCacheSourc
 		if (data.invalidate) this.invalidate({});
 	}
 }
+export class FourPropWithHistory extends tables.FourProp {
+	static subscribe(options) {
+		options.previousCount = 10;
+		super.subscribe(options);	
+	}
+	subscribe(options) {
+		options.previousCount = 10;
+		super.subscribe(options);	
+	}
+}
