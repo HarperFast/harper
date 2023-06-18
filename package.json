@@ -78,7 +78,7 @@
     "fast-glob": "3.2.12",
     "fastify": "~4.17.0",
     "fastify-plugin": "~4.5.0",
-    "fs-extra": "11.1.0",
+    "fs-extra": "11.1.1",
     "human-readable-ids": "1.0.4",
     "inquirer": "8.2.5",
     "is-number": "7.0.0",
