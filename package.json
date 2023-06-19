@@ -20,8 +20,8 @@
   "engines": {
     "node": ">=14.0.0",
     "preferred-node": "18.15.0",
-    "go-lang": "1.19.6",
-    "nats-server": "2.9.15"
+    "go-lang": "1.19.10",
+    "nats-server": "2.9.18"
   },
   "exports": {
     ".": "./index.js"
@@ -61,9 +61,9 @@
     "@aws-sdk/abort-controller": "3.347.0",
     "@endo/static-module-record": "^0.7.16",
     "@fastify/autoload": "~5.7.1",
-    "@fastify/compress": "~6.2.0",
-    "@fastify/cors": "~8.2.0",
-    "@fastify/static": "~6.9.0",
+    "@fastify/compress": "~6.4.0",
+    "@fastify/cors": "~8.3.0",
+    "@fastify/static": "~6.10.2",
     "@turf/area": "6.5.0",
     "@turf/boolean-contains": "6.5.0",
     "@turf/boolean-disjoint": "6.5.0",
@@ -74,7 +74,7 @@
     "@turf/helpers": "6.5.0",
     "@turf/length": "6.5.0",
     "alasql": "1.7.4",
-    "cbor-x": "1.5.1",
+    "cbor-x": "1.5.3",
     "chalk": "4.1.2",
     "cli-progress": "3.12.0",
     "clone": "2.1.2",
@@ -82,7 +82,7 @@
     "fast-glob": "3.2.12",
     "fastify": "~4.17.0",
     "fastify-plugin": "~4.5.0",
-    "fs-extra": "11.1.0",
+    "fs-extra": "11.1.1",
     "graphql": "^16.6.0",
     "human-readable-ids": "1.0.4",
     "inquirer": "8.2.5",
@@ -93,14 +93,13 @@
     "jsonwebtoken": "9.0.0",
     "lmdb": "2.8.1",
     "lodash": "4.17.21",
-    "mathjs": "11.6.0",
+    "mathjs": "11.8.0",
     "minimist": "1.2.8",
     "mkcert": "1.5.1",
     "moment": "2.29.4",
     "mqtt-packet": "~8.1.2",
     "msgpackr": "1.9.5",
     "nats": "2.14.0",
-    "msgpackr": "1.9.2",
     "needle": "3.2.0",
     "node-stream-zip": "1.15.0",
     "normalize-path": "^3.0.0",
@@ -126,7 +125,7 @@
     "uuid": "9.0.0",
     "validate.js": "0.13.1",
     "ws": "^8.12.0",
-    "yaml": "2.2.1"
+    "yaml": "2.3.1"
   },
   "devDependencies": {
     "@tsconfig/node16": "^1.0.3",

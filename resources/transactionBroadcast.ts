@@ -149,7 +149,6 @@ function notifyFromTransactionDataSharedBuffers(path, buffers, flag_position) {
 					flag_position += 2;
 				}
 				const key_subscriptions = dbi_subscriptions?.get(key);
-				//console.log(threadId, 'change to', key, 'listeners', handlers?.length, 'flag_position', flag_position);
 				if (key_subscriptions) {
 					for (const subscription of key_subscriptions) {
 						try {
@@ -211,8 +210,7 @@ function notifyFromTransactionData(path, audit_ids, same_thread?) {
 		if (!key_subscriptions) continue;
 		if (key_subscriptions) {
 			for (const subscription of key_subscriptions) {
-				if (subscription.startTime - 2 > txn_time) {
-					// allow for a couple milliseconds of skew
+				if (subscription.startTime >= txn_time) {
 					info('omitting', record_key, subscription.startTime, txn_time);
 					continue;
 				}

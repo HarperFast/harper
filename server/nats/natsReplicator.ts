@@ -17,7 +17,7 @@ let publishing_databases = new Map();
 export function start() {
 	if (env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) assignReplicationSource();
 }
-const MAX_INGEST_THREADS = 1;
+const MAX_INGEST_THREADS = 2;
 let immediateNATSTransaction, subscribed_to_nodes;
 /**
  * Replication functions by acting as a "source" for tables. With replicated tables, the local tables are considered

@@ -18,21 +18,24 @@ export async function handleFile(js, url_path, file_path, resources) {
 	const module_url = pathToFileURL(file_path).toString();
 	// use our configurable secure JS import loader
 	const exports = await secureImport(module_url);
-	for (const name in exports) {
-		// check each of the module exports to see if it implements a Resource handler
-		const exported_class = exports[name];
-		if (
-			typeof exported_class === 'function' &&
-			(exported_class.get || exported_class.put || exported_class.post || exported_class.delete)
-		) {
-			// use the REST handler to expose the Resource as an endpoint
-			/*let handler: any = restHandler(relative_path, exported_class);
-			handler.init = () => {
-				// TODO: Allow for an initialization routine?
-			};*/
-			// treat the default export as the root path
-			resources.set(dirname(url_path) + (name === 'default' ? '' : '/' + name), exported_class);
+	// allow default to be used as root path handler
+	console.log('js', file_path);
+	if (isResource(exports.default)) resources.set(dirname(url_path), exports.default);
+	recurseForResources(exports, dirname(url_path));
+	function recurseForResources(exports, prefix) {
+		for (const name in exports) {
+			// check each of the module exports to see if it implements a Resource handler
+			const exported = exports[name];
+			if (isResource(exported)) {
+				// expose as an endpoint
+				resources.set(prefix + '/' + name, exported);
+			} else if (typeof exported === 'object') {
+				recurseForResources(exported, prefix + '/' + name);
+			}
 		}
+	}
+	function isResource(value) {
+		return typeof value === 'function' && (value.get || value.put || value.post || value.delete);
 	}
 	return handlers;
 }

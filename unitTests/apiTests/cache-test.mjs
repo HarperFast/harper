@@ -22,7 +22,7 @@ describe('test REST calls with cache table', () => {
 	});
 	it('invalidate and get', async () => {
 		let response = await axios.post('http://localhost:9926/SimpleCache/3', {
-			invalidate: true
+			invalidate: true,
 		});
 		assert.equal(response.status, 204);
 		response = await axios('http://localhost:9926/SimpleCache/3');
@@ -33,7 +33,7 @@ describe('test REST calls with cache table', () => {
 	it('change source and get', async () => {
 		let response = await axios('http://localhost:9926/FourProp/3');
 		let data = response.data;
-		data.name = 'name change'
+		data.name = 'name change';
 		response = await axios.put('http://localhost:9926/FourProp/3', data);
 		assert.equal(response.status, 204);
 		response = await axios('http://localhost:9926/SimpleCache/3');

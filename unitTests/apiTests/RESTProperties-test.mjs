@@ -15,18 +15,18 @@ describe('test REST with property updates', () => {
 	});
 
 	it('post with sub-property manipulation', async () => {
-		let response = await axios.put('http://localhost:9926/SubObject/5', {
+		let response = await axios.put('http://localhost:9926/namespace/SubObject/5', {
 			id: 5,
-			subObject: { name: 'a sub-object'},
-			subArray: [{ name: 'a sub-object of an array'}],
+			subObject: { name: 'a sub-object' },
+			subArray: [{ name: 'a sub-object of an array' }],
 		});
 		assert.equal(response.status, 204);
-		response = await axios.post('http://localhost:9926/SubObject/5', {
+		response = await axios.post('http://localhost:9926/namespace/SubObject/5', {
 			subPropertyValue: 'a new value',
 			subArrayItem: 'a new item',
 		});
 		assert.equal(response.status, 200);
-		response = await axios.get('http://localhost:9926/SubObject/5');
+		response = await axios.get('http://localhost:9926/namespace/SubObject/5');
 		assert.equal(response.status, 200);
 		assert.equal(response.data.subObject.subProperty, 'a new value');
 		assert.equal(response.data.subArray[1], 'a new item');
@@ -35,52 +35,55 @@ describe('test REST with property updates', () => {
 		const headers = {
 			//authorization,
 			'content-type': '',
-			accept: 'application/json'
+			'accept': 'application/json',
 		};
-		let response = await axios.put('http://localhost:9926/FourProp/555', JSON.stringify({
-			id: 555,
-			name: 33,
-			age: 'not a number',
-		}), {
-			headers,
-			validateStatus: function (status) {
-				return true;
-			},
-		});
+		let response = await axios.put(
+			'http://localhost:9926/FourProp/555',
+			JSON.stringify({
+				id: 555,
+				name: 33,
+				age: 'not a number',
+			}),
+			{
+				headers,
+				validateStatus: function (status) {
+					return true;
+				},
+			}
+		);
 		assert.equal(response.status, 400);
 		assert(response.data.includes('Property name must be a string'));
 		assert(response.data.includes('Property age must be an integer'));
 	});
-	describe('check operations', function() {
-		it('search_by_value returns all attributes', async function() {
+	describe('check operations', function () {
+		it('search_by_value returns all attributes', async function () {
 			let response = await axios.post('http://localhost:9925', {
 				operation: 'search_by_value',
 				schema: 'data',
-				table: 'four_prop',
+				table: 'FourProp',
 				search_attribute: 'id',
 				search_value: '*',
-				get_attributes: '*',
-			})
+			});
 			assert.equal(response.data[0].title, 'title0');
 		});
-		it('sql returns all attributes of four property object', async function() {
+		it('sql returns all attributes of four property object', async function () {
 			let response = await axios.post('http://localhost:9925', {
 				operation: 'sql',
-				sql: 'SELECT * FROM data.four_prop',
-			})
+				sql: 'SELECT * FROM data.FourProp',
+			});
 			assert.equal(response.data[0].title, 'title0');
 		});
-		it('sql returns all attributes of four property object', async function() {
-			let response = await axios.put('http://localhost:9926/SubObject/6', {
+		it('sql returns all attributes and sub-object of array', async function () {
+			let response = await axios.put('http://localhost:9926/namespace/SubObject/6', {
 				id: 6,
-				subObject: { name: 'another sub-object'},
-				subArray: [{ name: 'another sub-object of an array'}],
+				subObject: { name: 'another sub-object' },
+				subArray: [{ name: 'another sub-object of an array' }],
 			});
 			response = await axios.post('http://localhost:9925', {
 				operation: 'sql',
-				sql: 'SELECT * FROM data.sub_object',
-			})
-			assert.equal(response.data[0].subObject.name, 'another sub-object');
+				sql: 'SELECT * FROM data.SubObject',
+			});
+			assert.equal(response.data[1].subObject.name, 'another sub-object');
 		});
 	});
 });
