@@ -894,7 +894,7 @@ export function makeTable(options) {
 			}
 			this.#writePublish(message);
 		}
-		#writePublish(message) {
+		#writePublish(message, options?) {
 			const txn_time = this[TRANSACTIONS_PROPERTY].timestamp;
 			const id = this[ID_PROPERTY] || null;
 

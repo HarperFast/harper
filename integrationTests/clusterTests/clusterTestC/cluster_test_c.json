@@ -5969,6 +5969,7 @@
 									"pm.test('Confirm records changed node 1', () => {",
 									"    try {",
 									"        const response = pm.response.json();",
+									" console.log('updated entries',response);",
 									"        pm.expect(response.length).to.equal(5);",
 									"        pm.expect(response).to.have.deep.members([",
 									"            {",
