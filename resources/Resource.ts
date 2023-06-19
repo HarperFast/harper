@@ -166,14 +166,14 @@ export class Resource implements ResourceInterface {
 		}
 		if (id == null) id = record[this.primaryKey];
 		if (id == null) return this.create(record, options);
-		const resource = this.getResource(id, this);
+		const resource = await this.getResource(id, this);
 		return resource.transact(async (txn_resource) => {
 			return txn_resource.put(record, options);
 		});
 	}
 	static async create(record, options?): void {
 		const id = this.getNewId(); //uuid.v4();
-		const resource = this.getResource(id, this);
+		const resource = await this.getResource(id, this);
 		return resource.transact(async (txn_resource) => {
 			await txn_resource.put(record, options);
 			return id;
@@ -187,7 +187,7 @@ export class Resource implements ResourceInterface {
 
 	static async delete(identifier: string | number | object) {
 		if (typeof identifier === 'string' || typeof identifier === 'number') {
-			const resource = this.getResource(identifier, this);
+			const resource = await this.getResource(identifier, this);
 			return resource.transact(async (txn_resource) => {
 				return txn_resource.delete();
 			});

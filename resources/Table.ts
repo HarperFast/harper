@@ -889,7 +889,7 @@ export function makeTable(options) {
 		 */
 		async publish(message, options) {
 			if (!this[SOURCE_PROPERTY] && this.constructor.Source?.prototype.publish) {
-				this[SOURCE_PROPERTY] = this.constructor.Source.getResource(this[ID_PROPERTY], this);
+				this[SOURCE_PROPERTY] = await this.constructor.Source.getResource(this[ID_PROPERTY], this);
 				await this[SOURCE_PROPERTY].publish(message, { target: this });
 			}
 			this.#writePublish(message);
