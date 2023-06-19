@@ -113,7 +113,8 @@ export function makeTable(options) {
 					const value = event.value;
 					if (event.table && !resource) {
 						const Table = databases[database_name][event.table];
-						const id = event.id || value[Table.primaryKey];
+						const id = event.id === undefined ? value[Table.primaryKey] : event.id;
+						if (id === undefined) throw new Error('Secondary resource found without an id ' + JSON.stringify(event));
 						resource = await first_resource.use(Table).getResource(id, first_resource, null, true);
 					}
 					switch (event.operation) {
@@ -149,7 +150,7 @@ export function makeTable(options) {
 								}
 								const id = first_write.id !== undefined ? first_write.id : first_write.value?.[primary_key];
 								const first_resource = await this.getResource(
-									id,
+									id ?? null,
 									{
 										[CONTEXT_PROPERTY]: {
 											user: {
@@ -202,8 +203,10 @@ export function makeTable(options) {
 		}
 		static getResource(id, resource_info, path, allow_invalidated): Promise<TableResource> {
 			const resource: TableResource = super.getResource(id, resource_info, path) as any;
-			const completion = resource.loadRecord(allow_invalidated);
-			if (completion?.then) return completion.then(() => resource);
+			if (id != null) {
+				const completion = resource.loadRecord(allow_invalidated);
+				if (completion?.then) return completion.then(() => resource);
+			}
 			return resource;
 		}
 		/**

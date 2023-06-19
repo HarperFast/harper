@@ -7,7 +7,6 @@ describe('Update Schema', () => {
 	let workers, server;
 	const { handleFile } = start({ ensureTable: table });
 	before(async function () {
-		this.timeout(15000);
 		let path = getMockLMDBPath();
 		handleFile(`
 		type SchemaChanges @table {

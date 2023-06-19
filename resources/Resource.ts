@@ -171,17 +171,16 @@ export class Resource implements ResourceInterface {
 			return txn_resource.put(record, options);
 		});
 	}
-	static async create(record, options?): void {
+	static create(record, options?): void {
 		const id = this.getNewId(); //uuid.v4();
-		const resource = await this.getResource(id, this);
+		const resource = new this(id, this);
 		return resource.transact(async (txn_resource) => {
 			await txn_resource.put(record, options);
 			return id;
 		});
 	}
 	post(new_record) {
-		if (this[ID_PROPERTY] == null)
-			return this.constructor.create(new_record);
+		if (this[ID_PROPERTY] == null) return this.constructor.create(new_record);
 		throw new Error('No post method defined for resource');
 	}
 
@@ -206,7 +205,7 @@ export class Resource implements ResourceInterface {
 	}
 
 	static search(query: object): AsyncIterable<object> {
-		return (new this(null)).search(query);
+		return new this(null).search(query);
 	}
 	search(query: object): AsyncIterable<object> {
 		throw new ClientError('search is not implemented');
@@ -218,7 +217,11 @@ export class Resource implements ResourceInterface {
 	static coerceId(id: string): number | string {
 		return id;
 	}
-	static getResource(id: number | string | (number | string | null)[] | null, resource_info: object, path): Resource | Promise<Resource> {
+	static getResource(
+		id: number | string | (number | string | null)[] | null,
+		resource_info: object,
+		path
+	): Resource | Promise<Resource> {
 		let resource;
 		if (!path) {
 			path = id?.toString() ?? '';
@@ -232,8 +235,7 @@ export class Resource implements ResourceInterface {
 			} else resource_cache = this[RESOURCE_CACHE] = new Map();
 			resource_cache.set(path, (resource = new this(id, resource_info)));
 		} else resource = new this(id, resource_info);
-		if (id == null || id.constructor === Array && id[id.length - 1] == null)
-			resource[IS_COLLECTION] = true;
+		if (id == null || (id.constructor === Array && id[id.length - 1] == null)) resource[IS_COLLECTION] = true;
 		return resource;
 	}
 
@@ -505,5 +507,4 @@ function executeTransaction(txn_resource: Resource, callback: (resource: Resourc
 		txn_resource.abort();
 		throw error;
 	}
-
 }
