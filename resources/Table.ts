@@ -147,25 +147,28 @@ export function makeTable(options) {
 									continue;
 								}
 								const id = first_write.id !== undefined ? first_write.id : first_write.value?.[primary_key];
-								const first_resource = new this(id, {
-									[CONTEXT_PROPERTY]: {
-										user: {
-											username: event.user,
+								const first_resource = await this.getResource(
+									id,
+									{
+										[CONTEXT_PROPERTY]: {
+											user: {
+												username: event.user,
+											},
 										},
 									},
-								});
-								const commit = first_resource.transact(async (first_resource) => {
+									null,
+									true
+								);
+								const commit = first_resource.transact((first_resource) => {
 									first_resource[TRANSACTIONS_PROPERTY].timestamp = event.timestamp;
 									if (event.operation === 'transaction') {
 										const promises = [];
 										let resource = first_resource;
 										for (const write of event.writes) {
-											const promise = writeUpdate(write, first_resource, resource);
-											await promise;
-											//promises.push();
+											promises.push(writeUpdate(write, first_resource, resource));
 											resource = null;
 										}
-										//return Promise.all(promises);
+										return Promise.all(promises);
 									} else if (event.operation === 'define_schema') {
 										// ensure table has the provided attributes
 										const updated_attributes = this.attributes.slice(0);
@@ -576,6 +579,12 @@ export function makeTable(options) {
 							}
 						}
 					}
+					harper_logger.trace(
+						'update version check',
+						this[VERSION_PROPERTY],
+						txn_time,
+						this[VERSION_PROPERTY] > txn_time
+					);
 
 					if (this[VERSION_PROPERTY] > txn_time) {
 						// This is not an error condition in our world of last-record-wins
@@ -626,6 +635,12 @@ export function makeTable(options) {
 						existing_record = existing_entry?.value;
 						this.updateModificationTime(existing_entry?.version);
 					}
+					harper_logger.trace(
+						'delete version check',
+						this[VERSION_PROPERTY],
+						txn_time,
+						this[VERSION_PROPERTY] > txn_time
+					);
 					if (this[VERSION_PROPERTY] > txn_time)
 						// a newer record exists locally
 						return;
