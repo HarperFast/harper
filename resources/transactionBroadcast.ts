@@ -149,7 +149,6 @@ function notifyFromTransactionDataSharedBuffers(path, buffers, flag_position) {
 					flag_position += 2;
 				}
 				const key_subscriptions = dbi_subscriptions?.get(key);
-				//console.log(threadId, 'change to', key, 'listeners', handlers?.length, 'flag_position', flag_position);
 				if (key_subscriptions) {
 					for (const subscription of key_subscriptions) {
 						try {

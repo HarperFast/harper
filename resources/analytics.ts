@@ -154,8 +154,8 @@ const rest = () => new Promise(setImmediate);
 async function cleanup(expiration, period) {
 	const AnalyticsTable = getAnalyticsTable();
 	const end = Date.now() - expiration;
-	for (const key of AnalyticsTable.primaryStore.getKeys({ start: false, end })) {
-		AnalyticsTable.delete(key);
+	for (const { key, value } of AnalyticsTable.primaryStore.getKeys({ start: false, end })) {
+		if (value) AnalyticsTable.delete(key);
 	}
 }
 
@@ -215,7 +215,6 @@ function recordAnalytics(message, worker?) {
 	report.id = getNextMonotonicTime();
 	getAnalyticsTable().put(report);
 	last_append = logAnalytics(report);
-	//console.log(message);
 }
 let last_append;
 let analytics_log;

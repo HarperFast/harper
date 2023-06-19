@@ -154,16 +154,18 @@ export function makeTable(options) {
 										},
 									},
 								});
-								const commit = first_resource.transact((first_resource) => {
+								const commit = first_resource.transact(async (first_resource) => {
 									first_resource[TRANSACTIONS_PROPERTY].timestamp = event.timestamp;
 									if (event.operation === 'transaction') {
 										const promises = [];
 										let resource = first_resource;
 										for (const write of event.writes) {
-											promises.push(writeUpdate(write, first_resource, resource));
+											const promise = writeUpdate(write, first_resource, resource);
+											await promise;
+											//promises.push();
 											resource = null;
 										}
-										return Promise.all(promises);
+										//return Promise.all(promises);
 									} else if (event.operation === 'define_schema') {
 										// ensure table has the provided attributes
 										const updated_attributes = this.attributes.slice(0);
@@ -286,7 +288,6 @@ export function makeTable(options) {
 			if (this.hasOwnProperty(RECORD_PROPERTY)) return; // already loaded, don't reload, current version may have modifications
 			const env_txn = this[DB_TXN_PROPERTY];
 			const id = this[ID_PROPERTY];
-			console.log(id);
 			let entry = primary_store.getEntry(this[ID_PROPERTY], { transaction: env_txn?.getReadTxn() });
 			let record;
 			if (entry) {
@@ -605,7 +606,7 @@ export function makeTable(options) {
 		async delete(options): Promise<boolean> {
 			if (!this[RECORD_PROPERTY]) return false;
 			if (this.constructor.Source?.prototype.delete) {
-				const source = (this[SOURCE_PROPERTY] = this.constructor.Source.getResource(this[ID_PROPERTY], this));
+				const source = (this[SOURCE_PROPERTY] = await this.constructor.Source.getResource(this[ID_PROPERTY], this));
 				await source.delete(options);
 			}
 			return this.#writeDelete();

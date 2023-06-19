@@ -140,7 +140,7 @@ class SubscriptionsSession {
 		message.data = data;
 		message.user = this.user;
 		let resource_found;
-		const publish_result = resources.call(topic, message, async (resource_access) => {
+		const publish_result = await resources.call(topic, message, async (resource_access) => {
 			resource_found = true;
 			return resource_access.publish(data);
 		});
