@@ -28,6 +28,7 @@ import * as signalling from '../utility/signalling';
 import { SchemaEventMsg } from '../server/threads/itc';
 import { databases, table } from './databases';
 import { idsForCondition, filterByType } from './search';
+import * as harper_logger from '../utility/logging/harper_logger';
 
 let server_utilities;
 const RANGE_ESTIMATE = 100000000;
