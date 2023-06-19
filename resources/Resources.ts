@@ -64,17 +64,28 @@ export class Resources extends Map<string, typeof Resource> {
 		if (found_entry) found_entry.remainingPath = '';
 		return found_entry;
 	}
-
+	pathToId(path, Resource) {
+		if (path.indexOf('/') === -1) {
+			return Resource.coerceId(decodeURIComponent(path));
+		}
+		const ids = path.split('/');
+		for (let i = 0; i < ids.length; i++) {
+			ids[i] = Resource.coerceId(decodeURIComponent(ids[i]));
+		}
+		return ids;
+	}
 	getResource(path: string, resource_info) {
 		const entry = this.getMatch(path);
 		if (entry) {
-			return entry.remainingPath ? entry.Resource.getResource(entry.remainingPath, resource_info) : entry.Resource;
+			path = entry.remainingPath;
+			return entry.Resource.getResource(this.pathToId(path, entry.Resource), resource_info, path);
 		}
 	}
 	async call(path: string, context, callback: Function) {
 		const entry = this.getMatch(path);
 		if (entry) {
-			const resource = entry.remainingPath ? entry.Resource.getResource(entry.remainingPath, context) : entry.Resource;
+			path = entry.remainingPath;
+			const resource = await entry.Resource.getResource(this.pathToId(path, entry.Resource), context, path);
 			return resource?.accessInTransaction(context, (resource_access) =>
 				callback(resource_access, entry.path, entry.remainingPath)
 			);

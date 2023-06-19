@@ -54,7 +54,6 @@ export function start({ ensureTable }) {
 							const attribute = {
 								name: field.name.value,
 								type,
-								is_number: type === 'Int' || type === 'Float',
 							};
 							attributes.push(attribute);
 							for (const directive of field.directives) {

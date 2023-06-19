@@ -46,8 +46,7 @@ export async function getSession({
 }) {
 	let session;
 	if (session_id && !non_durable) {
-		const session_resource = DurableSession.getResource(session_id);
-		await session_resource.loadRecord();
+		const session_resource = await DurableSession.getResource(session_id);
 		session = new DurableSubscriptionsSession(session_id, user, session_resource);
 		if (session_resource.doesExist()) session.sessionWasPresent = true;
 	} else {
@@ -141,8 +140,6 @@ class SubscriptionsSession {
 		message.data = data;
 		message.user = this.user;
 		let resource_found;
-		const levels = topic.split('/').length;
-		if (levels > 2) throw new Error('Only two level topics (of the form "table/id") are supported');
 		const publish_result = resources.call(topic, message, async (resource_access) => {
 			resource_found = true;
 			return resource_access.publish(data);
