@@ -139,7 +139,7 @@ async function messageProcessor(msg) {
 			operation,
 			database_name,
 			table_name,
-			(records ? 'records: ' + records.length : '') + (ids ? 'ids:' + ids.length : ''),
+			(records ? 'records: ' + records.map((record) => record.id) : '') + (ids ? 'ids: ' + ids : ''),
 			'with' + ' sequence:',
 			js_msg.seq
 		);
