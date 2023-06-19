@@ -18,8 +18,8 @@ module.exports = {
 	setCustomFunctionValidator,
 	addCustomFunctionProjectValidator,
 	dropCustomFunctionProjectValidator,
-	packageCustomFunctionProjectValidator,
-	deployCustomFunctionProjectValidator,
+	packageComponentValidator,
+	deployComponentValidator,
 };
 
 /**
@@ -161,11 +161,10 @@ function dropCustomFunctionProjectValidator(req) {
  * @param req
  * @returns {*}
  */
-function packageCustomFunctionProjectValidator(req) {
+function packageComponentValidator(req) {
 	const package_proj_schema = Joi.object({
 		project: Joi.string()
 			.pattern(PROJECT_FILE_NAME_REGEX)
-			.custom(checkProjectExists.bind(null, true))
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 		skip_node_modules: Joi.boolean(),
@@ -175,11 +174,11 @@ function packageCustomFunctionProjectValidator(req) {
 }
 
 /**
- * Validate deployCustomFunctionProject requests.
+ * Validate deployComponent requests.
  * @param req
  * @returns {*}
  */
-function deployCustomFunctionProjectValidator(req) {
+function deployComponentValidator(req) {
 	const deploy_proj_schema = Joi.object({
 		project: Joi.string()
 			.pattern(PROJECT_FILE_NAME_REGEX)
@@ -187,7 +186,7 @@ function deployCustomFunctionProjectValidator(req) {
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 		payload: Joi.string().optional().messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PACKAGE }),
 		package: Joi.string().optional(),
-		bypass_apps: Joi.boolean().optional(),
+		bypass_config: Joi.boolean().optional(),
 	});
 
 	return validator.validateBySchema(req, deploy_proj_schema);
