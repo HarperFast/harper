@@ -15,7 +15,7 @@ const sandbox = sinon.createSandbox();
 const harper_logger = require('../../../utility/logging/harper_logger');
 const user_schema = require('../../../security/user');
 const global_schema = require('../../../utility/globalSchema');
-const operations = rewire('../../../apps/operations');
+const operations = rewire('../../../components/operations');
 const env = require('../../../utility/environment/environmentManager');
 
 const { CONFIG_PARAMS } = require('../../../utility/hdbTerms');

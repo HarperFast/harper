@@ -60790,7 +60790,7 @@
 									"",
 									"pm.test(\"Custom function deploy success message is returned\", function () {",
 									"    const json_data = pm.response.json();",
-									"    pm.expect(json_data.message).to.equal(\"Successfully deployed project: test-deploy\");",
+									"    pm.expect(json_data.message).to.equal(\"Successfully deployed: test-deploy\");",
 									"});",
 									"",
 									"// Deploy will restart, wait for that to complete.",
