@@ -562,10 +562,16 @@ export function makeTable(options) {
 								else record[TableResource.createdTimeProperty] = txn_time;
 							}
 							if (this.constructor.Source?.prototype.put) {
-								const source = (this[SOURCE_PROPERTY] = this.constructor.Source.getResource(this[ID_PROPERTY], this));
-								completion = source.loadRecord();
-								if (completion?.then) completion = completion.then(() => source.put(record, options));
-								else completion = source.put(record, options);
+								const source = this.constructor.Source.getResource(this[ID_PROPERTY], this);
+								if (source?.then)
+									completion = source.then((source) => {
+										this[SOURCE_PROPERTY] = source;
+										return source.put(record, options);
+									});
+								else {
+									this[SOURCE_PROPERTY] = source;
+									completion = source.put(record, options);
+								}
 							}
 						}
 					}
