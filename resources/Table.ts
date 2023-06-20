@@ -617,10 +617,10 @@ export function makeTable(options) {
 
 		async delete(options): Promise<boolean> {
 			if (!this[RECORD_PROPERTY]) return false;
-			if (this.constructor.Source?.prototype.delete) {
+			/*if (this.constructor.Source?.prototype.delete) {
 				const source = (this[SOURCE_PROPERTY] = await this.constructor.Source.getResource(this[ID_PROPERTY], this));
 				await source.delete(options);
-			}
+			}*/
 			return this.#writeDelete();
 		}
 		#writeDelete(options) {
@@ -641,11 +641,12 @@ export function makeTable(options) {
 						existing_record = existing_entry?.value;
 						this.updateModificationTime(existing_entry?.version);
 					}
-					/*if (!delete_prepared) {
+					if (!delete_prepared) {
 						delete_prepared = true;
 						if (!options?.isNotification) {
 							if (this.constructor.Source?.prototype.delete) {
 								const source = this.constructor.Source.getResource(id, this);
+								harper_logger.trace(`Sending delete ${id} to source, is promise ${!!source?.then}`);
 								if (source?.then)
 									completion = source.then((source) => {
 										this[SOURCE_PROPERTY] = source;
@@ -657,7 +658,7 @@ export function makeTable(options) {
 								}
 							}
 						}
-					}*/
+					}
 					if (this[VERSION_PROPERTY] > txn_time)
 						// a newer record exists locally
 						return;
