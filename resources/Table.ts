@@ -89,9 +89,8 @@ export function makeTable(options) {
 		if (attribute.assignUpdatedTime || attribute.name === '__updatedtime__') updated_time_property = attribute.name;
 		if (attribute.isPrimaryKey) primary_key_attribute = attribute;
 	}
-	const TableName = CamelCase(table_name);
 	class TableResource extends Resource {
-		static name = TableName; // just for display/debugging purposes
+		static name = table_name; // for display/debugging purposes
 		static primaryStore = primary_store;
 		static auditStore = audit_store;
 		static primaryKey = primary_key;
@@ -297,7 +296,6 @@ export function makeTable(options) {
 			const id = this[ID_PROPERTY];
 			let entry = primary_store.getEntry(this[ID_PROPERTY], { transaction: env_txn?.getReadTxn() });
 			let record;
-			console.log('entry is', entry);
 			if (entry) {
 				if (entry.version > this[LAST_MODIFICATION_PROPERTY]) this.updateModificationTime(entry.version);
 				this[VERSION_PROPERTY] = entry.version;
@@ -308,7 +306,6 @@ export function makeTable(options) {
 				const get = this.constructor.Source?.prototype.get;
 				if (get && !get.doesNotLoad)
 					return this.getFromSource(record, this[VERSION_PROPERTY]).then((record) => {
-						console.log('got from source', record);
 						copyRecord(record, this);
 					});
 			}
@@ -492,7 +489,6 @@ export function makeTable(options) {
 			primary_store.put(this[ID_PROPERTY], invalidated_record, existing_version, existing_version);
 			const source = await this.constructor.Source.getResource(this[ID_PROPERTY], this);
 			const updated_record = await source.get();
-			console.log('get from source', {updated_record});
 			const version = existing_version || source[LAST_MODIFICATION_PROPERTY] || this[TRANSACTIONS_PROPERTY].timestamp;
 			if (updated_record) {
 				updated_record[primary_key] = this[ID_PROPERTY];
@@ -1049,6 +1045,7 @@ export function makeTable(options) {
 	const prototype = TableResource.prototype;
 	prototype[DB_TXN_PROPERTY] = immediateTransaction;
 	prototype[INCREMENTAL_UPDATE] = true; // default behavior
+	if (expiration_ms) TableResource.setTTLExpiration(expiration_ms);
 	return TableResource;
 	function assignDBTxn(resource) {
 		let db_txn = resource[TRANSACTIONS_PROPERTY].find((txn) => txn.dbPath === database_path);
@@ -1158,27 +1155,6 @@ function isEqualArray(a, b) {
 		} else if (valueA !== valueB) return false;
 	}
 	return true;
-}
-export function snake_case(camelCase: string) {
-	return (
-		camelCase[0].toLowerCase() +
-		camelCase
-			.slice(1)
-			.replace(/[a-z][A-Z][a-z]/g, (letters) => letters[0] + '_' + letters[1].toLowerCase() + letters.slice(2))
-	);
-}
-
-export function CamelCase(snake_case) {
-	return snake_case
-		.split('_')
-		.map((part) => part[0].toUpperCase() + part.slice(1))
-		.join('');
-}
-export function lowerCamelCase(snake_case) {
-	return snake_case
-		.split('_')
-		.map((part, i) => (i === 0 ? part : part[0].toUpperCase() + part.slice(1)))
-		.join('');
 }
 export function setServerUtilities(utilities) {
 	server_utilities = utilities;
