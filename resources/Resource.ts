@@ -210,6 +210,9 @@ export class Resource implements ResourceInterface {
 	search(query: object): AsyncIterable<object> {
 		throw new ClientError('search is not implemented');
 	}
+	static subscribe(options?: {}): AsyncIterable<{ id: any; operation: string; value: object }> {
+		return new this(null).subscribe(options);
+	}
 
 	static isCollection(resource) {
 		return resource?.[IS_COLLECTION];
@@ -244,8 +247,8 @@ export class Resource implements ResourceInterface {
 	 * @param query
 	 * @param options
 	 */
-	subscribe(query: any, options?: {}): AsyncIterable<{ id: any; operation: string; value: object }>;
-	static subscribe(query: any, options?: {}): AsyncIterable<{ id: any; operation: string; value: object }>;
+	subscribe(options?: {}): AsyncIterable<{ id: any; operation: string; value: object }>;
+	
 	connect(query?: {}): AsyncIterable<any> {
 		// convert subscription to an (async) iterator
 		const iterable = new IterableEventQueue();

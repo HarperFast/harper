@@ -297,6 +297,7 @@ export function makeTable(options) {
 			const id = this[ID_PROPERTY];
 			let entry = primary_store.getEntry(this[ID_PROPERTY], { transaction: env_txn?.getReadTxn() });
 			let record;
+			console.log('entry is', entry);
 			if (entry) {
 				if (entry.version > this[LAST_MODIFICATION_PROPERTY]) this.updateModificationTime(entry.version);
 				this[VERSION_PROPERTY] = entry.version;
@@ -307,6 +308,7 @@ export function makeTable(options) {
 				const get = this.constructor.Source?.prototype.get;
 				if (get && !get.doesNotLoad)
 					return this.getFromSource(record, this[VERSION_PROPERTY]).then((record) => {
+						console.log('got from source', record);
 						copyRecord(record, this);
 					});
 			}
@@ -490,6 +492,7 @@ export function makeTable(options) {
 			primary_store.put(this[ID_PROPERTY], invalidated_record, existing_version, existing_version);
 			const source = await this.constructor.Source.getResource(this[ID_PROPERTY], this);
 			const updated_record = await source.get();
+			console.log('get from source', {updated_record});
 			const version = existing_version || source[LAST_MODIFICATION_PROPERTY] || this[TRANSACTIONS_PROPERTY].timestamp;
 			if (updated_record) {
 				updated_record[primary_key] = this[ID_PROPERTY];
@@ -618,33 +621,43 @@ export function makeTable(options) {
 
 		async delete(options): Promise<boolean> {
 			if (!this[RECORD_PROPERTY]) return false;
-			if (this.constructor.Source?.prototype.delete) {
-				const source = (this[SOURCE_PROPERTY] = await this.constructor.Source.getResource(this[ID_PROPERTY], this));
-				await source.delete(options);
-			}
 			return this.#writeDelete();
 		}
 		#writeDelete(options) {
 			const env_txn = this[DB_TXN_PROPERTY] || immediateTransaction;
 			const txn_time = this[TRANSACTIONS_PROPERTY]?.timestamp || immediateTransaction.timestamp;
+			let delete_prepared;
+			const id = this[ID_PROPERTY];
+			let completion;
 			env_txn.addWrite({
-				key: this[ID_PROPERTY],
+				key: id,
 				store: primary_store,
 				txnTime: txn_time,
 				lastVersion: this[VERSION_PROPERTY],
 				commit: (retry) => {
 					let existing_record = this[RECORD_PROPERTY];
 					if (retry) {
-						const existing_entry = primary_store.getEntry(this[ID_PROPERTY]);
+						const existing_entry = primary_store.getEntry(id);
 						existing_record = existing_entry?.value;
 						this.updateModificationTime(existing_entry?.version);
 					}
-					harper_logger.trace(
-						'delete version check',
-						this[VERSION_PROPERTY],
-						txn_time,
-						this[VERSION_PROPERTY] > txn_time
-					);
+					if (!delete_prepared) {
+						delete_prepared = true;
+						if (!options?.isNotification) {
+							if (this.constructor.Source?.prototype.delete) {
+								const source = this.constructor.Source.getResource(id, this);
+								if (source?.then)
+									completion = source.then((source) => {
+										this[SOURCE_PROPERTY] = source;
+										return source.delete(options);
+									});
+								else {
+									this[SOURCE_PROPERTY] = source;
+									completion = source.delete(options);
+								}
+							}
+						}
+					}
 					if (this[VERSION_PROPERTY] > txn_time)
 						// a newer record exists locally
 						return;
@@ -654,6 +667,7 @@ export function makeTable(options) {
 					return {
 						// return the audit record that should be recorded
 						operation: 'delete',
+						[COMPLETION]: completion,
 					};
 				},
 			});
@@ -906,17 +920,14 @@ export function makeTable(options) {
 		 * @param message
 		 * @param options
 		 */
-		async publish(message, options) {
-			if (!this[SOURCE_PROPERTY] && this.constructor.Source?.prototype.publish) {
-				this[SOURCE_PROPERTY] = await this.constructor.Source.getResource(this[ID_PROPERTY], this);
-				await this[SOURCE_PROPERTY].publish(message, { target: this });
-			}
-			this.#writePublish(message);
+		async publish(message, options?) {
+			this.#writePublish(message, options);
 		}
 		#writePublish(message, options?) {
 			const txn_time = this[TRANSACTIONS_PROPERTY].timestamp;
 			const id = this[ID_PROPERTY] || null;
-
+			let completion;
+			let publish_prepared;
 			this[DB_TXN_PROPERTY].addWrite({
 				store: primary_store,
 				key: id,
@@ -930,12 +941,32 @@ export function makeTable(options) {
 					// just need to update the version number of the record so it points to the latest audit record
 					// but have to update the version number of the record
 					// TODO: would be faster to use getBinaryFast here and not have the record loaded
+
+					if (!publish_prepared) {
+						publish_prepared = true;
+						if (!options?.isNotification) {
+							if (this.constructor.Source?.prototype.publish) {
+								const source = this.constructor.Source.getResource(id, this);
+								if (source?.then)
+									completion = source.then((source) => {
+										this[SOURCE_PROPERTY] = source;
+										return source.publish(message, options);
+									});
+								else {
+									this[SOURCE_PROPERTY] = source;
+									completion = source.publish(message, options);
+								}
+							}
+						}
+					}
+
 					const existing_record = retries > 0 ? primary_store.get(id) : this[RECORD_PROPERTY];
 					primary_store.put(id, existing_record ?? null, txn_time);
 					// messages are recorded in the audit entry
 					return {
 						operation: 'message',
 						value: message,
+						[COMPLETION]: completion,
 					};
 				},
 			});
