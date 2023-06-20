@@ -46,8 +46,7 @@ export async function getSession({
 }) {
 	let session;
 	if (session_id && !non_durable) {
-		const session_resource = DurableSession.getResource(session_id);
-		await session_resource.loadRecord();
+		const session_resource = await DurableSession.getResource(session_id);
 		session = new DurableSubscriptionsSession(session_id, user, session_resource);
 		if (session_resource.doesExist()) session.sessionWasPresent = true;
 	} else {
@@ -94,15 +93,15 @@ class SubscriptionsSession {
 			this.subscriptions.splice(this.subscriptions.indexOf(existing_subscription), 1);
 		}
 		let subscription;
-		const resource = await resources.call(path, this, async (resource_access) => {
+		const resource = await resources.call(path, this, async (resource_access, resource_path) => {
 			return (subscription = await resource_access.subscribe({
-				listener: (update, id) => {
+				listener: (update) => {
 					let message_id;
 					if (needs_ack) {
 						update.topic = topic;
 						message_id = this.needsAcknowledge(update);
-					}
-					this.listener(search ? path + '/' + id : path, update.value, message_id, subscription_request);
+					} else message_id = next_message_id++;
+					this.listener(resource_path + '/' + (update.id ?? ''), update.value, message_id, subscription_request);
 				},
 				search,
 				user: this.user,
@@ -141,9 +140,7 @@ class SubscriptionsSession {
 		message.data = data;
 		message.user = this.user;
 		let resource_found;
-		const levels = topic.split('/').length;
-		if (levels > 2) throw new Error('Only two level topics (of the form "table/id") are supported');
-		const publish_result = resources.call(topic, message, async (resource_access) => {
+		const publish_result = await resources.call(topic, message, async (resource_access) => {
 			resource_found = true;
 			return resource_access.publish(data);
 		});

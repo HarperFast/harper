@@ -341,7 +341,14 @@ function updateConfigObject(param, value) {
  * @param create_backup - if true backup file is created
  * @param update_config_obj - if true updates the in memory flattened config object
  */
-function updateConfigValue(param, value, parsed_args = undefined, create_backup = false, update_config_obj = false) {
+function updateConfigValue(
+	param,
+	value,
+	parsed_args = undefined,
+	create_backup = false,
+	update_config_obj = false,
+	skip_param_map = false
+) {
 	if (flat_config_obj === undefined) {
 		initConfig();
 	}
@@ -355,9 +362,14 @@ function updateConfigValue(param, value, parsed_args = undefined, create_backup 
 	if (parsed_args === undefined && param.toLowerCase() === CONFIG_PARAMS.SCHEMAS) {
 		schemas_args = value;
 	} else if (parsed_args === undefined) {
-		const config_param = CONFIG_PARAM_MAP[param.toLowerCase()];
-		if (config_param === undefined) {
-			throw new Error(`Unable to update config, unrecognized config parameter: ${param}`);
+		let config_param;
+		if (skip_param_map) {
+			config_param = param;
+		} else {
+			config_param = CONFIG_PARAM_MAP[param.toLowerCase()];
+			if (config_param === undefined) {
+				throw new Error(`Unable to update config, unrecognized config parameter: ${param}`);
+			}
 		}
 
 		const split_param = config_param.split('_');

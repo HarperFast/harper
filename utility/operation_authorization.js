@@ -38,7 +38,7 @@ const permsTranslator = require('../security/permissionsTranslator');
 const system_information = require('../utility/environment/systemInformation');
 const token_authentication = require('../security/tokenAuthentication');
 const config_utils = require('../config/configUtils');
-const functions_operations = require('../apps/operations');
+const functions_operations = require('../components/operations');
 const alasql = require('alasql');
 const transaction_log = require('../utility/logging/transactionLog');
 const npm_utilities = require('./npmUtilities');
@@ -162,8 +162,8 @@ required_permissions.set(functions_operations.setCustomFunction.name, new permis
 required_permissions.set(functions_operations.dropCustomFunction.name, new permission(true, []));
 required_permissions.set(functions_operations.addCustomFunctionProject.name, new permission(true, []));
 required_permissions.set(functions_operations.dropCustomFunctionProject.name, new permission(true, []));
-required_permissions.set(functions_operations.packageCustomFunctionProject.name, new permission(true, []));
-required_permissions.set(functions_operations.deployCustomFunctionProject.name, new permission(true, []));
+required_permissions.set(functions_operations.packageComponent.name, new permission(true, []));
+required_permissions.set(functions_operations.deployComponent.name, new permission(true, []));
 
 //Below are functions that are currently open to all roles
 required_permissions.set(reg.getRegistrationInfo.name, new permission(false, []));

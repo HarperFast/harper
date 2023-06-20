@@ -29,7 +29,7 @@ async function searchByValue(search_object, callback) {
 	if (search_object.hasOwnProperty('desc') === true) {
 		search_object.reverse = search_object.desc;
 	}
-	let array = [];
+	const array = [];
 	for await (let record of harperBridge.searchByValue(search_object)) {
 		array.push(record);
 	}

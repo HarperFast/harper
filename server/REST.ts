@@ -83,7 +83,7 @@ async function http(request, next_handler) {
 			body: undefined,
 		};
 		headers['Server-Timing'] = `db;dur=${execution_time.toFixed(2)}`;
-		recordAction('TTFB', execution_time, resource_path, method);
+		recordAction(execution_time, 'TTFB', resource_path, method);
 		recordActionBinary(status < 400, 'success', resource_path, method);
 		// TODO: Handle 201 Created
 
@@ -94,7 +94,7 @@ async function http(request, next_handler) {
 		return response_object;
 	} catch (error) {
 		const execution_time = performance.now() - start;
-		recordAction('TTFB', execution_time, resource_path, method);
+		recordAction(execution_time, 'TTFB', resource_path, method);
 		recordActionBinary(false, 'success', resource_path, method);
 		if (!error.http_resp_code) console.error(error);
 		return {

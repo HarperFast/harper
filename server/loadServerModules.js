@@ -5,11 +5,11 @@ const operationsServer = require('./operationsServer');
 const auth = require('../security/auth');
 const natsReplicator = require('../server/nats/natsReplicator');
 const { getTables } = require('../resources/databases');
-const { loadApplications, loadComponent } = require('../apps/applicationsLoader');
+const { loadApplications, loadComponent } = require('../components/applicationsLoader');
 const env = require('../utility/environment/environmentManager');
 const { secureImport } = require('../security/jsLoader');
 const { resetResources } = require('../resources/Resources');
-const install_apps = require('../apps/installApps');
+const install_components = require('../components/installComponents');
 const mqtt = require('./mqtt');
 const { server } = require('./Server');
 const config_utils = require('../config/configUtils');
@@ -69,7 +69,7 @@ function getServerModules() {
  * @returns {Promise<void>}
  */
 async function loadServerModules(is_worker_thread = false) {
-	if (isMainThread) await install_apps();
+	if (isMainThread) await install_components();
 
 	let ports_started = [];
 	let resources = resetResources();

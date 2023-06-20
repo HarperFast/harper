@@ -7,13 +7,17 @@ import { open, appendFile, readFile, writeFile } from 'fs/promises';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 
 let active_actions = new Map<string, number[] & { occurred: number; count: number }>();
-
+let analytics_enabled = true;
+export function setAnalyticsEnabled(enabled) {
+	analytics_enabled = enabled;
+}
 /**
  * Record an action for analytics (like an HTTP request, replication, MQTT message)
  * @param path
  * @param value
  */
 export function recordAction(value, metric, path?, method?, type?) {
+	if (!analytics_enabled) return;
 	// TODO: We may want to consider sampling a subset of queries if this has too high of overhead. It is primarily the sort operation that is expensive (computing median, p96, etc.)
 	let key = metric + '-' + path;
 	if (method) key += '-' + method;
@@ -55,6 +59,7 @@ function sendAnalytics() {
 		const metrics = [];
 		const report = {
 			time: Date.now(),
+			period,
 			threadId,
 			metrics,
 		};
@@ -70,7 +75,6 @@ function sendAnalytics() {
 						p95: value[Math.floor(count * 0.95)],
 						p90: value[Math.floor(count * 0.9)],
 						count,
-						period,
 					})
 				);
 			} else {
@@ -95,8 +99,8 @@ function sendAnalytics() {
 		else recordAnalytics({ report });
 	}, ANALYTICS_DELAY).unref();
 }
-const AGGREGATE_PREFIX = 'hour-'; // we could have different levels of aggregation, but this denotes hourly aggregation
-async function aggregation(from_period, to_period = 3600000) {
+const AGGREGATE_PREFIX = 'min-'; // we could have different levels of aggregation, but this denotes hourly aggregation
+async function aggregation(from_period, to_period = 60000) {
 	const AnalyticsTable = getAnalyticsTable();
 	let last_for_period;
 	// find the last entry for this period
@@ -120,22 +124,23 @@ async function aggregation(from_period, to_period = 3600000) {
 		} else first_for_period = key;
 		last_time = key;
 		const { metrics } = value;
-		for (const { path, method, type, metric, mean, count } of metrics) {
+		for (const entry of metrics) {
+			let { path, method, type, metric, count, ...measures } = entry;
+			if (!count) count = 1;
 			let key = metric + '-' + path;
 			if (method) key += '-' + method;
 			let action = aggregate_actions.get(key);
 			if (action) {
-				action.mean = (action.mean * action.count + mean * count) / (action.count += count);
+				for (const measure_name in measures) {
+					const value = measures[measure_name];
+					if (typeof value === 'number') {
+						const action_count = action.count || 1;
+						action[measure_name] =
+							(action[measure_name] * action_count + value * count) / (action.count = action_count + count);
+					}
+				}
 			} else {
-				action = {
-					metric,
-					path,
-					method,
-					type,
-					mean,
-					count,
-					period: to_period,
-				};
+				action = Object.assign({ period: to_period }, entry);
 				aggregate_actions.set(key, action);
 			}
 		}
@@ -152,8 +157,8 @@ const rest = () => new Promise(setImmediate);
 async function cleanup(expiration, period) {
 	const AnalyticsTable = getAnalyticsTable();
 	const end = Date.now() - expiration;
-	for (const key of AnalyticsTable.primaryStore.getKeys({ start: false, end })) {
-		AnalyticsTable.delete(key);
+	for (const { key, value } of AnalyticsTable.primaryStore.getKeys({ start: false, end })) {
+		if (value) AnalyticsTable.delete(key);
 	}
 }
 
@@ -213,7 +218,6 @@ function recordAnalytics(message, worker?) {
 	report.id = getNextMonotonicTime();
 	getAnalyticsTable().put(report);
 	last_append = logAnalytics(report);
-	//console.log(message);
 }
 let last_append;
 let analytics_log;

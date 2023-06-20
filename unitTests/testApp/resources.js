@@ -31,7 +31,7 @@ export class Echo extends Resource {
 	}
 }
 
-export class SubObject extends tables.SubObject {
+class SubObject extends tables.SubObject {
 	get(query) {
 		this.addedProperty = true;
 		return super.get(query);
@@ -42,9 +42,22 @@ export class SubObject extends tables.SubObject {
 		return 'success';
 	}
 }
+export const namespace = {
+	SubObject,
+};
 class SimpleCacheSource extends tables.FourProp {}
 export class SimpleCache extends tables.SimpleCache.sourcedFrom(SimpleCacheSource) {
 	post(data) {
-		if (data.invalidate) this.invalidate({});
+		if (data.invalidate) this.invalidate();
+	}
+}
+export class FourPropWithHistory extends tables.FourProp {
+	static subscribe(options) {
+		options.previousCount = 10;
+		super.subscribe(options);	
+	}
+	subscribe(options) {
+		options.previousCount = 10;
+		super.subscribe(options);	
 	}
 }

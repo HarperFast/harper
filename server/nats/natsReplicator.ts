@@ -12,12 +12,14 @@ import hdb_terms from '../../utility/hdbTerms';
 import { onMessageFromWorkers } from '../../server/threads/manageThreads';
 import { threadId } from 'worker_threads';
 import initializeReplyService from './natsReplyService';
+import * as harper_logger from '../../utility/logging/harper_logger';
+
 
 let publishing_databases = new Map();
 export function start() {
 	if (env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) assignReplicationSource();
 }
-const MAX_INGEST_THREADS = 1;
+const MAX_INGEST_THREADS = 2;
 let immediateNATSTransaction, subscribed_to_nodes;
 /**
  * Replication functions by acting as a "source" for tables. With replicated tables, the local tables are considered
@@ -177,6 +179,7 @@ class NATSTransaction {
 				const table = write.table;
 				const operation = write.operation == 'put' ? 'upsert' : write.operation;
 				if (!transaction_event) {
+					harper_logger.trace(`Sending transaction event ${operation}`);
 					last_write_event = transaction_event = {
 						operation,
 						schema: db,

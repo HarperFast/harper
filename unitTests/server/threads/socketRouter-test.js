@@ -19,7 +19,6 @@ describe('Socket Router', () => {
 	});
 	it('Start HTTP threads and delegate evenly by most idle', function () {
 		server = startSocketServer(8925);
-
 		for (let worker of workers) {
 			worker.socketsRouted = 0;
 			worker.postMessage = function ({ port, fd }) {
@@ -31,7 +30,7 @@ describe('Socket Router', () => {
 				}
 			};
 		}
-		workers[2].expectedIdle = 2000; // give this one a higher expected idle
+		workers[2].expectedIdle = 2; // give this one a higher expected idle
 		// simulate a bunch of incoming connections
 		for (let i = 0; i < 100; i++) {
 			server.emit('connection', { _handle: { fd: 1 } });

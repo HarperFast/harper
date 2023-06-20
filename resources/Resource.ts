@@ -7,6 +7,8 @@ import { DefaultAccess } from './Access';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { IterableEventQueue } from './IterableEventQueue';
 import { _assignPackageExport } from '../index';
+import { ClientError } from '../utility/errors/hdbError';
+
 let tables;
 
 export const CONTEXT_PROPERTY = Symbol.for('context');
@@ -14,6 +16,7 @@ export const USER_PROPERTY = Symbol.for('user');
 export const ID_PROPERTY = Symbol.for('id');
 export const LAST_MODIFICATION_PROPERTY = Symbol.for('last-modification-time');
 export const TRANSACTIONS_PROPERTY = Symbol('transactions');
+export const IS_COLLECTION = Symbol('is-collection');
 export const SAVE_UPDATES_PROPERTY = Symbol('save-updates');
 export const RESOURCE_CACHE = Symbol('resource-cache');
 export const RECORD_PROPERTY = Symbol('stored-record');
@@ -95,21 +98,11 @@ export class Resource implements ResourceInterface {
 			txn.doneReading?.();
 		}
 	}
-	static async get(identifier: string | number): Promise<object>;
+	static async get(identifier: string | number | (string | number)[]): Promise<object>;
 	static async get(query: object): Promise<Iterable<object>>;
-	static async get(identifier: string | number | object, query) {
-		if (typeof identifier === 'string' || typeof identifier === 'number') {
-			const resource = this.getResource(identifier, this);
-			await resource.loadRecord();
-			return resource.get(query);
-		} else {
-			// could conditionally skip the mapping if get is not overriden
-			return this.transact(async (resource_txn) =>
-				(await resource_txn.search(identifier)).map((record) =>
-					resource_txn.resourceFromRecord(record, this[CONTEXT_PROPERTY]).get()
-				)
-			);
-		}
+	static async get(identifier: string | number | (string | number)[] | object, query) {
+		const resource = await this.getResource(identifier, this);
+		return resource.get(query);
 	}
 
 	doesExist(): boolean;
@@ -118,6 +111,9 @@ export class Resource implements ResourceInterface {
 	 * @param query - If included, specifies a query to perform on the record
 	 */
 	get(query?: object): Promise<object | void> | object | void {
+		if (this[IS_COLLECTION]) {
+			return this.search(query);
+		}
 		if (typeof this.doesExist !== 'function' || this.doesExist()) {
 			if (query?.select) {
 				const selected_data = {};
@@ -170,31 +166,28 @@ export class Resource implements ResourceInterface {
 		}
 		if (id == null) id = record[this.primaryKey];
 		if (id == null) return this.create(record, options);
-		const resource = this.getResource(id, this);
+		const resource = await this.getResource(id, this);
 		return resource.transact(async (txn_resource) => {
-			await txn_resource.loadRecord();
 			return txn_resource.put(record, options);
 		});
 	}
-	static async create(record, options?): void {
+	static create(record, options?): void {
 		const id = this.getNewId(); //uuid.v4();
-		const resource = this.getResource(id, this);
+		const resource = new this(id, this);
 		return resource.transact(async (txn_resource) => {
 			await txn_resource.put(record, options);
 			return id;
 		});
 	}
-	static post(new_record) {
-		return this.create(new_record);
+	post(new_record) {
+		if (this[ID_PROPERTY] == null) return this.constructor.create(new_record);
+		throw new Error('No post method defined for resource');
 	}
 
 	static async delete(identifier: string | number | object) {
 		if (typeof identifier === 'string' || typeof identifier === 'number') {
-			const resource = this.getResource(identifier, this);
+			const resource = await this.getResource(identifier, this);
 			return resource.transact(async (txn_resource) => {
-				if (txn_resource.delete.preload !== false) {
-					await txn_resource.loadRecord();
-				}
 				return txn_resource.delete();
 			});
 		} else {
@@ -211,33 +204,30 @@ export class Resource implements ResourceInterface {
 		}
 	}
 
-	static async search(query: object): Promise<Iterable<object>> {
-		throw new Error('Not implemented');
+	static search(query: object): AsyncIterable<object> {
+		return new this(null).search(query);
 	}
-	loadRecord(allowInvalidated?: boolean) {
-		// nothing to be done by default, Table implements an actual real version of this
+	search(query: object): AsyncIterable<object> {
+		throw new ClientError('search is not implemented');
 	}
-	static loadRecord() {
-		// nothing to be done by default, Table implements an actual real version of this
+	static subscribe(options?: {}): AsyncIterable<{ id: any; operation: string; value: object }> {
+		return new this(null).subscribe(options);
 	}
 
-	static resourceFromRecord(record) {
-		const resource = new this(record[this.primaryKey]);
-		copyRecord(record, resource);
-		resource[TRANSACTIONS_PROPERTY] = this[TRANSACTIONS_PROPERTY];
-		return resource;
+	static isCollection(resource) {
+		return resource?.[IS_COLLECTION];
 	}
-	static getResource(path: string, resource_info: object) {
+	static coerceId(id: string): number | string {
+		return id;
+	}
+	static getResource(
+		id: number | string | (number | string | null)[] | null,
+		resource_info: object,
+		path
+	): Resource | Promise<Resource> {
 		let resource;
-		if (typeof path === 'string') {
-			const slash_index = path.indexOf?.('/');
-			if (slash_index > -1) {
-				// for a property reference resource
-				resource = new this(decodeURIComponent(path.slice(0, slash_index)), resource_info);
-				resource.property = decodeURIComponent(path.slice(slash_index + 1));
-				return resource;
-			}
-			path = decodeURIComponent(path);
+		if (!path) {
+			path = id?.toString() ?? '';
 		}
 		if (this[TRANSACTIONS_PROPERTY]) {
 			let resource_cache;
@@ -246,8 +236,9 @@ export class Resource implements ResourceInterface {
 				resource = resource_cache.get(path);
 				if (resource) return resource;
 			} else resource_cache = this[RESOURCE_CACHE] = new Map();
-			resource_cache.set(path, (resource = new this(path, resource_info)));
-		} else resource = new this(path, resource_info);
+			resource_cache.set(path, (resource = new this(id, resource_info)));
+		} else resource = new this(id, resource_info);
+		if (id == null || (id.constructor === Array && id[id.length - 1] == null)) resource[IS_COLLECTION] = true;
 		return resource;
 	}
 
@@ -256,8 +247,8 @@ export class Resource implements ResourceInterface {
 	 * @param query
 	 * @param options
 	 */
-	subscribe(query: any, options?: {}): AsyncIterable<{ id: any; operation: string; value: object }>;
-	static subscribe(query: any, options?: {}): AsyncIterable<{ id: any; operation: string; value: object }>;
+	subscribe(options?: {}): AsyncIterable<{ id: any; operation: string; value: object }>;
+	
 	connect(query?: {}): AsyncIterable<any> {
 		// convert subscription to an (async) iterator
 		const iterable = new IterableEventQueue();
@@ -345,43 +336,17 @@ export class Resource implements ResourceInterface {
 		transactions.timestamp = options?.timestamp || getNextMonotonicTime();
 
 		const txn_resource = this.deriveWithTransactions(transactions, options);
-		try {
-			const result = callback(txn_resource);
-			if (result?.then)
-				return result?.then(
-					async (result) => {
-						await txn_resource.commit();
-						return result;
-					},
-					(error) => {
-						txn_resource.abort();
-						throw error;
-					}
-				);
-			else {
-				if (txn_resource[TRANSACTIONS_PROPERTY].some((transaction) => transaction.hasWritesToCommit))
-					return txn_resource.commit().then(() => result);
-				txn_resource.abort();
-				return result;
-			}
-		} catch (error) {
-			txn_resource.abort();
-			throw error;
-		}
+		return executeTransaction(txn_resource, callback);
 	}
-	async transact(callback, options?) {
+	transact(callback, options?) {
 		if (this[TRANSACTIONS_PROPERTY]) return callback(this);
-		try {
-			const transactions = [];
-			transactions.timestamp = options?.timestamp || getNextMonotonicTime();
-			this[TRANSACTIONS_PROPERTY] = transactions;
-			return await callback(this);
-		} finally {
-			await this.commit();
-		}
+		const transactions = [];
+		transactions.timestamp = options?.timestamp || getNextMonotonicTime();
+		this[TRANSACTIONS_PROPERTY] = transactions;
+		return executeTransaction(this, callback);
 	}
 	async accessInTransaction(request, action: (resource_access) => any) {
-		return this.transact(async (transactional_resource) => {
+		return this.transact((transactional_resource) => {
 			if (request) {
 				transactional_resource[CONTEXT_PROPERTY] = request;
 				transactional_resource[USER_PROPERTY] = request.user;
@@ -519,5 +484,30 @@ function copyArray(stored_array, target_array) {
 			else if (value.constructor === Array) copyArray(value, (value = new UpdatableArray()));
 		}
 		target_array[i] = value;
+	}
+}
+function executeTransaction(txn_resource: Resource, callback: (resource: Resource) => any) {
+	try {
+		const result = callback(txn_resource);
+		if (result?.then)
+			return result?.then(
+				async (result) => {
+					await txn_resource.commit();
+					return result;
+				},
+				(error) => {
+					txn_resource.abort();
+					throw error;
+				}
+			);
+		else {
+			if (txn_resource[TRANSACTIONS_PROPERTY].some((transaction) => transaction.hasWritesToCommit))
+				return txn_resource.commit().then(() => result);
+			txn_resource.abort();
+			return result;
+		}
+	} catch (error) {
+		txn_resource.abort();
+		throw error;
 	}
 }

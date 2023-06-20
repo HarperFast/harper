@@ -28,6 +28,7 @@ import * as signalling from '../utility/signalling';
 import { SchemaEventMsg } from '../server/threads/itc';
 import { databases, table } from './databases';
 import { idsForCondition, filterByType } from './search';
+import * as harper_logger from '../utility/logging/harper_logger';
 
 let server_utilities;
 const RANGE_ESTIMATE = 100000000;
@@ -88,9 +89,8 @@ export function makeTable(options) {
 		if (attribute.assignUpdatedTime || attribute.name === '__updatedtime__') updated_time_property = attribute.name;
 		if (attribute.isPrimaryKey) primary_key_attribute = attribute;
 	}
-	const TableName = CamelCase(table_name);
 	class TableResource extends Resource {
-		static name = TableName; // just for display/debugging purposes
+		static name = table_name; // for display/debugging purposes
 		static primaryStore = primary_store;
 		static auditStore = audit_store;
 		static primaryKey = primary_key;
@@ -108,21 +108,21 @@ export function makeTable(options) {
 			// define a source for retrieving invalidated entries for caching purposes
 			this.Source = Resource;
 			(async () => {
-				const writeUpdate = async (event, first_resource, resource) => {
+				const writeUpdate = async (event, first_resource: TableResource, resource: TableResource) => {
 					const value = event.value;
 					if (event.table && !resource) {
 						const Table = databases[database_name][event.table];
-						const id = event.id || value[Table.primaryKey];
-						resource = first_resource.use(Table).getResource(id, first_resource);
+						const id = event.id === undefined ? value[Table.primaryKey] : event.id;
+						if (id === undefined) throw new Error('Secondary resource found without an id ' + JSON.stringify(event));
+						resource = await first_resource.use(Table).getResource(id, first_resource, null, true);
 					}
-					await resource.loadRecord(true);
 					switch (event.operation) {
 						case 'put':
 							return resource.#writeUpdate(value, { isNotification: true });
 						case 'delete':
-							return resource.#writeDelete();
+							return resource.#writeDelete({ isNotification: true });
 						case 'publish':
-							return resource.#writePublish(value);
+							return resource.#writePublish(value, { isNotification: true });
 						default:
 							console.error('Unknown operation', event);
 					}
@@ -148,13 +148,18 @@ export function makeTable(options) {
 									continue;
 								}
 								const id = first_write.id !== undefined ? first_write.id : first_write.value?.[primary_key];
-								const first_resource = new this(id, {
-									[CONTEXT_PROPERTY]: {
-										user: {
-											username: event.user,
+								const first_resource = await this.getResource(
+									id ?? null,
+									{
+										[CONTEXT_PROPERTY]: {
+											user: {
+												username: event.user,
+											},
 										},
 									},
-								});
+									null,
+									true
+								);
 								const commit = first_resource.transact((first_resource) => {
 									first_resource[TRANSACTIONS_PROPERTY].timestamp = event.timestamp;
 									if (event.operation === 'transaction') {
@@ -166,11 +171,21 @@ export function makeTable(options) {
 										}
 										return Promise.all(promises);
 									} else if (event.operation === 'define_schema') {
-										// ensure table exists
-										table({ table: table_name, database: database_name, attributes: event.attributes });
-										signalling.signalSchemaChange(
-											new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_TABLE, database_name, table_name)
-										);
+										// ensure table has the provided attributes
+										const updated_attributes = this.attributes.slice(0);
+										let has_changes;
+										for (const attribute of event.attributes) {
+											if (!updated_attributes.find((existing) => existing.name === attribute.name)) {
+												updated_attributes.push(attribute);
+												has_changes = true;
+											}
+										}
+										if (has_changes) {
+											table({ table: table_name, database: database_name, attributes: updated_attributes });
+											signalling.signalSchemaChange(
+												new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_TABLE, database_name, table_name)
+											);
+										}
 									} else writeUpdate(event, first_resource, first_resource);
 								});
 								if (event.onCommit) commit.then(event.onCommit);
@@ -184,6 +199,14 @@ export function makeTable(options) {
 				}
 			})();
 			return this;
+		}
+		static getResource(id, resource_info, path, allow_invalidated): Promise<TableResource> {
+			const resource: TableResource = super.getResource(id, resource_info, path) as any;
+			if (id != null) {
+				const completion = resource.loadRecord(allow_invalidated);
+				if (completion?.then) return completion.then(() => resource);
+			}
+			return resource;
 		}
 		/**
 		 * Set TTL expiration for records in this table
@@ -203,6 +226,8 @@ export function makeTable(options) {
 						})) {
 							if (version < Date.now() - expiration_ms) {
 								// make sure we only delete it if the version has not changed
+								let resource = new this(key, this);
+								resource.invalidate();
 								this.primaryStore.ifVersion(key, version, () => this.primaryStore.remove(key));
 							}
 						}
@@ -210,49 +235,16 @@ export function makeTable(options) {
 				}
 			}
 		}
-
 		/**
-		 * Make a subscription to a query, to get notified of any changes to the specified data
-		 * @param identifier
-		 * @param options
+		 * Coerce the id as a string to the correct type for the primary key
+		 * @param id
+		 * @returns
 		 */
-		static async subscribe(identifier, options?) {
-			let key;
-			if (typeof identifier === 'object') {
-				if (options) key = identifier.conditions[0].attribute;
-				else {
-					options = identifier;
-					key = null;
-				}
-			} else key = identifier;
-			if (key === '' || key === '?')
-				// TODO: Should this require special permission?
-				key = null; // wildcard, get everything in table
-			const subscription = addSubscription(
-				this,
-				key,
-				function (id, audit_record, timestamp) {
-					//let result = await this.get(key);
-					try {
-						this.send({ id, timestamp, ...audit_record });
-					} catch (error) {
-						console.error(error);
-					}
-				},
-				options.startTime
-			);
-			if (options.startTime) {
-				// start time specified, get the audit history for this time range
-				for (const { key, value } of audit_store.getRange({ start: [options.startTime, Number.MAX_SAFE_INTEGER] })) {
-					const [timestamp, audit_table_id, id] = key;
-					if (audit_table_id !== table_id) continue;
-					subscription.send({ id, timestamp, ...value });
-				}
-			}
-
-			if (options.listener) subscription.on('data', options.listener);
-			return subscription;
+		static coerceId(id: string): number | string {
+			if (id === '') return null;
+			return coerceType(id, primary_key_attribute);
 		}
+
 		static async dropTable() {
 			delete databases[database_name][table_name];
 			if (database_name === database_path) {
@@ -288,7 +280,6 @@ export function makeTable(options) {
 			// coerce if we know this is supposed to be a number
 			super(identifier, resource_info);
 			if (this[TRANSACTIONS_PROPERTY]) assignDBTxn(this);
-			if (primary_key_attribute.is_number && this[ID_PROPERTY] != null) this[ID_PROPERTY] = +this[ID_PROPERTY];
 		}
 		updateModificationTime(latest = Date.now()) {
 			if (latest > this[LAST_MODIFICATION_PROPERTY]) {
@@ -296,43 +287,31 @@ export function makeTable(options) {
 				if (this.parent?.updateModificationTime) this.parent.updateModificationTime(latest);
 			}
 		}
-
-		async loadRecord(allow_invalidated?: boolean) {
+		// this primary exists to denote the difference between the Resource get, as a get that is implemented and returns something
+		get(query) {
+			return super.get(query);
+		}
+		loadRecord(allow_invalidated?: boolean) {
 			// TODO: determine if we use lazy access properties
 			if (this.hasOwnProperty(RECORD_PROPERTY)) return; // already loaded, don't reload, current version may have modifications
 			const env_txn = this[DB_TXN_PROPERTY];
+			const id = this[ID_PROPERTY];
 			let entry = primary_store.getEntry(this[ID_PROPERTY], { transaction: env_txn?.getReadTxn() });
 			let record;
 			if (entry) {
 				if (entry.version > this[LAST_MODIFICATION_PROPERTY]) this.updateModificationTime(entry.version);
 				this[VERSION_PROPERTY] = entry.version;
 				record = entry.value;
-				if (this[VERSION_PROPERTY] < 0 || this.__invalidated__) entry = null;
+				if (this[VERSION_PROPERTY] < 0 || !record || record?.__invalidated__) entry = null;
 			}
 			if (!entry && !allow_invalidated) {
 				const get = this.constructor.Source?.prototype.get;
-				if (get && !get.doesNotLoad) record = await this.getFromSource(record, this[VERSION_PROPERTY]);
+				if (get && !get.doesNotLoad)
+					return this.getFromSource(record, this[VERSION_PROPERTY]).then((record) => {
+						copyRecord(record, this);
+					});
 			}
 			copyRecord(record, this);
-
-			/*
-			if (record) {
-				record[TXN_KEY] = this;
-				const availability = record.__availability__;
-				if (availability?.cached & INVALIDATED) {
-					// TODO: If cold storage/alternate storage is available, retrieve from there
-
-					if (availability.residence) {
-						// TODO: Implement retrieval from other nodes once we have horizontal caching
-					}
-					if (this.constructor.Source) return this.getFromSource(identifier, record);
-				} else if (expiration_ms && expiration_ms < Date.now() - this[LAST_MODIFICATION_PROPERTY]) {
-					// TTL/expiration has some open questions, is it tenable to do it with replication?
-					// What if there is no source?
-					if (this.constructor.Source) return this.getFromSource(identifier, record);
-				}
-				return record;
-			}*/
 		}
 
 		/**
@@ -485,16 +464,15 @@ export function makeTable(options) {
 		async getFromSource(existing_record, existing_version) {
 			const invalidated_record = { __invalidated__: true };
 			if (this[RECORD_PROPERTY]) Object.assign(invalidated_record, existing_record);
-			const source = new this.constructor.Source(this[ID_PROPERTY], this);
 			// TODO: We want to eventually use a "direct write" method to directly write to the locations
 			// of the record in place in the database, which requires a reserved space in the random access structures
 			// it is important to remember that this is _NOT_ part of the current transaction; nothing is changing
 			// with the canonical data, we are simply fulfilling our local copy of the canonical data, but still don't
 			// want a timestamp later than the current transaction
-			const version = existing_version || source[LAST_MODIFICATION_PROPERTY] || this[TRANSACTIONS_PROPERTY].timestamp;
-			primary_store.put(this[ID_PROPERTY], invalidated_record, version, existing_version);
-			await source.loadRecord();
+			primary_store.put(this[ID_PROPERTY], invalidated_record, existing_version, existing_version);
+			const source = await this.constructor.Source.getResource(this[ID_PROPERTY], this);
 			const updated_record = await source.get();
+			const version = existing_version || source[LAST_MODIFICATION_PROPERTY] || this[TRANSACTIONS_PROPERTY].timestamp;
 			if (updated_record) {
 				updated_record[primary_key] = this[ID_PROPERTY];
 				// don't wait on this, we don't actually care if it fails, that just means there is even
@@ -503,12 +481,15 @@ export function makeTable(options) {
 			} else primary_store.remove(this[ID_PROPERTY], existing_version);
 			return updated_record;
 		}
-		invalidate(partial_record) {
-			if (!partial_record && Object.keys(indices).length > 0) partial_record = {};
-			if (partial_record) {
-				partial_record.__invalidated__ = true;
-				this.#writeUpdate(partial_record);
-			} else this.#writeDelete();
+		invalidate() {
+			let invalidated_record;
+			for (let name in indices) { // if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
+				if (!invalidated_record) invalidated_record = { __invalidated__: true };
+				invalidated_record[name] = this.getProperty(name);
+			}
+			if (invalidated_record) {
+				this.#writeUpdate(invalidated_record, { isNotification: true });
+			} else this.#writeDelete({ isNotification: true });
 		}
 		async operation(operation) {
 			operation.hdb_user = this[USER_PROPERTY];
@@ -574,13 +555,25 @@ export function makeTable(options) {
 								else record[TableResource.createdTimeProperty] = txn_time;
 							}
 							if (this.constructor.Source?.prototype.put) {
-								const source = (this[SOURCE_PROPERTY] = this.constructor.Source.getResource(this[ID_PROPERTY], this));
-								completion = source.loadRecord();
-								if (completion?.then) completion = completion.then(() => source.put(record, options));
-								else completion = source.put(record, options);
+								const source = this.constructor.Source.getResource(this[ID_PROPERTY], this);
+								if (source?.then)
+									completion = source.then((source) => {
+										this[SOURCE_PROPERTY] = source;
+										return source.put(record, options);
+									});
+								else {
+									this[SOURCE_PROPERTY] = source;
+									completion = source.put(record, options);
+								}
 							}
 						}
 					}
+					harper_logger.trace(
+						'update version check',
+						this[VERSION_PROPERTY],
+						txn_time,
+						this[VERSION_PROPERTY] > txn_time
+					);
 
 					if (this[VERSION_PROPERTY] > txn_time) {
 						// This is not an error condition in our world of last-record-wins
@@ -610,27 +603,47 @@ export function makeTable(options) {
 
 		async delete(options): Promise<boolean> {
 			if (!this[RECORD_PROPERTY]) return false;
-			if (this.constructor.Source?.prototype.delete) {
-				const source = (this[SOURCE_PROPERTY] = this.constructor.Source.getResource(this[ID_PROPERTY], this));
-				await source.loadRecord();
+			/*if (this.constructor.Source?.prototype.delete) {
+				const source = (this[SOURCE_PROPERTY] = await this.constructor.Source.getResource(this[ID_PROPERTY], this));
 				await source.delete(options);
-			}
+			}*/
 			return this.#writeDelete();
 		}
-		#writeDelete() {
+		#writeDelete(options) {
 			const env_txn = this[DB_TXN_PROPERTY] || immediateTransaction;
 			const txn_time = this[TRANSACTIONS_PROPERTY]?.timestamp || immediateTransaction.timestamp;
+			let delete_prepared;
+			const id = this[ID_PROPERTY];
+			let completion;
 			env_txn.addWrite({
-				key: this[ID_PROPERTY],
+				key: id,
 				store: primary_store,
 				txnTime: txn_time,
 				lastVersion: this[VERSION_PROPERTY],
 				commit: (retry) => {
 					let existing_record = this[RECORD_PROPERTY];
 					if (retry) {
-						const existing_entry = primary_store.getEntry(this[ID_PROPERTY]);
+						const existing_entry = primary_store.getEntry(id);
 						existing_record = existing_entry?.value;
 						this.updateModificationTime(existing_entry?.version);
+					}
+					if (!delete_prepared) {
+						delete_prepared = true;
+						if (!options?.isNotification) {
+							if (this.constructor.Source?.prototype.delete) {
+								const source = this.constructor.Source.getResource(id, this);
+								harper_logger.trace(`Sending delete ${id} to source, is promise ${!!source?.then}`);
+								if (source?.then)
+									completion = source.then((source) => {
+										this[SOURCE_PROPERTY] = source;
+										return source.delete(options);
+									});
+								else {
+									this[SOURCE_PROPERTY] = source;
+									completion = source.delete(options);
+								}
+							}
+						}
 					}
 					if (this[VERSION_PROPERTY] > txn_time)
 						// a newer record exists locally
@@ -641,6 +654,7 @@ export function makeTable(options) {
 					return {
 						// return the audit record that should be recorded
 						operation: 'delete',
+						[COMPLETION]: completion,
 					};
 				},
 			});
@@ -661,10 +675,9 @@ export function makeTable(options) {
 			});
 		}
 
-		static search(query, options?): AsyncIterable<any> {
-			if (!this[TRANSACTIONS_PROPERTY]) return this.transact((txn_resource) => txn_resource.search(query, options));
+		search(query): AsyncIterable<any> {
+			if (!this[TRANSACTIONS_PROPERTY]) return this.transact((txn_resource) => txn_resource.search(query));
 			if (query == null) {
-				// TODO: May have different semantics for /Table vs /Table/
 				query = []; // treat no query as a query for everything
 			}
 			const reverse = query.reverse === true;
@@ -676,10 +689,10 @@ export function makeTable(options) {
 				if (!attribute) {
 					throw handleHDBError(new Error(), `${attribute_name} is not a defined attribute`, 404);
 				}
-				if (attribute.is_number) {
+				if (attribute.type === 'Int' || attribute.type === 'Float') {
 					// convert to a number if that is expected
-					if (condition[1] === undefined) condition.value = parseFloat(condition.value);
-					else condition[1] = parseFloat(condition[1]);
+					if (condition[1] === undefined) condition.value = coerceType(condition.value, attribute);
+					else condition[1] = coerceType(condition[1], attribute);
 				}
 			}
 			// Sort the query by narrowest to broadest. Note that we want to do this both for intersection where
@@ -804,7 +817,7 @@ export function makeTable(options) {
 			}
 			return records;
 		}
-		subscribe(options) {
+		async subscribe(options) {
 			if (!audit_store) throw new Error('Can not subscribe to a table without an audit log');
 			const subscription = addSubscription(
 				this.constructor,
@@ -820,26 +833,65 @@ export function makeTable(options) {
 				options.startTime
 			);
 			const id = this[ID_PROPERTY];
-			if (options.startTime) {
+			let count = options.previousCount;
+			if (count > 1000) count = 1000; // don't allow too many, we have to hold these in memory
+			let start_time = options.startTime;
+			if (id == null) {
+				if (start_time) {
+					if (count)
+						throw new ClientError('startTime and previousCount can not be combined for a table level subscription');
+					// start time specified, get the audit history for this time range
+					for (const { key, value } of audit_store.getRange({ start: [start_time, Number.MAX_SAFE_INTEGER] })) {
+						const [timestamp, audit_table_id, id] = key;
+						if (audit_table_id !== table_id) continue;
+						subscription.send({ id, timestamp, ...value });
+						// TODO: Would like to do this asynchronously, but would need to catch up on anything published during iteration
+						//await new Promise((resolve) => setImmediate(resolve)); // yield for fairness
+						subscription.startTime = timestamp; // update so don't double send
+					}
+				} else if (count) {
+					const history = [];
+					// we are collecting the history in reverse order to get the right count, then reversing to send
+					for (const { key, value } of audit_store.getRange({ start: 'z', reverse: true })) {
+						const [timestamp, audit_table_id, id] = key;
+						if (audit_table_id !== table_id) continue;
+						history.push({ id, timestamp, ...value });
+						if (--count <= 0) break;
+						// TODO: Would like to do this asynchronously, but would need to catch up on anything published during iteration
+						//await new Promise((resolve) => setImmediate(resolve)); // yield for fairness
+					}
+					for (let i = history.length; i > 0; ) {
+						subscription.send(history[--i]);
+					}
+					if (history[0]) subscription.startTime = history[0].timestamp; // update so don't double send
+				}
+			} else {
+				if (count && !start_time) start_time = 0;
 				const version = this[VERSION_PROPERTY];
-				if (options.startTime < version) {
+				if (start_time < version) {
+					options.noRetain = true; // we are sending the current version from history, so don't double send
 					// start time specified, get the audit history for this record
 					const history = [];
 					let next_version = version;
 					do {
-						const audit_entry = audit_store.get([next_version, table_id, id]);
+						const key = [next_version, table_id, id];
+						//TODO: Would like to do this asynchronously, but we will need to run catch after this to ensure we didn't miss anything
+						//await audit_store.prefetch([key]); // do it asynchronously for better fairness/concurrency and avoid page faults
+						const audit_entry = audit_store.get(key);
 						if (audit_entry) {
 							history.push({ id, timestamp: next_version, ...audit_entry });
 							next_version = audit_entry.lastVersion;
 						} else break;
-					} while (next_version > options.startTime);
+						if (count) count--;
+					} while (next_version > start_time && count !== 0);
 					for (let i = history.length; i > 0; ) {
 						subscription.send(history[--i]);
 					}
+					subscription.startTime = version; // make sure we don't re-broadcast the current version that we already sent
 				}
 			}
 			if (options.listener) subscription.on('data', options.listener);
-			// if retain and it exists, send the first value
+			// if retain and it exists, send the current value first
 			if (!options.noRetain && this.doesExist())
 				subscription.send({ id, timestamp: this[VERSION_PROPERTY], value: this });
 			return subscription;
@@ -855,17 +907,14 @@ export function makeTable(options) {
 		 * @param message
 		 * @param options
 		 */
-		async publish(message, options) {
-			if (!this[SOURCE_PROPERTY] && this.constructor.Source?.prototype.publish) {
-				this[SOURCE_PROPERTY] = this.constructor.Source.getResource(this[ID_PROPERTY], this);
-				await this[SOURCE_PROPERTY].publish(message, { target: this });
-			}
-			this.#writePublish(message);
+		async publish(message, options?) {
+			this.#writePublish(message, options);
 		}
-		#writePublish(message) {
+		#writePublish(message, options?) {
 			const txn_time = this[TRANSACTIONS_PROPERTY].timestamp;
 			const id = this[ID_PROPERTY] || null;
-
+			let completion;
+			let publish_prepared;
 			this[DB_TXN_PROPERTY].addWrite({
 				store: primary_store,
 				key: id,
@@ -879,12 +928,32 @@ export function makeTable(options) {
 					// just need to update the version number of the record so it points to the latest audit record
 					// but have to update the version number of the record
 					// TODO: would be faster to use getBinaryFast here and not have the record loaded
+
+					if (!publish_prepared) {
+						publish_prepared = true;
+						if (!options?.isNotification) {
+							if (this.constructor.Source?.prototype.publish) {
+								const source = this.constructor.Source.getResource(id, this);
+								if (source?.then)
+									completion = source.then((source) => {
+										this[SOURCE_PROPERTY] = source;
+										return source.publish(message, options);
+									});
+								else {
+									this[SOURCE_PROPERTY] = source;
+									completion = source.publish(message, options);
+								}
+							}
+						}
+					}
+
 					const existing_record = retries > 0 ? primary_store.get(id) : this[RECORD_PROPERTY];
 					primary_store.put(id, existing_record ?? null, txn_time);
 					// messages are recorded in the audit entry
 					return {
 						operation: 'message',
 						value: message,
+						[COMPLETION]: completion,
 					};
 				},
 			});
@@ -905,9 +974,16 @@ export function makeTable(options) {
 									);
 								break;
 							case 'ID':
-								if (typeof value !== 'number' && typeof value !== 'string')
+								if (
+									!(
+										typeof value === 'number' ||
+										typeof value === 'string' ||
+										(value?.length > 0 &&
+											value.every?.((value) => typeof value === 'number' || typeof value === 'string'))
+									)
+								)
 									(validation_errors || (validation_errors = [])).push(
-										`Property ${attribute.name} must be a string or number`
+										`Property ${attribute.name} must be a string, number, or an array (of strings and numbers)`
 									);
 								break;
 							case 'String':
@@ -929,9 +1005,9 @@ export function makeTable(options) {
 			const publishing_resource = new this(null, this);
 			return publishing_resource.publish(message, options);
 		}
-		static async addAttributes(attributes) {
+		static async addAttributes(attributes_to_add) {
 			const new_attributes = attributes.slice(0);
-			for (const attribute of attributes) {
+			for (const attribute of attributes_to_add) {
 				if (!attribute.name) throw new ClientError('Attribute name is required');
 				if (attribute.name.match(/[`/]/))
 					throw new ClientError('Attribute names cannot include backticks or forward slashes');
@@ -960,6 +1036,7 @@ export function makeTable(options) {
 	const prototype = TableResource.prototype;
 	prototype[DB_TXN_PROPERTY] = immediateTransaction;
 	prototype[INCREMENTAL_UPDATE] = true; // default behavior
+	if (expiration_ms) TableResource.setTTLExpiration(expiration_ms);
 	return TableResource;
 	function assignDBTxn(resource) {
 		let db_txn = resource[TRANSACTIONS_PROPERTY].find((txn) => txn.dbPath === database_path);
@@ -1070,27 +1147,20 @@ function isEqualArray(a, b) {
 	}
 	return true;
 }
-export function snake_case(camelCase: string) {
-	return (
-		camelCase[0].toLowerCase() +
-		camelCase
-			.slice(1)
-			.replace(/[a-z][A-Z][a-z]/g, (letters) => letters[0] + '_' + letters[1].toLowerCase() + letters.slice(2))
-	);
-}
-
-export function CamelCase(snake_case) {
-	return snake_case
-		.split('_')
-		.map((part) => part[0].toUpperCase() + part.slice(1))
-		.join('');
-}
-export function lowerCamelCase(snake_case) {
-	return snake_case
-		.split('_')
-		.map((part, i) => (i === 0 ? part : part[0].toUpperCase() + part.slice(1)))
-		.join('');
-}
 export function setServerUtilities(utilities) {
 	server_utilities = utilities;
+}
+/**
+ * Coerce a string to the type defined by the attribute
+ * @param value
+ * @param attribute
+ * @returns
+ */
+function coerceType(value, attribute) {
+	const type = attribute?.type;
+	if (value === null) {
+		return value;
+	} else if (type === 'Int') return parseInt(value);
+	else if (type === 'Float') return parseFloat(value);
+	return value;
 }
