@@ -7,14 +7,17 @@ import { open, appendFile, readFile, writeFile } from 'fs/promises';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 
 let active_actions = new Map<string, number[] & { occurred: number; count: number }>();
-const ANALYTICS_ENABLED = true;
+let analytics_enabled = true;
+export function setAnalyticsEnabled(enabled) {
+	analytics_enabled = enabled;
+}
 /**
  * Record an action for analytics (like an HTTP request, replication, MQTT message)
  * @param path
  * @param value
  */
 export function recordAction(value, metric, path?, method?, type?) {
-	if (!ANALYTICS_ENABLED) return;
+	if (!analytics_enabled) return;
 	// TODO: We may want to consider sampling a subset of queries if this has too high of overhead. It is primarily the sort operation that is expensive (computing median, p96, etc.)
 	let key = metric + '-' + path;
 	if (method) key += '-' + method;

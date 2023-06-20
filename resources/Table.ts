@@ -89,9 +89,8 @@ export function makeTable(options) {
 		if (attribute.assignUpdatedTime || attribute.name === '__updatedtime__') updated_time_property = attribute.name;
 		if (attribute.isPrimaryKey) primary_key_attribute = attribute;
 	}
-	const TableName = CamelCase(table_name);
 	class TableResource extends Resource {
-		static name = TableName; // just for display/debugging purposes
+		static name = table_name; // for display/debugging purposes
 		static primaryStore = primary_store;
 		static auditStore = audit_store;
 		static primaryKey = primary_key;
@@ -109,11 +108,12 @@ export function makeTable(options) {
 			// define a source for retrieving invalidated entries for caching purposes
 			this.Source = Resource;
 			(async () => {
-				const writeUpdate = async (event, first_resource, resource) => {
+				const writeUpdate = async (event, first_resource: TableResource, resource: TableResource) => {
 					const value = event.value;
 					if (event.table && !resource) {
 						const Table = databases[database_name][event.table];
-						const id = event.id || value[Table.primaryKey];
+						const id = event.id === undefined ? value[Table.primaryKey] : event.id;
+						if (id === undefined) throw new Error('Secondary resource found without an id ' + JSON.stringify(event));
 						resource = await first_resource.use(Table).getResource(id, first_resource, null, true);
 					}
 					switch (event.operation) {
@@ -149,7 +149,7 @@ export function makeTable(options) {
 								}
 								const id = first_write.id !== undefined ? first_write.id : first_write.value?.[primary_key];
 								const first_resource = await this.getResource(
-									id,
+									id ?? null,
 									{
 										[CONTEXT_PROPERTY]: {
 											user: {
@@ -202,8 +202,10 @@ export function makeTable(options) {
 		}
 		static getResource(id, resource_info, path, allow_invalidated): Promise<TableResource> {
 			const resource: TableResource = super.getResource(id, resource_info, path) as any;
-			const completion = resource.loadRecord(allow_invalidated);
-			if (completion?.then) return completion.then(() => resource);
+			if (id != null) {
+				const completion = resource.loadRecord(allow_invalidated);
+				if (completion?.then) return completion.then(() => resource);
+			}
 			return resource;
 		}
 		/**
@@ -224,6 +226,8 @@ export function makeTable(options) {
 						})) {
 							if (version < Date.now() - expiration_ms) {
 								// make sure we only delete it if the version has not changed
+								let resource = new this(key, this);
+								resource.invalidate();
 								this.primaryStore.ifVersion(key, version, () => this.primaryStore.remove(key));
 							}
 						}
@@ -298,7 +302,7 @@ export function makeTable(options) {
 				if (entry.version > this[LAST_MODIFICATION_PROPERTY]) this.updateModificationTime(entry.version);
 				this[VERSION_PROPERTY] = entry.version;
 				record = entry.value;
-				if (this[VERSION_PROPERTY] < 0 || record?.__invalidated__) entry = null;
+				if (this[VERSION_PROPERTY] < 0 || !record || record?.__invalidated__) entry = null;
 			}
 			if (!entry && !allow_invalidated) {
 				const get = this.constructor.Source?.prototype.get;
@@ -308,25 +312,6 @@ export function makeTable(options) {
 					});
 			}
 			copyRecord(record, this);
-
-			/*
-			if (record) {
-				record[TXN_KEY] = this;
-				const availability = record.__availability__;
-				if (availability?.cached & INVALIDATED) {
-					// TODO: If cold storage/alternate storage is available, retrieve from there
-
-					if (availability.residence) {
-						// TODO: Implement retrieval from other nodes once we have horizontal caching
-					}
-					if (this.constructor.Source) return this.getFromSource(identifier, record);
-				} else if (expiration_ms && expiration_ms < Date.now() - this[LAST_MODIFICATION_PROPERTY]) {
-					// TTL/expiration has some open questions, is it tenable to do it with replication?
-					// What if there is no source?
-					if (this.constructor.Source) return this.getFromSource(identifier, record);
-				}
-				return record;
-			}*/
 		}
 
 		/**
@@ -496,11 +481,14 @@ export function makeTable(options) {
 			} else primary_store.remove(this[ID_PROPERTY], existing_version);
 			return updated_record;
 		}
-		invalidate(partial_record) {
-			if (!partial_record && Object.keys(indices).length > 0) partial_record = {};
-			if (partial_record) {
-				partial_record.__invalidated__ = true;
-				this.#writeUpdate(partial_record, { isNotification: true });
+		invalidate() {
+			let invalidated_record;
+			for (let name in indices) { // if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
+				if (!invalidated_record) invalidated_record = { __invalidated__: true };
+				invalidated_record[name] = this.getProperty(name);
+			}
+			if (invalidated_record) {
+				this.#writeUpdate(invalidated_record, { isNotification: true });
 			} else this.#writeDelete({ isNotification: true });
 		}
 		async operation(operation) {
@@ -615,33 +603,48 @@ export function makeTable(options) {
 
 		async delete(options): Promise<boolean> {
 			if (!this[RECORD_PROPERTY]) return false;
-			if (this.constructor.Source?.prototype.delete) {
+			/*if (this.constructor.Source?.prototype.delete) {
 				const source = (this[SOURCE_PROPERTY] = await this.constructor.Source.getResource(this[ID_PROPERTY], this));
 				await source.delete(options);
-			}
+			}*/
 			return this.#writeDelete();
 		}
 		#writeDelete(options) {
 			const env_txn = this[DB_TXN_PROPERTY] || immediateTransaction;
 			const txn_time = this[TRANSACTIONS_PROPERTY]?.timestamp || immediateTransaction.timestamp;
+			let delete_prepared;
+			const id = this[ID_PROPERTY];
+			let completion;
 			env_txn.addWrite({
-				key: this[ID_PROPERTY],
+				key: id,
 				store: primary_store,
 				txnTime: txn_time,
 				lastVersion: this[VERSION_PROPERTY],
 				commit: (retry) => {
 					let existing_record = this[RECORD_PROPERTY];
 					if (retry) {
-						const existing_entry = primary_store.getEntry(this[ID_PROPERTY]);
+						const existing_entry = primary_store.getEntry(id);
 						existing_record = existing_entry?.value;
 						this.updateModificationTime(existing_entry?.version);
 					}
-					harper_logger.trace(
-						'delete version check',
-						this[VERSION_PROPERTY],
-						txn_time,
-						this[VERSION_PROPERTY] > txn_time
-					);
+					if (!delete_prepared) {
+						delete_prepared = true;
+						if (!options?.isNotification) {
+							if (this.constructor.Source?.prototype.delete) {
+								const source = this.constructor.Source.getResource(id, this);
+								harper_logger.trace(`Sending delete ${id} to source, is promise ${!!source?.then}`);
+								if (source?.then)
+									completion = source.then((source) => {
+										this[SOURCE_PROPERTY] = source;
+										return source.delete(options);
+									});
+								else {
+									this[SOURCE_PROPERTY] = source;
+									completion = source.delete(options);
+								}
+							}
+						}
+					}
 					if (this[VERSION_PROPERTY] > txn_time)
 						// a newer record exists locally
 						return;
@@ -651,6 +654,7 @@ export function makeTable(options) {
 					return {
 						// return the audit record that should be recorded
 						operation: 'delete',
+						[COMPLETION]: completion,
 					};
 				},
 			});
@@ -903,17 +907,14 @@ export function makeTable(options) {
 		 * @param message
 		 * @param options
 		 */
-		async publish(message, options) {
-			if (!this[SOURCE_PROPERTY] && this.constructor.Source?.prototype.publish) {
-				this[SOURCE_PROPERTY] = await this.constructor.Source.getResource(this[ID_PROPERTY], this);
-				await this[SOURCE_PROPERTY].publish(message, { target: this });
-			}
-			this.#writePublish(message);
+		async publish(message, options?) {
+			this.#writePublish(message, options);
 		}
 		#writePublish(message, options?) {
 			const txn_time = this[TRANSACTIONS_PROPERTY].timestamp;
 			const id = this[ID_PROPERTY] || null;
-
+			let completion;
+			let publish_prepared;
 			this[DB_TXN_PROPERTY].addWrite({
 				store: primary_store,
 				key: id,
@@ -927,12 +928,32 @@ export function makeTable(options) {
 					// just need to update the version number of the record so it points to the latest audit record
 					// but have to update the version number of the record
 					// TODO: would be faster to use getBinaryFast here and not have the record loaded
+
+					if (!publish_prepared) {
+						publish_prepared = true;
+						if (!options?.isNotification) {
+							if (this.constructor.Source?.prototype.publish) {
+								const source = this.constructor.Source.getResource(id, this);
+								if (source?.then)
+									completion = source.then((source) => {
+										this[SOURCE_PROPERTY] = source;
+										return source.publish(message, options);
+									});
+								else {
+									this[SOURCE_PROPERTY] = source;
+									completion = source.publish(message, options);
+								}
+							}
+						}
+					}
+
 					const existing_record = retries > 0 ? primary_store.get(id) : this[RECORD_PROPERTY];
 					primary_store.put(id, existing_record ?? null, txn_time);
 					// messages are recorded in the audit entry
 					return {
 						operation: 'message',
 						value: message,
+						[COMPLETION]: completion,
 					};
 				},
 			});
@@ -1015,6 +1036,7 @@ export function makeTable(options) {
 	const prototype = TableResource.prototype;
 	prototype[DB_TXN_PROPERTY] = immediateTransaction;
 	prototype[INCREMENTAL_UPDATE] = true; // default behavior
+	if (expiration_ms) TableResource.setTTLExpiration(expiration_ms);
 	return TableResource;
 	function assignDBTxn(resource) {
 		let db_txn = resource[TRANSACTIONS_PROPERTY].find((txn) => txn.dbPath === database_path);
@@ -1124,27 +1146,6 @@ function isEqualArray(a, b) {
 		} else if (valueA !== valueB) return false;
 	}
 	return true;
-}
-export function snake_case(camelCase: string) {
-	return (
-		camelCase[0].toLowerCase() +
-		camelCase
-			.slice(1)
-			.replace(/[a-z][A-Z][a-z]/g, (letters) => letters[0] + '_' + letters[1].toLowerCase() + letters.slice(2))
-	);
-}
-
-export function CamelCase(snake_case) {
-	return snake_case
-		.split('_')
-		.map((part) => part[0].toUpperCase() + part.slice(1))
-		.join('');
-}
-export function lowerCamelCase(snake_case) {
-	return snake_case
-		.split('_')
-		.map((part, i) => (i === 0 ? part : part[0].toUpperCase() + part.slice(1)))
-		.join('');
 }
 export function setServerUtilities(utilities) {
 	server_utilities = utilities;

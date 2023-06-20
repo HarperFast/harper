@@ -69,7 +69,7 @@ if (!isMainThread) {
 												harper_logger.warn('Had to forcefully exit the thread', threadId);
 											process.exit(0);
 										},
-										server.cantCleanupProperly ? 500 : 5000
+										server.cantCleanupProperly ? 2500 : 5000
 									).unref();
 								});
 							server.closeIdleConnections?.();

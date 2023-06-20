@@ -474,7 +474,7 @@ export function table({
 			const dbi_key = table_name + '/' + attribute.name;
 			Object.defineProperty(attribute, 'key', { value: dbi_key, configurable: true });
 			let attribute_descriptor = attributes_dbi.get(dbi_key);
-			if (attribute_descriptor?.attribute) attribute_descriptor.indexed = true; // legacy descriptor
+			if (attribute_descriptor?.attribute && !attribute_descriptor.name) attribute_descriptor.indexed = true; // legacy descriptor
 			const changed =
 				!attribute_descriptor ||
 				attribute_descriptor.type !== attribute.type ||

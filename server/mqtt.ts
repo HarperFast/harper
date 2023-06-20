@@ -154,7 +154,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 									cmd: 'publish',
 									topic,
 									payload: serialize(message),
-									messageId: message_id || Math.floor(Math.random() * 100),
+									messageId: message_id || Math.floor(Math.random() * 100000000),
 									qos: subscription.qos,
 								},
 								general_topic

@@ -244,10 +244,8 @@ function broadcastWithAcknowledgement(message) {
 		for (let port of connected_ports) {
 			try {
 				let request_id = next_id++;
-				harper_logger.trace('send', request_id);
 				const ack_handler = () => {
 					awaiting_responses.delete(request_id);
-					harper_logger.trace('ack_handler', waiting_count, request_id);
 					if (--waiting_count === 0) {
 						resolve();
 					}
