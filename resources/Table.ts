@@ -108,7 +108,7 @@ export function makeTable(options) {
 			// define a source for retrieving invalidated entries for caching purposes
 			this.Source = Resource;
 			(async () => {
-				const writeUpdate = async (event, first_resource, resource) => {
+				const writeUpdate = async (event, first_resource: TableResource, resource: TableResource) => {
 					const value = event.value;
 					if (event.table && !resource) {
 						const Table = databases[database_name][event.table];
@@ -617,6 +617,10 @@ export function makeTable(options) {
 
 		async delete(options): Promise<boolean> {
 			if (!this[RECORD_PROPERTY]) return false;
+			if (this.constructor.Source?.prototype.delete) {
+				const source = (this[SOURCE_PROPERTY] = await this.constructor.Source.getResource(this[ID_PROPERTY], this));
+				await source.delete(options);
+			}
 			return this.#writeDelete();
 		}
 		#writeDelete(options) {
@@ -637,7 +641,7 @@ export function makeTable(options) {
 						existing_record = existing_entry?.value;
 						this.updateModificationTime(existing_entry?.version);
 					}
-					if (!delete_prepared) {
+					/*if (!delete_prepared) {
 						delete_prepared = true;
 						if (!options?.isNotification) {
 							if (this.constructor.Source?.prototype.delete) {
@@ -653,7 +657,7 @@ export function makeTable(options) {
 								}
 							}
 						}
-					}
+					}*/
 					if (this[VERSION_PROPERTY] > txn_time)
 						// a newer record exists locally
 						return;
