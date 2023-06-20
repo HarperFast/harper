@@ -5,6 +5,8 @@ import * as hdb_terms from '../../utility/hdbTerms';
 import * as harper_logger from '../../utility/logging/harper_logger';
 import { unlinkSync, existsSync } from 'fs';
 const workers = [];
+let queued_sockets = [];
+const handle_socket = [];
 env.initSync();
 let direct_thread_server;
 export let debugMode;
@@ -19,12 +21,26 @@ export async function startHTTPThreads(thread_count = 2) {
 		return Promise.resolve([]);
 	}
 	await loadServerModules();
+	const workers_ready = [];
 	for (let i = 0; i < thread_count; i++) {
 		startWorker('server/threads/threadServer.js', {
 			name: hdb_terms.THREAD_TYPES.HTTP,
 			workerIndex: i,
-			onStarted(worker) {
+			async onStarted(worker) {
 				// note that this can be called multiple times, once when started, and again when threads are restarted
+				const ready = new Promise((resolve, reject) => {
+					function onMessage(message) {
+						if (message.type === hdb_terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STARTED) {
+							worker.removeListener('message', onMessage);
+							resolve(worker);
+						}
+					}
+
+					worker.on('message', onMessage);
+					worker.on('error', reject);
+				});
+				workers_ready.push(ready);
+				await ready;
 				workers.push(worker);
 				worker.expectedIdle = 1;
 				worker.lastIdle = 0;
@@ -41,24 +57,16 @@ export async function startHTTPThreads(thread_count = 2) {
 					const index = workers.indexOf(worker);
 					if (index > -1) workers.splice(index, 1);
 				}
+				if (queued_sockets) {
+					// if there are any queued sockets, we re-deliver them
+					const sockets = queued_sockets;
+					queued_sockets = [];
+					for (const socket of sockets) handle_socket[socket.localPort](socket);
+				}
 			},
 		});
 	}
-	return Promise.all(
-		workers.map(
-			(worker) =>
-				new Promise((resolve, reject) => {
-					function onMessage(message) {
-						if (message.type === hdb_terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STARTED) {
-							worker.removeListener('message', onMessage);
-							resolve(worker);
-						}
-					}
-					worker.on('message', onMessage);
-					worker.on('error', reject);
-				})
-		)
-	);
+	return Promise.all(workers_ready);
 }
 
 export function startSocketServer(port = 0, session_affinity_identifier) {
@@ -82,13 +90,16 @@ export function startSocketServer(port = 0, session_affinity_identifier) {
 			allowHalfOpen: true,
 			pauseOnConnect: !worker_strategy.readsData,
 		},
-		(socket) => {
+		(handle_socket[port] = (socket) => {
 			worker_strategy(socket, (worker, received_data) => {
 				if (!worker) {
 					if (direct_thread_server) {
 						direct_thread_server.deliverSocket(socket, port, received_data);
 						socket.resume();
-					} else harper_logger.error(`No HTTP workers found`);
+					} else {
+						console.warn('Queuing socket');
+						queued_sockets.push(socket);
+					}
 					return;
 				}
 				worker.requests++;
@@ -98,7 +109,7 @@ export function startSocketServer(port = 0, session_affinity_identifier) {
 				// Windows doesn't support passing sockets by file descriptors, so we have manually proxy the socket data
 				else proxySocket(socket, worker, port);
 			});
-		}
+		})
 	).listen(port);
 	server.on('error', (error) => {
 		console.error('Error in socket server', error);
