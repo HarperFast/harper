@@ -422,9 +422,3 @@ if (isMainThread) {
 		}
 	});
 }
-global.restartWorkers = restartWorkers;
-if (isMainThread) {
-	setInterval(() => {
-		restartWorkers();
-	}, 12000);
-}
