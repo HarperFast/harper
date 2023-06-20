@@ -100,7 +100,7 @@ class SubscriptionsSession {
 					if (needs_ack) {
 						update.topic = topic;
 						message_id = this.needsAcknowledge(update);
-					}
+					} else message_id = next_message_id++;
 					this.listener(resource_path + '/' + (update.id ?? ''), update.value, message_id, subscription_request);
 				},
 				search,
