@@ -21,7 +21,7 @@ const fake_components = {
 	unit_test_package3: {
 		package: 'HarperDB/unit_test_package3.tar',
 	},
-	harperdb: {
+	harperdbTest: {
 		package: 'HarperDB',
 	},
 	unitTest1: {
@@ -57,6 +57,7 @@ describe('Test installApps module', () => {
 
 	before(() => {
 		env_mgr.setProperty('rootPath', 'unit-test');
+		install_components.__set__('hdb_terms.PACKAGE_ROOT', 'comps/unit/tests');
 		read_json_stub = sandbox.stub(fs, 'readJson').resolves(fake_installed_package_json);
 		get_config_stub = sandbox.stub(config_utils, 'getConfiguration').returns(fake_components);
 		install_root_mod_stub = sandbox.stub(npm_utils, 'installAllRootModules');
@@ -80,10 +81,9 @@ describe('Test installApps module', () => {
 		await install_components();
 		expect(write_file_stub.args[0]).to.eql([
 			'unit-test/package.json',
-			'{\n  "dependencies": {\n    "unit_test_package1": "github:HarperDB/unit_test_package1",\n    "unit_test_package2": "github:HarperDB/unit_test_package2",\n    "unit_test_package3": "file:HarperDB/unit_test_package3.tar",\n    "harperdb": "npm:HarperDB",\n    "unitTest1": "npm:@HarperDBtest/unit_test_package4",\n    "darper_test": "npm:@HarperDBtestAgain/unit_test_package5@1.2.3",\n    "fromurl": "https://www.harperdb.io/apps-test"\n  }\n}',
+			'{\n  "dependencies": {\n    "harperdb": "file:comps/unit/tests",\n    "unit_test_package1": "github:HarperDB/unit_test_package1",\n    "unit_test_package2": "github:HarperDB/unit_test_package2",\n    "unit_test_package3": "file:HarperDB/unit_test_package3.tar",\n    "harperdbTest": "npm:HarperDB",\n    "unitTest1": "npm:@HarperDBtest/unit_test_package4",\n    "darper_test": "npm:@HarperDBtestAgain/unit_test_package5@1.2.3",\n    "fromurl": "https://www.harperdb.io/apps-test"\n  }\n}',
 		]);
 		expect(install_root_mod_stub.called).to.be.true;
-		expect(ensure_sym_link.called).to.be.true;
 	});
 
 	it('Test more components added to existing dependencies', async () => {
@@ -97,7 +97,7 @@ describe('Test installApps module', () => {
 		await install_components();
 		expect(write_file_stub.args[0]).to.eql([
 			'unit-test/package.json',
-			'{\n  "dependencies": {\n    "unit_test_package1": "github:HarperDB/unit_test_package1",\n    "unit_test_package2": "github:HarperDB/unit_test_package2",\n    "unit_test_package3": "file:HarperDB/unit_test_package3.tar",\n    "harperdb": "npm:HarperDB",\n    "unitTest1": "npm:@HarperDBtest/unit_test_package4",\n    "darper_test": "npm:@HarperDBtestAgain/unit_test_package5@1.2.3",\n    "fromurl": "https://www.harperdb.io/apps-test"\n  }\n}',
+			'{\n  "dependencies": {\n    "harperdb": "file:comps/unit/tests",\n    "unit_test_package1": "github:HarperDB/unit_test_package1",\n    "unit_test_package2": "github:HarperDB/unit_test_package2",\n    "unit_test_package3": "file:HarperDB/unit_test_package3.tar",\n    "harperdbTest": "npm:HarperDB",\n    "unitTest1": "npm:@HarperDBtest/unit_test_package4",\n    "darper_test": "npm:@HarperDBtestAgain/unit_test_package5@1.2.3",\n    "fromurl": "https://www.harperdb.io/apps-test"\n  }\n}',
 		]);
 	});
 
@@ -106,7 +106,7 @@ describe('Test installApps module', () => {
 		await install_components();
 		expect(write_file_stub.args[0]).to.eql([
 			'unit-test/package.json',
-			'{\n  "dependencies": {\n    "unit_test_package1": "github:HarperDB/unit_test_package1",\n    "unit_test_package2": "github:HarperDB/unit_test_package2",\n    "unit_test_package3": "file:HarperDB/unit_test_package3.tar",\n    "harperdb": "npm:HarperDB",\n    "unitTest1": "npm:@HarperDBtest/unit_test_package4",\n    "darper_test": "npm:@HarperDBtestAgain/unit_test_package5@1.2.3"\n  }\n}',
+			'{\n  "dependencies": {\n    "harperdb": "file:comps/unit/tests",\n    "unit_test_package1": "github:HarperDB/unit_test_package1",\n    "unit_test_package2": "github:HarperDB/unit_test_package2",\n    "unit_test_package3": "file:HarperDB/unit_test_package3.tar",\n    "harperdbTest": "npm:HarperDB",\n    "unitTest1": "npm:@HarperDBtest/unit_test_package4",\n    "darper_test": "npm:@HarperDBtestAgain/unit_test_package5@1.2.3"\n  }\n}',
 		]);
 	});
 

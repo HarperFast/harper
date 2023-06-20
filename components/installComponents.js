@@ -22,22 +22,13 @@ async function installComponents() {
 	const root_path = eng_mgr.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
 	const pkg_json_path = path.join(root_path, 'package.json');
 	const pkg_json = {
-		dependencies: {},
+		dependencies: {
+			harperdb: 'file:' + hdb_terms.PACKAGE_ROOT,
+		},
 	};
 
-	// Add a link to harperdb in hdb/node_modules
 	const node_mods_path = path.join(root_path, 'node_modules');
 	await fs.ensureDir(node_mods_path);
-	const harperdb_link_path = path.join(node_mods_path, 'harperdb');
-	try {
-		await fs.ensureSymlink(hdb_terms.PACKAGE_ROOT, harperdb_link_path);
-	} catch (err) {
-		if (err.code === hdb_terms.NODE_ERROR_CODES.EEXIST) {
-			await fs.unlink(harperdb_link_path);
-			await fs.ensureSymlink(hdb_terms.PACKAGE_ROOT, harperdb_link_path);
-		} else throw err;
-	}
-
 	let install_pkg_json;
 	let pkg_json_exists = true;
 	let update_occurred = false;
@@ -59,7 +50,7 @@ async function installComponents() {
 		// If there is no package.json file go ahead and write package.json and npm install it
 		if (!pkg_json_exists) {
 			hdb_log.notify('Installing apps.');
-			await installPackages(pkg_json_path, pkg_json, pkg_json_path);
+			await installPackages(pkg_json_path, pkg_json);
 			return;
 		}
 
@@ -85,7 +76,7 @@ async function installComponents() {
 	if (update_occurred) {
 		hdb_log.notify('Updating components.');
 		// Write package.json, call npm install
-		await installPackages(pkg_json_path, pkg_json, pkg_json_path);
+		await installPackages(pkg_json_path, pkg_json);
 	}
 }
 
@@ -117,10 +108,9 @@ async function getPkgPrefix(pkg) {
  * Write package.json, call npm install
  * @param pkg_json_path
  * @param pkg_json
- * @param install_pkg_json_path
  * @returns {Promise<void>}
  */
-async function installPackages(pkg_json_path, pkg_json, install_pkg_json_path) {
+async function installPackages(pkg_json_path, pkg_json) {
 	hdb_log.trace('npm installing components package.json', pkg_json);
 	await fs.writeFile(pkg_json_path, JSON.stringify(pkg_json, null, '  '));
 	await npm_utils.installAllRootModules(eng_mgr.get(hdb_terms.CONFIG_PARAMS.IGNORE_SCRIPTS) === true);
