@@ -48,7 +48,7 @@ export const namespace = {
 class SimpleCacheSource extends tables.FourProp {}
 export class SimpleCache extends tables.SimpleCache.sourcedFrom(SimpleCacheSource) {
 	post(data) {
-		if (data.invalidate) this.invalidate({});
+		if (data.invalidate) this.invalidate();
 	}
 }
 export class FourPropWithHistory extends tables.FourProp {

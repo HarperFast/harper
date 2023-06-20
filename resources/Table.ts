@@ -226,6 +226,8 @@ export function makeTable(options) {
 						})) {
 							if (version < Date.now() - expiration_ms) {
 								// make sure we only delete it if the version has not changed
+								let resource = new this(key, this);
+								resource.invalidate();
 								this.primaryStore.ifVersion(key, version, () => this.primaryStore.remove(key));
 							}
 						}
@@ -300,7 +302,7 @@ export function makeTable(options) {
 				if (entry.version > this[LAST_MODIFICATION_PROPERTY]) this.updateModificationTime(entry.version);
 				this[VERSION_PROPERTY] = entry.version;
 				record = entry.value;
-				if (this[VERSION_PROPERTY] < 0 || record?.__invalidated__) entry = null;
+				if (this[VERSION_PROPERTY] < 0 || !record || record?.__invalidated__) entry = null;
 			}
 			if (!entry && !allow_invalidated) {
 				const get = this.constructor.Source?.prototype.get;
@@ -310,25 +312,6 @@ export function makeTable(options) {
 					});
 			}
 			copyRecord(record, this);
-
-			/*
-			if (record) {
-				record[TXN_KEY] = this;
-				const availability = record.__availability__;
-				if (availability?.cached & INVALIDATED) {
-					// TODO: If cold storage/alternate storage is available, retrieve from there
-
-					if (availability.residence) {
-						// TODO: Implement retrieval from other nodes once we have horizontal caching
-					}
-					if (this.constructor.Source) return this.getFromSource(identifier, record);
-				} else if (expiration_ms && expiration_ms < Date.now() - this[LAST_MODIFICATION_PROPERTY]) {
-					// TTL/expiration has some open questions, is it tenable to do it with replication?
-					// What if there is no source?
-					if (this.constructor.Source) return this.getFromSource(identifier, record);
-				}
-				return record;
-			}*/
 		}
 
 		/**
@@ -498,11 +481,14 @@ export function makeTable(options) {
 			} else primary_store.remove(this[ID_PROPERTY], existing_version);
 			return updated_record;
 		}
-		invalidate(partial_record) {
-			if (!partial_record && Object.keys(indices).length > 0) partial_record = {};
-			if (partial_record) {
-				partial_record.__invalidated__ = true;
-				this.#writeUpdate(partial_record, { isNotification: true });
+		invalidate() {
+			let invalidated_record;
+			for (let name in indices) { // if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
+				if (!invalidated_record) invalidated_record = { __invalidated__: true };
+				invalidated_record[name] = this.getProperty(name);
+			}
+			if (invalidated_record) {
+				this.#writeUpdate(invalidated_record, { isNotification: true });
 			} else this.#writeDelete({ isNotification: true });
 		}
 		async operation(operation) {
