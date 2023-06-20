@@ -97,7 +97,15 @@ export function startSocketServer(port = 0, session_affinity_identifier) {
 						direct_thread_server.deliverSocket(socket, port, received_data);
 						socket.resume();
 					} else {
-						console.warn('Queuing socket');
+						if (queued_sockets.length === 0) {
+							setTimeout(() => {
+								if (queued_sockets.length > 0) {
+									console.warn(
+										'Incoming sockets/requests have been queued for workers to start, and no workers have handled them. Check to make sure an error is not preventing workers from starting'
+									);
+								}
+							}, 10000).unref();
+						}
 						queued_sockets.push(socket);
 					}
 					return;
