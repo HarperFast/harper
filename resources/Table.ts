@@ -869,6 +869,11 @@ export function makeTable(options) {
 						subscription.send(history[--i]);
 					}
 					if (history[0]) subscription.startTime = history[0].timestamp; // update so don't double send
+				} else if (!options.noRetain) {
+					for (const { key: id, value, version } of primary_store.getRange({ start: false, versions: true })) {
+						if (!value) continue;
+						subscription.send({ id, timestamp: version, value });
+					}
 				}
 			} else {
 				if (count && !start_time) start_time = 0;
@@ -893,12 +898,12 @@ export function makeTable(options) {
 						subscription.send(history[--i]);
 					}
 					subscription.startTime = version; // make sure we don't re-broadcast the current version that we already sent
+				} else if (!options.noRetain) {
+					// if retain and it exists, send the current value first
+					if (this.doesExist()) subscription.send({ id, timestamp: this[VERSION_PROPERTY], value: this });
 				}
 			}
 			if (options.listener) subscription.on('data', options.listener);
-			// if retain and it exists, send the current value first
-			if (!options.noRetain && this.doesExist())
-				subscription.send({ id, timestamp: this[VERSION_PROPERTY], value: this });
 			return subscription;
 		}
 		doesExist() {
