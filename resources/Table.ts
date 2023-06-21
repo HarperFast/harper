@@ -226,7 +226,7 @@ export function makeTable(options) {
 						})) {
 							if (version < Date.now() - expiration_ms) {
 								// make sure we only delete it if the version has not changed
-								let resource = new this(key, this);
+								const resource = new this(key, this);
 								resource.invalidate();
 								this.primaryStore.ifVersion(key, version, () => this.primaryStore.remove(key));
 							}
@@ -483,7 +483,8 @@ export function makeTable(options) {
 		}
 		invalidate() {
 			let invalidated_record;
-			for (let name in indices) { // if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
+			for (const name in indices) {
+				// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
 				if (!invalidated_record) invalidated_record = { __invalidated__: true };
 				invalidated_record[name] = this.getProperty(name);
 			}
@@ -852,11 +853,15 @@ export function makeTable(options) {
 				} else if (count) {
 					const history = [];
 					// we are collecting the history in reverse order to get the right count, then reversing to send
-					for (const { key, value } of audit_store.getRange({ start: 'z', reverse: true })) {
-						const [timestamp, audit_table_id, id] = key;
-						if (audit_table_id !== table_id) continue;
-						history.push({ id, timestamp, ...value });
-						if (--count <= 0) break;
+					for (const { key, value } of audit_store.getRange({ start: 'z', end: false, reverse: true })) {
+						try {
+							const [timestamp, audit_table_id, id] = key;
+							if (audit_table_id !== table_id) continue;
+							history.push({ id, timestamp, ...value });
+							if (--count <= 0) break;
+						} catch (error) {
+							harper_logger.error('Error getting history entry', key, error);
+						}
 						// TODO: Would like to do this asynchronously, but would need to catch up on anything published during iteration
 						//await new Promise((resolve) => setImmediate(resolve)); // yield for fairness
 					}
