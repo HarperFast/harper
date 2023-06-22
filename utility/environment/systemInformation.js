@@ -2,7 +2,6 @@
 
 const si = require('systeminformation');
 const log = require('../logging/harper_logger');
-const terms = require('../hdbTerms');
 const lmdb_get_table_size = require('../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbGetTableSize');
 const schema_describe = require('../../dataLayer/schemaDescribe');
 const { getThreadInfo } = require('../../server/threads/manageThreads');
@@ -103,7 +102,11 @@ async function getHDBProcessInfo() {
 		let processes = await si.processes();
 
 		processes.list.forEach((process) => {
-			if (process.params.includes(terms.HDB_PROC_NAME) || process.name.includes('harperdb')) {
+			if (
+				process.params.includes('harperdb') ||
+				process.name.includes('harperdb') ||
+				process.command.includes('harperdb')
+			) {
 				harperdb_processes.core.push(process);
 			} else if (process.name === 'nats-server') {
 				harperdb_processes.clustering.push(process);
