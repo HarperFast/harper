@@ -52,12 +52,8 @@ export class SimpleCache extends tables.SimpleCache.sourcedFrom(SimpleCacheSourc
 	}
 }
 export class FourPropWithHistory extends tables.FourProp {
-	static subscribe(options) {
-		options.previousCount = 10;
-		super.subscribe(options);	
-	}
 	subscribe(options) {
 		options.previousCount = 10;
-		super.subscribe(options);	
+		return super.subscribe(options);
 	}
 }

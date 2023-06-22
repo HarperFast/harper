@@ -19,7 +19,6 @@ export async function handleFile(js, url_path, file_path, resources) {
 	// use our configurable secure JS import loader
 	const exports = await secureImport(module_url);
 	// allow default to be used as root path handler
-	console.log('js', file_path);
 	if (isResource(exports.default)) resources.set(dirname(url_path), exports.default);
 	recurseForResources(exports, dirname(url_path));
 	function recurseForResources(exports, prefix) {

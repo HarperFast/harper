@@ -19,14 +19,15 @@ export function start({ ensureTable }) {
 		setupFile: handleFile,
 	};
 
-	function handleFile(gql_content, url_path, file_path, resources) {
+	async function handleFile(gql_content, url_path, file_path, resources) {
 		// lazy load the graphql package so we don't load it for users that don't use graphql
-		const { parse, Source, Kind, NamedTypeNode, StringValueNode } = require('graphql');
-		// This crashes Node:
-		//const { parse, Source, Kind, NamedTypeNode, StringValueNode } = await import('graphql');
+		const { parse, Source, Kind, NamedTypeNode, StringValueNode } = await import('graphql');
 		const ast = parse(new Source(gql_content.toString(), file_path));
-		const handlers = new Map();
 		const types = new Map();
+		const tables = [];
+		let query;
+		// we begin by iterating through the definitions in the AST to get the types and convert them
+		// to a friendly format for table attributes
 		for (const definition of ast.definitions) {
 			switch (definition.kind) {
 				case Kind.OBJECT_TYPE_DEFINITION:
@@ -41,100 +42,107 @@ export function start({ ensureTable }) {
 							}
 							if (type_def.schema) type_def.database = type_def.schema;
 							if (!type_def.table) type_def.table = type_name;
+							tables.push(type_def);
 						}
 						if (directive.name.value === 'sealed') {
 							type_def.sealed = true;
 						}
+						if (directive.name.value === 'exposed') {
+							type_def.exposed = true;
+						}
 					}
-					if (type_def.table) {
-						const attributes = [];
-						let has_primary_key = false;
-						for (const field of definition.fields) {
-							const type = (field.type as NamedTypeNode).name?.value;
-							const attribute = {
-								name: field.name.value,
-								type,
+					const properties = [];
+					let has_primary_key = false;
+					function getProperty(type) {
+						if (type.kind === 'NonNullType') {
+							const property = getProperty(type.type);
+							property.nullable = true;
+							return property;
+						}
+						if (type.kind === 'ListType') {
+							return {
+								type: 'array',
+								elements: getProperty(type.type),
 							};
-							attributes.push(attribute);
-							for (const directive of field.directives) {
-								if (directive.name.value === 'primaryKey') {
-									if (has_primary_key) console.warn('Can not define two attributes as a primary key');
-									else {
-										attribute.isPrimaryKey = true;
-										has_primary_key = true;
-									}
-								} else if (directive.name.value === 'indexed') {
-									attribute.indexed = true;
-								} else if (directive.name.value === 'createdTime') {
-									attribute.assignCreatedTime = true;
-								} else if (directive.name.value === 'updatedTime') {
-									attribute.assignUpdatedTime = true;
-								}
-							}
-							if (!has_primary_key) {
-								const id_attribute = attributes.find((attribute) => attribute.name === 'id');
-								if (id_attribute) id_attribute.isPrimaryKey = true;
-								// Do we wait until we have auto-incrementing numbers before auto-adding a primary key?
-								else
-									attributes.push({
-										name: 'id',
-										type: 'ID',
-										isPrimaryKey: true,
-									});
-							}
 						}
-						type_def.attributes = attributes;
-						// with graphql database definitions, this is a declaration that the table should exist and that it
-						// should be created if it does not exist
-						type_def.tableClass = ensureTable(type_def);
+						const type_name = (type as NamedTypeNode).name?.value;
+						return { type: type_name };
 					}
-					if (type_name === 'Query') {
-						for (const field of definition.fields) {
-							const query_name = field.name.value;
-							const type_name = (field.type as NamedTypeNode).name.value;
-							const type_def = types.get(type_name);
-							const authorized_roles = [];
-							for (const directive of definition.directives) {
-								if (directive.name.value === 'allow') {
-									for (const arg of directive.arguments) {
-										if (arg.name.value === 'role') {
-											authorized_roles.push((arg.value as StringValueNode).value);
-										}
+					for (const field of definition.fields) {
+						const property = getProperty(field.type);
+						property.name = field.name.value;
+						properties.push(property);
+						for (const directive of field.directives) {
+							if (directive.name.value === 'primaryKey') {
+								if (has_primary_key) console.warn('Can not define two attributes as a primary key');
+								else {
+									property.isPrimaryKey = true;
+									has_primary_key = true;
+								}
+							} else if (directive.name.value === 'indexed') {
+								property.indexed = true;
+							} else if (directive.name.value === 'createdTime') {
+								property.assignCreatedTime = true;
+							} else if (directive.name.value === 'updatedTime') {
+								property.assignUpdatedTime = true;
+							} else if (directive.name.value === 'allow') {
+								const authorized_roles = (property.authorizedRoles = []);
+								for (const arg of directive.arguments) {
+									if (arg.name.value === 'role') {
+										authorized_roles.push((arg.value as StringValueNode).value);
 									}
 								}
 							}
-							// Eventually we may create a custom resource that is generated for this query and instantiated for
-							// each request, that can handle any GraphQL defined sets of properties that should be returned
-							/*class GraphQLResource extends Resource {
-								get(id) {
-									let role = this.user?.role;
-									if (role && authorized_roles.indexOf(role.name) > -1 ||
-											role?.permission?.super_user) {
-										let record = this.useTable(type_def.table, type_def.database)?.get(id);
-										return record;
-									} else throw new Error('Unauthorized');
-								}
-								subscribe(path, options) {
-									let role = this.user?.role;
-									if (role && authorized_roles.indexOf(role.name) > -1 ||
-										role?.permission?.super_user) {
-										return this.useTable(type_def.table, type_def.database)?.subscribe(path, options);
-									} else throw new Error('Unauthorized');
-								}
-								put(id, body) {
-									return this.useTable(type_def.table, type_def.database)?.put(id, body);
-								}
-							}
-							handlers.set(query_name, restHandler(GraphQLResource));*/
-							// the main thread should only be setting up tables, worker threads actually register the resources
-							// for server usage
-							resources.set(dirname(url_path) + '/' + query_name, type_def.tableClass);
-							//handlers.set(query_name, restHandler(relative_path + '/' + query_name, type_def.tableClass));
 						}
+					}
+					type_def.properties = properties;
+					type_def.typeName = type_name;
+					if (type_name === 'Query') {
+						query = type_def;
 					}
 			}
 		}
-		return handlers;
+		// if any types reference other types, fill those in.
+		for (const [name, type_def] of types) {
+			for (const property of type_def.properties) {
+				const target_type_def = types.get(property.type);
+				if (target_type_def) {
+					property.properties = target_type_def.properties;
+				}
+			}
+		}
+		// any tables that are defined in the schema can now be registered
+		for (const type_def of tables) {
+			let has_primary_key = false;
+			const attributes = type_def.properties;
+			for (const attribute of attributes) {
+				if (attribute.isPrimaryKey) has_primary_key = true;
+			}
+			if (!has_primary_key) {
+				const id_attribute = attributes.find((attribute) => attribute.name === 'id');
+				if (id_attribute) id_attribute.isPrimaryKey = true;
+				// Do we wait until we have auto-incrementing numbers before auto-adding a primary key?
+				else
+					attributes.push({
+						name: 'id',
+						type: 'ID',
+						isPrimaryKey: true,
+					});
+			}
+			type_def.attributes = attributes;
+			// with graphql database definitions, this is a declaration that the table should exist and that it
+			// should be created if it does not exist
+			type_def.tableClass = ensureTable(type_def);
+			if (type_def.exposed) resources.set(dirname(url_path) + '/' + type_def.typeName, type_def.tableClass);
+		}
+		// and if there was a `type Query` definition, we use that to created exported resources
+		if (query) {
+			for (const property of query.properties) {
+				const type_def = types.get(property.type);
+				if (!type_def) throw new Error(`${property.type} was not found as a Query export`);
+				resources.set(dirname(url_path) + '/' + property.name, type_def.tableClass);
+			}
+		}
 	}
 }
 

@@ -35,7 +35,6 @@ export class DefaultAccess {
 		// parse the query first and pass it to allowRead so it can inform attribute-level permissions
 		// and the permissions can modify the query, assigning a select for available attributes.
 		this.resource[SAVE_UPDATES_PROPERTY] = false; // by default modifications aren't saved, they just yield a different result from get
-		await this.resource.loadRecord?.();
 		if (this.request) {
 			const allowed = await this.resource.allowRead(this.request.user, query);
 			if (!allowed) {
@@ -50,7 +49,6 @@ export class DefaultAccess {
 		const search = this.request.search;
 		let query;
 		if (search) query = this.parseQuery(search);
-		await this.resource.loadRecord(true);
 		const updated_data = await content;
 		if (this.resource.allowUpdate(this.request.user, updated_data)) {
 			return this.resource.put(updated_data, query);
@@ -59,7 +57,6 @@ export class DefaultAccess {
 		}
 	}
 	async patch(content) {
-		await this.resource.loadRecord();
 		const updated_data = await content;
 		if (this.resource.allowUpdate(this.request.user, updated_data)) {
 			return this.resource.put(updated_data, { select: Object.keys(updated_data) });
@@ -68,7 +65,6 @@ export class DefaultAccess {
 		}
 	}
 	async post(content) {
-		await this.resource.loadRecord();
 		const data = await content;
 		if (this.resource.allowCreate(this.request.user, data)) {
 			this.resource.update?.();
@@ -76,12 +72,10 @@ export class DefaultAccess {
 		} else throw new AccessError(this.user);
 	}
 	async delete() {
-		await this.resource.loadRecord(true);
 		if (this.resource.allowDelete(this.request.user)) return this.resource.delete();
 		else throw new AccessError(this.user);
 	}
 	async publish(content) {
-		await this.resource.loadRecord(true);
 		const data = await content;
 		//console.log('publish', identifier, require('worker_threads').threadId);
 		if (this.request.retain) {
@@ -99,14 +93,12 @@ export class DefaultAccess {
 		throw new AccessError(this.user);
 	}
 	async subscribe(options) {
-		await this.resource.loadRecord?.();
 		//console.log('publish', identifier, require('worker_threads').threadId);
 		const allowed = await this.resource.allowRead(this.request.user, options.search);
 		if (!allowed) throw new AccessError(this.user);
 		return this.resource.subscribe(options);
 	}
 	async connect(incoming_messages) {
-		await this.resource.loadRecord();
 		const allowed = await this.resource.allowRead(this.request.user);
 		if (!allowed) {
 			throw new AccessError(this.user);
@@ -115,7 +107,6 @@ export class DefaultAccess {
 	}
 	async query(content) {
 		this.resource[SAVE_UPDATES_PROPERTY] = false; // by default modifications aren't saved, they just yield a different result from get
-		await this.resource.loadRecord?.();
 		let query = await content;
 		const allowed = await this.resource.allowRead(this.request.user, query);
 		if (!allowed) {

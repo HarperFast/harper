@@ -92,22 +92,22 @@ class SubscriptionsSession {
 			existing_subscription.end();
 			this.subscriptions.splice(this.subscriptions.indexOf(existing_subscription), 1);
 		}
-		let subscription;
-		const resource = await resources.call(path, this, async (resource_access, resource_path) => {
-			return (subscription = await resource_access.subscribe({
-				listener: (update) => {
-					let message_id;
-					if (needs_ack) {
-						update.topic = topic;
-						message_id = this.needsAcknowledge(update);
-					} else message_id = next_message_id++;
-					this.listener(resource_path + '/' + (update.id ?? ''), update.value, message_id, subscription_request);
-				},
+		const subscription = await resources.call(path, this, async (resource_access, resource_path) => {
+			const subscription = await resource_access.subscribe({
 				search,
 				user: this.user,
 				startTime: start_time,
 				noRetain: rh,
-			}));
+			});
+			subscription.on('data', (update) => {
+				let message_id;
+				if (needs_ack) {
+					update.topic = topic;
+					message_id = this.needsAcknowledge(update);
+				} else message_id = next_message_id++;
+				this.listener(resource_path + '/' + (update.id ?? ''), update.value, message_id, subscription_request);
+			});
+			return subscription;
 		});
 		subscription.topic = topic;
 		subscription.qos = subscription_request.qos;
