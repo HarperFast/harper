@@ -68,6 +68,10 @@ async function initialize(called_by_install = false, called_by_main = false) {
 		}
 	}
 
+	// Write HarperDB PID to file for tracking purposes
+	await fs.writeFile(path.join(env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH), hdb_terms.HDB_PID_FILE), `${process.pid}`);
+	hdb_logger.info('HarperDB PID', process.pid);
+
 	// Requiring the processManagement mod will create the .pm2 dir. This code is here to allow install to set
 	// pm2 env vars before that is done.
 	if (pm2_utils === undefined) pm2_utils = require('../utility/processManagement/processManagement');
