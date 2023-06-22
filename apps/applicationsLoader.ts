@@ -260,9 +260,10 @@ export async function loadComponent(
 		}
 		// Auto restart threads on changes to any app folder. TODO: Make this configurable
 		if (isMainThread && !watches_setup) {
-			watchDir(folder, () => {
-				loadApplications();
-				restartWorkers();
+			watchDir(folder, async () => {
+				await loadApplications();
+				await restartWorkers();
+				console.log('Reloaded HarperDB components');
 			});
 		}
 		if (config.extensionModule) {
