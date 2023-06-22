@@ -55,14 +55,14 @@ export function start({ ensureTable }) {
 					let has_primary_key = false;
 					function getProperty(type) {
 						if (type.kind === 'NonNullType') {
-							let property = getProperty(type.type);
+							const property = getProperty(type.type);
 							property.nullable = true;
 							return property;
 						}
 						if (type.kind === 'ListType') {
 							return {
 								type: 'array',
-								elements: getProperty(type.type);
+								elements: getProperty(type.type),
 							};
 						}
 						const type_name = (type as NamedTypeNode).name?.value;
