@@ -16,7 +16,7 @@ import { _assignPackageExport } from '../index';
 import { getIndexedValues } from '../utility/lmdb/commonUtility';
 import * as signalling from '../utility/signalling';
 import { SchemaEventMsg } from '../server/threads/itc';
-import { workerData } from 'worker_threads';
+import { workerData, threadId } from 'worker_threads';
 import * as harper_logger from '../utility/logging/harper_logger';
 import * as manage_threads from '../server/threads/manageThreads';
 
@@ -319,10 +319,9 @@ function ensureDB(database_name) {
 }
 function setTable(tables, table_name, Table) {
 	tables[table_name] = Table;
-	const defined_tables = tables[DEFINED_TABLES];
-	if (defined_tables) {
-		defined_tables.set(table_name, Table);
-	}
+	let defined_tables = tables[DEFINED_TABLES];
+	if (!defined_tables) defined_tables = tables[DEFINED_TABLES] = new Map();
+	defined_tables.set(table_name, Table);
 	return Table;
 }
 const ROOT_STORE_KEY = Symbol('root-store');
@@ -566,7 +565,8 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 				snapshot: false, // don't hold a read transaction this whole time
 			})) {
 				if (!record) continue; // deletion entry
-				if (Table.schemaVersion !== schema_version) return; // break out if there are any schema changes and let someone else pick it up
+				// TODO: Do we ever need to interrupt due to a schema change that was not a restart?
+				//if (Table.schemaVersion !== schema_version) return; // break out if there are any schema changes and let someone else pick it up
 				let indexed = 0;
 				outstanding++;
 				// every index operation needs to be guarded by the version still be the same. If it has already changed before
@@ -597,7 +597,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 						harper_logger.error(error);
 					}
 				);
-				if (workerData.restartNumber !== manage_threads.restartNumber) {
+				if (workerData && workerData.restartNumber !== manage_threads.restartNumber) {
 					interrupted = true;
 				}
 				if (++indexed % 100 === 0 || interrupted) {

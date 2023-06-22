@@ -8,7 +8,7 @@ describe('Update Schema', () => {
 	const { handleFile } = start({ ensureTable: table });
 	before(async function () {
 		let path = getMockLMDBPath();
-		handleFile(`
+		await handleFile(`
 		type SchemaChanges @table {
 			id: ID @primaryKey
 			state: String
@@ -26,7 +26,7 @@ describe('Update Schema', () => {
 			caught_error = error;
 		}
 		//assert(caught_error?.message.includes('not indexed'));
-		handleFile(`
+		await handleFile(`
 		type SchemaChanges @table {
 			id: ID @primaryKey
 			state: String @indexed
@@ -37,7 +37,7 @@ describe('Update Schema', () => {
 		} catch (error) {
 			caught_error = error;
 		}
-		//assert(caught_error?.message.includes('not indexed yet'));
+		assert(caught_error?.message.includes('not indexed yet'));
 		await tables.SchemaChanges.indexingOperation;
 		let records = [];
 		for await (let record of tables.SchemaChanges.search([{ attribute: 'state', value: 'UT' }])) {

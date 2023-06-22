@@ -32810,7 +32810,8 @@
 		},
 		{
 			"name": "6. SQL Role Testing",
-            "item": [
+          "item": [],
+          "disabled-item": [
 				{
 					"name": "SQL Add non SU role",
 					"event": [

@@ -37,7 +37,7 @@ module.exports = {
 	messageTypeListener,
 	getWorkerIndex,
 	setMainIsWorker,
-	restartNumber: 1,
+	restartNumber: workerData?.restartNumber || 1,
 };
 let isMainWorker;
 function getWorkerIndex() {
@@ -400,7 +400,8 @@ if (isMainThread) {
 				if (queued_restart) clearTimeout(queued_restart);
 				queued_restart = setTimeout(async () => {
 					if (before_restart) await before_restart();
-					restartWorkers();
+					await restartWorkers();
+					console.log('Reloaded HarperDB components');
 				}, 100);
 			}
 		}
