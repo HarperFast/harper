@@ -240,7 +240,7 @@ function readMetaDb(
 					}
 					for (const attribute of attributes) {
 						// now load the non-primary keys, opening the dbs as necessary for indices
-						if (!attribute.is_hash_attribute) {
+						if (!attribute.is_hash_attribute && (attribute.indexed || (attribute.attribute && !attribute.name))) {
 							if (!indices[attribute.name]) {
 								const dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
 								indices[attribute.name] = root_store.openDB(attribute.key, dbi_init);
