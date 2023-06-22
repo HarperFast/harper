@@ -68,6 +68,7 @@ describe('Test run module', () => {
 		stop = require('../../bin/stop');
 
 		get_prob_stub = sandbox.stub(env_mangr, 'get');
+		get_prob_stub.withArgs('rootPath').returns('unit-test');
 		spawn_stub = sandbox.stub(child_process, 'spawn').returns(fake_spawn);
 		check_perms_stub = sandbox.stub(install_user_permission, 'checkPermission');
 		start_all_services_stub = sandbox.stub(pm2_utils, 'startAllServices').resolves();
@@ -76,6 +77,7 @@ describe('Test run module', () => {
 		process_exit_stub = sandbox.stub(process, 'exit');
 		console_log_stub = sandbox.stub(console, 'log');
 		console_error_stub = sandbox.stub(console, 'error');
+		sandbox.stub(fs, 'writeFile');
 		test_util.preTestPrep();
 		run_rw = rewire('../../bin/run');
 		log_rw = run_rw.__set__('hdb_logger', logger_fake);
@@ -140,6 +142,7 @@ describe('Test run module', () => {
 		});
 
 		it('Test upgrade is called if upgrade version permits', async () => {
+			env_mangr.setProperty(hdb_terms.CONFIG_PARAMS.ROOTPATH, 'unit-test');
 			is_hdb_installed_stub.resolves(true);
 			get_ver_update_info_stub.resolves({ upgrade_version: '9.9.9' });
 			await run();

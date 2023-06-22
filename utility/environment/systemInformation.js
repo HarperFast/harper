@@ -296,6 +296,7 @@ async function systemInformation(system_info_op) {
 				response.table_size = await getTableSize();
 				break;
 			case 'database_metrics':
+			case 'metrics':
 				response.metrics = await getMetrics();
 				break;
 			case 'threads':

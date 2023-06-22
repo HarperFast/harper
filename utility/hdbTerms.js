@@ -42,6 +42,7 @@ const CLUSTERING_INGEST_PROC_DESCRIPTOR = 'Clustering Ingest Service';
 const CLUSTERING_REPLY_SERVICE_DESCRIPTOR = 'Clustering Reply Service';
 
 const FOREGROUND_PID_FILE = 'foreground.pid';
+const HDB_PID_FILE = 'hdb.pid';
 
 const PROCESS_DESCRIPTORS = {
 	HDB: HDB_PROC_DESCRIPTOR,
@@ -431,6 +432,7 @@ const SERVICE_ACTIONS_ENUM = {
 	VERSION: 'version',
 	UPGRADE: 'upgrade',
 	HELP: 'help',
+	STATUS: 'status',
 };
 
 //describes the Geo Conversion types
@@ -1019,4 +1021,5 @@ module.exports = {
 	PACKAGE_ROOT,
 	PRE_4_0_0_VERSION,
 	SCHEMAS_PARAM_CONFIG,
+	HDB_PID_FILE,
 };

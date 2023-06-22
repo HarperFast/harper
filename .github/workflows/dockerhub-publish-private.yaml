@@ -4,9 +4,36 @@ name: DockerHub Publish Private
 jobs:
   build:
     uses: ./.github/workflows/build.yaml
-  dockerBuild:
+  getLicenses:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+    - uses: actions/checkout@v3
+    - name: "Get Latest License Files"
+      run: .github/scripts/get-license-files.sh
+    - name: "Get HarperDB/harperdb_open_source_license_generator.git"
+      uses: actions/checkout@v3
+      with:
+        repository: "HarperDB/harperdb_open_source_license_generator.git"
+        path: "harperdb_open_source_license_generator"
+        ref: "master"
+    - uses: actions/setup-node@v3
+    - name: "Generate license file"
+      env:
+        project_path: "."
+        output_file: "utility/Docker/licenses/open-source-licenses-notices.md"
+        template_file: "harperdb_open_source_license_generator/template.txt"
+      run: npm install harperdb_open_source_license_generator/ && node harperdb_open_source_license_generator/index.js
+    - name: 'Upload Artifact'
+      uses: actions/upload-artifact@v3
+      with:
+        name: "licenses"
+        path: "utility/Docker/licenses/"
+        retention-days: 1
+  build-container-harperdb:
     needs:
       - build
+      - getLicenses
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -24,7 +51,11 @@ jobs:
       with:
         name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
         path: ./
-    - name: "Build Docker Image and Publish"
+    - uses: actions/download-artifact@v3
+      with:
+        name: "licenses"
+        path: "utility/Docker/licenses/"
+    - name: "Publish harperdb/private to Dockerhub"
       env:
         HARPERDB_VERSION: ${{ needs.build.outputs.harperdbVersion }}
         NODE_VERSION: ${{ needs.build.outputs.nodeVersion }}
