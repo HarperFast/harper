@@ -443,6 +443,15 @@ async function deployCustomFunctionProject(req) {
 	return `Successfully deployed project: ${project}`;
 }
 
+async function getComponentFiles() {
+	const files = await fs.readdir(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT));
+	console.log(files);
+}
+
+async function getComponentFile(name, path) {}
+
+async function setComponentFile() {}
+
 module.exports = {
 	customFunctionsStatus,
 	getCustomFunctions,
@@ -453,4 +462,7 @@ module.exports = {
 	dropCustomFunctionProject,
 	packageCustomFunctionProject,
 	deployCustomFunctionProject,
+	getComponentFiles,
+	getComponentFile,
+	setComponentFile,
 };
