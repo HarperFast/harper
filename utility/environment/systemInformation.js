@@ -1,5 +1,7 @@
 'use strict';
 
+const fs = require('fs-extra');
+const path = require('path');
 const si = require('systeminformation');
 const log = require('../logging/harper_logger');
 const terms = require('../hdbTerms');
@@ -102,8 +104,21 @@ async function getHDBProcessInfo() {
 	try {
 		let processes = await si.processes();
 
+		let hdb_pid;
+		try {
+			hdb_pid = Number.parseInt(
+				await fs.readFile(path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE), 'utf8')
+			);
+		} catch (err) {
+			if (err.code === terms.NODE_ERROR_CODES.ENOENT) {
+				log.error(`Unable to locate 'hdb.pid' file, try stopping and starting HarperDB`);
+			} else {
+				throw err;
+			}
+		}
+
 		processes.list.forEach((process) => {
-			if (process.params.includes(terms.HDB_PROC_NAME) || process.name.includes('harperdb')) {
+			if (process.pid === hdb_pid) {
 				harperdb_processes.core.push(process);
 			} else if (process.name === 'nats-server') {
 				harperdb_processes.clustering.push(process);
