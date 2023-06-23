@@ -44,6 +44,7 @@ const CLUSTERING_INGEST_PROC_DESCRIPTOR = 'Clustering Ingest Service';
 const CLUSTERING_REPLY_SERVICE_DESCRIPTOR = 'Clustering Reply Service';
 
 const FOREGROUND_PID_FILE = 'foreground.pid';
+const HDB_PID_FILE = 'hdb.pid';
 
 const PROCESS_DESCRIPTORS = {
 	HDB: HDB_PROC_DESCRIPTOR,
@@ -438,6 +439,7 @@ const SERVICE_ACTIONS_ENUM = {
 	VERSION: 'version',
 	UPGRADE: 'upgrade',
 	HELP: 'help',
+	STATUS: 'status',
 };
 
 //describes the Geo Conversion types
@@ -1063,5 +1065,6 @@ module.exports = {
 	METADATA_PROPERTY,
 	AUTH_AUDIT_STATUS,
 	AUTH_AUDIT_TYPES,
+	HDB_PID_FILE,
 };
 require('./devops/tsBuild');

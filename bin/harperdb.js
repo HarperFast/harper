@@ -149,6 +149,14 @@ function harperDBService() {
 						logger.error(`Got an error during upgrade ${e}`);
 					});
 				break;
+			case SERVICE_ACTIONS_ENUM.STATUS:
+				const status = require('./status');
+				status()
+					.then()
+					.catch((err) => {
+						console.error(err);
+					});
+				break;
 			case undefined:
 				// The require is here to better control the flow of imports when this module is called.
 				require('./run').main();
@@ -171,7 +179,8 @@ Commands:
   restart - Restart the harperdb background process
   install - Install harperdb
   register - Register harperdb
-  upgrade - Upgrade harperdb`);
+  upgrade - Upgrade harperdb
+  status - Print the status of HarperDB and clustering`);
 		}
 	});
 }
