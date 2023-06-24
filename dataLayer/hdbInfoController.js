@@ -22,6 +22,7 @@ const hdb_utils = require('../utility/common_utils');
 const global_schema = require('../utility/globalSchema');
 const tableLoader = require('../resources/databases');
 const directiveManager = require('../upgrade/directives/directivesController');
+let p_setSchemaDataToGlobal = util.promisify(global_schema.setSchemaDataToGlobal);
 
 let p_search_search_by_value = search.searchByValue;
 

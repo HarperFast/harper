@@ -2,6 +2,8 @@
 
 const crypto = require('crypto');
 const env_mgr = require('../utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('../utility/hdbTerms');
+
 const CRYPTO_ALGORITHM = 'aes-256-cbc';
 const KEY_BYTE_LENGTH = 32;
 const IV_BYTE_LENGTH = 16;
@@ -55,7 +57,7 @@ function decrypt(text) {
  */
 function createNatsTableStreamName(database, table) {
 	// TODO: Real config here
-	const full_name = env_mgr.get('database_streams') ? database : `${database}.${table}`;
+	const full_name = env_mgr.get(CONFIG_PARAMS.CLUSTERING_DATABASELEVEL) ? database : `${database}.${table}`;
 	let hash = hash_cache.get(full_name);
 	if (!hash) {
 		hash = crypto.createHash('md5').update(full_name).digest('hex');

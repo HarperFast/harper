@@ -19,8 +19,10 @@ async function http(request, next_handler) {
 	let resource_path;
 	try {
 		const headers = {};
+		let resource;
 		let response_data = await resources.call(request.pathname.slice(1), request, (resource_access, path) => {
 			resource_path = path;
+			resource = resource_access.resource;
 			if (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'QUERY') {
 				// TODO: Support cancelation (if the request otherwise fails or takes too many bytes)
 				try {
@@ -66,7 +68,7 @@ async function http(request, next_handler) {
 		let lastModification;
 		if (response_data == undefined) {
 			status = method === 'GET' || method === 'HEAD' ? 404 : 204;
-		} else if ((lastModification = response_data[LAST_MODIFICATION_PROPERTY])) {
+		} else if ((lastModification = resource[LAST_MODIFICATION_PROPERTY])) {
 			const if_match = request.headers['if-match'];
 			if (if_match && (lastModification * 1000).toString(36) == if_match) {
 				//resource_result.cancel();

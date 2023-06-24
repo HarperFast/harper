@@ -15,8 +15,8 @@ import {
 	copyRecord,
 	withoutCopying,
 	NOT_COPIED_YET,
-	EXPLICIT_CHANGES_PROPERTY,
 	USER_PROPERTY,
+	IS_COLLECTION,
 } from './Resource';
 import { COMPLETION, DatabaseTransaction, immediateTransaction } from './DatabaseTransaction';
 import * as lmdb_terms from '../utility/lmdb/terms';
@@ -29,6 +29,7 @@ import { SchemaEventMsg } from '../server/threads/itc';
 import { databases, table } from './databases';
 import { idsForCondition, filterByType } from './search';
 import * as harper_logger from '../utility/logging/harper_logger';
+import { assignObjectAccessors, collapseData, deepFreeze, hasChanges, OWN_DATA } from './tracked';
 
 let server_utilities;
 const RANGE_ESTIMATE = 100000000;
@@ -287,9 +288,38 @@ export function makeTable(options) {
 				if (this.parent?.updateModificationTime) this.parent.updateModificationTime(latest);
 			}
 		}
-		// this primary exists to denote the difference between the Resource get, as a get that is implemented and returns something
-		get(query) {
-			return super.get(query);
+		/**
+		 * This retrieves the data of this resource. By default, with no argument, just return `this`.
+		 * @param query - If included, specifies a query to perform on the record
+		 */
+		get(query?: object): Promise<object | void> | object | void {
+			if (typeof query === 'string') return this.getProperty(query);
+			if (this[IS_COLLECTION]) {
+				return this.search(query);
+			}
+			if (this.isSavedRecord()) {
+				if (query?.select) {
+					const selected_data = {};
+					const forceNulls = query.select.forceNulls;
+					const own_data = this[OWN_DATA];
+					for (const property of query.select) {
+						let value;
+						if (this.hasOwnProperty(property) && typeof (value = this[property]) !== 'function') {
+							selected_data[property] = value;
+							continue;
+						}
+						if (own_data && property in own_data) {
+							let value = own_data[property];
+							if (value && typeof value === 'object') value = collapseData(value);
+							selected_data[property] = value;
+						} else value = this[RECORD_PROPERTY][property];
+						if (value === undefined && forceNulls) value = null;
+						selected_data[property] = value;
+					}
+					return selected_data;
+				}
+				return collapseData(this);
+			}
 		}
 		loadRecord(allow_invalidated?: boolean) {
 			// TODO: determine if we use lazy access properties
@@ -306,12 +336,14 @@ export function makeTable(options) {
 			}
 			if (!entry && !allow_invalidated) {
 				const get = this.constructor.Source?.prototype.get;
-				if (get && !get.doesNotLoad)
+				if (get)
 					return this.getFromSource(record, this[VERSION_PROPERTY]).then((record) => {
-						copyRecord(record, this);
+						if (record?.[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
+						this[RECORD_PROPERTY] = record;
 					});
 			}
-			copyRecord(record, this);
+			if (record?.[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
+			this[RECORD_PROPERTY] = record;
 		}
 
 		/**
@@ -368,7 +400,7 @@ export function makeTable(options) {
 						for (const permission of attribute_permissions) {
 							const key = permission.attribute_name;
 							if (!permission.update && !(key in updated_data)) {
-								updated_data[key] = this.get(key);
+								updated_data[key] = this.getProperty(key);
 							}
 						}
 					}
@@ -444,15 +476,19 @@ export function makeTable(options) {
 				// TODO: Remove from transaction
 				return this;
 			}
-
+			let own_data;
 			if (typeof arg === 'object' && arg) {
-				arg[primary_key] = this[ID_PROPERTY]; // ensure that the id is in the record
-				for (const key in this) {
-					if (arg[key] === undefined) delete this[key];
+				for (const key in this[RECORD_PROPERTY]) {
+					if (arg[key] === undefined) arg[key] = undefined;
 				}
-				for (const key in arg) {
-					this[key] = arg[key];
-				}
+				own_data = this[OWN_DATA];
+				if (own_data) arg = Object.assign(own_data, arg);
+				this[OWN_DATA] = own_data = arg;
+			}
+			if (!this[RECORD_PROPERTY] && !(own_data || (own_data = this[OWN_DATA]))?.[primary_key]) {
+				// if no primary key in the data, we assign it
+				if (!own_data) own_data = this[OWN_DATA] = Object.create(null);
+				own_data[primary_key] = this[ID_PROPERTY];
 			}
 			this.#writeUpdate(this);
 			return this;
@@ -520,9 +556,9 @@ export function makeTable(options) {
 			//  during the write transaction.
 			const txn_time = this[TRANSACTIONS_PROPERTY]?.timestamp || immediateTransaction.timestamp;
 			let existing_record = this[RECORD_PROPERTY];
-			this[RECORD_PROPERTY] = record;
 			let is_unchanged;
 			let record_prepared;
+			if (!existing_record) this[RECORD_PROPERTY] = {}; // mark that this resource is being saved so isSaveRecord return true
 			env_txn.addWrite({
 				key: this[ID_PROPERTY],
 				store: primary_store,
@@ -541,12 +577,9 @@ export function makeTable(options) {
 					}
 					if (!record_prepared) {
 						record_prepared = true;
-						if (record[EXPLICIT_CHANGES_PROPERTY]) {
-							record = Object.assign({}, record, record[EXPLICIT_CHANGES_PROPERTY]);
-						}
 						if (!options?.isNotification) {
 							if (record[INCREMENTAL_UPDATE]) {
-								is_unchanged = withoutCopying(() => isEqual(this, existing_record));
+								is_unchanged = !hasChanges(record);
 								if (is_unchanged) return;
 							}
 							if (TableResource.updatedTimeProperty) record[TableResource.updatedTimeProperty] = txn_time;
@@ -555,6 +588,7 @@ export function makeTable(options) {
 									record[TableResource.createdTimeProperty] = existing_record[TableResource.createdTimeProperty];
 								else record[TableResource.createdTimeProperty] = txn_time;
 							}
+							record = deepFreeze(record); // this flatten and freeze the record
 							if (this.constructor.Source?.prototype.put) {
 								const source = this.constructor.Source.getResource(this[ID_PROPERTY], this);
 								if (source?.then)
@@ -567,7 +601,9 @@ export function makeTable(options) {
 									completion = source.put(record, options);
 								}
 							}
-						}
+						} else record = deepFreeze(record); // TODO: I don't know that we need to freeze notification objects, might eliminate this for reduced overhead
+						if (record[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
+						this[RECORD_PROPERTY] = record;
 					}
 					harper_logger.trace(
 						'update version check',
@@ -900,13 +936,13 @@ export function makeTable(options) {
 					subscription.startTime = version; // make sure we don't re-broadcast the current version that we already sent
 				} else if (!options.noRetain) {
 					// if retain and it exists, send the current value first
-					if (this.doesExist()) subscription.send({ id, timestamp: this[VERSION_PROPERTY], value: this });
+					if (this.isSavedRecord()) subscription.send({ id, timestamp: this[VERSION_PROPERTY], value: this });
 				}
 			}
 			if (options.listener) subscription.on('data', options.listener);
 			return subscription;
 		}
-		doesExist() {
+		isSavedRecord() {
 			return Boolean(this[RECORD_PROPERTY]);
 		}
 
@@ -1042,7 +1078,14 @@ export function makeTable(options) {
 			}
 			return primary_store.getStats().entryCount - excluded_count;
 		}
+		/**
+		 * When attributes have been changed, we update the accessors that are assigned to this table
+		 */
+		static updatedAttributes() {
+			assignObjectAccessors(this, this);
+		}
 	}
+	TableResource.updatedAttributes(); // on creation, update accessors as well
 	const prototype = TableResource.prototype;
 	prototype[DB_TXN_PROPERTY] = immediateTransaction;
 	prototype[INCREMENTAL_UPDATE] = true; // default behavior
@@ -1123,39 +1166,6 @@ function attributesAsObject(attribute_permissions, type) {
 }
 function noop() {
 	// prefetch callback
-}
-function isEqual(a, b) {
-	let count = 0;
-	if ((a && typeof a) !== (b && typeof b)) return false;
-	for (const key in a) {
-		const valueA = a[key];
-		if (valueA === NOT_COPIED_YET) continue; // if it was not copied yet, it can't be different
-		const valueB = b[key];
-		if (valueA && typeof valueA === 'object' && valueB && typeof valueB === 'object') {
-			if (valueA instanceof Array) {
-				if (!isEqualArray(valueA, valueB)) return false;
-			} else {
-				if (!isEqual(valueA, valueB)) return false;
-			}
-		} else if (valueA !== valueB) return false;
-		count++;
-	}
-	return count === Object.keys(b).length;
-}
-function isEqualArray(a, b) {
-	if (a.length !== b.length) return false;
-	for (let i = 0; i < a.length; i++) {
-		const valueA = a[i];
-		const valueB = b[i];
-		if (valueA && typeof valueA === 'object' && valueB && typeof valueB === 'object') {
-			if (valueA instanceof Array) {
-				if (!isEqualArray(valueA, valueB)) return false;
-			} else {
-				if (!isEqual(valueA, valueB)) return false;
-			}
-		} else if (valueA !== valueB) return false;
-	}
-	return true;
 }
 export function setServerUtilities(utilities) {
 	server_utilities = utilities;

@@ -137,7 +137,7 @@ export function getDatabases(): Databases {
 				if (!defined_tables.has(table_name)) delete tables[table_name];
 			}
 			delete tables[DEFINED_TABLES];
-		} else delete databases[db_name];
+		} /*else delete databases[db_name];*/
 	}
 	defined_databases = null;
 	return databases;
@@ -281,7 +281,6 @@ function readMetaDb(
 		}
 		return root_store;
 	} catch (error) {
-		// @ts-ignore
 		error.message += `Error opening database ${path}`;
 		throw error;
 	}
@@ -513,7 +512,10 @@ export function table({
 	} finally {
 		if (txn_commit) txn_commit();
 	}
-	if (has_changes) Table.schemaVersion++;
+	if (has_changes) {
+		Table.schemaVersion++;
+		Table.updatedAttributes();
+	}
 	if (attributes_to_index.length > 0 || indices_to_remove.length > 0) {
 		Table.indexingOperation = runIndexing(Table, attributes_to_index, indices_to_remove);
 	} else if (has_changes)
