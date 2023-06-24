@@ -31,7 +31,7 @@ clustering:
   logLevel: error
   nodeName: null
   republishMessages: true
-  databaseLevel: true
+  databaseLevel: false
   tls:
     certificate: null
     certificateAuthority: null

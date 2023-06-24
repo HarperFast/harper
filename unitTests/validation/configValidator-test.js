@@ -58,7 +58,7 @@ const FAKE_CONFIG = {
 		},
 		nodeName: 'test_name',
 		republishMessages: true,
-		databaseLevel: true,
+		databaseLevel: false,
 		replyService: {
 			processes: 3,
 		},
@@ -214,7 +214,7 @@ describe('Test configValidator module', () => {
 						},
 						nodeName: 'test_name',
 						republishMessages: true,
-						databaseLevel: true,
+						databaseLevel: false,
 						replyService: {
 							processes: 3,
 						},
