@@ -724,6 +724,7 @@ async function addSourceToWorkStream(node, work_queue_name, subscription) {
 		opt_start_time: start_time,
 		// TODO: Once NATS add support for multiple sourced subjects, we will enable filtering by table with:
 		// filter_subject: table && env_mgr.get(CONFIG_PARAMS.CLUSTERING_DATABASELEVEL) ? `${nats_terms.SUBJECT_PREFIXES.TXN}.${schema}.${table}.>` : `${nats_terms.SUBJECT_PREFIXES.TXN}.>`,
+		filter_subject: `${nats_terms.SUBJECT_PREFIXES.TXN}.>`,
 	};
 
 	if (!is_local_stream) {
