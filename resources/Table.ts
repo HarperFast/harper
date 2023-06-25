@@ -47,7 +47,7 @@ const LAZY_PROPERTY_ACCESS = { lazy: true };
 export interface Table {
 	primaryStore: Database;
 	auditStore: Database;
-	indices: Database[];
+	indices: {};
 	databasePath: string;
 	tableName: string;
 	databaseName: string;
@@ -844,8 +844,8 @@ export function makeTable(options) {
 					const forceNulls = select.forceNulls;
 					for (let i = 0, l = select.length; i < l; i++) {
 						const key = select[i];
-						if (record.hasOwnProperty(key)) selected[key] = record[key];
-						else if (forceNulls) selected[key] = null;
+						selected[key] = record[key];
+						if (forceNulls && selected[key] === undefined) selected[key] = null;
 					}
 					return selected;
 				}

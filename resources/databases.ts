@@ -443,7 +443,7 @@ export function table({
 				tableId: primary_store.tableId,
 				databasePath: database_name,
 				databaseName: database_name,
-				indices: [],
+				indices: {},
 				attributes,
 				schemaDefined: schema_defined,
 				dbisDB: attributes_dbi,
