@@ -196,7 +196,9 @@ workflow against the release branch/tag
 ### Docker Hub Release
 
 Docker Hub allows publishing a new image with tags that match tags of an already published image, so no need to practice 
-by publishing to the private repository first.
+by publishing to the private repository first. 
+
+> This will publish both `harperdb/harperdb` and `harperdb/harperdb-openshift`. 
 
 1. Run the `DockerHub Publish Public` 
 ([dockerhub-publish-public.yaml](https://github.com/HarperDB/harperdb/blob/main/.github/workflows/dockerhub-publish-public.yaml))
@@ -204,6 +206,40 @@ workflow against the release branch/tag.
 2. Verify README and new version under tags at [harperdb/harperdb](https://hub.docker.com/r/harperdb/harperdb)
 3. Test locally using examples in [README.md](utility/Docker/README.md)
 4. Update the Dockerhub Readme to match `README.md` in `utility/Docker`
+
+### Redhat Container Image Release
+
+The above step will publish the `harperdb/harperdb-openshift` image to Dockerhub. From here, we need to submit it to 
+Redhat for certification.
+
+#### pre-requisites
+
+1. podman (or [podman-desktop](https://podman-desktop.io/)) - you can installed this next to docker-desktop. This is needed to generate a docker auth file for Redhat.
+2. [openshift-preflight](https://github.com/redhat-openshift-ecosystem/openshift-preflight) - you will have to compile and install this, unless you happen to be running RHEL.
+
+#### process
+
+If you have not already created one, create an auth file for dockerhub. Redhat needs this due to dockerhub pull restrictions.
+This command will create an auth file `temp-auth.json` in the current directory.
+```shell
+podman login registry.hub.docker.com --authfile ./temp-auth.json
+```
+
+Next is to push these images to Redhat. You will want to `docker pull` the image first. You will need to have built the `openshift-preflight` utility from above.
+They `pyxis` key can be found in LastPass under the redhat.com haperdb account entry in the notes. 
+
+> You have to run this for each platform we support (currenty `amd64` and `arm64`)
+```shell
+preflight check container registry.hub.docker.com/harperdb/harperdb-openshift:[version] \
+  --submit \
+  --pyxis-api-token=${PYXIS_API_TOKEN} \
+  --certification-project-id=64652bdb6c16c68a7fdbe93b \
+  --platform [arm64|amd64] \
+  --docker-config ./temp-auth.json
+```
+
+After this, you will need to go here [HarperDB Container Image Project](https://connect.redhat.com/projects/64652bdb6c16c68a7fdbe93b/images)
+and publish/unpublish images as needed.
 
 ### Update Offline Install Package
 
