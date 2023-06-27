@@ -36,8 +36,10 @@ export const databases: Databases = Object.create(null);
 _assignPackageExport('databases', databases);
 _assignPackageExport('tables', tables);
 const table_listeners = [];
-let loaded_databases;
+let loaded_databases; // indicates if we have loaded databases from the file system yet
 const database_envs = new Map<string, any>();
+// This is used to track all the databases that are found when iterating through the file system so that anything that is missing
+// can be removed:
 let defined_databases;
 /**
  * This gets the set of tables from the default database ("data").
@@ -137,7 +139,7 @@ export function getDatabases(): Databases {
 				if (!defined_tables.has(table_name)) delete tables[table_name];
 			}
 			delete tables[DEFINED_TABLES];
-		} /*else delete databases[db_name];*/
+		} else delete databases[db_name];
 	}
 	defined_databases = null;
 	return databases;
@@ -159,7 +161,8 @@ export function resetDatabases() {
 }
 
 /**
- * This is responsible for reading the internal dbi to get a list of all the tables and their indexed or registered attributes
+ * This is responsible for reading the internal dbi of a single database file to get a list of all the tables and
+ * their indexed or registered attributes
  * @param path
  * @param default_table
  * @param database_name
@@ -258,7 +261,7 @@ function readMetaDb(
 									existing_attributes.splice(existing_attributes.indexOf(existing_attribute), 1, attribute);
 								else existing_attributes.push(attribute);
 							}
-						} catch(error){
+						} catch (error) {
 							harper_logger.error(`Error trying to update attribute`, attribute, existing_attributes, indices, error);
 						}
 					}
@@ -303,6 +306,11 @@ interface TableDefinition {
 	attributes: any[];
 	schemaDefined?: boolean;
 }
+/**
+ * Ensure that we have this database object (that holds a set of tables) set up
+ * @param database_name 
+ * @returns 
+ */
 function ensureDB(database_name) {
 	let db_tables = databases[database_name];
 	if (!db_tables) {
@@ -319,13 +327,20 @@ function ensureDB(database_name) {
 			db_tables = databases[database_name] = Object.create(null);
 		}
 	}
-	if (!db_tables[DEFINED_TABLES] && defined_databases) {
+	if (defined_databases && !defined_databases.has(database_name)) {
 		const defined_tables = new Map(); // we create this so we can determine what was found in a reset and remove any removed dbs/tables
 		db_tables[DEFINED_TABLES] = defined_tables;
 		defined_databases.set(database_name, defined_tables);
 	}
 	return db_tables;
 }
+/**
+ * Set the table class into the database's tables object
+ * @param tables
+ * @param table_name 
+ * @param Table 
+ * @returns 
+ */
 function setTable(tables, table_name, Table) {
 	tables[table_name] = Table;
 	let defined_tables = tables[DEFINED_TABLES];
@@ -334,6 +349,11 @@ function setTable(tables, table_name, Table) {
 	return Table;
 }
 const ROOT_STORE_KEY = Symbol('root-store');
+/**
+ * Get root store for a database
+ * @param options
+ * @returns 
+ */
 export function database({ database: database_name, table: table_name }) {
 	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
 	getDatabases();
@@ -359,13 +379,15 @@ export function database({ database: database_name, table: table_name }) {
 	database[ROOT_STORE_KEY] = root_store;
 	return root_store;
 }
-
+/**
+ * Delete the database
+ * @param database_name 
+ */
 export async function dropDatabase(database_name) {
 	if (!databases[database_name]) throw new Error('Schema does not exist');
 	const root_store = database({ database: database_name });
 	delete databases[database_name];
 	database_envs.delete(root_store.path);
-	console.log('closing store due to dropping', root_store.path);
 	await root_store.close();
 	await fs.remove(root_store.path);
 }
