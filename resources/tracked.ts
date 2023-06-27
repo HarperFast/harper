@@ -8,12 +8,17 @@ function getChanges(target) {
 	return target[OWN_DATA] || (target[OWN_DATA] = Object.create(null));
 }
 /**
- *	A TrackedObject is a wrapper around a cacheable, frozen read-only record, designed to facilitate record updates,
+ *	A tracked class cacheable, (potentially) frozen read-only record, designed to facilitate record updates,
  *	and tracks property (and sub-object/array) changes so that on commit, any property changes can be written as part of
  *	the commit. This will also track specific updates so can record information in CRDTs.
  */
-
-export function assignObjectAccessors(Target, type_def) {
+/**
+ * assignObjectAccessors add methods to the prototype of the provided Target class to make
+ * it a tracked object.
+ * @param Target Class to add accessors to
+ * @param type_def Type definition for determining property
+ */
+export function assignTrackedAccessors(Target, type_def) {
 	const prototype = Target.prototype;
 	const descriptors = {};
 	const attributes = type_def.attributes || type_def.properties || [];
@@ -28,28 +33,10 @@ export function assignObjectAccessors(Target, type_def) {
 				}
 				const source_value = this[RECORD_PROPERTY]?.[name];
 				if (source_value && typeof source_value === 'object') {
-					// lazily instantiate in case of recursive structures
-					switch (source_value.constructor) {
-						case Object:
-							if (!TrackedObject) {
-								TrackedObject = class {
-									constructor(source) {
-										this[RECORD_PROPERTY] = source;
-									}
-								};
-								assignObjectAccessors(TrackedObject, attribute);
-							}
-							if (!changes) changes = this[OWN_DATA] = Object.create(null);
-							return (changes[name] = new TrackedObject(source_value));
-						case Array:
-							if (!TrackedArray) {
-								TrackedArray = class extends BaseTrackedArray {
-									static attribute = attribute.elements;
-								};
-							}
-							if (!changes) changes = this[OWN_DATA] = Object.create(null);
-							return (changes[name] = new TrackedArray(source_value));
-						// any other objects (like Date) just returned below
+					const updated_value = trackObject(source_value, attribute);
+					if (updated_value) {
+						if (!changes) changes = this[OWN_DATA] = Object.create(null);
+						return (changes[name] = updated_value);
 					}
 				}
 				return source_value;
@@ -104,11 +91,47 @@ export function assignObjectAccessors(Target, type_def) {
 	if (!prototype.get) prototype.get = prototype.getProperty;
 	if (!prototype.delete) prototype.delete = prototype.deleteProperty;
 }
+function trackObject(source_object, type_def) {
+	// lazily instantiate in case of recursive structures
+	let TrackedObject;
+	switch (source_object.constructor) {
+		case Object:
+			if (type_def) {
+				if (!(TrackedObject = type_def.TrackedObject)) {
+					type_def.TrackedObject = TrackedObject = class {
+						constructor(source_object) {
+							this[RECORD_PROPERTY] = source_object;
+						}
+					};
+					assignTrackedAccessors(TrackedObject, type_def);
+				}
+				return new TrackedObject(source_object);
+			} else {
+				return new GenericTrackedObject(source_object);
+			}
+		case Array:
+			const tracked_array = new TrackedArray(source_object.length);
+			tracked_array[RECORD_PROPERTY] = source_object;
+			for (let i = 0, l = source_object.length; i < l; i++) {
+				let element = source_object[i];
+				if (element && typeof element === 'object') element = trackObject(element, type_def?.elements);
+				tracked_array[i] = element;
+			}
+			return tracked_array;
+		// any other objects (like Date) are left unchanged
+	}
+}
+class GenericTrackedObject {
+	constructor(source_object) {
+		this[RECORD_PROPERTY] = source_object;
+	}
+}
+assignTrackedAccessors(GenericTrackedObject, {});
 /**
  * Collapse the changed and transitive and source/record data into single object that
  * can be directly serialized. Performed recursively
  * @param target
- * @returns 
+ * @returns
  */
 export function collapseData(target) {
 	const changes = target[OWN_DATA];
@@ -128,13 +151,12 @@ export function collapseData(target) {
 		Object.assign(copied_source, target);
 	}
 	return copied_source || target[RECORD_PROPERTY];
-
 }
 /**
  * Collapse the changed data and source/record data into single object
  * that is frozen and suitable for storage and caching
  * @param target
- * @returns 
+ * @returns
  */
 export function deepFreeze(target) {
 	const changes = target[OWN_DATA];
@@ -150,27 +172,68 @@ export function deepFreeze(target) {
 	}
 	return copied_source ? Object.freeze(copied_source) : target[RECORD_PROPERTY] || Object.freeze(target);
 }
+/**
+ * Determine if any changes have been made to this tracked object
+ * @param target
+ * @returns 
+ */
 export function hasChanges(target) {
-	if (!target[RECORD_PROPERTY]) return true; // if no original source then it is always a change
-	const changes = target[OWN_DATA];
-	for (const key in changes) {
-		const value = changes[key];
-		if (value && typeof value === 'object') {
-			const source_value = target[RECORD_PROPERTY][key];
-			// could just be a copy, need to check
-			if (source_value && value[RECORD_PROPERTY] === source_value) {
-				if (hasChanges(value)) return true;
+	const source = target[RECORD_PROPERTY];
+	if (!source) return true; // if no original source then it is always a change
+	if (target.constructor === Array) {
+		if (target[HAS_CHANGES]) return true;
+		if (target.length !== source.length) return true;
+		for (let i = 0, l = target.length; i < l; i++) {
+			const source_value = source[i];
+			const target_value = target[i];
+			if (source_value && target_value[RECORD_PROPERTY] === source_value) {
+				if (hasChanges(target_value)) return true;
 			} else return true;
-		} else return true;
+		}
+	} else {
+		const changes = target[OWN_DATA];
+		for (const key in changes) {
+			const value = changes[key];
+			if (value && typeof value === 'object') {
+				const source_value = source[key];
+				// could just be a copy, need to check
+				if (source_value && value[RECORD_PROPERTY] === source_value) {
+					if (hasChanges(value)) return true;
+				} else return true;
+			} else return true;
+		}
 	}
+	return false;
 }
 
-class BaseTrackedArray extends Array {
-	constructor(source: []) {
-		super();
-		super.push(...source);
+const HAS_CHANGES = Symbol.for('has-changes');
+class TrackedArray extends Array {
+	[HAS_CHANGES]: boolean;
+	constructor(length) {
+		super(length);
+	}
+	splice(...args) {
+		this[HAS_CHANGES] = true;
+		return super.splice(...args);
+	}
+	push(...args) {
+		this[HAS_CHANGES] = true;
+		return super.push(...args);
+	}
+	pop() {
+		this[HAS_CHANGES] = true;
+		return super.pop();
+	}
+	unshift(...args) {
+		this[HAS_CHANGES] = true;
+		return super.unshift(...args);
+	}
+	shift() {
+		this[HAS_CHANGES] = true;
+		return super.shift();
 	}
 }
+TrackedArray.prototype.constructor = Array; // this makes type checks easier/faster (and we want it to be Array like too)
 
 // Copy a record into a resource, using copy-on-write for nested objects/arrays
 export function copyRecord(record, target_resource, attributes) {

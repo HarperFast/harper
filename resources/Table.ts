@@ -29,7 +29,7 @@ import { SchemaEventMsg } from '../server/threads/itc';
 import { databases, table } from './databases';
 import { idsForCondition, filterByType } from './search';
 import * as harper_logger from '../utility/logging/harper_logger';
-import { assignObjectAccessors, collapseData, deepFreeze, hasChanges, OWN_DATA } from './tracked';
+import { assignTrackedAccessors, collapseData, deepFreeze, hasChanges, OWN_DATA } from './tracked';
 
 let server_utilities;
 const RANGE_ESTIMATE = 100000000;
@@ -1082,7 +1082,7 @@ export function makeTable(options) {
 		 * When attributes have been changed, we update the accessors that are assigned to this table
 		 */
 		static updatedAttributes() {
-			assignObjectAccessors(this, this);
+			assignTrackedAccessors(this, this);
 		}
 	}
 	TableResource.updatedAttributes(); // on creation, update accessors as well
