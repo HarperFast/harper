@@ -6,7 +6,7 @@ const DurableSession = table({
 	table: 'hdb_durable_session',
 	attributes: [
 		{ name: 'id', isPrimaryKey: true },
-		{ name: 'subscriptions', type: 'array'}
+		{ name: 'subscriptions', type: 'array' },
 	],
 });
 
@@ -112,6 +112,8 @@ class SubscriptionsSession {
 			});
 			return subscription;
 		});
+		if (!subscription)
+			throw new Error(`The ${topic} does not exist, no resource has been defined to handle this topic`);
 		subscription.topic = topic;
 		subscription.qos = subscription_request.qos;
 		this.subscriptions.push(subscription);
