@@ -14,7 +14,6 @@ const { createServer: createSecureSocketServer } = require('tls');
 process.on('uncaughtException', (error) => {
 	if (error.code === 'ECONNRESET') return; // that's what network connections do
 	console.error('uncaughtException', error);
-	process.exit(100);
 });
 const { HDB_SETTINGS_NAMES, CONFIG_PARAMS } = terms;
 env.initSync();
