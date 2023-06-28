@@ -443,14 +443,79 @@ async function deployCustomFunctionProject(req) {
 	return `Successfully deployed project: ${project}`;
 }
 
+/**
+ * Gets a JSON directory tree of the components dir and all nested files/folders
+ * @returns {Promise<*>}
+ */
 async function getComponentFiles() {
-	const files = await fs.readdir(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT));
-	console.log(files);
+	// Recursive function that will traverse the components dir and build json
+	// directory tree as it goes.
+	const walk_dir = async (dir, result) => {
+		const list = await fs.readdir(dir);
+		for (let item of list) {
+			const item_path = path.join(dir, item);
+			const stats = await fs.stat(item_path);
+			if (await stats.isDirectory()) {
+				if (!item.startsWith('.')) {
+					let res = {
+						name: item,
+						entries: [],
+					};
+					result.entries.push(res);
+					await walk_dir(item_path, res);
+				}
+			} else {
+				const file_name = path.basename(item, path.extname(item));
+				if (!file_name.startsWith('.')) {
+					const res = {
+						name: path.basename(item),
+						mtime: stats.mtime,
+						size: stats.size,
+					};
+					result.entries.push(res);
+				}
+			}
+		}
+		return result;
+	};
+
+	return walk_dir(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT), {
+		name: env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT).split(path.sep).slice(-1).pop(),
+		entries: [],
+	});
 }
 
-async function getComponentFile(name, path) {}
+/**
+ * Gets the contents of a component file
+ * @param req
+ * @returns {Promise<*>}
+ */
+async function getComponentFile(req) {
+	const validation = validator.getComponentFileValidator(req);
+	if (validation) {
+		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
 
-async function setComponentFile() {}
+	return fs.readFile(path.join(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT), req.project, req.file), 'utf8');
+}
+
+/**
+ * Used to update or create a component file
+ * @param req
+ * @returns {Promise<string>}
+ */
+async function setComponentFile(req) {
+	const validation = validator.setComponentFileValidator(req);
+	if (validation) {
+		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
+
+	const options = req.encoding ? { encoding: req.encoding } : { encoding: 'utf8' };
+	const path_to_comp = path.join(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT), req.project, req.file);
+	await fs.ensureFile(path_to_comp);
+	await fs.outputFile(path_to_comp, req.payload, options);
+	return `Successfully set component: ` + req.file;
+}
 
 module.exports = {
 	customFunctionsStatus,

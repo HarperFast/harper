@@ -20,6 +20,8 @@ module.exports = {
 	dropCustomFunctionProjectValidator,
 	packageCustomFunctionProjectValidator,
 	deployCustomFunctionProjectValidator,
+	setComponentFileValidator,
+	getComponentFileValidator,
 };
 
 /**
@@ -120,6 +122,34 @@ function setCustomFunctionValidator(req) {
 	});
 
 	return validator.validateBySchema(req, set_func_schema);
+}
+
+/**
+ * Validate set_component_file requests.
+ * @param req
+ * @returns {*}
+ */
+function setComponentFileValidator(req) {
+	const set_comp_schema = Joi.object({
+		project: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
+		file: Joi.string().required(),
+		payload: Joi.string().required(),
+		encoding: Joi.string().valid('utf8', 'ASCII', 'binary', 'hex', 'base64', 'utf16le', 'latin1', 'ucs2').optional(),
+	});
+
+	return validator.validateBySchema(req, set_comp_schema);
+}
+
+function getComponentFileValidator(req) {
+	const get_comp_schema = Joi.object({
+		project: Joi.string().required(),
+		file: Joi.string().required(),
+	});
+
+	return validator.validateBySchema(req, get_comp_schema);
 }
 
 /**
