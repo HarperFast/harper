@@ -6,7 +6,13 @@ const DurableSession = table({
 	table: 'hdb_durable_session',
 	attributes: [
 		{ name: 'id', isPrimaryKey: true },
-		{ name: 'subscriptions', type: 'array' },
+		{
+			name: 'subscriptions',
+			type: 'array',
+			elements: {
+				attributes: [{ name: 'topic' }, { name: 'qos' }, { name: 'startTime' }],
+			},
+		},
 	],
 });
 
@@ -102,14 +108,19 @@ class SubscriptionsSession {
 				startTime: start_time,
 				noRetain: rh,
 			});
-			subscription.on('data', (update) => {
-				let message_id;
-				if (needs_ack) {
-					update.topic = topic;
-					message_id = this.needsAcknowledge(update);
-				} else message_id = next_message_id++;
-				this.listener(resource_path + '/' + (update.id ?? ''), update.value, message_id, subscription_request);
-			});
+			if (!subscription) throw new Error(`No subscription was returned from subscribe for topic ${topic}`);
+			if (!subscription[Symbol.asyncIterator])
+				throw new Error(`Subscription is not (async) iterable for topic ${topic}`);
+			(async () => {
+				for await (const update of subscription) {
+					let message_id;
+					if (needs_ack) {
+						update.topic = topic;
+						message_id = this.needsAcknowledge(update);
+					} else message_id = next_message_id++;
+					this.listener(resource_path + '/' + (update.id ?? ''), update.value, message_id, subscription_request);
+				}
+			})();
 			return subscription;
 		});
 		if (!subscription)
@@ -171,7 +182,10 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	async resume() {
 		// resuming a session, we need to resume each subscription
 		for (const subscription of this.sessionRecord.subscriptions || []) {
-			await this.resumeSubscription({ noRetain: true, ...subscription }, true);
+			await this.resumeSubscription(
+				{ noRetain: true, topic: subscription.topic, qos: subscription.qos, startTime: subscription.startTime },
+				true
+			);
 		}
 	}
 	resumeSubscription(subscription, needs_ack) {

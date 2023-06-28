@@ -308,8 +308,8 @@ interface TableDefinition {
 }
 /**
  * Ensure that we have this database object (that holds a set of tables) set up
- * @param database_name 
- * @returns 
+ * @param database_name
+ * @returns
  */
 function ensureDB(database_name) {
 	let db_tables = databases[database_name];
@@ -337,9 +337,9 @@ function ensureDB(database_name) {
 /**
  * Set the table class into the database's tables object
  * @param tables
- * @param table_name 
- * @param Table 
- * @returns 
+ * @param table_name
+ * @param Table
+ * @returns
  */
 function setTable(tables, table_name, Table) {
 	tables[table_name] = Table;
@@ -352,7 +352,7 @@ const ROOT_STORE_KEY = Symbol('root-store');
 /**
  * Get root store for a database
  * @param options
- * @returns 
+ * @returns
  */
 export function database({ database: database_name, table: table_name }) {
 	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
@@ -381,7 +381,7 @@ export function database({ database: database_name, table: table_name }) {
 }
 /**
  * Delete the database
- * @param database_name 
+ * @param database_name
  */
 export async function dropDatabase(database_name) {
 	if (!databases[database_name]) throw new Error('Schema does not exist');
@@ -512,7 +512,9 @@ export function table({
 			const changed =
 				!attribute_descriptor ||
 				attribute_descriptor.type !== attribute.type ||
-				attribute_descriptor.indexed !== attribute.indexed;
+				attribute_descriptor.indexed !== attribute.indexed ||
+				JSON.stringify(attribute_descriptor.attributes) !== JSON.stringify(attribute.attributes) ||
+				JSON.stringify(attribute_descriptor.elements) !== JSON.stringify(attribute.elements);
 			if (attribute.indexed) {
 				const dbi_init = new OpenDBIObject(true, false);
 				const dbi = root_store.openDB(dbi_key, dbi_init);

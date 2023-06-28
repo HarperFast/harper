@@ -24,7 +24,6 @@ export function assignTrackedAccessors(Target, type_def) {
 	const attributes = type_def.attributes || type_def.properties || [];
 	for (const attribute of attributes) {
 		const name = attribute.name;
-		let TrackedObject, TrackedArray;
 		const descriptor = {
 			get() {
 				let changes = this[OWN_DATA];
@@ -175,7 +174,7 @@ export function deepFreeze(target) {
 /**
  * Determine if any changes have been made to this tracked object
  * @param target
- * @returns 
+ * @returns
  */
 export function hasChanges(target) {
 	const source = target[RECORD_PROPERTY];
