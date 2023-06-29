@@ -180,7 +180,7 @@ function getConfigValue(param) {
 	return flat_config_obj[param_map.toLowerCase()];
 }
 
-function getConfigFilePath(boot_props_file_path) {
+function getConfigFilePath(boot_props_file_path = hdb_utils.getPropsFilePath()) {
 	const cmd_args = hdb_utils.getEnvCliRootPath();
 	if (cmd_args) return path.join(cmd_args, hdb_terms.HDB_CONFIG_FILE);
 	const hdb_properties = PropertiesReader(boot_props_file_path);

@@ -81,13 +81,22 @@ function initLogSettings(force_init = false) {
 	try {
 		if (hdb_properties === undefined || force_init) {
 			closeLogFile();
+			const boot_props_file_path = getPropsFilePath();
 			let properties = assignCMDENVVariables(['ROOTPATH']);
-			if (!fs.pathExistsSync(path.join(properties.ROOTPATH, hdb_terms.HDB_CONFIG_FILE))) {
-				const boot_props_file_path = getPropsFilePath();
+			try {
 				hdb_properties = PropertiesReader(boot_props_file_path);
+			} catch (err) {
+				// This is here for situations where HDB isn't using a boot file
+				if (
+					!properties.ROOTPATH ||
+					(properties.ROOTPATH && !fs.pathExistsSync(path.join(properties.ROOTPATH, hdb_terms.HDB_CONFIG_FILE)))
+				)
+					throw err;
 			}
 
-			// TODO: this needs work
+			//if root path check for config file, if it exists - all good
+			// if root path and no config file just throw err
+
 			({
 				level: log_level,
 				config_log_path: log_root,
