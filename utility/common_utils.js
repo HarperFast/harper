@@ -13,6 +13,7 @@ const moment = require('moment');
 const { inspect } = require('util');
 const is_number = require('is-number');
 const _ = require('lodash');
+const minimist = require('minimist');
 const { hdb_errors } = require('./errors/hdbError');
 
 
@@ -80,6 +81,8 @@ module.exports = {
 	stringifyObj,
 	ms_to_time,
 	changeExtension,
+	getEnvCliRootPath,
+	noBootFile,
 	PACKAGE_ROOT: terms.PACKAGE_ROOT,
 };
 
@@ -841,4 +844,27 @@ function ms_to_time(ms) {
 function changeExtension(file, extension) {
 	const basename = path.basename(file, path.extname(file));
 	return path.join(path.dirname(file), basename + extension);
+}
+
+/**
+ * Checks ENV and CLI for ROOTPATH arg
+ */
+function getEnvCliRootPath() {
+	if (process.env[terms.CONFIG_PARAMS.ROOTPATH.toUpperCase()])
+		return process.env[terms.CONFIG_PARAMS.ROOTPATH.toUpperCase()];
+	const cli_args = minimist(process.argv);
+	if (cli_args[terms.CONFIG_PARAMS.ROOTPATH.toUpperCase()]) return cli_args[terms.CONFIG_PARAMS.ROOTPATH.toUpperCase()];
+}
+
+/**
+ * Will check to see if there is a rootpath cli/env var pointing to a harperdb-config.yaml file
+ * This is used for running HDB without a boot file
+ */
+let no_boot_file;
+function noBootFile() {
+	if (no_boot_file) return no_boot_file;
+	const cli_env_root = getEnvCliRootPath();
+	if (getEnvCliRootPath() && fs.pathExistsSync(path.join(cli_env_root, terms.HDB_CONFIG_FILE))) {
+		no_boot_file = true;
+	}
 }

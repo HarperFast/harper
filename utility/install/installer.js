@@ -62,6 +62,7 @@ const INSTALL_PROMPTS = {
 	CLUSTER_PASS: 'Please enter a password for the CLUSTER_USER:',
 };
 
+const env_cli_root = hdb_utils.getEnvCliRootPath();
 let hdb_root = undefined;
 
 /**
@@ -78,12 +79,6 @@ install.createSuperUser = createSuperUser;
 async function install() {
 	console.log(HDB_PROMPT_MSG(LINE_BREAK + INSTALL_START_MSG + LINE_BREAK));
 	hdb_logger.notify(INSTALL_START_MSG);
-
-	if (hdb_utils.isEmptyOrZeroLength(os.userInfo().uid)) {
-		throw `Installing user: ${
-			os.userInfo().username
-		} has no pid. Please install with a properly created user. Cancelling install.`;
-	}
 
 	// Check to see if any cmd/env vars are passed that override install prompts.
 	const prompt_override = checkForPromptOverride();
@@ -384,6 +379,10 @@ async function checkForExistingInstall() {
 		hdb_exists = await fs.pathExists(config_file_path);
 	}
 
+	// If the boot file doesn't exist check to see if cli/env root path has been passed and
+	// is pointing to an installed HDB
+	if (!boot_file_exists && hdb_utils.noBootFile()) hdb_exists = true;
+
 	if (hdb_exists) {
 		hdb_logger.trace(`Install found existing HDB config at:${boot_prop_path}`);
 		// getVersionUpdateInfo will only return an obj if there is an upgrade directive for the new version.
@@ -451,39 +450,35 @@ async function createBootPropertiesFile() {
 			process.env.USERNAME || process.env.USER || process.env.LOGNAME || process.env.LNAME || process.env.SUDO_USER;
 	}
 
-	if (!install_user) {
-		throw new Error(
-			'Could not determine current username in this environment.  Please set the USERNAME environment variable in your OS and try install again.'
-		);
-	}
-
-	const boot_props_value = `settings_path = ${config_file_path}
+	if (install_user) {
+		const boot_props_value = `settings_path = ${config_file_path}
     install_user = ${install_user}`;
 
-	const home_dir = hdb_utils.getHomeDir();
-	const home_dir_path = path.join(home_dir, hdb_terms.HDB_HOME_DIR_NAME);
-	const home_dir_keys_dir_path = path.join(home_dir_path, hdb_terms.LICENSE_KEY_DIR_NAME);
+		const home_dir = hdb_utils.getHomeDir();
+		const home_dir_path = path.join(home_dir, hdb_terms.HDB_HOME_DIR_NAME);
+		const home_dir_keys_dir_path = path.join(home_dir_path, hdb_terms.LICENSE_KEY_DIR_NAME);
 
-	try {
-		fs.mkdirpSync(home_dir_path, { mode: hdb_terms.HDB_FILE_PERMISSIONS });
-		fs.mkdirpSync(home_dir_keys_dir_path, { mode: hdb_terms.HDB_FILE_PERMISSIONS });
-	} catch (err) {
-		console.error(
-			`Could not make settings directory ${hdb_terms.HDB_HOME_DIR_NAME} in home directory.  Please check your permissions and try again.`
-		);
+		try {
+			fs.mkdirpSync(home_dir_path, { mode: hdb_terms.HDB_FILE_PERMISSIONS });
+			fs.mkdirpSync(home_dir_keys_dir_path, { mode: hdb_terms.HDB_FILE_PERMISSIONS });
+		} catch (err) {
+			console.error(
+				`Could not make settings directory ${hdb_terms.HDB_HOME_DIR_NAME} in home directory.  Please check your permissions and try again.`
+			);
+		}
+
+		const props_file_path = path.join(home_dir_path, hdb_terms.BOOT_PROPS_FILE_NAME);
+		try {
+			await fs.writeFile(props_file_path, boot_props_value);
+		} catch (err) {
+			hdb_logger.error(`There was an error creating the boot file at path: ${props_file_path}`);
+			throw err;
+		}
+
+		env_manager.setProperty(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER, `${install_user}`);
+		env_manager.setProperty(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, config_file_path);
+		env_manager.setProperty(env_manager.BOOT_PROPS_FILE_PATH, props_file_path);
 	}
-
-	const props_file_path = path.join(home_dir_path, hdb_terms.BOOT_PROPS_FILE_NAME);
-	try {
-		await fs.writeFile(props_file_path, boot_props_value);
-	} catch (err) {
-		hdb_logger.error(`There was an error creating the boot file at path: ${props_file_path}`);
-		throw err;
-	}
-
-	env_manager.setProperty(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER, `${install_user}`);
-	env_manager.setProperty(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, config_file_path);
-	env_manager.setProperty(env_manager.BOOT_PROPS_FILE_PATH, props_file_path);
 }
 
 /**
