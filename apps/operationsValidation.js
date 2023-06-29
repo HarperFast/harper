@@ -55,6 +55,11 @@ function checkProjectExists(check_exists, project, helpers) {
 	}
 }
 
+function checkFilePath(path, helpers) {
+	if (path.includes('..')) return helpers.message('Invalid file path');
+	return path;
+}
+
 /**
  * Check the custom functions dir to see if a file exists.
  * @param project
@@ -94,6 +99,7 @@ function getDropCustomFunctionValidator(req) {
 		file: Joi.string()
 			.pattern(PROJECT_FILE_NAME_REGEX)
 			.custom(checkFileExists.bind(null, req.project, req.type))
+			.custom(checkFilePath)
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_FILE_NAME }),
 	});
@@ -114,10 +120,7 @@ function setCustomFunctionValidator(req) {
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 		type: Joi.string().valid('helpers', 'routes').required(),
-		file: Joi.string()
-			.pattern(PROJECT_FILE_NAME_REGEX)
-			.required()
-			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_FILE_NAME }),
+		file: Joi.string().custom(checkFilePath).required(),
 		function_content: Joi.string().required(),
 	});
 
@@ -135,7 +138,7 @@ function setComponentFileValidator(req) {
 			.pattern(PROJECT_FILE_NAME_REGEX)
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
-		file: Joi.string().required(),
+		file: Joi.string().custom(checkFilePath).required(),
 		payload: Joi.string().required(),
 		encoding: Joi.string().valid('utf8', 'ASCII', 'binary', 'hex', 'base64', 'utf16le', 'latin1', 'ucs2').optional(),
 	});
@@ -146,7 +149,8 @@ function setComponentFileValidator(req) {
 function getComponentFileValidator(req) {
 	const get_comp_schema = Joi.object({
 		project: Joi.string().required(),
-		file: Joi.string().required(),
+		file: Joi.string().custom(checkFilePath).required(),
+		encoding: Joi.string().valid('utf8', 'ASCII', 'binary', 'hex', 'base64', 'utf16le', 'latin1', 'ucs2').optional(),
 	});
 
 	return validator.validateBySchema(req, get_comp_schema);
