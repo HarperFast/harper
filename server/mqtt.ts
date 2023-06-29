@@ -21,7 +21,14 @@ export async function start({ server, port, webSocket, securePort, requireAuthen
 				if (ws.protocol === 'mqtt') {
 					const { onMessage, onClose } = onSocket(
 						ws,
-						(message) => ws.send(message),
+						(message, allow_backpressure) => {
+							ws.send(message);
+							// This can be used for back-pressure. Most of the time with real-time data, it is probably more
+							// efficient to immediately deliver and let the buffers queue the data, but when iterating through
+							// a database/audit log, we could employ back-pressure to do this with less memory pressure
+							if (allow_backpressure && ws._socket.writableNeedDrain)
+								return new Promise((resolve) => this._socket.once('drain', resolve));
+						},
 						request,
 						Promise.resolve(chain_completion).then(() => request?.user),
 						mqtt_settings
@@ -73,7 +80,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 	}
 	function onClose() {
 		number_of_connections--;
-		session.disconnect();
+		session?.disconnect();
 	}
 
 	parser.on('packet', async (packet) => {
