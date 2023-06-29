@@ -3,8 +3,10 @@ import { messageTypeListener, getThreadInfo } from '../server/threads/manageThre
 import { table } from './databases';
 import { getLogFilePath } from '../utility/logging/harper_logger';
 import { dirname, join } from 'path';
-import { open, appendFile, readFile, writeFile } from 'fs/promises';
+import { open, stat, appendFile, readFile, writeFile } from 'fs/promises';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
+import { get } from '../utility/environment/environmentManager';
+import { getPropsFilePath, noBootFile } from '../utility/common_utils';
 
 let active_actions = new Map<string, number[] & { occurred: number; count: number }>();
 let analytics_enabled = true;
@@ -188,14 +190,36 @@ function getAnalyticsTable() {
 		}))
 	);
 }
-if (isMainThread) {
-	messageTypeListener(ANALYTICS_REPORT_TYPE, recordAnalytics);
-	setInterval(async () => {
-		await aggregation(ANALYTICS_DELAY, AGGREGATE_PERIOD);
-		await cleanup(RAW_EXPIRATION, ANALYTICS_DELAY);
-		//await cleanup(AGGREGATE_EXPIRATION, AGGREGATE_PERIOD);
-	}, AGGREGATE_PERIOD / 2).unref();
+async function isHdbInstalled() {
+	try {
+		await stat(getPropsFilePath());
+		await stat(get('settings_path'));
+	} catch (err) {
+		if (noBootFile()) return true;
+		if (err.code === 'ENOENT') {
+			// boot props not found, hdb not installed
+			return false;
+		}
+
+		throw err;
+	}
+
+	return true;
 }
+
+if (isMainThread) {
+	(async () => {
+		if (await isHdbInstalled()) {
+			messageTypeListener(ANALYTICS_REPORT_TYPE, recordAnalytics);
+			setInterval(async () => {
+				await aggregation(ANALYTICS_DELAY, AGGREGATE_PERIOD);
+				await cleanup(RAW_EXPIRATION, ANALYTICS_DELAY);
+				//await cleanup(AGGREGATE_EXPIRATION, AGGREGATE_PERIOD);
+			}, AGGREGATE_PERIOD / 2).unref();
+		}
+	})();
+}
+
 let total_bytes_processed = 0;
 const last_utilizations = new Map();
 function recordAnalytics(message, worker?) {

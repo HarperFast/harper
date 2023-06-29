@@ -38,7 +38,7 @@ const INSTALL_START_MSG = 'Starting HarperDB install...';
 const INSTALL_COMPLETE_MSG = 'HarperDB installation was successful.';
 const TC_NOT_ACCEPTED = 'Terms & Conditions acceptance is required to proceed with installation. Exiting install...';
 const UPGRADE_MSG = 'An out of date version of HarperDB is already installed.';
-const HDB_EXISTS_MSG = 'It appears HarperDB is already installed. Exiting install...';
+const HDB_EXISTS_MSG = 'It appears that HarperDB is already installed. Exiting install...';
 const ABORT_MSG = 'Aborting install';
 const HDB_PORT_REGEX = new RegExp(
 	/^([0-9]{1,4}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])$/
@@ -97,6 +97,14 @@ async function install() {
 
 	// Prompt the user with params needed for install.
 	const install_params = await installPrompts(prompt_override);
+	// HDB root is the one of the first params we need for install.
+	hdb_root = install_params[hdb_terms.INSTALL_PROMPTS.ROOTPATH];
+
+	// We allow HDB to run without a boot file we check for a harperdb-config.yaml
+	if (await fs.pathExists(path.join(hdb_root, hdb_terms.HDB_CONFIG_FILE))) {
+		console.error(HDB_EXISTS_MSG);
+		process.exit();
+	}
 
 	const spinner = ora({
 		prefixText: HDB_PROMPT_MSG('Installing'),
@@ -105,8 +113,6 @@ async function install() {
 	});
 	spinner.start();
 
-	// HDB root is the one of the first params we need for install.
-	hdb_root = install_params[hdb_terms.INSTALL_PROMPTS.ROOTPATH];
 	if (hdb_utils.isEmpty(hdb_root)) {
 		throw new Error('Installer should have the HDB root param at the stage it is in but it does not.');
 	}
