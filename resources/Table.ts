@@ -628,6 +628,7 @@ export function makeTable(options) {
 
 					primary_store.put(this[ID_PROPERTY], record, txn_time);
 					updateIndices(this[ID_PROPERTY], existing_record, record);
+					if (existing_record === null && !retry) record_deletion(-1);
 					return {
 						// return the audit record that should be recorded
 						operation: 'put',
@@ -687,7 +688,7 @@ export function makeTable(options) {
 						return;
 					updateIndices(this[ID_PROPERTY], existing_record);
 					primary_store.put(this[ID_PROPERTY], null, txn_time);
-					if (!retry) record_deletion();
+					if (!retry) record_deletion(1);
 					return {
 						// return the audit record that should be recorded
 						operation: 'delete',
@@ -1142,9 +1143,9 @@ export function makeTable(options) {
 	/*
 	Here we write the deletion count for our thread id
 	 */
-	function record_deletion() {
+	function record_deletion(increment: number) {
 		if (!deletion_count) deletion_count = primary_store.get([DELETION_COUNT_KEY, threadId]) || 0;
-		deletion_count++;
+		deletion_count += increment;
 		if (!pending_deletion_count_write) {
 			pending_deletion_count_write = setTimeout(() => {
 				pending_deletion_count_write = null;
