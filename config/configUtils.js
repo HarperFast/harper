@@ -551,8 +551,10 @@ function readConfigFile() {
 	try {
 		fs.accessSync(boot_props_file_path, fs.constants.F_OK | fs.constants.R_OK);
 	} catch (err) {
-		logger.error(err);
-		throw new Error(`HarperDB properties file at path ${boot_props_file_path} does not exist`);
+		if (!hdb_utils.noBootFile()) {
+			logger.error(err);
+			throw new Error(`HarperDB properties file at path ${boot_props_file_path} does not exist`);
+		}
 	}
 
 	const config_file_path = getConfigFilePath(boot_props_file_path);

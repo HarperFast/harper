@@ -15,25 +15,6 @@ const { SERVICE_ACTIONS_ENUM } = hdb_terms;
 
 harperDBService();
 
-function checkCallingUserSync() {
-	let hdb_exe_path = path.join(PACKAGE_ROOT, 'bin', `harperdb.${hdb_terms.CODE_EXTENSION}`);
-	let stats = undefined;
-	try {
-		stats = fs.statSync(hdb_exe_path);
-	} catch (e) {
-		// if we are here, we are probably running from the repo.
-		logger.info(`Couldn't find the harperdb executable process.`);
-		return;
-	}
-	let curr_user = os.userInfo();
-	if (stats && curr_user.uid > 0 && stats.uid !== curr_user.uid) {
-		let err_msg = `You are not the owner of the HarperDB process.  Please log in as the owner and try the command again.`;
-		logger.error(err_msg);
-		console.log({ curr_user, stats }, err_msg);
-		throw new Error(err_msg);
-	}
-}
-
 function harperDBService() {
 	let node_results = check_node();
 
@@ -57,16 +38,6 @@ function harperDBService() {
 
 		if (process.argv && process.argv[2] && !process.argv[2].startsWith('-')) {
 			service = process.argv[2].toLowerCase();
-		}
-
-		// check if already running, ends process if error caught.
-		if (service !== hdb_terms.SERVICE_ACTIONS_ENUM.INSTALL) {
-			try {
-				checkCallingUserSync();
-			} catch (e) {
-				console.log(e.message);
-				throw e;
-			}
 		}
 
 		let result = undefined;

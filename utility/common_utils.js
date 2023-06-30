@@ -16,7 +16,6 @@ const _ = require('lodash');
 const minimist = require('minimist');
 const { hdb_errors } = require('./errors/hdbError');
 
-
 const async_set_timeout = require('util').promisify(setTimeout);
 const HDB_PROC_START_TIMEOUT = 100;
 const CHECK_PROCS_LOOP_LIMIT = 5;
@@ -71,7 +70,6 @@ module.exports = {
 	autoCasterIsNumberCheck,
 	backtickASTSchemaItems,
 	isPortTaken,
-	stopProcess,
 	createForkArgs,
 	autoCastBoolean,
 	async_set_timeout,
@@ -740,25 +738,6 @@ function backtickASTSchemaItems(statement) {
 }
 
 /**
- * Finds a process by its module name then kills it.
- * @param module
- * @returns {Promise<void>}
- */
-async function stopProcess(module) {
-	const curr_user = os.userInfo();
-	const module_ps = await ps_list.findPs(module);
-	module_ps.forEach((ps) => {
-		// Note we are doing loose equality (==) rather than strict
-		// equality here, as find-process returns the uid as a string.  No point in spending time converting it.
-		// if curr_user.uid is 0, the user has run run using sudo or logged in as root.
-		if (curr_user.uid == 0 || ps.uid == curr_user.uid) {
-			process.kill(ps.pid);
-			log.trace(`Following process was killed by stopProcess: ${ps.cmd}`);
-		}
-	});
-}
-
-/**
  * Create arguments for child_process fork
  * @param module_path
  * @returns {*[]}
@@ -780,7 +759,7 @@ function autoCastBoolean(boolean) {
  * Gets a tables hash attribute from the global schema
  */
 function getTableHashAttribute(schema, table) {
-	const {getDatabases} = require('../resources/databases');
+	const { getDatabases } = require('../resources/databases');
 	let table_obj = getDatabases()[schema]?.[table];
 	return table_obj?.primaryKey || table_obj?.hash_attribute;
 }
@@ -791,7 +770,7 @@ function getTableHashAttribute(schema, table) {
  * @returns {boolean} - returns true if schema exists
  */
 function doesSchemaExist(schema) {
-	const {getDatabases} = require('../resources/databases');
+	const { getDatabases } = require('../resources/databases');
 	return getDatabases()[schema] !== undefined;
 }
 
@@ -802,7 +781,7 @@ function doesSchemaExist(schema) {
  * @returns {boolean} - returns true if table exists
  */
 function doesTableExist(schema, table) {
-	const {getDatabases} = require('../resources/databases');
+	const { getDatabases } = require('../resources/databases');
 	return getDatabases()[schema]?.[table] !== undefined;
 }
 
