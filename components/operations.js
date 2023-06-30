@@ -306,26 +306,36 @@ function dropCustomFunctionProject(req) {
 }
 
 /**
- * Packages a CF project into a tar file and also returns the base64 encode of said tar file.
- * Will copy the project into a temp dir call 'package', this is done because when npm installing tar
- * files the contents of the tar need to be in a dir called package. Deploy CF project uses npm install.
+ * Will package a component into a temp tar file then output that file as a base64 string.
+ * Req can accept a skip_node_modules boolean which will skip the node mods when creating temp tar file.
  * @param req
- * @returns {Promise<{file: string, payload: *, project}>}
+ * @returns {Promise<{payload: *, project}>}
  */
-async function packageCustomFunctionProject(req) {
+async function packageComponent(req) {
 	if (req.project) {
 		req.project = path.parse(req.project).name;
 	}
 
-	const validation = validator.packageCustomFunctionProjectValidator(req);
+	const validation = validator.packageComponentValidator(req);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	log.trace(`packaging custom function project`);
 	const cf_dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 	const { project } = req;
-	const path_to_project = await fs.realpath(path.join(cf_dir, project));
+	log.trace(`packaging component`, project);
+
+	let path_to_project;
+	try {
+		path_to_project = await fs.realpath(path.join(cf_dir, project));
+	} catch (err) {
+		if (err.code !== terms.NODE_ERROR_CODES.ENOENT) throw err;
+		try {
+			path_to_project = await fs.realpath(path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project));
+		} catch (err) {
+			if (err.code === terms.NODE_ERROR_CODES.ENOENT) throw new Error(`Unable to locate project '${project}'`);
+		}
+	}
 
 	// npm requires the contents of a module to be in a 'package' directory.
 	const tmp_project_dir = path.join(TMP_PATH, project);
@@ -355,67 +365,53 @@ async function packageCustomFunctionProject(req) {
 	const payload = fs.readFileSync(file, { encoding: 'base64' });
 
 	await fs.remove(tmp_project_dir);
+	await fs.remove(file);
 
 	// return the package payload as base64-encoded string
-	return { project, file, payload };
+	return { project, payload };
 }
 
 /**
- * Tar a project folder from the custom_functions folder
- *
- * @param {NodeObject} req
- * @returns {string}
+ * Can deploy a component in multiple ways. If a 'package' is provided all it will do is write that package to
+ * harperdb-config, when HDB is restarted the package will be installed in hdb/node_modules. If a base64 encoded string is passed it
+ * will write string to a tar file in the hdb/components dir. When deploying with a payload and bypass_config: true
+ * is provided it will extract the tar in hdb/components. If bypass_config is false it will not extract tar file but
+ * instead add ref to it in harper-config which will install the component in hdb/node_modules on restart/run
+ * @param req
+ * @returns {Promise<string>}
  */
-async function deployCustomFunctionProject(req) {
-	isCFEnabled();
+async function deployComponent(req) {
 	if (req.project) {
 		req.project = path.parse(req.project).name;
 	}
 
-	const validation = validator.deployCustomFunctionProjectValidator(req);
+	const validation = validator.deployComponentValidator(req);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	log.trace(`deploying custom function project`);
 	const cf_dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
-	const { project, payload, package: pkg, bypass_apps } = req;
+	let { project, payload, package: pkg, bypass_config } = req;
+	log.trace(`deploying component`, project);
+	bypass_config = bypass_config === true;
 
-	if (bypass_apps !== true) {
-		let new_app = {
-			name: project,
-		};
+	if (bypass_config && pkg) {
+		throw new Error('Cannot bypass_config when deploying with a package');
+	}
 
+	if (!payload && !pkg) {
+		throw new Error("'payload' or 'package' must be provided");
+	}
+
+	if (!bypass_config) {
 		if (payload) {
-			const path_to_project_tar = path.join(cf_dir, project + '.tar');
-			await fs.outputFile(path_to_project_tar, payload, { encoding: 'base64' });
-			new_app.package = path_to_project_tar;
-		} else if (pkg) {
-			new_app.package = pkg;
-		} else {
-			throw new Error("'payload' or 'package' must be provided");
+			pkg = path.join(cf_dir, project + '.tar');
+			await fs.outputFile(pkg, payload, { encoding: 'base64' });
 		}
 
 		// Adds package to harperdb-config and then relies on restart to call install on the new app
-		let apps = env.get(terms.CONFIG_PARAMS.APPS);
-		if (apps === undefined) apps = [];
-
-		let app_already_exists = false;
-		for (const app of apps) {
-			if (app.name === new_app.name) {
-				app.package = new_app.package;
-				app_already_exists = true;
-			}
-		}
-
-		if (!app_already_exists) {
-			apps.push(new_app);
-		}
-
-		config_utils.updateConfigValue(terms.CONFIG_PARAMS.APPS, apps);
+		config_utils.updateConfigValue(`${project}_package`, pkg, undefined, false, false, true);
 	} else {
-		// If they are bypassing apps we do not add the deployment to the apps config, it goes directly so the custom functions dir
-		if (pkg) throw new Error('bypass_apps is not available when deploying from package');
 		const path_to_project = path.join(cf_dir, project);
 		// check if the project exists, if it doesn't, create it.
 		await fs.ensureDir(path_to_project);
@@ -438,9 +434,20 @@ async function deployCustomFunctionProject(req) {
 
 		// delete the file
 		await fs.unlink(temp_file_path);
+
+		// HDB will package a component into a 'package` folder, this is done for npm install,
+		// however if we are here npm install is not being used, so we copy/remove component code up one dir.
+		const dir = await fs.readdir(path_to_project);
+		if (
+			(dir.length === 1 && dir.includes('package')) ||
+			(dir.length === 2 && dir.includes('package') && dir.includes('.DS_Store'))
+		) {
+			await fs.copy(path.join(path_to_project, 'package'), path_to_project);
+			await fs.remove(path.join(path_to_project, 'package'));
+		}
 	}
 
-	return `Successfully deployed project: ${project}`;
+	return `Successfully deployed: ${project}`;
 }
 
 module.exports = {
@@ -451,6 +458,6 @@ module.exports = {
 	dropCustomFunction,
 	addCustomFunctionProject,
 	dropCustomFunctionProject,
-	packageCustomFunctionProject,
-	deployCustomFunctionProject,
+	packageComponent,
+	deployComponent,
 };

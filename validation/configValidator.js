@@ -13,7 +13,7 @@ const hdb_terms = require('../utility/hdbTerms');
 const validator = require('./validationWrapper');
 
 const DEFAULT_LOG_FOLDER = 'log';
-const DEFAULT_CUSTOM_FUNCTIONS_FOLDER = 'custom_functions';
+const DEFAULT_CUSTOM_FUNCTIONS_FOLDER = 'components';
 const DEFAULT_CORES_IF_ERR = 4;
 const INVALID_SIZE_UNIT_MSG = 'Invalid logging.rotation.maxSize unit. Available units are G, M or K';
 const INVALID_INTERVAL_UNIT_MSG = 'Invalid logging.rotation.interval unit. Available units are D, H or M (minutes)';
@@ -197,8 +197,10 @@ function configValidator(config_json) {
 		}).required(),
 		rootPath: string.pattern(/^[\\\/]$|([\\\/][a-zA-Z_0-9\:-]+)+$/, 'directory path').required(),
 		mqtt: Joi.object({
-			port: port_constraints,
-			securePort: port_constraints,
+			network: Joi.object({
+				port: port_constraints,
+				securePort: port_constraints,
+			}).required(),
 			webSocket: boolean.optional(),
 			requireAuthentication: boolean.optional(),
 		}),
@@ -298,7 +300,9 @@ function setDefaultThreads(parent, helpers) {
 	available_memory = Math.round(Math.min(available_memory, totalmem()) / 1000000);
 	// (available memory -750MB) / 300MB
 	num_processes = Math.max(Math.min(num_processes, Math.round((available_memory - 750) / 300)), 1);
-	hdb_logger.info(`Detected ${processors} cores and ${available_memory}MB on this machine, defaulting ${config_param} to ${num_processes}`);
+	hdb_logger.info(
+		`Detected ${processors} cores and ${available_memory}MB on this machine, defaulting ${config_param} to ${num_processes}`
+	);
 	return num_processes;
 }
 
