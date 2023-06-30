@@ -1,4 +1,5 @@
 import { Resource } from './Resource';
+import { transaction } from './transaction';
 
 /**
  * This is the global set of all resources that have been registered on this server.
@@ -81,15 +82,16 @@ export class Resources extends Map<string, typeof Resource> {
 			return entry.Resource.getResource(this.pathToId(path, entry.Resource), resource_info, path);
 		}
 	}
-	async call(path: string, context, callback: Function) {
-		const entry = this.getMatch(path);
-		if (entry) {
-			path = entry.remainingPath;
-			const resource = await entry.Resource.getResource(this.pathToId(path, entry.Resource), context, path);
-			return resource?.accessInTransaction(context, (resource_access) =>
-				callback(resource_access, entry.path, entry.remainingPath)
-			);
-		}
+	call(path: string, request, callback: Function) {
+		return transaction(request, async () => {
+			const entry = this.getMatch(path);
+			if (entry) {
+				path = request.path = entry.remainingPath;
+				request.id = this.pathToId(path, entry.Resource);
+				const resource = entry.Resource.getResource(request);
+				return callback(resource, entry.path, path);
+			}
+		});
 	}
 	setRepresentation(path, type, representation) {}
 }

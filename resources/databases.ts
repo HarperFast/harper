@@ -242,6 +242,7 @@ function readMetaDb(
 						}
 						const dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
 						primary_store = root_store.openDB(attribute.key, dbi_init);
+						primary_store.rootStore = root_store;
 						primary_store.tableId = table_id;
 					}
 					harper_logger.trace(`comparing attributes ${table_name}`);
@@ -450,6 +451,7 @@ export function table({
 		const dbi_init = new OpenDBIObject(!primary_key_attribute.isPrimaryKey, primary_key_attribute.isPrimaryKey);
 		const dbi_name = table_name + '/' + primary_key_attribute.name;
 		const primary_store = root_store.openDB(dbi_name, dbi_init);
+		primary_store.rootStore = root_store;
 		if (!root_store.env.nextTableId) root_store.env.nextTableId = 1;
 		primary_store.tableId = root_store.env.nextTableId++;
 		primary_key_attribute.tableId = primary_store.tableId;

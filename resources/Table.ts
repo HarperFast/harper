@@ -2,11 +2,11 @@ import { CONFIG_PARAMS, OPERATIONS_ENUM } from '../utility/hdbTerms';
 import { open, Database, asBinary, SKIP } from 'lmdb';
 import { getIndexedValues } from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
-import { ResourceInterface } from './ResourceInterface';
+import { ResourceInterface, SubscriptionRequest } from './ResourceInterface';
 import { workerData, threadId } from 'worker_threads';
 import { messageTypeListener } from '../server/threads/manageThreads';
 import {
-	CONTEXT_PROPERTY,
+	REQUEST,
 	TRANSACTIONS_PROPERTY,
 	ID_PROPERTY,
 	LAST_MODIFICATION_PROPERTY,
@@ -30,6 +30,7 @@ import { databases, table } from './databases';
 import { idsForCondition, filterByType } from './search';
 import * as harper_logger from '../utility/logging/harper_logger';
 import { assignTrackedAccessors, collapseData, deepFreeze, hasChanges, OWN_DATA } from './tracked';
+import { transaction } from './transaction';
 
 let server_utilities;
 const RANGE_ESTIMATE = 100000000;
@@ -109,21 +110,23 @@ export function makeTable(options) {
 			// define a source for retrieving invalidated entries for caching purposes
 			this.Source = Resource;
 			(async () => {
-				const writeUpdate = async (event, first_resource: TableResource, resource: TableResource) => {
+				const writeUpdate = async (event) => {
 					const value = event.value;
-					if (event.table && !resource) {
-						const Table = databases[database_name][event.table];
-						const id = event.id === undefined ? value[Table.primaryKey] : event.id;
-						if (id === undefined) throw new Error('Secondary resource found without an id ' + JSON.stringify(event));
-						resource = await first_resource.use(Table).getResource(id, first_resource, null, true);
+					const Table = databases[database_name][event.table];
+					if (!event.id) {
+						event.id = value[Table.primaryKey];
+						if (!event.id) throw new Error('Secondary resource found without an id ' + JSON.stringify(event));
 					}
+					event.allowInvalidated = true;
+					event.isNotification = true;
+					const resource: TableResource = await Table.getResource(event);
 					switch (event.operation) {
 						case 'put':
-							return resource.#writeUpdate(value, { isNotification: true });
+							return resource.#writeUpdate(value, event);
 						case 'delete':
-							return resource.#writeDelete({ isNotification: true });
+							return resource.#writeDelete(event);
 						case 'publish':
-							return resource.#writePublish(value, { isNotification: true });
+							return resource.#writePublish(value, event);
 						default:
 							console.error('Unknown operation', event);
 					}
@@ -148,27 +151,11 @@ export function makeTable(options) {
 									console.error('Bad subscription event');
 									continue;
 								}
-								const id = first_write.id !== undefined ? first_write.id : first_write.value?.[primary_key];
-								const first_resource = await this.getResource(
-									id ?? null,
-									{
-										[CONTEXT_PROPERTY]: {
-											user: {
-												username: event.user,
-											},
-										},
-									},
-									null,
-									true
-								);
-								const commit = first_resource.transact((first_resource) => {
-									first_resource[TRANSACTIONS_PROPERTY].timestamp = event.timestamp;
+								transaction(event, () => {
 									if (event.operation === 'transaction') {
 										const promises = [];
-										let resource = first_resource;
 										for (const write of event.writes) {
-											promises.push(writeUpdate(write, first_resource, resource));
-											resource = null;
+											promises.push(writeUpdate(write));
 										}
 										return Promise.all(promises);
 									} else if (event.operation === 'define_schema') {
@@ -187,7 +174,7 @@ export function makeTable(options) {
 												new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_TABLE, database_name, table_name)
 											);
 										}
-									} else writeUpdate(event, first_resource, first_resource);
+									} else writeUpdate(event);
 								});
 								if (event.onCommit) commit.then(event.onCommit);
 							} catch (error) {
@@ -201,10 +188,10 @@ export function makeTable(options) {
 			})();
 			return this;
 		}
-		static getResource(id, resource_info, path, allow_invalidated): Promise<TableResource> {
-			const resource: TableResource = super.getResource(id, resource_info, path) as any;
-			if (id != null) {
-				const completion = resource.loadRecord(allow_invalidated);
+		static getResource(request): Promise<TableResource> | TableResource {
+			const resource: TableResource = super.getResource(request) as any;
+			if (request.id != null) {
+				const completion = resource.loadRecord(request.allowInvalidated);
 				if (completion?.then) return completion.then(() => resource);
 			}
 			return resource;
@@ -287,6 +274,10 @@ export function makeTable(options) {
 				this[LAST_MODIFICATION_PROPERTY] = latest;
 				if (this.parent?.updateModificationTime) this.parent.updateModificationTime(latest);
 			}
+		}
+		static get(request) {
+			if (request.id === undefined) return this.describe();
+			return super.get(request);
 		}
 		/**
 		 * This retrieves the data of this resource. By default, with no argument, just return `this`.
@@ -548,18 +539,18 @@ export function makeTable(options) {
 			// TODO: only do this if we are in a custom function, otherwise directly call #writeUpdate
 			this.update(record);
 		}
-		#writeUpdate(record, options?) {
-			const env_txn = this[DB_TXN_PROPERTY] || immediateTransaction;
+		#writeUpdate(record, request) {
+			const transaction = txnForRequest(request);
 
 			// use optimistic locking to only commit if the existing record state still holds true.
 			// this is superior to using an async transaction since it doesn't require JS execution
 			//  during the write transaction.
-			const txn_time = this[TRANSACTIONS_PROPERTY]?.timestamp || immediateTransaction.timestamp;
+			const txn_time = transaction.timestamp;
 			let existing_record = this[RECORD_PROPERTY];
 			let is_unchanged;
 			let record_prepared;
 			if (!existing_record) this[RECORD_PROPERTY] = {}; // mark that this resource is being saved so isSaveRecord return true
-			env_txn.addWrite({
+			transaction.addWrite({
 				key: this[ID_PROPERTY],
 				store: primary_store,
 				txnTime: txn_time,
@@ -638,21 +629,21 @@ export function makeTable(options) {
 			});
 		}
 
-		async delete(options): Promise<boolean> {
+		async delete(request: Request): Promise<boolean> {
 			if (!this[RECORD_PROPERTY]) return false;
 			/*if (this.constructor.Source?.prototype.delete) {
 				const source = (this[SOURCE_PROPERTY] = await this.constructor.Source.getResource(this[ID_PROPERTY], this));
 				await source.delete(options);
 			}*/
-			return this.#writeDelete();
+			return this.#writeDelete(request);
 		}
-		#writeDelete(options) {
-			const env_txn = this[DB_TXN_PROPERTY] || immediateTransaction;
-			const txn_time = this[TRANSACTIONS_PROPERTY]?.timestamp || immediateTransaction.timestamp;
+		#writeDelete(command: Request) {
+			const transaction = txnForRequest(command);
+			const txn_time = transaction.timestamp;
 			let delete_prepared;
 			const id = this[ID_PROPERTY];
 			let completion;
-			env_txn.addWrite({
+			transaction.addWrite({
 				key: id,
 				store: primary_store,
 				txnTime: txn_time,
@@ -666,18 +657,18 @@ export function makeTable(options) {
 					}
 					if (!delete_prepared) {
 						delete_prepared = true;
-						if (!options?.isNotification) {
+						if (!command?.isNotification) {
 							if (this.constructor.Source?.prototype.delete) {
 								const source = this.constructor.Source.getResource(id, this);
 								harper_logger.trace(`Sending delete ${id} to source, is promise ${!!source?.then}`);
 								if (source?.then)
 									completion = source.then((source) => {
 										this[SOURCE_PROPERTY] = source;
-										return source.delete(options);
+										return source.delete(command);
 									});
 								else {
 									this[SOURCE_PROPERTY] = source;
-									completion = source.delete(options);
+									completion = source.delete(command);
 								}
 							}
 						}
@@ -854,7 +845,7 @@ export function makeTable(options) {
 			}
 			return records;
 		}
-		async subscribe(options) {
+		async subscribe(request: SubscriptionRequest) {
 			if (!audit_store) throw new Error('Can not subscribe to a table without an audit log');
 			const subscription = addSubscription(
 				this.constructor,
@@ -867,12 +858,12 @@ export function makeTable(options) {
 						console.error(error);
 					}
 				},
-				options.startTime
+				request.startTime
 			);
 			const id = this[ID_PROPERTY];
-			let count = options.previousCount;
+			let count = request.previousCount;
 			if (count > 1000) count = 1000; // don't allow too many, we have to hold these in memory
-			let start_time = options.startTime;
+			let start_time = request.startTime;
 			if (id == null) {
 				if (start_time) {
 					if (count)
@@ -905,7 +896,7 @@ export function makeTable(options) {
 						subscription.send(history[--i]);
 					}
 					if (history[0]) subscription.startTime = history[0].timestamp; // update so don't double send
-				} else if (!options.noRetain) {
+				} else if (!request.noRetain) {
 					for (const { key: id, value, version } of primary_store.getRange({ start: false, versions: true })) {
 						if (!value) continue;
 						subscription.send({ id, timestamp: version, value });
@@ -915,7 +906,7 @@ export function makeTable(options) {
 				if (count && !start_time) start_time = 0;
 				const version = this[VERSION_PROPERTY];
 				if (start_time < version) {
-					options.noRetain = true; // we are sending the current version from history, so don't double send
+					request.noRetain = true; // we are sending the current version from history, so don't double send
 					// start time specified, get the audit history for this record
 					const history = [];
 					let next_version = version;
@@ -934,12 +925,12 @@ export function makeTable(options) {
 						subscription.send(history[--i]);
 					}
 					subscription.startTime = version; // make sure we don't re-broadcast the current version that we already sent
-				} else if (!options.noRetain) {
+				} else if (!request.noRetain) {
 					// if retain and it exists, send the current value first
 					if (this.isSavedRecord()) subscription.send({ id, timestamp: this[VERSION_PROPERTY], value: this });
 				}
 			}
-			if (options.listener) subscription.on('data', options.listener);
+			if (request.listener) subscription.on('data', request.listener);
 			return subscription;
 		}
 		isSavedRecord() {
@@ -956,12 +947,13 @@ export function makeTable(options) {
 		async publish(message, options?) {
 			this.#writePublish(message, options);
 		}
-		#writePublish(message, options?) {
-			const txn_time = this[TRANSACTIONS_PROPERTY].timestamp;
+		#writePublish(message, command?: Request) {
+			const transaction = txnForRequest(command);
+			const txn_time = transaction.timestamp;
 			const id = this[ID_PROPERTY] || null;
 			let completion;
 			let publish_prepared;
-			this[DB_TXN_PROPERTY].addWrite({
+			transaction.addWrite({
 				store: primary_store,
 				key: id,
 				txnTime: txn_time,
@@ -977,17 +969,17 @@ export function makeTable(options) {
 
 					if (!publish_prepared) {
 						publish_prepared = true;
-						if (!options?.isNotification) {
+						if (!command?.isNotification) {
 							if (this.constructor.Source?.prototype.publish) {
 								const source = this.constructor.Source.getResource(id, this);
 								if (source?.then)
 									completion = source.then((source) => {
 										this[SOURCE_PROPERTY] = source;
-										return source.publish(message, options);
+										return source.publish(message, command);
 									});
 								else {
 									this[SOURCE_PROPERTY] = source;
-									completion = source.publish(message, options);
+									completion = source.publish(message, command);
 								}
 							}
 						}
@@ -1094,7 +1086,7 @@ export function makeTable(options) {
 	function assignDBTxn(resource) {
 		let db_txn = resource[TRANSACTIONS_PROPERTY].find((txn) => txn.dbPath === database_path);
 		if (!db_txn) {
-			db_txn = new DatabaseTransaction(primary_store, resource[CONTEXT_PROPERTY]?.user, audit_store);
+			db_txn = new DatabaseTransaction(primary_store, resource[REQUEST]?.user, audit_store);
 			db_txn.dbPath = database_path;
 			resource[TRANSACTIONS_PROPERTY].push(db_txn);
 		}
@@ -1151,6 +1143,17 @@ export function makeTable(options) {
 				primary_store.put([DELETION_COUNT_KEY, threadId], deletion_count);
 			}, 50);
 		}
+	}
+
+	function txnForRequest(request: Request) {
+		let transaction_set = request?.transaction;
+		if (transaction_set) {
+			let transaction;
+			if ((transaction = transaction_set?.find((txn) => txn.path === database_path))) return transaction;
+			transaction_set.push((transaction = new DatabaseTransaction(primary_store, request.user, audit_store)));
+			return transaction;
+		}
+		return immediateTransaction;
 	}
 }
 

@@ -14,7 +14,6 @@ import { threadId } from 'worker_threads';
 import initializeReplyService from './natsReplyService';
 import * as harper_logger from '../../utility/logging/harper_logger';
 
-
 let publishing_databases = new Map();
 export function start() {
 	if (env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) assignReplicationSource();
@@ -64,27 +63,27 @@ export function setNATSReplicator(table_name, db_name, Table) {
 
 	Table.sourcedFrom(
 		class NATSReplicator extends Resource {
-			put(record, options) {
+			put(request) {
 				// add this to the transaction
-				this.getNATSTransaction(options).addWrite(db_name, {
+				this.getNATSTransaction(request).addWrite(db_name, {
 					operation: 'put',
 					table: table_name,
-					record,
+					record: request.data,
 				});
 			}
-			delete(options) {
-				this.getNATSTransaction(options).addWrite(db_name, {
+			delete(request) {
+				this.getNATSTransaction(request).addWrite(db_name, {
 					operation: 'delete',
 					table: table_name,
 					id: this[ID_PROPERTY],
 				});
 			}
-			publish(message, options) {
-				this.getNATSTransaction(options).addWrite(db_name, {
+			publish(request) {
+				this.getNATSTransaction(request).addWrite(db_name, {
 					operation: 'publish',
 					table: table_name,
 					id: this[ID_PROPERTY],
-					record: message,
+					record: request.data,
 				});
 			}
 			static defineSchema(Table) {
@@ -95,17 +94,16 @@ export function setNATSReplicator(table_name, db_name, Table) {
 			 * This gets the NATS transaction object for the current overall transaction. This will
 			 * accumulate any writes that occur during a transaction, and allow them to be aggregated
 			 * into a replication message that encompasses all the writes of a transaction.
-			 * @param options
+			 * @param request
 			 */
-			getNATSTransaction(options): NATSTransaction {
-				let nats_transaction: NATSTransaction = this[TRANSACTIONS_PROPERTY]?.nats;
+			getNATSTransaction(request): NATSTransaction {
+				let nats_transaction: NATSTransaction = request?.transaction?.nats;
 				if (!nats_transaction) {
-					if (this[TRANSACTIONS_PROPERTY]) {
-						this[TRANSACTIONS_PROPERTY].push(
-							(nats_transaction = this[TRANSACTIONS_PROPERTY].nats =
-								new NATSTransaction(this[TRANSACTIONS_PROPERTY], options))
+					if (request?.transaction) {
+						request.transaction.push(
+							(nats_transaction = request.transaction.nats = new NATSTransaction(request.transaction, request))
 						);
-						nats_transaction.user = this[USER_PROPERTY];
+						nats_transaction.user = request.user;
 					} else nats_transaction = immediateNATSTransaction;
 				}
 				return nats_transaction;

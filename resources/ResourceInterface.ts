@@ -1,18 +1,33 @@
 export interface ResourceInterface<Key = any, Record = any> {
-	get?(key: Key, options?: {}): Promise<UpdatableRecord<Record>>; // or use ResourceId instead of Key
-	put?(key: Key, record: Record, options?: {}): void;
-	patch?(key: Key, record: Record, options?: {}): Record;
-	update?(key: Key): Promise<UpdatableRecord<Record>>;
-	delete?(key: Key, options?: {}): boolean;
-	search?(query, options?: {}): AsyncIterable<any>;
-	subscribe?(query, options?: {}): Subscription;
-	allowAccess(): boolean | Promise<boolean>;
-	allowGet(): boolean | Promise<boolean>;
-	allowPut(): boolean | Promise<boolean>;
-	allowPatch(): boolean | Promise<boolean>;
-	allowDelete(): boolean | Promise<boolean>;
+	get?(request: Request): Promise<UpdatableRecord<Record>>; // or use ResourceId instead of Key
+	put?(request: Request): void;
+	patch?(request: Request): Record;
+	update?(request: Request): Promise<UpdatableRecord<Record>>;
+	delete?(request: Request): boolean;
+	search?(request: Request): AsyncIterable<any>;
+	subscribe?(request: SubscriptionRequest): Subscription;
+	allowRead(request: Request): boolean | Promise<boolean>;
+	allowUpdate(request: Request): boolean | Promise<boolean>;
+	allowCreate(request: Request): boolean | Promise<boolean>;
+	allowDelete(request: Request): boolean | Promise<boolean>;
 	lastModificationTime: number;
+	request: Request;
 }
+export interface Request {
+	id: Id;
+	path: string;
+	user: any;
+	data?: any;
+	select?: string[];
+	conditions?: any[];
+	limit?: number;
+	offset?: number;
+}
+export interface SubscriptionRequest extends Request {
+	startTime?: number;
+	previousCount?: number;
+}
+export type Id = number | string | (number | string | null)[] | null;
 type UpdatableRecord<T> = T
 interface Subscription {}
 type ResourceId = Request|number|string;

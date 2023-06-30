@@ -1,4 +1,4 @@
-import { ResourceInterface } from './ResourceInterface';
+import { ResourceInterface, Request, SubscriptionRequest, Id } from './ResourceInterface';
 import { getTables } from './databases';
 import { Table } from './Table';
 import { randomUUID } from 'crypto';
@@ -7,11 +7,12 @@ import { DefaultAccess } from './Access';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { IterableEventQueue } from './IterableEventQueue';
 import { _assignPackageExport } from '../index';
+import { parseQuery } from './search';
 import { ClientError } from '../utility/errors/hdbError';
 
 let tables;
 
-export const CONTEXT_PROPERTY = Symbol.for('context');
+export const REQUEST = Symbol.for('request');
 export const USER_PROPERTY = Symbol.for('user');
 export const ID_PROPERTY = Symbol.for('id');
 export const LAST_MODIFICATION_PROPERTY = Symbol.for('last-modification-time');
@@ -31,21 +32,15 @@ export const USED_RESOURCES = Symbol('used-resources');
  * data aggregation, processing, or monitoring.
  */
 export class Resource implements ResourceInterface {
-	[CONTEXT_PROPERTY]: any;
+	[REQUEST]: any;
 	[USER_PROPERTY]: any;
 	[ID_PROPERTY]: any;
 	[LAST_MODIFICATION_PROPERTY] = 0;
 	[TRANSACTIONS_PROPERTY]: Transaction[] & { timestamp: number };
 	static transactions: Transaction[] & { timestamp: number };
-	constructor(identifier?, source?) {
+	constructor(identifier: Id, request: Request) {
 		this[ID_PROPERTY] = identifier;
-		this[CONTEXT_PROPERTY] = source?.[CONTEXT_PROPERTY];
-		this[USER_PROPERTY] = this[CONTEXT_PROPERTY]?.user;
-		this[TRANSACTIONS_PROPERTY] = source?.[TRANSACTIONS_PROPERTY];
-	}
-
-	getById(id: any, options?: any): Promise<{}> {
-		throw new Error('Not implemented');
+		this.request = request;
 	}
 
 	/**
@@ -60,49 +55,51 @@ export class Resource implements ResourceInterface {
 		}
 	}
 
-	/**
-	 * Commit the resource transaction(s). This commits any transactions that have started as part of the resolution
-	 * of this resource, and frees any read transaction.
-	 */
-	async commit(flush = true): Promise<{ txnTime: number }> {
-		const commits = [];
-		// this can grow during the commit phase, so need to always check length
-		try {
-			for (let i = 0; i < this[TRANSACTIONS_PROPERTY].length; i++) {
-				const txn = this[TRANSACTIONS_PROPERTY][i];
-				txn.validate?.();
-			}
-			for (let i = 0; i < this[TRANSACTIONS_PROPERTY].length; ) {
-				for (let l = this[TRANSACTIONS_PROPERTY].length; i < l; i++) {
-					const txn = this[TRANSACTIONS_PROPERTY][i];
-					// TODO: If we have multiple commits in a single resource instance, need to maintain
-					// databases with waiting flushes to resolve at the end when a flush is requested.
-					commits.push(txn.commit(flush));
-				}
-				await Promise.all(commits);
-			}
-			return { txnTime: this[TRANSACTIONS_PROPERTY].timestamp };
-		} finally {
-			this[TRANSACTIONS_PROPERTY] = null;
-		}
-	}
-	static commit = Resource.prototype.commit;
-	abort() {
-		for (const txn of this[TRANSACTIONS_PROPERTY]) {
-			txn.abort?.();
-		}
-	}
-	static abort = Resource.prototype.abort;
-	doneReading() {
-		for (const txn of this[TRANSACTIONS_PROPERTY]) {
-			txn.doneReading?.();
-		}
-	}
 	static async get(identifier: string | number | (string | number)[]): Promise<object>;
 	static async get(query: object): Promise<Iterable<object>>;
-	static async get(identifier: string | number | (string | number)[] | object, query) {
-		const resource = await this.getResource(identifier, this);
-		return resource.get(query);
+	static async get(request) {
+		let id, path, search;
+		if (typeof request === 'string') {
+			id = request;
+		} else if (request && typeof request === 'object') {
+			({ id, path, search } = request);
+			if (search) {
+				request.query = parseQuery(search);
+			}
+		}
+		const resource = await this.getResource(id, request, path);
+		resource[SAVE_UPDATES_PROPERTY] = false; // by default modifications aren't saved, they just yield a different result from get
+		if (request.authorize) {
+			const allowed = await resource.allowRead(request);
+			if (!allowed) {
+				throw new AccessError(request.user);
+			}
+			request.authorize = false;
+		}
+		return resource.get(request);
+	}
+	static async put(request) {
+		let resource = await this.getResource(request);
+		if (request.authorize) {
+			request.authorize = false;
+			const allowed = await resource.allowUpdate(request);
+			if (!allowed) {
+				throw new AccessError(request.user);
+			}
+		}
+		return resource.put(request);
+	}
+	static async delete(request) {
+		request.allowInvalidated = true;
+		let resource = await this.getResource(request);
+		if (request.authorize) {
+			request.authorize = false;
+			const allowed = await resource.allowDelete(request);
+			if (!allowed) {
+				throw new AccessError(request.user);
+			}
+		}
+		return resource.delete(request);
 	}
 
 	put(record: object, options?): Promise<void>;
@@ -154,7 +151,7 @@ export class Resource implements ResourceInterface {
 				const completions = [];
 				if (this.prototype.delete.preload === false) identifier.select = [this.primaryKey];
 				for (const record of resource_txn.search(identifier)) {
-					const record_resource = new this(record[this.primaryKey], this[CONTEXT_PROPERTY], resource_txn.transaction);
+					const record_resource = new this(record[this.primaryKey], this[REQUEST], resource_txn.transaction);
 					record_resource.record = record;
 					completions.push(record_resource.delete());
 				}
@@ -179,24 +176,21 @@ export class Resource implements ResourceInterface {
 	static coerceId(id: string): number | string {
 		return id;
 	}
-	static getResource(
-		id: number | string | (number | string | null)[] | null,
-		resource_info: object,
-		path
-	): Resource | Promise<Resource> {
+	static getResource(request: Request): Resource | Promise<Resource> {
 		let resource;
+		let { path, id } = request;
 		if (!path) {
 			path = id?.toString() ?? '';
 		}
-		if (this[TRANSACTIONS_PROPERTY]) {
+		if (request.transaction) {
 			let resource_cache;
-			if (this.hasOwnProperty(RESOURCE_CACHE)) {
-				resource_cache = this[RESOURCE_CACHE];
-				resource = resource_cache.get(path);
-				if (resource) return resource;
-			} else resource_cache = this[RESOURCE_CACHE] = new Map();
-			resource_cache.set(path, (resource = new this(id, resource_info)));
-		} else resource = new this(id, resource_info);
+			if (request.resourceCache) {
+				resource_cache = request.resourceCache;
+			} else resource_cache = request.resourceCache = new Map();
+			resource = resource_cache.get(path);
+			if (resource) return resource;
+			resource_cache.set(path, (resource = new this(id, request)));
+		} else resource = new this(id, request);
 		if (id == null || (id.constructor === Array && id[id.length - 1] == null)) resource[IS_COLLECTION] = true;
 		return resource;
 	}
@@ -237,7 +231,7 @@ export class Resource implements ResourceInterface {
 			const used = used_resources.find((used) => used === Resource || ResourceToUse.isPrototypeOf(used));
 			if (used) return used;
 		} else this[USED_RESOURCES] = used_resources = [];
-		const txn_resource = ResourceToUse.deriveWithTransactions(this[TRANSACTIONS_PROPERTY], this[CONTEXT_PROPERTY]);
+		const txn_resource = ResourceToUse.deriveWithTransactions(this[TRANSACTIONS_PROPERTY], this[REQUEST]);
 		used_resources.push(txn_resource);
 		txn_resource[USED_RESOURCES] = used_resources;
 		if (identifier) return txn_resource.get(identifier);
@@ -260,7 +254,7 @@ export class Resource implements ResourceInterface {
 				this[USER_PROPERTY],
 				table.auditStore
 			));
-		return table.transaction(this[CONTEXT_PROPERTY], env_txn, env_txn.getReadTxn(), this);
+		return table.transaction(this[REQUEST], env_txn, env_txn.getReadTxn(), this);
 	}
 	async fetch(input: RequestInfo | URL, init?: RequestInit) {
 		const response = await fetch(input, init);
@@ -286,7 +280,7 @@ export class Resource implements ResourceInterface {
 			// @ts-ignore
 			static name = name;
 			static [TRANSACTIONS_PROPERTY] = transactions;
-			static [CONTEXT_PROPERTY] = options;
+			static [REQUEST] = options;
 		};
 	}
 	static transact(callback, options?) {
@@ -307,7 +301,7 @@ export class Resource implements ResourceInterface {
 	async accessInTransaction(request, action: (resource_access) => any) {
 		return this.transact((transactional_resource) => {
 			if (request) {
-				transactional_resource[CONTEXT_PROPERTY] = request;
+				transactional_resource[REQUEST] = request;
 				transactional_resource[USER_PROPERTY] = request.user;
 			}
 			const resource_access = transactional_resource.access(request);
@@ -349,6 +343,7 @@ export class Resource implements ResourceInterface {
 		return user?.role.permission.super_user;
 	}
 }
+Resource.prototype.request = null;
 _assignPackageExport('Resource', Resource);
 
 export function snake_case(camelCase: string) {

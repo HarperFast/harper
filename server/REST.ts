@@ -20,9 +20,8 @@ async function http(request, next_handler) {
 	try {
 		const headers = {};
 		let resource;
-		let response_data = await resources.call(request.pathname.slice(1), request, (resource_access, path) => {
+		let response_data = await resources.call(request.pathname.slice(1), request, (resource, path) => {
 			resource_path = path;
-			resource = resource_access.resource;
 			if (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'QUERY') {
 				// TODO: Support cancelation (if the request otherwise fails or takes too many bytes)
 				try {
@@ -35,29 +34,29 @@ async function http(request, next_handler) {
 			switch (method) {
 				case 'GET':
 				case 'HEAD':
-					return resource_access.get();
+					return resource.get(request);
 				case 'POST':
-					return resource_access.post(request.data);
+					return resource.post(request);
 				case 'PUT':
-					return resource_access.put(request.data);
+					return resource.put(request);
 				case 'DELETE':
-					return resource_access.delete();
+					return resource.delete(request);
 				case 'PATCH':
-					return resource_access.patch(request.data);
+					return resource.patch(request);
 				case 'OPTIONS': // used primarily for CORS
 					headers.Allow = 'GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS, TRACe, QUERY, COPY, MOVE';
 					return;
 				case 'CONNECT':
 					// websockets? and event-stream
-					return resource_access.connect();
+					return resource.connect(request);
 				case 'TRACE':
 					return 'HarperDB is the terminating server';
 				case 'QUERY':
-					return resource_access.query(request.data);
+					return resource.query(request);
 				case 'COPY': // methods suggested from webdav RFC 4918
-					return resource_access.copy(request.headers.destination);
+					return resource.copy(request.headers.destination);
 				case 'MOVE':
-					return resource_access.move(request.headers.destination);
+					return resource.move(request.headers.destination);
 				default:
 					throw new ServerError('Method not available', 501);
 			}
@@ -215,9 +214,9 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 		});
 		await chain_completion;
 		let resource_found;
-		const response_stream = await resources.call(request.pathname.slice(1), request, (resource_access, path) => {
+		const response_stream = await resources.call(request.pathname.slice(1), request, (resource, path) => {
 			resource_found = true;
-			return resource_access.connect(incoming_messages);
+			return resource.connect(incoming_messages);
 		});
 		if (!resource_found) {
 			ws.send(serializeMessage(`No resource was found to handle ${request.pathname}`, request));

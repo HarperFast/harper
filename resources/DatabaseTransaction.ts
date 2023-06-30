@@ -1,10 +1,7 @@
 import { asBinary, Database, getLastVersion, RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
-import { EXPLICIT_CHANGES_PROPERTY } from './Resource';
-import { UPDATES_PROPERTY } from '../utility/hdbTerms';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 
 export const COMPLETION = Symbol('completion');
-const MAX_OPTIMISTIC_RETRIES = 2;
 const MAX_OPTIMISTIC_SIZE = 100;
 export class DatabaseTransaction implements Transaction {
 	conditions = []; // the set of reads that were made in this txn, that need to be verified to commit the writes

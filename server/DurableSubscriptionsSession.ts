@@ -156,9 +156,9 @@ class SubscriptionsSession {
 		message.data = data;
 		message.user = this.user;
 		let resource_found;
-		const publish_result = await resources.call(topic, message, async (resource_access) => {
+		const publish_result = await resources.call(topic, message, async (resource) => {
 			resource_found = true;
-			return resource_access.publish(data);
+			return retain ? resource.put(data) : resource.publish(data);
 		});
 		if (!resource_found) throw new Error('There is no resource or table for the ${topic} topic');
 		return publish_result;
