@@ -49,7 +49,14 @@ function harperDBService() {
 			case SERVICE_ACTIONS_ENUM.RUN:
 				// Run a specific application folder
 				let app_folder = process.argv[3];
-				if (app_folder && app_folder[0] !== '-') process.env.RUN_HDB_APP = app_folder;
+				if (app_folder && app_folder[0] !== '-') {
+					if (fs.existsSync(path.join(app_folder, hdb_terms.HDB_CONFIG_FILE))) {
+						// This can be used to run HDB without a boot file
+						process.env.ROOTPATH = app_folder;
+					} else {
+						process.env.RUN_HDB_APP = app_folder;
+					}
+				}
 				require('./run').main();
 				break;
 			case SERVICE_ACTIONS_ENUM.START:
