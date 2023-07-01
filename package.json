@@ -78,7 +78,7 @@
     "chalk": "4.1.2",
     "cli-progress": "3.12.0",
     "clone": "2.1.2",
-    "esbuild": "^0.17.10",
+    "esbuild": "^0.18.0",
     "fast-glob": "3.2.12",
     "fastify": "~4.18.0",
     "fastify-plugin": "~4.5.0",
