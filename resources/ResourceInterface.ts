@@ -14,11 +14,13 @@ export interface ResourceInterface<Key = any, Record = any> {
 	request: Request;
 }
 export interface Request {
-	id: Id;
-	path: string;
-	user: any;
+	id?: Id;
+	path?: string;
+	user?: any;
 	data?: any;
 	select?: string[];
+}
+export interface SearchRequest extends Request {
 	conditions?: any[];
 	limit?: number;
 	offset?: number;

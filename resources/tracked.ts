@@ -66,7 +66,7 @@ export function assignTrackedAccessors(Target, type_def) {
 		if (
 			!(name in prototype) ||
 			// this means that we are re-defining an attribute accessor (which is fine)
-			Object.getOwnPropertyDescriptor(prototype, name).get?.isAttribute
+			Object.getOwnPropertyDescriptor(prototype, name)?.get?.isAttribute
 		) {
 			Object.defineProperty(prototype, name, descriptor);
 		}

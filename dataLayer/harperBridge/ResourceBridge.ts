@@ -53,7 +53,14 @@ export class ResourceBridge extends LMDBBridge {
 		conditions.reverse = search_object.reverse;
 		conditions.allowFullScan = true;
 
-		return table.search(conditions);
+		return table.search({
+			conditions,
+			limit: search_object.limit,
+			offset: search_object.offset,
+			reverse: search_object.reverse,
+			select: getSelect(search_object, table),
+			allowFullScan: true,
+		});
 	}
 	/**
 	 * Writes new table data to the system tables creates the environment file and creates two datastores to track created and updated
@@ -367,13 +374,15 @@ export class ResourceBridge extends LMDBBridge {
 							comparator,
 						},
 				  ];
-		conditions.limit = search_object.limit;
-		conditions.offset = search_object.offset;
-		conditions.select = getSelect(search_object, table);
-		conditions.reverse = search_object.reverse;
-		conditions.allowFullScan = true;
 
-		return table.search(conditions);
+		return table.search({
+			conditions,
+			allowFullScan: true,
+			limit: search_object.limit,
+			offset: search_object.offset,
+			reverse: search_object.reverse,
+			select: getSelect(search_object, table),
+		});
 	}
 	async getDataByValue(search_object: SearchObject, comparator) {
 		const map = new Map();

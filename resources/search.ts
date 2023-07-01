@@ -3,6 +3,15 @@ import * as lmdb_terms from '../utility/lmdb/terms';
 import { compareKeys } from 'ordered-binary';
 import { SKIP } from 'lmdb';
 
+const QUERY_PARSER = /([^?&|=<>!()*]+)([&|=<>!()*]*)/g;
+const SYMBOL_OPERATORS = {
+	'<': 'lt',
+	'<=': 'le',
+	'>': 'gt',
+	'>=': 'ge',
+	'!=': 'ne',
+};
+
 export function idsForCondition(search_condition, transaction, reverse, Table, allow_full_scan) {
 	const attribute_name = search_condition[0] ?? search_condition.attribute;
 	let start;
@@ -144,4 +153,98 @@ export function filterByType(search_condition) {
 		default:
 			return; // Object.create(null);
 	}
+}
+
+/**
+ * This is responsible for taking a query string (from a get()) and converting it to a standard query object
+ * structure
+ * @param query_string
+ */
+export function parseQuery(query_string: string) {
+	let match;
+	let attribute, comparator;
+	const conditions = [];
+	let offset, limit, sort, select, last_index;
+	// TODO: Use URLSearchParams with a fallback for when it can't parse everything (USP is very fast)
+	while ((match = QUERY_PARSER.exec(query_string))) {
+		last_index = QUERY_PARSER.lastIndex;
+		let [, value, operator] = match;
+		switch (operator) {
+			case ')':
+				// finish call
+				operator = operator.slice(1);
+				break;
+			case '=':
+				if (attribute) {
+					// a FIQL operator like =gt= (and don't allow just any string)
+					if (value.length <= 2) comparator = value;
+				} else {
+					comparator = 'equals';
+					attribute = decodeURIComponent(value);
+				}
+				break;
+			case '!=':
+			case '<':
+			case '<=':
+			case '>':
+			case '>=':
+				comparator = SYMBOL_OPERATORS[operator];
+				attribute = decodeURIComponent(value);
+				break;
+			case '=*':
+				comparator = 'ends_with';
+				attribute = decodeURIComponent(value);
+				break;
+			case '*':
+			case '*&':
+				conditions.push({
+					comparator: comparator === 'ends_with' ? 'contains' : 'starts_with',
+					attribute,
+					value: decodeURIComponent(value),
+				});
+				attribute = null;
+				break;
+			case '':
+			case undefined:
+			case '&':
+			case '|':
+				switch (attribute) {
+					case 'offset':
+						conditions.offset = +value;
+						break;
+					case 'limit':
+						conditions.limit = +value;
+						break;
+					case 'select':
+						conditions.select = value.split(',');
+						break;
+					case 'sort':
+						conditions.sort = value.split(',').map((direction) => {
+							switch (direction[0]) {
+								case '-':
+									return { attribute: direction.slice(1), descending: true };
+								case '+':
+									return { attribute: direction.slice(1), descending: false };
+								default:
+									return { attribute: direction, descending: false };
+							}
+						});
+						break;
+					case undefined:
+						throw new Error('Unable to parse query');
+					default:
+						conditions.push({
+							comparator: comparator,
+							attribute,
+							value: decodeURIComponent(value),
+						});
+				}
+				attribute = undefined;
+				break;
+			default:
+				throw new Error(`Unknown operator ${operator} in query`);
+		}
+	}
+	if (last_index !== query_string.length) throw new Error('Unable to parse query');
+	return conditions;
 }

@@ -88,8 +88,7 @@ export class Resources extends Map<string, typeof Resource> {
 			if (entry) {
 				path = request.path = entry.remainingPath;
 				request.id = this.pathToId(path, entry.Resource);
-				const resource = entry.Resource.getResource(request);
-				return callback(resource, entry.path, path);
+				return callback(entry.Resource, entry.path, path);
 			}
 		});
 	}

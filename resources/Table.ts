@@ -264,11 +264,6 @@ export function makeTable(options) {
 		[DB_TXN_PROPERTY]: DatabaseTransaction;
 		static Source: typeof Resource;
 
-		constructor(identifier, resource_info) {
-			// coerce if we know this is supposed to be a number
-			super(identifier, resource_info);
-			if (this[TRANSACTIONS_PROPERTY]) assignDBTxn(this);
-		}
 		updateModificationTime(latest = Date.now()) {
 			if (latest > this[LAST_MODIFICATION_PROPERTY]) {
 				this[LAST_MODIFICATION_PROPERTY] = latest;
@@ -315,7 +310,7 @@ export function makeTable(options) {
 		loadRecord(allow_invalidated?: boolean) {
 			// TODO: determine if we use lazy access properties
 			if (this.hasOwnProperty(RECORD_PROPERTY)) return; // already loaded, don't reload, current version may have modifications
-			const env_txn = this[DB_TXN_PROPERTY];
+			const env_txn = txnForRequest(this.request);
 			const id = this[ID_PROPERTY];
 			let entry = primary_store.getEntry(this[ID_PROPERTY], { transaction: env_txn?.getReadTxn() });
 			let record;
@@ -635,6 +630,7 @@ export function makeTable(options) {
 				const source = (this[SOURCE_PROPERTY] = await this.constructor.Source.getResource(this[ID_PROPERTY], this));
 				await source.delete(options);
 			}*/
+			// TODO: Handle deletion of a collection/query
 			return this.#writeDelete(request);
 		}
 		#writeDelete(command: Request) {
@@ -688,28 +684,14 @@ export function makeTable(options) {
 			});
 			return true;
 		}
-		static transact(callback, options?) {
-			if (this[TRANSACTIONS_PROPERTY]) return callback(this);
-			return super.transact((TableTxn) => {
-				assignDBTxn(TableTxn);
-				return callback(TableTxn);
-			}, options);
-		}
-		transact(callback) {
-			if (this[TRANSACTIONS_PROPERTY]) return callback(this);
-			return super.transact(() => {
-				assignDBTxn(this);
-				return callback(this);
-			});
-		}
 
-		search(query): AsyncIterable<any> {
-			if (!this[TRANSACTIONS_PROPERTY]) return this.transact((txn_resource) => txn_resource.search(query));
-			if (query == null) {
-				query = []; // treat no query as a query for everything
-			}
-			const reverse = query.reverse === true;
-			let conditions = query.length >= 0 ? query : Array.from(query);
+		search(request: Request): AsyncIterable<any> {
+			if (!request?.transaction) return transaction(request, (request) => this.search(request));
+			const txn = txnForRequest(request);
+			const reverse = request.reverse === true;
+			let conditions = request.conditions;
+			if (!conditions) conditions = Array.isArray(request) ? request : [];
+			else if (conditions.length < 0) conditions = Array.from(conditions);
 
 			for (const condition of conditions) {
 				const attribute_name = condition[0] ?? condition.attribute;
@@ -752,9 +734,9 @@ export function makeTable(options) {
 			// transaction, and we really don't care if the
 			// counts are done in the same read transaction because they are just estimates) until the search
 			// results have been iterated and finished.
-			const read_txn = this[DB_TXN_PROPERTY].getReadTxn();
+			const read_txn = txn.getReadTxn();
 			read_txn.use();
-			const select = query.select;
+			const select = request.select;
 			const first_search = conditions[0];
 			let records;
 			if (!first_search) {
@@ -771,9 +753,9 @@ export function makeTable(options) {
 					});
 			} else {
 				// both AND and OR start by getting an iterator for the ids for first condition
-				let ids = idsForCondition(first_search, read_txn, reverse, TableResource, query.allowFullScan);
+				let ids = idsForCondition(first_search, read_txn, reverse, TableResource, request.allowFullScan);
 				// and then things diverge...
-				if (!query.operator || query.operator.toLowerCase() === 'and') {
+				if (!request.operator || request.operator.toLowerCase() === 'and') {
 					// get the intersection of condition searches by using the indexed query for the first condition
 					// and then filtering by all subsequent conditions
 					const filters = conditions.slice(1).map(filterByType);
@@ -783,7 +765,7 @@ export function makeTable(options) {
 					for (let i = 1; i < conditions.length; i++) {
 						const condition = conditions[i];
 						// might want to lazily execute this after getting to this point in the iteration
-						const next_ids = idsForCondition(condition, read_txn, reverse, TableResource, query.allowFullScan);
+						const next_ids = idsForCondition(condition, read_txn, reverse, TableResource, request.allowFullScan);
 						ids = ids.concat(next_ids);
 					}
 					const returned_ids = new Set();
@@ -797,10 +779,10 @@ export function makeTable(options) {
 					records = idsToRecords(ids);
 				}
 			}
-			if (query.offset || query.limit !== undefined)
+			if (request.offset || request.limit !== undefined)
 				records = records.slice(
-					query.offset,
-					query.limit !== undefined ? (query.offset || 0) + query.limit : undefined
+					request.offset,
+					request.limit !== undefined ? (request.offset || 0) + request.limit : undefined
 				);
 			records.onDone = () => {
 				read_txn.done();
@@ -1079,7 +1061,6 @@ export function makeTable(options) {
 	}
 	TableResource.updatedAttributes(); // on creation, update accessors as well
 	const prototype = TableResource.prototype;
-	prototype[DB_TXN_PROPERTY] = immediateTransaction;
 	prototype[INCREMENTAL_UPDATE] = true; // default behavior
 	if (expiration_ms) TableResource.setTTLExpiration(expiration_ms);
 	return TableResource;
@@ -1146,7 +1127,7 @@ export function makeTable(options) {
 	}
 
 	function txnForRequest(request: Request) {
-		let transaction_set = request?.transaction;
+		const transaction_set = request?.transaction;
 		if (transaction_set) {
 			let transaction;
 			if ((transaction = transaction_set?.find((txn) => txn.path === database_path))) return transaction;

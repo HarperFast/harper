@@ -65,9 +65,12 @@ async function http(request, next_handler) {
 		const execution_time = performance.now() - start;
 		let status = 200;
 		let lastModification;
+		if (typeof response_data?.get === 'function') {
+			response_data = await response_data.get();
+		}
 		if (response_data == undefined) {
 			status = method === 'GET' || method === 'HEAD' ? 404 : 204;
-		} else if ((lastModification = resource[LAST_MODIFICATION_PROPERTY])) {
+		} else if ((lastModification = request.lastModified)) {
 			const if_match = request.headers['if-match'];
 			if (if_match && (lastModification * 1000).toString(36) == if_match) {
 				//resource_result.cancel();

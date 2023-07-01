@@ -1,4 +1,4 @@
-import { ResourceInterface, Request, SubscriptionRequest, Id } from './ResourceInterface';
+import { ResourceInterface, Request, SearchRequest, SubscriptionRequest, Id } from './ResourceInterface';
 import { getTables } from './databases';
 import { Table } from './Table';
 import { randomUUID } from 'crypto';
@@ -32,7 +32,7 @@ export const USED_RESOURCES = Symbol('used-resources');
  * data aggregation, processing, or monitoring.
  */
 export class Resource implements ResourceInterface {
-	[REQUEST]: any;
+	request: Request;
 	[USER_PROPERTY]: any;
 	[ID_PROPERTY]: any;
 	[LAST_MODIFICATION_PROPERTY] = 0;
@@ -55,19 +55,24 @@ export class Resource implements ResourceInterface {
 		}
 	}
 
-	static async get(identifier: string | number | (string | number)[]): Promise<object>;
-	static async get(query: object): Promise<Iterable<object>>;
-	static async get(request) {
-		let id, path, search;
-		if (typeof request === 'string') {
-			id = request;
-		} else if (request && typeof request === 'object') {
-			({ id, path, search } = request);
-			if (search) {
-				request.query = parseQuery(search);
-			}
+	static async get(identifier: Id, request?: Request): Promise<object>;
+	static async get(request: Request): Promise<object>;
+	static async get(request: SearchRequest): Promise<AsyncIterable<object>>;
+	static async get(id: Id, request: Request) {
+		let path, search;
+		if (id && typeof id === 'object' && !request) {
+			({ id, path, search } = request = id);
+		} else if (request) {
+			// and id and request were provided, create a request with the provided id
+			({ path, search } = request);
+			request = Object.assign({}, request); // copy it so we don't modify the original
+			request.id = id;
+		} else {
+			// only id provided
+			request = { id };
 		}
-		const resource = await this.getResource(id, request, path);
+		if (search) request.query = parseQuery(search);
+		const resource = await this.getResource(request);
 		resource[SAVE_UPDATES_PROPERTY] = false; // by default modifications aren't saved, they just yield a different result from get
 		if (request.authorize) {
 			const allowed = await resource.allowRead(request);
@@ -78,8 +83,11 @@ export class Resource implements ResourceInterface {
 		}
 		return resource.get(request);
 	}
+	/**
+	 * Store the provided record by the provided id. If no id is provided, it is auto-generated.
+	 */
 	static async put(request) {
-		let resource = await this.getResource(request);
+		const resource = await this.getResource(request);
 		if (request.authorize) {
 			request.authorize = false;
 			const allowed = await resource.allowUpdate(request);
@@ -91,7 +99,7 @@ export class Resource implements ResourceInterface {
 	}
 	static async delete(request) {
 		request.allowInvalidated = true;
-		let resource = await this.getResource(request);
+		const resource = await this.getResource(request);
 		if (request.authorize) {
 			request.authorize = false;
 			const allowed = await resource.allowDelete(request);
@@ -106,58 +114,60 @@ export class Resource implements ResourceInterface {
 	static getNewId() {
 		return randomUUID();
 	}
-
-	/**
-	 * Store the provided record by the provided id. If no id is provided, it is auto-generated.
-	 * @param id?
-	 * @param record
-	 * @param options
-	 */
-	static async put(id, record, options?): void {
-		if (typeof id === 'object') {
-			// id is optional
-			options = record;
-			record = id;
-			id = null;
-		}
-		if (id == null) id = record[this.primaryKey];
-		if (id == null) return this.create(record, options);
-		const resource = await this.getResource(id, this);
-		return resource.transact(async (txn_resource) => {
-			return txn_resource.put(record, options);
-		});
-	}
-	static create(record, options?): void {
+	static async create(request: Request): Promise<Id> {
 		const id = this.getNewId(); //uuid.v4();
-		const resource = new this(id, this);
-		return resource.transact(async (txn_resource) => {
-			await txn_resource.put(record, options);
-			return id;
-		});
+		const resource = new this(id, request);
+		await resource.put(request);
+		return id;
 	}
+	static async post(request) {
+		const resource = await this.getResource(request);
+		if (request.authorize) {
+			request.authorize = false;
+			const allowed = await resource.allowCreate(request);
+			if (!allowed) {
+				throw new AccessError(request.user);
+			}
+		}
+		return resource.post(request);
+	}
+	static async connect(request) {
+		const resource = await this.getResource(request);
+		if (request.authorize) {
+			request.authorize = false;
+			const allowed = await resource.allowRead(request);
+			if (!allowed) {
+				throw new AccessError(request.user);
+			}
+		}
+		return resource.connect(request);
+	}
+	static async subscribe(request: Request): AsyncIterable<{ id: any; operation: string; value: object }> {
+		const resource = await this.getResource(request);
+		if (request.authorize) {
+			request.authorize = false;
+			const allowed = await resource.allowRead(request);
+			if (!allowed) {
+				throw new AccessError(request.user);
+			}
+		}
+		return resource.subscribe(request);
+	}
+	static async publish(request: Request): Promise<void> {
+		const resource = await this.getResource(request);
+		if (request.authorize) {
+			request.authorize = false;
+			const allowed = await resource.allowCreate(request);
+			if (!allowed) {
+				throw new AccessError(request.user);
+			}
+		}
+		return resource.publish(request);
+	}
+
 	post(new_record) {
 		if (this[ID_PROPERTY] == null) return this.constructor.create(new_record);
 		throw new Error('No post method defined for resource');
-	}
-
-	static async delete(identifier: string | number | object) {
-		if (typeof identifier === 'string' || typeof identifier === 'number') {
-			const resource = await this.getResource(identifier, this);
-			return resource.transact(async (txn_resource) => {
-				return txn_resource.delete();
-			});
-		} else {
-			return this.transact((resource_txn) => {
-				const completions = [];
-				if (this.prototype.delete.preload === false) identifier.select = [this.primaryKey];
-				for (const record of resource_txn.search(identifier)) {
-					const record_resource = new this(record[this.primaryKey], this[REQUEST], resource_txn.transaction);
-					record_resource.record = record;
-					completions.push(record_resource.delete());
-				}
-				return Promise.all(completions);
-			});
-		}
 	}
 
 	static search(query: object): AsyncIterable<object> {
@@ -165,9 +175,6 @@ export class Resource implements ResourceInterface {
 	}
 	search(query: object): AsyncIterable<object> {
 		throw new ClientError('search is not implemented');
-	}
-	static subscribe(options?: {}): AsyncIterable<{ id: any; operation: string; value: object }> {
-		return new this(null).subscribe(options);
 	}
 
 	static isCollection(resource) {
@@ -201,7 +208,7 @@ export class Resource implements ResourceInterface {
 	 * @param options
 	 */
 	subscribe(options?: {}): AsyncIterable<{ id: any; operation: string; value: object }>;
-	
+
 	connect(query?: {}): AsyncIterable<any> {
 		// convert subscription to an (async) iterator
 		const iterable = new IterableEventQueue();
@@ -217,105 +224,10 @@ export class Resource implements ResourceInterface {
 		}
 		return iterable;
 	}
-	static connect = Resource.prototype.connect;
 
-	/**
-	 * This used to indicate that this resource will use another resource to compute its data. Doing this will include
-	 * the other resource in the resource snapshot and track timestamps of data used from that resource, allowing for
-	 * automated modification/timestamp handling.
-	 * @param ResourceToUse
-	 */
-	use(ResourceToUse: typeof Resource, identifier: string | number) {
-		let used_resources = this[USED_RESOURCES];
-		if (used_resources) {
-			const used = used_resources.find((used) => used === Resource || ResourceToUse.isPrototypeOf(used));
-			if (used) return used;
-		} else this[USED_RESOURCES] = used_resources = [];
-		const txn_resource = ResourceToUse.deriveWithTransactions(this[TRANSACTIONS_PROPERTY], this[REQUEST]);
-		used_resources.push(txn_resource);
-		txn_resource[USED_RESOURCES] = used_resources;
-		if (identifier) return txn_resource.get(identifier);
-		return txn_resource;
-	}
 	update(keyOrRecord) {
 		throw new Error('Not implemented');
 	}
-	useTable(table_name: string, schema_name?: string): ResourceInterface {
-		if (!tables) tables = getTables();
-		const schema_object = schema_name ? tables[schema_name] : tables;
-		const table: Table = schema_object?.[table_name];
-		if (!table) return;
-		const key = schema_name ? schema_name + '/' + table_name : table_name;
-		const env_path = table.envPath;
-		const env_txn =
-			this[TRANSACTIONS_PROPERTY][env_path] ||
-			(this[TRANSACTIONS_PROPERTY][env_path] = new DatabaseTransaction(
-				table.primaryStore,
-				this[USER_PROPERTY],
-				table.auditStore
-			));
-		return table.transaction(this[REQUEST], env_txn, env_txn.getReadTxn(), this);
-	}
-	async fetch(input: RequestInfo | URL, init?: RequestInit) {
-		const response = await fetch(input, init);
-		const method = init?.method || 'GET';
-		if (method === 'GET' && response.status === 200) {
-			// we are accumulating most recent times for the sake of making resources cacheable
-			const last_modified = response.headers['last-modified'];
-			if (last_modified) {
-				this.updateModificationTime(Date.parse(last_modified));
-				return response;
-			}
-		}
-		// else use current time
-		this.updateModificationTime();
-		return response;
-	}
-	static set transaction(t) {
-		throw new Error('Can not set transaction on base Resource class');
-	}
-	static deriveWithTransactions(transactions, options) {
-		const name = this.name + ' (txn)';
-		return class extends this {
-			// @ts-ignore
-			static name = name;
-			static [TRANSACTIONS_PROPERTY] = transactions;
-			static [REQUEST] = options;
-		};
-	}
-	static transact(callback, options?) {
-		if (this[TRANSACTIONS_PROPERTY]) return callback(this);
-		const transactions = [];
-		transactions.timestamp = options?.timestamp || getNextMonotonicTime();
-
-		const txn_resource = this.deriveWithTransactions(transactions, options);
-		return executeTransaction(txn_resource, callback);
-	}
-	transact(callback, options?) {
-		if (this[TRANSACTIONS_PROPERTY]) return callback(this);
-		const transactions = [];
-		transactions.timestamp = options?.timestamp || getNextMonotonicTime();
-		this[TRANSACTIONS_PROPERTY] = transactions;
-		return executeTransaction(this, callback);
-	}
-	async accessInTransaction(request, action: (resource_access) => any) {
-		return this.transact((transactional_resource) => {
-			if (request) {
-				transactional_resource[REQUEST] = request;
-				transactional_resource[USER_PROPERTY] = request.user;
-			}
-			const resource_access = transactional_resource.access(request);
-			return action(resource_access);
-		});
-	}
-	static accessInTransaction = Resource.prototype.accessInTransaction;
-	static access(request) {
-		return new this.Access(request, this);
-	}
-	access(request) {
-		return new this.constructor.Access(request, this);
-	}
-	static Access = DefaultAccess;
 
 	// Default permissions (super user only accesss):
 	static allowRead(user, query?: object): boolean | object {
@@ -353,114 +265,15 @@ export function snake_case(camelCase: string) {
 	);
 }
 
-function checkAllowed(method_allowed, user, resource): void | Promise<void> {
-	const allowed = method_allowed ?? resource.allowAccess?.() ?? user?.role.permission.super_user; // default permission check
-	if (allowed?.then) {
-		// handle promises, waiting for them using fast path (not await)
-		return allowed.then(() => {
-			if (!allowed) checkAllowed(false, user, resource);
-		});
-	} else if (!allowed) {
-		let error;
+class AccessError extends Error {
+	constructor(user) {
 		if (user) {
-			error = new Error('Unauthorized access to resource');
-			error.status = 403;
+			super('Unauthorized access to resource');
+			this.status = 403;
 		} else {
-			error = new Error('Must login');
-			error.status = 401;
+			super('Must login');
+			this.status = 401;
 			// TODO: Optionally allow a Location header to redirect to
 		}
-		throw error;
-	}
-}
-
-// Copy a record into a resource, using copy-on-write for nested objects/arrays
-export function copyRecord(record, target_resource) {
-	target_resource[RECORD_PROPERTY] = record;
-	for (const key in record) {
-		// do not override existing methods
-		if (target_resource[key] === undefined) {
-			const value = record[key];
-			// use copy-on-write for sub-objects
-			if (typeof value === 'object' && value) setSubObject(target_resource, key, value);
-			// primitives can be directly copied
-			else target_resource[key] = value;
-		}
-	}
-}
-export const NOT_COPIED_YET = {};
-let copy_enabled = true;
-function setSubObject(target_resource, key, stored_value) {
-	let value = NOT_COPIED_YET;
-	Object.defineProperty(target_resource, key, {
-		get() {
-			if (value === NOT_COPIED_YET && copy_enabled) {
-				switch (stored_value.constructor) {
-					case Object:
-						copyRecord(stored_value, (value = new UpdatableObject()));
-						break;
-					case Array:
-						copyArray(stored_value, (value = new UpdatableArray()));
-						break;
-					default:
-						value = stored_value;
-				}
-			}
-			return value;
-		},
-		set(new_value) {
-			value = new_value;
-		},
-		enumerable: true,
-		configurable: true,
-	});
-}
-export function withoutCopying(callback) {
-	copy_enabled = false;
-	const result = callback();
-	copy_enabled = true;
-	return result;
-}
-class UpdatableObject {
-	// eventually provide CRDT functions here like add, subtract
-}
-class UpdatableArray extends Array {
-	// eventually provide CRDT tracking for push, unshift, pop, etc.
-}
-function copyArray(stored_array, target_array) {
-	for (let i = 0, l = stored_array.length; i < l; i++) {
-		let value = stored_array[i];
-		// copy sub-objects (it assumed we don't really need to lazily access entries in an array,
-		// if an array is accessed, probably all elements in array will be accessed
-		if (typeof value === 'object' && value) {
-			if (value.constructor === Object) copyRecord(value, (value = new UpdatableObject()));
-			else if (value.constructor === Array) copyArray(value, (value = new UpdatableArray()));
-		}
-		target_array[i] = value;
-	}
-}
-function executeTransaction(txn_resource: Resource, callback: (resource: Resource) => any) {
-	try {
-		const result = callback(txn_resource);
-		if (result?.then)
-			return result?.then(
-				async (result) => {
-					await txn_resource.commit();
-					return result;
-				},
-				(error) => {
-					txn_resource.abort();
-					throw error;
-				}
-			);
-		else {
-			if (txn_resource[TRANSACTIONS_PROPERTY].some((transaction) => transaction.hasWritesToCommit))
-				return txn_resource.commit().then(() => result);
-			txn_resource.abort();
-			return result;
-		}
-	} catch (error) {
-		txn_resource.abort();
-		throw error;
 	}
 }
