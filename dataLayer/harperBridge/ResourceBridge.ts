@@ -14,6 +14,7 @@ import {
 import * as signalling from '../../utility/signalling';
 import { SchemaEventMsg } from '../../server/threads/itc';
 import { async_set_timeout } from '../../utility/common_utils';
+import { transaction } from '../../resources/transaction';
 
 const { HDB_ERROR_MSGS } = hdb_errors;
 const DEFAULT_DATABASE = 'data';
@@ -163,9 +164,9 @@ export class ResourceBridge extends LMDBBridge {
 
 		let new_attributes;
 		const Table = getDatabases()[upsert_obj.schema][upsert_obj.table];
-		return Table.transact(
-			async (txn_table) => {
-				if (!txn_table.schemaDefined) {
+		return transaction({ user: upsert_obj.hdb_user },
+			async (request) => {
+				if (!Table.schemaDefined) {
 					new_attributes = [];
 					for (const attribute_name of attributes) {
 						const existing_attribute = Table.attributes.find(
@@ -176,7 +177,7 @@ export class ResourceBridge extends LMDBBridge {
 						}
 					}
 					if (new_attributes.length > 0) {
-						await txn_table.addAttributes(
+						await Table.addAttributes(
 							new_attributes.map((name) => ({
 								name,
 								indexed: true,
@@ -188,7 +189,7 @@ export class ResourceBridge extends LMDBBridge {
 				const keys = [];
 				const skipped = [];
 				for (const record of upsert_obj.records) {
-					const existing_record = await txn_table.get(record[Table.primaryKey]);
+					const existing_record = await Table.get(record[Table.primaryKey], request);
 					if (
 						(upsert_obj.requires_existing && !existing_record) ||
 						(upsert_obj.requires_no_existing && existing_record)
@@ -212,11 +213,11 @@ export class ResourceBridge extends LMDBBridge {
 							if (!Object.prototype.hasOwnProperty.call(record, key)) record[key] = existing_record[key];
 						}
 					}
-					await txn_table.put(record[Table.primaryKey], record);
+					await Table.put(record, request);
 					keys.push(record[Table.primaryKey]);
 				}
 				return {
-					txn_time: txn_table.txnTime,
+					txn_time: request.transaction.timestamp,
 					written_hashes: keys,
 					new_attributes,
 					skipped_hashes: skipped,
