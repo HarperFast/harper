@@ -85,6 +85,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 
 	parser.on('packet', async (packet) => {
 		if (user?.then) user = await user;
+		if (session?.then) await session;
 		try {
 			switch (packet.cmd) {
 				case 'connect':
@@ -132,10 +133,11 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 						mqtt_settings.authorizeClient?.(packet, user);
 
 						// TODO: Handle the will & testament, and possibly use the will's content type as a hint for expected content
-						session = await getSession({
+						session = getSession({
 							user,
 							...packet,
 						});
+						session = await session;
 					} catch (error) {
 						log_error(error);
 						return sendPacket({
@@ -168,7 +170,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 							);
 						} catch (error) {
 							log_error(error);
-							session.disconnect();
+							session?.disconnect();
 						}
 					});
 					if (session.sessionWasPresent) await session.resume();
@@ -269,7 +271,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					sendPacket({ cmd: 'pingresp' });
 					break;
 				case 'disconnect':
-					session.disconnect();
+					session?.disconnect();
 					if (socket.close) socket.close();
 					else socket.end();
 					break;
