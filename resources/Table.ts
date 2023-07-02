@@ -605,12 +605,6 @@ export function makeTable(options) {
 						if (record[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
 						this[RECORD_PROPERTY] = record;
 					}
-					harper_logger.trace(
-						'update version check',
-						this[VERSION_PROPERTY],
-						txn_time,
-						this[VERSION_PROPERTY] > txn_time
-					);
 
 					if (this[VERSION_PROPERTY] > txn_time) {
 						// This is not an error condition in our world of last-record-wins
