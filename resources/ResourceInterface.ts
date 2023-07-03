@@ -1,17 +1,22 @@
 export interface ResourceInterface<Key = any, Record = any> {
-	get?(request: Request): Promise<UpdatableRecord<Record>>; // or use ResourceId instead of Key
-	put?(request: Request): void;
-	patch?(request: Request): Record;
-	update?(request: Request): Promise<UpdatableRecord<Record>>;
+	get?(request: Request): Promise<UpdatableRecord<Record>>;
+	get?(query: Query): Promise<AsyncIterable<Record>>;
+	get?(property: string): any;
+	put?(record: any, request: Request): void;
+	update?(updates: any, request: Request): Promise<UpdatableRecord<Record>>;
 	delete?(request: Request): boolean;
-	search?(request: Request): AsyncIterable<any>;
+	search?(query: Query): AsyncIterable<any>;
 	subscribe?(request: SubscriptionRequest): Subscription;
 	allowRead(request: Request): boolean | Promise<boolean>;
-	allowUpdate(request: Request): boolean | Promise<boolean>;
-	allowCreate(request: Request): boolean | Promise<boolean>;
+	allowUpdate(updates: any, request: Request): boolean | Promise<boolean>;
+	allowCreate(record: any, request: Request): boolean | Promise<boolean>;
 	allowDelete(request: Request): boolean | Promise<boolean>;
 	lastModificationTime: number;
 	request: Request;
+}
+export interface Context {
+	user?: any;
+	transactions: any[];
 }
 export interface Request {
 	id?: Id;
@@ -19,8 +24,9 @@ export interface Request {
 	user?: any;
 	data?: any;
 	select?: string[];
+	context?: Context;
 }
-export interface SearchRequest extends Request {
+export interface Query extends Request {
 	conditions?: any[];
 	limit?: number;
 	offset?: number;

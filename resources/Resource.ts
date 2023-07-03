@@ -1,4 +1,4 @@
-import { ResourceInterface, Request, SearchRequest, SubscriptionRequest, Id } from './ResourceInterface';
+import { ResourceInterface, Request, SearchRequest, SubscriptionRequest, Id, Context, Query, CollectionQuery } from './ResourceInterface';
 import { getTables } from './databases';
 import { Table } from './Table';
 import { randomUUID } from 'crypto';
@@ -55,9 +55,9 @@ export class Resource implements ResourceInterface {
 		}
 	}
 
-	static async get(identifier: Id, request?: Request): Promise<object>;
-	static async get(request: Request): Promise<object>;
-	static async get(request: SearchRequest): Promise<AsyncIterable<object>>;
+	static async get(identifier: Id, context?: Context): Promise<object>;
+	static async get(request: Request, context?: Context): Promise<object>;
+	static async get(query: Query, context?: Context): Promise<AsyncIterable<object>>;
 	static async get(id: Id, request: Request) {
 		let path, search;
 		if (id && typeof id === 'object' && !request) {
@@ -86,8 +86,9 @@ export class Resource implements ResourceInterface {
 	/**
 	 * Store the provided record by the provided id. If no id is provided, it is auto-generated.
 	 */
-	static async put(request) {
-		const resource = await this.getResource(request);
+	static async put(record: any, context?: Context);
+	static async put(record: any, context?: Context) {
+		const resource = await this.getResource(context);
 		if (request.authorize) {
 			request.authorize = false;
 			const allowed = await resource.allowUpdate(request);
