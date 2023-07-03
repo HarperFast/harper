@@ -8,7 +8,7 @@ const path = require('path');
 const tar = require('tar-fs');
 const test_util = require('../../test_utils');
 test_util.getMockTestPath();
-const operations = rewire('../../../apps/operations');
+const operations = rewire('../../../components/operations');
 const env = require('../../../utility/environment/environmentManager');
 const { TEST_DATA_BASE64_CF_PROJECT } = require('../../test_data');
 const { expect } = chai;
@@ -68,13 +68,12 @@ describe('Test custom functions operations', () => {
 
 	it('Test packageCustomFunctionProject properly tars up a project directory', async () => {
 		const tar_spy = sinon.spy(tar, 'pack');
-		const response = await operations.packageCustomFunctionProject({ project: 'unit_test', skip_node_modules: true });
+		const response = await operations.packageComponent({ project: 'unit_test', skip_node_modules: true });
 
 		expect(response).to.be.instanceOf(Object);
 
-		expect(Object.keys(response)).to.have.length(3);
+		expect(Object.keys(response)).to.have.length(2);
 		expect(Object.keys(response)).to.include('project');
-		expect(Object.keys(response)).to.include('file');
 		expect(Object.keys(response)).to.include('payload');
 
 		expect(response.project).to.equal('unit_test');
@@ -143,5 +142,46 @@ describe('Test custom functions operations', () => {
 
 		expect(endpoints).to.be.instanceOf(Object);
 		expect(Object.keys(endpoints)).to.have.length(0);
+	});
+
+	describe('Test component operations', () => {
+		const test_yaml_string =
+			"REST: true\ngraphqlSchema:\n  files: '*.graphql'\n  # path: / # exported queries are on the root path by default\n\n";
+
+		async function createMockComponents() {
+			await fs.ensureFile(path.join(CF_DIR_ROOT, 'my-cool-component', 'resources.js'));
+			await fs.ensureFile(path.join(CF_DIR_ROOT, 'my-cool-component', '.hidden'));
+			await fs.ensureFile(path.join(CF_DIR_ROOT, 'my-cool-component', 'utils', 'utils.js'));
+			await fs.outputFile(path.join(CF_DIR_ROOT, 'my-other-component', 'config.yaml'), test_yaml_string);
+		}
+
+		before(async () => {
+			await createMockComponents();
+		});
+
+		it('Test getComponentFiles happy path', async () => {
+			const result = await operations.getComponentFiles();
+			expect(result.name).to.equal('custom_functions');
+			expect(result.entries[0].name).to.equal('my-cool-component');
+			expect(result.entries[0].entries.length).to.equal(2);
+			expect(result.entries[1].name).to.equal('my-other-component');
+			expect(result.entries[1].entries[0].name).to.equal('config.yaml');
+		});
+
+		it('Test getComponentFile happy path', async () => {
+			const result = await operations.getComponentFile({ project: 'my-other-component', file: 'config.yaml' });
+			expect(result).to.eql(test_yaml_string);
+		});
+
+		it('Test setComponentFile happy path', async () => {
+			const result = await operations.setComponentFile({
+				project: 'my-other-component',
+				file: 'config.yaml',
+				payload: 'im the new payload',
+			});
+			const updated_file = await operations.getComponentFile({ project: 'my-other-component', file: 'config.yaml' });
+			expect(updated_file).to.eql('im the new payload');
+			expect(result).to.equal('Successfully set component: config.yaml');
+		});
 	});
 });

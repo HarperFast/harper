@@ -36,7 +36,7 @@ export function addSubscription(table, key, listener?: (key) => any, start_time:
 				const first_txn = event.firstTxn;
 				 */
 				const audit_ids = event.auditIds;
-				notifyFromTransactionData(path, audit_ids);
+				notifyFromTransactionData(event.path, audit_ids);
 			}
 		});
 		all_subscriptions = Object.create(null); // using it as a map that doesn't change much

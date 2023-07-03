@@ -9,7 +9,7 @@ const delete_ = require('../../dataLayer/delete');
 const read_audit_log = require('../../dataLayer/readAuditLog');
 const user = require('../../security/user');
 const role = require('../../security/role');
-const custom_function_operations = require('../../apps/operations');
+const custom_function_operations = require('../../components/operations');
 const harper_logger = require('../../utility/logging/harper_logger');
 const read_log = require('../../utility/logging/readLog');
 const add_node = require('../../utility/clustering/addNode');
@@ -356,6 +356,18 @@ function initializeOperationFunctionMap() {
 		new OperationFunctionObject(custom_function_operations.getCustomFunctions)
 	);
 	op_func_map.set(
+		terms.OPERATIONS_ENUM.GET_COMPONENT_FILE,
+		new OperationFunctionObject(custom_function_operations.getComponentFile)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.GET_COMPONENT_FILES,
+		new OperationFunctionObject(custom_function_operations.getComponentFiles)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.SET_COMPONENT_FILE,
+		new OperationFunctionObject(custom_function_operations.setComponentFile)
+	);
+	op_func_map.set(
 		terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTION,
 		new OperationFunctionObject(custom_function_operations.getCustomFunction)
 	);
@@ -377,11 +389,19 @@ function initializeOperationFunctionMap() {
 	);
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.PACKAGE_CUSTOM_FUNCTION_PROJECT,
-		new OperationFunctionObject(custom_function_operations.packageCustomFunctionProject)
+		new OperationFunctionObject(custom_function_operations.packageComponent)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.PACKAGE_COMPONENT,
+		new OperationFunctionObject(custom_function_operations.packageComponent)
 	);
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.DEPLOY_CUSTOM_FUNCTION_PROJECT,
-		new OperationFunctionObject(custom_function_operations.deployCustomFunctionProject)
+		new OperationFunctionObject(custom_function_operations.deployComponent)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.DEPLOY_COMPONENT,
+		new OperationFunctionObject(custom_function_operations.deployComponent)
 	);
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG,

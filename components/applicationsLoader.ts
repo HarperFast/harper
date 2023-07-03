@@ -28,13 +28,13 @@ import * as mqtt from '../server/mqtt';
 const { readFile } = promises;
 
 const CONFIG_FILENAME = 'config.yaml';
-const CF_ROUTES_DIR = env.get(HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+const CF_ROUTES_DIR = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT);
 let loaded_components = new Map<any, any>();
 let watches_setup;
 let resources;
 
 /**
- * Load all the applications registered in HarperDB, those in the custom_functions directory as well as any directly
+ * Load all the applications registered in HarperDB, those in the components directory as well as any directly
  * specified to run
  * @param loaded_plugin_modules
  * @param loaded_resources

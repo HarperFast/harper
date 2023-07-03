@@ -568,6 +568,7 @@ export function makeTable(options) {
 								is_unchanged = !hasChanges(record);
 								if (is_unchanged) return;
 							}
+							if (record[primary_key] !== this[ID_PROPERTY]) record[primary_key] = this[ID_PROPERTY];
 							if (TableResource.updatedTimeProperty) record[TableResource.updatedTimeProperty] = txn_time;
 							if (TableResource.createdTimeProperty) {
 								if (existing_record)
@@ -591,12 +592,6 @@ export function makeTable(options) {
 						if (record[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
 						this[RECORD_PROPERTY] = record;
 					}
-					harper_logger.trace(
-						'update version check',
-						this[VERSION_PROPERTY],
-						txn_time,
-						this[VERSION_PROPERTY] > txn_time
-					);
 
 					if (this[VERSION_PROPERTY] > txn_time) {
 						// This is not an error condition in our world of last-record-wins
@@ -614,6 +609,7 @@ export function makeTable(options) {
 
 					primary_store.put(this[ID_PROPERTY], record, txn_time);
 					updateIndices(this[ID_PROPERTY], existing_record, record);
+					if (existing_record === null && !retry) record_deletion(-1);
 					return {
 						// return the audit record that should be recorded
 						operation: 'put',
@@ -674,7 +670,7 @@ export function makeTable(options) {
 						return;
 					updateIndices(this[ID_PROPERTY], existing_record);
 					primary_store.put(this[ID_PROPERTY], null, txn_time);
-					if (!retry) record_deletion();
+					if (!retry) record_deletion(1);
 					return {
 						// return the audit record that should be recorded
 						operation: 'delete',
@@ -1115,9 +1111,9 @@ export function makeTable(options) {
 	/*
 	Here we write the deletion count for our thread id
 	 */
-	function record_deletion() {
+	function record_deletion(increment: number) {
 		if (!deletion_count) deletion_count = primary_store.get([DELETION_COUNT_KEY, threadId]) || 0;
-		deletion_count++;
+		deletion_count += increment;
 		if (!pending_deletion_count_write) {
 			pending_deletion_count_write = setTimeout(() => {
 				pending_deletion_count_write = null;

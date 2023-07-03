@@ -70,7 +70,7 @@ describe('test mount_hdb module', () => {
 		expect(mk_dirp_sync_stub.getCall(7).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}database`);
 		expect(mk_dirp_sync_stub.getCall(8).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}transactions`);
 		expect(mk_dirp_sync_stub.getCall(9).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}clustering${SEP}leaf`);
-		expect(mk_dirp_sync_stub.getCall(10).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}custom_functions`);
+		expect(mk_dirp_sync_stub.getCall(10).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}components`);
 	});
 
 	it('Test createLMDBTables happy path', async () => {
