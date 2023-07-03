@@ -582,6 +582,7 @@ export function makeTable(options) {
 								is_unchanged = !hasChanges(record);
 								if (is_unchanged) return;
 							}
+							if (record[primary_key] !== this[ID_PROPERTY]) record[primary_key] = this[ID_PROPERTY];
 							if (TableResource.updatedTimeProperty) record[TableResource.updatedTimeProperty] = txn_time;
 							if (TableResource.createdTimeProperty) {
 								if (existing_record)
