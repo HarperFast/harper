@@ -8,15 +8,15 @@ export interface ResourceInterface<Key = any, Record = any> {
 	search?(query: Query): AsyncIterable<any>;
 	subscribe?(request: SubscriptionRequest): Subscription;
 	allowRead(request: Request): boolean | Promise<boolean>;
-	allowUpdate(updates: any, request: Request): boolean | Promise<boolean>;
-	allowCreate(record: any, request: Request): boolean | Promise<boolean>;
+	allowUpdate(request: Request): boolean | Promise<boolean>;
+	allowCreate(request: Request): boolean | Promise<boolean>;
 	allowDelete(request: Request): boolean | Promise<boolean>;
 	lastModificationTime: number;
-	request: Request;
+	context: Request;
 }
 export interface Context {
 	user?: any;
-	transactions: any[];
+	transaction: any[];
 }
 export interface Request {
 	id?: Id;

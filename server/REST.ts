@@ -3,6 +3,7 @@ import { recordAction, recordActionBinary } from '../resources/analytics';
 import { ServerOptions } from 'http';
 import { ServerError, ClientError } from '../utility/errors/hdbError';
 import { Resources } from '../resources/Resources';
+import { parseQuery } from '../resources/search';
 import { LAST_MODIFICATION_PROPERTY } from '../resources/Resource';
 import { IterableEventQueue } from '../resources/IterableEventQueue';
 
@@ -15,6 +16,7 @@ interface Response {
 
 async function http(request, next_handler) {
 	const method = request.method;
+	if (request.search) parseQuery(request);
 	const start = performance.now();
 	let resource_path;
 	try {

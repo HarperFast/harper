@@ -1,4 +1,13 @@
-import { ResourceInterface, Request, SearchRequest, SubscriptionRequest, Id, Context, Query, CollectionQuery } from './ResourceInterface';
+import {
+	ResourceInterface,
+	Request,
+	SearchRequest,
+	SubscriptionRequest,
+	Id,
+	Context,
+	Query,
+	CollectionQuery,
+} from './ResourceInterface';
 import { getTables } from './databases';
 import { Table } from './Table';
 import { randomUUID } from 'crypto';
@@ -9,6 +18,7 @@ import { IterableEventQueue } from './IterableEventQueue';
 import { _assignPackageExport } from '../index';
 import { parseQuery } from './search';
 import { ClientError } from '../utility/errors/hdbError';
+import { OWN_DATA } from './tracked';
 
 let tables;
 
@@ -32,15 +42,15 @@ export const USED_RESOURCES = Symbol('used-resources');
  * data aggregation, processing, or monitoring.
  */
 export class Resource implements ResourceInterface {
-	request: Request;
+	context: Context;
 	[USER_PROPERTY]: any;
 	[ID_PROPERTY]: any;
 	[LAST_MODIFICATION_PROPERTY] = 0;
 	[TRANSACTIONS_PROPERTY]: Transaction[] & { timestamp: number };
 	static transactions: Transaction[] & { timestamp: number };
-	constructor(identifier: Id, request: Request) {
+	constructor(identifier: Id, context: Context) {
 		this[ID_PROPERTY] = identifier;
-		this.request = request;
+		this.context = context ?? null;
 	}
 
 	/**
@@ -58,20 +68,8 @@ export class Resource implements ResourceInterface {
 	static async get(identifier: Id, context?: Context): Promise<object>;
 	static async get(request: Request, context?: Context): Promise<object>;
 	static async get(query: Query, context?: Context): Promise<AsyncIterable<object>>;
-	static async get(id: Id, request: Request) {
-		let path, search;
-		if (id && typeof id === 'object' && !request) {
-			({ id, path, search } = request = id);
-		} else if (request) {
-			// and id and request were provided, create a request with the provided id
-			({ path, search } = request);
-			request = Object.assign({}, request); // copy it so we don't modify the original
-			request.id = id;
-		} else {
-			// only id provided
-			request = { id };
-		}
-		if (search) request.query = parseQuery(search);
+	static async get(request: Id | Request | Query, context?: Context) {
+		request = requestForIdArgs(request, context);
 		const resource = await this.getResource(request);
 		resource[SAVE_UPDATES_PROPERTY] = false; // by default modifications aren't saved, they just yield a different result from get
 		if (request.authorize) {
@@ -81,14 +79,34 @@ export class Resource implements ResourceInterface {
 			}
 			request.authorize = false;
 		}
-		return resource.get(request);
+		const result = resource.get(request);
+		if (request.select && !resource[IS_COLLECTION] && result) {
+			const selected_data = {};
+			const forceNulls = request.select.forceNulls;
+			const own_data = result[OWN_DATA];
+			for (const property of request.select) {
+				let value;
+				if (result.hasOwnProperty(property) && typeof (value = result[property]) !== 'function') {
+					selected_data[property] = value;
+					continue;
+				}
+				if (own_data && property in own_data) {
+					const value = own_data[property];
+					selected_data[property] = value;
+				} else value = result[RECORD_PROPERTY][property];
+				if (value === undefined && forceNulls) value = null;
+				selected_data[property] = value;
+			}
+			return selected_data;
+		}
+		return result;
 	}
 	/**
 	 * Store the provided record by the provided id. If no id is provided, it is auto-generated.
 	 */
-	static async put(record: any, context?: Context);
 	static async put(record: any, context?: Context) {
-		const resource = await this.getResource(context);
+		const request = requestForDataArgs(record, context);
+		const resource = await this.getResource(request);
 		if (request.authorize) {
 			request.authorize = false;
 			const allowed = await resource.allowUpdate(request);
@@ -96,9 +114,10 @@ export class Resource implements ResourceInterface {
 				throw new AccessError(request.user);
 			}
 		}
-		return resource.put(request);
+		return resource.put(await request.data);
 	}
-	static async delete(request) {
+	static async delete(request: Request | Id, context?: Context) {
+		request = requestForIdArgs(request, context);
 		request.allowInvalidated = true;
 		const resource = await this.getResource(request);
 		if (request.authorize) {
@@ -111,7 +130,6 @@ export class Resource implements ResourceInterface {
 		return resource.delete(request);
 	}
 
-	put(record: object, options?): Promise<void>;
 	static getNewId() {
 		return randomUUID();
 	}
@@ -121,7 +139,7 @@ export class Resource implements ResourceInterface {
 		await resource.put(request);
 		return id;
 	}
-	static async post(request) {
+	static async post(record, request) {
 		const resource = await this.getResource(request);
 		if (request.authorize) {
 			request.authorize = false;
@@ -190,16 +208,20 @@ export class Resource implements ResourceInterface {
 		if (!path) {
 			path = id?.toString() ?? '';
 		}
-		if (request.transaction) {
+		let is_collection = id == null || (id.constructor === Array && id[id.length - 1] == null);
+		// if it is a collection and we have a collection class defined, use it
+		let constructor = is_collection && this.Collection || this;
+		let context = request.context || request;
+		if (context.transaction) {
 			let resource_cache;
-			if (request.resourceCache) {
-				resource_cache = request.resourceCache;
-			} else resource_cache = request.resourceCache = new Map();
+			if (context.resourceCache) {
+				resource_cache = context.resourceCache;
+			} else resource_cache = context.resourceCache = new Map();
 			resource = resource_cache.get(path);
 			if (resource) return resource;
-			resource_cache.set(path, (resource = new this(id, request)));
-		} else resource = new this(id, request);
-		if (id == null || (id.constructor === Array && id[id.length - 1] == null)) resource[IS_COLLECTION] = true;
+			resource_cache.set(path, (resource = new constructor(id, context)));
+		} else resource = new constructor(id, context);
+		if (is_collection) resource[IS_COLLECTION] = true;
 		return resource;
 	}
 
@@ -256,7 +278,7 @@ export class Resource implements ResourceInterface {
 		return user?.role.permission.super_user;
 	}
 }
-Resource.prototype.request = null;
+Resource.prototype.context = null;
 _assignPackageExport('Resource', Resource);
 
 export function snake_case(camelCase: string) {
@@ -277,4 +299,28 @@ class AccessError extends Error {
 			// TODO: Optionally allow a Location header to redirect to
 		}
 	}
+}
+function requestForIdArgs(request: Request | Id, context?: Context) {
+	if (request && typeof request === 'object' && !Array.isArray(request)) {
+		if (context) {
+			request.transaction = context.transaction;
+			request.user = context.user;
+			request.timestamp = context.timestamp;
+		}
+	} else {
+		const id = request;
+		request = context ? Object.create(context) : {};
+		request.id = id;
+	}
+	return request;
+}
+function requestForDataArgs(record: any, context: Context): Request;
+function requestForDataArgs(request: Request): Request;
+function requestForDataArgs(request: Request | any, context?: Context) {
+	if (context) {
+		const data = request;
+		request = Object.create(context);
+		request.data = data;
+	}
+	return request;
 }

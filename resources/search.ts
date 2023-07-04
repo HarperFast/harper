@@ -2,6 +2,7 @@ import { ClientError } from '../utility/errors/hdbError';
 import * as lmdb_terms from '../utility/lmdb/terms';
 import { compareKeys } from 'ordered-binary';
 import { SKIP } from 'lmdb';
+import { Request } from './ResourceInterface';
 
 const QUERY_PARSER = /([^?&|=<>!()*]+)([&|=<>!()*]*)/g;
 const SYMBOL_OPERATORS = {
@@ -160,11 +161,13 @@ export function filterByType(search_condition) {
  * structure
  * @param query_string
  */
-export function parseQuery(query_string: string) {
+export function parseQuery(request: Request) {
+	let query_string: string = request.search;
+	if (!query_string) return;
 	let match;
 	let attribute, comparator;
 	const conditions = [];
-	let offset, limit, sort, select, last_index;
+	let last_index;
 	// TODO: Use URLSearchParams with a fallback for when it can't parse everything (USP is very fast)
 	while ((match = QUERY_PARSER.exec(query_string))) {
 		last_index = QUERY_PARSER.lastIndex;
@@ -210,16 +213,16 @@ export function parseQuery(query_string: string) {
 			case '|':
 				switch (attribute) {
 					case 'offset':
-						conditions.offset = +value;
+						request.offset = +value;
 						break;
 					case 'limit':
-						conditions.limit = +value;
+						request.limit = +value;
 						break;
 					case 'select':
-						conditions.select = value.split(',');
+						request.select = value.split(',');
 						break;
 					case 'sort':
-						conditions.sort = value.split(',').map((direction) => {
+						request.sort = value.split(',').map((direction) => {
 							switch (direction[0]) {
 								case '-':
 									return { attribute: direction.slice(1), descending: true };
@@ -246,5 +249,5 @@ export function parseQuery(query_string: string) {
 		}
 	}
 	if (last_index !== query_string.length) throw new Error('Unable to parse query');
-	return conditions;
+	request.conditions = conditions;
 }

@@ -2,7 +2,7 @@ import { CONFIG_PARAMS, OPERATIONS_ENUM } from '../utility/hdbTerms';
 import { open, Database, asBinary, SKIP } from 'lmdb';
 import { getIndexedValues } from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
-import { ResourceInterface, SubscriptionRequest } from './ResourceInterface';
+import { Query, ResourceInterface, Request, SubscriptionRequest } from './ResourceInterface';
 import { workerData, threadId } from 'worker_threads';
 import { messageTypeListener } from '../server/threads/manageThreads';
 import {
@@ -155,6 +155,7 @@ export function makeTable(options) {
 									if (event.operation === 'transaction') {
 										const promises = [];
 										for (const write of event.writes) {
+											write.context = event;
 											promises.push(writeUpdate(write));
 										}
 										return Promise.all(promises);
@@ -270,47 +271,27 @@ export function makeTable(options) {
 				if (this.parent?.updateModificationTime) this.parent.updateModificationTime(latest);
 			}
 		}
-		static get(request) {
-			if (request.id === undefined) return this.describe();
-			return super.get(request);
+		static get(request, context) {
+			if (request && typeof request === 'object' && !Array.isArray(request) && request.id === undefined) return this.describe();
+			return super.get(request, context);
 		}
 		/**
 		 * This retrieves the data of this resource. By default, with no argument, just return `this`.
 		 * @param query - If included, specifies a query to perform on the record
 		 */
-		get(query?: object): Promise<object | void> | object | void {
+		get(query?: Query | string): Promise<object | void> | object | void {
 			if (typeof query === 'string') return this.getProperty(query);
 			if (this[IS_COLLECTION]) {
 				return this.search(query);
 			}
 			if (this.isSavedRecord()) {
-				if (query?.select) {
-					const selected_data = {};
-					const forceNulls = query.select.forceNulls;
-					const own_data = this[OWN_DATA];
-					for (const property of query.select) {
-						let value;
-						if (this.hasOwnProperty(property) && typeof (value = this[property]) !== 'function') {
-							selected_data[property] = value;
-							continue;
-						}
-						if (own_data && property in own_data) {
-							let value = own_data[property];
-							if (value && typeof value === 'object') value = collapseData(value);
-							selected_data[property] = value;
-						} else value = this[RECORD_PROPERTY][property];
-						if (value === undefined && forceNulls) value = null;
-						selected_data[property] = value;
-					}
-					return selected_data;
-				}
-				return collapseData(this);
+				return this;
 			}
 		}
 		loadRecord(allow_invalidated?: boolean) {
 			// TODO: determine if we use lazy access properties
 			if (this.hasOwnProperty(RECORD_PROPERTY)) return; // already loaded, don't reload, current version may have modifications
-			const env_txn = txnForRequest(this.request);
+			const env_txn = this.#txnForRequest();
 			const id = this[ID_PROPERTY];
 			let entry = primary_store.getEntry(this[ID_PROPERTY], { transaction: env_txn?.getReadTxn() });
 			let record;
@@ -448,28 +429,22 @@ export function makeTable(options) {
 		 * once the corresponding transaction is committed. These changes can (eventually) include CRDT type operations.
 		 * @param arg This can be a record to update the current resource with.
 		 */
-		update(arg) {
-			if (typeof arg === 'function') {
-				return this.transact(() => {
-					this.update();
-					arg();
-				});
-			}
-			const env_txn = this[DB_TXN_PROPERTY];
+		update(updates: any, request?: Request) {
+			const env_txn = this.#txnForRequest();
 			if (!env_txn) throw new Error('Can not update a table resource outside of a transaction');
 			// record in the list of updating records so it can be written to the database when we commit
-			if (arg === false) {
+			if (updates === false) {
 				// TODO: Remove from transaction
 				return this;
 			}
 			let own_data;
-			if (typeof arg === 'object' && arg) {
+			if (typeof updates === 'object' && updates) {
 				for (const key in this[RECORD_PROPERTY]) {
-					if (arg[key] === undefined) arg[key] = undefined;
+					if (updates[key] === undefined) updates[key] = undefined;
 				}
 				own_data = this[OWN_DATA];
-				if (own_data) arg = Object.assign(own_data, arg);
-				this[OWN_DATA] = own_data = arg;
+				if (own_data) updates = Object.assign(own_data, updates);
+				this[OWN_DATA] = own_data = updates;
 			}
 			if (!this[RECORD_PROPERTY] && !(own_data || (own_data = this[OWN_DATA]))?.[primary_key]) {
 				// if no primary key in the data, we assign it
@@ -535,7 +510,7 @@ export function makeTable(options) {
 			this.update(record);
 		}
 		#writeUpdate(record, request) {
-			const transaction = txnForRequest(request);
+			const transaction = this.#txnForRequest();
 
 			// use optimistic locking to only commit if the existing record state still holds true.
 			// this is superior to using an async transaction since it doesn't require JS execution
@@ -630,7 +605,7 @@ export function makeTable(options) {
 			return this.#writeDelete(request);
 		}
 		#writeDelete(command: Request) {
-			const transaction = txnForRequest(command);
+			const transaction = this.#txnForRequest();
 			const txn_time = transaction.timestamp;
 			let delete_prepared;
 			const id = this[ID_PROPERTY];
@@ -682,8 +657,8 @@ export function makeTable(options) {
 		}
 
 		search(request: Request): AsyncIterable<any> {
-			if (!request?.transaction) return transaction(request, (request) => this.search(request));
-			const txn = txnForRequest(request);
+			if (!this.context?.transaction) return transaction(this, (request) => this.search(request));
+			const txn = this.#txnForRequest();
 			const reverse = request.reverse === true;
 			let conditions = request.conditions;
 			if (!conditions) conditions = Array.isArray(request) ? request : [];
@@ -926,7 +901,7 @@ export function makeTable(options) {
 			this.#writePublish(message, options);
 		}
 		#writePublish(message, command?: Request) {
-			const transaction = txnForRequest(command);
+			const transaction = this.#txnForRequest();
 			const txn_time = transaction.timestamp;
 			const id = this[ID_PROPERTY] || null;
 			let completion;
@@ -973,6 +948,17 @@ export function makeTable(options) {
 					};
 				},
 			});
+		}
+		#txnForRequest() {
+			const context = this.context;
+			const transaction_set = context?.transaction;
+			if (transaction_set) {
+				let transaction;
+				if ((transaction = transaction_set?.find((txn) => txn.path === database_path))) return transaction;
+				transaction_set.push((transaction = new DatabaseTransaction(primary_store, context.user, audit_store)));
+				return transaction;
+			}
+			return immediateTransaction;
 		}
 		validate(record) {
 			let validation_errors;
@@ -1122,16 +1108,6 @@ export function makeTable(options) {
 		}
 	}
 
-	function txnForRequest(request: Request) {
-		const transaction_set = request?.transaction;
-		if (transaction_set) {
-			let transaction;
-			if ((transaction = transaction_set?.find((txn) => txn.path === database_path))) return transaction;
-			transaction_set.push((transaction = new DatabaseTransaction(primary_store, request.user, audit_store)));
-			return transaction;
-		}
-		return immediateTransaction;
-	}
 }
 
 function attributesAsObject(attribute_permissions, type) {

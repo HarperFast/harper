@@ -15,11 +15,16 @@ export function transaction<T>(request: Request | ((request: Request) => T), cal
 		callback = request;
 		request = {};
 	} else if (!request) request = {}; // request argument included, but null or undefined, so create anew one
-	else if (request.transaction && typeof callback === 'function') return callback(request as Request); // nothing to be done, already in transaction
+	else if (request.context?.transaction && typeof callback === 'function') return callback(request as Request); // nothing to be done, already in transaction
 	if (typeof callback !== 'function') throw new Error('Callback function must be provided to transaction');
-	const transaction = (request.transaction = new TransactionSet());
-	transaction.timestamp = request.timestamp || getNextMonotonicTime();
-	request.resourceCache = new Map();
+	let context = request.context;
+	if (!context) {
+		if (context === null) context = request.context = {};
+		else context = request;
+	}
+	const transaction = (context.transaction = new TransactionSet());
+	transaction.timestamp = context.timestamp || getNextMonotonicTime();
+	context.resourceCache = new Map();
 	let result;
 	try {
 		result = callback(request);

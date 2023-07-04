@@ -87,6 +87,21 @@ export function assignTrackedAccessors(Target, type_def) {
 	prototype.deleteProperty = function (name) {
 		getChanges(this)[name] = undefined;
 	};
+	prototype.toJSON = function() {
+		const changes = this[OWN_DATA];
+		let copied_source;
+		for (const key in changes) {
+			// copy the source first so we have properties in the right order and can override them
+			if (!copied_source) copied_source = Object.assign({}, this[RECORD_PROPERTY]);
+			copied_source[key] = changes[key]; // let recursive calls to toJSON handle sub-objects
+		}
+		const keys = Object.keys(this); // we use Object.keys because it is expected that the many inherited enumerables would slow a for-in loop down
+		if (keys.length > 0) {
+			if (!copied_source) copied_source = Object.assign({}, this[RECORD_PROPERTY]);
+			Object.assign(copied_source, this);
+		}
+		return copied_source || this[RECORD_PROPERTY];
+	};
 	if (!prototype.get) prototype.get = prototype.getProperty;
 	if (!prototype.delete) prototype.delete = prototype.deleteProperty;
 }
