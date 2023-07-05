@@ -356,6 +356,18 @@ function initializeOperationFunctionMap() {
 		new OperationFunctionObject(custom_function_operations.getCustomFunctions)
 	);
 	op_func_map.set(
+		terms.OPERATIONS_ENUM.GET_COMPONENT_FILE,
+		new OperationFunctionObject(custom_function_operations.getComponentFile)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.GET_COMPONENT_FILES,
+		new OperationFunctionObject(custom_function_operations.getComponentFiles)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.SET_COMPONENT_FILE,
+		new OperationFunctionObject(custom_function_operations.setComponentFile)
+	);
+	op_func_map.set(
 		terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTION,
 		new OperationFunctionObject(custom_function_operations.getCustomFunction)
 	);

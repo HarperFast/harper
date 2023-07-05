@@ -37,7 +37,7 @@ class SubObject extends tables.SubObject {
 		return super.get(query);
 	}
 	post(data) {
-		this.subObject.subProperty = data.subPropertyValue;
+		this.subObject.set('subProperty', data.subPropertyValue);
 		this.subArray.push(data.subArrayItem);
 		return 'success';
 	}

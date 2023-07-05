@@ -49,7 +49,7 @@ async function installComponents() {
 
 		// If there is no package.json file go ahead and write package.json and npm install it
 		if (!pkg_json_exists) {
-			hdb_log.notify('Installing apps.');
+			hdb_log.notify('Installing components');
 			await installPackages(pkg_json_path, pkg_json);
 			return;
 		}

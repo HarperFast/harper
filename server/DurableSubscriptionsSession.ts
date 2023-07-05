@@ -4,7 +4,16 @@ import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 const DurableSession = table({
 	database: 'system',
 	table: 'hdb_durable_session',
-	attributes: [{ name: 'id', isPrimaryKey: true }],
+	attributes: [
+		{ name: 'id', isPrimaryKey: true },
+		{
+			name: 'subscriptions',
+			type: 'array',
+			elements: {
+				attributes: [{ name: 'topic' }, { name: 'qos' }, { name: 'startTime' }],
+			},
+		},
+	],
 });
 
 /**
@@ -48,11 +57,11 @@ export async function getSession({
 	if (session_id && !non_durable) {
 		const session_resource = await DurableSession.getResource(session_id);
 		session = new DurableSubscriptionsSession(session_id, user, session_resource);
-		if (session_resource.doesExist()) session.sessionWasPresent = true;
+		if (session_resource.isSavedRecord()) session.sessionWasPresent = true;
 	} else {
 		if (session_id) {
 			// connecting with a clean session and session id is how durable sessions are deleted
-			const session_resource = await DurableSession.get(session_id);
+			const session_resource = await DurableSession.getResource(session_id);
 			if (session_resource) session_resource.delete();
 		}
 		session = new SubscriptionsSession(session_id, user);
@@ -99,16 +108,23 @@ class SubscriptionsSession {
 				startTime: start_time,
 				noRetain: rh,
 			});
-			subscription.on('data', (update) => {
-				let message_id;
-				if (needs_ack) {
-					update.topic = topic;
-					message_id = this.needsAcknowledge(update);
-				} else message_id = next_message_id++;
-				this.listener(resource_path + '/' + (update.id ?? ''), update.value, message_id, subscription_request);
-			});
+			if (!subscription) throw new Error(`No subscription was returned from subscribe for topic ${topic}`);
+			if (!subscription[Symbol.asyncIterator])
+				throw new Error(`Subscription is not (async) iterable for topic ${topic}`);
+			(async () => {
+				for await (const update of subscription) {
+					let message_id;
+					if (needs_ack) {
+						update.topic = topic;
+						message_id = this.needsAcknowledge(update);
+					} else message_id = next_message_id++;
+					this.listener(resource_path + '/' + (update.id ?? ''), update.value, message_id, subscription_request);
+				}
+			})();
 			return subscription;
 		});
+		if (!subscription)
+			throw new Error(`The ${topic} does not exist, no resource has been defined to handle this topic`);
 		subscription.topic = topic;
 		subscription.qos = subscription_request.qos;
 		this.subscriptions.push(subscription);
@@ -166,7 +182,10 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	async resume() {
 		// resuming a session, we need to resume each subscription
 		for (const subscription of this.sessionRecord.subscriptions || []) {
-			await this.resumeSubscription({ noRetain: true, ...subscription }, true);
+			await this.resumeSubscription(
+				{ noRetain: true, topic: subscription.topic, qos: subscription.qos, startTime: subscription.startTime },
+				true
+			);
 		}
 	}
 	resumeSubscription(subscription, needs_ack) {

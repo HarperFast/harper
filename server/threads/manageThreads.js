@@ -47,9 +47,6 @@ function setMainIsWorker(isWorker) {
 	isMainWorker = isWorker;
 }
 let messageTypeListeners = {
-	[RESTART_TYPE](message) {
-		restartWorkers(message.workerType);
-	},
 	[REQUEST_THREAD_INFO](message, worker) {
 		sendThreadInfo(worker);
 	},
@@ -167,6 +164,10 @@ const OVERLAPPING_RESTART_TYPES = [hdb_terms.THREAD_TYPES.HTTP];
 
 async function restartWorkers(name = null, max_workers_down = 2, start_replacement_threads = true) {
 	if (isMainThread) {
+		// This is here to prevent circular dependencies
+		const { loadServerModules } = require('../loadServerModules');
+		await loadServerModules();
+
 		module.exports.restartNumber++;
 		if (max_workers_down < 1) {
 			// we accept a ratio of workers, and compute absolute maximum being down at a time from the total number of

@@ -450,6 +450,88 @@ async function deployComponent(req) {
 	return `Successfully deployed: ${project}`;
 }
 
+/**
+ * Gets a JSON directory tree of the components dir and all nested files/folders
+ * @returns {Promise<*>}
+ */
+async function getComponentFiles() {
+	// Recursive function that will traverse the components dir and build json
+	// directory tree as it goes.
+	const walk_dir = async (dir, result) => {
+		const list = await fs.readdir(dir, { withFileTypes: true });
+		for (let item of list) {
+			const item_name = item.name;
+			if (item_name.startsWith('.') || item_name === 'node_modules') continue;
+			const item_path = path.join(dir, item_name);
+			if (await item.isDirectory()) {
+				let res = {
+					name: item_name,
+					entries: [],
+				};
+				result.entries.push(res);
+				await walk_dir(item_path, res);
+			} else {
+				const stats = await fs.stat(item_path);
+				const res = {
+					name: path.basename(item_name),
+					mtime: stats.mtime,
+					size: stats.size,
+				};
+				result.entries.push(res);
+			}
+		}
+		return result;
+	};
+
+	return walk_dir(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT), {
+		name: env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT).split(path.sep).slice(-1).pop(),
+		entries: [],
+	});
+}
+
+/**
+ * Gets the contents of a component file
+ * @param req
+ * @returns {Promise<*>}
+ */
+async function getComponentFile(req) {
+	const validation = validator.getComponentFileValidator(req);
+	if (validation) {
+		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
+
+	const options = req.encoding ? { encoding: req.encoding } : { encoding: 'utf8' };
+	try {
+		return await fs.readFile(
+			path.join(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT), req.project, req.file),
+			options
+		);
+	} catch (err) {
+		if (err.code === terms.NODE_ERROR_CODES.ENOENT) {
+			throw new Error(`Component file not found '${path.join(req.project, req.file)}'`);
+		}
+		throw err;
+	}
+}
+
+/**
+ * Used to update or create a component file
+ * @param req
+ * @returns {Promise<string>}
+ */
+async function setComponentFile(req) {
+	const validation = validator.setComponentFileValidator(req);
+	if (validation) {
+		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
+
+	const options = req.encoding ? { encoding: req.encoding } : { encoding: 'utf8' };
+	const path_to_comp = path.join(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT), req.project, req.file);
+	await fs.ensureFile(path_to_comp);
+	await fs.outputFile(path_to_comp, req.payload, options);
+	return `Successfully set component: ` + req.file;
+}
+
 module.exports = {
 	customFunctionsStatus,
 	getCustomFunctions,
@@ -460,4 +542,7 @@ module.exports = {
 	dropCustomFunctionProject,
 	packageComponent,
 	deployComponent,
+	getComponentFiles,
+	getComponentFile,
+	setComponentFile,
 };

@@ -105,47 +105,6 @@ export class Resource implements ResourceInterface {
 		return resource.get(query);
 	}
 
-	doesExist(): boolean;
-	/**
-	 * This retrieves the data of this resource. By default, with no argument, just return `this`.
-	 * @param query - If included, specifies a query to perform on the record
-	 */
-	get(query?: object): Promise<object | void> | object | void {
-		if (this[IS_COLLECTION]) {
-			return this.search(query);
-		}
-		if (typeof this.doesExist !== 'function' || this.doesExist()) {
-			if (query?.select) {
-				const selected_data = {};
-				const forceNulls = query.select.forceNulls;
-				for (const property of query.select) {
-					let value = this[property];
-					if (typeof value === 'function') value = this[EXPLICIT_CHANGES_PROPERTY]?.[property];
-					if (value === undefined && forceNulls) value = null;
-					selected_data[property] = value;
-				}
-				return selected_data;
-			} else if (this[EXPLICIT_CHANGES_PROPERTY]) {
-				const aggregated_data = {};
-				for (const property in this) aggregated_data[property] = this[property];
-				for (const key in this[EXPLICIT_CHANGES_PROPERTY]) aggregated_data[key] = this[EXPLICIT_CHANGES_PROPERTY][key];
-				return aggregated_data;
-			}
-			return this;
-		}
-	}
-	getProperty(name) {
-		const value = this[name];
-		if (typeof value === 'function') return this[EXPLICIT_CHANGES_PROPERTY]?.[name];
-		return value;
-	}
-	setProperty(name, value) {
-		if (typeof this[name] === 'function') {
-			const explicit_changes = this[EXPLICIT_CHANGES_PROPERTY] || (this[EXPLICIT_CHANGES_PROPERTY] = {});
-			explicit_changes[name] = value;
-		} else this[name] = value;
-	}
-
 	put(record: object, options?): Promise<void>;
 	static getNewId() {
 		return randomUUID();
@@ -390,7 +349,6 @@ export class Resource implements ResourceInterface {
 		return user?.role.permission.super_user;
 	}
 }
-Resource.prototype.get.doesNotLoad = true; // the default get implementation does not actually load anything
 _assignPackageExport('Resource', Resource);
 
 export function snake_case(camelCase: string) {

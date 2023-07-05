@@ -1,5 +1,8 @@
 'use strict';
-
+let whyIsNodeStillRunning;
+try {
+	whyIsNodeStillRunning = require('why-is-node-still-running');
+} catch (error) {} // only if installed
 const hdb_terms = require('../../utility/hdbTerms');
 const hdb_utils = require('../../utility/common_utils');
 const harper_logger = require('../../utility/logging/harper_logger');
@@ -59,5 +62,10 @@ const JOB_ID = JOB_NAME.substring(4);
 		job_obj.end_datetime = moment().valueOf();
 	} finally {
 		await jobs.updateJob(job_obj);
+		if (typeof whyIsNodeStillRunning !== 'undefined') {
+			setTimeout(() => {
+				whyIsNodeStillRunning.whyIsNodeStillRunning();
+			}).unref(1000);
+		}
 	}
 })();
