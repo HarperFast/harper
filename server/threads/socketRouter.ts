@@ -12,15 +12,15 @@ let direct_thread_server;
 export let debugMode;
 
 export async function startHTTPThreads(thread_count = 2) {
-	const { loadServerModules } = require('../loadServerModules');
+	const { loadRootComponents } = require('../loadRootComponents');
 
 	if (thread_count === 0 || debugMode) {
 		setMainIsWorker(true);
 		direct_thread_server = require('./threadServer');
-		await loadServerModules(true);
+		await loadRootComponents(true);
 		return Promise.resolve([]);
 	}
-	await loadServerModules();
+	await loadRootComponents();
 	const workers_ready = [];
 	for (let i = 0; i < thread_count; i++) {
 		startWorker('server/threads/threadServer.js', {

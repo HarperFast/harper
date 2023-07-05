@@ -39,7 +39,7 @@ let resources;
  * @param loaded_plugin_modules
  * @param loaded_resources
  */
-export function loadApplications(loaded_plugin_modules?: Map<any, any>, loaded_resources?: Resources) {
+export function loadComponentDirectories(loaded_plugin_modules?: Map<any, any>, loaded_resources?: Resources) {
 	if (loaded_resources) resources = loaded_resources;
 	if (loaded_plugin_modules) loaded_components = loaded_plugin_modules;
 	const cfs_loaded = [];
@@ -261,7 +261,7 @@ export async function loadComponent(
 		// Auto restart threads on changes to any app folder. TODO: Make this configurable
 		if (isMainThread && !watches_setup) {
 			watchDir(folder, async () => {
-				return loadApplications(); // return the promise
+				return loadComponentDirectories(); // return the promise
 			});
 		}
 		if (config.extensionModule) {

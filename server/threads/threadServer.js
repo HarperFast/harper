@@ -34,8 +34,8 @@ let http_servers = {},
 	http_responders = [];
 
 if (!isMainThread) {
-	require('../loadServerModules')
-		.loadServerModules(true)
+	require('../loadRootComponents')
+		.loadRootComponents(true)
 		.then(() => {
 			parentPort
 				.on('message', (message) => {

@@ -3,9 +3,9 @@ const socket_router = require('./threads/socketRouter');
 const hdb_terms = require('../utility/hdbTerms');
 const operationsServer = require('./operationsServer');
 const auth = require('../security/auth');
-const natsReplicator = require('../server/nats/natsReplicator');
+const natsReplicator = require('./nats/natsReplicator');
 const { getTables } = require('../resources/databases');
-const { loadApplications, loadComponent } = require('../components/applicationsLoader');
+const { loadComponentDirectories, loadComponent } = require('../components/componentLoader');
 const env = require('../utility/environment/environmentManager');
 const { secureImport } = require('../security/jsLoader');
 const { resetResources } = require('../resources/Resources');
@@ -68,7 +68,7 @@ function getServerModules() {
  * This is main entry point for loading the main set of global server modules that power HarperDB.
  * @returns {Promise<void>}
  */
-async function loadServerModules(is_worker_thread = false) {
+async function loadRootComponents(is_worker_thread = false) {
 	if (isMainThread) await install_components();
 
 	let ports_started = [];
@@ -78,7 +78,7 @@ async function loadServerModules(is_worker_thread = false) {
 	// the HarperDB root component
 	await loadComponent(dirname(config_utils.getConfigFilePath()), resources, 'hdb', true, loaded_components);
 	// once the global plugins are loaded, we now load all the CF and run applications (and their components)
-	await loadApplications(loaded_components, resources);
+	await loadComponentDirectories(loaded_components, resources);
 	let all_ready = [];
 	for (let [server_module] of loaded_components) {
 		if (server_module.ready) all_ready.push(server_module.ready());
@@ -86,7 +86,7 @@ async function loadServerModules(is_worker_thread = false) {
 	if (all_ready.length > 0) await Promise.all(all_ready);
 }
 
-module.exports.loadServerModules = loadServerModules;
+module.exports.loadRootComponents = loadRootComponents;
 function parseYamlDoc(file_path) {
 	return YAML.parseDocument(fs.readFileSync(file_path, 'utf8'), { simpleKeys: true });
 }

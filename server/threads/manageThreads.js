@@ -165,8 +165,8 @@ const OVERLAPPING_RESTART_TYPES = [hdb_terms.THREAD_TYPES.HTTP];
 async function restartWorkers(name = null, max_workers_down = 2, start_replacement_threads = true) {
 	if (isMainThread) {
 		// This is here to prevent circular dependencies
-		const { loadServerModules } = require('../loadServerModules');
-		await loadServerModules();
+		const { loadRootComponents } = require('../loadRootComponents');
+		await loadRootComponents();
 
 		module.exports.restartNumber++;
 		if (max_workers_down < 1) {
