@@ -202,6 +202,7 @@ function readMetaDb(
 		const tables_to_load = new Map();
 		for (const { key, value } of dbis_store.getRange({ start: false })) {
 			let [table_name, attribute_name] = key.toString().split('/');
+			if (attribute_name === '') attribute_name = value.name; // primary key
 			if (!attribute_name) {
 				attribute_name = table_name;
 				table_name = default_table;
@@ -449,7 +450,7 @@ export function table({
 		}
 		harper_logger.trace(`${table_name} table loading, opening primary store`);
 		const dbi_init = new OpenDBIObject(!primary_key_attribute.isPrimaryKey, primary_key_attribute.isPrimaryKey);
-		const dbi_name = table_name + '/' + primary_key_attribute.name;
+		const dbi_name = table_name + '/';
 		const primary_store = root_store.openDB(dbi_name, dbi_init);
 		primary_store.rootStore = root_store;
 		if (!root_store.env.nextTableId) root_store.env.nextTableId = 1;
@@ -485,6 +486,7 @@ export function table({
 	const indices_to_remove = [];
 	for (const { key, value } of attributes_dbi.getRange({ start: true })) {
 		let [attribute_table_name, attribute_name] = key.toString().split('/');
+		if (attribute_name === '') attribute_name = value.name; // primary key
 		if (attribute_name) {
 			if (attribute_table_name !== table_name) continue;
 		} else {

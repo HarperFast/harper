@@ -19,10 +19,11 @@ import { _assignPackageExport } from '../index';
 import { parseQuery } from './search';
 import { ClientError } from '../utility/errors/hdbError';
 import { OWN_DATA } from './tracked';
+import { transaction } from './transaction';
 
 let tables;
 
-export const REQUEST = Symbol.for('request');
+export const CONTEXT = Symbol.for('context');
 export const USER_PROPERTY = Symbol.for('user');
 export const ID_PROPERTY = Symbol.for('id');
 export const LAST_MODIFICATION_PROPERTY = Symbol.for('last-modification-time');
@@ -42,7 +43,7 @@ export const USED_RESOURCES = Symbol('used-resources');
  * data aggregation, processing, or monitoring.
  */
 export class Resource implements ResourceInterface {
-	context: Context;
+	[CONTEXT]: Context;
 	[USER_PROPERTY]: any;
 	[ID_PROPERTY]: any;
 	[LAST_MODIFICATION_PROPERTY] = 0;
@@ -50,7 +51,7 @@ export class Resource implements ResourceInterface {
 	static transactions: Transaction[] & { timestamp: number };
 	constructor(identifier: Id, context: Context) {
 		this[ID_PROPERTY] = identifier;
-		this.context = context ?? null;
+		this[CONTEXT] = context ?? null;
 	}
 
 	/**
@@ -65,22 +66,23 @@ export class Resource implements ResourceInterface {
 		}
 	}
 
-	static async get(identifier: Id, context?: Context): Promise<object>;
-	static async get(request: Request, context?: Context): Promise<object>;
-	static async get(query: Query, context?: Context): Promise<AsyncIterable<object>>;
+	static get(identifier: Id, context?: Context): Promise<object>;
+	static get(request: Request, context?: Context): Promise<object>;
+	static get(query: Query, context?: Context): Promise<AsyncIterable<object>>;
 	static async get(request: Id | Request | Query, context?: Context) {
-		request = requestForIdArgs(request, context);
-		const resource = await this.getResource(request);
+		request = requestForIdArgs(request, context); // TODO: I don't think we actually need to create a request, can just reuse context
+		const resource: ResourceInterface = await this.getResource(request);
 		resource[SAVE_UPDATES_PROPERTY] = false; // by default modifications aren't saved, they just yield a different result from get
 		if (request.authorize) {
-			const allowed = await resource.allowRead(request);
+			const allowed = await resource.allowRead(request.user, request);
 			if (!allowed) {
 				throw new AccessError(request.user);
 			}
 			request.authorize = false;
 		}
-		const result = resource.get(request);
-		if (request.select && !resource[IS_COLLECTION] && result) {
+		const is_collection = resource[IS_COLLECTION];
+		const result = is_collection && resource.search ? resource.search(request) : resource.get();
+		if (request.select && !is_collection && result) {
 			const selected_data = {};
 			const forceNulls = request.select.forceNulls;
 			const own_data = result[OWN_DATA];
@@ -104,17 +106,29 @@ export class Resource implements ResourceInterface {
 	/**
 	 * Store the provided record by the provided id. If no id is provided, it is auto-generated.
 	 */
-	static async put(record: any, context?: Context) {
+	static put(record: any, context?: Context) {
 		const request = requestForDataArgs(record, context);
-		const resource = await this.getResource(request);
-		if (request.authorize) {
-			request.authorize = false;
-			const allowed = await resource.allowUpdate(request);
-			if (!allowed) {
-				throw new AccessError(request.user);
+		return transaction(request, async (request) => {
+			const resource = await this.getResource(request);
+			let record = await request.data;
+			if (Array.isArray(data) && resource[IS_COLLECTION]) {
+				let results = [];
+				let authorize = request.authorize;
+				for (let element of record) {
+					if (authorize) request.authorize = true; // authorize each record
+					results.push(this.put(element, request));
+				}
+				return results;
 			}
-		}
-		return resource.put(await request.data);
+			if (request.authorize) {
+				request.authorize = false;
+				const allowed = await resource.allowUpdate(request, record, true);
+				if (!allowed) {
+					throw new AccessError(request.user);
+				}
+			}
+			return resource.put(record);
+		});
 	}
 	static async delete(request: Request | Id, context?: Context) {
 		request = requestForIdArgs(request, context);
@@ -189,13 +203,6 @@ export class Resource implements ResourceInterface {
 		throw new Error('No post method defined for resource');
 	}
 
-	static search(query: object): AsyncIterable<object> {
-		return new this(null).search(query);
-	}
-	search(query: object): AsyncIterable<object> {
-		throw new ClientError('search is not implemented');
-	}
-
 	static isCollection(resource) {
 		return resource?.[IS_COLLECTION];
 	}
@@ -208,10 +215,10 @@ export class Resource implements ResourceInterface {
 		if (!path) {
 			path = id?.toString() ?? '';
 		}
-		let is_collection = id == null || (id.constructor === Array && id[id.length - 1] == null);
+		const is_collection = id == null || (id.constructor === Array && id[id.length - 1] == null);
 		// if it is a collection and we have a collection class defined, use it
-		let constructor = is_collection && this.Collection || this;
-		let context = request.context || request;
+		const constructor = (is_collection && this.Collection) || this;
+		const context = request[CONTEXT] || request;
 		if (context.transaction) {
 			let resource_cache;
 			if (context.resourceCache) {
@@ -253,32 +260,23 @@ export class Resource implements ResourceInterface {
 	}
 
 	// Default permissions (super user only accesss):
-	static allowRead(user, query?: object): boolean | object {
-		return user?.role.permission.super_user;
-	}
-	allowRead(user, query?: object): boolean | object {
+	allowRead(user): boolean | object {
 		return this.constructor.allowRead(user, query);
 	}
-	static allowUpdate(user): boolean | object {
-		return user?.role.permission.super_user;
-	}
 	allowUpdate(user): boolean | object {
-		return user?.role.permission.super_user;
-	}
-	static allowCreate(user): boolean | object {
 		return user?.role.permission.super_user;
 	}
 	allowCreate(user): boolean | object {
 		return user?.role.permission.super_user;
 	}
-	static allowDelete(user): boolean | object {
-		return user?.role.permission.super_user;
-	}
 	allowDelete(user): boolean | object {
 		return user?.role.permission.super_user;
 	}
+	getContext() {
+		return this[CONTEXT];
+	}
 }
-Resource.prototype.context = null;
+Resource.prototype[CONTEXT] = null;
 _assignPackageExport('Resource', Resource);
 
 export function snake_case(camelCase: string) {
@@ -303,13 +301,14 @@ class AccessError extends Error {
 function requestForIdArgs(request: Request | Id, context?: Context) {
 	if (request && typeof request === 'object' && !Array.isArray(request)) {
 		if (context) {
+			context = CONTEXT in context ? context[CONTEXT] : context;
 			request.transaction = context.transaction;
 			request.user = context.user;
 			request.timestamp = context.timestamp;
 		}
 	} else {
 		const id = request;
-		request = context ? Object.create(context) : {};
+		request = context ? Object.create(CONTEXT in context ? context[CONTEXT] : context) : {};
 		request.id = id;
 	}
 	return request;

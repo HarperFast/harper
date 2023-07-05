@@ -1,18 +1,18 @@
 export interface ResourceInterface<Key = any, Record = any> {
-	get?(request: Request): Promise<UpdatableRecord<Record>>;
+	get?(): Promise<UpdatableRecord<Record>>;
 	get?(query: Query): Promise<AsyncIterable<Record>>;
 	get?(property: string): any;
-	put?(record: any, request: Request): void;
-	update?(updates: any, request: Request): Promise<UpdatableRecord<Record>>;
-	delete?(request: Request): boolean;
+	put?(record: any): void;
+	update?(updates: any, full_update?: boolean): Promise<UpdatableRecord<Record>>;
+	delete?(): boolean;
 	search?(query: Query): AsyncIterable<any>;
 	subscribe?(request: SubscriptionRequest): Subscription;
-	allowRead(request: Request): boolean | Promise<boolean>;
-	allowUpdate(request: Request): boolean | Promise<boolean>;
-	allowCreate(request: Request): boolean | Promise<boolean>;
-	allowDelete(request: Request): boolean | Promise<boolean>;
+	allowRead(user: any, query?: Query): boolean | Promise<boolean>;
+	allowUpdate(user: any, record: any, full_update?: boolean): boolean | Promise<boolean>;
+	allowCreate(user: any, record: any): boolean | Promise<boolean>;
+	allowDelete(user: any, query?: Query): boolean | Promise<boolean>;
 	lastModificationTime: number;
-	context: Request;
+	[CONTEXT]: Request;
 }
 export interface Context {
 	user?: any;

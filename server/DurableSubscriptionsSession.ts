@@ -57,7 +57,7 @@ export async function getSession({
 	if (session_id && !non_durable) {
 		const session_resource = await DurableSession.getResource(session_id);
 		session = new DurableSubscriptionsSession(session_id, user, session_resource);
-		if (session_resource.isSavedRecord()) session.sessionWasPresent = true;
+		if (session_resource.doesExist()) session.sessionWasPresent = true;
 	} else {
 		if (session_id) {
 			// connecting with a clean session and session id is how durable sessions are deleted
@@ -101,8 +101,8 @@ class SubscriptionsSession {
 			existing_subscription.end();
 			this.subscriptions.splice(this.subscriptions.indexOf(existing_subscription), 1);
 		}
-		const subscription = await resources.call(path, this, async (resource_access, resource_path) => {
-			const subscription = await resource_access.subscribe({
+		const subscription = await resources.call(path, this, async (resource, resource_path) => {
+			const subscription = await resource.subscribe({
 				search,
 				user: this.user,
 				startTime: start_time,
@@ -161,7 +161,7 @@ class SubscriptionsSession {
 			return retain
 				? data === undefined
 					? resource.delete(message)
-					: resource.put(message)
+					: resource.update(message, true)
 				: resource.publish(message);
 		});
 		if (!resource_found) throw new Error('There is no resource or table for the ${topic} topic');

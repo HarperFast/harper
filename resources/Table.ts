@@ -6,7 +6,7 @@ import { Query, ResourceInterface, Request, SubscriptionRequest } from './Resour
 import { workerData, threadId } from 'worker_threads';
 import { messageTypeListener } from '../server/threads/manageThreads';
 import {
-	REQUEST,
+	CONTEXT,
 	TRANSACTIONS_PROPERTY,
 	ID_PROPERTY,
 	LAST_MODIFICATION_PROPERTY,
@@ -35,7 +35,6 @@ import { transaction } from './transaction';
 let server_utilities;
 const RANGE_ESTIMATE = 100000000;
 env_mngr.initSync();
-const b = Buffer.alloc(1);
 const LMDB_PREFETCH_WRITES = env_mngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 
 const DELETION_COUNT_KEY = Symbol.for('deletions');
@@ -44,6 +43,7 @@ const VERSION_PROPERTY = Symbol.for('version');
 const INCREMENTAL_UPDATE = Symbol.for('incremental-update');
 const SOURCE_PROPERTY = Symbol('source-resource');
 const LAZY_PROPERTY_ACCESS = { lazy: true };
+const NOTIFICATION = { isNotification: true };
 
 export interface Table {
 	primaryStore: Database;
@@ -118,15 +118,14 @@ export function makeTable(options) {
 						if (!event.id) throw new Error('Secondary resource found without an id ' + JSON.stringify(event));
 					}
 					event.allowInvalidated = true;
-					event.isNotification = true;
 					const resource: TableResource = await Table.getResource(event);
 					switch (event.operation) {
 						case 'put':
-							return resource.#writeUpdate(value, event);
+							return resource.#writeUpdate(value, NOTIFICATION);
 						case 'delete':
-							return resource.#writeDelete(event);
+							return resource.#writeDelete(NOTIFICATION);
 						case 'publish':
-							return resource.#writePublish(value, event);
+							return resource.#writePublish(value, NOTIFICATION);
 						default:
 							console.error('Unknown operation', event);
 					}
@@ -155,7 +154,7 @@ export function makeTable(options) {
 									if (event.operation === 'transaction') {
 										const promises = [];
 										for (const write of event.writes) {
-											write.context = event;
+											write[CONTEXT] = event;
 											promises.push(writeUpdate(write));
 										}
 										return Promise.all(promises);
@@ -243,7 +242,7 @@ export function makeTable(options) {
 					const index = indices[attribute];
 					index.drop();
 				}
-				dbis_db.remove(TableResource.tableName + '/' + primary_key);
+				dbis_db.remove(TableResource.tableName + '/');
 				primary_store.drop();
 				await dbis_db.committed;
 			} else {
@@ -284,7 +283,7 @@ export function makeTable(options) {
 			if (this[IS_COLLECTION]) {
 				return this.search(query);
 			}
-			if (this.isSavedRecord()) {
+			if (this.doesExist()) {
 				return this;
 			}
 		}
@@ -347,9 +346,9 @@ export function makeTable(options) {
 		 * Determine if the user is allowed to update data from the current resource
 		 * @param user The current, authenticated user
 		 * @param updated_data
-		 * @param partial_update
+		 * @param full_update
 		 */
-		allowUpdate(user, updated_data: {}, partial_update: boolean) {
+		allowUpdate(user, updated_data: {}, full_update: boolean) {
 			if (!user) return false;
 			const permission = user.role.permission;
 			if (permission.super_user) return true;
@@ -361,7 +360,7 @@ export function makeTable(options) {
 					for (const key in updated_data) {
 						if (!attrs_for_type[key]) return false;
 					}
-					if (!partial_update) {
+					if (full_update) {
 						// if this is a full put operation that removes missing properties, we don't want to remove properties
 						// that the user doesn't have permission to remove
 						for (const permission of attribute_permissions) {
@@ -390,8 +389,7 @@ export function makeTable(options) {
 		/**
 		 * Determine if the user is allowed to create new data in the current resource
 		 * @param user The current, authenticated user
-		 * @param updated_data
-		 * @param partial_update
+		 * @param new_data
 		 */
 		static allowCreate(user, new_data: {}) {
 			if (!user) return false;
@@ -429,7 +427,7 @@ export function makeTable(options) {
 		 * once the corresponding transaction is committed. These changes can (eventually) include CRDT type operations.
 		 * @param arg This can be a record to update the current resource with.
 		 */
-		update(updates: any, request?: Request) {
+		update(updates: any, full_update: boolean) {
 			const env_txn = this.#txnForRequest();
 			if (!env_txn) throw new Error('Can not update a table resource outside of a transaction');
 			// record in the list of updating records so it can be written to the database when we commit
@@ -439,8 +437,10 @@ export function makeTable(options) {
 			}
 			let own_data;
 			if (typeof updates === 'object' && updates) {
-				for (const key in this[RECORD_PROPERTY]) {
-					if (updates[key] === undefined) updates[key] = undefined;
+				if (full_update) {
+					for (const key in this[RECORD_PROPERTY]) {
+						if (updates[key] === undefined) updates[key] = undefined;
+					}
 				}
 				own_data = this[OWN_DATA];
 				if (own_data) updates = Object.assign(own_data, updates);
@@ -486,8 +486,8 @@ export function makeTable(options) {
 				invalidated_record[name] = this.getProperty(name);
 			}
 			if (invalidated_record) {
-				this.#writeUpdate(invalidated_record, { isNotification: true });
-			} else this.#writeDelete({ isNotification: true });
+				this.#writeUpdate(invalidated_record, NOTIFICATION);
+			} else this.#writeDelete(NOTIFICATION);
 		}
 		async operation(operation) {
 			operation.hdb_user = this[USER_PROPERTY];
@@ -509,7 +509,7 @@ export function makeTable(options) {
 			// TODO: only do this if we are in a custom function, otherwise directly call #writeUpdate
 			this.update(record);
 		}
-		#writeUpdate(record, request) {
+		#writeUpdate(record, options?: any) {
 			const transaction = this.#txnForRequest();
 
 			// use optimistic locking to only commit if the existing record state still holds true.
@@ -543,7 +543,7 @@ export function makeTable(options) {
 								is_unchanged = !hasChanges(record);
 								if (is_unchanged) return;
 							}
-							if (record[primary_key] !== this[ID_PROPERTY]) record[primary_key] = this[ID_PROPERTY];
+							if (primary_key && record[primary_key] !== this[ID_PROPERTY]) record[primary_key] = this[ID_PROPERTY];
 							if (TableResource.updatedTimeProperty) record[TableResource.updatedTimeProperty] = txn_time;
 							if (TableResource.createdTimeProperty) {
 								if (existing_record)
@@ -604,7 +604,7 @@ export function makeTable(options) {
 			// TODO: Handle deletion of a collection/query
 			return this.#writeDelete(request);
 		}
-		#writeDelete(command: Request) {
+		#writeDelete(options?: any) {
 			const transaction = this.#txnForRequest();
 			const txn_time = transaction.timestamp;
 			let delete_prepared;
@@ -624,7 +624,7 @@ export function makeTable(options) {
 					}
 					if (!delete_prepared) {
 						delete_prepared = true;
-						if (!command?.isNotification) {
+						if (!options?.isNotification) {
 							if (this.constructor.Source?.prototype.delete) {
 								const source = this.constructor.Source.getResource(id, this);
 								harper_logger.trace(`Sending delete ${id} to source, is promise ${!!source?.then}`);
@@ -657,7 +657,7 @@ export function makeTable(options) {
 		}
 
 		search(request: Request): AsyncIterable<any> {
-			if (!this.context?.transaction) return transaction(this, (request) => this.search(request));
+			if (!this[CONTEXT]?.transaction) return transaction(this, (request) => this.search(request));
 			const txn = this.#txnForRequest();
 			const reverse = request.reverse === true;
 			let conditions = request.conditions;
@@ -880,13 +880,13 @@ export function makeTable(options) {
 					subscription.startTime = version; // make sure we don't re-broadcast the current version that we already sent
 				} else if (!request.noRetain) {
 					// if retain and it exists, send the current value first
-					if (this.isSavedRecord()) subscription.send({ id, timestamp: this[VERSION_PROPERTY], value: this });
+					if (this.doesExist()) subscription.send({ id, timestamp: this[VERSION_PROPERTY], value: this });
 				}
 			}
 			if (request.listener) subscription.on('data', request.listener);
 			return subscription;
 		}
-		isSavedRecord() {
+		doesExist() {
 			return Boolean(this[RECORD_PROPERTY]);
 		}
 
@@ -900,7 +900,7 @@ export function makeTable(options) {
 		async publish(message, options?) {
 			this.#writePublish(message, options);
 		}
-		#writePublish(message, command?: Request) {
+		#writePublish(message, options?: any) {
 			const transaction = this.#txnForRequest();
 			const txn_time = transaction.timestamp;
 			const id = this[ID_PROPERTY] || null;
@@ -922,7 +922,7 @@ export function makeTable(options) {
 
 					if (!publish_prepared) {
 						publish_prepared = true;
-						if (!command?.isNotification) {
+						if (!options?.isNotification) {
 							if (this.constructor.Source?.prototype.publish) {
 								const source = this.constructor.Source.getResource(id, this);
 								if (source?.then)
@@ -950,7 +950,7 @@ export function makeTable(options) {
 			});
 		}
 		#txnForRequest() {
-			const context = this.context;
+			const context = this[CONTEXT];
 			const transaction_set = context?.transaction;
 			if (transaction_set) {
 				let transaction;
@@ -1049,7 +1049,7 @@ export function makeTable(options) {
 	function assignDBTxn(resource) {
 		let db_txn = resource[TRANSACTIONS_PROPERTY].find((txn) => txn.dbPath === database_path);
 		if (!db_txn) {
-			db_txn = new DatabaseTransaction(primary_store, resource[REQUEST]?.user, audit_store);
+			db_txn = new DatabaseTransaction(primary_store, resource[CONTEXT]?.user, audit_store);
 			db_txn.dbPath = database_path;
 			resource[TRANSACTIONS_PROPERTY].push(db_txn);
 		}
