@@ -55,13 +55,13 @@ export async function getSession({
 }) {
 	let session;
 	if (session_id && !non_durable) {
-		const session_resource = await DurableSession.getResource(session_id);
+		const session_resource = await DurableSession.get(session_id);
 		session = new DurableSubscriptionsSession(session_id, user, session_resource);
 		if (session_resource.doesExist()) session.sessionWasPresent = true;
 	} else {
 		if (session_id) {
 			// connecting with a clean session and session id is how durable sessions are deleted
-			const session_resource = await DurableSession.getResource(session_id);
+			const session_resource = await DurableSession.get(session_id);
 			if (session_resource) session_resource.delete();
 		}
 		session = new SubscriptionsSession(session_id, user);

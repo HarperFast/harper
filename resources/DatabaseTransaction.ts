@@ -47,10 +47,9 @@ export class DatabaseTransaction implements Transaction {
 	/**
 	 * Resolves with information on the timestamp and success of the commit
 	 */
-	async commit(flush = true, retries = 0): Promise<CommitResolution> {
+	commit(flush = true, retries = 0): Promise<CommitResolution> {
 		this.doneReading();
 		let resolution,
-			resource_resolutions,
 			completions = [];
 		let write_index = 0;
 		let last_store;
@@ -93,7 +92,6 @@ export class DatabaseTransaction implements Transaction {
 				}
 			}
 		};
-		if (resource_resolutions) await Promise.all(resource_resolutions);
 		if (this.writes.length < MAX_OPTIMISTIC_SIZE >> retries) nextCondition();
 		else {
 			// if it is too big to expect optimistic writes to work, or we have done too many retries we use

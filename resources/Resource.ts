@@ -69,134 +69,110 @@ export class Resource implements ResourceInterface {
 	static get(identifier: Id, context?: Context): Promise<object>;
 	static get(request: Request, context?: Context): Promise<object>;
 	static get(query: Query, context?: Context): Promise<AsyncIterable<object>>;
-	static async get(request: Id | Request | Query, context?: Context) {
-		request = requestForIdArgs(request, context); // TODO: I don't think we actually need to create a request, can just reuse context
-		const resource: ResourceInterface = await this.getResource(request);
-		resource[SAVE_UPDATES_PROPERTY] = false; // by default modifications aren't saved, they just yield a different result from get
-		if (request.authorize) {
-			const allowed = await resource.allowRead(request.user, request);
-			if (!allowed) {
-				throw new AccessError(request.user);
-			}
-			request.authorize = false;
-		}
-		const is_collection = resource[IS_COLLECTION];
-		const result = is_collection && resource.search ? resource.search(request) : resource.get();
-		if (request.select && !is_collection && result) {
-			const selected_data = {};
-			const forceNulls = request.select.forceNulls;
-			const own_data = result[OWN_DATA];
-			for (const property of request.select) {
-				let value;
-				if (result.hasOwnProperty(property) && typeof (value = result[property]) !== 'function') {
+	static get = transactional(
+		function (request: Request, resource: Resource) {
+			const is_collection = resource[IS_COLLECTION];
+			const result = is_collection && resource.search ? resource.search(request) : resource.get();
+			if (request.hasOwnProperty('select') && !is_collection && result) {
+				const selected_data = {};
+				const forceNulls = request.select.forceNulls;
+				const own_data = result[OWN_DATA];
+				for (const property of request.select) {
+					let value;
+					if (result.hasOwnProperty(property) && typeof (value = result[property]) !== 'function') {
+						selected_data[property] = value;
+						continue;
+					}
+					if (own_data && property in own_data) {
+						const value = own_data[property];
+						selected_data[property] = value;
+					} else value = result[RECORD_PROPERTY][property];
+					if (value === undefined && forceNulls) value = null;
 					selected_data[property] = value;
-					continue;
 				}
-				if (own_data && property in own_data) {
-					const value = own_data[property];
-					selected_data[property] = value;
-				} else value = result[RECORD_PROPERTY][property];
-				if (value === undefined && forceNulls) value = null;
-				selected_data[property] = value;
+				return selected_data;
 			}
-			return selected_data;
-		}
-		return result;
-	}
+			return result;
+		},
+		{ type: 'read' }
+	);
 	/**
 	 * Store the provided record by the provided id. If no id is provided, it is auto-generated.
 	 */
-	static put(record: any, context?: Context) {
-		const request = requestForDataArgs(record, context);
-		return transaction(request, async (request) => {
-			const resource = await this.getResource(request);
-			let record = await request.data;
-			if (Array.isArray(data) && resource[IS_COLLECTION]) {
-				let results = [];
-				let authorize = request.authorize;
-				for (let element of record) {
+	static put = transactional(
+		async function (request: Request, resource: Resource) {
+			const record = await request.data;
+			if (Array.isArray(record) && resource[IS_COLLECTION]) {
+				const results = [];
+				const authorize = request.authorize;
+				for (const element of record) {
 					if (authorize) request.authorize = true; // authorize each record
 					results.push(this.put(element, request));
 				}
 				return results;
 			}
-			if (request.authorize) {
-				request.authorize = false;
-				const allowed = await resource.allowUpdate(request, record, true);
-				if (!allowed) {
-					throw new AccessError(request.user);
-				}
-			}
 			return resource.put(record);
-		});
-	}
-	static async delete(request: Request | Id, context?: Context) {
-		request = requestForIdArgs(request, context);
-		request.allowInvalidated = true;
-		const resource = await this.getResource(request);
-		if (request.authorize) {
-			request.authorize = false;
-			const allowed = await resource.allowDelete(request);
-			if (!allowed) {
-				throw new AccessError(request.user);
-			}
-		}
-		return resource.delete(request);
-	}
+		},
+		{ hasContent: true, type: 'update' }
+	);
+	static delete = transactional(
+		function (request: Request, resource: Resource) {
+			return resource.delete(request);
+		},
+		{ hasContent: true, type: 'delete' }
+	);
 
 	static getNewId() {
 		return randomUUID();
 	}
-	static async create(request: Request): Promise<Id> {
+	static async create(record: any, request: Request): Promise<Id> {
 		const id = this.getNewId(); //uuid.v4();
-		const resource = new this(id, request);
-		await resource.put(request);
-		return id;
-	}
-	static async post(record, request) {
-		const resource = await this.getResource(request);
-		if (request.authorize) {
-			request.authorize = false;
-			const allowed = await resource.allowCreate(request);
-			if (!allowed) {
-				throw new AccessError(request.user);
-			}
+		if (request) {
+			request.id = id;
+			return this.put(record, request);
+		} else {
+			request = record;
+			request.id = id;
+			return this.put(request);
 		}
-		return resource.post(request);
 	}
-	static async connect(request) {
-		const resource = await this.getResource(request);
-		if (request.authorize) {
-			request.authorize = false;
-			const allowed = await resource.allowRead(request);
-			if (!allowed) {
-				throw new AccessError(request.user);
-			}
-		}
-		return resource.connect(request);
-	}
-	static async subscribe(request: Request): AsyncIterable<{ id: any; operation: string; value: object }> {
-		const resource = await this.getResource(request);
-		if (request.authorize) {
-			request.authorize = false;
-			const allowed = await resource.allowRead(request);
-			if (!allowed) {
-				throw new AccessError(request.user);
-			}
-		}
-		return resource.subscribe(request);
-	}
-	static async publish(request: Request): Promise<void> {
-		const resource = await this.getResource(request);
-		if (request.authorize) {
-			request.authorize = false;
-			const allowed = await resource.allowCreate(request);
-			if (!allowed) {
-				throw new AccessError(request.user);
-			}
-		}
-		return resource.publish(request);
-	}
+	static post = transactional(
+		async function (request: Request, resource: Resource) {
+			const data = await request.data;
+			return resource.post(data);
+		},
+		{ hasContent: true, type: 'create' }
+	);
+
+	static connect = transactional(
+		function (request: Request, resource: Resource) {
+			return resource.connect(request);
+		},
+		{ type: 'read' }
+	);
+
+	static subscribe(request: SubscriptionRequest): Promise<AsyncIterable<{ id: any; operation: string; value: object }>>;
+	static subscribe = transactional(
+		function (request: Request, resource: Resource) {
+			return resource.subscribe(request);
+		},
+		{ type: 'read' }
+	);
+
+	static publish = transactional(
+		async function (request: Request, resource: Resource) {
+			const message = await request.data;
+			return resource.publish(message);
+		},
+		{ hasContent: true, type: 'create' }
+	);
+
+	static search = transactional(
+		function (request: Request, resource: Resource) {
+			return resource.search(request);
+		},
+		{ type: 'read' }
+	);
 
 	post(new_record) {
 		if (this[ID_PROPERTY] == null) return this.constructor.create(new_record);
@@ -209,9 +185,9 @@ export class Resource implements ResourceInterface {
 	static coerceId(id: string): number | string {
 		return id;
 	}
-	static getResource(request: Request): Resource | Promise<Resource> {
+	static getResource(id: Id, request: Request): Resource | Promise<Resource> {
 		let resource;
-		let { path, id } = request;
+		let { path } = request;
 		if (!path) {
 			path = id?.toString() ?? '';
 		}
@@ -298,20 +274,75 @@ class AccessError extends Error {
 		}
 	}
 }
-function requestForIdArgs(request: Request | Id, context?: Context) {
-	if (request && typeof request === 'object' && !Array.isArray(request)) {
-		if (context) {
-			context = CONTEXT in context ? context[CONTEXT] : context;
-			request.transaction = context.transaction;
-			request.user = context.user;
-			request.timestamp = context.timestamp;
+function transactional(action, options) {
+	return function (request: Request | Id, context?: Context) {
+		let id;
+		if (options.hasContent) {
+			// for put, post, patch
+			if (context) {
+				const data = request;
+				request = Object.create(context);
+				request.data = data;
+			}
+			id = request.hasOwnProperty('id') ? request.id : (this.primaryKey && request.data[this.primaryKey]);
+			// otherwise check to see if the first arg is an id
+		} else if (request && typeof request === 'object' && !Array.isArray(request)) {
+			// request is actually a Request object, just make sure we inherit any context
+			if (context) {
+				context = CONTEXT in context ? context[CONTEXT] : context;
+				request.transaction = context.transaction;
+				request.user = context.user;
+				request.resourceCache = context.resourceCache;
+				request.timestamp = context.timestamp;
+			}
+			id = request.id;
+		} else {
+			// request is an id
+			id = request;
+			request = context ? Object.create(CONTEXT in context ? context[CONTEXT] : context) : {};
 		}
-	} else {
-		const id = request;
-		request = context ? Object.create(CONTEXT in context ? context[CONTEXT] : context) : {};
-		request.id = id;
-	}
-	return request;
+		if (options.allowInvalidated) request.allowInvalidated = true;
+		if (request.transaction) {
+			// we are already in a transaction, proceed
+			const resource = this.getResource(id, request);
+			return resource.then ? resource.then(withResource) : withResource(resource);
+		} else {
+			// start a transaction
+			return transaction(request, (request) => {
+				const resource = this.getResource(id, request);
+				return resource.then ? resource.then(withResource) : withResource(resource);
+			});
+		}
+		function withResource(resource: ResourceInterface) {
+			if (options.type === 'read') resource[SAVE_UPDATES_PROPERTY] = false; // by default modifications aren't saved, they just yield a different result from get
+			if (request.authorize) {
+				// do permission checks (and don't require subsequent uses of this request/context to need to do it)
+				request.authorize = false;
+				const allowed =
+					options.type === 'read'
+						? resource.allowRead(request.user, request)
+						: options.type === 'update'
+						? resource.doesExist?.() === false
+							? resource.allowCreate(request.user, request)
+							: resource.allowUpdate(request.user, request)
+						: options.type === 'create'
+						? resource.allowCreate(request.user, request)
+						: resource.allowDelete(request.user, request);
+				if (allowed?.then) {
+					return allowed.then((allowed) => {
+						if (!allowed) {
+							throw new AccessError(request.user);
+						}
+						return action(request, resource);
+					});
+				}
+				if (!allowed) {
+					throw new AccessError(request.user);
+				}
+			}
+			return action(request, resource);
+		}
+	};
 }
 function requestForDataArgs(record: any, context: Context): Request;
 function requestForDataArgs(request: Request): Request;

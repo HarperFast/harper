@@ -67,6 +67,8 @@ export class Resources extends Map<string, typeof Resource> {
 	}
 	pathToId(path, Resource) {
 		if (path.indexOf('/') === -1) {
+			// special syntax for more compact numeric representations
+			if (path.startsWith('$')) path = parseInt(path, 36);
 			return Resource.coerceId(decodeURIComponent(path));
 		}
 		const ids = path.split('/');
@@ -79,7 +81,8 @@ export class Resources extends Map<string, typeof Resource> {
 		const entry = this.getMatch(path);
 		if (entry) {
 			path = entry.remainingPath;
-			return entry.Resource.getResource(this.pathToId(path, entry.Resource), resource_info, path);
+			resource_info.path = path;
+			return entry.Resource.getResource(this.pathToId(path, entry.Resource), resource_info);
 		}
 	}
 	call(path: string, request, callback: Function) {

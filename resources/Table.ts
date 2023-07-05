@@ -2,7 +2,7 @@ import { CONFIG_PARAMS, OPERATIONS_ENUM } from '../utility/hdbTerms';
 import { open, Database, asBinary, SKIP } from 'lmdb';
 import { getIndexedValues } from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
-import { Query, ResourceInterface, Request, SubscriptionRequest } from './ResourceInterface';
+import { Query, ResourceInterface, Request, SubscriptionRequest, Id } from './ResourceInterface';
 import { workerData, threadId } from 'worker_threads';
 import { messageTypeListener } from '../server/threads/manageThreads';
 import {
@@ -118,7 +118,7 @@ export function makeTable(options) {
 						if (!event.id) throw new Error('Secondary resource found without an id ' + JSON.stringify(event));
 					}
 					event.allowInvalidated = true;
-					const resource: TableResource = await Table.getResource(event);
+					const resource: TableResource = await Table.getResource(event.id, event);
 					switch (event.operation) {
 						case 'put':
 							return resource.#writeUpdate(value, NOTIFICATION);
@@ -188,9 +188,9 @@ export function makeTable(options) {
 			})();
 			return this;
 		}
-		static getResource(request): Promise<TableResource> | TableResource {
-			const resource: TableResource = super.getResource(request) as any;
-			if (request.id != null) {
+		static getResource(id: Id, request): Promise<TableResource> | TableResource {
+			const resource: TableResource = super.getResource(id, request) as any;
+			if (id != null) {
 				const completion = resource.loadRecord(request.allowInvalidated);
 				if (completion?.then) return completion.then(() => resource);
 			}
@@ -657,7 +657,6 @@ export function makeTable(options) {
 		}
 
 		search(request: Request): AsyncIterable<any> {
-			if (!this[CONTEXT]?.transaction) return transaction(this, (request) => this.search(request));
 			const txn = this.#txnForRequest();
 			const reverse = request.reverse === true;
 			let conditions = request.conditions;
@@ -954,8 +953,9 @@ export function makeTable(options) {
 			const transaction_set = context?.transaction;
 			if (transaction_set) {
 				let transaction;
-				if ((transaction = transaction_set?.find((txn) => txn.path === database_path))) return transaction;
+				if ((transaction = transaction_set?.find((txn) => txn.lmdbDb?.path === database_path))) return transaction;
 				transaction_set.push((transaction = new DatabaseTransaction(primary_store, context.user, audit_store)));
+				transaction.timestamp = transaction_set.timestamp;
 				return transaction;
 			}
 			return immediateTransaction;
@@ -1138,5 +1138,8 @@ function coerceType(value, attribute) {
 		return value;
 	} else if (type === 'Int') return parseInt(value);
 	else if (type === 'Float') return parseFloat(value);
+	else if (!type || type === 'ID') {
+		return parseFloat(value) || value;
+	}
 	return value;
 }
