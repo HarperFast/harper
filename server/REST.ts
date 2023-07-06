@@ -59,8 +59,10 @@ async function http(request, next_handler) {
 					return resource.copy(request.headers.destination);
 				case 'MOVE':
 					return resource.move(request.headers.destination);
+				case 'BREW': // RFC 2324
+					throw new ClientError("HarperDB is short and stout and can't brew coffee", 418);
 				default:
-					throw new ServerError('Method not available', 501);
+					throw new ServerError(`Method ${method} is not recognized`, 501);
 			}
 		});
 		if (resource_path === undefined) return next_handler(request); // no resource handler found
@@ -70,11 +72,12 @@ async function http(request, next_handler) {
 		if (typeof response_data?.get === 'function') {
 			response_data = await response_data.get();
 		}
+		const responseMetadata = request.responseMetadata;
 		if (response_data == undefined) {
 			status = method === 'GET' || method === 'HEAD' ? 404 : 204;
-		} else if ((lastModification = request.responseMetadata?.lastModified)) {
-			const if_match = request.headers['if-match'];
-			if (if_match && (lastModification * 1000).toString(36) == if_match) {
+		} else if ((lastModification = responseMetadata?.lastModified)) {
+			const last_etag = request.headers['if-none-match'];
+			if (last_etag && (lastModification * 1000).toString(36) == last_etag) {
 				//resource_result.cancel();
 				status = 304;
 				response_data = undefined;
@@ -83,6 +86,11 @@ async function http(request, next_handler) {
 				headers['Last-Modified'] = new Date(lastModification).toUTCString();
 			}
 		}
+		if (responseMetadata) {
+			if (responseMetadata.created) status = 201;
+			if (responseMetadata.location) headers.Location = responseMetadata.location;
+		}
+
 		const response_object = {
 			status,
 			headers,
@@ -103,9 +111,17 @@ async function http(request, next_handler) {
 		recordAction(execution_time, 'TTFB', resource_path, method);
 		recordActionBinary(false, 'success', resource_path, method);
 		if (!error.http_resp_code) console.error(error);
+		const headers = {};
+		if (error.http_resp_code === 405) {
+			if (error.method) error.message += ` to handle HTTP method ${error.method.toUpperCase() || ''}`;
+			if (error.allow) {
+				error.allow.push('trace', 'head', 'options');
+				headers.Allow = error.allow.map((method) => method.toUpperCase()).join(', ');
+			}
+		}
 		return {
 			status: error.http_resp_code || 500, // use specified error status, or default to generic server error
-			headers: {},
+			headers,
 			body: serializeMessage(error.toString(), request),
 		};
 	}
