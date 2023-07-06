@@ -101,9 +101,9 @@ export class Resource implements ResourceInterface {
 	static delete(request: Request, context?: Context): Promise<object>;
 	static delete = transactional(
 		function (request: Request, resource: Resource) {
-			return resource.delete ? resource.delete(request) : missingMethod(resource, 'delete');
+			return resource.delete ? resource.delete() : missingMethod(resource, 'delete');
 		},
-		{ hasContent: true, type: 'delete' }
+		{ hasContent: false, type: 'delete' }
 	);
 
 	static getNewId() {
