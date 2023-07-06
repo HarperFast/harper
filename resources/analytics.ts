@@ -124,7 +124,7 @@ async function aggregation(from_period, to_period = 60000) {
 		} else first_for_period = key;
 		last_time = key;
 		const { metrics } = value;
-		for (const entry of metrics) {
+		for (const entry of metrics || []) {
 			let { path, method, type, metric, count, ...measures } = entry;
 			if (!count) count = 1;
 			let key = metric + '-' + path;

@@ -15,6 +15,7 @@ import * as signalling from '../../utility/signalling';
 import { SchemaEventMsg } from '../../server/threads/itc';
 import { async_set_timeout } from '../../utility/common_utils';
 import { transaction } from '../../resources/transaction';
+import { Id } from '../../resources/ResourceInterface';
 
 const { HDB_ERROR_MSGS } = hdb_errors;
 const DEFAULT_DATABASE = 'data';
@@ -164,7 +165,8 @@ export class ResourceBridge extends LMDBBridge {
 
 		let new_attributes;
 		const Table = getDatabases()[upsert_obj.schema][upsert_obj.table];
-		return transaction({ user: upsert_obj.hdb_user },
+		return transaction(
+			{ user: upsert_obj.hdb_user },
 			async (request) => {
 				if (!Table.schemaDefined) {
 					new_attributes = [];
@@ -230,21 +232,16 @@ export class ResourceBridge extends LMDBBridge {
 	}
 	async deleteRecords(delete_obj) {
 		const Table = getDatabases()[delete_obj.schema][delete_obj.table];
-		return Table.transact(
-			async (txn_table) => {
-				const ids = delete_obj.hash_values || delete_obj.records.map((record) => record[Table.primaryKey]);
-				const deleted = [];
-				const skipped = [];
-				for (const id of ids) {
-					if (await txn_table.delete(id)) deleted.push(id);
-					else skipped.push(id);
-				}
-				return createDeleteResponse(deleted, skipped, txn_table.txnTime);
-			},
-			{
-				user: delete_obj.hdb_user,
+		return transaction({ user: delete_obj.hdb_user }, async (context) => {
+			const ids: Id[] = delete_obj.hash_values || delete_obj.records.map((record) => record[Table.primaryKey]);
+			const deleted = [];
+			const skipped = [];
+			for (const id of ids) {
+				if (await Table.delete(id, context)) deleted.push(id);
+				else skipped.push(id);
 			}
-		);
+			return createDeleteResponse(deleted, skipped, txn_table.txnTime);
+		});
 	}
 
 	/**
@@ -418,7 +415,7 @@ function getSelect({ get_attributes }, table) {
 /**
  * Iterator for asynchronous getting ids from an array
  */
-async function* getRecords(search_object, return_key_value?) {
+function getRecords(search_object, return_key_value?) {
 	const table = getTable(search_object);
 	const select = getSelect(search_object, table);
 	if (!table) {
@@ -426,26 +423,15 @@ async function* getRecords(search_object, return_key_value?) {
 	}
 	let lazy;
 	if (select && table.attributes.length - select.length > 2 && select.length < 5) lazy = true;
-	let txn_table;
-	let resolve_txn;
 	// we need to get the transaction and ensure that the transaction spans the entire duration
 	// of the iteration
-	table.transact(
-		(txn) =>
-			new Promise((resolve) => {
-				txn_table = txn;
-				resolve_txn = resolve;
-			})
-	);
-	try {
+	return transaction({ user: search_object.hdb_user }, async function* (context) {
 		for (const id of search_object.hash_values) {
-			const record = await txn_table.get(id, { lazy, select });
+			const record = await table.get({ id, lazy, select }, context);
 			if (return_key_value) yield { key: id, value: record };
 			else yield record;
 		}
-	} finally {
-		resolve_txn();
-	}
+	});
 }
 function getTable(operation_object) {
 	const database_name = operation_object.database || operation_object.schema || DEFAULT_DATABASE;
