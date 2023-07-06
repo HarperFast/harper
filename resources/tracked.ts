@@ -173,8 +173,26 @@ export function collapseData(target) {
  * @returns
  */
 export function deepFreeze(target) {
-	const changes = target[OWN_DATA];
 	let copied_source;
+	if (target[HAS_ARRAY_CHANGES]) {
+		// an array with changes; by default we can freeze the tracked array itself
+		copied_source = target;
+		for (let i = 0, l = target.length; i < l; i++) {
+			let value = target[i];
+			if (value && typeof value === 'object') {
+				const new_value = deepFreeze(value);
+				if (new_value !== value && copied_source === target) {
+					// if we need to make any changes to the user's array, we make a copy so we don't modify
+					// an array that the user may be using with transient properties
+					copied_source = target.slice(0);
+				}
+				value = new_value;
+			}
+			copied_source[i] = value;
+		}
+		return Object.freeze(copied_source);
+	}
+	const changes = target[OWN_DATA];
 	for (const key in changes) {
 		// copy the source first so we have properties in the right order and can override them
 		if (!copied_source) copied_source = Object.assign({}, target[RECORD_PROPERTY]);
@@ -195,7 +213,7 @@ export function hasChanges(target) {
 	const source = target[RECORD_PROPERTY];
 	if (!source) return true; // if no original source then it is always a change
 	if (target.constructor === Array) {
-		if (target[HAS_CHANGES]) return true;
+		if (target[HAS_ARRAY_CHANGES]) return true;
 		if (target.length !== source.length) return true;
 		for (let i = 0, l = target.length; i < l; i++) {
 			const source_value = source[i];
@@ -220,30 +238,30 @@ export function hasChanges(target) {
 	return false;
 }
 
-const HAS_CHANGES = Symbol.for('has-changes');
+const HAS_ARRAY_CHANGES = Symbol.for('has-array-changes');
 class TrackedArray extends Array {
-	[HAS_CHANGES]: boolean;
+	[HAS_ARRAY_CHANGES]: boolean;
 	constructor(length) {
 		super(length);
 	}
 	splice(...args) {
-		this[HAS_CHANGES] = true;
+		this[HAS_ARRAY_CHANGES] = true;
 		return super.splice(...args);
 	}
 	push(...args) {
-		this[HAS_CHANGES] = true;
+		this[HAS_ARRAY_CHANGES] = true;
 		return super.push(...args);
 	}
 	pop() {
-		this[HAS_CHANGES] = true;
+		this[HAS_ARRAY_CHANGES] = true;
 		return super.pop();
 	}
 	unshift(...args) {
-		this[HAS_CHANGES] = true;
+		this[HAS_ARRAY_CHANGES] = true;
 		return super.unshift(...args);
 	}
 	shift() {
-		this[HAS_CHANGES] = true;
+		this[HAS_ARRAY_CHANGES] = true;
 		return super.shift();
 	}
 }
