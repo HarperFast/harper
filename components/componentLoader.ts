@@ -108,7 +108,6 @@ const DEFAULT_CONFIG = {
 	},*/
 };
 
-const POSSIBLE_ROOT_FILES = ['config.yaml', 'package.json', 'schema.graphql', 'resources.js', ''];
 const ports_started = [];
 const loaded_paths = new Map();
 /**

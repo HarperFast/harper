@@ -6,12 +6,8 @@ const { join, isAbsolute, extname } = require('path');
 const { watch, readdir } = require('fs/promises');
 const { totalmem } = require('os');
 const hdb_terms = require('../../utility/hdbTerms');
-const env = require('../../utility/environment/environmentManager');
-const hdb_license = require('../../utility/registration/hdb_license');
 const harper_logger = require('../../utility/logging/harper_logger');
 const terms = require('../../utility/hdbTerms');
-env.initSync();
-const THREAD_COUNT = env.get(hdb_terms.CONFIG_PARAMS.HTTP_THREADS) || 1;
 const MB = 1024 * 1024;
 const workers = []; // these are our child workers that we are managing
 const connected_ports = []; // these are all known connected worker ports (siblings, children, parents)
@@ -55,8 +51,6 @@ let messageTypeListeners = {
 	},
 };
 function startWorker(path, options = {}) {
-	const license = hdb_license.licenseSearch();
-	const licensed_memory = license.ram_allocation;
 	// Take a percentage of total memory to determine the max memory for each thread. The percentage is based
 	// on the thread count. Generally, it is unrealistic to efficiently use the majority of total memory for a single
 	// NodeJS worker since it would lead to massive swap space usage with other processes and there is significant
@@ -70,10 +64,7 @@ function startWorker(path, options = {}) {
 	let available_memory = process.constrainedMemory?.() || totalmem(); // used constrained memory if it is available
 	// and lower than total memory
 	available_memory = Math.min(available_memory, totalmem());
-	const max_old_memory = Math.min(
-		Math.max(Math.floor(available_memory / MB / (1 + THREAD_COUNT / 4)), 512),
-		licensed_memory || Infinity
-	);
+	const max_old_memory = Math.max(Math.floor(available_memory / MB / (1 + (options.threadCount || 1) / 4)), 512);
 	// Max young memory space (semi-space for scavenger) is 1/128 of max memory (limited to 16-64). For most of our m5
 	// machines this will be 64MB (less for t3's). This is based on recommendations from:
 	// https://www.alibabacloud.com/blog/node-js-application-troubleshooting-manual---comprehensive-gc-problems-and-optimization_594965
@@ -165,8 +156,10 @@ const OVERLAPPING_RESTART_TYPES = [hdb_terms.THREAD_TYPES.HTTP];
 async function restartWorkers(name = null, max_workers_down = 2, start_replacement_threads = true) {
 	if (isMainThread) {
 		// This is here to prevent circular dependencies
-		const { loadRootComponents } = require('../loadRootComponents');
-		await loadRootComponents();
+		if (start_replacement_threads) {
+			const { loadRootComponents } = require('../loadRootComponents');
+			await loadRootComponents();
+		}
 
 		module.exports.restartNumber++;
 		if (max_workers_down < 1) {

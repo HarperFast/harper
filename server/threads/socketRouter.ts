@@ -1,74 +1,79 @@
-import { startWorker, setMonitorListener, setMainIsWorker } from './manageThreads';
+import { startWorker, setMonitorListener, setMainIsWorker, shutdownWorkers } from './manageThreads';
 import { createServer } from 'net';
-import * as env from '../../utility/environment/environmentManager';
 import * as hdb_terms from '../../utility/hdbTerms';
 import * as harper_logger from '../../utility/logging/harper_logger';
 import { unlinkSync, existsSync } from 'fs';
 const workers = [];
 let queued_sockets = [];
 const handle_socket = [];
-env.initSync();
 let direct_thread_server;
+let current_thread_count = 0;
+const workers_ready = [];
 export let debugMode;
 
-export async function startHTTPThreads(thread_count = 2) {
-	const { loadRootComponents } = require('../loadRootComponents');
-
-	if (thread_count === 0 || debugMode) {
-		setMainIsWorker(true);
-		direct_thread_server = require('./threadServer');
-		await loadRootComponents(true);
-		return Promise.resolve([]);
+export async function startHTTPThreads(thread_count = 2, dynamic_threads) {
+	if (!dynamic_threads) {
+		const { loadRootComponents } = require('../loadRootComponents');
+		if (thread_count === 0 || debugMode) {
+			setMainIsWorker(true);
+			direct_thread_server = require('./threadServer');
+			await loadRootComponents(true);
+			return Promise.resolve([]);
+		}
+		await loadRootComponents();
 	}
-	await loadRootComponents();
-	const workers_ready = [];
 	for (let i = 0; i < thread_count; i++) {
-		startWorker('server/threads/threadServer.js', {
-			name: hdb_terms.THREAD_TYPES.HTTP,
-			workerIndex: i,
-			async onStarted(worker) {
-				// note that this can be called multiple times, once when started, and again when threads are restarted
-				const ready = new Promise((resolve, reject) => {
-					function onMessage(message) {
-						if (message.type === hdb_terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STARTED) {
-							worker.removeListener('message', onMessage);
-							resolve(worker);
-						}
-					}
-
-					worker.on('message', onMessage);
-					worker.on('error', reject);
-				});
-				workers_ready.push(ready);
-				await ready;
-				workers.push(worker);
-				worker.expectedIdle = 1;
-				worker.lastIdle = 0;
-				worker.requests = 1;
-				worker.on('message', (message) => {
-					if (message.requestId) {
-						const handler = requestMap.get(message.requestId);
-						if (handler) handler(message);
-					}
-				});
-				worker.on('exit', removeWorker);
-				worker.on('shutdown', removeWorker);
-				function removeWorker() {
-					const index = workers.indexOf(worker);
-					if (index > -1) workers.splice(index, 1);
-				}
-				if (queued_sockets) {
-					// if there are any queued sockets, we re-deliver them
-					const sockets = queued_sockets;
-					queued_sockets = [];
-					for (const socket of sockets) handle_socket[socket.localPort](socket);
-				}
-			},
-		});
+		startHTTPWorker(i, thread_count);
 	}
 	return Promise.all(workers_ready);
 }
+function startHTTPWorker(index, thread_count = 1) {
+	current_thread_count++;
+	startWorker('server/threads/threadServer.js', {
+		name: hdb_terms.THREAD_TYPES.HTTP,
+		workerIndex: index,
+		threadCount: thread_count,
+		async onStarted(worker) {
+			// note that this can be called multiple times, once when started, and again when threads are restarted
+			const ready = new Promise((resolve, reject) => {
+				function onMessage(message) {
+					if (message.type === hdb_terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STARTED) {
+						worker.removeListener('message', onMessage);
+						resolve(worker);
+					}
+				}
 
+				worker.on('message', onMessage);
+				worker.on('error', reject);
+			});
+			workers_ready.push(ready);
+			await ready;
+			workers.push(worker);
+			worker.expectedIdle = 1;
+			worker.lastIdle = 0;
+			worker.requests = 1;
+			worker.on('message', (message) => {
+				if (message.requestId) {
+					const handler = requestMap.get(message.requestId);
+					if (handler) handler(message);
+				}
+			});
+			worker.on('exit', removeWorker);
+			worker.on('shutdown', removeWorker);
+			function removeWorker() {
+				const index = workers.indexOf(worker);
+				if (index > -1) workers.splice(index, 1);
+			}
+			if (queued_sockets) {
+				// if there are any queued sockets, we re-deliver them
+				const sockets = queued_sockets;
+				queued_sockets = [];
+				for (const socket of sockets) handle_socket[socket.localPort](socket);
+			}
+		},
+	});
+}
+let recent_request;
 export function startSocketServer(port = 0, session_affinity_identifier) {
 	if (typeof port === 'string') {
 		// if we are using a unix domain socket, we try to delete it first, otherwise it will throw an EADDRESSINUSE
@@ -91,12 +96,14 @@ export function startSocketServer(port = 0, session_affinity_identifier) {
 			pauseOnConnect: !worker_strategy.readsData,
 		},
 		(handle_socket[port] = (socket) => {
+			recent_request = true;
 			worker_strategy(socket, (worker, received_data) => {
 				if (!worker) {
 					if (direct_thread_server) {
 						direct_thread_server.deliverSocket(socket, port, received_data);
 						socket.resume();
-					} else {
+					} else if (current_thread_count > 0) {
+						// should be a thread coming on line
 						if (queued_sockets.length === 0) {
 							setTimeout(() => {
 								if (queued_sockets.length > 0) {
@@ -107,6 +114,21 @@ export function startSocketServer(port = 0, session_affinity_identifier) {
 							}, 10000).unref();
 						}
 						queued_sockets.push(socket);
+					} else {
+						console.log('start up a dynamic thread to handle request');
+						startHTTPWorker(0);
+						const interval = setInterval(() => {
+							if (recent_request) recent_request = false;
+							else {
+								clearInterval(interval);
+								console.log('shut down dynamic thread due to inactivity');
+								shutdownWorkers();
+								current_thread_count = 0;
+								setTimeout(() => {
+									global.gc?.();
+								}, 5000);
+							}
+						}, 10000);
 					}
 					return;
 				}
