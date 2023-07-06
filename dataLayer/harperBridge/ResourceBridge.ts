@@ -241,7 +241,7 @@ export class ResourceBridge extends LMDBBridge {
 				if (await Table.delete(id, context)) deleted.push(id);
 				else skipped.push(id);
 			}
-			return createDeleteResponse(deleted, skipped, txn_table.txnTime);
+			return createDeleteResponse(deleted, skipped, context.transaction.timestamp);
 		});
 	}
 
