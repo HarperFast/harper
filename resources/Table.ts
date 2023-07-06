@@ -9,10 +9,8 @@ import {
 	CONTEXT,
 	TRANSACTIONS_PROPERTY,
 	ID_PROPERTY,
-	LAST_MODIFICATION_PROPERTY,
 	RECORD_PROPERTY,
 	Resource,
-	USER_PROPERTY,
 	IS_COLLECTION,
 } from './Resource';
 import { COMPLETION, DatabaseTransaction, immediateTransaction } from './DatabaseTransaction';
@@ -35,7 +33,6 @@ env_mngr.initSync();
 const LMDB_PREFETCH_WRITES = env_mngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 
 const DELETION_COUNT_KEY = Symbol.for('deletions');
-const DB_TXN_PROPERTY = Symbol('db-txn');
 const VERSION_PROPERTY = Symbol.for('version');
 const INCREMENTAL_UPDATE = Symbol.for('incremental-update');
 const SOURCE_PROPERTY = Symbol('source-resource');
@@ -259,7 +256,6 @@ export function makeTable(options) {
 			);
 		}
 
-		[DB_TXN_PROPERTY]: DatabaseTransaction;
 		static Source: typeof Resource;
 
 		static get(request, context) {
@@ -280,6 +276,12 @@ export function makeTable(options) {
 				return this;
 			}
 		}
+		/**
+		 * Database/table resources are backed by persisted records and loaded prior to any other actions (get, put, etc.)
+		 * Most of the operations require the data to be loaded anyway for proper index updates.
+		 * @param allow_invalidated If this is true, we can complete with a partial, invalidated record (don't need to load from cache source)
+		 * @returns 
+		 */
 		loadRecord(allow_invalidated?: boolean) {
 			// TODO: determine if we use lazy access properties
 			if (this.hasOwnProperty(RECORD_PROPERTY)) return; // already loaded, don't reload, current version may have modifications
@@ -465,7 +467,7 @@ export function makeTable(options) {
 			primary_store.put(this[ID_PROPERTY], invalidated_record, existing_version, existing_version);
 			const source = await this.constructor.Source.getResource(this[ID_PROPERTY], this);
 			const updated_record = await source.get();
-			const version = existing_version || source[LAST_MODIFICATION_PROPERTY] || this[TRANSACTIONS_PROPERTY].timestamp;
+			const version = existing_version;
 			if (updated_record) {
 				updated_record[primary_key] = this[ID_PROPERTY];
 				// don't wait on this, we don't actually care if it fails, that just means there is even
@@ -486,7 +488,7 @@ export function makeTable(options) {
 			} else this._writeDelete(NOTIFICATION);
 		}
 		async operation(operation) {
-			operation.hdb_user = this[USER_PROPERTY];
+			operation.hdb_user = this[CONTEXT]?.user;
 			operation.table ||= TableResource.tableName;
 			operation.schema ||= TableResource.databaseName;
 			const operation_function = server_utilities.chooseOperation(operation);
@@ -952,7 +954,7 @@ export function makeTable(options) {
 			const transaction_set = context?.transaction;
 			if (transaction_set) {
 				let transaction;
-				if ((transaction = transaction_set?.find((txn) => txn.lmdbDb?.path === database_path))) return transaction;
+				if ((transaction = transaction_set?.find((txn) => txn.lmdbDb?.path === primary_store.path))) return transaction;
 				transaction_set.push((transaction = new DatabaseTransaction(primary_store, context.user, audit_store)));
 				transaction.timestamp = transaction_set.timestamp;
 				return transaction;

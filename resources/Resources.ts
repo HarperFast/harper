@@ -81,7 +81,6 @@ export class Resources extends Map<string, typeof Resource> {
 		const entry = this.getMatch(path);
 		if (entry) {
 			path = entry.remainingPath;
-			resource_info.path = path;
 			return entry.Resource.getResource(this.pathToId(path, entry.Resource), resource_info);
 		}
 	}
@@ -89,7 +88,7 @@ export class Resources extends Map<string, typeof Resource> {
 		return transaction(request, async () => {
 			const entry = this.getMatch(path);
 			if (entry) {
-				path = request.path = entry.remainingPath;
+				path = entry.remainingPath;
 				request.id = this.pathToId(path, entry.Resource);
 				return callback(entry.Resource, entry.path, path);
 			}

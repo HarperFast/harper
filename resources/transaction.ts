@@ -24,7 +24,7 @@ export function transaction<T>(request: Request | ((request: Request) => T), cal
 	}
 	const transaction = (context.transaction = new TransactionSet());
 	transaction.timestamp = context.timestamp || getNextMonotonicTime();
-	context.resourceCache = new Map();
+	context.resourceCache = [];
 	let result;
 	try {
 		result = callback(request);

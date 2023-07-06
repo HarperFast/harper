@@ -1,19 +1,9 @@
-import {
-	ResourceInterface,
-	Request,
-	SearchRequest,
-	SubscriptionRequest,
-	Id,
-	Context,
-	Query,
-	CollectionQuery,
-} from './ResourceInterface';
+import { ResourceInterface, Request, SubscriptionRequest, Id, Context, Query } from './ResourceInterface';
 import { getTables } from './databases';
 import { Table } from './Table';
 import { randomUUID } from 'crypto';
 import { DatabaseTransaction, Transaction } from './DatabaseTransaction';
 import { DefaultAccess } from './Access';
-import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { IterableEventQueue } from './IterableEventQueue';
 import { _assignPackageExport } from '../index';
 import { parseQuery } from './search';
@@ -24,16 +14,10 @@ import { transaction } from './transaction';
 let tables;
 
 export const CONTEXT = Symbol.for('context');
-export const USER_PROPERTY = Symbol.for('user');
 export const ID_PROPERTY = Symbol.for('id');
-export const LAST_MODIFICATION_PROPERTY = Symbol.for('last-modification-time');
-export const TRANSACTIONS_PROPERTY = Symbol('transactions');
 export const IS_COLLECTION = Symbol('is-collection');
 export const SAVE_UPDATES_PROPERTY = Symbol('save-updates');
-export const RESOURCE_CACHE = Symbol('resource-cache');
 export const RECORD_PROPERTY = Symbol('stored-record');
-export const EXPLICIT_CHANGES_PROPERTY = Symbol.for('explicit-changes');
-export const USED_RESOURCES = Symbol('used-resources');
 
 /**
  * This is the main class that can be extended for any resource in HarperDB and provides the essential reusable
@@ -44,14 +28,12 @@ export const USED_RESOURCES = Symbol('used-resources');
  */
 export class Resource implements ResourceInterface {
 	[CONTEXT]: Context;
-	[USER_PROPERTY]: any;
 	[ID_PROPERTY]: any;
-	[LAST_MODIFICATION_PROPERTY] = 0;
-	[TRANSACTIONS_PROPERTY]: Transaction[] & { timestamp: number };
 	static transactions: Transaction[] & { timestamp: number };
-	constructor(identifier: Id, context: Context) {
+	constructor(identifier: Id, source: Context | { [CONTEXT]: Context }) {
 		this[ID_PROPERTY] = identifier;
-		this[CONTEXT] = context ?? null;
+		const context = source[CONTEXT];
+		this[CONTEXT] = context !== undefined ? context : source || null;
 	}
 
 	/**
@@ -72,7 +54,7 @@ export class Resource implements ResourceInterface {
 	static get = transactional(
 		function (request: Request, resource: Resource) {
 			const is_collection = resource[IS_COLLECTION];
-			const result = is_collection && resource.search ? resource.search(request) : resource.get();
+			const result = is_collection && resource.search ? resource.search(request) : resource.get?.();
 			if (request.hasOwnProperty('select') && !is_collection && result) {
 				const selected_data = {};
 				const forceNulls = request.select.forceNulls;
@@ -111,13 +93,15 @@ export class Resource implements ResourceInterface {
 				}
 				return results;
 			}
-			return resource.put(record);
+			return resource.put ? resource.put(record) : missingMethod(resource, 'put');
 		},
 		{ hasContent: true, type: 'update' }
 	);
+	static delete(identifier: Id, context?: Context): Promise<boolean>;
+	static delete(request: Request, context?: Context): Promise<object>;
 	static delete = transactional(
 		function (request: Request, resource: Resource) {
-			return resource.delete(request);
+			return resource.delete ? resource.delete(request) : missingMethod(resource, 'delete');
 		},
 		{ hasContent: true, type: 'delete' }
 	);
@@ -129,17 +113,18 @@ export class Resource implements ResourceInterface {
 		const id = this.getNewId(); //uuid.v4();
 		return transaction(context, (context) => {
 			const resource = new this(id, context);
-			resource.update(record);
+			const results = resource.put ? resource.put(record) : missingMethod(resource, 'put');
 			if (context.responseMetadata) {
 				context.responseMetadata.location = id;
 				context.responseMetadata.created = true;
 			}
-			return id;
+			return results?.then ? results.then(() => id) : id;
 		});
 	}
 	static post = transactional(
 		async function (request: Request, resource: Resource) {
 			const data = await request.data;
+			if (resource[ID_PROPERTY] != null) resource.update(); // save any changes made during post
 			return resource.post(data);
 		},
 		{ hasContent: true, type: 'create' }
@@ -147,7 +132,7 @@ export class Resource implements ResourceInterface {
 
 	static connect = transactional(
 		function (request: Request, resource: Resource) {
-			return resource.connect(request);
+			return resource.connect ? resource.connect(request) : missingMethod(resource, 'connect');
 		},
 		{ type: 'read' }
 	);
@@ -155,7 +140,7 @@ export class Resource implements ResourceInterface {
 	static subscribe(request: SubscriptionRequest): Promise<AsyncIterable<{ id: any; operation: string; value: object }>>;
 	static subscribe = transactional(
 		function (request: Request, resource: Resource) {
-			return resource.subscribe(request);
+			return resource.subscribe ? resource.subscribe(request) : missingMethod(resource, 'subscribe');
 		},
 		{ type: 'read' }
 	);
@@ -163,21 +148,45 @@ export class Resource implements ResourceInterface {
 	static publish = transactional(
 		async function (request: Request, resource: Resource) {
 			const message = await request.data;
-			return resource.publish(message);
+			if (resource[ID_PROPERTY] != null) resource.update(); // save any changes made during publish
+			return resource.publish ? resource.publish(message) : missingMethod(resource, 'publish');
 		},
 		{ hasContent: true, type: 'create' }
 	);
 
 	static search = transactional(
 		function (request: Request, resource: Resource) {
-			return resource.search(request);
+			return resource.search ? resource.search(request) : missingMethod(resource, 'search');
 		},
 		{ type: 'read' }
 	);
 
+	static query = transactional(
+		async function (request: Request, resource: Resource) {
+			const query = await request.data;
+			return resource.search ? resource.search(query) : missingMethod(resource, 'search');
+		},
+		{ hasContent: true, type: 'read' }
+	);
+	static query = this.search;
+
+	static copy = transactional(
+		function (request: Request, resource: Resource) {
+			return resource.copy ? resource.copy(request.headers?.destination) : missingMethod(resource, 'copy');
+		},
+		{ type: 'create' }
+	);
+
+	static move = transactional(
+		function (request: Request, resource: Resource) {
+			return resource.move ? resource.move(request.headers?.destination) : missingMethod(resource, 'move');
+		},
+		{ type: 'delete' }
+	);
+
 	post(new_record) {
 		if (this[ID_PROPERTY] == null) return this.constructor.create(new_record, this[CONTEXT]);
-		throw new Error('No post method defined for resource');
+		missingMethod(this, 'post');
 	}
 
 	static isCollection(resource) {
@@ -188,22 +197,43 @@ export class Resource implements ResourceInterface {
 	}
 	static getResource(id: Id, request: Request): Resource | Promise<Resource> {
 		let resource;
-		let { path } = request;
-		if (!path) {
-			path = id?.toString() ?? '';
-		}
 		const is_collection = id == null || (id.constructor === Array && id[id.length - 1] == null);
 		// if it is a collection and we have a collection class defined, use it
 		const constructor = (is_collection && this.Collection) || this;
-		const context = request[CONTEXT] || request;
+		let context = request[CONTEXT];
+		if (!context) context = context === undefined ? request : {};
 		if (context.transaction) {
 			let resource_cache;
 			if (context.resourceCache) {
 				resource_cache = context.resourceCache;
-			} else resource_cache = context.resourceCache = new Map();
-			resource = resource_cache.get(path);
-			if (resource) return resource;
-			resource_cache.set(path, (resource = new constructor(id, context)));
+			} else resource_cache = context.resourceCache = [];
+			// we have two different cache formats, generally we want to use a simple array for small transactions, but can transition to a Map for larger operations
+			if (resource_cache.asMap) {
+				// we use the Map structure for larger transactions that require a larger cache (constant time lookups)
+				let cache_for_id = resource_cache.asMap.get(id);
+				resource = cache_for_id?.find((resource) => resource.constructor === constructor);
+				if (resource) return resource;
+				if (!cache_for_id) resource_cache.asMap.set(id, (cache_for_id = []));
+				cache_for_id.push((resource = new constructor(id, context)));
+			} else { // for small caches, this is probably fastest
+				resource = resource_cache.find(
+					(resource) => resource[ID_PROPERTY] === id && resource.constructor === constructor
+				);
+				if (resource) return resource;
+				resource_cache.push((resource = new constructor(id, context)));
+				if (resource_cache.length > 10) {
+					// if it gets too big, upgrade to a Map
+					const cache_map = new Map();
+					for (const resource of resource_cache) {
+						const id = resource[ID_PROPERTY];
+						const cache_for_id = cache_map.get(id);
+						if (cache_for_id) cache_for_id.push(resource);
+						else cache_map.set(id, [resource]);
+					}
+					context.resourceCache.length = 0; // clear out all the entries since we are using the map now
+					context.resourceCache.asMap = cache_map;
+				}
+			}
 		} else resource = new constructor(id, context);
 		if (is_collection) resource[IS_COLLECTION] = true;
 		return resource;
@@ -280,10 +310,17 @@ function transactional(action, options) {
 		let id;
 		if (options.hasContent) {
 			// for put, post, patch
+			if (!request?.responseMetadata) {
+				request = {
+					data: request,
+				};
+			}
 			if (context) {
-				const data = request;
-				request = Object.create(context);
-				request.data = data;
+				context = CONTEXT in context ? context[CONTEXT] : context;
+				request.transaction = context.transaction;
+				request.user = context.user;
+				request.resourceCache = context.resourceCache;
+				request.timestamp = context.timestamp;
 			}
 			id = request.hasOwnProperty('id') ? request.id : this.primaryKey && request.data[this.primaryKey];
 			// otherwise check to see if the first arg is an id
@@ -345,13 +382,12 @@ function transactional(action, options) {
 		}
 	};
 }
-function requestForDataArgs(record: any, context: Context): Request;
-function requestForDataArgs(request: Request): Request;
-function requestForDataArgs(request: Request | any, context?: Context) {
-	if (context) {
-		const data = request;
-		request = Object.create(context);
-		request.data = data;
+function missingMethod(resource, method) {
+	const error = new ClientError(`The ${resource.constructor.name} does not have a ${method} method implemented`, 405);
+	error.allow = [];
+	error.method = method;
+	for (const method of ['get', 'put', 'post', 'delete', 'query', 'move', 'copy']) {
+		if (typeof resource[method] === 'function') error.allow.push(method);
 	}
-	return request;
+	throw error;
 }
