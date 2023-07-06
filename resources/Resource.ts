@@ -55,7 +55,7 @@ export class Resource implements ResourceInterface {
 		function (request: Request, resource: Resource) {
 			const is_collection = resource[IS_COLLECTION];
 			const result = is_collection && resource.search ? resource.search(request) : resource.get?.();
-			if (request.hasOwnProperty('select') && !is_collection && result) {
+			if (request.select && request.hasOwnProperty('select') && !is_collection && result) {
 				const selected_data = {};
 				const forceNulls = request.select.forceNulls;
 				const own_data = result[OWN_DATA];
