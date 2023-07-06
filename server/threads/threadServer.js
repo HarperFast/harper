@@ -377,6 +377,7 @@ class Request {
 		}
 		this.headers = node_request.headers;
 		this.headers.get = get;
+		this.responseMetadata = {};
 	}
 	get url() {
 		return this.protocol + '://' + this.host + this.pathname + this.search;

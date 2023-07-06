@@ -13,6 +13,7 @@ import { onMessageFromWorkers } from '../../server/threads/manageThreads';
 import { threadId } from 'worker_threads';
 import initializeReplyService from './natsReplyService';
 import * as harper_logger from '../../utility/logging/harper_logger';
+import { Context } from '../../resources/ResourceInterface';
 
 let publishing_databases = new Map();
 export function start() {
@@ -63,27 +64,28 @@ export function setNATSReplicator(table_name, db_name, Table) {
 
 	Table.sourcedFrom(
 		class NATSReplicator extends Resource {
-			put(request) {
+			put(record) {
 				// add this to the transaction
-				this.getNATSTransaction(request).addWrite(db_name, {
+				this.getNATSTransaction(this.getContext()).addWrite(db_name, {
 					operation: 'put',
 					table: table_name,
-					record: request.data,
+					id: this[ID_PROPERTY],
+					record,
 				});
 			}
-			delete(request) {
-				this.getNATSTransaction(request).addWrite(db_name, {
+			delete() {
+				this.getNATSTransaction(this.getContext()).addWrite(db_name, {
 					operation: 'delete',
 					table: table_name,
 					id: this[ID_PROPERTY],
 				});
 			}
-			publish(request) {
-				this.getNATSTransaction(request).addWrite(db_name, {
+			publish(message) {
+				this.getNATSTransaction(this.getContext()).addWrite(db_name, {
 					operation: 'publish',
 					table: table_name,
 					id: this[ID_PROPERTY],
-					record: request.data,
+					record: message,
 				});
 			}
 			static defineSchema(Table) {
@@ -94,16 +96,16 @@ export function setNATSReplicator(table_name, db_name, Table) {
 			 * This gets the NATS transaction object for the current overall transaction. This will
 			 * accumulate any writes that occur during a transaction, and allow them to be aggregated
 			 * into a replication message that encompasses all the writes of a transaction.
-			 * @param request
+			 * @param context
 			 */
-			getNATSTransaction(request): NATSTransaction {
-				let nats_transaction: NATSTransaction = request?.transaction?.nats;
+			getNATSTransaction(context: Context): NATSTransaction {
+				let nats_transaction: NATSTransaction = context?.transaction?.nats;
 				if (!nats_transaction) {
-					if (request?.transaction) {
-						request.transaction.push(
-							(nats_transaction = request.transaction.nats = new NATSTransaction(request.transaction, request))
+					if (context?.transaction) {
+						context.transaction.push(
+							(nats_transaction = context.transaction.nats = new NATSTransaction(context.transaction, context))
 						);
-						nats_transaction.user = request.user;
+						nats_transaction.user = context.user;
 					} else nats_transaction = immediateNATSTransaction;
 				}
 				return nats_transaction;

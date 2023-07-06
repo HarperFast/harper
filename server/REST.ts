@@ -72,7 +72,7 @@ async function http(request, next_handler) {
 		}
 		if (response_data == undefined) {
 			status = method === 'GET' || method === 'HEAD' ? 404 : 204;
-		} else if ((lastModification = request.lastModified)) {
+		} else if ((lastModification = request.responseMetadata?.lastModified)) {
 			const if_match = request.headers['if-match'];
 			if (if_match && (lastModification * 1000).toString(36) == if_match) {
 				//resource_result.cancel();

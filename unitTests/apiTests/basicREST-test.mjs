@@ -166,10 +166,10 @@ describe('test REST calls', () => {
 
 		it('by primary key', async () => {
 			// this test also tests to ensure deleted values are not reachable
-			let response = await axios('http://localhost:9926/FourProp/?id=1*');
+			let response = await axios('http://localhost:9926/VariedProps/?id=8*');
 			assert.equal(response.status, 200);
-			assert.equal(response.data.length, 1);
-			assert.equal(response.data[0].id, '1');
+			assert.equal(response.data.length, 2);
+			assert.equal(response.data[0].id[0], '8');
 		});
 
 		it('query with select', async () => {

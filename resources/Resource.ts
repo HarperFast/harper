@@ -125,16 +125,17 @@ export class Resource implements ResourceInterface {
 	static getNewId() {
 		return randomUUID();
 	}
-	static async create(record: any, request: Request): Promise<Id> {
+	static async create(record: any, context: Context): Promise<Id> {
 		const id = this.getNewId(); //uuid.v4();
-		if (request) {
-			request.id = id;
-			return this.put(record, request);
-		} else {
-			request = record;
-			request.id = id;
-			return this.put(request);
-		}
+		return transaction(context, (context) => {
+			const resource = new this(id, context);
+			resource.update(record);
+			if (context.responseMetadata) {
+				context.responseMetadata.location = id;
+				context.responseMetadata.created = true;
+			}
+			return id;
+		});
 	}
 	static post = transactional(
 		async function (request: Request, resource: Resource) {
@@ -175,7 +176,7 @@ export class Resource implements ResourceInterface {
 	);
 
 	post(new_record) {
-		if (this[ID_PROPERTY] == null) return this.constructor.create(new_record);
+		if (this[ID_PROPERTY] == null) return this.constructor.create(new_record, this[CONTEXT]);
 		throw new Error('No post method defined for resource');
 	}
 
@@ -284,7 +285,7 @@ function transactional(action, options) {
 				request = Object.create(context);
 				request.data = data;
 			}
-			id = request.hasOwnProperty('id') ? request.id : (this.primaryKey && request.data[this.primaryKey]);
+			id = request.hasOwnProperty('id') ? request.id : this.primaryKey && request.data[this.primaryKey];
 			// otherwise check to see if the first arg is an id
 		} else if (request && typeof request === 'object' && !Array.isArray(request)) {
 			// request is actually a Request object, just make sure we inherit any context
