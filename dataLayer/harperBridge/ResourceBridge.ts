@@ -48,16 +48,11 @@ export class ResourceBridge extends LMDBBridge {
 			comparator: condition.search_type,
 			value: condition.search_value,
 		}));
-		//set the operator to always be lowercase for later evaluations
-		conditions.operator = search_object.operator ? search_object.operator.toLowerCase() : undefined;
-		conditions.limit = search_object.limit;
-		conditions.offset = search_object.offset;
-		conditions.select = getSelect(search_object, table);
-		conditions.reverse = search_object.reverse;
-		conditions.allowFullScan = true;
 
 		return table.search({
 			conditions,
+			//set the operator to always be lowercase for later evaluations
+			operator: search_object.operator ? search_object.operator.toLowerCase() : undefined;
 			limit: search_object.limit,
 			offset: search_object.offset,
 			reverse: search_object.reverse,

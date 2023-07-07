@@ -317,6 +317,7 @@ function transactional(action, options) {
 				id = context.hasOwnProperty('id') ? context.id : this.primaryKey && data?.[this.primaryKey];
 			} else {
 				request = {};
+				if (this.primaryKey) id = data[this.primaryKey];
 			}
 			request.data = data;
 			// otherwise check to see if the first arg is an id

@@ -512,6 +512,9 @@ export function makeTable(options) {
 			// use optimistic locking to only commit if the existing record state still holds true.
 			// this is superior to using an async transaction since it doesn't require JS execution
 			//  during the write transaction.
+			if (this[ID_PROPERTY] === undefined) {
+				throw new Error('Can not save record without an id');
+			}
 			const txn_time = transaction.timestamp;
 			let existing_record = this[RECORD_PROPERTY];
 			let is_unchanged;
