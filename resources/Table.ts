@@ -103,7 +103,8 @@ export function makeTable(options) {
 					const Table = databases[database_name][event.table];
 					if (event.id === undefined) {
 						event.id = value[Table.primaryKey];
-						if (event.id === undefined) throw new Error('Secondary resource found without an id ' + JSON.stringify(event));
+						if (event.id === undefined)
+							throw new Error('Secondary resource found without an id ' + JSON.stringify(event));
 					}
 					event.allowInvalidated = true;
 					const resource: TableResource = await Table.getResource(event.id, event);
@@ -162,7 +163,7 @@ export function makeTable(options) {
 												new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_TABLE, database_name, table_name)
 											);
 										}
-									} else writeUpdate(event);
+									} else return writeUpdate(event);
 								});
 								if (event.onCommit) {
 									if (commit_resolution?.then) commit_resolution.then(event.onCommit);
