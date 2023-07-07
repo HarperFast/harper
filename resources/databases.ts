@@ -22,6 +22,7 @@ import * as manage_threads from '../server/threads/manageThreads';
 
 const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
+const TABLE_CLASSES = Symbol('table-classes');
 initSync();
 
 interface Tables {
@@ -138,7 +139,6 @@ export function getDatabases(): Databases {
 			for (const table_name in tables) {
 				if (!defined_tables.has(table_name)) delete tables[table_name];
 			}
-			delete tables[DEFINED_TABLES];
 		} else delete databases[db_name];
 	}
 	defined_databases = null;
@@ -216,14 +216,16 @@ function readMetaDb(
 		harper_logger.trace(`reading database from ${database_name}`);
 
 		const tables = ensureDB(database_name);
-		const existing_defined_tables = tables[DEFINED_TABLES];
+		const defined_tables = tables[DEFINED_TABLES];
+		const table_classes = tables[TABLE_CLASSES];
 		for (const [table_name, attributes] of tables_to_load) {
 			for (const attribute of attributes) {
 				// find the primary key attribute as that defines the table itself
 				attribute.attribute = attribute.name;
 				if (attribute.is_hash_attribute) {
 					// if the table has already been defined, use that class, don't create a new one
-					let table = existing_defined_tables?.get(table_name);
+					defined_tables?.add(table_name);
+					let table = table_classes?.get(table_name);
 					let indices = {},
 						existing_attributes = [];
 					let table_id;
@@ -246,7 +248,6 @@ function readMetaDb(
 						primary_store.rootStore = root_store;
 						primary_store.tableId = table_id;
 					}
-					harper_logger.trace(`comparing attributes ${table_name}`);
 					for (const attribute of attributes) {
 						try {
 							// now load the non-primary keys, opening the dbs as necessary for indices
@@ -258,7 +259,6 @@ function readMetaDb(
 								const existing_attribute = existing_attributes.find(
 									(existing_attribute) => existing_attribute.name === attribute.name
 								);
-								harper_logger.trace(`comparing attributes ${table_name}`);
 								if (existing_attribute)
 									existing_attributes.splice(existing_attributes.indexOf(existing_attribute), 1, attribute);
 								else existing_attributes.push(attribute);
@@ -267,7 +267,6 @@ function readMetaDb(
 							harper_logger.error(`Error trying to update attribute`, attribute, existing_attributes, indices, error);
 						}
 					}
-					harper_logger.trace(`need to make table ${!!table}`);
 					if (!table) {
 						table = setTable(
 							tables,
@@ -330,7 +329,7 @@ function ensureDB(database_name) {
 		}
 	}
 	if (defined_databases && !defined_databases.has(database_name)) {
-		const defined_tables = new Map(); // we create this so we can determine what was found in a reset and remove any removed dbs/tables
+		const defined_tables = new Set(); // we create this so we can determine what was found in a reset and remove any removed dbs/tables
 		db_tables[DEFINED_TABLES] = defined_tables;
 		defined_databases.set(database_name, defined_tables);
 	}
@@ -345,9 +344,9 @@ function ensureDB(database_name) {
  */
 function setTable(tables, table_name, Table) {
 	tables[table_name] = Table;
-	let defined_tables = tables[DEFINED_TABLES];
-	if (!defined_tables) defined_tables = tables[DEFINED_TABLES] = new Map();
-	defined_tables.set(table_name, Table);
+	let table_classes = tables[TABLE_CLASSES];
+	if (!table_classes) table_classes = tables[TABLE_CLASSES] = new Map();
+	table_classes.set(table_name, Table);
 	return Table;
 }
 const ROOT_STORE_KEY = Symbol('root-store');

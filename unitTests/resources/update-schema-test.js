@@ -22,7 +22,7 @@ describe('Update Schema', () => {
 		});
 		let caught_error;
 		try {
-			tables.SchemaChanges.search([{ attribute: 'state', value: 'UT' }]);
+			tables.SchemaChanges.search({ conditions: [{ attribute: 'state', value: 'UT' }] });
 		} catch (error) {
 			caught_error = error;
 		}
@@ -34,14 +34,14 @@ describe('Update Schema', () => {
 			city: String @indexed
 		}`);
 		try {
-			tables.SchemaChanges.search([{ attribute: 'state', value: 'UT' }]);
+			tables.SchemaChanges.search({ conditions: [{ attribute: 'state', value: 'UT' }] });
 		} catch (error) {
 			caught_error = error;
 		}
 		assert(caught_error?.message.includes('not indexed yet'));
 		await tables.SchemaChanges.indexingOperation;
 		let records = [];
-		for await (let record of tables.SchemaChanges.search([{ attribute: 'state', value: 'UT' }])) {
+		for await (let record of tables.SchemaChanges.search({ conditions: [{ attribute: 'state', value: 'UT' }] })) {
 			records.push(record);
 		}
 		assert.equal(records.length, 21);

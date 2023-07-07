@@ -161,9 +161,7 @@ describe('Test operationsValidation module', () => {
 				function_content: 'hello world',
 			};
 			const result = validator.setCustomFunctionValidator(req);
-			expect(result.message).to.equal(
-				'Project name can only contain alphanumeric, dash and underscores characters. File name can only contain alphanumeric, dash and underscore characters'
-			);
+			expect(result.message).to.equal('Project name can only contain alphanumeric, dash and underscores characters');
 		});
 	});
 
