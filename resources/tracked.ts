@@ -78,7 +78,7 @@ export function assignTrackedAccessors(Target, type_def) {
 			const changes = this[OWN_DATA];
 			if (changes?.[name] !== undefined) return changes[name];
 			return this[RECORD_PROPERTY]?.[name];
-		}
+		},
 	});
 	Object.defineProperty(prototype, 'set', {
 		value: function (name, value) {
@@ -86,12 +86,12 @@ export function assignTrackedAccessors(Target, type_def) {
 			if (descriptor) return descriptor.set.call(this, value);
 			if (type_def.sealed) throw new ClientError('Can not add a property to a sealed table schema');
 			getChanges(this)[name] = value;
-		}
+		},
 	});
 	Object.defineProperty(prototype, 'deleteProperty', {
 		value: function (name) {
 			getChanges(this)[name] = undefined;
-		}
+		},
 	});
 	Object.defineProperty(prototype, 'toJSON', {
 		value: function () {
@@ -108,8 +108,8 @@ export function assignTrackedAccessors(Target, type_def) {
 				Object.assign(copied_source, this);
 			}
 			return copied_source || this[RECORD_PROPERTY];
-		}
-	}
+		},
+	});
 	if (!prototype.get) Object.defineProperty(prototype, 'get', { value: prototype.getProperty });
 	if (!prototype.delete) Object.defineProperty(prototype, 'delete', { value: prototype.deleteProperty });
 }
