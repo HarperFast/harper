@@ -102,8 +102,8 @@ export function assignTrackedAccessors(Target, type_def) {
 		}
 		return copied_source || this[RECORD_PROPERTY];
 	});
-	if (!prototype.get) setMethod('get', { value: prototype.getProperty });
-	if (!prototype.delete) setMethod('delete', { value: prototype.deleteProperty });
+	if (!prototype.get) setMethod('get', prototype.getProperty);
+	if (!prototype.delete) setMethod('delete', prototype.deleteProperty);
 	function setMethod(name, method) {
 		Object.defineProperty(prototype, name, {
 			value: method,
