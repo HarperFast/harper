@@ -55,13 +55,13 @@ export async function getSession({
 }) {
 	let session;
 	if (session_id && !non_durable) {
-		const session_resource = await DurableSession.getResource(session_id);
+		const session_resource = await DurableSession.getResource(session_id, {});
 		session = new DurableSubscriptionsSession(session_id, user, session_resource);
-		if (session_resource.isSavedRecord()) session.sessionWasPresent = true;
+		if (session_resource) session.sessionWasPresent = true;
 	} else {
 		if (session_id) {
 			// connecting with a clean session and session id is how durable sessions are deleted
-			const session_resource = await DurableSession.getResource(session_id);
+			const session_resource = await DurableSession.get(session_id);
 			if (session_resource) session_resource.delete();
 		}
 		session = new SubscriptionsSession(session_id, user);
@@ -101,8 +101,8 @@ class SubscriptionsSession {
 			existing_subscription.end();
 			this.subscriptions.splice(this.subscriptions.indexOf(existing_subscription), 1);
 		}
-		const subscription = await resources.call(path, this, async (resource_access, resource_path) => {
-			const subscription = await resource_access.subscribe({
+		const subscription = await resources.call(path, this, async (resource, resource_path) => {
+			const subscription = await resource.subscribe({
 				search,
 				user: this.user,
 				startTime: start_time,
@@ -156,9 +156,13 @@ class SubscriptionsSession {
 		message.data = data;
 		message.user = this.user;
 		let resource_found;
-		const publish_result = await resources.call(topic, message, async (resource_access) => {
+		const publish_result = await resources.call(topic, message, async (resource) => {
 			resource_found = true;
-			return resource_access.publish(data);
+			return retain
+				? data === undefined
+					? resource.delete(message)
+					: resource.put(message.data, message)
+				: resource.publish(message.data, message);
 		});
 		if (!resource_found) throw new Error('There is no resource or table for the ${topic} topic');
 		return publish_result;
@@ -210,18 +214,18 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				}
 			}
 		}
-		this.sessionRecord.update(() => {
-			for (const subscription of this.subscriptions) {
-				if (subscription.topic === topic) {
-					subscription.startTime = update.timestamp;
-				}
+
+		for (const subscription of this.subscriptions) {
+			if (subscription.topic === topic) {
+				subscription.startTime = update.timestamp;
 			}
-			this.sessionRecord.subscriptions = this.subscriptions.map((subscription) => ({
-				qos: subscription.qos,
-				topic: subscription.topic,
-				startTime: subscription.startTime,
-			}));
-		});
+		}
+		this.sessionRecord.subscriptions = this.subscriptions.map((subscription) => ({
+			qos: subscription.qos,
+			topic: subscription.topic,
+			startTime: subscription.startTime,
+		}));
+		this.sessionRecord.update();
 		// TODO: Increment the timestamp for the corresponding subscription, possibly recording any interim unacked messages
 	}
 
@@ -238,7 +242,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 					startTime: start_time,
 				};
 			});
-			DurableSession.put(this.sessionId, this.sessionRecord);
+			DurableSession.put(this.sessionRecord);
 		}
 		return subscription.qos;
 	}

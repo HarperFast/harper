@@ -66,29 +66,50 @@ export function assignTrackedAccessors(Target, type_def) {
 		if (
 			!(name in prototype) ||
 			// this means that we are re-defining an attribute accessor (which is fine)
-			Object.getOwnPropertyDescriptor(prototype, name).get?.isAttribute
+			Object.getOwnPropertyDescriptor(prototype, name)?.get?.isAttribute
 		) {
 			Object.defineProperty(prototype, name, descriptor);
 		}
 	}
-	prototype.getProperty = function (name) {
+	setMethod('getProperty', function (name) {
 		const descriptor = descriptors[name];
 		if (descriptor) return descriptor.set.call(this, value);
 		const changes = this[OWN_DATA];
 		if (changes?.[name] !== undefined) return changes[name];
 		return this[RECORD_PROPERTY]?.[name];
-	};
-	prototype.set = function (name, value) {
+	});
+	setMethod('set', function (name, value) {
 		const descriptor = descriptors[name];
 		if (descriptor) return descriptor.set.call(this, value);
 		if (type_def.sealed) throw new ClientError('Can not add a property to a sealed table schema');
 		getChanges(this)[name] = value;
-	};
-	prototype.deleteProperty = function (name) {
+	});
+	setMethod('deleteProperty', function (name) {
 		getChanges(this)[name] = undefined;
-	};
-	if (!prototype.get) prototype.get = prototype.getProperty;
-	if (!prototype.delete) prototype.delete = prototype.deleteProperty;
+	});
+	setMethod('toJSON', function () {
+		const changes = this[OWN_DATA];
+		let copied_source;
+		for (const key in changes) {
+			// copy the source first so we have properties in the right order and can override them
+			if (!copied_source) copied_source = Object.assign({}, this[RECORD_PROPERTY]);
+			copied_source[key] = changes[key]; // let recursive calls to toJSON handle sub-objects
+		}
+		const keys = Object.keys(this); // we use Object.keys because it is expected that the many inherited enumerables would slow a for-in loop down
+		if (keys.length > 0) {
+			if (!copied_source) copied_source = Object.assign({}, this[RECORD_PROPERTY]);
+			Object.assign(copied_source, this);
+		}
+		return copied_source || this[RECORD_PROPERTY];
+	});
+	if (!prototype.get) setMethod('get', prototype.getProperty);
+	if (!prototype.delete) setMethod('delete', prototype.deleteProperty);
+	function setMethod(name, method) {
+		Object.defineProperty(prototype, name, {
+			value: method,
+			configurable: true,
+		});
+	}
 }
 function trackObject(source_object, type_def) {
 	// lazily instantiate in case of recursive structures
@@ -158,8 +179,26 @@ export function collapseData(target) {
  * @returns
  */
 export function deepFreeze(target) {
-	const changes = target[OWN_DATA];
 	let copied_source;
+	if (target[HAS_ARRAY_CHANGES]) {
+		// an array with changes; by default we can freeze the tracked array itself
+		copied_source = target;
+		for (let i = 0, l = target.length; i < l; i++) {
+			let value = target[i];
+			if (value && typeof value === 'object') {
+				const new_value = deepFreeze(value);
+				if (new_value !== value && copied_source === target) {
+					// if we need to make any changes to the user's array, we make a copy so we don't modify
+					// an array that the user may be using with transient properties
+					copied_source = target.slice(0);
+				}
+				value = new_value;
+			}
+			copied_source[i] = value;
+		}
+		return Object.freeze(copied_source);
+	}
+	const changes = target[OWN_DATA];
 	for (const key in changes) {
 		// copy the source first so we have properties in the right order and can override them
 		if (!copied_source) copied_source = Object.assign({}, target[RECORD_PROPERTY]);
@@ -180,12 +219,12 @@ export function hasChanges(target) {
 	const source = target[RECORD_PROPERTY];
 	if (!source) return true; // if no original source then it is always a change
 	if (target.constructor === Array) {
-		if (target[HAS_CHANGES]) return true;
+		if (target[HAS_ARRAY_CHANGES]) return true;
 		if (target.length !== source.length) return true;
 		for (let i = 0, l = target.length; i < l; i++) {
 			const source_value = source[i];
 			const target_value = target[i];
-			if (source_value && target_value[RECORD_PROPERTY] === source_value) {
+			if (source_value && target_value?.[RECORD_PROPERTY] === source_value) {
 				if (hasChanges(target_value)) return true;
 			} else return true;
 		}
@@ -205,30 +244,30 @@ export function hasChanges(target) {
 	return false;
 }
 
-const HAS_CHANGES = Symbol.for('has-changes');
+const HAS_ARRAY_CHANGES = Symbol.for('has-array-changes');
 class TrackedArray extends Array {
-	[HAS_CHANGES]: boolean;
+	[HAS_ARRAY_CHANGES]: boolean;
 	constructor(length) {
 		super(length);
 	}
 	splice(...args) {
-		this[HAS_CHANGES] = true;
+		this[HAS_ARRAY_CHANGES] = true;
 		return super.splice(...args);
 	}
 	push(...args) {
-		this[HAS_CHANGES] = true;
+		this[HAS_ARRAY_CHANGES] = true;
 		return super.push(...args);
 	}
 	pop() {
-		this[HAS_CHANGES] = true;
+		this[HAS_ARRAY_CHANGES] = true;
 		return super.pop();
 	}
 	unshift(...args) {
-		this[HAS_CHANGES] = true;
+		this[HAS_ARRAY_CHANGES] = true;
 		return super.unshift(...args);
 	}
 	shift() {
-		this[HAS_CHANGES] = true;
+		this[HAS_ARRAY_CHANGES] = true;
 		return super.shift();
 	}
 }

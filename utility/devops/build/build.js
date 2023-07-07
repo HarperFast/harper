@@ -18,6 +18,7 @@ for (let i = 97; i < 123; i++) {
 }
 let entry_modules = [
 	'bin/harperdb.js',
+	'bin/lite.js',
 	'launchServiceScripts/launchInstallNATSServer.js',
 	'launchServiceScripts/launchNatsIngestService.js',
 	'launchServiceScripts/launchNatsReplyService.js',

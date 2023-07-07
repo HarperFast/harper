@@ -6,7 +6,6 @@ const hdb_log = require('../utility/logging/harper_logger');
 const hdb_utils = require('../utility/common_utils');
 const hdb_terms = require('../utility/hdbTerms');
 const eng_mgr = require('../utility/environment/environmentManager');
-const npm_utils = require('../utility/npmUtilities');
 const config_utils = require('../config/configUtils');
 
 module.exports = installComponents;
@@ -113,5 +112,6 @@ async function getPkgPrefix(pkg) {
 async function installPackages(pkg_json_path, pkg_json) {
 	hdb_log.trace('npm installing components package.json', pkg_json);
 	await fs.writeFile(pkg_json_path, JSON.stringify(pkg_json, null, '  '));
+	const npm_utils = require('../utility/npmUtilities');
 	await npm_utils.installAllRootModules(eng_mgr.get(hdb_terms.CONFIG_PARAMS.IGNORE_SCRIPTS) === true);
 }

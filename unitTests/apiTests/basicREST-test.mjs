@@ -48,7 +48,7 @@ describe('test REST calls', () => {
 			method: 'GET',
 			responseType: 'arraybuffer',
 			headers: {
-				'If-Match': response.headers.etag,
+				'If-None-Match': response.headers.etag,
 				...headers
 			},
 			validateStatus: function (status) {
@@ -84,7 +84,7 @@ describe('test REST calls', () => {
 		let response = await axios.post('http://localhost:9926/VariedProps/', {
 			name: 'new record without an id',
 		});
-		assert.equal(response.status, 200);
+		assert.equal(response.status, 201);
 		assert.equal(typeof response.data, 'string');
 	});
 	describe('querying with query parameters', function() {
@@ -166,10 +166,10 @@ describe('test REST calls', () => {
 
 		it('by primary key', async () => {
 			// this test also tests to ensure deleted values are not reachable
-			let response = await axios('http://localhost:9926/FourProp/?id=1*');
+			let response = await axios('http://localhost:9926/VariedProps/?id=8*');
 			assert.equal(response.status, 200);
-			assert.equal(response.data.length, 1);
-			assert.equal(response.data[0].id, '1');
+			assert.equal(response.data.length, 2);
+			assert.equal(response.data[0].id[0], '8');
 		});
 
 		it('query with select', async () => {
