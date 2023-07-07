@@ -3,6 +3,7 @@ const { start } = require('../../resources/graphql');
 const { table } = require('../../resources/databases');
 const assert = require('assert');
 const test_data = require('../testData');
+const { transaction } = require('../../resources/transaction');
 describe('Update Schema', () => {
 	let workers, server;
 	const { handleFile } = start({ ensureTable: table });
@@ -16,8 +17,8 @@ describe('Update Schema', () => {
 		}`);
 	});
 	it('Add some records and then index them', async function () {
-		await tables.SchemaChanges.transact((table) => {
-			test_data.map((record) => table.create(record));
+		await transaction((context) => {
+			test_data.map((record) => tables.SchemaChanges.create(record, context));
 		});
 		let caught_error;
 		try {

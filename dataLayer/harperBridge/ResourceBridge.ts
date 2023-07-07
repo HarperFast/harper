@@ -52,7 +52,7 @@ export class ResourceBridge extends LMDBBridge {
 		return table.search({
 			conditions,
 			//set the operator to always be lowercase for later evaluations
-			operator: search_object.operator ? search_object.operator.toLowerCase() : undefined;
+			operator: search_object.operator ? search_object.operator.toLowerCase() : undefined,
 			limit: search_object.limit,
 			offset: search_object.offset,
 			reverse: search_object.reverse,
