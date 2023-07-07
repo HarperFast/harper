@@ -55,6 +55,19 @@ describe('test REST with property updates', () => {
 		assert(response.data.includes('Property name must be a string'));
 		assert(response.data.includes('Property age must be an integer'));
 	});
+
+	it('put with nested path', async () => {
+		let response = await axios.put('http://localhost:9926/namespace/SubObject/multi/part/id/3', {
+			subObject: { name: 'deeply nested' },
+			subArray: [],
+		});
+		assert.equal(response.status, 204);
+		response = await axios.get('http://localhost:9926/namespace/SubObject/multi/part/id/3');
+		assert.equal(response.status, 200);
+		assert.equal(response.data.subObject.name, 'deeply nested');
+		assert.deepEqual(response.data.id, ['multi','part', 'id', 3]);
+	});
+
 	describe('check operations', function () {
 		it('search_by_value returns all attributes', async function () {
 			let response = await axios.post('http://localhost:9925', {
