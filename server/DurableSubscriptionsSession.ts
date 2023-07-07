@@ -161,8 +161,8 @@ class SubscriptionsSession {
 			return retain
 				? data === undefined
 					? resource.delete(message)
-					: resource.put(message)
-				: resource.publish(message);
+					: resource.put(message.data, message)
+				: resource.publish(message.data, message);
 		});
 		if (!resource_found) throw new Error('There is no resource or table for the ${topic} topic');
 		return publish_result;

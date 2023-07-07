@@ -48,7 +48,7 @@ describe('test REST calls', () => {
 			method: 'GET',
 			responseType: 'arraybuffer',
 			headers: {
-				'If-Match': response.headers.etag,
+				'If-None-Match': response.headers.etag,
 				...headers
 			},
 			validateStatus: function (status) {
@@ -84,7 +84,7 @@ describe('test REST calls', () => {
 		let response = await axios.post('http://localhost:9926/VariedProps/', {
 			name: 'new record without an id',
 		});
-		assert.equal(response.status, 200);
+		assert.equal(response.status, 201);
 		assert.equal(typeof response.data, 'string');
 	});
 	describe('querying with query parameters', function() {

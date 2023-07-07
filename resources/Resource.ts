@@ -215,7 +215,8 @@ export class Resource implements ResourceInterface {
 				if (resource) return resource;
 				if (!cache_for_id) resource_cache.asMap.set(id, (cache_for_id = []));
 				cache_for_id.push((resource = new constructor(id, context)));
-			} else { // for small caches, this is probably fastest
+			} else {
+				// for small caches, this is probably fastest
 				resource = resource_cache.find(
 					(resource) => resource[ID_PROPERTY] === id && resource.constructor === constructor
 				);
@@ -309,20 +310,15 @@ function transactional(action, options) {
 	return function (request: Request | Id, context?: Context) {
 		let id;
 		if (options.hasContent) {
-			// for put, post, patch
-			if (!request?.responseMetadata) {
-				request = {
-					data: request,
-				};
-			}
+			// for put, post, patch, publish, query
+			const data = request;
 			if (context) {
-				context = CONTEXT in context ? context[CONTEXT] : context;
-				request.transaction = context.transaction;
-				request.user = context.user;
-				request.resourceCache = context.resourceCache;
-				request.timestamp = context.timestamp;
+				request = Object.create(CONTEXT in context ? context[CONTEXT] : context);
+				id = context.hasOwnProperty('id') ? context.id : this.primaryKey && data?.[this.primaryKey];
+			} else {
+				request = {};
 			}
-			id = request.hasOwnProperty('id') ? request.id : this.primaryKey && request.data[this.primaryKey];
+			request.data = data;
 			// otherwise check to see if the first arg is an id
 		} else if (request && typeof request === 'object' && !Array.isArray(request)) {
 			// request is actually a Request object, just make sure we inherit any context
@@ -343,15 +339,15 @@ function transactional(action, options) {
 		if (request.transaction) {
 			// we are already in a transaction, proceed
 			const resource = this.getResource(id, request);
-			return resource.then ? resource.then(withResource) : withResource(resource);
+			return resource.then ? resource.then(authorizeActionOnResource) : authorizeActionOnResource(resource);
 		} else {
 			// start a transaction
 			return transaction(request, (request) => {
 				const resource = this.getResource(id, request);
-				return resource.then ? resource.then(withResource) : withResource(resource);
+				return resource.then ? resource.then(authorizeActionOnResource) : authorizeActionOnResource(resource);
 			});
 		}
-		function withResource(resource: ResourceInterface) {
+		function authorizeActionOnResource(resource: ResourceInterface) {
 			if (options.type === 'read') resource[SAVE_UPDATES_PROPERTY] = false; // by default modifications aren't saved, they just yield a different result from get
 			if (request.authorize) {
 				// do permission checks (and don't require subsequent uses of this request/context to need to do it)

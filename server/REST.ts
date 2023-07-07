@@ -38,13 +38,13 @@ async function http(request, next_handler) {
 				case 'HEAD':
 					return resource.get(request);
 				case 'POST':
-					return resource.post(request);
+					return resource.post(request.data, request);
 				case 'PUT':
-					return resource.put(request);
+					return resource.put(request.data, request);
 				case 'DELETE':
 					return resource.delete(request);
 				case 'PATCH':
-					return resource.patch(request);
+					return resource.patch(request.data, request);
 				case 'OPTIONS': // used primarily for CORS
 					headers.Allow = 'GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS, TRACe, QUERY, COPY, MOVE';
 					return;
@@ -54,7 +54,7 @@ async function http(request, next_handler) {
 				case 'TRACE':
 					return 'HarperDB is the terminating server';
 				case 'QUERY':
-					return resource.query(request);
+					return resource.query(request.data, request);
 				case 'COPY': // methods suggested from webdav RFC 4918
 					return resource.copy(request.headers.destination);
 				case 'MOVE':
