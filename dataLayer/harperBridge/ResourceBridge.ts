@@ -187,7 +187,7 @@ export class ResourceBridge extends LMDBBridge {
 				const keys = [];
 				const skipped = [];
 				for (const record of upsert_obj.records) {
-					const existing_record = await Table.get(record[Table.primaryKey], request);
+					let existing_record = await Table.get(record[Table.primaryKey], request);
 					if (
 						(upsert_obj.requires_existing && !existing_record) ||
 						(upsert_obj.requires_no_existing && existing_record)
@@ -195,13 +195,21 @@ export class ResourceBridge extends LMDBBridge {
 						skipped.push(record[Table.primaryKey]);
 						continue;
 					}
+					if (existing_record) existing_record = collapseData(existing_record);
 					for (const key in record) {
-						let value = record[key];
-						if (typeof value === 'function') {
-							const value_results = value([[existing_record]]);
-							if (Array.isArray(value_results)) {
-								value = value_results[0].func_val;
-								record[key] = value;
+						if (Object.prototype.hasOwnProperty.call(record, key)) {
+							let value = record[key];
+							if (typeof value === 'function') {
+								try {
+									const value_results = value([[existing_record]]);
+									if (Array.isArray(value_results)) {
+										value = value_results[0].func_val;
+										record[key] = value;
+									}
+								} catch (error) {
+									error.message += 'Trying to set key ' + key + ' on object' + JSON.stringify(record);
+									throw error;
+								}
 							}
 						}
 					}

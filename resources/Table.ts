@@ -138,7 +138,7 @@ export function makeTable(options) {
 									console.error('Bad subscription event');
 									continue;
 								}
-								transaction(event, () => {
+								const commit_resolution = transaction(event, () => {
 									if (event.operation === 'transaction') {
 										const promises = [];
 										for (const write of event.writes) {
@@ -164,7 +164,10 @@ export function makeTable(options) {
 										}
 									} else writeUpdate(event);
 								});
-								if (event.onCommit) commit.then(event.onCommit);
+								if (event.onCommit) {
+									if (commit_resolution?.then) commit_resolution.then(event.onCommit);
+									else event.onCommit();
+								}
 							} catch (error) {
 								console.error('error in subscription handler', error);
 							}
@@ -280,7 +283,10 @@ export function makeTable(options) {
 			if (this.hasOwnProperty(RECORD_PROPERTY)) return; // already loaded, don't reload, current version may have modifications
 			const env_txn = this._txnForRequest();
 			const id = this[ID_PROPERTY];
-			let entry = primary_store.getEntry(this[ID_PROPERTY], { transaction: env_txn?.getReadTxn() });
+			if (typeof id === 'object' && id && !Array.isArray(id)) {
+				throw new Error(`Invalid id ${JSON.stringify(id)}`);
+			}
+			let entry = primary_store.getEntry(id, { transaction: env_txn?.getReadTxn() });
 			let record;
 			if (entry) {
 				const responseMetadata = this[CONTEXT]?.responseMetadata;

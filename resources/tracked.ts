@@ -218,7 +218,7 @@ export function hasChanges(target) {
 		for (let i = 0, l = target.length; i < l; i++) {
 			const source_value = source[i];
 			const target_value = target[i];
-			if (source_value && target_value[RECORD_PROPERTY] === source_value) {
+			if (source_value && target_value?.[RECORD_PROPERTY] === source_value) {
 				if (hasChanges(target_value)) return true;
 			} else return true;
 		}
