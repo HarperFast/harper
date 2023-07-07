@@ -55,9 +55,9 @@ export async function getSession({
 }) {
 	let session;
 	if (session_id && !non_durable) {
-		const session_resource = await DurableSession.get(session_id);
+		const session_resource = await DurableSession.getResource(session_id, {});
 		session = new DurableSubscriptionsSession(session_id, user, session_resource);
-		if (session_resource.doesExist()) session.sessionWasPresent = true;
+		if (session_resource) session.sessionWasPresent = true;
 	} else {
 		if (session_id) {
 			// connecting with a clean session and session id is how durable sessions are deleted
@@ -214,18 +214,18 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				}
 			}
 		}
-		this.sessionRecord.update(() => {
-			for (const subscription of this.subscriptions) {
-				if (subscription.topic === topic) {
-					subscription.startTime = update.timestamp;
-				}
+
+		for (const subscription of this.subscriptions) {
+			if (subscription.topic === topic) {
+				subscription.startTime = update.timestamp;
 			}
-			this.sessionRecord.subscriptions = this.subscriptions.map((subscription) => ({
-				qos: subscription.qos,
-				topic: subscription.topic,
-				startTime: subscription.startTime,
-			}));
-		});
+		}
+		this.sessionRecord.subscriptions = this.subscriptions.map((subscription) => ({
+			qos: subscription.qos,
+			topic: subscription.topic,
+			startTime: subscription.startTime,
+		}));
+		this.sessionRecord.update();
 		// TODO: Increment the timestamp for the corresponding subscription, possibly recording any interim unacked messages
 	}
 
@@ -242,7 +242,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 					startTime: start_time,
 				};
 			});
-			DurableSession.put(this.sessionId, this.sessionRecord);
+			DurableSession.put(this.sessionRecord);
 		}
 		return subscription.qos;
 	}

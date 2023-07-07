@@ -5,14 +5,7 @@ import { sortBy } from 'lodash';
 import { Query, ResourceInterface, Request, SubscriptionRequest, Id } from './ResourceInterface';
 import { workerData, threadId } from 'worker_threads';
 import { messageTypeListener } from '../server/threads/manageThreads';
-import {
-	CONTEXT,
-	TRANSACTIONS_PROPERTY,
-	ID_PROPERTY,
-	RECORD_PROPERTY,
-	Resource,
-	IS_COLLECTION,
-} from './Resource';
+import { CONTEXT, TRANSACTIONS_PROPERTY, ID_PROPERTY, RECORD_PROPERTY, Resource, IS_COLLECTION } from './Resource';
 import { COMPLETION, DatabaseTransaction, immediateTransaction } from './DatabaseTransaction';
 import * as lmdb_terms from '../utility/lmdb/terms';
 import * as env_mngr from '../utility/environment/environmentManager';
@@ -272,7 +265,7 @@ export function makeTable(options) {
 			if (this[IS_COLLECTION]) {
 				return this.search(query);
 			}
-			if (this.doesExist()) {
+			if (this.doesExist() || (this[CONTEXT]?.hasOwnProperty('returnNonexistent') && this[CONTEXT].returnNonexistent)) {
 				return this;
 			}
 		}
@@ -280,7 +273,7 @@ export function makeTable(options) {
 		 * Database/table resources are backed by persisted records and loaded prior to any other actions (get, put, etc.)
 		 * Most of the operations require the data to be loaded anyway for proper index updates.
 		 * @param allow_invalidated If this is true, we can complete with a partial, invalidated record (don't need to load from cache source)
-		 * @returns 
+		 * @returns
 		 */
 		loadRecord(allow_invalidated?: boolean) {
 			// TODO: determine if we use lazy access properties

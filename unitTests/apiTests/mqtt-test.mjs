@@ -272,6 +272,10 @@ describe('test MQTT connections and commands', () => {
 			clientId: 'test-client1'
 		});
 		await new Promise((resolve, reject) => {
+			client.on('connect', resolve);
+			client.on('error', reject);
+		});
+		await new Promise((resolve, reject) => {
 			client.subscribe(['SimpleRecord/41', 'SimpleRecord/42'], {
 				qos: 1
 			}, function (err) {
