@@ -71,10 +71,16 @@ class TransactionSet extends Array {
 		if (commits.length > 0)
 			return Promise.all(commits).then(() => {
 				// remove all the committed transactions
-				this.splice(l, this.length - l);
+				this.splice(0, l);
 				// and call again to process any more, or just return timestamp
 				return this.commit(flush);
 			});
+		else if (this.length > l) {
+			this.splice(0, l);
+			// and call again to process any more, or just return timestamp
+			return this.commit(flush);
+		}
+
 		this.length = 0;
 		return { txnTime: this.timestamp };
 	}
