@@ -101,9 +101,9 @@ export function makeTable(options) {
 				const writeUpdate = async (event) => {
 					const value = event.value;
 					const Table = databases[database_name][event.table];
-					if (!event.id) {
+					if (event.id === undefined) {
 						event.id = value[Table.primaryKey];
-						if (!event.id) throw new Error('Secondary resource found without an id ' + JSON.stringify(event));
+						if (event.id === undefined) throw new Error('Secondary resource found without an id ' + JSON.stringify(event));
 					}
 					event.allowInvalidated = true;
 					const resource: TableResource = await Table.getResource(event.id, event);
