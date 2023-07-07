@@ -71,47 +71,45 @@ export function assignTrackedAccessors(Target, type_def) {
 			Object.defineProperty(prototype, name, descriptor);
 		}
 	}
-	Object.defineProperty(prototype, 'getProperty', {
-		value: function (name) {
-			const descriptor = descriptors[name];
-			if (descriptor) return descriptor.set.call(this, value);
-			const changes = this[OWN_DATA];
-			if (changes?.[name] !== undefined) return changes[name];
-			return this[RECORD_PROPERTY]?.[name];
-		},
+	setMethod('getProperty', function (name) {
+		const descriptor = descriptors[name];
+		if (descriptor) return descriptor.set.call(this, value);
+		const changes = this[OWN_DATA];
+		if (changes?.[name] !== undefined) return changes[name];
+		return this[RECORD_PROPERTY]?.[name];
 	});
-	Object.defineProperty(prototype, 'set', {
-		value: function (name, value) {
-			const descriptor = descriptors[name];
-			if (descriptor) return descriptor.set.call(this, value);
-			if (type_def.sealed) throw new ClientError('Can not add a property to a sealed table schema');
-			getChanges(this)[name] = value;
-		},
+	setMethod('set', function (name, value) {
+		const descriptor = descriptors[name];
+		if (descriptor) return descriptor.set.call(this, value);
+		if (type_def.sealed) throw new ClientError('Can not add a property to a sealed table schema');
+		getChanges(this)[name] = value;
 	});
-	Object.defineProperty(prototype, 'deleteProperty', {
-		value: function (name) {
-			getChanges(this)[name] = undefined;
-		},
+	setMethod('deleteProperty', function (name) {
+		getChanges(this)[name] = undefined;
 	});
-	Object.defineProperty(prototype, 'toJSON', {
-		value: function () {
-			const changes = this[OWN_DATA];
-			let copied_source;
-			for (const key in changes) {
-				// copy the source first so we have properties in the right order and can override them
-				if (!copied_source) copied_source = Object.assign({}, this[RECORD_PROPERTY]);
-				copied_source[key] = changes[key]; // let recursive calls to toJSON handle sub-objects
-			}
-			const keys = Object.keys(this); // we use Object.keys because it is expected that the many inherited enumerables would slow a for-in loop down
-			if (keys.length > 0) {
-				if (!copied_source) copied_source = Object.assign({}, this[RECORD_PROPERTY]);
-				Object.assign(copied_source, this);
-			}
-			return copied_source || this[RECORD_PROPERTY];
-		},
+	setMethod('toJSON', function () {
+		const changes = this[OWN_DATA];
+		let copied_source;
+		for (const key in changes) {
+			// copy the source first so we have properties in the right order and can override them
+			if (!copied_source) copied_source = Object.assign({}, this[RECORD_PROPERTY]);
+			copied_source[key] = changes[key]; // let recursive calls to toJSON handle sub-objects
+		}
+		const keys = Object.keys(this); // we use Object.keys because it is expected that the many inherited enumerables would slow a for-in loop down
+		if (keys.length > 0) {
+			if (!copied_source) copied_source = Object.assign({}, this[RECORD_PROPERTY]);
+			Object.assign(copied_source, this);
+		}
+		return copied_source || this[RECORD_PROPERTY];
 	});
-	if (!prototype.get) Object.defineProperty(prototype, 'get', { value: prototype.getProperty });
-	if (!prototype.delete) Object.defineProperty(prototype, 'delete', { value: prototype.deleteProperty });
+	if (!prototype.get) setMethod('get', { value: prototype.getProperty });
+	if (!prototype.delete) setMethod('delete', { value: prototype.deleteProperty });
+	function setMethod(name, method) {
+		Object.defineProperty(prototype, name, {
+			value: method,
+			configurable: true,
+		});
+	}
 }
 function trackObject(source_object, type_def) {
 	// lazily instantiate in case of recursive structures
