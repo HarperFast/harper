@@ -12,7 +12,9 @@ const workers_ready = [];
 export let debugMode;
 
 export async function startHTTPThreads(thread_count = 2, dynamic_threads) {
-	if (!dynamic_threads) {
+	if (dynamic_threads) {
+		startHTTPWorker(0, 1, true);
+	} else {
 		const { loadRootComponents } = require('../loadRootComponents');
 		if (thread_count === 0 || debugMode) {
 			setMainIsWorker(true);
@@ -27,7 +29,7 @@ export async function startHTTPThreads(thread_count = 2, dynamic_threads) {
 	}
 	return Promise.all(workers_ready);
 }
-function startHTTPWorker(index, thread_count = 1) {
+function startHTTPWorker(index, thread_count = 1, shutdown_when_idle?) {
 	current_thread_count++;
 	startWorker('server/threads/threadServer.js', {
 		name: hdb_terms.THREAD_TYPES.HTTP,
@@ -72,6 +74,20 @@ function startHTTPWorker(index, thread_count = 1) {
 			}
 		},
 	});
+	if (shutdown_when_idle) {
+		const interval = setInterval(() => {
+			if (recent_request) recent_request = false;
+			else {
+				clearInterval(interval);
+				console.log('shut down dynamic thread due to inactivity');
+				shutdownWorkers();
+				current_thread_count = 0;
+				setTimeout(() => {
+					global.gc?.();
+				}, 5000);
+			}
+		}, 10000);
+	}
 }
 let recent_request;
 export function startSocketServer(port = 0, session_affinity_identifier) {
@@ -117,18 +133,6 @@ export function startSocketServer(port = 0, session_affinity_identifier) {
 					} else {
 						console.log('start up a dynamic thread to handle request');
 						startHTTPWorker(0);
-						const interval = setInterval(() => {
-							if (recent_request) recent_request = false;
-							else {
-								clearInterval(interval);
-								console.log('shut down dynamic thread due to inactivity');
-								shutdownWorkers();
-								current_thread_count = 0;
-								setTimeout(() => {
-									global.gc?.();
-								}, 5000);
-							}
-						}, 10000);
 					}
 					return;
 				}
