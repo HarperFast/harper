@@ -105,17 +105,19 @@ async function aggregation(from_period, to_period = 60000) {
 	let last_for_period;
 	// find the last entry for this period
 	for (const entry of AnalyticsTable.primaryStore.getRange({ start: AGGREGATE_PREFIX + 'z', reverse: true })) {
-		if (!entry.value) continue;
+		if (!entry.value?.time) continue;
 		last_for_period = entry.value.time;
 		break;
 	}
-	// is it older than the period we are calculating?
+	// was the last aggregation too recent to calculate a whole period?
 	if (Date.now() - to_period < last_for_period) return;
 	let first_for_period;
+	console.log('aggregating since', new Date(last_for_period));
 	const aggregate_actions = new Map();
 	let last_time;
 	for (const { key, value } of AnalyticsTable.primaryStore.getRange({
 		start: last_for_period || false,
+		exclusiveStart: true,
 		end: Infinity,
 	})) {
 		if (!value) continue;
@@ -125,9 +127,9 @@ async function aggregation(from_period, to_period = 60000) {
 		last_time = key;
 		const { metrics } = value;
 		for (const entry of metrics || []) {
-			let { path, method, type, metric, count, ...measures } = entry;
+			let { path, method, type, metric, count, threadId, ...measures } = entry;
 			if (!count) count = 1;
-			let key = metric + '-' + path;
+			let key = metric + (path ? '-' + path : '');
 			if (method) key += '-' + method;
 			let action = aggregate_actions.get(key);
 			if (action) {
@@ -147,7 +149,8 @@ async function aggregation(from_period, to_period = 60000) {
 		await rest();
 	}
 	for (const [key, value] of aggregate_actions) {
-		value.id = AGGREGATE_PREFIX + last_time + '-' + key;
+		value.id = AGGREGATE_PREFIX + Math.round(last_time) + '-' + key;
+		value.time = last_time;
 		AnalyticsTable.put(value);
 	}
 }
@@ -157,12 +160,12 @@ const rest = () => new Promise(setImmediate);
 async function cleanup(expiration, period) {
 	const AnalyticsTable = getAnalyticsTable();
 	const end = Date.now() - expiration;
-	for (const { key, value } of AnalyticsTable.primaryStore.getKeys({ start: false, end })) {
-		if (value) AnalyticsTable.delete(key);
+	for (const key of AnalyticsTable.primaryStore.getKeys({ start: false, end })) {
+		AnalyticsTable.primaryStore.remove(key);
 	}
 }
 
-const AGGREGATE_PERIOD = 20000;
+const AGGREGATE_PERIOD = 60000;
 const RAW_EXPIRATION = 3600000;
 const AGGREGATE_EXPIRATION = 100000;
 let AnalyticsTable;
@@ -172,6 +175,7 @@ function getAnalyticsTable() {
 		(AnalyticsTable = table({
 			table: 'hdb_analytics',
 			database: 'system',
+			reallyDelete: true,
 			expiration: 864000,
 			attributes: [
 				{
