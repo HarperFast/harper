@@ -288,26 +288,30 @@ export function makeTable(options) {
 			if (typeof id === 'object' && id && !Array.isArray(id)) {
 				throw new Error(`Invalid id ${JSON.stringify(id)}`);
 			}
-			let entry = primary_store.getEntry(id, { transaction: env_txn?.getReadTxn() });
-			let record;
-			if (entry) {
-				const responseMetadata = this[CONTEXT]?.responseMetadata;
-				if (responseMetadata && entry.version > (responseMetadata.lastModified || 0))
-					responseMetadata.lastModified = entry.version;
-				this[VERSION_PROPERTY] = entry.version;
-				record = entry.value;
-				if (this[VERSION_PROPERTY] < 0 || !record || record?.__invalidated__) entry = null;
-			}
-			if (!entry && !allow_invalidated) {
-				const get = this.constructor.Source?.prototype.get;
-				if (get)
-					return this.getFromSource(record, this[VERSION_PROPERTY]).then((record) => {
-						if (record?.[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
-						this[RECORD_PROPERTY] = record;
-					});
-			}
-			if (record?.[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
-			this[RECORD_PROPERTY] = record;
+			const whenPrefetched = () => {
+				let entry = primary_store.getEntry(id, { transaction: env_txn?.getReadTxn() });
+				let record;
+				if (entry) {
+					const responseMetadata = this[CONTEXT]?.responseMetadata;
+					if (responseMetadata && entry.version > (responseMetadata.lastModified || 0))
+						responseMetadata.lastModified = entry.version;
+					this[VERSION_PROPERTY] = entry.version;
+					record = entry.value;
+					if (this[VERSION_PROPERTY] < 0 || !record || record?.__invalidated__) entry = null;
+				}
+				if (!entry && !allow_invalidated) {
+					const get = this.constructor.Source?.prototype.get;
+					if (get)
+						return this.getFromSource(record, this[VERSION_PROPERTY]).then((record) => {
+							if (record?.[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
+							this[RECORD_PROPERTY] = record;
+						});
+				}
+				if (record?.[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
+				this[RECORD_PROPERTY] = record;
+			};
+			if (id == null) return whenPrefetched();
+			else primary_store.prefetch([id], whenPrefetched);
 		}
 
 		/**
