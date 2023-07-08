@@ -112,7 +112,6 @@ async function aggregation(from_period, to_period = 60000) {
 	// was the last aggregation too recent to calculate a whole period?
 	if (Date.now() - to_period < last_for_period) return;
 	let first_for_period;
-	console.log('aggregating since', new Date(last_for_period));
 	const aggregate_actions = new Map();
 	let last_time;
 	for (const { key, value } of AnalyticsTable.primaryStore.getRange({
@@ -175,7 +174,6 @@ function getAnalyticsTable() {
 		(AnalyticsTable = table({
 			table: 'hdb_analytics',
 			database: 'system',
-			reallyDelete: true,
 			expiration: 864000,
 			attributes: [
 				{
