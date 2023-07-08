@@ -64,6 +64,7 @@ export function makeTable(options) {
 		databasePath: database_path,
 		databaseName: database_name,
 		auditStore: audit_store,
+		trackDeletes: track_deletes,
 		schemaDefined: schema_defined,
 		dbisDB: dbis_db,
 	} = options;
@@ -648,8 +649,10 @@ export function makeTable(options) {
 						// a newer record exists locally
 						return;
 					updateIndices(this[ID_PROPERTY], existing_record);
-					primary_store.put(this[ID_PROPERTY], null, txn_time);
-					if (!retry) record_deletion(1);
+					if (audit_store || track_deletes) {
+						primary_store.put(this[ID_PROPERTY], null, txn_time);
+						if (!retry) record_deletion(1);
+					} else primary_store.remove(this[ID_PROPERTY]);
 					return {
 						// return the audit record that should be recorded
 						operation: 'delete',

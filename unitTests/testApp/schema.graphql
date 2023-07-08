@@ -1,9 +1,9 @@
-type VariedProps @table @endpoint {
+type VariedProps @table @export {
 	id: ID @primaryKey
 	name: String @indexed
 }
 
-type SimpleRecord @table {
+type SimpleRecord @table(audit: false) {
 	id: ID @primaryKey
 	name: String @indexed
 }

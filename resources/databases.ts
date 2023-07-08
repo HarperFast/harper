@@ -230,6 +230,8 @@ function readMetaDb(
 						existing_attributes = [];
 					let table_id;
 					let primary_store;
+					const audit = attribute.audit !== false;
+					const track_deletes = attribute.trackDeletes;
 					if (table) {
 						indices = table.indices;
 						existing_attributes = table.attributes;
@@ -273,7 +275,8 @@ function readMetaDb(
 							table_name,
 							makeTable({
 								primaryStore: primary_store,
-								auditStore: audit_store,
+								auditStore: audit && audit_store,
+								trackDeletes: track_deletes,
 								tableName: table_name,
 								tableId: table_id,
 								primaryKey: attribute.name,
@@ -304,6 +307,8 @@ interface TableDefinition {
 	database?: string;
 	path?: string;
 	expiration?: number;
+	audit?: boolean;
+	trackDeletes?: boolean;
 	attributes: any[];
 	schemaDefined?: boolean;
 }
@@ -407,6 +412,8 @@ export function table({
 	database: database_name,
 	expiration,
 	attributes,
+	audit,
+	trackDeletes: track_deletes,
 	schemaDefined: schema_defined,
 	origin,
 }: TableDefinition) {
@@ -436,13 +443,14 @@ export function table({
 		Table.attributes.splice(0, Table.attributes.length, ...attributes);
 	} else {
 		let audit_store = root_store.auditStore;
-		if (!audit_store && USE_AUDIT) {
+		if (!audit_store) {
 			root_store.auditStore = audit_store = root_store.openDB(AUDIT_STORE_NAME, {});
 		}
 		primary_key_attribute = attributes.find((attribute) => attribute.isPrimaryKey) || { name: 'id' };
 		primary_key = primary_key_attribute.name;
 		primary_key_attribute.is_hash_attribute = true;
 		primary_key_attribute.schemaDefined = schema_defined;
+		if (track_deletes) primary_key_attribute.trackDeletes = true;
 		if (origin) {
 			if (!primary_key_attribute.origins) primary_key_attribute.origins = [origin];
 			else if (!primary_key_attribute.origins.includes(origin)) primary_key_attribute.origins.push(origin);
@@ -461,7 +469,8 @@ export function table({
 			table_name,
 			makeTable({
 				primaryStore: primary_store,
-				auditStore: audit_store,
+				auditStore: audit && audit_store,
+				trackDeletes: track_deletes,
 				primaryKey: primary_key,
 				tableName: table_name,
 				tableId: primary_store.tableId,
