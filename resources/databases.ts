@@ -152,9 +152,9 @@ export function resetDatabases() {
 	getDatabases();
 	for (const [path, store] of database_envs) {
 		if (store.needsDeletion) {
-			console.log('closing store due to no longer be referenced', path, require('worker_threads').threadId);
+			console.log('Would have closed store due to no longer be referenced', path);
 			///store.close();
-			database_envs.delete(path);
+			//database_envs.delete(path);
 		}
 	}
 	return databases;
@@ -213,7 +213,6 @@ function readMetaDb(
 			attributes.push(value);
 			Object.defineProperty(value, 'key', { value: key, configurable: true });
 		}
-		harper_logger.trace(`reading database from ${database_name}`);
 
 		const tables = ensureDB(database_name);
 		const defined_tables = tables[DEFINED_TABLES];
@@ -246,6 +245,7 @@ function readMetaDb(
 							dbis_store.putSync(attribute.key, attribute);
 						}
 						const dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
+						harper_logger.trace(`openDB ${attribute.key} from ${database_name}`);
 						primary_store = root_store.openDB(attribute.key, dbi_init);
 						primary_store.rootStore = root_store;
 						primary_store.tableId = table_id;
@@ -256,6 +256,7 @@ function readMetaDb(
 							if (!attribute.is_hash_attribute && (attribute.indexed || (attribute.attribute && !attribute.name))) {
 								if (!indices[attribute.name]) {
 									const dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
+									harper_logger.trace(`openDB ${attribute.key} from ${database_name}`);
 									indices[attribute.name] = root_store.openDB(attribute.key, dbi_init);
 								}
 								const existing_attribute = existing_attributes.find(
@@ -445,6 +446,7 @@ export function table({
 	} else {
 		let audit_store = root_store.auditStore;
 		if (!audit_store) {
+			harper_logger.trace(`openDB ${AUDIT_STORE_NAME} from ${database_name}`);
 			root_store.auditStore = audit_store = root_store.openDB(AUDIT_STORE_NAME, {});
 		}
 		primary_key_attribute = attributes.find((attribute) => attribute.isPrimaryKey) || { name: 'id' };
@@ -459,11 +461,13 @@ export function table({
 		harper_logger.trace(`${table_name} table loading, opening primary store`);
 		const dbi_init = new OpenDBIObject(!primary_key_attribute.isPrimaryKey, primary_key_attribute.isPrimaryKey);
 		const dbi_name = table_name + '/';
+		harper_logger.trace(`openDB ${dbi_name} from ${database_name}`);
 		const primary_store = root_store.openDB(dbi_name, dbi_init);
 		primary_store.rootStore = root_store;
 		if (!root_store.env.nextTableId) root_store.env.nextTableId = 1;
 		primary_store.tableId = root_store.env.nextTableId++;
 		primary_key_attribute.tableId = primary_store.tableId;
+		harper_logger.trace(`openDB ${INTERNAL_DBIS_NAME} from ${database_name}`);
 		attributes_dbi = root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
 		Table = setTable(
 			tables,
@@ -491,6 +495,7 @@ export function table({
 	}
 	harper_logger.trace(`${table_name} table loading, getting stored attributes`);
 	indices = Table.indices;
+	if (!attributes_dbi) harper_logger.trace(`openDB ${INTERNAL_DBIS_NAME} from ${database_name}`);
 	attributes_dbi = attributes_dbi || (root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init));
 	Table.dbisDB = attributes_dbi;
 	const indices_to_remove = [];
@@ -531,6 +536,7 @@ export function table({
 				JSON.stringify(attribute_descriptor.elements) !== JSON.stringify(attribute.elements);
 			if (attribute.indexed) {
 				const dbi_init = new OpenDBIObject(true, false);
+				harper_logger.trace(`openDB ${dbi_key} from ${database_name}`);
 				const dbi = root_store.openDB(dbi_key, dbi_init);
 				if (
 					changed ||

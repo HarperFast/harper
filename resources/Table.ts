@@ -1,23 +1,22 @@
 import { CONFIG_PARAMS, OPERATIONS_ENUM } from '../utility/hdbTerms';
-import { open, Database, asBinary, SKIP } from 'lmdb';
+import { Database, asBinary, SKIP } from 'lmdb';
 import { getIndexedValues } from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
 import { Query, ResourceInterface, Request, SubscriptionRequest, Id } from './ResourceInterface';
 import { workerData, threadId } from 'worker_threads';
 import { messageTypeListener } from '../server/threads/manageThreads';
-import { CONTEXT, TRANSACTIONS_PROPERTY, ID_PROPERTY, RECORD_PROPERTY, Resource, IS_COLLECTION } from './Resource';
+import { CONTEXT, ID_PROPERTY, RECORD_PROPERTY, Resource, IS_COLLECTION } from './Resource';
 import { COMPLETION, DatabaseTransaction, immediateTransaction } from './DatabaseTransaction';
 import * as lmdb_terms from '../utility/lmdb/terms';
 import * as env_mngr from '../utility/environment/environmentManager';
 import { addSubscription, listenToCommits } from './transactionBroadcast';
 import { handleHDBError, ClientError } from '../utility/errors/hdbError';
-import OpenDBIObject from '../utility/lmdb/OpenDBIObject';
 import * as signalling from '../utility/signalling';
 import { SchemaEventMsg } from '../server/threads/itc';
 import { databases, table } from './databases';
 import { idsForCondition, filterByType } from './search';
 import * as harper_logger from '../utility/logging/harper_logger';
-import { assignTrackedAccessors, collapseData, deepFreeze, hasChanges, OWN_DATA } from './tracked';
+import { assignTrackedAccessors, deepFreeze, hasChanges, OWN_DATA } from './tracked';
 import { transaction } from './transaction';
 
 let server_utilities;
@@ -145,7 +144,12 @@ export function makeTable(options) {
 										const promises = [];
 										for (const write of event.writes) {
 											write[CONTEXT] = event;
-											promises.push(writeUpdate(write));
+											try {
+												promises.push(writeUpdate(write));
+											} catch (error) {
+												error.message += ' writing ' + JSON.stringify(write) + ' of event ' + JSON.stringify(event);
+												throw error;
+											}
 										}
 										return Promise.all(promises);
 									} else if (event.operation === 'define_schema') {
@@ -294,11 +298,20 @@ export function makeTable(options) {
 				if (read_txn?.isDone) {
 					throw new Error('Invalid read transaction');
 				}
+				let first_load_record;
+				if (!read_txn.hasRunLoadRecord) {
+					first_load_record = true;
+					read_txn.hasRunLoadRecord = true;
+				}
 				let entry;
 				try {
 					entry = primary_store.getEntry(id, { transaction: read_txn });
 				} catch (error) {
-					error.message += '. The read txn is ' + JSON.stringify(read_txn);
+					error.message += '. The read txn is ' + JSON.stringify(read_txn) + ' first loadRecord: ' + first_load_record;
+					console.error(error);
+					console.error('reader list', primary_store.readerList());
+					console.error('reader check', primary_store.readerCheck());
+					console.error('reader list', primary_store.readerList());
 					throw error;
 				}
 				let record;
