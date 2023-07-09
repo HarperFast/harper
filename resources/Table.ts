@@ -288,6 +288,7 @@ export function makeTable(options) {
 			if (typeof id === 'object' && id && !Array.isArray(id)) {
 				throw new Error(`Invalid id ${JSON.stringify(id)}`);
 			}
+			let resolve_load;
 			const whenPrefetched = () => {
 				let entry = primary_store.getEntry(id, { transaction: env_txn?.getReadTxn() });
 				let record;
@@ -301,17 +302,26 @@ export function makeTable(options) {
 				}
 				if (!entry && !allow_invalidated) {
 					const get = this.constructor.Source?.prototype.get;
-					if (get)
-						return this.getFromSource(record, this[VERSION_PROPERTY]).then((record) => {
+					if (get) {
+						const result = this.getFromSource(record, this[VERSION_PROPERTY]).then((record) => {
 							if (record?.[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
 							this[RECORD_PROPERTY] = record;
 						});
+						resolve_load?.(result);
+						return result;
+					}
 				}
 				if (record?.[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
 				this[RECORD_PROPERTY] = record;
+				resolve_load?.();
 			};
-			if (id == null) return whenPrefetched();
-			else primary_store.prefetch([id], whenPrefetched);
+			// if it is cached, we use that as indication that we can get the value very quickly
+			if (id == null || primary_store.cache?.get(id)) return whenPrefetched();
+			// otherwise we asynchronously get, both improving concurrency and avoiding a page fault on the main thread
+			return new Promise((resolve) => {
+				resolve_load = resolve;
+				primary_store.prefetch([id], whenPrefetched);
+			});
 		}
 
 		/**
