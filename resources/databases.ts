@@ -152,9 +152,9 @@ export function resetDatabases() {
 	getDatabases();
 	for (const [path, store] of database_envs) {
 		if (store.needsDeletion) {
-			console.log('Would have closed store due to no longer be referenced', path);
-			///store.close();
-			//database_envs.delete(path);
+			console.log('Closing store due to path no longer existing', path);
+			store.close();
+			database_envs.delete(path);
 		}
 	}
 	return databases;
