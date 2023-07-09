@@ -54,9 +54,6 @@ export class DatabaseTransaction implements Transaction {
 		let write_index = 0;
 		let last_store;
 		let txn_time;
-		for (const write of this.writes) {
-			write.validate?.();
-		}
 		const doWrite = (write) => {
 			const audit_record = write.commit(retries);
 			if (audit_record) {
