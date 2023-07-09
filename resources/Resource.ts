@@ -54,7 +54,11 @@ export class Resource implements ResourceInterface {
 	static get = transactional(
 		function (request: Request, resource: Resource) {
 			const is_collection = resource[IS_COLLECTION];
-			const result = is_collection && resource.search ? resource.search(request) : resource.get?.();
+			// TODO: Handle async
+			let result = is_collection && resource.search ? resource.search(request) : resource.get?.();
+			if (request.property && request.hasOwnProperty('property') && !is_collection && result) {
+				result = result[request.property];
+			}
 			if (request.select && request.hasOwnProperty('select') && !is_collection && result) {
 				const selected_data = {};
 				const forceNulls = request.select.forceNulls;

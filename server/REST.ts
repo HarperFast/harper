@@ -15,14 +15,23 @@ interface Response {
 }
 
 async function http(request, next_handler) {
-	const method = request.method;
+	const method = request.headers.accept === 'text/event-stream' ? 'CONNECT' : request.method;
 	if (request.search) parseQuery(request);
 	const start = performance.now();
 	let resource_path;
 	try {
 		const headers = {};
-		let resource;
-		let response_data = await resources.call(request.pathname.slice(1), request, (resource, path) => {
+		let path = request.pathname.slice(1);
+		const dot_index = path.lastIndexOf('.');
+		if (dot_index > -1) {
+			// we can use .extensions to force the Accept header or to access a property
+			const ext = path.slice(dot_index + 1);
+			const accept = EXTENSION_TYPES[ext];
+			if (accept) request.headers.accept = accept;
+			else request.property = ext;
+			path = path.slice(0, dot_index);
+		}
+		let response_data = await resources.call(path, request, (resource, path) => {
 			resource_path = path;
 			if (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'QUERY') {
 				// TODO: Support cancelation (if the request otherwise fails or takes too many bytes)
@@ -205,7 +214,6 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 	resources = options.resources;
 	options.server.http(async (request: Request, next_handler) => {
 		if (request.isWebSocket) return;
-		startRequest(request);
 		return http(request, next_handler);
 	});
 	options.server.ws(async (ws, request, chain_completion) => {
@@ -261,9 +269,6 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 			const ext = path.slice(dot_index + 1);
 			const accept = EXTENSION_TYPES[ext];
 			if (accept) request.headers.accept = accept;
-		}
-		if (request.headers.accept === 'text/event-stream') {
-			request.method = 'CONNECT';
 		}
 	}
 }
