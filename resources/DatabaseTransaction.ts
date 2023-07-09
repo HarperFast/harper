@@ -4,12 +4,8 @@ import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 export const COMPLETION = Symbol('completion');
 const MAX_OPTIMISTIC_SIZE = 100;
 export class DatabaseTransaction implements Transaction {
-	conditions = []; // the set of reads that were made in this txn, that need to be verified to commit the writes
 	writes = []; // the set of writes to commit if the conditions are met
-	updatingResources?: any[];
-	fullIsolation = false;
 	username: string;
-	inTwoPhase?: boolean;
 	lmdbDb: RootDatabase;
 	auditStore: Database;
 	readTxn: LMDBTransaction;
@@ -30,13 +26,6 @@ export class DatabaseTransaction implements Transaction {
 	}
 	addWrite(operation) {
 		this.writes.push(operation);
-	}
-	get hasWritesToCommit() {
-		return this.writes.length > 0 || this.updatingResources?.length > 0;
-	}
-
-	recordRead(store, key, version, lock) {
-		this.conditions.push({ store, key, version, lock });
 	}
 
 	validate() {
@@ -112,7 +101,6 @@ export class DatabaseTransaction implements Transaction {
 				if (last_store) completions.push(last_store.flushed);
 				return Promise.all(completions).then(() => {
 					// now reset transactions tracking; this transaction be reused and committed again
-					this.conditions = [];
 					this.writes = [];
 					return {
 						txnTime: txn_time,
@@ -126,7 +114,6 @@ export class DatabaseTransaction implements Transaction {
 	abort(): void {
 		this.doneReading();
 		// reset the transaction
-		this.conditions = [];
 		this.writes = [];
 	}
 }

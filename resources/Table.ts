@@ -290,11 +290,17 @@ export function makeTable(options) {
 			}
 			let resolve_load;
 			const whenPrefetched = () => {
-				let read_txn = env_txn?.getReadTxn();
+				const read_txn = env_txn?.getReadTxn();
 				if (read_txn?.isDone) {
 					throw new Error('Invalid read transaction');
 				}
-				let entry = primary_store.getEntry(id, { transaction: read_txn });
+				let entry;
+				try {
+					entry = primary_store.getEntry(id, { transaction: read_txn });
+				} catch (error) {
+					error.message += '. The read txn is ' + JSON.stringify(read_txn);
+					throw error;
+				}
 				let record;
 				if (entry) {
 					const responseMetadata = this[CONTEXT]?.responseMetadata;
