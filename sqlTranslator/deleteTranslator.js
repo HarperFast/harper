@@ -8,7 +8,6 @@ const terms = require('../utility/hdbTerms');
 const global_schema = require('../utility/globalSchema');
 const transaction = require('../dataLayer/transaction');
 
-const transact_to_clustering_utilities = require('../utility/clustering/transactToClusteringUtilities');
 const write = require('../dataLayer/insert');
 
 const RECORD = 'record';
@@ -54,11 +53,6 @@ async function convertDelete({ statement, hdb_user }) {
 		//});
 		//await write.flush({ schema: table_info.schema, table: table_info.name });
 
-		// With non SQL CUD actions, the `post` operation passed into OperationFunctionCaller would send the transaction to the cluster.
-		// Since we don`t send Most SQL options to the cluster, we need to explicitly send it.
-		/*if (result.deleted_hashes.length > 0) {
-			await transact_to_clustering_utilities.postOperationHandler(delete_obj, result);
-		}*/
 
 		if (hdb_utils.isEmptyOrZeroLength(result.message)) {
 			result.message = generateReturnMessage(result);

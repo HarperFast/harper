@@ -32,7 +32,6 @@ const util = require('util');
 const insert = require('../../dataLayer/insert');
 const global_schema = require('../../utility/globalSchema');
 const system_information = require('../../utility/environment/systemInformation');
-const transact_to_clustering_utils = require('../../utility/clustering/transactToClusteringUtilities');
 const job_runner = require('../jobs/jobRunner');
 const token_authentication = require('../../security/tokenAuthentication');
 const config_utils = require('../../config/configUtils');
@@ -58,9 +57,6 @@ const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
 
 const OperationFunctionObject = require('./OperationFunctionObject');
 
-function postWrite(request_body, result, nats_msg_header) {
-	return transact_to_clustering_utils.postOperationHandler(request_body, result, nats_msg_header);
-}
 /**
  * This will process a command message on this receiving node rather than sending it to a remote node.  NOTE: this function
  * handles the response to the sender.
