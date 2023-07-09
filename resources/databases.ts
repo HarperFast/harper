@@ -275,7 +275,8 @@ function readMetaDb(
 							table_name,
 							makeTable({
 								primaryStore: primary_store,
-								auditStore: audit && audit_store,
+								auditStore: audit_store,
+								audit,
 								trackDeletes: track_deletes,
 								tableName: table_name,
 								tableId: table_id,
@@ -469,7 +470,8 @@ export function table({
 			table_name,
 			makeTable({
 				primaryStore: primary_store,
-				auditStore: audit && audit_store,
+				auditStore: audit_store,
+				audit,
 				trackDeletes: track_deletes,
 				primaryKey: primary_key,
 				tableName: table_name,
