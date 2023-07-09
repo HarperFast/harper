@@ -607,7 +607,7 @@ export function makeTable(options) {
 						if (record[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
 						this[RECORD_PROPERTY] = record;
 					}
-
+					harper_logger.trace(`Checking timestamp for put`, this[ID_PROPERTY], this[VERSION_PROPERTY], txn_time);
 					if (this[VERSION_PROPERTY] > txn_time) {
 						// This is not an error condition in our world of last-record-wins
 						// replication. If the existing record is newer than it just means the provided record
