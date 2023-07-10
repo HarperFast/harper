@@ -1,0 +1,41 @@
+on:
+  workflow_dispatch:
+    inputs:
+      harperdbVersion:
+        description: "Version of HarperDB to install via NPM"
+        required: true
+        type: string
+      nodeVersion:
+        description: "Version of node to install via NVM"
+        required: true
+        type: string
+name: "DigitalOcean Create Snapshot"
+defaults:
+  run:
+    working-directory: "./utility/marketplaces/digitalocean"
+jobs:
+  Build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup `packer`
+        uses: hashicorp/setup-packer@main
+        id: setup
+
+      - name: Run `packer init`
+        id: init
+        run: "packer init ."
+
+      - name: Run `packer validate`
+        id: validate
+        env:
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+        run: "packer validate ./marketplace-image.json"
+
+      - name: "Build and Upload Snapshot"
+        env:
+          HARPERDB_VERSION: ${{ inputs.harperdbVersion }}
+          NODE_VERSION: ${{ inputs.nodeVersion }}
+          DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+        run: packer build -color=false -on-error=abort -var "HARPERDB_VERSION=${HARPERDB_VERSION}" -var "NODE_VERSION=${NODE_VERSION}" marketplace-image.json

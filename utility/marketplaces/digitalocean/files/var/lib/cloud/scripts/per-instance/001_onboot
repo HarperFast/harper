@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+
+# Remove the ssh force logout command
+sed -e '/Match User ubuntu/d' \
+    -e '/.*ForceCommand.*droplet.*/d' \
+    -i /etc/ssh/sshd_config
+
+systemctl restart ssh

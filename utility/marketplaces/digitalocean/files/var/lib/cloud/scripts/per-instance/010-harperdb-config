@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+
+#  harperdb install parameters
+hdb_system_user="${HDB_SYSTEM_USER:-harperdb}"
+hdb_root="${HDB_ROOT:-/opt/hdb}"
+
+# generate harperdb admin user and pass and write them to /root/.harperdb
+hdb_admin_user="HDB_ADMIN"
+hdb_admin_pass="$(openssl rand -base64 24)"
+
+cat <<EOF > /root/.harperdb
+user: ${hdb_admin_user}
+pass: ${hdb_admin_pass}
+EOF
+
+chmod 600 /root/.harperdb
+
+# for verifying harperdb install
+hdb_log_file="${hdb_root}/log/hdb.log"
+hdb_install_complete_msg='HarperDB installation was successful.'
+hdb_already_installed_msg='It appears HarperDB is already installed. Exiting install...'
+
+# make sure log file exists and is empty
+[[ -f "${hdb_log_file}" ]] && rm -f "${hdb_log_file}"
+mkdir -p "${hdb_root}/log"
+touch "${hdb_log_file}"
+chown -R "${hdb_system_user}:" "${hdb_root}/log"
+
+# get path for harperdb
+harperdb_path="$(grep 'ExecStart=' /etc/systemd/system/harperdb.service | cut -d'"' -f2 | cut -d':' -f1)"
+
+# install and configure harperdb
+sudo -u "${hdb_system_user}" --shell --set-home -- <<EOF
+  export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:${harperdb_path}
+  harperdb install \
+    --TC_AGREEMENT "yes" \
+    --ROOTPATH "${hdb_root}" \
+    --OPERATIONSAPI_NETWORK_PORT "9925" \
+    --HDB_ADMIN_USERNAME "${hdb_admin_user}" \
+    --HDB_ADMIN_PASSWORD "${hdb_admin_pass}" \
+    --OPERATIONSAPI_NETWORK_HTTPS "true" \
+    --CUSTOMFUNCTIONS_NETWORK_HTTPS "true" &>/dev/null &
+  grep -q "${hdb_install_complete_msg}\|${hdb_already_installed_msg}" <(tail -q -fF "${hdb_log_file}")
+  harperdb stop
+EOF
+
+sleep 10
+
+systemctl enable --now harperdb
