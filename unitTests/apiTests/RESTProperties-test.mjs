@@ -31,6 +31,28 @@ describe('test REST with property updates', () => {
 		assert.equal(response.data.subObject.subProperty, 'a new value');
 		assert.equal(response.data.subArray[1], 'a new item');
 	});
+	it('get with sub-property access via dot', async () => {
+		let response = await axios.put('http://localhost:9926/namespace/SubObject/6', {
+			id: 5,
+			subObject: { name: 'a sub-object' },
+			subArray: [{ name: 'a sub-object of an array' }],
+		});
+		assert.equal(response.status, 204);
+		response = await axios.get('http://localhost:9926/namespace/SubObject/6.subObject');
+		assert.equal(response.status, 200);
+		assert.equal(response.data.name, 'a sub-object');
+	});
+	it('get with sub-property access via ?select', async () => {
+		let response = await axios.put('http://localhost:9926/namespace/SubObject/6', {
+			id: 5,
+			subObject: { name: 'a sub-object' },
+			subArray: [{ name: 'a sub-object of an array' }],
+		});
+		assert.equal(response.status, 204);
+		response = await axios.get('http://localhost:9926/namespace/SubObject/6?select=subObject');
+		assert.equal(response.status, 200);
+		assert.equal(response.data.name, 'a sub-object');
+	});
 	it('put with wrong type on attribute', async () => {
 		const headers = {
 			//authorization,

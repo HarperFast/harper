@@ -763,7 +763,7 @@ export function makeTable(options) {
 					)
 					.map(({ value }) => {
 						if (!value) return SKIP;
-						return new Promise((resolve) => setImmediate(() => resolve(selectProperties(value))));
+						return new Promise((resolve) => setImmediate(() => resolve(value)));
 					});
 			} else {
 				// both AND and OR start by getting an iterator for the ids for first condition
@@ -820,7 +820,7 @@ export function makeTable(options) {
 								for (let i = 0; i < filters_length; i++) {
 									if (!filters[i](record)) return resolve(SKIP); // didn't match filters
 								}
-								resolve(selectProperties(record));
+								resolve(record);
 							})
 						)
 				);

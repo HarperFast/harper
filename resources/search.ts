@@ -162,7 +162,7 @@ export function filterByType(search_condition) {
  * @param query_string
  */
 export function parseQuery(request: Request) {
-	let query_string: string = request.search;
+	const query_string: string = request.search;
 	if (!query_string) return;
 	let match;
 	let attribute, comparator;
@@ -219,7 +219,18 @@ export function parseQuery(request: Request) {
 						request.limit = +value;
 						break;
 					case 'select':
-						request.select = value.split(',');
+						if (value[0] === '[') {
+							if (value[value.length - 1] !== ']') throw new Error('Unmatched brackets');
+							request.select = value.slice(1, -1).split(',');
+						} else if (value === '{') {
+							if (value[value.length - 1] !== '}') throw new Error('Unmatched curly brackets');
+							request.select = value.slice(1, -1).split(',');
+							request.select.asObject = true;
+						} else if (value.indexOf(',') > -1) {
+							request.select = value.split(',');
+							request.select.asObject = true;
+						}
+						else request.select = value;
 						break;
 					case 'sort':
 						request.sort = value.split(',').map((direction) => {

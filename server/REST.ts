@@ -78,9 +78,9 @@ async function http(request, next_handler) {
 		const execution_time = performance.now() - start;
 		let status = 200;
 		let lastModification;
-		if (typeof response_data?.get === 'function') {
+		/*if (typeof response_data?.get === 'function') {
 			response_data = await response_data.get();
-		}
+		}*/
 		const responseMetadata = request.responseMetadata;
 		if (response_data == undefined) {
 			status = method === 'GET' || method === 'HEAD' ? 404 : 204;

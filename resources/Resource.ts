@@ -55,28 +55,20 @@ export class Resource implements ResourceInterface {
 		function (request: Request, resource: Resource) {
 			const is_collection = resource[IS_COLLECTION];
 			// TODO: Handle async
-			let result = is_collection && resource.search ? resource.search(request) : resource.get?.();
-			if (request.property && request.hasOwnProperty('property') && !is_collection && result) {
-				result = result[request.property];
-			}
-			if (request.select && request.hasOwnProperty('select') && !is_collection && result) {
-				const selected_data = {};
-				const forceNulls = request.select.forceNulls;
-				const own_data = result[OWN_DATA];
-				for (const property of request.select) {
-					let value;
-					if (result.hasOwnProperty(property) && typeof (value = result[property]) !== 'function') {
-						selected_data[property] = value;
-						continue;
-					}
-					if (own_data && property in own_data) {
-						const value = own_data[property];
-						selected_data[property] = value;
-					} else value = result[RECORD_PROPERTY][property];
-					if (value === undefined && forceNulls) value = null;
-					selected_data[property] = value;
+			const result =
+				is_collection && resource.search
+					? resource.search(request)
+					: request.property && request.hasOwnProperty('property')
+					? resource.get?.(request.property)
+					: resource.get?.();
+			let select;
+			if ((select = request.select) && request.hasOwnProperty('select') && result != null) {
+				let transform = transformForSelect(request.select);
+				if (is_collection) {
+					return result.map(transform);
+				} else {
+					return transform(request.select)(result);
 				}
-				return selected_data;
 			}
 			return result;
 		},
@@ -391,4 +383,57 @@ function missingMethod(resource, method) {
 		if (typeof resource[method] === 'function') error.allow.push(method);
 	}
 	throw error;
+}
+function selectFromObject(object) {
+	// TODO: eventually we will do aggregate functions here
+	const record = object[RECORD_PROPERTY];
+	if (record) {
+		const own_data = object[OWN_DATA];
+		return (property) => {
+			let value;
+			if (object.hasOwnProperty(property) && typeof (value = object[property]) !== 'function') {
+				return value;
+			}
+			if (own_data && property in own_data) {
+				return own_data[property];
+			} else return record[property];
+		};
+	} else return (property) => object[property];
+}
+function transformForSelect(select) {
+	if (typeof select === 'string') // if select is a single string then return property value
+		return (object) => {
+			return selectFromObject(object)(select);
+		};
+	else if (typeof select === 'object') {
+		// if it is an array, return an array
+		if (Array.isArray(select)) {
+			if (!select.asObject)
+				return (object) => {
+					const results = [];
+					const getProperty = selectFromObject(object);
+					for (const property of select) {
+						results.push(getProperty(property));
+					}
+					return results;
+				};
+		} else {
+			const select_array = [];
+			for (const key in select) {
+				select_array.push(key);
+			}
+			select = select_array;
+		}
+		const forceNulls = select.forceNulls;
+		return (object) => { // finally the case of returning objects
+			const selected_data = {};
+			const getProperty = selectFromObject(object);
+			for (const property of select) {
+				let value = getProperty(property);
+				if (value === undefined && forceNulls) value = null;
+				selected_data[property] = value;
+			}
+			return selected_data;
+		};
+	}
 }
