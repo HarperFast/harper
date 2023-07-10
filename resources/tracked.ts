@@ -73,7 +73,7 @@ export function assignTrackedAccessors(Target, type_def) {
 	}
 	setMethod('getProperty', function (name) {
 		const descriptor = descriptors[name];
-		if (descriptor) return descriptor.set.call(this, value);
+		if (descriptor) return descriptor.get.call(this);
 		const changes = this[OWN_DATA];
 		if (changes?.[name] !== undefined) return changes[name];
 		return this[RECORD_PROPERTY]?.[name];
