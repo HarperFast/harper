@@ -151,8 +151,8 @@ export function resetDatabases() {
 	}
 	getDatabases();
 	for (const [path, store] of database_envs) {
-		if (store.needsDeletion) {
-			console.log('Closing store due to path no longer existing', path);
+		if (store.needsDeletion && !path.endsWith('system.mdb')) {
+			console.log('Closing store due to path no longer existing', path, 'remaining databases', Object.keys(databases));
 			store.close();
 			database_envs.delete(path);
 		}
