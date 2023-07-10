@@ -3,7 +3,6 @@ import { getTables } from './databases';
 import { Table } from './Table';
 import { randomUUID } from 'crypto';
 import { DatabaseTransaction, Transaction } from './DatabaseTransaction';
-import { DefaultAccess } from './Access';
 import { IterableEventQueue } from './IterableEventQueue';
 import { _assignPackageExport } from '../index';
 import { parseQuery } from './search';
@@ -63,11 +62,11 @@ export class Resource implements ResourceInterface {
 					: resource.get?.();
 			let select;
 			if ((select = request.select) && request.hasOwnProperty('select') && result != null) {
-				let transform = transformForSelect(request.select);
+				const transform = transformForSelect(select);
 				if (is_collection) {
 					return result.map(transform);
 				} else {
-					return transform(request.select)(result);
+					return transform(result);
 				}
 			}
 			return result;
@@ -401,7 +400,8 @@ function selectFromObject(object) {
 	} else return (property) => object[property];
 }
 function transformForSelect(select) {
-	if (typeof select === 'string') // if select is a single string then return property value
+	if (typeof select === 'string')
+		// if select is a single string then return property value
 		return (object) => {
 			return selectFromObject(object)(select);
 		};
@@ -425,7 +425,8 @@ function transformForSelect(select) {
 			select = select_array;
 		}
 		const forceNulls = select.forceNulls;
-		return (object) => { // finally the case of returning objects
+		return (object) => {
+			// finally the case of returning objects
 			const selected_data = {};
 			const getProperty = selectFromObject(object);
 			for (const property of select) {
@@ -435,5 +436,5 @@ function transformForSelect(select) {
 			}
 			return selected_data;
 		};
-	}
+	} else throw new Error('Invalid select argument type ' + typeof select);
 }
