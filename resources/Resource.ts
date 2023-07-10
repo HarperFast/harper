@@ -151,7 +151,13 @@ export class Resource implements ResourceInterface {
 
 	static search = transactional(
 		function (request: Request, resource: Resource) {
-			return resource.search ? resource.search(request) : missingMethod(resource, 'search');
+			const result = resource.search ? resource.search(request) : missingMethod(resource, 'search');
+			const select = request.select;
+			if (select && request.hasOwnProperty('select') && result != null) {
+				const transform = transformForSelect(select);
+				return result.map(transform);
+			}
+			return result;
 		},
 		{ type: 'read' }
 	);
