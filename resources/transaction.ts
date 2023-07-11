@@ -1,5 +1,6 @@
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { Request } from './ResourceInterface';
+import { _assignPackageExport } from '../index';
 
 export function transaction<T>(request: Request, callback: (request: Request) => T): T;
 export function transaction<T>(callback: (request: Request) => T): T;
@@ -47,6 +48,8 @@ export function transaction<T>(request: Request | ((request: Request) => T), cal
 	const committed = transaction.commit();
 	return committed.then ? committed.then(() => result) : result;
 }
+
+_assignPackageExport('transaction', transaction);
 
 class TransactionSet extends Array {
 	/**
