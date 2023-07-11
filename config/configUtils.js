@@ -50,6 +50,7 @@ module.exports = {
 	initOldConfig,
 	getConfigFromFile,
 	getConfigFilePath,
+	addConfig,
 };
 
 /**
@@ -644,4 +645,17 @@ function initOldConfig(old_config_path) {
 function getConfigFromFile(param) {
 	const config_file = readConfigFile();
 	return _.get(config_file, param.replaceAll('_', '.'));
+}
+
+/**
+ * Adds one or more new config elements to harperdb-config
+ * @param values [{keys: ['dog', 'name'], value: tuck}]
+ * @returns {Promise<void>}
+ */
+async function addConfig(values) {
+	const config_doc = parseYamlDoc(getConfigFilePath());
+	for (const v of values) {
+		config_doc.hasIn(v.keys) ? config_doc.setIn(v.keys, v.value) : config_doc.addIn(v.keys, v.value);
+	}
+	await fs.writeFile(getConfigFilePath(), String(config_doc));
 }

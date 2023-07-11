@@ -10,9 +10,6 @@ const { pipeline } = require('stream/promises');
 const { createWriteStream, ensureDir } = require('fs-extra');
 const { join } = require('path');
 const _ = require('lodash');
-const zlib = require('zlib');
-const util = require('util');
-const gunzip = util.promisify(zlib.gunzip);
 const { openEnvironment } = require('../../lmdb/environmentUtility');
 const { statDBI } = require('../../lmdb/environmentUtility');
 const env_mgr = require('../../environment/environmentManager');
@@ -47,14 +44,13 @@ const SYSTEM_TABLES_TO_CLONE = [
 const username = process.env.HDB_LEADER_USERNAME;
 const password = process.env.HDB_LEADER_PASSWORD;
 const url = process.env.HDB_LEADER_URL;
-const clustering_host = process.env.HDB_CLUSTERING_HOST;
+const clustering_host = process.env.HDB_LEADER_CLUSTERING_HOST;
 
 let leader_clustering_enabled;
 let clone_node_config;
 let leader_config;
 let leader_schemas;
 
-// TODO: Do you want to set log level back to error?
 async function cloneNode() {
 	console.info('Cloning node: ' + url);
 	try {
@@ -66,7 +62,7 @@ async function cloneNode() {
 	await installHDB();
 	await cloneTables();
 	await cloneConfig();
-	await cloneApps();
+	await cloneComponents();
 	await clusterTables();
 	console.info('Successfully cloned node: ' + url);
 }
@@ -85,13 +81,11 @@ async function installHDB() {
 	process.env.HDB_ADMIN_PASSWORD = password;
 	process.env.OPERATIONSAPI_NETWORK_PORT = clone_node_config?.operationsApi?.network?.port ?? DEFAULT_HDB_PORT;
 	process.env.CLUSTERING_NODENAME = clone_node_config?.clustering?.nodeName ?? hri.random();
-	process.env.LOGGING_LEVEL = 'info';
 	process.env.CLUSTERING_LOGLEVEL = 'info';
 
 	await install();
 }
 
-// TODO: add zip to backup
 async function cloneTables() {
 	// Get all the non-system schema/table from leader node
 	leader_schemas = await leaderHttpReq({ operation: OPERATIONS_ENUM.DESCRIBE_ALL });
@@ -154,8 +148,6 @@ async function cloneTables() {
 			// Stream the backup to a file with temp name consisting of <timestamp>-<table name>, this is done so that if clone
 			// fails during this step half cloned db files can easily be identified.
 			const temp_db_path = join(schema_path, `${backup_date.getTime()}-${table}.mdb`);
-
-			const unzip = zlib.createGunzip();
 			await pipeline(backup.body, createWriteStream(temp_db_path, { overwrite: true }));
 
 			// Once the clone of a db file is completed it is renamed to its permanent name
@@ -184,56 +176,41 @@ async function cloneTables() {
 		}
 	}
 }
-async function cloneApps() {
-	const { deployCustomFunctionProject } = require('../../../server/customFunctions/operations');
-	const leader_config_apps = leader_config?.apps ?? [];
-	const leader_cf_root = leader_config?.customFunctions?.root;
-	let leader_apps = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_CUSTOM_FUNCTIONS });
-	leader_apps = await leader_apps.json();
+async function cloneComponents() {
+	const { deployComponent } = require('../../../components/operations');
+	let leader_component_files = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_COMPONENT_FILES });
+	leader_component_files = await leader_component_files.json();
 
-	if (leader_apps)
-		if (clone_node_config?.apps?.excludeApps) {
-			// If there is excludeApps in clone config reference it against all the leader apps and remove any apps that should be excluded from clone.
-			for (const exclude_app of clone_node_config.apps.excludeApps) {
-				if (exclude_app?.name == null) continue;
-				if (leader_apps[exclude_app?.name]) delete leader_apps[exclude_app.name];
+	// Loop through the result from get components and build array of comp names to clone
+	// excluding any that are set as excluded in clone config.
+	let comps_to_clone = [];
+	if (leader_component_files.entries.length) {
+		for (const comp of leader_component_files.entries) {
+			// Ignore any files in root of component dir
+			if (!comp.entries) continue;
+			let exclude = false;
+			if (clone_node_config?.components?.exclude) {
+				for (const exclude_comps of clone_node_config.components.exclude) {
+					if (exclude_comps?.name == null) continue;
+					if (exclude_comps.name === comp.name) {
+						exclude = true;
+						break;
+					}
+				}
 			}
+			if (!exclude) comps_to_clone.push(comp.name);
 		}
 
-	// Loop through the result from get_custom_functions. If the function is referenced in the leader
-	// apps config AND it is located in the leaders CF root, package & deploy it to clone node.
-	// If the function exits but is not referenced in the leader app config, package & deploy it but
-	// exclude it from the apps config on clone node. Any apps that are in leader app config but don't reside
-	// in the leader CF root are ignored. These can be deployed when npm install is run in a later step on clone node.
-	const skip_node_modules = clone_node_config?.apps?.skipNodeModules !== false;
-	for (const project in leader_apps) {
-		let app_deployed = false;
-		for (const app of leader_config_apps) {
-			if (app.name === project && app.package.includes(leader_cf_root)) {
-				console.info('Cloning and deploying custom function/app: ' + project);
-				let pkg = await leaderHttpReq({
-					operation: OPERATIONS_ENUM.PACKAGE_CUSTOM_FUNCTION_PROJECT,
-					project,
-					skip_node_modules,
-				});
-				const { payload } = await pkg.json();
-				await deployCustomFunctionProject({ project, payload });
-				app_deployed = true;
-				break;
-			} else if (app.name === project) {
-				app_deployed = true;
-			}
-		}
-
-		if (!app_deployed) {
-			console.info('Cloning and deploying custom function/app: ' + project);
-			let pkg = await leaderHttpReq({
-				operation: OPERATIONS_ENUM.PACKAGE_CUSTOM_FUNCTION_PROJECT,
-				project,
+		const skip_node_modules = clone_node_config?.apps?.skipNodeModules !== false;
+		for (const comp_clone of comps_to_clone) {
+			console.info('Cloning component: ' + comp_clone);
+			const comp_pkg = await leaderHttpReq({
+				operation: OPERATIONS_ENUM.PACKAGE_COMPONENT,
+				project: comp_clone,
 				skip_node_modules,
 			});
-			const { payload } = await pkg.json();
-			await deployCustomFunctionProject({ project, payload, bypass_apps: true });
+			const { payload } = await comp_pkg.json();
+			await deployComponent({ payload, project: comp_clone });
 		}
 	}
 }
@@ -284,6 +261,8 @@ async function clusterTables() {
 		}
 	}
 
+	await nats_utils.createTableStreams(subscriptions);
+
 	hdb_log.info(
 		'Sending add_node request to node:',
 		leader_config?.clustering?.nodeName,
@@ -302,7 +281,6 @@ async function clusterTables() {
 	await nats_utils.closeConnection();
 }
 
-//TODO: Clone plugin config
 async function cloneConfig() {
 	console.info('Cloning configuration');
 	leader_config = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_CONFIGURATION });
@@ -311,7 +289,7 @@ async function cloneConfig() {
 	let config_update = {};
 
 	if (leader_clustering_enabled) {
-		if (clustering_host == null) throw new Error(`'HDB_CLUSTERING_HOST' must be defined`);
+		if (clustering_host == null) throw new Error(`'HDB_LEADER_CLUSTERING_HOST' must be defined`);
 		config_update[CONFIG_PARAMS.CLUSTERING_ENABLED] = true;
 
 		const leader_routes = leader_config?.clustering?.hubServer?.cluster?.network?.routes;
@@ -330,32 +308,24 @@ async function cloneConfig() {
 		config_update[CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_ROUTES] = routes;
 	}
 
-	if (leader_config?.apps && Array.isArray(leader_config?.apps)) {
-		let exclude_apps = clone_node_config?.apps?.excludeApps;
-		// Convert array of excluded apps to object where app name is key, for easy searching.
-		exclude_apps = exclude_apps
-			? exclude_apps.reduce((obj, item) => {
-					return { ...obj, [item['name']]: true };
-			  }, {})
-			: [];
+	let exclude_comps = clone_node_config?.components?.exclude;
+	// Convert array of excluded apps to object where app name is key, for easy searching.
+	exclude_comps = exclude_comps
+		? exclude_comps.reduce((obj, item) => {
+				return { ...obj, [item['name']]: true };
+		  }, {})
+		: [];
 
-		const apps = env_mgr.get(CONFIG_PARAMS.APPS) ?? [];
-		const cloned_apps = [];
-		for (const app of leader_config.apps) {
-			if (exclude_apps[app.name]) continue;
-			// Remove any duplicate app config that might exist between leader and clone node. Leader apps take priority.
-			for (const [i, existing_app] of apps.entries()) {
-				if (existing_app.name === app.name) {
-					apps.splice(i, 1);
-					break;
-				}
-			}
-
-			cloned_apps.push(app);
+	// Get all the comps in the leader config and check if they are in excluded config.
+	let comps_clone = [];
+	for (const element in leader_config) {
+		if (leader_config[element]?.package && !exclude_comps[element]) {
+			comps_clone.push({ keys: [element, 'package'], value: leader_config[element].package });
 		}
+	}
 
-		if (apps.length !== 0)
-			config_update[CONFIG_PARAMS.APPS] = Array.isArray(apps) ? apps.concat(cloned_apps) : cloned_apps;
+	if (!_.isEmpty(comps_clone)) {
+		await config_utils.addConfig(comps_clone);
 	}
 
 	hdb_log.info('Cloning config:', config_update);
@@ -387,7 +357,7 @@ async function leaderHttpReq(req, get_backup = false) {
 }
 
 cloneNode()
-	.then(() => {})
+	.then()
 	.catch((err) => {
 		console.log(err);
 	});

@@ -374,9 +374,7 @@ async function packageComponent(req) {
 /**
  * Can deploy a component in multiple ways. If a 'package' is provided all it will do is write that package to
  * harperdb-config, when HDB is restarted the package will be installed in hdb/node_modules. If a base64 encoded string is passed it
- * will write string to a tar file in the hdb/components dir. When deploying with a payload and bypass_config: true
- * is provided it will extract the tar in hdb/components. If bypass_config is false it will not extract tar file but
- * instead add ref to it in harper-config which will install the component in hdb/node_modules on restart/run
+ * will write string to a tar file in the hdb/components dir, then it will extract the tar in hdb/components.
  * @param req
  * @returns {Promise<string>}
  */
@@ -391,60 +389,45 @@ async function deployComponent(req) {
 	}
 
 	const cf_dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
-	let { project, payload, package: pkg, bypass_config } = req;
+	let { project, payload, package: pkg } = req;
 	log.trace(`deploying component`, project);
-	bypass_config = bypass_config === true;
-
-	if (bypass_config && pkg) {
-		throw new Error('Cannot bypass_config when deploying with a package');
-	}
 
 	if (!payload && !pkg) {
 		throw new Error("'payload' or 'package' must be provided");
 	}
 
-	if (!bypass_config) {
-		if (payload) {
-			pkg = path.join(cf_dir, project + '.tar');
-			await fs.outputFile(pkg, payload, { encoding: 'base64' });
-		}
+	const path_to_project = path.join(cf_dir, project);
+	// check if the project exists, if it doesn't, create it.
+	await fs.ensureDir(path_to_project);
 
-		// Adds package to harperdb-config and then relies on restart to call install on the new app
-		config_utils.updateConfigValue(`${project}_package`, pkg, undefined, false, false, true);
-	} else {
-		const path_to_project = path.join(cf_dir, project);
-		// check if the project exists, if it doesn't, create it.
-		await fs.ensureDir(path_to_project);
+	// Create a temp file to store project tar in. Check that is doesn't already exist, if it does create another path and test.
+	let temp_file_path;
+	let temp_file_exists;
+	do {
+		temp_file_path = path.join(TMP_PATH, uuidV4() + '.tar');
+		temp_file_exists = await fs.pathExists(temp_file_path);
+	} while (temp_file_exists);
 
-		// Create a temp file to store project tar in. Check that is doesn't already exist, if it does create another path and test.
-		let temp_file_path;
-		let temp_file_exists;
-		do {
-			temp_file_path = path.join(TMP_PATH, uuidV4() + '.tar');
-			temp_file_exists = await fs.pathExists(temp_file_path);
-		} while (temp_file_exists);
+	// pack the directory
+	await fs.outputFile(temp_file_path, payload, { encoding: 'base64' });
 
-		// pack the directory
-		await fs.outputFile(temp_file_path, payload, { encoding: 'base64' });
+	// extract the reconstituted file to the proper project directory
+	const stream = fs.createReadStream(temp_file_path);
+	stream.pipe(tar.extract(path_to_project));
+	await new Promise((resolve) => stream.on('end', resolve));
 
-		// extract the reconstituted file to the proper project directory
-		const stream = fs.createReadStream(temp_file_path);
-		stream.pipe(tar.extract(path_to_project));
-		await new Promise((resolve) => stream.on('end', resolve));
+	// delete the file
+	await fs.unlink(temp_file_path);
 
-		// delete the file
-		await fs.unlink(temp_file_path);
-
-		// HDB will package a component into a 'package` folder, this is done for npm install,
-		// however if we are here npm install is not being used, so we copy/remove component code up one dir.
-		const dir = await fs.readdir(path_to_project);
-		if (
-			(dir.length === 1 && dir.includes('package')) ||
-			(dir.length === 2 && dir.includes('package') && dir.includes('.DS_Store'))
-		) {
-			await fs.copy(path.join(path_to_project, 'package'), path_to_project);
-			await fs.remove(path.join(path_to_project, 'package'));
-		}
+	// HDB will package a component into a 'package` folder, this is done for npm install,
+	// however if we are here npm install is not being used, so we copy/remove component code up one dir.
+	const dir = await fs.readdir(path_to_project);
+	if (
+		(dir.length === 1 && dir.includes('package')) ||
+		(dir.length === 2 && dir.includes('package') && dir.includes('.DS_Store'))
+	) {
+		await fs.copy(path.join(path_to_project, 'package'), path_to_project);
+		await fs.remove(path.join(path_to_project, 'package'));
 	}
 
 	return `Successfully deployed: ${project}`;

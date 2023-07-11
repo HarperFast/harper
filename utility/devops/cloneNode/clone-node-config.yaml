@@ -2,23 +2,20 @@
 ---
 database:
   excludeSchemas:
-    - schema:
+    - schema: null
   excludeTables:
-    - schema:
-      table:
-apps:
+    - schema: null
+      table: null
+components:
   skipNodeModules: true
-  excludeApps:
-    - name:
-plugins:
-  excludePlugins:
-    - name:
+  exclude:
+    - name: null
 clustering:
-  nodeName:
+  nodeName: null
   publishToLeaderNode: true
   subscribeToLeaderNode: true
 httpsRejectUnauthorized: false
-rootPath:
+rootPath: null
 operationsApi:
   network:
     port: 9925
