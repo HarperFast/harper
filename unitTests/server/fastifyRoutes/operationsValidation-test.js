@@ -6,7 +6,7 @@ const fs = require('fs-extra');
 const { expect } = chai;
 const rewire = require('rewire');
 const env_mangr = require('../../../utility/environment/environmentManager');
-const validator = rewire('../../../apps/operationsValidation');
+const validator = rewire('../../../components/operationsValidation');
 
 describe('Test operationsValidation module', () => {
 	const sandbox = sinon.createSandbox();
@@ -161,9 +161,7 @@ describe('Test operationsValidation module', () => {
 				function_content: 'hello world',
 			};
 			const result = validator.setCustomFunctionValidator(req);
-			expect(result.message).to.equal(
-				'Project name can only contain alphanumeric, dash and underscores characters. File name can only contain alphanumeric, dash and underscore characters'
-			);
+			expect(result.message).to.equal('Project name can only contain alphanumeric, dash and underscores characters');
 		});
 	});
 

@@ -28,18 +28,18 @@ import * as mqtt from '../server/mqtt';
 const { readFile } = promises;
 
 const CONFIG_FILENAME = 'config.yaml';
-const CF_ROUTES_DIR = env.get(HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+const CF_ROUTES_DIR = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT);
 let loaded_components = new Map<any, any>();
 let watches_setup;
 let resources;
 
 /**
- * Load all the applications registered in HarperDB, those in the custom_functions directory as well as any directly
+ * Load all the applications registered in HarperDB, those in the components directory as well as any directly
  * specified to run
  * @param loaded_plugin_modules
  * @param loaded_resources
  */
-export function loadApplications(loaded_plugin_modules?: Map<any, any>, loaded_resources?: Resources) {
+export function loadComponentDirectories(loaded_plugin_modules?: Map<any, any>, loaded_resources?: Resources) {
 	if (loaded_resources) resources = loaded_resources;
 	if (loaded_plugin_modules) loaded_components = loaded_plugin_modules;
 	const cfs_loaded = [];
@@ -108,7 +108,6 @@ const DEFAULT_CONFIG = {
 	},*/
 };
 
-const POSSIBLE_ROOT_FILES = ['config.yaml', 'package.json', 'schema.graphql', 'resources.js', ''];
 const ports_started = [];
 const loaded_paths = new Map();
 /**
@@ -261,7 +260,7 @@ export async function loadComponent(
 		// Auto restart threads on changes to any app folder. TODO: Make this configurable
 		if (isMainThread && !watches_setup) {
 			watchDir(folder, async () => {
-				return loadApplications(); // return the promise
+				return loadComponentDirectories(); // return the promise
 			});
 		}
 		if (config.extensionModule) {

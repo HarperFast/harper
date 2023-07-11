@@ -7,6 +7,7 @@ import { tables } from './databases';
 import { getLastTxnId } from 'lmdb';
 import { writeKey } from 'ordered-binary';
 import { IterableEventQueue } from './IterableEventQueue';
+import { keyArrayToString } from './Resources';
 const TRANSACTION_EVENT_TYPE = 'transaction';
 const FAILED_CONDITION = 0x4000000;
 let all_subscriptions;
@@ -20,7 +21,7 @@ const test = Buffer.alloc(4096);
  * @param key
  * @param listener
  */
-export function addSubscription(table, key, listener?: (key) => any, start_time: number) {
+export function addSubscription(table, key, listener?: (key) => any, start_time: number, include_descendants) {
 	const path = table.primaryStore.env.path;
 	const table_id = table.primaryStore.tableId;
 	// set up the subscriptions map. We want to just use a single map (per table) for efficient delegation
@@ -36,7 +37,7 @@ export function addSubscription(table, key, listener?: (key) => any, start_time:
 				const first_txn = event.firstTxn;
 				 */
 				const audit_ids = event.auditIds;
-				notifyFromTransactionData(path, audit_ids);
+				notifyFromTransactionData(event.path, audit_ids);
 			}
 		});
 		all_subscriptions = Object.create(null); // using it as a map that doesn't change much
@@ -48,16 +49,12 @@ export function addSubscription(table, key, listener?: (key) => any, start_time:
 		table_subscriptions = database_subscriptions[table_id] = new Map();
 		table_subscriptions.envs = database_subscriptions;
 		table_subscriptions.tableId = table_id;
-		table_subscriptions.allKeys = [];
 	}
+
+	key = keyArrayToString(key);
 	const subscription = new Subscription(listener);
 	subscription.startTime = start_time;
-	if (key == null) {
-		table_subscriptions.allKeys.push(subscription);
-		subscription.subscriptions = table_subscriptions.allKeys;
-		subscription.subscriptions.tables = table_subscriptions;
-		return subscription;
-	}
+	if (include_descendants) subscription.includeDescendants = include_descendants;
 	let subscriptions: any[] = table_subscriptions.get(key);
 
 	if (subscriptions) subscriptions.push(subscription);
@@ -89,10 +86,8 @@ class Subscription extends IterableEventQueue {
 			const table_subscriptions = this.subscriptions.tables;
 			// TODO: Handle cleanup of wildcard
 			const key = this.subscriptions.key;
-			if (key !== undefined)
-				// otherwise it is allKeys
-				table_subscriptions.delete(key);
-			if (table_subscriptions.size === 0 && table_subscriptions.allKeys.length === 0) {
+			table_subscriptions.delete(key);
+			if (table_subscriptions.size === 0) {
 				const env_subscriptions = table_subscriptions.envs;
 				const dbi = table_subscriptions.dbi;
 				delete env_subscriptions[dbi];
@@ -123,36 +118,33 @@ function notifyFromTransactionData(path, audit_ids, same_thread?) {
 		if (!table_subscriptions) continue;
 		writeKey(audit_id, test, 0);
 		const audit_record = subscriptions.auditStore.get(audit_id);
-		for (const subscription of table_subscriptions.allKeys) {
-			try {
-				if (subscription.crossThreads === false && !same_thread) continue;
-				if (!audit_record) {
-					// No audit record found?
-					continue;
-				}
-				subscription.listener(record_key, audit_record, txn_time);
-			} catch (error) {
-				console.error(error);
-				info(error);
-			}
-		}
-		const key_subscriptions = table_subscriptions.get(record_key);
-		if (!key_subscriptions) continue;
-		if (key_subscriptions) {
-			for (const subscription of key_subscriptions) {
-				if (subscription.startTime >= txn_time) {
-					info('omitting', record_key, subscription.startTime, txn_time);
-					continue;
-				}
-				try {
-					if (subscription.crossThreads === false && !same_thread) continue;
-					subscription.listener(record_key, audit_record, txn_time);
-				} catch (error) {
-					console.error(error);
-					info(error);
+		let matching_key = keyArrayToString(record_key);
+		let is_ancestor;
+		do {
+			const key_subscriptions = table_subscriptions.get(matching_key);
+			if (key_subscriptions) {
+				for (const subscription of key_subscriptions) {
+					if (is_ancestor && !subscription.includeDescendants) continue;
+					if (subscription.startTime >= txn_time) {
+						info('omitting', record_key, subscription.startTime, txn_time);
+						continue;
+					}
+					try {
+						if (subscription.crossThreads === false && !same_thread) continue;
+						subscription.listener(record_key, audit_record, txn_time);
+					} catch (error) {
+						console.error(error);
+						info(error);
+					}
 				}
 			}
-		}
+			if (matching_key == null) break;
+			const last_slash = matching_key.lastIndexOf?.('/', matching_key.length - 2);
+			if (last_slash > -1) {
+				matching_key = matching_key.slice(0, last_slash + 1);
+			} else matching_key = null;
+			is_ancestor = true;
+		} while (true);
 	}
 }
 

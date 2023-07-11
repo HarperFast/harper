@@ -3,6 +3,7 @@ import { recordAction, recordActionBinary } from '../resources/analytics';
 import { ServerOptions } from 'http';
 import { ServerError, ClientError } from '../utility/errors/hdbError';
 import { Resources } from '../resources/Resources';
+import { parseQuery } from '../resources/search';
 import { LAST_MODIFICATION_PROPERTY } from '../resources/Resource';
 import { IterableEventQueue } from '../resources/IterableEventQueue';
 
@@ -14,15 +15,24 @@ interface Response {
 }
 
 async function http(request, next_handler) {
-	const method = request.method;
+	const method = request.headers.accept === 'text/event-stream' ? 'CONNECT' : request.method;
+	if (request.search) parseQuery(request);
 	const start = performance.now();
 	let resource_path;
 	try {
 		const headers = {};
-		let resource;
-		let response_data = await resources.call(request.pathname.slice(1), request, (resource_access, path) => {
+		let path = request.pathname.slice(1);
+		const dot_index = path.lastIndexOf('.');
+		if (dot_index > -1) {
+			// we can use .extensions to force the Accept header or to access a property
+			const ext = path.slice(dot_index + 1);
+			const accept = EXTENSION_TYPES[ext];
+			if (accept) request.headers.accept = accept;
+			else request.property = ext;
+			path = path.slice(0, dot_index);
+		}
+		let response_data = await resources.call(path, request, (resource, path) => {
 			resource_path = path;
-			resource = resource_access.resource;
 			if (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'QUERY') {
 				// TODO: Support cancelation (if the request otherwise fails or takes too many bytes)
 				try {
@@ -35,42 +45,48 @@ async function http(request, next_handler) {
 			switch (method) {
 				case 'GET':
 				case 'HEAD':
-					return resource_access.get();
+					return resource.get(request);
 				case 'POST':
-					return resource_access.post(request.data);
+					return resource.post(request.data, request);
 				case 'PUT':
-					return resource_access.put(request.data);
+					return resource.put(request.data, request);
 				case 'DELETE':
-					return resource_access.delete();
+					return resource.delete(request);
 				case 'PATCH':
-					return resource_access.patch(request.data);
+					return resource.patch(request.data, request);
 				case 'OPTIONS': // used primarily for CORS
 					headers.Allow = 'GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS, TRACe, QUERY, COPY, MOVE';
 					return;
 				case 'CONNECT':
 					// websockets? and event-stream
-					return resource_access.connect();
+					return resource.connect(request);
 				case 'TRACE':
 					return 'HarperDB is the terminating server';
 				case 'QUERY':
-					return resource_access.query(request.data);
+					return resource.query(request.data, request);
 				case 'COPY': // methods suggested from webdav RFC 4918
-					return resource_access.copy(request.headers.destination);
+					return resource.copy(request.headers.destination);
 				case 'MOVE':
-					return resource_access.move(request.headers.destination);
+					return resource.move(request.headers.destination);
+				case 'BREW': // RFC 2324
+					throw new ClientError("HarperDB is short and stout and can't brew coffee", 418);
 				default:
-					throw new ServerError('Method not available', 501);
+					throw new ServerError(`Method ${method} is not recognized`, 501);
 			}
 		});
 		if (resource_path === undefined) return next_handler(request); // no resource handler found
 		const execution_time = performance.now() - start;
 		let status = 200;
 		let lastModification;
+		/*if (typeof response_data?.get === 'function') {
+			response_data = await response_data.get();
+		}*/
+		const responseMetadata = request.responseMetadata;
 		if (response_data == undefined) {
 			status = method === 'GET' || method === 'HEAD' ? 404 : 204;
-		} else if ((lastModification = resource[LAST_MODIFICATION_PROPERTY])) {
-			const if_match = request.headers['if-match'];
-			if (if_match && (lastModification * 1000).toString(36) == if_match) {
+		} else if ((lastModification = responseMetadata?.lastModified)) {
+			const last_etag = request.headers['if-none-match'];
+			if (last_etag && (lastModification * 1000).toString(36) == last_etag) {
 				//resource_result.cancel();
 				status = 304;
 				response_data = undefined;
@@ -79,6 +95,11 @@ async function http(request, next_handler) {
 				headers['Last-Modified'] = new Date(lastModification).toUTCString();
 			}
 		}
+		if (responseMetadata) {
+			if (responseMetadata.created) status = 201;
+			if (responseMetadata.location) headers.Location = responseMetadata.location;
+		}
+
 		const response_object = {
 			status,
 			headers,
@@ -99,9 +120,17 @@ async function http(request, next_handler) {
 		recordAction(execution_time, 'TTFB', resource_path, method);
 		recordActionBinary(false, 'success', resource_path, method);
 		if (!error.http_resp_code) console.error(error);
+		const headers = {};
+		if (error.http_resp_code === 405) {
+			if (error.method) error.message += ` to handle HTTP method ${error.method.toUpperCase() || ''}`;
+			if (error.allow) {
+				error.allow.push('trace', 'head', 'options');
+				headers.Allow = error.allow.map((method) => method.toUpperCase()).join(', ');
+			}
+		}
 		return {
 			status: error.http_resp_code || 500, // use specified error status, or default to generic server error
-			headers: {},
+			headers,
 			body: serializeMessage(error.toString(), request),
 		};
 	}
@@ -185,7 +214,6 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 	resources = options.resources;
 	options.server.http(async (request: Request, next_handler) => {
 		if (request.isWebSocket) return;
-		startRequest(request);
 		return http(request, next_handler);
 	});
 	options.server.ws(async (ws, request, chain_completion) => {
@@ -215,9 +243,9 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 		});
 		await chain_completion;
 		let resource_found;
-		const response_stream = await resources.call(request.pathname.slice(1), request, (resource_access, path) => {
+		const response_stream = await resources.call(request.pathname.slice(1), request, (resource, path) => {
 			resource_found = true;
-			return resource_access.connect(incoming_messages);
+			return resource.connect(incoming_messages);
 		});
 		if (!resource_found) {
 			ws.send(serializeMessage(`No resource was found to handle ${request.pathname}`, request));
@@ -241,9 +269,6 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 			const ext = path.slice(dot_index + 1);
 			const accept = EXTENSION_TYPES[ext];
 			if (accept) request.headers.accept = accept;
-		}
-		if (request.headers.accept === 'text/event-stream') {
-			request.method = 'CONNECT';
 		}
 	}
 }

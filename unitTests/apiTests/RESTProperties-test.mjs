@@ -31,6 +31,28 @@ describe('test REST with property updates', () => {
 		assert.equal(response.data.subObject.subProperty, 'a new value');
 		assert.equal(response.data.subArray[1], 'a new item');
 	});
+	it('get with sub-property access via dot', async () => {
+		let response = await axios.put('http://localhost:9926/namespace/SubObject/6', {
+			id: 5,
+			subObject: { name: 'a sub-object' },
+			subArray: [{ name: 'a sub-object of an array' }],
+		});
+		assert.equal(response.status, 204);
+		response = await axios.get('http://localhost:9926/namespace/SubObject/6.subObject');
+		assert.equal(response.status, 200);
+		assert.equal(response.data.name, 'a sub-object');
+	});
+	it('get with sub-property access via ?select', async () => {
+		let response = await axios.put('http://localhost:9926/namespace/SubObject/6', {
+			id: 5,
+			subObject: { name: 'a sub-object' },
+			subArray: [{ name: 'a sub-object of an array' }],
+		});
+		assert.equal(response.status, 204);
+		response = await axios.get('http://localhost:9926/namespace/SubObject/6?select=subObject');
+		assert.equal(response.status, 200);
+		assert.equal(response.data.name, 'a sub-object');
+	});
 	it('put with wrong type on attribute', async () => {
 		const headers = {
 			//authorization,
@@ -55,6 +77,31 @@ describe('test REST with property updates', () => {
 		assert(response.data.includes('Property name must be a string'));
 		assert(response.data.includes('Property age must be an integer'));
 	});
+
+	it('put with nested path', async () => {
+		let response = await axios.put('http://localhost:9926/namespace/SubObject/multi/part/id/3', {
+			subObject: { name: 'deeply nested' },
+			subArray: [],
+		});
+		assert.equal(response.status, 204);
+		response = await axios.get('http://localhost:9926/namespace/SubObject/multi/part/id/3');
+		assert.equal(response.status, 200);
+		assert.equal(response.data.subObject.name, 'deeply nested');
+		assert.deepEqual(response.data.id, ['multi','part', 'id', 3]);
+	});
+	it('get with timestamps and no PK on record', async () => {
+		let response = await axios.put('http://localhost:9926/HasTimeStampsNoPK/33', {
+			name: 'Look Ma, no primary key!',
+		});
+		assert.equal(response.status, 204);
+		response = await axios.get('http://localhost:9926/HasTimeStampsNoPK/33');
+		assert.equal(response.status, 200);
+		assert.equal(response.data.name, 'Look Ma, no primary key!');
+		assert(response.data.updated > 1689025407526);
+		assert(response.data.created > 1689025407526);
+		assert.equal(Object.keys(response.data).length, 3);
+	});
+
 	describe('check operations', function () {
 		it('search_by_value returns all attributes', async function () {
 			let response = await axios.post('http://localhost:9925', {

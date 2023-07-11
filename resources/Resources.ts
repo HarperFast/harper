@@ -1,4 +1,5 @@
 import { Resource } from './Resource';
+import { transaction } from './transaction';
 
 /**
  * This is the global set of all resources that have been registered on this server.
@@ -66,6 +67,8 @@ export class Resources extends Map<string, typeof Resource> {
 	}
 	pathToId(path, Resource) {
 		if (path.indexOf('/') === -1) {
+			// special syntax for more compact numeric representations
+			if (path.startsWith('$')) path = parseInt(path, 36);
 			return Resource.coerceId(decodeURIComponent(path));
 		}
 		const ids = path.split('/');
@@ -78,22 +81,30 @@ export class Resources extends Map<string, typeof Resource> {
 		const entry = this.getMatch(path);
 		if (entry) {
 			path = entry.remainingPath;
-			return entry.Resource.getResource(this.pathToId(path, entry.Resource), resource_info, path);
+			return entry.Resource.getResource(this.pathToId(path, entry.Resource), resource_info);
 		}
 	}
-	async call(path: string, context, callback: Function) {
-		const entry = this.getMatch(path);
-		if (entry) {
-			path = entry.remainingPath;
-			const resource = await entry.Resource.getResource(this.pathToId(path, entry.Resource), context, path);
-			return resource?.accessInTransaction(context, (resource_access) =>
-				callback(resource_access, entry.path, entry.remainingPath)
-			);
-		}
+	call(path: string, request, callback: Function) {
+		return transaction(request, async () => {
+			const entry = this.getMatch(path);
+			if (entry) {
+				path = entry.remainingPath;
+				request.id = this.pathToId(path, entry.Resource);
+				return callback(entry.Resource, entry.path, path);
+			}
+		});
 	}
 	setRepresentation(path, type, representation) {}
 }
 export let resources: Resources;
 export function resetResources() {
 	return (resources = new Resources());
+}
+
+export function keyArrayToString(key) {
+	if (Array.isArray(key)) {
+		if (key[key.length - 1] === null) return key.slice(0, -1).join('/') + '/';
+		else return key.join('/');
+	}
+	return key;
 }

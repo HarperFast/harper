@@ -3,6 +3,7 @@ const { start } = require('../../resources/graphql');
 const { table } = require('../../resources/databases');
 const assert = require('assert');
 const test_data = require('../testData');
+const { transaction } = require('../../resources/transaction');
 describe('Update Schema', () => {
 	let workers, server;
 	const { handleFile } = start({ ensureTable: table });
@@ -16,12 +17,12 @@ describe('Update Schema', () => {
 		}`);
 	});
 	it('Add some records and then index them', async function () {
-		await tables.SchemaChanges.transact((table) => {
-			test_data.map((record) => table.create(record));
+		await transaction((context) => {
+			test_data.map((record) => tables.SchemaChanges.create(record, context));
 		});
 		let caught_error;
 		try {
-			tables.SchemaChanges.search([{ attribute: 'state', value: 'UT' }]);
+			tables.SchemaChanges.search({ conditions: [{ attribute: 'state', value: 'UT' }] });
 		} catch (error) {
 			caught_error = error;
 		}
@@ -33,14 +34,14 @@ describe('Update Schema', () => {
 			city: String @indexed
 		}`);
 		try {
-			tables.SchemaChanges.search([{ attribute: 'state', value: 'UT' }]);
+			tables.SchemaChanges.search({ conditions: [{ attribute: 'state', value: 'UT' }] });
 		} catch (error) {
 			caught_error = error;
 		}
 		assert(caught_error?.message.includes('not indexed yet'));
 		await tables.SchemaChanges.indexingOperation;
 		let records = [];
-		for await (let record of tables.SchemaChanges.search([{ attribute: 'state', value: 'UT' }])) {
+		for await (let record of tables.SchemaChanges.search({ conditions: [{ attribute: 'state', value: 'UT' }] })) {
 			records.push(record);
 		}
 		assert.equal(records.length, 21);
