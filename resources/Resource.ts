@@ -60,16 +60,19 @@ export class Resource implements ResourceInterface {
 					: request.property && request.hasOwnProperty('property')
 					? resource.get?.(request.property)
 					: resource.get?.();
-			let select;
-			if ((select = request.select) && request.hasOwnProperty('select') && result != null) {
-				const transform = transformForSelect(select);
-				if (is_collection) {
-					return result.map(transform);
-				} else {
-					return transform(result);
+			if (result?.then) return result.then(handleSelect);
+			return handleSelect(result);
+			function handleSelect(result) {
+				let select;
+				if ((select = request.select) && request.hasOwnProperty('select') && result != null) {
+					const transform = transformForSelect(select);
+					if (is_collection) {
+						return result.map(transform);
+					} else {
+						return transform(result);
+					}
 				}
 			}
-			return result;
 		},
 		{ type: 'read' }
 	);
