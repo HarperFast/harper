@@ -30,7 +30,8 @@ export function start({ ensureTable }) {
 				case Kind.OBJECT_TYPE_DEFINITION:
 					const type_name = definition.name.value;
 					// use type name as the default table
-					const type_def = { table: null, database: null, attributes: [] };
+					const properties = [];
+					const type_def = { table: null, database: null, properties };
 					types.set(type_name, type_def);
 					for (const directive of definition.directives) {
 						if (directive.name.value === 'table') {
@@ -39,6 +40,7 @@ export function start({ ensureTable }) {
 							}
 							if (type_def.schema) type_def.database = type_def.schema;
 							if (!type_def.table) type_def.table = type_name;
+							type_def.attributes = type_def.properties;
 							tables.push(type_def);
 						}
 						if (directive.name.value === 'sealed') {
@@ -48,7 +50,6 @@ export function start({ ensureTable }) {
 							type_def.export = true;
 						}
 					}
-					const properties = [];
 					let has_primary_key = false;
 					function getProperty(type) {
 						if (type.kind === 'NonNullType') {
@@ -92,7 +93,6 @@ export function start({ ensureTable }) {
 							}
 						}
 					}
-					type_def.properties = properties;
 					type_def.typeName = type_name;
 					if (type_name === 'Query') {
 						query = type_def;
@@ -110,23 +110,6 @@ export function start({ ensureTable }) {
 		}
 		// any tables that are defined in the schema can now be registered
 		for (const type_def of tables) {
-			let has_primary_key = false;
-			const attributes = type_def.properties;
-			for (const attribute of attributes) {
-				if (attribute.isPrimaryKey) has_primary_key = true;
-			}
-			if (!has_primary_key) {
-				const id_attribute = attributes.find((attribute) => attribute.name === 'id');
-				if (id_attribute) id_attribute.isPrimaryKey = true;
-				// Do we wait until we have auto-incrementing numbers before auto-adding a primary key?
-				else
-					attributes.push({
-						name: 'id',
-						type: 'ID',
-						isPrimaryKey: true,
-					});
-			}
-			type_def.attributes = attributes;
 			// with graphql database definitions, this is a declaration that the table should exist and that it
 			// should be created if it does not exist
 			type_def.tableClass = ensureTable(type_def);

@@ -89,6 +89,18 @@ describe('test REST with property updates', () => {
 		assert.equal(response.data.subObject.name, 'deeply nested');
 		assert.deepEqual(response.data.id, ['multi','part', 'id', 3]);
 	});
+	it('get with timestamps and no PK on record', async () => {
+		let response = await axios.put('http://localhost:9926/HasTimeStampsNoPK/33', {
+			name: 'Look Ma, no primary key!',
+		});
+		assert.equal(response.status, 204);
+		response = await axios.get('http://localhost:9926/HasTimeStampsNoPK/33');
+		assert.equal(response.status, 200);
+		assert.equal(response.data.name, 'Look Ma, no primary key!');
+		assert(response.data.updated > 1689025407526);
+		assert(response.data.created > 1689025407526);
+		assert.equal(Object.keys(response.data).length, 3);
+	});
 
 	describe('check operations', function () {
 		it('search_by_value returns all attributes', async function () {

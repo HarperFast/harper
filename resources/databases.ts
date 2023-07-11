@@ -199,23 +199,26 @@ function readMetaDb(
 			}
 		}
 
+		const tables = ensureDB(database_name);
+		const defined_tables = tables[DEFINED_TABLES];
 		const tables_to_load = new Map();
 		for (const { key, value } of dbis_store.getRange({ start: false })) {
 			let [table_name, attribute_name] = key.toString().split('/');
-			if (attribute_name === '') attribute_name = value.name; // primary key
-			if (!attribute_name) {
+			if (attribute_name === '') {
+				// primary key
+				attribute_name = value.name;
+			} else if (!attribute_name) {
 				attribute_name = table_name;
 				table_name = default_table;
 				value.name = attribute_name;
 			}
+			defined_tables?.add(table_name);
 			let attributes = tables_to_load.get(table_name);
 			if (!attributes) tables_to_load.set(table_name, (attributes = []));
-			attributes.push(value);
+			if (attribute_name != null) attributes.push(value);
 			Object.defineProperty(value, 'key', { value: key, configurable: true });
 		}
 
-		const tables = ensureDB(database_name);
-		const defined_tables = tables[DEFINED_TABLES];
 		const table_classes = tables[TABLE_CLASSES];
 		for (const [table_name, attributes] of tables_to_load) {
 			for (const attribute of attributes) {
@@ -223,7 +226,6 @@ function readMetaDb(
 				attribute.attribute = attribute.name;
 				if (attribute.is_hash_attribute) {
 					// if the table has already been defined, use that class, don't create a new one
-					defined_tables?.add(table_name);
 					let table = table_classes?.get(table_name);
 					let indices = {},
 						existing_attributes = [];
@@ -449,7 +451,7 @@ export function table({
 			harper_logger.trace(`openDB ${AUDIT_STORE_NAME} from ${database_name}`);
 			root_store.auditStore = audit_store = root_store.openDB(AUDIT_STORE_NAME, {});
 		}
-		primary_key_attribute = attributes.find((attribute) => attribute.isPrimaryKey) || { name: 'id' };
+		primary_key_attribute = attributes.find((attribute) => attribute.isPrimaryKey) || {};
 		primary_key = primary_key_attribute.name;
 		primary_key_attribute.is_hash_attribute = true;
 		primary_key_attribute.schemaDefined = schema_defined;
@@ -459,7 +461,7 @@ export function table({
 			else if (!primary_key_attribute.origins.includes(origin)) primary_key_attribute.origins.push(origin);
 		}
 		harper_logger.trace(`${table_name} table loading, opening primary store`);
-		const dbi_init = new OpenDBIObject(!primary_key_attribute.isPrimaryKey, primary_key_attribute.isPrimaryKey);
+		const dbi_init = new OpenDBIObject(false, true);
 		const dbi_name = table_name + '/';
 		harper_logger.trace(`openDB ${dbi_name} from ${database_name}`);
 		const primary_store = root_store.openDB(dbi_name, dbi_init);

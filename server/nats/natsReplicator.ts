@@ -190,11 +190,8 @@ class NATSTransaction {
 							node_name,
 						},
 					};
-					if (operation === 'delete') transaction_event.hash_values = ids;
-					else if (operation === 'publish') {
-						transaction_event.hash_values = ids;
-						transaction_event.records = records;
-					} else {
+					transaction_event.hash_values = ids;
+					if (operation !== 'delete') {
 						transaction_event.records = records;
 					}
 				}

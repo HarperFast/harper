@@ -482,7 +482,7 @@ export function makeTable(options) {
 				if (own_data) updates = Object.assign(own_data, updates);
 				this[OWN_DATA] = own_data = updates;
 			}
-			if (!this[RECORD_PROPERTY] && !(own_data || (own_data = this[OWN_DATA]))?.[primary_key]) {
+			if (!this[RECORD_PROPERTY] && primary_key && !(own_data || (own_data = this[OWN_DATA]))?.[primary_key]) {
 				// if no primary key in the data, we assign it
 				if (!own_data) own_data = this[OWN_DATA] = Object.create(null);
 				own_data[primary_key] = this[ID_PROPERTY];
@@ -847,7 +847,6 @@ export function makeTable(options) {
 				this.constructor,
 				this[ID_PROPERTY],
 				function (id, audit_record, timestamp) {
-					//let result = await this.get(key);
 					try {
 						this.send({ id, timestamp, ...audit_record });
 					} catch (error) {
@@ -860,7 +859,7 @@ export function makeTable(options) {
 			let count = request.previousCount;
 			if (count > 1000) count = 1000; // don't allow too many, we have to hold these in memory
 			let start_time = request.startTime;
-			if (id == null) {
+			if (this[IS_COLLECTION]) {
 				if (start_time) {
 					if (count)
 						throw new ClientError('startTime and previousCount can not be combined for a table level subscription');

@@ -31,7 +31,7 @@ export class Resource implements ResourceInterface {
 	static transactions: Transaction[] & { timestamp: number };
 	constructor(identifier: Id, source: Context | { [CONTEXT]: Context }) {
 		this[ID_PROPERTY] = identifier;
-		const context = source[CONTEXT];
+		const context = source?.[CONTEXT];
 		this[CONTEXT] = context !== undefined ? context : source || null;
 	}
 
@@ -198,10 +198,13 @@ export class Resource implements ResourceInterface {
 	}
 	static getResource(id: Id, request: Request): Resource | Promise<Resource> {
 		let resource;
-		const is_collection = id == null || (id.constructor === Array && id[id.length - 1] == null);
+		let context = request[CONTEXT];
+		let is_collection;
+		if (typeof request.isCollection === 'boolean' && request.hasOwnProperty('isCollection'))
+			is_collection = request.isCollection;
+		else is_collection = id == null || (id.constructor === Array && id[id.length - 1] == null);
 		// if it is a collection and we have a collection class defined, use it
 		const constructor = (is_collection && this.Collection) || this;
-		let context = request[CONTEXT];
 		if (!context) context = context === undefined ? request : {};
 		if (context.transaction) {
 			let resource_cache;

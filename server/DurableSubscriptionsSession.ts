@@ -1,6 +1,7 @@
 import { table } from '../resources/databases';
 import { resources } from '../resources/Resources';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
+import { IS_COLLECTION } from '../resources/Resource';
 const DurableSession = table({
 	database: 'system',
 	table: 'hdb_durable_session',
@@ -90,24 +91,33 @@ class SubscriptionsSession {
 			path = topic.slice(0, search_index);
 		} else path = topic;
 		if (!path) throw new Error('No topic provided');
-		if (path.endsWith('+') || path.endsWith('#'))
-			// normalize wildcard
-			path = topic.slice(0, path.length - 1);
-		const levels = path.split('/').length;
-		if (levels > 2) throw new Error('Only two level topics (of the form "table/id") are supported');
+		let is_collection = false;
+		let is_shallow_wildcard;
+		if (path.endsWith('+') || path.endsWith('#')) {
+			is_collection = true;
+			if (path.endsWith('+')) is_shallow_wildcard = true;
+			// handle wildcard
+			path = path.slice(0, path.length - 1);
+		}
+
+		if (path.indexOf('.') > -1) throw new Error('Dots are not allowed in topic names');
+		if (path.indexOf('#') > -1 || path.indexOf('+') > -1) throw new Error('Only trailing wildcards are supported');
 		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
 		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
 		if (existing_subscription) {
 			existing_subscription.end();
 			this.subscriptions.splice(this.subscriptions.indexOf(existing_subscription), 1);
 		}
-		const subscription = await resources.call(path, this, async (resource, resource_path) => {
-			const subscription = await resource.subscribe({
-				search,
-				user: this.user,
-				startTime: start_time,
-				noRetain: rh,
-			});
+		const request = {
+			search,
+			user: this.user,
+			startTime: start_time,
+			noRetain: rh,
+			isCollection: is_collection,
+			shallowWildcard: is_shallow_wildcard,
+		};
+		const subscription = await resources.call(path, request, async (resource, resource_path) => {
+			const subscription = await resource.subscribe(request);
 			if (!subscription) throw new Error(`No subscription was returned from subscribe for topic ${topic}`);
 			if (!subscription[Symbol.asyncIterator])
 				throw new Error(`Subscription is not (async) iterable for topic ${topic}`);
