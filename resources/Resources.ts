@@ -100,3 +100,11 @@ export let resources: Resources;
 export function resetResources() {
 	return (resources = new Resources());
 }
+
+export function keyArrayToString(key) {
+	if (Array.isArray(key)) {
+		if (key[key.length - 1] === null) return key.slice(0, -1).join('/') + '/';
+		else return key.join('/');
+	}
+	return key;
+}

@@ -1,7 +1,8 @@
 import { table } from '../resources/databases';
-import { resources } from '../resources/Resources';
+import { keyArrayToString, resources } from '../resources/Resources';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { IS_COLLECTION } from '../resources/Resource';
+import { warn } from '../utility/logging/harper_logger';
 const DurableSession = table({
 	database: 'system',
 	table: 'hdb_durable_session',
@@ -123,12 +124,19 @@ class SubscriptionsSession {
 				throw new Error(`Subscription is not (async) iterable for topic ${topic}`);
 			(async () => {
 				for await (const update of subscription) {
-					let message_id;
-					if (needs_ack) {
-						update.topic = topic;
-						message_id = this.needsAcknowledge(update);
-					} else message_id = next_message_id++;
-					this.listener(resource_path + '/' + (update.id ?? ''), update.value, message_id, subscription_request);
+					try {
+						let message_id;
+						if (needs_ack) {
+							update.topic = topic;
+							message_id = this.needsAcknowledge(update);
+						} else message_id = next_message_id++;
+						let path = update.id;
+						if (Array.isArray(path)) path = keyArrayToString(path);
+						if (path == null) path = '';
+						this.listener(resource_path + '/' + path, update.value, message_id, subscription_request);
+					} catch (error) {
+						warn(error);
+					}
 				}
 			})();
 			return subscription;

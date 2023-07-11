@@ -18,6 +18,7 @@ import { idsForCondition, filterByType } from './search';
 import * as harper_logger from '../utility/logging/harper_logger';
 import { assignTrackedAccessors, deepFreeze, hasChanges, OWN_DATA } from './tracked';
 import { transaction } from './transaction';
+import { MAXIMUM_KEY } from 'ordered-binary';
 
 let server_utilities;
 const RANGE_ESTIMATE = 100000000;
@@ -299,7 +300,7 @@ export function makeTable(options) {
 					throw new Error('Invalid read transaction');
 				}
 				let first_load_record;
-				if (!read_txn.hasRunLoadRecord) {
+				if (read_txn && !read_txn.hasRunLoadRecord) {
 					first_load_record = true;
 					read_txn.hasRunLoadRecord = true;
 				}
@@ -853,21 +854,24 @@ export function makeTable(options) {
 						console.error(error);
 					}
 				},
-				request.startTime
+				request.startTime,
+				this[IS_COLLECTION]
 			);
-			const id = this[ID_PROPERTY];
+			const this_id = this[ID_PROPERTY];
 			let count = request.previousCount;
 			if (count > 1000) count = 1000; // don't allow too many, we have to hold these in memory
 			let start_time = request.startTime;
 			if (this[IS_COLLECTION]) {
+				// a collection should retrieve all descendant ids
 				if (start_time) {
 					if (count)
 						throw new ClientError('startTime and previousCount can not be combined for a table level subscription');
 					// start time specified, get the audit history for this time range
 					for (const { key, value } of audit_store.getRange({ start: [start_time, Number.MAX_SAFE_INTEGER] })) {
-						const [timestamp, audit_table_id, id] = key;
+						let [timestamp, audit_table_id, id] = key;
+						if (key.length > 3) id = key.slice(2);
 						if (audit_table_id !== table_id) continue;
-						subscription.send({ id, timestamp, ...value });
+						if (this_id == null || isDescendantId(this_id, id)) subscription.send({ id, timestamp, ...value });
 						// TODO: Would like to do this asynchronously, but would need to catch up on anything published during iteration
 						//await new Promise((resolve) => setImmediate(resolve)); // yield for fairness
 						subscription.startTime = timestamp; // update so don't double send
@@ -877,10 +881,13 @@ export function makeTable(options) {
 					// we are collecting the history in reverse order to get the right count, then reversing to send
 					for (const { key, value } of audit_store.getRange({ start: 'z', end: false, reverse: true })) {
 						try {
-							const [timestamp, audit_table_id, id] = key;
+							let [timestamp, audit_table_id, id] = key;
+							if (key.length > 3) id = key.slice(2);
 							if (audit_table_id !== table_id) continue;
-							history.push({ id, timestamp, ...value });
-							if (--count <= 0) break;
+							if (this_id == null || isDescendantId(this_id, id)) {
+								history.push({ id, timestamp, ...value });
+								if (--count <= 0) break;
+							}
 						} catch (error) {
 							harper_logger.error('Error getting history entry', key, error);
 						}
@@ -892,7 +899,11 @@ export function makeTable(options) {
 					}
 					if (history[0]) subscription.startTime = history[0].timestamp; // update so don't double send
 				} else if (!request.noRetain) {
-					for (const { key: id, value, version } of primary_store.getRange({ start: false, versions: true })) {
+					for (const { key: id, value, version } of primary_store.getRange({
+						start: this_id ?? false,
+						end: this_id == null ? undefined : [this_id, MAXIMUM_KEY],
+						versions: true,
+					})) {
 						if (!value) continue;
 						subscription.send({ id, timestamp: version, value });
 					}
@@ -906,12 +917,12 @@ export function makeTable(options) {
 					const history = [];
 					let next_version = version;
 					do {
-						const key = [next_version, table_id, id];
+						const key = [next_version, table_id, this_id];
 						//TODO: Would like to do this asynchronously, but we will need to run catch after this to ensure we didn't miss anything
 						//await audit_store.prefetch([key]); // do it asynchronously for better fairness/concurrency and avoid page faults
 						const audit_entry = audit_store.get(key);
 						if (audit_entry) {
-							history.push({ id, timestamp: next_version, ...audit_entry });
+							history.push({ id: this_id, timestamp: next_version, ...audit_entry });
 							next_version = audit_entry.lastVersion;
 						} else break;
 						if (count) count--;
@@ -922,7 +933,7 @@ export function makeTable(options) {
 					subscription.startTime = version; // make sure we don't re-broadcast the current version that we already sent
 				} else if (!request.noRetain) {
 					// if retain and it exists, send the current value first
-					if (this.doesExist()) subscription.send({ id, timestamp: this[VERSION_PROPERTY], value: this });
+					if (this.doesExist()) subscription.send({ id: this_id, timestamp: this[VERSION_PROPERTY], value: this });
 				}
 			}
 			if (request.listener) subscription.on('data', request.listener);
@@ -981,6 +992,7 @@ export function makeTable(options) {
 					}
 
 					const existing_record = retries > 0 ? primary_store.get(id) : this[RECORD_PROPERTY];
+					if (!existing_record && !retries && (audit_store || track_deletes)) record_deletion(1);
 					primary_store.put(id, existing_record ?? null, txn_time);
 					// messages are recorded in the audit entry
 					return {
@@ -1172,4 +1184,19 @@ function coerceType(value, attribute) {
 		return STRING_CAN_BE_INTEGER.test(value) ? parseInt(value) : value;
 	}
 	return value;
+}
+function isDescendantId(ancestor_id, descendant_id): boolean {
+	if (ancestor_id == null) return true; // ancestor of all ids
+	if (!Array.isArray(descendant_id)) return ancestor_id === descendant_id;
+	if (Array.isArray(ancestor_id)) {
+		let al = ancestor_id.length;
+		if (ancestor_id[al - 1] === null) al--;
+		if (descendant_id.length >= al) {
+			for (let i = 0; i < al; i++) {
+				if (descendant_id[i] !== ancestor_id[i]) return false;
+			}
+			return true;
+		}
+		return false;
+	} else if (descendant_id[0] === ancestor_id) return true;
 }
