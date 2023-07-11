@@ -504,8 +504,7 @@ export function makeTable(options) {
 			// with the canonical data, we are simply fulfilling our local copy of the canonical data, but still don't
 			// want a timestamp later than the current transaction
 			primary_store.put(this[ID_PROPERTY], invalidated_record, existing_version, existing_version);
-			const source = await this.constructor.Source.getResource(this[ID_PROPERTY], this);
-			const updated_record = await source.get();
+			const updated_record = await this.constructor.Source.get(this[ID_PROPERTY], this);
 			const version = existing_version;
 			if (updated_record) {
 				updated_record[primary_key] = this[ID_PROPERTY];
