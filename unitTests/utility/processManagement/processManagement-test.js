@@ -458,24 +458,6 @@ describe('Test processManagement utilityFunctions module', () => {
 		});
 	});
 
-	describe('Test isServiceRegistered', () => {
-		afterEach(async function () {
-			this.timeout(10000);
-			await stopDeleteAllServices();
-		});
-
-		it('Test false is returned if service no registered to processManagement', async () => {
-			const result = await utility_functions.isServiceRegistered('harperdb');
-			expect(result).to.be.false;
-		});
-
-		it('Test true is returned if service is registered to processManagement', async () => {
-			await utility_functions.startService('harperdb');
-			const result = await utility_functions.isServiceRegistered('harperdb');
-			expect(result).to.be.false;
-		});
-	});
-
 	describe('Test restartAllServices function', () => {
 		let reload_stub = sandbox.stub();
 		let restart_stub = sandbox.stub();

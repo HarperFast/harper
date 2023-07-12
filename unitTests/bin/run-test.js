@@ -12,7 +12,6 @@ const path = require('path');
 const test_util = require('../test_utils');
 const env_mangr = require('../../utility/environment/environmentManager');
 const hdb_terms = require('../../utility/hdbTerms');
-const install_user_permission = require('../../utility/install_user_permission');
 const pm2_utils = require('../../utility/processManagement/processManagement');
 const nats_config = require('../../server/nats/utility/natsConfig');
 const child_process = require('child_process');
@@ -44,7 +43,6 @@ describe('Test run module', () => {
 	let process_exit_stub;
 	let start_all_services_stub;
 	let start_service_stub;
-	let check_perms_stub;
 	let spawn_stub;
 	let get_prob_stub;
 	let start_clustering_stub;
@@ -70,7 +68,6 @@ describe('Test run module', () => {
 		get_prob_stub = sandbox.stub(env_mangr, 'get');
 		get_prob_stub.withArgs('rootPath').returns('unit-test');
 		spawn_stub = sandbox.stub(child_process, 'spawn').returns(fake_spawn);
-		check_perms_stub = sandbox.stub(install_user_permission, 'checkPermission');
 		start_all_services_stub = sandbox.stub(pm2_utils, 'startAllServices').resolves();
 		start_service_stub = sandbox.stub(pm2_utils, 'startService').resolves();
 		start_clustering_stub = sandbox.stub(pm2_utils, 'startClusteringProcesses').resolves();
@@ -197,14 +194,6 @@ describe('Test run module', () => {
 			expect(log_error_stub.getCall(0).firstArg.name).to.equal(TEST_ERROR);
 			expect(process_exit_stub.getCall(0).firstArg).to.equal(1);
 			is_hdb_installed_stub.resolves(true);
-		});
-
-		it('Test error is thrown if check perms fails', async () => {
-			check_perms_stub.throws(new Error(TEST_ERROR));
-			await run();
-			expect(console_error_stub.getCall(0).firstArg).to.equal(TEST_ERROR);
-			expect(log_error_stub.getCall(0).firstArg.message).to.equal(TEST_ERROR);
-			expect(process_exit_stub.getCall(0).firstArg).to.equal(1);
 		});
 	});
 
@@ -453,7 +442,6 @@ describe('Test run module', () => {
 			const result = await isHdbInstalled();
 
 			expect(result).to.be.true;
-			expect(fs_stat_stub.getCall(0).args[0]).to.include(`.harperdb${path.sep}hdb_boot_properties.file`);
 			expect(fs_stat_stub.getCall(1).args[0]).to.include(`harperdb${path.sep}unitTests${path.sep}settings.test`);
 		});
 

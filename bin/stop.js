@@ -15,11 +15,13 @@ module.exports = stop;
 async function stop() {
 	console.log(STOP_MSG);
 	hdb_logger.notify(STOP_MSG);
-	if (await process_man.isServiceRegistered(hdb_terms.HDB_PROC_DESCRIPTOR)) process_man.enterPM2Mode();
-
-	const services = await process_man.getUniqueServicesList();
-	for (const service in services) {
-		await process_man.stop(service);
+	const is_pm2_mode = await process_man.isServiceRegistered(hdb_terms.HDB_PROC_DESCRIPTOR);
+	if (is_pm2_mode) {
+		process_man.enterPM2Mode();
+		const services = await process_man.getUniqueServicesList();
+		for (const service in services) {
+			await process_man.stop(service);
+		}
 	}
 
 	// Kill process management daemon
