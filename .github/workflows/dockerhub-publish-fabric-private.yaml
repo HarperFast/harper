@@ -1,7 +1,4 @@
 on:
-  push:
-    branches:
-      - "CORE-2214"
   workflow_dispatch:
 name: DockerHub Publish Private
 jobs:
@@ -58,12 +55,12 @@ jobs:
       with:
         name: "licenses"
         path: "utility/Docker/licenses/"
-    - name: "Publish harperdb/private to Dockerhub"
+    - name: "Publish harperdb/fabric to Dockerhub"
       env:
         HARPERDB_VERSION: ${{ needs.build.outputs.harperdbVersion }}
         NODE_VERSION: ${{ needs.build.outputs.nodeVersion }}
         PUBLISH: "fabric"
         GITHUB_RUN_NUMBER: ${{ vars.GITHUB_RUN_NUMBER }}
         DOCKERFILE: 'utility/Docker/Dockerfile-fabric'
-        DOCKER_IMAGE: 'harperdb/harperdb-fabric'
+        DOCKER_IMAGE: 'harperdb/fabric'
       run: ./.github/scripts/docker-publish.sh
