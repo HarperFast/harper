@@ -1,6 +1,8 @@
 import { table } from '../resources/databases';
-import { resources } from '../resources/Resources';
+import { keyArrayToString, resources } from '../resources/Resources';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
+import { IS_COLLECTION } from '../resources/Resource';
+import { warn } from '../utility/logging/harper_logger';
 const DurableSession = table({
 	database: 'system',
 	table: 'hdb_durable_session',
@@ -55,13 +57,13 @@ export async function getSession({
 }) {
 	let session;
 	if (session_id && !non_durable) {
-		const session_resource = await DurableSession.getResource(session_id);
+		const session_resource = await DurableSession.getResource(session_id, {});
 		session = new DurableSubscriptionsSession(session_id, user, session_resource);
-		if (session_resource.isSavedRecord()) session.sessionWasPresent = true;
+		if (session_resource) session.sessionWasPresent = true;
 	} else {
 		if (session_id) {
 			// connecting with a clean session and session id is how durable sessions are deleted
-			const session_resource = await DurableSession.getResource(session_id);
+			const session_resource = await DurableSession.get(session_id);
 			if (session_resource) session_resource.delete();
 		}
 		session = new SubscriptionsSession(session_id, user);
@@ -90,35 +92,51 @@ class SubscriptionsSession {
 			path = topic.slice(0, search_index);
 		} else path = topic;
 		if (!path) throw new Error('No topic provided');
-		if (path.endsWith('+') || path.endsWith('#'))
-			// normalize wildcard
-			path = topic.slice(0, path.length - 1);
-		const levels = path.split('/').length;
-		if (levels > 2) throw new Error('Only two level topics (of the form "table/id") are supported');
+		let is_collection = false;
+		let is_shallow_wildcard;
+		if (path.endsWith('+') || path.endsWith('#')) {
+			is_collection = true;
+			if (path.endsWith('+')) is_shallow_wildcard = true;
+			// handle wildcard
+			path = path.slice(0, path.length - 1);
+		}
+
+		if (path.indexOf('.') > -1) throw new Error('Dots are not allowed in topic names');
+		if (path.indexOf('#') > -1 || path.indexOf('+') > -1) throw new Error('Only trailing wildcards are supported');
 		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
 		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
 		if (existing_subscription) {
 			existing_subscription.end();
 			this.subscriptions.splice(this.subscriptions.indexOf(existing_subscription), 1);
 		}
-		const subscription = await resources.call(path, this, async (resource_access, resource_path) => {
-			const subscription = await resource_access.subscribe({
-				search,
-				user: this.user,
-				startTime: start_time,
-				noRetain: rh,
-			});
+		const request = {
+			search,
+			user: this.user,
+			startTime: start_time,
+			noRetain: rh,
+			isCollection: is_collection,
+			shallowWildcard: is_shallow_wildcard,
+		};
+		const subscription = await resources.call(path, request, async (resource, resource_path) => {
+			const subscription = await resource.subscribe(request);
 			if (!subscription) throw new Error(`No subscription was returned from subscribe for topic ${topic}`);
 			if (!subscription[Symbol.asyncIterator])
 				throw new Error(`Subscription is not (async) iterable for topic ${topic}`);
 			(async () => {
 				for await (const update of subscription) {
-					let message_id;
-					if (needs_ack) {
-						update.topic = topic;
-						message_id = this.needsAcknowledge(update);
-					} else message_id = next_message_id++;
-					this.listener(resource_path + '/' + (update.id ?? ''), update.value, message_id, subscription_request);
+					try {
+						let message_id;
+						if (needs_ack) {
+							update.topic = topic;
+							message_id = this.needsAcknowledge(update);
+						} else message_id = next_message_id++;
+						let path = update.id;
+						if (Array.isArray(path)) path = keyArrayToString(path);
+						if (path == null) path = '';
+						this.listener(resource_path + '/' + path, update.value, message_id, subscription_request);
+					} catch (error) {
+						warn(error);
+					}
 				}
 			})();
 			return subscription;
@@ -156,9 +174,13 @@ class SubscriptionsSession {
 		message.data = data;
 		message.user = this.user;
 		let resource_found;
-		const publish_result = await resources.call(topic, message, async (resource_access) => {
+		const publish_result = await resources.call(topic, message, async (resource) => {
 			resource_found = true;
-			return resource_access.publish(data);
+			return retain
+				? data === undefined
+					? resource.delete(message)
+					: resource.put(message.data, message)
+				: resource.publish(message.data, message);
 		});
 		if (!resource_found) throw new Error('There is no resource or table for the ${topic} topic');
 		return publish_result;
@@ -210,18 +232,18 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				}
 			}
 		}
-		this.sessionRecord.update(() => {
-			for (const subscription of this.subscriptions) {
-				if (subscription.topic === topic) {
-					subscription.startTime = update.timestamp;
-				}
+
+		for (const subscription of this.subscriptions) {
+			if (subscription.topic === topic) {
+				subscription.startTime = update.timestamp;
 			}
-			this.sessionRecord.subscriptions = this.subscriptions.map((subscription) => ({
-				qos: subscription.qos,
-				topic: subscription.topic,
-				startTime: subscription.startTime,
-			}));
-		});
+		}
+		this.sessionRecord.subscriptions = this.subscriptions.map((subscription) => ({
+			qos: subscription.qos,
+			topic: subscription.topic,
+			startTime: subscription.startTime,
+		}));
+		this.sessionRecord.update();
 		// TODO: Increment the timestamp for the corresponding subscription, possibly recording any interim unacked messages
 	}
 
@@ -238,7 +260,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 					startTime: start_time,
 				};
 			});
-			DurableSession.put(this.sessionId, this.sessionRecord);
+			DurableSession.put(this.sessionRecord);
 		}
 		return subscription.qos;
 	}

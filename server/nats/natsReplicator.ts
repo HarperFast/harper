@@ -13,7 +13,7 @@ import { onMessageFromWorkers } from '../../server/threads/manageThreads';
 import { threadId } from 'worker_threads';
 import initializeReplyService from './natsReplyService';
 import * as harper_logger from '../../utility/logging/harper_logger';
-
+import { Context } from '../../resources/ResourceInterface';
 
 let publishing_databases = new Map();
 export function start() {
@@ -64,23 +64,24 @@ export function setNATSReplicator(table_name, db_name, Table) {
 
 	Table.sourcedFrom(
 		class NATSReplicator extends Resource {
-			put(record, options) {
+			put(record) {
 				// add this to the transaction
-				this.getNATSTransaction(options).addWrite(db_name, {
+				this.getNATSTransaction(this.getContext()).addWrite(db_name, {
 					operation: 'put',
 					table: table_name,
+					id: this[ID_PROPERTY],
 					record,
 				});
 			}
-			delete(options) {
-				this.getNATSTransaction(options).addWrite(db_name, {
+			delete() {
+				this.getNATSTransaction(this.getContext()).addWrite(db_name, {
 					operation: 'delete',
 					table: table_name,
 					id: this[ID_PROPERTY],
 				});
 			}
-			publish(message, options) {
-				this.getNATSTransaction(options).addWrite(db_name, {
+			publish(message) {
+				this.getNATSTransaction(this.getContext()).addWrite(db_name, {
 					operation: 'publish',
 					table: table_name,
 					id: this[ID_PROPERTY],
@@ -95,17 +96,16 @@ export function setNATSReplicator(table_name, db_name, Table) {
 			 * This gets the NATS transaction object for the current overall transaction. This will
 			 * accumulate any writes that occur during a transaction, and allow them to be aggregated
 			 * into a replication message that encompasses all the writes of a transaction.
-			 * @param options
+			 * @param context
 			 */
-			getNATSTransaction(options): NATSTransaction {
-				let nats_transaction: NATSTransaction = this[TRANSACTIONS_PROPERTY]?.nats;
+			getNATSTransaction(context: Context): NATSTransaction {
+				let nats_transaction: NATSTransaction = context?.transaction?.nats;
 				if (!nats_transaction) {
-					if (this[TRANSACTIONS_PROPERTY]) {
-						this[TRANSACTIONS_PROPERTY].push(
-							(nats_transaction = this[TRANSACTIONS_PROPERTY].nats =
-								new NATSTransaction(this[TRANSACTIONS_PROPERTY], options))
+					if (context?.transaction) {
+						context.transaction.push(
+							(nats_transaction = context.transaction.nats = new NATSTransaction(context.transaction, context))
 						);
-						nats_transaction.user = this[USER_PROPERTY];
+						nats_transaction.user = context.user;
 					} else nats_transaction = immediateNATSTransaction;
 				}
 				return nats_transaction;
@@ -190,11 +190,8 @@ class NATSTransaction {
 							node_name,
 						},
 					};
-					if (operation === 'delete') transaction_event.hash_values = ids;
-					else if (operation === 'publish') {
-						transaction_event.hash_values = ids;
-						transaction_event.records = records;
-					} else {
+					transaction_event.hash_values = ids;
+					if (operation !== 'delete') {
 						transaction_event.records = records;
 					}
 				}

@@ -48,7 +48,7 @@ describe('test REST calls', () => {
 			method: 'GET',
 			responseType: 'arraybuffer',
 			headers: {
-				'If-Match': response.headers.etag,
+				'If-None-Match': response.headers.etag,
 				...headers
 			},
 			validateStatus: function (status) {
@@ -84,7 +84,7 @@ describe('test REST calls', () => {
 		let response = await axios.post('http://localhost:9926/VariedProps/', {
 			name: 'new record without an id',
 		});
-		assert.equal(response.status, 200);
+		assert.equal(response.status, 201);
 		assert.equal(typeof response.data, 'string');
 	});
 	describe('querying with query parameters', function() {
@@ -166,13 +166,13 @@ describe('test REST calls', () => {
 
 		it('by primary key', async () => {
 			// this test also tests to ensure deleted values are not reachable
-			let response = await axios('http://localhost:9926/FourProp/?id=1*');
+			let response = await axios('http://localhost:9926/VariedProps/?id=8*');
 			assert.equal(response.status, 200);
-			assert.equal(response.data.length, 1);
-			assert.equal(response.data[0].id, '1');
+			assert.equal(response.data.length, 2);
+			assert.equal(response.data[0].id[0], '8');
 		});
 
-		it('query with select', async () => {
+		it('query with select two properties', async () => {
 			let response = await axios('http://localhost:9926/FourProp?age=lt=22&select=age,id');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 2);
@@ -181,6 +181,18 @@ describe('test REST calls', () => {
 			assert.equal(response.data[0].name, undefined);
 			assert.equal(response.data[1].name, undefined);
 		});
+		it('query with select one properties', async () => {
+			let response = await axios('http://localhost:9926/FourProp?age=lt=22&select=age');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.length, 2);
+			assert.equal(response.data[1], 21);
+		});
+		it('query with select two properties', async () => {
+			let response = await axios('http://localhost:9926/FourProp?age=lt=22&select=[age,id]');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.length, 2);
+			assert.equal(response.data[1][0], 21);
+			assert.equal(response.data[1][1], 1);
+		});
 	});
-
 });

@@ -22,6 +22,7 @@ import * as manage_threads from '../server/threads/manageThreads';
 
 const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
+const TABLE_CLASSES = Symbol('table-classes');
 initSync();
 
 interface Tables {
@@ -138,7 +139,6 @@ export function getDatabases(): Databases {
 			for (const table_name in tables) {
 				if (!defined_tables.has(table_name)) delete tables[table_name];
 			}
-			delete tables[DEFINED_TABLES];
 		} else delete databases[db_name];
 	}
 	defined_databases = null;
@@ -151,9 +151,9 @@ export function resetDatabases() {
 	}
 	getDatabases();
 	for (const [path, store] of database_envs) {
-		if (store.needsDeletion) {
-			console.log('closing store due to no longer be referenced', path, require('worker_threads').threadId);
-			///store.close();
+		if (store.needsDeletion && !path.endsWith('system.mdb')) {
+			console.log('Closing store due to path no longer existing', path, 'remaining databases', Object.keys(databases));
+			store.close();
 			database_envs.delete(path);
 		}
 	}
@@ -199,34 +199,40 @@ function readMetaDb(
 			}
 		}
 
+		const tables = ensureDB(database_name);
+		const defined_tables = tables[DEFINED_TABLES];
 		const tables_to_load = new Map();
 		for (const { key, value } of dbis_store.getRange({ start: false })) {
 			let [table_name, attribute_name] = key.toString().split('/');
-			if (!attribute_name) {
+			if (attribute_name === '') {
+				// primary key
+				attribute_name = value.name;
+			} else if (!attribute_name) {
 				attribute_name = table_name;
 				table_name = default_table;
 				value.name = attribute_name;
 			}
+			defined_tables?.add(table_name);
 			let attributes = tables_to_load.get(table_name);
 			if (!attributes) tables_to_load.set(table_name, (attributes = []));
-			attributes.push(value);
+			if (attribute_name != null) attributes.push(value);
 			Object.defineProperty(value, 'key', { value: key, configurable: true });
 		}
-		harper_logger.trace(`reading database from ${database_name}`);
 
-		const tables = ensureDB(database_name);
-		const existing_defined_tables = tables[DEFINED_TABLES];
+		const table_classes = tables[TABLE_CLASSES];
 		for (const [table_name, attributes] of tables_to_load) {
 			for (const attribute of attributes) {
 				// find the primary key attribute as that defines the table itself
 				attribute.attribute = attribute.name;
 				if (attribute.is_hash_attribute) {
 					// if the table has already been defined, use that class, don't create a new one
-					let table = existing_defined_tables?.get(table_name);
+					let table = table_classes?.get(table_name);
 					let indices = {},
 						existing_attributes = [];
 					let table_id;
 					let primary_store;
+					const audit = attribute.audit !== false;
+					const track_deletes = attribute.trackDeletes;
 					if (table) {
 						indices = table.indices;
 						existing_attributes = table.attributes;
@@ -241,22 +247,23 @@ function readMetaDb(
 							dbis_store.putSync(attribute.key, attribute);
 						}
 						const dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
+						harper_logger.trace(`openDB ${attribute.key} from ${database_name}`);
 						primary_store = root_store.openDB(attribute.key, dbi_init);
+						primary_store.rootStore = root_store;
 						primary_store.tableId = table_id;
 					}
-					harper_logger.trace(`comparing attributes ${table_name}`);
 					for (const attribute of attributes) {
 						try {
 							// now load the non-primary keys, opening the dbs as necessary for indices
 							if (!attribute.is_hash_attribute && (attribute.indexed || (attribute.attribute && !attribute.name))) {
 								if (!indices[attribute.name]) {
 									const dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
+									harper_logger.trace(`openDB ${attribute.key} from ${database_name}`);
 									indices[attribute.name] = root_store.openDB(attribute.key, dbi_init);
 								}
 								const existing_attribute = existing_attributes.find(
 									(existing_attribute) => existing_attribute.name === attribute.name
 								);
-								harper_logger.trace(`comparing attributes ${table_name}`);
 								if (existing_attribute)
 									existing_attributes.splice(existing_attributes.indexOf(existing_attribute), 1, attribute);
 								else existing_attributes.push(attribute);
@@ -265,7 +272,6 @@ function readMetaDb(
 							harper_logger.error(`Error trying to update attribute`, attribute, existing_attributes, indices, error);
 						}
 					}
-					harper_logger.trace(`need to make table ${!!table}`);
 					if (!table) {
 						table = setTable(
 							tables,
@@ -273,6 +279,8 @@ function readMetaDb(
 							makeTable({
 								primaryStore: primary_store,
 								auditStore: audit_store,
+								audit,
+								trackDeletes: track_deletes,
 								tableName: table_name,
 								tableId: table_id,
 								primaryKey: attribute.name,
@@ -303,6 +311,8 @@ interface TableDefinition {
 	database?: string;
 	path?: string;
 	expiration?: number;
+	audit?: boolean;
+	trackDeletes?: boolean;
 	attributes: any[];
 	schemaDefined?: boolean;
 }
@@ -328,7 +338,7 @@ function ensureDB(database_name) {
 		}
 	}
 	if (defined_databases && !defined_databases.has(database_name)) {
-		const defined_tables = new Map(); // we create this so we can determine what was found in a reset and remove any removed dbs/tables
+		const defined_tables = new Set(); // we create this so we can determine what was found in a reset and remove any removed dbs/tables
 		db_tables[DEFINED_TABLES] = defined_tables;
 		defined_databases.set(database_name, defined_tables);
 	}
@@ -343,9 +353,9 @@ function ensureDB(database_name) {
  */
 function setTable(tables, table_name, Table) {
 	tables[table_name] = Table;
-	let defined_tables = tables[DEFINED_TABLES];
-	if (!defined_tables) defined_tables = tables[DEFINED_TABLES] = new Map();
-	defined_tables.set(table_name, Table);
+	let table_classes = tables[TABLE_CLASSES];
+	if (!table_classes) table_classes = tables[TABLE_CLASSES] = new Map();
+	table_classes.set(table_name, Table);
 	return Table;
 }
 const ROOT_STORE_KEY = Symbol('root-store');
@@ -406,6 +416,8 @@ export function table({
 	database: database_name,
 	expiration,
 	attributes,
+	audit,
+	trackDeletes: track_deletes,
 	schemaDefined: schema_defined,
 	origin,
 }: TableDefinition) {
@@ -435,24 +447,29 @@ export function table({
 		Table.attributes.splice(0, Table.attributes.length, ...attributes);
 	} else {
 		let audit_store = root_store.auditStore;
-		if (!audit_store && USE_AUDIT) {
+		if (!audit_store) {
+			harper_logger.trace(`openDB ${AUDIT_STORE_NAME} from ${database_name}`);
 			root_store.auditStore = audit_store = root_store.openDB(AUDIT_STORE_NAME, {});
 		}
-		primary_key_attribute = attributes.find((attribute) => attribute.isPrimaryKey) || { name: 'id' };
+		primary_key_attribute = attributes.find((attribute) => attribute.isPrimaryKey) || {};
 		primary_key = primary_key_attribute.name;
 		primary_key_attribute.is_hash_attribute = true;
 		primary_key_attribute.schemaDefined = schema_defined;
+		if (track_deletes) primary_key_attribute.trackDeletes = true;
 		if (origin) {
 			if (!primary_key_attribute.origins) primary_key_attribute.origins = [origin];
 			else if (!primary_key_attribute.origins.includes(origin)) primary_key_attribute.origins.push(origin);
 		}
 		harper_logger.trace(`${table_name} table loading, opening primary store`);
-		const dbi_init = new OpenDBIObject(!primary_key_attribute.isPrimaryKey, primary_key_attribute.isPrimaryKey);
-		const dbi_name = table_name + '/' + primary_key_attribute.name;
+		const dbi_init = new OpenDBIObject(false, true);
+		const dbi_name = table_name + '/';
+		harper_logger.trace(`openDB ${dbi_name} from ${database_name}`);
 		const primary_store = root_store.openDB(dbi_name, dbi_init);
+		primary_store.rootStore = root_store;
 		if (!root_store.env.nextTableId) root_store.env.nextTableId = 1;
 		primary_store.tableId = root_store.env.nextTableId++;
 		primary_key_attribute.tableId = primary_store.tableId;
+		harper_logger.trace(`openDB ${INTERNAL_DBIS_NAME} from ${database_name}`);
 		attributes_dbi = root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
 		Table = setTable(
 			tables,
@@ -460,6 +477,8 @@ export function table({
 			makeTable({
 				primaryStore: primary_store,
 				auditStore: audit_store,
+				audit,
+				trackDeletes: track_deletes,
 				primaryKey: primary_key,
 				tableName: table_name,
 				tableId: primary_store.tableId,
@@ -478,11 +497,13 @@ export function table({
 	}
 	harper_logger.trace(`${table_name} table loading, getting stored attributes`);
 	indices = Table.indices;
+	if (!attributes_dbi) harper_logger.trace(`openDB ${INTERNAL_DBIS_NAME} from ${database_name}`);
 	attributes_dbi = attributes_dbi || (root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init));
 	Table.dbisDB = attributes_dbi;
 	const indices_to_remove = [];
 	for (const { key, value } of attributes_dbi.getRange({ start: true })) {
 		let [attribute_table_name, attribute_name] = key.toString().split('/');
+		if (attribute_name === '') attribute_name = value.name; // primary key
 		if (attribute_name) {
 			if (attribute_table_name !== table_name) continue;
 		} else {
@@ -517,6 +538,7 @@ export function table({
 				JSON.stringify(attribute_descriptor.elements) !== JSON.stringify(attribute.elements);
 			if (attribute.indexed) {
 				const dbi_init = new OpenDBIObject(true, false);
+				harper_logger.trace(`openDB ${dbi_key} from ${database_name}`);
 				const dbi = root_store.openDB(dbi_key, dbi_init);
 				if (
 					changed ||

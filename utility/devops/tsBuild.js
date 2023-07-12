@@ -5,7 +5,7 @@ const { isMainThread } = require('worker_threads');
 const { join, relative } = require('path');
 const { PACKAGE_ROOT } = require('../hdbTerms');
 require('source-map-support').install();
-const SRC_DIRECTORIES = ['resources', 'server'];
+const SRC_DIRECTORIES = ['resources', 'server', 'dataLayer'];
 const TS_DIRECTORY = 'ts-build';
 let needs_compile;
 const is_source_code = __filename.endsWith('tsBuild.js');

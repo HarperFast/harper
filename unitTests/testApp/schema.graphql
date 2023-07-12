@@ -1,9 +1,9 @@
-type VariedProps @table @endpoint {
+type VariedProps @table @export {
 	id: ID @primaryKey
 	name: String @indexed
 }
 
-type SimpleRecord @table {
+type SimpleRecord @table(audit: false) {
 	id: ID @primaryKey
 	name: String @indexed
 }
@@ -14,10 +14,9 @@ type FourProp @table {
 	title: String
 }
 
-type HasTimeStamps @table {
-	id: ID @primaryKey
-	created: Int @creationDate
-	updated: Int @updateDate
+type HasTimeStampsNoPK @table @export {
+	created: Int @createdTime
+	updated: Int @updatedTime
 }
 type SomeObject {
 	name: String

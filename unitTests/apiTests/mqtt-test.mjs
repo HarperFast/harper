@@ -130,7 +130,7 @@ describe('test MQTT connections and commands', () => {
 				"schema": "data",
 				"table": "SimpleRecord",
 				"records": [{
-					id: '77',
+					id: 77,
 					name: 'test record from operation'
 				}]
 			}).then(response => {
@@ -248,7 +248,7 @@ describe('test MQTT connections and commands', () => {
 				qos: 1,
 			});
 
-			client.publish('SimpleRecord', JSON.stringify({
+			client.publish('SimpleRecord/', JSON.stringify({
 				name: 'This is a test to the generic table topic'
 			}), {
 				qos: 1,
@@ -270,6 +270,10 @@ describe('test MQTT connections and commands', () => {
 		client = connect('mqtt://localhost:1883', {
 			clean: false,
 			clientId: 'test-client1'
+		});
+		await new Promise((resolve, reject) => {
+			client.on('connect', resolve);
+			client.on('error', reject);
 		});
 		await new Promise((resolve, reject) => {
 			client.subscribe(['SimpleRecord/41', 'SimpleRecord/42'], {
@@ -395,7 +399,7 @@ describe('test MQTT connections and commands', () => {
 			messages.push(topic, payload.length > 0 ? JSON.parse(payload) : 'deleted');
 		});
 		await new Promise((resolve, reject) => {
-			client.subscribe('FourPropWithHistory/', {
+			client.subscribe('FourPropWithHistory/#', {
 				qos: 1
 			}, function (err) {
 				if (err) reject(err);

@@ -34,8 +34,8 @@ let http_servers = {},
 	http_responders = [];
 
 if (!isMainThread) {
-	require('../loadServerModules')
-		.loadServerModules(true)
+	require('../loadRootComponents')
+		.loadRootComponents(true)
 		.then(() => {
 			parentPort
 				.on('message', (message) => {
@@ -377,6 +377,7 @@ class Request {
 		}
 		this.headers = node_request.headers;
 		this.headers.get = get;
+		this.responseMetadata = {};
 	}
 	get url() {
 		return this.protocol + '://' + this.host + this.pathname + this.search;

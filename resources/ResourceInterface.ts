@@ -1,18 +1,43 @@
 export interface ResourceInterface<Key = any, Record = any> {
-	get?(key: Key, options?: {}): Promise<UpdatableRecord<Record>>; // or use ResourceId instead of Key
-	put?(key: Key, record: Record, options?: {}): void;
-	patch?(key: Key, record: Record, options?: {}): Record;
-	update?(key: Key): Promise<UpdatableRecord<Record>>;
-	delete?(key: Key, options?: {}): boolean;
-	search?(query, options?: {}): AsyncIterable<any>;
-	subscribe?(query, options?: {}): Subscription;
-	allowAccess(): boolean | Promise<boolean>;
-	allowGet(): boolean | Promise<boolean>;
-	allowPut(): boolean | Promise<boolean>;
-	allowPatch(): boolean | Promise<boolean>;
-	allowDelete(): boolean | Promise<boolean>;
-	lastModificationTime: number;
+	get?(): Promise<UpdatableRecord<Record>>;
+	get?(query: Query): Promise<AsyncIterable<Record>>;
+	get?(property: string): any;
+	put?(record: any): void;
+	update?(updates: any, full_update?: boolean): Promise<UpdatableRecord<Record>>;
+	delete?(): boolean;
+	search?(query: Query): AsyncIterable<any>;
+	subscribe?(request: SubscriptionRequest): Subscription;
+	allowRead(user: any, query?: Query): boolean | Promise<boolean>;
+	allowUpdate(user: any, record: any, full_update?: boolean): boolean | Promise<boolean>;
+	allowCreate(user: any, record: any): boolean | Promise<boolean>;
+	allowDelete(user: any, query?: Query): boolean | Promise<boolean>;
+	[CONTEXT]: Request;
 }
+export interface Context {
+	user?: any;
+	transaction: any[];
+	responseData: {
+		lastModified: number;
+	};
+}
+export interface Request {
+	id?: Id;
+	path?: string;
+	user?: any;
+	data?: any;
+	select?: string[];
+	context?: Context;
+}
+export interface Query extends Request {
+	conditions?: any[];
+	limit?: number;
+	offset?: number;
+}
+export interface SubscriptionRequest extends Request {
+	startTime?: number;
+	previousCount?: number;
+}
+export type Id = number | string | (number | string | null)[] | null;
 type UpdatableRecord<T> = T
 interface Subscription {}
 type ResourceId = Request|number|string;

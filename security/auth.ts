@@ -133,7 +133,7 @@ export async function authentication(request, next_handler) {
 		request.user = await server.auth(session.user);
 	} else if (
 		env.get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) &&
-		(request.ip.includes('127.0.0.1') || request.ip == '::1')
+		(request.ip?.includes('127.0.0.1') || request.ip == '::1')
 	) {
 		request.user = new_user = await getSuperUser();
 	}

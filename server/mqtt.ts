@@ -35,6 +35,9 @@ export async function start({ server, port, webSocket, securePort, requireAuthen
 					);
 					ws.on('message', onMessage);
 					ws.on('close', onClose);
+					ws.on('error', (error) => {
+						info('WebSocket error', error);
+					});
 				}
 			},
 			{ subProtocol: 'mqtt' }

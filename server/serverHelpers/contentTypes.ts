@@ -123,6 +123,7 @@ function tryJSONParse(input) {
 }
 const PUBLIC_ENCODE_OPTIONS = {
 	useRecords: false,
+	useToJSON: true,
 };
 export function registerContentHandlers(app) {
 	app.register(registerFastifySerializers, {

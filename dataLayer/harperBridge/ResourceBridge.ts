@@ -14,6 +14,9 @@ import {
 import * as signalling from '../../utility/signalling';
 import { SchemaEventMsg } from '../../server/threads/itc';
 import { async_set_timeout } from '../../utility/common_utils';
+import { transaction } from '../../resources/transaction';
+import { Id } from '../../resources/ResourceInterface';
+import { collapseData } from '../../resources/tracked';
 
 const { HDB_ERROR_MSGS } = hdb_errors;
 const DEFAULT_DATABASE = 'data';
@@ -45,15 +48,17 @@ export class ResourceBridge extends LMDBBridge {
 			comparator: condition.search_type,
 			value: condition.search_value,
 		}));
-		//set the operator to always be lowercase for later evaluations
-		conditions.operator = search_object.operator ? search_object.operator.toLowerCase() : undefined;
-		conditions.limit = search_object.limit;
-		conditions.offset = search_object.offset;
-		conditions.select = getSelect(search_object, table);
-		conditions.reverse = search_object.reverse;
-		conditions.allowFullScan = true;
 
-		return table.search(conditions);
+		return table.search({
+			conditions,
+			//set the operator to always be lowercase for later evaluations
+			operator: search_object.operator ? search_object.operator.toLowerCase() : undefined,
+			limit: search_object.limit,
+			offset: search_object.offset,
+			reverse: search_object.reverse,
+			select: getSelect(search_object, table),
+			allowFullScan: true,
+		});
 	}
 	/**
 	 * Writes new table data to the system tables creates the environment file and creates two datastores to track created and updated
@@ -156,9 +161,10 @@ export class ResourceBridge extends LMDBBridge {
 
 		let new_attributes;
 		const Table = getDatabases()[upsert_obj.schema][upsert_obj.table];
-		return Table.transact(
-			async (txn_table) => {
-				if (!txn_table.schemaDefined) {
+		return transaction(
+			{ user: upsert_obj.hdb_user },
+			async (request) => {
+				if (!Table.schemaDefined) {
 					new_attributes = [];
 					for (const attribute_name of attributes) {
 						const existing_attribute = Table.attributes.find(
@@ -169,7 +175,7 @@ export class ResourceBridge extends LMDBBridge {
 						}
 					}
 					if (new_attributes.length > 0) {
-						await txn_table.addAttributes(
+						await Table.addAttributes(
 							new_attributes.map((name) => ({
 								name,
 								indexed: true,
@@ -181,7 +187,7 @@ export class ResourceBridge extends LMDBBridge {
 				const keys = [];
 				const skipped = [];
 				for (const record of upsert_obj.records) {
-					const existing_record = await txn_table.get(record[Table.primaryKey]);
+					let existing_record = await Table.get(record[Table.primaryKey], request);
 					if (
 						(upsert_obj.requires_existing && !existing_record) ||
 						(upsert_obj.requires_no_existing && existing_record)
@@ -189,13 +195,21 @@ export class ResourceBridge extends LMDBBridge {
 						skipped.push(record[Table.primaryKey]);
 						continue;
 					}
+					if (existing_record) existing_record = collapseData(existing_record);
 					for (const key in record) {
-						let value = record[key];
-						if (typeof value === 'function') {
-							const value_results = value([[existing_record]]);
-							if (Array.isArray(value_results)) {
-								value = value_results[0].func_val;
-								record[key] = value;
+						if (Object.prototype.hasOwnProperty.call(record, key)) {
+							let value = record[key];
+							if (typeof value === 'function') {
+								try {
+									const value_results = value([[existing_record]]);
+									if (Array.isArray(value_results)) {
+										value = value_results[0].func_val;
+										record[key] = value;
+									}
+								} catch (error) {
+									error.message += 'Trying to set key ' + key + ' on object' + JSON.stringify(record);
+									throw error;
+								}
 							}
 						}
 					}
@@ -205,11 +219,11 @@ export class ResourceBridge extends LMDBBridge {
 							if (!Object.prototype.hasOwnProperty.call(record, key)) record[key] = existing_record[key];
 						}
 					}
-					await txn_table.put(record[Table.primaryKey], record);
+					await Table.put(record, request);
 					keys.push(record[Table.primaryKey]);
 				}
 				return {
-					txn_time: txn_table.txnTime,
+					txn_time: request.transaction.timestamp,
 					written_hashes: keys,
 					new_attributes,
 					skipped_hashes: skipped,
@@ -222,21 +236,16 @@ export class ResourceBridge extends LMDBBridge {
 	}
 	async deleteRecords(delete_obj) {
 		const Table = getDatabases()[delete_obj.schema][delete_obj.table];
-		return Table.transact(
-			async (txn_table) => {
-				const ids = delete_obj.hash_values || delete_obj.records.map((record) => record[Table.primaryKey]);
-				const deleted = [];
-				const skipped = [];
-				for (const id of ids) {
-					if (await txn_table.delete(id)) deleted.push(id);
-					else skipped.push(id);
-				}
-				return createDeleteResponse(deleted, skipped, txn_table.txnTime);
-			},
-			{
-				user: delete_obj.hdb_user,
+		return transaction({ user: delete_obj.hdb_user }, async (context) => {
+			const ids: Id[] = delete_obj.hash_values || delete_obj.records.map((record) => record[Table.primaryKey]);
+			const deleted = [];
+			const skipped = [];
+			for (const id of ids) {
+				if (await Table.delete(id, context)) deleted.push(id);
+				else skipped.push(id);
 			}
-		);
+			return createDeleteResponse(deleted, skipped, context.transaction.timestamp);
+		});
 	}
 
 	/**
@@ -367,13 +376,15 @@ export class ResourceBridge extends LMDBBridge {
 							comparator,
 						},
 				  ];
-		conditions.limit = search_object.limit;
-		conditions.offset = search_object.offset;
-		conditions.select = getSelect(search_object, table);
-		conditions.reverse = search_object.reverse;
-		conditions.allowFullScan = true;
 
-		return table.search(conditions);
+		return table.search({
+			conditions,
+			allowFullScan: true,
+			limit: search_object.limit,
+			offset: search_object.offset,
+			reverse: search_object.reverse,
+			select: getSelect(search_object, table),
+		});
 	}
 	async getDataByValue(search_object: SearchObject, comparator) {
 		const map = new Map();
@@ -402,13 +413,14 @@ function getSelect({ get_attributes }, table) {
 			else get_attributes = table.attributes.map((attribute) => attribute.name);
 		}
 		get_attributes.forceNulls = true;
+		get_attributes.asObject = true;
 		return get_attributes;
 	}
 }
 /**
  * Iterator for asynchronous getting ids from an array
  */
-async function* getRecords(search_object, return_key_value?) {
+function getRecords(search_object, return_key_value?) {
 	const table = getTable(search_object);
 	const select = getSelect(search_object, table);
 	if (!table) {
@@ -416,26 +428,16 @@ async function* getRecords(search_object, return_key_value?) {
 	}
 	let lazy;
 	if (select && table.attributes.length - select.length > 2 && select.length < 5) lazy = true;
-	let txn_table;
-	let resolve_txn;
 	// we need to get the transaction and ensure that the transaction spans the entire duration
 	// of the iteration
-	table.transact(
-		(txn) =>
-			new Promise((resolve) => {
-				txn_table = txn;
-				resolve_txn = resolve;
-			})
-	);
-	try {
+	return transaction({ user: search_object.hdb_user }, async function* (context) {
 		for (const id of search_object.hash_values) {
-			const record = await txn_table.get(id, { lazy, select });
+			let record = await table.get({ id, lazy, select }, context);
+			record = record && collapseData(record);
 			if (return_key_value) yield { key: id, value: record };
 			else yield record;
 		}
-	} finally {
-		resolve_txn();
-	}
+	});
 }
 function getTable(operation_object) {
 	const database_name = operation_object.database || operation_object.schema || DEFAULT_DATABASE;
