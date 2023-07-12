@@ -1,9 +1,7 @@
 'use strict';
 
-const environment_utility = require('../../../../utility/lmdb/environmentUtility');
 const { Readable } = require('stream');
-const { getBaseSchemaPath } = require('../lmdbUtility/initializePaths');
-const path = require('path');
+const { getDatabases } = require('../../../../resources/databases');
 const { readSync, openSync, createReadStream } = require('fs');
 
 module.exports = getBackup;
@@ -14,8 +12,11 @@ const META_SIZE = 32768;
  * @returns {Promise<[]>}
  */
 async function getBackup(get_backup_obj) {
-	let env_base_path = path.join(getBaseSchemaPath(), get_backup_obj.schema.toString());
-	let env = await environment_utility.openEnvironment(env_base_path, get_backup_obj.table);
+	const database_name = get_backup_obj.database || get_backup_obj.schema || 'data';
+	const databases = getDatabases()[database_name];
+	const first_table = databases[Object.keys(databases)[0]];
+	const env = first_table.primaryStore;
+
 	let fd = openSync(env.path);
 	const backup_date = new Date().toISOString();
 	return env.transaction(() => {
