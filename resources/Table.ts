@@ -507,10 +507,11 @@ export function makeTable(options) {
 			// with the canonical data, we are simply fulfilling our local copy of the canonical data, but still don't
 			// want a timestamp later than the current transaction
 			primary_store.put(this[ID_PROPERTY], invalidated_record, existing_version, existing_version);
-			const updated_record = await this.constructor.Source.get(this[ID_PROPERTY], this);
+			let updated_record = await this.constructor.Source.get(this[ID_PROPERTY], this);
 			const version = existing_version;
 			if (updated_record) {
-				updated_record[primary_key] = this[ID_PROPERTY];
+				if (primary_key) updated_record[primary_key] = this[ID_PROPERTY];
+				if (typeof updated_record.toJSON === 'function') updated_record = updated_record.toJSON();
 				// don't wait on this, we don't actually care if it fails, that just means there is even
 				// a newer entry going in the cache in the future
 				primary_store.put(this[ID_PROPERTY], updated_record, version, existing_version);
