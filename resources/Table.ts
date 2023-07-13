@@ -104,8 +104,7 @@ export function makeTable(options) {
 					const Table = databases[database_name][event.table];
 					if (event.id === undefined) {
 						event.id = value[Table.primaryKey];
-						if (event.id === undefined)
-							throw new Error('Replication message without an id ' + JSON.stringify(event));
+						if (event.id === undefined) throw new Error('Replication message without an id ' + JSON.stringify(event));
 					}
 					event.allowInvalidated = true;
 					const resource: TableResource = await Table.getResource(event.id, event);
@@ -122,16 +121,19 @@ export function makeTable(options) {
 				};
 
 				try {
-					const subscription = await Resource.subscribe?.({
-						// this is used to indicate that all threads are (presumably) making this subscription
-						// and we do not need to propagate events across threads (more efficient)
-						crossThreads: false,
-						// this is used to indicate that we want, if possible, immediate notification of writes
-						// within the process (not supported yet)
-						inTransactionUpdates: true,
-						// supports transaction operations
-						supportsTransactions: true,
-					});
+					const has_subscribe = Resource.prototype ? Resource.prototype.subscribe : Resource.subscribe;
+					const subscription =
+						has_subscribe &&
+						(await Resource.subscribe?.({
+							// this is used to indicate that all threads are (presumably) making this subscription
+							// and we do not need to propagate events across threads (more efficient)
+							crossThreads: false,
+							// this is used to indicate that we want, if possible, immediate notification of writes
+							// within the process (not supported yet)
+							inTransactionUpdates: true,
+							// supports transaction operations
+							supportsTransactions: true,
+						}));
 					if (subscription) {
 						for await (const event of subscription) {
 							try {
@@ -325,8 +327,9 @@ export function makeTable(options) {
 					if (this[VERSION_PROPERTY] < 0 || !record || record?.__invalidated__) entry = null;
 				}
 				if (!entry && !allow_invalidated) {
-					const get = this.constructor.Source?.prototype.get;
-					if (get) {
+					const source = this.constructor.Source;
+					const has_get = source && (source.prototype ? source.prototype.get : source.get);
+					if (has_get) {
 						const result = this.getFromSource(record, this[VERSION_PROPERTY]).then((record) => {
 							if (record?.[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
 							this[RECORD_PROPERTY] = record;
