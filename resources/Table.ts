@@ -105,7 +105,7 @@ export function makeTable(options) {
 					if (event.id === undefined) {
 						event.id = value[Table.primaryKey];
 						if (event.id === undefined)
-							throw new Error('Secondary resource found without an id ' + JSON.stringify(event));
+							throw new Error('Replication message without an id ' + JSON.stringify(event));
 					}
 					event.allowInvalidated = true;
 					const resource: TableResource = await Table.getResource(event.id, event);
