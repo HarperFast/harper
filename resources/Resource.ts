@@ -72,6 +72,7 @@ export class Resource implements ResourceInterface {
 						return transform(result);
 					}
 				}
+				return result;
 			}
 		},
 		{ type: 'read' }
@@ -419,23 +420,15 @@ function transformForSelect(select) {
 		};
 	else if (typeof select === 'object') {
 		// if it is an array, return an array
-		if (Array.isArray(select)) {
-			if (!select.asObject)
-				return (object) => {
-					const results = [];
-					const getProperty = selectFromObject(object);
-					for (const property of select) {
-						results.push(getProperty(property));
-					}
-					return results;
-				};
-		} else {
-			const select_array = [];
-			for (const key in select) {
-				select_array.push(key);
-			}
-			select = select_array;
-		}
+		if (select.asArray)
+			return (object) => {
+				const results = [];
+				const getProperty = selectFromObject(object);
+				for (const property of select) {
+					results.push(getProperty(property));
+				}
+				return results;
+			};
 		const forceNulls = select.forceNulls;
 		return (object) => {
 			// finally the case of returning objects

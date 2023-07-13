@@ -222,15 +222,13 @@ export function parseQuery(request: Request) {
 						if (value[0] === '[') {
 							if (value[value.length - 1] !== ']') throw new Error('Unmatched brackets');
 							request.select = value.slice(1, -1).split(',');
+							request.select.asArray = true;
 						} else if (value === '{') {
 							if (value[value.length - 1] !== '}') throw new Error('Unmatched curly brackets');
 							request.select = value.slice(1, -1).split(',');
-							request.select.asObject = true;
 						} else if (value.indexOf(',') > -1) {
 							request.select = value.split(',');
-							request.select.asObject = true;
-						}
-						else request.select = value;
+						} else request.select = value;
 						break;
 					case 'sort':
 						request.sort = value.split(',').map((direction) => {

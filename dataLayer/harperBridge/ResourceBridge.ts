@@ -413,7 +413,6 @@ function getSelect({ get_attributes }, table) {
 			else get_attributes = table.attributes.map((attribute) => attribute.name);
 		}
 		get_attributes.forceNulls = true;
-		get_attributes.asObject = true;
 		return get_attributes;
 	}
 }
