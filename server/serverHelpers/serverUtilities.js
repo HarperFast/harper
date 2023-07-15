@@ -38,6 +38,8 @@ const config_utils = require('../../config/configUtils');
 const transaction_log = require('../../utility/logging/transactionLog');
 const npm_utilities = require('../../utility/npmUtilities');
 const { setServerUtilities } = require('../../resources/Table');
+const { CONTEXT } = require('../../resources/Resource');
+const { _assignPackageExport } = require('../../index');
 
 const operation_function_caller = require(`../../utility/OperationFunctionCaller`);
 
@@ -113,6 +115,7 @@ const OPERATION_FUNCTION_MAP = initializeOperationFunctionMap();
 module.exports = {
 	chooseOperation,
 	getOperationFunction,
+	operation,
 	processLocalTransaction,
 };
 setServerUtilities(module.exports);
@@ -198,6 +201,18 @@ function getOperationFunction(json) {
 	);
 }
 
+_assignPackageExport('operation', operation);
+/**
+ * Standalone function to execute an operation
+ * @param {*} operation
+ * @param {*} context
+ * @returns
+ */
+function operation(operation, context) {
+	operation.hdb_user = this[CONTEXT]?.user;
+	const operation_function = chooseOperation(operation);
+	return processLocalTransaction({ body: operation }, operation_function);
+}
 async function catchup(req) {
 	harper_logger.trace('In serverUtils.catchup');
 	let catchup_object = req.transaction;
