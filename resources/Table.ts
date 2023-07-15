@@ -101,7 +101,7 @@ export function makeTable(options) {
 			(async () => {
 				const writeUpdate = async (event) => {
 					const value = event.value;
-					const Table = databases[database_name][event.table];
+					const Table = event.table ? databases[database_name][event.table] : TableResource;
 					if (event.id === undefined) {
 						event.id = value[Table.primaryKey];
 						if (event.id === undefined) throw new Error('Replication message without an id ' + JSON.stringify(event));
@@ -625,7 +625,6 @@ export function makeTable(options) {
 							lastUpdate: this[LAST_MODIFICATION_PROPERTY],
 						};*/
 					}
-
 					primary_store.put(this[ID_PROPERTY], record, txn_time);
 					updateIndices(this[ID_PROPERTY], existing_record, record);
 					if (existing_record === null && !retry) record_deletion(-1);
@@ -849,7 +848,7 @@ export function makeTable(options) {
 			if (!audit_store) throw new Error('Can not subscribe to a table without an audit log');
 			const subscription = addSubscription(
 				this.constructor,
-				this[ID_PROPERTY],
+				this[ID_PROPERTY] ?? null, // treat undefined and null as the root
 				function (id, audit_record, timestamp) {
 					try {
 						this.send({ id, timestamp, ...audit_record });
