@@ -97,6 +97,10 @@ describe('test REST with property updates', () => {
 		assert.equal(response.status, 200);
 		assert.equal(response.data[0].subObject.name, 'deeply nested');
 		assert.equal(response.data.length, 1);
+		response = await axios.get('http://localhost:9926/namespace/SubObject/multi/part/');
+		assert.equal(response.status, 200);
+		assert.equal(response.data[0].subObject.name, 'deeply nested');
+		assert.equal(response.data.length, 1);
 		response = await axios.get('http://localhost:9926/namespace/SubObject/multi/?any=not-here');
 		assert.equal(response.status, 200);
 		assert.equal(response.data.length, 0);
