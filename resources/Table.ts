@@ -994,7 +994,7 @@ export function makeTable(options) {
 					}
 
 					const existing_record = retries > 0 ? primary_store.get(id) : this[RECORD_PROPERTY];
-					if (!existing_record && !retries && (audit_store || track_deletes)) record_deletion(1);
+					if (existing_record === undefined && !retries && (audit_store || track_deletes)) record_deletion(1);
 					primary_store.put(id, existing_record ?? null, txn_time);
 					// messages are recorded in the audit entry
 					return {
