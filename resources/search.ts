@@ -168,7 +168,7 @@ export function parseQuery(request: Request) {
 	let attribute, comparator;
 	const conditions = [];
 	let last_index;
-	// TODO: Use URLSearchParams with a fallback for when it can't parse everything (USP is very fast)
+	// TODO: Use URLSearchParams with a fallback for when it can parse everything (USP is very fast)
 	while ((match = QUERY_PARSER.exec(query_string))) {
 		last_index = QUERY_PARSER.lastIndex;
 		let [, value, operator] = match;
@@ -223,11 +223,8 @@ export function parseQuery(request: Request) {
 							if (value[value.length - 1] !== ']') throw new Error('Unmatched brackets');
 							request.select = value.slice(1, -1).split(',');
 							request.select.asArray = true;
-						} else if (value === '{') {
-							if (value[value.length - 1] !== '}') throw new Error('Unmatched curly brackets');
-							request.select = value.slice(1, -1).split(',');
 						} else if (value.indexOf(',') > -1) {
-							request.select = value.split(',');
+							request.select = (value.endsWith(',') ? value.slice(0, -1) : value).split(',');
 						} else request.select = value;
 						break;
 					case 'sort':
