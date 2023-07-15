@@ -121,7 +121,8 @@ export function makeTable(options) {
 				};
 
 				try {
-					const has_subscribe = Resource.prototype ? Resource.prototype.subscribe : Resource.subscribe;
+					const has_subscribe =
+						Resource.subscribe && (!Resource.subscribe.reliesOnPrototype || Resource.prototype.subscribe);
 					const subscription =
 						has_subscribe &&
 						(await Resource.subscribe?.({
@@ -328,7 +329,7 @@ export function makeTable(options) {
 				}
 				if (!entry && !allow_invalidated) {
 					const source = this.constructor.Source;
-					const has_get = source && (source.prototype ? source.prototype.get : source.get);
+					const has_get = source && source.get && (!source.get.reliesOnPrototype || source.prototype.get);
 					if (has_get) {
 						const result = this.getFromSource(record, this[VERSION_PROPERTY]).then((record) => {
 							if (record?.[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
@@ -561,9 +562,10 @@ export function makeTable(options) {
 			let existing_record = this[RECORD_PROPERTY];
 			let is_unchanged;
 			let record_prepared;
+			let id = this[ID_PROPERTY];
 			if (!existing_record) this[RECORD_PROPERTY] = {}; // mark that this resource is being saved so isSaveRecord return true
 			transaction.addWrite({
-				key: this[ID_PROPERTY],
+				key: id,
 				store: primary_store,
 				txnTime: txn_time,
 				lastVersion: this[VERSION_PROPERTY],
@@ -574,7 +576,7 @@ export function makeTable(options) {
 					let completion;
 					if (retry) {
 						if (is_unchanged) return;
-						const existing_entry = primary_store.getEntry(this[ID_PROPERTY]);
+						const existing_entry = primary_store.getEntry(id);
 						existing_record = existing_entry?.value;
 						const responseMetadata = this[CONTEXT]?.responseMetadata;
 						if (responseMetadata && existing_entry?.version > (responseMetadata.lastModified || 0))
@@ -587,7 +589,7 @@ export function makeTable(options) {
 								is_unchanged = !hasChanges(record);
 								if (is_unchanged) return;
 							}
-							if (primary_key && record[primary_key] !== this[ID_PROPERTY]) record[primary_key] = this[ID_PROPERTY];
+							if (primary_key && record[primary_key] !== id) record[primary_key] = id;
 							if (TableResource.updatedTimeProperty) record[TableResource.updatedTimeProperty] = txn_time;
 							if (TableResource.createdTimeProperty) {
 								if (existing_record)
@@ -595,23 +597,15 @@ export function makeTable(options) {
 								else record[TableResource.createdTimeProperty] = txn_time;
 							}
 							record = deepFreeze(record); // this flatten and freeze the record
-							if (this.constructor.Source?.prototype.put) {
-								const source = this.constructor.Source.getResource(this[ID_PROPERTY], this);
-								if (source?.then)
-									completion = source.then((source) => {
-										this[SOURCE_PROPERTY] = source;
-										return source.put(record);
-									});
-								else {
-									this[SOURCE_PROPERTY] = source;
-									completion = source.put(record);
-								}
+							const source = this.constructor.Source;
+							if (source?.put && (!source.put.reliesOnPrototype || source.prototype.put)) {
+								completion = source.put(id, record, this);
 							}
 						} else record = deepFreeze(record); // TODO: I don't know that we need to freeze notification objects, might eliminate this for reduced overhead
 						if (record[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
 						this[RECORD_PROPERTY] = record;
 					}
-					harper_logger.trace(`Checking timestamp for put`, this[ID_PROPERTY], this[VERSION_PROPERTY], txn_time);
+					harper_logger.trace(`Checking timestamp for put`, id, this[VERSION_PROPERTY], txn_time);
 					if (this[VERSION_PROPERTY] > txn_time) {
 						// This is not an error condition in our world of last-record-wins
 						// replication. If the existing record is newer than it just means the provided record
@@ -640,10 +634,6 @@ export function makeTable(options) {
 
 		async delete(request: Request): Promise<boolean> {
 			if (!this[RECORD_PROPERTY]) return false;
-			/*if (this.constructor.Source?.prototype.delete) {
-				const source = (this[SOURCE_PROPERTY] = await this.constructor.Source.getResource(this[ID_PROPERTY], this));
-				await source.delete(options);
-			}*/
 			// TODO: Handle deletion of a collection/query
 			return this._writeDelete(request);
 		}
@@ -670,19 +660,9 @@ export function makeTable(options) {
 					if (!delete_prepared) {
 						delete_prepared = true;
 						if (!options?.isNotification) {
-							if (this.constructor.Source?.prototype.delete) {
-								const source = this.constructor.Source.getResource(id, this);
-								harper_logger.trace(`Sending delete ${id} to source, is promise ${!!source?.then}`);
-								if (source?.then)
-									completion = source.then((source) => {
-										this[SOURCE_PROPERTY] = source;
-										return source.delete();
-									});
-								else {
-									this[SOURCE_PROPERTY] = source;
-									completion = source.delete();
-								}
-							}
+							const source = this.constructor.Source;
+							if (source?.delete && (!source.delete.reliesOnPrototype || source.prototype.delete))
+								completion = source.delete(id, this);
 						}
 					}
 					if (this[VERSION_PROPERTY] > txn_time)
@@ -978,17 +958,9 @@ export function makeTable(options) {
 					if (!publish_prepared) {
 						publish_prepared = true;
 						if (!options?.isNotification) {
-							if (this.constructor.Source?.prototype.publish) {
-								const source = this.constructor.Source.getResource(id, this);
-								if (source?.then)
-									completion = source.then((source) => {
-										this[SOURCE_PROPERTY] = source;
-										return source.publish(message);
-									});
-								else {
-									this[SOURCE_PROPERTY] = source;
-									completion = source.publish(message);
-								}
+							const source = this.constructor.Source;
+							if (source?.publish && (!source.publish.reliesOnPrototype || source.prototype.publish)) {
+								completion = source.publish(id, message, this);
 							}
 						}
 					}

@@ -65,9 +65,9 @@ async function http(request, next_handler) {
 				case 'QUERY':
 					return resource.query(request.data, request);
 				case 'COPY': // methods suggested from webdav RFC 4918
-					return resource.copy(request.headers.destination);
+					return resource.copy(request.headers.destination, request);
 				case 'MOVE':
-					return resource.move(request.headers.destination);
+					return resource.move(request.headers.destination, request);
 				case 'BREW': // RFC 2324
 					throw new ClientError("HarperDB is short and stout and can't brew coffee", 418);
 				default:

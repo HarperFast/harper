@@ -1,19 +1,14 @@
 import { ResourceInterface, Request, SubscriptionRequest, Id, Context, Query } from './ResourceInterface';
-import { getTables } from './databases';
-import { Table } from './Table';
 import { randomUUID } from 'crypto';
-import { DatabaseTransaction, Transaction } from './DatabaseTransaction';
+import { Transaction } from './DatabaseTransaction';
 import { IterableEventQueue } from './IterableEventQueue';
 import { _assignPackageExport } from '../index';
-import { parseQuery } from './search';
 import { ClientError } from '../utility/errors/hdbError';
 import { OWN_DATA } from './tracked';
 import { transaction } from './transaction';
 
-let tables;
-
 export const CONTEXT = Symbol.for('context');
-export const ID_PROPERTY = Symbol.for('id');
+export const ID_PROPERTY = Symbol.for('primary-key');
 export const IS_COLLECTION = Symbol('is-collection');
 export const SAVE_UPDATES_PROPERTY = Symbol('save-updates');
 export const RECORD_PROPERTY = Symbol('stored-record');
@@ -288,6 +283,9 @@ export class Resource implements ResourceInterface {
 	allowDelete(user): boolean | object {
 		return user?.role.permission.super_user;
 	}
+	getId() {
+		return this[ID_PROPERTY];
+	}
 	getContext() {
 		return this[CONTEXT];
 	}
@@ -315,22 +313,34 @@ class AccessError extends Error {
 	}
 }
 function transactional(action, options) {
-	return function (request: Request | Id, context?: Context) {
+	applyContext.reliesOnPrototype = true;
+	return applyContext;
+	function applyContext(request: Request | Id, data_or_context?: any, context?: Context) {
 		let id;
 		if (options.hasContent) {
 			// for put, post, patch, publish, query
-			const data = request;
+			let data;
 			if (context) {
+				// if there are three arguments, it is id, data, context
+				id = request;
+				data = data_or_context;
 				request = Object.create(CONTEXT in context ? context[CONTEXT] : context);
-				id = context.hasOwnProperty('id') ? context.id : this.primaryKey && data?.[this.primaryKey];
 			} else {
-				request = {};
-				if (this.primaryKey) id = data[this.primaryKey];
+				data = request;
+				if (data_or_context) {
+					// two arguments, data, context
+					request = Object.create(CONTEXT in data_or_context ? data_or_context[CONTEXT] : data_or_context);
+					id = data_or_context.hasOwnProperty('id') ? data_or_context.id : this.primaryKey && data?.[this.primaryKey];
+				} else {
+					request = {};
+					if (this.primaryKey) id = data[this.primaryKey];
+				}
 			}
 			request.data = data;
 			// otherwise check to see if the first arg is an id
 		} else if (request && typeof request === 'object' && !Array.isArray(request)) {
 			// request is actually a Request object, just make sure we inherit any context
+			context = data_or_context;
 			if (context) {
 				context = CONTEXT in context ? context[CONTEXT] : context;
 				request.transaction = context.transaction;
@@ -342,6 +352,7 @@ function transactional(action, options) {
 		} else {
 			// request is an id
 			id = request;
+			context = data_or_context;
 			request = context ? Object.create(CONTEXT in context ? context[CONTEXT] : context) : {};
 		}
 		if (options.allowInvalidated) request.allowInvalidated = true;
@@ -385,7 +396,7 @@ function transactional(action, options) {
 			}
 			return action(request, resource);
 		}
-	};
+	}
 }
 function missingMethod(resource, method) {
 	const error = new ClientError(`The ${resource.constructor.name} does not have a ${method} method implemented`, 405);

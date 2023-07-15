@@ -227,6 +227,8 @@ export function parseQuery(request: Request) {
 							request.select = (value.endsWith(',') ? value.slice(0, -1) : value).split(',');
 						} else request.select = value;
 						break;
+					case 'group-by':
+						throw new Error('Group by is not implemented yet');
 					case 'sort':
 						request.sort = value.split(',').map((direction) => {
 							switch (direction[0]) {
