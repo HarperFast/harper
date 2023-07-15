@@ -22,6 +22,7 @@ import { MAXIMUM_KEY } from 'ordered-binary';
 
 let server_utilities;
 const RANGE_ESTIMATE = 100000000;
+const STARTS_WITH_ESTIMATE = 10000000;
 env_mngr.initSync();
 const LMDB_PREFETCH_WRITES = env_mngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 
@@ -530,12 +531,10 @@ export function makeTable(options) {
 				this._writeUpdate(invalidated_record, NOTIFICATION);
 			} else this._writeDelete(NOTIFICATION);
 		}
-		async operation(operation) {
-			operation.hdb_user = this[CONTEXT]?.user;
-			operation.table ||= TableResource.tableName;
-			operation.schema ||= TableResource.databaseName;
-			const operation_function = server_utilities.chooseOperation(operation);
-			return server_utilities.processLocalTransaction({ body: operation }, operation_function);
+		static operation(operation, context) {
+			operation.table ||= table_name;
+			operation.schema ||= database_name;
+			return server_utilities.operation(operation, context);
 		}
 
 		/**
@@ -562,7 +561,7 @@ export function makeTable(options) {
 			let existing_record = this[RECORD_PROPERTY];
 			let is_unchanged;
 			let record_prepared;
-			let id = this[ID_PROPERTY];
+			const id = this[ID_PROPERTY];
 			if (!existing_record) this[RECORD_PROPERTY] = {}; // mark that this resource is being saved so isSaveRecord return true
 			transaction.addWrite({
 				key: id,
@@ -688,15 +687,20 @@ export function makeTable(options) {
 			const reverse = request.reverse === true;
 			let conditions = request.conditions;
 			if (!conditions) conditions = Array.isArray(request) ? request : [];
-			else if (conditions.length < 0) conditions = Array.from(conditions);
-
+			else if (conditions.length === undefined) conditions = Array.from(conditions);
+			if (request.id && request.hasOwnProperty('id')) {
+				conditions = [{ attribute: null, comparator: 'prefix', value: request.id }].concat(conditions);
+			}
 			for (const condition of conditions) {
 				const attribute_name = condition[0] ?? condition.attribute;
-				const attribute = attributes.find((attribute) => attribute.name == attribute_name);
+				const attribute =
+					attribute_name == null
+						? primary_key_attribute
+						: attributes.find((attribute) => attribute.name == attribute_name);
 				if (!attribute) {
-					throw handleHDBError(new Error(), `${attribute_name} is not a defined attribute`, 404);
-				}
-				if (attribute.type === 'Int' || attribute.type === 'Float') {
+					if (attribute_name != null)
+						throw handleHDBError(new Error(), `${attribute_name} is not a defined attribute`, 404);
+				} else if (attribute.type === 'Int' || attribute.type === 'Float') {
 					// convert to a number if that is expected
 					if (condition[1] === undefined) condition.value = coerceType(condition.value, attribute);
 					else condition[1] = coerceType(condition[1], attribute);
@@ -712,15 +716,21 @@ export function makeTable(options) {
 						// skip if it is cached
 						const search_type = condition.comparator || condition.search_type;
 						if (search_type === lmdb_terms.SEARCH_TYPES.EQUALS) {
-							// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
-							const index = indices[condition[0] ?? condition.attribute];
-							condition.estimated_count = index ? index.getValuesCount(condition[1] ?? condition.value) : Infinity;
+							const attribute_name = condition[0] ?? condition.attribute;
+							if (attribute_name == null || attribute_name === primary_key) condition.estimated_count = 1;
+							else {
+								// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
+								const index = indices[attribute_name];
+								condition.estimated_count = index ? index.getValuesCount(condition[1] ?? condition.value) : Infinity;
+							}
 						} else if (
 							search_type === lmdb_terms.SEARCH_TYPES.CONTAINS ||
 							search_type === lmdb_terms.SEARCH_TYPES.ENDS_WITH ||
 							search_type === 'ne'
 						)
 							condition.estimated_count = Infinity;
+						else if (search_type === lmdb_terms.SEARCH_TYPES.STARTS_WITH || search_type === 'prefix')
+							condition.estimated_count = STARTS_WITH_ESTIMATE;
 						// this search types can't/doesn't use indices, so try do them last
 						// for range queries (betweens, starts-with, greater, etc.), just arbitrarily guess
 						else condition.estimated_count = RANGE_ESTIMATE;

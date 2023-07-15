@@ -1,6 +1,6 @@
 import { ClientError } from '../utility/errors/hdbError';
 import * as lmdb_terms from '../utility/lmdb/terms';
-import { compareKeys } from 'ordered-binary';
+import { compareKeys, MAXIMUM_KEY } from 'ordered-binary';
 import { SKIP } from 'lmdb';
 import { Request } from './ResourceInterface';
 
@@ -37,6 +37,11 @@ export function idsForCondition(search_condition, transaction, reverse, Table, a
 		case 'ge':
 			start = value;
 			break;
+		case 'prefix':
+			start = value;
+			end = value.slice(0);
+			end[end.length - 1] = MAXIMUM_KEY;
+			break;
 		case 'starts_with':
 			start = value.toString();
 			end = value + String.fromCharCode(0xffff);
@@ -67,7 +72,8 @@ export function idsForCondition(search_condition, transaction, reverse, Table, a
 		exclusiveStart = !inclusiveEnd;
 		inclusiveEnd = new_end;
 	}
-	const index = attribute_name === Table.primaryKey ? Table.primaryStore : Table.indices[attribute_name];
+	const is_primary_key = attribute_name === Table.primaryKey || attribute_name == null;
+	const index = is_primary_key ? Table.primaryStore : Table.indices[attribute_name];
 
 	if (!index || index.isIndexing || need_full_scan) {
 		// no indexed searching available, need a full scan
@@ -86,7 +92,6 @@ export function idsForCondition(search_condition, transaction, reverse, Table, a
 			.getRange({ start: true, transaction, reverse })
 			.map(({ key, value }) => new Promise((resolve) => setImmediate(() => resolve(filter(value) ? key : SKIP))));
 	}
-	const is_primary_key = attribute_name === Table.primaryKey;
 	const range_options = { start, end, inclusiveEnd, exclusiveStart, values: !is_primary_key, transaction, reverse };
 	if (is_primary_key) {
 		return index.getRange(range_options);
