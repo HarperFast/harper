@@ -25,6 +25,7 @@ type SubObject @table {
 	id: ID @primaryKey
 	subObject: SomeObject
 	subArray: [SomeObject]
+	any: Any
 }
 type SimpleCache @table {
 	id: ID @primaryKey
