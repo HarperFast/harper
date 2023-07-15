@@ -192,34 +192,16 @@ function getAnalyticsTable() {
 		}))
 	);
 }
-async function isHdbInstalled() {
-	try {
-		await stat(getPropsFilePath());
-		await stat(get('settings_path'));
-	} catch (err) {
-		if (noBootFile()) return true;
-		if (err.code === 'ENOENT') {
-			// boot props not found, hdb not installed
-			return false;
-		}
 
-		throw err;
-	}
-
-	return true;
-}
-
-if (isMainThread) {
-	(async () => {
-		if (await isHdbInstalled()) {
-			messageTypeListener(ANALYTICS_REPORT_TYPE, recordAnalytics);
-			setInterval(async () => {
-				await aggregation(ANALYTICS_DELAY, AGGREGATE_PERIOD);
-				await cleanup(RAW_EXPIRATION, ANALYTICS_DELAY);
-				//await cleanup(AGGREGATE_EXPIRATION, AGGREGATE_PERIOD);
-			}, AGGREGATE_PERIOD / 2).unref();
-		}
-	})();
+messageTypeListener(ANALYTICS_REPORT_TYPE, recordAnalytics);
+let scheduled_tasks_running;
+function startScheduledTasks() {
+	scheduled_tasks_running = true;
+	setInterval(async () => {
+		await aggregation(ANALYTICS_DELAY, AGGREGATE_PERIOD);
+		await cleanup(RAW_EXPIRATION, ANALYTICS_DELAY);
+		//await cleanup(AGGREGATE_EXPIRATION, AGGREGATE_PERIOD);
+	}, AGGREGATE_PERIOD / 2).unref();
 }
 
 let total_bytes_processed = 0;
@@ -243,6 +225,7 @@ function recordAnalytics(message, worker?) {
 	}
 	report.id = getNextMonotonicTime();
 	getAnalyticsTable().put(report);
+	if (!scheduled_tasks_running) startScheduledTasks();
 	last_append = logAnalytics(report);
 }
 let last_append;
