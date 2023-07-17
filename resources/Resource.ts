@@ -272,7 +272,7 @@ export class Resource implements ResourceInterface {
 
 	// Default permissions (super user only accesss):
 	allowRead(user): boolean | object {
-		return this.constructor.allowRead(user, query);
+		return user?.role.permission.super_user;
 	}
 	allowUpdate(user): boolean | object {
 		return user?.role.permission.super_user;
