@@ -413,7 +413,6 @@ async function listUsers() {
 			throw err;
 		}
 
-		logger.trace('roles:', roles);
 		let roleMapObj = {};
 		for (let role of roles) {
 			roleMapObj[role.id] = _.cloneDeep(role);
