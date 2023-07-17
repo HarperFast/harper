@@ -121,7 +121,7 @@ async function alterRole(role) {
 		throw handleHDBError(err);
 	}
 
-	signalling.signalUserChange(new UserEventMsg(process.pid));
+	await signalling.signalUserChange(new UserEventMsg(process.pid));
 	return role;
 }
 
