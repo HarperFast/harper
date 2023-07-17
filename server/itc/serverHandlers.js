@@ -100,6 +100,7 @@ function handleErrorCallback(err) {
 	}
 }
 
+const user_listeners = [];
 /**
  * Updates the global hdb_users object by querying the hdb_role table.
  * @param event
@@ -122,9 +123,13 @@ async function userHandler(event) {
 
 		hdb_logger.trace(`ITC userHandler ${hdb_terms.HDB_ITC_CLIENT_PREFIX}${process.pid} received user event:`, event);
 		await user_schema.setUsersToGlobal();
+		for (let listener of user_listeners) listener();
 	} catch (err) {
 		hdb_logger.error(err);
 	}
 }
 
+userHandler.addListener = function (listener) {
+	user_listeners.push(listener);
+};
 module.exports = server_itc_handlers;

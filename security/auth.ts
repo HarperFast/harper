@@ -8,6 +8,7 @@ import * as env from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms';
 import { loggerWithTag, AuthAuditLog } from '../utility/logging/harper_logger.js';
 import { serializeMessage } from '../server/serverHelpers/contentTypes';
+import { user } from '../server/itc/serverHandlers';
 const auth_event_log = loggerWithTag('auth-event');
 env.initSync();
 
@@ -189,10 +190,17 @@ export async function authentication(request, next_handler) {
 	}
 	return response;
 }
+let started;
 export function start({ server, port }) {
 	server.request(authentication, { port: port || 'all' });
 	// keep it cleaned out periodically
-	setInterval(() => {
-		authorization_cache = new Map();
-	}, env.get(CONFIG_PARAMS.AUTHENTICATION_CACHETTL)).unref();
+	if (!started) {
+		started = true;
+		setInterval(() => {
+			authorization_cache = new Map();
+		}, env.get(CONFIG_PARAMS.AUTHENTICATION_CACHETTL)).unref();
+		user.addListener(() => {
+			authorization_cache = new Map();
+		});
+	}
 }

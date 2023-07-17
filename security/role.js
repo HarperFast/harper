@@ -117,7 +117,6 @@ async function alterRole(role) {
 
 	try {
 		await insert.update(update_object);
-		await new Promise((resolve) => setTimeout(resolve, 1000));
 	} catch (err) {
 		throw handleHDBError(err);
 	}
