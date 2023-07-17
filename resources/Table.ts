@@ -4,7 +4,7 @@ import { getIndexedValues } from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
 import { Query, ResourceInterface, Request, SubscriptionRequest, Id } from './ResourceInterface';
 import { workerData, threadId } from 'worker_threads';
-import { messageTypeListener } from '../server/threads/manageThreads';
+import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { CONTEXT, ID_PROPERTY, RECORD_PROPERTY, Resource, IS_COLLECTION } from './Resource';
 import { COMPLETION, DatabaseTransaction, immediateTransaction } from './DatabaseTransaction';
 import * as lmdb_terms from '../utility/lmdb/terms';
@@ -303,6 +303,7 @@ export function makeTable(options) {
 				if (read_txn?.isDone) {
 					throw new Error('Invalid read transaction');
 				}
+				// this is all for debugging, should be removed eventually
 				let first_load_record;
 				if (read_txn && !read_txn.hasRunLoadRecord) {
 					first_load_record = true;
@@ -324,12 +325,18 @@ export function makeTable(options) {
 					const responseMetadata = this[CONTEXT]?.responseMetadata;
 					if (responseMetadata && entry.version > (responseMetadata.lastModified || 0))
 						responseMetadata.lastModified = entry.version;
-					this[VERSION_PROPERTY] = entry.version;
+					const version = (this[VERSION_PROPERTY] = entry.version);
 					record = entry.value;
-					if (this[VERSION_PROPERTY] < 0 || !record || record?.__invalidated__) entry = null;
+					if (
+						version < 0 ||
+						!record ||
+						typeof record.__invalidated__ === 'boolean' ||
+						(expiration_ms && version < Date.now() - expiration_ms)
+					)
+						entry = null;
 				}
 				if (!entry && !allow_invalidated) {
-					const source = this.constructor.Source;
+					const source = TableResource.Source;
 					const has_get = source && source.get && (!source.get.reliesOnPrototype || source.prototype.get);
 					if (has_get) {
 						const result = this.getFromSource(record, this[VERSION_PROPERTY]).then((record) => {
@@ -498,38 +505,78 @@ export function makeTable(options) {
 		}
 
 		/**
-		 * This will be used to record that a record is being resolved
+		 * This is used to record that a retrieve a record from source
 		 */
 		async getFromSource(existing_record, existing_version) {
-			const invalidated_record = { __invalidated__: true };
-			if (this[RECORD_PROPERTY]) Object.assign(invalidated_record, existing_record);
+			const id = this[ID_PROPERTY];
+			if (existing_version < 0) {
+				// this signals that there is another thread that is getting this record, need to wait for it
+				let entry;
+				while (true) {
+					primary_store.getEntry(id);
+					if (entry.version > 0) return entry.value;
+					// TODO: listen for commits
+					await new Promise((resolve) => setTimeout(resolve, 10));
+				}
+			}
+			const is_invalidation = existing_record?.__invalidated__;
+			//			const invalidated_record = { __invalidated__: true };
+			//			if (this[RECORD_PROPERTY]) Object.assign(invalidated_record, existing_record);
 			// TODO: We want to eventually use a "direct write" method to directly write to the locations
 			// of the record in place in the database, which requires a reserved space in the random access structures
 			// it is important to remember that this is _NOT_ part of the current transaction; nothing is changing
 			// with the canonical data, we are simply fulfilling our local copy of the canonical data, but still don't
 			// want a timestamp later than the current transaction
-			primary_store.put(this[ID_PROPERTY], invalidated_record, existing_version, existing_version);
-			let updated_record = await this.constructor.Source.get(this[ID_PROPERTY], this);
-			const version = existing_version;
+			primary_store.put(id, existing_record, -existing_version, existing_version);
+			// we create a new context for the source, we want to determine the timestamp and don't want to
+			// attribute this to current user
+			const source_context = { responseMetadata: {} };
+			let updated_record = await TableResource.Source.get(id, source_context);
+			let version = source_context.responseMetadata.lastModified;
+			// If we are using expiration and the version will already expire, need to incrment it
+			if (!version || (expiration_ms && version < Date.now() - expiration_ms)) version = getNextMonotonicTime();
 			if (updated_record) {
 				if (primary_key) updated_record[primary_key] = this[ID_PROPERTY];
 				if (typeof updated_record.toJSON === 'function') updated_record = updated_record.toJSON();
 				// don't wait on this, we don't actually care if it fails, that just means there is even
 				// a newer entry going in the cache in the future
-				primary_store.put(this[ID_PROPERTY], updated_record, version, existing_version);
-			} else primary_store.remove(this[ID_PROPERTY], existing_version);
+				primary_store.put(id, updated_record, version, -existing_version);
+			} else primary_store.remove(id, existing_version);
+			if (is_invalidation) {
+				audit_store.put([version, table_id, id], {
+					operation: updated_record ? 'put' : 'delete',
+					value: updated_record,
+					lastVersion: existing_version,
+				});
+			}
 			return updated_record;
 		}
 		invalidate() {
-			let invalidated_record;
+			let partial_record;
 			for (const name in indices) {
 				// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
-				if (!invalidated_record) invalidated_record = { __invalidated__: true };
-				invalidated_record[name] = this.getProperty(name);
+				if (!partial_record) partial_record = { __invalidated__: true };
+				partial_record[name] = this.getProperty(name);
 			}
-			if (invalidated_record) {
-				this._writeUpdate(invalidated_record, NOTIFICATION);
+			//
+			if (partial_record) {
+				this._writeUpdate(partial_record, NOTIFICATION);
 			} else this._writeDelete(NOTIFICATION);
+		}
+		evict() {
+			let partial_record;
+			for (const name in indices) {
+				// if there are any indices, we need to preserve a partial evicted record to ensure we can still do searches
+				if (!partial_record) partial_record = { __invalidated__: false };
+				partial_record[name] = this.getProperty(name);
+			}
+			//
+			if (partial_record) {
+				return primary_store.put(this[ID_PROPERTY], partial_record, this[VERSION_PROPERTY], this[VERSION_PROPERTY]);
+			} else return primary_store.remove(this[ID_PROPERTY], this[VERSION_PROPERTY]);
+		}
+		lock() {
+			throw new Error('Not yet implemented');
 		}
 		static operation(operation, context) {
 			operation.table ||= table_name;
@@ -596,7 +643,7 @@ export function makeTable(options) {
 								else record[TableResource.createdTimeProperty] = txn_time;
 							}
 							record = deepFreeze(record); // this flatten and freeze the record
-							const source = this.constructor.Source;
+							const source = TableResource.Source;
 							if (source?.put && (!source.put.reliesOnPrototype || source.prototype.put)) {
 								completion = source.put(id, record, this);
 							}
@@ -659,7 +706,7 @@ export function makeTable(options) {
 					if (!delete_prepared) {
 						delete_prepared = true;
 						if (!options?.isNotification) {
-							const source = this.constructor.Source;
+							const source = TableResource.Source;
 							if (source?.delete && (!source.delete.reliesOnPrototype || source.prototype.delete))
 								completion = source.delete(id, this);
 						}
@@ -837,7 +884,7 @@ export function makeTable(options) {
 		async subscribe(request: SubscriptionRequest) {
 			if (!audit_store) throw new Error('Can not subscribe to a table without an audit log');
 			const subscription = addSubscription(
-				this.constructor,
+				TableResource,
 				this[ID_PROPERTY] ?? null, // treat undefined and null as the root
 				function (id, audit_record, timestamp) {
 					try {
@@ -968,7 +1015,7 @@ export function makeTable(options) {
 					if (!publish_prepared) {
 						publish_prepared = true;
 						if (!options?.isNotification) {
-							const source = this.constructor.Source;
+							const source = TableResource.Source;
 							if (source?.publish && (!source.publish.reliesOnPrototype || source.prototype.publish)) {
 								completion = source.publish(id, message, this);
 							}

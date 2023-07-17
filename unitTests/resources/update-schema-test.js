@@ -1,15 +1,12 @@
 const { getMockLMDBPath } = require('../test_utils');
-const { start } = require('../../resources/graphql');
-const { table } = require('../../resources/databases');
+const { loadGQLSchema } = require('../../resources/graphql');
 const assert = require('assert');
 const test_data = require('../testData');
 const { transaction } = require('../../resources/transaction');
 describe('Update Schema', () => {
-	let workers, server;
-	const { handleFile } = start({ ensureTable: table });
 	before(async function () {
-		let path = getMockLMDBPath();
-		await handleFile(`
+		getMockLMDBPath();
+		await loadGQLSchema(`
 		type SchemaChanges @table {
 			id: ID @primaryKey
 			state: String
@@ -27,7 +24,7 @@ describe('Update Schema', () => {
 			caught_error = error;
 		}
 		//assert(caught_error?.message.includes('not indexed'));
-		await handleFile(`
+		await loadGQLSchema(`
 		type SchemaChanges @table {
 			id: ID @primaryKey
 			state: String @indexed
