@@ -61,9 +61,9 @@ async function cloneNode() {
 
 	await installHDB();
 	await cloneTables();
-	await cloneConfig();
-	await cloneComponents();
-	await clusterTables();
+	// await cloneConfig();
+	// await cloneComponents();
+	// await clusterTables();
 	console.info('Successfully cloned node: ' + url);
 }
 
@@ -92,8 +92,8 @@ async function cloneTables() {
 	leader_schemas = await leader_schemas.json();
 
 	// If there is excludeSchemas in clone config search for value in leader schema description and delete if found, so it's not cloned.
-	if (clone_node_config?.database?.excludeSchemas) {
-		for (const exclude_schema of clone_node_config.database.excludeSchemas) {
+	if (clone_node_config?.database?.excludeDatabases) {
+		for (const exclude_schema of clone_node_config.database.excludeDatabases) {
 			if (exclude_schema?.schema == null) continue;
 			if (leader_schemas[exclude_schema?.schema]) {
 				hdb_log.info('Excluding schema:', exclude_schema.schema);
@@ -105,21 +105,39 @@ async function cloneTables() {
 	// If there is excludeTables in clone config search for value in leader schema description and delete if found, so it's not cloned.
 	if (clone_node_config?.database?.excludeTables) {
 		for (const exclude_table of clone_node_config.database.excludeTables) {
-			if (exclude_table?.schema == null) continue;
-			if (leader_schemas[exclude_table?.schema]?.[exclude_table?.table]) {
-				hdb_log.info(`Excluding schema.table: ${exclude_table.schema}.${exclude_table.table}`);
-				delete leader_schemas[exclude_table.schema][exclude_table.table];
+			if (exclude_table?.database == null) continue;
+			if (leader_schemas[exclude_table?.database]?.[exclude_table?.table]) {
+				hdb_log.info(`Excluding schema.table: ${exclude_table.database}.${exclude_table.table}`);
+				delete leader_schemas[exclude_table.database][exclude_table.table];
 			}
 		}
 	}
 
-	// The describe_all req to the leader node won't return system tables, for that reason they are handled separately.
+	// Clone system database
+	console.info('Cloning system database');
+	const sys_backup = await leaderHttpReq(
+		{
+			operation: OPERATIONS_ENUM.GET_BACKUP,
+			database: 'system',
+		},
+		true
+	);
+
+	const sys_schema_path = getSystemSchemaPath();
+	await ensureDir(sys_schema_path);
+	const sys_db_path = join(sys_schema_path, 'system.mdb');
+	await pipeline(sys_backup.body, createWriteStream(sys_db_path, { overwrite: true }));
+
+	// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
+	await fs.utimes(sys_db_path, Date.now(), new Date(sys_backup.headers.get('date')));
+
+	/*	// The describe_all req to the leader node won't return system tables, for that reason they are handled separately.
 	for (const sys_table of SYSTEM_TABLES_TO_CLONE) {
 		console.info('Cloning system table: ' + sys_table);
 		const sys_backup = await leaderHttpReq(
 			{
 				operation: OPERATIONS_ENUM.GET_BACKUP,
-				schema: SYSTEM_SCHEMA_NAME,
+				database: ,
 				table: sys_table,
 			},
 			true
@@ -131,7 +149,7 @@ async function cloneTables() {
 
 		// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
 		await fs.utimes(sys_db_path, Date.now(), new Date(sys_backup.headers.get('date')));
-	}
+	}*/
 
 	for (const schema in leader_schemas) {
 		for (const table in leader_schemas[schema]) {

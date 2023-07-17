@@ -1,10 +1,10 @@
 # Clone HarperDB node configuration file. Refer to TODO - add ref to config for this
 ---
 database:
-  excludeSchemas:
-    - schema: null
+  excludeDatabases:
+    - database: null
   excludeTables:
-    - schema: null
+    - database: null
       table: null
 components:
   skipNodeModules: true
