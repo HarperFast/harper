@@ -95,6 +95,7 @@ export function makeTable(options) {
 		static updatedTimeProperty = updated_time_property;
 		static schemaDefined = schema_defined;
 		static dbTxn = immediateTransaction;
+		static dbisDB = dbis_db;
 		static sourcedFrom(Resource) {
 			// define a source for retrieving invalidated entries for caching purposes
 			this.Source = Resource;
