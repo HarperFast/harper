@@ -244,7 +244,7 @@ function broadcastWithAcknowledgement(message) {
 						resolve();
 					}
 					port.off(port.close ? 'close' : 'exit', ack_handler);
-					if (--port.refCount === 0) {
+					if (port !== parentPort && --port.refCount === 0) {
 						port.unref();
 					}
 				};
