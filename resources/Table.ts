@@ -6,7 +6,7 @@ import { Query, ResourceInterface, Request, SubscriptionRequest, Id } from './Re
 import { workerData, threadId } from 'worker_threads';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { CONTEXT, ID_PROPERTY, RECORD_PROPERTY, Resource, IS_COLLECTION } from './Resource';
-import { COMPLETION, DatabaseTransaction, ImmediateTransaction, immediateTransaction } from './DatabaseTransaction';
+import { COMPLETION, DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction';
 import * as lmdb_terms from '../utility/lmdb/terms';
 import * as env_mngr from '../utility/environment/environmentManager';
 import { addSubscription, listenToCommits } from './transactionBroadcast';
