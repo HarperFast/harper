@@ -19,6 +19,7 @@ import * as harper_logger from '../utility/logging/harper_logger';
 import { assignTrackedAccessors, deepFreeze, hasChanges, OWN_DATA } from './tracked';
 import { transaction } from './transaction';
 import { MAXIMUM_KEY } from 'ordered-binary';
+import { getWorkerIndex } from '../server/threads/manageThreads';
 
 let server_utilities;
 const RANGE_ESTIMATE = 100000000;
@@ -61,7 +62,6 @@ export function makeTable(options) {
 		tableId: table_id,
 		tableName: table_name,
 		primaryStore: primary_store,
-		expirationMS: expiration_ms,
 		databasePath: database_path,
 		databaseName: database_name,
 		auditStore: audit_store,
@@ -69,6 +69,7 @@ export function makeTable(options) {
 		schemaDefined: schema_defined,
 		dbisDB: dbis_db,
 	} = options;
+	let { expirationMS: expiration_ms } = options;
 	let { attributes } = options;
 	if (!attributes) attributes = [];
 	if (audit_store) listenToCommits(audit_store);
@@ -193,7 +194,13 @@ export function makeTable(options) {
 		static getResource(id: Id, request): Promise<TableResource> | TableResource {
 			const resource: TableResource = super.getResource(id, request) as any;
 			if (id != null) {
-				const completion = resource.loadRecord(request.allowInvalidated);
+				let completion;
+				try {
+					completion = resource.loadRecord(request.allowInvalidated);
+				} catch (error) {
+					if (error.message.includes('Unable to serialize object')) error.message += ': ' + JSON.stringify(id);
+					throw error;
+				}
 				if (completion?.then) return completion.then(() => resource);
 			}
 			return resource;
@@ -205,24 +212,21 @@ export function makeTable(options) {
 		static setTTLExpiration(expiration_time) {
 			// we set up a timer to remove expired entries. we only want the timer/reaper to run in one thread,
 			// so we use the first one
-			if (workerData?.workerIndex === 0) {
-				if (!this.expirationTimer) {
-					const expiration_ms = expiration_time * 1000;
-					this.expirationTimer = setInterval(() => {
-						// iterate through all entries to find expired ones
-						for (const { key, value: record, version } of this.primaryStore.getRange({
-							start: false,
-							versions: true,
-						})) {
-							if (version < Date.now() - expiration_ms) {
-								// make sure we only delete it if the version has not changed
-								const resource = new this(key, this);
-								resource.invalidate();
-								this.primaryStore.ifVersion(key, version, () => this.primaryStore.remove(key));
-							}
+			if (getWorkerIndex() === 0) {
+				expiration_ms = expiration_time * 1000;
+				if (this.expirationTimer) clearInterval(this.expirationTimer);
+				this.expirationTimer = setInterval(() => {
+					// iterate through all entries to find expired ones
+					for (const { key, value: record, version } of this.primaryStore.getRange({
+						start: false,
+						versions: true,
+					})) {
+						if (version < Date.now() - expiration_ms) {
+							// evict!
+							TableResource.evict(key, record, version);
 						}
-					}, expiration_ms);
-				}
+					}
+				}, expiration_ms).unref();
 			}
 		}
 		/**
@@ -507,7 +511,7 @@ export function makeTable(options) {
 		/**
 		 * This is used to record that a retrieve a record from source
 		 */
-		async getFromSource(existing_record, existing_version) {
+		async getFromSource(existing_record = null, existing_version) {
 			const id = this[ID_PROPERTY];
 			if (existing_version < 0) {
 				// this signals that there is another thread that is getting this record, need to wait for it
@@ -527,12 +531,13 @@ export function makeTable(options) {
 			// it is important to remember that this is _NOT_ part of the current transaction; nothing is changing
 			// with the canonical data, we are simply fulfilling our local copy of the canonical data, but still don't
 			// want a timestamp later than the current transaction
-			primary_store.put(id, existing_record, -existing_version, existing_version);
+			const updating_version = -(existing_version || 1);
+			primary_store.put(id, existing_record, updating_version, existing_version);
 			// we create a new context for the source, we want to determine the timestamp and don't want to
 			// attribute this to current user
 			const source_context = { responseMetadata: {} };
 			let updated_record = await TableResource.Source.get(id, source_context);
-			let version = source_context.responseMetadata.lastModified;
+			let version = source_context.responseMetadata.lastModified || existing_version;
 			// If we are using expiration and the version will already expire, need to incrment it
 			if (!version || (expiration_ms && version < Date.now() - expiration_ms)) version = getNextMonotonicTime();
 			if (updated_record) {
@@ -540,7 +545,7 @@ export function makeTable(options) {
 				if (typeof updated_record.toJSON === 'function') updated_record = updated_record.toJSON();
 				// don't wait on this, we don't actually care if it fails, that just means there is even
 				// a newer entry going in the cache in the future
-				primary_store.put(id, updated_record, version, -existing_version);
+				primary_store.put(id, updated_record, version, updating_version);
 			} else primary_store.remove(id, existing_version);
 			if (is_invalidation) {
 				audit_store.put([version, table_id, id], {
@@ -552,28 +557,47 @@ export function makeTable(options) {
 			return updated_record;
 		}
 		invalidate() {
-			let partial_record;
+			const partial_record = { __invalidated__: true };
 			for (const name in indices) {
 				// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
-				if (!partial_record) partial_record = { __invalidated__: true };
 				partial_record[name] = this.getProperty(name);
 			}
-			//
-			if (partial_record) {
-				this._writeUpdate(partial_record, NOTIFICATION);
-			} else this._writeDelete(NOTIFICATION);
+			const transaction = this._txnForRequest();
+			const txn_time = transaction.timestamp;
+			transaction.addWrite({
+				key: this[ID_PROPERTY],
+				store: primary_store,
+				txnTime: txn_time,
+				lastVersion: this[VERSION_PROPERTY],
+				commit: (retry) => {
+					if (retry) return;
+					primary_store.put(this[ID_PROPERTY], partial_record, txn_time);
+					// TODO: record_deletion?
+					return {
+						// return the audit record that should be recorded
+						operation: 'invalidate',
+					};
+				},
+			});
 		}
-		evict() {
+		static evict(id, existing_record, existing_version) {
 			let partial_record;
+			if (!existing_record) {
+				const entry = primary_store.getEntry(id);
+				if (!entry) return;
+				existing_record = entry.value;
+				existing_version = entry.version;
+			}
+
 			for (const name in indices) {
 				// if there are any indices, we need to preserve a partial evicted record to ensure we can still do searches
 				if (!partial_record) partial_record = { __invalidated__: false };
-				partial_record[name] = this.getProperty(name);
+				partial_record[name] = existing_record[name];
 			}
 			//
 			if (partial_record) {
-				return primary_store.put(this[ID_PROPERTY], partial_record, this[VERSION_PROPERTY], this[VERSION_PROPERTY]);
-			} else return primary_store.remove(this[ID_PROPERTY], this[VERSION_PROPERTY]);
+				return primary_store.put(id, partial_record, existing_version, existing_version);
+			} else return primary_store.remove(id, existing_version);
 		}
 		lock() {
 			throw new Error('Not yet implemented');
@@ -1126,7 +1150,7 @@ export function makeTable(options) {
 	TableResource.updatedAttributes(); // on creation, update accessors as well
 	const prototype = TableResource.prototype;
 	prototype[INCREMENTAL_UPDATE] = true; // default behavior
-	if (expiration_ms) TableResource.setTTLExpiration(expiration_ms);
+	if (expiration_ms) TableResource.setTTLExpiration(expiration_ms / 1000);
 	return TableResource;
 	function updateIndices(id, existing_record, record?) {
 		// iterate the entries from the record

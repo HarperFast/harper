@@ -126,6 +126,13 @@ class SubscriptionsSession {
 				for await (const update of subscription) {
 					try {
 						let message_id;
+						if (
+							update.operation &&
+							update.operation !== 'put' &&
+							update.operation !== 'delete' &&
+							update.operation !== 'message'
+						)
+							continue;
 						if (needs_ack) {
 							update.topic = topic;
 							message_id = this.needsAcknowledge(update);
