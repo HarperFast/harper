@@ -1,9 +1,10 @@
 const fg = require('fast-glob');
-const { statSync, existsSync } = require('fs');
-const { spawnSync } = require('child_process');
+const { statSync, existsSync, readFileSync, writeFileSync } = require('fs');
+const { spawnSync, spawn } = require('child_process');
 const { isMainThread } = require('worker_threads');
 const { join, relative } = require('path');
 const { PACKAGE_ROOT } = require('../hdbTerms');
+const { tmpdir } = require('os');
 require('source-map-support').install();
 const SRC_DIRECTORIES = ['resources', 'server', 'dataLayer'];
 const TS_DIRECTORY = 'ts-build';
@@ -46,6 +47,25 @@ if (is_source_code) {
 			let result = spawnSync(process.argv[0], [join(PACKAGE_ROOT, 'node_modules/.bin/tsc')], { cwd: PACKAGE_ROOT });
 			if (result.stdout.length) console.log(result.stdout.toString());
 			if (result.stderr.length) console.log(result.stderr.toString());
+			let pid_path = join(tmpdir(), 'harperdb-tsc.pid');
+			let is_running;
+			if (existsSync(pid_path)) {
+				try {
+					// signal of zero can be used to check for existence
+					process.kill(+readFileSync(pid_path, { encoding: 'utf8' }), 0);
+					is_running = true;
+				} catch (e) {}
+			}
+			if (!is_running) {
+				console.log('starting tsc background process');
+				let tsc_process = spawn(process.argv[0], [join(PACKAGE_ROOT, 'node_modules/.bin/tsc'), '--watch'], {
+					cwd: PACKAGE_ROOT,
+					detached: true,
+					stdio: 'ignore',
+				});
+				writeFileSync(pid_path, tsc_process.pid.toString());
+				tsc_process.unref();
+			}
 		}
 	}
 
