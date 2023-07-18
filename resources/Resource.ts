@@ -195,7 +195,7 @@ export class Resource implements ResourceInterface {
 	static coerceId(id: string): number | string {
 		return id;
 	}
-	static getResource(id: Id, request: Request): Resource | Promise<Resource> {
+	static getResource(id: Id, request: Request, options?: any): Resource | Promise<Resource> {
 		let resource;
 		let context = request[CONTEXT];
 		let is_collection;
@@ -358,12 +358,12 @@ function transactional(action, options) {
 		if (options.allowInvalidated) request.allowInvalidated = true;
 		if (request.transaction) {
 			// we are already in a transaction, proceed
-			const resource = this.getResource(id, request);
+			const resource = this.getResource(id, request, options);
 			return resource.then ? resource.then(authorizeActionOnResource) : authorizeActionOnResource(resource);
 		} else {
 			// start a transaction
 			return transaction(request, (request) => {
-				const resource = this.getResource(id, request);
+				const resource = this.getResource(id, request, options);
 				return resource.then ? resource.then(authorizeActionOnResource) : authorizeActionOnResource(resource);
 			});
 		}

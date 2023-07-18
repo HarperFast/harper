@@ -117,7 +117,10 @@ function notifyFromTransactionData(path, audit_ids, same_thread?) {
 		const table_subscriptions = subscriptions[table_id];
 		if (!table_subscriptions) continue;
 		writeKey(audit_id, test, 0);
+		const is_invalidation = audit_id[3];
+		if (is_invalidation) audit_id.length = 3;
 		const audit_record = subscriptions.auditStore.get(audit_id);
+		if (is_invalidation && audit_record.operation !== 'invalidate') continue; // this indicates that the invalidation entry has already been replaced, so just wait for the second update
 		let matching_key = keyArrayToString(record_key);
 		let is_ancestor;
 		do {
@@ -180,6 +183,7 @@ export function listenToCommits(audit_store) {
 				let key;
 				if (next.meta && next.meta.store === audit_store && (key = next.meta.key)) {
 					if (typeof key[2] === 'symbol') key[2] = null;
+					if (key.invalidated) key[3] = true; // how we indicate invalidation for now
 					audit_ids.push(key);
 				}
 				if (next.uint32 !== last_uint32) {

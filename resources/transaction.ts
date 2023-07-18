@@ -1,6 +1,7 @@
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { Request } from './ResourceInterface';
 import { _assignPackageExport } from '../index';
+import { CONTEXT } from './Resource';
 
 export function transaction<T>(request: Request, callback: (request: Request) => T): T;
 export function transaction<T>(callback: (request: Request) => T): T;
@@ -32,24 +33,39 @@ export function transaction<T>(request: Request | ((request: Request) => T), cal
 		if (result?.then) {
 			return result.then(
 				(result) => {
+					context.transaction = null;
 					const committed = transaction.commit();
 					return committed.then ? committed.then(() => result) : result;
 				},
 				(error) => {
+					context.transaction = null;
 					transaction.abort();
 					throw error;
 				}
 			);
 		}
 	} catch (error) {
+		context.transaction = null;
 		transaction.abort();
 		throw error;
 	}
+	context.transaction = null;
 	const committed = transaction.commit();
 	return committed.then ? committed.then(() => result) : result;
 }
 
 _assignPackageExport('transaction', transaction);
+
+transaction.commit = function (context_source) {
+	const transaction = (context_source[CONTEXT] || context_source)?.transaction;
+	if (!transaction) throw new Error('No active transaction is available to commit');
+	return transaction.commit();
+};
+transaction.abort = function (context_source) {
+	const transaction = (context_source[CONTEXT] || context_source)?.transaction;
+	if (!transaction) throw new Error('No active transaction is available to abort');
+	return transaction.abort();
+};
 
 class TransactionSet extends Array {
 	/**

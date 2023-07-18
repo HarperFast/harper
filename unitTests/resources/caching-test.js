@@ -7,15 +7,24 @@ const { setMainIsWorker } = require('../../server/threads/manageThreads');
 const { transaction } = require('../../resources/transaction');
 describe('Caching', () => {
 	let CachingTable,
+		IndexedCachingTable,
 		source_requests = 0;
 	let events = [];
 	before(async function () {
 		getMockLMDBPath();
-		setMainIsWorker(true);
+		setMainIsWorker(true); // TODO: Should be default until changed
 		CachingTable = table({
 			table: 'CachingTable',
 			database: 'test',
 			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }],
+		});
+		IndexedCachingTable = table({
+			table: 'IndexedCachingTable',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name', indexed: true },
+			],
 		});
 		class Source extends Resource {
 			get() {
@@ -31,6 +40,7 @@ describe('Caching', () => {
 			}
 		}
 		CachingTable.sourcedFrom(Source);
+		IndexedCachingTable.sourcedFrom(Source);
 		let subscription = await CachingTable.subscribe({});
 
 		subscription.on('data', (event) => {
@@ -62,17 +72,41 @@ describe('Caching', () => {
 		CachingTable.setTTLExpiration(50);
 		source_requests = 0;
 		events = [];
-		await transaction(async (context) => {
-			let result = await CachingTable.get(23, context);
-			assert.equal(result.id, 23);
-			assert.equal(result.name, 'name ' + 23);
-			assert.equal(source_requests, 1);
-			result.invalidate();
-		});
 		let result = await CachingTable.get(23, context);
+		assert.equal(result.id, 23);
+		assert.equal(result.name, 'name ' + 23);
+		assert.equal(source_requests, 1);
+		result.invalidate();
 		await new Promise((resolve) => setTimeout(resolve, 20));
+		result = await CachingTable.get(23, context);
+		await new Promise((resolve) => setTimeout(resolve, 10));
 		assert.equal(result.id, 23);
 		assert.equal(source_requests, 2);
 		assert.equal(events.length, 2);
+	});
+	it('Can load cached indexed data', async function () {
+		source_requests = 0;
+		events = [];
+		IndexedCachingTable.setTTLExpiration(0.005);
+		let result = await IndexedCachingTable.get(23);
+		assert.equal(result.id, 23);
+		assert.equal(result.name, 'name ' + 23);
+		assert.equal(source_requests, 1);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		let results = [];
+		for await (let record of IndexedCachingTable.search({ conditions: [{ attribute: 'name', value: 'name 23' }] })) {
+			results.push(record);
+		}
+		assert.equal(results.length, 1);
+		result = await CachingTable.get(23);
+		assert.equal(result.id, 23);
+		assert.equal(source_requests, 2);
+		// let it expire
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		result = await CachingTable.get(23);
+		assert.equal(result.id, 23);
+		assert.equal(result.name, 'name ' + 23);
+		assert.equal(source_requests, 2);
+		assert.equal(events.length, 0);
 	});
 });

@@ -6,7 +6,7 @@ import { Query, ResourceInterface, Request, SubscriptionRequest, Id } from './Re
 import { workerData, threadId } from 'worker_threads';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { CONTEXT, ID_PROPERTY, RECORD_PROPERTY, Resource, IS_COLLECTION } from './Resource';
-import { COMPLETION, DatabaseTransaction, immediateTransaction } from './DatabaseTransaction';
+import { COMPLETION, DatabaseTransaction, ImmediateTransaction, immediateTransaction } from './DatabaseTransaction';
 import * as lmdb_terms from '../utility/lmdb/terms';
 import * as env_mngr from '../utility/environment/environmentManager';
 import { addSubscription, listenToCommits } from './transactionBroadcast';
@@ -32,7 +32,7 @@ const VERSION_PROPERTY = Symbol.for('version');
 const INCREMENTAL_UPDATE = Symbol.for('incremental-update');
 const SOURCE_PROPERTY = Symbol('source-resource');
 const LAZY_PROPERTY_ACCESS = { lazy: true };
-const NOTIFICATION = { isNotification: true };
+const NOTIFICATION = { isNotification: true, allowInvalidated: true };
 
 export interface Table {
 	primaryStore: Database;
@@ -108,8 +108,7 @@ export function makeTable(options) {
 						event.id = value[Table.primaryKey];
 						if (event.id === undefined) throw new Error('Replication message without an id ' + JSON.stringify(event));
 					}
-					event.allowInvalidated = true;
-					const resource: TableResource = await Table.getResource(event.id, event);
+					const resource: TableResource = await Table.getResource(event.id, event, NOTIFICATION);
 					switch (event.operation) {
 						case 'put':
 							return resource._writeUpdate(value, NOTIFICATION);
@@ -191,17 +190,32 @@ export function makeTable(options) {
 			})();
 			return this;
 		}
-		static getResource(id: Id, request): Promise<TableResource> | TableResource {
+		static getResource(id: Id, request, options?: any): Promise<TableResource> | TableResource {
 			const resource: TableResource = super.getResource(id, request) as any;
 			if (id != null) {
-				let completion;
 				try {
-					completion = resource.loadRecord(request.allowInvalidated);
+					if (resource.hasOwnProperty(RECORD_PROPERTY)) return resource; // already loaded, don't reload, current version may have modifications
+					const env_txn = resource._txnForRequest();
+					if (typeof id === 'object' && id && !Array.isArray(id)) {
+						throw new Error(`Invalid id ${JSON.stringify(id)}`);
+					}
+					let resolve_load;
+					const read_txn = env_txn?.getReadTxn();
+					if (options) options.transaction = read_txn;
+					else options = { transaction: read_txn };
+					let finished;
+					loadRecord(id, request, options, (entry) => {
+						resource[RECORD_PROPERTY] = entry?.value;
+						resource[VERSION_PROPERTY] = entry?.version;
+						finished = true;
+						resolve_load?.(resource);
+					});
+					if (finished) return resource;
+					else return new Promise((resolve) => (resolve_load = resolve));
 				} catch (error) {
 					if (error.message.includes('Unable to serialize object')) error.message += ': ' + JSON.stringify(id);
 					throw error;
 				}
-				if (completion?.then) return completion.then(() => resource);
 			}
 			return resource;
 		}
@@ -287,83 +301,6 @@ export function makeTable(options) {
 				return this;
 			}
 		}
-		/**
-		 * Database/table resources are backed by persisted records and loaded prior to any other actions (get, put, etc.)
-		 * Most of the operations require the data to be loaded anyway for proper index updates.
-		 * @param allow_invalidated If this is true, we can complete with a partial, invalidated record (don't need to load from cache source)
-		 * @returns
-		 */
-		loadRecord(allow_invalidated?: boolean) {
-			// TODO: determine if we use lazy access properties
-			if (this.hasOwnProperty(RECORD_PROPERTY)) return; // already loaded, don't reload, current version may have modifications
-			const env_txn = this._txnForRequest();
-			const id = this[ID_PROPERTY];
-			if (typeof id === 'object' && id && !Array.isArray(id)) {
-				throw new Error(`Invalid id ${JSON.stringify(id)}`);
-			}
-			let resolve_load;
-			const whenPrefetched = () => {
-				const read_txn = env_txn?.getReadTxn();
-				if (read_txn?.isDone) {
-					throw new Error('Invalid read transaction');
-				}
-				// this is all for debugging, should be removed eventually
-				let first_load_record;
-				if (read_txn && !read_txn.hasRunLoadRecord) {
-					first_load_record = true;
-					read_txn.hasRunLoadRecord = true;
-				}
-				let entry;
-				try {
-					entry = primary_store.getEntry(id, { transaction: read_txn });
-				} catch (error) {
-					error.message += '. The read txn is ' + JSON.stringify(read_txn) + ' first loadRecord: ' + first_load_record;
-					console.error(error);
-					console.error('reader list', primary_store.readerList());
-					console.error('reader check', primary_store.readerCheck());
-					console.error('reader list', primary_store.readerList());
-					throw error;
-				}
-				let record;
-				if (entry) {
-					const responseMetadata = this[CONTEXT]?.responseMetadata;
-					if (responseMetadata && entry.version > (responseMetadata.lastModified || 0))
-						responseMetadata.lastModified = entry.version;
-					const version = (this[VERSION_PROPERTY] = entry.version);
-					record = entry.value;
-					if (
-						version < 0 ||
-						!record ||
-						typeof record.__invalidated__ === 'boolean' ||
-						(expiration_ms && version < Date.now() - expiration_ms)
-					)
-						entry = null;
-				}
-				if (!entry && !allow_invalidated) {
-					const source = TableResource.Source;
-					const has_get = source && source.get && (!source.get.reliesOnPrototype || source.prototype.get);
-					if (has_get) {
-						const result = this.getFromSource(record, this[VERSION_PROPERTY]).then((record) => {
-							if (record?.[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
-							this[RECORD_PROPERTY] = record;
-						});
-						resolve_load?.(result);
-						return result;
-					}
-				}
-				if (record?.[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
-				this[RECORD_PROPERTY] = record;
-				resolve_load?.();
-			};
-			// if it is cached, we use that as indication that we can get the value very quickly
-			if (id == null || primary_store.cache?.get(id)) return whenPrefetched();
-			// otherwise we asynchronously get, both improving concurrency and avoiding a page fault on the main thread
-			return new Promise((resolve) => {
-				resolve_load = resolve;
-				primary_store.prefetch([id], whenPrefetched);
-			});
-		}
-
 		/**
 		 * Determine if the user is allowed to get/read data from the current resource
 		 * @param user The current, authenticated user
@@ -508,54 +445,6 @@ export function makeTable(options) {
 			return this;
 		}
 
-		/**
-		 * This is used to record that a retrieve a record from source
-		 */
-		async getFromSource(existing_record = null, existing_version) {
-			const id = this[ID_PROPERTY];
-			if (existing_version < 0) {
-				// this signals that there is another thread that is getting this record, need to wait for it
-				let entry;
-				while (true) {
-					primary_store.getEntry(id);
-					if (entry.version > 0) return entry.value;
-					// TODO: listen for commits
-					await new Promise((resolve) => setTimeout(resolve, 10));
-				}
-			}
-			const is_invalidation = existing_record?.__invalidated__;
-			//			const invalidated_record = { __invalidated__: true };
-			//			if (this[RECORD_PROPERTY]) Object.assign(invalidated_record, existing_record);
-			// TODO: We want to eventually use a "direct write" method to directly write to the locations
-			// of the record in place in the database, which requires a reserved space in the random access structures
-			// it is important to remember that this is _NOT_ part of the current transaction; nothing is changing
-			// with the canonical data, we are simply fulfilling our local copy of the canonical data, but still don't
-			// want a timestamp later than the current transaction
-			const updating_version = -(existing_version || 1);
-			primary_store.put(id, existing_record, updating_version, existing_version);
-			// we create a new context for the source, we want to determine the timestamp and don't want to
-			// attribute this to current user
-			const source_context = { responseMetadata: {} };
-			let updated_record = await TableResource.Source.get(id, source_context);
-			let version = source_context.responseMetadata.lastModified || existing_version;
-			// If we are using expiration and the version will already expire, need to incrment it
-			if (!version || (expiration_ms && version < Date.now() - expiration_ms)) version = getNextMonotonicTime();
-			if (updated_record) {
-				if (primary_key) updated_record[primary_key] = this[ID_PROPERTY];
-				if (typeof updated_record.toJSON === 'function') updated_record = updated_record.toJSON();
-				// don't wait on this, we don't actually care if it fails, that just means there is even
-				// a newer entry going in the cache in the future
-				primary_store.put(id, updated_record, version, updating_version);
-			} else primary_store.remove(id, existing_version);
-			if (is_invalidation) {
-				audit_store.put([version, table_id, id], {
-					operation: updated_record ? 'put' : 'delete',
-					value: updated_record,
-					lastVersion: existing_version,
-				});
-			}
-			return updated_record;
-		}
 		invalidate() {
 			const partial_record = { __invalidated__: true };
 			for (const name in indices) {
@@ -568,6 +457,7 @@ export function makeTable(options) {
 				key: this[ID_PROPERTY],
 				store: primary_store,
 				txnTime: txn_time,
+				invalidated: true,
 				lastVersion: this[VERSION_PROPERTY],
 				commit: (retry) => {
 					if (retry) return;
@@ -865,21 +755,23 @@ export function makeTable(options) {
 			records.onDone = () => {
 				read_txn.done();
 			};
+			const context = this[CONTEXT];
 			function idsToRecords(ids, filters?) {
 				// TODO: Test and ensure that we break out of these loops when a connection is lost
 				const filters_length = filters?.length;
-				const lazy = filters_length > 0 || select?.length < 4;
+				const options = {
+					transaction: read_txn,
+					lazy: filters_length > 0 || select?.length < 4,
+					alwaysPrefetch: true,
+				};
 				return ids.map(
 					// for filter operations, we intentionally use async and yield the event turn so that scanning queries
 					// do not hog resources and give more processing opportunity for more efficient index-driven queries.
 					// this also gives an opportunity to prefetch and ensure any page faults happen in a different thread
 					(id) =>
 						new Promise((resolve) =>
-							primary_store.prefetch([id], () => {
-								const record = primary_store.get(id, {
-									transaction: read_txn,
-									lazy,
-								});
+							loadRecord(id, context, options, (entry) => {
+								const record = entry?.value;
 								if (!record) return resolve(SKIP);
 								for (let i = 0; i < filters_length; i++) {
 									if (!filters[i](record)) return resolve(SKIP); // didn't match filters
@@ -888,20 +780,6 @@ export function makeTable(options) {
 							})
 						)
 				);
-			}
-			function selectProperties(record) {
-				if (select) {
-					const selected = {};
-					const forceNulls = select.forceNulls;
-					for (let i = 0, l = select.length; i < l; i++) {
-						const key = select[i];
-						selected[key] = record[key];
-						if (forceNulls && selected[key] === undefined) selected[key] = null;
-					}
-					return selected;
-				}
-				// get the full record, not the lazy record
-				return record.toJSON ? record.toJSON() : record;
 			}
 			return records;
 		}
@@ -1067,8 +945,9 @@ export function makeTable(options) {
 				transaction_set.push((transaction = new DatabaseTransaction(primary_store, context.user, audit_store)));
 				transaction.timestamp = transaction_set.timestamp;
 				return transaction;
+			} else {
+				return new ImmediateTransaction(primary_store, context.user, audit_store);
 			}
-			return immediateTransaction;
 		}
 		validate(record) {
 			let validation_errors;
@@ -1153,6 +1032,7 @@ export function makeTable(options) {
 	if (expiration_ms) TableResource.setTTLExpiration(expiration_ms / 1000);
 	return TableResource;
 	function updateIndices(id, existing_record, record?) {
+		let has_changes;
 		// iterate the entries from the record
 		// for-in is about 5x as fast as for-of Object.entries, and this is extremely time sensitive since it can be
 		// inside a write transaction
@@ -1165,7 +1045,7 @@ export function makeTable(options) {
 			if (value === existing_value && !is_indexing) {
 				continue;
 			}
-
+			has_changes = true;
 			//if the update cleared out the attribute value we need to delete it from the index
 			let values = getIndexedValues(existing_value);
 			if (values) {
@@ -1190,6 +1070,120 @@ export function makeTable(options) {
 				}
 			}
 		}
+		return has_changes;
+	}
+	function loadRecord(id, context, options, callback) {
+		// TODO: determine if we use lazy access properties
+		const whenPrefetched = () => {
+			// this is all for debugging, should be removed eventually
+			const read_txn = options.transaction;
+			if (read_txn?.isDone) {
+				throw new Error('Invalid read transaction');
+			}
+			let first_load_record;
+			if (read_txn && !read_txn.hasRunLoadRecord) {
+				first_load_record = true;
+				read_txn.hasRunLoadRecord = true;
+			}
+			let entry;
+			try {
+				entry = primary_store.getEntry(id, options);
+			} catch (error) {
+				error.message += '. The read txn is ' + JSON.stringify(read_txn) + ' first loadRecord: ' + first_load_record;
+				console.error(error);
+				console.error('reader list', primary_store.readerList());
+				console.error('reader check', primary_store.readerCheck());
+				console.error('reader list', primary_store.readerList());
+				throw error;
+			}
+			let record, version;
+			let load_from_source;
+			if (entry) {
+				const responseMetadata = context?.responseMetadata;
+				if (responseMetadata && entry.version > (responseMetadata.lastModified || 0))
+					responseMetadata.lastModified = entry.version;
+				version = entry.version;
+				record = entry.value;
+				if (
+					version < 0 ||
+					!record ||
+					typeof record.__invalidated__ === 'boolean' ||
+					(expiration_ms && version < Date.now() - expiration_ms)
+				)
+					load_from_source = true;
+			} else load_from_source = true;
+			if (load_from_source && !options?.allowInvalidated) {
+				const source = TableResource.Source;
+				const has_get = source && source.get && (!source.get.reliesOnPrototype || source.prototype.get);
+				if (has_get) {
+					return getFromSource(id, record, version).then((entry) => {
+						if (entry?.value?.[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
+						callback(entry);
+					});
+				}
+			}
+			if (entry?.value?.[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
+			callback(entry);
+		};
+		// if it is cached, we use that as indication that we can get the value very quickly
+		if (!options.alwaysPrefetch && (id == null || primary_store.cache?.get(id))) return whenPrefetched();
+		primary_store.prefetch([id], whenPrefetched);
+	}
+	/**
+	 * This is used to record that a retrieve a record from source
+	 */
+	async function getFromSource(id, existing_record = null, existing_version) {
+		if (existing_version < 0) {
+			// this signals that there is another thread that is getting this record, need to wait for it
+			let entry;
+			while (true) {
+				primary_store.getEntry(id);
+				if (entry.version > 0) return entry.value;
+				// TODO: listen for commits
+				await new Promise((resolve) => setTimeout(resolve, 10));
+			}
+		}
+		let has_changes = existing_record?.__invalidated__;
+		//			const invalidated_record = { __invalidated__: true };
+		//			if (this[RECORD_PROPERTY]) Object.assign(invalidated_record, existing_record);
+		// TODO: We want to eventually use a "direct write" method to directly write to the locations
+		// of the record in place in the database, which requires a reserved space in the random access structures
+		// it is important to remember that this is _NOT_ part of the current transaction; nothing is changing
+		// with the canonical data, we are simply fulfilling our local copy of the canonical data, but still don't
+		// want a timestamp later than the current transaction
+		const updating_version = -(existing_version || 1);
+		primary_store.put(id, existing_record, updating_version, existing_version);
+		// we create a new context for the source, we want to determine the timestamp and don't want to
+		// attribute this to current user
+		const source_context = { responseMetadata: {} };
+		let updated_record = await TableResource.Source.get(id, source_context);
+		let version = source_context.responseMetadata.lastModified || existing_version;
+		// If we are using expiration and the version will already expire, need to incrment it
+		if (!version || (expiration_ms && version < Date.now() - expiration_ms)) version = getNextMonotonicTime();
+		has_changes = updateIndices(id, existing_record, updated_record) || has_changes;
+		if (updated_record) {
+			if (primary_key) updated_record[primary_key] = id;
+			if (typeof updated_record.toJSON === 'function') updated_record = updated_record.toJSON();
+			// don't wait on this, we don't actually care if it fails, that just means there is even
+			// a newer entry going in the cache in the future
+			primary_store.put(id, updated_record, version, updating_version);
+		} else primary_store.remove(id, existing_version);
+		if (has_changes) {
+			console.log('storing audit from getFromSource', [version, table_id, id], {
+				operation: updated_record ? 'put' : 'delete',
+				value: updated_record,
+				lastVersion: existing_version,
+			});
+			audit_store.put([version, table_id, id], {
+				operation: updated_record ? 'put' : 'delete',
+				value: updated_record,
+				lastVersion: existing_version,
+			});
+		}
+		return {
+			version,
+			value: updated_record,
+		};
 	}
 	/*
 	Here we write the deletion count for our thread id
