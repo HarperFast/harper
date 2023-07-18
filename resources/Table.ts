@@ -96,7 +96,6 @@ export function makeTable(options) {
 		static createdTimeProperty = created_time_property;
 		static updatedTimeProperty = updated_time_property;
 		static schemaDefined = schema_defined;
-		static dbTxn = immediateTransaction;
 		static sourcedFrom(Resource) {
 			// define a source for retrieving invalidated entries for caching purposes
 			this.Source = Resource;
@@ -1136,9 +1135,13 @@ export function makeTable(options) {
 		if (existing_version < 0) {
 			// this signals that there is another thread that is getting this record, need to wait for it
 			let entry;
-			while (true) {
-				primary_store.getEntry(id);
-				if (entry.version > 0) return entry.value;
+			let retries = 0;
+			while (retries++ < 100) {
+				entry = primary_store.getEntry(id);
+				if (entry?.version > 0) {
+					if (typeof entry.value?.__invalidated__ === 'boolean') return getFromSource(id, entry.value, entry.version);
+					return entry;
+				}
 				// TODO: listen for commits
 				await new Promise((resolve) => setTimeout(resolve, 10));
 			}
@@ -1169,11 +1172,6 @@ export function makeTable(options) {
 			primary_store.put(id, updated_record, version, updating_version);
 		} else primary_store.remove(id, existing_version);
 		if (has_changes) {
-			console.log('storing audit from getFromSource', [version, table_id, id], {
-				operation: updated_record ? 'put' : 'delete',
-				value: updated_record,
-				lastVersion: existing_version,
-			});
 			audit_store.put([version, table_id, id], {
 				operation: updated_record ? 'put' : 'delete',
 				value: updated_record,

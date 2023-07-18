@@ -93,10 +93,6 @@ export class DatabaseTransaction implements Transaction {
 			});
 		}
 		//this.auditStore.ifNoExists('txn_time-fix this', nextCondition);
-		// TODO: if any of these fail, restart this
-		// TODO: This is where we write to the SharedArrayBuffer so that subscribers from other threads can
-		// listen... And then we can use it determine when the commit has been delivered to at least one other
-		// node
 
 		return resolution?.then((resolution) => {
 			if (resolution) {
