@@ -17,6 +17,10 @@ if [[ "${PUBLISH}" == "private" ]]; then
   docker_image="harperdb/private"
 fi
 
+if [[ "${PUBLISH}" == "fabric" ]]; then
+  docker_image="harperdb/fabric"
+fi
+
 docker_platform="linux/amd64,linux/arm64"
 docker_output="type=registry"
 

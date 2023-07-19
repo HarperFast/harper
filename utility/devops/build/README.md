@@ -24,6 +24,10 @@
       * [Publishing a non-alpha/beta/RC version:](#publishing-a-non-alphabetarc-version)
       * [Publishing an alpha/beta/RC version:](#publishing-an-alphabetarc-version)
     * [Docker Hub Release](#docker-hub-release)
+    * [Redhat Container Image Release](#redhat-container-image-release)
+      * [pre-requisites](#pre-requisites)
+      * [process](#process)
+    * [Update DigitalOcean Marketplace](#update-digitalocean-marketplace)
     * [Update Offline Install Package](#update-offline-install-package)
     * [PROD HarperDB Cloud](#prod-harperdb-cloud)
       * [Upgrade](#upgrade)
@@ -240,6 +244,14 @@ preflight check container registry.hub.docker.com/harperdb/harperdb-openshift:[v
 
 After this, you will need to go here [HarperDB Container Image Project](https://connect.redhat.com/projects/64652bdb6c16c68a7fdbe93b/images)
 and publish/unpublish images as needed.
+
+### Update DigitalOcean Marketplace
+
+1. Run the `DigitalOcean Create Snapshot` workflow ([digitalocean-create-snapshot.yaml](https://github.com/HarperDB/harperdb/blob/main/.github/workflows/digitalocean-create-snapshot.yaml))
+   1. You will need to supply both `harperdbVersion` and `nodeVersion` for this step.
+2. Goto [digital ocean images](https://cloud.digitalocean.com/images/snapshots/droplets) and locate the newly created snapshot after the workflow has completed
+3. Click on the `More` dropdown for the snapshot, and select `Update Marketplace 1-Click App`
+4. Update the information, especially the version, and submit
 
 ### Update Offline Install Package
 

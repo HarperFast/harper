@@ -7,6 +7,7 @@ const nats_terms = require('../../server/nats/utility/natsTerms');
 const path = require('path');
 const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
 const env_manager = require('../environment/environmentManager');
+const hdb_utils = require('../common_utils');
 
 const DISABLE_FILE_LOG = '/dev/null';
 const LAUNCH_SCRIPTS_DIR = path.join(PACKAGE_ROOT, 'launchServiceScripts');
@@ -23,6 +24,8 @@ function generateMainServerConfig() {
 	const license = hdb_license.licenseSearch();
 	const max_memory = license.ram_allocation || hdb_terms.RAM_ALLOCATION_ENUM.DEFAULT;
 	const mem_value = hdb_terms.MEM_SETTING_KEY + max_memory;
+	const env_vars = { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.HDB, IS_SCRIPTED_SERVICE: true };
+	if (hdb_utils.noBootFile()) env_vars[hdb_terms.CONFIG_PARAMS.ROOTPATH.toUpperCase()] = hdb_utils.getEnvCliRootPath();
 
 	// We are using launch scripts here because something was happening with the build where stdout/err was
 	// losing reference to the pm2 process and not being logged. It seems to only happen with clustered processes.
@@ -30,7 +33,7 @@ function generateMainServerConfig() {
 		name: hdb_terms.PROCESS_DESCRIPTORS.HDB,
 		script: hdb_terms.LAUNCH_SERVICE_SCRIPTS.MAIN,
 		exec_mode: 'fork',
-		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.HDB, IS_SCRIPTED_SERVICE: true },
+		env: env_vars,
 		node_args: mem_value,
 		cwd: PACKAGE_ROOT,
 	};
@@ -125,10 +128,12 @@ function generateClusteringUpgradeV4ServiceConfig() {
 }
 
 function generateRestart() {
+	const env_vars = { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.RESTART_HDB };
+	if (hdb_utils.noBootFile()) env_vars[hdb_terms.CONFIG_PARAMS.ROOTPATH.toUpperCase()] = hdb_utils.getEnvCliRootPath();
 	const restart_config = {
 		name: hdb_terms.PROCESS_DESCRIPTORS.RESTART_HDB,
 		exec_mode: 'fork',
-		env: { [hdb_terms.PROCESS_NAME_ENV_PROP]: hdb_terms.PROCESS_DESCRIPTORS.RESTART_HDB },
+		env: env_vars,
 		instances: 1,
 		autorestart: false,
 		cwd: SCRIPTS_DIR,

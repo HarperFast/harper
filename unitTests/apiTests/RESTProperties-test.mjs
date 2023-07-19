@@ -45,6 +45,7 @@ describe('test REST with property updates', () => {
 	it('get with sub-property access via ?select', async () => {
 		let response = await axios.put('http://localhost:9926/namespace/SubObject/6', {
 			id: 5,
+			any: { name: 'can be an object' },
 			subObject: { name: 'a sub-object' },
 			subArray: [{ name: 'a sub-object of an array' }],
 		});
@@ -52,6 +53,8 @@ describe('test REST with property updates', () => {
 		response = await axios.get('http://localhost:9926/namespace/SubObject/6?select=subObject');
 		assert.equal(response.status, 200);
 		assert.equal(response.data.name, 'a sub-object');
+		response = await axios.get('http://localhost:9926/namespace/SubObject/6?select=any,');
+		assert.equal(response.data.any.name, 'can be an object');
 	});
 	it('put with wrong type on attribute', async () => {
 		const headers = {
@@ -80,6 +83,7 @@ describe('test REST with property updates', () => {
 
 	it('put with nested path', async () => {
 		let response = await axios.put('http://localhost:9926/namespace/SubObject/multi/part/id/3', {
+			any: 'can be a string',
 			subObject: { name: 'deeply nested' },
 			subArray: [],
 		});
@@ -87,7 +91,19 @@ describe('test REST with property updates', () => {
 		response = await axios.get('http://localhost:9926/namespace/SubObject/multi/part/id/3');
 		assert.equal(response.status, 200);
 		assert.equal(response.data.subObject.name, 'deeply nested');
-		assert.deepEqual(response.data.id, ['multi','part', 'id', 3]);
+		assert.deepEqual(response.data.id, ['multi', 'part', 'id', 3]);
+		assert.deepEqual(response.data.any, 'can be a string');
+		response = await axios.get('http://localhost:9926/namespace/SubObject/multi/');
+		assert.equal(response.status, 200);
+		assert.equal(response.data[0].subObject.name, 'deeply nested');
+		assert.equal(response.data.length, 1);
+		response = await axios.get('http://localhost:9926/namespace/SubObject/multi/part/');
+		assert.equal(response.status, 200);
+		assert.equal(response.data[0].subObject.name, 'deeply nested');
+		assert.equal(response.data.length, 1);
+		response = await axios.get('http://localhost:9926/namespace/SubObject/multi/?any=not-here');
+		assert.equal(response.status, 200);
+		assert.equal(response.data.length, 0);
 	});
 	it('get with timestamps and no PK on record', async () => {
 		let response = await axios.put('http://localhost:9926/HasTimeStampsNoPK/33', {

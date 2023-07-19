@@ -152,7 +152,6 @@ export function resetDatabases() {
 	getDatabases();
 	for (const [path, store] of database_envs) {
 		if (store.needsDeletion && !path.endsWith('system.mdb')) {
-			console.log('Closing store due to path no longer existing', path, 'remaining databases', Object.keys(databases));
 			store.close();
 			database_envs.delete(path);
 		}
@@ -233,6 +232,7 @@ export function readMetaDb(
 					let primary_store;
 					const audit = attribute.audit !== false;
 					const track_deletes = attribute.trackDeletes;
+					const expiration = attribute.expiration;
 					if (table) {
 						indices = table.indices;
 						existing_attributes = table.attributes;
@@ -280,6 +280,7 @@ export function readMetaDb(
 								primaryStore: primary_store,
 								auditStore: audit_store,
 								audit,
+								expirationMS: expiration && expiration * 1000,
 								trackDeletes: track_deletes,
 								tableName: table_name,
 								tableId: table_id,
@@ -456,6 +457,7 @@ export function table({
 		primary_key_attribute.is_hash_attribute = true;
 		primary_key_attribute.schemaDefined = schema_defined;
 		if (track_deletes) primary_key_attribute.trackDeletes = true;
+		if (expiration) primary_key_attribute.expiration = expiration;
 		if (origin) {
 			if (!primary_key_attribute.origins) primary_key_attribute.origins = [origin];
 			else if (!primary_key_attribute.origins.includes(origin)) primary_key_attribute.origins.push(origin);
@@ -479,6 +481,7 @@ export function table({
 				auditStore: audit_store,
 				audit,
 				trackDeletes: track_deletes,
+				expirationMS: expiration && expiration * 1000,
 				primaryKey: primary_key,
 				tableName: table_name,
 				tableId: primary_store.tableId,

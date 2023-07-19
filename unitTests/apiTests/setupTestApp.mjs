@@ -4,6 +4,7 @@ import axios from 'axios';
 import { encode } from 'cbor-x';
 import { createRequire } from 'module';
 import analytics from '../../ts-build/resources/analytics.js';
+import { disableNATS } from '../../ts-build/server/nats/natsReplicator.js';
 const require = createRequire(import.meta.url);
 const config = {};
 
@@ -30,6 +31,8 @@ function makeString() {
 let created_records;
 export async function setupTestApp() {
 	analytics.setAnalyticsEnabled(false);
+	disableNATS();
+
 	// exit if it is already setup or we are running in the browser
 	if (created_records || typeof navigator !== 'undefined') return created_records;
 	let path = getMockLMDBPath();

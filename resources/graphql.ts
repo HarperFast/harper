@@ -1,4 +1,5 @@
 import { dirname } from 'path';
+import { table } from './databases';
 /**
  * This is the entry point for handling GraphQL schemas (and server-side defined queries, eventually). This will be
  * called for schemas, and this will parse the schema (into an AST), and use it to ensure all specified tables and their
@@ -127,3 +128,5 @@ export function start({ ensureTable }) {
 }
 
 export const startOnMainThread = start;
+// useful for testing
+export const loadGQLSchema = start({ ensureTable: table }).handleFile;

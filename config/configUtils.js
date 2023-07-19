@@ -182,8 +182,8 @@ function getConfigValue(param) {
 }
 
 function getConfigFilePath(boot_props_file_path = hdb_utils.getPropsFilePath()) {
-	const cmd_args = minimist(process.argv);
-	if (cmd_args.ROOTPATH) return path.join(cmd_args.ROOTPATH, hdb_terms.HDB_CONFIG_FILE);
+	const cmd_args = hdb_utils.getEnvCliRootPath();
+	if (cmd_args) return path.join(cmd_args, hdb_terms.HDB_CONFIG_FILE);
 	const hdb_properties = PropertiesReader(boot_props_file_path);
 	return hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
 }
@@ -195,12 +195,15 @@ function getConfigFilePath(boot_props_file_path = hdb_utils.getPropsFilePath()) 
  */
 function initConfig(force = false) {
 	if (flat_config_obj === undefined || force) {
-		const boot_props_file_path = hdb_utils.getPropsFilePath();
-		try {
-			fs.accessSync(boot_props_file_path, fs.constants.F_OK | fs.constants.R_OK);
-		} catch (err) {
-			logger.error(err);
-			throw new Error(`HarperDB properties file at path ${boot_props_file_path} does not exist`);
+		let boot_props_file_path;
+		if (!hdb_utils.noBootFile()) {
+			boot_props_file_path = hdb_utils.getPropsFilePath();
+			try {
+				fs.accessSync(boot_props_file_path, fs.constants.F_OK | fs.constants.R_OK);
+			} catch (err) {
+				logger.error(err);
+				throw new Error(`HarperDB properties file at path ${boot_props_file_path} does not exist`);
+			}
 		}
 
 		const config_file_path = getConfigFilePath(boot_props_file_path);
@@ -561,8 +564,10 @@ function readConfigFile() {
 	try {
 		fs.accessSync(boot_props_file_path, fs.constants.F_OK | fs.constants.R_OK);
 	} catch (err) {
-		logger.error(err);
-		throw new Error(`HarperDB properties file at path ${boot_props_file_path} does not exist`);
+		if (!hdb_utils.noBootFile()) {
+			logger.error(err);
+			throw new Error(`HarperDB properties file at path ${boot_props_file_path} does not exist`);
+		}
 	}
 
 	const config_file_path = getConfigFilePath(boot_props_file_path);

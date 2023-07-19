@@ -13,7 +13,6 @@ const check_jwt_tokens = require('../utility/install/checkJWTTokensExist');
 const install = require('../utility/install/installer');
 const chalk = require('chalk');
 const pjson = require('../package.json');
-const install_user_permission = require('../utility/install_user_permission');
 const hdb_utils = require('../utility/common_utils');
 const config_utils = require('../config/configUtils');
 const assignCMDENVVariables = require('../utility/assignCmdEnvVariables');
@@ -112,15 +111,6 @@ async function initialize(called_by_install = false, called_by_main = false) {
 	check_jwt_tokens();
 	//await checkAuditLogEnvironmentsExist();
 	writeLicenseFromVars();
-
-	// Check user has required permissions to start HDB.
-	try {
-		install_user_permission.checkPermission();
-	} catch (err) {
-		hdb_logger.error(err);
-		console.error(err.message);
-		process.exit(1);
-	}
 
 	const clustering_enabled = hdb_utils.autoCastBoolean(env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY));
 	if (clustering_enabled && isMainThread) {
@@ -322,6 +312,7 @@ async function isHdbInstalled() {
 		await fs.stat(hdb_utils.getPropsFilePath());
 		await fs.stat(env.get(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
 	} catch (err) {
+		if (hdb_utils.noBootFile()) return true;
 		if (err.code === 'ENOENT') {
 			// boot props not found, hdb not installed
 			return false;

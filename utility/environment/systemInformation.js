@@ -125,6 +125,15 @@ async function getHDBProcessInfo() {
 				harperdb_processes.clustering.push(process);
 			}
 		});
+
+		for (const hdb_p of harperdb_processes.core) {
+			for (const p of processes.list) {
+				if (p.pid === hdb_p.parentPid && (p.name === 'PM2' || p.command === 'PM2')) {
+					hdb_p.parent = 'PM2';
+				}
+			}
+		}
+
 		return harperdb_processes;
 	} catch (e) {
 		log.error(`error in getHDBProcessInfo: ${e}`);

@@ -111,17 +111,21 @@ async function alterRole(role) {
 		operation: 'update',
 		schema: 'system',
 		table: 'hdb_role',
-		hash_attribute: 'rolename',
 		records: [role],
 	};
 
+	let update_response;
 	try {
-		await insert.update(update_object);
+		update_response = await insert.update(update_object);
 	} catch (err) {
 		throw handleHDBError(err);
 	}
 
-	signalling.signalUserChange(new UserEventMsg(process.pid));
+	if (update_response && update_response?.message === 'updated 0 of 1 records') {
+		throw handleHDBError(new Error(), 'Invalid role id', HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
+	}
+
+	await signalling.signalUserChange(new UserEventMsg(process.pid));
 	return role;
 }
 

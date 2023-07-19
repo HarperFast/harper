@@ -13,7 +13,7 @@ const config_utils = require('../config/configUtils');
 const process_man = require('../utility/processManagement/processManagement');
 const sys_info = require('../utility/environment/systemInformation');
 const assignCMDENVVariables = require('../utility/assignCmdEnvVariables');
-const { restartWorkers, onMessageFromWorkers } = require('../server/threads/manageThreads');
+const { restartWorkers, onMessageByType } = require('../server/threads/manageThreads');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
 const env_mgr = require('../utility/environment/environmentManager');
@@ -35,11 +35,9 @@ module.exports = {
 
 // Add ITC event listener to main thread which will be called from child that receives restart request.
 if (isMainThread) {
-	onMessageFromWorkers((message) => {
-		if (message.type === hdb_terms.ITC_EVENT_TYPES.RESTART) {
-			if (message.workerType) restartService({ service: message.workerType });
-			else restart({ operation: 'restart' });
-		}
+	onMessageByType(hdb_terms.ITC_EVENT_TYPES.RESTART, (message) => {
+		if (message.workerType) restartService({ service: message.workerType });
+		else restart({ operation: 'restart' });
 	});
 }
 

@@ -101,7 +101,7 @@ export class ResourceBridge extends LMDBBridge {
 	}
 	async dropAttribute(drop_attribute_obj) {
 		const Table = getTable(drop_attribute_obj);
-		await Table.removeAttribute(drop_attribute_obj.attribute);
+		await Table.removeAttributes([drop_attribute_obj.attribute]);
 		if (!Table.schemaDefined) {
 			// legacy behavior of deleting all the property values
 			const property = drop_attribute_obj.attribute;
@@ -161,78 +161,72 @@ export class ResourceBridge extends LMDBBridge {
 
 		let new_attributes;
 		const Table = getDatabases()[upsert_obj.schema][upsert_obj.table];
-		return transaction(
-			{ user: upsert_obj.hdb_user },
-			async (request) => {
-				if (!Table.schemaDefined) {
-					new_attributes = [];
-					for (const attribute_name of attributes) {
-						const existing_attribute = Table.attributes.find(
-							(existing_attribute) => existing_attribute.name == attribute_name
-						);
-						if (!existing_attribute) {
-							new_attributes.push(attribute_name);
-						}
-					}
-					if (new_attributes.length > 0) {
-						await Table.addAttributes(
-							new_attributes.map((name) => ({
-								name,
-								indexed: true,
-							}))
-						);
+		return transaction({ user: upsert_obj.hdb_user }, async (request) => {
+			if (!Table.schemaDefined) {
+				new_attributes = [];
+				for (const attribute_name of attributes) {
+					const existing_attribute = Table.attributes.find(
+						(existing_attribute) => existing_attribute.name == attribute_name
+					);
+					if (!existing_attribute) {
+						new_attributes.push(attribute_name);
 					}
 				}
+				if (new_attributes.length > 0) {
+					await Table.addAttributes(
+						new_attributes.map((name) => ({
+							name,
+							indexed: true,
+						}))
+					);
+				}
+			}
 
-				const keys = [];
-				const skipped = [];
-				for (const record of upsert_obj.records) {
-					let existing_record = await Table.get(record[Table.primaryKey], request);
-					if (
-						(upsert_obj.requires_existing && !existing_record) ||
-						(upsert_obj.requires_no_existing && existing_record)
-					) {
-						skipped.push(record[Table.primaryKey]);
-						continue;
-					}
-					if (existing_record) existing_record = collapseData(existing_record);
-					for (const key in record) {
-						if (Object.prototype.hasOwnProperty.call(record, key)) {
-							let value = record[key];
-							if (typeof value === 'function') {
-								try {
-									const value_results = value([[existing_record]]);
-									if (Array.isArray(value_results)) {
-										value = value_results[0].func_val;
-										record[key] = value;
-									}
-								} catch (error) {
-									error.message += 'Trying to set key ' + key + ' on object' + JSON.stringify(record);
-									throw error;
+			const keys = [];
+			const skipped = [];
+			for (const record of upsert_obj.records) {
+				let existing_record = await Table.get(record[Table.primaryKey], request);
+				if (
+					(upsert_obj.requires_existing && !existing_record) ||
+					(upsert_obj.requires_no_existing && existing_record)
+				) {
+					skipped.push(record[Table.primaryKey]);
+					continue;
+				}
+				if (existing_record) existing_record = collapseData(existing_record);
+				for (const key in record) {
+					if (Object.prototype.hasOwnProperty.call(record, key)) {
+						let value = record[key];
+						if (typeof value === 'function') {
+							try {
+								const value_results = value([[existing_record]]);
+								if (Array.isArray(value_results)) {
+									value = value_results[0].func_val;
+									record[key] = value;
 								}
+							} catch (error) {
+								error.message += 'Trying to set key ' + key + ' on object' + JSON.stringify(record);
+								throw error;
 							}
 						}
 					}
-					if (existing_record) {
-						for (const key in existing_record) {
-							// if the record is missing any properties, fill them in from the existing record
-							if (!Object.prototype.hasOwnProperty.call(record, key)) record[key] = existing_record[key];
-						}
-					}
-					await Table.put(record, request);
-					keys.push(record[Table.primaryKey]);
 				}
-				return {
-					txn_time: request.transaction.timestamp,
-					written_hashes: keys,
-					new_attributes,
-					skipped_hashes: skipped,
-				};
-			},
-			{
-				user: upsert_obj.hdb_user,
+				if (existing_record) {
+					for (const key in existing_record) {
+						// if the record is missing any properties, fill them in from the existing record
+						if (!Object.prototype.hasOwnProperty.call(record, key)) record[key] = existing_record[key];
+					}
+				}
+				await Table.put(record, request);
+				keys.push(record[Table.primaryKey]);
 			}
-		);
+			return {
+				txn_time: request.transaction.timestamp,
+				written_hashes: keys,
+				new_attributes,
+				skipped_hashes: skipped,
+			};
+		});
 	}
 	async deleteRecords(delete_obj) {
 		const Table = getDatabases()[delete_obj.schema][delete_obj.table];
@@ -267,13 +261,15 @@ export class ResourceBridge extends LMDBBridge {
 			);
 		}
 
-		const records_to_delete = await Table.search([
-			{
-				attribute: Table.createdTimeProperty,
-				value: Date.parse(delete_obj.date),
-				comparator: VALUE_SEARCH_COMPARATORS.LESS,
-			},
-		]);
+		const records_to_delete = await Table.search({
+			conditions: [
+				{
+					attribute: Table.createdTimeProperty,
+					value: Date.parse(delete_obj.date),
+					comparator: VALUE_SEARCH_COMPARATORS.LESS,
+				},
+			],
+		});
 
 		let delete_called = false;
 		const deleted_ids = [];
@@ -413,7 +409,6 @@ function getSelect({ get_attributes }, table) {
 			else get_attributes = table.attributes.map((attribute) => attribute.name);
 		}
 		get_attributes.forceNulls = true;
-		get_attributes.asObject = true;
 		return get_attributes;
 	}
 }

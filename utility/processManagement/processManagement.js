@@ -5,7 +5,6 @@ const hdb_utils = require('../common_utils');
 const nats_config = require('../../server/nats/utility/natsConfig');
 const nats_utils = require('../../server/nats/utility/natsUtils');
 const nats_terms = require('../../server/nats/utility/natsTerms');
-const pm2 = require('pm2');
 const services_config = require('./servicesConfig');
 const env_mangr = require('../environment/environmentManager');
 const hdb_logger = require('../../utility/logging/harper_logger');
@@ -17,6 +16,7 @@ const child_process = require('child_process');
 const { execFile } = child_process;
 const exec = util.promisify(child_process.exec);
 const si = require('systeminformation');
+let pm2;
 
 module.exports = {
 	enterPM2Mode,
@@ -67,6 +67,7 @@ function enterPM2Mode() {
  * @returns {Promise<unknown>}
  */
 function connect() {
+	if (!pm2) pm2 = require('pm2');
 	return new Promise((resolve, reject) => {
 		pm2.connect((err, res) => {
 			// PM2 tries to take over logging. We are not going to be defeated, we are taking it back!
@@ -520,7 +521,8 @@ async function restartAllServices(excluding = []) {
  */
 async function isServiceRegistered(service) {
 	if (child_processes?.find((child_process) => child_process.name === service)) return true;
-	return !hdb_utils.isEmptyOrZeroLength(await describe(service));
+	const hdb_procs = await sys_info.getHDBProcessInfo();
+	return hdb_procs.core.length && hdb_procs.core[0]?.parent === 'PM2';
 }
 
 /**

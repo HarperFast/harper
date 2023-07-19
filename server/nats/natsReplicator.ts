@@ -9,15 +9,16 @@ import { setSubscription } from './natsIngestService';
 import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility';
 import env from '../../utility/environment/environmentManager';
 import hdb_terms from '../../utility/hdbTerms';
-import { onMessageFromWorkers } from '../../server/threads/manageThreads';
-import { threadId } from 'worker_threads';
-import initializeReplyService from './natsReplyService';
 import * as harper_logger from '../../utility/logging/harper_logger';
 import { Context } from '../../resources/ResourceInterface';
 
 let publishing_databases = new Map();
+let nats_disabled;
 export function start() {
 	if (env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) assignReplicationSource();
+}
+export function disableNATS(disabled = true) {
+	nats_disabled = disabled;
 }
 const MAX_INGEST_THREADS = 2;
 let immediateNATSTransaction, subscribed_to_nodes;
@@ -29,6 +30,7 @@ let immediateNATSTransaction, subscribed_to_nodes;
  * any tables that aren't caching tables for another source).
  */
 function assignReplicationSource() {
+	if (nats_disabled) return;
 	const databases = getDatabases();
 	for (const database_name in databases) {
 		const database = databases[database_name];

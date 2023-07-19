@@ -1,7 +1,7 @@
 import { readKey } from 'ordered-binary';
 import { info } from '../utility/logging/harper_logger';
 import { threadId } from 'worker_threads';
-import { onMessageFromWorkers, broadcast } from '../server/threads/manageThreads';
+import { onMessageByType, broadcast } from '../server/threads/manageThreads';
 import { MAXIMUM_KEY } from 'ordered-binary';
 import { tables } from './databases';
 import { getLastTxnId } from 'lmdb';
@@ -27,18 +27,16 @@ export function addSubscription(table, key, listener?: (key) => any, start_time:
 	// set up the subscriptions map. We want to just use a single map (per table) for efficient delegation
 	// (rather than having every subscriber filter every transaction)
 	if (!all_subscriptions) {
-		onMessageFromWorkers((event) => {
-			if (event.type === TRANSACTION_EVENT_TYPE) {
-				/* TODO: We want to actually pass around the LMDB txn id and the first time stamp, as it should be much more
-				     efficient, but first we
-				need lmdb-js support for get the txn_id cursor/range entries, so we can validate each entry matches
-				the txn_id
-				const txn_id = event.txnId;
-				const first_txn = event.firstTxn;
-				 */
-				const audit_ids = event.auditIds;
-				notifyFromTransactionData(event.path, audit_ids);
-			}
+		onMessageByType(TRANSACTION_EVENT_TYPE, (event) => {
+			/* TODO: We want to actually pass around the LMDB txn id and the first time stamp, as it should be much more
+					efficient, but first we
+			need lmdb-js support for get the txn_id cursor/range entries, so we can validate each entry matches
+			the txn_id
+			const txn_id = event.txnId;
+			const first_txn = event.firstTxn;
+				*/
+			const audit_ids = event.auditIds;
+			notifyFromTransactionData(event.path, audit_ids);
 		});
 		all_subscriptions = Object.create(null); // using it as a map that doesn't change much
 	}
@@ -117,7 +115,10 @@ function notifyFromTransactionData(path, audit_ids, same_thread?) {
 		const table_subscriptions = subscriptions[table_id];
 		if (!table_subscriptions) continue;
 		writeKey(audit_id, test, 0);
+		const is_invalidation = audit_id[3];
+		if (is_invalidation) audit_id.length = 3;
 		const audit_record = subscriptions.auditStore.get(audit_id);
+		if (is_invalidation && audit_record.operation !== 'invalidate') continue; // this indicates that the invalidation entry has already been replaced, so just wait for the second update
 		let matching_key = keyArrayToString(record_key);
 		let is_ancestor;
 		do {
@@ -152,51 +153,45 @@ function notifyFromTransactionData(path, audit_ids, same_thread?) {
  * Interface with lmdb-js to listen for commits and find the SharedArrayBuffers that hold the transaction log/instructions.
  * @param primary_store
  */
-export function listenToCommits(audit_store) {
-	const lmdb_env = audit_store.env;
-	audit_store.cache = new Map(); // this is a trick to get the key and store information to pass through after the commit
+export function listenToCommits(primary_store, audit_store) {
+	const store = audit_store || primary_store;
+	const lmdb_env = store.env;
+	if (audit_store) audit_store.cache = new Map(); // this is a trick to get the key and store information to pass through after the commit
 	if (!lmdb_env.hasBroadcastListener) {
 		lmdb_env.hasBroadcastListener = true;
 		const path = lmdb_env.path;
 
-		audit_store.on('aftercommit', ({ next, last, txnId }) => {
+		store.on('aftercommit', ({ next, last, txnId }) => {
 			// after each commit, broadcast the transaction to all threads so subscribers can read the
 			// transactions and find changes of interest. We try to use the same binary format for
 			// transactions that is used by lmdb-js for minimal modification and since the binary
 			// format can readily be shared with other threads
-			const transaction_buffers = [];
-			let last_uint32;
 			let start;
 			let first_txn;
 			const audit_ids = [];
-			// get all the buffers (and starting position of the first) in this transaction
-			do {
-				/* TODO: Once we have lmdb support for return txn ids, we can just get the first one
-				if (!first_txn && next.meta && next.meta.store === audit_store && next.meta.key) {
-					first_txn = next.meta.key[0];
-					break;
-				}*/
-				if (next.flag & FAILED_CONDITION) continue;
-				let key;
-				if (next.meta && next.meta.store === audit_store && (key = next.meta.key)) {
-					if (typeof key[2] === 'symbol') key[2] = null;
-					audit_ids.push(key);
-				}
-				if (next.uint32 !== last_uint32) {
-					last_uint32 = next.uint32;
-					if (last_uint32) {
-						if (start === undefined) start = next.flagPosition;
-						transaction_buffers.push(last_uint32.buffer);
+			if (audit_store) {
+				// get all the buffers (and starting position of the first) in this transaction
+				do {
+					/* TODO: Once we have lmdb support for return txn ids, we can just get the first one
+					if (!first_txn && next.meta && next.meta.store === audit_store && next.meta.key) {
+						first_txn = next.meta.key[0];
+						break;
+					}*/
+					if (next.flag & FAILED_CONDITION) continue;
+					let key;
+					if (next.meta && next.meta.store === audit_store && (key = next.meta.key)) {
+						if (typeof key[2] === 'symbol') key[2] = null;
+						if (key.invalidated) key[3] = true; // how we indicate invalidation for now
+						audit_ids.push(key);
 					}
-				}
-			} while (next != last && (next = next.next));
+				} while (next != last && (next = next.next));
+			}
 			// broadcast all the transaction buffers so they can be (sequentially) read and subscriptions messages
 			// delivered on all other threads
 			//if (first_txn) {
 			broadcast({
 				type: TRANSACTION_EVENT_TYPE,
 				path,
-				buffers: transaction_buffers,
 				auditIds: audit_ids,
 				//txnId,
 				//firstTxn: first_txn,

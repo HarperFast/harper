@@ -54,7 +54,9 @@ export class DatabaseTransaction implements Transaction {
 				if (this.auditStore) {
 					audit_record.user = this.username;
 					audit_record.lastVersion = write.lastVersion;
-					this.auditStore.put([(txn_time = write.txnTime), write.store.tableId, write.key], audit_record);
+					const key = [(txn_time = write.txnTime), write.store.tableId, write.key];
+					if (write.invalidated) key.invalidated = true; // this indicates that audit record is an invalidation, and will be replaced
+					this.auditStore.put(key, audit_record);
 				}
 			}
 		};
@@ -91,10 +93,6 @@ export class DatabaseTransaction implements Transaction {
 			});
 		}
 		//this.auditStore.ifNoExists('txn_time-fix this', nextCondition);
-		// TODO: if any of these fail, restart this
-		// TODO: This is where we write to the SharedArrayBuffer so that subscribers from other threads can
-		// listen... And then we can use it determine when the commit has been delivered to at least one other
-		// node
 
 		return resolution?.then((resolution) => {
 			if (resolution) {
@@ -125,13 +123,15 @@ export interface Transaction {
 	commit(flush?: boolean): Promise<CommitResolution>;
 	abort?(flush?: boolean): any;
 }
-export class ImmediateTransaction {
+export class ImmediateTransaction extends DatabaseTransaction {
+	_timestamp: number;
 	addWrite(operation) {
-		operation.commit();
+		super.addWrite(operation);
+		// immediately commit the write
+		this.commit();
 	}
 	get timestamp() {
-		return getNextMonotonicTime();
+		return this._timestamp || (this._timestamp = getNextMonotonicTime());
 	}
 	getReadTxn() {} // no transaction means read latest
 }
-export const immediateTransaction = new ImmediateTransaction();

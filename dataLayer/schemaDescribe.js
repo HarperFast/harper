@@ -52,9 +52,11 @@ async function describeAll(op_obj) {
 		}
 		let databases = getDatabases();
 		let schema_list = {};
+		let schema_perms = {};
 		let t_results = [];
 		for (let schema in databases) {
 			schema_list[schema] = true;
+			if (!sys_call && !is_su) schema_perms[schema] = op_obj.hdb_user.role.permission[schema].describe;
 			let tables = databases[schema];
 			for (let table in tables) {
 				try {
@@ -156,10 +158,24 @@ async function descTable(describe_table_object, attr_perms) {
 			HTTP_STATUS_CODES.NOT_FOUND
 		);
 
+	let attributes = [];
+	if (table_attr_perms) {
+		let permitted_attr = {};
+		table_attr_perms.forEach((a) => {
+			if (a.describe) permitted_attr[a.attribute_name] = true;
+		});
+
+		table_obj.attributes.forEach((a) => {
+			if (permitted_attr[a.name]) attributes.push(a);
+		});
+	} else {
+		attributes = table_obj.attributes;
+	}
+
 	let table_result = {
 		schema,
 		name: table_obj.tableName,
-		attributes: table_obj.attributes,
+		attributes,
 		hash_attribute: table_obj.attributes.find((attribute) => attribute.isPrimaryKey || attribute.is_hash_attribute)
 			?.name,
 	};

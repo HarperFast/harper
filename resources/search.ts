@@ -1,6 +1,6 @@
 import { ClientError } from '../utility/errors/hdbError';
 import * as lmdb_terms from '../utility/lmdb/terms';
-import { compareKeys } from 'ordered-binary';
+import { compareKeys, MAXIMUM_KEY } from 'ordered-binary';
 import { SKIP } from 'lmdb';
 import { Request } from './ResourceInterface';
 
@@ -37,6 +37,11 @@ export function idsForCondition(search_condition, transaction, reverse, Table, a
 		case 'ge':
 			start = value;
 			break;
+		case 'prefix':
+			start = value;
+			end = value.slice(0);
+			end[end.length - 1] = MAXIMUM_KEY;
+			break;
 		case 'starts_with':
 			start = value.toString();
 			end = value + String.fromCharCode(0xffff);
@@ -67,7 +72,8 @@ export function idsForCondition(search_condition, transaction, reverse, Table, a
 		exclusiveStart = !inclusiveEnd;
 		inclusiveEnd = new_end;
 	}
-	const index = attribute_name === Table.primaryKey ? Table.primaryStore : Table.indices[attribute_name];
+	const is_primary_key = attribute_name === Table.primaryKey || attribute_name == null;
+	const index = is_primary_key ? Table.primaryStore : Table.indices[attribute_name];
 
 	if (!index || index.isIndexing || need_full_scan) {
 		// no indexed searching available, need a full scan
@@ -86,7 +92,6 @@ export function idsForCondition(search_condition, transaction, reverse, Table, a
 			.getRange({ start: true, transaction, reverse })
 			.map(({ key, value }) => new Promise((resolve) => setImmediate(() => resolve(filter(value) ? key : SKIP))));
 	}
-	const is_primary_key = attribute_name === Table.primaryKey;
 	const range_options = { start, end, inclusiveEnd, exclusiveStart, values: !is_primary_key, transaction, reverse };
 	if (is_primary_key) {
 		return index.getRange(range_options);
@@ -168,7 +173,7 @@ export function parseQuery(request: Request) {
 	let attribute, comparator;
 	const conditions = [];
 	let last_index;
-	// TODO: Use URLSearchParams with a fallback for when it can't parse everything (USP is very fast)
+	// TODO: Use URLSearchParams with a fallback for when it can parse everything (USP is very fast)
 	while ((match = QUERY_PARSER.exec(query_string))) {
 		last_index = QUERY_PARSER.lastIndex;
 		let [, value, operator] = match;
@@ -222,16 +227,13 @@ export function parseQuery(request: Request) {
 						if (value[0] === '[') {
 							if (value[value.length - 1] !== ']') throw new Error('Unmatched brackets');
 							request.select = value.slice(1, -1).split(',');
-						} else if (value === '{') {
-							if (value[value.length - 1] !== '}') throw new Error('Unmatched curly brackets');
-							request.select = value.slice(1, -1).split(',');
-							request.select.asObject = true;
+							request.select.asArray = true;
 						} else if (value.indexOf(',') > -1) {
-							request.select = value.split(',');
-							request.select.asObject = true;
-						}
-						else request.select = value;
+							request.select = (value.endsWith(',') ? value.slice(0, -1) : value).split(',');
+						} else request.select = value;
 						break;
+					case 'group-by':
+						throw new Error('Group by is not implemented yet');
 					case 'sort':
 						request.sort = value.split(',').map((direction) => {
 							switch (direction[0]) {
@@ -245,7 +247,7 @@ export function parseQuery(request: Request) {
 						});
 						break;
 					case undefined:
-						throw new Error('Unable to parse query');
+						throw new Error(`Unable to parse query, no part before ${operator} at ${last_index} in ${query_string}`);
 					default:
 						conditions.push({
 							comparator: comparator,
@@ -256,9 +258,9 @@ export function parseQuery(request: Request) {
 				attribute = undefined;
 				break;
 			default:
-				throw new Error(`Unknown operator ${operator} in query`);
+				throw new Error(`Unknown operator ${operator} in query ${query_string}`);
 		}
 	}
-	if (last_index !== query_string.length) throw new Error('Unable to parse query');
+	if (last_index !== query_string.length) throw new Error(`Unable to parse query, unexpected end in ${query_string}`);
 	request.conditions = conditions;
 }
