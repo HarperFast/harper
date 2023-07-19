@@ -31,27 +31,29 @@ export function transaction<T>(request: Request | ((request: Request) => T), cal
 	try {
 		result = callback(request);
 		if (result?.then) {
-			return result.then(
-				(result) => {
-					context.transaction = null;
-					const committed = transaction.commit();
-					return committed.then ? committed.then(() => result) : result;
-				},
-				(error) => {
-					context.transaction = null;
-					transaction.abort();
-					throw error;
-				}
-			);
+			return result.then(onSuccess, onError);
 		}
 	} catch (error) {
-		context.transaction = null;
+		onError(error);
+	}
+	return onSuccess(result);
+	function onSuccess(result) {
+		const committed = transaction.commit();
+		if (committed.then) {
+			return committed.then(() => {
+				context.transaction = null;
+				return result;
+			});
+		} else {
+			context.transaction = null;
+			return result;
+		}
+	}
+	function onError(error) {
 		transaction.abort();
+		context.transaction = null;
 		throw error;
 	}
-	context.transaction = null;
-	const committed = transaction.commit();
-	return committed.then ? committed.then(() => result) : result;
 }
 
 _assignPackageExport('transaction', transaction);
