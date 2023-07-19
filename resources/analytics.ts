@@ -1,5 +1,5 @@
 import { isMainThread, parentPort, threadId } from 'worker_threads';
-import { messageTypeListener, getThreadInfo } from '../server/threads/manageThreads';
+import { setChildListenerByType, getThreadInfo } from '../server/threads/manageThreads';
 import { table } from './databases';
 import { getLogFilePath } from '../utility/logging/harper_logger';
 import { dirname, join } from 'path';
@@ -193,7 +193,7 @@ function getAnalyticsTable() {
 	);
 }
 
-messageTypeListener(ANALYTICS_REPORT_TYPE, recordAnalytics);
+setChildListenerByType(ANALYTICS_REPORT_TYPE, recordAnalytics);
 let scheduled_tasks_running;
 function startScheduledTasks() {
 	scheduled_tasks_running = true;

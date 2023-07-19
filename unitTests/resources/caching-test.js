@@ -70,7 +70,6 @@ describe('Caching', () => {
 
 	it('Cache stampede is handled', async function () {
 		try {
-			console.log('start stampede test');
 			CachingTable.setTTLExpiration(0.01);
 			await new Promise((resolve) => setTimeout(resolve, 15));
 			CachingTable.setTTLExpiration(40);
@@ -78,7 +77,7 @@ describe('Caching', () => {
 			events = [];
 			timer = 10;
 			CachingTable.get(23, context);
-			await CachingTable.primaryStore.committed; // wait for the record to update to updating
+			await CachingTable.primaryStore.committed; // wait for the record to update to updating status
 			CachingTable.get(23, context);
 			let result = await CachingTable.get(23, context);
 			assert.equal(result.id, 23);

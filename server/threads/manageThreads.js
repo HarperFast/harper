@@ -28,9 +28,10 @@ module.exports = {
 	workers,
 	setMonitorListener,
 	onMessageFromWorkers,
+	onMessageByType,
 	broadcast,
 	broadcastWithAcknowledgement,
-	messageTypeListener,
+	setChildListenerByType,
 	getWorkerIndex,
 	setMainIsWorker,
 	restartNumber: workerData?.restartNumber || 1,
@@ -42,7 +43,7 @@ function getWorkerIndex() {
 function setMainIsWorker(isWorker) {
 	isMainWorker = isWorker;
 }
-let messageTypeListeners = {
+let childListenerByType = {
 	[REQUEST_THREAD_INFO](message, worker) {
 		sendThreadInfo(worker);
 	},
@@ -131,7 +132,7 @@ function startWorker(path, options = {}) {
 		}
 	});
 	worker.on('message', (message) => {
-		messageTypeListeners[message.type]?.(message, worker);
+		childListenerByType[message.type]?.(message, worker);
 	});
 	workers.push(worker);
 	startMonitoring();
@@ -208,8 +209,8 @@ async function restartWorkers(name = null, max_workers_down = 2, start_replaceme
 		});
 	}
 }
-function messageTypeListener(type, listener) {
-	messageTypeListeners[type] = listener;
+function setChildListenerByType(type, listener) {
+	childListenerByType[type] = listener;
 }
 function shutdownWorkers(name) {
 	return restartWorkers(name, Infinity, false);
@@ -218,6 +219,12 @@ function shutdownWorkers(name) {
 const message_listeners = [];
 function onMessageFromWorkers(listener) {
 	message_listeners.push(listener);
+}
+const listeners_by_type = new Map();
+function onMessageByType(type, listener) {
+	let listeners = listeners_by_type.get(type);
+	if (!listeners) listeners_by_type.set(type, listeners = []);
+	listeners.push(listener);
 }
 
 function broadcast(message) {
@@ -370,6 +377,12 @@ function addPort(port, keep_ref) {
 			} else {
 				for (let listener of message_listeners) {
 					listener(message, port);
+				}
+				let listeners = listeners_by_type.get(message.type);
+				if (listeners) {
+					for (let listener of listeners) {
+						listener(message, port);
+					}
 				}
 			}
 		})

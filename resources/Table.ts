@@ -19,7 +19,7 @@ import * as harper_logger from '../utility/logging/harper_logger';
 import { assignTrackedAccessors, deepFreeze, hasChanges, OWN_DATA } from './tracked';
 import { transaction } from './transaction';
 import { MAXIMUM_KEY } from 'ordered-binary';
-import { getWorkerIndex } from '../server/threads/manageThreads';
+import { getWorkerIndex, onMessageByType } from '../server/threads/manageThreads';
 
 let server_utilities;
 const RANGE_ESTIMATE = 100000000;
@@ -72,7 +72,7 @@ export function makeTable(options) {
 	let { expirationMS: expiration_ms } = options;
 	let { attributes } = options;
 	if (!attributes) attributes = [];
-	if (audit_store) listenToCommits(audit_store);
+	listenToCommits(primary_store, audit_store);
 	let deletion_count = 0;
 	let pending_deletion_count_write;
 	let primary_key_attribute = {};
@@ -1130,12 +1130,17 @@ export function makeTable(options) {
 		primary_store.prefetch([id], whenPrefetched);
 	}
 	function setupCommitListeners() {
+		// setup a new set of listeners for commits
 		commit_listeners = new Set();
-		primary_store.on('aftercommit', () => {
+		// listen for commits from other threads
+		onMessageByType('transaction', onCommit);
+		// listen for commits from our own thread
+		primary_store.on('aftercommit', onCommit);
+		function onCommit() {
 			for (const listener of commit_listeners) {
 				listener();
 			}
-		});
+		}
 	}
 	/**
 	 * This is used to record that a retrieve a record from source
