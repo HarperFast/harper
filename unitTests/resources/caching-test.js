@@ -70,9 +70,10 @@ describe('Caching', () => {
 
 	it('Cache stampede is handled', async function () {
 		try {
-			console.log('start stampede test')
+			console.log('start stampede test');
 			CachingTable.setTTLExpiration(0.01);
 			await new Promise((resolve) => setTimeout(resolve, 15));
+			CachingTable.setTTLExpiration(40);
 			source_requests = 0;
 			events = [];
 			timer = 10;
@@ -88,6 +89,7 @@ describe('Caching', () => {
 		}
 	});
 	it('Cache invalidation triggers updates', async function () {
+		CachingTable.setTTLExpiration(0.005);
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		CachingTable.setTTLExpiration(50);
 		source_requests = 0;

@@ -77,6 +77,7 @@ export function makeTable(options) {
 	let pending_deletion_count_write;
 	let primary_key_attribute = {};
 	let created_time_property, updated_time_property;
+	let commit_listeners: Set;
 	for (const attribute of attributes) {
 		if (attribute.assignCreatedTime || attribute.name === '__createdtime__') created_time_property = attribute.name;
 		if (attribute.assignUpdatedTime || attribute.name === '__updatedtime__') updated_time_property = attribute.name;
@@ -1128,6 +1129,14 @@ export function makeTable(options) {
 		if (!options.alwaysPrefetch && (id == null || primary_store.cache?.get(id))) return whenPrefetched();
 		primary_store.prefetch([id], whenPrefetched);
 	}
+	function setupCommitListeners() {
+		commit_listeners = new Set();
+		primary_store.on('aftercommit', () => {
+			for (const listener of commit_listeners) {
+				listener();
+			}
+		});
+	}
 	/**
 	 * This is used to record that a retrieve a record from source
 	 */
@@ -1135,16 +1144,28 @@ export function makeTable(options) {
 		if (existing_version < 0) {
 			// this signals that there is another thread that is getting this record, need to wait for it
 			let entry;
-			let retries = 0;
-			while (retries++ < 100) {
-				entry = primary_store.getEntry(id);
-				if (entry?.version > 0) {
-					if (typeof entry.value?.__invalidated__ === 'boolean') return getFromSource(id, entry.value, entry.version);
-					return entry;
-				}
-				// TODO: listen for commits
-				await new Promise((resolve) => setTimeout(resolve, 10));
+			if (!commit_listeners) {
+				setupCommitListeners();
 			}
+			return await new Promise((resolve) => {
+				// we wait for a commit to see if the entry has updated
+				let timer;
+				const listener = () => {
+					entry = primary_store.getEntry(id);
+					if (!entry || entry.version > 0) {
+						clearTimeout(timer);
+						commit_listeners.delete(listener);
+						if (typeof entry?.value?.__invalidated__ === 'boolean')
+							return resolve(getFromSource(id, entry.value, entry.version));
+						resolve(entry);
+					}
+				};
+				commit_listeners.add(listener);
+				timer = setTimeout(() => {
+					commit_listeners.delete(listener);
+					resolve(getFromSource(id, entry?.value));
+				}, 10000).unref();
+			});
 		}
 		let has_changes = existing_record?.__invalidated__;
 		//			const invalidated_record = { __invalidated__: true };
@@ -1171,6 +1192,7 @@ export function makeTable(options) {
 			// a newer entry going in the cache in the future
 			primary_store.put(id, updated_record, version, updating_version);
 		} else primary_store.remove(id, existing_version);
+
 		if (has_changes) {
 			audit_store.put([version, table_id, id], {
 				operation: updated_record ? 'put' : 'delete',
