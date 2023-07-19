@@ -16,10 +16,10 @@ const props_cors_accesslist = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORS
 const props_cors = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORS);
 
 server.auth = findAndValidateUser;
-let session_table = table({
+const session_table = table({
 	table: 'hdb_session',
 	database: 'system',
-	attributes: [{ name: 'id', isPrimaryKey: true }],
+	attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'user' }],
 });
 
 let authorization_cache = new Map();
@@ -45,13 +45,13 @@ export async function authentication(request, next_handler) {
 	if (env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS)) {
 		// we prefix the cookie name with the origin so that we can partition/separate session/authentications
 		// host, to protect against CSRF
-		const cookie_prefix = (origin ? '' : origin + '-') + 'hdb-session=';
+		const cookie_prefix = (origin ? origin + '-' : '') + 'hdb-session=';
 		const cookie_start = cookie?.indexOf(cookie_prefix);
 		if (cookie_start >= 0) {
 			const end = cookie.indexOf(';', cookie_start);
-			session_id = cookie.slice(cookie_start, end === -1 ? cookie.length : end);
-			if (session_table.then) session_table = await session_table;
-			session = session_table.get(session_id);
+			const delimiter = cookie.indexOf('=', cookie_start);
+			session_id = cookie.slice(delimiter + 1, end === -1 ? cookie.length : end);
+			session = await session_table.get(session_id);
 		}
 		request.session = session || (session = {});
 	}
@@ -77,7 +77,7 @@ export async function authentication(request, next_handler) {
 
 	let new_user;
 	if (authorization) {
-		let new_user = authorization_cache.get(authorization);
+		new_user = authorization_cache.get(authorization);
 		if (!new_user) {
 			const [strategy, credentials] = authorization.split(' ');
 			let username, password;
@@ -131,7 +131,7 @@ export async function authentication(request, next_handler) {
 		request.user = new_user;
 	} else if (session?.user) {
 		// or should this be cached in the session?
-		request.user = await server.auth(session.user);
+		request.user = await server.auth(session.user, null, false);
 	} else if (
 		env.get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) &&
 		(request.ip?.includes('127.0.0.1') || request.ip == '::1')
@@ -144,12 +144,11 @@ export async function authentication(request, next_handler) {
 				session_id = uuid();
 				response_headers.push(
 					'set-cookie',
-					`hdb-session=${session_id}; Path=/; Expires=Tue, 01 Oct 8307 19:33:20 GMT; HttpOnly; Partitioned${
+					`hdb-session=${session_id}; Path=/; Expires=Tue, 01 Oct 8307 19:33:20 GMT; HttpOnly${
 						request.protocol === 'https' ? '; Secure' : ''
 					}`
 				);
 			}
-			if (session_table.then) session_table = await session_table;
 			updated_session.id = session_id;
 			session_table.put(updated_session);
 		};
