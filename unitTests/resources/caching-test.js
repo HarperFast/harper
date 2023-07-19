@@ -40,7 +40,19 @@ describe('Caching', () => {
 				);
 			}
 		}
-		CachingTable.sourcedFrom(Source);
+		CachingTable.sourcedFrom({
+			get(id) {
+				return new Promise((resolve) =>
+					setTimeout(() => {
+						source_requests++;
+						resolve({
+							id,
+							name: 'name ' + id,
+						});
+					}, timer)
+				);
+			},
+		});
 		IndexedCachingTable.sourcedFrom(Source);
 		let subscription = await CachingTable.subscribe({});
 
