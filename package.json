@@ -37,7 +37,7 @@
     "submodules": "git submodule update --init --recursive",
     "build": "eslint -c ./.eslintbuild bin/ dataLayer/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
     "pretty": "eslint --fix bin/ dataLayer/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
-    "test": "rimraf ./.nyc_output/* && node utility/devops/register.js --reset_license && npm run cover:apitests && npm run cover:logging && npm run cover:upgrade && npm run cover:nats && npm run cover:cfserver && npm run cover:hdbserver &&  npm run cover:main && nyc merge .nyc_output coverage.json && node ./utility/devops/register.js --reset_license",
+    "test": "rimraf ./.nyc_output/* && node utility/devops/register.js --reset_license && npm run cover:logging && npm run cover:apitests && npm run cover:upgrade && npm run cover:nats && npm run cover:cfserver && npm run cover:hdbserver &&  npm run cover:main && nyc merge .nyc_output coverage.json && node ./utility/devops/register.js --reset_license",
     "cover:main": "cd bin/ && nyc --no-clean --reporter=lcovonly ../node_modules/mocha/bin/_mocha '../unitTests/**/*.js' --config '../unitTests/.mocharc-main.json'",
     "cover:lmdbbridge": "cd bin/ && nyc --no-clean --reporter=lcovonly --retries 3 ../node_modules/mocha/bin/_mocha '../unitTests/dataLayer/harperBridge/lmdbBridge/**/*.js' --config '../unitTests/.mocharc.json'",
     "cover:lmdbutility": "cd bin/ && nyc --no-clean --reporter=lcovonly --retries 3 ../node_modules/mocha/bin/_mocha '../unitTests/utility/lmdb/**/*.js' --config '../unitTests/.mocharc.json'",
