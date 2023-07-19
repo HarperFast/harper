@@ -247,7 +247,7 @@ export function parseQuery(request: Request) {
 						});
 						break;
 					case undefined:
-						throw new Error('Unable to parse query');
+						throw new Error(`Unable to parse query, no part before ${operator} at ${last_index} in ${query_string}`);
 					default:
 						conditions.push({
 							comparator: comparator,
@@ -258,9 +258,9 @@ export function parseQuery(request: Request) {
 				attribute = undefined;
 				break;
 			default:
-				throw new Error(`Unknown operator ${operator} in query`);
+				throw new Error(`Unknown operator ${operator} in query ${query_string}`);
 		}
 	}
-	if (last_index !== query_string.length) throw new Error('Unable to parse query');
+	if (last_index !== query_string.length) throw new Error(`Unable to parse query, unexpected end in ${query_string}`);
 	request.conditions = conditions;
 }
