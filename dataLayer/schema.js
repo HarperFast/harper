@@ -13,6 +13,7 @@ const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const { SchemaEventMsg } = require('../server/threads/itc');
 const nats_utils = require('../server/nats/utility/natsUtils');
+const { getDatabases } = require('../resources/databases');
 
 module.exports = {
 	createSchema: createSchema,
@@ -334,6 +335,20 @@ function dropAttributeFromGlobal(drop_attribute_object) {
 }
 
 async function createAttribute(create_attribute_object) {
+	const table_attr = getDatabases()[create_attribute_object.schema][create_attribute_object.table].attributes;
+	for (const { name } of table_attr) {
+		if (name === create_attribute_object.attribute) {
+			throw handleHDBError(
+				new Error(),
+				`attribute '${create_attribute_object.attribute}' already exists in ${create_attribute_object.schema}.${create_attribute_object.table}`,
+				HTTP_STATUS_CODES.BAD_REQUEST,
+				undefined,
+				undefined,
+				true
+			);
+		}
+	}
+
 	await harperBridge.createAttribute(create_attribute_object);
 	signalling.signalSchemaChange(
 		new SchemaEventMsg(
