@@ -653,14 +653,15 @@ function getConfigFromFile(param) {
 }
 
 /**
- * Adds one or more new config elements to harperdb-config
- * @param values [{keys: ['dog', 'name'], value: tuck}]
+ * Adds a top level element and any nested values to harperdb-config
+ * @param top_level_element - element name
+ * @param values - JSON value which should have top level element
  * @returns {Promise<void>}
  */
-async function addConfig(values) {
+async function addConfig(top_level_element, values) {
 	const config_doc = parseYamlDoc(getConfigFilePath());
-	for (const v of values) {
-		config_doc.hasIn(v.keys) ? config_doc.setIn(v.keys, v.value) : config_doc.addIn(v.keys, v.value);
-	}
+	config_doc.hasIn([top_level_element])
+		? config_doc.setIn([top_level_element], values)
+		: config_doc.addIn([top_level_element], values);
 	await fs.writeFile(getConfigFilePath(), String(config_doc));
 }
