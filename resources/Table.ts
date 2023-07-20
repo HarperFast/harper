@@ -96,6 +96,7 @@ export function makeTable(options) {
 		static expirationTimer;
 		static createdTimeProperty = created_time_property;
 		static updatedTimeProperty = updated_time_property;
+		static dbisDB = dbis_db;
 		static schemaDefined = schema_defined;
 		static sourcedFrom(Resource) {
 			// define a source for retrieving invalidated entries for caching purposes
