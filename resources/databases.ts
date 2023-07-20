@@ -122,7 +122,7 @@ export function getDatabases(): Databases {
 			if (table_configs) {
 				for (const table_name in table_configs) {
 					const table_config = table_configs[table_name];
-					const table_path = join(table_config.path, 'data.mdb');
+					const table_path = join(table_config.path, basename(table_name + '.mdb'));
 					if (existsSync(table_path)) {
 						readMetaDb(table_path, table_name, db_name, null, true);
 					}
@@ -359,7 +359,6 @@ function setTable(tables, table_name, Table) {
 	table_classes.set(table_name, Table);
 	return Table;
 }
-const ROOT_STORE_KEY = Symbol('root-store');
 /**
  * Get root store for a database
  * @param options
@@ -369,8 +368,6 @@ export function database({ database: database_name, table: table_name }) {
 	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
 	getDatabases();
 	const database = ensureDB(database_name);
-	let root_store = database[ROOT_STORE_KEY];
-	if (root_store) return root_store;
 	let database_path = join(getHdbBasePath(), DATABASES_DIR_NAME);
 	const table_path = table_name && env_get(CONFIG_PARAMS.SCHEMAS)?.[database_name]?.tables?.[table_name]?.path;
 	database_path =
@@ -379,15 +376,14 @@ export function database({ database: database_name, table: table_name }) {
 		process.env.STORAGE_PATH ||
 		env_get(CONFIG_PARAMS.STORAGE_PATH) ||
 		(existsSync(database_path) ? database_path : join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME));
-	const path = join(database_path, table_path ? 'data.mdb' : database_name + '.mdb');
-	root_store = database_envs.get(path);
+	const path = join(database_path, (table_path ? table_name : database_name) + '.mdb');
+	let root_store = database_envs.get(path);
 	if (!root_store) {
 		// TODO: validate database name
 		const env_init = new OpenEnvironmentObject(path, false);
 		root_store = open(env_init);
 		database_envs.set(path, root_store);
 	}
-	database[ROOT_STORE_KEY] = root_store;
 	return root_store;
 }
 /**
