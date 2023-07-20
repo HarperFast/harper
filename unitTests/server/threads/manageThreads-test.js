@@ -9,7 +9,7 @@ const terms = require('../../../utility/hdbTerms');
 const assert = require('assert');
 const { threadId } = require('worker_threads');
 
-describe.skip('(Re)start/monitor workers', () => {
+describe('(Re)start/monitor workers', () => {
 	before(async function () {
 		await shutdownWorkers();
 	});
