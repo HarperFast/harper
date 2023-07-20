@@ -41,6 +41,7 @@ async function http(request, next_handler) {
 					throw new ClientError(error, 400);
 				}
 			}
+			request.authorize = true;
 
 			switch (method) {
 				case 'GET':

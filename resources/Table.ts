@@ -231,6 +231,7 @@ export function makeTable(options) {
 				expiration_ms = expiration_time * 1000;
 				if (this.expirationTimer) clearInterval(this.expirationTimer);
 				this.expirationTimer = setInterval(() => {
+					if (this.primaryStore.rootStore.status === 'closed') return clearInterval(this.expirationTimer);
 					// iterate through all entries to find expired ones
 					for (const { key, value: record, version } of this.primaryStore.getRange({
 						start: false,
