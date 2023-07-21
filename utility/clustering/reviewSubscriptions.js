@@ -49,7 +49,13 @@ async function reviewSubscriptions(subs, remote_node_name) {
 	for (const sub of subs) {
 		const { schema: schema_req, table: table_req } = sub;
 		// System schema/table should exist on all nodes so no need to review
-		if (schema_req === hdb_terms.SYSTEM_SCHEMA_NAME) continue;
+		if (schema_req === hdb_terms.SYSTEM_SCHEMA_NAME) {
+			await nats_utils.createLocalTableStream(schema_req, table_req);
+			const node_sub = new NodeSubscription(schema_req, table_req, sub.publish, sub.subscribe);
+			node_sub.start_time = sub.start_time;
+			added.push(node_sub);
+			continue;
+		}
 
 		const schema_exists_locally = hdb_utils.doesSchemaExist(schema_req);
 		const schema_exists_remote = remote_describe_all[schema_req] !== undefined;

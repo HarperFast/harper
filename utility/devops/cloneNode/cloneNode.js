@@ -10,8 +10,6 @@ const { pipeline } = require('stream/promises');
 const { createWriteStream, ensureDir } = require('fs-extra');
 const { join } = require('path');
 const _ = require('lodash');
-const { openEnvironment } = require('../../lmdb/environmentUtility');
-const { statDBI } = require('../../lmdb/environmentUtility');
 const env_mgr = require('../../environment/environmentManager');
 const sys_info = require('../../environment/systemInformation');
 const hdb_log = require('../../logging/harper_logger');
@@ -47,6 +45,11 @@ let leader_dbs;
 let clone_node_name;
 let root_path;
 
+// TODO: what to do with DB files with no tables
+// TODO: hdb info table? we need it bu should it be cloned - other system tables - nodes?
+// TODO: should system tables have same subs as user tabels?
+// TODO: way to check hdb is started so that we dont need to use a timout
+// TODO: user roles replicating need to update chace?
 async function cloneNode() {
 	console.info('Cloning node: ' + url);
 	try {
@@ -60,9 +63,8 @@ async function cloneNode() {
 	await installHDB();
 	await cloneConfig();
 	await cloneTables();
-
-	// await cloneComponents();
-	// await clusterTables();
+	await cloneComponents();
+	await clusterTables();
 	console.info('Successfully cloned node: ' + url);
 }
 
@@ -162,6 +164,28 @@ async function cloneConfig() {
 }
 
 async function cloneTables() {
+	//Clone system database
+	console.info('Cloning system database');
+	const sys_backup = await leaderHttpReq(
+		{
+			operation: OPERATIONS_ENUM.GET_BACKUP,
+			database: 'system',
+			tables: SYSTEM_TABLES_TO_CLONE,
+		},
+		true
+	);
+
+	const sys_db_dir = getDbFileDir('system');
+	await ensureDir(sys_db_dir);
+
+	const sys_db_file_dir = join(sys_db_dir, 'system.mdb');
+	await pipeline(sys_backup.body, createWriteStream(sys_db_file_dir, { overwrite: true }));
+
+	await createSystemTable();
+
+	// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
+	await fs.utimes(sys_db_file_dir, Date.now(), new Date(sys_backup.headers.get('date')));
+
 	// Get all the non-system db/table from leader node
 	leader_dbs = await leaderHttpReq({ operation: OPERATIONS_ENUM.DESCRIBE_ALL });
 	leader_dbs = await leader_dbs.json();
@@ -209,18 +233,17 @@ async function cloneTables() {
 
 		let backup;
 		if (excluded_tables) {
+			console.info(`Cloning database: ${db} tables: ${tables_to_clone}`);
 			backup = await leaderHttpReq(
 				{ operation: OPERATIONS_ENUM.GET_BACKUP, database: db, tables: tables_to_clone },
 				true
 			);
 		} else {
+			console.info(`Cloning database: ${db}`);
 			backup = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_BACKUP, database: db }, true);
 		}
 
-		const db_dir =
-			(clone_node_config?.databases && clone_node_config?.databases[db]?.path) ||
-			env_mgr.get(CONFIG_PARAMS.SCHEMAS)[db]?.path ||
-			env_mgr.get(CONFIG_PARAMS.STORAGE_PATH);
+		const db_dir = getDbFileDir(db);
 		await ensureDir(db_dir);
 		const backup_date = new Date(backup.headers.get('date'));
 
@@ -236,91 +259,22 @@ async function cloneTables() {
 		// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
 		await fs.utimes(db_path, Date.now(), backup_date);
 	}
-	//
-	// // If there is excludeDatabases in clone config search for value in leader schema description and delete if found, so it's not cloned.
-	// if (clone_node_config?.database?.excludeDatabases) {
-	// 	for (const exclude_schema of clone_node_config.database.excludeDatabases) {
-	// 		if (exclude_schema?.schema == null) continue;
-	// 		if (leader_dbs[exclude_schema?.schema]) {
-	// 			hdb_log.info('Excluding schema:', exclude_schema.schema);
-	// 			delete leader_dbs[exclude_schema.schema];
-	// 		}
-	// 	}
-	// }
-	//
-	// // If there is excludeTables in clone config search for value in leader schema description and delete if found, so it's not cloned.
-	// if (clone_node_config?.database?.excludeTables) {
-	// 	for (const exclude_table of clone_node_config.database.excludeTables) {
-	// 		if (exclude_table?.database == null) continue;
-	// 		if (leader_dbs[exclude_table?.database]?.[exclude_table?.table]) {
-	// 			hdb_log.info(`Excluding schema.table: ${exclude_table.database}.${exclude_table.table}`);
-	// 			delete leader_dbs[exclude_table.database][exclude_table.table];
-	// 		}
-	// 	}
-	// }
-
-	// Clone system database
-	// console.info('Cloning system database');
-	// const sys_backup = await leaderHttpReq(
-	// 	{
-	// 		operation: OPERATIONS_ENUM.GET_BACKUP,
-	// 		database: 'system',
-	// 		tables: SYSTEM_TABLES_TO_CLONE,
-	// 	},
-	// 	true
-	// );
-	//
-	// const sys_schema_path = getSystemSchemaPath();
-	// await ensureDir(sys_schema_path);
-	// const sys_db_path = join(sys_schema_path, 'system.mdb');
-	// await pipeline(sys_backup.body, createWriteStream(sys_db_path, { overwrite: true }));
-	//
-	// // We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
-	// await fs.utimes(sys_db_path, Date.now(), new Date(sys_backup.headers.get('date')));
-
-	for (const schema in leader_dbs) {
-		for (const table in leader_dbs[schema]) {
-			console.info(`Cloning schema.table: ${schema}.${table}`);
-			const primary_key = leader_dbs[schema][table]['hash_attribute'];
-			const leader_record_count = leader_dbs[schema][table]['record_count'];
-
-			// Stream table backup from leader node to clone node.
-			const backup = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_BACKUP, schema, table }, true);
-			const schema_path = getSchemaPath(schema, table);
-			await ensureDir(schema_path);
-			const backup_date = new Date(backup.headers.get('date'));
-
-			// Stream the backup to a file with temp name consisting of <timestamp>-<table name>, this is done so that if clone
-			// fails during this step half cloned db files can easily be identified.
-			const temp_db_path = join(schema_path, `${backup_date.getTime()}-${table}.mdb`);
-			await pipeline(backup.body, createWriteStream(temp_db_path, { overwrite: true }));
-
-			// Once the clone of a db file is completed it is renamed to its permanent name
-			const db_path = join(schema_path, table + '.mdb');
-			await fs.rename(temp_db_path, db_path);
-
-			// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
-			await fs.utimes(db_path, Date.now(), backup_date);
-
-			// Open the backup table and get its entry count to confirm record counts closely match.
-			const env = await openEnvironment(schema_path, table);
-			const dbi_stat = statDBI(env, primary_key);
-			const record_count = dbi_stat.entryCount;
-
-			// We allow for a 5% difference in count to account for any changes on leader after taking backup snapshot.
-			if (
-				leader_record_count !== 0 &&
-				leader_record_count <= record_count * 0.95 &&
-				leader_record_count >= record_count * 1.05
-			) {
-				throw new Error(
-					`Something has gone wrong. The record count for leader table '${table}' is inconsistent with the record count on clone node. 
-					Leader node record count: ${leader_record_count}. Clone node record count: ${record_count}`
-				);
-			}
-		}
-	}
 }
+
+function getDbFileDir(db) {
+	return (
+		(clone_node_config?.databases && clone_node_config?.databases[db]?.path) || env_mgr.get(CONFIG_PARAMS.STORAGE_PATH)
+	);
+}
+
+async function createSystemTable() {
+	const { createLMDBTables } = require('../../../utility/mount_hdb');
+	const hdb_info_controller = require('../../../dataLayer/hdbInfoController');
+	const version = require('../../../bin/version');
+	await createLMDBTables();
+	await hdb_info_controller.insertHdbInstallInfo(version.version());
+}
+// any ones in config will be installed via config on arun
 async function cloneComponents() {
 	const { deployComponent } = require('../../../components/operations');
 	let leader_component_files = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_COMPONENT_FILES });
@@ -380,22 +334,20 @@ async function clusterTables() {
 	const add_node = require('../../clustering/addNode');
 
 	const subscriptions = [];
-	const sys_schema_path = getSystemSchemaPath();
+	const sys_db_file_stat = await fs.stat(join(getDbFileDir('system'), 'system.mdb'));
 	for (const sys_table of SYSTEM_TABLES_TO_CLONE) {
-		const db_file_stat = await fs.stat(join(sys_schema_path, sys_table + '.mdb'));
 		subscriptions.push({
 			schema: SYSTEM_SCHEMA_NAME,
 			table: sys_table,
 			subscribe,
 			publish,
-			start_time: db_file_stat.mtime.toISOString(),
+			start_time: sys_db_file_stat.mtime.toISOString(),
 		});
 	}
 
 	for (const schema in leader_dbs) {
+		const db_file_stat = await fs.stat(join(getDbFileDir(schema), schema + '.mdb'));
 		for (const table in leader_dbs[schema]) {
-			const schema_path = getSchemaPath(schema, table);
-			const db_file_stat = await fs.stat(join(schema_path, table + '.mdb'));
 			subscriptions.push({
 				schema,
 				table,
