@@ -199,19 +199,26 @@ export function makeTable(options) {
 					if (typeof id === 'object' && id && !Array.isArray(id)) {
 						throw new Error(`Invalid id ${JSON.stringify(id)}`);
 					}
-					let resolve_load;
+					let resolve_load, reject_load;
 					const read_txn = env_txn?.getReadTxn();
 					if (options) options.transaction = read_txn;
 					else options = { transaction: read_txn };
 					let finished;
-					loadRecord(id, request, options, (entry) => {
-						resource[RECORD_PROPERTY] = entry?.value;
-						resource[VERSION_PROPERTY] = entry?.version;
-						finished = true;
-						resolve_load?.(resource);
+					loadRecord(id, request, options, (entry, error) => {
+						if (error) reject_load(error);
+						else {
+							resource[RECORD_PROPERTY] = entry?.value;
+							resource[VERSION_PROPERTY] = entry?.version;
+							finished = true;
+							resolve_load?.(resource);
+						}
 					});
 					if (finished) return resource;
-					else return new Promise((resolve) => (resolve_load = resolve));
+					else
+						return new Promise((resolve, reject) => {
+							resolve_load = resolve;
+							reject_load = reject;
+						});
 				} catch (error) {
 					if (error.message.includes('Unable to serialize object')) error.message += ': ' + JSON.stringify(id);
 					throw error;
@@ -1118,10 +1125,15 @@ export function makeTable(options) {
 				const source = TableResource.Source;
 				const has_get = source && source.get && (!source.get.reliesOnPrototype || source.prototype.get);
 				if (has_get) {
-					return getFromSource(id, record, version).then((entry) => {
-						if (entry?.value?.[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
-						callback(entry);
-					});
+					return getFromSource(id, record, version, context).then(
+						(entry) => {
+							if (entry?.value?.[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
+							callback(entry);
+						},
+						(error) => {
+							callback(null, error);
+						}
+					);
 				}
 			}
 			if (entry?.value?.[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
@@ -1147,7 +1159,7 @@ export function makeTable(options) {
 	/**
 	 * This is used to record that a retrieve a record from source
 	 */
-	async function getFromSource(id, existing_record = null, existing_version) {
+	async function getFromSource(id, existing_record = null, existing_version, context) {
 		if (existing_version < 0) {
 			// this signals that there is another thread that is getting this record, need to wait for it
 			let entry;
@@ -1163,14 +1175,14 @@ export function makeTable(options) {
 						clearTimeout(timer);
 						commit_listeners.delete(listener);
 						if (typeof entry?.value?.__invalidated__ === 'boolean')
-							return resolve(getFromSource(id, entry.value, entry.version));
+							return resolve(getFromSource(id, entry.value, entry.version, context));
 						resolve(entry);
 					}
 				};
 				commit_listeners.add(listener);
 				timer = setTimeout(() => {
 					commit_listeners.delete(listener);
-					resolve(getFromSource(id, entry?.value));
+					resolve(getFromSource(id, entry?.value, undefined, context));
 				}, 10000); //.unref();
 			});
 		}
@@ -1185,37 +1197,46 @@ export function makeTable(options) {
 		const updating_version = -(existing_version || 1);
 		primary_store.put(id, existing_record, updating_version, existing_version);
 		// we create a new context for the source, we want to determine the timestamp and don't want to
-		// attribute this to current user
-		const source_context = { responseMetadata: {} };
-		let updated_record = await TableResource.Source.get(id, source_context);
-		let version = source_context.responseMetadata.lastModified || existing_version;
-		// If we are using expiration and the version will already expire, need to incrment it
-		if (!version || (expiration_ms && version < Date.now() - expiration_ms)) version = getNextMonotonicTime();
-		has_changes = updateIndices(id, existing_record, updated_record) || has_changes;
-		if (updated_record) {
-			if (primary_key) updated_record[primary_key] = id;
-			if (typeof updated_record.toJSON === 'function') updated_record = updated_record.toJSON();
-			// don't wait on this, we don't actually care if it fails, that just means there is even
-			// a newer entry going in the cache in the future
-			primary_store.put(id, updated_record, version, updating_version);
-		} else
-			primary_store.remove(id, updating_version).then((success) => {
-				if (!success) {
-					console.log('Cached value was not removed', primary_store.getEntry(id));
-				}
-			});
-
-		if (has_changes) {
-			audit_store.put([version, table_id, id], {
-				operation: updated_record ? 'put' : 'delete',
-				value: updated_record,
-				lastVersion: existing_version,
-			});
-		}
-		return {
-			version,
-			value: updated_record,
+		// attribute this to current user (but we do want the current transaction)
+		const source_context = {
+			responseMetadata: {},
+			transaction: context?.transaction,
 		};
+		try {
+			let updated_record = await TableResource.Source.get(id, source_context);
+			let version = source_context.responseMetadata.lastModified || existing_version;
+			// If we are using expiration and the version will already expire, need to incrment it
+			if (!version || (expiration_ms && version < Date.now() - expiration_ms)) version = getNextMonotonicTime();
+			has_changes = updateIndices(id, existing_record, updated_record) || has_changes;
+			if (updated_record) {
+				if (primary_key) updated_record[primary_key] = id;
+				if (typeof updated_record.toJSON === 'function') updated_record = updated_record.toJSON();
+				// don't wait on this, we don't actually care if it fails, that just means there is even
+				// a newer entry going in the cache in the future
+				primary_store.put(id, updated_record, version, updating_version);
+			} else
+				primary_store.remove(id, updating_version).then((success) => {
+					if (!success) {
+						console.log('Cached value was not removed', primary_store.getEntry(id));
+					}
+				});
+
+			if (has_changes) {
+				audit_store.put([version, table_id, id], {
+					operation: updated_record ? 'put' : 'delete',
+					value: updated_record,
+					lastVersion: existing_version,
+				});
+			}
+			return {
+				version,
+				value: updated_record,
+			};
+		} catch (error) {
+			// revert the record state
+			primary_store.put(id, existing_record, existing_version, updating_version);
+			throw error;
+		}
 	}
 	/*
 	Here we write the deletion count for our thread id

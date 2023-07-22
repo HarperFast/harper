@@ -33,9 +33,9 @@ describe('Caching', () => {
 		class Source extends Resource {
 			get() {
 				return new Promise((resolve, reject) => {
-					if (return_error) reject(new Error('test source error'));
 					setTimeout(() => {
 						source_requests++;
+						if (return_error) reject(new Error('test source error'));
 						resolve(
 							return_value && {
 								id: this.getId(),
@@ -155,7 +155,7 @@ describe('Caching', () => {
 			} catch (error) {
 				returned_error = error;
 			}
-			assert.equal(returned_error.toString(), 'source test error');
+			assert.equal(returned_error?.message, 'test source error');
 			assert.equal(source_requests, 1);
 		} finally {
 			return_error = false;
