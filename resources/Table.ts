@@ -479,11 +479,12 @@ export function makeTable(options) {
 				existing_record = entry.value;
 				existing_version = entry.version;
 			}
-
-			for (const name in indices) {
-				// if there are any indices, we need to preserve a partial evicted record to ensure we can still do searches
-				if (!partial_record) partial_record = { __invalidated__: false };
-				partial_record[name] = existing_record[name];
+			if (existing_record) {
+				for (const name in indices) {
+					// if there are any indices, we need to preserve a partial evicted record to ensure we can still do searches
+					if (!partial_record) partial_record = { __invalidated__: false };
+					partial_record[name] = existing_record[name];
+				}
 			}
 			//
 			if (partial_record) {
@@ -1170,7 +1171,7 @@ export function makeTable(options) {
 				timer = setTimeout(() => {
 					commit_listeners.delete(listener);
 					resolve(getFromSource(id, entry?.value));
-				}, 10000).unref();
+				}, 10000); //.unref();
 			});
 		}
 		let has_changes = existing_record?.__invalidated__;
@@ -1197,7 +1198,12 @@ export function makeTable(options) {
 			// don't wait on this, we don't actually care if it fails, that just means there is even
 			// a newer entry going in the cache in the future
 			primary_store.put(id, updated_record, version, updating_version);
-		} else primary_store.remove(id, existing_version);
+		} else
+			primary_store.remove(id, updating_version).then((success) => {
+				if (!success) {
+					console.log('Cached value was not removed', primary_store.getEntry(id));
+				}
+			});
 
 		if (has_changes) {
 			audit_store.put([version, table_id, id], {

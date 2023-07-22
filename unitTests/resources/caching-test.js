@@ -11,6 +11,9 @@ describe('Caching', () => {
 		source_requests = 0;
 	let events = [];
 	let timer = 0;
+	let return_value = true;
+	let return_error;
+
 	before(async function () {
 		getMockLMDBPath();
 		setMainIsWorker(true); // TODO: Should be default until changed
@@ -29,15 +32,18 @@ describe('Caching', () => {
 		});
 		class Source extends Resource {
 			get() {
-				return new Promise((resolve) =>
+				return new Promise((resolve, reject) => {
+					if (return_error) reject(new Error('test source error'));
 					setTimeout(() => {
 						source_requests++;
-						resolve({
-							id: this.getId(),
-							name: 'name ' + this.getId(),
-						});
-					}, timer)
-				);
+						resolve(
+							return_value && {
+								id: this.getId(),
+								name: 'name ' + this.getId(),
+							}
+						);
+					}, timer);
+				});
 			}
 		}
 		CachingTable.sourcedFrom({
@@ -45,10 +51,12 @@ describe('Caching', () => {
 				return new Promise((resolve) =>
 					setTimeout(() => {
 						source_requests++;
-						resolve({
-							id,
-							name: 'name ' + id,
-						});
+						resolve(
+							return_value && {
+								id,
+								name: 'name ' + id,
+							}
+						);
 					}, timer)
 				);
 			},
@@ -116,6 +124,42 @@ describe('Caching', () => {
 		assert.equal(result.id, 23);
 		assert.equal(source_requests, 2);
 		assert.equal(events.length, 2);
+	});
+	it('Source returns undefined', async function () {
+		try {
+			IndexedCachingTable.setTTLExpiration(0.005);
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			source_requests = 0;
+			events = [];
+			return_value = undefined;
+			let result = await IndexedCachingTable.get(29, context);
+			assert.equal(result, undefined);
+			assert.equal(source_requests, 1);
+			result = await IndexedCachingTable.get(29, context);
+			assert.equal(result, undefined);
+		} finally {
+			return_value = true;
+		}
+	});
+	it('Source throw error', async function () {
+		try {
+			IndexedCachingTable.setTTLExpiration(0.005);
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			source_requests = 0;
+			events = [];
+			return_error = true;
+			let returned_error;
+			let result;
+			try {
+				result = await IndexedCachingTable.get(30, context);
+			} catch (error) {
+				returned_error = error;
+			}
+			assert.equal(returned_error.toString(), 'source test error');
+			assert.equal(source_requests, 1);
+		} finally {
+			return_error = false;
+		}
 	});
 	it('Can load cached indexed data', async function () {
 		source_requests = 0;
