@@ -112,6 +112,7 @@ describe('test MQTT connections and commands', () => {
 			client.on('connect', resolve);
 			client.on('error', reject);
 		});
+		console.log('connected for retained record test');
 		await new Promise((resolve, reject) => {
 			client.subscribe(path, function (err) {
 				//console.log('subscribed', err);
@@ -122,9 +123,10 @@ describe('test MQTT connections and commands', () => {
 			});
 			client.once('message', (topic, payload, packet) => {
 				let record = JSON.parse(payload);
-				console.log(topic, record);
+				console.log('got message', topic, record);
 				resolve();
 			});
+			console.log('trying to call upsert operation')
 			callOperation({
 				"operation": "upsert",
 				"schema": "data",
@@ -134,6 +136,7 @@ describe('test MQTT connections and commands', () => {
 					name: 'test record from operation'
 				}]
 			}).then(response => {
+				console.log('got response',response.status);
 				response.json().then(data=> {
 				console.log(data)});
 			}, error => {

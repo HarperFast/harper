@@ -1183,7 +1183,7 @@ export function makeTable(options) {
 				timer = setTimeout(() => {
 					commit_listeners.delete(listener);
 					resolve(getFromSource(id, entry?.value, undefined, context));
-				}, 10000); //.unref();
+				}, 10000).unref();
 			});
 		}
 		let has_changes = existing_record?.__invalidated__;
