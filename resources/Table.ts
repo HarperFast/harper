@@ -251,7 +251,7 @@ export function makeTable(options) {
 						start: false,
 						versions: true,
 					})) {
-						if (version < Date.now() - expiration_ms) {
+						if (version < Date.now() - expiration_ms && version > 0) {
 							// evict!
 							TableResource.evict(key, record, version);
 						}
