@@ -137,8 +137,7 @@ describe('test MQTT connections and commands', () => {
 				}]
 			}).then(response => {
 				console.log('got response',response.status);
-				response.json().then(data=> {
-				console.log(data)});
+				response.json().then(data => { console.log(data) });
 			}, error => {
 				reject(error);
 			});
