@@ -99,7 +99,15 @@ export function makeTable(options) {
 		static schemaDefined = schema_defined;
 		static sourcedFrom(Resource) {
 			// define a source for retrieving invalidated entries for caching purposes
-			this.Source = Resource;
+			if (this.Source) {
+				if (this.Source.mergeSource) this.Source = this.Source.mergeSource(Resource);
+				else if (Resource.mergeSource) {
+					this.Source = Resource.mergeSource(this.Source);
+				} else
+					throw new Error(
+						'Can not assign multiple sources to a table with no source providing a (static) mergeSource method'
+					);
+			} else this.Source = Resource;
 			(async () => {
 				const writeUpdate = async (event) => {
 					const value = event.value;
@@ -1197,7 +1205,7 @@ export function makeTable(options) {
 		const updating_version = -(existing_version || 1);
 		primary_store.put(id, existing_record, updating_version, existing_version);
 		// we create a new context for the source, we want to determine the timestamp and don't want to
-		// attribute this to current user (but we do want the current transaction)
+		// attribute this to the current user (but we do want to use the current transaction)
 		const source_context = {
 			responseMetadata: {},
 			transaction: context?.transaction,

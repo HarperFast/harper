@@ -62,10 +62,9 @@ export function setNATSReplicator(table_name, db_name, Table) {
 	if (!Table) {
 		return console.error(`Attempt to replicate non-existent table ${table_name} from database ${db_name}`);
 	}
-	if (Table.Source) return;
-
 	Table.sourcedFrom(
 		class NATSReplicator extends Resource {
+			static Source;
 			put(record) {
 				// add this to the transaction
 				this.getNATSTransaction(this.getContext()).addWrite(db_name, {
@@ -74,6 +73,9 @@ export function setNATSReplicator(table_name, db_name, Table) {
 					id: this[ID_PROPERTY],
 					record,
 				});
+				const source = NATSReplicator.Source;
+				if (source?.put && (!source.put.reliesOnPrototype || source.prototype.put))
+					return source.put(this[ID_PROPERTY], record, this.getContext());
 			}
 			delete() {
 				this.getNATSTransaction(this.getContext()).addWrite(db_name, {
@@ -81,6 +83,9 @@ export function setNATSReplicator(table_name, db_name, Table) {
 					table: table_name,
 					id: this[ID_PROPERTY],
 				});
+				const source = NATSReplicator.Source;
+				if (source?.delete && (!source.delete.reliesOnPrototype || source.prototype.delete))
+					return source.delete(this[ID_PROPERTY], this.getContext());
 			}
 			publish(message) {
 				this.getNATSTransaction(this.getContext()).addWrite(db_name, {
@@ -89,11 +94,25 @@ export function setNATSReplicator(table_name, db_name, Table) {
 					id: this[ID_PROPERTY],
 					record: message,
 				});
+				const source = NATSReplicator.Source;
+				if (source?.publish && (!source.publish.reliesOnPrototype || source.prototype.publish))
+					return source.publish(this[ID_PROPERTY], message, this.getContext());
 			}
 			static defineSchema(Table) {
 				publishSchema(Table);
 			}
 
+			/**
+			 * merge access to another source
+			 * @param other_source
+			 */
+			static mergeSource(other_source) {
+				// we can just delegate directly to the other get
+				this.get = (...args) => other_source.get(...args);
+				// define the other source as our source, so we can pass through to it
+				this.Source = other_source;
+				return this;
+			}
 			/**
 			 * This gets the NATS transaction object for the current overall transaction. This will
 			 * accumulate any writes that occur during a transaction, and allow them to be aggregated

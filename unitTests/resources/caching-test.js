@@ -5,6 +5,8 @@ const { table } = require('../../resources/databases');
 const { Resource } = require('../../resources/Resource');
 const { setMainIsWorker } = require('../../server/threads/manageThreads');
 const { transaction } = require('../../resources/transaction');
+// might want to enable an iteration with NATS being assigned as a source
+//const { setNATSReplicator } = require('../../server/nats/natsReplicator');
 describe('Caching', () => {
 	let CachingTable,
 		IndexedCachingTable,
@@ -46,6 +48,7 @@ describe('Caching', () => {
 				});
 			}
 		}
+		//setNATSReplicator('CachingTable', 'test', CachingTable);
 		CachingTable.sourcedFrom({
 			get(id) {
 				return new Promise((resolve) =>
@@ -61,6 +64,7 @@ describe('Caching', () => {
 				);
 			},
 		});
+		//setNATSReplicator('IndexedCachingTable', 'test', IndexedCachingTable);
 		IndexedCachingTable.sourcedFrom(Source);
 		let subscription = await CachingTable.subscribe({});
 
