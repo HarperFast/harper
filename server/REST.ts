@@ -6,6 +6,7 @@ import { Resources } from '../resources/Resources';
 import { parseQuery } from '../resources/search';
 import { LAST_MODIFICATION_PROPERTY } from '../resources/Resource';
 import { IterableEventQueue } from '../resources/IterableEventQueue';
+import { transaction } from '../resources/transaction';
 
 interface Response {
 	status?: number;
@@ -21,18 +22,24 @@ async function http(request, next_handler) {
 	let resource_path;
 	try {
 		const headers = {};
-		let path = request.pathname.slice(1);
-		const dot_index = path.lastIndexOf('.');
+		let url = request.url.slice(1);
+		const search_index = url.indexOf('?');
+		const dot_index = url.lastIndexOf('.', search_index === -1 ? undefined : search_index);
 		if (dot_index > -1) {
-			// we can use .extensions to force the Accept header or to access a property
-			const ext = path.slice(dot_index + 1);
+			// we can use .extensions to force the Accept header
+			const ext = url.slice(dot_index + 1, search_index === -1 ? undefined : search_index);
 			const accept = EXTENSION_TYPES[ext];
-			if (accept) request.headers.accept = accept;
-			else request.property = ext;
-			path = path.slice(0, dot_index);
+			if (accept) {
+				// TODO: Might be preferable to pass this into getDeserializer instead of modifying the request itself
+				request.headers.accept = accept;
+				url = url.slice(0, dot_index) + (search_index > -1 ? url.slice(search_index) : '');
+			}
 		}
-		let response_data = await resources.call(path, request, (resource, path) => {
-			resource_path = path;
+		const entry = resources.getMatch(url);
+		if (!entry) return next_handler(request); // no resource handler found
+		const relative_url = entry.relativeURL;
+		const resource = entry.Resource;
+		let response_data = await transaction(request, () => {
 			if (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'QUERY') {
 				// TODO: Support cancelation (if the request otherwise fails or takes too many bytes)
 				try {
@@ -46,36 +53,35 @@ async function http(request, next_handler) {
 			switch (method) {
 				case 'GET':
 				case 'HEAD':
-					return resource.get(request);
+					return resource.get(relative_url, request);
 				case 'POST':
-					return resource.post(request.data, request);
+					return resource.post(relative_url, request.data, request);
 				case 'PUT':
-					return resource.put(request.data, request);
+					return resource.put(relative_url, request.data, request);
 				case 'DELETE':
-					return resource.delete(request);
+					return resource.delete(relative_url, request);
 				case 'PATCH':
-					return resource.patch(request.data, request);
+					return resource.patch(relative_url, request.data, request);
 				case 'OPTIONS': // used primarily for CORS
 					headers.Allow = 'GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS, TRACe, QUERY, COPY, MOVE';
 					return;
 				case 'CONNECT':
 					// websockets? and event-stream
-					return resource.connect(request);
+					return resource.connect(relative_url, request);
 				case 'TRACE':
 					return 'HarperDB is the terminating server';
 				case 'QUERY':
-					return resource.query(request.data, request);
+					return resource.query(relative_url, request.data, request);
 				case 'COPY': // methods suggested from webdav RFC 4918
-					return resource.copy(request.headers.destination, request);
+					return resource.copy(relative_url, request.headers.destination, request);
 				case 'MOVE':
-					return resource.move(request.headers.destination, request);
+					return resource.move(relative_url, request.headers.destination, request);
 				case 'BREW': // RFC 2324
 					throw new ClientError("HarperDB is short and stout and can't brew coffee", 418);
 				default:
 					throw new ServerError(`Method ${method} is not recognized`, 501);
 			}
 		});
-		if (resource_path === undefined) return next_handler(request); // no resource handler found
 		const execution_time = performance.now() - start;
 		let status = 200;
 		let lastModification;

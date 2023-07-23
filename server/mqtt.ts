@@ -184,7 +184,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					for (const subscription of packet.subscriptions) {
 						let granted_qos;
 						try {
-							granted_qos = (await session.addSubscription(subscription, subscription.qos >= 1)) || 0;
+							granted_qos = (await session.addSubscription(subscription, subscription.qos >= 1)).qos || 0;
 						} catch (error) {
 							log_error(error);
 							granted_qos = 0x80; // failure
