@@ -91,14 +91,14 @@
     "json2csv": "5.0.7",
     "jsonata": "1.8.6",
     "jsonwebtoken": "9.0.0",
-    "lmdb": "2.8.2",
+    "lmdb": "2.8.3",
     "lodash": "4.17.21",
     "mathjs": "11.8.1",
     "minimist": "1.2.8",
     "mkcert": "1.5.1",
     "moment": "2.29.4",
     "mqtt-packet": "~8.1.2",
-    "msgpackr": "1.9.5-debug.1",
+    "msgpackr": "1.9.5",
     "nats": "2.14.0",
     "needle": "3.2.0",
     "node-stream-zip": "1.15.0",
@@ -171,9 +171,6 @@
     },
     "alasql": {
       "xlsx": "0.18.5"
-    },
-    "lmdb": {
-      "msgpackr": "1.9.5-debug.1"
     }
   },
   "optionalDependencies": {
