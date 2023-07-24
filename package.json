@@ -53,8 +53,8 @@
     "coverage": "nyc --reporter=lcov npm test"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "3.354.0",
     "@aws-sdk/lib-storage": "3.358.0",
+    "@aws-sdk/client-s3": "3.359.0",
     "@aws-sdk/abort-controller": "3.347.0",
     "@fastify/autoload": "~5.7.1",
     "@fastify/compress": "~6.4.0",
@@ -88,7 +88,7 @@
     "jsonwebtoken": "9.0.0",
     "lmdb": "2.8.2",
     "lodash": "4.17.21",
-    "mathjs": "11.8.1",
+    "mathjs": "11.8.2",
     "minimist": "1.2.8",
     "mkcert": "1.5.1",
     "moment": "2.29.4",
@@ -110,7 +110,7 @@
     "recursive-iterator": "3.3.0",
     "semver": "7.5.2",
     "stream-chain": "2.2.5",
-    "systeminformation": "5.17.16",
+    "systeminformation": "5.17.17",
     "stream-json": "1.8.0",
     "tar-fs": "2.1.1",
     "ulidx": "0.5.0",
