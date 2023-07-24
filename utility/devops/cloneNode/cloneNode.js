@@ -49,7 +49,8 @@ let root_path;
 // TODO: hdb info table? we need it bu should it be cloned - other system tables - nodes?
 // TODO: should system tables have same subs as user tabels?
 // TODO: way to check hdb is started so that we dont need to use a timout
-// TODO: user roles replicating need to update chace?
+// TODO: user roles replicating need to update cache?
+// TODO: system tables are getting the replicator comp
 async function cloneNode() {
 	console.info('Cloning node: ' + url);
 	try {
@@ -59,19 +60,20 @@ async function cloneNode() {
 	}
 
 	clone_node_name = clone_node_config?.clustering?.nodeName ?? hri.random();
+	leader_config = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_CONFIGURATION });
+	leader_config = await leader_config.json();
 
+	await cloneTables();
 	await installHDB();
 	await cloneConfig();
-	await cloneTables();
 	await cloneComponents();
-	await clusterTables();
+	//await clusterTables();
 	console.info('Successfully cloned node: ' + url);
 }
 
 async function installHDB() {
 	if (await isHdbInstalled()) {
-		console.info('Install of HarperDB found on clone node.');
-		return;
+		throw new Error('Existing install of HarperDB found on clone node.');
 	}
 
 	if (!clone_node_config?.rootPath) {
@@ -101,8 +103,6 @@ async function installHDB() {
 
 async function cloneConfig() {
 	console.info('Cloning configuration');
-	leader_config = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_CONFIGURATION });
-	leader_config = await leader_config.json();
 	leader_clustering_enabled = leader_config?.clustering?.enabled;
 	let config_update = { [CONFIG_PARAMS.ROOTPATH]: root_path };
 
@@ -181,7 +181,7 @@ async function cloneTables() {
 	const sys_db_file_dir = join(sys_db_dir, 'system.mdb');
 	await pipeline(sys_backup.body, createWriteStream(sys_db_file_dir, { overwrite: true }));
 
-	await createSystemTable();
+	//await createSystemTable();
 
 	// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
 	await fs.utimes(sys_db_file_dir, Date.now(), new Date(sys_backup.headers.get('date')));
@@ -267,13 +267,13 @@ function getDbFileDir(db) {
 	);
 }
 
-async function createSystemTable() {
-	const { createLMDBTables } = require('../../../utility/mount_hdb');
-	const hdb_info_controller = require('../../../dataLayer/hdbInfoController');
-	const version = require('../../../bin/version');
-	await createLMDBTables();
-	await hdb_info_controller.insertHdbInstallInfo(version.version());
-}
+// async function createSystemTable() {
+// 	const { createLMDBTables } = require('../../../utility/mount_hdb');
+// 	const hdb_info_controller = require('../../../dataLayer/hdbInfoController');
+// 	const version = require('../../../bin/version');
+// 	await createLMDBTables();
+// 	await hdb_info_controller.insertHdbInstallInfo(version.version());
+// }
 // any ones in config will be installed via config on arun
 async function cloneComponents() {
 	const { deployComponent } = require('../../../components/operations');
@@ -323,8 +323,8 @@ async function clusterTables() {
 		await main();
 	} else {
 		console.info(await restart({ operation: OPERATIONS_ENUM.RESTART }));
+		await hdb_utils.async_set_timeout(WAIT_FOR_RESTART_TIME);
 	}
-	await hdb_utils.async_set_timeout(WAIT_FOR_RESTART_TIME);
 
 	console.info('Clustering cloned tables');
 	const subscribe = clone_node_config?.clusteringConfig?.subscribeToLeaderNode !== false;
