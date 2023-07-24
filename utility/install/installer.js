@@ -544,8 +544,13 @@ async function createAdminUser(role, admin_user) {
 	try {
 		role_response = await role_ops.addRole(role);
 	} catch (err) {
-		err.message += 'Error creating role';
-		throw err;
+		// This is here to allow installs overtop of existing user/roles tables
+		if (err.message.includes('already exists')) {
+			admin_user = undefined;
+		} else {
+			err.message += 'Error creating role';
+			throw err;
+		}
 	}
 
 	if (admin_user) {

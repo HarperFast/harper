@@ -45,10 +45,6 @@ let leader_dbs;
 let clone_node_name;
 let root_path;
 
-// TODO: what to do with DB files with no tables
-// TODO: hdb info table? we need it bu should it be cloned - other system tables - nodes?
-// TODO: should system tables have same subs as user tabels?
-// TODO: way to check hdb is started so that we dont need to use a timout
 // TODO: user roles replicating need to update cache?
 // TODO: system tables are getting the replicator comp
 async function cloneNode() {
@@ -57,23 +53,6 @@ async function cloneNode() {
 		clone_node_config = YAML.parseDocument(fs.readFileSync(CLONE_CONFIG_PATH, 'utf8'), { simpleKeys: true }).toJSON();
 	} catch (err) {
 		console.info(CLONE_CONFIG_PATH + ' not found, using default config values.');
-	}
-
-	clone_node_name = clone_node_config?.clustering?.nodeName ?? hri.random();
-	leader_config = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_CONFIGURATION });
-	leader_config = await leader_config.json();
-
-	await cloneTables();
-	await installHDB();
-	await cloneConfig();
-	await cloneComponents();
-	//await clusterTables();
-	console.info('Successfully cloned node: ' + url);
-}
-
-async function installHDB() {
-	if (await isHdbInstalled()) {
-		throw new Error('Existing install of HarperDB found on clone node.');
 	}
 
 	if (!clone_node_config?.rootPath) {
@@ -85,6 +64,23 @@ async function installHDB() {
 		}
 	} else {
 		root_path = clone_node_config.rootPath;
+	}
+
+	clone_node_name = clone_node_config?.clustering?.nodeName ?? hri.random();
+	leader_config = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_CONFIGURATION });
+	leader_config = await leader_config.json();
+
+	await cloneTables();
+	await installHDB();
+	await cloneConfig();
+	await cloneComponents();
+	await clusterTables();
+	console.info('Successfully cloned node: ' + url);
+}
+
+async function installHDB() {
+	if (await isHdbInstalled()) {
+		throw new Error('Existing install of HarperDB found on clone node.');
 	}
 
 	console.info('Clone node installing HarperDB.');
@@ -220,7 +216,7 @@ async function cloneTables() {
 
 	for (const db in leader_dbs) {
 		if (exclude_db[db]) continue;
-
+		if (_.isEmpty(leader_dbs[db])) continue;
 		let tables_to_clone = [];
 		let excluded_tables = false;
 		for (const table in leader_dbs[db]) {
@@ -263,7 +259,9 @@ async function cloneTables() {
 
 function getDbFileDir(db) {
 	return (
-		(clone_node_config?.databases && clone_node_config?.databases[db]?.path) || env_mgr.get(CONFIG_PARAMS.STORAGE_PATH)
+		(clone_node_config?.databases && clone_node_config?.databases[db]?.path) ||
+		(clone_node_config?.storage && clone_node_config?.storage?.path) ||
+		join(root_path, 'database')
 	);
 }
 
