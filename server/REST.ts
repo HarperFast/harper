@@ -37,7 +37,7 @@ async function http(request, next_handler) {
 		}
 		const entry = resources.getMatch(url);
 		if (!entry) return next_handler(request); // no resource handler found
-		const relative_url = entry.relativeURL;
+		const local_url = '/' + entry.relativeURL; // TODO: We don't want to have to remove the forward slash and then re-add it
 		const resource = entry.Resource;
 		let response_data = await transaction(request, () => {
 			if (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'QUERY') {
@@ -53,29 +53,29 @@ async function http(request, next_handler) {
 			switch (method) {
 				case 'GET':
 				case 'HEAD':
-					return resource.get(relative_url, request);
+					return resource.get(local_url, request);
 				case 'POST':
-					return resource.post(relative_url, request.data, request);
+					return resource.post(local_url, request.data, request);
 				case 'PUT':
-					return resource.put(relative_url, request.data, request);
+					return resource.put(local_url, request.data, request);
 				case 'DELETE':
-					return resource.delete(relative_url, request);
+					return resource.delete(local_url, request);
 				case 'PATCH':
-					return resource.patch(relative_url, request.data, request);
+					return resource.patch(local_url, request.data, request);
 				case 'OPTIONS': // used primarily for CORS
 					headers.Allow = 'GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS, TRACe, QUERY, COPY, MOVE';
 					return;
 				case 'CONNECT':
 					// websockets? and event-stream
-					return resource.connect(relative_url, request);
+					return resource.connect(local_url, request);
 				case 'TRACE':
 					return 'HarperDB is the terminating server';
 				case 'QUERY':
-					return resource.query(relative_url, request.data, request);
+					return resource.query(local_url, request.data, request);
 				case 'COPY': // methods suggested from webdav RFC 4918
-					return resource.copy(relative_url, request.headers.destination, request);
+					return resource.copy(local_url, request.headers.destination, request);
 				case 'MOVE':
-					return resource.move(relative_url, request.headers.destination, request);
+					return resource.move(local_url, request.headers.destination, request);
 				case 'BREW': // RFC 2324
 					throw new ClientError("HarperDB is short and stout and can't brew coffee", 418);
 				default:

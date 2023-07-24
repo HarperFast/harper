@@ -312,6 +312,7 @@ class AccessError extends Error {
 	}
 }
 function pathToId(path, Resource) {
+	path = path.slice(1);
 	if (path.indexOf('/') === -1) {
 		// special syntax for more compact numeric representations
 		if (path.startsWith('$')) path = parseInt(path, 36);
@@ -361,12 +362,14 @@ function transactional(action, options) {
 		}
 		if (id === undefined) {
 			if (typeof id_or_query === 'string') {
-				const search_index = id_or_query.indexOf('?');
-				if (search_index > -1) {
-					query = this.parseQuery(id_or_query.slice(search_index + 1));
-					id_or_query = id_or_query.slice(0, search_index);
-				}
-				id = pathToId(id_or_query, this);
+				if (id_or_query[0] === '/') {
+					const search_index = id_or_query.indexOf('?');
+					if (search_index > -1) {
+						query = this.parseQuery(id_or_query.slice(search_index + 1));
+						id_or_query = id_or_query.slice(0, search_index);
+					}
+					id = pathToId(id_or_query, this);
+				} else id = id_or_query;
 			} else if (typeof id_or_query === 'object' && id_or_query) {
 				// it is a query
 				query = id_or_query;
@@ -381,6 +384,7 @@ function transactional(action, options) {
 					else if (id.length === 1) id = id[0];
 				} else {
 					if (typeof (id = id_or_query.url) === 'string') {
+						if (id[0] !== '/') throw new URIError(`Invalid local URL ${id}, must start with slash`);
 						const search_index = id.indexOf('?');
 						if (search_index > -1) {
 							Object.assign(query, this.parseQuery(id.slice(search_index + 1)));
