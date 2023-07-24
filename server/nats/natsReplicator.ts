@@ -32,7 +32,9 @@ let immediateNATSTransaction, subscribed_to_nodes;
 function assignReplicationSource() {
 	if (nats_disabled) return;
 	const databases = getDatabases();
-	for (const database_name in databases) {
+	const database_names = Object.keys(databases);
+	database_names.push('system');
+	for (const database_name of database_names) {
 		const database = databases[database_name];
 		for (const table_name in database) {
 			const Table = database[table_name];
