@@ -108,7 +108,12 @@ function notifyFromTransactionData(path, audit_ids, same_thread?) {
 		if (txn_id !== getLastTxnId()) continue;
 
 	 */
-	subscriptions.auditStore.resetReadTxn();
+	try {
+		subscriptions.auditStore.resetReadTxn();
+	} catch (error) {
+		error.message += ' in ' + path;
+		throw error;
+	}
 	for (const audit_id of audit_ids) {
 		const [txn_time, table_id, record_key] = audit_id;
 		last_time = txn_time;
