@@ -18,7 +18,7 @@ const { PACKAGE_ROOT } = require('../utility/hdbTerms');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
-const CUSTOM_FUNCTION_TEMPLATE = path.join(PACKAGE_ROOT, 'custom_function_template');
+const APPLICATION_TEMPLATE = path.join(PACKAGE_ROOT, 'application-template');
 const TMP_PATH = path.join(env.get(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY), 'tmp');
 
 function isCFEnabled() {
@@ -239,7 +239,7 @@ function addCustomFunctionProject(req) {
 	try {
 		const project_dir = path.join(cf_dir, project);
 		fs.mkdirSync(project_dir, { recursive: true });
-		fs.copySync(CUSTOM_FUNCTION_TEMPLATE, project_dir);
+		fs.copySync(APPLICATION_TEMPLATE, project_dir);
 		return `Successfully created custom function project: ${project}`;
 	} catch (err) {
 		throw handleHDBError(

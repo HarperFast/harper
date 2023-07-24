@@ -99,7 +99,10 @@ export function makeTable(options) {
 		static schemaDefined = schema_defined;
 		static sourcedFrom(Resource, options) {
 			// define a source for retrieving invalidated entries for caching purposes
-			if (options) this.sourceOptions = options;
+			if (options) {
+				this.sourceOptions = options;
+				if (options.expiration) this.setTTLExpiration(options.expiration);
+			}
 			if (this.Source) {
 				if (this.Source.mergeSource) this.Source = this.Source.mergeSource(Resource, this.sourceOptions);
 				else if (Resource.mergeSource) {
