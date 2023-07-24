@@ -18,7 +18,7 @@ export class DatabaseTransaction implements Transaction {
 		// used optimistically
 		return this.readTxn || (this.readTxn = this.lmdbDb.useReadTransaction());
 	}
-	doneReading() {
+	resetReadSnapshot() {
 		if (this.readTxn) {
 			this.readTxn.done();
 			this.readTxn = null;
@@ -37,7 +37,7 @@ export class DatabaseTransaction implements Transaction {
 	 * Resolves with information on the timestamp and success of the commit
 	 */
 	commit(flush = true, retries = 0): Promise<CommitResolution> {
-		this.doneReading();
+		this.resetReadSnapshot();
 		let resolution,
 			completions = [];
 		let write_index = 0;
@@ -110,7 +110,7 @@ export class DatabaseTransaction implements Transaction {
 		});
 	}
 	abort(): void {
-		this.doneReading();
+		this.resetReadSnapshot();
 		// reset the transaction
 		this.writes = [];
 	}
