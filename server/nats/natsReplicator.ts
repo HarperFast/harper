@@ -41,7 +41,6 @@ function assignReplicationSource() {
 	}
 	publishing_databases = new Map();
 	onNewTable((Table, is_changed) => {
-		if (Table?.Source) return;
 		setNATSReplicator(Table.tableName, Table.databaseName, Table);
 		if (is_changed) publishSchema(Table);
 	});
