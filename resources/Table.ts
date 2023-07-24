@@ -97,12 +97,13 @@ export function makeTable(options) {
 		static createdTimeProperty = created_time_property;
 		static updatedTimeProperty = updated_time_property;
 		static schemaDefined = schema_defined;
-		static sourcedFrom(Resource) {
+		static sourcedFrom(Resource, options) {
 			// define a source for retrieving invalidated entries for caching purposes
+			if (options) this.sourceOptions = options;
 			if (this.Source) {
-				if (this.Source.mergeSource) this.Source = this.Source.mergeSource(Resource);
+				if (this.Source.mergeSource) this.Source = this.Source.mergeSource(Resource, this.sourceOptions);
 				else if (Resource.mergeSource) {
-					this.Source = Resource.mergeSource(this.Source);
+					this.Source = Resource.mergeSource(this.Source, this.sourceOptions);
 				} else
 					throw new Error(
 						'Can not assign multiple sources to a table with no source providing a (static) mergeSource method'
@@ -124,6 +125,8 @@ export function makeTable(options) {
 							return resource._writeDelete(NOTIFICATION);
 						case 'publish':
 							return resource._writePublish(value, NOTIFICATION);
+						case 'invalidate':
+							return resource.invalidate(NOTIFICATION);
 						default:
 							console.error('Unknown operation', event);
 					}
@@ -461,7 +464,7 @@ export function makeTable(options) {
 			return this;
 		}
 
-		invalidate() {
+		invalidate(options) {
 			const partial_record = { __invalidated__: true };
 			for (const name in indices) {
 				// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
@@ -477,11 +480,20 @@ export function makeTable(options) {
 				lastVersion: this[VERSION_PROPERTY],
 				commit: (retry) => {
 					if (retry) return;
+					const source = TableResource.Source;
+					let completion;
+					const id = this[ID_PROPERTY];
+					if (!options?.isNotification) {
+						if (source?.invalidate && (!source.invalidate.reliesOnPrototype || source.prototype.invalidate)) {
+							completion = source.invalidate(id, this);
+						}
+					}
 					primary_store.put(this[ID_PROPERTY], partial_record, txn_time);
 					// TODO: record_deletion?
 					return {
 						// return the audit record that should be recorded
 						operation: 'invalidate',
+						[COMPLETION]: completion,
 					};
 				},
 			});
