@@ -102,8 +102,19 @@ export class Resource implements ResourceInterface {
 	static getNewId() {
 		return randomUUID();
 	}
-	static create(record: any, context: Context): Promise<Id> {
-		const id = this.getNewId(); //uuid.v4();
+	static create(id_prefix: Id, record: any, context: Context): Promise<Id>;
+	static create(record: any, context: Context): Promise<Id>;
+	static create(id_prefix: any, record: any, context?: Context): Promise<Id> {
+		let id;
+		if (id_prefix == null) id = this.getNewId(); //uuid.v4();
+		else if (Array.isArray(id_prefix)) id = [...id_prefix, this.getNewId()];
+		else if (typeof id_prefix !== 'object') id = [id_prefix, this.getNewId()];
+		else {
+			// two argument form, shift the arguments
+			id = this.getNewId();
+			record = id_prefix;
+			context = record;
+		}
 		return transaction(context, (context) => {
 			const resource = new this(id, context);
 			const results = resource.put ? resource.put(record) : missingMethod(resource, 'put');
@@ -181,7 +192,7 @@ export class Resource implements ResourceInterface {
 	);
 
 	post(new_record) {
-		if (this[ID_PROPERTY] == null) return this.constructor.create(new_record, this[CONTEXT]);
+		if (this[IS_COLLECTION]) return this.constructor.create(this[ID_PROPERTY], new_record, this[CONTEXT]);
 		missingMethod(this, 'post');
 	}
 
