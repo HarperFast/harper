@@ -1,4 +1,4 @@
-import { CONFIG_PARAMS, OPERATIONS_ENUM } from '../utility/hdbTerms';
+import { CONFIG_PARAMS, OPERATIONS_ENUM, SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME } from '../utility/hdbTerms';
 import { Database, asBinary, SKIP } from 'lmdb';
 import { getIndexedValues } from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
@@ -12,7 +12,7 @@ import * as env_mngr from '../utility/environment/environmentManager';
 import { addSubscription, listenToCommits } from './transactionBroadcast';
 import { handleHDBError, ClientError } from '../utility/errors/hdbError';
 import * as signalling from '../utility/signalling';
-import { SchemaEventMsg } from '../server/threads/itc';
+import { SchemaEventMsg, UserEventMsg } from '../server/threads/itc';
 import { databases, table } from './databases';
 import { idsForCondition, filterByType } from './search';
 import * as harper_logger from '../utility/logging/harper_logger';
@@ -102,9 +102,16 @@ export function makeTable(options) {
 			// define a source for retrieving invalidated entries for caching purposes
 			this.Source = Resource;
 			(async () => {
+				let user_role_update = false;
 				const writeUpdate = async (event) => {
 					const value = event.value;
 					const Table = event.table ? databases[database_name][event.table] : TableResource;
+					if (
+						database_name === SYSTEM_SCHEMA_NAME &&
+						(event.table === SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME || event.table === SYSTEM_TABLE_NAMES.USER_TABLE_NAME)
+					) {
+						user_role_update = true;
+					}
 					if (event.id === undefined) {
 						event.id = value[Table.primaryKey];
 						if (event.id === undefined) throw new Error('Replication message without an id ' + JSON.stringify(event));
@@ -177,6 +184,10 @@ export function makeTable(options) {
 									} else return writeUpdate(event);
 								});
 								if (event.onCommit) {
+									if (commit_resolution?.then && user_role_update) {
+										signalling.signalUserChange(new UserEventMsg(process.pid));
+									}
+
 									if (commit_resolution?.then) commit_resolution.then(event.onCommit);
 									else event.onCommit();
 								}

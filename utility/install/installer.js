@@ -119,7 +119,7 @@ async function install() {
 	env_manager.setHdbBasePath(hdb_root);
 
 	// Creates the HarperDB project folder structure and the LMDB environments/dbis.
-	await mount_hdb.mountHdb(hdb_root);
+	await mount_hdb(hdb_root);
 
 	// Creates the boot prop file in user home dir. Boot prop file contains location of hdb config.
 	await createBootPropertiesFile();

@@ -8,7 +8,7 @@ const bridge = require('../dataLayer/harperBridge/harperBridge');
 const system_schema = require('../json/systemSchema');
 const init_paths = require('../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
 
-module.exports = { mountHdb, createLMDBTables };
+module.exports = mountHdb;
 
 async function mountHdb(hdb_path) {
 	hdb_logger.trace('Mounting HarperDB');
