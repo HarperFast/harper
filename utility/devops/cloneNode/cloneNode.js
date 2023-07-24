@@ -20,10 +20,6 @@ const nats_utils = require('../../../server/nats/utility/natsUtils');
 const global_schema = require('../../globalSchema');
 const { isHdbInstalled, main } = require('../../../bin/run');
 const install = require('../../install/installer');
-const {
-	getSchemaPath,
-	getSystemSchemaPath,
-} = require('../../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
 const hdb_terms = require('../../hdbTerms');
 const { SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME, CONFIG_PARAMS, OPERATIONS_ENUM } = hdb_terms;
 
@@ -45,8 +41,6 @@ let leader_dbs;
 let clone_node_name;
 let root_path;
 
-// TODO: user roles replicating need to update cache?
-// TODO: system tables are getting the replicator comp
 async function cloneNode() {
 	console.info('Cloning node: ' + url);
 	try {
@@ -76,25 +70,6 @@ async function cloneNode() {
 	await cloneComponents();
 	await clusterTables();
 	console.info('Successfully cloned node: ' + url);
-}
-
-async function installHDB() {
-	if (await isHdbInstalled()) {
-		throw new Error('Existing install of HarperDB found on clone node.');
-	}
-
-	console.info('Clone node installing HarperDB.');
-	process.env.TC_AGREEMENT = 'yes';
-	process.env.ROOTPATH = root_path;
-	if (!username) throw new Error('HDB_LEADER_USERNAME is undefined.');
-	process.env.HDB_ADMIN_USERNAME = username;
-	if (!password) throw new Error('HDB_LEADER_PASSWORD is undefined.');
-	process.env.HDB_ADMIN_PASSWORD = password;
-	process.env.OPERATIONSAPI_NETWORK_PORT = clone_node_config?.operationsApi?.network?.port ?? DEFAULT_HDB_PORT;
-	process.env.CLUSTERING_NODENAME = clone_node_name;
-	process.env.CLUSTERING_LOGLEVEL = clone_node_config?.clustering?.logLevel ?? DEFAULT_CLUSTERING_LOG_LEVEL;
-
-	await install();
 }
 
 async function cloneConfig() {
@@ -159,6 +134,25 @@ async function cloneConfig() {
 	if (!_.isEmpty(config_update)) await config_utils.updateConfigValue(undefined, undefined, config_update, false, true);
 }
 
+async function installHDB() {
+	if (await isHdbInstalled()) {
+		throw new Error('Existing install of HarperDB found on clone node.');
+	}
+
+	console.info('Clone node installing HarperDB.');
+	process.env.TC_AGREEMENT = 'yes';
+	process.env.ROOTPATH = root_path;
+	if (!username) throw new Error('HDB_LEADER_USERNAME is undefined.');
+	process.env.HDB_ADMIN_USERNAME = username;
+	if (!password) throw new Error('HDB_LEADER_PASSWORD is undefined.');
+	process.env.HDB_ADMIN_PASSWORD = password;
+	process.env.OPERATIONSAPI_NETWORK_PORT = clone_node_config?.operationsApi?.network?.port ?? DEFAULT_HDB_PORT;
+	process.env.CLUSTERING_NODENAME = clone_node_name;
+	process.env.CLUSTERING_LOGLEVEL = clone_node_config?.clustering?.logLevel ?? DEFAULT_CLUSTERING_LOG_LEVEL;
+
+	await install();
+}
+
 async function cloneTables() {
 	//Clone system database
 	console.info('Cloning system database');
@@ -176,8 +170,6 @@ async function cloneTables() {
 
 	const sys_db_file_dir = join(sys_db_dir, 'system.mdb');
 	await pipeline(sys_backup.body, createWriteStream(sys_db_file_dir, { overwrite: true }));
-
-	//await createSystemTable();
 
 	// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
 	await fs.utimes(sys_db_file_dir, Date.now(), new Date(sys_backup.headers.get('date')));
@@ -215,13 +207,17 @@ async function cloneTables() {
 		: {};
 
 	for (const db in leader_dbs) {
-		if (exclude_db[db]) continue;
+		if (exclude_db[db]) {
+			leader_dbs[db] = 'excluded';
+			continue;
+		}
 		if (_.isEmpty(leader_dbs[db])) continue;
 		let tables_to_clone = [];
 		let excluded_tables = false;
 		for (const table in leader_dbs[db]) {
 			if (excluded_table[db + table]) {
 				excluded_tables = true;
+				leader_dbs[db][table] = 'excluded';
 			} else {
 				tables_to_clone.push(table);
 			}
@@ -265,14 +261,6 @@ function getDbFileDir(db) {
 	);
 }
 
-// async function createSystemTable() {
-// 	const { createLMDBTables } = require('../../../utility/mount_hdb');
-// 	const hdb_info_controller = require('../../../dataLayer/hdbInfoController');
-// 	const version = require('../../../bin/version');
-// 	await createLMDBTables();
-// 	await hdb_info_controller.insertHdbInstallInfo(version.version());
-// }
-// any ones in config will be installed via config on arun
 async function cloneComponents() {
 	const { deployComponent } = require('../../../components/operations');
 	let leader_component_files = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_COMPONENT_FILES });
@@ -343,11 +331,13 @@ async function clusterTables() {
 		});
 	}
 
-	for (const schema in leader_dbs) {
-		const db_file_stat = await fs.stat(join(getDbFileDir(schema), schema + '.mdb'));
-		for (const table in leader_dbs[schema]) {
+	for (const db in leader_dbs) {
+		if (leader_dbs[db] === 'excluded') continue;
+		const db_file_stat = await fs.stat(join(getDbFileDir(db), db + '.mdb'));
+		for (const table in leader_dbs[db]) {
+			if (leader_dbs[db][table] === 'excluded') continue;
 			subscriptions.push({
-				schema,
+				schema: db,
 				table,
 				subscribe,
 				publish,
