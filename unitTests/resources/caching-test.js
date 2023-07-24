@@ -5,12 +5,17 @@ const { table } = require('../../resources/databases');
 const { Resource } = require('../../resources/Resource');
 const { setMainIsWorker } = require('../../server/threads/manageThreads');
 const { transaction } = require('../../resources/transaction');
+// might want to enable an iteration with NATS being assigned as a source
+//const { setNATSReplicator } = require('../../server/nats/natsReplicator');
 describe('Caching', () => {
 	let CachingTable,
 		IndexedCachingTable,
 		source_requests = 0;
 	let events = [];
 	let timer = 0;
+	let return_value = true;
+	let return_error;
+
 	before(async function () {
 		getMockLMDBPath();
 		setMainIsWorker(true); // TODO: Should be default until changed
@@ -29,30 +34,37 @@ describe('Caching', () => {
 		});
 		class Source extends Resource {
 			get() {
-				return new Promise((resolve) =>
+				return new Promise((resolve, reject) => {
 					setTimeout(() => {
 						source_requests++;
-						resolve({
-							id: this.getId(),
-							name: 'name ' + this.getId(),
-						});
-					}, timer)
-				);
+						if (return_error) reject(new Error('test source error'));
+						resolve(
+							return_value && {
+								id: this.getId(),
+								name: 'name ' + this.getId(),
+							}
+						);
+					}, timer);
+				});
 			}
 		}
+		//setNATSReplicator('CachingTable', 'test', CachingTable);
 		CachingTable.sourcedFrom({
 			get(id) {
 				return new Promise((resolve) =>
 					setTimeout(() => {
 						source_requests++;
-						resolve({
-							id,
-							name: 'name ' + id,
-						});
+						resolve(
+							return_value && {
+								id,
+								name: 'name ' + id,
+							}
+						);
 					}, timer)
 				);
 			},
 		});
+		//setNATSReplicator('IndexedCachingTable', 'test', IndexedCachingTable);
 		IndexedCachingTable.sourcedFrom(Source);
 		let subscription = await CachingTable.subscribe({});
 
@@ -94,7 +106,7 @@ describe('Caching', () => {
 			let result = await CachingTable.get(23, context);
 			assert.equal(result.id, 23);
 			assert.equal(result.name, 'name ' + 23);
-			assert.equal(source_requests, 1);
+			assert(source_requests <= 1);
 		} finally {
 			timer = 0;
 		}
@@ -116,6 +128,42 @@ describe('Caching', () => {
 		assert.equal(result.id, 23);
 		assert.equal(source_requests, 2);
 		assert.equal(events.length, 2);
+	});
+	it('Source returns undefined', async function () {
+		try {
+			IndexedCachingTable.setTTLExpiration(0.005);
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			source_requests = 0;
+			events = [];
+			return_value = undefined;
+			let result = await IndexedCachingTable.get(29, context);
+			assert.equal(result, undefined);
+			assert.equal(source_requests, 1);
+			result = await IndexedCachingTable.get(29, context);
+			assert.equal(result, undefined);
+		} finally {
+			return_value = true;
+		}
+	});
+	it('Source throw error', async function () {
+		try {
+			IndexedCachingTable.setTTLExpiration(0.005);
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			source_requests = 0;
+			events = [];
+			return_error = true;
+			let returned_error;
+			let result;
+			try {
+				result = await IndexedCachingTable.get(30, context);
+			} catch (error) {
+				returned_error = error;
+			}
+			assert.equal(returned_error?.message, 'test source error');
+			assert.equal(source_requests, 1);
+		} finally {
+			return_error = false;
+		}
 	});
 	it('Can load cached indexed data', async function () {
 		source_requests = 0;

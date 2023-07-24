@@ -45,7 +45,7 @@ export async function authentication(request, next_handler) {
 	if (env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS)) {
 		// we prefix the cookie name with the origin so that we can partition/separate session/authentications
 		// host, to protect against CSRF
-		const cookie_prefix = (origin ? origin + '-' : '') + 'hdb-session=';
+		const cookie_prefix = (origin ? origin.replace(/^https?:\/\//, '').replace(/\W/, '_') + '-' : '') + 'hdb-session=';
 		const cookie_start = cookie?.indexOf(cookie_prefix);
 		if (cookie_start >= 0) {
 			const end = cookie.indexOf(';', cookie_start);
@@ -142,9 +142,11 @@ export async function authentication(request, next_handler) {
 		request.session.update = async function (updated_session) {
 			if (!session_id) {
 				session_id = uuid();
+				const cookie_prefix =
+					(origin ? origin.replace(/^https?:\/\//, '').replace(/\W/, '_') + '-' : '') + 'hdb-session=';
 				response_headers.push(
 					'set-cookie',
-					`hdb-session=${session_id}; Path=/; Expires=Tue, 01 Oct 8307 19:33:20 GMT; HttpOnly${
+					`${cookie_prefix}${session_id}; Path=/; Expires=Tue, 01 Oct 8307 19:33:20 GMT; HttpOnly${
 						request.protocol === 'https' ? '; Secure' : ''
 					}`
 				);

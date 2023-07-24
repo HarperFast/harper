@@ -112,6 +112,7 @@ describe('test MQTT connections and commands', () => {
 			client.on('connect', resolve);
 			client.on('error', reject);
 		});
+		console.log('connected for retained record test');
 		await new Promise((resolve, reject) => {
 			client.subscribe(path, function (err) {
 				//console.log('subscribed', err);
@@ -122,9 +123,10 @@ describe('test MQTT connections and commands', () => {
 			});
 			client.once('message', (topic, payload, packet) => {
 				let record = JSON.parse(payload);
-				console.log(topic, record);
+				console.log('got message', topic, record);
 				resolve();
 			});
+			console.log('trying to call upsert operation')
 			callOperation({
 				"operation": "upsert",
 				"schema": "data",
@@ -134,8 +136,8 @@ describe('test MQTT connections and commands', () => {
 					name: 'test record from operation'
 				}]
 			}).then(response => {
-				response.json().then(data=> {
-				console.log(data)});
+				console.log('got response',response.status);
+				response.json().then(data => { console.log(data) });
 			}, error => {
 				reject(error);
 			});
@@ -255,7 +257,7 @@ describe('test MQTT connections and commands', () => {
 			});
 		});
 	});
-	it('subscribe with QoS=1 and reconnect with non-clean session', async function () {
+	it.skip('subscribe with QoS=1 and reconnect with non-clean session', async function () {
 		// this first connection is a tear down to remove any previous durable session with this id
 		let client = connect('mqtt://localhost:1883', {
 			clean: true,

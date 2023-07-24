@@ -223,7 +223,7 @@ function onMessageFromWorkers(listener) {
 const listeners_by_type = new Map();
 function onMessageByType(type, listener) {
 	let listeners = listeners_by_type.get(type);
-	if (!listeners) listeners_by_type.set(type, listeners = []);
+	if (!listeners) listeners_by_type.set(type, (listeners = []));
 	listeners.push(listener);
 }
 
@@ -381,7 +381,11 @@ function addPort(port, keep_ref) {
 				let listeners = listeners_by_type.get(message.type);
 				if (listeners) {
 					for (let listener of listeners) {
-						listener(message, port);
+						try {
+							listener(message, port);
+						} catch (error) {
+							harper_logger.error(error);
+						}
 					}
 				}
 			}
