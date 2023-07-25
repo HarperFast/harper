@@ -10,23 +10,23 @@ const { pipeline } = require('stream/promises');
 const { createWriteStream, ensureDir } = require('fs-extra');
 const { join } = require('path');
 const _ = require('lodash');
-const env_mgr = require('../../environment/environmentManager');
-const sys_info = require('../../environment/systemInformation');
-const hdb_log = require('../../logging/harper_logger');
-const config_utils = require('../../../config/configUtils');
-const { restart } = require('../../../bin/restart');
-const hdb_utils = require('../../common_utils');
-const nats_utils = require('../../../server/nats/utility/natsUtils');
-const global_schema = require('../../globalSchema');
-const { isHdbInstalled, main } = require('../../../bin/run');
-const install = require('../../install/installer');
-const hdb_terms = require('../../hdbTerms');
+const env_mgr = require('../environment/environmentManager');
+const sys_info = require('../environment/systemInformation');
+const hdb_log = require('../logging/harper_logger');
+const config_utils = require('../../config/configUtils');
+const { restart } = require('../../bin/restart');
+const hdb_utils = require('../common_utils');
+const nats_utils = require('../../server/nats/utility/natsUtils');
+const global_schema = require('../globalSchema');
+const { isHdbInstalled, main } = require('../../bin/run');
+const install = require('../install/installer');
+const hdb_terms = require('../hdbTerms');
 const { SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME, CONFIG_PARAMS, OPERATIONS_ENUM } = hdb_terms;
 
 const DEFAULT_HDB_PORT = 9925;
 const DEFAULT_CLUSTERING_LOG_LEVEL = 'info';
 const WAIT_FOR_RESTART_TIME = 10000;
-const CLONE_CONFIG_PATH = join(__dirname, 'clone-node-config.yaml');
+const CLONE_CONFIG_FILE = 'clone-node-config.yaml';
 const SYSTEM_TABLES_TO_CLONE = [SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME, SYSTEM_TABLE_NAMES.USER_TABLE_NAME];
 
 const username = process.env.HDB_LEADER_USERNAME;
@@ -43,21 +43,24 @@ let root_path;
 
 async function cloneNode() {
 	console.info('Cloning node: ' + url);
-	try {
-		clone_node_config = YAML.parseDocument(fs.readFileSync(CLONE_CONFIG_PATH, 'utf8'), { simpleKeys: true }).toJSON();
-	} catch (err) {
-		console.info(CLONE_CONFIG_PATH + ' not found, using default config values.');
-	}
 
 	if (!clone_node_config?.rootPath) {
 		try {
-			root_path = join(os.homedir(), hdb_terms.HDB_ROOT_DIR_NAME);
+			root_path = process.env.ROOTPATH ? process.env.ROOTPATH : join(os.homedir(), hdb_terms.HDB_ROOT_DIR_NAME);
 		} catch (err) {
 			console.error(err);
 			throw new Error(`There was an setting default rootPath. Please set 'rootPath' in clone-node-config.yaml`);
 		}
 	} else {
 		root_path = clone_node_config.rootPath;
+	}
+
+	let clone_config_path;
+	try {
+		clone_config_path = join(root_path, CLONE_CONFIG_FILE);
+		clone_node_config = YAML.parseDocument(fs.readFileSync(clone_config_path, 'utf8'), { simpleKeys: true }).toJSON();
+	} catch (err) {
+		console.info(clone_config_path + ' not found, using default config values.');
 	}
 
 	clone_node_name = clone_node_config?.clustering?.nodeName ?? hri.random();
@@ -199,7 +202,7 @@ async function cloneTables() {
 	}
 
 	// Build excluded table object where key is db + table
-	let excluded_table = clone_node_config.databaseConfig.excludeTables;
+	let excluded_table = clone_node_config?.databaseConfig?.excludeTables;
 	excluded_table = excluded_table
 		? excluded_table.reduce((obj, item) => {
 				return { ...obj, [item['database'] == null ? null : item['database'] + item['table']]: true };
@@ -262,7 +265,7 @@ function getDbFileDir(db) {
 }
 
 async function cloneComponents() {
-	const { deployComponent } = require('../../../components/operations');
+	const { deployComponent } = require('../../components/operations');
 	let leader_component_files = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_COMPONENT_FILES });
 	leader_component_files = await leader_component_files.json();
 
@@ -317,7 +320,7 @@ async function clusterTables() {
 	const publish = clone_node_config?.clusteringConfig?.publishToLeaderNode !== false;
 
 	await global_schema.setSchemaDataToGlobalAsync();
-	const add_node = require('../../clustering/addNode');
+	const add_node = require('../clustering/addNode');
 
 	const subscriptions = [];
 	const sys_db_file_stat = await fs.stat(join(getDbFileDir('system'), 'system.mdb'));
