@@ -153,7 +153,7 @@ export function resetDatabases() {
 	for (const [path, store] of database_envs) {
 		if (store.needsDeletion && !path.endsWith('system.mdb')) {
 			console.log('closing database', path);
-			store.close();
+			store.close().then(() => console.log('closed database', path));
 			database_envs.delete(path);
 		}
 	}
