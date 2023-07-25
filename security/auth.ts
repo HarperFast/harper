@@ -14,6 +14,8 @@ env.initSync();
 
 const props_cors_accesslist = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORSACCESSLIST);
 const props_cors = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORS);
+const props_cors_accesslist_operations_api = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSACCESSLIST);
+const props_cors_operations_api = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS);
 
 server.auth = findAndValidateUser;
 const session_table = table({
@@ -32,8 +34,9 @@ export async function authentication(request, next_handler) {
 	const response_headers = [];
 	if ((origin && props_cors && props_cors_accesslist.includes(origin)) || props_cors_accesslist.includes('*')) {
 		response_headers.push('Access-Control-Allow-Origin', origin);
-		if (env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS))
+		if (env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS)) {
 			response_headers.push('Access-Control-Allow-Credentials', 'true');
+        }
 		if (request.method === 'OPTIONS') {
 			// preflight request
 			response_headers.push('Access-Control-Allow-Method', 'POST, GET, PUT, DELETE, PATCH, OPTIONS');
@@ -43,6 +46,11 @@ export async function authentication(request, next_handler) {
 	let session_id;
 	let session;
 	if (env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS)) {
+
+	    response_headers.push('Access-Control-Allow-Credentials', 'true');
+	    if ((origin && props_cors_operations_api && props_cors_accesslist_operations_api.includes(origin)) || props_cors_accesslist_operations_api.includes('*')) {
+		    response_headers.push('Access-Control-Allow-Origin', origin);
+        }
 		// we prefix the cookie name with the origin so that we can partition/separate session/authentications
 		// host, to protect against CSRF
 		const cookie_prefix = (origin ? origin.replace(/^https?:\/\//, '').replace(/\W/, '_') + '-' : '') + 'hdb-session=';
