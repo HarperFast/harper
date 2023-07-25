@@ -3,33 +3,29 @@ import { Request } from './ResourceInterface';
 import { _assignPackageExport } from '../index';
 import { CONTEXT } from './Resource';
 
-export function transaction<T>(request: Request, callback: (request: Request) => T): T;
-export function transaction<T>(callback: (request: Request) => T): T;
+export function transaction<T>(context: Request, callback: (transaction: TransactionSet) => T): T;
+export function transaction<T>(callback: ((transaction: TransactionSet) => T)): T;
 /**
  * Start and run a new transaction. This can be called with a request to hold the transaction, or a new request object will be created
- * @param request
+ * @param context
  * @param callback
  * @returns
  */
-export function transaction<T>(request: Request | ((request: Request) => T), callback?: (request: Request) => T): T {
+export function transaction<T>(context: Request | ((transaction: TransactionSet) => T), callback?: (transaction: TransactionSet) => T): T {
 	if (!callback) {
 		// optional first argument, handle case of no request
-		callback = request;
-		request = {};
-	} else if (!request) request = {}; // request argument included, but null or undefined, so create anew one
-	else if (request.context?.transaction && typeof callback === 'function') return callback(request as Request); // nothing to be done, already in transaction
+		callback = context;
+		context = {};
+	} else if (!context) context = {}; // request argument included, but null or undefined, so create anew one
+	else if (context?.transaction && typeof callback === 'function') return callback(context.transaction); // nothing to be done, already in transaction
 	if (typeof callback !== 'function') throw new Error('Callback function must be provided to transaction');
-	let context = request.context;
-	if (!context) {
-		if (context === null) context = request.context = {};
-		else context = request;
-	}
 	const transaction = (context.transaction = new TransactionSet());
 	transaction.timestamp = context.timestamp || getNextMonotonicTime();
+	transaction[CONTEXT] = context;
 	context.resourceCache = [];
 	let result;
 	try {
-		result = callback(request);
+		result = callback(transaction);
 		if (result?.then) {
 			return result.then(onSuccess, onError);
 		}

@@ -115,7 +115,7 @@ export class Resource implements ResourceInterface {
 			record = id_prefix;
 			context = record;
 		}
-		return transaction(context, (context) => {
+		return transaction(context, () => {
 			const resource = new this(id, context);
 			const results = resource.put ? resource.put(record) : missingMethod(resource, 'put');
 			if (context.responseMetadata) {
@@ -416,8 +416,8 @@ function transactional(action, options) {
 			return resource.then ? resource.then(authorizeActionOnResource) : authorizeActionOnResource(resource);
 		} else {
 			// start a transaction
-			return transaction(context, (request) => {
-				const resource = this.getResource(id, request, options);
+			return transaction(context, () => {
+				const resource = this.getResource(id, context, options);
 				return resource.then ? resource.then(authorizeActionOnResource) : authorizeActionOnResource(resource);
 			});
 		}

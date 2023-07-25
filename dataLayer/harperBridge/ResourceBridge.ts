@@ -161,7 +161,8 @@ export class ResourceBridge extends LMDBBridge {
 
 		let new_attributes;
 		const Table = getDatabases()[upsert_obj.schema][upsert_obj.table];
-		return transaction({ user: upsert_obj.hdb_user }, async (request) => {
+		const context = { user: upsert_obj.hdb_user };
+		return transaction(context, async (transaction) => {
 			if (!Table.schemaDefined) {
 				new_attributes = [];
 				for (const attribute_name of attributes) {
@@ -185,7 +186,7 @@ export class ResourceBridge extends LMDBBridge {
 			const keys = [];
 			const skipped = [];
 			for (const record of upsert_obj.records) {
-				let existing_record = await Table.get(record[Table.primaryKey], request);
+				let existing_record = await Table.get(record[Table.primaryKey], context);
 				if (
 					(upsert_obj.requires_existing && !existing_record) ||
 					(upsert_obj.requires_no_existing && existing_record)
@@ -217,11 +218,11 @@ export class ResourceBridge extends LMDBBridge {
 						if (!Object.prototype.hasOwnProperty.call(record, key)) record[key] = existing_record[key];
 					}
 				}
-				await Table.put(record, request);
+				await Table.put(record, context);
 				keys.push(record[Table.primaryKey]);
 			}
 			return {
-				txn_time: request.transaction.timestamp,
+				txn_time: transaction.timestamp,
 				written_hashes: keys,
 				new_attributes,
 				skipped_hashes: skipped,
@@ -230,7 +231,8 @@ export class ResourceBridge extends LMDBBridge {
 	}
 	async deleteRecords(delete_obj) {
 		const Table = getDatabases()[delete_obj.schema][delete_obj.table];
-		return transaction({ user: delete_obj.hdb_user }, async (context) => {
+		const context = { user: delete_obj.hdb_user };
+		return transaction(context, async (transaction) => {
 			const ids: Id[] = delete_obj.hash_values || delete_obj.records.map((record) => record[Table.primaryKey]);
 			const deleted = [];
 			const skipped = [];
@@ -238,7 +240,7 @@ export class ResourceBridge extends LMDBBridge {
 				if (await Table.delete(id, context)) deleted.push(id);
 				else skipped.push(id);
 			}
-			return createDeleteResponse(deleted, skipped, context.transaction.timestamp);
+			return createDeleteResponse(deleted, skipped, transaction.timestamp);
 		});
 	}
 
@@ -425,7 +427,8 @@ function getRecords(search_object, return_key_value?) {
 	if (select && table.attributes.length - select.length > 2 && select.length < 5) lazy = true;
 	// we need to get the transaction and ensure that the transaction spans the entire duration
 	// of the iteration
-	return transaction({ user: search_object.hdb_user }, async function* (context) {
+	const context = { user: search_object.hdb_user };
+	return transaction(context, async function* (transaction) {
 		for (const id of search_object.hash_values) {
 			let record = await table.get({ id, lazy, select }, context);
 			record = record && collapseData(record);
