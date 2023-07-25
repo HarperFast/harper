@@ -60192,10 +60192,7 @@
 									"",
 									"pm.test(\"Table values are returned\", function () {",
 									"    const json_data = pm.response.json();",
-									"    pm.expect(json_data[0]).to.haveOwnProperty('breed_id');",
-									"    pm.expect(json_data[0]).to.haveOwnProperty('adorable');",
-									"    pm.expect(json_data[0]).to.haveOwnProperty('dog_name');",
-									"    pm.expect(json_data[0]).to.haveOwnProperty('id');",
+									"    pm.expect(json_data).to.haveOwnProperty('greeting');",
 									"",
 									"});"
 								],
@@ -60239,7 +60236,7 @@
 							}
 						},
 						"url": {
-							"raw": "{{host}}:{{cf_port}}/test_project",
+							"raw": "{{host}}:{{cf_port}}/Greeting/",
 							"host": [
 								"{{host}}"
 							],
