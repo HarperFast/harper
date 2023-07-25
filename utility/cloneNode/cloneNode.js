@@ -1,12 +1,10 @@
 'use strict';
 
 const os = require('os');
-const fetch = require('node-fetch');
 const https = require('https');
 const fs = require('fs-extra');
 const YAML = require('yaml');
 const hri = require('human-readable-ids').hri;
-const { pipeline } = require('stream/promises');
 const { createWriteStream, ensureDir } = require('fs-extra');
 const { join } = require('path');
 const _ = require('lodash');
@@ -31,7 +29,7 @@ const SYSTEM_TABLES_TO_CLONE = [SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME, SYSTEM_TABLE
 
 const username = process.env.HDB_LEADER_USERNAME;
 const password = process.env.HDB_LEADER_PASSWORD;
-const url = process.env.HDB_LEADER_URL;
+const leader_url = process.env.HDB_LEADER_URL;
 const clustering_host = process.env.HDB_LEADER_CLUSTERING_HOST;
 
 let leader_clustering_enabled;
@@ -42,7 +40,7 @@ let clone_node_name;
 let root_path;
 
 async function cloneNode() {
-	console.info('Cloning node: ' + url);
+	console.info('Cloning node: ' + leader_url);
 
 	if (!clone_node_config?.rootPath) {
 		try {
@@ -65,14 +63,14 @@ async function cloneNode() {
 
 	clone_node_name = clone_node_config?.clustering?.nodeName ?? hri.random();
 	leader_config = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_CONFIGURATION });
-	leader_config = await leader_config.json();
+	leader_config = await JSON.parse(leader_config.body);
 
 	await cloneTables();
 	await installHDB();
 	await cloneConfig();
 	await cloneComponents();
 	await clusterTables();
-	console.info('Successfully cloned node: ' + url);
+	console.info('Successfully cloned node: ' + leader_url);
 }
 
 async function cloneConfig() {
@@ -159,27 +157,28 @@ async function installHDB() {
 async function cloneTables() {
 	//Clone system database
 	console.info('Cloning system database');
-	const sys_backup = await leaderHttpReq(
+	const sys_db_dir = getDbFileDir('system');
+	await ensureDir(sys_db_dir);
+
+	const sys_db_file_dir = join(sys_db_dir, 'system.mdb');
+	const file_stream = createWriteStream(sys_db_file_dir, { overwrite: true });
+	const headers = await leaderHttpStream(
 		{
 			operation: OPERATIONS_ENUM.GET_BACKUP,
 			database: 'system',
 			tables: SYSTEM_TABLES_TO_CLONE,
 		},
-		true
+		file_stream
 	);
 
-	const sys_db_dir = getDbFileDir('system');
-	await ensureDir(sys_db_dir);
-
-	const sys_db_file_dir = join(sys_db_dir, 'system.mdb');
-	await pipeline(sys_backup.body, createWriteStream(sys_db_file_dir, { overwrite: true }));
+	//await pipeline(sys_backup.body, createWriteStream(sys_db_file_dir, { overwrite: true }));
 
 	// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
-	await fs.utimes(sys_db_file_dir, Date.now(), new Date(sys_backup.headers.get('date')));
+	await fs.utimes(sys_db_file_dir, Date.now(), new Date(headers.date));
 
 	// Get all the non-system db/table from leader node
 	leader_dbs = await leaderHttpReq({ operation: OPERATIONS_ENUM.DESCRIBE_ALL });
-	leader_dbs = await leader_dbs.json();
+	leader_dbs = await JSON.parse(leader_dbs.body);
 
 	// Create object where excluded db name is key
 	let exclude_db = clone_node_config?.databaseConfig?.excludeDatabases;
@@ -226,33 +225,23 @@ async function cloneTables() {
 			}
 		}
 
-		let backup;
+		let backup_req;
 		if (excluded_tables) {
 			console.info(`Cloning database: ${db} tables: ${tables_to_clone}`);
-			backup = await leaderHttpReq(
-				{ operation: OPERATIONS_ENUM.GET_BACKUP, database: db, tables: tables_to_clone },
-				true
-			);
+			backup_req = { operation: OPERATIONS_ENUM.GET_BACKUP, database: db, tables: tables_to_clone };
 		} else {
 			console.info(`Cloning database: ${db}`);
-			backup = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_BACKUP, database: db }, true);
+			backup_req = { operation: OPERATIONS_ENUM.GET_BACKUP, database: db };
 		}
 
 		const db_dir = getDbFileDir(db);
 		await ensureDir(db_dir);
-		const backup_date = new Date(backup.headers.get('date'));
-
-		// Stream the backup to a file with temp name consisting of <timestamp>-<table name>, this is done so that if clone
-		// fails during this step half cloned db files can easily be identified.
-		const temp_db_path = join(db_dir, `${backup_date.getTime()}-${db}.mdb`);
-		await pipeline(backup.body, createWriteStream(temp_db_path, { overwrite: true }));
-
-		// Once the clone of a db file is completed it is renamed to its permanent name
 		const db_path = join(db_dir, db + '.mdb');
-		await fs.rename(temp_db_path, db_path);
+		const table_file_stream = createWriteStream(db_path, { overwrite: true });
+		const req_headers = await leaderHttpStream(backup_req, table_file_stream);
 
 		// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
-		await fs.utimes(db_path, Date.now(), backup_date);
+		await fs.utimes(db_path, Date.now(), new Date(req_headers.date));
 	}
 }
 
@@ -267,7 +256,7 @@ function getDbFileDir(db) {
 async function cloneComponents() {
 	const { deployComponent } = require('../../components/operations');
 	let leader_component_files = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_COMPONENT_FILES });
-	leader_component_files = await leader_component_files.json();
+	leader_component_files = await JSON.parse(leader_component_files.body);
 
 	// Loop through the result from get components and build array of comp names to clone
 	// excluding any that are set as excluded in clone config.
@@ -297,7 +286,7 @@ async function cloneComponents() {
 				project: comp_clone,
 				skip_node_modules,
 			});
-			const { payload } = await comp_pkg.json();
+			const { payload } = await JSON.parse(comp_pkg.body);
 			await deployComponent({ payload, project: comp_clone });
 		}
 	}
@@ -369,28 +358,60 @@ async function clusterTables() {
 	await nats_utils.closeConnection();
 }
 
-async function leaderHttpReq(req, get_backup = false) {
+async function leaderHttpReq(req) {
 	const https_agent = new https.Agent({
 		rejectUnauthorized: clone_node_config?.httpsRejectUnauthorized ?? false,
 	});
 
 	const auth = Buffer.from(username + ':' + password).toString('base64');
 	const headers = { 'Authorization': 'Basic ' + auth, 'Content-Type': 'application/json' };
-	if (get_backup) {
-		headers['Accept-Encoding'] = 'gzip';
-	}
-
-	const response = await fetch(url, {
+	const url = new URL(leader_url);
+	const options = {
+		protocol: url.protocol,
+		host: url.hostname,
 		method: 'POST',
 		headers,
-		body: JSON.stringify(req),
 		agent: https_agent,
-		compress: true,
+	};
+
+	if (url.port) options.port = url.port;
+	return await hdb_utils.httpsRequest(options, req);
+}
+
+async function leaderHttpStream(data, stream) {
+	const https_agent = new https.Agent({
+		rejectUnauthorized: clone_node_config?.httpsRejectUnauthorized ?? false,
 	});
 
-	if (response.ok) return response;
-	console.error(`HTTP Error Response: ${response.status} ${response.statusText}`);
-	throw new Error(await response.text());
+	const auth = Buffer.from(username + ':' + password).toString('base64');
+	const headers = { 'Authorization': 'Basic ' + auth, 'Content-Type': 'application/json' };
+	const url = new URL(leader_url);
+	const options = {
+		protocol: url.protocol,
+		host: url.hostname,
+		method: 'POST',
+		headers,
+		agent: https_agent,
+	};
+
+	if (url.port) options.port = url.port;
+
+	return new Promise((resolve, reject) => {
+		const req = https.request(options, (res) => {
+			res.pipe(stream);
+			res.on('end', () => {
+				stream.close();
+				resolve(res.headers);
+			});
+		});
+
+		req.on('error', (err) => {
+			reject(err);
+		});
+
+		req.write(JSON.stringify(data));
+		req.end();
+	});
 }
 
 cloneNode()

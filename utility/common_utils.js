@@ -14,6 +14,7 @@ const { inspect } = require('util');
 const is_number = require('is-number');
 const _ = require('lodash');
 const minimist = require('minimist');
+const https = require('https');
 const { hdb_errors } = require('./errors/hdbError');
 
 const async_set_timeout = require('util').promisify(setTimeout);
@@ -81,6 +82,7 @@ module.exports = {
 	changeExtension,
 	getEnvCliRootPath,
 	noBootFile,
+	httpsRequest,
 	PACKAGE_ROOT: terms.PACKAGE_ROOT,
 };
 
@@ -846,4 +848,31 @@ function noBootFile() {
 	if (getEnvCliRootPath() && fs.pathExistsSync(path.join(cli_env_root, terms.HDB_CONFIG_FILE))) {
 		no_boot_file = true;
 	}
+}
+
+function httpsRequest(options, data) {
+	return new Promise((resolve, reject) => {
+		const req = https.request(options, (res) => {
+			res.setEncoding('utf8');
+			let response = {
+				body: '',
+				headers: res.headers,
+			};
+
+			res.on('data', (chunk) => {
+				response.body += chunk;
+			});
+
+			res.on('end', () => {
+				resolve(response);
+			});
+		});
+
+		req.on('error', (err) => {
+			reject(err);
+		});
+
+		req.write(JSON.stringify(data));
+		req.end();
+	});
 }
