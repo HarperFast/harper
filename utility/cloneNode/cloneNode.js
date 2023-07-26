@@ -5,6 +5,7 @@ const https = require('https');
 const fs = require('fs-extra');
 const YAML = require('yaml');
 const hri = require('human-readable-ids').hri;
+const { pipeline } = require('stream/promises');
 const { createWriteStream, ensureDir } = require('fs-extra');
 const { join } = require('path');
 const _ = require('lodash');
@@ -65,7 +66,14 @@ async function cloneNode() {
 	leader_config = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_CONFIGURATION });
 	leader_config = await JSON.parse(leader_config.body);
 
-	await cloneTables();
+	if (global.fetch) {
+		await cloneTablesFetch();
+		// Setting this env var was causing run `npm install` to fail, so deleting it here.
+		if (process.env.NODE_TLS_REJECT_UNAUTHORIZED) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
+	} else {
+		await cloneTables();
+	}
+
 	await installHDB();
 	await cloneConfig();
 	await cloneComponents();
@@ -171,8 +179,6 @@ async function cloneTables() {
 		file_stream
 	);
 
-	//await pipeline(sys_backup.body, createWriteStream(sys_db_file_dir, { overwrite: true }));
-
 	// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
 	await fs.utimes(sys_db_file_dir, Date.now(), new Date(headers.date));
 
@@ -243,6 +249,133 @@ async function cloneTables() {
 		// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
 		await fs.utimes(db_path, Date.now(), new Date(req_headers.date));
 	}
+}
+
+async function cloneTablesFetch() {
+	//Clone system database
+	console.info('Cloning system database');
+	const sys_backup = await leaderHttpReqFetch(
+		{
+			operation: OPERATIONS_ENUM.GET_BACKUP,
+			database: 'system',
+			tables: SYSTEM_TABLES_TO_CLONE,
+		},
+		true
+	);
+
+	const sys_db_dir = getDbFileDir('system');
+	await ensureDir(sys_db_dir);
+
+	const sys_db_file_dir = join(sys_db_dir, 'system.mdb');
+	await pipeline(sys_backup.body, createWriteStream(sys_db_file_dir, { overwrite: true }));
+
+	// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
+	await fs.utimes(sys_db_file_dir, Date.now(), new Date(sys_backup.headers.get('date')));
+
+	// Get all the non-system db/table from leader node
+	leader_dbs = await leaderHttpReqFetch({ operation: OPERATIONS_ENUM.DESCRIBE_ALL });
+	leader_dbs = await leader_dbs.json();
+
+	// Create object where excluded db name is key
+	let exclude_db = clone_node_config?.databaseConfig?.excludeDatabases;
+	exclude_db = exclude_db
+		? exclude_db.reduce((obj, item) => {
+				return { ...obj, [item['database']]: true };
+		  }, {})
+		: {};
+
+	// Check the leader config for any tables with custom pathing - these cant be cloned
+	if (leader_config.schemas) {
+		for (const cfg in leader_config.schemas) {
+			if (Object.keys(leader_config.schemas[cfg]).includes('tables')) {
+				exclude_db[cfg] = true;
+				console.info(
+					`Excluding database '${cfg}' from clone because leader node has custom pathing configured for one or more of its tables`
+				);
+			}
+		}
+	}
+
+	// Build excluded table object where key is db + table
+	let excluded_table = clone_node_config?.databaseConfig?.excludeTables;
+	excluded_table = excluded_table
+		? excluded_table.reduce((obj, item) => {
+				return { ...obj, [item['database'] == null ? null : item['database'] + item['table']]: true };
+		  }, {})
+		: {};
+
+	for (const db in leader_dbs) {
+		if (exclude_db[db]) {
+			leader_dbs[db] = 'excluded';
+			continue;
+		}
+		if (_.isEmpty(leader_dbs[db])) continue;
+		let tables_to_clone = [];
+		let excluded_tables = false;
+		for (const table in leader_dbs[db]) {
+			if (excluded_table[db + table]) {
+				excluded_tables = true;
+				leader_dbs[db][table] = 'excluded';
+			} else {
+				tables_to_clone.push(table);
+			}
+		}
+
+		let backup;
+		if (excluded_tables) {
+			console.info(`Cloning database: ${db} tables: ${tables_to_clone}`);
+			backup = await leaderHttpReqFetch(
+				{ operation: OPERATIONS_ENUM.GET_BACKUP, database: db, tables: tables_to_clone },
+				true
+			);
+		} else {
+			console.info(`Cloning database: ${db}`);
+			backup = await leaderHttpReqFetch({ operation: OPERATIONS_ENUM.GET_BACKUP, database: db }, true);
+		}
+
+		const db_dir = getDbFileDir(db);
+		await ensureDir(db_dir);
+		const backup_date = new Date(backup.headers.get('date'));
+
+		// Stream the backup to a file with temp name consisting of <timestamp>-<table name>, this is done so that if clone
+		// fails during this step half cloned db files can easily be identified.
+		const temp_db_path = join(db_dir, `${backup_date.getTime()}-${db}.mdb`);
+		await pipeline(backup.body, createWriteStream(temp_db_path, { overwrite: true }));
+
+		// Once the clone of a db file is completed it is renamed to its permanent name
+		const db_path = join(db_dir, db + '.mdb');
+		await fs.rename(temp_db_path, db_path);
+
+		// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
+		await fs.utimes(db_path, Date.now(), backup_date);
+	}
+}
+
+async function leaderHttpReqFetch(req, get_backup = false) {
+	const reject_unauth = clone_node_config?.httpsRejectUnauthorized ?? false;
+	const https_agent = new https.Agent({
+		rejectUnauthorized: reject_unauth,
+	});
+
+	if (!reject_unauth) process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
+	const auth = Buffer.from(username + ':' + password).toString('base64');
+	const headers = { 'Authorization': 'Basic ' + auth, 'Content-Type': 'application/json' };
+	if (get_backup) {
+		headers['Accept-Encoding'] = 'gzip';
+	}
+
+	const response = await fetch(leader_url, {
+		method: 'POST',
+		headers,
+		body: JSON.stringify(req),
+		agent: https_agent,
+		compress: true,
+	});
+
+	if (response.ok) return response;
+	console.error(`HTTP Error Response: ${response.status} ${response.statusText}`);
+	throw new Error(await response.text());
 }
 
 function getDbFileDir(db) {
@@ -371,11 +504,11 @@ async function leaderHttpReq(req) {
 		host: url.hostname,
 		method: 'POST',
 		headers,
-		agent: https_agent,
 	};
 
+	if (url.protocol === 'https:') options.agent = https_agent;
 	if (url.port) options.port = url.port;
-	return await hdb_utils.httpsRequest(options, req);
+	return await hdb_utils.httpRequest(options, req);
 }
 
 async function leaderHttpStream(data, stream) {
@@ -391,9 +524,9 @@ async function leaderHttpStream(data, stream) {
 		host: url.hostname,
 		method: 'POST',
 		headers,
-		agent: https_agent,
 	};
 
+	if (url.protocol === 'https:') options.agent = https_agent;
 	if (url.port) options.port = url.port;
 
 	return new Promise((resolve, reject) => {
