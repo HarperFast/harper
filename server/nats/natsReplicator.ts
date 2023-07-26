@@ -61,10 +61,10 @@ export function setNATSReplicator(table_name, db_name, Table) {
 	if (!Table) {
 		return console.error(`Attempt to replicate non-existent table ${table_name} from database ${db_name}`);
 	}
+	if (Table.Source?.isNATSReplicator) return;
 	let source;
 	Table.sourcedFrom(
 		class NATSReplicator extends Resource {
-			static Source;
 			put(record) {
 				// add this to the transaction
 				let completion;
@@ -168,6 +168,7 @@ export function setNATSReplicator(table_name, db_name, Table) {
 					return subscription;
 				}
 			}
+			static isNATSReplicator = true;
 		}
 	);
 	/**
