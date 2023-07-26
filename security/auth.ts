@@ -47,7 +47,7 @@ export async function authentication(request, next_handler) {
 			if (request.method === 'OPTIONS') {
 				// preflight request
 				response_headers.push('Access-Control-Allow-Method', 'POST, GET, PUT, DELETE, PATCH, OPTIONS');
-				response_headers.push('Access-Control-Allow-Headers', 'Accept', 'Content-Type', 'Authorization');
+				response_headers.push('Access-Control-Allow-Headers', 'Accept, Content-Type, Authorization');
 			}
 		}
 	}
