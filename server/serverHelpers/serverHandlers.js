@@ -77,7 +77,7 @@ function authHandler(req, resp, done) {
 	} else {
 		req.body.hdb_user = null;
 		req.body.hdb_auth_header = req.headers.authorization;
-		req.body.baseRequest = req.raw.baseRequest;
+		req.body.baseRequest = req.raw?.baseRequest;
 		done();
 	}
 }
