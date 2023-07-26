@@ -1034,7 +1034,6 @@ export function makeTable(options) {
 				new_attributes.push(attribute);
 			}
 			table({ table: table_name, database: database_name, schemaDefined: schema_defined, attributes: new_attributes });
-			this.Source?.defineSchema?.(this);
 			return TableResource.indexingOperation;
 		}
 		static async removeAttributes(names: string[]) {

@@ -1,4 +1,4 @@
-import { databases, getDatabases, onNewTable } from '../../resources/databases';
+import { databases, getDatabases, onUpdatedTable } from '../../resources/databases';
 import { ID_PROPERTY, Resource, TRANSACTIONS_PROPERTY, USER_PROPERTY } from '../../resources/Resource';
 import { publishToStream } from './utility/natsUtils';
 import { SUBJECT_PREFIXES } from './utility/natsTerms';
@@ -40,7 +40,7 @@ function assignReplicationSource() {
 		}
 	}
 	publishing_databases = new Map();
-	onNewTable((Table, is_changed) => {
+	onUpdatedTable((Table, is_changed) => {
 		setNATSReplicator(Table.tableName, Table.databaseName, Table);
 		if (is_changed) publishSchema(Table);
 	});

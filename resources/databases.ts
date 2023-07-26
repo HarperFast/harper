@@ -708,6 +708,6 @@ export function dropTableMeta({ table: table_name, database: database_name }) {
 	return Promise.all(removals);
 }
 
-export function onNewTable(listener) {
+export function onUpdatedTable(listener) {
 	table_listeners.push(listener);
 }
