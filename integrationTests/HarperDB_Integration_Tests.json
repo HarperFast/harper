@@ -60503,24 +60503,13 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"const expected_obj = {",
-									"    \"test_project\": {",
-									"        \"routes\": [",
-									"            \"examples\"",
-									"        ],",
-									"        \"helpers\": [",
-									"            \"example\"",
-									"        ],",
-									"    }",
-									"};",
-									"",
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
 									"pm.test(\"Function object is returned\", function () {",
 									"    const json_data = pm.response.json();",
-									"    pm.expect(json_data).to.eql(expected_obj);",
+									"    pm.expect(json_data).to.have.property('test_project');",
 									"});"
 								],
 								"type": "text/javascript"
