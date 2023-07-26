@@ -1,4 +1,4 @@
-import { databases, getDatabases, onNewTable } from '../../resources/databases';
+import { databases, getDatabases, onUpdatedTable } from '../../resources/databases';
 import { ID_PROPERTY, Resource, TRANSACTIONS_PROPERTY, USER_PROPERTY } from '../../resources/Resource';
 import { publishToStream } from './utility/natsUtils';
 import { SUBJECT_PREFIXES } from './utility/natsTerms';
@@ -20,7 +20,7 @@ export function start() {
 export function disableNATS(disabled = true) {
 	nats_disabled = disabled;
 }
-const MAX_INGEST_THREADS = 2;
+const MAX_INGEST_THREADS = 1;
 let immediateNATSTransaction, subscribed_to_nodes;
 /**
  * Replication functions by acting as a "source" for tables. With replicated tables, the local tables are considered
@@ -40,8 +40,7 @@ function assignReplicationSource() {
 		}
 	}
 	publishing_databases = new Map();
-	onNewTable((Table, is_changed) => {
-		if (Table?.Source) return;
+	onUpdatedTable((Table, is_changed) => {
 		setNATSReplicator(Table.tableName, Table.databaseName, Table);
 		if (is_changed) publishSchema(Table);
 	});
@@ -62,55 +61,98 @@ export function setNATSReplicator(table_name, db_name, Table) {
 	if (!Table) {
 		return console.error(`Attempt to replicate non-existent table ${table_name} from database ${db_name}`);
 	}
-	if (Table.Source) return;
-
+	if (Table.Source?.isNATSReplicator) return;
+	let source;
 	Table.sourcedFrom(
 		class NATSReplicator extends Resource {
 			put(record) {
 				// add this to the transaction
-				this.getNATSTransaction(this.getContext()).addWrite(db_name, {
-					operation: 'put',
-					table: table_name,
-					id: this[ID_PROPERTY],
-					record,
-				});
+				let completion;
+				if (source?.put && (!source.put.reliesOnPrototype || source.prototype.put))
+					completion = source.put(this[ID_PROPERTY], record, this.getContext());
+				return getNATSTransaction(this.getContext()).addWrite(
+					db_name,
+					{
+						operation: 'put',
+						table: table_name,
+						id: this[ID_PROPERTY],
+						record,
+					},
+					completion
+				);
 			}
 			delete() {
-				this.getNATSTransaction(this.getContext()).addWrite(db_name, {
-					operation: 'delete',
-					table: table_name,
-					id: this[ID_PROPERTY],
-				});
+				let completion;
+				if (source?.delete && (!source.delete.reliesOnPrototype || source.prototype.delete))
+					completion = source.delete(this[ID_PROPERTY], this.getContext());
+				return getNATSTransaction(this.getContext()).addWrite(
+					db_name,
+					{
+						operation: 'delete',
+						table: table_name,
+						id: this[ID_PROPERTY],
+					},
+					completion
+				);
 			}
 			publish(message) {
-				this.getNATSTransaction(this.getContext()).addWrite(db_name, {
-					operation: 'publish',
+				let completion;
+				if (source?.publish && (!source.publish.reliesOnPrototype || source.prototype.publish))
+					completion = source.publish(this[ID_PROPERTY], message, this.getContext());
+				return getNATSTransaction(this.getContext()).addWrite(
+					db_name,
+					{
+						operation: 'publish',
+						table: table_name,
+						id: this[ID_PROPERTY],
+						record: message,
+					},
+					completion
+				);
+			}
+			invalidate(message) {
+				getNATSTransaction(this.getContext()).addWrite(db_name, {
+					operation: 'invalidate',
 					table: table_name,
 					id: this[ID_PROPERTY],
-					record: message,
 				});
+				if (source?.invalidate && (!source.invalidate.reliesOnPrototype || source.prototype.invalidate))
+					return source.invalidate(this[ID_PROPERTY], this.getContext());
 			}
 			static defineSchema(Table) {
 				publishSchema(Table);
 			}
 
 			/**
-			 * This gets the NATS transaction object for the current overall transaction. This will
-			 * accumulate any writes that occur during a transaction, and allow them to be aggregated
-			 * into a replication message that encompasses all the writes of a transaction.
-			 * @param context
+			 * merge access to another source
+			 * @param other_source
 			 */
-			getNATSTransaction(context: Context): NATSTransaction {
-				let nats_transaction: NATSTransaction = context?.transaction?.nats;
-				if (!nats_transaction) {
-					if (context?.transaction) {
-						context.transaction.push(
-							(nats_transaction = context.transaction.nats = new NATSTransaction(context.transaction, context))
-						);
-						nats_transaction.user = context.user;
-					} else nats_transaction = immediateNATSTransaction;
+			static mergeSource(other_source, options) {
+				// define the other source as our source, so we can pass through to it
+				source = other_source;
+				// we can just delegate directly to the other get
+				if (source && source.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
+					if (options.replicationSource) {
+						// if this source is a source for replication, we need to replicate data that
+						// is fulfilled from this source
+						this.get = async (id, context) => {
+							const result = await source.get(id, context);
+							if (result) {
+								getNATSTransaction(context).addWrite(db_name, {
+									operation: 'put',
+									table: table_name,
+									id,
+									record: result,
+								});
+							}
+							return result;
+						};
+					} else {
+						// if we are a cache of replicated data, we just pass through
+						this.get = (id, context) => source.get(id, context);
+					}
 				}
-				return nats_transaction;
+				return this;
 			}
 
 			/**
@@ -126,8 +168,27 @@ export function setNATSReplicator(table_name, db_name, Table) {
 					return subscription;
 				}
 			}
+			static isNATSReplicator = true;
 		}
 	);
+	/**
+	 * This gets the NATS transaction object for the current overall transaction. This will
+	 * accumulate any writes that occur during a transaction, and allow them to be aggregated
+	 * into a replication message that encompasses all the writes of a transaction.
+	 * @param context
+	 */
+	function getNATSTransaction(context: Context): NATSTransaction {
+		let nats_transaction: NATSTransaction = context?.transaction?.nats;
+		if (!nats_transaction) {
+			if (context?.transaction) {
+				context.transaction.push(
+					(nats_transaction = context.transaction.nats = new NATSTransaction(context.transaction, context))
+				);
+				nats_transaction.user = context.user;
+			} else nats_transaction = immediateNATSTransaction;
+		}
+		return nats_transaction;
+	}
 }
 
 /**
@@ -159,10 +220,11 @@ class NATSTransaction {
 	user: string;
 	writes_by_db = new Map(); // TODO: short circuit of setting up a map if all the db paths are the same (99.9% of the time that will be the case)
 	constructor(protected transaction, protected options?) {}
-	addWrite(database_path, write) {
+	addWrite(database_path, write, completion?) {
 		let writes_for_path = this.writes_by_db.get(database_path);
 		if (!writes_for_path) this.writes_by_db.set(database_path, (writes_for_path = []));
-		writes_for_path.push(write);
+		if (completion?.then) return completion.then(() => writes_for_path.push(write));
+		else writes_for_path.push(write);
 	}
 
 	/**

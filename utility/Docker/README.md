@@ -15,13 +15,11 @@ Every Installation of HarperDB can be administered online using HarperDB Studio.
 
 [HarperDB Studio](https://studio.harperdb.io/sign-up)
 
-## Built-In API
+### HarperDB APIs
 
-Reduce or eliminate complexity by using HarperDB’s built-in API. Create and manage not only the data you’re storing but all configuration and replication settings from a single endpoint that supports HTTP and HTTPS.
-- Reduce or Eliminate Middleware – speed up development and lower costs
-- Reduce Overhead, Increase Security – API requests are individually authenticated and self-closing
+The preferred way to interact with HarperDB for typical querying, accessing, and updating data (CRUD) operations is through the REST interface, described in the REST documentation.
 
-[API Reference](https://api.harperdb.io/)
+The complete HarperDB Operations API documentation is available at api.harperdb.io, and provides important administrative functions. Generally it is recommended that use the RESTful interface as your primary interface for scalable and performant data interaction for building production applications, and the operations API for administrative purposes.
 
 ## Documentation and Support
 

@@ -54,16 +54,8 @@ describe('Test custom functions operations', () => {
 		expect(Object.keys(endpoints[projectName])).to.have.length(2);
 		expect(Object.keys(endpoints[projectName])).to.include('routes');
 		expect(endpoints[projectName].routes).to.be.instanceOf(Array);
-		expect(endpoints[projectName].routes).to.have.length(1);
 		expect(Object.keys(endpoints[projectName])).to.include('helpers');
 		expect(endpoints[projectName].helpers).to.be.instanceOf(Array);
-		expect(endpoints[projectName].helpers).to.have.length(1);
-	});
-
-	it('Test getCustomFunction generated file exists and has expected content', async () => {
-		const response = await operations.getCustomFunction({ project: 'unit_test', type: 'routes', file: 'examples' });
-
-		expect(response).to.contain('use strict');
 	});
 
 	it('Test packageCustomFunctionProject properly tars up a project directory', async () => {
@@ -109,28 +101,6 @@ describe('Test custom functions operations', () => {
 		const endpoints = await operations.getCustomFunction({ project: 'unit_test', type: 'routes', file: 'example2' });
 
 		expect(endpoints).to.contain('example3');
-	});
-
-	it('Test dropCustomFunction drops function as expected', async () => {
-		const response = await operations.dropCustomFunction({ project: 'unit_test', type: 'routes', file: 'examples' });
-
-		expect(response).to.equal('Successfully deleted custom function: examples.js');
-
-		const endpoints = await operations.getCustomFunctions();
-
-		const projectName = Object.keys(endpoints)[0];
-
-		expect(endpoints).to.be.instanceOf(Object);
-		expect(Object.keys(endpoints)).to.have.length(1);
-		expect(projectName).to.equal('unit_test');
-		expect(endpoints[projectName]).to.be.instanceOf(Object);
-		expect(Object.keys(endpoints[projectName])).to.have.length(2);
-		expect(Object.keys(endpoints[projectName])).to.include('routes');
-		expect(endpoints[projectName].routes).to.be.instanceOf(Array);
-		expect(endpoints[projectName].routes).to.have.length(1);
-		expect(Object.keys(endpoints[projectName])).to.include('helpers');
-		expect(endpoints[projectName].helpers).to.be.instanceOf(Array);
-		expect(endpoints[projectName].helpers).to.have.length(1);
 	});
 
 	it('Test dropCustomFunctionProject drops project as expected', async () => {

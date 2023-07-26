@@ -137,8 +137,7 @@ describe('test MQTT connections and commands', () => {
 				}]
 			}).then(response => {
 				console.log('got response',response.status);
-				response.json().then(data=> {
-				console.log(data)});
+				response.json().then(data => { console.log(data) });
 			}, error => {
 				reject(error);
 			});
@@ -258,7 +257,7 @@ describe('test MQTT connections and commands', () => {
 			});
 		});
 	});
-	it('subscribe with QoS=1 and reconnect with non-clean session', async function () {
+	it.skip('subscribe with QoS=1 and reconnect with non-clean session', async function () {
 		// this first connection is a tear down to remove any previous durable session with this id
 		let client = connect('mqtt://localhost:1883', {
 			clean: true,

@@ -20,6 +20,11 @@ export const RECORD_PROPERTY = Symbol('stored-record');
  * data. This interface is used pervasively in HarperDB and is implemented by database tables and can be used to define
  * sources for caching, real-data sources for messaging protocols, and RESTful endpoints, as well as any other types of
  * data aggregation, processing, or monitoring.
+ *
+ * This base Resource class provides a set of static methods that are main entry points for querying and updating data
+ * in resources/tables. The static methods provide the default handling of arguments, context, and ensuring that
+ * internal actions are wrapped in a transaction. The base Resource class intended to be extended, and the instance
+ * methods can be overriden to provide specific implementations of actions like get, put, post, delete, and subscribe.
  */
 export class Resource implements ResourceInterface {
 	[CONTEXT]: Context;
@@ -43,6 +48,9 @@ export class Resource implements ResourceInterface {
 		}
 	}
 
+	/**
+	 * The get methods are for directly getting a resource, and called for HTTP GET requests.
+	 */
 	static get(identifier: Id, context?: Context): Promise<object>;
 	static get(request: Request, context?: Context): Promise<object>;
 	static get(query: Query, context?: Context): Promise<AsyncIterable<object>>;
@@ -99,6 +107,9 @@ export class Resource implements ResourceInterface {
 		{ hasContent: false, type: 'delete' }
 	);
 
+	/**
+	 * Generate a new primary key for a resource; by default we use UUIDs (for now).
+	 */
 	static getNewId() {
 		return randomUUID();
 	}
@@ -205,6 +216,13 @@ export class Resource implements ResourceInterface {
 	static parseQuery(search) {
 		return parseQuery(search);
 	}
+	/**
+	 * Gets an instance of a resource by id
+	 * @param id
+	 * @param request
+	 * @param options
+	 * @returns
+	 */
 	static getResource(id: Id, request: Request, options?: any): Resource | Promise<Resource> {
 		let resource;
 		let context = request[CONTEXT];
@@ -216,6 +234,9 @@ export class Resource implements ResourceInterface {
 		const constructor = (is_collection && this.Collection) || this;
 		if (!context) context = context === undefined ? request : {};
 		if (context.transaction) {
+			// if this is part of a transaction, we use a map of existing loaded instances
+			// so that if a resource is already requested by id in this transaction, we can
+			// reuse that instance and preserve and changes/updates in that instance.
 			let resource_cache;
 			if (context.resourceCache) {
 				resource_cache = context.resourceCache;
@@ -248,7 +269,7 @@ export class Resource implements ResourceInterface {
 					context.resourceCache.asMap = cache_map;
 				}
 			}
-		} else resource = new constructor(id, context);
+		} else resource = new constructor(id, context); // outside of a transaction, just create an instance
 		if (is_collection) resource[IS_COLLECTION] = true;
 		return resource;
 	}
@@ -293,9 +314,17 @@ export class Resource implements ResourceInterface {
 	allowDelete(user): boolean | object {
 		return user?.role.permission.super_user;
 	}
+	/**
+	 * Get the primary key value for this resource.
+	 * @returns primary key
+	 */
 	getId() {
 		return this[ID_PROPERTY];
 	}
+	/**
+	 * Get the context for this resource
+	 * @returns context object with information about the current transaction, user, and more
+	 */
 	getContext() {
 		return this[CONTEXT];
 	}
@@ -336,6 +365,12 @@ function pathToId(path, Resource) {
 	return ids;
 }
 
+/**
+ * This is responsible for arranging arguments in the main static methods and creating the appropriate context and default transaction wrapping
+ * @param action
+ * @param options
+ * @returns
+ */
 function transactional(action, options) {
 	applyContext.reliesOnPrototype = true;
 	const has_content = options.hasContent;
@@ -343,6 +378,7 @@ function transactional(action, options) {
 	function applyContext(id_or_query: string | Id, data_or_context?: any, context?: Context) {
 		let id, query;
 		let data;
+		// First we do our argument normalization. There are two main types of methods, with or without content
 		if (has_content) {
 			// for put, post, patch, publish, query
 			if (context) {
@@ -364,6 +400,8 @@ function transactional(action, options) {
 					data = data_or_context;
 				}
 			}
+			// otherwise handle methods for get, delete, etc.
+			// first, check to see if it is two argument
 		} else if (data_or_context) {
 			// (id, context), preferred form used for methods without a body
 			context = data_or_context;
@@ -463,6 +501,12 @@ function missingMethod(resource, method) {
 	}
 	throw error;
 }
+/**
+ * This is responsible for handling a select query parameter/call that selects specific
+ * properties from the returned record(s).
+ * @param object
+ * @returns
+ */
 function selectFromObject(object) {
 	// TODO: eventually we will do aggregate functions here
 	const record = object[RECORD_PROPERTY];

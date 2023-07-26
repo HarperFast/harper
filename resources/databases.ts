@@ -152,7 +152,8 @@ export function resetDatabases() {
 	getDatabases();
 	for (const [path, store] of database_envs) {
 		if (store.needsDeletion && !path.endsWith('system.mdb')) {
-			store.close();
+			console.log('closing database', path);
+			store.close().then(() => console.log('closed database', path));
 			database_envs.delete(path);
 		}
 	}
@@ -707,6 +708,6 @@ export function dropTableMeta({ table: table_name, database: database_name }) {
 	return Promise.all(removals);
 }
 
-export function onNewTable(listener) {
+export function onUpdatedTable(listener) {
 	table_listeners.push(listener);
 }

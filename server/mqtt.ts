@@ -180,7 +180,6 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					break;
 				case 'subscribe':
 					const granted = [];
-					info('Received subscription request', packet.subscriptions);
 					for (const subscription of packet.subscriptions) {
 						let granted_qos;
 						try {
@@ -192,17 +191,14 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 						granted.push(granted_qos);
 					}
 					await session.committed;
-					info('Sending suback', packet.subscriptions[0].topic);
 					sendPacket({
 						// Send a subscription acknowledgment
 						cmd: 'suback',
 						granted,
 						messageId: packet.messageId,
 					});
-					info('Sent suback');
 					break;
 				case 'unsubscribe':
-					info('Received unsubscribe request', packet.unsubscriptions);
 					for (const subscription of packet.unsubscriptions) {
 						session.removeSubscription(subscription);
 					}

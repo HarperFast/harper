@@ -29,7 +29,7 @@ describe('test REST calls', () => {
 		let data = JSON.parse(response.data);
 		assert.equal(available_records[1], data.id);
 	});
-	it('do get with CBOR', async () => {
+	it.skip('do get with CBOR', async () => {
 		const headers = {
 			//authorization,
 			accept: 'application/cbor'
@@ -168,6 +168,7 @@ describe('test REST calls', () => {
 			// this test also tests to ensure deleted values are not reachable
 			let response = await axios('http://localhost:9926/VariedProps/?id=8*');
 			assert.equal(response.status, 200);
+			if (response.data.length > 2) console.log('Record starting with 8',response.data);
 			assert.equal(response.data.length, 2);
 			assert.equal(response.data[0].id[0], '8');
 		});

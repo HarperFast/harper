@@ -1,3 +1,9 @@
+/**
+ * This module provides the main table implementation of the Resource API, providing full access to HarperDB
+ * tables through the interface defined by the Resource class. This module is responsible for handling these
+ * table-level interactions, loading records, updating records, querying, and more.
+ */
+
 import { CONFIG_PARAMS, OPERATIONS_ENUM } from '../utility/hdbTerms';
 import { Database, asBinary, SKIP } from 'lmdb';
 import { getIndexedValues } from '../utility/lmdb/commonUtility';
@@ -33,7 +39,6 @@ const INCREMENTAL_UPDATE = Symbol.for('incremental-update');
 const SOURCE_PROPERTY = Symbol('source-resource');
 const LAZY_PROPERTY_ACCESS = { lazy: true };
 const NOTIFICATION = { isNotification: true, allowInvalidated: true };
-
 export interface Table {
 	primaryStore: Database;
 	auditStore: Database;
@@ -97,10 +102,39 @@ export function makeTable(options) {
 		static createdTimeProperty = created_time_property;
 		static updatedTimeProperty = updated_time_property;
 		static schemaDefined = schema_defined;
-		static sourcedFrom(Resource) {
+		/**
+		 * This defines a source for a table. This effectively makes a table into a cache, where the canonical
+		 * source of data (or source of truth) is provided here in the Resource argument. Additional options
+		 * can be provided to indicate how the caching should be handled.
+		 * @param Resource 
+		 * @param options 
+		 * @returns 
+		 */
+		static sourcedFrom(Resource, options) {
 			// define a source for retrieving invalidated entries for caching purposes
-			this.Source = Resource;
+			if (options) {
+				this.sourceOptions = options;
+				if (options.expiration) this.setTTLExpiration(options.expiration);
+			}
+			if (this.Source) {
+				// if there is already an existing source, we check to see if the sources can cooperate,
+				// and be "merged". The NATS replicator supports merging.
+				if (this.Source.mergeSource) this.Source = this.Source.mergeSource(Resource, this.sourceOptions);
+				else if (Resource.mergeSource) {
+					this.Source = Resource.mergeSource(this.Source, this.sourceOptions);
+				} else
+					throw new Error(
+						'Can not assign multiple sources to a table with no source providing a (static) mergeSource method'
+					);
+			} else this.Source = Resource;
+			// External data source may provide a subscribe method, allowing for real-time proactive delivery
+			// of data from the source to this caching table. This is generally greatly superior to expiration-based
+			// caching since it much for accurately ensures freshness and maximizing caching time.
+			// Here we subscribe the external data source if it is available, getting notification events
+			// as they come in, and directly writing them to this table. We use the notification option to ensure
+			// that we don't re-broadcast these as "requested" changes back to the source.
 			(async () => {
+				// perform the write of an individual write event
 				const writeUpdate = async (event) => {
 					const value = event.value;
 					const Table = event.table ? databases[database_name][event.table] : TableResource;
@@ -116,6 +150,8 @@ export function makeTable(options) {
 							return resource._writeDelete(NOTIFICATION);
 						case 'publish':
 							return resource._writePublish(value, NOTIFICATION);
+						case 'invalidate':
+							return resource.invalidate(NOTIFICATION);
 						default:
 							console.error('Unknown operation', event);
 					}
@@ -137,6 +173,7 @@ export function makeTable(options) {
 							supportsTransactions: true,
 						}));
 					if (subscription) {
+						// we listen for events by iterating through the async iterator provided by the subscription
 						for await (const event of subscription) {
 							try {
 								const first_write = event.operation === 'transaction' ? event.writes[0] : event;
@@ -146,6 +183,7 @@ export function makeTable(options) {
 								}
 								const commit_resolution = transaction(event, () => {
 									if (event.operation === 'transaction') {
+										// if it is a transaction, we need to individuall iterate through each write event
 										const promises = [];
 										for (const write of event.writes) {
 											write[CONTEXT] = event;
@@ -190,6 +228,14 @@ export function makeTable(options) {
 			})();
 			return this;
 		}
+		/**
+		 * Gets a resource instance, as defined by the Resource class, adding the table-specific handling
+		 * of also loading the stored record into the resource instance.
+		 * @param id
+		 * @param request 
+		 * @param options An important option is allowInvalidated, which can be used to indicate that it is not necessary for a caching table to load data from the source if there is not a local copy of the data in the table (usually not necessary for a delete, for example).
+		 * @returns 
+		 */
 		static getResource(id: Id, request, options?: any): Promise<TableResource> | TableResource {
 			const resource: TableResource = super.getResource(id, request) as any;
 			if (id != null) {
@@ -227,7 +273,8 @@ export function makeTable(options) {
 			return resource;
 		}
 		/**
-		 * Set TTL expiration for records in this table
+		 * Set TTL expiration for records in this table. On retrieval, record timestamps are checked for expiration.
+		 * This also informs the scheduling for record eviction.
 		 * @param expiration_time Time in seconds
 		 */
 		static setTTLExpiration(expiration_time) {
@@ -243,7 +290,7 @@ export function makeTable(options) {
 						start: false,
 						versions: true,
 					})) {
-						if (version < Date.now() - expiration_ms) {
+						if (version < Date.now() - expiration_ms && version > 0) {
 							// evict!
 							TableResource.evict(key, record, version);
 						}
@@ -453,7 +500,7 @@ export function makeTable(options) {
 			return this;
 		}
 
-		invalidate() {
+		invalidate(options) {
 			const partial_record = { __invalidated__: true };
 			for (const name in indices) {
 				// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
@@ -469,15 +516,27 @@ export function makeTable(options) {
 				lastVersion: this[VERSION_PROPERTY],
 				commit: (retry) => {
 					if (retry) return;
+					const source = TableResource.Source;
+					let completion;
+					const id = this[ID_PROPERTY];
+					if (!options?.isNotification) {
+						if (source?.invalidate && (!source.invalidate.reliesOnPrototype || source.prototype.invalidate)) {
+							completion = source.invalidate(id, this);
+						}
+					}
 					primary_store.put(this[ID_PROPERTY], partial_record, txn_time);
 					// TODO: record_deletion?
 					return {
 						// return the audit record that should be recorded
 						operation: 'invalidate',
+						[COMPLETION]: completion,
 					};
 				},
 			});
 		}
+		/**
+		 * Evicting a record will remove it from a caching table. This is not considered a canonical data change, and it is assumed that retrieving this record from the source will still yield the same record, this is only removing the local copy of the record.
+		 */
 		static evict(id, existing_record, existing_version) {
 			let partial_record;
 			if (!existing_record) {
@@ -498,6 +557,9 @@ export function makeTable(options) {
 				return primary_store.put(id, partial_record, existing_version, existing_version);
 			} else return primary_store.remove(id, existing_version);
 		}
+		/**
+		 * This is intended to acquire a lock on a record from the whole cluster.
+		 */
 		lock() {
 			throw new Error('Not yet implemented');
 		}
@@ -518,12 +580,12 @@ export function makeTable(options) {
 		async put(record): Promise<void> {
 			this.update(record, true);
 		}
+		// perform the actual write operation; this may come from a user request to write (put, post, etc.), or
+		// a notification that a write has already occurred in the canonical data source, we need to update our
+		// local copy
 		_writeUpdate(record, options?: any) {
 			const transaction = this._txnForRequest();
 
-			// use optimistic locking to only commit if the existing record state still holds true.
-			// this is superior to using an async transaction since it doesn't require JS execution
-			//  during the write transaction.
 			if (this[ID_PROPERTY] === undefined) {
 				throw new Error('Can not save record without an id');
 			}
@@ -566,6 +628,7 @@ export function makeTable(options) {
 								else record[TableResource.createdTimeProperty] = txn_time;
 							}
 							record = deepFreeze(record); // this flatten and freeze the record
+							// send this to the source
 							const source = TableResource.Source;
 							if (source?.put && (!source.put.reliesOnPrototype || source.prototype.put)) {
 								completion = source.put(id, record, this);
@@ -575,6 +638,9 @@ export function makeTable(options) {
 						this[RECORD_PROPERTY] = record;
 					}
 					harper_logger.trace(`Checking timestamp for put`, id, this[VERSION_PROPERTY], txn_time);
+					// we use optimistic locking to only commit if the existing record state still holds true.
+					// this is superior to using an async transaction since it doesn't require JS execution
+					//  during the write transaction.
 					if (this[VERSION_PROPERTY] > txn_time) {
 						// This is not an error condition in our world of last-record-wins
 						// replication. If the existing record is newer than it just means the provided record
@@ -1011,7 +1077,6 @@ export function makeTable(options) {
 				new_attributes.push(attribute);
 			}
 			table({ table: table_name, database: database_name, schemaDefined: schema_defined, attributes: new_attributes });
-			this.Source?.defineSchema?.(this);
 			return TableResource.indexingOperation;
 		}
 		static async removeAttributes(names: string[]) {
@@ -1197,7 +1262,7 @@ export function makeTable(options) {
 		const updating_version = -(existing_version || 1);
 		primary_store.put(id, existing_record, updating_version, existing_version);
 		// we create a new context for the source, we want to determine the timestamp and don't want to
-		// attribute this to current user (but we do want the current transaction)
+		// attribute this to the current user (but we do want to use the current transaction)
 		const source_context = {
 			responseMetadata: {},
 			transaction: context?.transaction,
