@@ -205,7 +205,7 @@ function getPorts(options) {
 }
 function httpServer(listener, options) {
 	for (let { port, secure } of getPorts(options)) {
-		getHTTPServer(port, secure);
+		getHTTPServer(port, secure, options.isOperationsServer);
 		if (typeof listener === 'function') {
 			http_responders[options?.runFirst ? 'unshift' : 'push']({ listener, port: options?.port || port });
 		} else {
@@ -215,13 +215,14 @@ function httpServer(listener, options) {
 		ws_chain = makeCallbackChain(request_listeners, port);
 	}
 }
-function getHTTPServer(port, secure) {
+function getHTTPServer(port, secure, is_operations_server) {
 	if (!http_servers[port]) {
 		let options = {};
 		if (secure) {
-			const privateKey = env.get('customfunctions_tls_privatekey');
-			const certificate = env.get('customfunctions_tls_certificate');
-			const certificateAuthority = env.get('customfunctions_tls_certificateauthority');
+			const server_prefix = is_operations_server ? 'operationsapi' : 'customfunctions';
+			const privateKey = env.get(server_prefix + '_tls_privatekey');
+			const certificate = env.get(server_prefix + '_tls_certificate');
+			const certificateAuthority = env.get(server_prefix + '_tls_certificateauthority');
 
 			options = {
 				key: readFileSync(privateKey),
@@ -232,6 +233,7 @@ function getHTTPServer(port, secure) {
 		http_servers[port] = (secure ? createSecureServer : createServer)(options, async (node_request, node_response) => {
 			try {
 				let request = new Request(node_request);
+				if (is_operations_server) request.isOperationsServer = true;
 				// assign a more WHATWG compliant headers object, this is our real standard interface
 				let response = await http_chain[port](request);
 				if (response.status === -1) {
@@ -241,6 +243,7 @@ function getHTTPServer(port, secure) {
 					for (let name in response.headers) {
 						node_response.setHeader(name, response.headers[name]);
 					}
+					node_request.baseRequest = request;
 					return http_servers[port].emit('unhandled', node_request, node_response);
 				}
 				if (!response.handlesHeaders) node_response.writeHead(response.status || 200, response.headers);

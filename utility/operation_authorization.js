@@ -36,6 +36,7 @@ const terms = require('./hdbTerms');
 const permsTranslator = require('../security/permissionsTranslator');
 const system_information = require('../utility/environment/systemInformation');
 const token_authentication = require('../security/tokenAuthentication');
+const auth = require('../security/auth');
 const config_utils = require('../config/configUtils');
 const functions_operations = require('../components/operations');
 const alasql = require('alasql');
@@ -148,9 +149,11 @@ required_permissions.set(transaction_log.deleteTransactionLogsBefore.name, new p
 required_permissions.set(npm_utilities.installModules.name, new permission(true, []));
 required_permissions.set(npm_utilities.auditModules.name, new permission(true, []));
 
-//this operation must be available to all users so they can create authentication tokens
+//this operation must be available to all users so they can create authentication tokens and login
 required_permissions.set(token_authentication.createTokens.name, new permission(false, []));
 required_permissions.set(token_authentication.refreshOperationToken.name, new permission(false, []));
+required_permissions.set(auth.login.name, new permission(false, []));
+required_permissions.set(auth.logout.name, new permission(false, []));
 
 //Operations specific to HDB Functions
 required_permissions.set(functions_operations.customFunctionsStatus.name, new permission(true, []));

@@ -12,10 +12,10 @@ import { user } from '../server/itc/serverHandlers';
 const auth_event_log = loggerWithTag('auth-event');
 env.initSync();
 
-const props_cors_accesslist = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORSACCESSLIST);
-const props_cors = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORS);
-const props_cors_accesslist_operations_api = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSACCESSLIST);
-const props_cors_operations_api = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS);
+const apps_cors_accesslist = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORSACCESSLIST);
+const apps_cors = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORS);
+const operations_cors_accesslist = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSACCESSLIST);
+const operations_cors = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS);
 
 server.auth = findAndValidateUser;
 const session_table = table({
@@ -32,25 +32,28 @@ export async function authentication(request, next_handler) {
 	const cookie = headers.cookie;
 	const origin = headers.origin;
 	const response_headers = [];
-	if ((origin && props_cors && props_cors_accesslist.includes(origin)) || props_cors_accesslist.includes('*')) {
-		response_headers.push('Access-Control-Allow-Origin', origin);
-		if (env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS)) {
-			response_headers.push('Access-Control-Allow-Credentials', 'true');
-        }
-		if (request.method === 'OPTIONS') {
-			// preflight request
-			response_headers.push('Access-Control-Allow-Method', 'POST, GET, PUT, DELETE, PATCH, OPTIONS');
-			response_headers.push('Access-Control-Allow-Headers', 'Accept', 'Content-Type', 'Authorization');
+	if (origin) {
+		const access_list = request.isOperationsServer
+			? operations_cors
+				? operations_cors_accesslist
+				: []
+			: apps_cors
+			? apps_cors_accesslist
+			: [];
+		if (access_list.includes(origin) || access_list.includes('*')) {
+			response_headers.push('Access-Control-Allow-Origin', origin);
+			if (env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS))
+				response_headers.push('Access-Control-Allow-Credentials', 'true');
+			if (request.method === 'OPTIONS') {
+				// preflight request
+				response_headers.push('Access-Control-Allow-Method', 'POST, GET, PUT, DELETE, PATCH, OPTIONS');
+				response_headers.push('Access-Control-Allow-Headers', 'Accept', 'Content-Type', 'Authorization');
+			}
 		}
 	}
 	let session_id;
 	let session;
 	if (env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS)) {
-
-	    response_headers.push('Access-Control-Allow-Credentials', 'true');
-	    if ((origin && props_cors_operations_api && props_cors_accesslist_operations_api.includes(origin)) || props_cors_accesslist_operations_api.includes('*')) {
-		    response_headers.push('Access-Control-Allow-Origin', origin);
-        }
 		// we prefix the cookie name with the origin so that we can partition/separate session/authentications
 		// host, to protect against CSRF
 		const cookie_prefix = (origin ? origin.replace(/^https?:\/\//, '').replace(/\W/, '_') + '-' : '') + 'hdb-session=';
@@ -212,4 +215,16 @@ export function start({ server, port }) {
 			authorization_cache = new Map();
 		});
 	}
+}
+// operations
+export async function login(login_object) {
+	if (!login_object.baseRequest.login) throw new Error('No session for login');
+	await login_object.baseRequest.login(login_object.username, login_object.password);
+	return 'Login successful';
+}
+
+export function logout(logout_object) {
+	if (!logout_object.baseRequest.session) throw new Error('No session for logout');
+	logout_object.baseRequest.session.update({ user: null });
+	return 'Logout successful';
 }

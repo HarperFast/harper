@@ -341,6 +341,8 @@ const OPERATIONS_ENUM = {
 	DELETE_AUDIT_LOGS_BEFORE: 'delete_audit_logs_before',
 	READ_AUDIT_LOG: 'read_audit_log',
 	CREATE_AUTHENTICATION_TOKENS: 'create_authentication_tokens',
+	LOGIN: 'login',
+	LOGOUT: 'logout',
 	REFRESH_OPERATION_TOKEN: 'refresh_operation_token',
 	GET_CONFIGURATION: 'get_configuration',
 	CUSTOM_FUNCTIONS_STATUS: 'custom_functions_status',
