@@ -158,7 +158,8 @@ function chooseOperation(json) {
 		} else if (
 			!json.bypass_auth &&
 			json.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS &&
-			json.operation !== terms.OPERATIONS_ENUM.LOGIN
+			json.operation !== terms.OPERATIONS_ENUM.LOGIN &&
+			json.operation !== terms.OPERATIONS_ENUM.LOGOUT
 		) {
 			let function_to_check = job_operation_function === undefined ? operation_function : job_operation_function;
 			let operation_json = json.search_operation ? json.search_operation : json;

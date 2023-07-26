@@ -150,7 +150,7 @@ export async function authentication(request, next_handler) {
 		request.user = new_user = await getSuperUser();
 	}
 	if (env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS)) {
-		request.session.update = async function (updated_session) {
+		request.session.update = function (updated_session) {
 			if (!session_id) {
 				session_id = uuid();
 				const cookie_prefix =
@@ -163,7 +163,7 @@ export async function authentication(request, next_handler) {
 				);
 			}
 			updated_session.id = session_id;
-			session_table.put(updated_session);
+			return session_table.put(updated_session);
 		};
 		request.login = async function (user, password) {
 			request.user = await server.auth(user, password);
@@ -223,8 +223,8 @@ export async function login(login_object) {
 	return 'Login successful';
 }
 
-export function logout(logout_object) {
+export async function logout(logout_object) {
 	if (!logout_object.baseRequest.session) throw new Error('No session for logout');
-	logout_object.baseRequest.session.update({ user: null });
+	await logout_object.baseRequest.session.update({ user: null });
 	return 'Logout successful';
 }

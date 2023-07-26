@@ -59,7 +59,8 @@ function authHandler(req, resp, done) {
 	//create_authorization_tokens needs to not authorize
 	if (
 		req.body.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS &&
-		req.body.operation !== terms.OPERATIONS_ENUM.LOGIN
+		req.body.operation !== terms.OPERATIONS_ENUM.LOGIN &&
+		req.body.operation !== terms.OPERATIONS_ENUM.LOGOUT
 	) {
 		p_authorize(req, resp)
 			.then((user_data) => {
