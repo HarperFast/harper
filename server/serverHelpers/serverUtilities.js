@@ -401,7 +401,11 @@ function initializeOperationFunctionMap() {
 	);
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.ADD_CUSTOM_FUNCTION_PROJECT,
-		new OperationFunctionObject(custom_function_operations.addCustomFunctionProject)
+		new OperationFunctionObject(custom_function_operations.addComponent)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.ADD_COMPONENT,
+		new OperationFunctionObject(custom_function_operations.addComponent)
 	);
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION_PROJECT,

@@ -36,10 +36,10 @@ describe('Test custom functions operations', () => {
 		expect(directory).to.equal(CF_DIR_ROOT);
 	});
 
-	it('Test addCustomFunctionProject creates the project folder with the correct name', async () => {
-		const response = await operations.addCustomFunctionProject({ project: 'unit_test' });
+	it('Test addComponent creates the project folder with the correct name', async () => {
+		const response = await operations.addComponent({ project: 'unit_test' });
 
-		expect(response).to.equal('Successfully created custom function project: unit_test');
+		expect(response).to.equal('Successfully added project: unit_test');
 	});
 
 	it('Test getCustomFunctions returns object with proper length and content', async () => {

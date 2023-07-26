@@ -260,7 +260,7 @@ describe('Test customFunctionsServer module', () => {
 		before(async () => {
 			fs.removeSync(CF_DIR_ROOT);
 			fs.ensureDirSync(CF_DIR_ROOT);
-			await operations.addCustomFunctionProject({ project: 'test' });
+			await operations.addComponent({ project: 'test' });
 			fs.createSymlinkSync(path.join(CF_DIR_ROOT, 'test'), path.join(CF_DIR_ROOT, 'test-linked'));
 		});
 
