@@ -76,6 +76,7 @@ async function operationsServer(options) {
 
 		//make sure the process waits for the server to be fully instantiated before moving forward
 		await server.ready();
+		if (!options) options = {};
 		options.isOperationsServer = true;
 		// fastify can't clean up properly
 		server.server.cantCleanupProperly = true;
