@@ -205,7 +205,7 @@ function getPorts(options) {
 }
 function httpServer(listener, options) {
 	for (let { port, secure } of getPorts(options)) {
-		getHTTPServer(port, secure, options.isOperationsServer);
+		getHTTPServer(port, secure, options?.isOperationsServer);
 		if (typeof listener === 'function') {
 			http_responders[options?.runFirst ? 'unshift' : 'push']({ listener, port: options?.port || port });
 		} else {
