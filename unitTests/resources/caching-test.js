@@ -75,7 +75,7 @@ describe('Caching', () => {
 	it('Can load cached data', async function () {
 		source_requests = 0;
 		events = [];
-		CachingTable.setTTLExpiration(0.005);
+		CachingTable.setTTLExpiration(0.008);
 		let result = await CachingTable.get(23);
 		assert.equal(result.id, 23);
 		assert.equal(result.name, 'name ' + 23);

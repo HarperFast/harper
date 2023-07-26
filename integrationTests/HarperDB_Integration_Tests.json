@@ -60242,7 +60242,7 @@
 							],
 							"port": "{{cf_port}}",
 							"path": [
-								"test_project"
+								"Greeting"
 							]
 						}
 					},
