@@ -339,8 +339,14 @@ export function makeTable(options) {
 		static Source: typeof Resource;
 
 		static get(request, context) {
-			if (request && typeof request === 'object' && !Array.isArray(request) && request.id === undefined)
-				return this.describe();
+			if (request && (typeof request === 'object' && !Array.isArray(request) && request.url === '/' || request === '/')
+				return { // basically a describe call
+					recordCount: this.getRecordCount(),
+					records: './', // an href to the records themselves
+					name: table_name,
+					database: database_name,
+					attributes,
+				};
 			return super.get(request, context);
 		}
 		/**
