@@ -373,20 +373,31 @@ class Request {
 		this.method = node_request.method;
 		let url = node_request.url;
 		this[node_request_key] = node_request;
-		let question_index = url.indexOf('?');
+		this.url = url;
+		/*		let question_index = url.indexOf('?');
 		if (question_index > -1) {
 			this.pathname = url.slice(0, question_index);
 			this.search = url.slice(question_index);
 		} else {
 			this.pathname = url;
 			this.search = '';
-		}
+		}*/
 		this.headers = node_request.headers;
 		this.headers.get = get;
 		this.responseMetadata = {};
 	}
-	get url() {
-		return this.protocol + '://' + this.host + this.pathname + this.search;
+	get absoluteURL() {
+		return this.protocol + '://' + this.host + this.url;
+	}
+	get pathname() {
+		let query_start = this.url.indexOf('?');
+		if (query_start > -1) return this.url.slice(0, query_start);
+		return this.url;
+	}
+	set pathname(pathname) {
+		let query_start = this.url.indexOf('?');
+		if (query_start > -1) this.url = pathname + this.url.slice(query_start);
+		else this.url = pathname;
 	}
 	get protocol() {
 		return this[node_request_key].socket.encrypted ? 'https' : 'http';

@@ -106,9 +106,9 @@ export function makeTable(options) {
 		 * This defines a source for a table. This effectively makes a table into a cache, where the canonical
 		 * source of data (or source of truth) is provided here in the Resource argument. Additional options
 		 * can be provided to indicate how the caching should be handled.
-		 * @param Resource 
-		 * @param options 
-		 * @returns 
+		 * @param Resource
+		 * @param options
+		 * @returns
 		 */
 		static sourcedFrom(Resource, options) {
 			// define a source for retrieving invalidated entries for caching purposes
@@ -232,9 +232,9 @@ export function makeTable(options) {
 		 * Gets a resource instance, as defined by the Resource class, adding the table-specific handling
 		 * of also loading the stored record into the resource instance.
 		 * @param id
-		 * @param request 
+		 * @param request
 		 * @param options An important option is allowInvalidated, which can be used to indicate that it is not necessary for a caching table to load data from the source if there is not a local copy of the data in the table (usually not necessary for a delete, for example).
-		 * @returns 
+		 * @returns
 		 */
 		static getResource(id: Id, request, options?: any): Promise<TableResource> | TableResource {
 			const resource: TableResource = super.getResource(id, request) as any;
@@ -339,8 +339,14 @@ export function makeTable(options) {
 		static Source: typeof Resource;
 
 		static get(request, context) {
-			if (request && typeof request === 'object' && !Array.isArray(request) && request.id === undefined)
-				return this.describe();
+			if (request && (typeof request === 'object' && !Array.isArray(request) && request.url === '/' || request === '/')
+				return { // basically a describe call
+					recordCount: this.getRecordCount(),
+					records: './', // an href to the records themselves
+					name: table_name,
+					database: database_name,
+					attributes,
+				};
 			return super.get(request, context);
 		}
 		/**
@@ -724,8 +730,8 @@ export function makeTable(options) {
 			let conditions = request.conditions;
 			if (!conditions) conditions = Array.isArray(request) ? request : [];
 			else if (conditions.length === undefined) conditions = Array.from(conditions);
-			if (request.id && request.hasOwnProperty('id')) {
-				conditions = [{ attribute: null, comparator: 'prefix', value: request.id }].concat(conditions);
+			if (this[ID_PROPERTY]) {
+				conditions = [{ attribute: null, comparator: 'prefix', value: this[ID_PROPERTY] }].concat(conditions);
 			}
 			for (const condition of conditions) {
 				const attribute_name = condition[0] ?? condition.attribute;
