@@ -118,13 +118,13 @@ export class Resource implements ResourceInterface {
 	static create(id_prefix: any, record: any, context?: Context): Promise<Id> {
 		let id;
 		if (id_prefix == null) id = this.getNewId(); //uuid.v4();
-		else if (Array.isArray(id_prefix)) id = [...id_prefix, this.getNewId()];
+		else if (Array.isArray(id_prefix) && typeof id_prefix[0] !== 'object') id = [...id_prefix, this.getNewId()];
 		else if (typeof id_prefix !== 'object') id = [id_prefix, this.getNewId()];
 		else {
 			// two argument form, shift the arguments
 			id = this.getNewId();
-			record = id_prefix;
 			context = record;
+			record = id_prefix;
 		}
 		return transaction(context, () => {
 			const resource = new this(id, context);

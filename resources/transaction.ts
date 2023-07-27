@@ -4,14 +4,17 @@ import { _assignPackageExport } from '../index';
 import { CONTEXT } from './Resource';
 
 export function transaction<T>(context: Request, callback: (transaction: TransactionSet) => T): T;
-export function transaction<T>(callback: ((transaction: TransactionSet) => T)): T;
+export function transaction<T>(callback: (transaction: TransactionSet) => T): T;
 /**
  * Start and run a new transaction. This can be called with a request to hold the transaction, or a new request object will be created
  * @param context
  * @param callback
  * @returns
  */
-export function transaction<T>(context: Request | ((transaction: TransactionSet) => T), callback?: (transaction: TransactionSet) => T): T {
+export function transaction<T>(
+	context: Request | ((transaction: TransactionSet) => T),
+	callback?: (transaction: TransactionSet) => T
+): T {
 	if (!callback) {
 		// optional first argument, handle case of no request
 		callback = context;
