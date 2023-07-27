@@ -32,6 +32,7 @@ const username = process.env.HDB_LEADER_USERNAME;
 const password = process.env.HDB_LEADER_PASSWORD;
 const leader_url = process.env.HDB_LEADER_URL;
 const clustering_host = process.env.HDB_LEADER_CLUSTERING_HOST;
+const leader_clustering_port = process.env.HDB_LEADER_CLUSTERING_PORT;
 
 let leader_clustering_enabled;
 let clone_node_config;
@@ -41,6 +42,10 @@ let clone_node_name;
 let root_path;
 
 async function cloneNode() {
+	if (await isHdbInstalled()) {
+		throw new Error('Existing install of HarperDB found on clone node.');
+	}
+
 	console.info('Cloning node: ' + leader_url);
 
 	if (!clone_node_config?.rootPath) {
@@ -87,19 +92,20 @@ async function cloneConfig() {
 	let config_update = { [CONFIG_PARAMS.ROOTPATH]: root_path };
 
 	// If clustering is enabled on leader node, clone clustering config
-	if (leader_clustering_enabled) {
+	if (leader_clustering_enabled && clone_node_config?.clustering?.enabled !== false) {
 		if (clustering_host == null) throw new Error(`'HDB_LEADER_CLUSTERING_HOST' must be defined`);
 		config_update[CONFIG_PARAMS.CLUSTERING_ENABLED] = true;
 
 		const leader_routes = leader_config?.clustering?.hubServer?.cluster?.network?.routes;
-		const leader_clustering_port = leader_config?.clustering?.hubServer?.cluster?.network?.port;
+		const lead_clustering_port =
+			parseInt(leader_clustering_port) || leader_config?.clustering?.hubServer?.cluster?.network?.port;
 		config_update[CONFIG_PARAMS.CLUSTERING_USER] = leader_config?.clustering?.user;
 
 		// Add the leader host/port to clone node routes config
 		let routes = env_mgr.get(CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_ROUTES);
 		Array.isArray(routes)
-			? routes.push({ host: clustering_host, port: leader_clustering_port })
-			: (routes = [{ host: clustering_host, port: leader_clustering_port }]);
+			? routes.push({ host: clustering_host, port: lead_clustering_port })
+			: (routes = [{ host: clustering_host, port: lead_clustering_port }]);
 
 		// If the leader node has routes set in its config, concat them with any routes on clone node.
 		if (Array.isArray(leader_routes)) routes.concat(leader_routes);
@@ -144,10 +150,6 @@ async function cloneConfig() {
 }
 
 async function installHDB() {
-	if (await isHdbInstalled()) {
-		throw new Error('Existing install of HarperDB found on clone node.');
-	}
-
 	console.info('Clone node installing HarperDB.');
 	process.env.TC_AGREEMENT = 'yes';
 	process.env.ROOTPATH = root_path;
