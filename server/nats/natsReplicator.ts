@@ -1,5 +1,5 @@
-import { databases, getDatabases, onUpdatedTable } from '../../resources/databases';
-import { ID_PROPERTY, Resource, TRANSACTIONS_PROPERTY, USER_PROPERTY } from '../../resources/Resource';
+import { getDatabases, onUpdatedTable } from '../../resources/databases';
+import { ID_PROPERTY, Resource } from '../../resources/Resource';
 import { publishToStream } from './utility/natsUtils';
 import { SUBJECT_PREFIXES } from './utility/natsTerms';
 import { createNatsTableStreamName } from '../../security/cryptoHash';
@@ -12,7 +12,6 @@ import hdb_terms from '../../utility/hdbTerms';
 import * as harper_logger from '../../utility/logging/harper_logger';
 import { Context } from '../../resources/ResourceInterface';
 
-let publishing_databases = new Map();
 let nats_disabled;
 export function start() {
 	if (env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) assignReplicationSource();
@@ -39,7 +38,6 @@ function assignReplicationSource() {
 			setNATSReplicator(table_name, database_name, Table);
 		}
 	}
-	publishing_databases = new Map();
 	onUpdatedTable((Table, is_changed) => {
 		setNATSReplicator(Table.tableName, Table.databaseName, Table);
 		if (is_changed) publishSchema(Table);
@@ -131,7 +129,7 @@ export function setNATSReplicator(table_name, db_name, Table) {
 				// define the other source as our source, so we can pass through to it
 				source = other_source;
 				// we can just delegate directly to the other get
-				if (source && source.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
+				if (source?.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
 					if (options.replicationSource) {
 						// if this source is a source for replication, we need to replicate data that
 						// is fulfilled from this source

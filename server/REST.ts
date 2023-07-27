@@ -4,7 +4,6 @@ import { ServerOptions } from 'http';
 import { ServerError, ClientError } from '../utility/errors/hdbError';
 import { Resources } from '../resources/Resources';
 import { parseQuery } from '../resources/search';
-import { LAST_MODIFICATION_PROPERTY } from '../resources/Resource';
 import { IterableEventQueue } from '../resources/IterableEventQueue';
 import { transaction } from '../resources/transaction';
 
@@ -85,9 +84,6 @@ async function http(request, next_handler) {
 		const execution_time = performance.now() - start;
 		let status = 200;
 		let lastModification;
-		/*if (typeof response_data?.get === 'function') {
-			response_data = await response_data.get();
-		}*/
 		const responseMetadata = request.responseMetadata;
 		if (response_data == undefined) {
 			status = method === 'GET' || method === 'HEAD' ? 404 : 204;
@@ -95,6 +91,7 @@ async function http(request, next_handler) {
 			const last_etag = request.headers['if-none-match'];
 			if (last_etag && (lastModification * 1000).toString(36) == last_etag) {
 				//resource_result.cancel();
+				if (response_data?.onDone) response_data.onDone();
 				status = 304;
 				response_data = undefined;
 			} else {
@@ -140,51 +137,6 @@ async function http(request, next_handler) {
 			headers,
 			body: serializeMessage(error.toString(), request),
 		};
-	}
-}
-
-let message_count = 0;
-
-async function wsMessage(Resource, resource_path, path, data, request, ws) {
-	const method = data.method?.toUpperCase() || 'GET-SUB';
-	const request_data = data.body;
-	const request_id = data.id;
-	try {
-		const response = await execute(Resource, method, path, request_data, request, ws);
-		const subscription = response.data;
-		subscription.listener = () => {
-			if (!message_count) {
-				setTimeout(() => {
-					console.log(
-						'message count (in last 10 seconds)',
-						message_count,
-						'connection_count',
-						connection_count,
-						'mem',
-						Math.round(process.memoryUsage().heapUsed / 1000000)
-					);
-					message_count = 0;
-				}, 10000);
-			}
-			message_count++;
-			ws.send(
-				serializeMessage(
-					{
-						path,
-						updated: true,
-					},
-					request
-				)
-			);
-		};
-		ws.on('close', () => subscription.end());
-		//response_data.id = request_id;
-		response.id = request_id;
-		ws.send(serializeMessage(response, request));
-	} catch (error) {
-		// do content negotiation
-		console.error(error);
-		ws.send(serializeMessage({ status: 500, id: request_id, data: error.toString() }, request));
 	}
 }
 

@@ -50,45 +50,11 @@ async function syncSchemaMetadata(msg) {
 		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME);
 		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME);
 		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME);
+		// TODO: Eventually should indicate which database/table changed so we don't have to scan everything
 		let databases = resetDatabases();
 		if (msg.table && msg.database)
 			// wait for a write to finish to ensure all writes have been written
 			await databases[msg.database][msg.table].put(Symbol.for('write-verify'), null);
-
-		/*
-		if (global.hdb_schema !== undefined && typeof global.hdb_schema === 'object' && msg.operation !== undefined) {
-			switch (msg.operation) {
-				case 'drop_schema':
-					delete global.hdb_schema[msg.schema];
-					break;
-				case 'drop_table':
-					if (global.hdb_schema[msg.schema] !== undefined) {
-						delete global.hdb_schema[msg.schema][msg.table];
-					}
-					break;
-				case 'create_schema':
-					if (global.hdb_schema[msg.schema] === undefined) {
-						global.hdb_schema[msg.schema] = {};
-					}
-					break;
-				case 'create_table':
-				case 'create_attribute':
-					if (global.hdb_schema[msg.schema] === undefined) {
-						global.hdb_schema[msg.schema] = {};
-					}
-
-					global.hdb_schema[msg.schema][msg.table] = await schema_describe.describeTable({
-						schema: msg.schema,
-						table: msg.table,
-					});
-					break;
-				default:
-					global_schema.setSchemaDataToGlobal(handleErrorCallback);
-					break;
-			}
-		} else {
-			global_schema.setSchemaDataToGlobal(handleErrorCallback);
-		}*/
 	} catch (e) {
 		hdb_logger.error(e);
 	}

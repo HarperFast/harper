@@ -1,7 +1,6 @@
 import { table } from '../resources/databases';
 import { keyArrayToString, resources } from '../resources/Resources';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
-import { IS_COLLECTION } from '../resources/Resource';
 import { warn } from '../utility/logging/harper_logger';
 import { transaction } from '../resources/transaction';
 const DurableSession = table({
@@ -170,20 +169,12 @@ class SubscriptionsSession {
 		// nothing to do in a clean session
 	}
 	async removeSubscription(topic) {
-		const search_index = topic.indexOf('?');
-		let path;
-		if (search_index > -1) {
-			path = topic.slice(0, search_index);
-		} else path = topic;
-		if (path.endsWith('+') || path.endsWith('#'))
-			// normalize wildcard
-			path = topic.slice(0, path.length - 1);
 		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
 		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
 		if (existing_subscription) existing_subscription.end();
 	}
 	async publish(message, data) {
-		const { topic, retain, payload } = message;
+		const { topic, retain } = message;
 		message.data = data;
 		message.user = this.user;
 		const entry = resources.getMatch(topic);
@@ -266,7 +257,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 
 	async addSubscription(subscription, needs_ack) {
 		await this.resumeSubscription(subscription, needs_ack);
-		const { topic, qos, startTime: start_time } = subscription;
+		const { qos, startTime: start_time } = subscription;
 		if (qos > 0 && !start_time) {
 			this.sessionRecord.subscriptions = this.subscriptions.map((subscription) => {
 				let start_time = subscription.startTime;

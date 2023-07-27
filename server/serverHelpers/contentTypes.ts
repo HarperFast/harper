@@ -2,7 +2,7 @@ import { streamAsJSON } from './JSONStream';
 import { toCsvStream } from '../../dataLayer/export';
 import { pack, unpack, encodeIter } from 'msgpackr';
 import { decode, encode, EncoderStream } from 'cbor-x';
-import { createBrotliCompress, brotliCompress, constants } from 'zlib';
+import { createBrotliCompress, brotliCompress } from 'zlib';
 import { Readable } from 'stream';
 import { server, ContentTypeHandler } from '../Server';
 import { _assignPackageExport } from '../../index';

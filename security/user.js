@@ -560,7 +560,7 @@ async function getSuperUser() {
 	if (!global.hdb_users) {
 		await setUsersToGlobal();
 	}
-	for (let [username, user] of global.hdb_users) {
+	for (let [, user] of global.hdb_users) {
 		if (user.role.role === 'super_user') return user;
 	}
 }

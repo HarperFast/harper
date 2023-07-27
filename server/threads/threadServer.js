@@ -376,14 +376,6 @@ class Request {
 		let url = node_request.url;
 		this[node_request_key] = node_request;
 		this.url = url;
-		/*		let question_index = url.indexOf('?');
-		if (question_index > -1) {
-			this.pathname = url.slice(0, question_index);
-			this.search = url.slice(question_index);
-		} else {
-			this.pathname = url;
-			this.search = '';
-		}*/
 		this.headers = node_request.headers;
 		this.headers.get = get;
 		this.responseMetadata = {};

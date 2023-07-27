@@ -156,7 +156,7 @@ async function getDiskInfo() {
 		let { rx_sec, tx_sec, wx_sec, ...fs_stats } = await si.fsStats();
 		disk.read_write = fs_stats;
 
-		//disk.size = await si.fsSize();
+		disk.size = await si.fsSize();
 
 		return disk;
 	} catch (e) {

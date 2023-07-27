@@ -2,7 +2,7 @@
 // we can implement more efficient progressive buffer allocation.
 import { parser as makeParser, generate } from 'mqtt-packet';
 import { getSession, DurableSubscriptionsSession } from './DurableSubscriptionsSession';
-import { findAndValidateUser, getSuperUser } from '../security/user';
+import { getSuperUser } from '../security/user';
 import { serializeMessage, getDeserializer } from './serverHelpers/contentTypes';
 import { recordAction, addAnalyticsListener } from '../resources/analytics';
 import { server } from '../server/Server';

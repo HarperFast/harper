@@ -35,7 +35,7 @@ function authorize(req, res, next) {
 	if (req.raw?.user !== undefined) return next(null, req.raw.user);
 	let strategy;
 	let token;
-	if (req.headers && req.headers.authorization) {
+	if (req.headers?.authorization) {
 		let split_auth_header = req.headers.authorization.split(' ');
 		strategy = split_auth_header[0];
 		token = split_auth_header[1];
@@ -58,7 +58,7 @@ function authorize(req, res, next) {
 			})(req, res, next);
 			break;
 		case 'Bearer':
-			if (req.body && req.body.operation && req.body.operation === hdb_terms.OPERATIONS_ENUM.REFRESH_OPERATION_TOKEN) {
+			if (req.body?.operation && req.body.operation === hdb_terms.OPERATIONS_ENUM.REFRESH_OPERATION_TOKEN) {
 				token_authentication
 					.validateRefreshToken(token)
 					.then((user) => {
@@ -102,7 +102,7 @@ function checkPermissions(check_permission_obj, callback) {
 
 	let role = check_permission_obj.user.role;
 
-	if (!role || !role.permission) {
+	if (!role?.permission) {
 		return callback('Invalid role');
 	}
 	let permission = JSON.parse(role.permission);

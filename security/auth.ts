@@ -114,7 +114,7 @@ export async function authentication(request, next_handler) {
 							if (error.message === 'invalid token') {
 								// see if they provided a refresh token; we can allow that and pass it on to operations API
 								try {
-									new_user = await validateRefreshToken(credentials);
+									await validateRefreshToken(credentials);
 									return {
 										// we explicitly declare we don't want to handle this because the operations
 										// API has its own logic for handling this
