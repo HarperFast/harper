@@ -3,6 +3,7 @@ import { keyArrayToString, resources } from '../resources/Resources';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { IS_COLLECTION } from '../resources/Resource';
 import { warn } from '../utility/logging/harper_logger';
+import { transaction } from '../resources/transaction';
 const DurableSession = table({
 	database: 'system',
 	table: 'hdb_durable_session',
@@ -116,8 +117,14 @@ class SubscriptionsSession {
 			noRetain: rh,
 			isCollection: is_collection,
 			shallowWildcard: is_shallow_wildcard,
+			url: '',
 		};
-		const subscription = await resources.call(path, request, async (resource, resource_path) => {
+		const entry = resources.getMatch(path);
+		if (!entry) throw new Error(`The topic ${topic} does not exist, no resource has been defined to handle this topic`);
+		request.url = '/' + entry.relativeURL;
+		const resource_path = entry.path;
+		const resource = entry.Resource;
+		const subscription = await transaction(request, async () => {
 			const subscription = await resource.subscribe(request);
 			if (!subscription) throw new Error(`No subscription was returned from subscribe for topic ${topic}`);
 			if (!subscription[Symbol.asyncIterator])
@@ -148,11 +155,10 @@ class SubscriptionsSession {
 			})();
 			return subscription;
 		});
-		if (!subscription)
-			throw new Error(`The topic ${topic} does not exist, no resource has been defined to handle this topic`);
 		subscription.topic = topic;
 		subscription.qos = subscription_request.qos;
 		this.subscriptions.push(subscription);
+		return subscription;
 	}
 	resume() {
 		// nothing to do in a clean session
@@ -180,17 +186,21 @@ class SubscriptionsSession {
 		const { topic, retain, payload } = message;
 		message.data = data;
 		message.user = this.user;
-		let resource_found;
-		const publish_result = await resources.call(topic, message, async (resource) => {
-			resource_found = true;
+		const entry = resources.getMatch(topic);
+		if (!entry)
+			throw new Error(
+				`Can not publish to topic ${topic} as it does not exist, no resource has been defined to handle this topic`
+			);
+		const url = (message.url = '/' + entry.relativeURL);
+		const resource = entry.Resource;
+
+		return transaction(message, () => {
 			return retain
 				? data === undefined
-					? resource.delete(message)
-					: resource.put(message.data, message)
-				: resource.publish(message.data, message);
+					? resource.delete(url, message)
+					: resource.put(url, message.data, message)
+				: resource.publish(url, message.data, message);
 		});
-		if (!resource_found) throw new Error('There is no resource or table for the ${topic} topic');
-		return publish_result;
 	}
 	setListener(listener: (message) => any) {
 		this.listener = listener;

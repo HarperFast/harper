@@ -34,6 +34,7 @@ const global_schema = require('../../utility/globalSchema');
 const system_information = require('../../utility/environment/systemInformation');
 const job_runner = require('../jobs/jobRunner');
 const token_authentication = require('../../security/tokenAuthentication');
+const auth = require('../../security/auth');
 const config_utils = require('../../config/configUtils');
 const transaction_log = require('../../utility/logging/transactionLog');
 const npm_utilities = require('../../utility/npmUtilities');
@@ -154,7 +155,12 @@ function chooseOperation(json) {
 				}
 			}
 			//we need to bypass permission checks to allow the create_authorization_tokens
-		} else if (!json.bypass_auth && json.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS) {
+		} else if (
+			!json.bypass_auth &&
+			json.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS &&
+			json.operation !== terms.OPERATIONS_ENUM.LOGIN &&
+			json.operation !== terms.OPERATIONS_ENUM.LOGOUT
+		) {
 			let function_to_check = job_operation_function === undefined ? operation_function : job_operation_function;
 			let operation_json = json.search_operation ? json.search_operation : json;
 			if (!operation_json.hdb_user) {
@@ -357,6 +363,9 @@ function initializeOperationFunctionMap() {
 		terms.OPERATIONS_ENUM.REFRESH_OPERATION_TOKEN,
 		new OperationFunctionObject(token_authentication.refreshOperationToken)
 	);
+	op_func_map.set(terms.OPERATIONS_ENUM.LOGIN, new OperationFunctionObject(auth.login));
+	op_func_map.set(terms.OPERATIONS_ENUM.LOGOUT, new OperationFunctionObject(auth.logout));
+
 	op_func_map.set(terms.OPERATIONS_ENUM.GET_CONFIGURATION, new OperationFunctionObject(config_utils.getConfiguration));
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.CUSTOM_FUNCTIONS_STATUS,
@@ -392,7 +401,11 @@ function initializeOperationFunctionMap() {
 	);
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.ADD_CUSTOM_FUNCTION_PROJECT,
-		new OperationFunctionObject(custom_function_operations.addCustomFunctionProject)
+		new OperationFunctionObject(custom_function_operations.addComponent)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.ADD_COMPONENT,
+		new OperationFunctionObject(custom_function_operations.addComponent)
 	);
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION_PROJECT,

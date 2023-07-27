@@ -22,11 +22,12 @@ jobs:
         for public_dns_name in ${public_dns_names[@]}
         do 
           echo "Starting work on: $public_dns_name"
-          mkdir logs-artifact/$public_dns_name
-          scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/integrationTests/newman/report.html" "logs-artifact/$public_dns_name/newman_report.html" || (true && echo "Newman report not found")
-          scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/integrationTests/newman/extra_report.html" "logs-artifact/$public_dns_name/newman_extra_report.html" || (true && echo "Newman report not found")
-          scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/hdb/log/" "logs-artifact/$public_dns_name/"
-          scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/hdb/harperdb-config.yaml" "logs-artifact/$public_dns_name/harperdb-config.yaml"
+          log_folder_name=$(ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name "sudo curl http://169.254.169.254/latest/meta-data/local-ipv4")
+          mkdir logs-artifact/$log_folder_name
+          scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/integrationTests/newman/report.html" "logs-artifact/$log_folder_name/newman_report.html" || (true && echo "Newman report not found")
+          scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/integrationTests/newman/extra_report.html" "logs-artifact/$log_folder_name/newman_extra_report.html" || (true && echo "Newman report not found")
+          scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/hdb/log/" "logs-artifact/$log_folder_name/"
+          scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/hdb/harperdb-config.yaml" "logs-artifact/$log_folder_name/harperdb-config.yaml"
 
           echo "Ending work on: $public_dns_name"
         done

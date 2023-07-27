@@ -1,4 +1,4 @@
-/custom_function_template/*
+/application-template/*
 /validation/configValidator.js
 /server/nats/utility/natsUtils.js
 /utility/clustering/transactToClusteringUtilities.js

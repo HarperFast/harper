@@ -166,12 +166,11 @@ export function filterByType(search_condition) {
  * structure
  * @param query_string
  */
-export function parseQuery(request: Request) {
-	const query_string: string = request.search;
+export function parseQuery(query_string) {
 	if (!query_string) return;
+	const query = [];
 	let match;
 	let attribute, comparator;
-	const conditions = [];
 	let last_index;
 	// TODO: Use URLSearchParams with a fallback for when it can parse everything (USP is very fast)
 	while ((match = QUERY_PARSER.exec(query_string))) {
@@ -205,7 +204,7 @@ export function parseQuery(request: Request) {
 				break;
 			case '*':
 			case '*&':
-				conditions.push({
+				query.push({
 					comparator: comparator === 'ends_with' ? 'contains' : 'starts_with',
 					attribute,
 					value: decodeURIComponent(value),
@@ -218,24 +217,24 @@ export function parseQuery(request: Request) {
 			case '|':
 				switch (attribute) {
 					case 'offset':
-						request.offset = +value;
+						query.offset = +value;
 						break;
 					case 'limit':
-						request.limit = +value;
+						query.limit = +value;
 						break;
 					case 'select':
 						if (value[0] === '[') {
 							if (value[value.length - 1] !== ']') throw new Error('Unmatched brackets');
-							request.select = value.slice(1, -1).split(',');
-							request.select.asArray = true;
+							query.select = value.slice(1, -1).split(',');
+							query.select.asArray = true;
 						} else if (value.indexOf(',') > -1) {
-							request.select = (value.endsWith(',') ? value.slice(0, -1) : value).split(',');
-						} else request.select = value;
+							query.select = (value.endsWith(',') ? value.slice(0, -1) : value).split(',');
+						} else query.select = value;
 						break;
 					case 'group-by':
 						throw new Error('Group by is not implemented yet');
 					case 'sort':
-						request.sort = value.split(',').map((direction) => {
+						query.sort = value.split(',').map((direction) => {
 							switch (direction[0]) {
 								case '-':
 									return { attribute: direction.slice(1), descending: true };
@@ -249,7 +248,7 @@ export function parseQuery(request: Request) {
 					case undefined:
 						throw new Error(`Unable to parse query, no part before ${operator} at ${last_index} in ${query_string}`);
 					default:
-						conditions.push({
+						query.push({
 							comparator: comparator,
 							attribute,
 							value: decodeURIComponent(value),
@@ -262,5 +261,5 @@ export function parseQuery(request: Request) {
 		}
 	}
 	if (last_index !== query_string.length) throw new Error(`Unable to parse query, unexpected end in ${query_string}`);
-	request.conditions = conditions;
+	return query;
 }

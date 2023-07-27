@@ -205,7 +205,7 @@ function getPorts(options) {
 }
 function httpServer(listener, options) {
 	for (let { port, secure } of getPorts(options)) {
-		getHTTPServer(port, secure);
+		getHTTPServer(port, secure, options?.isOperationsServer);
 		if (typeof listener === 'function') {
 			http_responders[options?.runFirst ? 'unshift' : 'push']({ listener, port: options?.port || port });
 		} else {
@@ -215,13 +215,14 @@ function httpServer(listener, options) {
 		ws_chain = makeCallbackChain(request_listeners, port);
 	}
 }
-function getHTTPServer(port, secure) {
+function getHTTPServer(port, secure, is_operations_server) {
 	if (!http_servers[port]) {
 		let options = {};
 		if (secure) {
-			const privateKey = env.get('customfunctions_tls_privatekey');
-			const certificate = env.get('customfunctions_tls_certificate');
-			const certificateAuthority = env.get('customfunctions_tls_certificateauthority');
+			const server_prefix = is_operations_server ? 'operationsapi' : 'customfunctions';
+			const privateKey = env.get(server_prefix + '_tls_privatekey');
+			const certificate = env.get(server_prefix + '_tls_certificate');
+			const certificateAuthority = env.get(server_prefix + '_tls_certificateauthority');
 
 			options = {
 				key: readFileSync(privateKey),
@@ -232,6 +233,7 @@ function getHTTPServer(port, secure) {
 		http_servers[port] = (secure ? createSecureServer : createServer)(options, async (node_request, node_response) => {
 			try {
 				let request = new Request(node_request);
+				if (is_operations_server) request.isOperationsServer = true;
 				// assign a more WHATWG compliant headers object, this is our real standard interface
 				let response = await http_chain[port](request);
 				if (response.status === -1) {
@@ -241,6 +243,8 @@ function getHTTPServer(port, secure) {
 					for (let name in response.headers) {
 						node_response.setHeader(name, response.headers[name]);
 					}
+					node_request.baseRequest = request;
+					node_response.baseResponse = response;
 					return http_servers[port].emit('unhandled', node_request, node_response);
 				}
 				if (!response.handlesHeaders) node_response.writeHead(response.status || 200, response.headers);
@@ -282,17 +286,16 @@ function makeCallbackChain(responders, port_num) {
 	}
 	return next_callback;
 }
-const UNHANDLED = {
-	status: -1,
-	body: 'Not found',
-	headers: {},
-};
 function unhandled(request) {
 	if (request.user) {
 		// pass on authentication information to the next server
 		request[node_request_key].user = request.user;
 	}
-	return UNHANDLED;
+	return {
+		status: -1,
+		body: 'Not found',
+		headers: {},
+	};
 }
 function onRequest(listener, options) {
 	httpServer(listener, Object.assign({ requestOnly: true }, options));
@@ -370,20 +373,31 @@ class Request {
 		this.method = node_request.method;
 		let url = node_request.url;
 		this[node_request_key] = node_request;
-		let question_index = url.indexOf('?');
+		this.url = url;
+		/*		let question_index = url.indexOf('?');
 		if (question_index > -1) {
 			this.pathname = url.slice(0, question_index);
 			this.search = url.slice(question_index);
 		} else {
 			this.pathname = url;
 			this.search = '';
-		}
+		}*/
 		this.headers = node_request.headers;
 		this.headers.get = get;
 		this.responseMetadata = {};
 	}
-	get url() {
-		return this.protocol + '://' + this.host + this.pathname + this.search;
+	get absoluteURL() {
+		return this.protocol + '://' + this.host + this.url;
+	}
+	get pathname() {
+		let query_start = this.url.indexOf('?');
+		if (query_start > -1) return this.url.slice(0, query_start);
+		return this.url;
+	}
+	set pathname(pathname) {
+		let query_start = this.url.indexOf('?');
+		if (query_start > -1) this.url = pathname + this.url.slice(query_start);
+		else this.url = pathname;
 	}
 	get protocol() {
 		return this[node_request_key].socket.encrypted ? 'https' : 'http';

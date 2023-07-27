@@ -14,7 +14,7 @@ export class Resources extends Map<string, typeof Resource> {
 			path,
 			type,
 			hasSubPaths: false,
-			remainingPath: '', // reset after each match
+			relativeURL: '', // reset after each match
 		};
 		super.set(path, entry);
 		// now mark any entries that have sub paths so we can efficiently route forward
@@ -34,53 +34,43 @@ export class Resources extends Map<string, typeof Resource> {
 	 * @param path The URL Path
 	 * @param type Optional request content type, allows layering of resources, specifically for defining HTML handlers
 	 * that can further transform data from the main structured object resources.
-	 * @return The matched Resource class. Note that the remaining path is "returned" by setting the remainingPath property
+	 * @return The matched Resource class. Note that the remaining path is "returned" by setting the relativeURL property
 	 */
-	getMatch(path: string, type?: string) {
+	getMatch(url: string, type?: string) {
 		let slash_index = 2;
 		let found_entry;
-		while ((slash_index = path.indexOf('/', slash_index)) > -1) {
-			const resource_path = path.slice(0, slash_index);
+		while ((slash_index = url.indexOf('/', slash_index)) > -1) {
+			const resource_path = url.slice(0, slash_index);
 			const entry = this.get(resource_path);
 			if (entry) {
+				entry.relativeURL = url.slice(slash_index + 1);
 				if (!entry.hasSubPaths) {
-					entry.remainingPath = path.slice(slash_index + 1);
 					return entry;
 				}
 				found_entry = entry;
 			}
 			slash_index += 2;
 		}
-		if (!found_entry) {
-			found_entry = this.get(path);
-			if (!found_entry) {
-				// still not found, see if there is an explicit root path
-				found_entry = this.get('');
-				if (found_entry) {
-					found_entry.remainingPath = path;
-					return found_entry;
-				}
+		if (found_entry) return found_entry;
+		// try the exact path
+		const search_index = url.indexOf('?');
+		const path = search_index > -1 ? url.slice(0, search_index) : url;
+		found_entry = this.get(path);
+		if (found_entry) {
+			found_entry.relativeURL = search_index > -1 ? url.slice(search_index) : '';
+		} else if (!found_entry) {
+			// still not found, see if there is an explicit root path
+			found_entry = this.get('');
+			if (found_entry) {
+				found_entry.relativeURL = url;
 			}
-		} // try the exact path
-		if (found_entry) found_entry.remainingPath = '';
+		}
 		return found_entry;
-	}
-	pathToId(path, Resource) {
-		if (path.indexOf('/') === -1) {
-			// special syntax for more compact numeric representations
-			if (path.startsWith('$')) path = parseInt(path, 36);
-			return Resource.coerceId(decodeURIComponent(path));
-		}
-		const ids = path.split('/');
-		for (let i = 0; i < ids.length; i++) {
-			ids[i] = Resource.coerceId(decodeURIComponent(ids[i]));
-		}
-		return ids;
 	}
 	getResource(path: string, resource_info) {
 		const entry = this.getMatch(path);
 		if (entry) {
-			path = entry.remainingPath;
+			path = entry.relativeURL;
 			return entry.Resource.getResource(this.pathToId(path, entry.Resource), resource_info);
 		}
 	}
@@ -88,8 +78,7 @@ export class Resources extends Map<string, typeof Resource> {
 		return transaction(request, async () => {
 			const entry = this.getMatch(path);
 			if (entry) {
-				path = entry.remainingPath;
-				request.id = this.pathToId(path, entry.Resource);
+				path = entry.relativeURL;
 				return callback(entry.Resource, entry.path, path);
 			}
 		});

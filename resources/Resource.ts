@@ -6,6 +6,7 @@ import { _assignPackageExport } from '../index';
 import { ClientError } from '../utility/errors/hdbError';
 import { OWN_DATA } from './tracked';
 import { transaction } from './transaction';
+import { parseQuery } from './search';
 
 export const CONTEXT = Symbol.for('context');
 export const ID_PROPERTY = Symbol.for('primary-key');
@@ -19,6 +20,11 @@ export const RECORD_PROPERTY = Symbol('stored-record');
  * data. This interface is used pervasively in HarperDB and is implemented by database tables and can be used to define
  * sources for caching, real-data sources for messaging protocols, and RESTful endpoints, as well as any other types of
  * data aggregation, processing, or monitoring.
+ *
+ * This base Resource class provides a set of static methods that are main entry points for querying and updating data
+ * in resources/tables. The static methods provide the default handling of arguments, context, and ensuring that
+ * internal actions are wrapped in a transaction. The base Resource class intended to be extended, and the instance
+ * methods can be overriden to provide specific implementations of actions like get, put, post, delete, and subscribe.
  */
 export class Resource implements ResourceInterface {
 	[CONTEXT]: Context;
@@ -42,24 +48,26 @@ export class Resource implements ResourceInterface {
 		}
 	}
 
+	/**
+	 * The get methods are for directly getting a resource, and called for HTTP GET requests.
+	 */
 	static get(identifier: Id, context?: Context): Promise<object>;
 	static get(request: Request, context?: Context): Promise<object>;
 	static get(query: Query, context?: Context): Promise<AsyncIterable<object>>;
 	static get = transactional(
-		function (request: Request, resource: Resource) {
+		function (resource: Resource, query?: Map, request: Request, data?: any) {
 			const is_collection = resource[IS_COLLECTION];
-			// TODO: Handle async
 			const result =
 				is_collection && resource.search
-					? resource.search(request)
-					: request.property && request.hasOwnProperty('property')
-					? resource.get?.(request.property)
+					? resource.search(query || {})
+					: query?.property
+					? resource.get?.(query.property)
 					: resource.get?.();
 			if (result?.then) return result.then(handleSelect);
 			return handleSelect(result);
 			function handleSelect(result) {
 				let select;
-				if ((select = request.select) && request.hasOwnProperty('select') && result != null) {
+				if ((select = query?.select) && result != null) {
 					const transform = transformForSelect(select);
 					if (is_collection) {
 						return result.map(transform);
@@ -76,36 +84,49 @@ export class Resource implements ResourceInterface {
 	 * Store the provided record by the provided id. If no id is provided, it is auto-generated.
 	 */
 	static put = transactional(
-		async function (request: Request, resource: Resource) {
-			const record = await request.data;
-			if (Array.isArray(record) && resource[IS_COLLECTION]) {
+		function (resource: Resource, query?: Map, request: Request, data?: any) {
+			if (Array.isArray(data) && resource[IS_COLLECTION]) {
 				const results = [];
 				const authorize = request.authorize;
-				for (const element of record) {
+				for (const element of data) {
 					if (authorize) request.authorize = true; // authorize each record
-					results.push(this.put(element, request));
+					results.push(this.put(resource, query, request, element));
 				}
 				return results;
 			}
-			return resource.put ? resource.put(record) : missingMethod(resource, 'put');
+			return resource.put ? resource.put(data, query) : missingMethod(resource, 'put');
 		},
 		{ hasContent: true, type: 'update' }
 	);
 	static delete(identifier: Id, context?: Context): Promise<boolean>;
 	static delete(request: Request, context?: Context): Promise<object>;
 	static delete = transactional(
-		function (request: Request, resource: Resource) {
-			return resource.delete ? resource.delete() : missingMethod(resource, 'delete');
+		function (resource: Resource, query?: Map, request: Request, data?: any) {
+			return resource.delete ? resource.delete(query) : missingMethod(resource, 'delete');
 		},
 		{ hasContent: false, type: 'delete' }
 	);
 
+	/**
+	 * Generate a new primary key for a resource; by default we use UUIDs (for now).
+	 */
 	static getNewId() {
 		return randomUUID();
 	}
-	static async create(record: any, context: Context): Promise<Id> {
-		const id = this.getNewId(); //uuid.v4();
-		return transaction(context, (context) => {
+	static create(id_prefix: Id, record: any, context: Context): Promise<Id>;
+	static create(record: any, context: Context): Promise<Id>;
+	static create(id_prefix: any, record: any, context?: Context): Promise<Id> {
+		let id;
+		if (id_prefix == null) id = this.getNewId(); //uuid.v4();
+		else if (Array.isArray(id_prefix) && typeof id_prefix[0] !== 'object') id = [...id_prefix, this.getNewId()];
+		else if (typeof id_prefix !== 'object') id = [id_prefix, this.getNewId()];
+		else {
+			// two argument form, shift the arguments
+			id = this.getNewId();
+			context = record;
+			record = id_prefix;
+		}
+		return transaction(context, () => {
 			const resource = new this(id, context);
 			const results = resource.put ? resource.put(record) : missingMethod(resource, 'put');
 			if (context.responseMetadata) {
@@ -116,40 +137,38 @@ export class Resource implements ResourceInterface {
 		});
 	}
 	static post = transactional(
-		async function (request: Request, resource: Resource) {
-			const data = await request.data;
+		function (resource: Resource, query?: Map, request: Request, data?: any) {
 			if (resource[ID_PROPERTY] != null) resource.update(); // save any changes made during post
-			return resource.post(data);
+			return resource.post(data, query);
 		},
 		{ hasContent: true, type: 'create' }
 	);
 
 	static connect = transactional(
-		function (request: Request, resource: Resource) {
-			return resource.connect ? resource.connect(request) : missingMethod(resource, 'connect');
+		function (resource: Resource, query?: Map, request: Request, data?: any) {
+			return resource.connect ? resource.connect(query) : missingMethod(resource, 'connect');
 		},
 		{ type: 'read' }
 	);
 
 	static subscribe(request: SubscriptionRequest): Promise<AsyncIterable<{ id: any; operation: string; value: object }>>;
 	static subscribe = transactional(
-		function (request: Request, resource: Resource) {
-			return resource.subscribe ? resource.subscribe(request) : missingMethod(resource, 'subscribe');
+		function (resource: Resource, query?: Map, request: Request, data?: any) {
+			return resource.subscribe ? resource.subscribe(query) : missingMethod(resource, 'subscribe');
 		},
 		{ type: 'read' }
 	);
 
 	static publish = transactional(
-		async function (request: Request, resource: Resource) {
-			const message = await request.data;
+		function (resource: Resource, query?: Map, request: Request, data?: any) {
 			if (resource[ID_PROPERTY] != null) resource.update(); // save any changes made during publish
-			return resource.publish ? resource.publish(message) : missingMethod(resource, 'publish');
+			return resource.publish ? resource.publish(data, query) : missingMethod(resource, 'publish');
 		},
 		{ hasContent: true, type: 'create' }
 	);
 
 	static search = transactional(
-		function (request: Request, resource: Resource) {
+		function (resource: Resource, query?: Map, request: Request, data?: any) {
 			const result = resource.search ? resource.search(request) : missingMethod(resource, 'search');
 			const select = request.select;
 			if (select && request.hasOwnProperty('select') && result != null) {
@@ -162,30 +181,29 @@ export class Resource implements ResourceInterface {
 	);
 
 	static query = transactional(
-		async function (request: Request, resource: Resource) {
-			const query = await request.data;
-			return resource.search ? resource.search(query) : missingMethod(resource, 'search');
+		function (resource: Resource, query?: Map, request: Request, data?: any) {
+			return resource.search ? resource.search(data, query) : missingMethod(resource, 'search');
 		},
 		{ hasContent: true, type: 'read' }
 	);
 	static query = this.search;
 
 	static copy = transactional(
-		function (request: Request, resource: Resource) {
-			return resource.copy ? resource.copy(request.headers?.destination) : missingMethod(resource, 'copy');
+		function (resource: Resource, query?: Map, request: Request, data?: any) {
+			return resource.copy ? resource.copy(request.headers?.destination, query) : missingMethod(resource, 'copy');
 		},
 		{ type: 'create' }
 	);
 
 	static move = transactional(
-		function (request: Request, resource: Resource) {
-			return resource.move ? resource.move(request.headers?.destination) : missingMethod(resource, 'move');
+		function (resource: Resource, query?: Map, request: Request, data?: any) {
+			return resource.move ? resource.move(request.headers?.destination, query) : missingMethod(resource, 'move');
 		},
 		{ type: 'delete' }
 	);
 
 	post(new_record) {
-		if (this[ID_PROPERTY] == null) return this.constructor.create(new_record, this[CONTEXT]);
+		if (this[IS_COLLECTION]) return this.constructor.create(this[ID_PROPERTY], new_record, this[CONTEXT]);
 		missingMethod(this, 'post');
 	}
 
@@ -195,6 +213,16 @@ export class Resource implements ResourceInterface {
 	static coerceId(id: string): number | string {
 		return id;
 	}
+	static parseQuery(search) {
+		return parseQuery(search);
+	}
+	/**
+	 * Gets an instance of a resource by id
+	 * @param id
+	 * @param request
+	 * @param options
+	 * @returns
+	 */
 	static getResource(id: Id, request: Request, options?: any): Resource | Promise<Resource> {
 		let resource;
 		let context = request[CONTEXT];
@@ -206,6 +234,9 @@ export class Resource implements ResourceInterface {
 		const constructor = (is_collection && this.Collection) || this;
 		if (!context) context = context === undefined ? request : {};
 		if (context.transaction) {
+			// if this is part of a transaction, we use a map of existing loaded instances
+			// so that if a resource is already requested by id in this transaction, we can
+			// reuse that instance and preserve and changes/updates in that instance.
 			let resource_cache;
 			if (context.resourceCache) {
 				resource_cache = context.resourceCache;
@@ -238,7 +269,7 @@ export class Resource implements ResourceInterface {
 					context.resourceCache.asMap = cache_map;
 				}
 			}
-		} else resource = new constructor(id, context);
+		} else resource = new constructor(id, context); // outside of a transaction, just create an instance
 		if (is_collection) resource[IS_COLLECTION] = true;
 		return resource;
 	}
@@ -283,9 +314,17 @@ export class Resource implements ResourceInterface {
 	allowDelete(user): boolean | object {
 		return user?.role.permission.super_user;
 	}
+	/**
+	 * Get the primary key value for this resource.
+	 * @returns primary key
+	 */
 	getId() {
 		return this[ID_PROPERTY];
 	}
+	/**
+	 * Get the context for this resource
+	 * @returns context object with information about the current transaction, user, and more
+	 */
 	getContext() {
 		return this[CONTEXT];
 	}
@@ -312,89 +351,153 @@ class AccessError extends Error {
 		}
 	}
 }
+function pathToId(path, Resource) {
+	path = path.slice(1);
+	if (path.indexOf('/') === -1) {
+		// special syntax for more compact numeric representations
+		if (path.startsWith('$')) path = parseInt(path, 36);
+		return Resource.coerceId(decodeURIComponent(path));
+	}
+	const ids = path.split('/');
+	for (let i = 0; i < ids.length; i++) {
+		ids[i] = Resource.coerceId(decodeURIComponent(ids[i]));
+	}
+	return ids;
+}
+
+/**
+ * This is responsible for arranging arguments in the main static methods and creating the appropriate context and default transaction wrapping
+ * @param action
+ * @param options
+ * @returns
+ */
 function transactional(action, options) {
 	applyContext.reliesOnPrototype = true;
+	const has_content = options.hasContent;
 	return applyContext;
-	function applyContext(request: Request | Id, data_or_context?: any, context?: Context) {
-		let id;
-		if (options.hasContent) {
+	function applyContext(id_or_query: string | Id, data_or_context?: any, context?: Context) {
+		let id, query;
+		let data;
+		// First we do our argument normalization. There are two main types of methods, with or without content
+		if (has_content) {
 			// for put, post, patch, publish, query
-			let data;
 			if (context) {
 				// if there are three arguments, it is id, data, context
-				id = request;
 				data = data_or_context;
-				request = Object.create(CONTEXT in context ? context[CONTEXT] : context);
-			} else {
-				data = request;
-				if (data_or_context) {
-					// two arguments, data, context
-					request = Object.create(CONTEXT in data_or_context ? data_or_context[CONTEXT] : data_or_context);
-					id = data_or_context.hasOwnProperty('id') ? data_or_context.id : this.primaryKey && data?.[this.primaryKey];
+			} else if (data_or_context) {
+				// two arguments, more possibilities:
+				if (
+					typeof id_or_query === 'object' &&
+					id_or_query &&
+					(!Array.isArray(id_or_query) || typeof id_or_query[0] === 'object')
+				) {
+					// (data, context) form
+					data = id_or_query;
+					id = data[this.primaryKey] ?? null;
+					context = data_or_context;
 				} else {
-					request = {};
-					if (this.primaryKey) id = data[this.primaryKey];
+					// (id, data) form
+					data = data_or_context;
 				}
 			}
-			request.data = data;
-			// otherwise check to see if the first arg is an id
-		} else if (request && typeof request === 'object' && !Array.isArray(request)) {
-			// request is actually a Request object, just make sure we inherit any context
+			// otherwise handle methods for get, delete, etc.
+			// first, check to see if it is two argument
+		} else if (data_or_context) {
+			// (id, context), preferred form used for methods without a body
 			context = data_or_context;
-			if (context) {
-				context = CONTEXT in context ? context[CONTEXT] : context;
-				request.transaction = context.transaction;
-				request.user = context.user;
-				request.resourceCache = context.resourceCache;
-				request.timestamp = context.timestamp;
-			}
-			id = request.id;
-		} else {
-			// request is an id
-			id = request;
-			context = data_or_context;
-			request = context ? Object.create(CONTEXT in context ? context[CONTEXT] : context) : {};
+		} else if (id_or_query && typeof id_or_query === 'object' && !Array.isArray(id_or_query)) {
+			// (request) a structured id/query, which we will use as the context
+			context = id_or_query;
 		}
-		if (options.allowInvalidated) request.allowInvalidated = true;
-		if (request.transaction) {
+		if (id === undefined) {
+			let parse_url;
+			if (typeof id_or_query === 'string') {
+				id = id_or_query;
+				parse_url = id[0] === '/';
+			} else if (typeof id_or_query === 'object' && id_or_query) {
+				// it is a query
+				query = id_or_query;
+				if (id_or_query[Symbol.iterator]) {
+					// get the id part from an iterable query
+					let id = [];
+					for (const part of id_or_query) {
+						if (typeof part === 'object' && part) break;
+						id.push(part);
+					}
+					if (id.length === 0) id = null;
+					else if (id.length === 1) id = id[0];
+				} else {
+					if (typeof (id = id_or_query.url) === 'string') {
+						if (id[0] !== '/') throw new URIError(`Invalid local URL ${id}, must start with slash`);
+						parse_url = true;
+					}
+					if (id === undefined) id = id_or_query.id ?? null;
+				}
+			} else id = id_or_query ?? null;
+			if (parse_url) {
+				// handle queries in local URLs like /path/?name=value
+				const search_index = id.indexOf('?');
+				if (search_index > -1) {
+					const parsed_query = this.parseQuery(id.slice(search_index + 1));
+					query = query ? Object.assign(query, parsed_query) : parsed_query;
+					id = id.slice(0, search_index);
+				}
+				// handle paths of the form /path/id.property
+				const dot_index = id.indexOf('.');
+				if (dot_index > -1) {
+					const property = id.slice(dot_index + 1);
+					if (query) query.property = property;
+					else query = { property };
+					id = id.slice(0, dot_index);
+				}
+				// convert paths to arrays like /nested/path/4 -> ['nested', 'path', 4]
+				id = pathToId(id, this);
+			}
+		}
+
+		if (!context) context = {};
+		if (options.allowInvalidated) context.allowInvalidated = true;
+		if (context.transaction) {
 			// we are already in a transaction, proceed
-			const resource = this.getResource(id, request, options);
+			const resource = this.getResource(id, context, options);
 			return resource.then ? resource.then(authorizeActionOnResource) : authorizeActionOnResource(resource);
 		} else {
 			// start a transaction
-			return transaction(request, (request) => {
-				const resource = this.getResource(id, request, options);
+			return transaction(context, () => {
+				const resource = this.getResource(id, context, options);
 				return resource.then ? resource.then(authorizeActionOnResource) : authorizeActionOnResource(resource);
 			});
 		}
 		function authorizeActionOnResource(resource: ResourceInterface) {
 			if (options.type === 'read') resource[SAVE_UPDATES_PROPERTY] = false; // by default modifications aren't saved, they just yield a different result from get
-			if (request.authorize) {
+			if (context.authorize) {
 				// do permission checks (and don't require subsequent uses of this request/context to need to do it)
-				request.authorize = false;
+				context.authorize = false;
 				const allowed =
 					options.type === 'read'
-						? resource.allowRead(request.user, request)
+						? resource.allowRead(context.user, context)
 						: options.type === 'update'
 						? resource.doesExist?.() === false
-							? resource.allowCreate(request.user, request)
-							: resource.allowUpdate(request.user, request)
+							? resource.allowCreate(context.user, context)
+							: resource.allowUpdate(context.user, context)
 						: options.type === 'create'
-						? resource.allowCreate(request.user, request)
-						: resource.allowDelete(request.user, request);
+						? resource.allowCreate(context.user, context)
+						: resource.allowDelete(context.user, context);
 				if (allowed?.then) {
 					return allowed.then((allowed) => {
 						if (!allowed) {
-							throw new AccessError(request.user);
+							throw new AccessError(context.user);
 						}
-						return action(request, resource);
+						if (typeof data?.then === 'function') return data.then((data) => action(resource, query, context, data));
+						return action(resource, query, context, data);
 					});
 				}
 				if (!allowed) {
-					throw new AccessError(request.user);
+					throw new AccessError(context.user);
 				}
 			}
-			return action(request, resource);
+			if (typeof data?.then === 'function') return data.then((data) => action(resource, query, context, data));
+			return action(resource, query, context, data);
 		}
 	}
 }
@@ -407,6 +510,12 @@ function missingMethod(resource, method) {
 	}
 	throw error;
 }
+/**
+ * This is responsible for handling a select query parameter/call that selects specific
+ * properties from the returned record(s).
+ * @param object
+ * @returns
+ */
 function selectFromObject(object) {
 	// TODO: eventually we will do aggregate functions here
 	const record = object[RECORD_PROPERTY];

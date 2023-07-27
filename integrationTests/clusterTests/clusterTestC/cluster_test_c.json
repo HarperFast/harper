@@ -1191,7 +1191,7 @@
 									"",
 									"pm.test('Delete transaction log is correct', () => {",
 									"    const delete_tx = response[2];",
-									"",
+									"console.log({delete_tx});",
 									"    pm.expect(delete_tx.operation).to.equal('delete');",
 									"    pm.expect(delete_tx.user).to.equal('admin');",
 									"    pm.expect(delete_tx).to.haveOwnProperty('timestamp');",

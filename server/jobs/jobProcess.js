@@ -1,16 +1,13 @@
 'use strict';
-let whyIsNodeStillRunning;
-try {
-	whyIsNodeStillRunning = require('why-is-node-still-running');
-} catch (error) {} // only if installed
+
 const hdb_terms = require('../../utility/hdbTerms');
 const hdb_utils = require('../../utility/common_utils');
 const harper_logger = require('../../utility/logging/harper_logger');
 const global_schema = require('../../utility/globalSchema');
 const user = require('../../security/user');
-const promisify = require('util').promisify;
 const server_utils = require('../serverHelpers/serverUtilities');
 const { start: startNATS } = require('../nats/natsReplicator');
+const { closeConnection } = require('../nats/utility/natsUtils');
 const moment = require('moment');
 const jobs = require('./jobs');
 const { cloneDeep } = require('lodash');
@@ -25,6 +22,7 @@ const JOB_ID = JOB_NAME.substring(4);
 (async function job() {
 	// The request value could potentially be quite large so it's set to undefined to clear it out after being processed.
 	let job_obj = { id: JOB_ID, request: undefined };
+	let exit_code = 0;
 	try {
 		harper_logger.notify('Starting job:', JOB_ID);
 		startNATS();
@@ -56,16 +54,16 @@ const JOB_ID = JOB_NAME.substring(4);
 		job_obj.end_datetime = moment().valueOf();
 		harper_logger.notify('Successfully completed job:', JOB_ID);
 	} catch (err) {
+		exit_code = 1;
 		harper_logger.error(err);
 		job_obj.status = hdb_terms.JOB_STATUS_ENUM.ERROR;
 		job_obj.message = err.message ? err.message : err;
 		job_obj.end_datetime = moment().valueOf();
 	} finally {
 		await jobs.updateJob(job_obj);
-		if (typeof whyIsNodeStillRunning !== 'undefined') {
-			setTimeout(() => {
-				whyIsNodeStillRunning.whyIsNodeStillRunning();
-			}).unref(1000);
-		}
+		await closeConnection();
+		setTimeout(() => {
+			process.exit(exit_code);
+		}).unref(3000);
 	}
 })();

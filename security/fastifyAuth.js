@@ -46,7 +46,7 @@ function authorize(req, res, next) {
 			return next(err);
 		}
 		if (!user) {
-			return next('User not found');
+			return next('Must login');
 		}
 		return next(null, user);
 	}

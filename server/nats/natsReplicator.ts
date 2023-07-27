@@ -1,4 +1,4 @@
-import { databases, getDatabases, onNewTable } from '../../resources/databases';
+import { databases, getDatabases, onUpdatedTable } from '../../resources/databases';
 import { ID_PROPERTY, Resource, TRANSACTIONS_PROPERTY, USER_PROPERTY } from '../../resources/Resource';
 import { publishToStream } from './utility/natsUtils';
 import { SUBJECT_PREFIXES } from './utility/natsTerms';
@@ -20,7 +20,7 @@ export function start() {
 export function disableNATS(disabled = true) {
 	nats_disabled = disabled;
 }
-const MAX_INGEST_THREADS = 2;
+const MAX_INGEST_THREADS = 1;
 let immediateNATSTransaction, subscribed_to_nodes;
 /**
  * Replication functions by acting as a "source" for tables. With replicated tables, the local tables are considered
@@ -42,7 +42,7 @@ function assignReplicationSource() {
 		}
 	}
 	publishing_databases = new Map();
-	onNewTable((Table, is_changed) => {
+	onUpdatedTable((Table, is_changed) => {
 		setNATSReplicator(Table.tableName, Table.databaseName, Table);
 		if (is_changed) publishSchema(Table);
 	});
@@ -63,10 +63,10 @@ export function setNATSReplicator(table_name, db_name, Table) {
 	if (!Table) {
 		return console.error(`Attempt to replicate non-existent table ${table_name} from database ${db_name}`);
 	}
+	if (Table.Source?.isNATSReplicator) return;
 	let source;
 	Table.sourcedFrom(
 		class NATSReplicator extends Resource {
-			static Source;
 			put(record) {
 				// add this to the transaction
 				let completion;
@@ -170,6 +170,7 @@ export function setNATSReplicator(table_name, db_name, Table) {
 					return subscription;
 				}
 			}
+			static isNATSReplicator = true;
 		}
 	);
 	/**
