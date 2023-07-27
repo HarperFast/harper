@@ -31,7 +31,7 @@ export async function authentication(request, next_handler) {
 	const authorization = headers.authorization;
 	const cookie = headers.cookie;
 	const origin = headers.origin;
-	const response_headers = [];
+	let response_headers = [];
 	if (origin) {
 		const access_list = request.isOperationsServer
 			? operations_cors
@@ -41,14 +41,22 @@ export async function authentication(request, next_handler) {
 			? apps_cors_accesslist
 			: [];
 		if (access_list.includes(origin) || access_list.includes('*')) {
+			if (request.method === 'OPTIONS') {
+				// preflight request
+				const headers = {
+					'Access-Control-Allow-Method': 'POST, GET, PUT, DELETE, PATCH, OPTIONS',
+					'Access-Control-Allow-Headers': 'Accept, Content-Type, Authorization',
+					'Access-Control-Allow-Origin': origin,
+				};
+				if (env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS)) headers['Access-Control-Allow-Credentials'] = 'true';
+				return {
+					status: 200,
+					headers,
+				};
+			}
 			response_headers.push('Access-Control-Allow-Origin', origin);
 			if (env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS))
 				response_headers.push('Access-Control-Allow-Credentials', 'true');
-			if (request.method === 'OPTIONS') {
-				// preflight request
-				response_headers.push('Access-Control-Allow-Method', 'POST, GET, PUT, DELETE, PATCH, OPTIONS');
-				response_headers.push('Access-Control-Allow-Headers', 'Accept, Content-Type, Authorization');
-			}
 		}
 	}
 	let session_id;
@@ -155,12 +163,11 @@ export async function authentication(request, next_handler) {
 				session_id = uuid();
 				const cookie_prefix =
 					(origin ? origin.replace(/^https?:\/\//, '').replace(/\W/, '_') + '-' : '') + 'hdb-session=';
-				response_headers.push(
-					'set-cookie',
-					`${cookie_prefix}${session_id}; Path=/; Expires=Tue, 01 Oct 8307 19:33:20 GMT; HttpOnly${
-						request.protocol === 'https' ? '; Secure' : ''
-					}`
-				);
+				const cookie = `${cookie_prefix}${session_id}; Path=/; Expires=Tue, 01 Oct 8307 19:33:20 GMT; HttpOnly${
+					request.protocol === 'https' ? '; SameSite=None; Secure' : ''
+				}`;
+				if (response_headers) response_headers.push('set-cookie', cookie);
+				else if (response?.headers?.set) response.headers.set('set-cookie', cookie);
 			}
 			updated_session.id = session_id;
 			return session_table.put(updated_session);
@@ -196,10 +203,10 @@ export async function authentication(request, next_handler) {
 		if (!headers) response.headers = headers = {};
 		for (let i = 0; i < l; ) {
 			const name = response_headers[i++];
-			const value = response_headers[i++];
-			headers[name] = value;
+			headers[name] = response_headers[i++];
 		}
 	}
+	response_headers = null;
 	return response;
 }
 let started;
@@ -218,7 +225,11 @@ export function start({ server, port }) {
 }
 // operations
 export async function login(login_object) {
-	if (!login_object.baseRequest.login) throw new Error('No session for login');
+	if (!login_object.baseRequest?.login) throw new Error('No session for login');
+	// intercept any attempts to set headers on the standard response object and pass them on to fastify
+	login_object.baseResponse.headers.set = (name, value) => {
+		login_object.fastifyResponse.header(name, value);
+	};
 	await login_object.baseRequest.login(login_object.username, login_object.password);
 	return 'Login successful';
 }

@@ -244,6 +244,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 						node_response.setHeader(name, response.headers[name]);
 					}
 					node_request.baseRequest = request;
+					node_response.baseResponse = response;
 					return http_servers[port].emit('unhandled', node_request, node_response);
 				}
 				if (!response.handlesHeaders) node_response.writeHead(response.status || 200, response.headers);
@@ -285,17 +286,16 @@ function makeCallbackChain(responders, port_num) {
 	}
 	return next_callback;
 }
-const UNHANDLED = {
-	status: -1,
-	body: 'Not found',
-	headers: {},
-};
 function unhandled(request) {
 	if (request.user) {
 		// pass on authentication information to the next server
 		request[node_request_key].user = request.user;
 	}
-	return UNHANDLED;
+	return {
+		status: -1,
+		body: 'Not found',
+		headers: {},
+	};
 }
 function onRequest(listener, options) {
 	httpServer(listener, Object.assign({ requestOnly: true }, options));
