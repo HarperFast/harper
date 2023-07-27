@@ -216,23 +216,22 @@ function dropCustomFunction(req) {
 }
 
 /**
- * Create a new project folder in the custom_functions folder and copy the template into it
- *
+ * Create a new project folder in the components folder and copy the template into it
  * @param {NodeObject} req
  * @returns {string}
  */
-function addCustomFunctionProject(req) {
+function addComponent(req) {
 	isCFEnabled();
 	if (req.project) {
 		req.project = path.parse(req.project).name;
 	}
 
-	const validation = validator.addCustomFunctionProjectValidator(req);
+	const validation = validator.addComponentValidator(req);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	log.trace(`adding custom function project`);
+	log.trace(`adding component`);
 	const cf_dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 	const { project } = req;
 
@@ -240,7 +239,7 @@ function addCustomFunctionProject(req) {
 		const project_dir = path.join(cf_dir, project);
 		fs.mkdirSync(project_dir, { recursive: true });
 		fs.copySync(APPLICATION_TEMPLATE, project_dir);
-		return `Successfully created custom function project: ${project}`;
+		return `Successfully added project: ${project}`;
 	} catch (err) {
 		throw handleHDBError(
 			new Error(),
@@ -538,7 +537,7 @@ module.exports = {
 	getCustomFunction,
 	setCustomFunction,
 	dropCustomFunction,
-	addCustomFunctionProject,
+	addComponent,
 	dropCustomFunctionProject,
 	packageComponent,
 	deployComponent,
