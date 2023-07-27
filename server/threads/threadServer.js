@@ -81,10 +81,12 @@ if (!isMainThread) {
 		});
 }
 
-function deliverSocket(fd, port, data) {
+function deliverSocket(fd_or_socket, port, data) {
 	// Create a socket and deliver it to the HTTP server
 	// HTTP server likes to allow half open sockets
-	let socket = fd >= 0 ? new Socket({ fd, readable: true, writable: true, allowHalfOpen: true }) : fd;
+	let socket = fd_or_socket?.read
+		? fd_or_socket
+		: new Socket({ fd: fd_or_socket, readable: true, writable: true, allowHalfOpen: true });
 	// for each socket, deliver the connection to the HTTP server handler/parser
 	let server = SERVERS[port];
 	if (server) {
