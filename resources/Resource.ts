@@ -59,7 +59,7 @@ export class Resource implements ResourceInterface {
 			const is_collection = resource[IS_COLLECTION];
 			const result =
 				is_collection && resource.search
-					? resource.search(query)
+					? resource.search(query || {})
 					: query?.property
 					? resource.get?.(query.property)
 					: resource.get?.();
@@ -410,15 +410,10 @@ function transactional(action, options) {
 			context = id_or_query;
 		}
 		if (id === undefined) {
+			let parse_url;
 			if (typeof id_or_query === 'string') {
-				if (id_or_query[0] === '/') {
-					const search_index = id_or_query.indexOf('?');
-					if (search_index > -1) {
-						query = this.parseQuery(id_or_query.slice(search_index + 1));
-						id_or_query = id_or_query.slice(0, search_index);
-					}
-					id = pathToId(id_or_query, this);
-				} else id = id_or_query;
+				id = id_or_query;
+				parse_url = id[0] === '/';
 			} else if (typeof id_or_query === 'object' && id_or_query) {
 				// it is a query
 				query = id_or_query;
@@ -434,16 +429,30 @@ function transactional(action, options) {
 				} else {
 					if (typeof (id = id_or_query.url) === 'string') {
 						if (id[0] !== '/') throw new URIError(`Invalid local URL ${id}, must start with slash`);
-						const search_index = id.indexOf('?');
-						if (search_index > -1) {
-							Object.assign(query, this.parseQuery(id.slice(search_index + 1)));
-							id = id.slice(0, search_index);
-						}
-						id = pathToId(id, this);
+						parse_url = true;
 					}
 					if (id === undefined) id = id_or_query.id ?? null;
 				}
 			} else id = id_or_query ?? null;
+			if (parse_url) {
+				// handle queries in local URLs like /path/?name=value
+				const search_index = id.indexOf('?');
+				if (search_index > -1) {
+					const parsed_query = this.parseQuery(id.slice(search_index + 1));
+					query = query ? Object.assign(query, parsed_query) : parsed_query;
+					id = id.slice(0, search_index);
+				}
+				// handle paths of the form /path/id.property
+				const dot_index = id.indexOf('.');
+				if (dot_index > -1) {
+					const property = id.slice(dot_index + 1);
+					if (query) query.property = property;
+					else query = { property };
+					id = id.slice(0, dot_index);
+				}
+				// convert paths to arrays like /nested/path/4 -> ['nested', 'path', 4]
+				id = pathToId(id, this);
+			}
 		}
 
 		if (!context) context = {};
