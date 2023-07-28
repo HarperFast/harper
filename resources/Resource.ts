@@ -419,7 +419,7 @@ function transactional(action, options) {
 				query = id_or_query;
 				if (id_or_query[Symbol.iterator]) {
 					// get the id part from an iterable query
-					let id = [];
+					id = [];
 					for (const part of id_or_query) {
 						if (typeof part === 'object' && part) break;
 						id.push(part);
