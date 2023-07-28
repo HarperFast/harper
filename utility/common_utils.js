@@ -81,6 +81,7 @@ module.exports = {
 	changeExtension,
 	getEnvCliRootPath,
 	noBootFile,
+	transformReq,
 	PACKAGE_ROOT: terms.PACKAGE_ROOT,
 };
 
@@ -846,4 +847,16 @@ function noBootFile() {
 	if (getEnvCliRootPath() && fs.pathExistsSync(path.join(cli_env_root, terms.HDB_CONFIG_FILE))) {
 		no_boot_file = true;
 	}
+}
+
+/**
+ * Will set default schema/database or set database to schema
+ * @param req
+ */
+function transformReq(req) {
+	if (!req.schema && !req.database) {
+		req.schema = terms.DEFAULT_DATABASE_NAME;
+		return;
+	}
+	if (req.database) req.schema = req.database;
 }

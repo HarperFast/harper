@@ -2,21 +2,15 @@ const _ = require('lodash'),
 	validator = require('./validationWrapper');
 const Joi = require('joi');
 const hdb_utils = require('../utility/common_utils');
-const { hdb_schema_table, checkValidTable } = require('./common_validators');
+const { hdb_schema_table, checkValidTable, hdb_table, hdb_database } = require('./common_validators');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { getDatabases } = require('../resources/databases');
 const { HTTP_STATUS_CODES } = hdb_errors;
 
-const search_by_hashes_schema = Joi.object({
-	schema: hdb_schema_table,
-	table: hdb_schema_table,
-	hash_values: Joi.array().min(0).items(Joi.alternatives(Joi.string(), Joi.number())).required(),
-	get_attributes: Joi.array().min(1).items(hdb_schema_table).optional(),
-});
-
 const search_by_value_schema = Joi.object({
-	schema: hdb_schema_table,
-	table: hdb_schema_table,
+	database: hdb_database,
+	schema: hdb_database,
+	table: hdb_table,
 	search_attribute: hdb_schema_table,
 	search_value: Joi.any().required(),
 	get_attributes: Joi.array().min(1).items(hdb_schema_table).optional(),
@@ -26,8 +20,9 @@ const search_by_value_schema = Joi.object({
 });
 
 const search_by_conditions_schema = Joi.object({
-	schema: hdb_schema_table,
-	table: hdb_schema_table,
+	database: hdb_database,
+	schema: hdb_database,
+	table: hdb_table,
 	operator: Joi.string().valid('and', 'or').default('and').lowercase(),
 	offset: Joi.number().integer().min(0),
 	limit: Joi.number().integer().min(1),
@@ -75,7 +70,7 @@ module.exports = function (search_object, type) {
 			break;
 		case 'hashes':
 			let errors;
-			addError(checkValidTable('schema', search_object.schema));
+			addError(checkValidTable('database', search_object.schema));
 			addError(checkValidTable('table', search_object.table));
 			if (!search_object.hash_values) addError(`'hash_values' is required`);
 			else if (!Array.isArray(search_object.hash_values)) addError(`'hash_values' must be an array`);

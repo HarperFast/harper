@@ -39,6 +39,8 @@ async function deleteFilesBefore(delete_obj) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 
+	common_utils.transformReq(delete_obj);
+
 	let parsed_date = moment(delete_obj.date, moment.ISO_8601);
 	if (!parsed_date.isValid()) {
 		throw handleHDBError(
@@ -82,6 +84,8 @@ async function deleteAuditLogsBefore(delete_obj) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 
+	common_utils.transformReq(delete_obj);
+
 	if (isNaN(delete_obj.timestamp)) {
 		throw handleHDBError(
 			new Error(),
@@ -122,6 +126,8 @@ async function deleteRecord(delete_object) {
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
+
+	common_utils.transformReq(delete_object);
 
 	let invalid_schema_table_msg = common_utils.checkSchemaTableExist(delete_object.schema, delete_object.table);
 	if (invalid_schema_table_msg) {

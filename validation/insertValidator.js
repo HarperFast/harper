@@ -1,4 +1,4 @@
-const { hdb_schema_table } = require('./common_validators');
+const { hdb_table, hdb_database } = require('./common_validators');
 const validator = require('./validationWrapper');
 const Joi = require('joi');
 const INVALID_ATTRIBUTE_NAMES = {
@@ -29,8 +29,9 @@ const custom_records_val = (value, helpers) => {
 };
 
 const insert_schema = Joi.object({
-	schema: hdb_schema_table,
-	table: hdb_schema_table,
+	database: hdb_database,
+	schema: hdb_database,
+	table: hdb_table,
 	records: Joi.array().items(Joi.object().custom(custom_records_val)).required(),
 });
 
