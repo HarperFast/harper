@@ -208,7 +208,7 @@ async function messageProcessor(msg) {
 			);
 		}
 
-		// onCommit is not being called, but not sure if we really need to do this
+		// TODO: onCommit is not being called, but not sure if we really need to do this
 		// await completion;
 	} catch (e) {
 		harper_logger.error(e);

@@ -87,6 +87,16 @@ describe('test REST calls', () => {
 		assert.equal(response.status, 201);
 		assert.equal(typeof response.data, 'string');
 	});
+	describe('describe', function() {
+		it('table describe with root url', async () => {
+			let response = await axios('http://localhost:9926/FourProp');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.recordCount, 10);
+			assert.equal(response.data.attributes.length, 4);
+			assert.equal(response.data.name, 'FourProp');
+		});
+
+	});
 	describe('querying with query parameters', function() {
 		it('do query by string property', async () => {
 			let response = await axios('http://localhost:9926/FourProp/?name=name3');

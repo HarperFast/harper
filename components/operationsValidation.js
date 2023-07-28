@@ -16,7 +16,7 @@ const PROJECT_FILE_NAME_REGEX = /^[a-zA-Z0-9-_]+$/;
 module.exports = {
 	getDropCustomFunctionValidator,
 	setCustomFunctionValidator,
-	addCustomFunctionProjectValidator,
+	addComponentValidator,
 	dropCustomFunctionProjectValidator,
 	packageComponentValidator,
 	deployComponentValidator,
@@ -161,7 +161,7 @@ function getComponentFileValidator(req) {
  * @param req
  * @returns {*}
  */
-function addCustomFunctionProjectValidator(req) {
+function addComponentValidator(req) {
 	const add_func_schema = Joi.object({
 		project: Joi.string()
 			.pattern(PROJECT_FILE_NAME_REGEX)

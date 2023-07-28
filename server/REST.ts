@@ -4,8 +4,8 @@ import { ServerOptions } from 'http';
 import { ServerError, ClientError } from '../utility/errors/hdbError';
 import { Resources } from '../resources/Resources';
 import { parseQuery } from '../resources/search';
-import { LAST_MODIFICATION_PROPERTY } from '../resources/Resource';
 import { IterableEventQueue } from '../resources/IterableEventQueue';
+import { transaction } from '../resources/transaction';
 
 interface Response {
 	status?: number;
@@ -21,18 +21,24 @@ async function http(request, next_handler) {
 	let resource_path;
 	try {
 		const headers = {};
-		let path = request.pathname.slice(1);
-		const dot_index = path.lastIndexOf('.');
+		let url = request.url.slice(1);
+		const search_index = url.indexOf('?');
+		const dot_index = url.lastIndexOf('.', search_index === -1 ? undefined : search_index);
 		if (dot_index > -1) {
-			// we can use .extensions to force the Accept header or to access a property
-			const ext = path.slice(dot_index + 1);
+			// we can use .extensions to force the Accept header
+			const ext = url.slice(dot_index + 1, search_index === -1 ? undefined : search_index);
 			const accept = EXTENSION_TYPES[ext];
-			if (accept) request.headers.accept = accept;
-			else request.property = ext;
-			path = path.slice(0, dot_index);
+			if (accept) {
+				// TODO: Might be preferable to pass this into getDeserializer instead of modifying the request itself
+				request.headers.accept = accept;
+				url = url.slice(0, dot_index) + (search_index > -1 ? url.slice(search_index) : '');
+			}
 		}
-		let response_data = await resources.call(path, request, (resource, path) => {
-			resource_path = path;
+		const entry = resources.getMatch(url);
+		if (!entry) return next_handler(request); // no resource handler found
+		const local_url = '/' + entry.relativeURL; // TODO: We don't want to have to remove the forward slash and then re-add it
+		const resource = entry.Resource;
+		let response_data = await transaction(request, () => {
 			if (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'QUERY') {
 				// TODO: Support cancelation (if the request otherwise fails or takes too many bytes)
 				try {
@@ -46,42 +52,38 @@ async function http(request, next_handler) {
 			switch (method) {
 				case 'GET':
 				case 'HEAD':
-					return resource.get(request);
+					return resource.get(local_url, request);
 				case 'POST':
-					return resource.post(request.data, request);
+					return resource.post(local_url, request.data, request);
 				case 'PUT':
-					return resource.put(request.data, request);
+					return resource.put(local_url, request.data, request);
 				case 'DELETE':
-					return resource.delete(request);
+					return resource.delete(local_url, request);
 				case 'PATCH':
-					return resource.patch(request.data, request);
+					return resource.patch(local_url, request.data, request);
 				case 'OPTIONS': // used primarily for CORS
 					headers.Allow = 'GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS, TRACe, QUERY, COPY, MOVE';
 					return;
 				case 'CONNECT':
 					// websockets? and event-stream
-					return resource.connect(request);
+					return resource.connect(local_url, request);
 				case 'TRACE':
 					return 'HarperDB is the terminating server';
 				case 'QUERY':
-					return resource.query(request.data, request);
+					return resource.query(local_url, request.data, request);
 				case 'COPY': // methods suggested from webdav RFC 4918
-					return resource.copy(request.headers.destination, request);
+					return resource.copy(local_url, request.headers.destination, request);
 				case 'MOVE':
-					return resource.move(request.headers.destination, request);
+					return resource.move(local_url, request.headers.destination, request);
 				case 'BREW': // RFC 2324
 					throw new ClientError("HarperDB is short and stout and can't brew coffee", 418);
 				default:
 					throw new ServerError(`Method ${method} is not recognized`, 501);
 			}
 		});
-		if (resource_path === undefined) return next_handler(request); // no resource handler found
 		const execution_time = performance.now() - start;
 		let status = 200;
 		let lastModification;
-		/*if (typeof response_data?.get === 'function') {
-			response_data = await response_data.get();
-		}*/
 		const responseMetadata = request.responseMetadata;
 		if (response_data == undefined) {
 			status = method === 'GET' || method === 'HEAD' ? 404 : 204;
@@ -89,6 +91,7 @@ async function http(request, next_handler) {
 			const last_etag = request.headers['if-none-match'];
 			if (last_etag && (lastModification * 1000).toString(36) == last_etag) {
 				//resource_result.cancel();
+				if (response_data?.onDone) response_data.onDone();
 				status = 304;
 				response_data = undefined;
 			} else {
@@ -134,51 +137,6 @@ async function http(request, next_handler) {
 			headers,
 			body: serializeMessage(error.toString(), request),
 		};
-	}
-}
-
-let message_count = 0;
-
-async function wsMessage(Resource, resource_path, path, data, request, ws) {
-	const method = data.method?.toUpperCase() || 'GET-SUB';
-	const request_data = data.body;
-	const request_id = data.id;
-	try {
-		const response = await execute(Resource, method, path, request_data, request, ws);
-		const subscription = response.data;
-		subscription.listener = () => {
-			if (!message_count) {
-				setTimeout(() => {
-					console.log(
-						'message count (in last 10 seconds)',
-						message_count,
-						'connection_count',
-						connection_count,
-						'mem',
-						Math.round(process.memoryUsage().heapUsed / 1000000)
-					);
-					message_count = 0;
-				}, 10000);
-			}
-			message_count++;
-			ws.send(
-				serializeMessage(
-					{
-						path,
-						updated: true,
-					},
-					request
-				)
-			);
-		};
-		ws.on('close', () => subscription.end());
-		//response_data.id = request_id;
-		response.id = request_id;
-		ws.send(serializeMessage(response, request));
-	} catch (error) {
-		// do content negotiation
-		console.error(error);
-		ws.send(serializeMessage({ status: 500, id: request_id, data: error.toString() }, request));
 	}
 }
 

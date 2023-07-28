@@ -24,7 +24,7 @@ async function hdbCore(server) {
 // backwards compatibility, we do not assume custom functions can handle these.
 async function convertAsyncIterators(response) {
 	response = await response;
-	if (response && response[Symbol.asyncIterator] && !response[Symbol.iterator]) {
+	if (response?.[Symbol.asyncIterator] && !response[Symbol.iterator]) {
 		// requires async iteration to access elements
 		let array = [];
 		for await (let element of response) {

@@ -164,7 +164,7 @@ required_permissions.set(functions_operations.setComponentFile.name, new permiss
 required_permissions.set(functions_operations.getCustomFunction.name, new permission(true, []));
 required_permissions.set(functions_operations.setCustomFunction.name, new permission(true, []));
 required_permissions.set(functions_operations.dropCustomFunction.name, new permission(true, []));
-required_permissions.set(functions_operations.addCustomFunctionProject.name, new permission(true, []));
+required_permissions.set(functions_operations.addComponent.name, new permission(true, []));
 required_permissions.set(functions_operations.dropCustomFunctionProject.name, new permission(true, []));
 required_permissions.set(functions_operations.packageComponent.name, new permission(true, []));
 required_permissions.set(functions_operations.deployComponent.name, new permission(true, []));

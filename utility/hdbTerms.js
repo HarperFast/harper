@@ -358,6 +358,7 @@ const OPERATIONS_ENUM = {
 	SET_COMPONENT_FILE: 'set_component_file',
 	DROP_CUSTOM_FUNCTION: 'drop_custom_function',
 	ADD_CUSTOM_FUNCTION_PROJECT: 'add_custom_function_project',
+	ADD_COMPONENT: 'add_component',
 	DROP_CUSTOM_FUNCTION_PROJECT: 'drop_custom_function_project',
 	PACKAGE_CUSTOM_FUNCTION_PROJECT: 'package_custom_function_project',
 	DEPLOY_CUSTOM_FUNCTION_PROJECT: 'deploy_custom_function_project',

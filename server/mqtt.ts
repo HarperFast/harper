@@ -2,7 +2,7 @@
 // we can implement more efficient progressive buffer allocation.
 import { parser as makeParser, generate } from 'mqtt-packet';
 import { getSession, DurableSubscriptionsSession } from './DurableSubscriptionsSession';
-import { findAndValidateUser, getSuperUser } from '../security/user';
+import { getSuperUser } from '../security/user';
 import { serializeMessage, getDeserializer } from './serverHelpers/contentTypes';
 import { recordAction, addAnalyticsListener } from '../resources/analytics';
 import { server } from '../server/Server';
@@ -183,7 +183,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					for (const subscription of packet.subscriptions) {
 						let granted_qos;
 						try {
-							granted_qos = (await session.addSubscription(subscription, subscription.qos >= 1)) || 0;
+							granted_qos = (await session.addSubscription(subscription, subscription.qos >= 1)).qos || 0;
 						} catch (error) {
 							log_error(error);
 							granted_qos = 0x80; // failure

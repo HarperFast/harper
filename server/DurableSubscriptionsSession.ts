@@ -1,8 +1,8 @@
 import { table } from '../resources/databases';
 import { keyArrayToString, resources } from '../resources/Resources';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
-import { IS_COLLECTION } from '../resources/Resource';
 import { warn } from '../utility/logging/harper_logger';
+import { transaction } from '../resources/transaction';
 const DurableSession = table({
 	database: 'system',
 	table: 'hdb_durable_session',
@@ -116,8 +116,14 @@ class SubscriptionsSession {
 			noRetain: rh,
 			isCollection: is_collection,
 			shallowWildcard: is_shallow_wildcard,
+			url: '',
 		};
-		const subscription = await resources.call(path, request, async (resource, resource_path) => {
+		const entry = resources.getMatch(path);
+		if (!entry) throw new Error(`The topic ${topic} does not exist, no resource has been defined to handle this topic`);
+		request.url = '/' + entry.relativeURL;
+		const resource_path = entry.path;
+		const resource = entry.Resource;
+		const subscription = await transaction(request, async () => {
 			const subscription = await resource.subscribe(request);
 			if (!subscription) throw new Error(`No subscription was returned from subscribe for topic ${topic}`);
 			if (!subscription[Symbol.asyncIterator])
@@ -148,11 +154,10 @@ class SubscriptionsSession {
 			})();
 			return subscription;
 		});
-		if (!subscription)
-			throw new Error(`The topic ${topic} does not exist, no resource has been defined to handle this topic`);
 		subscription.topic = topic;
 		subscription.qos = subscription_request.qos;
 		this.subscriptions.push(subscription);
+		return subscription;
 	}
 	resume() {
 		// nothing to do in a clean session
@@ -164,33 +169,29 @@ class SubscriptionsSession {
 		// nothing to do in a clean session
 	}
 	async removeSubscription(topic) {
-		const search_index = topic.indexOf('?');
-		let path;
-		if (search_index > -1) {
-			path = topic.slice(0, search_index);
-		} else path = topic;
-		if (path.endsWith('+') || path.endsWith('#'))
-			// normalize wildcard
-			path = topic.slice(0, path.length - 1);
 		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
 		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
 		if (existing_subscription) existing_subscription.end();
 	}
 	async publish(message, data) {
-		const { topic, retain, payload } = message;
+		const { topic, retain } = message;
 		message.data = data;
 		message.user = this.user;
-		let resource_found;
-		const publish_result = await resources.call(topic, message, async (resource) => {
-			resource_found = true;
+		const entry = resources.getMatch(topic);
+		if (!entry)
+			throw new Error(
+				`Can not publish to topic ${topic} as it does not exist, no resource has been defined to handle this topic`
+			);
+		const url = (message.url = '/' + entry.relativeURL);
+		const resource = entry.Resource;
+
+		return transaction(message, () => {
 			return retain
 				? data === undefined
-					? resource.delete(message)
-					: resource.put(message.data, message)
-				: resource.publish(message.data, message);
+					? resource.delete(url, message)
+					: resource.put(url, message.data, message)
+				: resource.publish(url, message.data, message);
 		});
-		if (!resource_found) throw new Error('There is no resource or table for the ${topic} topic');
-		return publish_result;
 	}
 	setListener(listener: (message) => any) {
 		this.listener = listener;
@@ -256,7 +257,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 
 	async addSubscription(subscription, needs_ack) {
 		await this.resumeSubscription(subscription, needs_ack);
-		const { topic, qos, startTime: start_time } = subscription;
+		const { qos, startTime: start_time } = subscription;
 		if (qos > 0 && !start_time) {
 			this.sessionRecord.subscriptions = this.subscriptions.map((subscription) => {
 				let start_time = subscription.startTime;

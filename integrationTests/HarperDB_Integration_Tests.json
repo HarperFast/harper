@@ -60000,7 +60000,7 @@
 									"",
 									"pm.test(\"Custom function success message is returned\", function () {",
 									"    const json_data = pm.response.json();",
-									"    pm.expect(json_data.message).to.equal(\"Successfully created custom function project: test_project\");",
+									"    pm.expect(json_data.message).to.equal(\"Successfully added project: test_project\");",
 									"});"
 								],
 								"type": "text/javascript"

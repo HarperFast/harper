@@ -81,10 +81,12 @@ if (!isMainThread) {
 		});
 }
 
-function deliverSocket(fd, port, data) {
+function deliverSocket(fd_or_socket, port, data) {
 	// Create a socket and deliver it to the HTTP server
 	// HTTP server likes to allow half open sockets
-	let socket = fd >= 0 ? new Socket({ fd, readable: true, writable: true, allowHalfOpen: true }) : fd;
+	let socket = fd_or_socket?.read
+		? fd_or_socket
+		: new Socket({ fd: fd_or_socket, readable: true, writable: true, allowHalfOpen: true });
 	// for each socket, deliver the connection to the HTTP server handler/parser
 	let server = SERVERS[port];
 	if (server) {
@@ -244,6 +246,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 						node_response.setHeader(name, response.headers[name]);
 					}
 					node_request.baseRequest = request;
+					node_response.baseResponse = response;
 					return http_servers[port].emit('unhandled', node_request, node_response);
 				}
 				if (!response.handlesHeaders) node_response.writeHead(response.status || 200, response.headers);
@@ -285,17 +288,16 @@ function makeCallbackChain(responders, port_num) {
 	}
 	return next_callback;
 }
-const UNHANDLED = {
-	status: -1,
-	body: 'Not found',
-	headers: {},
-};
 function unhandled(request) {
 	if (request.user) {
 		// pass on authentication information to the next server
 		request[node_request_key].user = request.user;
 	}
-	return UNHANDLED;
+	return {
+		status: -1,
+		body: 'Not found',
+		headers: {},
+	};
 }
 function onRequest(listener, options) {
 	httpServer(listener, Object.assign({ requestOnly: true }, options));
@@ -373,20 +375,23 @@ class Request {
 		this.method = node_request.method;
 		let url = node_request.url;
 		this[node_request_key] = node_request;
-		let question_index = url.indexOf('?');
-		if (question_index > -1) {
-			this.pathname = url.slice(0, question_index);
-			this.search = url.slice(question_index);
-		} else {
-			this.pathname = url;
-			this.search = '';
-		}
+		this.url = url;
 		this.headers = node_request.headers;
 		this.headers.get = get;
 		this.responseMetadata = {};
 	}
-	get url() {
-		return this.protocol + '://' + this.host + this.pathname + this.search;
+	get absoluteURL() {
+		return this.protocol + '://' + this.host + this.url;
+	}
+	get pathname() {
+		let query_start = this.url.indexOf('?');
+		if (query_start > -1) return this.url.slice(0, query_start);
+		return this.url;
+	}
+	set pathname(pathname) {
+		let query_start = this.url.indexOf('?');
+		if (query_start > -1) this.url = pathname + this.url.slice(query_start);
+		else this.url = pathname;
 	}
 	get protocol() {
 		return this[node_request_key].socket.encrypted ? 'https' : 'http';

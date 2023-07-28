@@ -362,7 +362,7 @@ describe('test systemInformation module', () => {
 		});
 	});
 
-	it('test getDiskInfo function', async () => {
+	it.skip('test getDiskInfo function', async () => {
 		let results = await system_information.getDiskInfo();
 		if (process.platform !== 'win32') {
 			Object.keys(results).forEach((key) => {

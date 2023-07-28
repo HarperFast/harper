@@ -39,7 +39,7 @@ async function getCompartment(getGlobalVars) {
 		stackFiltering: 'verbose',
 	});
 
-	return (compartment = new (Compartment as typeof CompartmentClass)(
+	compartment = new (Compartment as typeof CompartmentClass)(
 		Object.assign(
 			{
 				console,
@@ -74,7 +74,8 @@ async function getCompartment(getGlobalVars) {
 				return new StaticModuleRecord(moduleText, module_specifier);
 			},
 		}
-	));
+	);
+	return compartment;
 }
 
 /**

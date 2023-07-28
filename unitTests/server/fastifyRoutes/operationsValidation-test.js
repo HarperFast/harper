@@ -181,7 +181,7 @@ describe('Test operationsValidation module', () => {
 			let req = {
 				project: '',
 			};
-			const result = validator.addCustomFunctionProjectValidator(req);
+			const result = validator.addComponentValidator(req);
 			expect(result.message).to.equal("'project' is not allowed to be empty");
 		});
 
@@ -189,7 +189,7 @@ describe('Test operationsValidation module', () => {
 			let req = {
 				project: '../home',
 			};
-			const result = validator.addCustomFunctionProjectValidator(req);
+			const result = validator.addComponentValidator(req);
 			expect(result.message).to.equal('Project name can only contain alphanumeric, dash and underscores characters');
 		});
 	});

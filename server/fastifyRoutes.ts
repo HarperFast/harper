@@ -9,14 +9,12 @@ import { HDB_SETTINGS_NAMES, CONFIG_PARAMS } from '../utility/hdbTerms';
 import * as harper_logger from '../utility/logging/harper_logger';
 import * as hdbCore from './fastifyRoutes/plugins/hdbCore';
 import * as user_schema from '../security/user';
-import { isMainThread } from 'worker_threads';
 import getServerOptions from './fastifyRoutes/helpers/getServerOptions';
 import getCORSOptions from './fastifyRoutes/helpers/getCORSOptions';
 import getHeaderTimeoutConfig from './fastifyRoutes/helpers/getHeaderTimeoutConfig';
 import { serverErrorHandler } from '../server/serverHelpers/serverHandlers';
 import { registerContentHandlers } from '../server/serverHelpers/contentTypes';
 import { server } from './Server';
-const CF_ROUTES_DIR = env.get(HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
 
 let fastify_server;
 const route_folders = new Set();
@@ -66,7 +64,6 @@ export async function customFunctionsServer() {
 		await setUp();
 
 		const props_http_secure_on = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_HTTPS);
-		const props_server_port = parseInt(env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10);
 		const is_https =
 			props_http_secure_on &&
 			(props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL);
@@ -102,7 +99,6 @@ export async function customFunctionsServer() {
 async function setUp() {
 	try {
 		harper_logger.info('Custom Functions starting configuration.');
-		//await p_schema_to_global();
 		await user_schema.setUsersToGlobal();
 		harper_logger.info('Custom Functions completed configuration.');
 	} catch (e) {
@@ -132,7 +128,7 @@ function buildRouteFolder(routes_folder, project_name) {
 						},
 					}))
 					.after((err, instance, next) => {
-						if (err && err.message) {
+						if (err?.message) {
 							harper_logger.error(err.message);
 						} else if (err) {
 							harper_logger.error(err);
