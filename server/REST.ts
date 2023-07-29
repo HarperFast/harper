@@ -96,7 +96,6 @@ async function http(request, next_handler) {
 				response_data = undefined;
 			} else {
 				headers['ETag'] = (lastModification * 1000).toString(36);
-				headers['Last-Modified'] = new Date(lastModification).toUTCString();
 			}
 		}
 		if (responseMetadata) {
