@@ -44,7 +44,7 @@ export async function authentication(request, next_handler) {
 			if (request.method === 'OPTIONS') {
 				// preflight request
 				const headers = {
-					'Access-Control-Allow-Method': 'POST, GET, PUT, DELETE, PATCH, OPTIONS',
+					'Access-Control-Allow-Methods': 'POST, GET, PUT, DELETE, PATCH, OPTIONS',
 					'Access-Control-Allow-Headers': 'Accept, Content-Type, Authorization',
 					'Access-Control-Allow-Origin': origin,
 				};
