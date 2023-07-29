@@ -274,7 +274,7 @@ export function serialize(response_data, request, response_object) {
 		// specifically for that content type (most useful for html).
 		response_object.headers['Vary'] = 'Accept, Accept-Encoding';
 		response_object.headers['Content-Type'] = serializer.type;
-		if (serializer.serializer.serializeStream) {
+		if (response_data[Symbol.iterator] && serializer.serializer.serializeStream) {
 			let stream = serializer.serializer.serializeStream(response_data);
 			if (compress) {
 				response_object.headers['Content-Encoding'] = 'br';
@@ -293,7 +293,12 @@ export function serialize(response_data, request, response_object) {
 		// TODO: Only do this if the size is large and we can cache the result (otherwise use logic above)
 		response_object.headers['Content-Encoding'] = 'br';
 		// if we have a single buffer (or string) we compress in a single async call
-		response_body = new Promise((resolve) => brotliCompress(response_body, resolve));
+		return new Promise((resolve, reject) =>
+			brotliCompress(response_body, (err, data) => {
+				if (err) reject(err);
+				else resolve(data);
+			})
+		);
 	}
 	return response_body;
 }

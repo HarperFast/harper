@@ -260,6 +260,17 @@ function getHTTPServer(port, secure, is_operations_server) {
 						});
 				}
 				// else just send the buffer/string
+				else if (body?.then)
+					body.then(
+						(body) => {
+							node_response.end(body);
+						},
+						(error) => {
+							node_response.writeHead(error.http_resp_code || 500);
+							node_response.end(error.toString());
+							harper_logger.error(error);
+						}
+					);
 				else node_response.end(body);
 			} catch (error) {
 				node_response.writeHead(error.http_resp_code || 500);
@@ -335,7 +346,7 @@ function onSocket(listener, options) {
 	}
 	if (options.port) SERVERS[options.port] = listener;
 }
-// workaround for inability to defer upgrade
+// workaround for inability to defer upgrade from https://github.com/nodejs/node/issues/6339#issuecomment-570511836
 Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
 	get() {
 		return (
