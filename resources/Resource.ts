@@ -186,7 +186,6 @@ export class Resource implements ResourceInterface {
 		},
 		{ hasContent: true, type: 'read' }
 	);
-	static query = this.search;
 
 	static copy = transactional(
 		function (resource: Resource, query?: Map, request: Request, data?: any) {
