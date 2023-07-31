@@ -226,12 +226,17 @@ function readMetaDb(
 			if (!primary_attribute) {
 				// this isn't defined, find it in the attributes
 				for (const attribute of attributes) {
-					if (attribute.is_hash_attribute) {
+					if (attribute.is_hash_attribute || attribute.isPrimaryKey) {
 						primary_attribute = attribute;
 						break;
 					}
 				}
-				if (!primary_attribute) throw new Error('Unable to find a primary key attribute on table');
+				if (!primary_attribute)
+					throw new Error(
+						`Unable to find a primary key attribute on table ${table_name}, with attributes: ${JSON.stringify(
+							attributes
+						)}`
+					);
 			}
 			// if the table has already been defined, use that class, don't create a new one
 			let table = table_classes?.get(table_name);
