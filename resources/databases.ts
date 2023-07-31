@@ -222,7 +222,17 @@ function readMetaDb(
 
 		const table_classes = tables[TABLE_CLASSES];
 		for (const [table_name, table_def] of tables_to_load) {
-			const { attributes, primary: primary_attribute } = table_def;
+			let { attributes, primary: primary_attribute } = table_def;
+			if (!primary_attribute) {
+				// this isn't defined, find it in the attributes
+				for (const attribute of attributes) {
+					if (attribute.is_hash_attribute) {
+						primary_attribute = attribute;
+						break;
+					}
+				}
+				if (!primary_attribute) throw new Error('Unable to find a primary key attribute on table');
+			}
 			// if the table has already been defined, use that class, don't create a new one
 			let table = table_classes?.get(table_name);
 			let indices = {},
