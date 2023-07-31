@@ -522,7 +522,7 @@ export function table({
 			attribute_name = attribute_table_name;
 		}
 		const attribute = attributes.find((attribute) => attribute.name === attribute_name);
-		if (!attribute?.indexed && value.indexed) {
+		if (!attribute?.indexed && value.indexed && !value.isPrimaryKey) {
 			startTxn();
 			has_changes = true;
 			attributes_dbi.remove(key);
