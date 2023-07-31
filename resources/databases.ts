@@ -213,92 +213,104 @@ function readMetaDb(
 				value.name = attribute_name;
 			}
 			defined_tables?.add(table_name);
-			let attributes = tables_to_load.get(table_name);
-			if (!attributes) tables_to_load.set(table_name, (attributes = []));
-			if (attribute_name != null) attributes.push(value);
+			let table_def = tables_to_load.get(table_name);
+			if (!table_def) tables_to_load.set(table_name, (table_def = { attributes: [] }));
+			if (attribute_name == null || value.is_hash_attribute) table_def.primary = value;
+			if (attribute_name != null) table_def.attributes.push(value);
 			Object.defineProperty(value, 'key', { value: key, configurable: true });
 		}
 
 		const table_classes = tables[TABLE_CLASSES];
-		for (const [table_name, attributes] of tables_to_load) {
+		for (const [table_name, table_def] of tables_to_load) {
+			let { attributes, primary: primary_attribute } = table_def;
+			if (!primary_attribute) {
+				// this isn't defined, find it in the attributes
+				for (const attribute of attributes) {
+					if (attribute.is_hash_attribute || attribute.isPrimaryKey) {
+						primary_attribute = attribute;
+						break;
+					}
+				}
+				if (!primary_attribute)
+					throw new Error(
+						`Unable to find a primary key attribute on table ${table_name}, with attributes: ${JSON.stringify(
+							attributes
+						)}`
+					);
+			}
+			// if the table has already been defined, use that class, don't create a new one
+			let table = table_classes?.get(table_name);
+			let indices = {},
+				existing_attributes = [];
+			let table_id;
+			let primary_store;
+			const audit = primary_attribute.audit !== false;
+			const track_deletes = primary_attribute.trackDeletes;
+			const expiration = primary_attribute.expiration;
+			if (table) {
+				indices = table.indices;
+				existing_attributes = table.attributes;
+				table.schemaVersion++;
+			} else {
+				table_id = primary_attribute.tableId;
+				if (table_id) {
+					if (table_id >= (root_store.nextTableId || 0)) root_store.nextTableId = table_id + 1;
+				} else {
+					if (!root_store.nextTableId) root_store.nextTableId = 1;
+					primary_attribute.tableId = table_id = root_store.nextTableId++;
+					dbis_store.putSync(primary_attribute.key, primary_attribute);
+				}
+				const dbi_init = new OpenDBIObject(!primary_attribute.is_hash_attribute, primary_attribute.is_hash_attribute);
+				harper_logger.trace(`openDB ${primary_attribute.key} from ${database_name}`);
+				primary_store = root_store.openDB(primary_attribute.key, dbi_init);
+				primary_store.rootStore = root_store;
+				primary_store.tableId = table_id;
+			}
 			for (const attribute of attributes) {
-				// find the primary key attribute as that defines the table itself
 				attribute.attribute = attribute.name;
-				if (attribute.is_hash_attribute) {
-					// if the table has already been defined, use that class, don't create a new one
-					let table = table_classes?.get(table_name);
-					let indices = {},
-						existing_attributes = [];
-					let table_id;
-					let primary_store;
-					const audit = attribute.audit !== false;
-					const track_deletes = attribute.trackDeletes;
-					const expiration = attribute.expiration;
-					if (table) {
-						indices = table.indices;
-						existing_attributes = table.attributes;
-						table.schemaVersion++;
-					} else {
-						table_id = attribute.tableId;
-						if (table_id) {
-							if (table_id >= (root_store.nextTableId || 0)) root_store.nextTableId = table_id + 1;
-						} else {
-							if (!root_store.nextTableId) root_store.nextTableId = 1;
-							attribute.tableId = table_id = root_store.nextTableId++;
-							dbis_store.putSync(attribute.key, attribute);
+				try {
+					// now load the non-primary keys, opening the dbs as necessary for indices
+					if (!attribute.is_hash_attribute && (attribute.indexed || (attribute.attribute && !attribute.name))) {
+						if (!indices[attribute.name]) {
+							const dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
+							harper_logger.trace(`openDB ${attribute.key} from ${database_name}`);
+							indices[attribute.name] = root_store.openDB(attribute.key, dbi_init);
 						}
-						const dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
-						harper_logger.trace(`openDB ${attribute.key} from ${database_name}`);
-						primary_store = root_store.openDB(attribute.key, dbi_init);
-						primary_store.rootStore = root_store;
-						primary_store.tableId = table_id;
-					}
-					for (const attribute of attributes) {
-						try {
-							// now load the non-primary keys, opening the dbs as necessary for indices
-							if (!attribute.is_hash_attribute && (attribute.indexed || (attribute.attribute && !attribute.name))) {
-								if (!indices[attribute.name]) {
-									const dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
-									harper_logger.trace(`openDB ${attribute.key} from ${database_name}`);
-									indices[attribute.name] = root_store.openDB(attribute.key, dbi_init);
-								}
-								const existing_attribute = existing_attributes.find(
-									(existing_attribute) => existing_attribute.name === attribute.name
-								);
-								if (existing_attribute)
-									existing_attributes.splice(existing_attributes.indexOf(existing_attribute), 1, attribute);
-								else existing_attributes.push(attribute);
-							}
-						} catch (error) {
-							harper_logger.error(`Error trying to update attribute`, attribute, existing_attributes, indices, error);
-						}
-					}
-					if (!table) {
-						table = setTable(
-							tables,
-							table_name,
-							makeTable({
-								primaryStore: primary_store,
-								auditStore: audit_store,
-								audit,
-								expirationMS: expiration && expiration * 1000,
-								trackDeletes: track_deletes,
-								tableName: table_name,
-								tableId: table_id,
-								primaryKey: attribute.name,
-								databasePath: is_legacy ? database_name + '/' + table_name : database_name,
-								databaseName: database_name,
-								indices,
-								attributes,
-								schemaDefined: attribute.schemaDefined,
-								dbisDB: dbis_store,
-							})
+						const existing_attribute = existing_attributes.find(
+							(existing_attribute) => existing_attribute.name === attribute.name
 						);
-						table.schemaVersion = 1;
-						for (const listener of table_listeners) {
-							listener(table);
-						}
+						if (existing_attribute)
+							existing_attributes.splice(existing_attributes.indexOf(existing_attribute), 1, attribute);
+						else existing_attributes.push(attribute);
 					}
+				} catch (error) {
+					harper_logger.error(`Error trying to update attribute`, attribute, existing_attributes, indices, error);
+				}
+			}
+			if (!table) {
+				table = setTable(
+					tables,
+					table_name,
+					makeTable({
+						primaryStore: primary_store,
+						auditStore: audit_store,
+						audit,
+						expirationMS: expiration && expiration * 1000,
+						trackDeletes: track_deletes,
+						tableName: table_name,
+						tableId: table_id,
+						primaryKey: primary_attribute.name,
+						databasePath: is_legacy ? database_name + '/' + table_name : database_name,
+						databaseName: database_name,
+						indices,
+						attributes,
+						schemaDefined: primary_attribute.schemaDefined,
+						dbisDB: dbis_store,
+					})
+				);
+				table.schemaVersion = 1;
+				for (const listener of table_listeners) {
+					listener(table);
 				}
 			}
 		}
@@ -510,7 +522,7 @@ export function table({
 			attribute_name = attribute_table_name;
 		}
 		const attribute = attributes.find((attribute) => attribute.name === attribute_name);
-		if (!attribute?.indexed && value.indexed) {
+		if (!attribute?.indexed && value.indexed && !value.isPrimaryKey) {
 			startTxn();
 			has_changes = true;
 			attributes_dbi.remove(key);

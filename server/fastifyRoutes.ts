@@ -5,7 +5,7 @@ import fastify_cors from '@fastify/cors';
 import request_time_plugin from './serverHelpers/requestTimePlugin';
 import autoload from '@fastify/autoload';
 import * as env from '../utility/environment/environmentManager';
-import { HDB_SETTINGS_NAMES, CONFIG_PARAMS } from '../utility/hdbTerms';
+import { CONFIG_PARAMS } from '../utility/hdbTerms';
 import * as harper_logger from '../utility/logging/harper_logger';
 import * as hdbCore from './fastifyRoutes/plugins/hdbCore';
 import * as user_schema from '../security/user';
