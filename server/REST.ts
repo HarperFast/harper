@@ -90,7 +90,6 @@ async function http(request, next_handler) {
 		} else if ((lastModification = responseMetadata?.lastModified)) {
 			const last_etag = request.headers['if-none-match'];
 			if (last_etag && (lastModification * 1000).toString(36) == last_etag) {
-				//resource_result.cancel();
 				if (response_data?.onDone) response_data.onDone();
 				status = 304;
 				response_data = undefined;
