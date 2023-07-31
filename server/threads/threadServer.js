@@ -1,7 +1,7 @@
 'use strict';
 const { isMainThread, parentPort, threadId } = require('worker_threads');
 const { Socket } = require('net');
-const { createServer } = require('http');
+const { createServer, IncomingMessage } = require('http');
 const { createServer: createSecureServer } = require('https');
 const { readFileSync } = require('fs');
 const harper_logger = require('../../utility/logging/harper_logger');
@@ -260,6 +260,17 @@ function getHTTPServer(port, secure, is_operations_server) {
 						});
 				}
 				// else just send the buffer/string
+				else if (body?.then)
+					body.then(
+						(body) => {
+							node_response.end(body);
+						},
+						(error) => {
+							node_response.writeHead(error.http_resp_code || 500);
+							node_response.end(error.toString());
+							harper_logger.error(error);
+						}
+					);
 				else node_response.end(body);
 			} catch (error) {
 				node_response.writeHead(error.http_resp_code || 500);
@@ -267,6 +278,12 @@ function getHTTPServer(port, secure, is_operations_server) {
 				harper_logger.error(error);
 			}
 		});
+		/* Should we use HTTP2 on upgrade?:
+		http_servers[port].on('upgrade', function upgrade(request, socket, head) {
+			wss.handleUpgrade(request, socket, head, function done(ws) {
+				wss.emit('connection', ws, request);
+			});
+		});*/
 		registerServer(http_servers[port], port);
 	}
 	return http_servers[port];
@@ -329,6 +346,18 @@ function onSocket(listener, options) {
 	}
 	if (options.port) SERVERS[options.port] = listener;
 }
+// workaround for inability to defer upgrade from https://github.com/nodejs/node/issues/6339#issuecomment-570511836
+Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
+	get() {
+		return (
+			'connection' in this.headers &&
+			'upgrade' in this.headers &&
+			this.headers.connection.startsWith('Upgrade') &&
+			this.headers.upgrade.toLowerCase() == 'websocket'
+		);
+	},
+	set(v) {},
+});
 function onWebSocket(listener, options) {
 	for (let { port: port_num, secure } of getPorts(options)) {
 		if (!ws_servers[port_num]) {

@@ -186,7 +186,6 @@ export class Resource implements ResourceInterface {
 		},
 		{ hasContent: true, type: 'read' }
 	);
-	static query = this.search;
 
 	static copy = transactional(
 		function (resource: Resource, query?: Map, request: Request, data?: any) {
@@ -425,7 +424,13 @@ function transactional(action, options) {
 						id.push(part);
 					}
 					if (id.length === 0) id = null;
-					else if (id.length === 1) id = id[0];
+					else {
+						if (id.length === 1) id = id[0];
+						if (query.slice) {
+							query = query.slice(id.length, query.length);
+							if (query.length === 0) query = null;
+						}
+					}
 				} else {
 					if (typeof (id = id_or_query.url) === 'string') {
 						if (id[0] !== '/') throw new URIError(`Invalid local URL ${id}, must start with slash`);
