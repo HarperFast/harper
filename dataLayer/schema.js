@@ -145,16 +145,12 @@ async function createTableStructure(create_table_object) {
 }
 
 async function dropSchema(drop_schema_object) {
+	let no_db_error =
+		!drop_schema_object.schema && !drop_schema_object.database ? new Error('database is required') : undefined;
 	let validation_error = validation.schema_object(drop_schema_object);
-	if (validation_error) {
-		throw handleHDBError(
-			validation_error,
-			validation_error.message,
-			HTTP_STATUS_CODES.BAD_REQUEST,
-			undefined,
-			undefined,
-			true
-		);
+	const val_error = no_db_error ?? validation_error;
+	if (val_error) {
+		throw handleHDBError(val_error, val_error.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 
 	transformReq(drop_schema_object);

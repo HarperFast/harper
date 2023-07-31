@@ -44,7 +44,6 @@ function makeAttributesStrings(object) {
 
 function schema_object(object) {
 	object = makeAttributesStrings(object);
-	if (!object.schema && !object.database) constraints.database.presence = { message: is_required_string };
 	constraints.table.presence = false;
 	constraints.attribute.presence = false;
 	constraints.hash_attribute.presence = false;
@@ -77,7 +76,6 @@ function attribute_object(object) {
 
 function describe_table(object) {
 	object = makeAttributesStrings(object);
-	constraints.schema.presence = { message: is_required_string };
 	constraints.table.presence = { message: is_required_string };
 	constraints.attribute.presence = false;
 	constraints.hash_attribute.presence = false;
