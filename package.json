@@ -54,7 +54,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-s3": "3.363.0",
-    "@aws-sdk/lib-storage": "3.363.0",
+    "@aws-sdk/lib-storage": "3.367.0",
     "@aws-sdk/abort-controller": "3.347.0",
     "@fastify/autoload": "~5.7.1",
     "@fastify/compress": "~6.4.0",
