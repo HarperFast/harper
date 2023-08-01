@@ -818,7 +818,7 @@
 									"",
 									"pm.test(\"Schema 'tx_log_test' is created\", () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"schema 'tx_log_test' successfully created\")",
+									"    pm.expect(response.message).to.equal(\"database 'tx_log_test' successfully created\")",
 									"})"
 								],
 								"type": "text/javascript"
@@ -2317,7 +2317,7 @@
 									"",
 									"pm.test(\"Schema 'tx_log_test' is dropped\", () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"successfully deleted schema 'tx_log_test'\")",
+									"    pm.expect(response.message).to.equal(\"successfully deleted 'tx_log_test'\")",
 									"})"
 								],
 								"type": "text/javascript"
@@ -2784,7 +2784,7 @@
 									"",
 									"pm.test('Radio schema created', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"schema 'radio' successfully created\");",
+									"    pm.expect(response.message).to.equal(\"database 'radio' successfully created\");",
 									"});",
 									""
 								],
@@ -2848,7 +2848,7 @@
 									"",
 									"pm.test('Radio schema created', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"schema 'listeners' successfully created\");",
+									"    pm.expect(response.message).to.equal(\"database 'listeners' successfully created\");",
 									"});",
 									""
 								],
@@ -7553,7 +7553,7 @@
 									"",
 									"pm.test('Schema radio dropped node 1', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"successfully deleted schema 'radio'\");",
+									"    pm.expect(response.message).to.equal(\"successfully deleted 'radio'\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -7616,7 +7616,7 @@
 									"",
 									"pm.test('Schema listeners dropped node 1', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"successfully deleted schema 'listeners'\");",
+									"    pm.expect(response.message).to.equal(\"successfully deleted 'listeners'\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -7679,7 +7679,7 @@
 									"",
 									"pm.test('Schema radio dropped node 2', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"successfully deleted schema 'radio'\");",
+									"    pm.expect(response.message).to.equal(\"successfully deleted 'radio'\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -7742,7 +7742,7 @@
 									"",
 									"pm.test('Schema listeners dropped node 2', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"successfully deleted schema 'listeners'\");",
+									"    pm.expect(response.message).to.equal(\"successfully deleted 'listeners'\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -8618,7 +8618,7 @@
 									"",
 									"pm.test('Dev schema created', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"schema 'dev' successfully created\");",
+									"    pm.expect(response.message).to.equal(\"database 'dev' successfully created\");",
 									"});",
 									""
 								],
@@ -10914,7 +10914,7 @@
 									"",
 									"pm.test('Schema dev dropped node 1', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"successfully deleted schema 'dev'\");",
+									"    pm.expect(response.message).to.equal(\"successfully deleted 'dev'\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -11050,7 +11050,7 @@
 									"",
 									"pm.test('Schema dev dropped node 2', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"successfully deleted schema 'dev'\");",
+									"    pm.expect(response.message).to.equal(\"successfully deleted 'dev'\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -11554,7 +11554,7 @@
 									"",
 									"pm.test('incredible_bulk schema created', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"schema 'incredible_bulk' successfully created\");",
+									"    pm.expect(response.message).to.equal(\"database 'incredible_bulk' successfully created\");",
 									"});",
 									""
 								],
@@ -11618,7 +11618,7 @@
 									"",
 									"pm.test('incredible_bulk schema created', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"schema 'incredible_bulk' successfully created\");",
+									"    pm.expect(response.message).to.equal(\"database 'incredible_bulk' successfully created\");",
 									"});",
 									""
 								],
@@ -14603,7 +14603,7 @@
 									"",
 									"pm.test('incredible_bulk schema deleted', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"successfully deleted schema 'incredible_bulk'\");",
+									"    pm.expect(response.message).to.equal(\"successfully deleted 'incredible_bulk'\");",
 									"});",
 									""
 								],
@@ -14667,7 +14667,7 @@
 									"",
 									"pm.test('incredible_bulk schema deleted', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"successfully deleted schema 'incredible_bulk'\");",
+									"    pm.expect(response.message).to.equal(\"successfully deleted 'incredible_bulk'\");",
 									"});",
 									""
 								],
@@ -15500,7 +15500,7 @@
 									"",
 									"pm.test('four schema created', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"schema 'four' successfully created\");",
+									"    pm.expect(response.message).to.equal(\"database 'four' successfully created\");",
 									"});",
 									""
 								],
@@ -15564,7 +15564,7 @@
 									"",
 									"pm.test('four schema created', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"schema 'four' successfully created\");",
+									"    pm.expect(response.message).to.equal(\"database 'four' successfully created\");",
 									"});",
 									""
 								],
@@ -18171,7 +18171,7 @@
 									"",
 									"pm.test('four schema deleted', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"successfully deleted schema 'four'\");",
+									"    pm.expect(response.message).to.equal(\"successfully deleted 'four'\");",
 									"});",
 									""
 								],
@@ -18235,7 +18235,7 @@
 									"",
 									"pm.test('four schema deleted', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"successfully deleted schema 'four'\");",
+									"    pm.expect(response.message).to.equal(\"successfully deleted 'four'\");",
 									"});",
 									""
 								],
@@ -18299,7 +18299,7 @@
 									"",
 									"pm.test('four schema deleted', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"successfully deleted schema 'four'\");",
+									"    pm.expect(response.message).to.equal(\"successfully deleted 'four'\");",
 									"});",
 									""
 								],
@@ -18363,7 +18363,7 @@
 									"",
 									"pm.test('four schema deleted', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"successfully deleted schema 'four'\");",
+									"    pm.expect(response.message).to.equal(\"successfully deleted 'four'\");",
 									"});",
 									""
 								],
