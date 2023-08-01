@@ -84,7 +84,6 @@ describe('Test describeAll', function () {
 
 	before(async function () {
 		test_envs = await test_util.createMockDB(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_DOG, test_data);
-		search_orig = schema_describe.__get__('p_search_search_by_value');
 		desc_table_orig = schema_describe.describeTable;
 		sandbox = sinon.createSandbox();
 	});
@@ -98,16 +97,15 @@ describe('Test describeAll', function () {
 	it('describeAll, test nominal case', async function () {
 		let all_schema = await schema_describe.describeAll();
 		assert.strictEqual(Object.keys(all_schema).length, 1, 'expected schema not found');
-		assert(all_schema.dev.dog.last_updated_record >= start_time, 'Has recent updated timestamp');
 	});
 
 	it('describeAll, test search exception', async function () {
 		let search_stub_throw = sandbox.stub().throws(new Error('search error'));
-		schema_describe.__set__('p_search_search_by_value', search_stub_throw);
+		const get_db_rw = schema_describe.__set__('getDatabases', search_stub_throw);
 		let all_schema = await schema_describe.describeAll();
 		assert.strictEqual(all_schema instanceof Error, true, 'expected exception');
 		// restore the original search
-		schema_describe.__set__('p_search_search_by_value', search_orig);
+		get_db_rw();
 	});
 
 	it('describeAll, test descTable exception', async function () {
@@ -127,7 +125,6 @@ describe('Test describeSchema', function () {
 	let sandbox = undefined;
 	before(async function () {
 		test_envs = await test_util.createMockDB(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_DOG, test_data);
-		search_orig = schema_describe.__get__('p_search_search_by_value');
 		desc_table_orig = schema_describe.describeTable;
 		sandbox = sinon.createSandbox();
 	});
@@ -141,22 +138,21 @@ describe('Test describeSchema', function () {
 	it('describeSchema, test nominal case', async function () {
 		let desc_schema = await schema_describe.describeSchema(DESCRIBE_SCHEMA_MESSAGE);
 		assert.strictEqual(Object.keys(desc_schema).length, 1, 'expected schema not found');
-		assert(desc_schema.dog.last_updated_record >= start_time, 'Has recent updated timestamp');
 	});
 
-	it('describeSchema, test nominal case', async function () {
+	it('describeSchema, test no schema error', async function () {
 		let error;
 		try {
 			let desc_schema = await schema_describe.describeSchema({});
 		} catch (err) {
 			error = err;
 		}
-		assert.strictEqual(error.message, 'Schema is required');
+		assert.strictEqual(error.message, "database 'data' does not exist");
 	});
 
 	it('describeSchema, test search exception', async function () {
 		let search_stub_throw = sandbox.stub().throws(new Error('search error'));
-		schema_describe.__set__('p_search_search_by_value', search_stub_throw);
+		const get_db_rw = schema_describe.__set__('getDatabases', search_stub_throw);
 		let desc_schema = undefined;
 		try {
 			desc_schema = await schema_describe.describeSchema(DESCRIBE_SCHEMA_MESSAGE);
@@ -164,7 +160,7 @@ describe('Test describeSchema', function () {
 			desc_schema = err;
 		}
 		assert.strictEqual(desc_schema instanceof Error, true, 'expected exception');
-		schema_describe.__set__('p_search_search_by_value', search_orig);
+		get_db_rw();
 	});
 
 	it('describeSchema, test descTable exception', async function () {
@@ -204,7 +200,6 @@ describe('Test describeTable', function () {
 
 	before(async function () {
 		test_envs = await test_util.createMockDB(HASH_ATTRIBUTE, TEST_SCHEMA, TEST_TABLE_DOG, test_data);
-		schema_describe.__get__('p_search_search_by_value');
 		desc_table_orig = schema_describe.describeTable;
 		sandbox = sinon.createSandbox();
 	});
@@ -234,14 +229,6 @@ describe('Test describeTable', function () {
 		} catch (err) {
 			result = err;
 		}
-		assert.deepStrictEqual(result.message, 'Schema is required,Table is required');
-	});
-
-	it('describeTable, test search exception case', async function () {
-		let search_stub_throw = sandbox.stub().onCall(0).resolves(SEARCH_STUB_RESULTS);
-		search_stub_throw.onCall(1).throws(new Error('Second search exception'));
-		schema_describe.__set__('p_search_search_by_value', search_stub_throw);
-		let desc_table = await schema_describe.describeTable(DESCRIBE_TABLE_MESSAGE);
-		assert.deepStrictEqual(desc_table.name, TEST_TABLE_DOG, 'expected empty results');
+		assert.deepStrictEqual(result.message, 'Table is required');
 	});
 });
