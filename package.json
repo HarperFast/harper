@@ -20,8 +20,8 @@
   "engines": {
     "node": ">=14.0.0",
     "preferred-node": "18.15.0",
-    "go-lang": "1.19.10",
-    "nats-server": "2.9.18"
+    "go-lang": "1.19.11",
+    "nats-server": "2.9.20"
   },
   "exports": {
     ".": "./index.js"
@@ -99,7 +99,7 @@
     "moment": "2.29.4",
     "mqtt-packet": "~8.1.2",
     "msgpackr": "1.9.5",
-    "nats": "2.14.0",
+    "nats": "2.15.1",
     "needle": "3.2.0",
     "node-stream-zip": "1.15.0",
     "normalize-path": "^3.0.0",
