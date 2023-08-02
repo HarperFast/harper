@@ -290,6 +290,7 @@ const OPERATIONS_ENUM = {
 	UPSERT: 'upsert',
 	SEARCH_BY_CONDITIONS: 'search_by_conditions',
 	SEARCH_BY_HASH: 'search_by_hash',
+	SEARCH_BY_ID: 'search_by_id',
 	SEARCH_BY_VALUE: 'search_by_value',
 	SEARCH: 'search',
 	SQL: 'sql',
