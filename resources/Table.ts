@@ -236,8 +236,8 @@ export function makeTable(options) {
 		 * @param options An important option is allowInvalidated, which can be used to indicate that it is not necessary for a caching table to load data from the source if there is not a local copy of the data in the table (usually not necessary for a delete, for example).
 		 * @returns
 		 */
-		static getResource(id: Id, request, options?: any): Promise<TableResource> | TableResource {
-			const resource: TableResource = super.getResource(id, request) as any;
+		static getResource(id: Id, request, resource_options?: any): Promise<TableResource> | TableResource {
+			const resource: TableResource = super.getResource(id, request, resource_options) as any;
 			if (id != null) {
 				try {
 					if (resource.hasOwnProperty(RECORD_PROPERTY)) return resource; // already loaded, don't reload, current version may have modifications
@@ -247,8 +247,7 @@ export function makeTable(options) {
 					}
 					let resolve_load, reject_load;
 					const read_txn = env_txn?.getReadTxn();
-					if (options) options.transaction = read_txn;
-					else options = { transaction: read_txn };
+					const options = { transaction: read_txn };
 					let finished;
 					loadRecord(id, request, options, (entry, error) => {
 						if (error) reject_load(error);
