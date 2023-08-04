@@ -74,13 +74,18 @@ let operation_index = 0;
  * @returns {Promise<void>}
  */
 async function workQueueListener(signal) {
-	const sub = nats_connection.subscribe(
-		`${nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_subject}.${nats_connection.info.server_name}`,
-		SUBSCRIPTION_OPTIONS
-	);
-	if (signal) signal.abort = () => sub.close();
+	// const sub = nats_connection.subscribe(
+	// 	`${nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_subject}.${nats_connection.info.server_name}`,
+	// 	SUBSCRIPTION_OPTIONS
+	// );
+	// if (signal) signal.abort = () => sub.close();
 
-	for await (const message of sub) {
+	const consumer = await js_client.consumers.get(
+		nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+		nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name
+	);
+	const messages = await consumer.consume();
+	for await (const message of messages) {
 		// ring style queue for awaiting operations for concurrency. await the entry from 100 operations ago:
 		await outstanding_operations[operation_index];
 		outstanding_operations[operation_index] = messageProcessor(message).catch((error) => {

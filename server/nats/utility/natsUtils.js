@@ -632,11 +632,11 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 		if (e.code.toString() === '404') {
 			await jsm.consumers.add(CONSUMER_NAMES.stream_name, {
 				ack_policy: AckPolicy.Explicit,
-				deliver_subject: `${CONSUMER_NAMES.deliver_subject}.${server_name}`,
+				//deliver_subject: `${CONSUMER_NAMES.deliver_subject}.${server_name}`,
 				durable_name: CONSUMER_NAMES.durable_name,
 				deliver_policy: DeliverPolicy.All,
 				max_ack_pending: 10000,
-				deliver_group: CONSUMER_NAMES.deliver_group,
+				//deliver_group: CONSUMER_NAMES.deliver_group,
 			});
 		} else {
 			throw e;
