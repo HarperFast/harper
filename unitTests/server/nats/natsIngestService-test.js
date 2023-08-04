@@ -4,7 +4,7 @@ const rewire = require('rewire');
 const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
-const { toJsMsg, headers } = require('nats');
+const { headers } = require('nats');
 const { decode } = require('msgpackr');
 const TEST_HEADERS = headers();
 
@@ -35,11 +35,6 @@ async function setupTestStreamAndSource() {
 async function teardownTestStreamAndSource() {
 	await nats_utils.deleteLocalStream(STREAM_NAME);
 	await nats_utils.deleteLocalStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
-}
-
-function decodeJsMsg(msg) {
-	const js_msg = toJsMsg(msg);
-	return decode(js_msg.data);
 }
 
 describe('Test natsIngestService module', () => {
@@ -87,7 +82,7 @@ describe('Test natsIngestService module', () => {
 		expect(server_name).to.equal('testLeafServer-leaf');
 		expect(js_manager).to.haveOwnProperty('streams');
 		expect(js_manager).to.haveOwnProperty('consumers');
-		expect(js_client).to.haveOwnProperty('api');
+		expect(js_client).to.haveOwnProperty('streamAPI');
 	}).timeout(10000);
 
 	describe('Test workQueueListener function', () => {

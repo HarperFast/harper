@@ -39,13 +39,8 @@ const {
 	StringCodec,
 	JSONCodec,
 	createInbox,
-	StreamSource,
 	headers,
-	toJsMsg,
-	nuid,
-	JetStreamOptions,
 	ErrorCode,
-	nanos,
 } = require('nats');
 const { PACKAGE_ROOT } = require('../../../utility/hdbTerms');
 
