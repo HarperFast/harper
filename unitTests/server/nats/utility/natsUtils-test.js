@@ -31,11 +31,6 @@ const TEST_HEADERS = headers();
 TEST_HEADERS.append(nats_terms.MSG_HEADERS.NATS_MSG_ID, TEST_MSG_ID);
 TEST_HEADERS.append(nats_terms.MSG_HEADERS.ORIGIN, 'testLeafServer');
 
-function decodeJsMsg(msg) {
-	const js_msg = toJsMsg(msg);
-	return decode(js_msg.data);
-}
-
 function CreateStreamMessage(operation, schema, table, records) {
 	this.operation = operation;
 	this.schema = schema;
@@ -332,7 +327,7 @@ describe('Test natsUtils module', () => {
 			expect(result).to.haveOwnProperty('nc');
 			expect(result).to.haveOwnProperty('opts');
 			expect(result).to.haveOwnProperty('jc');
-			expect(result).to.haveOwnProperty('api');
+			expect(result).to.haveOwnProperty('streamAPI');
 		}).timeout(TEST_TIMEOUT);
 
 		it('Test getJetStream returns JetStream client if if a connection does not exist', async () => {
@@ -341,7 +336,7 @@ describe('Test natsUtils module', () => {
 			expect(result).to.haveOwnProperty('nc');
 			expect(result).to.haveOwnProperty('opts');
 			expect(result).to.haveOwnProperty('jc');
-			expect(result).to.haveOwnProperty('api');
+			expect(result).to.haveOwnProperty('streamAPI');
 		}).timeout(TEST_TIMEOUT);
 
 		it('Test getNATSReferences calls getConnection and the JetStream functions', async () => {
@@ -643,7 +638,7 @@ describe('Test natsUtils module', () => {
 			expect(wq_stream.config.sources[0].external.api).to.equal('$JS.unit_test_node.API');
 			expect(wq_stream.config.sources[0].external.deliver).to.equal('');
 			expect(wq_stream.config.sources[0].opt_start_time).to.not.be.undefined;
-			expect(wq_stream.config.sources[0].filter_subject).to.equal('txn.devTest.Chicken1.>');
+			expect(wq_stream.config.sources[0].filter_subject).to.equal('txn.>');
 
 			await jsm.consumers.delete('__HARPERDB_WORK_QUEUE__', 'HDB_WORK_QUEUE');
 			await nats_utils.deleteLocalStream('__HARPERDB_WORK_QUEUE__');
@@ -798,7 +793,7 @@ describe('Test natsUtils module', () => {
 			const msg = await jsm.streams.getMessage(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, {
 				seq: wq_stream.state.first_seq,
 			});
-			expect(decodeJsMsg(msg).records[0].id).to.equal(2);
+			expect(decode(msg.data).records[0].id).to.equal(2);
 
 			await jsm.consumers.delete(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, 'HDB_WORK_QUEUE');
 			await nats_utils.deleteLocalStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);

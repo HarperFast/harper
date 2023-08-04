@@ -50,7 +50,7 @@ const {
 const { PACKAGE_ROOT } = require('../../../utility/hdbTerms');
 
 const pkg_json = require('../../../package.json');
-const {recordAction} = require('../../../resources/analytics');
+const { recordAction } = require('../../../resources/analytics');
 
 const jc = JSONCodec();
 const HDB_CLUSTERING_FOLDER = 'clustering';
@@ -380,15 +380,11 @@ async function listRemoteStreams(domain_name) {
  * @returns {Promise<*[]>}
  */
 async function viewStream(stream_name, start_time = undefined, max = undefined) {
-	const { jsm, connection } = await getNATSReferences();
+	const { jsm, js } = await getNATSReferences();
 	const consumer_name = ulid();
-	let entries = [];
-
 	const consumer_config = {
-		ack_policy: AckPolicy.None,
 		durable_name: consumer_name,
-		deliver_subject: consumer_name,
-		deliver_policy: DeliverPolicy.All,
+		ack_policy: AckPolicy.Explicit,
 	};
 
 	// If a start time is passed add a policy that will receive msgs from that time onward.
@@ -397,46 +393,38 @@ async function viewStream(stream_name, start_time = undefined, max = undefined) 
 		consumer_config.opt_start_time = new Date(start_time).toISOString();
 	}
 
-	try {
-		await jsm.consumers.add(stream_name, consumer_config);
+	await jsm.consumers.add(stream_name, consumer_config);
+	const consumer = await js.consumers.get(stream_name, consumer_name);
+	const messages = await consumer.consume();
+	if (consumer._info.num_pending === 0) return [];
 
-		const sub_config = { timeout: 20000 };
-		if (max) sub_config.max = max;
-		const sub = await connection.subscribe(consumer_name, sub_config);
+	let entries = [];
+	for await (const m of messages) {
+		const obj = decode(m.data);
+		let wrapper = {
+			nats_timestamp: m.info.timestampNanos,
+			nats_sequence: m.info.streamSequence,
+			entry: obj,
+		};
 
-		for await (const m of sub) {
-			const jmsg = toJsMsg(m);
-			const obj = decode(jmsg.data);
-			let wrapper = {
-				nats_timestamp: jmsg.info.timestampNanos,
-				nats_sequence: jmsg.info.streamSequence,
-				entry: obj,
-			};
-
-			if (jmsg.headers) {
-				wrapper.origin = jmsg.headers.get(nats_terms.MSG_HEADERS.ORIGIN);
-				wrapper.nats_msg_id = jmsg.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID);
-			}
-
-			entries.push(wrapper);
-			if (sub.getPending() === 1 && jmsg.info.pending === 0) {
-				sub.stop();
-			}
+		if (m.headers) {
+			wrapper.origin = m.headers.get(nats_terms.MSG_HEADERS.ORIGIN);
+			wrapper.nats_msg_id = m.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID);
 		}
 
-		await jsm.consumers.delete(stream_name, consumer_name);
+		entries.push(wrapper);
+		m.ack();
 
-		return entries;
-	} catch (err) {
-		await jsm.consumers.delete(stream_name, consumer_name);
-
-		// If the stream has no entries function will timeout. This is handled here.
-		if (err.code === 'TIMEOUT') {
-			return entries;
+		// if no pending, then we have processed the stream
+		// and we can break
+		if (m.info.pending === 0) {
+			break;
 		}
-
-		throw err;
 	}
+
+	await consumer.delete();
+
+	return entries;
 }
 
 /**
@@ -447,14 +435,11 @@ async function viewStream(stream_name, start_time = undefined, max = undefined) 
  * @returns {AsyncGenerator<{entry: any, nats_timestamp: number, nats_sequence: number, originators: *[]}, *[], *>}
  */
 async function* viewStreamIterator(stream_name, start_time = undefined, max = undefined) {
-	const { jsm, connection } = await getNATSReferences();
+	const { jsm, js } = await getNATSReferences();
 	const consumer_name = ulid();
-
 	const consumer_config = {
-		ack_policy: AckPolicy.None,
 		durable_name: consumer_name,
-		deliver_subject: consumer_name,
-		deliver_policy: DeliverPolicy.All,
+		ack_policy: AckPolicy.Explicit,
 	};
 
 	// If a start time is passed add a policy that will receive msgs from that time onward.
@@ -463,46 +448,36 @@ async function* viewStreamIterator(stream_name, start_time = undefined, max = un
 		consumer_config.opt_start_time = new Date(start_time).toISOString();
 	}
 
-	try {
-		await jsm.consumers.add(stream_name, consumer_config);
-		const sub_config = { timeout: 2000 };
-		if (max) sub_config.max = max;
-		const sub = await connection.subscribe(consumer_name, sub_config);
+	await jsm.consumers.add(stream_name, consumer_config);
+	const consumer = await js.consumers.get(stream_name, consumer_name);
+	const messages = await consumer.consume();
+	if (consumer._info.num_pending === 0) return [];
 
-		for await (const m of sub) {
-			const jmsg = toJsMsg(m);
-			let objects = decode(jmsg.data);
-			if (!objects[0]) objects = [objects];
-			for (let obj of objects) {
-				let wrapper = {
-					nats_timestamp: jmsg.info.timestampNanos,
-					nats_sequence: jmsg.info.streamSequence,
-					entry: obj,
-				};
+	for await (const m of messages) {
+		let objects = decode(m.data);
+		if (!objects[0]) objects = [objects];
+		for (let obj of objects) {
+			let wrapper = {
+				nats_timestamp: m.info.timestampNanos,
+				nats_sequence: m.info.streamSequence,
+				entry: obj,
+			};
 
-				if (jmsg.headers) {
-					wrapper.origin = jmsg.headers.get(nats_terms.MSG_HEADERS.ORIGIN);
-					wrapper.nats_msg_id = jmsg.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID);
-				}
-
-				yield wrapper;
+			if (m.headers) {
+				wrapper.origin = m.headers.get(nats_terms.MSG_HEADERS.ORIGIN);
+				wrapper.nats_msg_id = m.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID);
 			}
-			if (sub.getPending() === 1 && jmsg.info.pending === 0) {
-				sub.stop();
-			}
+
+			yield wrapper;
 		}
 
-		await jsm.consumers.delete(stream_name, consumer_name);
-	} catch (err) {
-		await jsm.consumers.delete(stream_name, consumer_name);
+		m.ack();
 
-		// If the stream has no entries function will timeout. This is handled here.
-		if (err.code === 'TIMEOUT') {
-			return [];
+		if (m.info.pending === 0) {
+			break;
 		}
-
-		throw err;
 	}
+	await consumer.delete();
 }
 
 /**
@@ -514,14 +489,19 @@ async function* viewStreamIterator(stream_name, start_time = undefined, max = un
  * @returns {Promise<void>}
  */
 async function publishToStream(subject_name, stream_name, msg_header, message) {
-	hdb_logger.trace(`publishToStream called with subject: ${subject_name}, stream: ${stream_name}, entries:`, message.operation);
+	hdb_logger.trace(
+		`publishToStream called with subject: ${subject_name}, stream: ${stream_name}, entries:`,
+		message.operation
+	);
 	msg_header = addNatsMsgHeader(message, msg_header);
 
 	const { js } = await getNATSReferences();
 	const nats_server = await getJsmServerName();
 	const subject = `${subject_name}.${nats_server}`;
-	let encoded_message = message instanceof Uint8Array ? message :// already encoded
-		encode(message);
+	let encoded_message =
+		message instanceof Uint8Array
+			? message // already encoded
+			: encode(message);
 
 	try {
 		hdb_logger.trace(`publishToStream publishing to subject: ${subject}`);
@@ -533,12 +513,12 @@ async function publishToStream(subject_name, stream_name, msg_header, message) {
 			return exclusiveLock(async () => {
 				// try again once we have the lock
 				try {
-					await js.publish(subject, encoded_message, {headers: msg_header});
-				} catch(error) {
+					await js.publish(subject, encoded_message, { headers: msg_header });
+				} catch (error) {
 					if (err.code && err.code.toString() === '503') {
 						hdb_logger.trace(`publishToStream creating stream: ${stream_name}`);
 						let subject_parts = subject.split('.');
-						subject_parts[2] = '*'
+						subject_parts[2] = '*';
 						await createLocalStream(stream_name, [subject] /*[subject_parts.join('.')]*/);
 						await js.publish(subject, encoded_message, { headers: msg_header });
 					} else {
@@ -894,25 +874,26 @@ async function updateWorkStream(subscription, node_name) {
 	// Nats has trouble concurrently updating a work stream. This code uses transaction locking to ensure that
 	// all updateWorkStream calls run synchronously.
 	await exclusiveLock(async () => {
-			// The connection between nodes can only be a "pull" relationship. This means we only care about the subscribe param.
-			// If a node is publishing to another node that publishing relationship is setup by have the opposite node subscribe to the node that is publishing.
-			if (subscription.subscribe === true) {
-				await addSourceToWorkStream(node_domain_name, nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, subscription);
-			} else {
-				await removeSourceFromWorkStream(
-					node_domain_name,
-					nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-					subscription
-				);
-			}
+		// The connection between nodes can only be a "pull" relationship. This means we only care about the subscribe param.
+		// If a node is publishing to another node that publishing relationship is setup by have the opposite node subscribe to the node that is publishing.
+		if (subscription.subscribe === true) {
+			await addSourceToWorkStream(node_domain_name, nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, subscription);
+		} else {
+			await removeSourceFromWorkStream(
+				node_domain_name,
+				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+				subscription
+			);
 		}
-	);
+	});
 }
 
 function exclusiveLock(callback) {
 	return transaction.writeTransaction(
 		hdb_terms.SYSTEM_SCHEMA_NAME,
-		hdb_terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME, callback);
+		hdb_terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME,
+		callback
+	);
 }
 /**
  * Creates a local stream for a table.
