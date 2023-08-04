@@ -395,7 +395,7 @@ async function viewStream(stream_name, start_time = undefined, max = undefined) 
 
 	await jsm.consumers.add(stream_name, consumer_config);
 	const consumer = await js.consumers.get(stream_name, consumer_name);
-	const messages = await consumer.consume();
+	const messages = !max ? await consumer.consume() : await consumer.fetch({ max_messages: max, expires: 2000 });
 	if (consumer._info.num_pending === 0) return [];
 
 	let entries = [];
@@ -450,7 +450,7 @@ async function* viewStreamIterator(stream_name, start_time = undefined, max = un
 
 	await jsm.consumers.add(stream_name, consumer_config);
 	const consumer = await js.consumers.get(stream_name, consumer_name);
-	const messages = await consumer.consume();
+	const messages = !max ? await consumer.consume() : await consumer.fetch({ max_messages: max, expires: 2000 });
 	if (consumer._info.num_pending === 0) return [];
 
 	for await (const m of messages) {
