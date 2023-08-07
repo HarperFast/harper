@@ -155,7 +155,6 @@ async function checkNATSServerInstalled() {
  */
 async function createConnection(port, username, password, wait_on_first_connect = true, host = '127.0.0.1') {
 	hdb_logger.trace('create connection called');
-	//console.trace('create connection called');
 	const c = await connect({
 		name: host,
 		port: port,
