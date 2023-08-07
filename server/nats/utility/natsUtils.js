@@ -154,7 +154,7 @@ async function checkNATSServerInstalled() {
  * @returns {Promise<*>}
  */
 async function createConnection(port, username, password, wait_on_first_connect = true, host = '127.0.0.1') {
-	hdb_logger.trace('create connection called');
+	hdb_logger.trace('create nats connection called');
 	const c = await connect({
 		name: host,
 		port: port,
@@ -170,7 +170,7 @@ async function createConnection(port, username, password, wait_on_first_connect 
 			rejectUnauthorized: false,
 		},
 	});
-	hdb_logger.trace(`create connection established a connection with id`, c?.info?.client_id);
+	hdb_logger.trace(`create connection established a nats client connection with id`, c?.info?.client_id);
 
 	return c;
 }
