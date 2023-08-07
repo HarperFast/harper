@@ -74,12 +74,6 @@ let operation_index = 0;
  * @returns {Promise<void>}
  */
 async function workQueueListener(signal) {
-	// const sub = nats_connection.subscribe(
-	// 	`${nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_subject}.${nats_connection.info.server_name}`,
-	// 	SUBSCRIPTION_OPTIONS
-	// );
-	// if (signal) signal.abort = () => sub.close();
-
 	const consumer = await js_client.consumers.get(
 		nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
 		nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name
