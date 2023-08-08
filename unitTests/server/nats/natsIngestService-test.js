@@ -109,10 +109,8 @@ describe('Test natsIngestService module', () => {
 			await setupTestStreamAndSource();
 			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, TEST_HEADERS, test_operation);
 			await nats_ingest_service.initialize();
-			let signal = {};
-			nats_ingest_service.workQueueListener(signal);
+			nats_ingest_service.workQueueListener();
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			//signal.abort();
 
 			let hippo = await Hippopotamus.get('Drake');
 			expect(hippo.name).to.equal('Drake');
@@ -153,10 +151,8 @@ describe('Test natsIngestService module', () => {
 			await nats_utils.publishToStream('msgid.dev.hippopotamus', STREAM_NAME, undefined, [test_operation_1]);
 			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, undefined, test_operation_2);
 			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, undefined, test_operation_3);
-			//nats_ingest_service.workQueueListener(signal);
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			nats_ingest_service.setIgnoreOrigin(false);
-			//signal.abort();
 			let hippo = await Hippopotamus.get('Delores');
 			expect(hippo).to.equal(undefined);
 			hippo = await Hippopotamus.get('Tupac');
@@ -181,10 +177,8 @@ describe('Test natsIngestService module', () => {
 		await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, TEST_HEADERS, test_operation);
 		await nats_ingest_service.initialize();
 		nats_ingest_service.__set__('server_name', 'hip_hop_hippopotamus');
-		let signal = {};
-		nats_ingest_service.workQueueListener(signal);
+		nats_ingest_service.workQueueListener();
 		await new Promise((resolve) => setTimeout(resolve, 100));
-		//signal.abort();
 		let hippo = await Hippopotamus.get('Eminem');
 		expect(hippo.name).to.equal('Eminem');
 		await teardownTestStreamAndSource();

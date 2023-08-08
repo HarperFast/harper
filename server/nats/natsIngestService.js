@@ -77,7 +77,7 @@ let operation_index = 0;
  * Uses an internal Nats consumer to subscribe to the stream of messages from the work queue and process each one.
  * @returns {Promise<void>}
  */
-async function workQueueListener(signal) {
+async function workQueueListener() {
 	const consumer = await js_client.consumers.get(
 		nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
 		nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name
