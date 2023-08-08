@@ -19,7 +19,8 @@ const hdb_logger = require('../../../utility/logging/harper_logger');
 const crypto_hash = require('../../../security/cryptoHash');
 const transaction = require('../../../dataLayer/transaction');
 const config_utils = require('../../../config/configUtils');
-const { encode, decode } = require('msgpackr');
+const { Encoder, decode } = require('msgpackr');
+const encoder = new Encoder(); // use default encoder options
 
 const { isEmpty } = hdb_utils;
 const user = require('../../../security/user');
@@ -538,7 +539,7 @@ async function publishToStream(subject_name, stream_name, msg_header, message) {
 	let encoded_message =
 		message instanceof Uint8Array
 			? message // already encoded
-			: encode(message);
+			: encoder.encode(message);
 
 	try {
 		hdb_logger.trace(`publishToStream publishing to subject: ${subject}`);
@@ -808,7 +809,7 @@ async function request(subject, data, timeout = 20000, reply = createInbox()) {
 		throw new Error('data param must be an object');
 	}
 
-	const request_data = encode(data);
+	const request_data = encoder.encode(data);
 
 	const { connection } = await getNATSReferences();
 	let options = {
