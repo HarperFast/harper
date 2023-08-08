@@ -80,7 +80,9 @@ describe('Test installer module', () => {
 			try {
 				// why do we rewire after a test?
 				rewire(installer_mod_path);
-			} catch (e) {}
+			} catch (e) {
+				console.warn(e);
+			}
 		});
 
 		it('Test that all functions needed for install are called', async () => {

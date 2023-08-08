@@ -139,7 +139,16 @@ export function getDatabases(): Databases {
 			for (const table_name in tables) {
 				if (!defined_tables.has(table_name)) delete tables[table_name];
 			}
-		} else delete databases[db_name];
+		} else {
+			delete databases[db_name];
+			if (db_name === 'data') {
+				for (const table_name in tables) {
+					delete tables[table_name];
+				}
+				delete tables[DEFINED_TABLES];
+				delete tables[TABLE_CLASSES];
+			}
+		}
 	}
 	defined_databases = null;
 	return databases;
@@ -405,6 +414,13 @@ export function database({ database: database_name, table: table_name }) {
  */
 export async function dropDatabase(database_name) {
 	if (!databases[database_name]) throw new Error('Schema does not exist');
+	if (database_name === 'data') {
+		for (const table_name in tables) {
+			delete tables[table_name];
+		}
+		delete tables[DEFINED_TABLES];
+		delete tables[TABLE_CLASSES];
+	}
 	const root_store = database({ database: database_name });
 	delete databases[database_name];
 	database_envs.delete(root_store.path);
@@ -435,6 +451,9 @@ export function table({
 	const root_store = database({ database: database_name, table: table_name });
 	const tables = databases[database_name];
 	let Table = tables?.[table_name];
+	if (root_store.status === 'closed') {
+		throw new Error(`Can not use a closed data store for ${table_name}`);
+	}
 	let primary_key;
 	let primary_key_attribute;
 	let indices;
@@ -454,6 +473,10 @@ export function table({
 	if (Table) {
 		harper_logger.trace(`${table_name} table already exists`);
 		primary_key = Table.primaryKey;
+		if (Table.primaryStore.rootStore.status === 'closed') {
+			throw new Error(`Can not use a closed data store from ${table_name} class`);
+		}
+
 		Table.attributes.splice(0, Table.attributes.length, ...attributes);
 	} else {
 		let audit_store = root_store.auditStore;

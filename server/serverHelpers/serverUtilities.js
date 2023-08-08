@@ -88,12 +88,7 @@ async function processLocalTransaction(req, operation_function) {
 		harper_logger.error(e);
 	}
 
-	let post_op_function = null; //terms.CLUSTER_OPERATIONS[req.body.operation] === undefined ? null : postWrite;
-	let data = await operation_function_caller.callOperationFunctionAsAwait(
-		operation_function,
-		req.body,
-		post_op_function
-	);
+	let data = await operation_function_caller.callOperationFunctionAsAwait(operation_function, req.body, null);
 
 	if (typeof data !== 'object') {
 		data = { message: data };

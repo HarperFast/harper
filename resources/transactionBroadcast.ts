@@ -208,3 +208,15 @@ export function listenToCommits(primary_store, audit_store) {
 		});
 	}
 }
+const transaction_key_encoder = {
+	writeKey(key, buffer, position) {
+		const data_view = buffer.dataView || (buffer.dataView = new DataView(buffer));
+		data_view.setFloat64(key[0], position);
+		data_view.setUint32(key[1], position + 8);
+		return writeKey(key[2], buffer, position + 12);
+	},
+	readKey(buffer, start, end) {
+		const data_view = buffer.dataView || (buffer.dataView = new DataView(buffer));
+		return [data_view.getFloat64(start), data_view.getUint32(start + 8), readKey(buffer, start + 12, end)];
+	},
+};

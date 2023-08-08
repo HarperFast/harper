@@ -50,7 +50,7 @@ const {
 const { PACKAGE_ROOT } = require('../../../utility/hdbTerms');
 
 const pkg_json = require('../../../package.json');
-const {recordAction} = require('../../../resources/analytics');
+const { recordAction } = require('../../../resources/analytics');
 
 const jc = JSONCodec();
 const HDB_CLUSTERING_FOLDER = 'clustering';
@@ -67,9 +67,6 @@ let hub_config;
 let jsm_server_name;
 let jetstream_manager;
 let jetstream;
-
-// Nats connection it cached here.
-let nats_connection;
 
 module.exports = {
 	runCommand,
@@ -154,7 +151,18 @@ async function checkNATSServerInstalled() {
  * @returns {Promise<*>}
  */
 async function createConnection(port, username, password, wait_on_first_connect = true, host = '127.0.0.1') {
-	return connect({
+	if (!username && !password) {
+		const cluster_user = await user.getClusterUser();
+		if (isEmpty(cluster_user)) {
+			throw new Error('Unable to get nats connection. Cluster user is undefined.');
+		}
+
+		username = cluster_user.username;
+		password = cluster_user.decrypt_hash;
+	}
+
+	hdb_logger.trace('create nats connection called');
+	const c = await connect({
 		name: host,
 		port: port,
 		user: username,
@@ -169,6 +177,9 @@ async function createConnection(port, username, password, wait_on_first_connect 
 			rejectUnauthorized: false,
 		},
 	});
+	hdb_logger.trace(`create connection established a nats client connection with id`, c?.info?.client_id);
+
+	return c;
 }
 
 /**
@@ -186,18 +197,19 @@ async function closeConnection() {
  * gets a reference to a NATS connection, if one is stored in global cache then that is returned, otherwise a new connection is created, added to global & returned
  * @returns {Promise<NatsConnection>}
  */
+let nats_connection;
+let nats_connection_promise;
 async function getConnection() {
-	if (!nats_connection) {
-		const cluster_user = await user.getClusterUser();
-		if (isEmpty(cluster_user)) {
-			throw new Error('Unable to get nats connection. Cluster user is undefined.');
-		}
-
-		const leaf_port = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT);
-		nats_connection = await createConnection(leaf_port, cluster_user.username, cluster_user.decrypt_hash);
+	if (!nats_connection_promise) {
+		// first time it will go in here
+		nats_connection_promise = createConnection(
+			env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT),
+			undefined,
+			undefined
+		);
+		nats_connection = await nats_connection_promise;
 	}
-
-	return nats_connection;
+	return nats_connection || nats_connection_promise; // if we have resolved nats_connection, can short-circuit and return it
 }
 
 /**
@@ -514,14 +526,19 @@ async function* viewStreamIterator(stream_name, start_time = undefined, max = un
  * @returns {Promise<void>}
  */
 async function publishToStream(subject_name, stream_name, msg_header, message) {
-	hdb_logger.trace(`publishToStream called with subject: ${subject_name}, stream: ${stream_name}, entries:`, message.operation);
+	hdb_logger.trace(
+		`publishToStream called with subject: ${subject_name}, stream: ${stream_name}, entries:`,
+		message.operation
+	);
 	msg_header = addNatsMsgHeader(message, msg_header);
 
 	const { js } = await getNATSReferences();
 	const nats_server = await getJsmServerName();
 	const subject = `${subject_name}.${nats_server}`;
-	let encoded_message = message instanceof Uint8Array ? message :// already encoded
-		encode(message);
+	let encoded_message =
+		message instanceof Uint8Array
+			? message // already encoded
+			: encode(message);
 
 	try {
 		hdb_logger.trace(`publishToStream publishing to subject: ${subject}`);
@@ -533,12 +550,12 @@ async function publishToStream(subject_name, stream_name, msg_header, message) {
 			return exclusiveLock(async () => {
 				// try again once we have the lock
 				try {
-					await js.publish(subject, encoded_message, {headers: msg_header});
-				} catch(error) {
+					await js.publish(subject, encoded_message, { headers: msg_header });
+				} catch (error) {
 					if (err.code && err.code.toString() === '503') {
 						hdb_logger.trace(`publishToStream creating stream: ${stream_name}`);
 						let subject_parts = subject.split('.');
-						subject_parts[2] = '*'
+						subject_parts[2] = '*';
 						await createLocalStream(stream_name, [subject] /*[subject_parts.join('.')]*/);
 						await js.publish(subject, encoded_message, { headers: msg_header });
 					} else {
@@ -894,25 +911,26 @@ async function updateWorkStream(subscription, node_name) {
 	// Nats has trouble concurrently updating a work stream. This code uses transaction locking to ensure that
 	// all updateWorkStream calls run synchronously.
 	await exclusiveLock(async () => {
-			// The connection between nodes can only be a "pull" relationship. This means we only care about the subscribe param.
-			// If a node is publishing to another node that publishing relationship is setup by have the opposite node subscribe to the node that is publishing.
-			if (subscription.subscribe === true) {
-				await addSourceToWorkStream(node_domain_name, nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, subscription);
-			} else {
-				await removeSourceFromWorkStream(
-					node_domain_name,
-					nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-					subscription
-				);
-			}
+		// The connection between nodes can only be a "pull" relationship. This means we only care about the subscribe param.
+		// If a node is publishing to another node that publishing relationship is setup by have the opposite node subscribe to the node that is publishing.
+		if (subscription.subscribe === true) {
+			await addSourceToWorkStream(node_domain_name, nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, subscription);
+		} else {
+			await removeSourceFromWorkStream(
+				node_domain_name,
+				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+				subscription
+			);
 		}
-	);
+	});
 }
 
 function exclusiveLock(callback) {
 	return transaction.writeTransaction(
 		hdb_terms.SYSTEM_SCHEMA_NAME,
-		hdb_terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME, callback);
+		hdb_terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME,
+		callback
+	);
 }
 /**
  * Creates a local stream for a table.
