@@ -154,6 +154,16 @@ async function checkNATSServerInstalled() {
  * @returns {Promise<*>}
  */
 async function createConnection(port, username, password, wait_on_first_connect = true, host = '127.0.0.1') {
+	if (!username && !password) {
+		const cluster_user = await user.getClusterUser();
+		if (isEmpty(cluster_user)) {
+			throw new Error('Unable to get nats connection. Cluster user is undefined.');
+		}
+
+		username = cluster_user.username;
+		password = cluster_user.decrypt_hash;
+	}
+
 	hdb_logger.trace('create nats connection called');
 	const c = await connect({
 		name: host,
@@ -192,16 +202,8 @@ async function closeConnection() {
  */
 async function getConnection() {
 	if (!nats_connection) {
-		//hdb_logger.notify('get connection called with no cache');
-		const cluster_user = await user.getClusterUser();
-		if (isEmpty(cluster_user)) {
-			throw new Error('Unable to get nats connection. Cluster user is undefined.');
-		}
-
 		const leaf_port = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT);
-		nats_connection = await createConnection(leaf_port, cluster_user.username, cluster_user.decrypt_hash);
-	} else {
-		//hdb_logger.notify('get connection called cache exists');
+		nats_connection = createConnection(leaf_port, undefined, undefined);
 	}
 
 	return nats_connection;
