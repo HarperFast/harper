@@ -7,6 +7,7 @@ const delete_schema = Joi.object({
 	database: hdb_database,
 	table: hdb_table,
 	hash_values: Joi.array().required(),
+	ids: Joi.array(),
 });
 
 module.exports = function (delete_object) {

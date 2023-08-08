@@ -20,6 +20,7 @@ async function searchByConditions(search_object) {
 
 async function searchByHash(search_object) {
 	transformReq(search_object);
+	if (search_object.ids) search_object.hash_values = search_object.ids;
 	let array = [];
 	for await (let record of harperBridge.searchByHash(search_object)) {
 		if (record) array.push(record);
