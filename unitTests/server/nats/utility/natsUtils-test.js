@@ -312,7 +312,6 @@ describe('Test natsUtils module', () => {
 		}).timeout(TEST_TIMEOUT);
 
 		it('Test getJetStreamManager calls getConnection if a connection does not exist', async () => {
-			nats_utils.__set__('nats_connection', undefined);
 			const result = await nats_utils.getJetStreamManager();
 			expect(result).to.haveOwnProperty('nc');
 			expect(result).to.haveOwnProperty('opts');
