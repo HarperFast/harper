@@ -172,14 +172,48 @@ export function parseQuery(query_string) {
 	let match;
 	let attribute, comparator;
 	let last_index;
+	let call;
 	// TODO: Use URLSearchParams with a fallback for when it can parse everything (USP is very fast)
 	while ((match = QUERY_PARSER.exec(query_string))) {
 		last_index = QUERY_PARSER.lastIndex;
-		let [, value, operator] = match;
+		const [, value, operator] = match;
 		switch (operator) {
 			case ')':
 				// finish call
-				operator = operator.slice(1);
+				switch (call) {
+					case 'range':
+						query.offset = +value;
+						query.limit = +value;
+						break;
+					case 'select':
+						if (value[0] === '[') {
+							if (value[value.length - 1] !== ']') throw new Error('Unmatched brackets');
+							query.select = value.slice(1, -1).split(',');
+							query.select.asArray = true;
+						} else if (value.indexOf(',') > -1) {
+							query.select = (value.endsWith(',') ? value.slice(0, -1) : value).split(',');
+						} else query.select = value;
+						break;
+					case 'group-by':
+						throw new Error('Group by is not implemented yet');
+					case 'sort':
+						query.sort = value.split(',').map((direction) => {
+							switch (direction[0]) {
+								case '-':
+									return { attribute: direction.slice(1), descending: true };
+								case '+':
+									return { attribute: direction.slice(1), descending: false };
+								default:
+									return { attribute: direction, descending: false };
+							}
+						});
+						break;
+					default:
+						throw new Error(`Unknown query function call ${call}`);
+				}
+				break;
+			case '(':
+				call = value;
 				break;
 			case '=':
 				if (attribute) {
@@ -215,45 +249,13 @@ export function parseQuery(query_string) {
 			case undefined:
 			case '&':
 			case '|':
-				switch (attribute) {
-					case 'offset':
-						query.offset = +value;
-						break;
-					case 'limit':
-						query.limit = +value;
-						break;
-					case 'select':
-						if (value[0] === '[') {
-							if (value[value.length - 1] !== ']') throw new Error('Unmatched brackets');
-							query.select = value.slice(1, -1).split(',');
-							query.select.asArray = true;
-						} else if (value.indexOf(',') > -1) {
-							query.select = (value.endsWith(',') ? value.slice(0, -1) : value).split(',');
-						} else query.select = value;
-						break;
-					case 'group-by':
-						throw new Error('Group by is not implemented yet');
-					case 'sort':
-						query.sort = value.split(',').map((direction) => {
-							switch (direction[0]) {
-								case '-':
-									return { attribute: direction.slice(1), descending: true };
-								case '+':
-									return { attribute: direction.slice(1), descending: false };
-								default:
-									return { attribute: direction, descending: false };
-							}
-						});
-						break;
-					case undefined:
-						throw new Error(`Unable to parse query, no part before ${operator} at ${last_index} in ${query_string}`);
-					default:
-						query.push({
-							comparator: comparator,
-							attribute,
-							value: decodeURIComponent(value),
-						});
-				}
+				if (!attribute)
+					throw new Error(`Unable to parse query, no part before ${operator} at ${last_index} in ${query_string}`);
+				query.push({
+					comparator: comparator,
+					attribute,
+					value: decodeURIComponent(value),
+				});
 				attribute = undefined;
 				break;
 			default:
