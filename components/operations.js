@@ -526,9 +526,39 @@ async function setComponentFile(req) {
 
 	const options = req.encoding ? { encoding: req.encoding } : { encoding: 'utf8' };
 	const path_to_comp = path.join(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT), req.project, req.file);
-	await fs.ensureFile(path_to_comp);
-	await fs.outputFile(path_to_comp, req.payload, options);
+	if (req.payload !== undefined) {
+		await fs.ensureFile(path_to_comp);
+		await fs.outputFile(path_to_comp, req.payload, options);
+	} else {
+		await fs.ensureDir(path_to_comp);
+	}
+
 	return `Successfully set component: ` + req.file;
+}
+
+/**
+ * Deletes a component dir/file
+ * @param req
+ * @returns {Promise<string>}
+ */
+async function dropComponentFile(req) {
+	const validation = validator.dropComponentFileValidator(req);
+	if (validation) {
+		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
+
+	const project_path = req.file ? path.join(req.project, req.file) : req.project;
+	const path_to_comp = req.file
+		? path.join(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT), project_path)
+		: path.join(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT), project_path);
+
+	if (!(await fs.pathExists(path_to_comp))) {
+		throw new Error(`${project_path} does not exist`);
+	}
+
+	await fs.remove(path_to_comp);
+
+	return 'Successfully dropped: ' + project_path;
 }
 
 module.exports = {
@@ -544,4 +574,5 @@ module.exports = {
 	getComponentFiles,
 	getComponentFile,
 	setComponentFile,
+	dropComponentFile,
 };
