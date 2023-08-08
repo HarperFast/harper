@@ -40,13 +40,8 @@ const {
 	StringCodec,
 	JSONCodec,
 	createInbox,
-	StreamSource,
 	headers,
-	toJsMsg,
-	nuid,
-	JetStreamOptions,
 	ErrorCode,
-	nanos,
 } = require('nats');
 const { PACKAGE_ROOT } = require('../../../utility/hdbTerms');
 
@@ -393,15 +388,11 @@ async function listRemoteStreams(domain_name) {
  * @returns {Promise<*[]>}
  */
 async function viewStream(stream_name, start_time = undefined, max = undefined) {
-	const { jsm, connection } = await getNATSReferences();
+	const { jsm, js } = await getNATSReferences();
 	const consumer_name = ulid();
-	let entries = [];
-
 	const consumer_config = {
-		ack_policy: AckPolicy.None,
 		durable_name: consumer_name,
-		deliver_subject: consumer_name,
-		deliver_policy: DeliverPolicy.All,
+		ack_policy: AckPolicy.Explicit,
 	};
 
 	// If a start time is passed add a policy that will receive msgs from that time onward.
@@ -410,46 +401,38 @@ async function viewStream(stream_name, start_time = undefined, max = undefined) 
 		consumer_config.opt_start_time = new Date(start_time).toISOString();
 	}
 
-	try {
-		await jsm.consumers.add(stream_name, consumer_config);
+	await jsm.consumers.add(stream_name, consumer_config);
+	const consumer = await js.consumers.get(stream_name, consumer_name);
+	const messages = !max ? await consumer.consume() : await consumer.fetch({ max_messages: max, expires: 2000 });
+	if (consumer._info.num_pending === 0) return [];
 
-		const sub_config = { timeout: 20000 };
-		if (max) sub_config.max = max;
-		const sub = await connection.subscribe(consumer_name, sub_config);
+	let entries = [];
+	for await (const m of messages) {
+		const obj = decode(m.data);
+		let wrapper = {
+			nats_timestamp: m.info.timestampNanos,
+			nats_sequence: m.info.streamSequence,
+			entry: obj,
+		};
 
-		for await (const m of sub) {
-			const jmsg = toJsMsg(m);
-			const obj = decode(jmsg.data);
-			let wrapper = {
-				nats_timestamp: jmsg.info.timestampNanos,
-				nats_sequence: jmsg.info.streamSequence,
-				entry: obj,
-			};
-
-			if (jmsg.headers) {
-				wrapper.origin = jmsg.headers.get(nats_terms.MSG_HEADERS.ORIGIN);
-				wrapper.nats_msg_id = jmsg.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID);
-			}
-
-			entries.push(wrapper);
-			if (sub.getPending() === 1 && jmsg.info.pending === 0) {
-				sub.stop();
-			}
+		if (m.headers) {
+			wrapper.origin = m.headers.get(nats_terms.MSG_HEADERS.ORIGIN);
+			wrapper.nats_msg_id = m.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID);
 		}
 
-		await jsm.consumers.delete(stream_name, consumer_name);
+		entries.push(wrapper);
+		m.ack();
 
-		return entries;
-	} catch (err) {
-		await jsm.consumers.delete(stream_name, consumer_name);
-
-		// If the stream has no entries function will timeout. This is handled here.
-		if (err.code === 'TIMEOUT') {
-			return entries;
+		// if no pending, then we have processed the stream
+		// and we can break
+		if (m.info.pending === 0) {
+			break;
 		}
-
-		throw err;
 	}
+
+	await consumer.delete();
+
+	return entries;
 }
 
 /**
@@ -460,14 +443,11 @@ async function viewStream(stream_name, start_time = undefined, max = undefined) 
  * @returns {AsyncGenerator<{entry: any, nats_timestamp: number, nats_sequence: number, originators: *[]}, *[], *>}
  */
 async function* viewStreamIterator(stream_name, start_time = undefined, max = undefined) {
-	const { jsm, connection } = await getNATSReferences();
+	const { jsm, js } = await getNATSReferences();
 	const consumer_name = ulid();
-
 	const consumer_config = {
-		ack_policy: AckPolicy.None,
 		durable_name: consumer_name,
-		deliver_subject: consumer_name,
-		deliver_policy: DeliverPolicy.All,
+		ack_policy: AckPolicy.Explicit,
 	};
 
 	// If a start time is passed add a policy that will receive msgs from that time onward.
@@ -476,46 +456,36 @@ async function* viewStreamIterator(stream_name, start_time = undefined, max = un
 		consumer_config.opt_start_time = new Date(start_time).toISOString();
 	}
 
-	try {
-		await jsm.consumers.add(stream_name, consumer_config);
-		const sub_config = { timeout: 2000 };
-		if (max) sub_config.max = max;
-		const sub = await connection.subscribe(consumer_name, sub_config);
+	await jsm.consumers.add(stream_name, consumer_config);
+	const consumer = await js.consumers.get(stream_name, consumer_name);
+	const messages = !max ? await consumer.consume() : await consumer.fetch({ max_messages: max, expires: 2000 });
+	if (consumer._info.num_pending === 0) return [];
 
-		for await (const m of sub) {
-			const jmsg = toJsMsg(m);
-			let objects = decode(jmsg.data);
-			if (!objects[0]) objects = [objects];
-			for (let obj of objects) {
-				let wrapper = {
-					nats_timestamp: jmsg.info.timestampNanos,
-					nats_sequence: jmsg.info.streamSequence,
-					entry: obj,
-				};
+	for await (const m of messages) {
+		let objects = decode(m.data);
+		if (!objects[0]) objects = [objects];
+		for (let obj of objects) {
+			let wrapper = {
+				nats_timestamp: m.info.timestampNanos,
+				nats_sequence: m.info.streamSequence,
+				entry: obj,
+			};
 
-				if (jmsg.headers) {
-					wrapper.origin = jmsg.headers.get(nats_terms.MSG_HEADERS.ORIGIN);
-					wrapper.nats_msg_id = jmsg.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID);
-				}
-
-				yield wrapper;
+			if (m.headers) {
+				wrapper.origin = m.headers.get(nats_terms.MSG_HEADERS.ORIGIN);
+				wrapper.nats_msg_id = m.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID);
 			}
-			if (sub.getPending() === 1 && jmsg.info.pending === 0) {
-				sub.stop();
-			}
+
+			yield wrapper;
 		}
 
-		await jsm.consumers.delete(stream_name, consumer_name);
-	} catch (err) {
-		await jsm.consumers.delete(stream_name, consumer_name);
+		m.ack();
 
-		// If the stream has no entries function will timeout. This is handled here.
-		if (err.code === 'TIMEOUT') {
-			return [];
+		if (m.info.pending === 0) {
+			break;
 		}
-
-		throw err;
 	}
+	await consumer.delete();
 }
 
 /**
@@ -675,11 +645,9 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 		if (e.code.toString() === '404') {
 			await jsm.consumers.add(CONSUMER_NAMES.stream_name, {
 				ack_policy: AckPolicy.Explicit,
-				deliver_subject: `${CONSUMER_NAMES.deliver_subject}.${server_name}`,
 				durable_name: CONSUMER_NAMES.durable_name,
 				deliver_policy: DeliverPolicy.All,
 				max_ack_pending: 10000,
-				deliver_group: CONSUMER_NAMES.deliver_group,
 			});
 		} else {
 			throw e;
