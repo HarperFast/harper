@@ -114,7 +114,7 @@
     "prompt": "1.3.0",
     "properties-reader": "2.2.0",
     "recursive-iterator": "3.3.0",
-    "semver": "7.5.2",
+    "semver": "7.5.4",
     "send": "^0.18.0",
     "ses": "^0.18.1",
     "stream-chain": "2.2.5",
