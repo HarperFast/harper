@@ -28,6 +28,7 @@ module.exports = {
 	workQueueListener,
 	setSubscription,
 	setIgnoreOrigin,
+	getDatabaseSubscriptions,
 };
 
 /**
@@ -61,6 +62,9 @@ function setSubscription(database, table, subscription) {
 	if (!initialized) {
 		initialize().then(workQueueListener);
 	}
+}
+function getDatabaseSubscriptions() {
+	return database_subscriptions;
 }
 let ignore_origin;
 function setIgnoreOrigin(value) {
