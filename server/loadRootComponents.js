@@ -17,7 +17,8 @@ let loaded_components = new Map();
 async function loadRootComponents(is_worker_thread = false) {
 	// Create and cache the nats client connection
 	if (!isMainThread && env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
-		await getConnection();
+		// The await is purposely omitted here so that is doesnt slow down startup time
+		getConnection();
 	}
 
 	if (isMainThread) await install_components();
