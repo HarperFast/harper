@@ -127,7 +127,7 @@ const AUTHENTICATION_ERROR_MSGS = {
 
 const OPERATION_AUTH_ERROR_MSGS = {
 	DEFAULT_INVALID_REQUEST: 'Invalid request',
-	OP_AUTH_PERMS_ERROR: 'This operation is not authorized due to role restrictions and/or invalid schema items',
+	OP_AUTH_PERMS_ERROR: 'This operation is not authorized due to role restrictions and/or invalid database items',
 	OP_IS_SU_ONLY: (op) => `Operation '${op}' is restricted to 'super_user' roles`,
 	OP_NOT_FOUND: (op) => `Operation '${op}' not found`,
 	SYSTEM_TIMESTAMP_PERMS_ERR:
@@ -135,7 +135,7 @@ const OPERATION_AUTH_ERROR_MSGS = {
 	UNKNOWN_OP_AUTH_ERROR: (op, schema, table) => `There was an error authorizing ${op} op on table '${schema}.${table}'`,
 	USER_HAS_NO_PERMS: (user) => `User ${user} has no role or permissions.  Please assign the user a valid role.`,
 	DROP_SYSTEM:
-		"The 'system' schema, tables and records are used internally by HarperDB and cannot be updated or removed.",
+		"The 'system' database, tables and records are used internally by HarperDB and cannot be updated or removed.",
 };
 
 const ROLE_PERMS_ERROR_MSGS = {
@@ -157,9 +157,10 @@ const ROLE_PERMS_ERROR_MSGS = {
 	ROLE_ALREADY_EXISTS: (role_name) => `A role with name '${role_name}' already exists`,
 	ROLE_NOT_FOUND: 'Role not found',
 	ROLE_PERMS_ERROR: 'Errors in the role permissions JSON provided',
-	SCHEMA_PERM_ERROR: (schema_name) => `Your role does not have permission to view schema metadata for '${schema_name}'`,
+	SCHEMA_PERM_ERROR: (schema_name) =>
+		`Your role does not have permission to view database metadata for '${schema_name}'`,
 	SCHEMA_TABLE_PERM_ERROR: (schema_name, table_name) =>
-		`Your role does not have permission to view schema.table metadata for '${schema_name}.${table_name}'`,
+		`Your role does not have permission to view database.table metadata for '${schema_name}.${table_name}'`,
 	SU_ROLE_MISSING_ERROR: "Missing 'super_user' key/value in permission set",
 	SU_CU_ROLE_BOOLEAN_ERROR: (role) => `Value for '${role}' permission must be a boolean`,
 	STRUCTURE_USER_ROLE_TYPE_ERROR: (role) => `Value for '${role}' permission must be a boolean or Array`,
@@ -175,10 +176,10 @@ const SCHEMA_OP_ERROR_MSGS = {
 	ATTR_EXISTS_ERR: (schema, table, attr) => `Attribute '${attr}' already exists in ${schema}.${table}'`,
 	DESCRIBE_ALL_ERR: 'There was an error during describeAll.  Please check the logs and try again.',
 	INVALID_TABLE_ERR: (table_result) => `Invalid table ${JSON.stringify(table_result)}`,
-	SCHEMA_NOT_FOUND: (schema) => `Schema '${schema}' does not exist`,
-	SCHEMA_EXISTS_ERR: (schema) => `Schema '${schema}' already exists`,
-	TABLE_EXISTS_ERR: (schema, table) => `Table '${table}' already exists in schema '${schema}'`,
-	SCHEMA_REQUIRED_ERR: 'schema is required',
+	SCHEMA_NOT_FOUND: (schema) => `database '${schema}' does not exist`,
+	SCHEMA_EXISTS_ERR: (schema) => `database '${schema}' already exists`,
+	TABLE_EXISTS_ERR: (schema, table) => `Table '${table}' already exists in '${schema}'`,
+	SCHEMA_REQUIRED_ERR: 'database is required',
 	TABLE_NOT_FOUND: (schema, table) => `Table '${schema}.${table}' does not exist`,
 	TABLE_REQUIRED_ERR: 'table is required',
 };

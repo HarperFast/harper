@@ -55,7 +55,7 @@ describe('Test addUpdateNodeValidator module', () => {
 
 		const result = addUpdateNodeValidator(test_req);
 		expect(result.message).to.equal(
-			"'subscriptions[0]' invalid schema name, 'system' name is reserved. 'subscriptions[0].publish' is required"
+			"'subscriptions[0]' invalid database name, 'system' name is reserved. 'subscriptions[0].publish' is required"
 		);
 	});
 

@@ -45,7 +45,7 @@ async function validation(write_object) {
 		throw new Error('invalid update parameters defined.');
 	}
 	if (hdb_utils.isEmptyOrZeroLength(write_object.schema)) {
-		throw new Error('invalid schema specified.');
+		throw new Error('invalid database specified.');
 	}
 	if (hdb_utils.isEmptyOrZeroLength(write_object.table)) {
 		throw new Error('invalid table specified.');
@@ -131,6 +131,8 @@ async function insertData(insert_object) {
 		throw handleHDBError(new Error(), validator.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
+	hdb_utils.transformReq(insert_object);
+
 	let invalid_schema_table_msg = hdb_utils.checkSchemaTableExist(insert_object.schema, insert_object.table);
 	if (invalid_schema_table_msg) {
 		throw handleHDBError(new Error(), invalid_schema_table_msg, HTTP_STATUS_CODES.BAD_REQUEST);
@@ -161,6 +163,8 @@ async function updateData(update_object) {
 	if (validator) {
 		throw handleHDBError(new Error(), validator.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
+
+	hdb_utils.transformReq(update_object);
 
 	let invalid_schema_table_msg = hdb_utils.checkSchemaTableExist(update_object.schema, update_object.table);
 	if (invalid_schema_table_msg) {
@@ -202,6 +206,8 @@ async function upsertData(upsert_object) {
 	if (validator) {
 		throw handleHDBError(new Error(), validator.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
+
+	hdb_utils.transformReq(upsert_object);
 
 	let invalid_schema_table_msg = hdb_utils.checkSchemaTableExist(upsert_object.schema, upsert_object.table);
 	if (invalid_schema_table_msg) {
@@ -255,5 +261,6 @@ function returnObject(action, written_hashes, object, skipped, new_attributes, t
 }
 
 function flush(object) {
+	hdb_utils.transformReq(object);
 	return harperBridge.flush(object.schema, object.table);
 }

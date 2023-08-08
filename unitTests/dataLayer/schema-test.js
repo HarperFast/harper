@@ -154,6 +154,15 @@ describe('Test schema module', function () {
 	 */
 	describe('Create schema structure', function () {
 		let create_schema_stub = sinon.stub(harperBridge, 'createSchema');
+		let schema_exists_stub;
+
+		before(() => {
+			schema_exists_stub = sandbox.stub(schema_metadata_validator, 'checkSchemaExists');
+		});
+
+		after(() => {
+			schema_exists_stub.restore();
+		});
 
 		it('should throw a validation error', async function () {
 			let validation_err = 'Schema is required';
@@ -172,6 +181,7 @@ describe('Test schema module', function () {
 		});
 
 		it('should throw schema already exists error', async function () {
+			schema_exists_stub.resolves(false);
 			global.hdb_schema = cloneDeep(GLOBAL_SCHEMA_FAKE);
 			let error;
 
@@ -181,21 +191,16 @@ describe('Test schema module', function () {
 				error = err;
 			}
 
-			expect(error.message).to.equal(`Schema '${SCHEMA_CREATE_OBJECT_TEST.schema}' already exists`);
+			expect(error.message).to.equal(`database '${SCHEMA_CREATE_OBJECT_TEST.schema}' already exists`);
 		});
 
 		it('should call bridge and return success message', async () => {
 			global.hdb_schema = { schema: 'notDogs' };
+			schema_exists_stub.resolves(true);
 			let result = await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
 
 			expect(create_schema_stub).to.have.been.calledWith(SCHEMA_CREATE_OBJECT_TEST);
-			expect(result).to.equal(`schema '${SCHEMA_CREATE_OBJECT_TEST.schema}' successfully created`);
-		});
-
-		it('should throw validation error', async () => {
-			schema_validator_stub.restore();
-			const expected_err = test_util.generateHDBError('Schema is required', 400);
-			await test_util.assertErrorAsync(schema.createSchemaStructure, [{ operation: 'create_schema' }], expected_err);
+			expect(result).to.equal(`database '${SCHEMA_CREATE_OBJECT_TEST.schema}' successfully created`);
 		});
 	});
 
@@ -240,17 +245,25 @@ describe('Test schema module', function () {
 		let create_table_validator_stub = sinon.stub(schema_validator, 'create_table_object');
 		let residence_validator_stub = sinon.stub(schema_validator, 'validateTableResidence');
 		let harper_bridge_stub;
+		let schema_exists_stub;
+		let schema_table_exists_stub;
 
 		before(() => {
+			schema_exists_stub = sandbox.stub(schema_metadata_validator, 'checkSchemaExists').resolves(true);
 			harper_bridge_stub = sinon.stub(harperBridge, 'createTable');
+			schema_table_exists_stub = sinon.stub(schema_metadata_validator, 'checkSchemaTableExists').resolves(true);
 			global.hdb_schema = {};
 		});
 
 		after(function () {
+			schema_exists_stub.restore();
+			schema_table_exists_stub.restore();
 			CREATE_TABLE_OBJECT_TEST.residence = '';
 		});
 
 		afterEach(function () {
+			schema_exists_stub.resolves(true);
+			schema_table_exists_stub.resolves(true);
 			global.clustering_on = true;
 			create_table_validator_stub.returns();
 		});
@@ -271,23 +284,11 @@ describe('Test schema module', function () {
 			expect(create_table_validator_stub).to.have.been.calledOnce;
 		});
 
-		it('should throw schema does not exist error message', async function () {
-			let error;
-
-			try {
-				await schema.createTableStructure(CREATE_TABLE_OBJECT_TEST);
-			} catch (err) {
-				error = err;
-			}
-
-			expect(error.message).to.equal(`Schema '${CREATE_TABLE_OBJECT_TEST.schema}' does not exist`);
-			expect(create_table_validator_stub).to.have.been.calledOnce;
-			expect(residence_validator_stub).to.have.been.calledOnce;
-		});
-
 		it('should throw table already exists error message', async function () {
 			let error;
 			global.hdb_schema = cloneDeep(GLOBAL_SCHEMA_FAKE);
+			schema_exists_stub.resolves(false);
+			schema_table_exists_stub.resolves(false);
 
 			try {
 				await schema.createTableStructure(CREATE_TABLE_OBJECT_TEST);
@@ -296,7 +297,7 @@ describe('Test schema module', function () {
 			}
 
 			expect(error.message).to.equal(
-				`Table '${CREATE_TABLE_OBJECT_TEST.table}' already exists in schema '${CREATE_TABLE_OBJECT_TEST.schema}'`
+				`Table '${CREATE_TABLE_OBJECT_TEST.table}' already exists in '${CREATE_TABLE_OBJECT_TEST.schema}'`
 			);
 			expect(create_table_validator_stub).to.have.been.calledOnce;
 			expect(residence_validator_stub).to.have.been.calledOnce;
@@ -369,9 +370,16 @@ describe('Test schema module', function () {
 		let bridge_drop_schema_stub = sinon.stub(harperBridge, 'dropSchema');
 		let schema_describe_rw;
 		let purge_schema_table_stub;
+		let check_exists_stub;
 
 		before(() => {
+			schema_validator_stub.returns(undefined);
+			sandbox.restore();
 			purge_schema_table_stub = sandbox.stub(nats_utils, 'purgeSchemaTableStreams').resolves();
+			// check_exists_stub = sandbox.stub().callsFake(async (schema_name) => {
+			// 	global.hdb_schema[schema_name] = Object.assign({}, GLOBAL_SCHEMA_FAKE[schema_name]);
+			// });
+			check_exists_stub = sandbox.stub().resolves(true);
 		});
 
 		beforeEach(() => {
@@ -380,9 +388,7 @@ describe('Test schema module', function () {
 					describeSchema: async (describe_schema_object) => Object.assign({}, GLOBAL_SCHEMA_FAKE.dogsrule),
 					describeTable: async (describe_table_object) => Object.assign({}, GLOBAL_SCHEMA_FAKE.dogsrule.catsdrool),
 				},
-				checkSchemaExists: async (schema_name) => {
-					global.hdb_schema[schema_name] = Object.assign({}, GLOBAL_SCHEMA_FAKE[schema_name]);
-				},
+				checkSchemaExists: check_exists_stub,
 			});
 		});
 
@@ -406,7 +412,7 @@ describe('Test schema module', function () {
 			expect(bridge_drop_schema_stub).to.have.been.calledWith(DROP_SCHEMA_OBJECT_TEST);
 			expect(signal_schema_change_stub.args[0][0].operation).to.equal('drop_schema');
 			expect(signal_schema_change_stub.args[0][0].schema).to.equal('dogsrule');
-			expect(result).to.equal(`successfully deleted schema '${DROP_SCHEMA_OBJECT_TEST.schema}'`);
+			expect(result).to.equal(`successfully deleted '${DROP_SCHEMA_OBJECT_TEST.schema}'`);
 			expect(purge_schema_table_stub.called).to.be.true;
 
 			schema_describe_rw();
@@ -422,10 +428,11 @@ describe('Test schema module', function () {
 				error = err;
 			}
 
-			expect(error.message).to.be.equal(`Schema '${DROP_SCHEMA_OBJECT_TEST.schema}' does not exist`);
+			expect(error.message).to.be.equal(`database '${DROP_SCHEMA_OBJECT_TEST.schema}' does not exist`);
 		});
 
 		it('Test error from bridge drop schema is caught, thrown and logged', async () => {
+			check_exists_stub.resolves(false);
 			global.hdb_schema = GLOBAL_SCHEMA_FAKE;
 			let error_msg = 'We have an error on the bridge';
 			bridge_drop_schema_stub.throws(new Error(error_msg));
@@ -435,7 +442,7 @@ describe('Test schema module', function () {
 		});
 
 		it('Test schema obj validation catches and throws error', async () => {
-			const expected_err = test_util.generateHDBError('Schema is required', 400);
+			const expected_err = test_util.generateHDBError('database is required', 400);
 			await test_util.assertErrorAsync(schema.dropSchema, [{ operation: 'drop_schema' }], expected_err);
 		});
 	});
@@ -678,8 +685,11 @@ describe('Test schema module', function () {
 			body: CREATE_ATTR_OBJECT_TEST,
 		};
 
+		let get_db_stub = sandbox.stub().returns({ dogsrule: { catsdrool: { attributes: [] } } });
+
 		before(function () {
 			bridge_create_attr_stub = sandbox.stub(harperBridge, 'createAttribute').resolves(attribute_structure_fake);
+			schema.__set__('getDatabases', get_db_stub);
 		});
 
 		after(function () {

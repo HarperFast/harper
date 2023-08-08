@@ -501,7 +501,7 @@ describe('Test operation_authorization', function () {
 			let temp_delete = new alasql.yy.Delete(ast_test);
 			let req_json = getRequestJson(TEST_JSON);
 			let expected_error = test_utils.generateHDBError(
-				"The 'system' schema, tables and records are used internally by HarperDB and cannot be updated or removed.",
+				"The 'system' database, tables and records are used internally by HarperDB and cannot be updated or removed.",
 				403
 			);
 			test_utils.assertErrorSync(
@@ -674,7 +674,7 @@ describe('Test operation_authorization', function () {
 			let result = op_auth_rewire.verifyPerms(req_json, req_json.operation);
 			assert.equal(
 				result.error,
-				'This operation is not authorized due to role restrictions and/or invalid schema items'
+				'This operation is not authorized due to role restrictions and/or invalid database items'
 			);
 			assert.equal(result.invalid_schema_items.length, 1);
 			assert.equal(result.invalid_schema_items[0], "Attribute '__createdtime__' does not exist on 'dev.dog'");
@@ -786,7 +786,7 @@ describe('Test operation_authorization', function () {
 			req_json.operation = 'drop_schema';
 			req_json.schema = 'system';
 			let expected_error = test_utils.generateHDBError(
-				"The 'system' schema, tables and records are used internally by HarperDB and cannot be updated or removed.",
+				"The 'system' database, tables and records are used internally by HarperDB and cannot be updated or removed.",
 				403
 			);
 			test_utils.assertErrorSync(op_auth_rewire.verifyPerms, [req_json, 'dropSchema'], expected_error);
@@ -798,7 +798,7 @@ describe('Test operation_authorization', function () {
 			req_json.schema = 'system';
 			req_json.table = 'hdb_user';
 			let expected_error = test_utils.generateHDBError(
-				"The 'system' schema, tables and records are used internally by HarperDB and cannot be updated or removed.",
+				"The 'system' database, tables and records are used internally by HarperDB and cannot be updated or removed.",
 				403
 			);
 			test_utils.assertErrorSync(op_auth_rewire.verifyPerms, [req_json, 'dropTable'], expected_error);
@@ -811,7 +811,7 @@ describe('Test operation_authorization', function () {
 			req_json.table = 'hdb_user';
 			req_json.attribute = 'username';
 			let expected_error = test_utils.generateHDBError(
-				"The 'system' schema, tables and records are used internally by HarperDB and cannot be updated or removed.",
+				"The 'system' database, tables and records are used internally by HarperDB and cannot be updated or removed.",
 				403
 			);
 			test_utils.assertErrorSync(op_auth_rewire.verifyPerms, [req_json, 'dropAttribute'], expected_error);
@@ -831,7 +831,7 @@ describe('Test operation_authorization', function () {
 			req_json.schema = 'dev';
 			let result = op_auth_rewire.verifyPerms(req_json, schema.createSchema);
 			expect(result).to.eql({
-				error: 'This operation is not authorized due to role restrictions and/or invalid schema items',
+				error: 'This operation is not authorized due to role restrictions and/or invalid database items',
 				invalid_schema_items: [],
 				unauthorized_access: ["Operation 'createSchema' is restricted to 'super_user' roles"],
 			});
@@ -943,7 +943,7 @@ describe('Test operation_authorization', function () {
 			req_json.table = 'dog';
 			let result = op_auth_rewire.verifyPerms(req_json, schema.dropSchema);
 			expect(result).to.eql({
-				error: 'This operation is not authorized due to role restrictions and/or invalid schema items',
+				error: 'This operation is not authorized due to role restrictions and/or invalid database items',
 				invalid_schema_items: [],
 				unauthorized_access: ["Operation 'dropSchema' is restricted to 'super_user' roles"],
 			});

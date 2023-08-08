@@ -1,10 +1,11 @@
 const validator = require('./validationWrapper');
 const Joi = require('joi');
-const { hdb_schema_table } = require('./common_validators');
+const { hdb_table, hdb_database } = require('./common_validators');
 
 const validation_schema = {
-	schema: hdb_schema_table,
-	table: hdb_schema_table,
+	schema: hdb_database,
+	database: hdb_database,
+	table: hdb_table,
 };
 
 const date_schema = {
