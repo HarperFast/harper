@@ -68,9 +68,6 @@ let jsm_server_name;
 let jetstream_manager;
 let jetstream;
 
-// Nats connection it cached here.
-let nats_connection;
-
 module.exports = {
 	runCommand,
 	checkNATSServerInstalled,
@@ -200,13 +197,19 @@ async function closeConnection() {
  * gets a reference to a NATS connection, if one is stored in global cache then that is returned, otherwise a new connection is created, added to global & returned
  * @returns {Promise<NatsConnection>}
  */
+let nats_connection;
+let nats_connection_promise;
 async function getConnection() {
-	if (!nats_connection) {
-		const leaf_port = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT);
-		nats_connection = createConnection(leaf_port, undefined, undefined);
+	if (!nats_connection_promise) {
+		// first time it will go in here
+		nats_connection_promise = createConnection(
+			env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT),
+			undefined,
+			undefined
+		);
+		nats_connection = await nats_connection_promise;
 	}
-
-	return nats_connection;
+	return nats_connection || nats_connection_promise; // if we have resolved nats_connection, can short-circuit and return it
 }
 
 /**
@@ -252,7 +255,6 @@ async function getJetStream() {
  * @returns {Promise<{jsm: JetStreamManager, js: JetStreamClient, connection: NatsConnection}>}
  */
 async function getNATSReferences() {
-	//hdb_logger.notify('get nats ref called');
 	const connection = nats_connection || (await getConnection());
 	const jsm = jetstream_manager || (await getJetStreamManager());
 	const js = jetstream || (await getJetStream());
