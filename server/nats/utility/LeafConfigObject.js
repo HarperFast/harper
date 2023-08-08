@@ -23,7 +23,7 @@ class LeafConfigObject {
 		if (ca_file === null) ca_file = undefined;
 		this.server_name = node_name + nats_terms.SERVER_SUFFIX.LEAF;
 		this.pid_file = pid_file;
-		this.max_payload = 10000000;
+		this.max_payload = 67108864;
 		this.jetstream = {
 			enabled: true,
 			store_dir: js_store_dir,
