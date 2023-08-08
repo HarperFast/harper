@@ -285,6 +285,7 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.UPSERT, new OperationFunctionObject(insert.upsert));
 	op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS, new OperationFunctionObject(search.searchByConditions));
 	op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_HASH, new OperationFunctionObject(p_search_search_by_hash));
+	op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_ID, new OperationFunctionObject(p_search_search_by_hash));
 	op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_VALUE, new OperationFunctionObject(p_search_search_by_value));
 	op_func_map.set(terms.OPERATIONS_ENUM.SEARCH, new OperationFunctionObject(p_search_search));
 	op_func_map.set(terms.OPERATIONS_ENUM.SQL, new OperationFunctionObject(p_sql_evaluate_sql));

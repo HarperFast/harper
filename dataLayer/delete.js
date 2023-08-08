@@ -122,6 +122,7 @@ async function deleteAuditLogsBefore(delete_obj) {
  * @returns {Promise<string>}
  */
 async function deleteRecord(delete_object) {
+	if (delete_object.ids) delete_object.hash_values = delete_object.ids;
 	let validation = deleteValidator(delete_object);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
