@@ -177,7 +177,7 @@ describe('Test natsIngestService module', () => {
 		let signal = {};
 		nats_ingest_service.workQueueListener(signal);
 		await new Promise((resolve) => setTimeout(resolve, 100));
-		signal.abort();
+		//signal.abort();
 		let hippo = await Hippopotamus.get('Eminem');
 		expect(hippo.name).to.equal('Eminem');
 		await teardownTestStreamAndSource();
