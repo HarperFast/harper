@@ -142,11 +142,6 @@ async function createEnvironment(base_path, env_name, is_txn = false, is_v3 = fa
 	if (!schemas_config) env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.SCHEMAS, (schemas_config = {}));
 	if (!schemas_config[db_name]) schemas_config[db_name] = {};
 	schemas_config[db_name].path = base_path;
-	/*return table({
-		table: env_name,
-		database: db_name,
-		attributes: [{ name: 'id', isPrimaryKey: true }],
-	});*/
 	try {
 		await validateEnvironmentPath(base_path, env_name, is_v3);
 		//if no error is thrown the environment already exists so we return the handle to that environment
@@ -170,12 +165,6 @@ async function createEnvironment(base_path, env_name, is_txn = false, is_v3 = fa
 			let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
 			env[lmdb_terms.ENVIRONMENT_NAME_KEY] = full_name;
 			global.lmdb_map[full_name] = env;
-			/*table({
-				table: env_name,
-				database: path.parse(base_path).name,
-				path: environment_path,
-				attributes: [{ name: 'id', isPrimaryKey: true }],
-			});*/
 
 			return env;
 		}
@@ -193,25 +182,6 @@ async function copyEnvironment(base_path, env_name, destination_path, compact_en
 		path: environment_path,
 		attributes: [{ name: 'id', isPrimaryKey: true }],
 	});
-
-	let env = await openEnvironment(base_path, env_name);
-
-	if (destination_path === undefined) {
-		throw new Error(LMDB_ERRORS.DESTINATION_PATH_REQUIRED);
-	}
-
-	//verify the destination_path is valid
-	try {
-		await fs.access(path.dirname(destination_path));
-	} catch (e) {
-		if (e.code === 'ENOENT') {
-			throw new Error(LMDB_ERRORS.INVALID_DESTINATION_PATH);
-		}
-
-		throw e;
-	}
-
-	await env.backup(destination_path, compact_environment);
 }
 
 /**

@@ -63,9 +63,6 @@ let jsm_server_name;
 let jetstream_manager;
 let jetstream;
 
-// Nats connection it cached here.
-let nats_connection;
-
 module.exports = {
 	runCommand,
 	checkNATSServerInstalled,
@@ -149,7 +146,18 @@ async function checkNATSServerInstalled() {
  * @returns {Promise<*>}
  */
 async function createConnection(port, username, password, wait_on_first_connect = true, host = '127.0.0.1') {
-	return connect({
+	if (!username && !password) {
+		const cluster_user = await user.getClusterUser();
+		if (isEmpty(cluster_user)) {
+			throw new Error('Unable to get nats connection. Cluster user is undefined.');
+		}
+
+		username = cluster_user.username;
+		password = cluster_user.decrypt_hash;
+	}
+
+	hdb_logger.trace('create nats connection called');
+	const c = await connect({
 		name: host,
 		port: port,
 		user: username,
@@ -164,6 +172,9 @@ async function createConnection(port, username, password, wait_on_first_connect 
 			rejectUnauthorized: false,
 		},
 	});
+	hdb_logger.trace(`create connection established a nats client connection with id`, c?.info?.client_id);
+
+	return c;
 }
 
 /**
@@ -181,18 +192,19 @@ async function closeConnection() {
  * gets a reference to a NATS connection, if one is stored in global cache then that is returned, otherwise a new connection is created, added to global & returned
  * @returns {Promise<NatsConnection>}
  */
+let nats_connection;
+let nats_connection_promise;
 async function getConnection() {
-	if (!nats_connection) {
-		const cluster_user = await user.getClusterUser();
-		if (isEmpty(cluster_user)) {
-			throw new Error('Unable to get nats connection. Cluster user is undefined.');
-		}
-
-		const leaf_port = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT);
-		nats_connection = await createConnection(leaf_port, cluster_user.username, cluster_user.decrypt_hash);
+	if (!nats_connection_promise) {
+		// first time it will go in here
+		nats_connection_promise = createConnection(
+			env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT),
+			undefined,
+			undefined
+		);
+		nats_connection = await nats_connection_promise;
 	}
-
-	return nats_connection;
+	return nats_connection || nats_connection_promise; // if we have resolved nats_connection, can short-circuit and return it
 }
 
 /**

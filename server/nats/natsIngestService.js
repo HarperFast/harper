@@ -147,7 +147,8 @@ async function messageProcessor(msg) {
 		harper_logger.trace(`messageProcessor nats msg id: ${msg.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID)}`);
 		let onCommit;
 		if (!records) records = ids;
-		let completion = new Promise((resolve) => (onCommit = resolve));
+		// TODO: Don't ack until this is completed
+		//let completion = new Promise((resolve) => (onCommit = resolve));
 		let { timestamp, user } = origin || {};
 		let subscription = database_subscriptions.get(database_name)?.get(table_name);
 		if (!subscription) {
