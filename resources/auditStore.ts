@@ -43,7 +43,7 @@ const AUDIT_STORE_OPTIONS = {
 	keyEncoder: transactionKeyEncoder,
 };
 
-let audit_retention = convertToMS(env_get(CONFIG_PARAMS.LOGGING_AUDIT_RETENTION));
+let audit_retention = convertToMS(env_get(CONFIG_PARAMS.LOGGING_AUDITRETENTION));
 let pending_cleanup = null;
 export function openAuditStore(root_store) {
 	const audit_store = (root_store.auditStore = root_store.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS));
