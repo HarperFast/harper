@@ -4,30 +4,13 @@
 const search = require('./search');
 const logger = require('../utility/logging/harper_logger');
 const validator = require('../validation/schema_validator');
-const _ = require('lodash');
 const crypto_hash = require('../security/cryptoHash');
 const hdb_utils = require('../utility/common_utils');
-const { promisify } = require('util');
-const terms = require('../utility/hdbTerms');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const env_mngr = require('../utility/environment/environmentManager');
 env_mngr.initSync();
-
-const lmdb_environment_utility = require('../utility/lmdb/environmentUtility');
-const search_utility = require('../utility/lmdb/searchUtility');
-const { getSchemaPath } = require('./harperBridge/lmdbBridge/lmdbUtility/initializePaths');
 const { getDatabases } = require('../resources/databases');
-
-// Promisified functions
-let p_search_search_by_value = search.searchByValue;
-let p_search_search_by_hash = search.searchByHash;
-
-const NAME_ATTRIBUTE_STRING = 'name';
-const HASH_ATTRIBUTE_STRING = 'hash_attribute';
-const SCHEMA_ATTRIBUTE_STRING = 'schema';
-const SCHEMA_TABLE_ATTRIBUTE_STRING = 'schema_table';
-const ATTRIBUTE_NAME_STRING = 'attribute';
 
 module.exports = {
 	describeAll,
@@ -125,6 +108,7 @@ async function describeAll(op_obj) {
  * @returns {Promise<{}|*>}
  */
 async function descTable(describe_table_object, attr_perms) {
+	hdb_utils.transformReq(describe_table_object);
 	let { schema, table } = describe_table_object;
 	schema = schema?.toString();
 	table = table?.toString();
@@ -202,27 +186,14 @@ async function descTable(describe_table_object, attr_perms) {
 }
 
 /**
- * Takes permissions for the table and returns the attributes that that have describe === true
- *
- * @param attr_perms - table attribute permissions for the role calling the describe op
- * @returns {*} -  a filtered object of attributes that can be returned in the describe operation
- */
-function getAttrsByPerms(attr_perms) {
-	return attr_perms.reduce((acc, perm) => {
-		if (perm.describe) {
-			acc.push({ attribute: perm.attribute_name });
-		}
-		return acc;
-	}, []);
-}
-
-/**
  * Returns the schema metadata filtered based on permissions for the user role making the request
  *
  * @param describe_schema_object
  * @returns {Promise<{}|[]>}
  */
 async function describeSchema(describe_schema_object) {
+	hdb_utils.transformReq(describe_schema_object);
+
 	let validation_msg = validator.schema_object(describe_schema_object);
 	if (validation_msg) {
 		throw validation_msg;

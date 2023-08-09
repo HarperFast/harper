@@ -4,7 +4,7 @@ const rewire = require('rewire');
 const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
-const { toJsMsg, headers } = require('nats');
+const { headers } = require('nats');
 const { decode } = require('msgpackr');
 const TEST_HEADERS = headers();
 
@@ -15,6 +15,7 @@ const hdb_logger = require('../../../utility/logging/harper_logger');
 const server_utilities = require('../../../server/serverHelpers/serverUtilities');
 const operation_function_caller = require('../../../utility/OperationFunctionCaller');
 const nats_ingest_service = rewire('../../../server/nats/natsIngestService');
+const real_nats_ingest_service = require('../../../server/nats/natsIngestService');
 const { table } = require('../../../resources/databases');
 const { setNATSReplicator } = require('../../../server/nats/natsReplicator');
 const { setMainIsWorker } = require('../../../server/threads/manageThreads');
@@ -37,17 +38,13 @@ async function teardownTestStreamAndSource() {
 	await nats_utils.deleteLocalStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
 }
 
-function decodeJsMsg(msg) {
-	const js_msg = toJsMsg(msg);
-	return decode(js_msg.data);
-}
-
 describe('Test natsIngestService module', () => {
 	const sandbox = sinon.createSandbox();
 	let get_operation_function_spy;
 	let call_operation_function_as_await_stub;
 	let log_stub;
 	let Hippopotamus;
+	let sub_restore;
 	TEST_HEADERS.append(nats_terms.MSG_HEADERS.ORIGIN, 'some_other_node');
 
 	before(async () => {
@@ -64,12 +61,17 @@ describe('Test natsIngestService module', () => {
 			attributes: [{ name: 'name', isPrimaryKey: true }],
 		});
 		setNATSReplicator('hippopotamus', 'dev', Hippopotamus);
+		sub_restore = nats_ingest_service.__set__(
+			'database_subscriptions',
+			real_nats_ingest_service.getDatabaseSubscriptions()
+		);
 	});
 
 	after(async function () {
 		this.timeout(TEST_TIMEOUT);
 		test_utils.unsetFakeClusterUser();
 		await test_utils.stopTestLeafServer();
+		sub_restore();
 	});
 
 	afterEach(() => {
@@ -87,7 +89,7 @@ describe('Test natsIngestService module', () => {
 		expect(server_name).to.equal('testLeafServer-leaf');
 		expect(js_manager).to.haveOwnProperty('streams');
 		expect(js_manager).to.haveOwnProperty('consumers');
-		expect(js_client).to.haveOwnProperty('api');
+		expect(js_client).to.haveOwnProperty('streamAPI');
 	}).timeout(10000);
 
 	describe('Test workQueueListener function', () => {
@@ -107,10 +109,8 @@ describe('Test natsIngestService module', () => {
 			await setupTestStreamAndSource();
 			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, TEST_HEADERS, test_operation);
 			await nats_ingest_service.initialize();
-			let signal = {};
-			nats_ingest_service.workQueueListener(signal);
+			nats_ingest_service.workQueueListener();
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			signal.abort();
 
 			let hippo = await Hippopotamus.get('Drake');
 			expect(hippo.name).to.equal('Drake');
@@ -147,14 +147,12 @@ describe('Test natsIngestService module', () => {
 			await nats_ingest_service.initialize();
 			// I don't understand why the work queue can't handle more than one message if headers are provided
 			// lots of hacks here to deal with the mysterious behavior.
-			require('../../../server/nats/natsIngestService').setIgnoreOrigin(true);
+			nats_ingest_service.setIgnoreOrigin(true);
 			await nats_utils.publishToStream('msgid.dev.hippopotamus', STREAM_NAME, undefined, [test_operation_1]);
 			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, undefined, test_operation_2);
 			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, undefined, test_operation_3);
-			//nats_ingest_service.workQueueListener(signal);
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			require('../../../server/nats/natsIngestService').setIgnoreOrigin(false);
-			//signal.abort();
+			nats_ingest_service.setIgnoreOrigin(false);
 			let hippo = await Hippopotamus.get('Delores');
 			expect(hippo).to.equal(undefined);
 			hippo = await Hippopotamus.get('Tupac');
@@ -179,10 +177,8 @@ describe('Test natsIngestService module', () => {
 		await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, TEST_HEADERS, test_operation);
 		await nats_ingest_service.initialize();
 		nats_ingest_service.__set__('server_name', 'hip_hop_hippopotamus');
-		let signal = {};
-		nats_ingest_service.workQueueListener(signal);
+		nats_ingest_service.workQueueListener();
 		await new Promise((resolve) => setTimeout(resolve, 100));
-		signal.abort();
 		let hippo = await Hippopotamus.get('Eminem');
 		expect(hippo.name).to.equal('Eminem');
 		await teardownTestStreamAndSource();

@@ -45,6 +45,7 @@ const CLUSTERING_REPLY_SERVICE_DESCRIPTOR = 'Clustering Reply Service';
 
 const FOREGROUND_PID_FILE = 'foreground.pid';
 const HDB_PID_FILE = 'hdb.pid';
+const DEFAULT_DATABASE_NAME = 'data';
 
 const PROCESS_DESCRIPTORS = {
 	HDB: HDB_PROC_DESCRIPTOR,
@@ -289,6 +290,7 @@ const OPERATIONS_ENUM = {
 	UPSERT: 'upsert',
 	SEARCH_BY_CONDITIONS: 'search_by_conditions',
 	SEARCH_BY_HASH: 'search_by_hash',
+	SEARCH_BY_ID: 'search_by_id',
 	SEARCH_BY_VALUE: 'search_by_value',
 	SEARCH: 'search',
 	SQL: 'sql',
@@ -296,11 +298,14 @@ const OPERATIONS_ENUM = {
 	CSV_FILE_LOAD: 'csv_file_load',
 	CSV_URL_LOAD: 'csv_url_load',
 	CREATE_SCHEMA: 'create_schema',
+	CREATE_DATABASE: 'create_database',
 	CREATE_TABLE: 'create_table',
 	CREATE_ATTRIBUTE: 'create_attribute',
 	DROP_SCHEMA: 'drop_schema',
+	DROP_DATABASE: 'drop_database',
 	DROP_TABLE: 'drop_table',
 	DESCRIBE_SCHEMA: 'describe_schema',
+	DESCRIBE_DATABASE: 'describe_database',
 	DESCRIBE_TABLE: 'describe_table',
 	DESCRIBE_ALL: 'describe_all',
 	DELETE: 'delete',
@@ -352,6 +357,7 @@ const OPERATIONS_ENUM = {
 	GET_COMPONENT_FILES: 'get_component_files',
 	GET_COMPONENT_FILE: 'get_component_file',
 	SET_COMPONENT_FILE: 'set_component_file',
+	DROP_COMPONENT_FILE: 'drop_component_file',
 	DROP_CUSTOM_FUNCTION: 'drop_custom_function',
 	ADD_CUSTOM_FUNCTION_PROJECT: 'add_custom_function_project',
 	ADD_COMPONENT: 'add_component',
@@ -1073,5 +1079,6 @@ module.exports = {
 	AUTH_AUDIT_STATUS,
 	AUTH_AUDIT_TYPES,
 	HDB_PID_FILE,
+	DEFAULT_DATABASE_NAME,
 };
 require('./devops/tsBuild');
