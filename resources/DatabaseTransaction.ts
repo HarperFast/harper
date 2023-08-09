@@ -36,15 +36,14 @@ export class DatabaseTransaction implements Transaction {
 	/**
 	 * Resolves with information on the timestamp and success of the commit
 	 */
-	commit(flush = true, retries = 0): Promise<CommitResolution> {
+	commit(txn_time = getNextMonotonicTime(), flush = true, retries = 0): Promise<CommitResolution> {
 		this.resetReadSnapshot();
 		let resolution,
 			completions = [];
 		let write_index = 0;
 		let last_store;
-		let txn_time;
 		const doWrite = (write) => {
-			const audit_record = write.commit(retries);
+			const audit_record = write.commit(txn_time, retries);
 			if (audit_record) {
 				if (audit_record[COMPLETION]) {
 					if (!completions) completions = [];
@@ -54,7 +53,7 @@ export class DatabaseTransaction implements Transaction {
 				if (this.auditStore) {
 					audit_record.user = this.username;
 					audit_record.lastVersion = write.lastVersion;
-					const key = [(txn_time = write.txnTime), write.store.tableId, write.key];
+					const key = [txn_time, write.store.tableId, write.key];
 					if (write.invalidated) key.invalidated = true; // this indicates that audit record is an invalidation, and will be replaced
 					this.auditStore.put(key, audit_record);
 				}
@@ -105,7 +104,7 @@ export class DatabaseTransaction implements Transaction {
 					};
 				});
 			} else {
-				return this.commit(flush, retries + 1); // try again
+				return this.commit(txn_time, flush, retries + 1); // try again
 			}
 		});
 	}
@@ -120,7 +119,7 @@ interface CommitResolution {
 	resolution: boolean;
 }
 export interface Transaction {
-	commit(flush?: boolean): Promise<CommitResolution>;
+	commit(timestamp: number, flush?: boolean): Promise<CommitResolution>;
 	abort?(flush?: boolean): any;
 }
 export class ImmediateTransaction extends DatabaseTransaction {
@@ -128,7 +127,7 @@ export class ImmediateTransaction extends DatabaseTransaction {
 	addWrite(operation) {
 		super.addWrite(operation);
 		// immediately commit the write
-		this.commit();
+		this.commit(this.timestamp);
 	}
 	get timestamp() {
 		return this._timestamp || (this._timestamp = getNextMonotonicTime());

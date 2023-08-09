@@ -229,7 +229,7 @@ class NATSTransaction {
 	 * Once a transaction is completed, we put all the accumulated writes into a single NATS
 	 * message and publish it to the cluster
 	 */
-	commit() {
+	commit(timestamp) {
 		const node_name = env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 		const promises = [];
 		for (const [db, writes] of this.writes_by_db) {
@@ -248,7 +248,7 @@ class NATSTransaction {
 						table,
 						__origin: {
 							user: this.user?.username,
-							timestamp: this.transaction.timestamp,
+							timestamp,
 							node_name,
 						},
 					};

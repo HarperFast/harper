@@ -516,14 +516,12 @@ export function makeTable(options) {
 				partial_record[name] = this.getProperty(name);
 			}
 			const transaction = this._txnForRequest();
-			const txn_time = transaction.timestamp;
 			transaction.addWrite({
 				key: this[ID_PROPERTY],
 				store: primary_store,
-				txnTime: txn_time,
 				invalidated: true,
 				lastVersion: this[VERSION_PROPERTY],
-				commit: (retry) => {
+				commit: (txn_time, retry) => {
 					if (retry) return;
 					const source = TableResource.Source;
 					let completion;
@@ -598,7 +596,6 @@ export function makeTable(options) {
 			if (this[ID_PROPERTY] === undefined) {
 				throw new Error('Can not save record without an id');
 			}
-			const txn_time = transaction.timestamp;
 			let existing_record = this[RECORD_PROPERTY];
 			let is_unchanged;
 			let record_prepared;
@@ -607,12 +604,11 @@ export function makeTable(options) {
 			transaction.addWrite({
 				key: id,
 				store: primary_store,
-				txnTime: txn_time,
 				lastVersion: this[VERSION_PROPERTY],
 				validate: () => {
 					this.validate(record);
 				},
-				commit: (retry) => {
+				commit: (txn_time, retry) => {
 					let completion;
 					if (retry) {
 						if (is_unchanged) return;
@@ -683,16 +679,14 @@ export function makeTable(options) {
 		}
 		_writeDelete(options?: any) {
 			const transaction = this._txnForRequest();
-			const txn_time = transaction.timestamp;
 			let delete_prepared;
 			const id = this[ID_PROPERTY];
 			let completion;
 			transaction.addWrite({
 				key: id,
 				store: primary_store,
-				txnTime: txn_time,
 				lastVersion: this[VERSION_PROPERTY],
-				commit: (retry) => {
+				commit: (txn_time, retry) => {
 					let existing_record = this[RECORD_PROPERTY];
 					if (retry) {
 						const existing_entry = primary_store.getEntry(id);
@@ -980,19 +974,17 @@ export function makeTable(options) {
 		}
 		_writePublish(message, options?: any) {
 			const transaction = this._txnForRequest();
-			const txn_time = transaction.timestamp;
 			const id = this[ID_PROPERTY] || null;
 			let completion;
 			let publish_prepared;
 			transaction.addWrite({
 				store: primary_store,
 				key: id,
-				txnTime: txn_time,
 				lastVersion: this[VERSION_PROPERTY],
 				validate: () => {
 					this.validate(message);
 				},
-				commit: (retries) => {
+				commit: (txn_time, retries) => {
 					this.validate(message);
 					// just need to update the version number of the record so it points to the latest audit record
 					// but have to update the version number of the record
@@ -1027,7 +1019,6 @@ export function makeTable(options) {
 				let transaction;
 				if ((transaction = transaction_set?.find((txn) => txn.lmdbDb?.path === primary_store.path))) return transaction;
 				transaction_set.push((transaction = new DatabaseTransaction(primary_store, context.user, audit_store)));
-				transaction.timestamp = transaction_set.timestamp;
 				return transaction;
 			} else {
 				return new ImmediateTransaction(primary_store, context.user, audit_store);

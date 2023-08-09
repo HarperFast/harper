@@ -23,7 +23,7 @@ export function transaction<T>(
 	else if (context?.transaction && typeof callback === 'function') return callback(context.transaction); // nothing to be done, already in transaction
 	if (typeof callback !== 'function') throw new Error('Callback function must be provided to transaction');
 	const transaction = (context.transaction = new TransactionSet());
-	transaction.timestamp = context.timestamp || getNextMonotonicTime();
+	if (context.timestamp) transaction.timestamp = context.timestamp;
 	transaction[CONTEXT] = context;
 	context.resourceCache = [];
 	let result;
@@ -69,6 +69,7 @@ transaction.abort = function (context_source) {
 };
 
 class TransactionSet extends Array {
+	timestamp: number;
 	/**
 	 * Commit the resource transaction(s). This commits any transactions that have started as part of the resolution
 	 * of this resource, and frees any read transaction.
@@ -81,11 +82,12 @@ class TransactionSet extends Array {
 			const txn = this[i];
 			txn.validate?.();
 		}
+		if (!this.timestamp) this.timestamp = getNextMonotonicTime();
 		for (let i = 0; i < l; i++) {
 			const txn = this[i];
 			// TODO: If we have multiple commits in a single resource instance, need to maintain
 			// databases with waiting flushes to resolve at the end when a flush is requested.
-			const resolution = txn.commit(flush);
+			const resolution = txn.commit(this.timestamp, flush);
 			if (resolution?.then) commits.push(resolution);
 		}
 		if (commits.length > 0)
