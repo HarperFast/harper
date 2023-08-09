@@ -48,7 +48,7 @@ export class DatabaseTransaction implements Transaction {
 			if (audit_record) {
 				if (audit_record[COMPLETION]) {
 					if (!completions) completions = [];
-					completions.push(audit_information[COMPLETION]);
+					completions.push(audit_record[COMPLETION]);
 				}
 				last_store = write.store;
 				if (this.auditStore) {
@@ -56,7 +56,7 @@ export class DatabaseTransaction implements Transaction {
 					audit_record.lastVersion = write.lastVersion;
 					const key = [txn_time, write.store.tableId, write.key];
 					if (write.invalidated) key.invalidated = true; // this indicates that audit record is an invalidation, and will be replaced
-					this.auditStore.put(key, createAuditEntry(write.lastVersion, this.username, audit_information));
+					this.auditStore.put(key, createAuditEntry(write.lastVersion, this.username, audit_record));
 				}
 			}
 		};
