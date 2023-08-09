@@ -48,7 +48,7 @@ const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdb_err
 const { UserEventMsg } = require('../server/threads/itc');
 const _ = require('lodash');
 const { _assignPackageExport } = require('../index');
-_assignPackageExport('user', findAndValidateUser);
+_assignPackageExport('getUser', findAndValidateUser);
 
 const USER_ATTRIBUTE_ALLOWLIST = {
 	username: true,

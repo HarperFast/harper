@@ -1,11 +1,16 @@
 import { streamAsJSON } from './JSONStream';
 import { toCsvStream } from '../../dataLayer/export';
 import { pack, unpack, encodeIter } from 'msgpackr';
-import { decode, encode, EncoderStream } from 'cbor-x';
+import { decode, Encoder, EncoderStream } from 'cbor-x';
 import { createBrotliCompress, brotliCompress } from 'zlib';
 import { Readable } from 'stream';
 import { server, ContentTypeHandler } from '../Server';
 import { _assignPackageExport } from '../../index';
+
+const PUBLIC_ENCODE_OPTIONS = {
+	useRecords: false,
+	useToJSON: true,
+};
 
 server.contentType = function (mime_type: string, handler: ContentTypeHandler) {
 	media_types.set(mime_type, handler);
@@ -21,12 +26,13 @@ media_types.set('application/json', {
 	deserialize: JSON.parse,
 	q: 0.8,
 });
+const cbor_encoder = new Encoder(PUBLIC_ENCODE_OPTIONS);
 media_types.set('application/cbor', {
 	serializeStream(data) {
 		return new EncoderStream(PUBLIC_ENCODE_OPTIONS).end(data);
 	},
-	serialize: encode,
-	deserialize: decode,
+	serialize: cbor_encoder.encode,
+	deserialize: cbor_encoder.decode,
 	q: 1,
 });
 media_types.set('application/x-msgpack', {
@@ -121,10 +127,6 @@ function tryJSONParse(input) {
 		return input;
 	}
 }
-const PUBLIC_ENCODE_OPTIONS = {
-	useRecords: false,
-	useToJSON: true,
-};
 export function registerContentHandlers(app) {
 	app.register(registerFastifySerializers, {
 		serializers: [

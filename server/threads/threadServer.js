@@ -238,6 +238,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 				if (is_operations_server) request.isOperationsServer = true;
 				// assign a more WHATWG compliant headers object, this is our real standard interface
 				let response = await http_chain[port](request);
+				node_response.setHeader('Server', 'HarperDB');
 				if (response.status === -1) {
 					// This means the HDB stack didn't handle the request, and we can then cascade the request
 					// to the server-level handler, forming the bridge to the slower legacy fastify framework that expects
@@ -317,7 +318,7 @@ function unhandled(request) {
 	};
 }
 function onRequest(listener, options) {
-	httpServer(listener, Object.assign({ requestOnly: true }, options));
+	httpServer(listener, { requestOnly: true, ...options });
 }
 
 /**

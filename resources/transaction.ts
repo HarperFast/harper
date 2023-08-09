@@ -25,18 +25,20 @@ export function transaction<T>(
 	const transaction = (context.transaction = new TransactionSet());
 	transaction.timestamp = context.timestamp || getNextMonotonicTime();
 	transaction[CONTEXT] = context;
+	// create a resource cache so that multiple requests to the same resource return the same resource
 	context.resourceCache = [];
 	let result;
 	try {
 		result = callback(transaction);
 		if (result?.then) {
-			return result.then(onSuccess, onError);
+			return result.then(onComplete, onError);
 		}
 	} catch (error) {
 		onError(error);
 	}
-	return onSuccess(result);
-	function onSuccess(result) {
+	return onComplete(result);
+	// when the transaction function completes, run this to commit the transaction
+	function onComplete(result) {
 		const committed = transaction.commit();
 		if (committed.then) {
 			return committed.then(() => {
@@ -48,6 +50,7 @@ export function transaction<T>(
 			return result;
 		}
 	}
+	// if the transaction function throws an error, we abort
 	function onError(error) {
 		transaction.abort();
 		context.transaction = null;

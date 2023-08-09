@@ -1,5 +1,6 @@
 import { asBinary, Database, getLastVersion, RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
+import { createAuditEntry } from './auditStore';
 
 export const COMPLETION = Symbol('completion');
 const MAX_OPTIMISTIC_SIZE = 100;
@@ -44,19 +45,17 @@ export class DatabaseTransaction implements Transaction {
 		let last_store;
 		let txn_time;
 		const doWrite = (write) => {
-			const audit_record = write.commit(retries);
-			if (audit_record) {
-				if (audit_record[COMPLETION]) {
+			const audit_information = write.commit(retries);
+			if (audit_information) {
+				if (audit_information[COMPLETION]) {
 					if (!completions) completions = [];
-					completions.push(audit_record[COMPLETION]);
+					completions.push(audit_information[COMPLETION]);
 				}
 				last_store = write.store;
-				if (this.auditStore) {
-					audit_record.user = this.username;
-					audit_record.lastVersion = write.lastVersion;
+				if (this.auditStore && audit_information.operation) {
 					const key = [(txn_time = write.txnTime), write.store.tableId, write.key];
 					if (write.invalidated) key.invalidated = true; // this indicates that audit record is an invalidation, and will be replaced
-					this.auditStore.put(key, audit_record);
+					this.auditStore.put(key, createAuditEntry(write.lastVersion, this.username, audit_information));
 				}
 			}
 		};

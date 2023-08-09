@@ -40,15 +40,13 @@ async function getCompartment(getGlobalVars) {
 	});
 
 	compartment = new (Compartment as typeof CompartmentClass)(
-		Object.assign(
-			{
-				console,
-				Math,
-				Date,
-				fetch: secureOnlyFetch,
-			},
-			getGlobalVars()
-		),
+		{
+			console,
+			Math,
+			Date,
+			fetch: secureOnlyFetch,
+			...getGlobalVars(),
+		},
 		{
 			//harperdb: { Resource, tables, databases }
 		},

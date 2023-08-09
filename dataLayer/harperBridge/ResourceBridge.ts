@@ -10,6 +10,7 @@ import {
 	OPERATIONS_ENUM,
 	VALUE_SEARCH_COMPARATORS,
 	VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP,
+	READ_AUDIT_LOG_SEARCH_TYPES_ENUM,
 } from '../../utility/hdbTerms';
 import * as signalling from '../../utility/signalling';
 import { SchemaEventMsg } from '../../server/threads/itc';
@@ -69,16 +70,24 @@ export class ResourceBridge extends LMDBBridge {
 	async createTable(table_system_data, table_create_obj) {
 		let attributes = table_create_obj.attributes;
 		const schema_defined = Boolean(attributes);
-		if (!attributes) {
-			// legacy default schema for tables created through operations API
+		const primary_key_name = table_create_obj.primary_key || table_create_obj.hash_attribute;
+		if (attributes) {
+			// allow for attributes to be specified, but do some massaging to make sure they are in the right form
+			for (const attribute of attributes) {
+				if (attribute.is_primary_key) {
+					attribute.isPrimaryKey = true;
+					delete attribute.is_primary_key;
+				} else if (attribute.name === primary_key_name && primary_key_name) attribute.isPrimaryKey = true;
+			}
+		} else {
+			// legacy default schema for tables created through operations API without attributes
+			if (!primary_key_name)
+				throw new ClientError('A primary key must be specified with a `primary_key` property or with `attributes`');
 			attributes = [
-				{ name: table_create_obj.hash_attribute, isPrimaryKey: true },
+				{ name: primary_key_name, isPrimaryKey: true },
 				{ name: '__createdtime__', indexed: true },
 				{ name: '__updatedtime__', indexed: true },
 			];
-		}
-		for (const attribute of attributes) {
-			if (attribute.name === table_create_obj.hash_attribute) attribute.isPrimaryKey = true;
 		}
 		table({
 			database: table_create_obj.schema,
@@ -86,9 +95,6 @@ export class ResourceBridge extends LMDBBridge {
 			attributes,
 			schemaDefined: schema_defined,
 		});
-		signalling.signalSchemaChange(
-			new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_TABLE, table_create_obj.schema, table_create_obj.table)
-		);
 	}
 	async createAttribute(create_attribute_obj) {
 		await getTable(create_attribute_obj).addAttributes([
@@ -129,9 +135,6 @@ export class ResourceBridge extends LMDBBridge {
 	}
 	dropTable(drop_table_object) {
 		getTable(drop_table_object).dropTable();
-		signalling.signalSchemaChange(
-			new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, drop_table_object.schema, drop_table_object.table)
-		);
 	}
 	createSchema(create_schema_obj) {
 		database({
@@ -402,6 +405,48 @@ export class ResourceBridge extends LMDBBridge {
 	resetReadTxn(schema, table) {
 		getTable({ schema, table })?.primaryStore.resetReadTxn();
 	}
+	async deleteAuditLogsBefore(delete_obj) {
+		const table = getTable(delete_obj);
+		return table.deleteHistory(delete_obj.timestamp);
+	}
+
+	async readAuditLog(read_audit_log_obj) {
+		const table = getTable(read_audit_log_obj);
+		const histories = {};
+		switch (read_audit_log_obj.search_type) {
+			case READ_AUDIT_LOG_SEARCH_TYPES_ENUM.HASH_VALUE:
+				// get the history of each record
+				for (const id of read_audit_log_obj.search_values) {
+					histories[id] = (await table.getHistoryOfRecord(id)).map((audit_record) => {
+						let operation = audit_record.operation;
+						if (operation === 'put') operation = 'upsert';
+						return {
+							operation,
+							user_name: audit_record.user,
+							hash_values: [id],
+							records: [audit_record.value],
+						};
+					});
+				}
+				return histories;
+			case READ_AUDIT_LOG_SEARCH_TYPES_ENUM.USERNAME:
+				const users = read_audit_log_obj.search_values;
+				// do a full table scan of the history and find users
+				for await (const entry of groupRecordsInHistory(table)) {
+					if (users.includes(entry.user_name)) {
+						const entries_for_user = histories[entry.user_name] || (histories[entry.user_name] = []);
+						entries_for_user.push(entry);
+					}
+				}
+				return histories;
+			default:
+				return groupRecordsInHistory(
+					table,
+					read_audit_log_obj.search_values?.[0],
+					read_audit_log_obj.search_values?.[1]
+				);
+		}
+	}
 }
 
 function getSelect({ get_attributes }, table) {
@@ -460,4 +505,27 @@ function createDeleteResponse(deleted, skipped, txn_time) {
 		skipped_hashes: skipped,
 		txn_time: txn_time,
 	};
+}
+
+async function* groupRecordsInHistory(table, start?, end?) {
+	let enqueued;
+	for await (const entry of table.getHistory(start, end)) {
+		let operation = entry.operation;
+		if (operation === 'put') operation = 'upsert';
+		const { id, timestamp, value } = entry;
+		if (enqueued?.timestamp === timestamp) {
+			enqueued.hash_values.push(id);
+			enqueued.records.push(value);
+		} else {
+			if (enqueued) yield enqueued;
+			enqueued = {
+				operation,
+				user_name: entry.user,
+				timestamp,
+				hash_values: [id],
+				records: [value],
+			};
+		}
+	}
+	if (enqueued) yield enqueued;
 }
