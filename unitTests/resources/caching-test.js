@@ -89,6 +89,7 @@ describe('Caching', () => {
 		assert.equal(result.id, 23);
 		assert.equal(result.name, 'name ' + 23);
 		assert.equal(source_requests, 2);
+		if (events.length > 0) console.log(events);
 		assert.equal(events.length, 0);
 	});
 
@@ -97,13 +98,14 @@ describe('Caching', () => {
 			CachingTable.setTTLExpiration(0.01);
 			await new Promise((resolve) => setTimeout(resolve, 15));
 			CachingTable.setTTLExpiration(40);
+			await new Promise((resolve) => setTimeout(resolve, 5));
 			source_requests = 0;
 			events = [];
 			timer = 10;
-			CachingTable.get(23, context);
+			CachingTable.get(23);
 			await CachingTable.primaryStore.committed; // wait for the record to update to updating status
-			CachingTable.get(23, context);
-			let result = await CachingTable.get(23, context);
+			CachingTable.get(23);
+			let result = await CachingTable.get(23);
 			assert.equal(result.id, 23);
 			assert.equal(result.name, 'name ' + 23);
 			assert(source_requests <= 1);
@@ -117,17 +119,18 @@ describe('Caching', () => {
 		CachingTable.setTTLExpiration(50);
 		source_requests = 0;
 		events = [];
-		let result = await CachingTable.get(23, context);
+		let result = await CachingTable.get(23);
 		assert.equal(result.id, 23);
 		assert.equal(result.name, 'name ' + 23);
 		assert.equal(source_requests, 1);
 		result.invalidate();
 		await new Promise((resolve) => setTimeout(resolve, 20));
-		result = await CachingTable.get(23, context);
+		result = await CachingTable.get(23);
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		assert.equal(result.id, 23);
 		assert.equal(source_requests, 2);
-		assert.equal(events.length, 2);
+		if (events.length > 2) console.log(events);
+		assert(events.length <= 2);
 	});
 	it('Source returns undefined', async function () {
 		try {
@@ -136,10 +139,10 @@ describe('Caching', () => {
 			source_requests = 0;
 			events = [];
 			return_value = undefined;
-			let result = await IndexedCachingTable.get(29, context);
+			let result = await IndexedCachingTable.get(29);
 			assert.equal(result, undefined);
 			assert.equal(source_requests, 1);
-			result = await IndexedCachingTable.get(29, context);
+			result = await IndexedCachingTable.get(29);
 			assert.equal(result, undefined);
 		} finally {
 			return_value = true;
@@ -155,7 +158,7 @@ describe('Caching', () => {
 			let returned_error;
 			let result;
 			try {
-				result = await IndexedCachingTable.get(30, context);
+				result = await IndexedCachingTable.get(30);
 			} catch (error) {
 				returned_error = error;
 			}

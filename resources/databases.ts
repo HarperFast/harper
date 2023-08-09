@@ -1,5 +1,5 @@
 import { initSync, getHdbBasePath, get as env_get } from '../utility/environment/environmentManager';
-import { INTERNAL_DBIS_NAME, AUDIT_STORE_NAME } from '../utility/lmdb/terms';
+import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms';
 import { open } from 'lmdb';
 import { join, extname, basename } from 'path';
 import { existsSync, readdirSync, DirEnt } from 'fs';
@@ -19,10 +19,10 @@ import { SchemaEventMsg } from '../server/threads/itc';
 import { workerData, threadId } from 'worker_threads';
 import * as harper_logger from '../utility/logging/harper_logger';
 import * as manage_threads from '../server/threads/manageThreads';
+import { openAuditStore, transactionKeyEncoder } from './auditStore';
 
 const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
-const TABLE_CLASSES = Symbol('table-classes');
 initSync();
 
 interface Tables {
@@ -31,11 +31,12 @@ interface Tables {
 interface Databases {
 	[database_name: string]: Tables;
 }
-const USE_AUDIT = true; // TODO: Get this from config
+
 export const tables: Tables = Object.create(null);
 export const databases: Databases = Object.create(null);
 _assignPackageExport('databases', databases);
 _assignPackageExport('tables', tables);
+const NEXT_TABLE_ID = Symbol.for('next-table-id');
 const table_listeners = [];
 let loaded_databases; // indicates if we have loaded databases from the file system yet
 const database_envs = new Map<string, any>();
@@ -136,8 +137,14 @@ export function getDatabases(): Databases {
 		const defined_tables = defined_databases.get(db_name);
 		if (defined_tables) {
 			const tables = databases[db_name];
+			if (db_name.includes('delete'))
+				harper_logger.trace(`defined tables ${Array.from(defined_tables.keys())}`);
+	
 			for (const table_name in tables) {
-				if (!defined_tables.has(table_name)) delete tables[table_name];
+				if (!defined_tables.has(table_name)) {
+					harper_logger.trace(`delete table class ${table_name}`);
+					delete tables[table_name];
+				}
 			}
 		} else {
 			delete databases[db_name];
@@ -146,7 +153,6 @@ export function getDatabases(): Databases {
 					delete tables[table_name];
 				}
 				delete tables[DEFINED_TABLES];
-				delete tables[TABLE_CLASSES];
 			}
 		}
 	}
@@ -184,7 +190,8 @@ function readMetaDb(
 	is_legacy?: boolean
 ) {
 	const env_init = new OpenEnvironmentObject(path, false);
-	harper_logger.trace(`reading meta data from ${path}`);
+	if (path.includes('delete'))
+		harper_logger.trace(`reading meta data from ${path}`);
 	try {
 		let root_store = database_envs.get(path);
 		if (root_store) root_store.needsDeletion = false;
@@ -196,7 +203,7 @@ function readMetaDb(
 		const dbis_store =
 			root_store.dbisDb || (root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init));
 		let audit_store = root_store.auditStore;
-		if (USE_AUDIT && !audit_store) {
+		if (!audit_store) {
 			if (audit_path) {
 				if (existsSync(audit_path)) {
 					env_init.path = audit_path;
@@ -204,7 +211,7 @@ function readMetaDb(
 					audit_store.isLegacy = true;
 				}
 			} else {
-				audit_store = root_store.auditStore = root_store.openDB(AUDIT_STORE_NAME, internal_dbi_init);
+				audit_store = openAuditStore(root_store);
 			}
 		}
 
@@ -213,6 +220,8 @@ function readMetaDb(
 		const tables_to_load = new Map();
 		for (const { key, value } of dbis_store.getRange({ start: false })) {
 			let [table_name, attribute_name] = key.toString().split('/');
+			if (path.includes('delete'))
+				harper_logger.trace(`read key ${key}`);
 			if (attribute_name === '') {
 				// primary key
 				attribute_name = value.name;
@@ -229,7 +238,6 @@ function readMetaDb(
 			Object.defineProperty(value, 'key', { value: key, configurable: true });
 		}
 
-		const table_classes = tables[TABLE_CLASSES];
 		for (const [table_name, table_def] of tables_to_load) {
 			let { attributes, primary: primary_attribute } = table_def;
 			if (!primary_attribute) {
@@ -248,12 +256,15 @@ function readMetaDb(
 					);
 			}
 			// if the table has already been defined, use that class, don't create a new one
-			let table = table_classes?.get(table_name);
+			let table = tables[table_name];
 			let indices = {},
 				existing_attributes = [];
 			let table_id;
 			let primary_store;
-			const audit = primary_attribute.audit !== false;
+			const audit =
+				typeof primary_attribute.audit === 'boolean'
+					? primary_attribute.audit
+					: env_get(CONFIG_PARAMS.LOGGING_AUDITLOG);
 			const track_deletes = primary_attribute.trackDeletes;
 			const expiration = primary_attribute.expiration;
 			if (table) {
@@ -263,10 +274,11 @@ function readMetaDb(
 			} else {
 				table_id = primary_attribute.tableId;
 				if (table_id) {
-					if (table_id >= (root_store.nextTableId || 0)) root_store.nextTableId = table_id + 1;
+					if (table_id >= (dbis_store.get(NEXT_TABLE_ID) || 0)) dbis_store.putSync(NEXT_TABLE_ID, table_id + 1);
 				} else {
-					if (!root_store.nextTableId) root_store.nextTableId = 1;
-					primary_attribute.tableId = table_id = root_store.nextTableId++;
+					primary_attribute.tableId = table_id = dbis_store.get(NEXT_TABLE_ID);
+					if (!table_id) table_id = 1;
+					dbis_store.putSync(NEXT_TABLE_ID, table_id + 1);
 					dbis_store.putSync(primary_attribute.key, primary_attribute);
 				}
 				const dbi_init = new OpenDBIObject(!primary_attribute.is_hash_attribute, primary_attribute.is_hash_attribute);
@@ -297,6 +309,7 @@ function readMetaDb(
 				}
 			}
 			if (!table) {
+				harper_logger.trace(`creating table class ${table_name}`, Object.keys(tables));
 				table = setTable(
 					tables,
 					table_name,
@@ -376,9 +389,6 @@ function ensureDB(database_name) {
  */
 function setTable(tables, table_name, Table) {
 	tables[table_name] = Table;
-	let table_classes = tables[TABLE_CLASSES];
-	if (!table_classes) table_classes = tables[TABLE_CLASSES] = new Map();
-	table_classes.set(table_name, Table);
 	return Table;
 }
 /**
@@ -419,7 +429,6 @@ export async function dropDatabase(database_name) {
 			delete tables[table_name];
 		}
 		delete tables[DEFINED_TABLES];
-		delete tables[TABLE_CLASSES];
 	}
 	const root_store = database({ database: database_name });
 	delete databases[database_name];
@@ -481,14 +490,14 @@ export function table({
 	} else {
 		let audit_store = root_store.auditStore;
 		if (!audit_store) {
-			harper_logger.trace(`openDB ${AUDIT_STORE_NAME} from ${database_name}`);
-			root_store.auditStore = audit_store = root_store.openDB(AUDIT_STORE_NAME, {});
+			audit_store = openAuditStore(root_store);
 		}
 		primary_key_attribute = attributes.find((attribute) => attribute.isPrimaryKey) || {};
 		primary_key = primary_key_attribute.name;
 		primary_key_attribute.is_hash_attribute = true;
 		primary_key_attribute.schemaDefined = schema_defined;
 		if (track_deletes) primary_key_attribute.trackDeletes = true;
+		audit = primary_key_attribute.audit = typeof audit === 'boolean' ? audit : env_get(CONFIG_PARAMS.LOGGING_AUDITLOG);
 		if (expiration) primary_key_attribute.expiration = expiration;
 		if (origin) {
 			if (!primary_key_attribute.origins) primary_key_attribute.origins = [origin];
@@ -500,11 +509,12 @@ export function table({
 		harper_logger.trace(`openDB ${dbi_name} from ${database_name}`);
 		const primary_store = root_store.openDB(dbi_name, dbi_init);
 		primary_store.rootStore = root_store;
-		if (!root_store.env.nextTableId) root_store.env.nextTableId = 1;
-		primary_store.tableId = root_store.env.nextTableId++;
-		primary_key_attribute.tableId = primary_store.tableId;
 		harper_logger.trace(`openDB ${INTERNAL_DBIS_NAME} from ${database_name}`);
 		attributes_dbi = root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
+		primary_store.tableId = attributes_dbi.get(NEXT_TABLE_ID);
+		if (!primary_store.tableId) primary_store.tableId = 1;
+		attributes_dbi.putSync(NEXT_TABLE_ID, primary_store.tableId + 1);
+		primary_key_attribute.tableId = primary_store.tableId;
 		Table = setTable(
 			tables,
 			table_name,
@@ -559,11 +569,26 @@ export function table({
 		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
 		// iterate through the attributes to ensure that we have all the dbis created and indexed
 		for (const attribute of attributes || []) {
-			if (attribute.isPrimaryKey) continue; // primary key can't change
-			// non-indexed attributes do not need a dbi
-			const dbi_key = table_name + '/' + attribute.name;
+			let dbi_key = table_name + '/' + (attribute.name || '');
 			Object.defineProperty(attribute, 'key', { value: dbi_key, configurable: true });
 			let attribute_descriptor = attributes_dbi.get(dbi_key);
+			if (attribute.isPrimaryKey) {
+				// primary key can't change indexing, but settings can change
+				if (audit === true && !Table.audit) {
+					Table.enableAuditing();
+					if (!attribute_descriptor) {
+						dbi_key = table_name + '/';
+						attribute_descriptor = attributes_dbi.get(dbi_key);
+					}
+					const updated_primary_attribute = Object.assign({}, attribute_descriptor, { audit: true });
+					has_changes = true; // send out notification of the change
+					startTxn();
+					attributes_dbi.put(dbi_key, updated_primary_attribute);
+				}
+
+				continue;
+			}
+			// note that non-indexed attributes do not need a dbi
 			if (attribute_descriptor?.attribute && !attribute_descriptor.name) attribute_descriptor.indexed = true; // legacy descriptor
 			const changed =
 				!attribute_descriptor ||
@@ -653,6 +678,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 			last_resolution = index.drop();
 		}
 		let interrupted;
+		let indexed = 0;
 		const attributes_length = attributes.length;
 		if (attributes_length > 0) {
 			let outstanding = 0;
@@ -666,7 +692,6 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 				if (!record) continue; // deletion entry
 				// TODO: Do we ever need to interrupt due to a schema change that was not a restart?
 				//if (Table.schemaVersion !== schema_version) return; // break out if there are any schema changes and let someone else pick it up
-				let indexed = 0;
 				outstanding++;
 				// every index operation needs to be guarded by the version still be the same. If it has already changed before
 				// we index, that's fine because indexing is idempotent, we can just put the same values again. If it changes

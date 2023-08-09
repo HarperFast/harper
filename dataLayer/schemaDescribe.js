@@ -174,9 +174,10 @@ async function descTable(describe_table_object, attr_perms) {
 			for (let key of audit_store.getKeys({ reverse: true, limit: 1 })) {
 				table_result.last_updated_record = key[0];
 			}
-		} else if (table_obj.indices.__updatedtime__) {
-			for (let key of table_obj.indices.__updatedtime__.get().getKeys({ reverse: true, limit: 1 })) {
-				table_result.last_updated_record = key[0];
+		}
+		if (!table_result.last_updated_record && table_obj.indices.__updatedtime__) {
+			for (let key of table_obj.indices.__updatedtime__.getKeys({ reverse: true, limit: 1 })) {
+				table_result.last_updated_record = key;
 			}
 		}
 	} catch (e) {

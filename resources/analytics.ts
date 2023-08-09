@@ -177,6 +177,8 @@ function getAnalyticsTable() {
 			table: 'hdb_analytics',
 			database: 'system',
 			expiration: 864000,
+			audit: false,
+			trackDeletes: false,
 			attributes: [
 				{
 					name: 'id',
@@ -206,6 +208,7 @@ function startScheduledTasks() {
 
 let total_bytes_processed = 0;
 const last_utilizations = new Map();
+const LOG_ANALYTICS = false; // TODO: Make this a config option if we really want this
 function recordAnalytics(message, worker?) {
 	const report = message.report;
 	report.threadId = worker?.threadId || threadId;
@@ -226,7 +229,7 @@ function recordAnalytics(message, worker?) {
 	report.id = getNextMonotonicTime();
 	getAnalyticsTable().put(report);
 	if (!scheduled_tasks_running) startScheduledTasks();
-	last_append = logAnalytics(report);
+	if (LOG_ANALYTICS) last_append = logAnalytics(report);
 }
 let last_append;
 let analytics_log;
@@ -253,17 +256,18 @@ async function logAnalytics(report) {
 	await analytics_log.write(JSON.stringify(report) + '\n', position);
 }
 
-let BUCKET_COUNT = 100;
+const BUCKET_COUNT = 100;
 function addToBucket(action, value) {
 	if (!action.buckets) {
 		action.buckets = newBuckets();
 	}
-	let { counts, values, totalCount } = action.buckets;
+	const { counts, values, totalCount } = action.buckets;
 	let jump = BUCKET_COUNT >> 1; // amount to jump with each iteration
 	let position = jump; // start at halfway point
 	while ((jump = jump >> 1) > 0) {
-		let bucket_value = values[position];
-		if (bucket_value === 0) { // unused slot, immediately put our value in
+		const bucket_value = values[position];
+		if (bucket_value === 0) {
+			// unused slot, immediately put our value in
 			counts[position] = 1;
 			values[position] = value;
 		}
@@ -273,7 +277,7 @@ function addToBucket(action, value) {
 			position -= jump;
 		}
 	}
-	let count = counts[position] + 1;
+	const count = counts[position] + 1;
 	if (position === BUCKET_COUNT) {
 		// if we go beyond the last item, increase the bucket (max) value
 		position--;
@@ -286,7 +290,7 @@ function addToBucket(action, value) {
 	}
 }
 function newBuckets() {
-	let ab = new ArrayBuffer(8 * BUCKET_COUNT);
+	const ab = new ArrayBuffer(8 * BUCKET_COUNT);
 	return {
 		values: new Float32Array(ab, 0, BUCKET_COUNT),
 		counts: new Uint32Array(ab, BUCKET_COUNT * 4, BUCKET_COUNT),
@@ -299,18 +303,18 @@ let balancing_buckets;
  * @param param
  */
 function rebalance({ counts, values, totalCount }, reset_counts) {
-	let count_per_bucket = totalCount / BUCKET_COUNT;
+	const count_per_bucket = totalCount / BUCKET_COUNT;
 	let target_position = 0;
 	let target_count = 0;
 	let last_target_value = 0;
-	let { values: target_values, counts: target_counts } = balancing_buckets || (balancing_buckets = newBuckets());
+	const { values: target_values, counts: target_counts } = balancing_buckets || (balancing_buckets = newBuckets());
 	for (let i = 0; i < BUCKET_COUNT; i++) {
 		// iterate through the existing buckets, filling up the target buckets in a balanced way
 		let count = counts[i];
-		let remaining_in_bucket
-		while (((remaining_in_bucket = count_per_bucket - target_count) < count)) {
+		let remaining_in_bucket;
+		while ((remaining_in_bucket = count_per_bucket - target_count) < count) {
 			value = values[i];
-			last_target_value = (count_per_bucket - target_count) / count * (value - last_target_value) + last_target_value;
+			last_target_value = ((count_per_bucket - target_count) / count) * (value - last_target_value) + last_target_value;
 			target_values[target_position] = last_target_value;
 			target_counts[target_position] = count_per_bucket;
 			count -= count_per_bucket;
@@ -321,8 +325,6 @@ function rebalance({ counts, values, totalCount }, reset_counts) {
 	}
 	// now copy the balanced buckets back into the original buckets
 	values.set(target_values);
-	if (reset_counts)
-		counts.fill(0);
-	else
-		counts.set(target_counts);
+	if (reset_counts) counts.fill(0);
+	else counts.set(target_counts);
 }

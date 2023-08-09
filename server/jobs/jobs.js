@@ -45,7 +45,7 @@ async function handleGetJob(json_body) {
 	try {
 		let result = await getJobById(json_body.id);
 		if (!hdb_util.isEmptyOrZeroLength(result)) {
-			result[0] = Object.assign({}, result[0]);
+			result[0] = { ...result[0] };
 			if (result[0].request !== undefined) delete result[0].request;
 			delete result[0]['__createdtime__'];
 			delete result[0]['__updatedtime__'];

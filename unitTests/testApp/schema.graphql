@@ -7,7 +7,7 @@ type SimpleRecord @table(audit: false) {
 	id: ID @primaryKey
 	name: String @indexed
 }
-type FourProp @table {
+type FourProp @table(audit: "1d") {
 	id: ID @primaryKey
 	name: String @indexed
 	age: Int @indexed

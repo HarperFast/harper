@@ -73,14 +73,6 @@ async function createTable(create_table_object) {
 	transformReq(create_table_object);
 
 	let create_table_structure = await createTableStructure(create_table_object);
-	signalling.signalSchemaChange(
-		new SchemaEventMsg(
-			process.pid,
-			create_table_object.operation,
-			create_table_object.schema,
-			create_table_object.table
-		)
-	);
 
 	return create_table_structure;
 }
@@ -219,9 +211,6 @@ async function dropTable(drop_table_object) {
 	}
 
 	await harperBridge.dropTable(drop_table_object);
-	signalling.signalSchemaChange(
-		new SchemaEventMsg(process.pid, drop_table_object.operation, drop_table_object.schema, drop_table_object.table)
-	);
 
 	// Purge tables local stream. Streams are part of Nats and are used by clustering, they are 'message stores' that track transactions on a table.
 	await nats_utils.purgeTableStream(drop_table_object.schema, drop_table_object.table);

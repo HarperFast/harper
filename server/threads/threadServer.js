@@ -317,7 +317,7 @@ function unhandled(request) {
 	};
 }
 function onRequest(listener, options) {
-	httpServer(listener, Object.assign({ requestOnly: true }, options));
+	httpServer(listener, { requestOnly: true, ...options });
 }
 
 /**

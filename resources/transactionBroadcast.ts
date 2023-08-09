@@ -1,13 +1,10 @@
-import { readKey } from 'ordered-binary';
 import { info } from '../utility/logging/harper_logger';
 import { threadId } from 'worker_threads';
 import { onMessageByType, broadcast } from '../server/threads/manageThreads';
-import { MAXIMUM_KEY } from 'ordered-binary';
-import { tables } from './databases';
-import { getLastTxnId } from 'lmdb';
 import { writeKey } from 'ordered-binary';
 import { IterableEventQueue } from './IterableEventQueue';
 import { keyArrayToString } from './Resources';
+import { readAuditEntry } from './auditStore';
 const TRANSACTION_EVENT_TYPE = 'transaction';
 const FAILED_CONDITION = 0x4000000;
 let all_subscriptions;
@@ -47,6 +44,7 @@ export function addSubscription(table, key, listener?: (key) => any, start_time:
 		table_subscriptions = database_subscriptions[table_id] = new Map();
 		table_subscriptions.envs = database_subscriptions;
 		table_subscriptions.tableId = table_id;
+		table_subscriptions.store = table.primaryStore;
 	}
 
 	key = keyArrayToString(key);
@@ -114,7 +112,7 @@ function notifyFromTransactionData(path, audit_ids, same_thread?) {
 		error.message += ' in ' + path;
 		throw error;
 	}
-	for (const audit_id of audit_ids) {
+	audit_id_loop: for (const audit_id of audit_ids) {
 		const [txn_time, table_id, record_key] = audit_id;
 		last_time = txn_time;
 		const table_subscriptions = subscriptions[table_id];
@@ -122,8 +120,7 @@ function notifyFromTransactionData(path, audit_ids, same_thread?) {
 		writeKey(audit_id, test, 0);
 		const is_invalidation = audit_id[3];
 		if (is_invalidation) audit_id.length = 3;
-		const audit_record = subscriptions.auditStore.get(audit_id);
-		if (is_invalidation && audit_record.operation !== 'invalidate') continue; // this indicates that the invalidation entry has already been replaced, so just wait for the second update
+		let audit_record;
 		let matching_key = keyArrayToString(record_key);
 		let is_ancestor;
 		do {
@@ -137,6 +134,12 @@ function notifyFromTransactionData(path, audit_ids, same_thread?) {
 					}
 					try {
 						if (subscription.crossThreads === false && !same_thread) continue;
+						if (audit_record === undefined) {
+							const audit_record_encoded = subscriptions.auditStore.get(audit_id);
+							if (!audit_record_encoded) continue audit_id_loop; // if the audit record is pruned before we get to it, this can be undefined/null
+							audit_record = readAuditEntry(audit_record_encoded, table_subscriptions.store);
+							if (is_invalidation && audit_record.operation !== 'invalidate') continue audit_id_loop; // this indicates that the invalidation entry has already been replaced, so just wait for the second update
+						}
 						subscription.listener(record_key, audit_record, txn_time);
 					} catch (error) {
 						console.error(error);
@@ -172,16 +175,10 @@ export function listenToCommits(primary_store, audit_store) {
 			// transactions that is used by lmdb-js for minimal modification and since the binary
 			// format can readily be shared with other threads
 			let start;
-			let first_txn;
 			const audit_ids = [];
 			if (audit_store) {
 				// get all the buffers (and starting position of the first) in this transaction
 				do {
-					/* TODO: Once we have lmdb support for return txn ids, we can just get the first one
-					if (!first_txn && next.meta && next.meta.store === audit_store && next.meta.key) {
-						first_txn = next.meta.key[0];
-						break;
-					}*/
 					if (next.flag & FAILED_CONDITION) continue;
 					let key;
 					if (next.meta && next.meta.store === audit_store && (key = next.meta.key)) {
@@ -193,30 +190,15 @@ export function listenToCommits(primary_store, audit_store) {
 			}
 			// broadcast all the transaction buffers so they can be (sequentially) read and subscriptions messages
 			// delivered on all other threads
-			//if (first_txn) {
 			broadcast({
 				type: TRANSACTION_EVENT_TYPE,
 				path,
 				auditIds: audit_ids,
 				//txnId,
-				//firstTxn: first_txn,
 				start,
 			});
 			// and notify on our own thread too
 			notifyFromTransactionData(path, audit_ids, true);
-			//}
 		});
 	}
 }
-const transaction_key_encoder = {
-	writeKey(key, buffer, position) {
-		const data_view = buffer.dataView || (buffer.dataView = new DataView(buffer));
-		data_view.setFloat64(key[0], position);
-		data_view.setUint32(key[1], position + 8);
-		return writeKey(key[2], buffer, position + 12);
-	},
-	readKey(buffer, start, end) {
-		const data_view = buffer.dataView || (buffer.dataView = new DataView(buffer));
-		return [data_view.getFloat64(start), data_view.getUint32(start + 8), readKey(buffer, start + 12, end)];
-	},
-};
