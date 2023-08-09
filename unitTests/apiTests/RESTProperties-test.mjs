@@ -51,10 +51,10 @@ describe('test REST with property updates', () => {
 			subArray: [{ name: 'a sub-object of an array' }],
 		});
 		assert.equal(response.status, 204);
-		response = await axios.get('http://localhost:9926/namespace/SubObject/6?select=subObject');
+		response = await axios.get('http://localhost:9926/namespace/SubObject/6?select(subObject)');
 		assert.equal(response.status, 200);
 		assert.equal(response.data.name, 'a sub-object');
-		response = await axios.get('http://localhost:9926/namespace/SubObject/6?select=any,');
+		response = await axios.get('http://localhost:9926/namespace/SubObject/6?select(any,)');
 		assert.equal(response.data.any.name, 'can be an object');
 	});
 	it('put with wrong type on attribute', async () => {
