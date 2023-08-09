@@ -129,8 +129,8 @@ describe('Test custom functions operations', () => {
 			await createMockComponents();
 		});
 
-		it('Test getComponentFiles happy path', async () => {
-			const result = await operations.getComponentFiles();
+		it('Test getComponents happy path', async () => {
+			const result = await operations.getComponents();
 			expect(result.name).to.equal('custom_functions');
 			expect(result.entries[0].name).to.equal('my-cool-component');
 			expect(result.entries[0].entries.length).to.equal(2);

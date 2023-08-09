@@ -349,7 +349,7 @@ const OPERATIONS_ENUM = {
 	GET_CUSTOM_FUNCTIONS: 'get_custom_functions',
 	GET_CUSTOM_FUNCTION: 'get_custom_function',
 	SET_CUSTOM_FUNCTION: 'set_custom_function',
-	GET_COMPONENT_FILES: 'get_component_files',
+	GET_COMPONENTS: 'get_components',
 	GET_COMPONENT_FILE: 'get_component_file',
 	SET_COMPONENT_FILE: 'set_component_file',
 	DROP_CUSTOM_FUNCTION: 'drop_custom_function',

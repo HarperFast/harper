@@ -453,7 +453,15 @@ async function deployComponent(req) {
  * Gets a JSON directory tree of the components dir and all nested files/folders
  * @returns {Promise<*>}
  */
-async function getComponentFiles() {
+async function getComponents() {
+	const all_config = config_utils.getConfiguration();
+	let comps = [];
+	for (const element in all_config) {
+		if (all_config[element]?.package) {
+			comps.push(Object.assign(all_config[element], { name: element }));
+		}
+	}
+
 	// Recursive function that will traverse the components dir and build json
 	// directory tree as it goes.
 	const walk_dir = async (dir, result) => {
@@ -484,7 +492,7 @@ async function getComponentFiles() {
 
 	return walk_dir(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT), {
 		name: env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT).split(path.sep).slice(-1).pop(),
-		entries: [],
+		entries: comps,
 	});
 }
 
@@ -541,7 +549,7 @@ module.exports = {
 	dropCustomFunctionProject,
 	packageComponent,
 	deployComponent,
-	getComponentFiles,
+	getComponents,
 	getComponentFile,
 	setComponentFile,
 };

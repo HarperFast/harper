@@ -158,7 +158,7 @@ required_permissions.set(auth.logout.name, new permission(false, []));
 //Operations specific to HDB Functions
 required_permissions.set(functions_operations.customFunctionsStatus.name, new permission(true, []));
 required_permissions.set(functions_operations.getCustomFunctions.name, new permission(true, []));
-required_permissions.set(functions_operations.getComponentFiles.name, new permission(true, []));
+required_permissions.set(functions_operations.getComponents.name, new permission(true, []));
 required_permissions.set(functions_operations.getComponentFile.name, new permission(true, []));
 required_permissions.set(functions_operations.setComponentFile.name, new permission(true, []));
 required_permissions.set(functions_operations.getCustomFunction.name, new permission(true, []));
