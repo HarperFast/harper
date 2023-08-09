@@ -13,6 +13,7 @@ const validator = require('../../validation/validationWrapper');
 let file_load_validator = rewire('../../validation/fileLoadValidator');
 const common_utils = require('../../utility/common_utils');
 const log = require('../../utility/logging/harper_logger');
+const { getDatabases } = require('../../resources/databases');
 
 const FAKE_FILE_PATH = '/thisfilepath/wont/exist.csv';
 const LONG_STRING =
@@ -136,13 +137,6 @@ describe('Test fileLoadValidator module', () => {
 	 * Unit tests for validate module
 	 */
 	context('Test validate module', () => {
-		it('should return schema cant be blank error from dataObject', () => {
-			let result = file_load_validator.dataObject(obj_no_schema);
-
-			expect(result).to.be.instanceof(Error);
-			expect(result.message).to.equal("Schema can't be blank");
-		});
-
 		it('should return table cant be blank error from dataObject', () => {
 			let result = file_load_validator.dataObject(obj_no_table);
 
@@ -231,10 +225,8 @@ describe('Test fileLoadValidator module', () => {
 		});
 
 		it('should return null w/ valid s3FileObject', () => {
-			global.hdb_schema = {
-				hats: {
-					fordogs: {},
-				},
+			getDatabases().hats = {
+				fordogs: {},
 			};
 			const test_obj = test_util.deepClone(s3_object);
 			let result = file_load_validator.s3FileObject(test_obj);

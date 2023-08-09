@@ -3,10 +3,6 @@ on:
     branches:
       - main
       - "release_*"
-  pull_request:
-    types: [opened, synchronize, reopened]
-    paths:
-      - 'utility/Docker/Dockerfile-openshift'
   schedule:
     - cron: '1 14 * * 1-5'
   workflow_dispatch:

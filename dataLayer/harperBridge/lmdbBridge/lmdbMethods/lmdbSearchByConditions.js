@@ -5,6 +5,7 @@ const SearchObject = require('../../../SearchObject');
 const search_validator = require('../../../../validation/searchValidator');
 const search_utility = require('../../../../utility/lmdb/searchUtility');
 const lmdb_terms = require('../../../../utility/lmdb/terms');
+const { Resource } = require('../../../../resources/Resource');
 const lmdb_search = require('../lmdbUtility/lmdbSearch');
 const cursor_functions = require('../../../../utility/lmdb/searchCursorFunctions');
 const _ = require('lodash');
@@ -114,10 +115,15 @@ async function lmdbSearchByConditions(search_object) {
 				return true;
 			})
 			.slice(offset, search_object.limit && search_object.limit + offset);
-		records = search_utility.batchSearchByHash(transaction, table_info.hash_attribute, search_object.get_attributes, ids);
+		records = search_utility.batchSearchByHash(
+			transaction,
+			table_info.hash_attribute,
+			search_object.get_attributes,
+			ids
+		);
 	}
 	records.onDone = () => {
-		transaction.done();// need to complete the transaction once iteration is complete
+		transaction.done(); // need to complete the transaction once iteration is complete
 	};
 	return records;
 }
@@ -170,5 +176,5 @@ async function executeConditionSearch(transaction, search_object, condition, has
 	} else {
 		search.search_value = condition.search_value;
 	}
-	return lmdb_search.searchByType(transaction, search, search_type, hash_attribute).map(e => e.value);
+	return lmdb_search.searchByType(transaction, search, search_type, hash_attribute).map((e) => e.value);
 }

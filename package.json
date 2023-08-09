@@ -1,6 +1,6 @@
 {
   "name": "harperdb",
-  "version": "4.1.2",
+  "version": "4.2.0-alpha.7",
   "description": "HarperDB is a distributed SQL & NoSQL data platform focused on speed, flexibility, and ease of use.",
   "keywords": [
     "database",
@@ -20,8 +20,11 @@
   "engines": {
     "node": ">=14.0.0",
     "preferred-node": "18.15.0",
-    "go-lang": "1.19.10",
-    "nats-server": "2.9.18"
+    "go-lang": "1.19.12",
+    "nats-server": "2.9.21"
+  },
+  "exports": {
+    ".": "./index.js"
   },
   "homepage": "https://www.harperdb.io/",
   "bugs": "support@harperdb.io",
@@ -34,16 +37,17 @@
     "submodules": "git submodule update --init --recursive",
     "build": "eslint -c ./.eslintbuild bin/ dataLayer/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
     "pretty": "eslint --fix bin/ dataLayer/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
-    "test": "rimraf ./.nyc_output/* && node utility/devops/register.js --reset_license && npm run cover:logging && npm run cover:upgrade && npm run cover:nats && npm run cover:cfserver && npm run cover:lmdbbridge && npm run cover:lmdbutility && npm run cover:hdbserver &&  npm run cover:main && nyc merge .nyc_output coverage.json && node ./utility/devops/register.js --reset_license",
-    "cover:main": "cd bin/ && nyc --no-clean --reporter=lcovonly ../node_modules/mocha/bin/_mocha '../unitTests/**/*.js' --config '../unitTests/.mocharc-main.json'",
-    "cover:lmdbbridge": "cd bin/ && nyc --no-clean --reporter=lcovonly --retries 3 ../node_modules/mocha/bin/_mocha '../unitTests/dataLayer/harperBridge/lmdbBridge/**/*.js' --config '../unitTests/.mocharc.json'",
-    "cover:lmdbutility": "cd bin/ && nyc --no-clean --reporter=lcovonly --retries 3 ../node_modules/mocha/bin/_mocha '../unitTests/utility/lmdb/**/*.js' --config '../unitTests/.mocharc.json'",
-    "cover:hdbserver": "cd bin/ && nyc --no-clean --reporter=lcovonly ../node_modules/mocha/bin/_mocha '../unitTests/server/harperdb/hdbServer-test.js' --config '../unitTests/.mocharc.json'",
-    "cover:cfserver": "npm run submodules && cd bin/ && nyc --no-clean --reporter=lcovonly ../node_modules/mocha/bin/_mocha '../unitTests/server/customFunctions/customFunctionsServer-test.js' --config '../unitTests/.mocharc.json'",
-    "cover:nats": "cd bin/ && nyc --no-clean --reporter=lcovonly ../node_modules/mocha/bin/_mocha '../unitTests/server/nats/**/*.js' --config '../unitTests/.mocharc.json'",
-    "cover:upgrade": "cd bin/ && nyc --no-clean --reporter=lcovonly ../node_modules/mocha/bin/_mocha '../unitTests/upgrade/**/*.js' --config '../unitTests/.mocharc.json'",
-    "cover:apitests": "cd bin/ && node harperdb.js stop && node harperdb.js && nyc --no-clean --reporter=lcovonly ../node_modules/mocha/bin/_mocha '../unitTests/apiTests/**/*.js' --config '../unitTests/.mocharc.json' && node harperdb.js stop",
-    "cover:logging": "cd bin/ && nyc --no-clean --reporter=lcovonly ../node_modules/mocha/bin/_mocha '../unitTests/utility/logging/*.js' --config '../unitTests/.mocharc.json'",
+    "cover:test": "rimraf ./.nyc_output/* && node utility/devops/register.js --reset_license && nyc --no-clean --reporter=lcovonly npm run test:apitests && nyc --no-clean --reporter=lcovonly npm run test:logging && nyc --no-clean --reporter=lcovonly npm run test:upgrade && nyc --no-clean --reporter=lcovonly npm run test:nats && nyc --no-clean --reporter=lcovonly npm run test:cfserver && nyc --no-clean --reporter=lcovonly npm run test:hdbserver && nyc --no-clean --reporter=lcovonly npm run test:main && nyc merge .nyc_output coverage.json && node ./utility/devops/register.js --reset_license",
+    "test": "rimraf ./.nyc_output/* && node utility/devops/register.js --reset_license && npm run test:apitests && npm run test:logging && npm run test:upgrade && npm run test:nats && npm run test:cfserver && npm run test:hdbserver && npm run test:main && nyc merge .nyc_output coverage.json && node ./utility/devops/register.js --reset_license",
+    "test:main": "cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/**/*.js' --config '../unitTests/.mocharc-main.json'",
+    "test:lmdbbridge": "cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/dataLayer/harperBridge/lmdbBridge/**/*.js' --config '../unitTests/.mocharc.json'",
+    "test:lmdbutility": "cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/utility/lmdb/**/*.js' --config '../unitTests/.mocharc.json'",
+    "test:hdbserver": "cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/server/harperdb/hdbServer-test.js' --config '../unitTests/.mocharc.json'",
+    "test:cfserver": "npm run submodules && cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/server/fastifyRoutes/customFunctionsServer-test.js' --config '../unitTests/.mocharc.json'",
+    "test:nats": "cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/server/nats/**/*.js' --config '../unitTests/.mocharc.json'",
+    "test:upgrade": "cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/upgrade/**/*.js' --config '../unitTests/.mocharc.json'",
+    "test:apitests": "cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/apiTests/**/*-test.mjs' --config '../unitTests/.mocharc.json'",
+    "test:logging": "cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/utility/logging/*.js' --config '../unitTests/.mocharc.json'",
     "test:ci": " cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/**/*.js' --retries 3 --config '../unitTests/.mocharc-main.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/dataLayer/harperBridge/lmdbBridge/**/*.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/utility/lmdb/**/*.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/server/harperdb/hdbServer-test.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/server/customFunctions/customFunctionsServer-test.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/upgrade/**/*.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/server/nats/**/*.js' --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter",
     "hdb-check": "./utility/devops/hdb-check.sh",
     "download-prebuilds": "node ./utility/devops/build/download-prebuilds.js",
@@ -56,6 +60,7 @@
     "@aws-sdk/lib-storage": "3.367.0",
     "@aws-sdk/client-s3": "3.367.0",
     "@aws-sdk/abort-controller": "3.357.0",
+    "@endo/static-module-record": "^0.7.16",
     "@fastify/autoload": "~5.7.1",
     "@fastify/compress": "~6.4.0",
     "@fastify/cors": "~8.3.0",
@@ -79,6 +84,7 @@
     "fastify": "~4.19.2",
     "fastify-plugin": "~4.5.0",
     "fs-extra": "11.1.1",
+    "graphql": "^16.6.0",
     "human-readable-ids": "1.0.4",
     "inquirer": "8.2.5",
     "is-number": "7.0.0",
@@ -86,14 +92,15 @@
     "json2csv": "5.0.7",
     "jsonata": "1.8.6",
     "jsonwebtoken": "9.0.1",
-    "lmdb": "2.8.2",
+    "lmdb": "2.8.4",
     "lodash": "4.17.21",
     "mathjs": "11.8.2",
     "minimist": "1.2.8",
     "mkcert": "1.5.1",
     "moment": "2.29.4",
-    "msgpackr": "1.9.5",
-    "nats": "2.14.0",
+    "mqtt-packet": "~8.1.2",
+    "msgpackr": "1.9.6",
+    "nats": "2.15.1",
     "needle": "3.2.0",
     "node-stream-zip": "1.15.0",
     "normalize-path": "^3.0.0",
@@ -109,16 +116,23 @@
     "properties-reader": "2.2.0",
     "recursive-iterator": "3.3.0",
     "semver": "7.5.4",
+    "send": "^0.18.0",
+    "ses": "^0.18.1",
     "stream-chain": "2.2.5",
-    "systeminformation": "5.18.6",
     "stream-json": "1.8.0",
+    "systeminformation": "5.18.6",
     "tar-fs": "2.1.1",
     "ulidx": "0.5.0",
     "uuid": "9.0.0",
     "validate.js": "0.13.1",
+    "ws": "^8.13.0",
     "yaml": "2.3.1"
   },
   "devDependencies": {
+    "@tsconfig/node16": "^1.0.3",
+    "@types/node": "latest",
+    "@typescript-eslint/eslint-plugin": "^5.55.0",
+    "@typescript-eslint/parser": "^5.55.0",
     "axios": "0.27.2",
     "chai": "4.3.7",
     "chai-integer": "0.1.0",
@@ -126,12 +140,14 @@
     "eslint-config-prettier": "8.3.0",
     "eslint-plugin-prettier": "3.4.1",
     "eslint-plugin-radar": "0.2.1",
+    "eventsource": "^2.0.2",
     "hook-std": "3.0.0",
     "intercept-stdout": "0.1.2",
     "mocha": "^10.2.0",
     "mocha-teamcity-reporter": "3.0.0",
     "mock-require": "3.0.3",
     "mock-stdin": "1.0.0",
+    "mqtt": "~4.3.7",
     "newman": "5.3.2",
     "newman-reporter-html": "1.0.5",
     "newman-reporter-htmlextra": "^1.22.11",
@@ -142,14 +158,14 @@
     "rewire": "5.0.0",
     "rimraf": "3.0.2",
     "sinon": "10.0.0",
-    "sinon-chai": "3.7.0"
+    "sinon-chai": "3.7.0",
+    "source-map-support": "^0.5.21",
+    "typescript": "^4.9.4",
+    "why-is-node-still-running": "^1.0.0"
   },
   "overrides": {
     "eslint-plugin-radar": {
       "eslint": "8.22.0"
-    },
-    "lmdb": {
-      "msgpackr": "1.8.4"
     },
     "newman-reporter-html": {
       "newman": "5.3.2"
@@ -157,5 +173,9 @@
     "alasql": {
       "xlsx": "0.18.5"
     }
+  },
+  "optionalDependencies": {
+    "bufferutil": "^4.0.7",
+    "utf-8-validate": "^5.0.10"
   }
 }

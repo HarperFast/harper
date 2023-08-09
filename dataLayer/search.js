@@ -10,45 +10,34 @@ module.exports = {
 };
 
 const harperBridge = require('./harperBridge/harperBridge');
-const util = require('util');
-const c_search_by_hash = util.callbackify(harperBridge.searchByHash);
-const c_search_by_value = util.callbackify(harperBridge.searchByValue);
+const { transformReq } = require('../utility/common_utils');
 const SQLSearch = require('./SQLSearch');
 
 async function searchByConditions(search_object) {
+	transformReq(search_object);
 	return harperBridge.searchByConditions(search_object);
 }
 
-function searchByHash(search_object, callback) {
-	try {
-		c_search_by_hash(search_object, (err, results) => {
-			if (err) {
-				callback(err);
-				return;
-			}
-			callback(null, results);
-		});
-	} catch (err) {
-		return callback(err);
+async function searchByHash(search_object) {
+	transformReq(search_object);
+	if (search_object.ids) search_object.hash_values = search_object.ids;
+	let array = [];
+	for await (let record of harperBridge.searchByHash(search_object)) {
+		if (record) array.push(record);
 	}
+	return array;
 }
 
-function searchByValue(search_object, callback) {
-	try {
-		if (search_object.hasOwnProperty('desc') === true) {
-			search_object.reverse = search_object.desc;
-		}
-
-		c_search_by_value(search_object, (err, results) => {
-			if (err) {
-				callback(err);
-				return;
-			}
-			callback(null, results);
-		});
-	} catch (err) {
-		return callback(err);
+async function searchByValue(search_object) {
+	transformReq(search_object);
+	if (search_object.hasOwnProperty('desc') === true) {
+		search_object.reverse = search_object.desc;
 	}
+	const array = [];
+	for await (let record of harperBridge.searchByValue(search_object)) {
+		array.push(record);
+	}
+	return array;
 }
 
 function search(statement, callback) {

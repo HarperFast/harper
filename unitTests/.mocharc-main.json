@@ -7,6 +7,7 @@
     "recursive": true,
     "exit": true,
     "exclude": [
+        "../unitTests/install/**/*.js",
         "../unitTests/dataLayer/harperBridge/lmdbBridge/**/*.js",
         "../unitTests/utility/lmdb/**/*.js",
         "../unitTests/server/harperdb/hdbServer-test.js",
@@ -14,6 +15,8 @@
         "../unitTests/server/nats/**/*.js",
         "../unitTests/upgrade/**/*.js",
         "../unitTests/apiTests/**/*.js",
+        "../unitTests/dataLayer/**/*.js",
+        "../unitTests/testApp/**/*.js",
         "../unitTests/utility/logging/*.js"
     ]
 }

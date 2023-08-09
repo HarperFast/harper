@@ -13,7 +13,7 @@ function signalSchemaChange(message) {
 		server_itc_handlers = server_itc_handlers || require('../server/itc/serverHandlers');
 		const itc_event_schema = new ITCEventObject(hdb_terms.ITC_EVENT_TYPES.SCHEMA, message);
 		server_itc_handlers.schema(itc_event_schema);
-		sendItcEvent(itc_event_schema);
+		return sendItcEvent(itc_event_schema);
 	} catch (err) {
 		hdb_logger.error(err);
 	}
@@ -25,7 +25,7 @@ function signalUserChange(message) {
 		server_itc_handlers = server_itc_handlers || require('../server/itc/serverHandlers');
 		const itc_event_user = new ITCEventObject(hdb_terms.ITC_EVENT_TYPES.USER, message);
 		server_itc_handlers.user(itc_event_user);
-		sendItcEvent(itc_event_user);
+		return sendItcEvent(itc_event_user);
 	} catch (err) {
 		hdb_logger.error(err);
 	}

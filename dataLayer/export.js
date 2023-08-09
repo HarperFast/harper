@@ -27,8 +27,8 @@ const S3_JSON_EXPORT_CHUNK_SIZE = 1000;
 const LOCAL_JSON_EXPORT_SIZE = 1000;
 
 // Promisified function
-const p_search_by_hash = promisify(search.searchByHash);
-const p_search_by_value = promisify(search.searchByValue);
+const p_search_by_hash = search.searchByHash;
+const p_search_by_value = search.searchByValue;
 const p_sql = promisify(sql.evaluateSQL);
 const stream_finished = promisify(stream.finished);
 

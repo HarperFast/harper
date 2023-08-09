@@ -1,21 +1,16 @@
 'use strict';
 
-const util = require('util');
-const { toJsMsg } = require('nats');
 const { decode } = require('msgpackr');
-const global_schema = require('../../utility/globalSchema');
-const { isMainThread, parentPort } = require('worker_threads');
+const { isMainThread, parentPort, threadId } = require('worker_threads');
 const nats_utils = require('./utility/natsUtils');
 const nats_terms = require('./utility/natsTerms');
 const hdb_terms = require('../../utility/hdbTerms');
 const harper_logger = require('../../utility/logging/harper_logger');
-const server_utilities = require('../serverHelpers/serverUtilities');
-const operation_function_caller = require('../../utility/OperationFunctionCaller');
-const transact_to_cluster_utilities = require('../../utility/clustering/transactToClusteringUtilities');
 const env_mgr = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 require('../threads/manageThreads');
-const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
+const crypto_hash = require('../../security/cryptoHash');
+const { publishToStream } = nats_utils;
 
 const SUBSCRIPTION_OPTIONS = {
 	durable: nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name,
@@ -26,10 +21,14 @@ let nats_connection;
 let server_name;
 let js_manager;
 let js_client;
+let initialized;
 
 module.exports = {
 	initialize,
 	workQueueListener,
+	setSubscription,
+	setIgnoreOrigin,
+	getDatabaseSubscriptions,
 };
 
 /**
@@ -46,8 +45,8 @@ module.exports = {
  * @returns {Promise<void>}
  */
 async function initialize() {
+	initialized = true;
 	harper_logger.notify('Starting clustering ingest service.');
-	await p_schema_to_global();
 
 	const { connection, jsm, js } = await nats_utils.getNATSReferences();
 	nats_connection = connection;
@@ -55,20 +54,36 @@ async function initialize() {
 	js_manager = jsm;
 	js_client = js;
 }
+const database_subscriptions = new Map();
+function setSubscription(database, table, subscription) {
+	let table_subscriptions = database_subscriptions.get(database);
+	if (!table_subscriptions) database_subscriptions.set(database, (table_subscriptions = new Map()));
+	table_subscriptions.set(table, subscription);
+	if (!initialized) {
+		initialize().then(workQueueListener);
+	}
+}
+function getDatabaseSubscriptions() {
+	return database_subscriptions;
+}
+let ignore_origin;
+function setIgnoreOrigin(value) {
+	ignore_origin = value;
+}
 const MAX_CONCURRENCY = 100;
 const outstanding_operations = new Array(MAX_CONCURRENCY);
 let operation_index = 0;
 /**
- * Uses an internal Nats consumer to subscribe to the  of messages from the work queue and process each one.
+ * Uses an internal Nats consumer to subscribe to the stream of messages from the work queue and process each one.
  * @returns {Promise<void>}
  */
 async function workQueueListener() {
-	const sub = nats_connection.subscribe(
-		`${nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_subject}.${nats_connection.info.server_name}`,
-		SUBSCRIPTION_OPTIONS
+	const consumer = await js_client.consumers.get(
+		nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+		nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name
 	);
-
-	for await (const message of sub) {
+	const messages = await consumer.consume();
+	for await (const message of messages) {
 		// ring style queue for awaiting operations for concurrency. await the entry from 100 operations ago:
 		await outstanding_operations[operation_index];
 		outstanding_operations[operation_index] = messageProcessor(message).catch((error) => {
@@ -87,53 +102,128 @@ if (!isMainThread) {
 	});
 }
 /**
- * receives a message & processes it as an HDB operation
+ * Processes a message from the NATS work queue and delivers to through the table subscription to the NATS
+ * cluster which effectively acts as a source for tables. When a table makes a subscriptions, the subscription
+ * events are considered to be notifications; they don't go through higher level put/delete/publish methods
+ * because they should not go through validation or user-defined logic, they represent after-the-fact replication
+ * of updates that have already been made. This also means that subscription events are written at a lower level
+ * than the source delegation where replication occurs, which nicely avoids echoing to subscription events to
+ * sources. However, in NATS we are actually using echo to (potentially) route messages to other nodes. So we
+ * actually perform the echo in here. This has the advantage of being able to reuse the encoded message and
+ * encapsulating the header information.
  * @param msg
  * @returns {Promise<{}>}
  */
 async function messageProcessor(msg) {
-	const js_msg = toJsMsg(msg);
-	const entry = decode(js_msg.data);
+	const entry = decode(msg.data);
 
 	// If the msg origin header matches this node the msg can be ignored because it would have already been processed.
-	const origin = js_msg.headers.get(nats_terms.MSG_HEADERS.ORIGIN);
-	if (origin === env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME)) {
-		js_msg.ack();
+	let nats_msg_header = msg.headers;
+	const origin = nats_msg_header.get(nats_terms.MSG_HEADERS.ORIGIN);
+	if (origin === env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME) && !ignore_origin) {
+		msg.ack();
 		return;
 	}
 
-	harper_logger.trace('processing message:', entry, 'with sequence:', js_msg.seq);
-	harper_logger.trace(`messageProcessor nats msg id: ${js_msg.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID)}`);
-
-	let operation_function = undefined;
-	const found_operation = server_utilities.getOperationFunction(entry);
-	operation_function = found_operation.job_operation_function
-		? found_operation.job_operation_function
-		: found_operation.operation_function;
-
-	// Run the HDB transaction.
-	// csv loading and other jobs need to use a different postOp handler
-	let result;
 	try {
-		if (found_operation.job_operation_function) {
-			result = await operation_function(entry, js_msg.headers);
-		} else {
-			entry[hdb_terms.CLUSTERING_FLAG] = true;
+		let {
+			operation,
+			schema: database_name,
+			next: next_write,
+			table: table_name,
+			records,
+			hash_values: ids,
+			__origin: origin,
+		} = entry;
+		harper_logger.trace(
+			'processing message:',
+			operation,
+			database_name,
+			table_name,
+			(records ? 'records: ' + records.map((record) => record.id) : '') + (ids ? 'ids: ' + ids : ''),
+			'with' + ' sequence:',
+			msg.seq
+		);
+		harper_logger.trace(`messageProcessor nats msg id: ${msg.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID)}`);
+		let onCommit;
+		if (!records) records = ids;
+		// TODO: Don't ack until this is completed
+		//let completion = new Promise((resolve) => (onCommit = resolve));
+		let { timestamp, user } = origin || {};
+		let subscription = database_subscriptions.get(database_name)?.get(table_name);
+		if (!subscription) {
+			throw new Error('Missing table for replication message', table_name);
+		}
+		if (operation === 'define_schema') subscription.send(entry);
+		else if (records.length === 1 && !next_write)
+			// with a single record update, we can send this directly as a single event to our subscriber (the table
+			// subscriber)
+			subscription.send({
+				operation: convertOperation(operation),
+				value: records[0],
+				id: ids?.[0],
+				timestamp,
+				table: table_name,
+				onCommit,
+				user,
+			});
+		else {
+			// If there are multiple records in the transaction, we need to send a transaction event so that the
+			// subscriber can persist can commit these updates transactionally
+			let writes = records.map((record, i) => ({
+				operation: convertOperation(operation),
+				value: record,
+				id: ids?.[i],
+				table: table_name,
+			}));
+			// If there are multiple write operations, likewise, add these to transactional message we will send;
+			// This happens when a transaction consists of different operations or different tables, which can't be
+			// represented by simply a records array.
+			while (next_write) {
+				writes.push({
+					operation: next_write.operation,
+					value: next_write.record,
+					id: next_write.id,
+					table: next_write.table,
+				});
+				next_write = next_write.next;
+			}
+			// send the transaction of writes that we have aggregated
+			subscription.send({
+				operation: 'transaction',
+				writes,
+				table: table_name,
+				timestamp,
+				onCommit,
+				user,
+			});
+		}
 
-			result = await operation_function_caller.callOperationFunctionAsAwait(
-				operation_function,
-				entry,
-				transact_to_cluster_utilities.postOperationHandler,
-				js_msg.headers
+		if (env_mgr.get(terms.CONFIG_PARAMS.CLUSTERING_REPUBLISHMESSAGES) !== false) {
+			// echo the message to any other nodes
+			// use the already-encoded message
+			publishToStream(
+				msg.subject.split('.').slice(0, -1).join('.'), // remove the node name
+				crypto_hash.createNatsTableStreamName(database_name, table_name),
+				msg.headers,
+				msg.data
 			);
 		}
-		harper_logger.debug(result);
+
+		// TODO: onCommit is not being called, but not sure if we really need to do this
+		// await completion;
 	} catch (e) {
 		harper_logger.error(e);
 	}
-
 	// Ack to NATS to acknowledge the message has been processed
-	js_msg.ack();
-
-	return result;
+	msg.ack();
+}
+function convertOperation(operation) {
+	switch (operation) {
+		case 'insert':
+		case 'upsert':
+		case 'update':
+			return 'put';
+	}
+	return operation;
 }

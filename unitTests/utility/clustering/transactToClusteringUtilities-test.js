@@ -37,7 +37,8 @@ DELETE_OP.hdb_user = USER;
 const ATTRIBUTE_OP = new CreateAttributeObject('dev', 'cow', 'favourite moozic');
 ATTRIBUTE_OP.hdb_user = USER;
 
-describe('Test transactToClusteringUtilities module', () => {
+// we don't use transactToClustering anymore
+describe.skip('Test transactToClusteringUtilities module', () => {
 	const sandbox = sinon.createSandbox();
 	let publish_to_stream_stub;
 

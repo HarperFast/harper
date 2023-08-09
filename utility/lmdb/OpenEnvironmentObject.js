@@ -27,6 +27,7 @@ class OpenEnvironmentObject {
 		this.readOnly = read_only;
 		this.trackMetrics = true;
 		this.noSync = LMDB_NOSYNC;
+		this.noFSAccess = true;
 		// otherwise overlappingSync uses lmdb-js default, which is enabled on linux/mac, disabled on windows
 		if (LMDB_OVERLAPPING_SYNC !== undefined) this.overlappingSync = LMDB_OVERLAPPING_SYNC;
 		this.noReadAhead = LMDB_NOREADAHEAD;

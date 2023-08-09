@@ -5,7 +5,7 @@ const hdb_utils = require('../../utility/common_utils');
 const hdb_terms = require('../../utility/hdbTerms');
 const { ITC_ERRORS } = require('../../utility/errors/commonErrors');
 const { parentPort, threadId, isMainThread, workerData } = require('worker_threads');
-const { onMessageFromWorkers, broadcast } = require('./manageThreads');
+const { onMessageFromWorkers, broadcast, broadcastWithAcknowledgement } = require('./manageThreads');
 
 module.exports = {
 	sendItcEvent,
@@ -14,10 +14,17 @@ module.exports = {
 	UserEventMsg,
 };
 let server_itc_handlers;
-onMessageFromWorkers((event) => {
+onMessageFromWorkers(async (event, sender) => {
 	server_itc_handlers = server_itc_handlers || require('../itc/serverHandlers');
 	validateEvent(event);
-	if (server_itc_handlers[event.type]) server_itc_handlers[event.type](event);
+	if (server_itc_handlers[event.type]) {
+		await server_itc_handlers[event.type](event);
+		if (event.requestId && sender)
+			sender.postMessage({
+				type: 'ack',
+				id: event.requestId,
+			});
+	}
 });
 
 /**
@@ -26,7 +33,7 @@ onMessageFromWorkers((event) => {
  */
 function sendItcEvent(event) {
 	if (!isMainThread && event.message) event.message.originator = threadId;
-	broadcast(event);
+	return broadcastWithAcknowledgement(event);
 }
 
 /**

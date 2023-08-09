@@ -3,14 +3,11 @@
 const { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } = require('worker_threads');
 const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
 const { join, isAbsolute, extname } = require('path');
+const { watch, readdir } = require('fs/promises');
 const { totalmem } = require('os');
 const hdb_terms = require('../../utility/hdbTerms');
-const env = require('../../utility/environment/environmentManager');
-const hdb_license = require('../../utility/registration/hdb_license');
 const harper_logger = require('../../utility/logging/harper_logger');
 const terms = require('../../utility/hdbTerms');
-env.initSync();
-const THREAD_COUNT = env.get(hdb_terms.CONFIG_PARAMS.HTTP_THREADS) || 1;
 const MB = 1024 * 1024;
 const workers = []; // these are our child workers that we are managing
 const connected_ports = []; // these are all known connected worker ports (siblings, children, parents)
@@ -21,6 +18,7 @@ const REQUEST_THREAD_INFO = 'request_thread_info';
 const RESOURCE_REPORT = 'resource_report';
 const THREAD_INFO = 'thread_info';
 const ADDED_PORT = 'added-port';
+const ACKNOWLEDGEMENT = 'ack';
 let getThreadInfo;
 
 module.exports = {
@@ -30,12 +28,30 @@ module.exports = {
 	workers,
 	setMonitorListener,
 	onMessageFromWorkers,
+	onMessageByType,
 	broadcast,
+	broadcastWithAcknowledgement,
+	setChildListenerByType,
+	getWorkerIndex,
+	setMainIsWorker,
+	restartNumber: workerData?.restartNumber || 1,
 };
-
+let isMainWorker;
+function getWorkerIndex() {
+	return workerData ? workerData.workerIndex : isMainWorker ? 0 : undefined;
+}
+function setMainIsWorker(isWorker) {
+	isMainWorker = isWorker;
+}
+let childListenerByType = {
+	[REQUEST_THREAD_INFO](message, worker) {
+		sendThreadInfo(worker);
+	},
+	[RESOURCE_REPORT](message, worker) {
+		recordResourceReport(worker, message);
+	},
+};
 function startWorker(path, options = {}) {
-	const license = hdb_license.licenseSearch();
-	const licensed_memory = license.ram_allocation;
 	// Take a percentage of total memory to determine the max memory for each thread. The percentage is based
 	// on the thread count. Generally, it is unrealistic to efficiently use the majority of total memory for a single
 	// NodeJS worker since it would lead to massive swap space usage with other processes and there is significant
@@ -49,10 +65,7 @@ function startWorker(path, options = {}) {
 	let available_memory = process.constrainedMemory?.() || totalmem(); // used constrained memory if it is available
 	// and lower than total memory
 	available_memory = Math.min(available_memory, totalmem());
-	const max_old_memory = Math.min(
-		Math.max(Math.floor(available_memory / MB / (1 + THREAD_COUNT / 4)), 512),
-		licensed_memory || Infinity
-	);
+	const max_old_memory = Math.max(Math.floor(available_memory / MB / (1 + (options.threadCount || 1) / 4)), 512);
 	// Max young memory space (semi-space for scavenger) is 1/128 of max memory (limited to 16-64). For most of our m5
 	// machines this will be 64MB (less for t3's). This is based on recommendations from:
 	// https://www.alibabacloud.com/blog/node-js-application-troubleshooting-manual---comprehensive-gc-problems-and-optimization_594965
@@ -81,9 +94,15 @@ function startWorker(path, options = {}) {
 					maxOldGenerationSizeMb: max_old_memory,
 					maxYoungGenerationSizeMb: max_young_memory,
 				},
+				execArgv: ['--enable-source-maps'],
 				argv: process.argv.slice(2),
-				workerData: { addPorts: ports_to_send, name: options.name }, // pass these in synchronously to the worker so
-				// it has them on startup
+				// pass these in synchronously to the worker so it has them on startup:
+				workerData: {
+					addPorts: ports_to_send,
+					workerIndex: options.workerIndex,
+					name: options.name,
+					restartNumber: module.exports.restartNumber,
+				},
 				transferList: ports_to_send,
 			},
 			options
@@ -113,9 +132,7 @@ function startWorker(path, options = {}) {
 		}
 	});
 	worker.on('message', (message) => {
-		if (message.type === RESTART_TYPE) restartWorkers(message.workerType);
-		if (message.type === REQUEST_THREAD_INFO) sendThreadInfo(worker);
-		if (message.type === RESOURCE_REPORT) recordResourceReport(worker, message);
+		childListenerByType[message.type]?.(message, worker);
 	});
 	workers.push(worker);
 	startMonitoring();
@@ -139,6 +156,13 @@ const OVERLAPPING_RESTART_TYPES = [hdb_terms.THREAD_TYPES.HTTP];
 
 async function restartWorkers(name = null, max_workers_down = 2, start_replacement_threads = true) {
 	if (isMainThread) {
+		// This is here to prevent circular dependencies
+		if (start_replacement_threads) {
+			const { loadRootComponents } = require('../loadRootComponents');
+			await loadRootComponents();
+		}
+
+		module.exports.restartNumber++;
 		if (max_workers_down < 1) {
 			// we accept a ratio of workers, and compute absolute maximum being down at a time from the total number of
 			// threads
@@ -150,6 +174,7 @@ async function restartWorkers(name = null, max_workers_down = 2, start_replaceme
 		for (let worker of workers.slice(0)) {
 			if ((name && worker.name !== name) || worker.wasShutdown) continue; // filter by type, if specified
 			worker.postMessage({
+				restartNumber: module.exports.restartNumber,
 				type: hdb_terms.ITC_EVENT_TYPES.SHUTDOWN,
 			});
 			worker.wasShutdown = true;
@@ -184,15 +209,22 @@ async function restartWorkers(name = null, max_workers_down = 2, start_replaceme
 		});
 	}
 }
-
+function setChildListenerByType(type, listener) {
+	childListenerByType[type] = listener;
+}
 function shutdownWorkers(name) {
 	return restartWorkers(name, Infinity, false);
 }
 
 const message_listeners = [];
-
 function onMessageFromWorkers(listener) {
 	message_listeners.push(listener);
+}
+const listeners_by_type = new Map();
+function onMessageByType(type, listener) {
+	let listeners = listeners_by_type.get(type);
+	if (!listeners) listeners_by_type.set(type, (listeners = []));
+	listeners.push(listener);
 }
 
 function broadcast(message) {
@@ -203,6 +235,38 @@ function broadcast(message) {
 			harper_logger.error(`Unable to send message to worker`, error);
 		}
 	}
+}
+
+const awaiting_responses = new Map();
+let next_id = 1;
+function broadcastWithAcknowledgement(message) {
+	return new Promise((resolve) => {
+		let waiting_count = 0;
+		for (let port of connected_ports) {
+			try {
+				let request_id = next_id++;
+				const ack_handler = () => {
+					awaiting_responses.delete(request_id);
+					if (--waiting_count === 0) {
+						resolve();
+					}
+					port.off(port.close ? 'close' : 'exit', ack_handler);
+					if (port !== parentPort && --port.refCount === 0) {
+						port.unref();
+					}
+				};
+				port.ref();
+				port.refCount = (port.refCount || 0) + 1;
+				awaiting_responses.set((message.requestId = request_id), ack_handler);
+				port.on(port.close ? 'close' : 'exit', ack_handler);
+				port.postMessage(message);
+				waiting_count++;
+			} catch (error) {
+				harper_logger.error(`Unable to send message to worker`, error);
+			}
+		}
+		if (waiting_count === 0) resolve();
+	});
 }
 
 function sendThreadInfo(target_worker) {
@@ -304,11 +368,25 @@ function addPort(port, keep_ref) {
 	connected_ports.push(port);
 	port
 		.on('message', (message) => {
-			if (message.type === ADDED_PORT) {
-				addPort(message.port);
+			if (message.type === ADDED_PORT) addPort(message.port);
+			else if (message.type === ACKNOWLEDGEMENT) {
+				let completion = awaiting_responses.get(message.id);
+				if (completion) {
+					completion();
+				}
 			} else {
 				for (let listener of message_listeners) {
-					listener(message);
+					listener(message, port);
+				}
+				let listeners = listeners_by_type.get(message.type);
+				if (listeners) {
+					for (let listener of listeners) {
+						try {
+							listener(message, port);
+						} catch (error) {
+							harper_logger.error(error);
+						}
+					}
 				}
 			}
 		})
@@ -318,13 +396,34 @@ function addPort(port, keep_ref) {
 		.on('exit', () => {
 			connected_ports.splice(connected_ports.indexOf(port), 1);
 		});
-	if (!keep_ref) port.unref();
+	if (keep_ref) port.refCount = 100;
+	else port.unref();
 }
-
-if (!isMainThread) {
+if (isMainThread) {
+	let before_restart, queued_restart;
+	const watch_dir = async (dir, before_restart_callback) => {
+		if (before_restart_callback) before_restart = before_restart_callback;
+		for (let entry of await readdir(dir, { withFileTypes: true })) {
+			if (entry.isDirectory()) watch_dir(join(dir, entry.name));
+		}
+		for await (let { filename } of watch(dir, { persistent: false })) {
+			if (extname(filename) === '.ts' || extname(filename) === '.js' || extname(filename) === '.graphql') {
+				if (queued_restart) clearTimeout(queued_restart);
+				queued_restart = setTimeout(async () => {
+					if (before_restart) await before_restart();
+					await restartWorkers();
+					console.log('Reloaded HarperDB components');
+				}, 100);
+			}
+		}
+	};
+	module.exports.watchDir = watch_dir;
+	if (process.env.WATCH_DIR) watch_dir(process.env.WATCH_DIR);
+} else {
 	parentPort.on('message', async (message) => {
 		const { type } = message;
-		if (type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
+		if (type === hdb_terms.ITC_EVENT_TYPES.SHUTDOWN) {
+			module.exports.restartNumber = message.restartNumber;
 			parentPort.unref(); // remove this handle
 			setTimeout(() => {
 				harper_logger.warn('Thread did not voluntarily terminate', threadId);

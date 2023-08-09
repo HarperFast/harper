@@ -4,29 +4,13 @@
 const search = require('./search');
 const logger = require('../utility/logging/harper_logger');
 const validator = require('../validation/schema_validator');
-const _ = require('lodash');
 const crypto_hash = require('../security/cryptoHash');
 const hdb_utils = require('../utility/common_utils');
-const { promisify } = require('util');
-const terms = require('../utility/hdbTerms');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const env_mngr = require('../utility/environment/environmentManager');
 env_mngr.initSync();
-
-const lmdb_environment_utility = require('../utility/lmdb/environmentUtility');
-const search_utility = require('../utility/lmdb/searchUtility');
-const { getSchemaPath } = require('./harperBridge/lmdbBridge/lmdbUtility/initializePaths');
-
-// Promisified functions
-let p_search_search_by_value = promisify(search.searchByValue);
-let p_search_search_by_hash = promisify(search.searchByHash);
-
-const NAME_ATTRIBUTE_STRING = 'name';
-const HASH_ATTRIBUTE_STRING = 'hash_attribute';
-const SCHEMA_ATTRIBUTE_STRING = 'schema';
-const SCHEMA_TABLE_ATTRIBUTE_STRING = 'schema_table';
-const ATTRIBUTE_NAME_STRING = 'attribute';
+const { getDatabases } = require('../resources/databases');
 
 module.exports = {
 	describeAll,
@@ -49,60 +33,29 @@ async function describeAll(op_obj) {
 			role_perms = op_obj.hdb_user.role.permission;
 			is_su = role_perms.super_user || role_perms.cluster_user;
 		}
-
-		let schema_search = {
-			schema: terms.SYSTEM_SCHEMA_NAME,
-			table: terms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME,
-			search_attribute: NAME_ATTRIBUTE_STRING,
-			search_value: terms.WILDCARD_SEARCH_VALUE,
-			get_attributes: [NAME_ATTRIBUTE_STRING],
-		};
-
-		let schemas = await p_search_search_by_value(schema_search);
-
+		let databases = getDatabases();
 		let schema_list = {};
 		let schema_perms = {};
-		for (let schema of schemas) {
-			schema_list[schema.name] = true;
-			if (!sys_call && !is_su) {
-				schema_perms[schema.name] = role_perms[schema.name].describe;
-			}
-		}
-
-		let table_search_obj = {
-			schema: terms.SYSTEM_SCHEMA_NAME,
-			table: terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME,
-			search_attribute: terms.ID_ATTRIBUTE_STRING,
-			search_value: terms.WILDCARD_SEARCH_VALUE,
-			get_attributes: [
-				HASH_ATTRIBUTE_STRING,
-				terms.ID_ATTRIBUTE_STRING,
-				NAME_ATTRIBUTE_STRING,
-				SCHEMA_ATTRIBUTE_STRING,
-			],
-		};
-
-		let tables = await p_search_search_by_value(table_search_obj);
-
 		let t_results = [];
-		for (let table of tables) {
-			try {
-				let desc;
-				if (sys_call || is_su) {
-					desc = await descTable({ schema: table.schema, table: table.name });
-				} else if (
-					role_perms &&
-					role_perms[table.schema].describe &&
-					role_perms[table.schema].tables[table.name].describe
-				) {
-					const t_attr_perms = role_perms[table.schema].tables[table.name].attribute_permissions;
-					desc = await descTable({ schema: table.schema, table: table.name }, t_attr_perms);
+		for (let schema in databases) {
+			schema_list[schema] = true;
+			if (!sys_call && !is_su) schema_perms[schema] = op_obj.hdb_user.role.permission[schema].describe;
+			let tables = databases[schema];
+			for (let table in tables) {
+				try {
+					let desc;
+					if (sys_call || is_su) {
+						desc = await descTable({ schema, table });
+					} else if (role_perms && role_perms[schema].describe && role_perms[schema].tables[table].describe) {
+						const t_attr_perms = role_perms[schema].tables[table].attribute_permissions;
+						desc = await descTable({ schema, table }, t_attr_perms);
+					}
+					if (desc) {
+						t_results.push(desc);
+					}
+				} catch (e) {
+					logger.error(e);
 				}
-				if (desc) {
-					t_results.push(desc);
-				}
-			} catch (e) {
-				logger.error(e);
 			}
 		}
 
@@ -155,6 +108,7 @@ async function describeAll(op_obj) {
  * @returns {Promise<{}|*>}
  */
 async function descTable(describe_table_object, attr_perms) {
+	hdb_utils.transformReq(describe_table_object);
 	let { schema, table } = describe_table_object;
 	schema = schema?.toString();
 	table = table?.toString();
@@ -166,102 +120,70 @@ async function descTable(describe_table_object, attr_perms) {
 		table_attr_perms = describe_table_object.hdb_user.role.permission[schema].tables[table].attribute_permissions;
 	}
 
-	let table_result = {};
 	let validation = validator.describe_table(describe_table_object);
 	if (validation) {
 		throw validation;
 	}
-	if (schema === terms.SYSTEM_SCHEMA_NAME) {
-		return global.hdb_schema[terms.SYSTEM_SCHEMA_NAME][table];
+
+	let databases = getDatabases();
+	let tables = databases[schema];
+	if (!tables) {
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(describe_table_object.schema),
+			HTTP_STATUS_CODES.NOT_FOUND
+		);
 	}
-
-	let table_search_obj = {
-		schema: terms.SYSTEM_SCHEMA_NAME,
-		table: terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME,
-		hash_attribute: terms.SYSTEM_TABLE_HASH_ATTRIBUTES.TABLE_TABLE_HASH_ATTRIBUTE,
-		search_attribute: NAME_ATTRIBUTE_STRING,
-		search_value: table,
-		hash_values: [],
-		get_attributes: [terms.WILDCARD_SEARCH_VALUE],
-	};
-
-	let tables = Array.from(await p_search_search_by_value(table_search_obj));
-
-	if (!tables || tables.length === 0) {
+	let table_obj = tables[table];
+	if (!table_obj)
 		throw handleHDBError(
 			new Error(),
 			HDB_ERROR_MSGS.TABLE_NOT_FOUND(describe_table_object.schema, describe_table_object.table),
 			HTTP_STATUS_CODES.NOT_FOUND
 		);
+
+	let attributes = [];
+	if (table_attr_perms) {
+		let permitted_attr = {};
+		table_attr_perms.forEach((a) => {
+			if (a.describe) permitted_attr[a.attribute_name] = true;
+		});
+
+		table_obj.attributes.forEach((a) => {
+			if (permitted_attr[a.name]) attributes.push(a);
+		});
+	} else {
+		attributes = table_obj.attributes;
 	}
 
-	for await (let table1 of tables) {
-		try {
-			if (table1.schema !== schema) {
-				continue;
+	let table_result = {
+		schema,
+		name: table_obj.tableName,
+		attributes,
+		hash_attribute: table_obj.attributes.find((attribute) => attribute.isPrimaryKey || attribute.is_hash_attribute)
+			?.name,
+	};
+	// Nats/clustering stream names are hashed to ensure constant length alphanumeric values.
+	// String will always hash to the same value.
+	table_result.clustering_stream_name = crypto_hash.createNatsTableStreamName(table_result.schema, table_result.name);
+
+	try {
+		table_result.record_count = table_obj.getRecordCount();
+		let audit_store = table_obj.auditStore;
+		if (audit_store) {
+			for (let key of audit_store.getKeys({ reverse: true, limit: 1 })) {
+				table_result.last_updated_record = key[0];
 			}
-			table_result = table1;
-
-			if (!table_result.hash_attribute) {
-				throw handleHDBError(new Error(), HDB_ERROR_MSGS.INVALID_TABLE_ERR(table_result));
-			}
-
-			let attribute_search_obj = {
-				schema: terms.SYSTEM_SCHEMA_NAME,
-				table: terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME,
-				hash_attribute: terms.SYSTEM_TABLE_HASH_ATTRIBUTES.ATTRIBUTE_TABLE_HASH_ATTRIBUTE,
-				search_attribute: SCHEMA_TABLE_ATTRIBUTE_STRING,
-				search_value: schema + '.' + table,
-				get_attributes: [ATTRIBUTE_NAME_STRING],
-			};
-
-			let attributes = Array.from(await p_search_search_by_value(attribute_search_obj));
-			attributes = _.uniqBy(attributes, (attribute) => attribute.attribute);
-
-			if (table_attr_perms && table_attr_perms.length > 0) {
-				attributes = getAttrsByPerms(table_attr_perms);
-			}
-
-			table_result.attributes = attributes;
-
-			// Nats/clustering stream names are hashed to ensure constant length alphanumeric values.
-			// String will always hash to the same value.
-			table_result.clustering_stream_name = crypto_hash.createNatsTableStreamName(table1.schema, table1.name);
-
-			try {
-				let schema_path = getSchemaPath(table_result.schema, table_result.name);
-				let env = await lmdb_environment_utility.openEnvironment(schema_path, table_result.name);
-				let dbi_stat = lmdb_environment_utility.statDBI(env, table_result.hash_attribute);
-				table_result.record_count = dbi_stat.entryCount;
-				// do a reverse search of the updated timestamp index to find the very latest entry, and record that
-				// timestamp:
-				for (let { key } of search_utility.lessThan(env, table_result.hash_attribute, terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME, Infinity, true, 1, 0)) {
-					table_result.last_updated_record = key;
-				}
-			} catch (e) {
-				logger.warn(`unable to stat table dbi due to ${e}`);
-			}
-		} catch (err) {
-			logger.error(`There was an error getting attributes for table '${table1.name}'`);
-			logger.error(err);
 		}
+		if (!table_result.last_updated_record && table_obj.indices.__updatedtime__) {
+			for (let key of table_obj.indices.__updatedtime__.getKeys({ reverse: true, limit: 1 })) {
+				table_result.last_updated_record = key;
+			}
+		}
+	} catch (e) {
+		logger.warn(`unable to stat table dbi due to ${e}`);
 	}
 	return table_result;
-}
-
-/**
- * Takes permissions for the table and returns the attributes that that have describe === true
- *
- * @param attr_perms - table attribute permissions for the role calling the describe op
- * @returns {*} -  a filtered object of attributes that can be returned in the describe operation
- */
-function getAttrsByPerms(attr_perms) {
-	return attr_perms.reduce((acc, perm) => {
-		if (perm.describe) {
-			acc.push({ attribute: perm.attribute_name });
-		}
-		return acc;
-	}, []);
 }
 
 /**
@@ -271,6 +193,8 @@ function getAttrsByPerms(attr_perms) {
  * @returns {Promise<{}|[]>}
  */
 async function describeSchema(describe_schema_object) {
+	hdb_utils.transformReq(describe_schema_object);
+
 	let validation_msg = validator.schema_object(describe_schema_object);
 	if (validation_msg) {
 		throw validation_msg;
@@ -283,61 +207,30 @@ async function describeSchema(describe_schema_object) {
 	}
 	const schema_name = describe_schema_object.schema.toString();
 
-	let table_search_obj = {
-		schema: terms.SYSTEM_SCHEMA_NAME,
-		table: terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME,
-		hash_attribute: terms.SYSTEM_TABLE_HASH_ATTRIBUTES.TABLE_TABLE_HASH_ATTRIBUTE,
-		search_attribute: SCHEMA_ATTRIBUTE_STRING,
-		search_value: schema_name,
-		hash_values: [],
-		get_attributes: [HASH_ATTRIBUTE_STRING, terms.ID_ATTRIBUTE_STRING, NAME_ATTRIBUTE_STRING, SCHEMA_ATTRIBUTE_STRING],
-	};
-
-	let tables = Array.from(await p_search_search_by_value(table_search_obj));
-
-	if (tables && tables.length < 1) {
-		let schema_search_obj = {
-			schema: terms.SYSTEM_SCHEMA_NAME,
-			table: terms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME,
-			hash_attribute: terms.SYSTEM_TABLE_HASH_ATTRIBUTES.SCHEMA_TABLE_HASH_ATTRIBUTE,
-			hash_values: [schema_name],
-			get_attributes: [NAME_ATTRIBUTE_STRING],
-		};
-
-		let schema = Array.from(await p_search_search_by_hash(schema_search_obj));
-		if (schema && schema.length < 1) {
-			throw handleHDBError(
-				new Error(),
-				HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(describe_schema_object.schema),
-				HTTP_STATUS_CODES.NOT_FOUND
-			);
-		} else {
-			return {};
-		}
-	} else {
-		let results = {};
-		await Promise.all(
-			tables.map(async (table) => {
-				try {
-					let table_perms;
-					if (schema_perms && schema_perms.tables[table.name]) {
-						table_perms = schema_perms.tables[table.name];
-					}
-					if (hdb_utils.isEmpty(table_perms) || table_perms.describe) {
-						let data = await descTable(
-							{ schema: describe_schema_object.schema, table: table.name },
-							table_perms ? table_perms.attribute_permissions : null
-						);
-						if (data) {
-							results[data.name] = data;
-						}
-					}
-				} catch (err) {
-					logger.error(`Error describing schema table '${describe_schema_object.schema}.${table}'`);
-					logger.error(err);
-				}
-			})
+	let databases = getDatabases();
+	let schema = databases[schema_name];
+	if (!schema) {
+		throw handleHDBError(
+			new Error(),
+			HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(describe_schema_object.schema),
+			HTTP_STATUS_CODES.NOT_FOUND
 		);
-		return results;
 	}
+	let results = {};
+	for (let table_name in schema) {
+		let table_perms;
+		if (schema_perms && schema_perms.tables[table_name]) {
+			table_perms = schema_perms.tables[table_name];
+		}
+		if (hdb_utils.isEmpty(table_perms) || table_perms.describe) {
+			let data = await descTable(
+				{ schema: describe_schema_object.schema, table: table_name },
+				table_perms ? table_perms.attribute_permissions : null
+			);
+			if (data) {
+				results[data.name] = data;
+			}
+		}
+	}
+	return results;
 }

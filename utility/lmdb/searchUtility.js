@@ -93,7 +93,7 @@ function iterateRangeNext(
  * another important point to remember is the search is always iterating forward.  this makes sense for positive number searches,
  * but get wonky for negative number searches and especially for a range of between -4 & 6.  the reason is we will start the iterator at 0, move forward to 6,
  * then we need to jump forward to the highest negative number and stop at the start of our range (-4).
- * @param {lmdb.Transaction|lmdb.RootDatabase} transactionOrEnv
+ * @param {TableTransaction} transactionOrEnv
  * @param {String} hash_attribute
  * @param {String} attribute
  * @param {Number|String} lower_value

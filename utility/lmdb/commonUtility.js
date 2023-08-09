@@ -14,12 +14,9 @@ const PRIMITIVES = ['number', 'string', 'symbol', 'boolean', 'bigint'];
  * environment
  */
 function validateEnv(env) {
-	env = env?.database || env;
+	env = env?.primaryStore || env;
 	if (!env) {
 		throw new Error(LMDB_ERRORS.ENV_REQUIRED);
-	}
-	if (env.constructor.name !== 'LMDBStore') {
-		throw new Error(LMDB_ERRORS.INVALID_ENVIRONMENT);
 	}
 }
 
@@ -71,8 +68,7 @@ function primitiveCheck(value) {
  * Return all the indexable values from an attribute, ready to be indexed
  */
 function getIndexedValues(value) {
-	if (value === null || value === undefined)
-		return;
+	if (value === null || value === undefined) return;
 	if (PRIMITIVES.includes(typeof value)) {
 		if (value.length > MAX_SEARCH_KEY_LENGTH) {
 			return [value.slice(0, MAX_SEARCH_KEY_LENGTH) + OVERFLOW_MARKER];

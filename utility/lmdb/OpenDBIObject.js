@@ -4,7 +4,7 @@ const terms = require('../../utility/hdbTerms');
 env_mngr.initSync();
 const LMDB_COMPRESSION = env_mngr.get(terms.CONFIG_PARAMS.STORAGE_COMPRESSION);
 const LMDB_CACHING = env_mngr.get(terms.CONFIG_PARAMS.STORAGE_CACHING) !== false;
-
+const UPDATES_PROPERTY = terms.UPDATES_PROPERTY;
 /**
  * Defines how a DBI will be created/opened
  */
@@ -23,6 +23,9 @@ class OpenDBIObject {
 			this.cache = LMDB_CACHING && { validated: true };
 			this.randomAccessStructure = true;
 			this.freezeData = true;
+			this.alwaysLazyProperty = (property) => {
+				return property === UPDATES_PROPERTY;
+			};
 		}
 	}
 }

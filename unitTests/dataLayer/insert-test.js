@@ -46,13 +46,18 @@ const sandbox = sinon.createSandbox();
 describe('Test insert module', () => {
 	let check_schema_stub = sandbox.stub().returns(null);
 	let is_empty_stub = sandbox.stub().returns(false);
+	let transform_stub = sandbox.stub();
 
 	beforeEach(() => {
 		check_schema_stub.returns(null);
 	});
 
 	before(() => {
-		insert_rw.__set__('hdb_utils', { checkSchemaTableExist: check_schema_stub, isEmpty: is_empty_stub });
+		insert_rw.__set__('hdb_utils', {
+			checkSchemaTableExist: check_schema_stub,
+			isEmpty: is_empty_stub,
+			transformReq: transform_stub,
+		});
 	});
 
 	after(() => {

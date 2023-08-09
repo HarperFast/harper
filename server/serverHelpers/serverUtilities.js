@@ -9,7 +9,7 @@ const delete_ = require('../../dataLayer/delete');
 const read_audit_log = require('../../dataLayer/readAuditLog');
 const user = require('../../security/user');
 const role = require('../../security/role');
-const custom_function_operations = require('./../customFunctions/operations');
+const custom_function_operations = require('../../components/operations');
 const harper_logger = require('../../utility/logging/harper_logger');
 const read_log = require('../../utility/logging/readLog');
 const add_node = require('../../utility/clustering/addNode');
@@ -32,17 +32,21 @@ const util = require('util');
 const insert = require('../../dataLayer/insert');
 const global_schema = require('../../utility/globalSchema');
 const system_information = require('../../utility/environment/systemInformation');
-const transact_to_clustering_utils = require('../../utility/clustering/transactToClusteringUtilities');
 const job_runner = require('../jobs/jobRunner');
 const token_authentication = require('../../security/tokenAuthentication');
+const auth = require('../../security/auth');
 const config_utils = require('../../config/configUtils');
 const transaction_log = require('../../utility/logging/transactionLog');
 const npm_utilities = require('../../utility/npmUtilities');
+const { setServerUtilities } = require('../../resources/Table');
+const { CONTEXT } = require('../../resources/Resource');
+const { _assignPackageExport } = require('../../index');
+const { transformReq } = require('../../utility/common_utils');
 
 const operation_function_caller = require(`../../utility/OperationFunctionCaller`);
 
-const p_search_search_by_hash = util.promisify(search.searchByHash);
-const p_search_search_by_value = util.promisify(search.searchByValue);
+const p_search_search_by_hash = search.searchByHash;
+const p_search_search_by_value = search.searchByValue;
 const p_search_search = util.promisify(search.search);
 const p_sql_evaluate_sql = util.promisify(sql.evaluateSQL);
 
@@ -57,13 +61,6 @@ const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
 
 const OperationFunctionObject = require('./OperationFunctionObject');
 
-function postWrite(request_body, result, nats_msg_header) {
-	return Promise.all([
-		transact_to_clustering_utils.postOperationHandler(request_body, result, nats_msg_header),
-		// wait for flush (some operations like create_schema don't specify a table)
-		request_body.table ? insert.flush(request_body) : null,
-	]);
-}
 /**
  * This will process a command message on this receiving node rather than sending it to a remote node.  NOTE: this function
  * handles the response to the sender.
@@ -91,12 +88,7 @@ async function processLocalTransaction(req, operation_function) {
 		harper_logger.error(e);
 	}
 
-	let post_op_function = terms.CLUSTER_OPERATIONS[req.body.operation] === undefined ? null : postWrite;
-	let data = await operation_function_caller.callOperationFunctionAsAwait(
-		operation_function,
-		req.body,
-		post_op_function
-	);
+	let data = await operation_function_caller.callOperationFunctionAsAwait(operation_function, req.body, null);
 
 	if (typeof data !== 'object') {
 		data = { message: data };
@@ -120,8 +112,10 @@ const OPERATION_FUNCTION_MAP = initializeOperationFunctionMap();
 module.exports = {
 	chooseOperation,
 	getOperationFunction,
+	operation,
 	processLocalTransaction,
 };
+setServerUtilities(module.exports);
 
 function chooseOperation(json) {
 	let getOpResult;
@@ -144,12 +138,25 @@ function chooseOperation(json) {
 			if (!json.bypass_auth) {
 				let ast_perm_check = sql.checkASTPermissions(json, parsed_sql_object);
 				if (ast_perm_check) {
-					harper_logger.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.search_operation}`);
-					throw handleHDBError(new Error(), ast_perm_check, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN);
+					harper_logger.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
+					harper_logger.warn(`User '${json.hdb_user.username}' is not permitted to ${json.operation}`);
+					throw handleHDBError(
+						new Error(),
+						ast_perm_check,
+						hdb_errors.HTTP_STATUS_CODES.FORBIDDEN,
+						undefined,
+						undefined,
+						true
+					);
 				}
 			}
 			//we need to bypass permission checks to allow the create_authorization_tokens
-		} else if (!json.bypass_auth && json.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS) {
+		} else if (
+			!json.bypass_auth &&
+			json.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS &&
+			json.operation !== terms.OPERATIONS_ENUM.LOGIN &&
+			json.operation !== terms.OPERATIONS_ENUM.LOGOUT
+		) {
 			let function_to_check = job_operation_function === undefined ? operation_function : job_operation_function;
 			let operation_json = json.search_operation ? json.search_operation : json;
 			if (!operation_json.hdb_user) {
@@ -160,7 +167,17 @@ function chooseOperation(json) {
 
 			if (verify_perms_result) {
 				harper_logger.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
-				throw handleHDBError(new Error(), verify_perms_result, hdb_errors.HTTP_STATUS_CODES.FORBIDDEN);
+				harper_logger.warn(
+					`User '${operation_json.hdb_user.username}' is not permitted to ${operation_json.operation}`
+				);
+				throw handleHDBError(
+					new Error(),
+					verify_perms_result,
+					hdb_errors.HTTP_STATUS_CODES.FORBIDDEN,
+					undefined,
+					false,
+					true
+				);
 			}
 		}
 	} catch (err) {
@@ -186,6 +203,18 @@ function getOperationFunction(json) {
 	);
 }
 
+_assignPackageExport('operation', operation);
+/**
+ * Standalone function to execute an operation
+ * @param {*} operation
+ * @param {*} context
+ * @returns
+ */
+function operation(operation, context) {
+	operation.hdb_user = this[CONTEXT]?.user;
+	const operation_function = chooseOperation(operation);
+	return processLocalTransaction({ body: operation }, operation_function);
+}
 async function catchup(req) {
 	harper_logger.trace('In serverUtils.catchup');
 	let catchup_object = req.transaction;
@@ -226,11 +255,14 @@ async function catchup(req) {
 }
 
 async function executeJob(json) {
+	transformReq(json);
+
 	let new_job_object = undefined;
 	let result = undefined;
 	try {
 		result = await jobs.addJob(json);
 		new_job_object = result.createdJob;
+		harper_logger.info('addJob result', result);
 		let job_runner_message = new job_runner.RunnerMessage(new_job_object, json);
 		await job_runner.parseMessage(job_runner_message);
 
@@ -253,6 +285,7 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.UPSERT, new OperationFunctionObject(insert.upsert));
 	op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS, new OperationFunctionObject(search.searchByConditions));
 	op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_HASH, new OperationFunctionObject(p_search_search_by_hash));
+	op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_ID, new OperationFunctionObject(p_search_search_by_hash));
 	op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_VALUE, new OperationFunctionObject(p_search_search_by_value));
 	op_func_map.set(terms.OPERATIONS_ENUM.SEARCH, new OperationFunctionObject(p_search_search));
 	op_func_map.set(terms.OPERATIONS_ENUM.SQL, new OperationFunctionObject(p_sql_evaluate_sql));
@@ -261,12 +294,15 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.CSV_URL_LOAD, new OperationFunctionObject(executeJob, bulkLoad.csvURLLoad));
 	op_func_map.set(terms.OPERATIONS_ENUM.IMPORT_FROM_S3, new OperationFunctionObject(executeJob, bulkLoad.importFromS3));
 	op_func_map.set(terms.OPERATIONS_ENUM.CREATE_SCHEMA, new OperationFunctionObject(schema.createSchema));
+	op_func_map.set(terms.OPERATIONS_ENUM.CREATE_DATABASE, new OperationFunctionObject(schema.createSchema));
 	op_func_map.set(terms.OPERATIONS_ENUM.CREATE_TABLE, new OperationFunctionObject(schema.createTable));
 	op_func_map.set(terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE, new OperationFunctionObject(schema.createAttribute));
 	op_func_map.set(terms.OPERATIONS_ENUM.DROP_SCHEMA, new OperationFunctionObject(schema.dropSchema));
+	op_func_map.set(terms.OPERATIONS_ENUM.DROP_DATABASE, new OperationFunctionObject(schema.dropSchema));
 	op_func_map.set(terms.OPERATIONS_ENUM.DROP_TABLE, new OperationFunctionObject(schema.dropTable));
 	op_func_map.set(terms.OPERATIONS_ENUM.DROP_ATTRIBUTE, new OperationFunctionObject(schema.dropAttribute));
 	op_func_map.set(terms.OPERATIONS_ENUM.DESCRIBE_SCHEMA, new OperationFunctionObject(schema_describe.describeSchema));
+	op_func_map.set(terms.OPERATIONS_ENUM.DESCRIBE_DATABASE, new OperationFunctionObject(schema_describe.describeSchema));
 	op_func_map.set(terms.OPERATIONS_ENUM.DESCRIBE_TABLE, new OperationFunctionObject(schema_describe.describeTable));
 	op_func_map.set(terms.OPERATIONS_ENUM.DESCRIBE_ALL, new OperationFunctionObject(schema_describe.describeAll));
 	op_func_map.set(terms.OPERATIONS_ENUM.DELETE, new OperationFunctionObject(delete_.deleteRecord));
@@ -329,6 +365,9 @@ function initializeOperationFunctionMap() {
 		terms.OPERATIONS_ENUM.REFRESH_OPERATION_TOKEN,
 		new OperationFunctionObject(token_authentication.refreshOperationToken)
 	);
+	op_func_map.set(terms.OPERATIONS_ENUM.LOGIN, new OperationFunctionObject(auth.login));
+	op_func_map.set(terms.OPERATIONS_ENUM.LOGOUT, new OperationFunctionObject(auth.logout));
+
 	op_func_map.set(terms.OPERATIONS_ENUM.GET_CONFIGURATION, new OperationFunctionObject(config_utils.getConfiguration));
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.CUSTOM_FUNCTIONS_STATUS,
@@ -337,6 +376,22 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTIONS,
 		new OperationFunctionObject(custom_function_operations.getCustomFunctions)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.GET_COMPONENT_FILE,
+		new OperationFunctionObject(custom_function_operations.getComponentFile)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.GET_COMPONENT_FILES,
+		new OperationFunctionObject(custom_function_operations.getComponentFiles)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.SET_COMPONENT_FILE,
+		new OperationFunctionObject(custom_function_operations.setComponentFile)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.DROP_COMPONENT_FILE,
+		new OperationFunctionObject(custom_function_operations.dropComponentFile)
 	);
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTION,
@@ -352,7 +407,11 @@ function initializeOperationFunctionMap() {
 	);
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.ADD_CUSTOM_FUNCTION_PROJECT,
-		new OperationFunctionObject(custom_function_operations.addCustomFunctionProject)
+		new OperationFunctionObject(custom_function_operations.addComponent)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.ADD_COMPONENT,
+		new OperationFunctionObject(custom_function_operations.addComponent)
 	);
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION_PROJECT,
@@ -360,11 +419,19 @@ function initializeOperationFunctionMap() {
 	);
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.PACKAGE_CUSTOM_FUNCTION_PROJECT,
-		new OperationFunctionObject(custom_function_operations.packageCustomFunctionProject)
+		new OperationFunctionObject(custom_function_operations.packageComponent)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.PACKAGE_COMPONENT,
+		new OperationFunctionObject(custom_function_operations.packageComponent)
 	);
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.DEPLOY_CUSTOM_FUNCTION_PROJECT,
-		new OperationFunctionObject(custom_function_operations.deployCustomFunctionProject)
+		new OperationFunctionObject(custom_function_operations.deployComponent)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.DEPLOY_COMPONENT,
+		new OperationFunctionObject(custom_function_operations.deployComponent)
 	);
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG,

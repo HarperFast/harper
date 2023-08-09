@@ -117,7 +117,7 @@ function doesPropFileExist() {
 function initSync(force = false) {
 	try {
 		// If readPropsFile returns false, we are installing and don't need to read anything yet.
-		if (prop_file_exists || doesPropFileExist()) {
+		if (prop_file_exists || doesPropFileExist() || common_utils.noBootFile()) {
 			config_utils.initConfig(force);
 			install_props[hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY] = config_utils.getConfigValue(
 				hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY
@@ -150,7 +150,7 @@ function initTestEnvironment(test_config_obj = {}) {
 		const props_path = path.join(__dirname, '../../', 'unitTests');
 		install_props[BOOT_PROPS_FILE_PATH] = path.join(props_path, 'hdb_boot_properties.file');
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, path.join(props_path, 'settings.test'));
-		setProperty(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER, os.userInfo().username);
+		setProperty(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER, os.userInfo() ? os.userInfo().username : undefined);
 		setProperty(
 			hdb_terms.HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY,
 			path.join(props_path, 'envDir', 'utility', 'keys', 'privateKey.pem')
@@ -173,6 +173,7 @@ function initTestEnvironment(test_config_obj = {}) {
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY, true);
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY, '1231412de213');
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, path.join(props_path, 'envDir'));
+		setProperty(hdb_terms.CONFIG_PARAMS.STORAGE_PATH, path.join(props_path, 'envDir'));
 		setProperty(
 			hdb_terms.HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY,
 			common_utils.isEmpty(https_enabled) ? true : https_enabled
@@ -196,7 +197,7 @@ function initTestEnvironment(test_config_obj = {}) {
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY, true);
 		setProperty(
 			hdb_terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY,
-			path.resolve(__dirname, '../../unitTests/server/customFunctions/custom_functions')
+			path.resolve(__dirname, '../../unitTests/server/fastifyRoutes/custom_functions')
 		);
 		setProperty(
 			hdb_terms.HDB_SETTINGS_NAMES.LOCAL_STUDIO_ON,

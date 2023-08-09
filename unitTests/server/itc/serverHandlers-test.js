@@ -113,7 +113,8 @@ describe('Test hdbChildIpcHandler module', () => {
 		});
 	});
 
-	describe('Test syncSchemaMetadata function', () => {
+	// we don't use hdb_schema anymore
+	describe.skip('Test syncSchemaMetadata function', () => {
 		let syncSchemaMetadata;
 		let describe_table_stub;
 		let set_to_global_stub;

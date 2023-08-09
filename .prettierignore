@@ -4,6 +4,7 @@
 .nyc_output/
 coverage
 custom_function_template
+application-template
 docs/
 integrationTests/
 node_modules/

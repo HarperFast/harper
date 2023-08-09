@@ -9,12 +9,14 @@ const { isMainThread } = require('worker_threads');
 const os = require('os');
 const util = require('util');
 
-const auth = require('../../security/auth');
+const auth = require('../../security/fastifyAuth');
 const p_authorize = util.promisify(auth.authorize);
 const server_utilities = require('./serverUtilities');
 
 function handleServerUncaughtException(err) {
-	let message = `Found an uncaught exception with message: ${err.message}. ${os.EOL}Stack: ${err.stack} ${os.EOL}Terminating ${isMainThread ? 'HDB' : 'thread'}.`;
+	let message = `Found an uncaught exception with message: ${err.message}. ${os.EOL}Stack: ${err.stack} ${
+		os.EOL
+	}Terminating ${isMainThread ? 'HDB' : 'thread'}.`;
 	console.error(message);
 	harper_logger.fatal(message);
 	process.exit(1);
@@ -23,8 +25,8 @@ function handleServerUncaughtException(err) {
 function serverErrorHandler(error, req, resp) {
 	harper_logger[error.logLevel || 'error'](error);
 	if (error.http_resp_code) {
-		if (typeof error.http_resp_msg === 'string') {
-			return resp.code(error.http_resp_code).send({ error: error.http_resp_msg });
+		if (typeof error.http_resp_msg !== 'object') {
+			return resp.code(error.http_resp_code).send({ error: error.http_resp_msg || error.message });
 		}
 		return resp.code(error.http_resp_code).send(error.http_resp_msg);
 	}
@@ -55,7 +57,11 @@ function authHandler(req, resp, done) {
 	let user;
 
 	//create_authorization_tokens needs to not authorize
-	if (req.body.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS) {
+	if (
+		req.body.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS &&
+		req.body.operation !== terms.OPERATIONS_ENUM.LOGIN &&
+		req.body.operation !== terms.OPERATIONS_ENUM.LOGOUT
+	) {
 		p_authorize(req, resp)
 			.then((user_data) => {
 				user = user_data;
@@ -72,6 +78,9 @@ function authHandler(req, resp, done) {
 	} else {
 		req.body.hdb_user = null;
 		req.body.hdb_auth_header = req.headers.authorization;
+		req.body.baseRequest = req.raw?.baseRequest;
+		req.body.baseResponse = resp.raw?.baseResponse;
+		req.body.fastifyResponse = resp;
 		done();
 	}
 }

@@ -15,6 +15,7 @@ env.initSync();
 const SystemInformationObject = require('./SystemInformationObject');
 const { openEnvironment } = require('../lmdb/environmentUtility');
 const { getSchemaPath } = require('../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
+const { database } = require('../../resources/databases');
 
 //this will hold the system_information which is static to improve performance
 let system_information_cache = undefined;
@@ -124,6 +125,15 @@ async function getHDBProcessInfo() {
 				harperdb_processes.clustering.push(process);
 			}
 		});
+
+		for (const hdb_p of harperdb_processes.core) {
+			for (const p of processes.list) {
+				if (p.pid === hdb_p.parentPid && (p.name === 'PM2' || p.command === 'PM2')) {
+					hdb_p.parent = 'PM2';
+				}
+			}
+		}
+
 		return harperdb_processes;
 	} catch (e) {
 		log.error(`error in getHDBProcessInfo: ${e}`);
@@ -239,8 +249,7 @@ async function getMetrics() {
 		let table_stats = (schema_stats[schema_name] = {});
 		for (let table_name in schemas[schema_name]) {
 			try {
-				let schema_path = getSchemaPath(schema_name, table_name);
-				let env = await openEnvironment(schema_path, table_name);
+				let env = database({ database: schema_name, table: table_name });
 				let stats = env.getStats();
 				table_stats[table_name] = {
 					puts: stats.puts,

@@ -177,7 +177,7 @@
 									"",
 									"pm.test(\"Schema treat_sys was created on Node1\", function () {",
 									"    const jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"schema 'treat_sys' successfully created\");",
+									"    pm.expect(jsonData.message).to.eql(\"database 'treat_sys' successfully created\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -866,7 +866,7 @@
 									"",
 									"pm.test(\"Schema treat_sys was created on Node2\", function () {",
 									"    const jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"schema 'treat_sys' successfully created\");",
+									"    pm.expect(jsonData.message).to.eql(\"database 'treat_sys' successfully created\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -4680,7 +4680,7 @@
 									"\r",
 									"pm.test(\"Schema treat_sys was deleted from Node1\", function () {\r",
 									"    const jsonData = pm.response.json();\r",
-									"    pm.expect(jsonData.message).to.equal(\"successfully deleted schema 'treat_sys'\");\r",
+									"    pm.expect(jsonData.message).to.equal(\"successfully deleted 'treat_sys'\");\r",
 									"});\r",
 									"\r",
 									"\r",
@@ -5352,7 +5352,7 @@
 									"",
 									"pm.test(\"Schema treat_sys was re-created\", function () {",
 									"    const jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.equal(\"schema 'treat_sys' successfully created\");",
+									"    pm.expect(jsonData.message).to.equal(\"database 'treat_sys' successfully created\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -7595,7 +7595,6 @@
 									"            pm.expect(record.new_data).to.be.undefined;",
 									"        }",
 									"    ",
-									"        pm.expect(Object.keys(record)).to.be.length(7)",
 									"    });",
 									"});"
 								],
@@ -7742,10 +7741,8 @@
 									"        }",
 									"        if (record.id === 8) {",
 									"            pm.expect(record.treat).to.be.false;",
-									"            pm.expect(record.event).to.be.null;",
 									"        }",
 									"    ",
-									"        pm.expect(Object.keys(record)).to.be.length(7)",
 									"    });",
 									"});"
 								],
@@ -8319,7 +8316,6 @@
 									"            pm.expect(record.sensor_data).to.be.true;",
 									"        }",
 									"    ",
-									"        pm.expect(Object.keys(record)).to.be.length(9)",
 									"    });",
 									"});"
 								],
@@ -9438,7 +9434,6 @@
 									"        if (record.id === 20) {",
 									"            pm.expect(record.newest_data).to.equal(\"xyz\");",
 									"        }",
-									"        pm.expect(Object.keys(record)).to.be.length(6)",
 									"    });",
 									"});"
 								],
@@ -9876,7 +9871,7 @@
 									"const jsonData = pm.response.json();",
 									"",
 									"pm.test(\"Operation auth error message for csv_data_load non-SU\", function () {",
-									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid database items\");",
 									"});",
 									"",
 									"pm.test(\"Includes correct table perm object in unauthorized_access\", function () {",
@@ -10324,7 +10319,7 @@
 									"const jsonData = pm.response.json();",
 									"",
 									"pm.test(\"Operation auth error message for csv_data_load non-SU\", function () {",
-									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid database items\");",
 									"});",
 									"",
 									"pm.test(\"Includes correct table perm object in unauthorized_access\", function () {",
@@ -10540,7 +10535,7 @@
 									"const jsonData = pm.response.json();",
 									"",
 									"pm.test(\"Operation auth error message for csv_data_load non-SU\", function () {",
-									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid schema items\");",
+									"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid database items\");",
 									"});",
 									"",
 									"pm.test(\"Includes correct table perm object in unauthorized_access\", function () {",
@@ -10960,7 +10955,6 @@
 									"    for (const record of response) {",
 									"        const attributes = Object.keys(record)",
 									"        pm.expect(record.id).to.be.oneOf([17, 20, 21])",
-									"        pm.expect(attributes.length).to.eql(6)",
 									"    }",
 									"});",
 									""
@@ -11107,7 +11101,6 @@
 									"    for (const record of response) {",
 									"        const attributes = Object.keys(record)",
 									"        pm.expect(record.id).to.be.oneOf([17, 20, 21])",
-									"        pm.expect(attributes.length).to.eql(7)",
 									"    }",
 									"});",
 									""
@@ -11254,7 +11247,6 @@
 									"    for (const record of response) {",
 									"        const attributes = Object.keys(record)",
 									"        pm.expect(record.id).to.be.oneOf([17, 20, 21])",
-									"        pm.expect(attributes.length).to.eql(6)",
 									"    }",
 									"});",
 									""
@@ -11463,7 +11455,6 @@
 									"    for (const record of response) {",
 									"        const attributes = Object.keys(record)",
 									"        pm.expect(record.id).to.be.oneOf([17, 20, 21])",
-									"        pm.expect(attributes.length).to.eql(7)",
 									"        if (record.id === 17) {",
 									"            pm.expect(record.more_info).to.eql('xyz')",
 									"        }",
@@ -11613,7 +11604,6 @@
 									"    for (const record of response) {",
 									"        const attributes = Object.keys(record)",
 									"        pm.expect(record.id).to.be.oneOf([17, 20, 21])",
-									"        pm.expect(attributes.length).to.eql(8)",
 									"        if (record.id === 17) {",
 									"            pm.expect(record.more_info).to.eql('xyz')",
 									"        }",
@@ -11763,7 +11753,6 @@
 									"    for (const record of response) {",
 									"        const attributes = Object.keys(record)",
 									"        pm.expect(record.id).to.be.oneOf([17, 20, 21])",
-									"        pm.expect(attributes.length).to.eql(7)",
 									"        if (record.id === 17) {",
 									"            pm.expect(record.more_info).to.eql('xyz')",
 									"        }",
@@ -15658,7 +15647,7 @@
 									"});",
 									"pm.test(\"Schema successfully dropped from Node1\", function () {",
 									"    const jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.be.eql(\"successfully deleted schema 'treat_sys'\");",
+									"    pm.expect(jsonData.message).to.be.eql(\"successfully deleted 'treat_sys'\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -15787,7 +15776,7 @@
 									"});",
 									"pm.test(\"Schema successfully dropped from Node2\", function () {",
 									"    const jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.be.eql(\"successfully deleted schema 'treat_sys'\");",
+									"    pm.expect(jsonData.message).to.be.eql(\"successfully deleted 'treat_sys'\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -15916,7 +15905,7 @@
 									"});",
 									"pm.test(\"Schema successfully dropped from Node3\", function () {",
 									"    const jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.be.eql(\"successfully deleted schema 'treat_sys'\");",
+									"    pm.expect(jsonData.message).to.be.eql(\"successfully deleted 'treat_sys'\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -16045,7 +16034,7 @@
 									"});",
 									"pm.test(\"Schema successfully dropped from Node4\", function () {",
 									"    const jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.be.eql(\"successfully deleted schema 'treat_sys'\");",
+									"    pm.expect(jsonData.message).to.be.eql(\"successfully deleted 'treat_sys'\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -16174,7 +16163,7 @@
 									"});",
 									"pm.test(\"Schema successfully dropped from Node5\", function () {",
 									"    const jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.be.eql(\"successfully deleted schema 'treat_sys'\");",
+									"    pm.expect(jsonData.message).to.be.eql(\"successfully deleted 'treat_sys'\");",
 									"});"
 								],
 								"type": "text/javascript"

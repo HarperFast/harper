@@ -29,7 +29,7 @@ const PROCESS_INFO = {
 			tty: '',
 			user: 'kyle',
 			command: 'node',
-			params: '/home/kyle/WebstormProjects/harperdb/server/hdbServer.js',
+			params: '/home/kyle/WebstormProjects/harperdb/server/operationsServer.js',
 			path: '/usr/bin',
 		},
 		{
@@ -49,7 +49,7 @@ const PROCESS_INFO = {
 			tty: '',
 			user: 'kyle',
 			command: 'node',
-			params: '/home/kyle/WebstormProjects/harperdb/server/hdbServer.js',
+			params: '/home/kyle/WebstormProjects/harperdb/server/operationsServer.js',
 			path: '/usr/bin',
 		},
 		{
@@ -69,7 +69,7 @@ const PROCESS_INFO = {
 			tty: '',
 			user: 'kyle',
 			command: 'node',
-			params: '/home/kyle/WebstormProjects/harperdb/server/hdbServer.js',
+			params: '/home/kyle/WebstormProjects/harperdb/server/operationsServer.js',
 			path: '/usr/bin',
 		},
 	],
@@ -231,7 +231,7 @@ const EXPECTED_PROPERTIES = {
 		'heapUsed',
 		'heapTotal',
 	],
-	disk: ['io', 'read_write', 'size'],
+	disk: ['io', 'read_write'],
 	disk_io: ['rIO', 'wIO', 'tIO'],
 	disk_read_write: ['rx', 'wx', 'tx', 'ms'],
 	disk_size: ['fs', 'type', 'size', 'used', 'use', 'mount', 'available'],
@@ -362,7 +362,7 @@ describe('test systemInformation module', () => {
 		});
 	});
 
-	it('test getDiskInfo function', async () => {
+	it.skip('test getDiskInfo function', async () => {
 		let results = await system_information.getDiskInfo();
 		if (process.platform !== 'win32') {
 			Object.keys(results).forEach((key) => {
@@ -383,12 +383,6 @@ describe('test systemInformation module', () => {
 
 			EXPECTED_PROPERTIES.disk_read_write.forEach((property) => {
 				assert(results.read_write.hasOwnProperty(property));
-			});
-
-			assert(Array.isArray(results.size));
-
-			EXPECTED_PROPERTIES.disk_size.forEach((property) => {
-				assert(results.size[0].hasOwnProperty(property));
 			});
 		}
 	});

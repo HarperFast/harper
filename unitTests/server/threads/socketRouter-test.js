@@ -1,3 +1,4 @@
+require('../../../utility/devops/tsBuild');
 const {
 	startHTTPThreads,
 	startSocketServer,
@@ -11,19 +12,20 @@ const assert = require('assert');
 
 describe('Socket Router', () => {
 	let workers, server;
-	before(function () {
-		workers = startHTTPThreads(4);
+	before(async function () {
+		this.timeout(15000);
+		workers = await startHTTPThreads(4);
+		console.log({ workers });
 	});
 	it('Start HTTP threads and delegate evenly by most idle', function () {
-		server = startSocketServer(terms.SERVICES.HDB_CORE, 0);
-
+		server = startSocketServer(8925);
 		for (let worker of workers) {
 			worker.socketsRouted = 0;
-			worker.postMessage = function ({ type, fd }) {
+			worker.postMessage = function ({ port, fd }) {
 				// stub this and don't send to real worker, just count messages
-				if (type !== 'added-port') {
+				if (port) {
 					this.socketsRouted++;
-					assert.equal(type, terms.SERVICES.HDB_CORE);
+					assert.equal(port, 8925);
 					assert.equal(fd, 1);
 				}
 			};
@@ -54,15 +56,15 @@ describe('Socket Router', () => {
 	});
 
 	it('Start HTTP threads and delegate by remote address', function () {
-		server = startSocketServer(terms.SERVICES.HDB_CORE, 0, 'ip');
+		server = startSocketServer(8926, 'ip');
 
 		for (let worker of workers) {
 			worker.socketsRouted = 0;
-			worker.postMessage = function ({ type, fd }) {
+			worker.postMessage = function ({ type, port, fd }) {
 				if (type === 'added-port') return;
 				// stub this and don't send to real worker, just count messages
 				this.socketsRouted++;
-				assert.equal(type, terms.SERVICES.HDB_CORE);
+				assert.equal(port, 8926);
 				assert.equal(fd, 1);
 			};
 		}
@@ -91,17 +93,17 @@ describe('Socket Router', () => {
 	});
 
 	it('Start HTTP threads and delegate by authorization header', async function () {
-		server = startSocketServer(terms.SERVICES.HDB_CORE, 0, 'Authorization');
+		server = startSocketServer(8927, 'Authorization');
 		for (let worker of workers) {
 			worker.recentELU = { idle: 0 };
 		}
 		updateWorkerIdleness();
 		for (let worker of workers) {
 			worker.socketsRouted = 0;
-			worker.postMessage = function ({ type, fd }) {
+			worker.postMessage = function ({ type, port, fd }) {
 				// stub this and don't send to real worker, just count messages
 				this.socketsRouted++;
-				assert.equal(type, terms.SERVICES.HDB_CORE);
+				assert.equal(port, 8927);
 				assert.equal(fd, 1);
 			};
 		}

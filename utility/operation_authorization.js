@@ -36,8 +36,9 @@ const terms = require('./hdbTerms');
 const permsTranslator = require('../security/permissionsTranslator');
 const system_information = require('../utility/environment/systemInformation');
 const token_authentication = require('../security/tokenAuthentication');
+const auth = require('../security/auth');
 const config_utils = require('../config/configUtils');
-const functions_operations = require('../server/customFunctions/operations');
+const functions_operations = require('../components/operations');
 const alasql = require('alasql');
 const transaction_log = require('../utility/logging/transactionLog');
 const npm_utilities = require('./npmUtilities');
@@ -148,20 +149,26 @@ required_permissions.set(transaction_log.deleteTransactionLogsBefore.name, new p
 required_permissions.set(npm_utilities.installModules.name, new permission(true, []));
 required_permissions.set(npm_utilities.auditModules.name, new permission(true, []));
 
-//this operation must be available to all users so they can create authentication tokens
+//this operation must be available to all users so they can create authentication tokens and login
 required_permissions.set(token_authentication.createTokens.name, new permission(false, []));
 required_permissions.set(token_authentication.refreshOperationToken.name, new permission(false, []));
+required_permissions.set(auth.login.name, new permission(false, []));
+required_permissions.set(auth.logout.name, new permission(false, []));
 
 //Operations specific to HDB Functions
 required_permissions.set(functions_operations.customFunctionsStatus.name, new permission(true, []));
 required_permissions.set(functions_operations.getCustomFunctions.name, new permission(true, []));
+required_permissions.set(functions_operations.getComponentFiles.name, new permission(true, []));
+required_permissions.set(functions_operations.getComponentFile.name, new permission(true, []));
+required_permissions.set(functions_operations.setComponentFile.name, new permission(true, []));
+required_permissions.set(functions_operations.dropComponentFile.name, new permission(true, []));
 required_permissions.set(functions_operations.getCustomFunction.name, new permission(true, []));
 required_permissions.set(functions_operations.setCustomFunction.name, new permission(true, []));
 required_permissions.set(functions_operations.dropCustomFunction.name, new permission(true, []));
-required_permissions.set(functions_operations.addCustomFunctionProject.name, new permission(true, []));
+required_permissions.set(functions_operations.addComponent.name, new permission(true, []));
 required_permissions.set(functions_operations.dropCustomFunctionProject.name, new permission(true, []));
-required_permissions.set(functions_operations.packageCustomFunctionProject.name, new permission(true, []));
-required_permissions.set(functions_operations.deployCustomFunctionProject.name, new permission(true, []));
+required_permissions.set(functions_operations.packageComponent.name, new permission(true, []));
+required_permissions.set(functions_operations.deployComponent.name, new permission(true, []));
 
 //Below are functions that are currently open to all roles
 required_permissions.set(reg.getRegistrationInfo.name, new permission(false, []));

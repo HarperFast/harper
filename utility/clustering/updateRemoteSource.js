@@ -13,6 +13,7 @@ const UpdateRemoteResponseObject = require('./UpdateRemoteResponseObject');
 const hdb_utils = require('../common_utils');
 const env_manager = require('../environment/environmentManager');
 const { cloneDeep } = require('lodash');
+const { broadcast } = require('../../server/threads/manageThreads');
 
 module.exports = updateRemoteSource;
 
@@ -48,14 +49,22 @@ async function updateRemoteSource(request) {
 			// If the schema doesn't exist it is created.
 			if (!hdb_utils.doesSchemaExist(schema)) {
 				hdb_logger.trace(`updateRemoteSource creating schema: ${schema}`);
-				await schema_mod.createSchema({ operation: 'create_schema', schema });
+				try {
+					await schema_mod.createSchema({ operation: 'create_schema', schema });
+				} catch (error) {
+					hdb_logger.error(error);
+				}
 			}
 
 			// If the table doesn't exist it is created.
-			if (!hdb_utils.doesTableExist(schema, table)) {
+			if (table && !hdb_utils.doesTableExist(schema, table)) {
 				hdb_logger.trace(`updateRemoteSource creating table: ${table} in schema: ${schema}`);
 				const table_obj = new CreateTableObject(schema, table, sub.hash_attribute);
-				await schema_mod.createTable(table_obj);
+				try {
+					await schema_mod.createTable(table_obj);
+				} catch (error) {
+					hdb_logger.error(error);
+				}
 
 				// Create a stream for the new table
 				hdb_logger.trace(`Creating local stream for ${schema}.${table}`);
@@ -102,6 +111,9 @@ async function updateRemoteSource(request) {
 		// Regardless of if record exists or not we add/update its system_info param.
 		upsert_record.system_info = system_info;
 		await cluster_utils.upsertNodeRecord(upsert_record);
+		broadcast({
+			type: 'nats_update',
+		});
 
 		return new UpdateRemoteResponseObject(
 			nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.SUCCESS,

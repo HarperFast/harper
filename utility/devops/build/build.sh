@@ -42,11 +42,11 @@ rm -rf dependencies/*/
 # Obfuscate code
 node ./utility/devops/build/build.js
 
-# Pull in custom_function_template repo
+# Pull in application-template repo
 git submodule update --init --recursive
 
 # # Copy code to package creation directory
-rsync --exclude=".*" --recursive ./custom_function_template ./npm_pack/
+rsync --exclude=".*" --recursive ./application-template ./npm_pack/
 
 # Grab the postinstall script commands
 post_install="$(jq -r '.scripts."postinstall"' package.json)"

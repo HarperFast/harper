@@ -12,6 +12,7 @@ const clustering_utils = require('./clusterUtilities');
 const env_manager = require('../environment/environmentManager');
 const review_subscriptions = require('./reviewSubscriptions');
 const { Node, NodeSubscription } = require('./NodeObject');
+const { broadcast } = require('../../server/threads/manageThreads');
 
 const UNSUCCESSFUL_MSG =
 	'Unable to create subscriptions due to schema and/or tables not existing on the local or remote node';
@@ -112,7 +113,9 @@ async function addNode(req, skip_validation = false) {
 	// Add new node record to hdb_nodes table.
 	const node_record = new Node(remote_node_name, subs_for_record, reply.system_info);
 	await clustering_utils.upsertNodeRecord(node_record);
-
+	broadcast({
+		type: 'nats_update',
+	});
 	if (skipped.length > 0) {
 		response.message = PART_SUCCESS_MSG;
 	} else {

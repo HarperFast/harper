@@ -49,6 +49,7 @@ module.exports = {
 	getClusteringRoutes,
 	initOldConfig,
 	getConfigFromFile,
+	getConfigFilePath,
 };
 
 /**
@@ -72,7 +73,8 @@ function createConfigFile(args) {
 
 		if (config_param !== undefined) {
 			const split_param = config_param.split('_');
-			const value = castConfigValue(config_param, args[arg]);
+			let value = castConfigValue(config_param, args[arg]);
+			if (config_param === 'rootPath' && value?.endsWith('/')) value = value.slice(0, -1);
 			try {
 				config_doc.setIn([...split_param], value);
 			} catch (err) {
@@ -162,7 +164,7 @@ function getDefaultConfig(param) {
  * @returns {undefined|*}
  */
 function getConfigValue(param) {
-	if (hdb_utils.isEmpty(param)) {
+	if (param == null) {
 		logger.error(EMPTY_GET_VALUE);
 		return undefined;
 	}
@@ -178,9 +180,9 @@ function getConfigValue(param) {
 	return flat_config_obj[param_map.toLowerCase()];
 }
 
-function getConfigFilePath(boot_props_file_path) {
-	const cmd_args = minimist(process.argv);
-	if (cmd_args.ROOTPATH) return path.join(cmd_args.ROOTPATH, hdb_terms.HDB_CONFIG_FILE);
+function getConfigFilePath(boot_props_file_path = hdb_utils.getPropsFilePath()) {
+	const cmd_args = hdb_utils.getEnvCliRootPath();
+	if (cmd_args) return path.join(cmd_args, hdb_terms.HDB_CONFIG_FILE);
 	const hdb_properties = PropertiesReader(boot_props_file_path);
 	return hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
 }
@@ -192,12 +194,15 @@ function getConfigFilePath(boot_props_file_path) {
  */
 function initConfig(force = false) {
 	if (flat_config_obj === undefined || force) {
-		const boot_props_file_path = hdb_utils.getPropsFilePath();
-		try {
-			fs.accessSync(boot_props_file_path, fs.constants.F_OK | fs.constants.R_OK);
-		} catch (err) {
-			logger.error(err);
-			throw new Error(`HarperDB properties file at path ${boot_props_file_path} does not exist`);
+		let boot_props_file_path;
+		if (!hdb_utils.noBootFile()) {
+			boot_props_file_path = hdb_utils.getPropsFilePath();
+			try {
+				fs.accessSync(boot_props_file_path, fs.constants.F_OK | fs.constants.R_OK);
+			} catch (err) {
+				logger.error(err);
+				throw new Error(`HarperDB properties file at path ${boot_props_file_path} does not exist`);
+			}
 		}
 
 		const config_file_path = getConfigFilePath(boot_props_file_path);
@@ -260,7 +265,7 @@ function checkForUpdatedConfig(config_doc, config_file_path) {
 	const root_path = config_doc.getIn(['rootPath']);
 	let update_file = false;
 	if (!config_doc.hasIn(['storage', 'path'])) {
-		config_doc.setIn(['storage', 'path'], path.join(root_path, hdb_terms.SCHEMA_DIR_NAME));
+		config_doc.setIn(['storage', 'path'], path.join(root_path, 'database'));
 		update_file = true;
 	}
 
@@ -306,7 +311,7 @@ function validateConfig(config_doc) {
 	config_doc.setIn(['logging', 'rotation', 'path'], validation.value.logging.rotation.path);
 	config_doc.setIn(
 		['clustering', 'leafServer', 'streams', 'path'],
-		validation.value.clustering.leafServer.streams.path
+		validation.value.clustering.leafServer.streams?.path
 	);
 }
 
@@ -339,7 +344,14 @@ function updateConfigObject(param, value) {
  * @param create_backup - if true backup file is created
  * @param update_config_obj - if true updates the in memory flattened config object
  */
-function updateConfigValue(param, value, parsed_args = undefined, create_backup = false, update_config_obj = false) {
+function updateConfigValue(
+	param,
+	value,
+	parsed_args = undefined,
+	create_backup = false,
+	update_config_obj = false,
+	skip_param_map = false
+) {
 	if (flat_config_obj === undefined) {
 		initConfig();
 	}
@@ -353,9 +365,14 @@ function updateConfigValue(param, value, parsed_args = undefined, create_backup 
 	if (parsed_args === undefined && param.toLowerCase() === CONFIG_PARAMS.SCHEMAS) {
 		schemas_args = value;
 	} else if (parsed_args === undefined) {
-		const config_param = CONFIG_PARAM_MAP[param.toLowerCase()];
-		if (config_param === undefined) {
-			throw new Error(`Unable to update config, unrecognized config parameter: ${param}`);
+		let config_param;
+		if (skip_param_map) {
+			config_param = param;
+		} else {
+			config_param = CONFIG_PARAM_MAP[param.toLowerCase()];
+			if (config_param === undefined) {
+				throw new Error(`Unable to update config, unrecognized config parameter: ${param}`);
+			}
 		}
 
 		const split_param = config_param.split('_');
@@ -374,7 +391,8 @@ function updateConfigValue(param, value, parsed_args = undefined, create_backup 
 
 			if (config_param !== undefined) {
 				const split_param = config_param.split('_');
-				const new_value = castConfigValue(config_param, parsed_args[arg]);
+				let new_value = castConfigValue(config_param, parsed_args[arg]);
+				if (config_param === 'rootPath' && new_value?.endsWith('/')) new_value = new_value.slice(0, -1);
 				try {
 					config_doc.setIn([...split_param], new_value);
 				} catch (err) {
@@ -545,8 +563,10 @@ function readConfigFile() {
 	try {
 		fs.accessSync(boot_props_file_path, fs.constants.F_OK | fs.constants.R_OK);
 	} catch (err) {
-		logger.error(err);
-		throw new Error(`HarperDB properties file at path ${boot_props_file_path} does not exist`);
+		if (!hdb_utils.noBootFile()) {
+			logger.error(err);
+			throw new Error(`HarperDB properties file at path ${boot_props_file_path} does not exist`);
+		}
 	}
 
 	const config_file_path = getConfigFilePath(boot_props_file_path);

@@ -4,8 +4,13 @@ const validator = require('./validationWrapper');
 const is_required_string = 'is required';
 
 const constraints = {
+	database: {
+		presence: false,
+		format: common_validators.schema_format,
+		length: common_validators.schema_length,
+	},
 	schema: {
-		presence: true,
+		presence: false,
 		format: common_validators.schema_format,
 		length: common_validators.schema_length,
 	},
@@ -39,7 +44,6 @@ function makeAttributesStrings(object) {
 
 function schema_object(object) {
 	object = makeAttributesStrings(object);
-	constraints.schema.presence = { message: is_required_string };
 	constraints.table.presence = false;
 	constraints.attribute.presence = false;
 	constraints.hash_attribute.presence = false;
@@ -48,7 +52,6 @@ function schema_object(object) {
 
 function table_object(object) {
 	object = makeAttributesStrings(object);
-	constraints.schema.presence = { message: is_required_string };
 	constraints.table.presence = { message: is_required_string };
 	constraints.attribute.presence = false;
 	constraints.hash_attribute.presence = false;
@@ -57,16 +60,13 @@ function table_object(object) {
 
 function create_table_object(object) {
 	object = makeAttributesStrings(object);
-	constraints.schema.presence = { message: is_required_string };
 	constraints.table.presence = { message: is_required_string };
 	constraints.attribute.presence = false;
-	constraints.hash_attribute.presence = { message: is_required_string };
 	return validator.validateObject(object, constraints);
 }
 
 function attribute_object(object) {
 	object = makeAttributesStrings(object);
-	constraints.schema.presence = { message: is_required_string };
 	constraints.table.presence = { message: is_required_string };
 	constraints.attribute.presence = { message: is_required_string };
 	constraints.hash_attribute.presence = false;
@@ -75,7 +75,6 @@ function attribute_object(object) {
 
 function describe_table(object) {
 	object = makeAttributesStrings(object);
-	constraints.schema.presence = { message: is_required_string };
 	constraints.table.presence = { message: is_required_string };
 	constraints.attribute.presence = false;
 	constraints.hash_attribute.presence = false;

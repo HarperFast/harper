@@ -361,8 +361,8 @@ describe('Test processManagement utilityFunctions module', () => {
 			let leaf_name_found = false;
 			list.forEach((proc) => {
 				if (proc.name === 'HarperDB') hdb_name_found = true;
-				if (proc.name === 'Clustering Hub') hub_name_found = true;
-				if (proc.name === 'Clustering Leaf') leaf_name_found = true;
+				if (proc.name.startsWith('Clustering Hub')) hub_name_found = true;
+				if (proc.name.startsWith('Clustering Leaf')) leaf_name_found = true;
 			});
 
 			expect(list.length).to.equal(3);
@@ -433,7 +433,9 @@ describe('Test processManagement utilityFunctions module', () => {
 			await nats_config.generateNatsConfig();
 			await utility_functions.startAllServices();
 			const list = await utility_functions.getUniqueServicesList();
-			expect(list).to.eql(expected_obj);
+			expect(Object.keys(list)[0].startsWith('Clustering Hub')).to.be.true;
+			expect(Object.keys(list)[1].startsWith('Clustering Leaf')).to.be.true;
+			expect(Object.keys(list)[2].startsWith('HarperDB')).to.be.true;
 		}).timeout(20000);
 	});
 
@@ -453,24 +455,6 @@ describe('Test processManagement utilityFunctions module', () => {
 
 		afterEach(async () => {
 			await stopDeleteAllServices();
-		});
-	});
-
-	describe('Test isServiceRegistered', () => {
-		afterEach(async function () {
-			this.timeout(10000);
-			await stopDeleteAllServices();
-		});
-
-		it('Test false is returned if service no registered to processManagement', async () => {
-			const result = await utility_functions.isServiceRegistered('harperdb');
-			expect(result).to.be.false;
-		});
-
-		it('Test true is returned if service is registered to processManagement', async () => {
-			await utility_functions.startService('harperdb');
-			const result = await utility_functions.isServiceRegistered('harperdb');
-			expect(result).to.be.false;
 		});
 	});
 
@@ -507,8 +491,8 @@ describe('Test processManagement utilityFunctions module', () => {
 			const restart_calls = [...restart_stub.args[0], ...restart_stub.args[1]];
 			expect(reload_calls).to.include('HarperDB');
 			expect(reload_calls.length).to.equal(1);
-			expect(restart_calls).to.include('Clustering Hub');
-			expect(restart_calls).to.include('Clustering Leaf');
+			expect(restart_calls.some((call) => call.startsWith('Clustering Hub'))).to.be.true;
+			expect(restart_calls.some((call) => call.startsWith('Clustering Leaf'))).to.be.true;
 			expect(restart_calls.length).to.equal(2);
 		}).timeout(20000);
 	});

@@ -13,6 +13,7 @@ const moment = require('moment');
 const { inspect } = require('util');
 const is_number = require('is-number');
 const _ = require('lodash');
+const minimist = require('minimist');
 const { hdb_errors } = require('./errors/hdbError');
 
 const async_set_timeout = require('util').promisify(setTimeout);
@@ -69,7 +70,6 @@ module.exports = {
 	autoCasterIsNumberCheck,
 	backtickASTSchemaItems,
 	isPortTaken,
-	stopProcess,
 	createForkArgs,
 	autoCastBoolean,
 	async_set_timeout,
@@ -79,6 +79,9 @@ module.exports = {
 	stringifyObj,
 	ms_to_time,
 	changeExtension,
+	getEnvCliRootPath,
+	noBootFile,
+	transformReq,
 	PACKAGE_ROOT: terms.PACKAGE_ROOT,
 };
 
@@ -510,16 +513,17 @@ function isClusterOperation(operation_name) {
 }
 
 /**
- * Checks the global hdb_schema for a schema and table
+ * Checks the global databases for a schema and table
  * @param schema_name
  * @param table_name
  * @returns string returns a thrown message if schema and or table does not exist
  */
 function checkGlobalSchemaTable(schema_name, table_name) {
-	if (!global.hdb_schema[schema_name]) {
+	let databases = require('../resources/databases').getDatabases();
+	if (!databases[schema_name]) {
 		return hdb_errors.HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schema_name);
 	}
-	if (!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]) {
+	if (!databases[schema_name][table_name]) {
 		return hdb_errors.HDB_ERROR_MSGS.TABLE_NOT_FOUND(schema_name, table_name);
 	}
 }
@@ -659,7 +663,8 @@ function checkSchemaTableExist(schema, table) {
  * @returns {string}
  */
 function checkSchemaExists(schema) {
-	if (!global.hdb_schema[schema]) {
+	const { getDatabases } = require('../resources/databases');
+	if (!getDatabases()[schema]) {
 		return hdb_errors.HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schema);
 	}
 }
@@ -671,7 +676,8 @@ function checkSchemaExists(schema) {
  * @returns {string}
  */
 function checkTableExists(schema, table) {
-	if (!global.hdb_schema[schema][table]) {
+	const { getDatabases } = require('../resources/databases');
+	if (!getDatabases()[schema][table]) {
 		return hdb_errors.HDB_ERROR_MSGS.TABLE_NOT_FOUND(schema, table);
 	}
 }
@@ -733,25 +739,6 @@ function backtickASTSchemaItems(statement) {
 }
 
 /**
- * Finds a process by its module name then kills it.
- * @param module
- * @returns {Promise<void>}
- */
-async function stopProcess(module) {
-	const curr_user = os.userInfo();
-	const module_ps = await ps_list.findPs(module);
-	module_ps.forEach((ps) => {
-		// Note we are doing loose equality (==) rather than strict
-		// equality here, as find-process returns the uid as a string.  No point in spending time converting it.
-		// if curr_user.uid is 0, the user has run run using sudo or logged in as root.
-		if (curr_user.uid == 0 || ps.uid == curr_user.uid) {
-			process.kill(ps.pid);
-			log.trace(`Following process was killed by stopProcess: ${ps.cmd}`);
-		}
-	});
-}
-
-/**
  * Create arguments for child_process fork
  * @param module_path
  * @returns {*[]}
@@ -773,7 +760,9 @@ function autoCastBoolean(boolean) {
  * Gets a tables hash attribute from the global schema
  */
 function getTableHashAttribute(schema, table) {
-	return global.hdb_schema?.[schema]?.[table]?.hash_attribute;
+	const { getDatabases } = require('../resources/databases');
+	let table_obj = getDatabases()[schema]?.[table];
+	return table_obj?.primaryKey || table_obj?.hash_attribute;
 }
 
 /**
@@ -782,7 +771,8 @@ function getTableHashAttribute(schema, table) {
  * @returns {boolean} - returns true if schema exists
  */
 function doesSchemaExist(schema) {
-	return global?.hdb_schema?.[schema] !== undefined;
+	const { getDatabases } = require('../resources/databases');
+	return getDatabases()[schema] !== undefined;
 }
 
 /**
@@ -792,7 +782,8 @@ function doesSchemaExist(schema) {
  * @returns {boolean} - returns true if table exists
  */
 function doesTableExist(schema, table) {
-	return global?.hdb_schema?.[schema]?.[table] !== undefined;
+	const { getDatabases } = require('../resources/databases');
+	return getDatabases()[schema]?.[table] !== undefined;
 }
 
 /**
@@ -833,4 +824,39 @@ function ms_to_time(ms) {
 function changeExtension(file, extension) {
 	const basename = path.basename(file, path.extname(file));
 	return path.join(path.dirname(file), basename + extension);
+}
+
+/**
+ * Checks ENV and CLI for ROOTPATH arg
+ */
+function getEnvCliRootPath() {
+	if (process.env[terms.CONFIG_PARAMS.ROOTPATH.toUpperCase()])
+		return process.env[terms.CONFIG_PARAMS.ROOTPATH.toUpperCase()];
+	const cli_args = minimist(process.argv);
+	if (cli_args[terms.CONFIG_PARAMS.ROOTPATH.toUpperCase()]) return cli_args[terms.CONFIG_PARAMS.ROOTPATH.toUpperCase()];
+}
+
+/**
+ * Will check to see if there is a rootpath cli/env var pointing to a harperdb-config.yaml file
+ * This is used for running HDB without a boot file
+ */
+let no_boot_file;
+function noBootFile() {
+	if (no_boot_file) return no_boot_file;
+	const cli_env_root = getEnvCliRootPath();
+	if (getEnvCliRootPath() && fs.pathExistsSync(path.join(cli_env_root, terms.HDB_CONFIG_FILE))) {
+		no_boot_file = true;
+	}
+}
+
+/**
+ * Will set default schema/database or set database to schema
+ * @param req
+ */
+function transformReq(req) {
+	if (!req.schema && !req.database) {
+		req.schema = terms.DEFAULT_DATABASE_NAME;
+		return;
+	}
+	if (req.database) req.schema = req.database;
 }

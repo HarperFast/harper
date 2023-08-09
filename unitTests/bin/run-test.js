@@ -12,7 +12,6 @@ const path = require('path');
 const test_util = require('../test_utils');
 const env_mangr = require('../../utility/environment/environmentManager');
 const hdb_terms = require('../../utility/hdbTerms');
-const install_user_permission = require('../../utility/install_user_permission');
 const pm2_utils = require('../../utility/processManagement/processManagement');
 const nats_config = require('../../server/nats/utility/natsConfig');
 const child_process = require('child_process');
@@ -44,7 +43,6 @@ describe('Test run module', () => {
 	let process_exit_stub;
 	let start_all_services_stub;
 	let start_service_stub;
-	let check_perms_stub;
 	let spawn_stub;
 	let get_prob_stub;
 	let start_clustering_stub;
@@ -70,7 +68,6 @@ describe('Test run module', () => {
 		get_prob_stub = sandbox.stub(env_mangr, 'get');
 		get_prob_stub.withArgs('rootPath').returns('unit-test');
 		spawn_stub = sandbox.stub(child_process, 'spawn').returns(fake_spawn);
-		check_perms_stub = sandbox.stub(install_user_permission, 'checkPermission');
 		start_all_services_stub = sandbox.stub(pm2_utils, 'startAllServices').resolves();
 		start_service_stub = sandbox.stub(pm2_utils, 'startService').resolves();
 		start_clustering_stub = sandbox.stub(pm2_utils, 'startClusteringProcesses').resolves();
@@ -96,7 +93,6 @@ describe('Test run module', () => {
 	describe('Test run function', () => {
 		const is_hdb_installed_stub = sandbox.stub();
 		const create_log_file_stub = sandbox.stub();
-		const check_trans_log_env_exists_stub = sandbox.stub();
 		const check_jwt_tokens_stub = sandbox.stub();
 		const install_stub = sandbox.stub();
 		let is_hdb_installed_rw;
@@ -110,7 +106,6 @@ describe('Test run module', () => {
 			run_rw.__set__('check_jwt_tokens', check_jwt_tokens_stub);
 			run_rw.__set__('hdb_logger.createLogFile', create_log_file_stub);
 			is_hdb_installed_rw = run_rw.__set__('isHdbInstalled', is_hdb_installed_stub);
-			check_audit_log_env_exists_rw = run_rw.__set__('checkAuditLogEnvironmentsExist', check_trans_log_env_exists_stub);
 			install_rw = run_rw.__set__('install', install_stub);
 			get_ver_update_info_stub = sandbox.stub(hdbInfoController, 'getVersionUpdateInfo');
 			upgrade_stub = sandbox.stub(upgrade, 'upgrade');
@@ -123,7 +118,6 @@ describe('Test run module', () => {
 
 		after(() => {
 			is_hdb_installed_rw();
-			check_audit_log_env_exists_rw();
 			install_rw();
 			const service_index = process.argv.indexOf('--service');
 			if (service_index > -1) process.argv.splice(service_index, 1);
@@ -137,8 +131,6 @@ describe('Test run module', () => {
 			is_hdb_installed_stub.resolves(true);
 			get_ver_update_info_stub.resolves(undefined);
 			await run();
-
-			expect(check_trans_log_env_exists_stub).to.have.been.called;
 		});
 
 		it('Test upgrade is called if upgrade version permits', async () => {
@@ -202,14 +194,6 @@ describe('Test run module', () => {
 			expect(log_error_stub.getCall(0).firstArg.name).to.equal(TEST_ERROR);
 			expect(process_exit_stub.getCall(0).firstArg).to.equal(1);
 			is_hdb_installed_stub.resolves(true);
-		});
-
-		it('Test error is thrown if check perms fails', async () => {
-			check_perms_stub.throws(new Error(TEST_ERROR));
-			await run();
-			expect(console_error_stub.getCall(0).firstArg).to.equal(TEST_ERROR);
-			expect(log_error_stub.getCall(0).firstArg.message).to.equal(TEST_ERROR);
-			expect(process_exit_stub.getCall(0).firstArg).to.equal(1);
 		});
 	});
 
@@ -391,8 +375,9 @@ describe('Test run module', () => {
 			expect(open_create_trans_env_stub.getCall(6).args).to.eql(['system', 'hdb_license']);
 			expect(open_create_trans_env_stub.getCall(7).args).to.eql(['system', 'hdb_info']);
 			expect(open_create_trans_env_stub.getCall(8).args).to.eql(['system', 'hdb_nodes']);
-			expect(open_create_trans_env_stub.getCall(9).args).to.eql(['system', 'hdb_temp']);
-			expect(open_create_trans_env_stub.getCall(10).args).to.eql(['northnwd', 'customers']);
+			expect(open_create_trans_env_stub.getCall(9).args).to.eql(['system', 'hdb_analytics']);
+			expect(open_create_trans_env_stub.getCall(10).args).to.eql(['system', 'hdb_temp']);
+			expect(open_create_trans_env_stub.getCall(11).args).to.eql(['northnwd', 'customers']);
 			expect(log_info_stub.getCall(0).firstArg).to.equal('Checking Transaction Audit Environments exist');
 			expect(log_info_stub.getCall(1).firstArg).to.equal('Finished checking Transaction Audit Environments exist');
 		});
@@ -457,7 +442,6 @@ describe('Test run module', () => {
 			const result = await isHdbInstalled();
 
 			expect(result).to.be.true;
-			expect(fs_stat_stub.getCall(0).args[0]).to.include(`.harperdb${path.sep}hdb_boot_properties.file`);
 			expect(fs_stat_stub.getCall(1).args[0]).to.include(`harperdb${path.sep}unitTests${path.sep}settings.test`);
 		});
 

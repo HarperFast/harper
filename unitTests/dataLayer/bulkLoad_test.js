@@ -79,11 +79,6 @@ const CSV_URL_MESSAGE = {
 	csv_url: '',
 };
 
-// Used to stub the post function used to send to cluster.
-function postCSVLoadFunction_stub(orig_bulk_msg, result, orig_req) {
-	return result;
-}
-
 async function stubHOC(func, args) {
 	const stub_obj = { job_operation_function: func };
 	return await callStubFunc(stub_obj, args);
@@ -556,6 +551,7 @@ describe('Test bulkLoad.js', () => {
 		let importFromS3_rw;
 
 		let test_S3_message_json;
+		let check_schema_table_exist_stub;
 
 		before(() => {
 			validator_stub = sandbox.stub(validator, 's3FileObject').callThrough();
@@ -581,6 +577,7 @@ describe('Test bulkLoad.js', () => {
 
 			logger_error_spy = sandbox.spy(logger, 'error');
 			importFromS3_rw = bulkLoad_rewire.__get__('importFromS3');
+			check_schema_table_exist_stub = sandbox.stub(hdb_utils, 'checkGlobalSchemaTable').returns(undefined);
 
 			global.hdb_schema = {
 				golden: {
@@ -626,22 +623,6 @@ describe('Test bulkLoad.js', () => {
 			expect(fileLoad_stub.args[0][0].file_type).to.equal('.json');
 			expect(typeof fileLoad_stub.args[0][0].file_path === 'string').to.be.true;
 			expect(fileLoad_stub.args[0][0].file_path.endsWith('.json')).to.be.true;
-		});
-
-		it('Should use handleHDBError to handle any validation issues', async () => {
-			delete test_S3_message_json.schema;
-			let result;
-			try {
-				await importFromS3_rw(test_S3_message_json);
-			} catch (err) {
-				result = err;
-			}
-
-			expect(result).to.be.instanceof(Error);
-			expect(result.http_resp_msg).to.equal("Schema can't be blank");
-			expect(result.http_resp_code).to.equal(HTTP_STATUS_CODES.BAD_REQUEST);
-			expect(handleValidationErr_spy).to.have.been.calledOnce;
-			expect(downloadFileFromS3_stub).to.have.not.been.called;
 		});
 
 		it('Should use buildTopLevelErrMsg to handle any error thrown', async () => {
@@ -1094,42 +1075,6 @@ describe('Test bulkLoad.js', () => {
 
 			expect(error.message).to.equal('Somethings wrong');
 			expect(error).to.be.instanceof(Error);
-		});
-	});
-
-	describe('test postCSVLoadFunction', async () => {
-		let sandbox = sinon.createSandbox();
-		let publish_to_stream_stub;
-		let expected_result = {
-			records: 2,
-			number_written: 3,
-		};
-
-		let postCSVLoadFunction = bulkLoad_rewire.__get__('postCSVLoadFunction');
-		beforeEach(() => {
-			publish_to_stream_stub = sandbox.stub(nats_utils, 'publishToStream').resolves();
-		});
-
-		afterEach(() => {
-			sandbox.restore();
-		});
-
-		it('nominal case, see sent to cluster', async () => {
-			env.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED, true);
-			let msg = test_utils.deepClone(json_message_fake);
-			msg.transact_to_cluster = true;
-			let msg_with_originator = test_utils.deepClone(json_message_fake);
-			msg_with_originator.__originator = { ORIGINATOR_NAME: 111 };
-			let result = await postCSVLoadFunction(['blah'], msg, expected_result, msg_with_originator);
-			assert.strictEqual(publish_to_stream_stub.calledOnce, true, 'expected publishToStream to be called');
-		});
-
-		it('nominal case, see not sent to cluster', async () => {
-			env.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED, false);
-			let msg_with_originator = test_utils.deepClone(json_message_fake);
-			msg_with_originator.__originator = { ORIGINATOR_NAME: 111 };
-			let result = await postCSVLoadFunction(['blah'], json_message_fake, expected_result, msg_with_originator);
-			assert.strictEqual(publish_to_stream_stub.notCalled, true, 'expected publishToStream to NOT be called');
 		});
 	});
 });

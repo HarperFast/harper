@@ -10,9 +10,10 @@ const hdb_terms = require('../hdbTerms');
 const assignCMDENVVariables = require('../assignCmdEnvVariables');
 const os = require('os');
 const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
+
 const native_console_methods = {};
 for (let key in console) {
-	native_console_methods[key] = console[key];
+	if (!native_console_methods[key]) native_console_methods[key] = console[key];
 }
 const LOG_LEVEL_HIERARCHY = {
 	notify: 7,
@@ -68,6 +69,7 @@ module.exports = {
 	closeLogFile,
 	getLogFilePath: () => log_file_path,
 	OUTPUTS,
+	AuthAuditLog,
 };
 
 /**
@@ -80,8 +82,21 @@ function initLogSettings(force_init = false) {
 		if (hdb_properties === undefined || force_init) {
 			closeLogFile();
 			const boot_props_file_path = getPropsFilePath();
-			hdb_properties = PropertiesReader(boot_props_file_path);
 			let properties = assignCMDENVVariables(['ROOTPATH']);
+			try {
+				hdb_properties = PropertiesReader(boot_props_file_path);
+			} catch (err) {
+				// This is here for situations where HDB isn't using a boot file
+				if (
+					!properties.ROOTPATH ||
+					(properties.ROOTPATH && !fs.pathExistsSync(path.join(properties.ROOTPATH, hdb_terms.HDB_CONFIG_FILE)))
+				)
+					throw err;
+			}
+
+			//if root path check for config file, if it exists - all good
+			// if root path and no config file just throw err
+
 			({
 				level: log_level,
 				config_log_path: log_root,
@@ -204,7 +219,7 @@ function createLogRecord(level, args) {
 	let log_msg = '';
 	let length = args.length;
 	const last_arg = length - 1;
-	let tags = [ level ];
+	let tags = [level];
 	let x = 0;
 	let service_name;
 	if (typeof args[0] === 'object') {
@@ -216,7 +231,7 @@ function createLogRecord(level, args) {
 			x++;
 		}
 	}
-	tags.unshift(service_name || (SERVICE_NAME + '/' + threadId));
+	tags.unshift(service_name || SERVICE_NAME + '/' + threadId);
 	for (; x < length; x++) {
 		let arg = args[x];
 		if (arg instanceof Error && arg.stack) {
@@ -254,7 +269,8 @@ function logStdErr(log) {
 
 function logToFile(log) {
 	openLogFile();
-	fs.appendFileSync(log_fd, log);
+	if (log_fd) fs.appendFileSync(log_fd, log);
+	else native_console_methods.log(log);
 }
 
 function closeLogFile() {
@@ -266,7 +282,12 @@ function closeLogFile() {
 
 function openLogFile() {
 	if (!log_fd) {
-		log_fd = fs.openSync(log_file_path, 'a');
+		try {
+			if (!log_file_path) debugger;
+			log_fd = fs.openSync(log_file_path, 'a');
+		} catch (error) {
+			native_console_methods.error(error);
+		}
 		setTimeout(() => {
 			closeLogFile();
 		}, CLOSE_LOG_FD_TIMEOUT).unref(); // periodically time it out so we can reset it in case the file has been moved (log rotation or by user) or deleted.
@@ -452,4 +473,13 @@ function getDefaultConfig() {
 		console.error('Error accessing default config file for logging');
 		console.error(err);
 	}
+}
+
+function AuthAuditLog(username, status, type, originating_ip, request_method, path) {
+	this.username = username;
+	this.status = status;
+	this.type = type;
+	this.originating_ip = originating_ip;
+	this.request_method = request_method;
+	this.path = path;
 }

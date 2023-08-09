@@ -13,6 +13,7 @@ const env_manager = require('../environment/environmentManager');
 const { cloneDeep } = require('lodash');
 const review_subscriptions = require('./reviewSubscriptions');
 const { NodeSubscription } = require('./NodeObject');
+const { broadcast } = require('../../server/threads/manageThreads');
 
 const UNSUCCESSFUL_MSG =
 	'Unable to update subscriptions due to schema and/or tables not existing on the local or remote node';
@@ -149,4 +150,7 @@ async function updateNodeTable(existing_record, updated_subs, system_info) {
 
 	updated_record.system_info = system_info;
 	await clustering_utils.upsertNodeRecord(updated_record);
+	broadcast({
+		type: 'nats_update',
+	});
 }

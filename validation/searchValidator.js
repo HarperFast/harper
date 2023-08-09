@@ -2,35 +2,31 @@ const _ = require('lodash'),
 	validator = require('./validationWrapper');
 const Joi = require('joi');
 const hdb_utils = require('../utility/common_utils');
-const { hdb_schema_table, checkValidTable} = require('./common_validators');
+const { hdb_schema_table, checkValidTable, hdb_table, hdb_database } = require('./common_validators');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
+const { getDatabases } = require('../resources/databases');
 const { HTTP_STATUS_CODES } = hdb_errors;
 
-const search_by_hashes_schema = Joi.object({
-	schema: hdb_schema_table,
-	table: hdb_schema_table,
-	hash_values: Joi.array().min(0).items(Joi.alternatives(Joi.string(), Joi.number())).required(),
-	get_attributes: Joi.array().min(1).items(hdb_schema_table).required(),
-});
-
 const search_by_value_schema = Joi.object({
-	schema: hdb_schema_table,
-	table: hdb_schema_table,
+	database: hdb_database,
+	schema: hdb_database,
+	table: hdb_table,
 	search_attribute: hdb_schema_table,
 	search_value: Joi.any().required(),
-	get_attributes: Joi.array().min(1).items(hdb_schema_table).required(),
+	get_attributes: Joi.array().min(1).items(hdb_schema_table).optional(),
 	desc: Joi.bool(),
 	limit: Joi.number().integer().min(1),
 	offset: Joi.number().integer().min(0),
 });
 
 const search_by_conditions_schema = Joi.object({
-	schema: hdb_schema_table,
-	table: hdb_schema_table,
+	database: hdb_database,
+	schema: hdb_database,
+	table: hdb_table,
 	operator: Joi.string().valid('and', 'or').default('and').lowercase(),
 	offset: Joi.number().integer().min(0),
 	limit: Joi.number().integer().min(1),
-	get_attributes: Joi.array().min(1).items(hdb_schema_table).required(),
+	get_attributes: Joi.array().min(1).items(hdb_schema_table).optional(),
 	conditions: Joi.array()
 		.min(1)
 		.items(
@@ -74,21 +70,16 @@ module.exports = function (search_object, type) {
 			break;
 		case 'hashes':
 			let errors;
-			addError(checkValidTable('schema', search_object.schema));
+			addError(checkValidTable('database', search_object.schema));
 			addError(checkValidTable('table', search_object.table));
-			if (!search_object.hash_values)
-				addError(`'hash_values' is required`);
-			else if (!Array.isArray(search_object.hash_values))
-				addError(`'hash_values' must be an array`);
-			else if (!search_object.hash_values.every(value => typeof value === 'string' || typeof value === 'number'))
+			if (!search_object.hash_values) addError(`'hash_values' is required`);
+			else if (!Array.isArray(search_object.hash_values)) addError(`'hash_values' must be an array`);
+			else if (!search_object.hash_values.every((value) => typeof value === 'string' || typeof value === 'number'))
 				addError(`'hash_values' must be strings or numbers`);
-			if (!search_object.get_attributes)
-				addError(`'get_attributes' is required`);
-			else if (!Array.isArray(search_object.get_attributes))
-				addError(`'get_attributes' must be an array`);
-			else if (search_object.get_attributes.length === 0)
-				addError(`'get_attributes' must contain at least 1 item`);
-			else if (!search_object.get_attributes.every(value => typeof value === 'string' || typeof value === 'number'))
+			if (!search_object.get_attributes) addError(`'get_attributes' is required`);
+			else if (!Array.isArray(search_object.get_attributes)) addError(`'get_attributes' must be an array`);
+			else if (search_object.get_attributes.length === 0) addError(`'get_attributes' must contain at least 1 item`);
+			else if (!search_object.get_attributes.every((value) => typeof value === 'string' || typeof value === 'number'))
 				addError(`'get_attributes' must be strings or numbers`);
 			function addError(error) {
 				if (errors) errors += '. ' + error;
@@ -112,11 +103,11 @@ module.exports = function (search_object, type) {
 			return handleHDBError(new Error(), check_schema_table, HTTP_STATUS_CODES.NOT_FOUND);
 		}
 
-		let table_schema = global.hdb_schema[search_object.schema][search_object.table];
+		let table_schema = getDatabases()[search_object.schema][search_object.table];
 		let all_table_attributes = table_schema.attributes;
 
 		//this clones the get_attributes array
-		let check_attributes = [...search_object.get_attributes];
+		let check_attributes = search_object.get_attributes ? [...search_object.get_attributes] : [];
 
 		if (type === 'value') {
 			check_attributes.push(search_object.search_attribute);

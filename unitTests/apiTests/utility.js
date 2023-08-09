@@ -7,19 +7,21 @@ module.exports = {
 	removeAllSchemas,
 };
 function getVariables() {
-	config.auth = 'Basic ' + btoa(config.username + ':' + config.password);
+	if (config.username)
+		config.authorization = 'Basic ' + btoa(config.username + ':' + config.password);
 	config.url = `${config.protocol}://${config.host}:${config.port}`;
 	return config;
 }
 
 async function callOperation(operation_object) {
-	let { url, auth } = getVariables();
+	let { url, authorization } = getVariables();
+	let headers = {
+		'Content-Type': 'application/json',
+	};
+	if (authorization) headers[authorization] = authorization;
 	return await fetch(url, {
 		method: 'POST',
-		headers: {
-			'Content-Type': 'application/json',
-			'Authorization': auth,
-		},
+		headers,
 		body: JSON.stringify(operation_object),
 	});
 }

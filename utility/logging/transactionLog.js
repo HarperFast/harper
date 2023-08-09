@@ -66,6 +66,7 @@ async function* readTransactionLog(req) {
 			user: tx?.entry?.__origin?.user,
 			timestamp,
 			records: tx?.entry?.records,
+			attributes: tx?.entry?.attributes,
 		};
 
 		if (tx?.entry?.operation === hdb_terms.OPERATIONS_ENUM.DELETE) formatted_tx.hash_values = tx?.entry?.hash_values;

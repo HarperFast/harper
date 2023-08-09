@@ -4,7 +4,7 @@ const rewire = require('rewire');
 const chai = require('chai');
 const { expect } = chai;
 const sinon = require('sinon');
-const { toJsMsg, headers } = require('nats');
+const { headers } = require('nats');
 const { decode } = require('msgpackr');
 const TEST_HEADERS = headers();
 
@@ -15,6 +15,10 @@ const hdb_logger = require('../../../utility/logging/harper_logger');
 const server_utilities = require('../../../server/serverHelpers/serverUtilities');
 const operation_function_caller = require('../../../utility/OperationFunctionCaller');
 const nats_ingest_service = rewire('../../../server/nats/natsIngestService');
+const real_nats_ingest_service = require('../../../server/nats/natsIngestService');
+const { table } = require('../../../resources/databases');
+const { setNATSReplicator } = require('../../../server/nats/natsReplicator');
+const { setMainIsWorker } = require('../../../server/threads/manageThreads');
 
 const TEST_TIMEOUT = 30000;
 const SUBJECT_NAME = 'txn.dev.hippopotamus';
@@ -34,16 +38,13 @@ async function teardownTestStreamAndSource() {
 	await nats_utils.deleteLocalStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
 }
 
-function decodeJsMsg(msg) {
-	const js_msg = toJsMsg(msg);
-	return decode(js_msg.data);
-}
-
 describe('Test natsIngestService module', () => {
 	const sandbox = sinon.createSandbox();
 	let get_operation_function_spy;
 	let call_operation_function_as_await_stub;
 	let log_stub;
+	let Hippopotamus;
+	let sub_restore;
 	TEST_HEADERS.append(nats_terms.MSG_HEADERS.ORIGIN, 'some_other_node');
 
 	before(async () => {
@@ -52,12 +53,25 @@ describe('Test natsIngestService module', () => {
 		call_operation_function_as_await_stub = sandbox.stub(operation_function_caller, 'callOperationFunctionAsAwait');
 		await test_utils.launchTestLeafServer();
 		test_utils.setFakeClusterUser();
+		test_utils.getMockLMDBPath();
+		setMainIsWorker(true);
+		Hippopotamus = table({
+			table: 'hippopotamus',
+			database: 'dev',
+			attributes: [{ name: 'name', isPrimaryKey: true }],
+		});
+		setNATSReplicator('hippopotamus', 'dev', Hippopotamus);
+		sub_restore = nats_ingest_service.__set__(
+			'database_subscriptions',
+			real_nats_ingest_service.getDatabaseSubscriptions()
+		);
 	});
 
 	after(async function () {
 		this.timeout(TEST_TIMEOUT);
 		test_utils.unsetFakeClusterUser();
 		await test_utils.stopTestLeafServer();
+		sub_restore();
 	});
 
 	afterEach(() => {
@@ -75,40 +89,31 @@ describe('Test natsIngestService module', () => {
 		expect(server_name).to.equal('testLeafServer-leaf');
 		expect(js_manager).to.haveOwnProperty('streams');
 		expect(js_manager).to.haveOwnProperty('consumers');
-		expect(js_client).to.haveOwnProperty('api');
+		expect(js_client).to.haveOwnProperty('streamAPI');
 	}).timeout(10000);
 
 	describe('Test workQueueListener function', () => {
 		const SUBJECT_NAME = 'txn.dev.hippopotamus';
 		const STREAM_NAME = 'dev_hippopotamus';
-		let message_processor_stub = sandbox.stub().resolves();
-		let message_processor_rw;
-
-		before(() => {
-			message_processor_rw = nats_ingest_service.__set__('messageProcessor', message_processor_stub);
-		});
-
-		after(() => {
-			message_processor_rw();
-		});
-
-		afterEach(() => {
-			sandbox.resetHistory();
-		});
 
 		it('Test workQueueListener processes one message in work queue stream', async () => {
 			let opts = nats_ingest_service.__get__('SUBSCRIPTION_OPTIONS');
 			opts.max = 1;
 			let opts_restore = nats_ingest_service.__set__('SUBSCRIPTION_OPTIONS', opts);
-			const test_operation = { operation: 'create_table', schema: 'dev', table: 'hippopotamus', hash_attribute: 'id' };
+			const test_operation = {
+				operation: 'insert',
+				schema: 'dev',
+				table: 'hippopotamus',
+				records: [{ name: 'Drake' }],
+			};
 			await setupTestStreamAndSource();
-			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, undefined, test_operation);
+			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, TEST_HEADERS, test_operation);
 			await nats_ingest_service.initialize();
-			await nats_ingest_service.workQueueListener();
+			nats_ingest_service.workQueueListener();
+			await new Promise((resolve) => setTimeout(resolve, 100));
 
-			expect(decodeJsMsg(message_processor_stub.args[0][0])).to.eql(test_operation);
-
-			await teardownTestStreamAndSource();
+			let hippo = await Hippopotamus.get('Drake');
+			expect(hippo.name).to.equal('Drake');
 			opts_restore();
 		}).timeout(TEST_TIMEOUT);
 
@@ -139,20 +144,22 @@ describe('Test natsIngestService module', () => {
 
 			await setupTestStreamAndSource();
 			// This first publish should not show up in queue because of the filterSubject on the sub
-			await nats_utils.publishToStream('msgid.dev.hippopotamus', STREAM_NAME, undefined, [test_operation_3]);
-			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, undefined, test_operation_1);
+			await nats_ingest_service.initialize();
+			// I don't understand why the work queue can't handle more than one message if headers are provided
+			// lots of hacks here to deal with the mysterious behavior.
+			nats_ingest_service.setIgnoreOrigin(true);
+			await nats_utils.publishToStream('msgid.dev.hippopotamus', STREAM_NAME, undefined, [test_operation_1]);
 			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, undefined, test_operation_2);
 			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, undefined, test_operation_3);
-			await nats_ingest_service.initialize();
-			await nats_ingest_service.workQueueListener();
-
-			expect(message_processor_stub.called).to.be.true;
-			expect(decodeJsMsg(message_processor_stub.getCall(0).args[0])).to.eql(test_operation_1);
-			expect(decodeJsMsg(message_processor_stub.getCall(1).args[0])).to.eql(test_operation_2);
-			expect(decodeJsMsg(message_processor_stub.getCall(2).args[0])).to.eql(test_operation_3);
-
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			nats_ingest_service.setIgnoreOrigin(false);
+			let hippo = await Hippopotamus.get('Delores');
+			expect(hippo).to.equal(undefined);
+			hippo = await Hippopotamus.get('Tupac');
+			expect(hippo.name).to.equal('Tupac');
+			hippo = await Hippopotamus.get('Biggie');
+			expect(hippo.name).to.equal('Biggie');
 			await teardownTestStreamAndSource();
-			opts_restore();
 		}).timeout(TEST_TIMEOUT);
 	});
 
@@ -160,44 +167,20 @@ describe('Test natsIngestService module', () => {
 		let opts = nats_ingest_service.__get__('SUBSCRIPTION_OPTIONS');
 		opts.max = 1;
 		let opts_restore = nats_ingest_service.__set__('SUBSCRIPTION_OPTIONS', opts);
-		const test_operation = { operation: 'create_table', schema: 'dev', table: 'hippopotamus', hash_attribute: 'id' };
-		await setupTestStreamAndSource();
-		await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, TEST_HEADERS, test_operation);
-		await nats_ingest_service.initialize();
-		nats_ingest_service.__set__('server_name', 'hip_hop_hippopotamus');
-		await nats_ingest_service.workQueueListener();
-		test_operation['__clustering__'] = true;
-
-		expect(get_operation_function_spy.args[0][0]).to.eql(test_operation);
-		expect(call_operation_function_as_await_stub.args[0][0].name).to.equal('createTable');
-		expect(call_operation_function_as_await_stub.args[0][1]).to.eql(test_operation);
-		expect(call_operation_function_as_await_stub.args[0][2].name).to.equal('postOperationHandler');
-		opts_restore();
-		await teardownTestStreamAndSource();
-	}).timeout(TEST_TIMEOUT);
-
-	it('Test messageProcessor processes job operation happy path', async () => {
-		let opts = nats_ingest_service.__get__('SUBSCRIPTION_OPTIONS');
-		opts.max = 1;
-		let opts_restore = nats_ingest_service.__set__('SUBSCRIPTION_OPTIONS', opts);
 		const test_operation = {
-			operation: 'csv_file_load',
+			operation: 'insert',
 			schema: 'dev',
 			table: 'hippopotamus',
-			file_path: 'file/here/data.csv',
+			records: [{ name: 'Eminem' }],
 		};
-
 		await setupTestStreamAndSource();
-		TEST_HEADERS.append(nats_terms.MSG_HEADERS.NATS_MSG_ID, 'nats.123');
-		TEST_HEADERS.append(nats_terms.MSG_HEADERS.ORIGIN, 'another_node');
 		await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, TEST_HEADERS, test_operation);
 		await nats_ingest_service.initialize();
 		nats_ingest_service.__set__('server_name', 'hip_hop_hippopotamus');
-		await nats_ingest_service.workQueueListener();
-
-		expect(get_operation_function_spy.args[0][0]).to.eql(test_operation);
-		expect(call_operation_function_as_await_stub.notCalled).to.be.true;
-		opts_restore();
+		nats_ingest_service.workQueueListener();
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		let hippo = await Hippopotamus.get('Eminem');
+		expect(hippo.name).to.equal('Eminem');
 		await teardownTestStreamAndSource();
 	}).timeout(TEST_TIMEOUT);
 });

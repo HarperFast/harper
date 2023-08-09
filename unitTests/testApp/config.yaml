@@ -1,0 +1,15 @@
+REST: true
+graphqlSchema:
+  files: '*.graphql'
+  # path: / # exported queries are on the root path by default
+jsResource:
+  files: resources.js
+  # path: / # exported resources are on the root path by default, like http://server/resource-name
+fastifyRoutes:
+  files: routes/*.js
+  path: . # relative to the app-name, like  http://server/app-name/route-name
+static:
+  root: web
+  files: web/**
+# login
+  #path: /

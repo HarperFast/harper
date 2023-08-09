@@ -6,7 +6,7 @@ const util = require('util');
 const terms = require('../hdbTerms');
 const env_mgr = require('../environment/environmentManager');
 env_mgr.initSync();
-const auth = require('../../security/auth');
+const auth = require('../../security/fastifyAuth');
 const search = require('../../dataLayer/search');
 const { Node, NodeSubscription } = require('./NodeObject');
 const SearchByHashObject = require('../../dataLayer/SearchByHashObject');
@@ -20,8 +20,8 @@ const version = require('../../bin/version');
 
 //Promisified functions
 const p_auth_authorize = util.promisify(auth.authorize);
-const p_search_by_hash = util.promisify(search.searchByHash);
-const p_search_by_value = util.promisify(search.searchByValue);
+const p_search_by_hash = search.searchByHash;
+const p_search_by_value = search.searchByValue;
 
 module.exports = {
 	authHeaderToUser,
