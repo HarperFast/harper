@@ -1,14 +1,31 @@
 on:
   workflow_dispatch:
-    tag_latest:
-      description: 'tag this build as latest in registry'
-      default: 'false'
-      required: false
-      type: choice
-      options:
-        - 'true'
-        - 'false'
-name: DockerHub Publish Public
+    inputs:
+      publish:
+        description: 'Which registry do we want to publish to, public, private, or tar'
+        default: 'private'
+        required: false
+        type: choice
+        options:
+          - 'public'
+          - 'private'
+          - 'tar'
+      dockerfile:
+        description: 'Which dockerfile to use for this build'
+        default: 'utility/Docker/Dockerfile'
+        required: false
+        type: string
+      docker_image:
+        description: 'name of the docker image for this build'
+        default: 'harperdb/harperdb'
+        required: false
+        type: string
+      tag_latest:
+        description: 'tag this build as latest in registry'
+        default: 'false'
+        required: false
+        type: string
+name: Dockerhub Publish Single Image
 jobs:
   build:
     uses: ./.github/workflows/build.yaml
@@ -39,14 +56,6 @@ jobs:
         path: "utility/Docker/licenses/"
         retention-days: 1
   build-container-harperdb:
-    strategy:
-      matrix:
-        docker_image: [ 'harperdb/harperdb', 'harperdb/harperdb-openshift']
-        include:
-          - dockerfile: 'utility/Docker/Dockerfile'
-            docker_image: 'harperdb/harperdb'
-          - dockerfile: 'utility/Docker/Dockerfile-openshift'
-            docker_image: 'harperdb/harperdb-openshift'
     needs:
       - build
       - getLicenses
@@ -71,12 +80,13 @@ jobs:
       with:
         name: "licenses"
         path: "utility/Docker/licenses/"
-    - name: "Publish ${{ matrix.docker_image }} to Dockerhub"
+    - name: "Publish ${{ inputs.docker_image }} as ${{ inputs.publish }}"
       env:
-        HARPERDB_VERSION: ${{ needs.build.outputs.harperdbVersion }}
-        NODE_VERSION: ${{ needs.build.outputs.nodeVersion }}
-        DOCKERFILE: "${{ matrix.dockerfile }}"
-        DOCKER_IMAGE: "${{ matrix.docker_image }}"
-        PUBLISH: "public"
+        HARPERDB_VERSION: "${{ needs.build.outputs.harperdbVersion }}"
+        NODE_VERSION: "${{ needs.build.outputs.nodeVersion }}"
+        PUBLISH: "${{ inputs.publish }}"
+        GITHUB_RUN_NUMBER: "${{ vars.GITHUB_RUN_NUMBER }}"
+        DOCKERFILE: "${{ inputs.dockerfile }}"
+        DOCKER_IMAGE: "${{ inputs.docker_image }}"
         TAG_LATEST: "${{ inputs.tag_latest }}"
       run: ./.github/scripts/docker-publish.sh

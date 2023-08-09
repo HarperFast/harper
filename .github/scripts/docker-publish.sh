@@ -30,6 +30,11 @@ if [[ "${PUBLISH}" == "tar" ]]; then
   docker_output="type=docker,dest=docker-harperdb_${docker_tag}.tar"
 fi
 
+registry_tags="--tag ${docker_image}:${docker_tag}"
+if [[ "${TAG_LATEST}" == "true" ]]; then
+  registry_tags="${registry_tags} --tag ${docker_image}:latest"
+fi
+
 docker buildx build \
   --file ${DOCKERFILE} \
   --build-arg NODE_VERSION=${NODE_VERSION} \
@@ -40,5 +45,4 @@ docker buildx build \
   --platform ${docker_platform} \
   --no-cache \
   --output ${docker_output} \
-  --tag ${docker_image}:latest \
-  --tag ${docker_image}:${docker_tag} .
+  ${registry_tags} .
