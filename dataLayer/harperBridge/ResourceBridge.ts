@@ -69,16 +69,28 @@ export class ResourceBridge extends LMDBBridge {
 	async createTable(table_system_data, table_create_obj) {
 		let attributes = table_create_obj.attributes;
 		const schema_defined = Boolean(attributes);
-		if (!attributes) {
-			// legacy default schema for tables created through operations API
+		const primary_key_name = table_create_obj.primary_key || table_create_obj.hash_attribute;
+		if (attributes) {
+			// allow for attributes to be specified, but do some massaging to make sure they are in the right form
+			for (const attribute of attributes) {
+				if (attribute.attribute && !attribute.name) {
+					attribute.name = attribute.attribute;
+					delete attribute.attribute;
+				}
+				if (attribute.is_primary_key) {
+					attribute.isPrimaryKey = true;
+					delete attribute.is_primary_key;
+				} else if (attribute.name === primary_key_name && primary_key_name) attribute.isPrimaryKey = true;
+			}
+		} else {
+			// legacy default schema for tables created through operations API without attributes
+			if (!primary_key_name)
+				throw new ClientError('A primary key must be specified with a `primary_key` property or with `attributes`');
 			attributes = [
-				{ name: table_create_obj.hash_attribute, isPrimaryKey: true },
+				{ name: primary_key_name, isPrimaryKey: true },
 				{ name: '__createdtime__', indexed: true },
 				{ name: '__updatedtime__', indexed: true },
 			];
-		}
-		for (const attribute of attributes) {
-			if (attribute.name === table_create_obj.hash_attribute) attribute.isPrimaryKey = true;
 		}
 		table({
 			database: table_create_obj.schema,

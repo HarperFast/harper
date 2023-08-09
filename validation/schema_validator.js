@@ -60,7 +60,6 @@ function create_table_object(object) {
 	constraints.schema.presence = { message: is_required_string };
 	constraints.table.presence = { message: is_required_string };
 	constraints.attribute.presence = false;
-	constraints.hash_attribute.presence = { message: is_required_string };
 	return validator.validateObject(object, constraints);
 }
 
