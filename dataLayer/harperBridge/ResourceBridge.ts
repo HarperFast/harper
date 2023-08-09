@@ -73,10 +73,6 @@ export class ResourceBridge extends LMDBBridge {
 		if (attributes) {
 			// allow for attributes to be specified, but do some massaging to make sure they are in the right form
 			for (const attribute of attributes) {
-				if (attribute.attribute && !attribute.name) {
-					attribute.name = attribute.attribute;
-					delete attribute.attribute;
-				}
 				if (attribute.is_primary_key) {
 					attribute.isPrimaryKey = true;
 					delete attribute.is_primary_key;
