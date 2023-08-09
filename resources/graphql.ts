@@ -41,6 +41,7 @@ export function start({ ensureTable }) {
 							}
 							if (type_def.schema) type_def.database = type_def.schema;
 							if (!type_def.table) type_def.table = type_name;
+							if (type_def.audit) type_def.audit = type_def.audit !== 'false';
 							type_def.attributes = type_def.properties;
 							tables.push(type_def);
 						}
