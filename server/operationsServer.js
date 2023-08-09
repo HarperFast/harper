@@ -172,6 +172,9 @@ function buildServer(is_https) {
 			return handlePostRequest(req);
 		}
 	);
+	app.get('/health', () => {
+		return 'HarperDB is running.';
+	});
 
 	harper_logger.debug(`HarperDB process starting up ${is_https ? 'HTTPS' : 'HTTP'} server listener.`);
 
