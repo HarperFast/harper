@@ -14,6 +14,7 @@ const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const { SchemaEventMsg } = require('../server/threads/itc');
 const nats_utils = require('../server/nats/utility/natsUtils');
 const { getDatabases } = require('../resources/databases');
+const { transformReq } = require('../utility/common_utils');
 
 module.exports = {
 	createSchema: createSchema,
@@ -29,16 +30,12 @@ module.exports = {
 /** EXPORTED FUNCTIONS **/
 
 async function createSchema(schema_create_object) {
-	try {
-		let schema_structure = await createSchemaStructure(schema_create_object);
-		signalling.signalSchemaChange(
-			new SchemaEventMsg(process.pid, schema_create_object.operation, schema_create_object.schema)
-		);
+	let schema_structure = await createSchemaStructure(schema_create_object);
+	signalling.signalSchemaChange(
+		new SchemaEventMsg(process.pid, schema_create_object.operation, schema_create_object.schema)
+	);
 
-		return schema_structure;
-	} catch (err) {
-		throw err;
-	}
+	return schema_structure;
 }
 
 async function createSchemaStructure(schema_create_object) {
@@ -54,6 +51,8 @@ async function createSchemaStructure(schema_create_object) {
 		);
 	}
 
+	transformReq(schema_create_object);
+
 	if (!(await schema_metadata_validator.checkSchemaExists(schema_create_object.schema))) {
 		throw handleHDBError(
 			new Error(),
@@ -67,10 +66,12 @@ async function createSchemaStructure(schema_create_object) {
 
 	await harperBridge.createSchema(schema_create_object);
 
-	return `schema '${schema_create_object.schema}' successfully created`;
+	return `database '${schema_create_object.schema}' successfully created`;
 }
 
 async function createTable(create_table_object) {
+	transformReq(create_table_object);
+
 	let create_table_structure = await createTableStructure(create_table_object);
 	signalling.signalSchemaChange(
 		new SchemaEventMsg(
@@ -98,18 +99,6 @@ async function createTableStructure(create_table_object) {
 	}
 
 	validation.validateTableResidence(create_table_object.residence);
-
-	/*let invalid_schema_msg = await schema_metadata_validator.checkSchemaExists(create_table_object.schema);
-	if (invalid_schema_msg) {
-		throw handleHDBError(
-			new Error(),
-			invalid_schema_msg,
-			HTTP_STATUS_CODES.NOT_FOUND,
-			hdb_terms.LOG_LEVELS.ERROR,
-			invalid_schema_msg,
-			true
-		);
-	}*/
 
 	let invalid_table_msg = await schema_metadata_validator.checkSchemaTableExists(
 		create_table_object.schema,
@@ -156,17 +145,15 @@ async function createTableStructure(create_table_object) {
 }
 
 async function dropSchema(drop_schema_object) {
+	let no_db_error =
+		!drop_schema_object.schema && !drop_schema_object.database ? new Error('database is required') : undefined;
 	let validation_error = validation.schema_object(drop_schema_object);
-	if (validation_error) {
-		throw handleHDBError(
-			validation_error,
-			validation_error.message,
-			HTTP_STATUS_CODES.BAD_REQUEST,
-			undefined,
-			undefined,
-			true
-		);
+	const val_error = no_db_error ?? validation_error;
+	if (val_error) {
+		throw handleHDBError(val_error, val_error.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
+
+	transformReq(drop_schema_object);
 
 	let invalid_schema_msg = await schema_metadata_validator.checkSchemaExists(drop_schema_object.schema);
 	if (invalid_schema_msg) {
@@ -198,7 +185,7 @@ async function dropSchema(drop_schema_object) {
 	// Streams are part of Nats and are used by clustering, they are 'message stores' that track transactions on a table.
 	await nats_utils.purgeSchemaTableStreams(drop_schema_object.schema, tables);
 
-	return `successfully deleted schema '${drop_schema_object.schema}'`;
+	return `successfully deleted '${drop_schema_object.schema}'`;
 }
 
 async function dropTable(drop_table_object) {
@@ -213,6 +200,8 @@ async function dropTable(drop_table_object) {
 			true
 		);
 	}
+
+	transformReq(drop_table_object);
 
 	let invalid_schema_table_msg = await schema_metadata_validator.checkSchemaTableExists(
 		drop_table_object.schema,
@@ -257,6 +246,8 @@ async function dropAttribute(drop_attribute_object) {
 			true
 		);
 	}
+
+	transformReq(drop_attribute_object);
 
 	let invalid_schema_table_msg = await schema_metadata_validator.checkSchemaTableExists(
 		drop_attribute_object.schema,
@@ -335,6 +326,8 @@ function dropAttributeFromGlobal(drop_attribute_object) {
 }
 
 async function createAttribute(create_attribute_object) {
+	transformReq(create_attribute_object);
+
 	const table_attr = getDatabases()[create_attribute_object.schema][create_attribute_object.table].attributes;
 	for (const { name } of table_attr) {
 		if (name === create_attribute_object.attribute) {

@@ -17,8 +17,13 @@ const is_required_string = ' is required';
 
 const actions = ['insert', 'update', 'upsert'];
 const constraints = {
+	database: {
+		presence: false,
+		format: common_validators.schema_format,
+		length: common_validators.schema_length,
+	},
 	schema: {
-		presence: true,
+		presence: false,
 		format: common_validators.schema_format,
 		length: common_validators.schema_length,
 	},

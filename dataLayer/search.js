@@ -10,14 +10,17 @@ module.exports = {
 };
 
 const harperBridge = require('./harperBridge/harperBridge');
-const util = require('util');
+const { transformReq } = require('../utility/common_utils');
 const SQLSearch = require('./SQLSearch');
 
 async function searchByConditions(search_object) {
+	transformReq(search_object);
 	return harperBridge.searchByConditions(search_object);
 }
 
-async function searchByHash(search_object, callback) {
+async function searchByHash(search_object) {
+	transformReq(search_object);
+	if (search_object.ids) search_object.hash_values = search_object.ids;
 	let array = [];
 	for await (let record of harperBridge.searchByHash(search_object)) {
 		if (record) array.push(record);
@@ -25,7 +28,8 @@ async function searchByHash(search_object, callback) {
 	return array;
 }
 
-async function searchByValue(search_object, callback) {
+async function searchByValue(search_object) {
+	transformReq(search_object);
 	if (search_object.hasOwnProperty('desc') === true) {
 		search_object.reverse = search_object.desc;
 	}
