@@ -181,9 +181,12 @@ export function parseQuery(query_string) {
 			case ')':
 				// finish call
 				switch (call) {
-					case 'range':
-						query.offset = +value;
-						query.limit = +value;
+					case 'limit':
+						if (value.indexOf(',') > -1) {
+							const [start, end] = value.split(',');
+							query.offset = +start;
+							query.limit = end - query.offset;
+						} else query.limit = +value;
 						break;
 					case 'select':
 						if (value[0] === '[') {
