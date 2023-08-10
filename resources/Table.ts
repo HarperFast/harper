@@ -538,6 +538,7 @@ export function makeTable(options) {
 				txnTime: txn_time,
 				invalidated: true,
 				lastVersion: this[VERSION_PROPERTY],
+				nodeName: this[CONTEXT]?.nodeName,
 				commit: (retry) => {
 					if (retry) return;
 					const source = TableResource.Source;
@@ -624,6 +625,7 @@ export function makeTable(options) {
 				store: primary_store,
 				txnTime: txn_time,
 				lastVersion: this[VERSION_PROPERTY],
+				nodeName: this[CONTEXT]?.nodeName,
 				validate: () => {
 					this.validate(record);
 				},
@@ -708,6 +710,7 @@ export function makeTable(options) {
 				store: primary_store,
 				txnTime: txn_time,
 				lastVersion: this[VERSION_PROPERTY],
+				nodeName: this[CONTEXT]?.nodeName,
 				commit: (retry) => {
 					let existing_record = this[RECORD_PROPERTY];
 					if (retry) {
@@ -1015,6 +1018,7 @@ export function makeTable(options) {
 				key: id,
 				txnTime: txn_time,
 				lastVersion: this[VERSION_PROPERTY],
+				nodeName: this[CONTEXT]?.nodeName,
 				validate: () => {
 					this.validate(message);
 				},
