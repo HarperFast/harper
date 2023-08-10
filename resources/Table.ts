@@ -164,6 +164,8 @@ export function makeTable(options) {
 				try {
 					const has_subscribe =
 						Resource.subscribe && (!Resource.subscribe.reliesOnPrototype || Resource.prototype.subscribe);
+					// if subscriptions come in out-of-order, we need to track deletes to ensure consistency
+					if (has_subscribe && track_deletes == undefined) track_deletes = true;
 					const subscription =
 						has_subscribe &&
 						(await Resource.subscribe?.({
@@ -177,8 +179,6 @@ export function makeTable(options) {
 							supportsTransactions: true,
 						}));
 					if (subscription) {
-						// if subscriptions come in out-of-order, we need to track deletes to ensure consistency
-						if (track_deletes === undefined) track_deletes = true;
 						// we listen for events by iterating through the async iterator provided by the subscription
 						for await (const event of subscription) {
 							try {
@@ -1343,7 +1343,7 @@ export function makeTable(options) {
 				}, 10000).unref();
 			});
 		}
-		let invalidated = existing_record?.__invalidated__;
+		const invalidated = existing_record?.__invalidated__;
 		//			const invalidated_record = { __invalidated__: true };
 		//			if (this[RECORD_PROPERTY]) Object.assign(invalidated_record, existing_record);
 		// TODO: We want to eventually use a "direct write" method to directly write to the locations
@@ -1373,8 +1373,7 @@ export function makeTable(options) {
 				// don't wait on this, we don't actually care if it fails, that just means there is even
 				// a newer entry going in the cache in the future
 				primary_store.put(id, updated_record, version, updating_version);
-			} else
-				primary_store.remove(id, updating_version);
+			} else primary_store.remove(id, updating_version);
 
 			if (has_changes && audit) {
 				audit_store.put(
@@ -1420,12 +1419,11 @@ export function makeTable(options) {
 			deletion_cleanup = setTimeout(() => {
 				deletion_cleanup = null;
 				if (primary_store.rootStore.status !== 'open') return;
-				for (let { key, value } of primary_store.getRange({ start: true })) {
+				for (const { key, value } of primary_store.getRange({ start: true })) {
 					if (value === null) {
 						const entry = primary_store.getEntry(key);
 						// make sure it is still deleted when we do the removal
-						if (entry?.value === null)
-							primary_store.remove(key, entry.version);
+						if (entry?.value === null) primary_store.remove(key, entry.version);
 						recordDeletion(-1);
 					}
 				}
@@ -1436,8 +1434,7 @@ export function makeTable(options) {
 		delete_callback_handle = audit_store?.addDeleteRemovalCallback(table_id, (id) => {
 			const entry = primary_store.getEntry(id);
 			// make sure it is still deleted when we do the removal
-			if (entry?.value === null)
-				primary_store.remove(id, entry.version);
+			if (entry?.value === null) primary_store.remove(id, entry.version);
 			recordDeletion(-1);
 		});
 	}
