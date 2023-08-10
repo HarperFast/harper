@@ -10,7 +10,7 @@ import { getIndexedValues } from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
 import { Query, ResourceInterface, Request, SubscriptionRequest, Id } from './ResourceInterface';
 import { workerData, threadId } from 'worker_threads';
-import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
+import { getNextMonotonicTime, auto } from '../utility/lmdb/commonUtility';
 import { CONTEXT, ID_PROPERTY, RECORD_PROPERTY, Resource, IS_COLLECTION } from './Resource';
 import { COMPLETION, DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction';
 import * as lmdb_terms from '../utility/lmdb/terms';
@@ -27,6 +27,7 @@ import { transaction } from './transaction';
 import { MAXIMUM_KEY } from 'ordered-binary';
 import { getWorkerIndex, onMessageByType } from '../server/threads/manageThreads';
 import { createAuditEntry, readAuditEntry } from './auditStore';
+import { autoCast } from '../utility/common_utils';
 
 let server_utilities;
 const RANGE_ESTIMATE = 100000000;
@@ -1481,8 +1482,10 @@ function coerceType(value, attribute) {
 		return value;
 	} else if (type === 'Int') return parseInt(value);
 	else if (type === 'Float') return parseFloat(value);
-	else if (!type || type === 'ID') {
+	else if (type === 'ID') {
 		return STRING_CAN_BE_INTEGER.test(value) ? parseInt(value) : value;
+	} else if (!type) {
+		return autoCast(value);
 	}
 	return value;
 }
