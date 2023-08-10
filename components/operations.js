@@ -6,7 +6,6 @@ const path = require('path');
 const tar = require('tar-fs');
 const uuidV4 = require('uuid').v4;
 const normalize = require('normalize-path');
-const { parentPort } = require('worker_threads');
 
 const validator = require('./operationsValidation');
 const log = require('../utility/logging/harper_logger');
@@ -458,6 +457,9 @@ async function getComponents() {
 	let comps = [];
 	for (const element in all_config) {
 		if (all_config[element]?.package) {
+			if (path.extname(all_config[element].package)) {
+				all_config[element].package = path.basename(all_config[element].package);
+			}
 			comps.push(Object.assign(all_config[element], { name: element }));
 		}
 	}
