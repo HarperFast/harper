@@ -1093,10 +1093,8 @@ export function makeTable(options) {
 							case 'ID':
 								if (
 									!(
-										typeof value === 'number' ||
 										typeof value === 'string' ||
-										(value?.length > 0 &&
-											value.every?.((value) => typeof value === 'number' || typeof value === 'string'))
+										(value?.length > 0 && value.every?.((value) => typeof value === 'string'))
 									)
 								)
 									(validation_errors || (validation_errors = [])).push(
@@ -1491,9 +1489,7 @@ function coerceType(value, attribute) {
 		return value;
 	} else if (type === 'Int') return parseInt(value);
 	else if (type === 'Float') return parseFloat(value);
-	else if (type === 'ID') {
-		return STRING_CAN_BE_INTEGER.test(value) ? parseInt(value) : value;
-	} else if (type === 'Date') {
+	else if (type === 'Date') {
 		return new Date(value);
 	} else if (!type) {
 		return autoCast(value);

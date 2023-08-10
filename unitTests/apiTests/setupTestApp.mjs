@@ -69,7 +69,7 @@ export async function setupTestApp() {
 			let birthday = new Date((1990 + i) + '-03-22T22:41:12.176Z');
 
 			let object = {
-				id: i,
+				id: i.toString(),
 				name: 'name' + i,
 				age: 20 + i,
 				birthday,

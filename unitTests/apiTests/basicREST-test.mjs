@@ -67,7 +67,7 @@ describe('test REST calls', () => {
 			accept: 'application/cbor'
 		};
 		let response = await axios.put('http://localhost:9926/VariedProps/33', encode({
-			id: 33,
+			id: '33',
 			name: 'new record',
 		}), {
 			responseType: 'arraybuffer',

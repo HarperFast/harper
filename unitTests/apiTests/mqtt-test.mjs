@@ -132,7 +132,7 @@ describe('test MQTT connections and commands', () => {
 				"schema": "data",
 				"table": "SimpleRecord",
 				"records": [{
-					id: 77,
+					id: '77',
 					name: 'test record from operation'
 				}]
 			}).then(response => {
