@@ -6,11 +6,10 @@
 
 import { CONFIG_PARAMS, OPERATIONS_ENUM } from '../utility/hdbTerms';
 import { Database, asBinary, SKIP } from 'lmdb';
-import { getIndexedValues } from '../utility/lmdb/commonUtility';
+import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
 import { Query, ResourceInterface, Request, SubscriptionRequest, Id } from './ResourceInterface';
-import { workerData, threadId } from 'worker_threads';
-import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
+import { threadId } from 'worker_threads';
 import { CONTEXT, ID_PROPERTY, RECORD_PROPERTY, Resource, IS_COLLECTION } from './Resource';
 import { COMPLETION, DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction';
 import * as lmdb_terms from '../utility/lmdb/terms';
@@ -27,6 +26,7 @@ import { transaction } from './transaction';
 import { MAXIMUM_KEY } from 'ordered-binary';
 import { getWorkerIndex, onMessageByType } from '../server/threads/manageThreads';
 import { createAuditEntry, readAuditEntry } from './auditStore';
+import { convertToMS } from '../utility/common_utils';
 
 let server_utilities;
 const RANGE_ESTIMATE = 100000000;
@@ -56,6 +56,7 @@ export interface Table {
 	Source: { new (): ResourceInterface };
 	Transaction: ReturnType<typeof makeTable>;
 }
+const DELETE_ENTRY_EXPIRATION = convertToMS(env_mngr.get(CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXAGE)) || 86400000;
 /**
  * This returns a Table class for the given table settings (determined from the metadata table)
  * Instances of the returned class are Resource instances, intended to provide a consistent view or transaction of the table
@@ -1428,7 +1429,7 @@ export function makeTable(options) {
 						recordDeletion(-1);
 					}
 				}
-			}, TableResource.getRecordCount() * 100); // heuristic for how often to do cleanup, we want to do it less frequently as tables get bigger because it will take longer
+			}, TableResource.getRecordCount() * 100 + DELETE_ENTRY_EXPIRATION).unref(); // heuristic for how often to do cleanup, we want to do it less frequently as tables get bigger because it will take longer
 		}
 	}
 	function addDeleteRemoval() {
