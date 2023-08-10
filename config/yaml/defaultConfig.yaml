@@ -100,8 +100,6 @@ http:
   threads: null
   sessionAffinity: null
 rootPath: null
-serverPlugins:
- # add server plugins here
 storage:
   writeAsync: false
   caching: true

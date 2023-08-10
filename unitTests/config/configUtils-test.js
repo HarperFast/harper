@@ -400,7 +400,6 @@ describe('Test configUtils module', () => {
 					},
 				},
 				rootPath: path.join(DIRNAME, '/yaml'),
-				serverPlugins: null,
 				storage: {
 					writeAsync: true,
 					overlappingSync: false,
@@ -489,7 +488,6 @@ describe('Test configUtils module', () => {
 				storage_noreadahead: false,
 				storage_prefetchwrites: false,
 				storage_path: 'users/unit_test/path',
-				serverplugins: null,
 				operationsapi_tls_certificate: TEST_CERT,
 				operationsapi_tls_certificateauthority: null,
 				operationsapi_tls_privatekey: TEST_PRIVATE_KEY,
@@ -578,7 +576,6 @@ describe('Test configUtils module', () => {
 			operationsapi_network_timeout: 120000,
 			operationsapi_nodeenv: 'production',
 			rootpath: null,
-			serverplugins: null,
 			storage_writeasync: false,
 			storage_caching: true,
 			storage_compression: false,
