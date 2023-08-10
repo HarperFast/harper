@@ -363,6 +363,7 @@ describe('Test configUtils module', () => {
 						logSuccessful: false,
 					},
 					auditLog: true,
+					auditRetention: '3d',
 					file: false,
 					level: 'notify',
 					rotation: {
@@ -457,6 +458,7 @@ describe('Test configUtils module', () => {
 				logging_auditauthevents_logfailed: false,
 				logging_auditauthevents_logsuccessful: false,
 				logging_auditlog: true,
+				logging_auditretention: '3d',
 				logging_file: false,
 				logging_level: 'notify',
 				logging_rotation_enabled: true,
@@ -552,6 +554,7 @@ describe('Test configUtils module', () => {
 			logging_auditauthevents_logfailed: false,
 			logging_auditauthevents_logsuccessful: false,
 			logging_auditlog: false,
+			logging_auditretention: '3d',
 			logging_file: true,
 			logging_level: 'error',
 			logging_root: null,

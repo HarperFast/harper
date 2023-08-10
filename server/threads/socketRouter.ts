@@ -3,6 +3,7 @@ import { createServer } from 'net';
 import * as hdb_terms from '../../utility/hdbTerms';
 import * as harper_logger from '../../utility/logging/harper_logger';
 import { unlinkSync, existsSync } from 'fs';
+const { isMainThread } = require('worker_threads');
 const workers = [];
 let queued_sockets = [];
 const handle_socket = [];
@@ -10,6 +11,13 @@ let direct_thread_server;
 let current_thread_count = 0;
 const workers_ready = [];
 export let debugMode;
+
+if (isMainThread) {
+	process.on('uncaughtException', (error) => {
+		if (error.code === 'ECONNRESET') return; // that's what network connections do
+		console.error('uncaughtException', error);
+	});
+}
 
 export async function startHTTPThreads(thread_count = 2, dynamic_threads?: boolean) {
 	if (dynamic_threads) {
