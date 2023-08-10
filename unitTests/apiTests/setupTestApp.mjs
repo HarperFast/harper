@@ -66,11 +66,14 @@ export async function setupTestApp() {
 		}
 
 		for (let i = 0; i < 15; i++) {
+			let birthday = new Date((1990 + i) + '-03-22T22:41:12.176Z');
+
 			let object = {
 				id: i,
 				name: 'name' + i,
 				age: 20 + i,
-				title: 'title' + i
+				birthday,
+				title: 'title' + i,
 			};
 			let response = await axios.put('http://localhost:9926/FourProp/' + object.id, encode(object), {
 				method: 'PUT',

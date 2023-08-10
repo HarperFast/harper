@@ -86,8 +86,8 @@ export function makeTable(options) {
 	let created_time_property, updated_time_property;
 	let commit_listeners: Set;
 	for (const attribute of attributes) {
-		if (attribute.assignCreatedTime || attribute.name === '__createdtime__') created_time_property = attribute.name;
-		if (attribute.assignUpdatedTime || attribute.name === '__updatedtime__') updated_time_property = attribute.name;
+		if (attribute.assignCreatedTime || attribute.name === '__createdtime__') created_time_property = attribute;
+		if (attribute.assignUpdatedTime || attribute.name === '__updatedtime__') updated_time_property = attribute;
 		if (attribute.isPrimaryKey) primary_key_attribute = attribute;
 	}
 	let delete_callback_handle;
@@ -646,11 +646,23 @@ export function makeTable(options) {
 								if (is_unchanged) return;
 							}
 							if (primary_key && record[primary_key] !== id) record[primary_key] = id;
-							if (TableResource.updatedTimeProperty) record[TableResource.updatedTimeProperty] = txn_time;
-							if (TableResource.createdTimeProperty) {
-								if (existing_record)
-									record[TableResource.createdTimeProperty] = existing_record[TableResource.createdTimeProperty];
-								else record[TableResource.createdTimeProperty] = txn_time;
+							if (updated_time_property) {
+								record[updated_time_property.name] =
+									updated_time_property.type === 'Date'
+										? new Date(txn_time)
+										: updated_time_property.type === 'String'
+										? new Date(txn_time).toISOString()
+										: txn_time;
+							}
+							if (created_time_property) {
+								if (existing_record) record[created_time_property.name] = existing_record[created_time_property.name];
+								else
+									record[created_time_property.name] =
+										created_time_property.type === 'Date'
+											? new Date(txn_time)
+											: created_time_property.type === 'String'
+											? new Date(txn_time).toISOString()
+											: txn_time;
 							}
 							record = deepFreeze(record); // this flatten and freeze the record
 							// send this to the source
@@ -763,7 +775,7 @@ export function makeTable(options) {
 				if (!attribute) {
 					if (attribute_name != null)
 						throw handleHDBError(new Error(), `${attribute_name} is not a defined attribute`, 404);
-				} else if (attribute.type === 'Int' || attribute.type === 'Float') {
+				} else if (attribute.type) {
 					// convert to a number if that is expected
 					if (condition[1] === undefined) condition.value = coerceType(condition.value, attribute);
 					else condition[1] = coerceType(condition[1], attribute);
@@ -1353,7 +1365,7 @@ export function makeTable(options) {
 				}, 10000).unref();
 			});
 		}
-		let invalidated = existing_record?.__invalidated__;
+		const invalidated = existing_record?.__invalidated__;
 		//			const invalidated_record = { __invalidated__: true };
 		//			if (this[RECORD_PROPERTY]) Object.assign(invalidated_record, existing_record);
 		// TODO: We want to eventually use a "direct write" method to directly write to the locations
@@ -1383,8 +1395,7 @@ export function makeTable(options) {
 				// don't wait on this, we don't actually care if it fails, that just means there is even
 				// a newer entry going in the cache in the future
 				primary_store.put(id, updated_record, version, updating_version);
-			} else
-				primary_store.remove(id, updating_version);
+			} else primary_store.remove(id, updating_version);
 
 			if (has_changes && audit) {
 				audit_store.put(
@@ -1430,12 +1441,11 @@ export function makeTable(options) {
 			deletion_cleanup = setTimeout(() => {
 				deletion_cleanup = null;
 				if (primary_store.rootStore.status !== 'open') return;
-				for (let { key, value } of primary_store.getRange({ start: true })) {
+				for (const { key, value } of primary_store.getRange({ start: true })) {
 					if (value === null) {
 						const entry = primary_store.getEntry(key);
 						// make sure it is still deleted when we do the removal
-						if (entry?.value === null)
-							primary_store.remove(key, entry.version);
+						if (entry?.value === null) primary_store.remove(key, entry.version);
 						recordDeletion(-1);
 					}
 				}
@@ -1446,8 +1456,7 @@ export function makeTable(options) {
 		delete_callback_handle = audit_store?.addDeleteRemovalCallback(table_id, (id) => {
 			const entry = primary_store.getEntry(id);
 			// make sure it is still deleted when we do the removal
-			if (entry?.value === null)
-				primary_store.remove(id, entry.version);
+			if (entry?.value === null) primary_store.remove(id, entry.version);
 			recordDeletion(-1);
 		});
 	}
@@ -1484,6 +1493,8 @@ function coerceType(value, attribute) {
 	else if (type === 'Float') return parseFloat(value);
 	else if (type === 'ID') {
 		return STRING_CAN_BE_INTEGER.test(value) ? parseInt(value) : value;
+	} else if (type === 'Date') {
+		return new Date(value);
 	} else if (!type) {
 		return autoCast(value);
 	}
