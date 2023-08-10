@@ -4,6 +4,8 @@ const fs = require('fs-extra');
 const path = require('path');
 const si = require('systeminformation');
 const log = require('../logging/harper_logger');
+const nats_utils = require('../../server/nats/utility/natsUtils');
+const nats_terms = require('../../server/nats/utility/natsTerms');
 const terms = require('../hdbTerms');
 const lmdb_get_table_size = require('../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbGetTableSize');
 const schema_describe = require('../../dataLayer/schemaDescribe');
@@ -272,6 +274,35 @@ async function getMetrics() {
 	return schema_stats;
 }
 
+async function getNatsStreamInfo() {
+	if (env.get(terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+		const { js, jsm } = await nats_utils.getNATSReferences();
+		const ingest_info = await jsm.streams.info(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
+		const ingest_consumer = await js.consumers.get(
+			nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+			nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name
+		);
+
+		const res = {
+			ingest: {
+				stream: { ...ingest_info.state },
+				consumer: {
+					num_ack_pending: ingest_consumer._info.num_ack_pending,
+					num_redelivered: ingest_consumer._info.num_redelivered,
+					num_waiting: ingest_consumer._info.num_waiting,
+					num_pending: ingest_consumer._info.num_pending,
+				},
+			},
+		};
+
+		if (ingest_info.config?.sources) {
+			res.ingest.stream.sources = ingest_info.config.sources;
+		}
+
+		return res;
+	}
+}
+
 /**
  *
  * @param {SystemInformationOperation} system_info_op
@@ -290,6 +321,7 @@ async function systemInformation(system_info_op) {
 		response.table_size = await getTableSize();
 		response.metrics = await getMetrics();
 		response.threads = await getThreadInfo();
+		response.replication = await getNatsStreamInfo();
 		return response;
 	}
 
@@ -326,6 +358,8 @@ async function systemInformation(system_info_op) {
 			case 'threads':
 				response.threads = await getThreadInfo();
 				break;
+			case 'replication':
+				response.replication = await getNatsStreamInfo();
 			default:
 				break;
 		}
