@@ -165,6 +165,7 @@ async function createConnection(port, username, password, wait_on_first_connect 
 		pass: password,
 		maxReconnectAttempts: -1,
 		waitOnFirstConnect: wait_on_first_connect,
+		timeout: 30000,
 		tls: {
 			keyFile: env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY),
 			certFile: env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_CERTIFICATE),

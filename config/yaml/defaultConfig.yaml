@@ -63,6 +63,7 @@ logging:
     logFailed: false
     logSuccessful: false
   auditLog: false
+  auditRetention: 3d
   file: true
   level: error
   root: null
