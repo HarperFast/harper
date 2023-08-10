@@ -723,6 +723,7 @@ export function makeTable(options) {
 						// a newer record exists locally
 						return;
 					updateIndices(this[ID_PROPERTY], existing_record);
+					harper_logger.trace(`Write delete entry`, audit || track_deletes, txn_time);
 					if (audit || track_deletes) {
 						primary_store.put(this[ID_PROPERTY], null, txn_time);
 						if (!audit) enqueueDeletionCleanup();
