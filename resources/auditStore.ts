@@ -21,7 +21,8 @@ const ENTRY_DATAVIEW = new DataView(ENTRY_HEADER.buffer, ENTRY_HEADER.byteOffset
 export const transactionKeyEncoder = {
 	writeKey(key, buffer, position) {
 		if (Array.isArray(key)) {
-			const data_view = buffer.dataView || (buffer.dataView = new DataView(buffer));
+			const data_view =
+				buffer.dataView || (buffer.dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength));
 			data_view.setFloat64(position, key[0]);
 			data_view.setUint32(position + 8, key[1]);
 			return writeKey(key[2], buffer, position + 12);
@@ -31,7 +32,8 @@ export const transactionKeyEncoder = {
 	},
 	readKey(buffer, start, end) {
 		if (buffer[start] > 40) {
-			const data_view = buffer.dataView || (buffer.dataView = new DataView(buffer));
+			const data_view =
+				buffer.dataView || (buffer.dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength));
 			return [data_view.getFloat64(start), data_view.getUint32(start + 8), readKey(buffer, start + 12, end)];
 		} else {
 			return readKey(buffer, start, end);
