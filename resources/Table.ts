@@ -56,6 +56,8 @@ export interface Table {
 	Source: { new (): ResourceInterface };
 	Transaction: ReturnType<typeof makeTable>;
 }
+// we default to the max age of the streams because this is the limit on the number of old transactions
+// we might need to reconcile deleted entries against.
 const DELETE_ENTRY_EXPIRATION = convertToMS(env_mngr.get(CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXAGE)) || 86400000;
 /**
  * This returns a Table class for the given table settings (determined from the metadata table)
