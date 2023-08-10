@@ -27,6 +27,8 @@ const { verifyBulkLoadAttributePerms } = require('../utility/operation_authoriza
 const ClusteringOriginObject = require('../utility/clustering/ClusteringOriginObject');
 const nats_utils = require('../server/nats/utility/natsUtils');
 const crypto_hash = require('../security/cryptoHash');
+const { databases } = require('../resources/databases');
+const { coerceType } = require('../resources/Table');
 
 const CSV_NO_RECORDS_MSG = 'No records parsed from csv file.';
 const TEMP_DOWNLOAD_DIR = `${env.get('HDB_ROOT')}/tmp`;
@@ -568,7 +570,12 @@ async function callPapaParse(json_message) {
 
 		stream = fs.createReadStream(json_message.file_path, { highWaterMark: HIGHWATERMARK });
 		stream.setEncoding('utf8');
-		await papa_parse.parsePromise(stream, insertChunk.bind(null, json_message, insert_results));
+		const map_of_transforms = createTransformMap(json_message.schema, json_message.table);
+		await papa_parse.parsePromise(
+			stream,
+			insertChunk.bind(null, json_message, insert_results),
+			typeFunction.bind(null, map_of_transforms)
+		);
 		stream.destroy();
 
 		return insert_results;
@@ -581,6 +588,21 @@ async function callPapaParse(json_message) {
 			HDB_ERROR_MSGS.PAPA_PARSE_ERR + err
 		);
 	}
+}
+
+function createTransformMap(schema, table) {
+	const attributes = databases[schema][table].attributes;
+	let map_of_transforms = new Map(); // I don't know if this should be a Map, but this just makes a map of attributes with type coercions that we want
+	for (let attribute of attributes) {
+		if (attribute.type) map_of_transforms.set(attribute.name, (value) => coerceType(value, attribute)); // here is the transform to use
+	}
+	return map_of_transforms;
+}
+
+function typeFunction(map_of_transforms, value, header) {
+	let transform = map_of_transforms.get(header);
+	if (transform) return transform(value);
+	return hdb_utils.autoCast(value);
 }
 
 async function insertJson(json_message) {

@@ -16,6 +16,8 @@ const _ = require('lodash');
 const minimist = require('minimist');
 const { hdb_errors } = require('./errors/hdbError');
 
+const ISO_DATE = /^((\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d\.\d+([+-][0-2]\d:[0-5]\d|Z))|(\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d([+-][0-2]\d:[0-5]\d|Z))|(\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d([+-][0-2]\d:[0-5]\d|Z)))$/;
+
 const async_set_timeout = require('util').promisify(setTimeout);
 const HDB_PROC_START_TIMEOUT = 100;
 const CHECK_PROCS_LOOP_LIMIT = 5;
@@ -229,6 +231,10 @@ function autoCast(data) {
 	if (autoCasterIsNumberCheck(data) === true) {
 		return Number(data);
 	}
+
+	if(ISO_DATE.test(data))
+		return new Date(data);
+
 	return data;
 }
 
@@ -571,14 +577,15 @@ function getClusterUser(users, cluster_user_name) {
  * through bind to this function.
  */
 function promisifyPapaParse() {
-	papa_parse.parsePromise = function (stream, chunk_func) {
+	papa_parse.parsePromise = function (stream, chunk_func, typing_function) {
 		return new Promise(function (resolve, reject) {
 			papa_parse.parse(stream, {
 				header: true,
 				transformHeader: removeBOM,
 				chunk: chunk_func.bind(null, reject),
 				skipEmptyLines: true,
-				dynamicTyping: true,
+				transform: typing_function,
+				dynamicTyping: false,
 				error: reject,
 				complete: resolve,
 			});

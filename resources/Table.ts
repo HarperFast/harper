@@ -7,6 +7,7 @@
 import { CONFIG_PARAMS, OPERATIONS_ENUM } from '../utility/hdbTerms';
 import { Database, asBinary, SKIP } from 'lmdb';
 import { getIndexedValues } from '../utility/lmdb/commonUtility';
+import { autoCast } from '../utility/common_utils';
 import { sortBy } from 'lodash';
 import { Query, ResourceInterface, Request, SubscriptionRequest, Id } from './ResourceInterface';
 import { workerData, threadId } from 'worker_threads';
@@ -1475,14 +1476,16 @@ const STRING_CAN_BE_INTEGER = /^\d+$/;
  * @param attribute
  * @returns
  */
-function coerceType(value, attribute) {
+export function coerceType(value, attribute) {
 	const type = attribute?.type;
 	if (value === null) {
 		return value;
 	} else if (type === 'Int') return parseInt(value);
 	else if (type === 'Float') return parseFloat(value);
-	else if (!type || type === 'ID') {
+	else if (type === 'ID') {
 		return STRING_CAN_BE_INTEGER.test(value) ? parseInt(value) : value;
+	} else if (!type) {
+		return autoCast(value);
 	}
 	return value;
 }
