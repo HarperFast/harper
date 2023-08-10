@@ -141,6 +141,8 @@ export function filterByType(search_condition) {
 				(record_value) => typeof record_value === 'string' && record_value.startsWith(value)
 			);
 		case lmdb_terms.SEARCH_TYPES.BETWEEN:
+			if (value[0] instanceof Date) value[0] = value[0].getTime();
+			if (value[1] instanceof Date) value[1] = value[1].getTime();
 			return attributeComparator(attribute, (record_value) => {
 				return compareKeys(record_value, value[0]) >= 0 && compareKeys(record_value, value[1]) <= 0;
 			});
