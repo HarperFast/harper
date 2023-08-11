@@ -783,9 +783,15 @@ export function makeTable(options) {
 						throw handleHDBError(new Error(), `${attribute_name} is not a defined attribute`, 404);
 				} else if (attribute.type) {
 					// convert to a number if that is expected
-					if (condition[1] === undefined) condition.value = coerceType(condition.value, attribute);
-					else condition[1] = coerceType(condition[1], attribute);
+					if (condition[1] === undefined) condition.value = coerceTypedValues(condition.value, attribute);
+					else condition[1] = coerceTypedValues(condition[1], attribute);
 				}
+			}
+			function coerceTypedValues(value, attribute) {
+				if (Array.isArray(value)) {
+					return value.map((value) => coerceType(value, attribute));
+				}
+				return coerceType(value, attribute);
 			}
 			// Sort the query by narrowest to broadest. Note that we want to do this both for intersection where
 			// it allows us to do minimal filtering, and for union where we can return the fastest results first
