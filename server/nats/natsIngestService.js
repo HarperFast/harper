@@ -149,7 +149,7 @@ async function messageProcessor(msg) {
 		if (!records) records = ids;
 		// TODO: Don't ack until this is completed
 		//let completion = new Promise((resolve) => (onCommit = resolve));
-		let { timestamp, user } = origin || {};
+		let { timestamp, user, node_name } = origin || {};
 		let subscription = database_subscriptions.get(database_name)?.get(table_name);
 		if (!subscription) {
 			throw new Error('Missing table for replication message', table_name);
@@ -166,6 +166,7 @@ async function messageProcessor(msg) {
 				table: table_name,
 				onCommit,
 				user,
+				nodeName: node_name,
 			});
 		else {
 			// If there are multiple records in the transaction, we need to send a transaction event so that the
@@ -196,6 +197,7 @@ async function messageProcessor(msg) {
 				timestamp,
 				onCommit,
 				user,
+				nodeName: node_name,
 			});
 		}
 

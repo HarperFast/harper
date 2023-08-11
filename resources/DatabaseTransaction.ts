@@ -1,9 +1,11 @@
 import { asBinary, Database, getLastVersion, RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { createAuditEntry } from './auditStore';
+import { databases } from './databases';
 
 export const COMPLETION = Symbol('completion');
 const MAX_OPTIMISTIC_SIZE = 100;
+let node_ids: Map;
 export class DatabaseTransaction implements Transaction {
 	writes = []; // the set of writes to commit if the conditions are met
 	username: string;
@@ -55,6 +57,13 @@ export class DatabaseTransaction implements Transaction {
 				if (this.auditStore && audit_information.operation) {
 					const key = [(txn_time = write.txnTime), write.store.tableId, write.key];
 					if (write.invalidated) key.invalidated = true; // this indicates that audit record is an invalidation, and will be replaced
+					/**
+					 TODO: We will need to pass in the node id, whether that is locally generated from node name, or there is a global registory
+					let node_id = audit_information.nodeName ? node_ids.get(audit_information.nodeName) : 0;
+					if (node_id == undefined) {
+						// store the node name to node id mapping
+					}
+					*/
 					this.auditStore.put(key, createAuditEntry(write.lastVersion, this.username, audit_information));
 				}
 			}
