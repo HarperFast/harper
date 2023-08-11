@@ -553,14 +553,14 @@ function addNatsMsgHeader(req, nats_msg_header) {
 	const node_name = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 
 	// If the msg header does not have a msg id property, add one.
-	if (!nats_msg_header.has(nats_terms.MSG_HEADERS.NATS_MSG_ID)) {
-		const table_hash_attr = hdb_utils.getTableHashAttribute(req.schema, req.table);
-		const operation = req.action ? req.action : req.operation;
-		const nats_msg_id = `${node_name}.${req.schema}.${
-			req.table
-		}.${operation}.${table_hash_attr}.${Date.now()}.${ulid()}`;
-		nats_msg_header.append(nats_terms.MSG_HEADERS.NATS_MSG_ID, nats_msg_id);
-	}
+	// if (!nats_msg_header.has(nats_terms.MSG_HEADERS.NATS_MSG_ID)) {
+	// 	const table_hash_attr = hdb_utils.getTableHashAttribute(req.schema, req.table);
+	// 	const operation = req.action ? req.action : req.operation;
+	// 	const nats_msg_id = `${node_name}.${req.schema}.${
+	// 		req.table
+	// 	}.${operation}.${table_hash_attr}.${Date.now()}.${ulid()}`;
+	// 	nats_msg_header.append(nats_terms.MSG_HEADERS.NATS_MSG_ID, nats_msg_id);
+	// }
 
 	if (!nats_msg_header.has(nats_terms.MSG_HEADERS.ORIGIN)) {
 		nats_msg_header.append(nats_terms.MSG_HEADERS.ORIGIN, node_name);
@@ -628,9 +628,9 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 			name: CONSUMER_NAMES.stream_name,
 			storage: StorageType.File,
 			retention: RetentionPolicy.Workqueue,
-			duplicate_window: STREAM_DUPE_WINDOW,
+			//duplicate_window: STREAM_DUPE_WINDOW,
 			// txn subject is here because filter_subject in the consumer wouldn't work without it. No message will be published to it.
-			subjects: [`${nats_terms.SUBJECT_PREFIXES.TXN}.${CONSUMER_NAMES.stream_name}.${server_name}`],
+			//subjects: [`${nats_terms.SUBJECT_PREFIXES.TXN}.${CONSUMER_NAMES.stream_name}.${server_name}`],
 		});
 	} catch (err) {
 		// If the stream already exists ignore error that is thrown.
