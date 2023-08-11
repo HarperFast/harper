@@ -8,14 +8,14 @@ describe('Update Schema', () => {
 		getMockLMDBPath();
 		await loadGQLSchema(`
 		type SchemaChanges @table {
-			id: ID @primaryKey
+			id: Int @primaryKey
 			state: String
 			city: String
 		}`);
 	});
 	it('Add some records and then index them', async function () {
 		await transaction((context) => {
-			test_data.map((record) => tables.SchemaChanges.create(record, context));
+			test_data.map((record) => tables.SchemaChanges.put(record, context));
 		});
 		let caught_error;
 		try {
@@ -26,7 +26,7 @@ describe('Update Schema', () => {
 		//assert(caught_error?.message.includes('not indexed'));
 		await loadGQLSchema(`
 		type SchemaChanges @table {
-			id: ID @primaryKey
+			id: Int @primaryKey
 			state: String @indexed
 			city: String @indexed
 		}`);
