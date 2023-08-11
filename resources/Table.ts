@@ -1481,8 +1481,7 @@ function noop() {
 export function setServerUtilities(utilities) {
 	server_utilities = utilities;
 }
-const STRING_CAN_BE_INTEGER = /^\d+$/;
-const ENDS_WITH_TIMEZONE = /[+-][0-9]{2}:[0-9]{2}\b/;
+const ENDS_WITH_TIMEZONE = /[+-][0-9]{2}:[0-9]{2}|[a-zA-Z]$/;
 /**
  * Coerce a string to the type defined by the attribute
  * @param value
@@ -1498,7 +1497,7 @@ export function coerceType(value, attribute) {
 	else if (type === 'Float') return parseFloat(value);
 	else if (type === 'Date') {
 		//if the value is not an integer (to handle epoch values) and does not end in a timezone we suffiz with 'Z' tom make sure the Date is GMT timezone
-		if (Number.isNaN(value) && !ENDS_WITH_TIMEZONE.test(value)) {
+		if (typeof value !== 'number' && !ENDS_WITH_TIMEZONE.test(value)) {
 			value += 'Z';
 		}
 		return new Date(value);
