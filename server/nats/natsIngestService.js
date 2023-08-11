@@ -78,13 +78,20 @@ let operation_index = 0;
  * Uses an internal Nats consumer to subscribe to the stream of messages from the work queue and process each one.
  * @returns {Promise<void>}
  */
+
+let msg_count = 0;
 async function workQueueListener() {
 	const consumer = await js_client.consumers.get(
 		nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
 		nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name
 	);
+
+	setInterval(() => {
+		harper_logger.notify('work queue msg count', msg_count);
+	}, 10000).unref();
 	const messages = await consumer.consume();
 	for await (const message of messages) {
+		msg_count++;
 		// ring style queue for awaiting operations for concurrency. await the entry from 100 operations ago:
 		await outstanding_operations[operation_index];
 		outstanding_operations[operation_index] = messageProcessor(message).catch((error) => {
