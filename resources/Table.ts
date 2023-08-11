@@ -6,7 +6,7 @@
 
 import { CONFIG_PARAMS, OPERATIONS_ENUM } from '../utility/hdbTerms';
 import { Database, asBinary, SKIP } from 'lmdb';
-import { getIndexedValues } from '../utility/lmdb/commonUtility';
+import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
 import { Query, ResourceInterface, Request, SubscriptionRequest, Id } from './ResourceInterface';
 import { workerData, threadId } from 'worker_threads';
@@ -27,7 +27,7 @@ import { transaction } from './transaction';
 import { MAXIMUM_KEY } from 'ordered-binary';
 import { getWorkerIndex, onMessageByType } from '../server/threads/manageThreads';
 import { createAuditEntry, readAuditEntry } from './auditStore';
-import { autoCast } from '../utility/common_utils';
+import { autoCast, convertToMS } from '../utility/common_utils';
 
 let server_utilities;
 const RANGE_ESTIMATE = 100000000;
@@ -57,6 +57,9 @@ export interface Table {
 	Source: { new (): ResourceInterface };
 	Transaction: ReturnType<typeof makeTable>;
 }
+// we default to the max age of the streams because this is the limit on the number of old transactions
+// we might need to reconcile deleted entries against.
+const DELETE_ENTRY_EXPIRATION = convertToMS(env_mngr.get(CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXAGE)) || 86400000;
 /**
  * This returns a Table class for the given table settings (determined from the metadata table)
  * Instances of the returned class are Resource instances, intended to provide a consistent view or transaction of the table
@@ -165,6 +168,8 @@ export function makeTable(options) {
 				try {
 					const has_subscribe =
 						Resource.subscribe && (!Resource.subscribe.reliesOnPrototype || Resource.prototype.subscribe);
+					// if subscriptions come in out-of-order, we need to track deletes to ensure consistency
+					if (has_subscribe && track_deletes == undefined) track_deletes = true;
 					const subscription =
 						has_subscribe &&
 						(await Resource.subscribe?.({
@@ -178,8 +183,6 @@ export function makeTable(options) {
 							supportsTransactions: true,
 						}));
 					if (subscription) {
-						// if subscriptions come in out-of-order, we need to track deletes to ensure consistency
-						if (track_deletes === undefined) track_deletes = true;
 						// we listen for events by iterating through the async iterator provided by the subscription
 						for await (const event of subscription) {
 							try {
@@ -527,21 +530,19 @@ export function makeTable(options) {
 
 		invalidate(options) {
 			const transaction = this._txnForRequest();
-			const txn_time = transaction.timestamp;
-			const partial_record = { __invalidated__: txn_time };
-			for (const name in indices) {
-				// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
-				partial_record[name] = this.getProperty(name);
-			}
 			transaction.addWrite({
 				key: this[ID_PROPERTY],
 				store: primary_store,
-				txnTime: txn_time,
 				invalidated: true,
 				lastVersion: this[VERSION_PROPERTY],
 				nodeName: this[CONTEXT]?.nodeName,
-				commit: (retry) => {
+				commit: (txn_time, retry) => {
 					if (retry) return;
+					const partial_record = { __invalidated__: txn_time };
+					for (const name in indices) {
+						// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
+						partial_record[name] = this.getProperty(name);
+					}
 					const source = TableResource.Source;
 					let completion;
 					const id = this[ID_PROPERTY];
@@ -615,7 +616,6 @@ export function makeTable(options) {
 			if (this[ID_PROPERTY] === undefined) {
 				throw new Error('Can not save record without an id');
 			}
-			const txn_time = transaction.timestamp;
 			let existing_record = this[RECORD_PROPERTY];
 			let is_unchanged;
 			let record_prepared;
@@ -624,13 +624,12 @@ export function makeTable(options) {
 			transaction.addWrite({
 				key: id,
 				store: primary_store,
-				txnTime: txn_time,
 				lastVersion: this[VERSION_PROPERTY],
 				nodeName: this[CONTEXT]?.nodeName,
 				validate: () => {
 					this.validate(record);
 				},
-				commit: (retry) => {
+				commit: (txn_time, retry) => {
 					let completion;
 					if (retry) {
 						if (is_unchanged) return;
@@ -714,17 +713,15 @@ export function makeTable(options) {
 		}
 		_writeDelete(options?: any) {
 			const transaction = this._txnForRequest();
-			const txn_time = transaction.timestamp;
 			let delete_prepared;
 			const id = this[ID_PROPERTY];
 			let completion;
 			transaction.addWrite({
 				key: id,
 				store: primary_store,
-				txnTime: txn_time,
 				lastVersion: this[VERSION_PROPERTY],
 				nodeName: this[CONTEXT]?.nodeName,
-				commit: (retry) => {
+				commit: (txn_time, retry) => {
 					let existing_record = this[RECORD_PROPERTY];
 					if (retry) {
 						const existing_entry = primary_store.getEntry(id);
@@ -745,6 +742,7 @@ export function makeTable(options) {
 						// a newer record exists locally
 						return;
 					updateIndices(this[ID_PROPERTY], existing_record);
+					harper_logger.trace(`Write delete entry`, audit || track_deletes, txn_time);
 					if (audit || track_deletes) {
 						primary_store.put(this[ID_PROPERTY], null, txn_time);
 						if (!audit) enqueueDeletionCleanup();
@@ -1022,20 +1020,18 @@ export function makeTable(options) {
 		}
 		_writePublish(message, options?: any) {
 			const transaction = this._txnForRequest();
-			const txn_time = transaction.timestamp;
 			const id = this[ID_PROPERTY] || null;
 			let completion;
 			let publish_prepared;
 			transaction.addWrite({
 				store: primary_store,
 				key: id,
-				txnTime: txn_time,
 				lastVersion: this[VERSION_PROPERTY],
 				nodeName: this[CONTEXT]?.nodeName,
 				validate: () => {
 					this.validate(message);
 				},
-				commit: (retries) => {
+				commit: (txn_time, retries) => {
 					this.validate(message);
 					// just need to update the version number of the record so it points to the latest audit record
 					// but have to update the version number of the record
@@ -1073,7 +1069,6 @@ export function makeTable(options) {
 				let transaction;
 				if ((transaction = transaction_set?.find((txn) => txn.lmdbDb?.path === primary_store.path))) return transaction;
 				transaction_set.push((transaction = new DatabaseTransaction(primary_store, context.user, audit_store)));
-				transaction.timestamp = transaction_set.timestamp;
 				return transaction;
 			} else {
 				return new ImmediateTransaction(primary_store, context.user, audit_store);
@@ -1451,7 +1446,7 @@ export function makeTable(options) {
 						recordDeletion(-1);
 					}
 				}
-			}, TableResource.getRecordCount() * 100); // heuristic for how often to do cleanup, we want to do it less frequently as tables get bigger because it will take longer
+			}, TableResource.getRecordCount() * 100 + DELETE_ENTRY_EXPIRATION).unref(); // heuristic for how often to do cleanup, we want to do it less frequently as tables get bigger because it will take longer
 		}
 	}
 	function addDeleteRemoval() {

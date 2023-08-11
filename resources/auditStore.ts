@@ -3,6 +3,7 @@ import { initSync, get as env_get } from '../utility/environment/environmentMana
 import { AUDIT_STORE_NAME } from '../utility/lmdb/terms';
 import { CONFIG_PARAMS } from '../utility/hdbTerms';
 import { getWorkerIndex } from '../server/threads/manageThreads';
+import { convertToMS } from '../utility/common_utils';
 /**
  * This module is responsible for the binary representation of audit records in an efficient form.
  * This includes a custom key encoder that specifically encodes arrays with the first element (timestamp) as a
@@ -47,7 +48,7 @@ const AUDIT_STORE_OPTIONS = {
 	keyEncoder: transactionKeyEncoder,
 };
 
-let audit_retention = convertToMS(env_get(CONFIG_PARAMS.LOGGING_AUDITRETENTION));
+let audit_retention = convertToMS(env_get(CONFIG_PARAMS.LOGGING_AUDIT_RETENTION)) || (86400 * 3);
 let pending_cleanup = null;
 export function openAuditStore(root_store) {
 	const audit_store = (root_store.auditStore = root_store.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS));
@@ -95,30 +96,6 @@ export function setAuditRetention(retention_time) {
 	audit_retention = retention_time;
 }
 
-function convertToMS(interval) {
-	let seconds = 86400 * 3; // three day default
-	if (typeof interval === 'number') seconds = interval;
-	if (typeof interval === 'string') {
-		seconds = parseFloat(interval);
-		switch (interval.slice(-1)) {
-			case 'M':
-				seconds *= 86400 * 30;
-				break;
-			case 'D':
-			case 'd':
-				seconds *= 86400;
-				break;
-			case 'H':
-			case 'h':
-				seconds *= 3600;
-				break;
-			case 'm':
-				seconds *= 60;
-				break;
-		}
-	}
-	return seconds * 1000;
-}
 
 const HAS_FULL_RECORD = 16;
 const HAS_PARTIAL_RECORD = 32; // will be used for CRDTs

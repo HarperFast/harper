@@ -82,6 +82,7 @@ module.exports = {
 	getEnvCliRootPath,
 	noBootFile,
 	transformReq,
+	convertToMS,
 	PACKAGE_ROOT: terms.PACKAGE_ROOT,
 };
 
@@ -859,4 +860,30 @@ function transformReq(req) {
 		return;
 	}
 	if (req.database) req.schema = req.database;
+}
+
+
+function convertToMS(interval) {
+	let seconds = 0;
+	if (typeof interval === 'number') seconds = interval;
+	if (typeof interval === 'string') {
+		seconds = parseFloat(interval);
+		switch (interval.slice(-1)) {
+			case 'M':
+				seconds *= 86400 * 30;
+				break;
+			case 'D':
+			case 'd':
+				seconds *= 86400;
+				break;
+			case 'H':
+			case 'h':
+				seconds *= 3600;
+				break;
+			case 'm':
+				seconds *= 60;
+				break;
+		}
+	}
+	return seconds * 1000;
 }

@@ -10,6 +10,7 @@ const env_mgr = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 require('../threads/manageThreads');
 const crypto_hash = require('../../security/cryptoHash');
+const { recordAction, recordActionBinary } = require('../../resources/analytics');
 const { publishToStream } = nats_utils;
 
 const SUBSCRIPTION_OPTIONS = {
@@ -116,11 +117,14 @@ if (!isMainThread) {
  */
 async function messageProcessor(msg) {
 	const entry = decode(msg.data);
+	recordAction(msg.data.length, 'bytes-received', msg.subject, entry.operation, 'ingest');
 
 	// If the msg origin header matches this node the msg can be ignored because it would have already been processed.
 	let nats_msg_header = msg.headers;
 	const origin = nats_msg_header.get(nats_terms.MSG_HEADERS.ORIGIN);
-	if (origin === env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME) && !ignore_origin) {
+	const echo_received = origin === env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME) && !ignore_origin;
+	recordActionBinary(echo_received, 'echo', msg.subject, entry.operation, 'ingest');
+	if (echo_received) {
 		msg.ack();
 		return;
 	}
