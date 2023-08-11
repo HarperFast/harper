@@ -1031,12 +1031,12 @@ async function updateLocalStreams() {
 			hdb_logger.trace(`Updating stream subject name from: ${stream_subject} to: ${new_subject_name}`);
 			stream_config.subjects[0] = new_subject_name;
 
-			// Work queue uses a consumer to consume messages in stream. This needs to be updated also.
-			await jsm.consumers.update(
-				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name,
-				{ deliver_subject: `${nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_subject}.${server_name}` }
-			);
+			// // Work queue uses a consumer to consume messages in stream. This needs to be updated also.
+			// await jsm.consumers.update(
+			// 	nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+			// 	nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name,
+			// 	//{ deliver_subject: `${nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_subject}.${server_name}` }
+			// );
 		} else {
 			const subject_array = stream_subject.split('.');
 			subject_array[subject_array.length - 1] = server_name;

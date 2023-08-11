@@ -253,7 +253,7 @@ async function restartClustering() {
 
 		// Check to see if the node name or purge config has been updated,
 		// if it has we need to change config on any local streams.
-		await nats_utils.updateLocalStreams();
+		//await nats_utils.updateLocalStreams();
 
 		// Close the connection to the nats-server so that if stop/restart called from CLI process will exit.
 		if (called_from_cli) await nats_utils.closeConnection();
