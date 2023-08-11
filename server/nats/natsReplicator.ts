@@ -19,7 +19,7 @@ export function start() {
 export function disableNATS(disabled = true) {
 	nats_disabled = disabled;
 }
-const MAX_INGEST_THREADS = 1;
+const MAX_INGEST_THREADS = 2;
 let immediateNATSTransaction, subscribed_to_nodes;
 /**
  * Replication functions by acting as a "source" for tables. With replicated tables, the local tables are considered
@@ -229,7 +229,7 @@ class NATSTransaction {
 	 * Once a transaction is completed, we put all the accumulated writes into a single NATS
 	 * message and publish it to the cluster
 	 */
-	commit() {
+	commit(timestamp) {
 		const node_name = env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 		const promises = [];
 		for (const [db, writes] of this.writes_by_db) {
@@ -248,7 +248,7 @@ class NATSTransaction {
 						table,
 						__origin: {
 							user: this.user?.username,
-							timestamp: this.transaction.timestamp,
+							timestamp,
 							node_name,
 						},
 					};

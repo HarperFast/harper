@@ -17,7 +17,7 @@ describe('test REST with property updates', () => {
 
 	it('post with sub-property manipulation', async () => {
 		let response = await axios.put('http://localhost:9926/namespace/SubObject/5', {
-			id: 5,
+			id: '5',
 			subObject: { name: 'a sub-object' },
 			subArray: [{ name: 'a sub-object of an array' }],
 		});
@@ -34,7 +34,7 @@ describe('test REST with property updates', () => {
 	});
 	it('get with sub-property access via dot', async () => {
 		let response = await axios.put('http://localhost:9926/namespace/SubObject/6', {
-			id: 5,
+			id: '5',
 			subObject: { name: 'a sub-object' },
 			subArray: [{ name: 'a sub-object of an array' }],
 		});
@@ -45,7 +45,7 @@ describe('test REST with property updates', () => {
 	});
 	it('get with sub-property access via ?select', async () => {
 		let response = await axios.put('http://localhost:9926/namespace/SubObject/6', {
-			id: 5,
+			id: '5',
 			any: { name: 'can be an object' },
 			subObject: { name: 'a sub-object' },
 			subArray: [{ name: 'a sub-object of an array' }],
@@ -66,7 +66,7 @@ describe('test REST with property updates', () => {
 		let response = await axios.put(
 			'http://localhost:9926/FourProp/555',
 			JSON.stringify({
-				id: 555,
+				id: '555',
 				name: 33,
 				age: 'not a number',
 			}),
@@ -92,7 +92,7 @@ describe('test REST with property updates', () => {
 		response = await axios.get('http://localhost:9926/namespace/SubObject/multi/part/id/3');
 		assert.equal(response.status, 200);
 		assert.equal(response.data.subObject.name, 'deeply nested');
-		assert.deepEqual(response.data.id, ['multi', 'part', 'id', 3]);
+		assert.deepEqual(response.data.id, ['multi', 'part', 'id', '3']);
 		assert.deepEqual(response.data.any, 'can be a string');
 		response = await axios.get('http://localhost:9926/namespace/SubObject/multi/');
 		assert.equal(response.status, 200);
@@ -139,7 +139,7 @@ describe('test REST with property updates', () => {
 		});
 		it('sql returns all attributes and sub-object of array', async function () {
 			let response = await axios.put('http://localhost:9926/namespace/SubObject/6', {
-				id: 6,
+				id: '6',
 				subObject: { name: 'another sub-object' },
 				subArray: [{ name: 'another sub-object of an array' }],
 			});
