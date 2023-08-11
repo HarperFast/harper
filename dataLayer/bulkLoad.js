@@ -71,10 +71,12 @@ async function csvDataLoad(json_message, nats_msg_header) {
 
 	let bulk_load_result = {};
 	try {
+		const map_of_transforms = createTransformMap(json_message.schema, json_message.table);
 		let parse_results = papa_parse.parse(json_message.data, {
 			header: true,
 			skipEmptyLines: true,
-			dynamicTyping: true,
+			transform: typeFunction.bind(null, map_of_transforms),
+			dynamicTyping: false,
 		});
 
 		const attrsPermsErrors = new PermissionResponseObject();
@@ -556,12 +558,17 @@ async function callPapaParse(json_message) {
 		records: 0,
 		number_written: 0,
 	};
-
+	const map_of_transforms = createTransformMap(json_message.schema, json_message.table);
 	try {
 		const attrsPermsErrors = new PermissionResponseObject();
 		let stream = fs.createReadStream(json_message.file_path, { highWaterMark: HIGHWATERMARK });
 		stream.setEncoding('utf8');
-		await papa_parse.parsePromise(stream, validateChunk.bind(null, json_message, attrsPermsErrors));
+
+		await papa_parse.parsePromise(
+			stream,
+			validateChunk.bind(null, json_message, attrsPermsErrors),
+			typeFunction.bind(null, map_of_transforms)
+		);
 
 		const attr_perms_errors = attrsPermsErrors.getPermsResponse();
 		if (attr_perms_errors) {
@@ -570,7 +577,7 @@ async function callPapaParse(json_message) {
 
 		stream = fs.createReadStream(json_message.file_path, { highWaterMark: HIGHWATERMARK });
 		stream.setEncoding('utf8');
-		const map_of_transforms = createTransformMap(json_message.schema, json_message.table);
+
 		await papa_parse.parsePromise(
 			stream,
 			insertChunk.bind(null, json_message, insert_results),
