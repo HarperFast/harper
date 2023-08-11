@@ -84,9 +84,9 @@ function getIndexedValues(value) {
 				if (element.length > MAX_SEARCH_KEY_LENGTH)
 					values.push(element.slice(0, MAX_SEARCH_KEY_LENGTH) + OVERFLOW_MARKER);
 				else values.push(element);
-			}
+			} else if (element instanceof Date) return values.push(element.getTime());
 		}
-	}
+	} else if (value instanceof Date) return [value.getTime()];
 	return values;
 }
 

@@ -9,7 +9,8 @@ import { Database, asBinary, SKIP } from 'lmdb';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
 import { Query, ResourceInterface, Request, SubscriptionRequest, Id } from './ResourceInterface';
-import { threadId } from 'worker_threads';
+import { workerData, threadId } from 'worker_threads';
+import { getNextMonotonicTime, auto } from '../utility/lmdb/commonUtility';
 import { CONTEXT, ID_PROPERTY, RECORD_PROPERTY, Resource, IS_COLLECTION } from './Resource';
 import { COMPLETION, DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction';
 import * as lmdb_terms from '../utility/lmdb/terms';
@@ -26,7 +27,7 @@ import { transaction } from './transaction';
 import { MAXIMUM_KEY } from 'ordered-binary';
 import { getWorkerIndex, onMessageByType } from '../server/threads/manageThreads';
 import { createAuditEntry, readAuditEntry } from './auditStore';
-import { convertToMS } from '../utility/common_utils';
+import { autoCast, convertToMS } from '../utility/common_utils';
 
 let server_utilities;
 const RANGE_ESTIMATE = 100000000;
@@ -88,8 +89,8 @@ export function makeTable(options) {
 	let created_time_property, updated_time_property;
 	let commit_listeners: Set;
 	for (const attribute of attributes) {
-		if (attribute.assignCreatedTime || attribute.name === '__createdtime__') created_time_property = attribute.name;
-		if (attribute.assignUpdatedTime || attribute.name === '__updatedtime__') updated_time_property = attribute.name;
+		if (attribute.assignCreatedTime || attribute.name === '__createdtime__') created_time_property = attribute;
+		if (attribute.assignUpdatedTime || attribute.name === '__updatedtime__') updated_time_property = attribute;
 		if (attribute.isPrimaryKey) primary_key_attribute = attribute;
 	}
 	let delete_callback_handle;
@@ -534,6 +535,7 @@ export function makeTable(options) {
 				store: primary_store,
 				invalidated: true,
 				lastVersion: this[VERSION_PROPERTY],
+				nodeName: this[CONTEXT]?.nodeName,
 				commit: (txn_time, retry) => {
 					if (retry) return;
 					const partial_record = { __invalidated__: txn_time };
@@ -623,6 +625,7 @@ export function makeTable(options) {
 				key: id,
 				store: primary_store,
 				lastVersion: this[VERSION_PROPERTY],
+				nodeName: this[CONTEXT]?.nodeName,
 				validate: () => {
 					this.validate(record);
 				},
@@ -644,11 +647,23 @@ export function makeTable(options) {
 								if (is_unchanged) return;
 							}
 							if (primary_key && record[primary_key] !== id) record[primary_key] = id;
-							if (TableResource.updatedTimeProperty) record[TableResource.updatedTimeProperty] = txn_time;
-							if (TableResource.createdTimeProperty) {
-								if (existing_record)
-									record[TableResource.createdTimeProperty] = existing_record[TableResource.createdTimeProperty];
-								else record[TableResource.createdTimeProperty] = txn_time;
+							if (updated_time_property) {
+								record[updated_time_property.name] =
+									updated_time_property.type === 'Date'
+										? new Date(txn_time)
+										: updated_time_property.type === 'String'
+										? new Date(txn_time).toISOString()
+										: txn_time;
+							}
+							if (created_time_property) {
+								if (existing_record) record[created_time_property.name] = existing_record[created_time_property.name];
+								else
+									record[created_time_property.name] =
+										created_time_property.type === 'Date'
+											? new Date(txn_time)
+											: created_time_property.type === 'String'
+											? new Date(txn_time).toISOString()
+											: txn_time;
 							}
 							record = deepFreeze(record); // this flatten and freeze the record
 							// send this to the source
@@ -705,7 +720,12 @@ export function makeTable(options) {
 				key: id,
 				store: primary_store,
 				lastVersion: this[VERSION_PROPERTY],
+<<<<<<< HEAD
 				commit: (txn_time, retry) => {
+=======
+				nodeName: this[CONTEXT]?.nodeName,
+				commit: (retry) => {
+>>>>>>> origin/main
 					let existing_record = this[RECORD_PROPERTY];
 					if (retry) {
 						const existing_entry = primary_store.getEntry(id);
@@ -760,7 +780,7 @@ export function makeTable(options) {
 				if (!attribute) {
 					if (attribute_name != null)
 						throw handleHDBError(new Error(), `${attribute_name} is not a defined attribute`, 404);
-				} else if (attribute.type === 'Int' || attribute.type === 'Float') {
+				} else if (attribute.type) {
 					// convert to a number if that is expected
 					if (condition[1] === undefined) condition.value = coerceType(condition.value, attribute);
 					else condition[1] = coerceType(condition[1], attribute);
@@ -1011,6 +1031,7 @@ export function makeTable(options) {
 				store: primary_store,
 				key: id,
 				lastVersion: this[VERSION_PROPERTY],
+				nodeName: this[CONTEXT]?.nodeName,
 				validate: () => {
 					this.validate(message);
 				},
@@ -1075,10 +1096,8 @@ export function makeTable(options) {
 							case 'ID':
 								if (
 									!(
-										typeof value === 'number' ||
 										typeof value === 'string' ||
-										(value?.length > 0 &&
-											value.every?.((value) => typeof value === 'number' || typeof value === 'string'))
+										(value?.length > 0 && value.every?.((value) => typeof value === 'string'))
 									)
 								)
 									(validation_errors || (validation_errors = [])).push(
@@ -1473,8 +1492,10 @@ function coerceType(value, attribute) {
 		return value;
 	} else if (type === 'Int') return parseInt(value);
 	else if (type === 'Float') return parseFloat(value);
-	else if (!type || type === 'ID') {
-		return STRING_CAN_BE_INTEGER.test(value) ? parseInt(value) : value;
+	else if (type === 'Date') {
+		return new Date(value);
+	} else if (!type) {
+		return autoCast(value);
 	}
 	return value;
 }
