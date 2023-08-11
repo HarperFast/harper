@@ -1,9 +1,11 @@
 import { asBinary, Database, getLastVersion, RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { createAuditEntry } from './auditStore';
+import { databases } from './databases';
 
 export const COMPLETION = Symbol('completion');
 const MAX_OPTIMISTIC_SIZE = 100;
+let node_ids: Map;
 export class DatabaseTransaction implements Transaction {
 	writes = []; // the set of writes to commit if the conditions are met
 	username: string;
@@ -37,25 +39,33 @@ export class DatabaseTransaction implements Transaction {
 	/**
 	 * Resolves with information on the timestamp and success of the commit
 	 */
-	commit(flush = true, retries = 0): Promise<CommitResolution> {
+	commit(txn_time = getNextMonotonicTime(), flush = true, retries = 0): Promise<CommitResolution> {
 		this.resetReadSnapshot();
 		let resolution,
 			completions = [];
 		let write_index = 0;
 		let last_store;
-		let txn_time;
 		const doWrite = (write) => {
-			const audit_information = write.commit(retries);
-			if (audit_information) {
-				if (audit_information[COMPLETION]) {
+			const audit_record = write.commit(txn_time, retries);
+			if (audit_record) {
+				if (audit_record[COMPLETION]) {
 					if (!completions) completions = [];
-					completions.push(audit_information[COMPLETION]);
+					completions.push(audit_record[COMPLETION]);
 				}
 				last_store = write.store;
-				if (this.auditStore && audit_information.operation) {
-					const key = [(txn_time = write.txnTime), write.store.tableId, write.key];
+				if (this.auditStore) {
+					audit_record.user = this.username;
+					audit_record.lastVersion = write.lastVersion;
+					const key = [txn_time, write.store.tableId, write.key];
 					if (write.invalidated) key.invalidated = true; // this indicates that audit record is an invalidation, and will be replaced
-					this.auditStore.put(key, createAuditEntry(write.lastVersion, this.username, audit_information));
+					/**
+					 TODO: We will need to pass in the node id, whether that is locally generated from node name, or there is a global registory
+					let node_id = audit_information.nodeName ? node_ids.get(audit_information.nodeName) : 0;
+					if (node_id == undefined) {
+						// store the node name to node id mapping
+					}
+					*/
+					this.auditStore.put(key, createAuditEntry(write.lastVersion, this.username, audit_record));
 				}
 			}
 		};
@@ -104,7 +114,7 @@ export class DatabaseTransaction implements Transaction {
 					};
 				});
 			} else {
-				return this.commit(flush, retries + 1); // try again
+				return this.commit(txn_time, flush, retries + 1); // try again
 			}
 		});
 	}
@@ -119,7 +129,7 @@ interface CommitResolution {
 	resolution: boolean;
 }
 export interface Transaction {
-	commit(flush?: boolean): Promise<CommitResolution>;
+	commit(timestamp: number, flush?: boolean): Promise<CommitResolution>;
 	abort?(flush?: boolean): any;
 }
 export class ImmediateTransaction extends DatabaseTransaction {
@@ -127,7 +137,7 @@ export class ImmediateTransaction extends DatabaseTransaction {
 	addWrite(operation) {
 		super.addWrite(operation);
 		// immediately commit the write
-		this.commit();
+		this.commit(this.timestamp);
 	}
 	get timestamp() {
 		return this._timestamp || (this._timestamp = getNextMonotonicTime());
