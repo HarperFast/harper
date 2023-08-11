@@ -23,13 +23,14 @@ describe('Update Schema', () => {
 		} catch (error) {
 			caught_error = error;
 		}
-		//assert(caught_error?.message.includes('not indexed'));
+		assert(caught_error?.message.includes('not indexed'));
 		await loadGQLSchema(`
 		type SchemaChanges @table {
 			id: Int @primaryKey
 			state: String @indexed
 			city: String @indexed
 		}`);
+		caught_error = null;
 		try {
 			tables.SchemaChanges.search({ conditions: [{ attribute: 'state', value: 'UT' }] });
 		} catch (error) {

@@ -137,9 +137,8 @@ export function getDatabases(): Databases {
 		const defined_tables = defined_databases.get(db_name);
 		if (defined_tables) {
 			const tables = databases[db_name];
-			if (db_name.includes('delete'))
-				harper_logger.trace(`defined tables ${Array.from(defined_tables.keys())}`);
-	
+			if (db_name.includes('delete')) harper_logger.trace(`defined tables ${Array.from(defined_tables.keys())}`);
+
 			for (const table_name in tables) {
 				if (!defined_tables.has(table_name)) {
 					harper_logger.trace(`delete table class ${table_name}`);
@@ -190,8 +189,7 @@ function readMetaDb(
 	is_legacy?: boolean
 ) {
 	const env_init = new OpenEnvironmentObject(path, false);
-	if (path.includes('delete'))
-		harper_logger.trace(`reading meta data from ${path}`);
+	if (path.includes('delete')) harper_logger.trace(`reading meta data from ${path}`);
 	try {
 		let root_store = database_envs.get(path);
 		if (root_store) root_store.needsDeletion = false;
@@ -220,8 +218,7 @@ function readMetaDb(
 		const tables_to_load = new Map();
 		for (const { key, value } of dbis_store.getRange({ start: false })) {
 			let [table_name, attribute_name] = key.toString().split('/');
-			if (path.includes('delete'))
-				harper_logger.trace(`read key ${key}`);
+			if (path.includes('delete')) harper_logger.trace(`read key ${key}`);
 			if (attribute_name === '') {
 				// primary key
 				attribute_name = value.name;
@@ -680,6 +677,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 		let interrupted;
 		let indexed = 0;
 		const attributes_length = attributes.length;
+		await new Promise((resolve) => setImmediate(resolve)); // yield event turn, indexing should consistently take at least one event turn
 		if (attributes_length > 0) {
 			let outstanding = 0;
 			// this means that a new attribute has been introduced that needs to be indexed
