@@ -6,16 +6,10 @@
 
 import { CONFIG_PARAMS, OPERATIONS_ENUM } from '../utility/hdbTerms';
 import { Database, asBinary, SKIP } from 'lmdb';
-<<<<<<< HEAD
-import { getIndexedValues } from '../utility/lmdb/commonUtility';
-import { autoCast } from '../utility/common_utils';
-=======
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility';
->>>>>>> main
 import { sortBy } from 'lodash';
 import { Query, ResourceInterface, Request, SubscriptionRequest, Id } from './ResourceInterface';
 import { workerData, threadId } from 'worker_threads';
-import { getNextMonotonicTime, auto } from '../utility/lmdb/commonUtility';
 import { CONTEXT, ID_PROPERTY, RECORD_PROPERTY, Resource, IS_COLLECTION } from './Resource';
 import { COMPLETION, DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction';
 import * as lmdb_terms from '../utility/lmdb/terms';
@@ -64,7 +58,8 @@ export interface Table {
 }
 // we default to the max age of the streams because this is the limit on the number of old transactions
 // we might need to reconcile deleted entries against.
-const DELETE_ENTRY_EXPIRATION = convertToMS(env_mngr.get(CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXAGE)) || 86400000;
+const DELETE_ENTRY_EXPIRATION =
+	convertToMS(env_mngr.get(CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXAGE)) || 86400000;
 /**
  * This returns a Table class for the given table settings (determined from the metadata table)
  * Instances of the returned class are Resource instances, intended to provide a consistent view or transaction of the table
