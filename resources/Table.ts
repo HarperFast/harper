@@ -1353,7 +1353,7 @@ export function makeTable(options) {
 				}, 10000).unref();
 			});
 		}
-		let invalidated = existing_record?.__invalidated__;
+		const invalidated = existing_record?.__invalidated__;
 		//			const invalidated_record = { __invalidated__: true };
 		//			if (this[RECORD_PROPERTY]) Object.assign(invalidated_record, existing_record);
 		// TODO: We want to eventually use a "direct write" method to directly write to the locations
@@ -1383,8 +1383,7 @@ export function makeTable(options) {
 				// don't wait on this, we don't actually care if it fails, that just means there is even
 				// a newer entry going in the cache in the future
 				primary_store.put(id, updated_record, version, updating_version);
-			} else
-				primary_store.remove(id, updating_version);
+			} else primary_store.remove(id, updating_version);
 
 			if (has_changes && audit) {
 				audit_store.put(
@@ -1430,12 +1429,11 @@ export function makeTable(options) {
 			deletion_cleanup = setTimeout(() => {
 				deletion_cleanup = null;
 				if (primary_store.rootStore.status !== 'open') return;
-				for (let { key, value } of primary_store.getRange({ start: true })) {
+				for (const { key, value } of primary_store.getRange({ start: true })) {
 					if (value === null) {
 						const entry = primary_store.getEntry(key);
 						// make sure it is still deleted when we do the removal
-						if (entry?.value === null)
-							primary_store.remove(key, entry.version);
+						if (entry?.value === null) primary_store.remove(key, entry.version);
 						recordDeletion(-1);
 					}
 				}
@@ -1446,8 +1444,7 @@ export function makeTable(options) {
 		delete_callback_handle = audit_store?.addDeleteRemovalCallback(table_id, (id) => {
 			const entry = primary_store.getEntry(id);
 			// make sure it is still deleted when we do the removal
-			if (entry?.value === null)
-				primary_store.remove(id, entry.version);
+			if (entry?.value === null) primary_store.remove(id, entry.version);
 			recordDeletion(-1);
 		});
 	}
@@ -1470,6 +1467,7 @@ export function setServerUtilities(utilities) {
 	server_utilities = utilities;
 }
 const STRING_CAN_BE_INTEGER = /^\d+$/;
+const ENDS_WITH_TIMEZONE = /[+-][0-9]{2}:[0-9]{2}\b/;
 /**
  * Coerce a string to the type defined by the attribute
  * @param value
@@ -1478,12 +1476,21 @@ const STRING_CAN_BE_INTEGER = /^\d+$/;
  */
 export function coerceType(value, attribute) {
 	const type = attribute?.type;
+	//if a type is String is it safe to execute a .toString() on the value and return? Does not work for Array/Object so we would need to detect if is either of those first
 	if (value === null) {
 		return value;
 	} else if (type === 'Int') return parseInt(value);
 	else if (type === 'Float') return parseFloat(value);
 	else if (type === 'ID') {
 		return STRING_CAN_BE_INTEGER.test(value) ? parseInt(value) : value;
+	} else if (type === 'Date') {
+		//if value is already a Date, move on
+		if (value instanceof Date) return value;
+		//if the value is not an integer (to handle epoch values) and does not end in a timezone we suffiz with 'Z' tom make sure the Date is GMT timezone
+		if (Number.isNaN(value) && !ENDS_WITH_TIMEZONE.test(value)) {
+			value += 'Z';
+		}
+		return new Date(value);
 	} else if (!type) {
 		return autoCast(value);
 	}
