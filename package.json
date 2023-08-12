@@ -57,7 +57,7 @@
     "coverage": "nyc --reporter=lcov npm test"
   },
   "dependencies": {
-    "@aws-sdk/lib-storage": "3.367.0",
+    "@aws-sdk/lib-storage": "3.374.0",
     "@aws-sdk/client-s3": "3.367.0",
     "@aws-sdk/abort-controller": "3.357.0",
     "@endo/static-module-record": "^0.7.16",
