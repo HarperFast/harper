@@ -19,7 +19,7 @@ export function start() {
 export function disableNATS(disabled = true) {
 	nats_disabled = disabled;
 }
-const MAX_INGEST_THREADS = 1;
+const MAX_INGEST_THREADS = 2;
 let immediateNATSTransaction, subscribed_to_nodes;
 /**
  * Replication functions by acting as a "source" for tables. With replicated tables, the local tables are considered

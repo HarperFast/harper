@@ -90,8 +90,8 @@ async function workQueueListener() {
 
 	setInterval(() => {
 		harper_logger.notify('work queue msg count', msg_count);
-		harper_logger.notify('echo msg count', msg_count);
-		harper_logger.notify('inside p msg count', msg_count);
+		harper_logger.notify('echo msg count', echo_msgs);
+		harper_logger.notify('inside p msg count', inside_msg_p);
 	}, 10000).unref();
 	const messages = await consumer.consume();
 	for await (const message of messages) {
@@ -129,7 +129,7 @@ if (!isMainThread) {
 async function messageProcessor(msg) {
 	const entry = decode(msg.data);
 	recordAction(msg.data.length, 'bytes-received', msg.subject, entry.operation, 'ingest');
-	inside_msg_p++
+	inside_msg_p++;
 
 	// If the msg origin header matches this node the msg can be ignored because it would have already been processed.
 	let nats_msg_header = msg.headers;

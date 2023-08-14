@@ -553,14 +553,14 @@ function addNatsMsgHeader(req, nats_msg_header) {
 	const node_name = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 
 	// If the msg header does not have a msg id property, add one.
-	// if (!nats_msg_header.has(nats_terms.MSG_HEADERS.NATS_MSG_ID)) {
-	// 	const table_hash_attr = hdb_utils.getTableHashAttribute(req.schema, req.table);
-	// 	const operation = req.action ? req.action : req.operation;
-	// 	const nats_msg_id = `${node_name}.${req.schema}.${
-	// 		req.table
-	// 	}.${operation}.${table_hash_attr}.${Date.now()}.${ulid()}`;
-	// 	nats_msg_header.append(nats_terms.MSG_HEADERS.NATS_MSG_ID, nats_msg_id);
-	// }
+	if (!nats_msg_header.has(nats_terms.MSG_HEADERS.NATS_MSG_ID)) {
+		const table_hash_attr = hdb_utils.getTableHashAttribute(req.schema, req.table);
+		const operation = req.action ? req.action : req.operation;
+		const nats_msg_id = `${node_name}.${req.schema}.${
+			req.table
+		}.${operation}.${table_hash_attr}.${Date.now()}.${ulid()}`;
+		nats_msg_header.append(nats_terms.MSG_HEADERS.NATS_MSG_ID, nats_msg_id);
+	}
 
 	if (!nats_msg_header.has(nats_terms.MSG_HEADERS.ORIGIN)) {
 		nats_msg_header.append(nats_terms.MSG_HEADERS.ORIGIN, node_name);
@@ -628,7 +628,7 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 			name: CONSUMER_NAMES.stream_name,
 			storage: StorageType.File,
 			retention: RetentionPolicy.Workqueue,
-			//duplicate_window: STREAM_DUPE_WINDOW,
+			duplicate_window: STREAM_DUPE_WINDOW,
 			// txn subject is here because filter_subject in the consumer wouldn't work without it. No message will be published to it.
 			//subjects: [`${nats_terms.SUBJECT_PREFIXES.TXN}.${CONSUMER_NAMES.stream_name}.${server_name}`],
 		});
@@ -1030,13 +1030,6 @@ async function updateLocalStreams() {
 			const new_subject_name = `${nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name}.${server_name}`;
 			hdb_logger.trace(`Updating stream subject name from: ${stream_subject} to: ${new_subject_name}`);
 			stream_config.subjects[0] = new_subject_name;
-
-			// // Work queue uses a consumer to consume messages in stream. This needs to be updated also.
-			// await jsm.consumers.update(
-			// 	nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-			// 	nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name,
-			// 	//{ deliver_subject: `${nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_subject}.${server_name}` }
-			// );
 		} else {
 			const subject_array = stream_subject.split('.');
 			subject_array[subject_array.length - 1] = server_name;
