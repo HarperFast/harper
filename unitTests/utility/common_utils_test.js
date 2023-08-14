@@ -295,6 +295,18 @@ describe('Test common_utils module', () => {
 			assert.equal(cu.autoCast('true'), true);
 		});
 
+		it(`Pass in uppercase string of true, expect boolean true`, function () {
+			assert.equal(cu.autoCast('TRUE'), true);
+		});
+
+		it(`Pass in uppercase string of false, expect boolean false`, function () {
+			assert.equal(cu.autoCast('FALSE'), false);
+		});
+
+		it(`Pass in uppercase string of null, expect value of null`, function () {
+			assert.equal(cu.autoCast('NULL'), null);
+		});
+
 		it(`Pass in string of 42, expect number 42`, function () {
 			assert.equal(cu.autoCast('42'), 42);
 		});

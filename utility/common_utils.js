@@ -29,9 +29,12 @@ const CHARACTER_LIMIT = 255;
 //Because undefined will not return in a JSON response, we convert undefined to null when autocasting
 const AUTOCAST_COMMON_STRINGS = {
 	true: true,
+	TRUE: true,
+	FALSE: false,
 	false: false,
 	undefined: null,
 	null: null,
+	NULL: null,
 	NaN: NaN,
 };
 module.exports = {
