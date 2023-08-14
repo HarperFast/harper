@@ -667,8 +667,13 @@ describe('Test common_utils module', () => {
 			parsed_result.push(results.data);
 		};
 
+		let type_function = (value) => {
+			//TODO test HDB attribute schema casting
+			return cu.autoCast(value);
+		};
+
 		it('Test csv stream is parsed as expected', async () => {
-			await papa_parse.parsePromise(string_stream, chunk_function);
+			await papa_parse.parsePromise(string_stream, chunk_function, type_function);
 			expect(parsed_result).to.eql(expected_result);
 		});
 	});
