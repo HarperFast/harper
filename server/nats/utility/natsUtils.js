@@ -26,6 +26,8 @@ const { isEmpty } = hdb_utils;
 const user = require('../../../security/user');
 
 const STREAM_DUPE_WINDOW = 120000000000;
+const INGEST_MAX_MSG_AGE = 48 * 3600000000000; // nanoseconds
+const INGEST_MAX_BYTES = 500000000;
 
 const {
 	connect,
@@ -627,11 +629,10 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 		await jsm.streams.add({
 			name: CONSUMER_NAMES.stream_name,
 			storage: StorageType.File,
-			retention: RetentionPolicy.Interest,
+			retention: RetentionPolicy.Limits,
 			duplicate_window: STREAM_DUPE_WINDOW,
-			//max_age: STREAM_DUPE_WINDOW,
-			// txn subject is here because filter_subject in the consumer wouldn't work without it. No message will be published to it.
-			//subjects: [`${nats_terms.SUBJECT_PREFIXES.TXN}.${CONSUMER_NAMES.stream_name}.${server_name}`],
+			max_age: INGEST_MAX_MSG_AGE,
+			max_bytes: INGEST_MAX_BYTES,
 		});
 	} catch (err) {
 		// If the stream already exists ignore error that is thrown.

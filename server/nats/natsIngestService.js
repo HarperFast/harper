@@ -78,24 +78,13 @@ let operation_index = 0;
  * Uses an internal Nats consumer to subscribe to the stream of messages from the work queue and process each one.
  * @returns {Promise<void>}
  */
-
-let msg_count = 0;
-let echo_msgs = 0;
-let inside_msg_p = 0;
 async function workQueueListener() {
 	const consumer = await js_client.consumers.get(
 		nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
 		nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name
 	);
-
-	setInterval(() => {
-		harper_logger.notify('work queue msg count', msg_count);
-		harper_logger.notify('echo msg count', echo_msgs);
-		harper_logger.notify('inside p msg count', inside_msg_p);
-	}, 10000).unref();
 	const messages = await consumer.consume();
 	for await (const message of messages) {
-		msg_count++;
 		// ring style queue for awaiting operations for concurrency. await the entry from 100 operations ago:
 		await outstanding_operations[operation_index];
 		outstanding_operations[operation_index] = messageProcessor(message).catch((error) => {
@@ -129,7 +118,6 @@ if (!isMainThread) {
 async function messageProcessor(msg) {
 	const entry = decode(msg.data);
 	recordAction(msg.data.length, 'bytes-received', msg.subject, entry.operation, 'ingest');
-	inside_msg_p++;
 
 	// If the msg origin header matches this node the msg can be ignored because it would have already been processed.
 	let nats_msg_header = msg.headers;
@@ -137,7 +125,6 @@ async function messageProcessor(msg) {
 	const echo_received = origin === env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME) && !ignore_origin;
 	recordActionBinary(echo_received, 'echo', msg.subject, entry.operation, 'ingest');
 	if (echo_received) {
-		echo_msgs++;
 		msg.ack();
 		return;
 	}
