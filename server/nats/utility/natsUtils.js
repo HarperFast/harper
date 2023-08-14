@@ -633,6 +633,7 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 			duplicate_window: STREAM_DUPE_WINDOW,
 			max_age: INGEST_MAX_MSG_AGE,
 			max_bytes: INGEST_MAX_BYTES,
+			subjects: [`${nats_terms.SUBJECT_PREFIXES.TXN}.${CONSUMER_NAMES.stream_name}.${server_name}`],
 		});
 	} catch (err) {
 		// If the stream already exists ignore error that is thrown.
