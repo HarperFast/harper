@@ -675,7 +675,7 @@ export function makeTable(options) {
 						if (record[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
 						this[RECORD_PROPERTY] = record;
 					}
-					harper_logger.trace(`Checking timestamp for put`, id, this[VERSION_PROPERTY], txn_time);
+					harper_logger.trace(`Checking timestamp for put`, id, this[VERSION_PROPERTY] > txn_time, this[VERSION_PROPERTY], txn_time);
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
@@ -1058,13 +1058,19 @@ export function makeTable(options) {
 						if (!audit) enqueueDeletionCleanup();
 						recordDeletion(1);
 					}
-					primary_store.put(id, existing_record ?? null, txn_time);
 					// messages are recorded in the audit entry (regardless of whether audit is turned on)
-					return {
+					const audit_entry = {
 						operation: 'message',
 						value: primary_store.encoder.encode(message),
 						[COMPLETION]: completion,
 					};
+					if (!transaction.hasWrittenTime && this[VERSION_PROPERTY] > txn_time) {
+						// if this message is older than current timestamp, we try to actually change the txn time
+						// so that it will appear afterwards to maintain ordering of messages
+						txn_time = audit_entry.newTxnTime = this[VERSION_PROPERTY] + 0.001;
+					}
+					primary_store.put(id, existing_record ?? null, txn_time);
+					return audit_entry;
 				},
 			});
 		}

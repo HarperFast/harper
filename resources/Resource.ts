@@ -401,7 +401,7 @@ function transactional(action, options) {
 			} else {
 				// single argument form, just data
 				data = id_or_query;
-				id = data[this.primaryKey] ?? null;
+				id = data[ID_PROPERTY] ?? data[this.primaryKey] ?? null;
 			}
 			// otherwise handle methods for get, delete, etc.
 			// first, check to see if it is two argument
