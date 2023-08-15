@@ -1,11 +1,12 @@
-import { info } from '../utility/logging/harper_logger';
+import { info, trace } from '../utility/logging/harper_logger';
 import { threadId } from 'worker_threads';
-import { onMessageByType, broadcast } from '../server/threads/manageThreads';
+import { onMessageByType, broadcast, broadcastWithAcknowledgement } from '../server/threads/manageThreads';
 import { writeKey } from 'ordered-binary';
 import { IterableEventQueue } from './IterableEventQueue';
 import { keyArrayToString } from './Resources';
 import { readAuditEntry } from './auditStore';
 const TRANSACTION_EVENT_TYPE = 'transaction';
+const TRANSACTION_AWAIT_EVENT_TYPE = 'transaction-await';
 const FAILED_CONDITION = 0x4000000;
 let all_subscriptions;
 const test = Buffer.alloc(4096);
@@ -25,15 +26,11 @@ export function addSubscription(table, key, listener?: (key) => any, start_time:
 	// (rather than having every subscriber filter every transaction)
 	if (!all_subscriptions) {
 		onMessageByType(TRANSACTION_EVENT_TYPE, (event) => {
-			/* TODO: We want to actually pass around the LMDB txn id and the first time stamp, as it should be much more
-					efficient, but first we
-			need lmdb-js support for get the txn_id cursor/range entries, so we can validate each entry matches
-			the txn_id
-			const txn_id = event.txnId;
-			const first_txn = event.firstTxn;
-				*/
 			const audit_ids = event.auditIds;
-			notifyFromTransactionData(event.path, audit_ids);
+			notifyFromTransactionData(event.path, audit_ids, event.txnId);
+		});
+		onMessageByType(TRANSACTION_AWAIT_EVENT_TYPE, (event) => {
+			trace('confirming to proceed with txn', event.txnId);
 		});
 		all_subscriptions = Object.create(null); // using it as a map that doesn't change much
 	}
@@ -95,17 +92,51 @@ class Subscription extends IterableEventQueue {
 	}
 }
 
-let last_time = Date.now();
-function notifyFromTransactionData(path, audit_ids, same_thread?) {
+let last_txn_id;
+const delayed_notifications = new Map();
+function notifyFromTransactionData(path, audit_ids, txn_id, same_thread?) {
 	if (!all_subscriptions) return;
 	const subscriptions = all_subscriptions[path];
 	if (!subscriptions) return; // if no subscriptions to this env path, don't need to read anything
-	/*
-	TODO: Once we have lmdb-js support for returning lmdb txn ids, we can iterate with checks on the txn id.
-	 for (const { key, value: audit_record } of subscriptions.auditStore.getRange({ start: [first_txn, MAXIMUM_KEY] })) {
-		if (txn_id !== getLastTxnId()) continue;
-
-	 */
+	if (last_txn_id && last_txn_id + 1 !== txn_id) {
+		// if the transactions are not in order, we broadcast to ensure that we have
+		// awaited any other threads that have out of order transactions to broadcast
+		// TODO: we don't actually have a listener for this, and generally this back
+		// and forth should usually be sufficient to get the other threads to broadcast
+		// their txns, but we should probably add a listener to verify
+		trace('Waiting to ensure latest txn id', last_txn_id, 'proceeds', txn_id, same_thread);
+		const completion = (async () => {
+			// wait for any other delayed notifications with earlier txn ids first
+			for (const [other_txn_id, completion] of delayed_notifications) {
+				if (other_txn_id < txn_id) {
+					trace('Txn', txn_id, 'waiting for txn', other_txn_id);
+					await completion;
+				}
+			}
+			if (last_txn_id + 1 !== txn_id) {
+				// if we still need to wait, send out request
+				await broadcastWithAcknowledgement({
+					type: TRANSACTION_AWAIT_EVENT_TYPE,
+					txnId: txn_id,
+				});
+				// wait for any other delayed notifications with earlier txn ids that were added
+				for (const [other_txn_id, completion] of delayed_notifications) {
+					if (other_txn_id < txn_id) {
+						trace('Txn', txn_id, 'waiting for txn', other_txn_id);
+						await completion;
+					}
+				}
+			}
+			delayed_notifications.delete(txn_id);
+			trace('Proceeding with txn id', txn_id);
+			last_txn_id = txn_id - 1; // give it the green light to proceed
+			notifyFromTransactionData(path, audit_ids, txn_id, same_thread);
+		})();
+		delayed_notifications.set(txn_id, completion);
+		return completion;
+	}
+	trace('Notifying with txn id', txn_id, same_thread);
+	last_txn_id = txn_id;
 	try {
 		subscriptions.auditStore.resetReadTxn();
 	} catch (error) {
@@ -114,7 +145,6 @@ function notifyFromTransactionData(path, audit_ids, same_thread?) {
 	}
 	audit_id_loop: for (const audit_id of audit_ids) {
 		const [txn_time, table_id, record_key] = audit_id;
-		last_time = txn_time;
 		const table_subscriptions = subscriptions[table_id];
 		if (!table_subscriptions) continue;
 		writeKey(audit_id, test, 0);
@@ -138,6 +168,13 @@ function notifyFromTransactionData(path, audit_ids, same_thread?) {
 							const audit_record_encoded = subscriptions.auditStore.get(audit_id);
 							if (!audit_record_encoded) continue audit_id_loop; // if the audit record is pruned before we get to it, this can be undefined/null
 							audit_record = readAuditEntry(audit_record_encoded, table_subscriptions.store);
+							if (
+								audit_record.operation !== 'message' &&
+								// check to see if the latest is out-of-date, and if it is we skip it, except for messages were we try not to drop any
+								table_subscriptions.store.getEntry(audit_id[2])?.version !== audit_id[0]
+							)
+								continue audit_id_loop;
+
 							if (is_invalidation && audit_record.operation !== 'invalidate') continue audit_id_loop; // this indicates that the invalidation entry has already been replaced, so just wait for the second update
 						}
 						subscription.listener(record_key, audit_record, txn_time);
@@ -188,17 +225,18 @@ export function listenToCommits(primary_store, audit_store) {
 					}
 				} while (next != last && (next = next.next));
 			}
+			if (audit_ids.length === 0) return;
 			// broadcast all the transaction buffers so they can be (sequentially) read and subscriptions messages
 			// delivered on all other threads
 			broadcast({
 				type: TRANSACTION_EVENT_TYPE,
 				path,
 				auditIds: audit_ids,
-				//txnId,
+				txnId,
 				start,
 			});
 			// and notify on our own thread too
-			notifyFromTransactionData(path, audit_ids, true);
+			notifyFromTransactionData(path, audit_ids, txnId, true);
 		});
 	}
 }

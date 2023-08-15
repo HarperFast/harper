@@ -67,7 +67,7 @@ describe('test REST calls', () => {
 			accept: 'application/cbor'
 		};
 		let response = await axios.put('http://localhost:9926/VariedProps/33', encode({
-			id: 33,
+			id: '33',
 			name: 'new record',
 		}), {
 			responseType: 'arraybuffer',
@@ -96,7 +96,7 @@ describe('test REST calls', () => {
 			let response = await axios('http://localhost:9926/FourProp');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.recordCount, 10);
-			assert.equal(response.data.attributes.length, 4);
+			assert.equal(response.data.attributes.length, 5);
 			assert.equal(response.data.name, 'FourProp');
 		});
 
@@ -216,5 +216,13 @@ describe('test REST calls', () => {
 			assert.equal(response.data[1][0], 21);
 			assert.equal(response.data[1][1], 1);
 		});
+		it('query by date', async () => {
+			let response = await axios('http://localhost:9926/FourProp?birthday=gt=1993-01-22&birthday=lt=1994-11-22');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.length, 2);
+			assert.equal(response.data[0].birthday.slice(0,4), '1993');
+			assert.equal(response.data[1].birthday.slice(0,4), '1994');
+		});
+
 	});
 });

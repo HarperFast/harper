@@ -94,6 +94,7 @@ export class ResourceBridge extends LMDBBridge {
 			table: table_create_obj.table,
 			attributes,
 			schemaDefined: schema_defined,
+			expiration: table_create_obj.expiration,
 		});
 	}
 	async createAttribute(create_attribute_obj) {
@@ -262,14 +263,14 @@ export class ResourceBridge extends LMDBBridge {
 		const Table = getDatabases()[delete_obj.schema][delete_obj.table];
 		if (!Table.createdTimeProperty) {
 			throw new ClientError(
-				`Table must have a '__createdtime__' attribute or @creationDate timestamp defined to perform this operation`
+				`Table must have a '__createdtime__' attribute or @createdTime timestamp defined to perform this operation`
 			);
 		}
 
 		const records_to_delete = await Table.search({
 			conditions: [
 				{
-					attribute: Table.createdTimeProperty,
+					attribute: Table.createdTimeProperty.name,
 					value: Date.parse(delete_obj.date),
 					comparator: VALUE_SEARCH_COMPARATORS.LESS,
 				},
