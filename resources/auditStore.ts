@@ -15,7 +15,7 @@ import { convertToMS } from '../utility/common_utils';
  * 2 or 4 bytes: node-id
  * 8 bytes (optional): last version timestamp (allows for backwards traversal through history of a record)
  * username
-* remaining bytes (optional, not included for deletes/invalidation): the record itself, using the same encoding as its primary store
+ * remaining bytes (optional, not included for deletes/invalidation): the record itself, using the same encoding as its primary store
  */
 initSync();
 
@@ -48,7 +48,7 @@ const AUDIT_STORE_OPTIONS = {
 	keyEncoder: transactionKeyEncoder,
 };
 
-let audit_retention = convertToMS(env_get(CONFIG_PARAMS.LOGGING_AUDIT_RETENTION)) || (86400 * 3);
+let audit_retention = convertToMS(env_get(CONFIG_PARAMS.LOGGING_AUDITRETENTION)) || 86400 * 3;
 let pending_cleanup = null;
 export function openAuditStore(root_store) {
 	const audit_store = (root_store.auditStore = root_store.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS));
@@ -95,7 +95,6 @@ export function setAuditRetention(retention_time) {
 	pending_cleanup = null;
 	audit_retention = retention_time;
 }
-
 
 const HAS_FULL_RECORD = 16;
 const HAS_PARTIAL_RECORD = 32; // will be used for CRDTs
