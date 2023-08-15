@@ -360,6 +360,7 @@ async function systemInformation(system_info_op) {
 				break;
 			case 'replication':
 				response.replication = await getNatsStreamInfo();
+				break;
 			default:
 				break;
 		}
