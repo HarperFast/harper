@@ -26,6 +26,8 @@ const { isEmpty } = hdb_utils;
 const user = require('../../../security/user');
 
 const STREAM_DUPE_WINDOW = 120000000000;
+const INGEST_MAX_MSG_AGE = 48 * 3600000000000; // nanoseconds
+const INGEST_MAX_BYTES = 500000000;
 
 const {
 	connect,
@@ -627,9 +629,10 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 		await jsm.streams.add({
 			name: CONSUMER_NAMES.stream_name,
 			storage: StorageType.File,
-			retention: RetentionPolicy.Workqueue,
+			retention: RetentionPolicy.Limits,
 			duplicate_window: STREAM_DUPE_WINDOW,
-			// txn subject is here because filter_subject in the consumer wouldn't work without it. No message will be published to it.
+			max_age: INGEST_MAX_MSG_AGE,
+			max_bytes: INGEST_MAX_BYTES,
 			subjects: [`${nats_terms.SUBJECT_PREFIXES.TXN}.${CONSUMER_NAMES.stream_name}.${server_name}`],
 		});
 	} catch (err) {
@@ -1030,13 +1033,6 @@ async function updateLocalStreams() {
 			const new_subject_name = `${nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name}.${server_name}`;
 			hdb_logger.trace(`Updating stream subject name from: ${stream_subject} to: ${new_subject_name}`);
 			stream_config.subjects[0] = new_subject_name;
-
-			// Work queue uses a consumer to consume messages in stream. This needs to be updated also.
-			await jsm.consumers.update(
-				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name,
-				{ deliver_subject: `${nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_subject}.${server_name}` }
-			);
 		} else {
 			const subject_array = stream_subject.split('.');
 			subject_array[subject_array.length - 1] = server_name;
