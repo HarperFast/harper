@@ -94,6 +94,7 @@ export class ResourceBridge extends LMDBBridge {
 			table: table_create_obj.table,
 			attributes,
 			schemaDefined: schema_defined,
+			expiration: table_create_obj.expiration,
 		});
 	}
 	async createAttribute(create_attribute_obj) {
