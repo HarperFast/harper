@@ -762,7 +762,7 @@ export function makeTable(options) {
 			const txn = this._txnForRequest();
 			const reverse = request.reverse === true;
 			let conditions = request.conditions;
-			if (!conditions) conditions = Array.isArray(request) ? request : [];
+			if (!conditions) conditions = Array.isArray(request) ? request : request[Symbol.iterator] ? Array.from(request) : [];
 			else if (conditions.length === undefined) conditions = Array.from(conditions);
 			if (this[ID_PROPERTY]) {
 				conditions = [{ attribute: null, comparator: 'prefix', value: this[ID_PROPERTY] }].concat(conditions);
