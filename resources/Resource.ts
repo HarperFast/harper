@@ -228,7 +228,7 @@ export class Resource implements ResourceInterface {
 		let is_collection;
 		if (typeof request.isCollection === 'boolean' && request.hasOwnProperty('isCollection'))
 			is_collection = request.isCollection;
-		else is_collection = id == null || (id.constructor === Array && id[id.length - 1] == null);
+		else is_collection = id == null || (Array.isArray(id) && id[id.length - 1] == null);
 		// if it is a collection and we have a collection class defined, use it
 		const constructor = (is_collection && this.Collection) || this;
 		if (!context) context = context === undefined ? request : {};
@@ -357,13 +357,21 @@ function pathToId(path, Resource) {
 		if (path.startsWith('$')) path = parseInt(path, 36);
 		return Resource.coerceId(decodeURIComponent(path));
 	}
-	const ids = path.split('/');
-	for (let i = 0; i < ids.length; i++) {
-		ids[i] = Resource.coerceId(decodeURIComponent(ids[i]));
+	const string_ids = path.split('/');
+	const ids = new MulitPartId(string_ids.length);
+	for (let i = 0; i < string_ids.length; i++) {
+		ids[i] = Resource.coerceId(decodeURIComponent(string_ids[i]));
 	}
 	return ids;
 }
-
+/**
+ * An array for ids that toString's back to slash-delimited string
+ */
+class MulitPartId extends Array {
+	toString() {
+		return this.join('/');
+	}
+}
 /**
  * This is responsible for arranging arguments in the main static methods and creating the appropriate context and default transaction wrapping
  * @param action
@@ -416,7 +424,6 @@ function transactional(action, options) {
 			let parse_url;
 			if (typeof id_or_query === 'string') {
 				id = id_or_query;
-				parse_url = id[0] === '/';
 			} else if (typeof id_or_query === 'object' && id_or_query) {
 				// it is a query
 				query = id_or_query;
@@ -448,7 +455,12 @@ function transactional(action, options) {
 				const search_index = id.indexOf('?');
 				if (search_index > -1) {
 					const parsed_query = this.parseQuery(id.slice(search_index + 1));
-					query = query ? Object.assign(query, parsed_query) : parsed_query;
+					if (query) {
+						query[Symbol.iterator] = () => parsed_query[Symbol.iterator]();
+						if (parsed_query.select) query.select = parsed_query.select;
+						if (parsed_query.offset) query.offset = parsed_query.offset;
+						if (parsed_query.limit) query.limit = parsed_query.limit;
+					} else query = parsed_query;
 					id = id.slice(0, search_index);
 				}
 				// handle paths of the form /path/id.property
