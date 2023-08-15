@@ -10,7 +10,6 @@ import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUt
 import { sortBy } from 'lodash';
 import { Query, ResourceInterface, Request, SubscriptionRequest, Id } from './ResourceInterface';
 import { workerData, threadId } from 'worker_threads';
-import { getNextMonotonicTime, auto } from '../utility/lmdb/commonUtility';
 import { CONTEXT, ID_PROPERTY, RECORD_PROPERTY, Resource, IS_COLLECTION } from './Resource';
 import { COMPLETION, DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction';
 import * as lmdb_terms from '../utility/lmdb/terms';
@@ -59,7 +58,8 @@ export interface Table {
 }
 // we default to the max age of the streams because this is the limit on the number of old transactions
 // we might need to reconcile deleted entries against.
-const DELETE_ENTRY_EXPIRATION = convertToMS(env_mngr.get(CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXAGE)) || 86400000;
+const DELETE_ENTRY_EXPIRATION =
+	convertToMS(env_mngr.get(CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXAGE)) || 86400000;
 /**
  * This returns a Table class for the given table settings (determined from the metadata table)
  * Instances of the returned class are Resource instances, intended to provide a consistent view or transaction of the table
@@ -778,9 +778,15 @@ export function makeTable(options) {
 						throw handleHDBError(new Error(), `${attribute_name} is not a defined attribute`, 404);
 				} else if (attribute.type) {
 					// convert to a number if that is expected
-					if (condition[1] === undefined) condition.value = coerceType(condition.value, attribute);
-					else condition[1] = coerceType(condition[1], attribute);
+					if (condition[1] === undefined) condition.value = coerceTypedValues(condition.value, attribute);
+					else condition[1] = coerceTypedValues(condition[1], attribute);
 				}
+			}
+			function coerceTypedValues(value, attribute) {
+				if (Array.isArray(value)) {
+					return value.map((value) => coerceType(value, attribute));
+				}
+				return coerceType(value, attribute);
 			}
 			// Sort the query by narrowest to broadest. Note that we want to do this both for intersection where
 			// it allows us to do minimal filtering, and for union where we can return the fastest results first
@@ -1475,20 +1481,25 @@ function noop() {
 export function setServerUtilities(utilities) {
 	server_utilities = utilities;
 }
-const STRING_CAN_BE_INTEGER = /^\d+$/;
+const ENDS_WITH_TIMEZONE = /[+-][0-9]{2}:[0-9]{2}|[a-zA-Z]$/;
 /**
  * Coerce a string to the type defined by the attribute
  * @param value
  * @param attribute
  * @returns
  */
-function coerceType(value, attribute) {
+export function coerceType(value, attribute) {
 	const type = attribute?.type;
+	//if a type is String is it safe to execute a .toString() on the value and return? Does not work for Array/Object so we would need to detect if is either of those first
 	if (value === null) {
 		return value;
 	} else if (type === 'Int') return parseInt(value);
 	else if (type === 'Float') return parseFloat(value);
 	else if (type === 'Date') {
+		//if the value is not an integer (to handle epoch values) and does not end in a timezone we suffiz with 'Z' tom make sure the Date is GMT timezone
+		if (typeof value !== 'number' && !ENDS_WITH_TIMEZONE.test(value)) {
+			value += 'Z';
+		}
 		return new Date(value);
 	} else if (!type) {
 		return autoCast(value);
