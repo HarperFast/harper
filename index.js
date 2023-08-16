@@ -6,6 +6,7 @@ global.getUser = exports.getUser = undefined;
 global.server = exports.server = {};
 global.config = exports.config = {};
 global.contentTypes = exports.contentTypes = null;
+global.logger = {};
 exports._assignPackageExport = (name, value) => {
 	global[name] = exports[name] = value;
 };
