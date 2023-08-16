@@ -391,6 +391,7 @@ function transactional(action, options) {
 			if (context) {
 				// if there are three arguments, it is id, data, context
 				data = data_or_context;
+				context = context[CONTEXT] || context;
 			} else if (data_or_context) {
 				// two arguments, more possibilities:
 				if (
@@ -401,7 +402,7 @@ function transactional(action, options) {
 					// (data, context) form
 					data = id_or_query;
 					id = data[this.primaryKey] ?? null;
-					context = data_or_context;
+					context = data_or_context[CONTEXT] || data_or_context;
 				} else {
 					// (id, data) form
 					data = data_or_context;
@@ -415,7 +416,7 @@ function transactional(action, options) {
 			// first, check to see if it is two argument
 		} else if (data_or_context) {
 			// (id, context), preferred form used for methods without a body
-			context = data_or_context;
+			context = data_or_context[CONTEXT] || data_or_context;
 		} else if (id_or_query && typeof id_or_query === 'object' && !Array.isArray(id_or_query)) {
 			// (request) a structured id/query, which we will use as the context
 			context = id_or_query;

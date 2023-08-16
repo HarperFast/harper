@@ -36,7 +36,7 @@ async function http(request, next_handler) {
 		}
 		const entry = resources.getMatch(url);
 		if (!entry) return next_handler(request); // no resource handler found
-		const resource_request = { url: '/' + entry.relativeURL } ; // TODO: We don't want to have to remove the forward slash and then re-add it
+		const resource_request = { url: entry.relativeURL } ; // TODO: We don't want to have to remove the forward slash and then re-add it
 		const resource = entry.Resource;
 		let response_data = await transaction(request, () => {
 			if (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'QUERY') {
