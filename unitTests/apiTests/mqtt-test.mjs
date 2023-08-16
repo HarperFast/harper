@@ -63,7 +63,7 @@ describe('test MQTT connections and commands', () => {
 		let intervals = [];
 		let clients = [];
 		let published = 0;
-		let received = 0;
+		let received = [];
 		for (let x = 1; x < vus + 1; x++) {
 			const topic = `${tableName}/1`;
 			const client = connect({
@@ -96,7 +96,7 @@ describe('test MQTT connections and commands', () => {
 				let now = Date.now();
 				// message is Buffer
 				let obj = JSON.parse(message.toString());
-				received++;
+				received.push(obj);
 			});
 
 			client.on('error', function (error) {
@@ -108,6 +108,8 @@ describe('test MQTT connections and commands', () => {
 		for (let interval of intervals) clearInterval(interval);
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		for (let client of clients) client.end();
+		assert(received.length > 10);
+		assert.equal(received[0].name, 'radbot 9000');
 		//console.log({ published, received });
 	});
 	it('subscribe to retained record with upsert operation', async function () {

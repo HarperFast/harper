@@ -160,11 +160,12 @@ export function setNATSReplicator(table_name, db_name, Table) {
 			 * of the table classes.
 			 */
 			static subscribe() {
-				if (getWorkerIndex() < MAX_INGEST_THREADS) {
-					const subscription = new IterableEventQueue();
-					setSubscription(db_name, table_name, subscription);
-					return subscription;
-				}
+				const subscription = new IterableEventQueue();
+				setSubscription(db_name, table_name, subscription);
+				return subscription;
+			}
+			static subscribeOnThisThread(worker_index) {
+				return worker_index < MAX_INGEST_THREADS;
 			}
 			static isNATSReplicator = true;
 		}

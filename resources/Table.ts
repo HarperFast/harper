@@ -170,8 +170,12 @@ export function makeTable(options) {
 						Resource.subscribe && (!Resource.subscribe.reliesOnPrototype || Resource.prototype.subscribe);
 					// if subscriptions come in out-of-order, we need to track deletes to ensure consistency
 					if (has_subscribe && track_deletes == undefined) track_deletes = true;
+					const subscribe_on_this_thread = Resource.subscribeOnThisThread
+						? Resource.subscribeOnThisThread(getWorkerIndex())
+						: getWorkerIndex() === 0;
 					const subscription =
 						has_subscribe &&
+						subscribe_on_this_thread &&
 						(await Resource.subscribe?.({
 							// this is used to indicate that all threads are (presumably) making this subscription
 							// and we do not need to propagate events across threads (more efficient)
@@ -357,10 +361,7 @@ export function makeTable(options) {
 		static Source: typeof Resource;
 
 		static get(request, context) {
-			if (
-				request &&
-				((typeof request === 'object' && !Array.isArray(request) && request.url === '/') || request === '/')
-			)
+			if (request && typeof request === 'object' && !Array.isArray(request) && request.url === '')
 				return {
 					// basically a describe call
 					recordCount: this.getRecordCount(),
@@ -762,7 +763,8 @@ export function makeTable(options) {
 			const txn = this._txnForRequest();
 			const reverse = request.reverse === true;
 			let conditions = request.conditions;
-			if (!conditions) conditions = Array.isArray(request) ? request : [];
+			if (!conditions)
+				conditions = Array.isArray(request) ? request : request[Symbol.iterator] ? Array.from(request) : [];
 			else if (conditions.length === undefined) conditions = Array.from(conditions);
 			if (this[ID_PROPERTY]) {
 				conditions = [{ attribute: null, comparator: 'prefix', value: this[ID_PROPERTY] }].concat(conditions);
