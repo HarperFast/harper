@@ -120,7 +120,7 @@ class SubscriptionsSession {
 		};
 		const entry = resources.getMatch(path);
 		if (!entry) throw new Error(`The topic ${topic} does not exist, no resource has been defined to handle this topic`);
-		request.url = '/' + entry.relativeURL;
+		request.url = entry.relativeURL;
 		const resource_path = entry.path;
 		const resource = entry.Resource;
 		const subscription = await transaction(request, async () => {
@@ -182,15 +182,15 @@ class SubscriptionsSession {
 			throw new Error(
 				`Can not publish to topic ${topic} as it does not exist, no resource has been defined to handle this topic`
 			);
-		const url = (message.url = '/' + entry.relativeURL);
+		message.url = entry.relativeURL;
 		const resource = entry.Resource;
 
 		return transaction(message, () => {
 			return retain
 				? data === undefined
-					? resource.delete(url, message)
-					: resource.put(url, message.data, message)
-				: resource.publish(url, message.data, message);
+					? resource.delete(message, message)
+					: resource.put(message, message.data, message)
+				: resource.publish(message, message.data, message);
 		});
 	}
 	setListener(listener: (message) => any) {
