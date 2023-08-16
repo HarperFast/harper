@@ -7,7 +7,7 @@ import { transaction } from './transaction';
 export class Resources extends Map<string, typeof Resource> {
 	isWorker = true;
 	loginPath?: (request) => string;
-	set(path, Resource, type?: string): void {
+	set(path, Resource, type?: string, force?: boolean): void {
 		if (path.startsWith('/')) path = path.replace(/^\/+/, '');
 		const entry = {
 			Resource,
@@ -16,6 +16,7 @@ export class Resources extends Map<string, typeof Resource> {
 			hasSubPaths: false,
 			relativeURL: '', // reset after each match
 		};
+		if (super.get(path) && !force) throw new Error(`Conflicting paths for ${path}`);
 		super.set(path, entry);
 		// now mark any entries that have sub paths so we can efficiently route forward
 		for (const [path, entry] of this) {
@@ -43,7 +44,7 @@ export class Resources extends Map<string, typeof Resource> {
 			const resource_path = url.slice(0, slash_index);
 			const entry = this.get(resource_path);
 			if (entry) {
-				entry.relativeURL = url.slice(slash_index + 1);
+				entry.relativeURL = url.slice(slash_index);
 				if (!entry.hasSubPaths) {
 					return entry;
 				}
@@ -62,7 +63,7 @@ export class Resources extends Map<string, typeof Resource> {
 			// still not found, see if there is an explicit root path
 			found_entry = this.get('');
 			if (found_entry) {
-				found_entry.relativeURL = url;
+				found_entry.relativeURL = '';
 			}
 		}
 		return found_entry;
