@@ -5,6 +5,7 @@ const rewire = require('rewire');
 const system_information = require('../../../utility/environment/systemInformation');
 const rw_system_information = rewire('../../../utility/environment/systemInformation');
 const SystemInformationOperation = require('../../../utility/environment/SystemInformationOperation');
+const env_mgr = require('../../../utility/environment/environmentManager');
 
 const TableSizeObject = require('../../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/TableSizeObject');
 
@@ -285,6 +286,8 @@ describe('test systemInformation module', () => {
 		rw_getTableSize = rw_system_information.__set__('getTableSize', async () => {
 			return [];
 		});
+
+		env_mgr.setProperty('clustering_enabled', false);
 	});
 
 	after(() => {

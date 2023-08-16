@@ -8,6 +8,7 @@ const MAX_OPTIMISTIC_SIZE = 100;
 let node_ids: Map;
 export class DatabaseTransaction implements Transaction {
 	writes = []; // the set of writes to commit if the conditions are met
+	hasWrittenTime: boolean;
 	username: string;
 	lmdbDb: RootDatabase;
 	auditStore: Database;
@@ -45,6 +46,7 @@ export class DatabaseTransaction implements Transaction {
 			completions = [];
 		let write_index = 0;
 		let last_store;
+		this.hasWrittenTime = false;
 		const doWrite = (write) => {
 			const audit_record = write.commit(txn_time, retries);
 			if (audit_record) {
@@ -56,6 +58,9 @@ export class DatabaseTransaction implements Transaction {
 				if (this.auditStore) {
 					audit_record.user = this.username;
 					audit_record.lastVersion = write.lastVersion;
+					// we allow the operation to request a new transaction time (but should only happen if we haven't already written any records)
+					if (audit_record.newTxnTime && !this.hasWrittenTime) txn_time = audit_record.newTxnTime;
+					this.hasWrittenTime = true;
 					const key = [txn_time, write.store.tableId, write.key];
 					if (write.invalidated) key.invalidated = true; // this indicates that audit record is an invalidation, and will be replaced
 					/**

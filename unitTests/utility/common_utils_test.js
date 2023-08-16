@@ -295,6 +295,18 @@ describe('Test common_utils module', () => {
 			assert.equal(cu.autoCast('true'), true);
 		});
 
+		it(`Pass in uppercase string of true, expect boolean true`, function () {
+			assert.equal(cu.autoCast('TRUE'), true);
+		});
+
+		it(`Pass in uppercase string of false, expect boolean false`, function () {
+			assert.equal(cu.autoCast('FALSE'), false);
+		});
+
+		it(`Pass in uppercase string of null, expect value of null`, function () {
+			assert.equal(cu.autoCast('NULL'), null);
+		});
+
 		it(`Pass in string of 42, expect number 42`, function () {
 			assert.equal(cu.autoCast('42'), 42);
 		});
@@ -667,8 +679,13 @@ describe('Test common_utils module', () => {
 			parsed_result.push(results.data);
 		};
 
+		let type_function = (value) => {
+			//TODO test HDB attribute schema casting
+			return cu.autoCast(value);
+		};
+
 		it('Test csv stream is parsed as expected', async () => {
-			await papa_parse.parsePromise(string_stream, chunk_function);
+			await papa_parse.parsePromise(string_stream, chunk_function, type_function);
 			expect(parsed_result).to.eql(expected_result);
 		});
 	});
