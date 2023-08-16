@@ -64,6 +64,6 @@ const JOB_ID = JOB_NAME.substring(4);
 		await closeConnection();
 		setTimeout(() => {
 			process.exit(exit_code);
-		}).unref(3000);
+		}, 3000).unref();
 	}
 })();

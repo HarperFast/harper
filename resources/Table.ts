@@ -6,11 +6,10 @@
 
 import { CONFIG_PARAMS, OPERATIONS_ENUM } from '../utility/hdbTerms';
 import { Database, asBinary, SKIP } from 'lmdb';
-import { getIndexedValues } from '../utility/lmdb/commonUtility';
+import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
 import { Query, ResourceInterface, Request, SubscriptionRequest, Id } from './ResourceInterface';
 import { workerData, threadId } from 'worker_threads';
-import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { CONTEXT, ID_PROPERTY, RECORD_PROPERTY, Resource, IS_COLLECTION } from './Resource';
 import { COMPLETION, DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction';
 import * as lmdb_terms from '../utility/lmdb/terms';
@@ -27,6 +26,7 @@ import { transaction } from './transaction';
 import { MAXIMUM_KEY } from 'ordered-binary';
 import { getWorkerIndex, onMessageByType } from '../server/threads/manageThreads';
 import { createAuditEntry, readAuditEntry } from './auditStore';
+import { autoCast, convertToMS } from '../utility/common_utils';
 
 let server_utilities;
 const RANGE_ESTIMATE = 100000000;
@@ -56,6 +56,10 @@ export interface Table {
 	Source: { new (): ResourceInterface };
 	Transaction: ReturnType<typeof makeTable>;
 }
+// we default to the max age of the streams because this is the limit on the number of old transactions
+// we might need to reconcile deleted entries against.
+const DELETE_ENTRY_EXPIRATION =
+	convertToMS(env_mngr.get(CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXAGE)) || 86400000;
 /**
  * This returns a Table class for the given table settings (determined from the metadata table)
  * Instances of the returned class are Resource instances, intended to provide a consistent view or transaction of the table
@@ -85,8 +89,8 @@ export function makeTable(options) {
 	let created_time_property, updated_time_property;
 	let commit_listeners: Set;
 	for (const attribute of attributes) {
-		if (attribute.assignCreatedTime || attribute.name === '__createdtime__') created_time_property = attribute.name;
-		if (attribute.assignUpdatedTime || attribute.name === '__updatedtime__') updated_time_property = attribute.name;
+		if (attribute.assignCreatedTime || attribute.name === '__createdtime__') created_time_property = attribute;
+		if (attribute.assignUpdatedTime || attribute.name === '__updatedtime__') updated_time_property = attribute;
 		if (attribute.isPrimaryKey) primary_key_attribute = attribute;
 	}
 	let delete_callback_handle;
@@ -164,6 +168,8 @@ export function makeTable(options) {
 				try {
 					const has_subscribe =
 						Resource.subscribe && (!Resource.subscribe.reliesOnPrototype || Resource.prototype.subscribe);
+					// if subscriptions come in out-of-order, we need to track deletes to ensure consistency
+					if (has_subscribe && track_deletes == undefined) track_deletes = true;
 					const subscription =
 						has_subscribe &&
 						(await Resource.subscribe?.({
@@ -177,8 +183,6 @@ export function makeTable(options) {
 							supportsTransactions: true,
 						}));
 					if (subscription) {
-						// if subscriptions come in out-of-order, we need to track deletes to ensure consistency
-						if (track_deletes === undefined) track_deletes = true;
 						// we listen for events by iterating through the async iterator provided by the subscription
 						for await (const event of subscription) {
 							try {
@@ -526,20 +530,19 @@ export function makeTable(options) {
 
 		invalidate(options) {
 			const transaction = this._txnForRequest();
-			const txn_time = transaction.timestamp;
-			const partial_record = { __invalidated__: txn_time };
-			for (const name in indices) {
-				// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
-				partial_record[name] = this.getProperty(name);
-			}
 			transaction.addWrite({
 				key: this[ID_PROPERTY],
 				store: primary_store,
-				txnTime: txn_time,
 				invalidated: true,
 				lastVersion: this[VERSION_PROPERTY],
-				commit: (retry) => {
+				nodeName: this[CONTEXT]?.nodeName,
+				commit: (txn_time, retry) => {
 					if (retry) return;
+					const partial_record = { __invalidated__: txn_time };
+					for (const name in indices) {
+						// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
+						partial_record[name] = this.getProperty(name);
+					}
 					const source = TableResource.Source;
 					let completion;
 					const id = this[ID_PROPERTY];
@@ -613,7 +616,6 @@ export function makeTable(options) {
 			if (this[ID_PROPERTY] === undefined) {
 				throw new Error('Can not save record without an id');
 			}
-			const txn_time = transaction.timestamp;
 			let existing_record = this[RECORD_PROPERTY];
 			let is_unchanged;
 			let record_prepared;
@@ -622,12 +624,12 @@ export function makeTable(options) {
 			transaction.addWrite({
 				key: id,
 				store: primary_store,
-				txnTime: txn_time,
 				lastVersion: this[VERSION_PROPERTY],
+				nodeName: this[CONTEXT]?.nodeName,
 				validate: () => {
 					this.validate(record);
 				},
-				commit: (retry) => {
+				commit: (txn_time, retry) => {
 					let completion;
 					if (retry) {
 						if (is_unchanged) return;
@@ -645,11 +647,23 @@ export function makeTable(options) {
 								if (is_unchanged) return;
 							}
 							if (primary_key && record[primary_key] !== id) record[primary_key] = id;
-							if (TableResource.updatedTimeProperty) record[TableResource.updatedTimeProperty] = txn_time;
-							if (TableResource.createdTimeProperty) {
-								if (existing_record)
-									record[TableResource.createdTimeProperty] = existing_record[TableResource.createdTimeProperty];
-								else record[TableResource.createdTimeProperty] = txn_time;
+							if (updated_time_property) {
+								record[updated_time_property.name] =
+									updated_time_property.type === 'Date'
+										? new Date(txn_time)
+										: updated_time_property.type === 'String'
+										? new Date(txn_time).toISOString()
+										: txn_time;
+							}
+							if (created_time_property) {
+								if (existing_record) record[created_time_property.name] = existing_record[created_time_property.name];
+								else
+									record[created_time_property.name] =
+										created_time_property.type === 'Date'
+											? new Date(txn_time)
+											: created_time_property.type === 'String'
+											? new Date(txn_time).toISOString()
+											: txn_time;
 							}
 							record = deepFreeze(record); // this flatten and freeze the record
 							// send this to the source
@@ -661,7 +675,7 @@ export function makeTable(options) {
 						if (record[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
 						this[RECORD_PROPERTY] = record;
 					}
-					harper_logger.trace(`Checking timestamp for put`, id, this[VERSION_PROPERTY], txn_time);
+					harper_logger.trace(`Checking timestamp for put`, id, this[VERSION_PROPERTY] > txn_time, this[VERSION_PROPERTY], txn_time);
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
@@ -699,16 +713,15 @@ export function makeTable(options) {
 		}
 		_writeDelete(options?: any) {
 			const transaction = this._txnForRequest();
-			const txn_time = transaction.timestamp;
 			let delete_prepared;
 			const id = this[ID_PROPERTY];
 			let completion;
 			transaction.addWrite({
 				key: id,
 				store: primary_store,
-				txnTime: txn_time,
 				lastVersion: this[VERSION_PROPERTY],
-				commit: (retry) => {
+				nodeName: this[CONTEXT]?.nodeName,
+				commit: (txn_time, retry) => {
 					let existing_record = this[RECORD_PROPERTY];
 					if (retry) {
 						const existing_entry = primary_store.getEntry(id);
@@ -729,6 +742,7 @@ export function makeTable(options) {
 						// a newer record exists locally
 						return;
 					updateIndices(this[ID_PROPERTY], existing_record);
+					harper_logger.trace(`Write delete entry`, audit || track_deletes, txn_time);
 					if (audit || track_deletes) {
 						primary_store.put(this[ID_PROPERTY], null, txn_time);
 						if (!audit) enqueueDeletionCleanup();
@@ -762,11 +776,17 @@ export function makeTable(options) {
 				if (!attribute) {
 					if (attribute_name != null)
 						throw handleHDBError(new Error(), `${attribute_name} is not a defined attribute`, 404);
-				} else if (attribute.type === 'Int' || attribute.type === 'Float') {
+				} else if (attribute.type) {
 					// convert to a number if that is expected
-					if (condition[1] === undefined) condition.value = coerceType(condition.value, attribute);
-					else condition[1] = coerceType(condition[1], attribute);
+					if (condition[1] === undefined) condition.value = coerceTypedValues(condition.value, attribute);
+					else condition[1] = coerceTypedValues(condition[1], attribute);
 				}
+			}
+			function coerceTypedValues(value, attribute) {
+				if (Array.isArray(value)) {
+					return value.map((value) => coerceType(value, attribute));
+				}
+				return coerceType(value, attribute);
 			}
 			// Sort the query by narrowest to broadest. Note that we want to do this both for intersection where
 			// it allows us to do minimal filtering, and for union where we can return the fastest results first
@@ -1006,19 +1026,18 @@ export function makeTable(options) {
 		}
 		_writePublish(message, options?: any) {
 			const transaction = this._txnForRequest();
-			const txn_time = transaction.timestamp;
 			const id = this[ID_PROPERTY] || null;
 			let completion;
 			let publish_prepared;
 			transaction.addWrite({
 				store: primary_store,
 				key: id,
-				txnTime: txn_time,
 				lastVersion: this[VERSION_PROPERTY],
+				nodeName: this[CONTEXT]?.nodeName,
 				validate: () => {
 					this.validate(message);
 				},
-				commit: (retries) => {
+				commit: (txn_time, retries) => {
 					this.validate(message);
 					// just need to update the version number of the record so it points to the latest audit record
 					// but have to update the version number of the record
@@ -1039,13 +1058,19 @@ export function makeTable(options) {
 						if (!audit) enqueueDeletionCleanup();
 						recordDeletion(1);
 					}
-					primary_store.put(id, existing_record ?? null, txn_time);
 					// messages are recorded in the audit entry (regardless of whether audit is turned on)
-					return {
+					const audit_entry = {
 						operation: 'message',
 						value: primary_store.encoder.encode(message),
 						[COMPLETION]: completion,
 					};
+					if (!transaction.hasWrittenTime && this[VERSION_PROPERTY] > txn_time) {
+						// if this message is older than current timestamp, we try to actually change the txn time
+						// so that it will appear afterwards to maintain ordering of messages
+						txn_time = audit_entry.newTxnTime = this[VERSION_PROPERTY] + 0.001;
+					}
+					primary_store.put(id, existing_record ?? null, txn_time);
+					return audit_entry;
 				},
 			});
 		}
@@ -1056,7 +1081,6 @@ export function makeTable(options) {
 				let transaction;
 				if ((transaction = transaction_set?.find((txn) => txn.lmdbDb?.path === primary_store.path))) return transaction;
 				transaction_set.push((transaction = new DatabaseTransaction(primary_store, context.user, audit_store)));
-				transaction.timestamp = transaction_set.timestamp;
 				return transaction;
 			} else {
 				return new ImmediateTransaction(primary_store, context.user, audit_store);
@@ -1080,10 +1104,8 @@ export function makeTable(options) {
 							case 'ID':
 								if (
 									!(
-										typeof value === 'number' ||
 										typeof value === 'string' ||
-										(value?.length > 0 &&
-											value.every?.((value) => typeof value === 'number' || typeof value === 'string'))
+										(value?.length > 0 && value.every?.((value) => typeof value === 'string'))
 									)
 								)
 									(validation_errors || (validation_errors = [])).push(
@@ -1352,7 +1374,7 @@ export function makeTable(options) {
 				}, 10000).unref();
 			});
 		}
-		let invalidated = existing_record?.__invalidated__;
+		const invalidated = existing_record?.__invalidated__;
 		//			const invalidated_record = { __invalidated__: true };
 		//			if (this[RECORD_PROPERTY]) Object.assign(invalidated_record, existing_record);
 		// TODO: We want to eventually use a "direct write" method to directly write to the locations
@@ -1382,8 +1404,7 @@ export function makeTable(options) {
 				// don't wait on this, we don't actually care if it fails, that just means there is even
 				// a newer entry going in the cache in the future
 				primary_store.put(id, updated_record, version, updating_version);
-			} else
-				primary_store.remove(id, updating_version);
+			} else primary_store.remove(id, updating_version);
 
 			if (has_changes && audit) {
 				audit_store.put(
@@ -1429,24 +1450,22 @@ export function makeTable(options) {
 			deletion_cleanup = setTimeout(() => {
 				deletion_cleanup = null;
 				if (primary_store.rootStore.status !== 'open') return;
-				for (let { key, value } of primary_store.getRange({ start: true })) {
+				for (const { key, value } of primary_store.getRange({ start: true })) {
 					if (value === null) {
 						const entry = primary_store.getEntry(key);
 						// make sure it is still deleted when we do the removal
-						if (entry?.value === null)
-							primary_store.remove(key, entry.version);
+						if (entry?.value === null) primary_store.remove(key, entry.version);
 						recordDeletion(-1);
 					}
 				}
-			}, TableResource.getRecordCount() * 100); // heuristic for how often to do cleanup, we want to do it less frequently as tables get bigger because it will take longer
+			}, TableResource.getRecordCount() * 100 + DELETE_ENTRY_EXPIRATION).unref(); // heuristic for how often to do cleanup, we want to do it less frequently as tables get bigger because it will take longer
 		}
 	}
 	function addDeleteRemoval() {
 		delete_callback_handle = audit_store?.addDeleteRemovalCallback(table_id, (id) => {
 			const entry = primary_store.getEntry(id);
 			// make sure it is still deleted when we do the removal
-			if (entry?.value === null)
-				primary_store.remove(id, entry.version);
+			if (entry?.value === null) primary_store.remove(id, entry.version);
 			recordDeletion(-1);
 		});
 	}
@@ -1468,21 +1487,28 @@ function noop() {
 export function setServerUtilities(utilities) {
 	server_utilities = utilities;
 }
-const STRING_CAN_BE_INTEGER = /^\d+$/;
+const ENDS_WITH_TIMEZONE = /[+-][0-9]{2}:[0-9]{2}|[a-zA-Z]$/;
 /**
  * Coerce a string to the type defined by the attribute
  * @param value
  * @param attribute
  * @returns
  */
-function coerceType(value, attribute) {
+export function coerceType(value, attribute) {
 	const type = attribute?.type;
+	//if a type is String is it safe to execute a .toString() on the value and return? Does not work for Array/Object so we would need to detect if is either of those first
 	if (value === null) {
 		return value;
 	} else if (type === 'Int') return parseInt(value);
 	else if (type === 'Float') return parseFloat(value);
-	else if (!type || type === 'ID') {
-		return STRING_CAN_BE_INTEGER.test(value) ? parseInt(value) : value;
+	else if (type === 'Date') {
+		//if the value is not an integer (to handle epoch values) and does not end in a timezone we suffiz with 'Z' tom make sure the Date is GMT timezone
+		if (typeof value !== 'number' && !ENDS_WITH_TIMEZONE.test(value)) {
+			value += 'Z';
+		}
+		return new Date(value);
+	} else if (!type) {
+		return autoCast(value);
 	}
 	return value;
 }

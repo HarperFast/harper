@@ -3,6 +3,7 @@ import { initSync, get as env_get } from '../utility/environment/environmentMana
 import { AUDIT_STORE_NAME } from '../utility/lmdb/terms';
 import { CONFIG_PARAMS } from '../utility/hdbTerms';
 import { getWorkerIndex } from '../server/threads/manageThreads';
+import { convertToMS } from '../utility/common_utils';
 /**
  * This module is responsible for the binary representation of audit records in an efficient form.
  * This includes a custom key encoder that specifically encodes arrays with the first element (timestamp) as a
@@ -11,7 +12,9 @@ import { getWorkerIndex } from '../server/threads/manageThreads';
  * This also defines a binary representation for the audit records themselves which is:
  * 1 or 2 bytes: action, describes the action of this record and any flags for which other parts are included
  * 1 or 2 bytes: position of end of the username section. 0 if there is no username
+ * 2 or 4 bytes: node-id
  * 8 bytes (optional): last version timestamp (allows for backwards traversal through history of a record)
+ * username
  * remaining bytes (optional, not included for deletes/invalidation): the record itself, using the same encoding as its primary store
  */
 initSync();
@@ -45,7 +48,7 @@ const AUDIT_STORE_OPTIONS = {
 	keyEncoder: transactionKeyEncoder,
 };
 
-let audit_retention = convertToMS(env_get(CONFIG_PARAMS.LOGGING_AUDITRETENTION));
+let audit_retention = convertToMS(env_get(CONFIG_PARAMS.LOGGING_AUDITRETENTION)) || 86400 * 3;
 let pending_cleanup = null;
 export function openAuditStore(root_store) {
 	const audit_store = (root_store.auditStore = root_store.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS));
@@ -93,38 +96,13 @@ export function setAuditRetention(retention_time) {
 	audit_retention = retention_time;
 }
 
-function convertToMS(interval) {
-	let seconds = 86400 * 3; // three day default
-	if (typeof interval === 'number') seconds = interval;
-	if (typeof interval === 'string') {
-		seconds = parseFloat(interval);
-		switch (interval.slice(-1)) {
-			case 'M':
-				seconds *= 86400 * 30;
-				break;
-			case 'D':
-			case 'd':
-				seconds *= 86400;
-				break;
-			case 'H':
-			case 'h':
-				seconds *= 3600;
-				break;
-			case 'm':
-				seconds *= 60;
-				break;
-		}
-	}
-	return seconds * 1000;
-}
-
 const HAS_FULL_RECORD = 16;
 const HAS_PARTIAL_RECORD = 32; // will be used for CRDTs
 const PUT = 1;
 const DELETE = 2;
 const MESSAGE = 3;
 const INVALIDATE = 4;
-const HAS_FOUR_BYTE_HEADER = 128;
+const HAS_SIX_BYTE_HEADER = 128;
 const HAS_PREVIOUS_VERSION = 64;
 
 const OPERATIONS = {
@@ -140,14 +118,14 @@ const OPERATIONS = {
 export function createAuditEntry(last_version, username, audit_information) {
 	let action = OPERATIONS[audit_information.operation];
 
-	let position = 2;
+	let position = 3;
 	if (username) {
 		if (username.length > 80) {
-			action |= HAS_FOUR_BYTE_HEADER;
-			position = writeKey(username, ENTRY_HEADER, last_version ? 12 : 4);
+			action |= HAS_SIX_BYTE_HEADER;
+			position = writeKey(username, ENTRY_HEADER, last_version ? 14 : 6);
 			ENTRY_DATAVIEW.setUint16(2, position);
 		} else {
-			position = writeKey(username, ENTRY_HEADER, last_version ? 10 : 2);
+			position = writeKey(username, ENTRY_HEADER, last_version ? 11 : 3);
 			ENTRY_HEADER[1] = position;
 		}
 	} else {
@@ -155,11 +133,14 @@ export function createAuditEntry(last_version, username, audit_information) {
 	}
 	if (last_version) {
 		action |= HAS_PREVIOUS_VERSION;
-		const version_position = action & HAS_FOUR_BYTE_HEADER ? 4 : 2;
+		const version_position = action & HAS_SIX_BYTE_HEADER ? 6 : 3;
 		ENTRY_DATAVIEW.setFloat64(version_position, last_version);
 		if (!username) position = version_position + 8;
 	}
 	ENTRY_HEADER[0] = action;
+	// TODO: This is reserved for the node id
+	if (action & HAS_SIX_BYTE_HEADER) ENTRY_DATAVIEW.setUint16(4, 0);
+	else ENTRY_HEADER[2] = 0;
 	if (audit_information.value) return Buffer.concat([ENTRY_HEADER.slice(0, position), audit_information.value]);
 	else return ENTRY_HEADER.slice(0, position);
 }
@@ -167,15 +148,15 @@ export function readAuditEntry(buffer, store) {
 	const action = buffer[0];
 	const data_view =
 		buffer.dataView || (buffer.dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength));
-	const has_four_byte_header = action & HAS_FOUR_BYTE_HEADER;
-	let position = has_four_byte_header ? 4 : 2;
+	const has_six_byte_header = action & HAS_SIX_BYTE_HEADER;
+	let position = has_six_byte_header ? 6 : 3;
 	let last_version;
 	if (action & HAS_PREVIOUS_VERSION) {
 		last_version = data_view.getFloat64(position);
 		position += 8;
 	}
 	let username_end;
-	if (has_four_byte_header) username_end = data_view.getUint16(2);
+	if (has_six_byte_header) username_end = data_view.getUint16(2);
 	else username_end = buffer[1];
 	const value = action & HAS_FULL_RECORD ? store.decoder.decode(buffer.subarray(username_end || position)) : undefined;
 	return {

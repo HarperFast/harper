@@ -19,12 +19,12 @@ onMessageFromWorkers(async (event, sender) => {
 	validateEvent(event);
 	if (server_itc_handlers[event.type]) {
 		await server_itc_handlers[event.type](event);
-		if (event.requestId && sender)
-			sender.postMessage({
-				type: 'ack',
-				id: event.requestId,
-			});
 	}
+	if (event.requestId && sender)
+		sender.postMessage({
+			type: 'ack',
+			id: event.requestId,
+		});
 });
 
 /**
