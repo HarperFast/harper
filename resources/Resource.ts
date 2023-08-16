@@ -445,7 +445,6 @@ function transactional(action, options) {
 					}
 				} else {
 					if (typeof (id = id_or_query.url) === 'string') {
-						if (id[0] !== '/') throw new URIError(`Invalid local URL ${id}, must start with slash`);
 						parse_url = true;
 					}
 					if (id === undefined) id = id_or_query.id ?? null;

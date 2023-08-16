@@ -7,16 +7,25 @@ import { transaction } from './transaction';
 export class Resources extends Map<string, typeof Resource> {
 	isWorker = true;
 	loginPath?: (request) => string;
-	set(path, Resource, type?: string, force?: boolean): void {
+	set(path, resource, type?: string, force?: boolean): void {
+		if (!resource) throw new Error('Must provide a resource');
 		if (path.startsWith('/')) path = path.replace(/^\/+/, '');
 		const entry = {
-			Resource,
+			Resource: resource,
 			path,
 			type,
 			hasSubPaths: false,
 			relativeURL: '', // reset after each match
 		};
-		if (super.get(path) && !force) throw new Error(`Conflicting paths for ${path}`);
+		const existing_entry = super.get(path);
+		if (
+			existing_entry &&
+			(existing_entry.Resource.databaseName !== resource.databaseName ||
+				existing_entry.Resource.tableName !== resource.tableName) &&
+			!force
+		) {
+			throw new Error(`Conflicting paths for ${path}`);
+		}
 		super.set(path, entry);
 		// now mark any entries that have sub paths so we can efficiently route forward
 		for (const [path, entry] of this) {
