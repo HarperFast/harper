@@ -189,6 +189,9 @@ async function closeConnection() {
 	if (nats_connection) {
 		await nats_connection.drain();
 		nats_connection = undefined;
+		jetstream_manager = undefined;
+		jetstream = undefined;
+		nats_connection_promise = undefined;
 	}
 }
 
