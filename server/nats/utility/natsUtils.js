@@ -27,7 +27,7 @@ const user = require('../../../security/user');
 
 const STREAM_DUPE_WINDOW = 120000000000;
 const INGEST_MAX_MSG_AGE = 48 * 3600000000000; // nanoseconds
-const INGEST_MAX_BYTES = 500000000;
+const INGEST_MAX_BYTES = 50000000000;
 
 const {
 	connect,

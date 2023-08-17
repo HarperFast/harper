@@ -254,7 +254,7 @@ export async function loadComponent(
 				}
 			} catch (error) {
 				console.error(`Could not load component ${component_name} for application ${folder}`, error);
-				resources.set(component_config.path || '/', new ErrorResource(error));
+				resources.set(component_config.path || '/', new ErrorResource(error), null, true);
 			}
 		}
 		// Auto restart threads on changes to any app folder. TODO: Make this configurable

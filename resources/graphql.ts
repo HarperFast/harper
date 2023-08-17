@@ -50,6 +50,9 @@ export function start({ ensureTable }) {
 						}
 						if (directive.name.value === 'export') {
 							type_def.export = true;
+							for (const arg of directive.arguments) {
+								if (arg.name.value === 'name') type_def.export = { name: (arg.value as StringValueNode).value };
+							}
 						}
 					}
 					let has_primary_key = false;
@@ -115,7 +118,7 @@ export function start({ ensureTable }) {
 			// with graphql database definitions, this is a declaration that the table should exist and that it
 			// should be created if it does not exist
 			type_def.tableClass = ensureTable(type_def);
-			if (type_def.export) resources.set(dirname(url_path) + '/' + type_def.typeName, type_def.tableClass);
+			if (type_def.export) resources.set(dirname(url_path) + '/' + (type_def.export.name || type_def.typeName), type_def.tableClass);
 		}
 		// and if there was a `type Query` definition, we use that to created exported resources
 		if (query) {
