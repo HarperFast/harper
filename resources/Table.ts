@@ -220,7 +220,12 @@ export function makeTable(options) {
 											}
 										}
 										if (has_changes) {
-											table({ table: table_name, database: database_name, attributes: updated_attributes });
+											table({
+												table: table_name,
+												database: database_name,
+												attributes: updated_attributes,
+												origin: 'cluster',
+											});
 											signalling.signalSchemaChange(
 												new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_TABLE, database_name, table_name)
 											);
@@ -676,7 +681,13 @@ export function makeTable(options) {
 						if (record[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
 						this[RECORD_PROPERTY] = record;
 					}
-					harper_logger.trace(`Checking timestamp for put`, id, this[VERSION_PROPERTY] > txn_time, this[VERSION_PROPERTY], txn_time);
+					harper_logger.trace(
+						`Checking timestamp for put`,
+						id,
+						this[VERSION_PROPERTY] > txn_time,
+						this[VERSION_PROPERTY],
+						txn_time
+					);
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
