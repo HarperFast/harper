@@ -225,7 +225,11 @@ function readMetaDb(
 			} else if (!attribute_name) {
 				attribute_name = table_name;
 				table_name = default_table;
-				value.name = attribute_name;
+				if (!value.name) {
+					// legacy attribute
+					value.name = attribute_name;
+					value.indexed = !value.is_hash_attribute;
+				}
 			}
 			defined_tables?.add(table_name);
 			let table_def = tables_to_load.get(table_name);
