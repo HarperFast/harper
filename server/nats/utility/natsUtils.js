@@ -102,6 +102,7 @@ module.exports = {
 	closeConnection,
 	getJsmServerName,
 	addNatsMsgHeader,
+	updateIngestStreamConsumer,
 };
 
 /**
@@ -659,6 +660,30 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 		} else {
 			throw e;
 		}
+	}
+}
+
+async function updateIngestStreamConsumer() {
+	const { jsm } = await getNATSReferences();
+	const consumer_info = await jsm.consumers.info(
+		nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+		nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name
+	);
+
+	if (consumer_info.config.deliver_subject) {
+		hdb_logger.info('Removing old nats push consumer from ingest stream');
+		await jsm.consumers.delete(
+			nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+			nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name
+		);
+
+		hdb_logger.info('Adding pull consumer to ingest stream');
+		await jsm.consumers.add(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, {
+			ack_policy: AckPolicy.Explicit,
+			durable_name: nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name,
+			deliver_policy: DeliverPolicy.All,
+			max_ack_pending: 10000,
+		});
 	}
 }
 
