@@ -10,6 +10,7 @@ const hdb_terms = require('../hdbTerms');
 const assignCMDENVVariables = require('../assignCmdEnvVariables');
 const os = require('os');
 const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
+const { _assignPackageExport } = require('../../index');
 
 const native_console_methods = {};
 for (let key in console) {
@@ -71,7 +72,7 @@ module.exports = {
 	OUTPUTS,
 	AuthAuditLog,
 };
-
+_assignPackageExport('logger', module.exports);
 /**
  * Get the log settings from the settings file.
  * If the settings file doesn't exist (during install) check for command or env vars, if there aren't
