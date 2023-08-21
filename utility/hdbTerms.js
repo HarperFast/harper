@@ -357,7 +357,7 @@ const OPERATIONS_ENUM = {
 	GET_COMPONENTS: 'get_components',
 	GET_COMPONENT_FILE: 'get_component_file',
 	SET_COMPONENT_FILE: 'set_component_file',
-	DROP_COMPONENT_FILE: 'drop_component_file',
+	DROP_COMPONENT: 'drop_component',
 	DROP_CUSTOM_FUNCTION: 'drop_custom_function',
 	ADD_CUSTOM_FUNCTION_PROJECT: 'add_custom_function_project',
 	ADD_COMPONENT: 'add_component',

@@ -390,8 +390,8 @@ function initializeOperationFunctionMap() {
 		new OperationFunctionObject(custom_function_operations.setComponentFile)
 	);
 	op_func_map.set(
-		terms.OPERATIONS_ENUM.DROP_COMPONENT_FILE,
-		new OperationFunctionObject(custom_function_operations.dropComponentFile)
+		terms.OPERATIONS_ENUM.DROP_COMPONENT,
+		new OperationFunctionObject(custom_function_operations.dropComponent)
 	);
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTION,

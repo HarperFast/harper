@@ -50,6 +50,7 @@ module.exports = {
 	initOldConfig,
 	getConfigFromFile,
 	getConfigFilePath,
+	deleteConfigFromFile,
 };
 
 /**
@@ -649,4 +650,13 @@ function initOldConfig(old_config_path) {
 function getConfigFromFile(param) {
 	const config_file = readConfigFile();
 	return _.get(config_file, param.replaceAll('_', '.'));
+}
+
+function deleteConfigFromFile(param) {
+	const config_file_path = getConfigFilePath(hdb_utils.getPropsFilePath());
+	const config_doc = parseYamlDoc(config_file_path);
+	config_doc.deleteIn(param);
+	const hdb_root = config_doc.getIn(['rootPath']);
+	const config_file_location = path.join(hdb_root, hdb_terms.HDB_CONFIG_FILE);
+	fs.writeFileSync(config_file_location, String(config_doc));
 }

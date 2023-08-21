@@ -422,7 +422,7 @@ if (isMainThread) {
 				queued_restart = setTimeout(async () => {
 					if (before_restart) await before_restart();
 					await restartWorkers();
-					console.log('Reloaded HarperDB components');
+					harper_logger.info('Reloaded HarperDB components');
 				}, 100);
 			}
 		}
