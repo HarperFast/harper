@@ -663,6 +663,11 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 	}
 }
 
+/**
+ * 4.2 ingest stream got a new type of consumer.
+ * This function will facilitate the consumer update, if it is required.
+ * @returns {Promise<void>}
+ */
 async function updateIngestStreamConsumer() {
 	const { jsm } = await getNATSReferences();
 	const consumer_info = await jsm.consumers.info(
