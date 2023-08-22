@@ -334,11 +334,6 @@ async function packageComponent(req) {
 		}
 	}
 
-	//const tmp_project_dir = path.join(TMP_PATH, project);
-	// const tmp_package_dir = path.join(tmp_project_dir, 'package');
-	// fs.ensureDirSync(tmp_package_dir);
-	// await fs.copy(path_to_project, tmp_package_dir, { overwrite: true });
-
 	const file = path.join(TMP_PATH, `${project}.tar`);
 	let tar_opts = {};
 	if (req.skip_node_modules === true || req.skip_node_modules === 'true') {
@@ -360,7 +355,7 @@ async function packageComponent(req) {
 	// read the output into base64
 	const payload = fs.readFileSync(file, { encoding: 'base64' });
 
-	//await fs.remove(file);
+	await fs.remove(file);
 
 	// return the package payload as base64-encoded string
 	return { project, payload };
