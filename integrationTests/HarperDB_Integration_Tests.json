@@ -64145,7 +64145,9 @@
 									"",
 									"pm.test(\"delete job started\", function () {    ",
 									"    pm.expect(pm.response.json().message).to.include(\"Starting job with id\")",
-									"});"
+									"});",
+									"",
+									"setTimeout(()=>{}, 5000)"
 								],
 								"type": "text/javascript"
 							}
