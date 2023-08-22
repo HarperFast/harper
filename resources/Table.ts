@@ -170,8 +170,12 @@ export function makeTable(options) {
 						Resource.subscribe && (!Resource.subscribe.reliesOnPrototype || Resource.prototype.subscribe);
 					// if subscriptions come in out-of-order, we need to track deletes to ensure consistency
 					if (has_subscribe && track_deletes == undefined) track_deletes = true;
+					const subscribe_on_this_thread = Resource.subscribeOnThisThread
+						? Resource.subscribeOnThisThread(getWorkerIndex())
+						: getWorkerIndex() === 0;
 					const subscription =
 						has_subscribe &&
+						subscribe_on_this_thread &&
 						(await Resource.subscribe?.({
 							// this is used to indicate that all threads are (presumably) making this subscription
 							// and we do not need to propagate events across threads (more efficient)
@@ -216,7 +220,12 @@ export function makeTable(options) {
 											}
 										}
 										if (has_changes) {
-											table({ table: table_name, database: database_name, attributes: updated_attributes });
+											table({
+												table: table_name,
+												database: database_name,
+												attributes: updated_attributes,
+												origin: 'cluster',
+											});
 											signalling.signalSchemaChange(
 												new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_TABLE, database_name, table_name)
 											);
@@ -357,10 +366,7 @@ export function makeTable(options) {
 		static Source: typeof Resource;
 
 		static get(request, context) {
-			if (
-				request &&
-				((typeof request === 'object' && !Array.isArray(request) && request.url === '/') || request === '/')
-			)
+			if (request && typeof request === 'object' && !Array.isArray(request) && request.url === '')
 				return {
 					// basically a describe call
 					recordCount: this.getRecordCount(),
@@ -675,7 +681,13 @@ export function makeTable(options) {
 						if (record[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
 						this[RECORD_PROPERTY] = record;
 					}
-					harper_logger.trace(`Checking timestamp for put`, id, this[VERSION_PROPERTY] > txn_time, this[VERSION_PROPERTY], txn_time);
+					harper_logger.trace(
+						`Checking timestamp for put`,
+						id,
+						this[VERSION_PROPERTY] > txn_time,
+						this[VERSION_PROPERTY],
+						txn_time
+					);
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
@@ -762,7 +774,8 @@ export function makeTable(options) {
 			const txn = this._txnForRequest();
 			const reverse = request.reverse === true;
 			let conditions = request.conditions;
-			if (!conditions) conditions = Array.isArray(request) ? request : [];
+			if (!conditions)
+				conditions = Array.isArray(request) ? request : request[Symbol.iterator] ? Array.from(request) : [];
 			else if (conditions.length === undefined) conditions = Array.from(conditions);
 			if (this[ID_PROPERTY]) {
 				conditions = [{ attribute: null, comparator: 'prefix', value: this[ID_PROPERTY] }].concat(conditions);
