@@ -6,7 +6,6 @@ const path = require('path');
 const tar = require('tar-fs');
 const uuidV4 = require('uuid').v4;
 const normalize = require('normalize-path');
-const { parentPort } = require('worker_threads');
 
 const validator = require('./operationsValidation');
 const log = require('../utility/logging/harper_logger');
@@ -42,7 +41,6 @@ function isCFEnabled() {
  * @return Object.<String>
  */
 function customFunctionsStatus() {
-	console.log(`getting custom api status`);
 	log.trace(`getting custom api status`);
 	let response = {};
 
@@ -336,25 +334,19 @@ async function packageComponent(req) {
 		}
 	}
 
-	// npm requires the contents of a module to be in a 'package' directory.
-	const tmp_project_dir = path.join(TMP_PATH, project);
-	const tmp_package_dir = path.join(tmp_project_dir, 'package');
-	fs.ensureDirSync(tmp_package_dir);
-	await fs.copy(path_to_project, tmp_package_dir, { overwrite: true });
-
 	const file = path.join(TMP_PATH, `${project}.tar`);
 	let tar_opts = {};
 	if (req.skip_node_modules === true || req.skip_node_modules === 'true') {
 		// Create options for tar module that will exclude the CF projects node_modules directory.
 		tar_opts = {
 			ignore: (name) => {
-				return name.includes(path.join(tmp_package_dir, 'node_modules'));
+				return name.includes(path.join(path_to_project, 'node_modules'));
 			},
 		};
 	}
 
 	// pack the directory
-	tar.pack(tmp_project_dir, tar_opts).pipe(fs.createWriteStream(file, { overwrite: true }));
+	tar.pack(path_to_project, tar_opts).pipe(fs.createWriteStream(file, { overwrite: true }));
 
 	// wait for a second
 	// eslint-disable-next-line no-magic-numbers
@@ -363,7 +355,6 @@ async function packageComponent(req) {
 	// read the output into base64
 	const payload = fs.readFileSync(file, { encoding: 'base64' });
 
-	await fs.remove(tmp_project_dir);
 	await fs.remove(file);
 
 	// return the package payload as base64-encoded string
@@ -373,9 +364,7 @@ async function packageComponent(req) {
 /**
  * Can deploy a component in multiple ways. If a 'package' is provided all it will do is write that package to
  * harperdb-config, when HDB is restarted the package will be installed in hdb/node_modules. If a base64 encoded string is passed it
- * will write string to a tar file in the hdb/components dir. When deploying with a payload and bypass_config: true
- * is provided it will extract the tar in hdb/components. If bypass_config is false it will not extract tar file but
- * instead add ref to it in harper-config which will install the component in hdb/node_modules on restart/run
+ * will write string to a temp tar file and extract that file into the deployed project in hdb/components.
  * @param req
  * @returns {Promise<string>}
  */
@@ -390,28 +379,16 @@ async function deployComponent(req) {
 	}
 
 	const cf_dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
-	let { project, payload, package: pkg, bypass_config } = req;
+	let { project, payload, package: pkg } = req;
 	log.trace(`deploying component`, project);
-	bypass_config = bypass_config === true;
-
-	if (bypass_config && pkg) {
-		throw new Error('Cannot bypass_config when deploying with a package');
-	}
 
 	if (!payload && !pkg) {
 		throw new Error("'payload' or 'package' must be provided");
 	}
 
-	if (!bypass_config) {
-		if (payload) {
-			pkg = path.join(cf_dir, project + '.tar');
-			await fs.outputFile(pkg, payload, { encoding: 'base64' });
-		}
-
-		// Adds package to harperdb-config and then relies on restart to call install on the new app
-		config_utils.updateConfigValue(`${project}_package`, pkg, undefined, false, false, true);
-	} else {
+	if (payload) {
 		const path_to_project = path.join(cf_dir, project);
+		pkg = 'file:' + path_to_project;
 		// check if the project exists, if it doesn't, create it.
 		await fs.ensureDir(path_to_project);
 
@@ -433,27 +410,30 @@ async function deployComponent(req) {
 
 		// delete the file
 		await fs.unlink(temp_file_path);
-
-		// HDB will package a component into a 'package` folder, this is done for npm install,
-		// however if we are here npm install is not being used, so we copy/remove component code up one dir.
-		const dir = await fs.readdir(path_to_project);
-		if (
-			(dir.length === 1 && dir.includes('package')) ||
-			(dir.length === 2 && dir.includes('package') && dir.includes('.DS_Store'))
-		) {
-			await fs.copy(path.join(path_to_project, 'package'), path_to_project);
-			await fs.remove(path.join(path_to_project, 'package'));
-		}
 	}
+
+	// Adds package to harperdb-config and then relies on restart to call install on the new app
+	config_utils.updateConfigValue(`${project}_package`, pkg, undefined, false, false, true);
 
 	return `Successfully deployed: ${project}`;
 }
-
 /**
  * Gets a JSON directory tree of the components dir and all nested files/folders
  * @returns {Promise<*>}
  */
-async function getComponentFiles() {
+async function getComponents() {
+	const all_config = config_utils.getConfiguration();
+	let comps = [];
+	for (const element in all_config) {
+		if (all_config[element]?.package) {
+			// Do not return packages that are file paths.
+			if (all_config[element].package.startsWith('file:')) {
+				continue;
+			}
+			comps.push(Object.assign(all_config[element], { name: element }));
+		}
+	}
+
 	// Recursive function that will traverse the components dir and build json
 	// directory tree as it goes.
 	const walk_dir = async (dir, result) => {
@@ -484,7 +464,7 @@ async function getComponentFiles() {
 
 	return walk_dir(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT), {
 		name: env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT).split(path.sep).slice(-1).pop(),
-		entries: [],
+		entries: comps,
 	});
 }
 
@@ -541,22 +521,20 @@ async function setComponentFile(req) {
  * @param req
  * @returns {Promise<string>}
  */
-async function dropComponentFile(req) {
+async function dropComponent(req) {
 	const validation = validator.dropComponentFileValidator(req);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
 	const project_path = req.file ? path.join(req.project, req.file) : req.project;
-	const path_to_comp = req.file
-		? path.join(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT), project_path)
-		: path.join(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT), project_path);
+	const path_to_comp = path.join(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT), project_path);
 
-	if (!(await fs.pathExists(path_to_comp))) {
-		throw new Error(`${project_path} does not exist`);
+	if (await fs.pathExists(path_to_comp)) {
+		await fs.remove(path_to_comp);
 	}
 
-	await fs.remove(path_to_comp);
+	config_utils.deleteConfigFromFile([req.project]);
 
 	return 'Successfully dropped: ' + project_path;
 }
@@ -571,8 +549,8 @@ module.exports = {
 	dropCustomFunctionProject,
 	packageComponent,
 	deployComponent,
-	getComponentFiles,
+	getComponents,
 	getComponentFile,
 	setComponentFile,
-	dropComponentFile,
+	dropComponent,
 };
