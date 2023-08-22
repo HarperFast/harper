@@ -334,6 +334,7 @@ async function packageComponent(req) {
 		}
 	}
 
+	await fs.ensureDir(TMP_PATH);
 	const file = path.join(TMP_PATH, `${project}.tar`);
 	let tar_opts = {};
 	if (req.skip_node_modules === true || req.skip_node_modules === 'true') {
