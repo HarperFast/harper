@@ -352,6 +352,7 @@ interface TableDefinition {
 	trackDeletes?: boolean;
 	attributes: any[];
 	schemaDefined?: boolean;
+	origin?: string;
 }
 /**
  * Ensure that we have this database object (that holds a set of tables) set up
@@ -654,7 +655,7 @@ export function table({
 	Table.origin = origin;
 	if (has_changes) {
 		for (const listener of table_listeners) {
-			listener(Table, true);
+			listener(Table, origin !== 'cluster');
 		}
 	}
 	if (expiration) Table.setTTLExpiration(+expiration);
