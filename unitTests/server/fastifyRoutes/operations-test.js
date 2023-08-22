@@ -16,15 +16,18 @@ const { expect } = chai;
 describe('Test custom functions operations', () => {
 	let sandbox = sinon.createSandbox();
 	let CF_DIR_ROOT = path.resolve(__dirname, 'custom_functions');
+	let TMP_DIR = path.resolve(__dirname, '../../envDir/tmp');
 
 	before(() => {
 		fs.removeSync(CF_DIR_ROOT);
 		fs.ensureDirSync(CF_DIR_ROOT);
+		fs.ensureDirSync(TMP_DIR);
 		env.initTestEnvironment();
 	});
 
 	after(() => {
 		fs.removeSync(CF_DIR_ROOT);
+		fs.removeSync(TMP_DIR);
 		sandbox.restore();
 	});
 
