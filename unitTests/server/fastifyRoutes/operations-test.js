@@ -16,15 +16,18 @@ const { expect } = chai;
 describe('Test custom functions operations', () => {
 	let sandbox = sinon.createSandbox();
 	let CF_DIR_ROOT = path.resolve(__dirname, 'custom_functions');
+	let TMP_DIR = path.resolve(__dirname, '../../envDir/tmp');
 
 	before(() => {
 		fs.removeSync(CF_DIR_ROOT);
 		fs.ensureDirSync(CF_DIR_ROOT);
+		fs.ensureDirSync(TMP_DIR);
 		env.initTestEnvironment();
 	});
 
 	after(() => {
 		fs.removeSync(CF_DIR_ROOT);
+		fs.removeSync(TMP_DIR);
 		sandbox.restore();
 	});
 
@@ -129,8 +132,8 @@ describe('Test custom functions operations', () => {
 			await createMockComponents();
 		});
 
-		it('Test getComponentFiles happy path', async () => {
-			const result = await operations.getComponentFiles();
+		it('Test getComponents happy path', async () => {
+			const result = await operations.getComponents();
 			expect(result.name).to.equal('custom_functions');
 			expect(result.entries[0].name).to.equal('my-cool-component');
 			expect(result.entries[0].entries.length).to.equal(2);

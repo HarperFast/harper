@@ -22,6 +22,7 @@ module.exports = {
 	deployComponentValidator,
 	setComponentFileValidator,
 	getComponentFileValidator,
+	dropComponentFileValidator,
 };
 
 /**
@@ -139,11 +140,23 @@ function setComponentFileValidator(req) {
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 		file: Joi.string().custom(checkFilePath).required(),
-		payload: Joi.string().required(),
+		payload: Joi.string().optional(),
 		encoding: Joi.string().valid('utf8', 'ASCII', 'binary', 'hex', 'base64', 'utf16le', 'latin1', 'ucs2').optional(),
 	});
 
 	return validator.validateBySchema(req, set_comp_schema);
+}
+
+function dropComponentFileValidator(req) {
+	const drop_comp_schema = Joi.object({
+		project: Joi.string()
+			.pattern(PROJECT_FILE_NAME_REGEX)
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
+		file: Joi.string().custom(checkFilePath).optional(),
+	});
+
+	return validator.validateBySchema(req, drop_comp_schema);
 }
 
 function getComponentFileValidator(req) {

@@ -39,16 +39,14 @@ async function getCompartment(getGlobalVars) {
 		stackFiltering: 'verbose',
 	});
 
-	return (compartment = new (Compartment as typeof CompartmentClass)(
-		Object.assign(
-			{
-				console,
-				Math,
-				Date,
-				fetch: secureOnlyFetch,
-			},
-			getGlobalVars()
-		),
+	compartment = new (Compartment as typeof CompartmentClass)(
+		{
+			console,
+			Math,
+			Date,
+			fetch: secureOnlyFetch,
+			...getGlobalVars(),
+		},
 		{
 			//harperdb: { Resource, tables, databases }
 		},
@@ -74,7 +72,8 @@ async function getCompartment(getGlobalVars) {
 				return new StaticModuleRecord(moduleText, module_specifier);
 			},
 		}
-	));
+	);
+	return compartment;
 }
 
 /**

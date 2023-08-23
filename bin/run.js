@@ -109,7 +109,6 @@ async function initialize(called_by_install = false, called_by_main = false) {
 	}
 
 	check_jwt_tokens();
-	//await checkAuditLogEnvironmentsExist();
 	writeLicenseFromVars();
 
 	const clustering_enabled = hdb_utils.autoCastBoolean(env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY));

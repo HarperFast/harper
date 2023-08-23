@@ -1,5 +1,5 @@
-import { databases, getDatabases, onUpdatedTable } from '../../resources/databases';
-import { ID_PROPERTY, Resource, TRANSACTIONS_PROPERTY, USER_PROPERTY } from '../../resources/Resource';
+import { getDatabases, onUpdatedTable } from '../../resources/databases';
+import { ID_PROPERTY, Resource } from '../../resources/Resource';
 import { publishToStream } from './utility/natsUtils';
 import { SUBJECT_PREFIXES } from './utility/natsTerms';
 import { createNatsTableStreamName } from '../../security/cryptoHash';
@@ -12,7 +12,6 @@ import hdb_terms from '../../utility/hdbTerms';
 import * as harper_logger from '../../utility/logging/harper_logger';
 import { Context } from '../../resources/ResourceInterface';
 
-let publishing_databases = new Map();
 let nats_disabled;
 export function start() {
 	if (env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) assignReplicationSource();
@@ -20,7 +19,7 @@ export function start() {
 export function disableNATS(disabled = true) {
 	nats_disabled = disabled;
 }
-const MAX_INGEST_THREADS = 1;
+const MAX_INGEST_THREADS = 2;
 let immediateNATSTransaction, subscribed_to_nodes;
 /**
  * Replication functions by acting as a "source" for tables. With replicated tables, the local tables are considered
@@ -41,7 +40,6 @@ function assignReplicationSource() {
 			setNATSReplicator(table_name, database_name, Table);
 		}
 	}
-	publishing_databases = new Map();
 	onUpdatedTable((Table, is_changed) => {
 		setNATSReplicator(Table.tableName, Table.databaseName, Table);
 		if (is_changed) publishSchema(Table);
@@ -133,7 +131,7 @@ export function setNATSReplicator(table_name, db_name, Table) {
 				// define the other source as our source, so we can pass through to it
 				source = other_source;
 				// we can just delegate directly to the other get
-				if (source && source.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
+				if (source?.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
 					if (options.replicationSource) {
 						// if this source is a source for replication, we need to replicate data that
 						// is fulfilled from this source
@@ -164,11 +162,12 @@ export function setNATSReplicator(table_name, db_name, Table) {
 			 * of the table classes.
 			 */
 			static subscribe() {
-				if (getWorkerIndex() < MAX_INGEST_THREADS) {
-					const subscription = new IterableEventQueue();
-					setSubscription(db_name, table_name, subscription);
-					return subscription;
-				}
+				const subscription = new IterableEventQueue();
+				setSubscription(db_name, table_name, subscription);
+				return subscription;
+			}
+			static subscribeOnThisThread(worker_index) {
+				return worker_index < MAX_INGEST_THREADS;
 			}
 			static isNATSReplicator = true;
 		}
@@ -233,7 +232,7 @@ class NATSTransaction {
 	 * Once a transaction is completed, we put all the accumulated writes into a single NATS
 	 * message and publish it to the cluster
 	 */
-	commit() {
+	commit(timestamp) {
 		const node_name = env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 		const promises = [];
 		for (const [db, writes] of this.writes_by_db) {
@@ -252,7 +251,7 @@ class NATSTransaction {
 						table,
 						__origin: {
 							user: this.user?.username,
-							timestamp: this.transaction.timestamp,
+							timestamp,
 							node_name,
 						},
 					};

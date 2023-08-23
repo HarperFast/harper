@@ -186,7 +186,6 @@ export class Resource implements ResourceInterface {
 		},
 		{ hasContent: true, type: 'read' }
 	);
-	static query = this.search;
 
 	static copy = transactional(
 		function (resource: Resource, query?: Map, request: Request, data?: any) {
@@ -229,7 +228,7 @@ export class Resource implements ResourceInterface {
 		let is_collection;
 		if (typeof request.isCollection === 'boolean' && request.hasOwnProperty('isCollection'))
 			is_collection = request.isCollection;
-		else is_collection = id == null || (id.constructor === Array && id[id.length - 1] == null);
+		else is_collection = id == null || (Array.isArray(id) && id[id.length - 1] == null);
 		// if it is a collection and we have a collection class defined, use it
 		const constructor = (is_collection && this.Collection) || this;
 		if (!context) context = context === undefined ? request : {};
@@ -358,13 +357,21 @@ function pathToId(path, Resource) {
 		if (path.startsWith('$')) path = parseInt(path, 36);
 		return Resource.coerceId(decodeURIComponent(path));
 	}
-	const ids = path.split('/');
-	for (let i = 0; i < ids.length; i++) {
-		ids[i] = Resource.coerceId(decodeURIComponent(ids[i]));
+	const string_ids = path.split('/');
+	const ids = new MulitPartId(string_ids.length);
+	for (let i = 0; i < string_ids.length; i++) {
+		ids[i] = Resource.coerceId(decodeURIComponent(string_ids[i]));
 	}
 	return ids;
 }
-
+/**
+ * An array for ids that toString's back to slash-delimited string
+ */
+class MulitPartId extends Array {
+	toString() {
+		return this.join('/');
+	}
+}
 /**
  * This is responsible for arranging arguments in the main static methods and creating the appropriate context and default transaction wrapping
  * @param action
@@ -384,6 +391,7 @@ function transactional(action, options) {
 			if (context) {
 				// if there are three arguments, it is id, data, context
 				data = data_or_context;
+				context = context[CONTEXT] || context;
 			} else if (data_or_context) {
 				// two arguments, more possibilities:
 				if (
@@ -394,17 +402,21 @@ function transactional(action, options) {
 					// (data, context) form
 					data = id_or_query;
 					id = data[this.primaryKey] ?? null;
-					context = data_or_context;
+					context = data_or_context[CONTEXT] || data_or_context;
 				} else {
 					// (id, data) form
 					data = data_or_context;
 				}
+			} else {
+				// single argument form, just data
+				data = id_or_query;
+				id = data[ID_PROPERTY] ?? data[this.primaryKey] ?? null;
 			}
 			// otherwise handle methods for get, delete, etc.
 			// first, check to see if it is two argument
 		} else if (data_or_context) {
 			// (id, context), preferred form used for methods without a body
-			context = data_or_context;
+			context = data_or_context[CONTEXT] || data_or_context;
 		} else if (id_or_query && typeof id_or_query === 'object' && !Array.isArray(id_or_query)) {
 			// (request) a structured id/query, which we will use as the context
 			context = id_or_query;
@@ -413,22 +425,26 @@ function transactional(action, options) {
 			let parse_url;
 			if (typeof id_or_query === 'string') {
 				id = id_or_query;
-				parse_url = id[0] === '/';
 			} else if (typeof id_or_query === 'object' && id_or_query) {
 				// it is a query
 				query = id_or_query;
 				if (id_or_query[Symbol.iterator]) {
 					// get the id part from an iterable query
-					let id = [];
+					id = [];
 					for (const part of id_or_query) {
 						if (typeof part === 'object' && part) break;
 						id.push(part);
 					}
 					if (id.length === 0) id = null;
-					else if (id.length === 1) id = id[0];
+					else {
+						if (id.length === 1) id = id[0];
+						if (query.slice) {
+							query = query.slice(id.length, query.length);
+							if (query.length === 0) query = null;
+						}
+					}
 				} else {
 					if (typeof (id = id_or_query.url) === 'string') {
-						if (id[0] !== '/') throw new URIError(`Invalid local URL ${id}, must start with slash`);
 						parse_url = true;
 					}
 					if (id === undefined) id = id_or_query.id ?? null;
@@ -439,7 +455,12 @@ function transactional(action, options) {
 				const search_index = id.indexOf('?');
 				if (search_index > -1) {
 					const parsed_query = this.parseQuery(id.slice(search_index + 1));
-					query = query ? Object.assign(query, parsed_query) : parsed_query;
+					if (query) {
+						query[Symbol.iterator] = () => parsed_query[Symbol.iterator]();
+						if (parsed_query.select) query.select = parsed_query.select;
+						if (parsed_query.offset) query.offset = parsed_query.offset;
+						if (parsed_query.limit) query.limit = parsed_query.limit;
+					} else query = parsed_query;
 					id = id.slice(0, search_index);
 				}
 				// handle paths of the form /path/id.property

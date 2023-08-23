@@ -23,7 +23,10 @@ const session_table = table({
 	database: 'system',
 	attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'user' }],
 });
-
+const ENABLE_SESSIONS = env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS);
+const AUTHORIZE_LOCAL = env.get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL);
+const LOG_AUTH_SUCCESSFUL = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL);
+const LOG_AUTH_FAILED = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED);
 let authorization_cache = new Map();
 // TODO: Make this not return a promise if it can be fulfilled synchronously (from cache)
 export async function authentication(request, next_handler) {
@@ -44,24 +47,23 @@ export async function authentication(request, next_handler) {
 			if (request.method === 'OPTIONS') {
 				// preflight request
 				const headers = {
-					'Access-Control-Allow-Method': 'POST, GET, PUT, DELETE, PATCH, OPTIONS',
+					'Access-Control-Allow-Methods': 'POST, GET, PUT, DELETE, PATCH, OPTIONS',
 					'Access-Control-Allow-Headers': 'Accept, Content-Type, Authorization',
 					'Access-Control-Allow-Origin': origin,
 				};
-				if (env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS)) headers['Access-Control-Allow-Credentials'] = 'true';
+				if (ENABLE_SESSIONS) headers['Access-Control-Allow-Credentials'] = 'true';
 				return {
 					status: 200,
 					headers,
 				};
 			}
 			response_headers.push('Access-Control-Allow-Origin', origin);
-			if (env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS))
-				response_headers.push('Access-Control-Allow-Credentials', 'true');
+			if (ENABLE_SESSIONS) response_headers.push('Access-Control-Allow-Credentials', 'true');
 		}
 	}
 	let session_id;
 	let session;
-	if (env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS)) {
+	if (ENABLE_SESSIONS) {
 		// we prefix the cookie name with the origin so that we can partition/separate session/authentications
 		// host, to protect against CSRF
 		const cookie_prefix = (origin ? origin.replace(/^https?:\/\//, '').replace(/\W/, '_') + '-' : '') + 'hdb-session=';
@@ -114,7 +116,7 @@ export async function authentication(request, next_handler) {
 							if (error.message === 'invalid token') {
 								// see if they provided a refresh token; we can allow that and pass it on to operations API
 								try {
-									new_user = await validateRefreshToken(credentials);
+									await validateRefreshToken(credentials);
 									return {
 										// we explicitly declare we don't want to handle this because the operations
 										// API has its own logic for handling this
@@ -128,7 +130,7 @@ export async function authentication(request, next_handler) {
 						break;
 				}
 			} catch (err) {
-				if (env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED)) {
+				if (LOG_AUTH_FAILED) {
 					const failed_attempt = authorization_cache.get(credentials);
 					if (!failed_attempt) {
 						authorization_cache.set(credentials, credentials);
@@ -143,21 +145,17 @@ export async function authentication(request, next_handler) {
 			}
 
 			authorization_cache.set(authorization, new_user);
-			if (env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL))
-				authAuditLog(new_user.username, AUTH_AUDIT_STATUS.SUCCESS, strategy);
+			if (LOG_AUTH_SUCCESSFUL) authAuditLog(new_user.username, AUTH_AUDIT_STATUS.SUCCESS, strategy);
 		}
 
 		request.user = new_user;
 	} else if (session?.user) {
 		// or should this be cached in the session?
 		request.user = await server.auth(session.user, null, false);
-	} else if (
-		env.get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) &&
-		(request.ip?.includes('127.0.0.1') || request.ip == '::1')
-	) {
+	} else if (AUTHORIZE_LOCAL && (request.ip?.includes('127.0.0.1') || request.ip == '::1')) {
 		request.user = new_user = await getSuperUser();
 	}
-	if (env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS)) {
+	if (ENABLE_SESSIONS) {
 		request.session.update = function (updated_session) {
 			if (!session_id) {
 				session_id = uuid();

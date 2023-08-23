@@ -48,7 +48,7 @@ const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdb_err
 const { UserEventMsg } = require('../server/threads/itc');
 const _ = require('lodash');
 const { _assignPackageExport } = require('../index');
-_assignPackageExport('user', findAndValidateUser);
+_assignPackageExport('getUser', findAndValidateUser);
 
 const USER_ATTRIBUTE_ALLOWLIST = {
 	username: true,
@@ -560,7 +560,7 @@ async function getSuperUser() {
 	if (!global.hdb_users) {
 		await setUsersToGlobal();
 	}
-	for (let [username, user] of global.hdb_users) {
+	for (let [, user] of global.hdb_users) {
 		if (user.role.role === 'super_user') return user;
 	}
 }

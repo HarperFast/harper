@@ -51,6 +51,7 @@ module.exports = {
 	getConfigFromFile,
 	getConfigFilePath,
 	addConfig,
+	deleteConfigFromFile,
 };
 
 /**
@@ -664,4 +665,13 @@ async function addConfig(top_level_element, values) {
 		? config_doc.setIn([top_level_element], values)
 		: config_doc.addIn([top_level_element], values);
 	await fs.writeFile(getConfigFilePath(), String(config_doc));
+}
+
+function deleteConfigFromFile(param) {
+	const config_file_path = getConfigFilePath(hdb_utils.getPropsFilePath());
+	const config_doc = parseYamlDoc(config_file_path);
+	config_doc.deleteIn(param);
+	const hdb_root = config_doc.getIn(['rootPath']);
+	const config_file_location = path.join(hdb_root, hdb_terms.HDB_CONFIG_FILE);
+	fs.writeFileSync(config_file_location, String(config_doc));
 }

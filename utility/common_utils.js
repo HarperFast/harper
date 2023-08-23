@@ -18,6 +18,8 @@ const https = require('https');
 const http = require('http');
 const { hdb_errors } = require('./errors/hdbError');
 
+const ISO_DATE = /^((\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d\.\d+([+-][0-2]\d:[0-5]\d|Z))|(\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d([+-][0-2]\d:[0-5]\d|Z))|(\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d([+-][0-2]\d:[0-5]\d|Z)))$/;
+
 const async_set_timeout = require('util').promisify(setTimeout);
 const HDB_PROC_START_TIMEOUT = 100;
 const CHECK_PROCS_LOOP_LIMIT = 5;
@@ -29,9 +31,12 @@ const CHARACTER_LIMIT = 255;
 //Because undefined will not return in a JSON response, we convert undefined to null when autocasting
 const AUTOCAST_COMMON_STRINGS = {
 	true: true,
+	TRUE: true,
+	FALSE: false,
 	false: false,
 	undefined: null,
 	null: null,
+	NULL: null,
 	NaN: NaN,
 };
 module.exports = {
@@ -84,6 +89,8 @@ module.exports = {
 	getEnvCliRootPath,
 	noBootFile,
 	httpRequest,
+	transformReq,
+	convertToMS,
 	PACKAGE_ROOT: terms.PACKAGE_ROOT,
 };
 
@@ -231,6 +238,10 @@ function autoCast(data) {
 	if (autoCasterIsNumberCheck(data) === true) {
 		return Number(data);
 	}
+
+	if(ISO_DATE.test(data))
+		return new Date(data);
+
 	return data;
 }
 
@@ -573,14 +584,15 @@ function getClusterUser(users, cluster_user_name) {
  * through bind to this function.
  */
 function promisifyPapaParse() {
-	papa_parse.parsePromise = function (stream, chunk_func) {
+	papa_parse.parsePromise = function (stream, chunk_func, typing_function) {
 		return new Promise(function (resolve, reject) {
 			papa_parse.parse(stream, {
 				header: true,
 				transformHeader: removeBOM,
 				chunk: chunk_func.bind(null, reject),
 				skipEmptyLines: true,
-				dynamicTyping: true,
+				transform: typing_function,
+				dynamicTyping: false,
 				error: reject,
 				complete: resolve,
 			});
@@ -879,4 +891,42 @@ function httpRequest(options, data) {
 		req.write(JSON.stringify(data));
 		req.end();
 	});
+}
+
+/**
+ * Will set default schema/database or set database to schema
+ * @param req
+ */
+function transformReq(req) {
+	if (!req.schema && !req.database) {
+		req.schema = terms.DEFAULT_DATABASE_NAME;
+		return;
+	}
+	if (req.database) req.schema = req.database;
+}
+
+
+function convertToMS(interval) {
+	let seconds = 0;
+	if (typeof interval === 'number') seconds = interval;
+	if (typeof interval === 'string') {
+		seconds = parseFloat(interval);
+		switch (interval.slice(-1)) {
+			case 'M':
+				seconds *= 86400 * 30;
+				break;
+			case 'D':
+			case 'd':
+				seconds *= 86400;
+				break;
+			case 'H':
+			case 'h':
+				seconds *= 3600;
+				break;
+			case 'm':
+				seconds *= 60;
+				break;
+		}
+	}
+	return seconds * 1000;
 }

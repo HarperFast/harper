@@ -8,6 +8,9 @@ docker_file="${DOCKERFILE:=utility/Docker/Dockerfile}"
 # default to mainline "harperdb/harperdb" image if not defined
 docker_image="${DOCKER_IMAGE:=harperdb/harperdb}"
 
+# default to false for tagging this release as latest
+tag_latest="${TAG_LATEST:=false}"
+
 docker_tag="${HARPERDB_VERSION}"
 
 # add the GITHUB_RUN_NUMBER if we are publishing to the private repo.
@@ -28,6 +31,12 @@ docker_output="type=registry"
 if [[ "${PUBLISH}" == "tar" ]]; then
   docker_platform="linux/amd64"
   docker_output="type=docker,dest=docker-harperdb_${docker_tag}.tar"
+  tag_latest="false"
+fi
+
+registry_tags="--tag ${docker_image}:${docker_tag}"
+if [[ "${tag_latest}" == "true" ]]; then
+  registry_tags="${registry_tags} --tag ${docker_image}:latest"
 fi
 
 docker buildx build \
@@ -40,5 +49,4 @@ docker buildx build \
   --platform ${docker_platform} \
   --no-cache \
   --output ${docker_output} \
-  --tag ${docker_image}:latest \
-  --tag ${docker_image}:${docker_tag} .
+  ${registry_tags} .

@@ -1,7 +1,7 @@
 'use strict';
 const { isMainThread, parentPort, threadId } = require('worker_threads');
 const { Socket } = require('net');
-const { createServer } = require('http');
+const { createServer, IncomingMessage } = require('http');
 const { createServer: createSecureServer } = require('https');
 const { readFileSync } = require('fs');
 const harper_logger = require('../../utility/logging/harper_logger');
@@ -81,10 +81,12 @@ if (!isMainThread) {
 		});
 }
 
-function deliverSocket(fd, port, data) {
+function deliverSocket(fd_or_socket, port, data) {
 	// Create a socket and deliver it to the HTTP server
 	// HTTP server likes to allow half open sockets
-	let socket = fd >= 0 ? new Socket({ fd, readable: true, writable: true, allowHalfOpen: true }) : fd;
+	let socket = fd_or_socket?.read
+		? fd_or_socket
+		: new Socket({ fd: fd_or_socket, readable: true, writable: true, allowHalfOpen: true });
 	// for each socket, deliver the connection to the HTTP server handler/parser
 	let server = SERVERS[port];
 	if (server) {
@@ -236,6 +238,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 				if (is_operations_server) request.isOperationsServer = true;
 				// assign a more WHATWG compliant headers object, this is our real standard interface
 				let response = await http_chain[port](request);
+				node_response.setHeader('Server', 'HarperDB');
 				if (response.status === -1) {
 					// This means the HDB stack didn't handle the request, and we can then cascade the request
 					// to the server-level handler, forming the bridge to the slower legacy fastify framework that expects
@@ -258,6 +261,17 @@ function getHTTPServer(port, secure, is_operations_server) {
 						});
 				}
 				// else just send the buffer/string
+				else if (body?.then)
+					body.then(
+						(body) => {
+							node_response.end(body);
+						},
+						(error) => {
+							node_response.writeHead(error.http_resp_code || 500);
+							node_response.end(error.toString());
+							harper_logger.error(error);
+						}
+					);
 				else node_response.end(body);
 			} catch (error) {
 				node_response.writeHead(error.http_resp_code || 500);
@@ -265,6 +279,12 @@ function getHTTPServer(port, secure, is_operations_server) {
 				harper_logger.error(error);
 			}
 		});
+		/* Should we use HTTP2 on upgrade?:
+		http_servers[port].on('upgrade', function upgrade(request, socket, head) {
+			wss.handleUpgrade(request, socket, head, function done(ws) {
+				wss.emit('connection', ws, request);
+			});
+		});*/
 		registerServer(http_servers[port], port);
 	}
 	return http_servers[port];
@@ -298,7 +318,7 @@ function unhandled(request) {
 	};
 }
 function onRequest(listener, options) {
-	httpServer(listener, Object.assign({ requestOnly: true }, options));
+	httpServer(listener, { requestOnly: true, ...options });
 }
 
 /**
@@ -327,6 +347,18 @@ function onSocket(listener, options) {
 	}
 	if (options.port) SERVERS[options.port] = listener;
 }
+// workaround for inability to defer upgrade from https://github.com/nodejs/node/issues/6339#issuecomment-570511836
+Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
+	get() {
+		return (
+			'connection' in this.headers &&
+			'upgrade' in this.headers &&
+			this.headers.connection.startsWith('Upgrade') &&
+			this.headers.upgrade.toLowerCase() == 'websocket'
+		);
+	},
+	set(v) {},
+});
 function onWebSocket(listener, options) {
 	for (let { port: port_num, secure } of getPorts(options)) {
 		if (!ws_servers[port_num]) {
@@ -374,14 +406,6 @@ class Request {
 		let url = node_request.url;
 		this[node_request_key] = node_request;
 		this.url = url;
-		/*		let question_index = url.indexOf('?');
-		if (question_index > -1) {
-			this.pathname = url.slice(0, question_index);
-			this.search = url.slice(question_index);
-		} else {
-			this.pathname = url;
-			this.search = '';
-		}*/
 		this.headers = node_request.headers;
 		this.headers.get = get;
 		this.responseMetadata = {};

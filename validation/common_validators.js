@@ -27,6 +27,24 @@ const hdb_schema_table = Joi.alternatives(
 	Joi.number()
 ).required();
 
+const hdb_database = Joi.alternatives(
+	Joi.string()
+		.min(1)
+		.max(common_validators.schema_length.maximum)
+		.pattern(schema_regex)
+		.messages({ 'string.pattern.base': '{:#label} ' + common_validators.schema_format.message }),
+	Joi.number()
+);
+
+const hdb_table = Joi.alternatives(
+	Joi.string()
+		.min(1)
+		.max(common_validators.schema_length.maximum)
+		.pattern(schema_regex)
+		.messages({ 'string.pattern.base': '{:#label} ' + common_validators.schema_format.message }),
+	Joi.number()
+).required();
+
 function checkValidTable(property_name, value) {
 	if (!value) return `'${property_name}' is required`;
 	if (typeof value !== 'string') return `'${property_name}' must be a string`;
@@ -37,7 +55,7 @@ function checkValidTable(property_name, value) {
 }
 function validateSchemaExists(value, helpers) {
 	if (!hdb_utils.doesSchemaExist(value)) {
-		return helpers.message(`Schema '${value}' does not exist`);
+		return helpers.message(`Database '${value}' does not exist`);
 	}
 
 	return value;
@@ -55,7 +73,7 @@ function validateTableExists(value, helpers) {
 function validateSchemaName(value, helpers) {
 	if (value.toLowerCase() === hdb_terms.SYSTEM_SCHEMA_NAME) {
 		return helpers.message(
-			`'subscriptions[${helpers.state.path[1]}]' invalid schema name, '${hdb_terms.SYSTEM_SCHEMA_NAME}' name is reserved`
+			`'subscriptions[${helpers.state.path[1]}]' invalid database name, '${hdb_terms.SYSTEM_SCHEMA_NAME}' name is reserved`
 		);
 	}
 
@@ -70,4 +88,6 @@ module.exports = {
 	validateTableExists,
 	validateSchemaName,
 	checkValidTable,
+	hdb_database,
+	hdb_table,
 };

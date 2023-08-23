@@ -67,7 +67,7 @@ describe('test REST calls', () => {
 			accept: 'application/cbor'
 		};
 		let response = await axios.put('http://localhost:9926/VariedProps/33', encode({
-			id: 33,
+			id: '33',
 			name: 'new record',
 		}), {
 			responseType: 'arraybuffer',
@@ -86,13 +86,17 @@ describe('test REST calls', () => {
 		});
 		assert.equal(response.status, 201);
 		assert.equal(typeof response.data, 'string');
+		let id = response.data;
+		response = await axios.delete('http://localhost:9926/VariedProps/' + id);
+		assert.equal(response.status, 200);
+
 	});
 	describe('describe', function() {
 		it('table describe with root url', async () => {
 			let response = await axios('http://localhost:9926/FourProp');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.recordCount, 10);
-			assert.equal(response.data.attributes.length, 4);
+			assert.equal(response.data.attributes.length, 5);
 			assert.equal(response.data.name, 'FourProp');
 		});
 
@@ -168,10 +172,17 @@ describe('test REST calls', () => {
 			assert.equal(response.data[4].age, 25);
 		});
 		it('do a less than query by numeric property with limit and offset', async () => {
-			let response = await axios('http://localhost:9926/FourProp/?age=lt=25&offset=1&limit=2');
+			let response = await axios('http://localhost:9926/FourProp/?age=lt=25&limit(1,3)');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 2);
 			assert.equal(response.data[1].age, 22);
+		});
+
+		it('do a less than query by numeric property with limit', async () => {
+			let response = await axios('http://localhost:9926/FourProp/?age=lt=25&limit(3)');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.length, 3);
+			assert.equal(response.data[2].age, 22);
 		});
 
 		it('by primary key', async () => {
@@ -184,7 +195,7 @@ describe('test REST calls', () => {
 		});
 
 		it('query with select two properties', async () => {
-			let response = await axios('http://localhost:9926/FourProp?age=lt=22&select=age,id');
+			let response = await axios('http://localhost:9926/FourProp?age=lt=22&select(age,id)');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 2);
 			assert.equal(response.data[1].age, 21);
@@ -193,17 +204,25 @@ describe('test REST calls', () => {
 			assert.equal(response.data[1].name, undefined);
 		});
 		it('query with select one properties', async () => {
-			let response = await axios('http://localhost:9926/FourProp?age=lt=22&select=age');
+			let response = await axios('http://localhost:9926/FourProp?age=lt=22&select(age)');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 2);
 			assert.equal(response.data[1], 21);
 		});
-		it('query with select two properties', async () => {
-			let response = await axios('http://localhost:9926/FourProp?age=lt=22&select=[age,id]');
+		it('query with select two properties as array', async () => {
+			let response = await axios('http://localhost:9926/FourProp?age=lt=22&select([age,id])');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 2);
 			assert.equal(response.data[1][0], 21);
 			assert.equal(response.data[1][1], 1);
 		});
+		it('query by date', async () => {
+			let response = await axios('http://localhost:9926/FourProp?birthday=gt=1993-01-22&birthday=lt=1994-11-22');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.length, 2);
+			assert.equal(response.data[0].birthday.slice(0,4), '1993');
+			assert.equal(response.data[1].birthday.slice(0,4), '1994');
+		});
+
 	});
 });

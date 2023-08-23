@@ -402,7 +402,6 @@ describe('Test update module', () => {
 		before(() => {
 			update_records_rw = update.__get__('updateRecords');
 			write_update_stub = sandbox.stub(insert, 'update');
-			post_operation_handler_stub = sandbox.stub(transact_to_clustering_utilities, 'postOperationHandler');
 		});
 
 		after(() => {
@@ -428,12 +427,6 @@ describe('Test update module', () => {
 
 			const results = await update_records_rw(fake_table, fake_records, hdb_user);
 			expect(results).to.eql(expected_result);
-		});
-
-		it('Tests updateRecords throws an error', async () => {
-			const expected_err = new Error('Error posting to cluster');
-			post_operation_handler_stub.throws(expected_err);
-			await test_utils.assertErrorAsync(update_records_rw, [args], expected_err);
 		});
 	});
 });

@@ -1,6 +1,5 @@
 'use strict';
 
-const { toJsMsg } = require('nats');
 const { decode } = require('msgpackr');
 const { isMainThread, parentPort, threadId } = require('worker_threads');
 const nats_utils = require('./utility/natsUtils');
@@ -11,6 +10,7 @@ const env_mgr = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 require('../threads/manageThreads');
 const crypto_hash = require('../../security/cryptoHash');
+const { recordAction, recordActionBinary } = require('../../resources/analytics');
 const { publishToStream } = nats_utils;
 
 const SUBSCRIPTION_OPTIONS = {
@@ -29,6 +29,7 @@ module.exports = {
 	workQueueListener,
 	setSubscription,
 	setIgnoreOrigin,
+	getDatabaseSubscriptions,
 };
 
 /**
@@ -63,6 +64,9 @@ function setSubscription(database, table, subscription) {
 		initialize().then(workQueueListener);
 	}
 }
+function getDatabaseSubscriptions() {
+	return database_subscriptions;
+}
 let ignore_origin;
 function setIgnoreOrigin(value) {
 	ignore_origin = value;
@@ -74,14 +78,13 @@ let operation_index = 0;
  * Uses an internal Nats consumer to subscribe to the stream of messages from the work queue and process each one.
  * @returns {Promise<void>}
  */
-async function workQueueListener(signal) {
-	const sub = nats_connection.subscribe(
-		`${nats_terms.WORK_QUEUE_CONSUMER_NAMES.deliver_subject}.${nats_connection.info.server_name}`,
-		SUBSCRIPTION_OPTIONS
+async function workQueueListener() {
+	const consumer = await js_client.consumers.get(
+		nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+		nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name
 	);
-	if (signal) signal.abort = () => sub.close();
-
-	for await (const message of sub) {
+	const messages = await consumer.consume();
+	for await (const message of messages) {
 		// ring style queue for awaiting operations for concurrency. await the entry from 100 operations ago:
 		await outstanding_operations[operation_index];
 		outstanding_operations[operation_index] = messageProcessor(message).catch((error) => {
@@ -113,14 +116,16 @@ if (!isMainThread) {
  * @returns {Promise<{}>}
  */
 async function messageProcessor(msg) {
-	const js_msg = toJsMsg(msg);
-	const entry = decode(js_msg.data);
+	const entry = decode(msg.data);
+	recordAction(msg.data.length, 'bytes-received', msg.subject, entry.operation, 'ingest');
 
 	// If the msg origin header matches this node the msg can be ignored because it would have already been processed.
-	let nats_msg_header = js_msg.headers;
+	let nats_msg_header = msg.headers;
 	const origin = nats_msg_header.get(nats_terms.MSG_HEADERS.ORIGIN);
-	if (origin === env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME) && !ignore_origin) {
-		js_msg.ack();
+	const echo_received = origin === env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME) && !ignore_origin;
+	recordActionBinary(echo_received, 'echo', msg.subject, entry.operation, 'ingest');
+	if (echo_received) {
+		msg.ack();
 		return;
 	}
 
@@ -141,13 +146,14 @@ async function messageProcessor(msg) {
 			table_name,
 			(records ? 'records: ' + records.map((record) => record.id) : '') + (ids ? 'ids: ' + ids : ''),
 			'with' + ' sequence:',
-			js_msg.seq
+			msg.seq
 		);
-		harper_logger.trace(`messageProcessor nats msg id: ${js_msg.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID)}`);
+		harper_logger.trace(`messageProcessor nats msg id: ${msg.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID)}`);
 		let onCommit;
 		if (!records) records = ids;
-		let completion = new Promise((resolve) => (onCommit = resolve));
-		let { timestamp, user } = origin || {};
+		// TODO: Don't ack until this is completed
+		//let completion = new Promise((resolve) => (onCommit = resolve));
+		let { timestamp, user, node_name } = origin || {};
 		let subscription = database_subscriptions.get(database_name)?.get(table_name);
 		if (!subscription) {
 			throw new Error('Missing table for replication message', table_name);
@@ -164,6 +170,7 @@ async function messageProcessor(msg) {
 				table: table_name,
 				onCommit,
 				user,
+				nodeName: node_name,
 			});
 		else {
 			// If there are multiple records in the transaction, we need to send a transaction event so that the
@@ -194,6 +201,7 @@ async function messageProcessor(msg) {
 				timestamp,
 				onCommit,
 				user,
+				nodeName: node_name,
 			});
 		}
 
@@ -203,18 +211,18 @@ async function messageProcessor(msg) {
 			publishToStream(
 				msg.subject.split('.').slice(0, -1).join('.'), // remove the node name
 				crypto_hash.createNatsTableStreamName(database_name, table_name),
-				js_msg.headers,
-				js_msg.data
+				msg.headers,
+				msg.data
 			);
 		}
 
-		// onCommit is not being called, but not sure if we really need to do this
+		// TODO: onCommit is not being called, but not sure if we really need to do this
 		// await completion;
 	} catch (e) {
 		harper_logger.error(e);
 	}
 	// Ack to NATS to acknowledge the message has been processed
-	js_msg.ack();
+	msg.ack();
 }
 function convertOperation(operation) {
 	switch (operation) {

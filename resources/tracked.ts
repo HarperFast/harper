@@ -180,8 +180,8 @@ export function collapseData(target) {
  */
 export function deepFreeze(target) {
 	let copied_source;
-	if (target[HAS_ARRAY_CHANGES]) {
-		// an array with changes; by default we can freeze the tracked array itself
+	if (target[RECORD_PROPERTY] && target.constructor === Array && !Object.isFrozen(target)) {
+		// a tracked array, by default we can freeze the tracked array itself
 		copied_source = target;
 		for (let i = 0, l = target.length; i < l; i++) {
 			let value = target[i];

@@ -137,13 +137,6 @@ describe('Test fileLoadValidator module', () => {
 	 * Unit tests for validate module
 	 */
 	context('Test validate module', () => {
-		it('should return schema cant be blank error from dataObject', () => {
-			let result = file_load_validator.dataObject(obj_no_schema);
-
-			expect(result).to.be.instanceof(Error);
-			expect(result.message).to.equal("Schema can't be blank");
-		});
-
 		it('should return table cant be blank error from dataObject', () => {
 			let result = file_load_validator.dataObject(obj_no_table);
 

@@ -1,8 +1,7 @@
 import { table } from '../resources/databases';
 import { keyArrayToString, resources } from '../resources/Resources';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
-import { IS_COLLECTION } from '../resources/Resource';
-import { warn } from '../utility/logging/harper_logger';
+import { warn, trace } from '../utility/logging/harper_logger';
 import { transaction } from '../resources/transaction';
 const DurableSession = table({
 	database: 'system',
@@ -13,7 +12,7 @@ const DurableSession = table({
 			name: 'subscriptions',
 			type: 'array',
 			elements: {
-				attributes: [{ name: 'topic' }, { name: 'qos' }, { name: 'startTime' }],
+				attributes: [{ name: 'topic' }, { name: 'qos' }, { name: 'startTime' }, { name: 'acks' }],
 			},
 		},
 	],
@@ -72,7 +71,12 @@ export async function getSession({
 	return session;
 }
 let next_message_id = 1;
-
+function getNextMessageId() {
+	next_message_id++;
+	// MQTT only supports 16-bit message ids, so must roll over before getting beyond 16-bit ids.
+	if (next_message_id > 65500) next_message_id = 1;
+	return next_message_id;
+}
 class SubscriptionsSession {
 	listener: (message, subscription, timestamp, qos) => any;
 	sessionId: any;
@@ -84,7 +88,7 @@ class SubscriptionsSession {
 		this.sessionId = session_id;
 		this.user = user;
 	}
-	async addSubscription(subscription_request, needs_ack) {
+	async addSubscription(subscription_request, needs_ack, filter?) {
 		const { topic, noRetain: rh, startTime: start_time } = subscription_request;
 		const search_index = topic.indexOf('?');
 		let search, path;
@@ -121,7 +125,7 @@ class SubscriptionsSession {
 		};
 		const entry = resources.getMatch(path);
 		if (!entry) throw new Error(`The topic ${topic} does not exist, no resource has been defined to handle this topic`);
-		request.url = '/' + entry.relativeURL;
+		request.url = entry.relativeURL;
 		const resource_path = entry.path;
 		const resource = entry.Resource;
 		const subscription = await transaction(request, async () => {
@@ -140,10 +144,11 @@ class SubscriptionsSession {
 							update.operation !== 'message'
 						)
 							continue;
+						if (filter && !filter(update)) continue;
 						if (needs_ack) {
 							update.topic = topic;
 							message_id = this.needsAcknowledge(update);
-						} else message_id = next_message_id++;
+						} else message_id = getNextMessageId();
 						let path = update.id;
 						if (Array.isArray(path)) path = keyArrayToString(path);
 						if (path == null) path = '';
@@ -164,26 +169,18 @@ class SubscriptionsSession {
 		// nothing to do in a clean session
 	}
 	needsAcknowledge(update) {
-		return next_message_id++;
+		return getNextMessageId();
 	}
 	acknowledge(message_id) {
 		// nothing to do in a clean session
 	}
 	async removeSubscription(topic) {
-		const search_index = topic.indexOf('?');
-		let path;
-		if (search_index > -1) {
-			path = topic.slice(0, search_index);
-		} else path = topic;
-		if (path.endsWith('+') || path.endsWith('#'))
-			// normalize wildcard
-			path = topic.slice(0, path.length - 1);
 		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
 		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
 		if (existing_subscription) existing_subscription.end();
 	}
 	async publish(message, data) {
-		const { topic, retain, payload } = message;
+		const { topic, retain } = message;
 		message.data = data;
 		message.user = this.user;
 		const entry = resources.getMatch(topic);
@@ -191,15 +188,15 @@ class SubscriptionsSession {
 			throw new Error(
 				`Can not publish to topic ${topic} as it does not exist, no resource has been defined to handle this topic`
 			);
-		const url = (message.url = '/' + entry.relativeURL);
+		message.url = entry.relativeURL;
 		const resource = entry.Resource;
 
 		return transaction(message, () => {
 			return retain
 				? data === undefined
-					? resource.delete(url, message)
-					: resource.put(url, message.data, message)
-				: resource.publish(url, message.data, message);
+					? resource.delete(message, message)
+					: resource.put(message, message.data, message)
+				: resource.publish(message, message.data, message);
 		});
 	}
 	setListener(listener: (message) => any) {
@@ -223,16 +220,21 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		for (const subscription of this.sessionRecord.subscriptions || []) {
 			await this.resumeSubscription(
 				{ noRetain: true, topic: subscription.topic, qos: subscription.qos, startTime: subscription.startTime },
-				true
+				true,
+				subscription.acks
+					? (update) => {
+							return !subscription.acks.includes(update.timestamp);
+					  }
+					: null
 			);
 		}
 	}
-	resumeSubscription(subscription, needs_ack) {
-		return super.addSubscription(subscription, true);
+	resumeSubscription(subscription, needs_ack, filter?) {
+		return super.addSubscription(subscription, needs_ack, filter);
 	}
 	needsAcknowledge(update) {
 		if (!this.awaitingAcks) this.awaitingAcks = new Map();
-		const message_id = next_message_id++;
+		const message_id = getNextMessageId();
 		this.awaitingAcks.set(message_id, { topic: update.topic, timestamp: update.timestamp });
 		return message_id;
 	}
@@ -243,34 +245,39 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		for (const [, remaining_update] of this.awaitingAcks) {
 			if (remaining_update.topic === topic) {
 				if (remaining_update.timestamp < update.timestamp) {
-					remaining_update.timestamp = update.timestamp;
-					// TODO: Record this update as an out-of-order ack
-					return;
+					// this is an out of order ack, so instead of updating the timestamp, we record as an out-of-order ack
+					for (const subscription of this.sessionRecord.subscriptions) {
+						if (subscription.topic === topic) {
+							if (!subscription.acks) {
+								subscription.acks = [];
+							}
+							subscription.acks.push(update.timestamp);
+							trace('Received ack', topic, update.timestamp);
+							this.sessionRecord.update();
+							return;
+						}
+					}
 				}
 			}
 		}
 
-		for (const subscription of this.subscriptions) {
+		for (const subscription of this.sessionRecord.subscriptions) {
 			if (subscription.topic === topic) {
 				subscription.startTime = update.timestamp;
 			}
 		}
-		this.sessionRecord.subscriptions = this.subscriptions.map((subscription) => ({
-			qos: subscription.qos,
-			topic: subscription.topic,
-			startTime: subscription.startTime,
-		}));
 		this.sessionRecord.update();
 		// TODO: Increment the timestamp for the corresponding subscription, possibly recording any interim unacked messages
 	}
 
 	async addSubscription(subscription, needs_ack) {
 		await this.resumeSubscription(subscription, needs_ack);
-		const { topic, qos, startTime: start_time } = subscription;
+		const { qos, startTime: start_time } = subscription;
 		if (qos > 0 && !start_time) {
 			this.sessionRecord.subscriptions = this.subscriptions.map((subscription) => {
 				let start_time = subscription.startTime;
 				if (!start_time) start_time = subscription.startTime = getNextMonotonicTime();
+				trace('Added durable subscription', subscription.topic, start_time);
 				return {
 					qos: subscription.qos,
 					topic: subscription.topic,

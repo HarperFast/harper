@@ -41,6 +41,7 @@ const npm_utilities = require('../../utility/npmUtilities');
 const { setServerUtilities } = require('../../resources/Table');
 const { CONTEXT } = require('../../resources/Resource');
 const { _assignPackageExport } = require('../../index');
+const { transformReq } = require('../../utility/common_utils');
 
 const operation_function_caller = require(`../../utility/OperationFunctionCaller`);
 
@@ -87,12 +88,7 @@ async function processLocalTransaction(req, operation_function) {
 		harper_logger.error(e);
 	}
 
-	let post_op_function = null; //terms.CLUSTER_OPERATIONS[req.body.operation] === undefined ? null : postWrite;
-	let data = await operation_function_caller.callOperationFunctionAsAwait(
-		operation_function,
-		req.body,
-		post_op_function
-	);
+	let data = await operation_function_caller.callOperationFunctionAsAwait(operation_function, req.body, null);
 
 	if (typeof data !== 'object') {
 		data = { message: data };
@@ -259,6 +255,8 @@ async function catchup(req) {
 }
 
 async function executeJob(json) {
+	transformReq(json);
+
 	let new_job_object = undefined;
 	let result = undefined;
 	try {
@@ -287,6 +285,7 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.UPSERT, new OperationFunctionObject(insert.upsert));
 	op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS, new OperationFunctionObject(search.searchByConditions));
 	op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_HASH, new OperationFunctionObject(p_search_search_by_hash));
+	op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_ID, new OperationFunctionObject(p_search_search_by_hash));
 	op_func_map.set(terms.OPERATIONS_ENUM.SEARCH_BY_VALUE, new OperationFunctionObject(p_search_search_by_value));
 	op_func_map.set(terms.OPERATIONS_ENUM.SEARCH, new OperationFunctionObject(p_search_search));
 	op_func_map.set(terms.OPERATIONS_ENUM.SQL, new OperationFunctionObject(p_sql_evaluate_sql));
@@ -295,12 +294,15 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.CSV_URL_LOAD, new OperationFunctionObject(executeJob, bulkLoad.csvURLLoad));
 	op_func_map.set(terms.OPERATIONS_ENUM.IMPORT_FROM_S3, new OperationFunctionObject(executeJob, bulkLoad.importFromS3));
 	op_func_map.set(terms.OPERATIONS_ENUM.CREATE_SCHEMA, new OperationFunctionObject(schema.createSchema));
+	op_func_map.set(terms.OPERATIONS_ENUM.CREATE_DATABASE, new OperationFunctionObject(schema.createSchema));
 	op_func_map.set(terms.OPERATIONS_ENUM.CREATE_TABLE, new OperationFunctionObject(schema.createTable));
 	op_func_map.set(terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE, new OperationFunctionObject(schema.createAttribute));
 	op_func_map.set(terms.OPERATIONS_ENUM.DROP_SCHEMA, new OperationFunctionObject(schema.dropSchema));
+	op_func_map.set(terms.OPERATIONS_ENUM.DROP_DATABASE, new OperationFunctionObject(schema.dropSchema));
 	op_func_map.set(terms.OPERATIONS_ENUM.DROP_TABLE, new OperationFunctionObject(schema.dropTable));
 	op_func_map.set(terms.OPERATIONS_ENUM.DROP_ATTRIBUTE, new OperationFunctionObject(schema.dropAttribute));
 	op_func_map.set(terms.OPERATIONS_ENUM.DESCRIBE_SCHEMA, new OperationFunctionObject(schema_describe.describeSchema));
+	op_func_map.set(terms.OPERATIONS_ENUM.DESCRIBE_DATABASE, new OperationFunctionObject(schema_describe.describeSchema));
 	op_func_map.set(terms.OPERATIONS_ENUM.DESCRIBE_TABLE, new OperationFunctionObject(schema_describe.describeTable));
 	op_func_map.set(terms.OPERATIONS_ENUM.DESCRIBE_ALL, new OperationFunctionObject(schema_describe.describeAll));
 	op_func_map.set(terms.OPERATIONS_ENUM.DELETE, new OperationFunctionObject(delete_.deleteRecord));
@@ -380,12 +382,16 @@ function initializeOperationFunctionMap() {
 		new OperationFunctionObject(custom_function_operations.getComponentFile)
 	);
 	op_func_map.set(
-		terms.OPERATIONS_ENUM.GET_COMPONENT_FILES,
-		new OperationFunctionObject(custom_function_operations.getComponentFiles)
+		terms.OPERATIONS_ENUM.GET_COMPONENTS,
+		new OperationFunctionObject(custom_function_operations.getComponents)
 	);
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.SET_COMPONENT_FILE,
 		new OperationFunctionObject(custom_function_operations.setComponentFile)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.DROP_COMPONENT,
+		new OperationFunctionObject(custom_function_operations.dropComponent)
 	);
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.GET_CUSTOM_FUNCTION,

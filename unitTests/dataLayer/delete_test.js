@@ -8,6 +8,7 @@ const rewire = require('rewire');
 const harperBridge = require('../../dataLayer/harperBridge/harperBridge');
 const _delete = rewire('../../dataLayer/delete');
 const log = require('../../utility/logging/harper_logger');
+const hdb_utils = require('../../utility/common_utils');
 const chai = require('chai');
 const sinon = require('sinon');
 const sinon_chai = require('sinon-chai');
@@ -46,14 +47,20 @@ describe('Tests for delete.js', () => {
 	let sandbox = sinon.createSandbox();
 	let log_info_spy;
 	let p_global_schema_stub = sandbox.stub();
+	let schema_table_exist_stub;
 
 	before(() => {
 		log_info_spy = sandbox.spy(log, 'info');
 		_delete.__set__('p_global_schema', p_global_schema_stub);
+		schema_table_exist_stub = sandbox.stub(hdb_utils, 'checkSchemaTableExist').returns(undefined);
 	});
 
 	after(() => {
 		sandbox.restore();
+	});
+
+	beforeEach(() => {
+		schema_table_exist_stub.returns(undefined);
 	});
 
 	context('Test deleteFilesBeforeFunction', () => {
@@ -94,13 +101,14 @@ describe('Tests for delete.js', () => {
 		});
 
 		it('Test no schema error is returned', async () => {
+			schema_table_exist_stub.returns(`database 'imnotaschema' does not exist`);
 			global.hdb_schema = {
 				[DELETE_RECORDS_TEST.schema]: {
 					[DELETE_RECORDS_TEST.table]: {},
 				},
 			};
 			let delete_obj_clone = test_utils.deepClone(DELETE_BEFORE_OBJ);
-			let expected_error = test_utils.generateHDBError("Schema 'imnotaschema' does not exist", 404);
+			let expected_error = test_utils.generateHDBError("database 'imnotaschema' does not exist", 404);
 			delete_obj_clone.schema = 'imnotaschema';
 			await test_utils.assertErrorAsync(_delete.deleteFilesBefore, [delete_obj_clone], expected_error);
 		});
@@ -192,13 +200,14 @@ describe('Tests for delete.js', () => {
 		});
 
 		it('Test that error from schema/table check is handled', async () => {
+			schema_table_exist_stub.returns(`database 'imnotaschema' does not exist`);
 			global.hdb_schema = {
 				[DELETE_RECORDS_TEST.schema]: {
 					[DELETE_RECORDS_TEST.table]: {},
 				},
 			};
 			let delete_obj_clone = test_utils.deepClone(DELETE_RECORDS_TEST);
-			let expected_error = test_utils.generateHDBError("Schema 'imnotaschema' does not exist", 404);
+			let expected_error = test_utils.generateHDBError("database 'imnotaschema' does not exist", 404);
 			delete_obj_clone.schema = 'imnotaschema';
 			await test_utils.assertErrorAsync(_delete.deleteRecord, [delete_obj_clone], expected_error);
 		});

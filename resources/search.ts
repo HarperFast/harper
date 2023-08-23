@@ -17,7 +17,8 @@ export function idsForCondition(search_condition, transaction, reverse, Table, a
 	const attribute_name = search_condition[0] ?? search_condition.attribute;
 	let start;
 	let end, inclusiveEnd, exclusiveStart;
-	const value = search_condition[1] ?? search_condition.value;
+	let value = search_condition[1] ?? search_condition.value;
+	if (value instanceof Date) value = value.getTime();
 	const comparator = search_condition.comparator;
 	let need_full_scan;
 	switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
@@ -48,7 +49,9 @@ export function idsForCondition(search_condition, transaction, reverse, Table, a
 			break;
 		case 'between':
 			start = value[0];
+			if (start instanceof Date) start = start.getTime();
 			end = value[1];
+			if (end instanceof Date) end = end.getTime();
 			inclusiveEnd = true;
 			break;
 		case lmdb_terms.SEARCH_TYPES.EQUALS:
@@ -120,45 +123,60 @@ const ALTERNATE_COMPARATOR_NAMES = {
 export function filterByType(search_condition) {
 	const search_type = search_condition.comparator;
 	const attribute = search_condition[0] ?? search_condition.attribute;
-	const value = search_condition[1] ?? search_condition.value;
+	let value = search_condition[1] ?? search_condition.value;
+	if (value instanceof Date) value = value.getTime();
 
 	switch (search_type) {
 		case lmdb_terms.SEARCH_TYPES.EQUALS:
-			return (record) => record[attribute] === value;
+			return attributeComparator(attribute, (record_value) => record_value === value);
 		case lmdb_terms.SEARCH_TYPES.CONTAINS:
-			return (record) => record[attribute]?.toString().includes(value);
+			return attributeComparator(attribute, (record_value) => record_value?.toString().includes(value));
 		case lmdb_terms.SEARCH_TYPES.ENDS_WITH:
 		case lmdb_terms.SEARCH_TYPES._ENDS_WITH:
-			return (record) => record[attribute]?.toString().endsWith(value);
+			return attributeComparator(attribute, (record_value) => record_value?.toString().endsWith(value));
 		case lmdb_terms.SEARCH_TYPES.STARTS_WITH:
 		case lmdb_terms.SEARCH_TYPES._STARTS_WITH:
-			return (record) => typeof record[attribute] === 'string' && record[attribute].startsWith(value);
+			return attributeComparator(
+				attribute,
+				(record_value) => typeof record_value === 'string' && record_value.startsWith(value)
+			);
 		case lmdb_terms.SEARCH_TYPES.BETWEEN:
-			return (record) => {
-				const record_value = record[attribute];
+			if (value[0] instanceof Date) value[0] = value[0].getTime();
+			if (value[1] instanceof Date) value[1] = value[1].getTime();
+			return attributeComparator(attribute, (record_value) => {
 				return compareKeys(record_value, value[0]) >= 0 && compareKeys(record_value, value[1]) <= 0;
-			};
+			});
 		case 'gt':
 		case lmdb_terms.SEARCH_TYPES.GREATER_THAN:
 		case lmdb_terms.SEARCH_TYPES._GREATER_THAN:
-			return (record) => compareKeys(record[attribute], value) > 0;
+			return attributeComparator(attribute, (record_value) => compareKeys(record_value, value) > 0);
 		case 'ge':
 		case lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL:
 		case lmdb_terms.SEARCH_TYPES._GREATER_THAN_EQUAL:
-			return (record) => compareKeys(record[attribute], value) >= 0;
+			return attributeComparator(attribute, (record_value) => compareKeys(record_value, value) >= 0);
 		case lmdb_terms.SEARCH_TYPES.LESS_THAN:
 		case 'lt':
 		case lmdb_terms.SEARCH_TYPES._LESS_THAN:
-			return (record) => compareKeys(record[attribute], value) < 0;
+			return attributeComparator(attribute, (record_value) => compareKeys(record_value, value) < 0);
 		case 'le':
 		case lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL:
 		case lmdb_terms.SEARCH_TYPES._LESS_THAN_EQUAL:
-			return (record) => compareKeys(record[attribute], value) <= 0;
+			return attributeComparator(attribute, (record_value) => compareKeys(record_value, value) <= 0);
 		case 'ne':
-			return (record) => record[attribute] !== value;
+			return attributeComparator(attribute, (record_value) => compareKeys(record_value, value) !== 0);
 		default:
 			return; // Object.create(null);
 	}
+}
+/** Create a comparison function that can take the record and check the attribute's value with the filter function */
+function attributeComparator(attribute, filter) {
+	return (record) => {
+		const value = record[attribute];
+		if (typeof value !== 'object' || !value) return filter(value);
+		if (Array.isArray(value)) return value.some(filter);
+		if (value instanceof Date) return filter(value.getTime());
+		return false;
+	};
 }
 
 /**
@@ -172,14 +190,51 @@ export function parseQuery(query_string) {
 	let match;
 	let attribute, comparator;
 	let last_index;
+	let call;
 	// TODO: Use URLSearchParams with a fallback for when it can parse everything (USP is very fast)
 	while ((match = QUERY_PARSER.exec(query_string))) {
 		last_index = QUERY_PARSER.lastIndex;
-		let [, value, operator] = match;
+		const [, value, operator] = match;
 		switch (operator) {
 			case ')':
 				// finish call
-				operator = operator.slice(1);
+				switch (call) {
+					case 'limit':
+						if (value.indexOf(',') > -1) {
+							const [start, end] = value.split(',');
+							query.offset = +start;
+							query.limit = end - query.offset;
+						} else query.limit = +value;
+						break;
+					case 'select':
+						if (value[0] === '[') {
+							if (value[value.length - 1] !== ']') throw new Error('Unmatched brackets');
+							query.select = value.slice(1, -1).split(',');
+							query.select.asArray = true;
+						} else if (value.indexOf(',') > -1) {
+							query.select = (value.endsWith(',') ? value.slice(0, -1) : value).split(',');
+						} else query.select = value;
+						break;
+					case 'group-by':
+						throw new Error('Group by is not implemented yet');
+					case 'sort':
+						query.sort = value.split(',').map((direction) => {
+							switch (direction[0]) {
+								case '-':
+									return { attribute: direction.slice(1), descending: true };
+								case '+':
+									return { attribute: direction.slice(1), descending: false };
+								default:
+									return { attribute: direction, descending: false };
+							}
+						});
+						break;
+					default:
+						throw new Error(`Unknown query function call ${call}`);
+				}
+				break;
+			case '(':
+				call = value;
 				break;
 			case '=':
 				if (attribute) {
@@ -215,45 +270,13 @@ export function parseQuery(query_string) {
 			case undefined:
 			case '&':
 			case '|':
-				switch (attribute) {
-					case 'offset':
-						query.offset = +value;
-						break;
-					case 'limit':
-						query.limit = +value;
-						break;
-					case 'select':
-						if (value[0] === '[') {
-							if (value[value.length - 1] !== ']') throw new Error('Unmatched brackets');
-							query.select = value.slice(1, -1).split(',');
-							query.select.asArray = true;
-						} else if (value.indexOf(',') > -1) {
-							query.select = (value.endsWith(',') ? value.slice(0, -1) : value).split(',');
-						} else query.select = value;
-						break;
-					case 'group-by':
-						throw new Error('Group by is not implemented yet');
-					case 'sort':
-						query.sort = value.split(',').map((direction) => {
-							switch (direction[0]) {
-								case '-':
-									return { attribute: direction.slice(1), descending: true };
-								case '+':
-									return { attribute: direction.slice(1), descending: false };
-								default:
-									return { attribute: direction, descending: false };
-							}
-						});
-						break;
-					case undefined:
-						throw new Error(`Unable to parse query, no part before ${operator} at ${last_index} in ${query_string}`);
-					default:
-						query.push({
-							comparator: comparator,
-							attribute,
-							value: decodeURIComponent(value),
-						});
-				}
+				if (!attribute)
+					throw new Error(`Unable to parse query, no part before ${operator} at ${last_index} in ${query_string}`);
+				query.push({
+					comparator: comparator,
+					attribute,
+					value: decodeURIComponent(value),
+				});
 				attribute = undefined;
 				break;
 			default:

@@ -551,6 +551,7 @@ describe('Test bulkLoad.js', () => {
 		let importFromS3_rw;
 
 		let test_S3_message_json;
+		let check_schema_table_exist_stub;
 
 		before(() => {
 			validator_stub = sandbox.stub(validator, 's3FileObject').callThrough();
@@ -576,6 +577,7 @@ describe('Test bulkLoad.js', () => {
 
 			logger_error_spy = sandbox.spy(logger, 'error');
 			importFromS3_rw = bulkLoad_rewire.__get__('importFromS3');
+			check_schema_table_exist_stub = sandbox.stub(hdb_utils, 'checkGlobalSchemaTable').returns(undefined);
 
 			global.hdb_schema = {
 				golden: {
@@ -621,22 +623,6 @@ describe('Test bulkLoad.js', () => {
 			expect(fileLoad_stub.args[0][0].file_type).to.equal('.json');
 			expect(typeof fileLoad_stub.args[0][0].file_path === 'string').to.be.true;
 			expect(fileLoad_stub.args[0][0].file_path.endsWith('.json')).to.be.true;
-		});
-
-		it('Should use handleHDBError to handle any validation issues', async () => {
-			delete test_S3_message_json.schema;
-			let result;
-			try {
-				await importFromS3_rw(test_S3_message_json);
-			} catch (err) {
-				result = err;
-			}
-
-			expect(result).to.be.instanceof(Error);
-			expect(result.http_resp_msg).to.equal("Schema can't be blank");
-			expect(result.http_resp_code).to.equal(HTTP_STATUS_CODES.BAD_REQUEST);
-			expect(handleValidationErr_spy).to.have.been.calledOnce;
-			expect(downloadFileFromS3_stub).to.have.not.been.called;
 		});
 
 		it('Should use buildTopLevelErrMsg to handle any error thrown', async () => {

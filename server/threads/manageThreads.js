@@ -250,15 +250,25 @@ function broadcastWithAcknowledgement(message) {
 					if (--waiting_count === 0) {
 						resolve();
 					}
-					port.off(port.close ? 'close' : 'exit', ack_handler);
 					if (port !== parentPort && --port.refCount === 0) {
 						port.unref();
 					}
 				};
+				ack_handler.port = port;
 				port.ref();
 				port.refCount = (port.refCount || 0) + 1;
 				awaiting_responses.set((message.requestId = request_id), ack_handler);
-				port.on(port.close ? 'close' : 'exit', ack_handler);
+				if (!port.hasAckCloseListener) {
+					// just set a single close listener that can clean up all the ack handlers for a port that is closed
+					port.hasAckCloseListener = true;
+					port.on(port.close ? 'close' : 'exit', () => {
+						for (let [, ack_handler] of awaiting_responses) {
+							if (ack_handler.port === port) {
+								ack_handler();
+							}
+						}
+					});
+				}
 				port.postMessage(message);
 				waiting_count++;
 			} catch (error) {
@@ -406,13 +416,13 @@ if (isMainThread) {
 		for (let entry of await readdir(dir, { withFileTypes: true })) {
 			if (entry.isDirectory()) watch_dir(join(dir, entry.name));
 		}
-		for await (let { eventType, filename } of watch(dir, { persistent: false })) {
+		for await (let { filename } of watch(dir, { persistent: false })) {
 			if (extname(filename) === '.ts' || extname(filename) === '.js' || extname(filename) === '.graphql') {
 				if (queued_restart) clearTimeout(queued_restart);
 				queued_restart = setTimeout(async () => {
 					if (before_restart) await before_restart();
 					await restartWorkers();
-					console.log('Reloaded HarperDB components');
+					harper_logger.info('Reloaded HarperDB components');
 				}, 100);
 			}
 		}
