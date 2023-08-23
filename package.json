@@ -107,7 +107,7 @@
     "node-stream-zip": "1.15.0",
     "normalize-path": "^3.0.0",
     "ora": "5.4.1",
-    "ordered-binary": "1.4.0",
+    "ordered-binary": "1.4.1",
     "papaparse": "5.4.1",
     "passport": "0.6.0",
     "passport-http": "0.3.0",
