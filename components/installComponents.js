@@ -26,19 +26,6 @@ async function installComponents() {
 		},
 	};
 
-	// Build array of all component projects in hdb/components
-	const comp_dirs = (
-		await fs.readdir(eng_mgr.get(hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT), { withFileTypes: true })
-	)
-		.filter((dirent) => dirent.isDirectory())
-		.map((dirent) => dirent.name);
-
-	// Add all hdb/components to package.json
-	for (const comp_dir of comp_dirs) {
-		pkg_json.dependencies[comp_dir] =
-			'file:' + path.join(eng_mgr.get(hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT), comp_dir);
-	}
-
 	const node_mods_path = path.join(root_path, 'node_modules');
 	await fs.ensureDir(node_mods_path);
 	let install_pkg_json;
@@ -47,30 +34,33 @@ async function installComponents() {
 	try {
 		install_pkg_json = await fs.readJson(pkg_json_path);
 	} catch (err) {
+		if (hdb_utils.isEmptyOrZeroLength(components)) return;
 		if (err.code !== hdb_terms.NODE_ERROR_CODES.ENOENT) throw err;
 		pkg_json_exists = false;
 	}
 
-	// Build package.json from all component entries in harperdb-config
-	for (const { name, package: pkg } of components) {
-		const pkg_prefix = await getPkgPrefix(pkg);
-		pkg_json.dependencies[name] = pkg_prefix + pkg;
-	}
+	if (!hdb_utils.isEmptyOrZeroLength(components)) {
+		// Build package.json from all component entries in harperdb-config
+		for (const { name, package: pkg } of components) {
+			const pkg_prefix = await getPkgPrefix(pkg);
+			pkg_json.dependencies[name] = pkg_prefix + pkg;
+		}
 
-	// If there is no package.json file go ahead and write package.json and npm install it
-	if (!pkg_json_exists) {
-		hdb_log.notify('Installing components');
-		await installPackages(pkg_json_path, pkg_json);
-		return;
-	}
+		// If there is no package.json file go ahead and write package.json and npm install it
+		if (!pkg_json_exists) {
+			hdb_log.notify('Installing components');
+			await installPackages(pkg_json_path, pkg_json);
+			return;
+		}
 
-	// Loop through apps in config and see if they are defined in package.json, if they are check that the pkg in app matches what's in package file.
-	for (const { name, package: pkg } of components) {
-		const installed_pkg = install_pkg_json.dependencies[name];
-		const pkg_prefix = await getPkgPrefix(pkg);
-		if (installed_pkg === undefined || installed_pkg !== pkg_prefix + pkg) {
-			update_occurred = true;
-			break;
+		// Loop through apps in config and see if they are defined in package.json, if they are check that the pkg in app matches what's in package file.
+		for (const { name, package: pkg } of components) {
+			const installed_pkg = install_pkg_json.dependencies[name];
+			const pkg_prefix = await getPkgPrefix(pkg);
+			if (installed_pkg === undefined || installed_pkg !== pkg_prefix + pkg) {
+				update_occurred = true;
+				break;
+			}
 		}
 	}
 
@@ -81,8 +71,6 @@ async function installComponents() {
 			update_occurred = true;
 		}
 	}
-
-	if (JSON.stringify(install_pkg_json) !== JSON.stringify(pkg_json)) update_occurred = true;
 
 	if (update_occurred) {
 		hdb_log.notify('Updating components.');
