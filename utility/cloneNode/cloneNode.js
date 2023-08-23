@@ -390,7 +390,7 @@ function getDbFileDir(db) {
 
 async function cloneComponents() {
 	const { deployComponent } = require('../../components/operations');
-	let leader_component_files = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_COMPONENT_FILES });
+	let leader_component_files = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_COMPONENTS });
 	leader_component_files = await JSON.parse(leader_component_files.body);
 
 	// Loop through the result from get components and build array of comp names to clone
