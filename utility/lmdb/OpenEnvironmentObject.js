@@ -35,3 +35,4 @@ class OpenEnvironmentObject {
 }
 
 module.exports = OpenEnvironmentObject;
+OpenEnvironmentObject.MAX_DBS = MAX_DBS;

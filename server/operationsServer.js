@@ -169,7 +169,7 @@ function buildServer(is_https) {
 			// anymore; it needs to be closed because this thread is going to be terminated
 			if (req.body?.operation?.startsWith('restart')) res.header('Connection', 'close');
 			//if no error is thrown below, the response 'data' returned from the handler will be returned with 200/OK code
-			return handlePostRequest(req);
+			return handlePostRequest(req, res);
 		}
 	);
 	app.get('/health', () => {

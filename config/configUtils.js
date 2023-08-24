@@ -50,6 +50,7 @@ module.exports = {
 	initOldConfig,
 	getConfigFromFile,
 	getConfigFilePath,
+	addConfig,
 	deleteConfigFromFile,
 };
 
@@ -650,6 +651,20 @@ function initOldConfig(old_config_path) {
 function getConfigFromFile(param) {
 	const config_file = readConfigFile();
 	return _.get(config_file, param.replaceAll('_', '.'));
+}
+
+/**
+ * Adds a top level element and any nested values to harperdb-config
+ * @param top_level_element - element name
+ * @param values - JSON value which should have top level element
+ * @returns {Promise<void>}
+ */
+async function addConfig(top_level_element, values) {
+	const config_doc = parseYamlDoc(getConfigFilePath());
+	config_doc.hasIn([top_level_element])
+		? config_doc.setIn([top_level_element], values)
+		: config_doc.addIn([top_level_element], values);
+	await fs.writeFile(getConfigFilePath(), String(config_doc));
 }
 
 function deleteConfigFromFile(param) {

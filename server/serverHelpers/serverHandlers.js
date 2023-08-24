@@ -5,6 +5,7 @@ const hdb_util = require('../../utility/common_utils');
 const harper_logger = require('../../utility/logging/harper_logger');
 const { handleHDBError, hdb_errors } = require('../../utility/errors/hdbError');
 const { isMainThread } = require('worker_threads');
+const { Readable } = require('stream');
 
 const os = require('os');
 const util = require('util');
@@ -12,6 +13,7 @@ const util = require('util');
 const auth = require('../../security/fastifyAuth');
 const p_authorize = util.promisify(auth.authorize);
 const server_utilities = require('./serverUtilities');
+const { Gzip } = require('zlib');
 
 function handleServerUncaughtException(err) {
 	let message = `Found an uncaught exception with message: ${err.message}. ${os.EOL}Stack: ${err.stack} ${
@@ -85,7 +87,7 @@ function authHandler(req, resp, done) {
 	}
 }
 
-async function handlePostRequest(req, bypass_auth = false) {
+async function handlePostRequest(req, res, bypass_auth = false) {
 	let operation_function;
 
 	try {
@@ -93,7 +95,19 @@ async function handlePostRequest(req, bypass_auth = false) {
 			req.body.bypass_auth = bypass_auth;
 		}
 		operation_function = server_utilities.chooseOperation(req.body);
-		return server_utilities.processLocalTransaction(req, operation_function);
+		let result = await server_utilities.processLocalTransaction(req, operation_function);
+		if (result instanceof Readable && result.headers) {
+			for (let [name, value] of result.headers) {
+				res.header(name, value);
+			}
+			// fastify-compress has one job. I don't know why it can't do it. So we compress here to
+			// handle the case of returning a stream
+			if (req.headers['accept-encoding']?.includes('gzip')) {
+				res.header('content-encoding', 'gzip');
+				result = result.pipe(new Gzip());
+			}
+		}
+		return result;
 	} catch (error) {
 		harper_logger.error(error);
 		throw error;

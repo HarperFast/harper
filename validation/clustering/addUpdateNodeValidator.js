@@ -25,7 +25,7 @@ const validation_schema = {
 	subscriptions: Joi.array()
 		.items({
 			table: string.optional(),
-			schema: string.custom(validateSchemaName).required(),
+			schema: string.required(),
 			subscribe: boolean.required(),
 			publish: boolean.required().custom(checkForFalsy),
 			start_time: date.iso(),

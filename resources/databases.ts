@@ -181,7 +181,7 @@ export function resetDatabases() {
  * @param default_table
  * @param database_name
  */
-function readMetaDb(
+export function readMetaDb(
 	path: string,
 	default_table?: string,
 	database_name: string = DEFAULT_DATABASE_NAME,

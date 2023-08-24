@@ -136,8 +136,13 @@ function harperDBService() {
 					});
 				break;
 			case undefined:
-				// The require is here to better control the flow of imports when this module is called.
-				require('./run').main();
+				if (process.env.HDB_LEADER_URL) {
+					require('../utility/cloneNode/cloneNode');
+				} else {
+					// The require is here to better control the flow of imports when this module is called.
+					require('./run').main();
+				}
+
 				break;
 			default:
 				console.warn(`The "${service}" command is not understood.`);

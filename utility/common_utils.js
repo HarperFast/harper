@@ -14,6 +14,8 @@ const { inspect } = require('util');
 const is_number = require('is-number');
 const _ = require('lodash');
 const minimist = require('minimist');
+const https = require('https');
+const http = require('http');
 const { hdb_errors } = require('./errors/hdbError');
 
 const ISO_DATE = /^((\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d\.\d+([+-][0-2]\d:[0-5]\d|Z))|(\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d([+-][0-2]\d:[0-5]\d|Z))|(\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d([+-][0-2]\d:[0-5]\d|Z)))$/;
@@ -86,6 +88,7 @@ module.exports = {
 	changeExtension,
 	getEnvCliRootPath,
 	noBootFile,
+	httpRequest,
 	transformReq,
 	convertToMS,
 	PACKAGE_ROOT: terms.PACKAGE_ROOT,
@@ -858,6 +861,36 @@ function noBootFile() {
 	if (getEnvCliRootPath() && fs.pathExistsSync(path.join(cli_env_root, terms.HDB_CONFIG_FILE))) {
 		no_boot_file = true;
 	}
+}
+
+function httpRequest(options, data) {
+	let client;
+	if (options.protocol === 'http:') client = http;
+	else client = https;
+	return new Promise((resolve, reject) => {
+		const req = client.request(options, (res) => {
+			res.setEncoding('utf8');
+			let response = {
+				body: '',
+				headers: res.headers,
+			};
+
+			res.on('data', (chunk) => {
+				response.body += chunk;
+			});
+
+			res.on('end', () => {
+				resolve(response);
+			});
+		});
+
+		req.on('error', (err) => {
+			reject(err);
+		});
+
+		req.write(JSON.stringify(data));
+		req.end();
+	});
 }
 
 /**

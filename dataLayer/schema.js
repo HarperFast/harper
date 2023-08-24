@@ -25,6 +25,7 @@ module.exports = {
 	dropSchema: dropSchema,
 	dropTable: dropTable,
 	dropAttribute: dropAttribute,
+	getBackup,
 };
 
 /** EXPORTED FUNCTIONS **/
@@ -343,4 +344,8 @@ async function createAttribute(create_attribute_object) {
 	);
 
 	return `attribute '${create_attribute_object.schema}.${create_attribute_object.table}.${create_attribute_object.attribute}' successfully created.`;
+}
+
+function getBackup(get_backup_object) {
+	return harperBridge.getBackup(get_backup_object);
 }

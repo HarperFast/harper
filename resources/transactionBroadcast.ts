@@ -201,7 +201,7 @@ function notifyFromTransactionData(path, audit_ids, txn_id, same_thread?) {
 export function listenToCommits(primary_store, audit_store) {
 	const store = audit_store || primary_store;
 	const lmdb_env = store.env;
-	if (audit_store) audit_store.cache = new Map(); // this is a trick to get the key and store information to pass through after the commit
+	if (audit_store && !audit_store.cache) audit_store.cache = new Map(); // this is a trick to get the key and store information to pass through after the commit
 	if (!lmdb_env.hasBroadcastListener) {
 		lmdb_env.hasBroadcastListener = true;
 		const path = lmdb_env.path;

@@ -178,7 +178,7 @@ async function main(called_by_install = false) {
 				console.log(log_msg);
 			}
 		} else {
-			startHTTPThreads(env.get(hdb_terms.CONFIG_PARAMS.HTTP_THREADS));
+			await startHTTPThreads(env.get(hdb_terms.CONFIG_PARAMS.HTTP_THREADS));
 			if (start_clustering) {
 				if (!is_scripted) await pm2_utils.startClusteringProcesses();
 				await pm2_utils.startClusteringThreads();
@@ -299,6 +299,7 @@ async function openCreateAuditEnvironment(schema, table_name) {
 module.exports = {
 	launch,
 	main,
+	isHdbInstalled,
 };
 
 /**
