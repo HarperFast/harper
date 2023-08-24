@@ -187,7 +187,7 @@ function attributeComparator(attribute, filter) {
  */
 export function parseQuery(query_string) {
 	if (!query_string) return;
-	const query = [];
+	const query = new Query();
 	let match;
 	let attribute, comparator;
 	let last_index;
@@ -260,7 +260,7 @@ export function parseQuery(query_string) {
 				break;
 			case '*':
 			case '*&':
-				query.push({
+				query.conditions.push({
 					comparator: comparator === 'ends_with' ? 'contains' : 'starts_with',
 					attribute,
 					value: decodeURIComponent(value),
@@ -273,7 +273,7 @@ export function parseQuery(query_string) {
 			case '|':
 				if (!attribute)
 					throw new Error(`Unable to parse query, no part before ${operator} at ${last_index} in ${query_string}`);
-				query.push({
+				query.conditions.push({
 					comparator: comparator,
 					attribute,
 					value: decodeURIComponent(value),
@@ -286,4 +286,23 @@ export function parseQuery(query_string) {
 	}
 	if (last_index !== query_string.length) throw new Error(`Unable to parse query, unexpected end in ${query_string}`);
 	return query;
+}
+
+class Query {
+	declare conditions: { attribute: string; value: any; comparator: string }[];
+	declare limit: number;
+	declare offset: number;
+	declare select: string[];
+	constructor() {
+		this.conditions = [];
+	}
+	[Symbol.iterator]() {
+		return this.conditions[Symbol.iterator]();
+	}
+	get(name) {
+		for (let i = 0; i < this.conditions.length; i++) {
+			const condition = this.conditions[i];
+			if (condition.attribute === name) return condition.value;
+		}
+	}
 }

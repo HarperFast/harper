@@ -169,13 +169,13 @@ function notifyFromTransactionData(path, audit_ids, txn_id, same_thread?) {
 							if (!audit_record_encoded) continue audit_id_loop; // if the audit record is pruned before we get to it, this can be undefined/null
 							audit_record = readAuditEntry(audit_record_encoded, table_subscriptions.store);
 							if (
-								audit_record.operation !== 'message' &&
+								audit_record.type !== 'message' &&
 								// check to see if the latest is out-of-date, and if it is we skip it, except for messages were we try not to drop any
 								table_subscriptions.store.getEntry(audit_id[2])?.version !== audit_id[0]
 							)
 								continue audit_id_loop;
 
-							if (is_invalidation && audit_record.operation !== 'invalidate') continue audit_id_loop; // this indicates that the invalidation entry has already been replaced, so just wait for the second update
+							if (is_invalidation && audit_record.type !== 'invalidate') continue audit_id_loop; // this indicates that the invalidation entry has already been replaced, so just wait for the second update
 						}
 						subscription.listener(record_key, audit_record, txn_time);
 					} catch (error) {

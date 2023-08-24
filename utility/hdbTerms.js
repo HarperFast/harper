@@ -523,6 +523,7 @@ const HDB_SETTINGS_NAMES_REVERSE_LOOKUP = _.invert(HDB_SETTINGS_NAMES);
 
 // If a param is added to config it must also be added here.
 const CONFIG_PARAMS = {
+	ANALYTICS_AGGREGATEPERIOD: 'analytics_aggregatePeriod',
 	AUTHENTICATION_AUTHORIZELOCAL: 'authentication_authorizeLocal',
 	AUTHENTICATION_CACHETTL: 'authentication_cacheTTL',
 	AUTHENTICATION_ENABLESESSIONS: 'authentication_enableSessions',
@@ -739,6 +740,7 @@ const CONFIG_PARAM_MAP = {
 	mqtt_websocket: CONFIG_PARAMS.MQTT_WEBSOCKET,
 	mqtt_network_secureport: CONFIG_PARAMS.MQTT_NETWORK_SECUREPORT,
 	mqtt_requireauthentication: CONFIG_PARAMS.MQTT_REQUIREAUTHENTICATION,
+	analytics_aggregatePeriod: CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD,
 	authentication_authorizelocal: CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL,
 	authentication_cachettl: CONFIG_PARAMS.AUTHENTICATION_CACHETTL,
 	authentication_enablesessions: CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS,

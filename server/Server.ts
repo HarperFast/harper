@@ -1,4 +1,5 @@
 import { Socket } from 'net';
+import { _assignPackageExport } from '../index';
 
 /**
  * This is the central interface by which we define entry points for different server protocol plugins to listen for
@@ -35,3 +36,4 @@ export interface ContentTypeHandler {
 }
 
 export const server: Server = {};
+_assignPackageExport('server', server);

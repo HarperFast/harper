@@ -31,6 +31,7 @@ import { autoCast, convertToMS } from '../utility/common_utils';
 let server_utilities;
 const RANGE_ESTIMATE = 100000000;
 const STARTS_WITH_ESTIMATE = 10000000;
+const RECORD_PRUNING_INTERVAL = 3600000; // one hour
 env_mngr.initSync();
 const LMDB_PREFETCH_WRITES = env_mngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const DEFAULT_DELETION_ENTRY_TTL = 7200000;
@@ -86,11 +87,12 @@ export function makeTable(options) {
 	let deletion_cleanup;
 	let pending_deletion_count_write;
 	let primary_key_attribute = {};
-	let created_time_property, updated_time_property;
+	let created_time_property, updated_time_property, expires_at_property;
 	let commit_listeners: Set;
 	for (const attribute of attributes) {
 		if (attribute.assignCreatedTime || attribute.name === '__createdtime__') created_time_property = attribute;
 		if (attribute.assignUpdatedTime || attribute.name === '__updatedtime__') updated_time_property = attribute;
+		if (attribute.expiresAt) expires_at_property = attribute;
 		if (attribute.isPrimaryKey) primary_key_attribute = attribute;
 	}
 	let delete_callback_handle;
@@ -159,7 +161,7 @@ export function makeTable(options) {
 						if (event.id === undefined) throw new Error('Replication message without an id ' + JSON.stringify(event));
 					}
 					const resource: TableResource = await Table.getResource(event.id, event, NOTIFICATION);
-					switch (event.operation) {
+					switch (event.type) {
 						case 'put':
 							return resource._writeUpdate(value, NOTIFICATION);
 						case 'delete':
@@ -198,13 +200,13 @@ export function makeTable(options) {
 						// we listen for events by iterating through the async iterator provided by the subscription
 						for await (const event of subscription) {
 							try {
-								const first_write = event.operation === 'transaction' ? event.writes[0] : event;
+								const first_write = event.type === 'transaction' ? event.writes[0] : event;
 								if (!first_write) {
 									console.error('Bad subscription event');
 									continue;
 								}
 								const commit_resolution = transaction(event, () => {
-									if (event.operation === 'transaction') {
+									if (event.type === 'transaction') {
 										// if it is a transaction, we need to individuall iterate through each write event
 										const promises = [];
 										for (const write of event.writes) {
@@ -217,7 +219,7 @@ export function makeTable(options) {
 											}
 										}
 										return Promise.all(promises);
-									} else if (event.operation === 'define_schema') {
+									} else if (event.type === 'define_schema') {
 										// ensure table has the provided attributes
 										const updated_attributes = this.attributes.slice(0);
 										let has_changes;
@@ -398,6 +400,7 @@ export function makeTable(options) {
 			if (this[IS_COLLECTION]) {
 				return this.search(query);
 			}
+			if (query?.property) return this.getProperty(query.property);
 			if (this.doesExist() || (this[CONTEXT]?.hasOwnProperty('returnNonexistent') && this[CONTEXT].returnNonexistent)) {
 				return this;
 			}
@@ -573,7 +576,7 @@ export function makeTable(options) {
 					// TODO: record_deletion?
 					return {
 						// return the audit record that should be recorded
-						operation: audit && 'invalidate',
+						type: audit && 'invalidate',
 						[COMPLETION]: completion,
 					};
 				},
@@ -583,24 +586,30 @@ export function makeTable(options) {
 		 * Evicting a record will remove it from a caching table. This is not considered a canonical data change, and it is assumed that retrieving this record from the source will still yield the same record, this is only removing the local copy of the record.
 		 */
 		static evict(id, existing_record, existing_version) {
-			let partial_record;
-			if (!existing_record) {
-				const entry = primary_store.getEntry(id);
-				if (!entry) return;
-				existing_record = entry.value;
-				existing_version = entry.version;
-			}
-			if (existing_record) {
-				for (const name in indices) {
-					// if there are any indices, we need to preserve a partial evicted record to ensure we can still do searches
-					if (!partial_record) partial_record = { __invalidated__: 0 };
-					partial_record[name] = existing_record[name];
+			if (this.Source) {
+				// if there is a source, we are not "deleting" the record, just removing our local copy, but preserving what we need for indexing
+				let partial_record;
+				if (!existing_record) {
+					const entry = primary_store.getEntry(id);
+					if (!entry) return;
+					existing_record = entry.value;
+					existing_version = entry.version;
 				}
+				if (existing_record) {
+					for (const name in indices) {
+						// if there are any indices, we need to preserve a partial evicted record to ensure we can still do searches
+						if (!partial_record) partial_record = { __invalidated__: 0 };
+						partial_record[name] = existing_record[name];
+					}
+				}
+				//
+				if (partial_record) {
+					return primary_store.put(id, partial_record, existing_version, existing_version);
+				} else return primary_store.remove(id, existing_version); // assuming that cache eviction should be no shorter that audit log eviction, so this can be done
+			} else {
+				// if there is no source, just remove
+				return primary_store.remove(id, existing_version);
 			}
-			//
-			if (partial_record) {
-				return primary_store.put(id, partial_record, existing_version, existing_version);
-			} else return primary_store.remove(id, existing_version); // assuming that cache eviction should be no shorter that audit log eviction, so this can be done
 		}
 		/**
 		 * This is intended to acquire a lock on a record from the whole cluster.
@@ -711,7 +720,7 @@ export function makeTable(options) {
 						return (
 							audit && {
 								// return the audit record that should be recorded
-								operation: 'put',
+								type: 'put',
 								value: primary_store.encoder.encode(record),
 							}
 						);
@@ -722,7 +731,7 @@ export function makeTable(options) {
 					if (existing_record === null && !retry) recordDeletion(-1);
 					return {
 						// return the audit record that should be recorded
-						operation: audit && 'put',
+						type: audit && 'put',
 						value: encoded_record,
 						[COMPLETION]: completion,
 					};
@@ -731,6 +740,7 @@ export function makeTable(options) {
 		}
 
 		async delete(request: Request): Promise<boolean> {
+			if (typeof request === 'string') return this.deleteProperty(request);
 			if (!this[RECORD_PROPERTY]) return false;
 			// TODO: Handle deletion of a collection/query
 			return this._writeDelete(request);
@@ -774,7 +784,7 @@ export function makeTable(options) {
 					} else primary_store.remove(this[ID_PROPERTY]);
 					return {
 						// return the audit record that should be recorded
-						operation: audit && 'delete',
+						type: audit && 'delete',
 						[COMPLETION]: completion,
 					};
 				},
@@ -782,8 +792,9 @@ export function makeTable(options) {
 			return true;
 		}
 
-		search(request: Request): AsyncIterable<any> {
+		search(request: Query): AsyncIterable<any> {
 			const txn = this._txnForRequest();
+			if (!request) throw new Error('No query provided');
 			const reverse = request.reverse === true;
 			let conditions = request.conditions;
 			if (!conditions)
@@ -992,7 +1003,7 @@ export function makeTable(options) {
 						subscription.send(history[--i]);
 					}
 					if (history[0]) subscription.startTime = history[0].timestamp; // update so don't double send
-				} else if (!request.noRetain) {
+				} else if (!request.omitCurrent) {
 					for (const { key: id, value, version } of primary_store.getRange({
 						start: this_id ?? false,
 						end: this_id == null ? undefined : [this_id, MAXIMUM_KEY],
@@ -1015,7 +1026,7 @@ export function makeTable(options) {
 						//await audit_store.prefetch([key]); // do it asynchronously for better fairness/concurrency and avoid page faults
 						const audit_entry = audit_store.get(key);
 						if (audit_entry) {
-							request.noRetain = true; // we are sending the current version from history, so don't double send
+							request.omitCurrent = true; // we are sending the current version from history, so don't double send
 							const audit_record = readAuditEntry(audit_entry, primary_store);
 							history.push({ id: this_id, timestamp: next_version, ...audit_record });
 							next_version = audit_record.lastVersion;
@@ -1027,7 +1038,7 @@ export function makeTable(options) {
 					}
 					subscription.startTime = version; // make sure we don't re-broadcast the current version that we already sent
 				}
-				if (!request.noRetain && this.doesExist()) {
+				if (!request.omitCurrent && this.doesExist()) {
 					// if retain and it exists, send the current value first
 					subscription.send({ id: this_id, timestamp: this[VERSION_PROPERTY], value: this });
 				}
@@ -1085,7 +1096,7 @@ export function makeTable(options) {
 					}
 					// messages are recorded in the audit entry (regardless of whether audit is turned on)
 					const audit_entry = {
-						operation: 'message',
+						type: 'message',
 						value: primary_store.encoder.encode(message),
 						[COMPLETION]: completion,
 					};
@@ -1151,7 +1162,9 @@ export function makeTable(options) {
 				throw new ClientError(validation_errors.join('. '));
 			}
 		}
-
+		getUpdatedTime() {
+			return this[VERSION_PROPERTY];
+		}
 		static async addAttributes(attributes_to_add) {
 			const new_attributes = attributes.slice(0);
 			for (const attribute of attributes_to_add) {
@@ -1252,6 +1265,7 @@ export function makeTable(options) {
 	const prototype = TableResource.prototype;
 	prototype[INCREMENTAL_UPDATE] = true; // default behavior
 	if (expiration_ms) TableResource.setTTLExpiration(expiration_ms / 1000);
+	if (expires_at_property) runRecordExpirationEviction();
 	return TableResource;
 	function updateIndices(id, existing_record, record?) {
 		let has_changes;
@@ -1439,10 +1453,10 @@ export function makeTable(options) {
 						null,
 						updated_record
 							? {
-									operation: 'put',
+									type: 'put',
 									value: primary_store.encoder.encode(updated_record),
 							  }
-							: { operation: 'delete' }
+							: { type: 'delete' }
 					)
 				);
 			}
@@ -1493,6 +1507,38 @@ export function makeTable(options) {
 			if (entry?.value === null) primary_store.remove(id, entry.version);
 			recordDeletion(-1);
 		});
+	}
+	function runRecordExpirationEviction() {
+		// Periodically evict expired records, searching for records who expiresAt timestamp is before now
+		if (getWorkerIndex() === 0) {
+			// we want to run the pruning of expired records on only one thread so we don't have conflicts in evicting
+			console.log('starting eviction');
+			setInterval(async () => {
+				// go through each database and table and then search for expired entries
+				// find any entries that are set to expire before now
+				try {
+					console.log('running eviction');
+					const expires_at_name = expires_at_property.name;
+					const index = indices[expires_at_name];
+					if (!index) throw new Error(`expiresAt attribute ${expires_at_property} must be indexed`);
+					for (const { value: id } of index.getRange({
+						start: true,
+						end: Date.now(),
+						versions: true,
+						snapshot: false,
+					})) {
+						const record_entry = primary_store.getEntry(id);
+						if (record_entry.value?.[expires_at_name] < Date.now()) {
+							// make sure the record hasn't changed and won't change while removing
+							TableResource.evict(id, record_entry.value, record_entry.version);
+						}
+						await new Promise((resolve) => setImmediate(resolve));
+					}
+				} catch (error) {
+					harper_logger.error('Error in evicting old records', error);
+				}
+			}, RECORD_PRUNING_INTERVAL);
+		}
 	}
 }
 

@@ -136,6 +136,9 @@ function configValidator(config_json) {
 			operationTokenTimeout: Joi.required(),
 			refreshTokenTimeout: Joi.required(),
 		}),
+		analytics: Joi.object({
+			aggregatePeriod: number,
+		}),
 		clustering: clustering_validation_schema,
 		customFunctions: Joi.object({
 			enabled: enabled_constraints,

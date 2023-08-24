@@ -88,6 +88,8 @@ export function start({ ensureTable }) {
 								property.assignCreatedTime = true;
 							} else if (directive.name.value === 'updatedTime') {
 								property.assignUpdatedTime = true;
+							} else if (directive.name.value === 'expiresAt') {
+								property.expiresAt = true;
 							} else if (directive.name.value === 'allow') {
 								const authorized_roles = (property.authorizedRoles = []);
 								for (const arg of directive.arguments) {

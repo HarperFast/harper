@@ -14,6 +14,14 @@ export const IS_COLLECTION = Symbol('is-collection');
 export const SAVE_UPDATES_PROPERTY = Symbol('save-updates');
 export const RECORD_PROPERTY = Symbol('stored-record');
 
+const EXTENSION_TYPES = {
+	json: 'application/json',
+	cbor: 'application/cbor',
+	msgpack: 'application/x-msgpack',
+	csv: 'text/csv',
+};
+
+
 /**
  * This is the main class that can be extended for any resource in HarperDB and provides the essential reusable
  * uniform interface for interacting with data, defining the API for providing data (data sources) and for consuming
@@ -56,20 +64,14 @@ export class Resource implements ResourceInterface {
 	static get(query: Query, context?: Context): Promise<AsyncIterable<object>>;
 	static get = transactional(
 		function (resource: Resource, query?: Map, request: Request, data?: any) {
-			const is_collection = resource[IS_COLLECTION];
-			const result =
-				is_collection && resource.search
-					? resource.search(query || {})
-					: query?.property
-					? resource.get?.(query.property)
-					: resource.get?.();
+			const result = resource.get?.(query);
 			if (result?.then) return result.then(handleSelect);
 			return handleSelect(result);
 			function handleSelect(result) {
 				let select;
 				if ((select = query?.select) && result != null) {
 					const transform = transformForSelect(select);
-					if (is_collection) {
+					if (typeof result?.map === 'function') {
 						return result.map(transform);
 					} else {
 						return transform(result);
@@ -214,6 +216,26 @@ export class Resource implements ResourceInterface {
 	}
 	static parseQuery(search) {
 		return parseQuery(search);
+	}
+	static parsePath(path, context, query) {
+		const dot_index = path.indexOf('.');
+		if (dot_index > -1) {
+			const property = path.slice(dot_index + 1);
+			path = path.slice(0, dot_index);
+			const accept = context?.headers && EXTENSION_TYPES[property];
+			if (accept) {
+				// TODO: Might be preferable to pass this into getDeserializer instead of modifying the request itself
+				context.headers.accept = accept;
+			} else if (query) query.property = property;
+			else {
+				return {
+					query: { property },
+					id: pathToId(path, this),
+				};
+			}
+		}
+		// convert paths to arrays like /nested/path/4 -> ['nested', 'path', 4]
+		return pathToId(path, this);
 	}
 	/**
 	 * Gets an instance of a resource by id
@@ -422,7 +444,6 @@ function transactional(action, options) {
 			context = id_or_query;
 		}
 		if (id === undefined) {
-			let parse_url;
 			if (typeof id_or_query === 'string') {
 				id = id_or_query;
 			} else if (typeof id_or_query === 'object' && id_or_query) {
@@ -445,35 +466,24 @@ function transactional(action, options) {
 					}
 				} else {
 					if (typeof (id = id_or_query.url) === 'string') {
-						parse_url = true;
+						// handle queries in local URLs like /path/?name=value
+						const search_index = id.indexOf('?');
+						if (search_index > -1) {
+							const parsed_query = this.parseQuery(id.slice(search_index + 1));
+							if (query) query = Object.assign(parsed_query, query);
+							else query = parsed_query;
+							id = id.slice(0, search_index);
+						}
+						// handle paths of the form /path/id.property
+						const parsed_id = this.parsePath(id, context, query);
+						if (parsed_id?.query) {
+							query = parsed_id.query;
+							id = parsed_id.id;
+						} else id = parsed_id;
 					}
 					if (id === undefined) id = id_or_query.id ?? null;
 				}
 			} else id = id_or_query ?? null;
-			if (parse_url) {
-				// handle queries in local URLs like /path/?name=value
-				const search_index = id.indexOf('?');
-				if (search_index > -1) {
-					const parsed_query = this.parseQuery(id.slice(search_index + 1));
-					if (query) {
-						query[Symbol.iterator] = () => parsed_query[Symbol.iterator]();
-						if (parsed_query.select) query.select = parsed_query.select;
-						if (parsed_query.offset) query.offset = parsed_query.offset;
-						if (parsed_query.limit) query.limit = parsed_query.limit;
-					} else query = parsed_query;
-					id = id.slice(0, search_index);
-				}
-				// handle paths of the form /path/id.property
-				const dot_index = id.indexOf('.');
-				if (dot_index > -1) {
-					const property = id.slice(dot_index + 1);
-					if (query) query.property = property;
-					else query = { property };
-					id = id.slice(0, dot_index);
-				}
-				// convert paths to arrays like /nested/path/4 -> ['nested', 'path', 4]
-				id = pathToId(id, this);
-			}
 		}
 
 		if (!context) context = {};

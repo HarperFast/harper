@@ -105,7 +105,7 @@ const INVALIDATE = 4;
 const HAS_SIX_BYTE_HEADER = 128;
 const HAS_PREVIOUS_VERSION = 64;
 
-const OPERATIONS = {
+const EVENT_TYPES = {
 	put: PUT | HAS_FULL_RECORD,
 	[PUT]: 'put',
 	delete: DELETE,
@@ -116,7 +116,7 @@ const OPERATIONS = {
 	[INVALIDATE]: 'invalidate',
 };
 export function createAuditEntry(last_version, username, audit_information) {
-	let action = OPERATIONS[audit_information.operation];
+	let action = EVENT_TYPES[audit_information.type];
 
 	let position = 3;
 	if (username) {
@@ -142,7 +142,7 @@ export function createAuditEntry(last_version, username, audit_information) {
 	if (action & HAS_SIX_BYTE_HEADER) ENTRY_DATAVIEW.setUint16(4, 0);
 	else ENTRY_HEADER[2] = 0;
 	if (audit_information.value) return Buffer.concat([ENTRY_HEADER.slice(0, position), audit_information.value]);
-	else return ENTRY_HEADER.slice(0, position);
+	else return ENTRY_HEADER.subarray(0, position);
 }
 export function readAuditEntry(buffer, store) {
 	const action = buffer[0];
@@ -160,7 +160,7 @@ export function readAuditEntry(buffer, store) {
 	else username_end = buffer[1];
 	const value = action & HAS_FULL_RECORD ? store.decoder.decode(buffer.subarray(username_end || position)) : undefined;
 	return {
-		operation: OPERATIONS[action & 7],
+		type: EVENT_TYPES[action & 7],
 		value,
 		lastVersion: last_version,
 		get user() {

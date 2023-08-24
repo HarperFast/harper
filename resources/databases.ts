@@ -484,6 +484,7 @@ export function table({
 			attribute.name = attribute.attribute;
 			attribute.indexed = true;
 		} else attribute.attribute = attribute.name;
+		if (attribute.expiresAt) attribute.indexed = true;
 	}
 	let has_changes;
 	let txn_commit;

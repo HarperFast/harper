@@ -6,6 +6,8 @@ authentication:
   enableSessions: true
   operationTokenTimeout: 1d
   refreshTokenTimeout: 30d
+analytics:
+  aggregatePeriod: 60
 clustering:
   enabled: false
   hubServer:

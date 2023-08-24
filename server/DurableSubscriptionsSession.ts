@@ -89,7 +89,7 @@ class SubscriptionsSession {
 		this.user = user;
 	}
 	async addSubscription(subscription_request, needs_ack, filter?) {
-		const { topic, noRetain: rh, startTime: start_time } = subscription_request;
+		const { topic, omitCurrent: rh, startTime: start_time } = subscription_request;
 		const search_index = topic.indexOf('?');
 		let search, path;
 		if (search_index > -1) {
@@ -118,7 +118,7 @@ class SubscriptionsSession {
 			search,
 			user: this.user,
 			startTime: start_time,
-			noRetain: rh,
+			omitCurrent: rh,
 			isCollection: is_collection,
 			shallowWildcard: is_shallow_wildcard,
 			url: '',
@@ -137,13 +137,7 @@ class SubscriptionsSession {
 				for await (const update of subscription) {
 					try {
 						let message_id;
-						if (
-							update.operation &&
-							update.operation !== 'put' &&
-							update.operation !== 'delete' &&
-							update.operation !== 'message'
-						)
-							continue;
+						if (update.type && update.type !== 'put' && update.type !== 'delete' && update.type !== 'message') continue;
 						if (filter && !filter(update)) continue;
 						if (needs_ack) {
 							update.topic = topic;
@@ -219,7 +213,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		// resuming a session, we need to resume each subscription
 		for (const subscription of this.sessionRecord.subscriptions || []) {
 			await this.resumeSubscription(
-				{ noRetain: true, topic: subscription.topic, qos: subscription.qos, startTime: subscription.startTime },
+				{ omitCurrent: true, topic: subscription.topic, qos: subscription.qos, startTime: subscription.startTime },
 				true,
 				subscription.acks
 					? (update) => {

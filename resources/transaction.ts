@@ -72,7 +72,7 @@ transaction.abort = function (context_source) {
 };
 
 class TransactionSet extends Array {
-	timestamp: number;
+	declare timestamp: number;
 	/**
 	 * Commit the resource transaction(s). This commits any transactions that have started as part of the resolution
 	 * of this resource, and frees any read transaction.

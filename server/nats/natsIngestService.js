@@ -158,12 +158,14 @@ async function messageProcessor(msg) {
 		if (!subscription) {
 			throw new Error('Missing table for replication message', table_name);
 		}
-		if (operation === 'define_schema') subscription.send(entry);
-		else if (records.length === 1 && !next_write)
+		if (operation === 'define_schema') {
+			entry.type = operation;
+			subscription.send(entry);
+		} else if (records.length === 1 && !next_write)
 			// with a single record update, we can send this directly as a single event to our subscriber (the table
 			// subscriber)
 			subscription.send({
-				operation: convertOperation(operation),
+				type: convertOperation(operation),
 				value: records[0],
 				id: ids?.[0],
 				timestamp,
@@ -176,7 +178,7 @@ async function messageProcessor(msg) {
 			// If there are multiple records in the transaction, we need to send a transaction event so that the
 			// subscriber can persist can commit these updates transactionally
 			let writes = records.map((record, i) => ({
-				operation: convertOperation(operation),
+				type: convertOperation(operation),
 				value: record,
 				id: ids?.[i],
 				table: table_name,
@@ -186,7 +188,7 @@ async function messageProcessor(msg) {
 			// represented by simply a records array.
 			while (next_write) {
 				writes.push({
-					operation: next_write.operation,
+					type: next_write.operation,
 					value: next_write.record,
 					id: next_write.id,
 					table: next_write.table,
@@ -195,7 +197,7 @@ async function messageProcessor(msg) {
 			}
 			// send the transaction of writes that we have aggregated
 			subscription.send({
-				operation: 'transaction',
+				type: 'transaction',
 				writes,
 				table: table_name,
 				timestamp,

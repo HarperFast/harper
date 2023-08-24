@@ -280,6 +280,9 @@ describe('Test configUtils module', () => {
 
 		it('Test that given args are updated in new config file', () => {
 			const expected_config = {
+				analytics: {
+					aggregatePeriod: 60,
+				},
 				authentication: {
 					authorizeLocal: true,
 					cacheTTL: 30000,
@@ -411,6 +414,7 @@ describe('Test configUtils module', () => {
 				},
 			};
 			const expected_flat_config = {
+				analytics_aggregateperiod: 60,
 				authentication_authorizelocal: true,
 				authentication_cachettl: 30000,
 				authentication_enablesessions: true,
@@ -506,6 +510,7 @@ describe('Test configUtils module', () => {
 
 	describe('Test getDefaultConfig function', () => {
 		const expected_flat_default_config_obj = {
+			analytics_aggregateperiod: 60,
 			authentication_authorizelocal: true,
 			authentication_cachettl: 30000,
 			authentication_enablesessions: true,

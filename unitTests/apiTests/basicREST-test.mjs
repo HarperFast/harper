@@ -29,7 +29,7 @@ describe('test REST calls', () => {
 		let data = JSON.parse(response.data);
 		assert.equal(available_records[1], data.id);
 	});
-	it.skip('do get with CBOR', async () => {
+	it('do get with CBOR', async () => {
 		const headers = {
 			//authorization,
 			accept: 'application/cbor'

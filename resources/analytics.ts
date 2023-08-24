@@ -5,11 +5,14 @@ import { getLogFilePath } from '../utility/logging/harper_logger';
 import { dirname, join } from 'path';
 import { open, stat, appendFile, readFile, writeFile } from 'fs/promises';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
-import { get } from '../utility/environment/environmentManager';
-import { getPropsFilePath, noBootFile } from '../utility/common_utils';
+import { get as env_get, initSync } from '../utility/environment/environmentManager';
+import { CONFIG_PARAMS } from '../utility/hdbTerms';
 
+initSync();
 let active_actions = new Map<string, number[] & { occurred: number; count: number }>();
-let analytics_enabled = true;
+const AGGREGATE_PERIOD = env_get(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) * 1000;
+let analytics_enabled = AGGREGATE_PERIOD > 0;
+
 export function setAnalyticsEnabled(enabled) {
 	analytics_enabled = enabled;
 }
@@ -101,12 +104,16 @@ function sendAnalytics() {
 		else recordAnalytics({ report });
 	}, ANALYTICS_DELAY).unref();
 }
-const AGGREGATE_PREFIX = 'min-'; // we could have different levels of aggregation, but this denotes hourly aggregation
+const AGGREGATE_PREFIX = 'sum-'; // we could have different levels of aggregation, but this denotes hourly aggregation
 async function aggregation(from_period, to_period = 60000) {
 	const AnalyticsTable = getAnalyticsTable();
 	let last_for_period;
 	// find the last entry for this period
-	for (const entry of AnalyticsTable.primaryStore.getRange({ start: AGGREGATE_PREFIX + 'z', reverse: true })) {
+	for (const entry of AnalyticsTable.primaryStore.getRange({
+		start: AGGREGATE_PREFIX + 'z',
+		end: AGGREGATE_PREFIX,
+		reverse: true,
+	})) {
 		if (!entry.value?.time) continue;
 		last_for_period = entry.value.time;
 		break;
@@ -166,7 +173,6 @@ async function cleanup(expiration, period) {
 	}
 }
 
-const AGGREGATE_PERIOD = 60000;
 const RAW_EXPIRATION = 3600000;
 const AGGREGATE_EXPIRATION = 100000;
 let AnalyticsTable;

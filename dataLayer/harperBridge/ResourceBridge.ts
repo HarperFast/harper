@@ -419,7 +419,7 @@ export class ResourceBridge extends LMDBBridge {
 				// get the history of each record
 				for (const id of read_audit_log_obj.search_values) {
 					histories[id] = (await table.getHistoryOfRecord(id)).map((audit_record) => {
-						let operation = audit_record.operation;
+						let operation = audit_record.type;
 						if (operation === 'put') operation = 'upsert';
 						return {
 							operation,
@@ -511,7 +511,7 @@ function createDeleteResponse(deleted, skipped, txn_time) {
 async function* groupRecordsInHistory(table, start?, end?) {
 	let enqueued;
 	for await (const entry of table.getHistory(start, end)) {
-		let operation = entry.operation;
+		let operation = entry.type;
 		if (operation === 'put') operation = 'upsert';
 		const { id, timestamp, value } = entry;
 		if (enqueued?.timestamp === timestamp) {

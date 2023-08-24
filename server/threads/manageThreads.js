@@ -3,6 +3,7 @@
 const { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } = require('worker_threads');
 const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
 const { join, isAbsolute, extname } = require('path');
+const { server } = require('../Server');
 const { watch, readdir } = require('fs/promises');
 const { totalmem } = require('os');
 const hdb_terms = require('../../utility/hdbTerms');
@@ -43,6 +44,11 @@ function getWorkerIndex() {
 function setMainIsWorker(isWorker) {
 	isMainWorker = isWorker;
 }
+Object.defineProperty(server, 'workerIndex', {
+    get() {
+        return getWorkerIndex();
+    },
+});
 let childListenerByType = {
 	[REQUEST_THREAD_INFO](message, worker) {
 		sendThreadInfo(worker);

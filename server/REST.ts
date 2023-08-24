@@ -13,6 +13,8 @@ interface Response {
 	data?: any;
 	body?: any;
 }
+const etag_bytes = new Uint8Array(8);
+const etag_float = new Float64Array(etag_bytes.buffer, 0, 1);
 
 async function http(request, next_handler) {
 	const method = request.headers.accept === 'text/event-stream' ? 'CONNECT' : request.method;
@@ -20,23 +22,12 @@ async function http(request, next_handler) {
 	const start = performance.now();
 	let resource_path;
 	try {
-		const headers = {};
-		let url = request.url.slice(1);
-		const search_index = url.indexOf('?');
-		const dot_index = url.lastIndexOf('.', search_index === -1 ? undefined : search_index);
-		if (dot_index > -1) {
-			// we can use .extensions to force the Accept header
-			const ext = url.slice(dot_index + 1, search_index === -1 ? undefined : search_index);
-			const accept = EXTENSION_TYPES[ext];
-			if (accept) {
-				// TODO: Might be preferable to pass this into getDeserializer instead of modifying the request itself
-				request.headers.accept = accept;
-				url = url.slice(0, dot_index) + (search_index > -1 ? url.slice(search_index) : '');
-			}
-		}
+		const headers = new Headers();
+		request.responseHeaders = headers;
+		const url = request.url.slice(1);
 		const entry = resources.getMatch(url);
 		if (!entry) return next_handler(request); // no resource handler found
-		const resource_request = { url: entry.relativeURL } ; // TODO: We don't want to have to remove the forward slash and then re-add it
+		const resource_request = { url: entry.relativeURL }; // TODO: We don't want to have to remove the forward slash and then re-add it
 		const resource = entry.Resource;
 		let response_data = await transaction(request, () => {
 			if (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'QUERY') {
@@ -83,18 +74,35 @@ async function http(request, next_handler) {
 		});
 		const execution_time = performance.now() - start;
 		let status = 200;
-		let lastModification;
+		let last_modification;
 		const responseMetadata = request.responseMetadata;
 		if (response_data == undefined) {
 			status = method === 'GET' || method === 'HEAD' ? 404 : 204;
-		} else if ((lastModification = responseMetadata?.lastModified)) {
+		} else if ((last_modification = responseMetadata?.lastModified)) {
+			etag_float[0] = last_modification;
+			// base64 encoding of the 64-bit float encoding of the date in ms (with quotes)
+			// very fast and efficient
+			const etag = String.fromCharCode(
+				34,
+				(etag_bytes[0] & 0x3f) + 62,
+				(etag_bytes[0] >> 6) + ((etag_bytes[1] << 2) & 0x3f) + 62,
+				(etag_bytes[1] >> 4) + ((etag_bytes[2] << 4) & 0x3f) + 62,
+				(etag_bytes[2] >> 2) + 62,
+				(etag_bytes[3] & 0x3f) + 62,
+				(etag_bytes[3] >> 6) + ((etag_bytes[4] << 2) & 0x3f) + 62,
+				(etag_bytes[4] >> 4) + ((etag_bytes[5] << 4) & 0x3f) + 62,
+				(etag_bytes[5] >> 2) + 62,
+				(etag_bytes[6] & 0x3f) + 62,
+				(etag_bytes[6] >> 6) + ((etag_bytes[7] << 2) & 0x3f) + 62,
+				34
+			);
 			const last_etag = request.headers['if-none-match'];
-			if (last_etag && (lastModification * 1000).toString(36) == last_etag) {
+			if (last_etag && etag == last_etag) {
 				if (response_data?.onDone) response_data.onDone();
 				status = 304;
 				response_data = undefined;
 			} else {
-				headers['ETag'] = (lastModification * 1000).toString(36);
+				headers['ETag'] = etag;
 			}
 		}
 		if (responseMetadata) {
@@ -230,9 +238,8 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 	}
 }
 
-const EXTENSION_TYPES = {
-	json: 'application/json',
-	cbor: 'application/cbor',
-	msgpack: 'application/x-msgpack',
-	csv: 'text/csv',
-};
+class Headers {
+	set(name, value) {
+		this[name] = value;
+	}
+}

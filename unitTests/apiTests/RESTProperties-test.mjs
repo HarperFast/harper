@@ -106,6 +106,18 @@ describe('test REST with property updates', () => {
 		assert.equal(response.status, 200);
 		assert.equal(response.data.length, 0);
 	});
+
+	it('put with encoded slashes, dots', async () => {
+		let response = await axios.put('http://localhost:9926/namespace/SubObject/i%2Flike%2Fslashes%2E', {
+			any: 'can be a string',
+			subObject: {name: 'deeply nested'},
+			subArray: [],
+		});
+		assert.equal(response.status, 204);
+		response = await axios.get('http://localhost:9926/namespace/SubObject/i%2Flike%2Fslashes%2E');
+		assert.equal(response.status, 200);
+	});
+
 	it('get with timestamps and no PK on record', async () => {
 		let response = await axios.put('http://localhost:9926/HasTimeStampsNoPK/33', {
 			name: 'Look Ma, no primary key!',
