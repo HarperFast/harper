@@ -104,7 +104,7 @@ function configValidator(config_json) {
 			}).required(),
 			logLevel: Joi.valid('error', 'warn', 'info', 'debug', 'trace'),
 			nodeName: nats_term_constraints,
-			republishMessages: boolean.required(),
+			republishMessages: boolean.optional(),
 			databaseLevel: boolean.optional(),
 			tls: Joi.object({
 				certificate: pem_file_constraints,
@@ -130,12 +130,12 @@ function configValidator(config_json) {
 
 	const config_schema = Joi.object({
 		authentication: Joi.object({
-			authorizeLocal: boolean.required(),
+			authorizeLocal: boolean,
 			cacheTTL: number.required(),
-			enableSessions: boolean.required(),
+			enableSessions: boolean,
 			operationTokenTimeout: Joi.required(),
 			refreshTokenTimeout: Joi.required(),
-		}).required(),
+		}),
 		clustering: clustering_validation_schema,
 		customFunctions: Joi.object({
 			enabled: enabled_constraints,
@@ -161,8 +161,8 @@ function configValidator(config_json) {
 		}).required(),
 		logging: Joi.object({
 			auditAuthEvents: Joi.object({
-				logFailed: boolean.required(),
-				logSuccessful: boolean.required(),
+				logFailed: boolean,
+				logSuccessful: boolean,
 			}),
 			file: boolean.required(),
 			level: Joi.valid('notify', 'fatal', 'error', 'warn', 'info', 'debug', 'trace'),

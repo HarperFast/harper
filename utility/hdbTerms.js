@@ -608,7 +608,6 @@ const CONFIG_PARAMS = {
 	MQTT_WEBSOCKET: 'mqtt_webSocket',
 	MQTT_NETWORK_SECUREPORT: 'mqtt_network_securePort',
 	MQTT_REQUIREAUTHENTICATION: 'mqtt_requireAuthentication',
-	SERVER_PLUGINS: 'serverPlugins',
 };
 
 const CONFIG_PARAM_MAP = {
@@ -739,7 +738,6 @@ const CONFIG_PARAM_MAP = {
 	mqtt_websocket: CONFIG_PARAMS.MQTT_WEBSOCKET,
 	mqtt_network_secureport: CONFIG_PARAMS.MQTT_NETWORK_SECUREPORT,
 	mqtt_requireauthentication: CONFIG_PARAMS.MQTT_REQUIREAUTHENTICATION,
-	serverplugins: CONFIG_PARAMS.SERVER_PLUGINS,
 	authentication_authorizelocal: CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL,
 	authentication_cachettl: CONFIG_PARAMS.AUTHENTICATION_CACHETTL,
 	authentication_enablesessions: CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS,

@@ -126,6 +126,7 @@ describe('Test processManagement utilityFunctions module', () => {
 	let remove_nats_config_stub;
 	let get_all_node_records_stub;
 	let update_node_name_stub;
+	let ingest_stream_update_stub;
 	utility_functions.enterPM2Mode();
 
 	before(() => {
@@ -138,6 +139,7 @@ describe('Test processManagement utilityFunctions module', () => {
 		remove_nats_config_stub = sandbox.stub(nats_config, 'removeNatsConfig');
 		get_all_node_records_stub = sandbox.stub(clustering_utils, 'getAllNodeRecords').resolves([]);
 		update_node_name_stub = sandbox.stub(nats_utils, 'updateLocalStreams');
+		ingest_stream_update_stub = sandbox.stub(nats_utils, 'updateIngestStreamConsumer');
 		env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_USER, FAKE_CLUSTER_USER1);
 		env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT, 7711);
 		env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME, 'unitTestNodeName');

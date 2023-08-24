@@ -128,6 +128,7 @@ export function filterByType(search_condition) {
 
 	switch (search_type) {
 		case lmdb_terms.SEARCH_TYPES.EQUALS:
+		case undefined:
 			return attributeComparator(attribute, (record_value) => record_value === value);
 		case lmdb_terms.SEARCH_TYPES.CONTAINS:
 			return attributeComparator(attribute, (record_value) => record_value?.toString().includes(value));

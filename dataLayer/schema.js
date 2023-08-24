@@ -161,7 +161,7 @@ async function dropSchema(drop_schema_object) {
 
 	//we refresh and assign the entire schema metadata to global in order to make sure we have the latest
 	let schema = await schema_metadata_validator.schema_describe.describeSchema({ schema: drop_schema_object.schema });
-	global.hdb_schema[drop_schema_object.schema] = schema;
+	//global.hdb_schema[drop_schema_object.schema] = schema;
 
 	// Get all the tables that belong to schema.
 	const tables = Object.keys(global.hdb_schema[drop_schema_object.schema]);
@@ -171,7 +171,7 @@ async function dropSchema(drop_schema_object) {
 		new SchemaEventMsg(process.pid, drop_schema_object.operation, drop_schema_object.schema)
 	);
 
-	delete global.hdb_schema[drop_schema_object.schema];
+	//delete global.hdb_schema[drop_schema_object.schema];
 
 	// Purge the streams for all tables that were part of schema.
 	// Streams are part of Nats and are used by clustering, they are 'message stores' that track transactions on a table.

@@ -102,6 +102,7 @@ module.exports = {
 	closeConnection,
 	getJsmServerName,
 	addNatsMsgHeader,
+	updateIngestStreamConsumer,
 };
 
 /**
@@ -189,6 +190,9 @@ async function closeConnection() {
 	if (nats_connection) {
 		await nats_connection.drain();
 		nats_connection = undefined;
+		jetstream_manager = undefined;
+		jetstream = undefined;
+		nats_connection_promise = undefined;
 	}
 }
 
@@ -656,6 +660,35 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 		} else {
 			throw e;
 		}
+	}
+}
+
+/**
+ * 4.2 ingest stream got a new type of consumer.
+ * This function will facilitate the consumer update, if it is required.
+ * @returns {Promise<void>}
+ */
+async function updateIngestStreamConsumer() {
+	const { jsm } = await getNATSReferences();
+	const consumer_info = await jsm.consumers.info(
+		nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+		nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name
+	);
+
+	if (consumer_info.config.deliver_subject) {
+		hdb_logger.info('Removing old nats push consumer from ingest stream');
+		await jsm.consumers.delete(
+			nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
+			nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name
+		);
+
+		hdb_logger.info('Adding pull consumer to ingest stream');
+		await jsm.consumers.add(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, {
+			ack_policy: AckPolicy.Explicit,
+			durable_name: nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name,
+			deliver_policy: DeliverPolicy.All,
+			max_ack_pending: 10000,
+		});
 	}
 }
 

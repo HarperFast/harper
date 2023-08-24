@@ -572,6 +572,7 @@ async function startClusteringThreads() {
 		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE,
 	});
 	await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
+	await nats_utils.updateIngestStreamConsumer();
 
 	// Check to see if the node name or purge config has been updated,
 	// if it has we need to change config on any local streams.

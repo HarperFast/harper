@@ -225,7 +225,11 @@ function readMetaDb(
 			} else if (!attribute_name) {
 				attribute_name = table_name;
 				table_name = default_table;
-				value.name = attribute_name;
+				if (!value.name) {
+					// legacy attribute
+					value.name = attribute_name;
+					value.indexed = !value.is_hash_attribute;
+				}
 			}
 			defined_tables?.add(table_name);
 			let table_def = tables_to_load.get(table_name);
@@ -422,17 +426,23 @@ export function database({ database: database_name, table: table_name }) {
  */
 export async function dropDatabase(database_name) {
 	if (!databases[database_name]) throw new Error('Schema does not exist');
+	let database = databases[database_name];
+	for (const table_name in database) {
+		let table = database[table_name];
+		let root_store = table.primaryStore.rootStore;
+		database_envs.delete(root_store.path);
+		if (root_store.status === 'open') {
+			await root_store.close();
+			await fs.remove(root_store.path);
+		}
+	}
 	if (database_name === 'data') {
 		for (const table_name in tables) {
 			delete tables[table_name];
 		}
 		delete tables[DEFINED_TABLES];
 	}
-	const root_store = database({ database: database_name });
 	delete databases[database_name];
-	database_envs.delete(root_store.path);
-	await root_store.close();
-	await fs.remove(root_store.path);
 }
 
 /**

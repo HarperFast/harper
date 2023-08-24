@@ -48,7 +48,8 @@ describe('Test natsUtils module', () => {
 		hdb_warn_log_stub = sandbox.stub(hdb_logger, 'warn');
 	});
 
-	after(() => {
+	after(async () => {
+		await nats_utils.closeConnection();
 		sandbox.restore();
 		rewire('../../../../server/nats/utility/natsUtils');
 	});
