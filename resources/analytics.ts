@@ -161,7 +161,20 @@ async function aggregation(from_period, to_period = 60000) {
 		value.time = last_time;
 		AnalyticsTable.put(value);
 	}
+	const now = Date.now();
+	const { idle, active } = performance.eventLoopUtilization();
+	AnalyticsTable.put({
+		id: AGGREGATE_PREFIX + Math.round(now) + '-main-thread-utilization',
+		metric: 'main-thread-utilization',
+		idle: idle - last_idle,
+		active: active - last_active,
+		time: now,
+	});
+	last_idle = idle;
+	last_active = active;
 }
+let last_idle = 0;
+let last_active = 0;
 
 const rest = () => new Promise(setImmediate);
 
