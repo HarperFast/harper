@@ -461,7 +461,7 @@ function hasPermissions(user_object, op, schema_table_map, permsResponse, action
 	// set to true if this operation affects a system table.  Only su can read from system tables, but can't update/delete.
 	let is_su_system_operation = schema_table_map.has('system');
 	const user_perms = user_object.role.permission;
-	if (user_perms.super_user && (!is_su_system_operation || required_permissions.get(op).perms.length > 0)) {
+	if (user_perms.super_user && (!is_su_system_operation || required_permissions.get(op).requires_su)) {
 		//admins can do (almost) anything through the hole in sheet!
 		return null;
 	}
