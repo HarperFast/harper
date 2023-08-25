@@ -10,6 +10,7 @@ const terms = require('../../utility/hdbTerms');
 const { server } = require('../Server');
 const { WebSocketServer } = require('ws');
 const { createServer: createSecureSocketServer } = require('tls');
+const { getTicketKeys } = require('./manageThreads');
 
 process.on('uncaughtException', (error) => {
 	if (error.code === 'ECONNRESET') return; // that's what network connections do
@@ -230,6 +231,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 				key: readFileSync(privateKey),
 				// if they have a CA, we append it, so it is included
 				cert: readFileSync(certificate) + (certificateAuthority ? '\n\n' + readFileSync(certificateAuthority) : ''),
+				ticketKeys: getTicketKeys(),
 			};
 		}
 		http_servers[port] = (secure ? createSecureServer : createServer)(options, async (node_request, node_response) => {
@@ -408,7 +410,6 @@ class Request {
 		this.url = url;
 		this.headers = node_request.headers;
 		this.headers.get = get;
-		this.responseMetadata = {};
 	}
 	get absoluteURL() {
 		return this.protocol + '://' + this.host + this.url;

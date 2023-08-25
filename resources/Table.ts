@@ -31,7 +31,7 @@ import { autoCast, convertToMS } from '../utility/common_utils';
 let server_utilities;
 const RANGE_ESTIMATE = 100000000;
 const STARTS_WITH_ESTIMATE = 10000000;
-const RECORD_PRUNING_INTERVAL = 3600000; // one hour
+const RECORD_PRUNING_INTERVAL = 60000; // one minute
 env_mngr.initSync();
 const LMDB_PREFETCH_WRITES = env_mngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const DEFAULT_DELETION_ENTRY_TTL = 7200000;
@@ -171,7 +171,7 @@ export function makeTable(options) {
 						case 'invalidate':
 							return resource.invalidate(NOTIFICATION);
 						default:
-							console.error('Unknown operation', event);
+							harper_logger.error('Unknown operation', event.type, event.id);
 					}
 				};
 
@@ -195,6 +195,8 @@ export function makeTable(options) {
 							inTransactionUpdates: true,
 							// supports transaction operations
 							supportsTransactions: true,
+							// don't need the current state, should be up-to-date
+							omitCurrent: true,
 						}));
 					if (subscription) {
 						// we listen for events by iterating through the async iterator provided by the subscription
@@ -207,7 +209,7 @@ export function makeTable(options) {
 								}
 								const commit_resolution = transaction(event, () => {
 									if (event.type === 'transaction') {
-										// if it is a transaction, we need to individuall iterate through each write event
+										// if it is a transaction, we need to individually iterate through each write event
 										const promises = [];
 										for (const write of event.writes) {
 											write[CONTEXT] = event;
@@ -586,7 +588,8 @@ export function makeTable(options) {
 		 * Evicting a record will remove it from a caching table. This is not considered a canonical data change, and it is assumed that retrieving this record from the source will still yield the same record, this is only removing the local copy of the record.
 		 */
 		static evict(id, existing_record, existing_version) {
-			if (this.Source) {
+			const source = this.Source;
+			if (source?.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
 				// if there is a source, we are not "deleting" the record, just removing our local copy, but preserving what we need for indexing
 				let partial_record;
 				if (!existing_record) {
@@ -602,7 +605,7 @@ export function makeTable(options) {
 						partial_record[name] = existing_record[name];
 					}
 				}
-				//
+				// if we are evicting and not deleting, need to preserve the partial record
 				if (partial_record) {
 					return primary_store.put(id, partial_record, existing_version, existing_version);
 				} else return primary_store.remove(id, existing_version); // assuming that cache eviction should be no shorter that audit log eviction, so this can be done
@@ -662,9 +665,9 @@ export function makeTable(options) {
 						if (is_unchanged) return;
 						const existing_entry = primary_store.getEntry(id);
 						existing_record = existing_entry?.value;
-						const responseMetadata = this[CONTEXT]?.responseMetadata;
-						if (responseMetadata && existing_entry?.version > (responseMetadata.lastModified || 0))
-							responseMetadata.lastModified = existing_entry.version;
+						const context = this[CONTEXT];
+						if (context && existing_entry?.version > (context.lastModified || 0))
+							context.lastModified = existing_entry.version;
 					}
 					if (!record_prepared) {
 						record_prepared = true;
@@ -760,9 +763,9 @@ export function makeTable(options) {
 					if (retry) {
 						const existing_entry = primary_store.getEntry(id);
 						existing_record = existing_entry?.value;
-						const responseMetadata = this[CONTEXT]?.responseMetadata;
-						if (responseMetadata && existing_entry?.version > (responseMetadata.lastModified || 0))
-							responseMetadata.lastModified = existing_entry.version;
+						const context = this[CONTEXT];
+						if (context && existing_entry?.version > (context.lastModified || 0))
+							context.lastModified = existing_entry.version;
 					}
 					if (!delete_prepared) {
 						delete_prepared = true;
@@ -1335,9 +1338,7 @@ export function makeTable(options) {
 			let record, version;
 			let load_from_source;
 			if (entry) {
-				const responseMetadata = context?.responseMetadata;
-				if (responseMetadata && entry.version > (responseMetadata.lastModified || 0))
-					responseMetadata.lastModified = entry.version;
+				if (context && entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
 				version = entry.version;
 				record = entry.value;
 				if (
@@ -1427,12 +1428,11 @@ export function makeTable(options) {
 		// we create a new context for the source, we want to determine the timestamp and don't want to
 		// attribute this to the current user (but we do want to use the current transaction)
 		const source_context = {
-			responseMetadata: {},
 			transaction: context?.transaction,
 		};
 		try {
 			let updated_record = await TableResource.Source.get(id, source_context);
-			let version = source_context.responseMetadata.lastModified || existing_version;
+			let version = source_context.lastModified || existing_version;
 			// If we are using expiration and the version will already expire, need to incrment it
 			if (!version || (expiration_ms && version < Date.now() - expiration_ms)) version = getNextMonotonicTime();
 			const has_index_changes = updateIndices(id, existing_record, updated_record);
@@ -1512,12 +1512,10 @@ export function makeTable(options) {
 		// Periodically evict expired records, searching for records who expiresAt timestamp is before now
 		if (getWorkerIndex() === 0) {
 			// we want to run the pruning of expired records on only one thread so we don't have conflicts in evicting
-			console.log('starting eviction');
 			setInterval(async () => {
 				// go through each database and table and then search for expired entries
 				// find any entries that are set to expire before now
 				try {
-					console.log('running eviction');
 					const expires_at_name = expires_at_property.name;
 					const index = indices[expires_at_name];
 					if (!index) throw new Error(`expiresAt attribute ${expires_at_property} must be indexed`);
@@ -1537,7 +1535,7 @@ export function makeTable(options) {
 				} catch (error) {
 					harper_logger.error('Error in evicting old records', error);
 				}
-			}, RECORD_PRUNING_INTERVAL);
+			}, RECORD_PRUNING_INTERVAL).unref();
 		}
 	}
 }

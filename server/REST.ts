@@ -75,10 +75,9 @@ async function http(request, next_handler) {
 		const execution_time = performance.now() - start;
 		let status = 200;
 		let last_modification;
-		const responseMetadata = request.responseMetadata;
 		if (response_data == undefined) {
 			status = method === 'GET' || method === 'HEAD' ? 404 : 204;
-		} else if ((last_modification = responseMetadata?.lastModified)) {
+		} else if ((last_modification = request?.lastModified)) {
 			etag_float[0] = last_modification;
 			// base64 encoding of the 64-bit float encoding of the date in ms (with quotes)
 			// very fast and efficient
@@ -105,10 +104,8 @@ async function http(request, next_handler) {
 				headers['ETag'] = etag;
 			}
 		}
-		if (responseMetadata) {
-			if (responseMetadata.created) status = 201;
-			if (responseMetadata.location) headers.Location = responseMetadata.location;
-		}
+		if (request.createdResource) status = 201;
+		if (request.newLocation) headers.Location = request.newLocation;
 
 		const response_object = {
 			status,

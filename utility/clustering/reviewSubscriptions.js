@@ -83,6 +83,7 @@ async function reviewSubscriptions(subs, remote_node_name) {
 				table_req,
 				remote_describe_all[schema_req][table_req]['hash_attribute']
 			);
+			table_obj.attributes = remote_describe_all[schema_req][table_req].attributes;
 			await schema_mod.createTable(table_obj);
 		}
 

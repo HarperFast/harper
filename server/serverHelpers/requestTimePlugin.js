@@ -44,7 +44,6 @@ module.exports = fp(
 				recordAction(bytes_sent, 'bytes-sent', action, method, type);
 			}
 			let rounded_time = response_time.toFixed(3);
-			reply.header('HDB-Response-Time', rounded_time);
 			reply.header('Server-Timing', `db;dur=${rounded_time}`);
 		});
 		done();
