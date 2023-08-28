@@ -132,7 +132,7 @@ export function setNATSReplicator(table_name, db_name, Table) {
 				source = other_source;
 				// we can just delegate directly to the other get
 				if (source?.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
-					if (options.replicationSource) {
+					if (options?.replicationSource) {
 						// if this source is a source for replication, we need to replicate data that
 						// is fulfilled from this source
 						this.get = async (id, context) => {

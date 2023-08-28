@@ -1526,7 +1526,7 @@ export function makeTable(options) {
 						snapshot: false,
 					})) {
 						const record_entry = primary_store.getEntry(id);
-						if (record_entry.value?.[expires_at_name] < Date.now()) {
+						if (record_entry?.value?.[expires_at_name] < Date.now()) {
 							// make sure the record hasn't changed and won't change while removing
 							TableResource.evict(id, record_entry.value, record_entry.version);
 						}

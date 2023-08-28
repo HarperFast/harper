@@ -134,7 +134,7 @@ function buildNodePayloads(subscriptions, local_node_name, operation, system_inf
 			publish,
 			subscribe,
 			subscription.start_time,
-			table_class.schemaDefined && table_class.attributes
+			table_class.schemaDefined ? table_class.attributes : undefined
 		);
 		remote_node_subs.push(remote_payload_sub);
 	}

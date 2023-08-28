@@ -23,7 +23,7 @@ class RemotePayloadSubscription {
 		this.publish = publish;
 		this.subscribe = subscribe;
 		this.start_time = start_time;
-		this.attributes = attributes;
+		if (attributes !== undefined) this.attributes = attributes;
 	}
 }
 

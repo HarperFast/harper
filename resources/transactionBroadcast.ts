@@ -71,9 +71,11 @@ class Subscription extends IterableEventQueue {
 	constructor(listener) {
 		super();
 		this.listener = listener;
+		this.on('close', () => this.end());
 	}
 	end() {
 		// cleanup
+		if (!this.subscriptions) return;
 		this.subscriptions.splice(this.subscriptions.indexOf(this), 1);
 		if (this.subscriptions.length === 0) {
 			const table_subscriptions = this.subscriptions.tables;
@@ -86,6 +88,7 @@ class Subscription extends IterableEventQueue {
 				delete env_subscriptions[dbi];
 			}
 		}
+		this.subscriptions = null;
 	}
 	toJSON() {
 		return { name: 'subscription' };
