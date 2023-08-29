@@ -114,8 +114,13 @@ async function http(request, next_handler) {
 		};
 		const user_timings = headers['Server-Timing'];
 		headers['Server-Timing'] = `${user_timings ? user_timings + ', ' : ''}db;dur=${execution_time.toFixed(2)}`;
-		if (response_data?.wasLoadedFromSource?.()) {
-			headers['Server-Timing'] += ', miss';
+		const loaded_from_source = response_data?.wasLoadedFromSource?.()
+		if (loaded_from_source !== undefined) { // this appears to be a caching table with a source
+			if (loaded_from_source) { // indicate it was a missed cache
+				headers['Server-Timing'] += ', miss';
+			} else if (last_modification) {
+				headers.Age = Math.round((Date.now() - last_modification) / 1000);
+			}
 		}
 		recordAction(execution_time, 'TTFB', resource_path, method);
 		recordActionBinary(status < 400, 'success', resource_path, method);
