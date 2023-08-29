@@ -39,6 +39,7 @@ const DELETION_COUNT_KEY = Symbol.for('deletions');
 const VERSION_PROPERTY = Symbol.for('version');
 const INCREMENTAL_UPDATE = Symbol.for('incremental-update');
 const SOURCE_PROPERTY = Symbol('source-resource');
+const LOAD_FROM_SOURCE = Symbol('load-from-source');
 const LAZY_PROPERTY_ACCESS = { lazy: true };
 const NOTIFICATION = { isNotification: true, allowInvalidated: true };
 export interface Table {
@@ -1168,6 +1169,9 @@ export function makeTable(options) {
 		getUpdatedTime() {
 			return this[VERSION_PROPERTY];
 		}
+		wasLoadedFromSource() {
+			return Boolean(this[LOAD_FROM_SOURCE]);
+		}
 		static async addAttributes(attributes_to_add) {
 			const new_attributes = attributes.slice(0);
 			for (const attribute of attributes_to_add) {
@@ -1430,6 +1434,8 @@ export function makeTable(options) {
 		const source_context = {
 			transaction: context?.transaction,
 		};
+		if (context?.responseHeaders) source_context.responseHeaders = context?.responseHeaders;
+		this[LOAD_FROM_SOURCE] = true;
 		try {
 			let updated_record = await TableResource.Source.get(id, source_context);
 			let version = source_context.lastModified || existing_version;
