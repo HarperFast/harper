@@ -112,7 +112,11 @@ async function http(request, next_handler) {
 			headers,
 			body: undefined,
 		};
-		headers['Server-Timing'] = `db;dur=${execution_time.toFixed(2)}`;
+		const user_timings = headers['Server-Timing'];
+		headers['Server-Timing'] = `${user_timings ? user_timings + ', ' : ''}db;dur=${execution_time.toFixed(2)}`;
+		if (response_data?.wasLoadedFromSource?.()) {
+			headers['Server-Timing'] += ', miss';
+		}
 		recordAction(execution_time, 'TTFB', resource_path, method);
 		recordActionBinary(status < 400, 'success', resource_path, method);
 		// TODO: Handle 201 Created
