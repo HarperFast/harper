@@ -13,6 +13,7 @@ const _ = require('lodash');
 const { handleHDBError } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES, HDB_ERROR_MSGS } = require('../utility/errors/commonErrors');
 const minimist = require('minimist');
+const { server } = require('../server/Server');
 
 const { SCHEMAS_PARAM_CONFIG, CONFIG_PARAMS, CONFIG_PARAM_MAP } = hdb_terms;
 const UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is uninitialized';
@@ -240,7 +241,7 @@ function initConfig(force = false) {
 		// Validates config doc and if required sets default values for some parameters.
 		validateConfig(config_doc);
 		const config_obj = config_doc.toJSON();
-
+		server.config = config_obj;
 		flat_config_obj = flattenConfig(config_obj);
 
 		// If config has old version of logrotate enabled let user know it has been deprecated.
