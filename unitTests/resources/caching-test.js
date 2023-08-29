@@ -77,10 +77,12 @@ describe('Caching', () => {
 		events = [];
 		CachingTable.setTTLExpiration(0.008);
 		let result = await CachingTable.get(23);
+		assert.equal(result.wasLoadedFromSource(), true);
 		assert.equal(result.id, 23);
 		assert.equal(result.name, 'name ' + 23);
 		assert.equal(source_requests, 1);
 		result = await CachingTable.get(23);
+		assert.equal(result.wasLoadedFromSource(), false);
 		assert.equal(result.id, 23);
 		assert.equal(source_requests, 1);
 		// let it expire
