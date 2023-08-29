@@ -7,6 +7,7 @@ import { open, stat, appendFile, readFile, writeFile } from 'fs/promises';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { get as env_get, initSync } from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../utility/hdbTerms';
+import { server } from '../server/Server';
 
 initSync();
 let active_actions = new Map<string, number[] & { occurred: number; count: number }>();
@@ -24,7 +25,7 @@ export function setAnalyticsEnabled(enabled) {
 export function recordAction(value, metric, path?, method?, type?) {
 	if (!analytics_enabled) return;
 	// TODO: We may want to consider sampling a subset of queries if this has too high of overhead. It is primarily the sort operation that is expensive (computing median, p96, etc.)
-	let key = metric + '-' + path;
+	let key = metric + (path ? '-' + path : '');
 	if (method) key += '-' + method;
 	let action = active_actions.get(key);
 	if (action) {
@@ -43,6 +44,7 @@ export function recordAction(value, metric, path?, method?, type?) {
 	}
 	if (!analytics_start) sendAnalytics();
 }
+server.recordAnalytics = recordAction;
 export function recordActionBinary(value, metric, path, method, type?) {
 	recordAction(value ? 1 : 0, metric, path, method, type);
 }
