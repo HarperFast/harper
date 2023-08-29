@@ -285,7 +285,7 @@ export function makeTable(options) {
 					const read_txn = env_txn?.getReadTxn();
 					const options = { transaction: read_txn };
 					let finished;
-					loadRecord(id, request, options, (entry, error) => {
+					loadRecord(id, request, options, resource, (entry, error) => {
 						if (error) reject_load(error);
 						else {
 							resource[RECORD_PROPERTY] = entry?.value;
@@ -931,7 +931,7 @@ export function makeTable(options) {
 					// this also gives an opportunity to prefetch and ensure any page faults happen in a different thread
 					(id) =>
 						new Promise((resolve) =>
-							loadRecord(id, context, options, (entry) => {
+							loadRecord(id, context, options, null, (entry) => {
 								const record = entry?.value;
 								if (!record) return resolve(SKIP);
 								for (let i = 0; i < filters_length; i++) {
@@ -1315,7 +1315,7 @@ export function makeTable(options) {
 		}
 		return has_changes;
 	}
-	function loadRecord(id, context, options, callback) {
+	function loadRecord(id, context, options, resource, callback) {
 		// TODO: determine if we use lazy access properties
 		const whenPrefetched = () => {
 			// this is all for debugging, should be removed eventually
@@ -1355,6 +1355,7 @@ export function makeTable(options) {
 			} else load_from_source = true;
 			if (load_from_source && !options?.allowInvalidated) {
 				const source = TableResource.Source;
+				if (resource) resource[LOAD_FROM_SOURCE] = true;
 				const has_get = source && source.get && (!source.get.reliesOnPrototype || source.prototype.get);
 				if (has_get) {
 					return getFromSource(id, record, version, context).then(
@@ -1433,9 +1434,10 @@ export function makeTable(options) {
 		// attribute this to the current user (but we do want to use the current transaction)
 		const source_context = {
 			transaction: context?.transaction,
+			replacingRecord: existing_record,
+			replacingVersion: existing_version,
 		};
 		if (context?.responseHeaders) source_context.responseHeaders = context?.responseHeaders;
-		this[LOAD_FROM_SOURCE] = true;
 		try {
 			let updated_record = await TableResource.Source.get(id, source_context);
 			let version = source_context.lastModified || existing_version;
