@@ -9,6 +9,7 @@ import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/h
 import { loggerWithTag, AuthAuditLog } from '../utility/logging/harper_logger.js';
 import { serializeMessage } from '../server/serverHelpers/contentTypes';
 import { user } from '../server/itc/serverHandlers';
+import { Headers } from '../server/serverHelpers/Headers';
 const auth_event_log = loggerWithTag('auth-event');
 env.initSync();
 
@@ -198,10 +199,10 @@ export async function authentication(request, next_handler) {
 	const l = response_headers.length;
 	if (l > 0) {
 		let headers = response.headers;
-		if (!headers) response.headers = headers = {};
+		if (!headers) response.headers = headers = new Headers();
 		for (let i = 0; i < l; ) {
 			const name = response_headers[i++];
-			headers[name] = response_headers[i++];
+			headers.set(name, response_headers[i++]);
 		}
 	}
 	response_headers = null;

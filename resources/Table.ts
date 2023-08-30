@@ -1440,11 +1440,16 @@ export function makeTable(options) {
 			replacingRecord: existing_record,
 			replacingVersion: existing_version,
 		};
-		if (context?.responseHeaders) source_context.responseHeaders = context?.responseHeaders;
+		const response_headers = context?.responseHeaders;
+		if (response_headers) source_context.responseHeaders = response_headers;
 		try {
 			const start = performance.now();
 			let updated_record = await TableResource.Source.get(id, source_context);
-			recordAction(performance.now() - start, 'cache-resolution', table_name);
+			const resolve_duration = performance.now() - start;
+			recordAction(resolve_duration, 'cache-resolution', table_name);
+			if (response_headers) {
+				response_headers.append('Server-Timing', `cache-resolve;dur=${resolve_duration.toFixed(2)}`;
+			}
 			let version = source_context.lastModified || existing_version;
 			// If we are using expiration and the version will already expire, need to incrment it
 			if (!version || (expiration_ms && version < Date.now() - expiration_ms)) version = getNextMonotonicTime();

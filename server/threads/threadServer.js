@@ -11,6 +11,7 @@ const { server } = require('../Server');
 const { WebSocketServer } = require('ws');
 const { createServer: createSecureSocketServer } = require('tls');
 const { getTicketKeys } = require('./manageThreads');
+const { Headers } = require('../serverHelpers/Headers');
 
 process.on('uncaughtException', (error) => {
 	if (error.code === 'ECONNRESET') return; // that's what network connections do
@@ -240,19 +241,21 @@ function getHTTPServer(port, secure, is_operations_server) {
 				if (is_operations_server) request.isOperationsServer = true;
 				// assign a more WHATWG compliant headers object, this is our real standard interface
 				let response = await http_chain[port](request);
-				node_response.setHeader('Server', 'HarperDB');
+				response.headers?.set?.('Server', 'HarperDB');
 				if (response.status === -1) {
 					// This means the HDB stack didn't handle the request, and we can then cascade the request
 					// to the server-level handler, forming the bridge to the slower legacy fastify framework that expects
 					// to interact with a node HTTP server object.
-					for (let name in response.headers) {
-						node_response.setHeader(name, response.headers[name]);
+					for (let header_pair of response.headers) {
+						node_response.setHeader(header_pair[0], header_pair[1]);
 					}
 					node_request.baseRequest = request;
 					node_response.baseResponse = response;
 					return http_servers[port].emit('unhandled', node_request, node_response);
 				}
-				if (!response.handlesHeaders) node_response.writeHead(response.status || 200, response.headers);
+				if (!response.handlesHeaders && response.headers) {
+					node_response.writeHead(response.status || 200, Array.from(response.headers));
+				}
 				let body = response.body;
 				// if it is a stream, pipe it
 				if (body?.pipe) {
@@ -316,7 +319,7 @@ function unhandled(request) {
 	return {
 		status: -1,
 		body: 'Not found',
-		headers: {},
+		headers: new Headers(),
 	};
 }
 function onRequest(listener, options) {
