@@ -1,3 +1,5 @@
+name: Dockerhub Publish Single Image
+
 on:
   workflow_dispatch:
     inputs:
@@ -25,7 +27,7 @@ on:
         default: 'false'
         required: false
         type: string
-name: Dockerhub Publish Single Image
+
 jobs:
   build:
     uses: ./.github/workflows/build.yaml

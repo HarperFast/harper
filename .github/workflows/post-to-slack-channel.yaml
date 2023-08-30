@@ -1,0 +1,26 @@
+name: Post to Slack Channel
+
+on:
+  workflow_call:
+    inputs:
+      channel_id:
+        default:  'development-ci'
+        required: false
+        type: string
+      slack_message:
+        default: "${{ github.workflow }} Failed.\nSee logs here: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        required: false
+        type: string
+
+jobs:
+  sendSlackMessage:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Post to a Slack channel
+      id: slack
+      uses: slackapi/slack-github-action@v1.24.0
+      with:
+        channel-id: "${{ inputs.channel_id }}"
+        slack-message: "${{ inputs.slack_message }}"
+      env:
+        SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}

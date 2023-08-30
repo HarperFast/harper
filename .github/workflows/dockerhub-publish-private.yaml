@@ -1,6 +1,17 @@
+name: DockerHub Publish Private
+
 on:
   workflow_dispatch:
-name: DockerHub Publish Private
+    inputs:
+      tag_latest:
+        description: 'tag this build as latest in registry'
+        default: 'false'
+        required: false
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
 jobs:
   build:
     uses: ./.github/workflows/build.yaml
@@ -61,4 +72,5 @@ jobs:
         NODE_VERSION: ${{ needs.build.outputs.nodeVersion }}
         PUBLISH: "private"
         GITHUB_RUN_NUMBER: ${{ vars.GITHUB_RUN_NUMBER }}
+        TAG_LATEST: "${{ inputs.tag_latest }}"
       run: ./.github/scripts/docker-publish.sh

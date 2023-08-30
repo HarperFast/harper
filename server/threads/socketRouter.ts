@@ -146,7 +146,8 @@ export function startSocketServer(port = 0, session_affinity_identifier?) {
 				}
 				worker.requests++;
 				const fd = socket._handle.fd;
-				if (fd >= 0) worker.postMessage({ port, fd: socket._handle.fd, data: received_data });
+				harper_logger.trace('Socket', fd, 'from', socket.remoteAddress, ' routed to worker', worker.threadId);
+				if (fd >= 0) worker.postMessage({ port, fd, data: received_data });
 				// valid file descriptor, forward it
 				// Windows doesn't support passing sockets by file descriptors, so we have manually proxy the socket data
 				else proxySocket(socket, worker, port);
