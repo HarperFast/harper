@@ -27,6 +27,7 @@ import { MAXIMUM_KEY } from 'ordered-binary';
 import { getWorkerIndex, onMessageByType } from '../server/threads/manageThreads';
 import { createAuditEntry, readAuditEntry } from './auditStore';
 import { autoCast, convertToMS } from '../utility/common_utils';
+import { recordAction, recordActionBinary } from './analytics';
 
 let server_utilities;
 const RANGE_ESTIMATE = 100000000;
@@ -1356,6 +1357,7 @@ export function makeTable(options) {
 				)
 					load_from_source = true;
 			} else load_from_source = true;
+			if (has_source_get) recordActionBinary(load_from_source, 'cache-hit', table_name);
 			if (load_from_source && !options?.allowInvalidated) {
 				if (resource) resource[LOAD_FROM_SOURCE] = true;
 				if (has_source_get) {
@@ -1440,7 +1442,9 @@ export function makeTable(options) {
 		};
 		if (context?.responseHeaders) source_context.responseHeaders = context?.responseHeaders;
 		try {
+			const start = performance.now();
 			let updated_record = await TableResource.Source.get(id, source_context);
+			recordAction(performance.now() - start, 'cache-resolution', table_name);
 			let version = source_context.lastModified || existing_version;
 			// If we are using expiration and the version will already expire, need to incrment it
 			if (!version || (expiration_ms && version < Date.now() - expiration_ms)) version = getNextMonotonicTime();
