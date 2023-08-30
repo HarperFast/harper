@@ -246,7 +246,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 					// This means the HDB stack didn't handle the request, and we can then cascade the request
 					// to the server-level handler, forming the bridge to the slower legacy fastify framework that expects
 					// to interact with a node HTTP server object.
-					for (let header_pair of response.headers) {
+					for (let header_pair of response.headers || []) {
 						node_response.setHeader(header_pair[0], header_pair[1]);
 					}
 					node_request.baseRequest = request;
