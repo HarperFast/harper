@@ -45,7 +45,7 @@ export function recordAction(value, metric, path?, method?, type?) {
 	if (!analytics_start) sendAnalytics();
 }
 server.recordAnalytics = recordAction;
-export function recordActionBinary(value, metric, path, method, type?) {
+export function recordActionBinary(value, metric, path?, method?, type?) {
 	recordAction(value ? 1 : 0, metric, path, method, type);
 }
 let analytics_start = 0;

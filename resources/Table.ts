@@ -27,6 +27,7 @@ import { MAXIMUM_KEY } from 'ordered-binary';
 import { getWorkerIndex, onMessageByType } from '../server/threads/manageThreads';
 import { createAuditEntry, readAuditEntry } from './auditStore';
 import { autoCast, convertToMS } from '../utility/common_utils';
+import { recordAction, recordActionBinary } from './analytics';
 
 let server_utilities;
 const RANGE_ESTIMATE = 100000000;
@@ -86,6 +87,7 @@ export function makeTable(options) {
 	listenToCommits(primary_store, audit_store);
 	let deletion_count = 0;
 	let deletion_cleanup;
+	let has_source_get;
 	let pending_deletion_count_write;
 	let primary_key_attribute = {};
 	let created_time_property, updated_time_property, expires_at_property;
@@ -139,6 +141,8 @@ export function makeTable(options) {
 						'Can not assign multiple sources to a table with no source providing a (static) mergeSource method'
 					);
 			} else this.Source = Resource;
+			has_source_get = Resource && Resource.get && (!Resource.get.reliesOnPrototype || Resource.prototype.get);
+
 			// External data source may provide a subscribe method, allowing for real-time proactive delivery
 			// of data from the source to this caching table. This is generally greatly superior to expiration-based
 			// caching since it much for accurately ensures freshness and maximizing caching time.
@@ -1169,8 +1173,8 @@ export function makeTable(options) {
 		getUpdatedTime() {
 			return this[VERSION_PROPERTY];
 		}
-		wasLoadedFromSource() {
-			return Boolean(this[LOAD_FROM_SOURCE]);
+		wasLoadedFromSource(): boolean | void {
+			return has_source_get ? Boolean(this[LOAD_FROM_SOURCE]) : undefined;
 		}
 		static async addAttributes(attributes_to_add) {
 			const new_attributes = attributes.slice(0);
@@ -1353,11 +1357,10 @@ export function makeTable(options) {
 				)
 					load_from_source = true;
 			} else load_from_source = true;
+			if (has_source_get) recordActionBinary(load_from_source, 'cache-hit', table_name);
 			if (load_from_source && !options?.allowInvalidated) {
-				const source = TableResource.Source;
 				if (resource) resource[LOAD_FROM_SOURCE] = true;
-				const has_get = source && source.get && (!source.get.reliesOnPrototype || source.prototype.get);
-				if (has_get) {
+				if (has_source_get) {
 					return getFromSource(id, record, version, context).then(
 						(entry) => {
 							if (entry?.value?.[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
@@ -1437,9 +1440,16 @@ export function makeTable(options) {
 			replacingRecord: existing_record,
 			replacingVersion: existing_version,
 		};
-		if (context?.responseHeaders) source_context.responseHeaders = context?.responseHeaders;
+		const response_headers = context?.responseHeaders;
+		if (response_headers) source_context.responseHeaders = response_headers;
 		try {
+			const start = performance.now();
 			let updated_record = await TableResource.Source.get(id, source_context);
+			const resolve_duration = performance.now() - start;
+			recordAction(resolve_duration, 'cache-resolution', table_name);
+			if (response_headers) {
+				response_headers.append('Server-Timing', `cache-resolve;dur=${resolve_duration.toFixed(2)}`);
+			}
 			let version = source_context.lastModified || existing_version;
 			// If we are using expiration and the version will already expire, need to incrment it
 			if (!version || (expiration_ms && version < Date.now() - expiration_ms)) version = getNextMonotonicTime();

@@ -6,6 +6,7 @@ import { Resources } from '../resources/Resources';
 import { parseQuery } from '../resources/search';
 import { IterableEventQueue } from '../resources/IterableEventQueue';
 import { transaction } from '../resources/transaction';
+import { Headers } from '../server/serverHelpers/Headers';
 
 interface Response {
 	status?: number;
@@ -21,8 +22,8 @@ async function http(request, next_handler) {
 	if (request.search) parseQuery(request);
 	const start = performance.now();
 	let resource_path;
+	const headers = new Headers();
 	try {
-		const headers = new Headers();
 		request.responseHeaders = headers;
 		const url = request.url.slice(1);
 		const entry = resources.getMatch(url);
@@ -53,7 +54,7 @@ async function http(request, next_handler) {
 				case 'PATCH':
 					return resource.patch(resource_request, request.data, request);
 				case 'OPTIONS': // used primarily for CORS
-					headers.Allow = 'GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS, TRACe, QUERY, COPY, MOVE';
+					headers.set('Allow', 'GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS, TRACE, QUERY, COPY, MOVE');
 					return;
 				case 'CONNECT':
 					// websockets? and event-stream
@@ -101,22 +102,29 @@ async function http(request, next_handler) {
 				status = 304;
 				response_data = undefined;
 			} else {
-				headers['ETag'] = etag;
+				headers.set('ETag', etag);
 			}
 		}
 		if (request.createdResource) status = 201;
-		if (request.newLocation) headers.Location = request.newLocation;
+		if (request.newLocation) headers.set('Location', request.newLocation);
 
 		const response_object = {
 			status,
 			headers,
 			body: undefined,
 		};
-		const user_timings = headers['Server-Timing'];
-		headers['Server-Timing'] = `${user_timings ? user_timings + ', ' : ''}db;dur=${execution_time.toFixed(2)}`;
-		if (response_data?.wasLoadedFromSource?.()) {
-			headers['Server-Timing'] += ', miss';
+		let server_timing = `db;dur=${execution_time.toFixed(2)}`;
+		const loaded_from_source = response_data?.wasLoadedFromSource?.();
+		if (loaded_from_source !== undefined) {
+			// this appears to be a caching table with a source
+			if (loaded_from_source) {
+				// indicate it was a missed cache
+				server_timing += ', miss';
+			} else if (last_modification) {
+				headers.set('Age', Math.round((Date.now() - last_modification) / 1000));
+			}
 		}
+		headers.append('Server-Timing', server_timing, true);
 		recordAction(execution_time, 'TTFB', resource_path, method);
 		recordActionBinary(status < 400, 'success', resource_path, method);
 		// TODO: Handle 201 Created
@@ -131,12 +139,11 @@ async function http(request, next_handler) {
 		recordAction(execution_time, 'TTFB', resource_path, method);
 		recordActionBinary(false, 'success', resource_path, method);
 		if (!error.statusCode) console.error(error);
-		const headers = {};
 		if (error.statusCode === 405) {
 			if (error.method) error.message += ` to handle HTTP method ${error.method.toUpperCase() || ''}`;
 			if (error.allow) {
 				error.allow.push('trace', 'head', 'options');
-				headers.Allow = error.allow.map((method) => method.toUpperCase()).join(', ');
+				headers.set('Allow', error.allow.map((method) => method.toUpperCase()).join(', '));
 			}
 		}
 		return {
@@ -236,11 +243,5 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 			const accept = EXTENSION_TYPES[ext];
 			if (accept) request.headers.accept = accept;
 		}
-	}
-}
-
-class Headers {
-	set(name, value) {
-		this[name] = value;
 	}
 }

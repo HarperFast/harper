@@ -260,26 +260,26 @@ export function serialize(response_data, request, response_object) {
 	let response_body;
 	if (response_data?.contentType != null && response_data.data != null) {
 		// we use this as a special marker for blobs of data that are explicitly one content type
-		response_object.headers['Content-Type'] = response_data.contentType;
-		response_object.headers['Vary'] = 'Accept-Encoding';
+		response_object.headers.set('Content-Type', response_data.contentType);
+		response_object.headers.set('Vary', 'Accept-Encoding');
 		response_body = response_data.data;
 	}
 	if (response_data instanceof Uint8Array) {
 		// If a user function or property returns a direct Buffer of binary data, this is the most appropriate content
 		// type for it.
-		response_object.headers['Content-Type'] = 'application/octet-stream';
-		response_object.headers['Vary'] = 'Accept-Encoding';
+		response_object.headers.set('Content-Type', 'application/octet-stream');
+		response_object.headers.set('Vary', 'Accept-Encoding');
 		response_body = response_data;
 	} else {
 		const serializer = findBestSerializer(request);
 		// TODO: If a different content type is preferred, look through resources to see if there is one
 		// specifically for that content type (most useful for html).
-		response_object.headers['Vary'] = 'Accept, Accept-Encoding';
-		response_object.headers['Content-Type'] = serializer.type;
+		response_object.headers.set('Vary', 'Accept, Accept-Encoding');
+		response_object.headers.set('Content-Type', serializer.type);
 		if (response_data[Symbol.iterator] && serializer.serializer.serializeStream) {
 			let stream = serializer.serializer.serializeStream(response_data);
 			if (compress) {
-				response_object.headers['Content-Encoding'] = 'br';
+				response_object.headers.set('Content-Encoding', 'br');
 				// TODO: Use the fastest setting here and only do it if load is low
 				stream = stream.pipe(
 					createBrotliCompress({
@@ -293,7 +293,7 @@ export function serialize(response_data, request, response_object) {
 	}
 	if (compress) {
 		// TODO: Only do this if the size is large and we can cache the result (otherwise use logic above)
-		response_object.headers['Content-Encoding'] = 'br';
+		response_object.headers.set('Content-Encoding', 'br');
 		// if we have a single buffer (or string) we compress in a single async call
 		return new Promise((resolve, reject) =>
 			brotliCompress(response_body, (err, data) => {

@@ -9,6 +9,7 @@ import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/h
 import { loggerWithTag, AuthAuditLog } from '../utility/logging/harper_logger.js';
 import { serializeMessage } from '../server/serverHelpers/contentTypes';
 import { user } from '../server/itc/serverHandlers';
+import { Headers } from '../server/serverHelpers/Headers';
 const auth_event_log = loggerWithTag('auth-event');
 env.initSync();
 
@@ -164,8 +165,8 @@ export async function authentication(request, next_handler) {
 				const cookie = `${cookie_prefix}${session_id}; Path=/; Expires=Tue, 01 Oct 8307 19:33:20 GMT; HttpOnly${
 					request.protocol === 'https' ? '; SameSite=None; Secure' : ''
 				}`;
-				if (response_headers) response_headers.push('set-cookie', cookie);
-				else if (response?.headers?.set) response.headers.set('set-cookie', cookie);
+				if (response_headers) response_headers.push('Set-Cookie', cookie);
+				else if (response?.headers?.set) response.headers.set('Set-Cookie', cookie);
 			}
 			updated_session.id = session_id;
 			return session_table.put(updated_session);
@@ -191,17 +192,17 @@ export async function authentication(request, next_handler) {
 		) {
 			// on the web if we have a login page, default to redirecting to it
 			response.status = 302;
-			response.headers.Location = resources.loginPath(request);
+			response.headers.set('Location', resources.loginPath(request));
 		} // the HTTP specified way of indicating HTTP authentication methods supported:
-		else response.headers['WWW-Authenticate'] = 'Basic';
+		else response.headers.set('WWW-Authenticate', 'Basic');
 	}
 	const l = response_headers.length;
 	if (l > 0) {
 		let headers = response.headers;
-		if (!headers) response.headers = headers = {};
+		if (!headers) response.headers = headers = new Headers();
 		for (let i = 0; i < l; ) {
 			const name = response_headers[i++];
-			headers[name] = response_headers[i++];
+			headers.set(name, response_headers[i++]);
 		}
 	}
 	response_headers = null;
