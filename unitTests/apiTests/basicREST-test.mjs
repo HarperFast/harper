@@ -223,6 +223,19 @@ describe('test REST calls', () => {
 			assert.equal(response.data[0].birthday.slice(0,4), '1993');
 			assert.equal(response.data[1].birthday.slice(0,4), '1994');
 		});
-
 	});
+	it('invalidate and get from cache and check headers', async () => {
+		let response = await axios.post('http://localhost:9926/SimpleCache/3', {
+			invalidate: true
+		});
+		response = await axios('http://localhost:9926/SimpleCache/3');
+		assert.equal(response.status, 200);
+		assert(response.headers['server-timing'].includes('miss'));
+		assert.equal(response.data.name, 'name3');
+		response = await axios('http://localhost:9926/SimpleCache/3');
+		assert.equal(response.status, 200);
+		assert(!response.headers['server-timing'].includes('miss'));
+		assert.equal(response.data.name, 'name3');
+	});
+
 });
