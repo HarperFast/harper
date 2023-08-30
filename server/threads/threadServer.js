@@ -269,14 +269,14 @@ function getHTTPServer(port, secure, is_operations_server) {
 							node_response.end(body);
 						},
 						(error) => {
-							node_response.writeHead(error.http_resp_code || 500);
+							node_response.writeHead(error.statusCode || 500);
 							node_response.end(error.toString());
 							harper_logger.error(error);
 						}
 					);
 				else node_response.end(body);
 			} catch (error) {
-				node_response.writeHead(error.http_resp_code || 500);
+				node_response.writeHead(error.statusCode || 500);
 				node_response.end(error.toString());
 				harper_logger.error(error);
 			}

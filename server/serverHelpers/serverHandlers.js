@@ -26,11 +26,11 @@ function handleServerUncaughtException(err) {
 
 function serverErrorHandler(error, req, resp) {
 	harper_logger[error.logLevel || 'error'](error);
-	if (error.http_resp_code) {
+	if (error.statusCode) {
 		if (typeof error.http_resp_msg !== 'object') {
-			return resp.code(error.http_resp_code).send({ error: error.http_resp_msg || error.message });
+			return resp.code(error.statusCode).send({ error: error.http_resp_msg || error.message });
 		}
-		return resp.code(error.http_resp_code).send(error.http_resp_msg);
+		return resp.code(error.statusCode).send(error.http_resp_msg);
 	}
 	const statusCode = error.statusCode ? error.statusCode : hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR;
 	if (typeof error === 'string') {

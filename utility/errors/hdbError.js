@@ -22,7 +22,7 @@ class HdbError extends Error {
 		//This line ensures the original stack trace is captured and does not include the 'handle' or 'constructor' methods
 		Error.captureStackTrace(this, handleHDBError);
 
-		this.http_resp_code = http_code ? http_code : hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR;
+		this.statusCode = http_code ? http_code : hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR;
 		this.http_resp_msg = http_msg
 			? http_msg
 			: hdb_errors.DEFAULT_ERROR_MSGS[http_code]
@@ -45,18 +45,18 @@ class HdbError extends Error {
 class ClientError extends Error {
 	constructor(message, status_code) {
 		if (message instanceof Error) {
-			message.http_resp_code = status_code || 400;
+			message.statusCode = status_code || 400;
 			return message;
 		}
 		super(message);
-		this.http_resp_code = status_code || 400;
+		this.statusCode = status_code || 400;
 	}
 }
 
 class ServerError extends Error {
 	constructor(message, status_code) {
 		super(message);
-		this.http_resp_code = status_code || 500;
+		this.statusCode = status_code || 500;
 	}
 }
 

@@ -638,7 +638,7 @@ describe('Test bulkLoad.js', () => {
 
 			expect(result).to.be.instanceof(Error);
 			expect(result.http_resp_msg).to.equal(CHECK_LOGS_WRAPPER(TEST_BULK_LOAD_ERROR_MSGS.DEFAULT_BULK_LOAD_ERR));
-			expect(result.http_resp_code).to.equal(HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
+			expect(result.statusCode).to.equal(HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
 			expect(buildTopLevelErrMsg_spy.args[0][0].message).to.equal(test_err_msg);
 			expect(logger_error_spy).to.have.been.calledOnce;
 			expect(fileLoad_stub).to.not.have.been.called;
@@ -722,7 +722,7 @@ describe('Test bulkLoad.js', () => {
 
 			expect(results).to.be.instanceof(Error);
 			expect(results.http_resp_msg).to.equal(TEST_BULK_LOAD_ERROR_MSGS.DEFAULT_BULK_LOAD_ERR);
-			expect(results.http_resp_code).to.equal(HTTP_STATUS_CODES.BAD_REQUEST);
+			expect(results.statusCode).to.equal(HTTP_STATUS_CODES.BAD_REQUEST);
 			expect(logger_error_spy).to.have.been.calledOnce;
 			expect(logger_error_spy).to.have.been.calledWith(
 				TEST_BULK_LOAD_ERROR_MSGS.INVALID_FILE_EXT_ERR(invalid_msg_fake)
@@ -922,7 +922,7 @@ describe('Test bulkLoad.js', () => {
 			expect(error.http_resp_msg).to.equal(
 				'There was an error parsing the downloaded CSV data. Check logs and try again.'
 			);
-			expect(error.http_resp_code).to.equal(500);
+			expect(error.statusCode).to.equal(500);
 			expect(error.__proto__.constructor.name).to.equal('HdbError');
 			expect(logger_error_stub).to.have.been.calledOnce;
 		});
@@ -990,7 +990,7 @@ describe('Test bulkLoad.js', () => {
 			}
 
 			expect(results.http_resp_msg).to.equal(CHECK_LOGS_WRAPPER(TEST_BULK_LOAD_ERROR_MSGS.INSERT_JSON_ERR));
-			expect(results.http_resp_code).to.equal(HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
+			expect(results.statusCode).to.equal(HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
 			expect(validateChunk_stub).to.not.have.been.called;
 			expect(logger_error_spy).to.have.been.called;
 		});

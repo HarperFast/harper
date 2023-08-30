@@ -361,10 +361,10 @@ class AccessError extends Error {
 	constructor(user) {
 		if (user) {
 			super('Unauthorized access to resource');
-			this.http_resp_code = 403;
+			this.statusCode = 403;
 		} else {
 			super('Must login');
-			this.http_resp_code = 401;
+			this.statusCode = 401;
 			// TODO: Optionally allow a Location header to redirect to
 		}
 	}

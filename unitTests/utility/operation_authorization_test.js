@@ -441,7 +441,7 @@ describe('Test operation_authorization', function () {
 			} catch (e) {
 				test_err = e;
 			}
-			assert.equal(test_err.http_resp_code, 400);
+			assert.equal(test_err.statusCode, 400);
 			assert.equal(test_err.http_resp_msg, "Operation 'fart' not found");
 		});
 
@@ -522,7 +522,7 @@ describe('Test operation_authorization', function () {
 			}
 
 			assert.equal(test_err.http_resp_msg, 'Invalid request');
-			assert.equal(test_err.http_resp_code, 400);
+			assert.equal(test_err.statusCode, 400);
 		});
 
 		it('Check return if user has su.  Expect true', function () {
@@ -699,7 +699,7 @@ describe('Test operation_authorization', function () {
 				result = e;
 			}
 			assert.equal(result instanceof Error, true);
-			assert.equal(result.http_resp_code, 403);
+			assert.equal(result.statusCode, 403);
 			assert.equal(
 				result.http_resp_msg,
 				"Internal timestamp attributes - '__createdtime_' and '__updatedtime__' - cannot be inserted to or updated by HDB users."

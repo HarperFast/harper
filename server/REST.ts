@@ -130,9 +130,9 @@ async function http(request, next_handler) {
 		const execution_time = performance.now() - start;
 		recordAction(execution_time, 'TTFB', resource_path, method);
 		recordActionBinary(false, 'success', resource_path, method);
-		if (!error.http_resp_code) console.error(error);
+		if (!error.statusCode) console.error(error);
 		const headers = {};
-		if (error.http_resp_code === 405) {
+		if (error.statusCode === 405) {
 			if (error.method) error.message += ` to handle HTTP method ${error.method.toUpperCase() || ''}`;
 			if (error.allow) {
 				error.allow.push('trace', 'head', 'options');
@@ -140,7 +140,7 @@ async function http(request, next_handler) {
 			}
 		}
 		return {
-			status: error.http_resp_code || 500, // use specified error status, or default to generic server error
+			status: error.statusCode || 500, // use specified error status, or default to generic server error
 			headers,
 			body: serializeMessage(error.toString(), request),
 		};
