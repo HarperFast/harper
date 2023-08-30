@@ -54,7 +54,7 @@ async function http(request, next_handler) {
 				case 'PATCH':
 					return resource.patch(resource_request, request.data, request);
 				case 'OPTIONS': // used primarily for CORS
-					headers.set('Allow', 'GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS, TRACe, QUERY, COPY, MOVE');
+					headers.set('Allow', 'GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS, TRACE, QUERY, COPY, MOVE');
 					return;
 				case 'CONNECT':
 					// websockets? and event-stream
