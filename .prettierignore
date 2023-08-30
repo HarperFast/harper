@@ -5,7 +5,7 @@
 coverage
 custom_function_template
 application-template
-docs/
+studio/
 integrationTests/
 node_modules/
 npm_pack/

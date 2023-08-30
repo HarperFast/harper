@@ -133,16 +133,16 @@ function buildServer(is_https) {
 
 	// This handles all get requests for the studio
 	app.register(fastify_compress);
-	app.register(fastify_static, { root: guidePath.join(PACKAGE_ROOT, 'docs') });
+	app.register(fastify_static, { root: PACKAGE_ROOT });
 	registerContentHandlers(app);
 
 	let studio_on = env.get(terms.HDB_SETTINGS_NAMES.LOCAL_STUDIO_ON);
 	app.get('/', function (req, res) {
 		//if the local studio is enabled we will serve it, otherwise return 404
 		if (!common_utils.isEmpty(studio_on) && studio_on.toString().toLowerCase() === 'true') {
-			return res.sendFile('index.html');
+			return res.sendFile('studio/index.html');
 		}
-		return res.callNotFound();
+		return res.sendFile('studio/running.html');
 	});
 
 	// This handles all POST requests
