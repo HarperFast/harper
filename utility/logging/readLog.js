@@ -13,6 +13,7 @@ const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
 // Install log is created in harperdb/logs because the hdb folder doesn't exist initially during the install process.
 const INSTALL_LOG_LOCATION = path.join(PACKAGE_ROOT, `logs`);
 const DEFAULT_READ_LOG_LIMIT = 1000;
+const ESTIMATED_AVERAGE_ENTRY_SIZE = 200;
 
 module.exports = readLog;
 
@@ -42,11 +43,6 @@ async function readLog(request) {
 			? path.join(INSTALL_LOG_LOCATION, hdb_terms.LOG_NAMES.INSTALL)
 			: path.join(log_path, log_name);
 
-	const read_log_input_stream = fs.createReadStream(read_log_path);
-	read_log_input_stream.on('error', (err) => {
-		hdb_logger.error(err);
-	});
-
 	const level_defined = request.level !== undefined;
 	const level = level_defined ? request.level : undefined;
 	const from_defined = request.from !== undefined;
@@ -57,6 +53,15 @@ async function readLog(request) {
 	const order = request.order === undefined ? undefined : request.order;
 	const start = request.start === undefined ? 0 : request.start;
 	const max = start + limit;
+	let file_start = 0;
+	if (order === 'desc' && !from && !until) {
+		file_start = Math.max(fs.statSync(read_log_path).size - (max + 5) * ESTIMATED_AVERAGE_ENTRY_SIZE, 0);
+	}
+	const read_log_input_stream = fs.createReadStream(read_log_path, { start: file_start });
+	read_log_input_stream.on('error', (err) => {
+		hdb_logger.error(err);
+	});
+
 	let count = 0;
 	let result = [];
 	let remaining = '';
