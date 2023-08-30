@@ -253,8 +253,8 @@ function getHTTPServer(port, secure, is_operations_server) {
 					node_response.baseResponse = response;
 					return http_servers[port].emit('unhandled', node_request, node_response);
 				}
-				if (!response.handlesHeaders && response.headers) {
-					node_response.writeHead(response.status || 200, Array.from(response.headers));
+				if (!response.handlesHeaders) {
+					node_response.writeHead(response.status || 200, response.headers && Array.from(response.headers));
 				}
 				let body = response.body;
 				// if it is a stream, pipe it

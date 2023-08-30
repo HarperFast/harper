@@ -22,8 +22,8 @@ async function http(request, next_handler) {
 	if (request.search) parseQuery(request);
 	const start = performance.now();
 	let resource_path;
+	const headers = new Headers();
 	try {
-		const headers = new Headers();
 		request.responseHeaders = headers;
 		const url = request.url.slice(1);
 		const entry = resources.getMatch(url);
@@ -139,7 +139,6 @@ async function http(request, next_handler) {
 		recordAction(execution_time, 'TTFB', resource_path, method);
 		recordActionBinary(false, 'success', resource_path, method);
 		if (!error.http_resp_code) console.error(error);
-		const headers = new Headers();
 		if (error.http_resp_code === 405) {
 			if (error.method) error.message += ` to handle HTTP method ${error.method.toUpperCase() || ''}`;
 			if (error.allow) {
