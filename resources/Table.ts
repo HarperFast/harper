@@ -1448,7 +1448,7 @@ export function makeTable(options) {
 			const resolve_duration = performance.now() - start;
 			recordAction(resolve_duration, 'cache-resolution', table_name);
 			if (response_headers) {
-				response_headers.append('Server-Timing', `cache-resolve;dur=${resolve_duration.toFixed(2)}`;
+				response_headers.append('Server-Timing', `cache-resolve;dur=${resolve_duration.toFixed(2)}`);
 			}
 			let version = source_context.lastModified || existing_version;
 			// If we are using expiration and the version will already expire, need to incrment it
