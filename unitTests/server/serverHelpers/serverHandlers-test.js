@@ -108,7 +108,7 @@ describe('Test serverHandlers.js module ', () => {
 
 		it('Should send a response with custom error message and 400 code when included in error passed', () => {
 			const test_error = test_utils.deepClone(TEST_ERR);
-			test_error.http_resp_code = 400;
+			test_error.statusCode = 400;
 			test_error.http_resp_msg = 'Custom error message!';
 
 			const test_result = serverHandlers_rw.serverErrorHandler(test_error, {}, new TestMockResp());
@@ -119,7 +119,7 @@ describe('Test serverHandlers.js module ', () => {
 
 		it('Should send a response with custom error message object and 400 code when included in error passed', () => {
 			const test_error = test_utils.deepClone(TEST_ERR);
-			test_error.http_resp_code = 400;
+			test_error.statusCode = 400;
 			test_error.http_resp_msg = { blah: 'Custom error message!' };
 
 			const test_result = serverHandlers_rw.serverErrorHandler(test_error, {}, new TestMockResp());
@@ -182,7 +182,7 @@ describe('Test serverHandlers.js module ', () => {
 			}
 
 			assert.ok(
-				test_result.http_resp_code === HTTP_STATUS_CODES.BAD_REQUEST,
+				test_result.statusCode === HTTP_STATUS_CODES.BAD_REQUEST,
 				'Method should throw error w/ BAD_REQUEST code'
 			);
 			assert.ok(test_result.http_resp_msg === 'Invalid JSON.', 'Method should throw error for invalid JSON');
@@ -199,7 +199,7 @@ describe('Test serverHandlers.js module ', () => {
 			}
 
 			assert.ok(
-				test_result.http_resp_code === HTTP_STATUS_CODES.BAD_REQUEST,
+				test_result.statusCode === HTTP_STATUS_CODES.BAD_REQUEST,
 				'Method should throw error w/ BAD_REQUEST code'
 			);
 			assert.ok(test_result.http_resp_msg === 'Invalid JSON.', 'Method should throw error for invalid JSON');
@@ -216,7 +216,7 @@ describe('Test serverHandlers.js module ', () => {
 			}
 
 			assert.ok(
-				test_result.http_resp_code === HTTP_STATUS_CODES.BAD_REQUEST,
+				test_result.statusCode === HTTP_STATUS_CODES.BAD_REQUEST,
 				'Method should throw error w/ BAD_REQUEST code'
 			);
 			assert.ok(test_result.http_resp_msg === 'Invalid JSON.', 'Method should throw error for invalid JSON');
@@ -233,7 +233,7 @@ describe('Test serverHandlers.js module ', () => {
 			}
 
 			assert.ok(
-				test_result.http_resp_code === HTTP_STATUS_CODES.BAD_REQUEST,
+				test_result.statusCode === HTTP_STATUS_CODES.BAD_REQUEST,
 				'Method should throw error w/ BAD_REQUEST code'
 			);
 			assert.ok(
@@ -253,7 +253,7 @@ describe('Test serverHandlers.js module ', () => {
 			}
 
 			assert.ok(
-				test_result.http_resp_code === HTTP_STATUS_CODES.BAD_REQUEST,
+				test_result.statusCode === HTTP_STATUS_CODES.BAD_REQUEST,
 				'Method should throw error w/ BAD_REQUEST code'
 			);
 			assert.ok(
@@ -323,7 +323,7 @@ describe('Test serverHandlers.js module ', () => {
 
 			serverHandlers_rw.authHandler(test_req, {}, (err, data) => {
 				assert.ok(data === null, 'Should not return anything for valid auth');
-				assert.ok(err.http_resp_code === 401, 'Method should return an error with 401 status code');
+				assert.ok(err.statusCode === 401, 'Method should return an error with 401 status code');
 				assert.ok(err.http_resp_msg.error === TEST_ERR.message, 'Method should return correct error message');
 
 				assert.ok(warn_log_stub.calledTwice === true, 'Warning logged twice');

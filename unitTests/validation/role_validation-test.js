@@ -224,7 +224,7 @@ describe('Test role_validation module ', () => {
 			test_role_json.permission = { structure_user: ['dev', 'blah'] };
 			const test_result = customValidate_rw(test_role_json, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(1);
 			expect(test_result.http_resp_msg.main_permissions).to.include(TEST_SCHEMA_OP_ERROR.SCHEMA_NOT_FOUND('blah'));
 		});
@@ -234,7 +234,7 @@ describe('Test role_validation module ', () => {
 			test_role_json.permission = { structure_user: 'wut' };
 			const test_result = customValidate_rw(test_role_json, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(1);
 			expect(test_result.http_resp_msg.main_permissions).to.eql([
 				TEST_ROLE_PERMS_ERROR.STRUCTURE_USER_ROLE_TYPE_ERROR('structure_user'),
@@ -267,7 +267,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(1);
 			expect(test_result.http_resp_msg.main_permissions).to.include(
 				TEST_ROLE_PERMS_ERROR.INVALID_ROLE_JSON_KEYS(['super_admin'])
@@ -281,7 +281,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(1);
 			expect(test_result.http_resp_msg.main_permissions).to.include(
 				TEST_ROLE_PERMS_ERROR.INVALID_ROLE_JSON_KEYS(['super_admin', 'invalid_key'])
@@ -294,7 +294,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(1);
 			expect(test_result.http_resp_msg.main_permissions).to.include("Role can't be blank");
 		});
@@ -305,7 +305,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(1);
 			expect(test_result.http_resp_msg.main_permissions).to.include("Permission can't be blank");
 		});
@@ -317,7 +317,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(2);
 			expect(test_result.http_resp_msg.main_permissions).to.include("Permission can't be blank");
 			expect(test_result.http_resp_msg.main_permissions).to.include("Role can't be blank");
@@ -329,7 +329,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAlterRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(1);
 			expect(test_result.http_resp_msg.main_permissions).to.include("Id can't be blank");
 		});
@@ -340,7 +340,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAlterRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(1);
 			expect(test_result.http_resp_msg.main_permissions).to.include("Permission can't be blank");
 		});
@@ -352,7 +352,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAlterRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(2);
 			expect(test_result.http_resp_msg.main_permissions).to.include("Permission can't be blank");
 			expect(test_result.http_resp_msg.main_permissions).to.include("Id can't be blank");
@@ -367,7 +367,7 @@ describe('Test role_validation module ', () => {
 			expect(test_result.http_resp_msg.main_permissions[0]).to.equal(
 				TEST_ROLE_PERMS_ERROR.SU_CU_ROLE_NO_PERMS_ALLOWED('super_user')
 			);
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 		});
 
 		it('CU permission true w/ permissions - expect error thrown', () => {
@@ -380,7 +380,7 @@ describe('Test role_validation module ', () => {
 			expect(test_result.http_resp_msg.main_permissions[0]).to.equal(
 				TEST_ROLE_PERMS_ERROR.SU_CU_ROLE_NO_PERMS_ALLOWED('cluster_user')
 			);
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 		});
 
 		it('CU and SU permission true - expect error thrown', () => {
@@ -393,7 +393,7 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.http_resp_msg.main_permissions[0]).to.equal(TEST_ROLE_PERMS_ERROR.SU_CU_ROLE_COMBINED_ERROR);
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 		});
 
 		it('Role_obj passed with no schema values - expect NO validation results', () => {
@@ -412,7 +412,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(1);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
@@ -426,7 +426,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(1);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
@@ -440,7 +440,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(1);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
@@ -454,7 +454,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(1);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
@@ -471,7 +471,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(4);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
@@ -495,7 +495,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(2);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
@@ -515,7 +515,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(2);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
@@ -537,7 +537,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
 			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(
@@ -551,7 +551,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
 			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(
@@ -565,7 +565,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
 			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(
@@ -579,7 +579,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
 			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(
@@ -594,7 +594,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(1);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY][0]).to.equal(
@@ -608,7 +608,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(1);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY][0]).to.equal(
@@ -622,7 +622,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(1);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY][0]).to.equal(
@@ -636,7 +636,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(1);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY][0]).to.include(
@@ -653,7 +653,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(4);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
@@ -677,7 +677,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(2);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
@@ -697,7 +697,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(2);
 			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
@@ -719,7 +719,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
 			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(
@@ -733,7 +733,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
 			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(
@@ -747,7 +747,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
 			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(
@@ -761,7 +761,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
 			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(
@@ -776,7 +776,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
 			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(
@@ -793,7 +793,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
 			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(
@@ -813,7 +813,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
 			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(
@@ -828,7 +828,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_code).to.equal(400);
+			expect(test_result.statusCode).to.equal(400);
 			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
 			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
 			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(

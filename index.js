@@ -4,7 +4,6 @@ global.tables = exports.tables = {};
 global.databases = {};
 global.getUser = exports.getUser = undefined;
 global.server = exports.server = {};
-global.config = exports.config = {};
 global.contentTypes = exports.contentTypes = null;
 global.logger = {};
 exports._assignPackageExport = (name, value) => {

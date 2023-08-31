@@ -58,8 +58,15 @@ async function updateRemoteSource(request) {
 
 			// If the table doesn't exist it is created.
 			if (table && !hdb_utils.doesTableExist(schema, table)) {
-				hdb_logger.trace(`updateRemoteSource creating table: ${table} in schema: ${schema}`);
 				const table_obj = new CreateTableObject(schema, table, sub.hash_attribute);
+				if (sub.attributes) {
+					table_obj.attributes = sub.attributes;
+				}
+				hdb_logger.trace(
+					`updateRemoteSource creating table: ${table} in schema: ${schema} with attributes: ${JSON.stringify(
+						sub.attributes
+					)}`
+				);
 				try {
 					await schema_mod.createTable(table_obj);
 				} catch (error) {

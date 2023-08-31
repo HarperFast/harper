@@ -6,6 +6,7 @@ import { Resources } from '../resources/Resources';
 import { parseQuery } from '../resources/search';
 import { IterableEventQueue } from '../resources/IterableEventQueue';
 import { transaction } from '../resources/transaction';
+import { Headers } from '../server/serverHelpers/Headers';
 
 interface Response {
 	status?: number;
@@ -21,8 +22,8 @@ async function http(request, next_handler) {
 	if (request.search) parseQuery(request);
 	const start = performance.now();
 	let resource_path;
+	const headers = new Headers();
 	try {
-		const headers = new Headers();
 		request.responseHeaders = headers;
 		const url = request.url.slice(1);
 		const entry = resources.getMatch(url);
@@ -53,7 +54,7 @@ async function http(request, next_handler) {
 				case 'PATCH':
 					return resource.patch(resource_request, request.data, request);
 				case 'OPTIONS': // used primarily for CORS
-					headers.Allow = 'GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS, TRACe, QUERY, COPY, MOVE';
+					headers.set('Allow', 'GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS, TRACE, QUERY, COPY, MOVE');
 					return;
 				case 'CONNECT':
 					// websockets? and event-stream
@@ -75,10 +76,9 @@ async function http(request, next_handler) {
 		const execution_time = performance.now() - start;
 		let status = 200;
 		let last_modification;
-		const responseMetadata = request.responseMetadata;
 		if (response_data == undefined) {
 			status = method === 'GET' || method === 'HEAD' ? 404 : 204;
-		} else if ((last_modification = responseMetadata?.lastModified)) {
+		} else if ((last_modification = request?.lastModified)) {
 			etag_float[0] = last_modification;
 			// base64 encoding of the 64-bit float encoding of the date in ms (with quotes)
 			// very fast and efficient
@@ -102,20 +102,29 @@ async function http(request, next_handler) {
 				status = 304;
 				response_data = undefined;
 			} else {
-				headers['ETag'] = etag;
+				headers.set('ETag', etag);
 			}
 		}
-		if (responseMetadata) {
-			if (responseMetadata.created) status = 201;
-			if (responseMetadata.location) headers.Location = responseMetadata.location;
-		}
+		if (request.createdResource) status = 201;
+		if (request.newLocation) headers.set('Location', request.newLocation);
 
 		const response_object = {
 			status,
 			headers,
 			body: undefined,
 		};
-		headers['Server-Timing'] = `db;dur=${execution_time.toFixed(2)}`;
+		let server_timing = `db;dur=${execution_time.toFixed(2)}`;
+		const loaded_from_source = response_data?.wasLoadedFromSource?.();
+		if (loaded_from_source !== undefined) {
+			// this appears to be a caching table with a source
+			if (loaded_from_source) {
+				// indicate it was a missed cache
+				server_timing += ', miss';
+			} else if (last_modification) {
+				headers.set('Age', Math.round((Date.now() - last_modification) / 1000));
+			}
+		}
+		headers.append('Server-Timing', server_timing, true);
 		recordAction(execution_time, 'TTFB', resource_path, method);
 		recordActionBinary(status < 400, 'success', resource_path, method);
 		// TODO: Handle 201 Created
@@ -129,17 +138,16 @@ async function http(request, next_handler) {
 		const execution_time = performance.now() - start;
 		recordAction(execution_time, 'TTFB', resource_path, method);
 		recordActionBinary(false, 'success', resource_path, method);
-		if (!error.http_resp_code) console.error(error);
-		const headers = {};
-		if (error.http_resp_code === 405) {
+		if (!error.statusCode) console.error(error);
+		if (error.statusCode === 405) {
 			if (error.method) error.message += ` to handle HTTP method ${error.method.toUpperCase() || ''}`;
 			if (error.allow) {
 				error.allow.push('trace', 'head', 'options');
-				headers.Allow = error.allow.map((method) => method.toUpperCase()).join(', ');
+				headers.set('Allow', error.allow.map((method) => method.toUpperCase()).join(', '));
 			}
 		}
 		return {
-			status: error.http_resp_code || 500, // use specified error status, or default to generic server error
+			status: error.statusCode || 500, // use specified error status, or default to generic server error
 			headers,
 			body: serializeMessage(error.toString(), request),
 		};
@@ -235,11 +243,5 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 			const accept = EXTENSION_TYPES[ext];
 			if (accept) request.headers.accept = accept;
 		}
-	}
-}
-
-class Headers {
-	set(name, value) {
-		this[name] = value;
 	}
 }

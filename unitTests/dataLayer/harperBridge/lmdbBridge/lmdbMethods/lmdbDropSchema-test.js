@@ -198,7 +198,7 @@ describe('test validateDropSchema module', () => {
 			} catch (e) {
 				test_error = e;
 			}
-			assert.equal(test_error.http_resp_code, HTTP_STATUS_CODES.NOT_FOUND);
+			assert.equal(test_error.statusCode, HTTP_STATUS_CODES.NOT_FOUND);
 			assert.equal(test_error.http_resp_msg, HDB_ERROR_MSGS.SCHEMA_NOT_FOUND('faker'));
 			assert.equal(test_error.message, HDB_ERROR_MSGS.SCHEMA_NOT_FOUND('faker'));
 		});

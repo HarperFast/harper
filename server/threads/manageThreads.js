@@ -9,6 +9,7 @@ const { totalmem } = require('os');
 const hdb_terms = require('../../utility/hdbTerms');
 const harper_logger = require('../../utility/logging/harper_logger');
 const terms = require('../../utility/hdbTerms');
+const { randomBytes } = require('crypto');
 const MB = 1024 * 1024;
 const workers = []; // these are our child workers that we are managing
 const connected_ports = []; // these are all known connected worker ports (siblings, children, parents)
@@ -34,6 +35,7 @@ module.exports = {
 	broadcastWithAcknowledgement,
 	setChildListenerByType,
 	getWorkerIndex,
+	getTicketKeys,
 	setMainIsWorker,
 	restartNumber: workerData?.restartNumber || 1,
 };
@@ -44,10 +46,16 @@ function getWorkerIndex() {
 function setMainIsWorker(isWorker) {
 	isMainWorker = isWorker;
 }
+let ticket_keys;
+function getTicketKeys() {
+	if (ticket_keys) return ticket_keys;
+	ticket_keys = isMainThread ? randomBytes(48) : workerData.ticketKeys;
+	return ticket_keys;
+}
 Object.defineProperty(server, 'workerIndex', {
-    get() {
-        return getWorkerIndex();
-    },
+	get() {
+		return getWorkerIndex();
+	},
 });
 let childListenerByType = {
 	[REQUEST_THREAD_INFO](message, worker) {
@@ -108,6 +116,7 @@ function startWorker(path, options = {}) {
 					workerIndex: options.workerIndex,
 					name: options.name,
 					restartNumber: module.exports.restartNumber,
+					ticketKeys: getTicketKeys(),
 				},
 				transferList: ports_to_send,
 			},

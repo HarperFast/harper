@@ -21,7 +21,6 @@ const EXTENSION_TYPES = {
 	csv: 'text/csv',
 };
 
-
 /**
  * This is the main class that can be extended for any resource in HarperDB and provides the essential reusable
  * uniform interface for interacting with data, defining the API for providing data (data sources) and for consuming
@@ -131,10 +130,8 @@ export class Resource implements ResourceInterface {
 		return transaction(context, () => {
 			const resource = new this(id, context);
 			const results = resource.put ? resource.put(record) : missingMethod(resource, 'put');
-			if (context.responseMetadata) {
-				context.responseMetadata.location = id;
-				context.responseMetadata.created = true;
-			}
+			context.newLocation = id;
+			context.createdResource = true;
 			return results?.then ? results.then(() => id) : id;
 		});
 	}
@@ -364,10 +361,10 @@ class AccessError extends Error {
 	constructor(user) {
 		if (user) {
 			super('Unauthorized access to resource');
-			this.http_resp_code = 403;
+			this.statusCode = 403;
 		} else {
 			super('Must login');
-			this.http_resp_code = 401;
+			this.statusCode = 401;
 			// TODO: Optionally allow a Location header to redirect to
 		}
 	}

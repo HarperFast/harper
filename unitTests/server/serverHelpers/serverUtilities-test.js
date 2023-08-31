@@ -55,7 +55,7 @@ describe('Test serverUtilities_rw.js module ', () => {
 				test_result = err;
 			}
 
-			assert.ok(test_result.http_resp_code === 400);
+			assert.ok(test_result.statusCode === 400);
 			assert.ok(test_result.http_resp_msg === "Operation 'blah' not found");
 		});
 	});

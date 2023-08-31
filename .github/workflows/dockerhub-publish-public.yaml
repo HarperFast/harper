@@ -1,14 +1,17 @@
+name: DockerHub Publish Public
+
 on:
   workflow_dispatch:
-    tag_latest:
-      description: 'tag this build as latest in registry'
-      default: 'false'
-      required: false
-      type: choice
-      options:
-        - 'true'
-        - 'false'
-name: DockerHub Publish Public
+    inputs:
+      tag_latest:
+        description: 'tag this build as latest in registry'
+        default: 'false'
+        required: false
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
 jobs:
   build:
     uses: ./.github/workflows/build.yaml

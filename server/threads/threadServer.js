@@ -10,6 +10,8 @@ const terms = require('../../utility/hdbTerms');
 const { server } = require('../Server');
 const { WebSocketServer } = require('ws');
 const { createServer: createSecureSocketServer } = require('tls');
+const { getTicketKeys } = require('./manageThreads');
+const { Headers } = require('../serverHelpers/Headers');
 
 process.on('uncaughtException', (error) => {
 	if (error.code === 'ECONNRESET') return; // that's what network connections do
@@ -230,6 +232,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 				key: readFileSync(privateKey),
 				// if they have a CA, we append it, so it is included
 				cert: readFileSync(certificate) + (certificateAuthority ? '\n\n' + readFileSync(certificateAuthority) : ''),
+				ticketKeys: getTicketKeys(),
 			};
 		}
 		http_servers[port] = (secure ? createSecureServer : createServer)(options, async (node_request, node_response) => {
@@ -238,19 +241,21 @@ function getHTTPServer(port, secure, is_operations_server) {
 				if (is_operations_server) request.isOperationsServer = true;
 				// assign a more WHATWG compliant headers object, this is our real standard interface
 				let response = await http_chain[port](request);
-				node_response.setHeader('Server', 'HarperDB');
+				response.headers?.set?.('Server', 'HarperDB');
 				if (response.status === -1) {
 					// This means the HDB stack didn't handle the request, and we can then cascade the request
 					// to the server-level handler, forming the bridge to the slower legacy fastify framework that expects
 					// to interact with a node HTTP server object.
-					for (let name in response.headers) {
-						node_response.setHeader(name, response.headers[name]);
+					for (let header_pair of response.headers || []) {
+						node_response.setHeader(header_pair[0], header_pair[1]);
 					}
 					node_request.baseRequest = request;
 					node_response.baseResponse = response;
 					return http_servers[port].emit('unhandled', node_request, node_response);
 				}
-				if (!response.handlesHeaders) node_response.writeHead(response.status || 200, response.headers);
+				if (!response.handlesHeaders) {
+					node_response.writeHead(response.status || 200, response.headers && Array.from(response.headers));
+				}
 				let body = response.body;
 				// if it is a stream, pipe it
 				if (body?.pipe) {
@@ -267,14 +272,14 @@ function getHTTPServer(port, secure, is_operations_server) {
 							node_response.end(body);
 						},
 						(error) => {
-							node_response.writeHead(error.http_resp_code || 500);
+							node_response.writeHead(error.statusCode || 500);
 							node_response.end(error.toString());
 							harper_logger.error(error);
 						}
 					);
 				else node_response.end(body);
 			} catch (error) {
-				node_response.writeHead(error.http_resp_code || 500);
+				node_response.writeHead(error.statusCode || 500);
 				node_response.end(error.toString());
 				harper_logger.error(error);
 			}
@@ -314,7 +319,7 @@ function unhandled(request) {
 	return {
 		status: -1,
 		body: 'Not found',
-		headers: {},
+		headers: new Headers(),
 	};
 }
 function onRequest(listener, options) {
@@ -408,7 +413,6 @@ class Request {
 		this.url = url;
 		this.headers = node_request.headers;
 		this.headers.get = get;
-		this.responseMetadata = {};
 	}
 	get absoluteURL() {
 		return this.protocol + '://' + this.host + this.url;

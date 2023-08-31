@@ -706,7 +706,7 @@ describe('Test permissionsTranslator module', function () {
 			}
 
 			expect(test_result.http_resp_msg).to.eql(TEST_ROLE_PERMS_ERROR.OUTDATED_PERMS_TRANSLATION_ERROR);
-			expect(test_result.http_resp_code).to.eql(HTTP_STATUS_CODES.BAD_REQUEST);
+			expect(test_result.statusCode).to.eql(HTTP_STATUS_CODES.BAD_REQUEST);
 		});
 
 		it('Should return correct error message if missing attribute_permissions/restrictions', () => {
@@ -724,7 +724,7 @@ describe('Test permissionsTranslator module', function () {
 			}
 
 			expect(test_result.http_resp_msg).to.eql(TEST_ROLE_PERMS_ERROR.OUTDATED_PERMS_TRANSLATION_ERROR);
-			expect(test_result.http_resp_code).to.eql(HTTP_STATUS_CODES.BAD_REQUEST);
+			expect(test_result.statusCode).to.eql(HTTP_STATUS_CODES.BAD_REQUEST);
 		});
 
 		it('Should return correct error message if error is thrown and updatedtime key does not exist on role.perms', () => {
@@ -742,7 +742,7 @@ describe('Test permissionsTranslator module', function () {
 			}
 
 			expect(test_result.http_resp_msg).to.eql(TEST_ROLE_PERMS_ERROR.OUTDATED_PERMS_TRANSLATION_ERROR);
-			expect(test_result.http_resp_code).to.eql(HTTP_STATUS_CODES.BAD_REQUEST);
+			expect(test_result.statusCode).to.eql(HTTP_STATUS_CODES.BAD_REQUEST);
 		});
 
 		it('Should return generic error if updatedtime is after release date', () => {
@@ -759,7 +759,7 @@ describe('Test permissionsTranslator module', function () {
 			}
 
 			expect(test_result.http_resp_msg).to.eql(TEST_DEFAULT_ERROR_RESP);
-			expect(test_result.http_resp_code).to.eql(HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
+			expect(test_result.statusCode).to.eql(HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
 		});
 	});
 

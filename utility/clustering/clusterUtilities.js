@@ -17,6 +17,7 @@ const { HTTP_STATUS_CODES, HDB_ERROR_MSGS } = hdb_errors;
 const SearchObject = require('../../dataLayer/SearchObject');
 const system_information = require('../environment/systemInformation');
 const version = require('../../bin/version');
+const { getDatabases } = require('../../resources/databases');
 
 //Promisified functions
 const p_auth_authorize = util.promisify(auth.authorize);
@@ -125,13 +126,15 @@ function buildNodePayloads(subscriptions, local_node_name, operation, system_inf
 		const hash_attribute = hdb_utils.getTableHashAttribute(schema, table);
 
 		const { subscribe, publish } = reverseSubscription(subscription);
+		const table_class = getDatabases()[schema]?.[table];
 		const remote_payload_sub = new RemotePayloadSubscription(
 			schema,
 			table,
 			hash_attribute,
 			publish,
 			subscribe,
-			subscription.start_time
+			subscription.start_time,
+			table_class.schemaDefined ? table_class.attributes : undefined
 		);
 		remote_node_subs.push(remote_payload_sub);
 	}

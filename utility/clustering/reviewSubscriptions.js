@@ -77,12 +77,18 @@ async function reviewSubscriptions(subs, remote_node_name) {
 
 		// If the table exists on remote node but not locally, create it locally.
 		if (!table_exists_locally && table_exists_remote) {
-			hdb_logger.trace(`addNode creating table: ${table_req} in schema: ${schema_req}`);
+			hdb_logger.trace(
+				`addNode creating table: ${table_req} in schema: ${schema_req} with attributes ${JSON.stringify(
+					remote_describe_all[schema_req][table_req].attributes
+				)}`
+			);
 			const table_obj = new CreateTableObject(
 				schema_req,
 				table_req,
 				remote_describe_all[schema_req][table_req]['hash_attribute']
 			);
+			if (remote_describe_all[schema_req][table_req].attributes)
+				table_obj.attributes = remote_describe_all[schema_req][table_req].attributes;
 			await schema_mod.createTable(table_obj);
 		}
 

@@ -16,13 +16,14 @@ class RemotePayloadObject {
  * This class represents one subscription in the connections class above
  */
 class RemotePayloadSubscription {
-	constructor(schema, table, hash_attribute, publish, subscribe, start_time) {
+	constructor(schema, table, hash_attribute, publish, subscribe, start_time, attributes) {
 		this.schema = schema;
 		this.table = table;
 		this.hash_attribute = hash_attribute;
 		this.publish = publish;
 		this.subscribe = subscribe;
 		this.start_time = start_time;
+		if (attributes !== undefined) this.attributes = attributes;
 	}
 }
 
