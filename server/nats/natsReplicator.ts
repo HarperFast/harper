@@ -116,8 +116,6 @@ export function setNATSReplicator(table_name, db_name, Table) {
 					table: table_name,
 					id: this[ID_PROPERTY],
 				});
-				if (source?.invalidate && (!source.invalidate.reliesOnPrototype || source.prototype.invalidate))
-					return source.invalidate(this[ID_PROPERTY], this.getContext());
 			}
 			static defineSchema(Table) {
 				publishSchema(Table);
@@ -170,6 +168,7 @@ export function setNATSReplicator(table_name, db_name, Table) {
 				return worker_index < MAX_INGEST_THREADS;
 			}
 			static isNATSReplicator = true;
+			static shouldReceiveInvalidations = true;
 		}
 	);
 	/**

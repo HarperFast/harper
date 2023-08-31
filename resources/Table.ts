@@ -289,7 +289,7 @@ export function makeTable(options) {
 					const read_txn = env_txn?.getReadTxn();
 					const options = { transaction: read_txn };
 					let finished;
-					loadRecord(id, request, options, resource, (entry, error) => {
+					loadRecord(id, request, options, resource, resource_options?.allowInvalidated, (entry, error) => {
 						if (error) reject_load(error);
 						else {
 							resource[RECORD_PROPERTY] = entry?.value;
@@ -575,7 +575,7 @@ export function makeTable(options) {
 					let completion;
 					const id = this[ID_PROPERTY];
 					if (!options?.isNotification) {
-						if (source?.invalidate && (!source.invalidate.reliesOnPrototype || source.prototype.invalidate)) {
+						if (source?.shouldReceiveInvalidations) {
 							completion = source.invalidate(id, this);
 						}
 					}
@@ -935,7 +935,7 @@ export function makeTable(options) {
 					// this also gives an opportunity to prefetch and ensure any page faults happen in a different thread
 					(id) =>
 						new Promise((resolve) =>
-							loadRecord(id, context, options, null, (entry) => {
+							loadRecord(id, context, options, null, false, (entry) => {
 								const record = entry?.value;
 								if (!record) return resolve(SKIP);
 								for (let i = 0; i < filters_length; i++) {
@@ -1319,7 +1319,7 @@ export function makeTable(options) {
 		}
 		return has_changes;
 	}
-	function loadRecord(id, context, options, resource, callback) {
+	function loadRecord(id, context, options, resource, allow_invalidated, callback) {
 		// TODO: determine if we use lazy access properties
 		const whenPrefetched = () => {
 			// this is all for debugging, should be removed eventually
@@ -1358,7 +1358,7 @@ export function makeTable(options) {
 					load_from_source = true;
 			} else load_from_source = true;
 			if (has_source_get) recordActionBinary(load_from_source, 'cache-hit', table_name);
-			if (load_from_source && !options?.allowInvalidated) {
+			if (load_from_source && !allow_invalidated) {
 				if (resource) resource[LOAD_FROM_SOURCE] = true;
 				if (has_source_get) {
 					return getFromSource(id, record, version, context).then(

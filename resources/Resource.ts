@@ -105,7 +105,7 @@ export class Resource implements ResourceInterface {
 		function (resource: Resource, query?: Map, request: Request, data?: any) {
 			return resource.delete ? resource.delete(query) : missingMethod(resource, 'delete');
 		},
-		{ hasContent: false, type: 'delete' }
+		{ hasContent: false, type: 'delete', allowInvalidated: true }
 	);
 
 	/**
@@ -135,6 +135,13 @@ export class Resource implements ResourceInterface {
 			return results?.then ? results.then(() => id) : id;
 		});
 	}
+	static invalidate = transactional(
+		function (resource: Resource, query?: Map, request: Request, data?: any) {
+			return resource.invalidate ? resource.invalidate(query) : missingMethod(resource, 'delete');
+		},
+		{ hasContent: false, type: 'update', allowInvalidated: true }
+	);
+
 	static post = transactional(
 		function (resource: Resource, query?: Map, request: Request, data?: any) {
 			if (resource[ID_PROPERTY] != null) resource.update(); // save any changes made during post
@@ -484,15 +491,19 @@ function transactional(action, options) {
 		}
 
 		if (!context) context = {};
-		if (options.allowInvalidated) context.allowInvalidated = true;
+		let resource_options;
+		if (query?.allowInvalidated) {
+			resource_options = Object.assign({}, options);
+			resource_options.allowInvalidated = true;
+		} else resource_options = options;
 		if (context.transaction) {
 			// we are already in a transaction, proceed
-			const resource = this.getResource(id, context, options);
+			const resource = this.getResource(id, context, resource_options);
 			return resource.then ? resource.then(authorizeActionOnResource) : authorizeActionOnResource(resource);
 		} else {
 			// start a transaction
 			return transaction(context, () => {
-				const resource = this.getResource(id, context, options);
+				const resource = this.getResource(id, context, resource_options);
 				return resource.then ? resource.then(authorizeActionOnResource) : authorizeActionOnResource(resource);
 			});
 		}

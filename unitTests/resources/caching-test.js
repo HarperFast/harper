@@ -133,6 +133,24 @@ describe('Caching', () => {
 		assert.equal(source_requests, 2);
 		if (events.length > 2) console.log(events);
 		assert(events.length <= 2);
+
+		source_requests = 0;
+		events = [];
+		CachingTable.invalidate(23); // show not load from cache
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.equal(source_requests, 0);
+		assert.equal(events.length, 1);
+		CachingTable.get({ id: 23, allowInvalidated: true }).invalidate(); // show not load from cache
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.equal(source_requests, 0);
+		assert.equal(events.length, 2);
+
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		result = await CachingTable.get(23);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.equal(result.id, 23);
+		assert.equal(source_requests, 1);
+		assert.equal(events.length, 3);
 	});
 	it('Source returns undefined', async function () {
 		try {
