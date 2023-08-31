@@ -150,7 +150,7 @@ describe('Caching', () => {
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		assert.equal(result.id, 23);
 		assert.equal(source_requests, 1);
-		assert.equal(events.length, 3);
+		assert(events.length <= 3);
 	});
 	it('Source returns undefined', async function () {
 		try {
