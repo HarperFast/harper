@@ -16,8 +16,9 @@ const {
 async function hdbCore(server) {
 	server.decorate('hdbCore', {
 		preValidation: [reqBodyValidationHandler, authHandler],
-		request: (request) => convertAsyncIterators(handlePostRequest(request)),
-		requestWithoutAuthentication: (request) => convertAsyncIterators(handlePostRequest(request, true)),
+		request: (request) => convertAsyncIterators(handlePostRequest(request, response)),
+		requestWithoutAuthentication: (request, response) =>
+			convertAsyncIterators(handlePostRequest(request, response, true)),
 	});
 }
 // We convert responses that can only be asynchronously iterated to (promises of) arrays for
