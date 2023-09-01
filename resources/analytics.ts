@@ -147,14 +147,15 @@ async function aggregation(from_period, to_period = 60000) {
 			if (method) key += '-' + method;
 			let action = aggregate_actions.get(key);
 			if (action) {
+				if (!action.count) action.count = 1;
+				const previous_count = action.count;
 				for (const measure_name in measures) {
 					const value = measures[measure_name];
 					if (typeof value === 'number') {
-						const action_count = action.count || 1;
-						action[measure_name] =
-							(action[measure_name] * action_count + value * count) / (action.count = action_count + count);
+						action[measure_name] = (action[measure_name] * previous_count + value * count) / (previous_count + count);
 					}
 				}
+				action.count += count;
 			} else {
 				action = Object.assign({ period: to_period }, entry);
 				aggregate_actions.set(key, action);
