@@ -24,7 +24,7 @@ export function setAnalyticsEnabled(enabled) {
  */
 export function recordAction(value, metric, path?, method?, type?) {
 	if (!analytics_enabled) return;
-	// TODO: We may want to consider sampling a subset of queries if this has too high of overhead. It is primarily the sort operation that is expensive (computing median, p96, etc.)
+	// TODO: We may want to consider sampling a subset of queries if this has too high of overhead. It is primarily the sort operation that is expensive (computing median, p95, etc.)
 	let key = metric + (path ? '-' + path : '');
 	if (method) key += '-' + method;
 	let action = active_actions.get(key);
@@ -79,8 +79,13 @@ function sendAnalytics() {
 					Object.assign(value.description, {
 						median: value[count >> 1],
 						mean: value.total / count,
-						p95: value[Math.floor(count * 0.95)],
+						p1: value[Math.floor(count * 0.01)],
+						p10: value[Math.floor(count * 0.1)],
+						p25: value[Math.floor(count * 0.25)],
+						p75: value[Math.floor(count * 0.75)],
 						p90: value[Math.floor(count * 0.9)],
+						p95: value[Math.floor(count * 0.95)],
+						p99: value[Math.floor(count * 0.99)],
 						count,
 					})
 				);
