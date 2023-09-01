@@ -28,6 +28,7 @@ async function http(request, next_handler) {
 		const url = request.url.slice(1);
 		const entry = resources.getMatch(url);
 		if (!entry) return next_handler(request); // no resource handler found
+		request.handlerPath = entry.path;
 		const resource_request = { url: entry.relativeURL }; // TODO: We don't want to have to remove the forward slash and then re-add it
 		const resource = entry.Resource;
 		let response_data = await transaction(request, () => {
@@ -73,7 +74,6 @@ async function http(request, next_handler) {
 					throw new ServerError(`Method ${method} is not recognized`, 501);
 			}
 		});
-		const execution_time = performance.now() - start;
 		let status = 200;
 		let last_modification;
 		if (response_data == undefined) {
@@ -113,31 +113,23 @@ async function http(request, next_handler) {
 			headers,
 			body: undefined,
 		};
-		let server_timing = `db;dur=${execution_time.toFixed(2)}`;
 		const loaded_from_source = response_data?.wasLoadedFromSource?.();
 		if (loaded_from_source !== undefined) {
 			// this appears to be a caching table with a source
 			if (loaded_from_source) {
 				// indicate it was a missed cache
-				server_timing += ', miss';
+				response_object.wasCacheMiss = true;
 			} else if (last_modification) {
 				headers.set('Age', Math.round((Date.now() - last_modification) / 1000));
 			}
 		}
-		headers.append('Server-Timing', server_timing, true);
-		recordAction(execution_time, 'TTFB', resource_path, method);
-		recordActionBinary(status < 400, 'success', resource_path, method);
 		// TODO: Handle 201 Created
-
 		if (response_data !== undefined) {
 			response_object.body = serialize(response_data, request, response_object);
 			if (method === 'HEAD') response_object.body = undefined; // we want everything else to be the same as GET, but then omit the body
 		}
 		return response_object;
 	} catch (error) {
-		const execution_time = performance.now() - start;
-		recordAction(execution_time, 'TTFB', resource_path, method);
-		recordActionBinary(false, 'success', resource_path, method);
 		if (!error.statusCode) console.error(error);
 		if (error.statusCode === 405) {
 			if (error.method) error.message += ` to handle HTTP method ${error.method.toUpperCase() || ''}`;

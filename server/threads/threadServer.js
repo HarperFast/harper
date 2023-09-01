@@ -12,6 +12,7 @@ const { WebSocketServer } = require('ws');
 const { createServer: createSecureSocketServer } = require('tls');
 const { getTicketKeys } = require('./manageThreads');
 const { Headers } = require('../serverHelpers/Headers');
+const { recordAction, recordActionBinary } = require('../../resources/analytics');
 
 process.on('uncaughtException', (error) => {
 	if (error.code === 'ECONNRESET') return; // that's what network connections do
@@ -237,6 +238,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 		}
 		http_servers[port] = (secure ? createSecureServer : createServer)(options, async (node_request, node_response) => {
 			try {
+				let start_time = performance.now();
 				let request = new Request(node_request);
 				if (is_operations_server) request.isOperationsServer = true;
 				// assign a more WHATWG compliant headers object, this is our real standard interface
@@ -253,12 +255,25 @@ function getHTTPServer(port, secure, is_operations_server) {
 					node_response.baseResponse = response;
 					return http_servers[port].emit('unhandled', node_request, node_response);
 				}
+				const status = response.status || 200;
+				const end_time = performance.now();
+				const execution_time = end_time - start_time;
 				if (!response.handlesHeaders) {
-					node_response.writeHead(
-						response.status || 200,
-						response.headers && (response.headers[Symbol.iterator] ? Array.from(response.headers) : response.headers)
-					);
+					const headers = response.headers;
+					if (headers?.append) {
+						let server_timing = `hdb;dur=${execution_time.toFixed(2)}`;
+						if (response.wasCacheMiss) {
+							server_timing += ', miss';
+						}
+						headers.append('Server-Timing', server_timing, true);
+					}
+					node_response.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
 				}
+				const handler_path = request.handlerPath;
+				const method = request.method;
+				recordAction(execution_time, 'TTFB', handler_path, method);
+				recordActionBinary(status < 400, 'success', handler_path, method);
+
 				let body = response.body;
 				// if it is a stream, pipe it
 				if (body?.pipe) {
@@ -267,6 +282,14 @@ function getHTTPServer(port, secure, is_operations_server) {
 						node_response.on('close', () => {
 							body.destroy();
 						});
+					let bytes_sent = 0;
+					body.on('data', (data) => {
+						bytes_sent += data.length;
+					});
+					body.on('end', () => {
+						recordAction(performance.now() - end_time, 'transfer', handler_path, method);
+						recordAction(bytes_sent, 'bytes-sent', handler_path, method);
+					});
 				}
 				// else just send the buffer/string
 				else if (body?.then)
