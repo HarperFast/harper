@@ -11,8 +11,7 @@ import { server } from '../server/Server';
 
 initSync();
 let active_actions = new Map<string, number[] & { occurred: number; count: number }>();
-const AGGREGATE_PERIOD = env_get(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) * 1000;
-let analytics_enabled = AGGREGATE_PERIOD > 0;
+let analytics_enabled = env_get(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 
 export function setAnalyticsEnabled(enabled) {
 	analytics_enabled = enabled;
@@ -225,11 +224,14 @@ setChildListenerByType(ANALYTICS_REPORT_TYPE, recordAnalytics);
 let scheduled_tasks_running;
 function startScheduledTasks() {
 	scheduled_tasks_running = true;
-	setInterval(async () => {
-		await aggregation(ANALYTICS_DELAY, AGGREGATE_PERIOD);
-		await cleanup(RAW_EXPIRATION, ANALYTICS_DELAY);
-		//await cleanup(AGGREGATE_EXPIRATION, AGGREGATE_PERIOD);
-	}, AGGREGATE_PERIOD / 2).unref();
+	const AGGREGATE_PERIOD = env_get(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) * 1000;
+	if (AGGREGATE_PERIOD) {
+		setInterval(async () => {
+			await aggregation(ANALYTICS_DELAY, AGGREGATE_PERIOD);
+			await cleanup(RAW_EXPIRATION, ANALYTICS_DELAY);
+			//await cleanup(AGGREGATE_EXPIRATION, AGGREGATE_PERIOD);
+		}, AGGREGATE_PERIOD / 2).unref();
+	}
 }
 
 let total_bytes_processed = 0;
