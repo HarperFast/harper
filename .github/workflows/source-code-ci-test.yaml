@@ -141,6 +141,7 @@ jobs:
   sendSlackMessage:
     uses: ./.github/workflows/post-to-slack-channel.yaml
     if: ${{ failure() && github.event_name == 'schedule' }}
+    secrets: inherit
     needs:
       - destroyInstances
       - downloadLogs
