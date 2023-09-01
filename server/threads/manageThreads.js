@@ -429,17 +429,21 @@ if (isMainThread) {
 	const watch_dir = async (dir, before_restart_callback) => {
 		if (before_restart_callback) before_restart = before_restart_callback;
 		for (let entry of await readdir(dir, { withFileTypes: true })) {
-			if (entry.isDirectory()) watch_dir(join(dir, entry.name));
+			if (entry.isDirectory() && entry.name !== 'node_modules') watch_dir(join(dir, entry.name));
 		}
-		for await (let { filename } of watch(dir, { persistent: false })) {
-			if (extname(filename) === '.ts' || extname(filename) === '.js' || extname(filename) === '.graphql') {
-				if (queued_restart) clearTimeout(queued_restart);
-				queued_restart = setTimeout(async () => {
-					if (before_restart) await before_restart();
-					await restartWorkers();
-					harper_logger.info('Reloaded HarperDB components');
-				}, 100);
+		try {
+			for await (let { filename } of watch(dir, { persistent: false })) {
+				if (extname(filename) === '.ts' || extname(filename) === '.js' || extname(filename) === '.graphql') {
+					if (queued_restart) clearTimeout(queued_restart);
+					queued_restart = setTimeout(async () => {
+						if (before_restart) await before_restart();
+						await restartWorkers();
+						console.log('Reloaded HarperDB components');
+					}, 100);
+				}
 			}
+		} catch (error) {
+			console.warn('Error trying to watch component directory', dir, error);
 		}
 	};
 	module.exports.watchDir = watch_dir;
