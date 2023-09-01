@@ -140,7 +140,7 @@ function setComponentFileValidator(req) {
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 		file: Joi.string().custom(checkFilePath).required(),
-		payload: Joi.string().optional(),
+		payload: Joi.string().allow('').optional(),
 		encoding: Joi.string().valid('utf8', 'ASCII', 'binary', 'hex', 'base64', 'utf16le', 'latin1', 'ucs2').optional(),
 	});
 
