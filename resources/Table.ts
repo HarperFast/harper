@@ -1364,6 +1364,7 @@ export function makeTable(options) {
 					return getFromSource(id, record, version, context).then(
 						(entry) => {
 							if (entry?.value?.[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
+							if (context && entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
 							callback(entry);
 						},
 						(error) => {
