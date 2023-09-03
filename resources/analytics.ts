@@ -107,7 +107,7 @@ function sendAnalytics() {
 						const count = upper_bound - last_upper_bound;
 						if (value === last_value) distribution[distribution.length - 1].count += count;
 						else {
-							distribution.push({ value, count });
+							distribution.push(count > 1 ? { value, count } : value);
 							last_value = value;
 						}
 						last_upper_bound = upper_bound;
@@ -200,8 +200,9 @@ async function aggregation(from_period, to_period = 60000) {
 				aggregate_actions.set(key, action);
 			}
 			if (distribution) {
+				distribution = distribution.map((entry) => (typeof entry === 'number' ? { value: entry, count: 1 } : entry));
 				const existing_distribution = distributions.get(key);
-				if (!existing_distribution) distributions.set(key, distribution.slice(0));
+				if (!existing_distribution) distributions.set(key, distribution);
 				else {
 					existing_distribution.push(...distribution);
 				}
