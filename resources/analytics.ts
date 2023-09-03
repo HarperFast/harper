@@ -29,7 +29,15 @@ export function recordAction(value, metric, path?, method?, type?) {
 	let action = active_actions.get(key);
 	if (action) {
 		if (typeof value === 'number') {
-			action.push(value);
+			let values: Float32Array = action.values;
+			const index = values.index++;
+			if (index >= values.length) {
+				const old_values = values;
+				action.values = values = new Float32Array(index * 2);
+				values.set(old_values);
+				values.index = index + 1;
+			}
+			values[index] = Math.random();
 			action.total += value;
 		} else if (typeof value === 'boolean') {
 			if (value) action.total++;
@@ -37,7 +45,9 @@ export function recordAction(value, metric, path?, method?, type?) {
 		} else throw new TypeError('Invalid metric value type ' + typeof value);
 	} else {
 		if (typeof value === 'number') {
-			action = [value];
+			action = { total: value, values: new Float32Array(4) };
+			action.values.index = 1;
+			action.values[0] = value;
 			action.total = value;
 		} else if (typeof value === 'boolean') {
 			action = {};
@@ -65,7 +75,7 @@ const analytics_listeners = [];
 export function addAnalyticsListener(callback) {
 	analytics_listeners.push(callback);
 }
-const IDEAL_PERCENTILES = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 1];
+const IDEAL_PERCENTILES = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 0.999, 1];
 /**
  * Periodically send analytics data back to the main thread for storage
  */
@@ -81,8 +91,9 @@ function sendAnalytics() {
 			threadId,
 			metrics,
 		};
-		for (const [name, values] of active_actions) {
-			if (values.length > 0) {
+		for (const [name, action] of active_actions) {
+			if (action.values) {
+				const values = action.values.subarray(0, action.values.index);
 				values.sort();
 				const count = values.length;
 				// compute the stats
@@ -103,14 +114,14 @@ function sendAnalytics() {
 					}
 				}
 				metrics.push(
-					Object.assign(values.description, {
-						mean: values.total / count,
+					Object.assign(action.description, {
+						mean: action.total / count,
 						distribution,
 						count,
 					})
 				);
 			} else {
-				metrics.push(values);
+				metrics.push(action);
 			}
 			await rest(); // sort's are expensive and we don't want to do two of them in the same event turn
 		}
@@ -221,8 +232,8 @@ async function aggregation(from_period, to_period = 60000) {
 				bin.value - ((bin.value - previous_bin.value) * (count_position - next_target_count)) / bin.count
 			);
 		}
-		const [p1, p10, p25, median, p75, p90, p95, p99] = percentiles;
-		Object.assign(action, { p1, p10, p25, median, p75, p90, p95, p99 });
+		const [p1, p10, p25, median, p75, p90, p95, p99, p999] = percentiles;
+		Object.assign(action, { p1, p10, p25, median, p75, p90, p95, p99, p999 });
 	}
 	let has_updates;
 	for (const [key, value] of aggregate_actions) {
@@ -351,6 +362,9 @@ async function logAnalytics(report) {
 	await analytics_log.write(JSON.stringify(report) + '\n', position);
 }
 
+/**
+ * This section contains a possible/experimental approach to bucketing values as they come instead of pushing all into an array and sortin.
+ */
 const BUCKET_COUNT = 100;
 function addToBucket(action, value) {
 	if (!action.buckets) {
