@@ -1,0 +1,51 @@
+name: npm publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_public:
+        description: "Publish to our public repository, or private if false"
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+        default: false
+      tag_latest:
+        description: "If true, publish with both 'latest' and 'stable' tags. Else, tag with 'next'"
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+        default: false
+      dryrun:
+        description: "Add the --dry-run flag to npm publish"
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+        default: true
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yaml
+  npmPublish:
+    needs:
+      - build
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+    - uses: actions/download-artifact@v3
+      with:
+        name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
+    - uses: actions/setup-node@v3
+      with:
+        node-version: '${{needs.build.outputs.nodeVersion}}'
+        registry-url: 'https://registry.npmjs.org'
+    - name: "npm Publish"
+      env:
+          NODE_AUTH_TOKEN: "${{ secrets.NPM_ACCESS_KEY }}"
+          HARPERDB_VERSION:  "${{ needs.build.outputs.harperdbVersion }}"
+          PUBLISH_PUBLIC: "${{ inputs.publish_public }}"
+          DRYRUN: "${{ inputs.dryrun }}"
+          TAG_LATEST: "${{ inputs.tag_latest }}"
+      run: ./.github/scripts/npm-publish.sh
