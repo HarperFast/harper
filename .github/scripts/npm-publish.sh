@@ -17,7 +17,7 @@ then
 fi
 
 # If publish_public is set to true, set access=public
-if [[ "${PUBLISH_PUBLIC}" == "true" ]]
+if [[ "${PUBLISH_DESTINATION}" == "public" ]]
 then
   NPM_PACKAGE_NAME="harperdb"
   NPM_ACCESS="--access=public"
@@ -30,7 +30,7 @@ echo "name in package.json:    $(jq -r '.name' ./package/package.json)"
 echo "version in package.json: $(jq -r '.version' ./package/package.json)"
 
 # also tag latest with 'stable'
-if [[ "${TAG_LATEST}" == "true" ]]
+if [[ "${EXTRA_TAGS}" == "latest+stable" ]]
 then
   NPM_TAG="stable"
   npm publish ./package/ "${NPM_ACCESS}" "${NPM_DRYRUN}"

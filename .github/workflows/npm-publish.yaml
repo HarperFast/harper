@@ -3,20 +3,20 @@ name: npm publish
 on:
   workflow_dispatch:
     inputs:
-      publish_public:
-        description: "Publish to our public repository, or private if false"
+      publish_destination:
+        description: "Publish private package '@ harperdb/harperdb' or public package 'harperdb'"
         type: choice
         options:
-          - 'true'
-          - 'false'
-        default: false
-      tag_latest:
-        description: "If true, publish with both 'latest' and 'stable' tags. Else, tag with 'next'"
+          - 'private'
+          - 'public'
+        default: 'private'
+      extra_tags:
+        description: "Tag package with 'next' or tag with 'latest' and 'stable'"
         type: choice
         options:
-          - 'true'
-          - 'false'
-        default: false
+          - 'next'
+          - 'latest+stable'
+        default: next
       dryrun:
         description: "Add the --dry-run flag to npm publish"
         type: choice
@@ -34,6 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
+    - uses: actions/checkout@v3
     - uses: actions/download-artifact@v3
       with:
         name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
@@ -45,7 +46,7 @@ jobs:
       env:
           NODE_AUTH_TOKEN: "${{ secrets.NPM_ACCESS_KEY }}"
           HARPERDB_VERSION:  "${{ needs.build.outputs.harperdbVersion }}"
-          PUBLISH_PUBLIC: "${{ inputs.publish_public }}"
+          PUBLISH_DESTINATION: "${{ inputs.publish_destination }}"
+          EXTRA_TAGS: "${{ inputs.extra_tags }}"
           DRYRUN: "${{ inputs.dryrun }}"
-          TAG_LATEST: "${{ inputs.tag_latest }}"
       run: ./.github/scripts/npm-publish.sh
