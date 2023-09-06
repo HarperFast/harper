@@ -53,7 +53,9 @@ export function recordAction(value, metric, path?, method?, type?) {
 			action = {};
 			action.total = value ? 1 : 0;
 			action.count = 1;
-		} else throw new TypeError('Invalid metric value type ' + typeof value);
+		} else {
+			throw new TypeError('Invalid metric value type ' + typeof value);
+		}
 		action.description = {
 			metric,
 			path,
@@ -66,7 +68,7 @@ export function recordAction(value, metric, path?, method?, type?) {
 }
 server.recordAnalytics = recordAction;
 export function recordActionBinary(value, metric, path?, method?, type?) {
-	recordAction(value, metric, path, method, type);
+	recordAction(Boolean(value), metric, path, method, type);
 }
 let analytics_start = 0;
 const ANALYTICS_DELAY = 1000;
