@@ -47,12 +47,12 @@ export async function authentication(request, next_handler) {
 		if (access_list.includes(origin) || access_list.includes('*')) {
 			if (request.method === 'OPTIONS') {
 				// preflight request
-				const headers = {
-					'Access-Control-Allow-Methods': 'POST, GET, PUT, DELETE, PATCH, OPTIONS',
-					'Access-Control-Allow-Headers': 'Accept, Content-Type, Authorization',
-					'Access-Control-Allow-Origin': origin,
-				};
-				if (ENABLE_SESSIONS) headers['Access-Control-Allow-Credentials'] = 'true';
+				const headers = new Headers([
+					['Access-Control-Allow-Methods', 'POST, GET, PUT, DELETE, PATCH, OPTIONS'],
+					['Access-Control-Allow-Headers', 'Accept, Content-Type, Authorization'],
+					['Access-Control-Allow-Origin', origin],
+				]);
+				if (ENABLE_SESSIONS) headers.set('Access-Control-Allow-Credentials', 'true');
 				return {
 					status: 200,
 					headers,
