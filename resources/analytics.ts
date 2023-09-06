@@ -28,11 +28,34 @@ export function recordAction(value, metric, path?, method?, type?) {
 	if (method) key += '-' + method;
 	let action = active_actions.get(key);
 	if (action) {
-		action.push(value);
-		action.total += value;
+		if (typeof value === 'number') {
+			let values: Float32Array = action.values;
+			const index = values.index++;
+			if (index >= values.length) {
+				const old_values = values;
+				action.values = values = new Float32Array(index * 2);
+				values.set(old_values);
+				values.index = index + 1;
+			}
+			values[index] = Math.random();
+			action.total += value;
+		} else if (typeof value === 'boolean') {
+			if (value) action.total++;
+			action.count++;
+		} else throw new TypeError('Invalid metric value type ' + typeof value);
 	} else {
-		action = [value];
-		action.total = value;
+		if (typeof value === 'number') {
+			action = { total: value, values: new Float32Array(4) };
+			action.values.index = 1;
+			action.values[0] = value;
+			action.total = value;
+		} else if (typeof value === 'boolean') {
+			action = {};
+			action.total = value ? 1 : 0;
+			action.count = 1;
+		} else {
+			throw new TypeError('Invalid metric value type ' + typeof value);
+		}
 		action.description = {
 			metric,
 			path,
@@ -45,7 +68,7 @@ export function recordAction(value, metric, path?, method?, type?) {
 }
 server.recordAnalytics = recordAction;
 export function recordActionBinary(value, metric, path?, method?, type?) {
-	recordAction(value ? 1 : 0, metric, path, method, type);
+	recordAction(Boolean(value), metric, path, method, type);
 }
 let analytics_start = 0;
 const ANALYTICS_DELAY = 1000;
@@ -54,12 +77,13 @@ const analytics_listeners = [];
 export function addAnalyticsListener(callback) {
 	analytics_listeners.push(callback);
 }
+const IDEAL_PERCENTILES = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 0.999, 1];
 /**
  * Periodically send analytics data back to the main thread for storage
  */
 function sendAnalytics() {
 	analytics_start = performance.now();
-	setTimeout(() => {
+	setTimeout(async () => {
 		const period = performance.now() - analytics_start;
 		analytics_start = 0;
 		const metrics = [];
@@ -69,28 +93,39 @@ function sendAnalytics() {
 			threadId,
 			metrics,
 		};
-		for (const [name, value] of active_actions) {
-			if (value.sort) {
-				value.sort();
-				const count = value.length;
+		for (const [name, action] of active_actions) {
+			if (action.values) {
+				const values = action.values.subarray(0, action.values.index);
+				values.sort();
+				const count = values.length;
 				// compute the stats
+				let last_upper_bound = 0;
+				const distribution = [];
+				let last_value;
+				for (const percentile of IDEAL_PERCENTILES) {
+					const upper_bound = Math.floor(count * percentile);
+					const value = values[upper_bound - 1];
+					if (upper_bound > last_upper_bound) {
+						const count = upper_bound - last_upper_bound;
+						if (value === last_value) distribution[distribution.length - 1].count += count;
+						else {
+							distribution.push(count > 1 ? { value, count } : value);
+							last_value = value;
+						}
+						last_upper_bound = upper_bound;
+					}
+				}
 				metrics.push(
-					Object.assign(value.description, {
-						median: value[count >> 1],
-						mean: value.total / count,
-						p1: value[Math.floor(count * 0.01)],
-						p10: value[Math.floor(count * 0.1)],
-						p25: value[Math.floor(count * 0.25)],
-						p75: value[Math.floor(count * 0.75)],
-						p90: value[Math.floor(count * 0.9)],
-						p95: value[Math.floor(count * 0.95)],
-						p99: value[Math.floor(count * 0.99)],
+					Object.assign(action.description, {
+						mean: action.total / count,
+						distribution,
 						count,
 					})
 				);
 			} else {
-				metrics.push(value);
+				metrics.push(action);
 			}
+			await rest(); // sort's are expensive and we don't want to do two of them in the same event turn
 		}
 		const memory_usage = process.memoryUsage();
 		metrics.push({
@@ -128,6 +163,7 @@ async function aggregation(from_period, to_period = 60000) {
 	if (Date.now() - to_period < last_for_period) return;
 	let first_for_period;
 	const aggregate_actions = new Map();
+	const distributions = new Map();
 	let last_time;
 	for (const { key, value } of AnalyticsTable.primaryStore.getRange({
 		start: last_for_period || false,
@@ -139,9 +175,9 @@ async function aggregation(from_period, to_period = 60000) {
 			if (key > first_for_period + to_period) break; // outside the period of interest
 		} else first_for_period = key;
 		last_time = key;
-		const { metrics } = value;
+		const { metrics, threadId } = value;
 		for (const entry of metrics || []) {
-			let { path, method, type, metric, count, threadId, ...measures } = entry;
+			let { path, method, type, metric, count, total, distribution, ...measures } = entry;
 			if (!count) count = 1;
 			let key = metric + (path ? '-' + path : '');
 			if (method) key += '-' + method;
@@ -156,27 +192,71 @@ async function aggregation(from_period, to_period = 60000) {
 					}
 				}
 				action.count += count;
+				if (total >= 0) {
+					action.total += total;
+					action.ratio = action.total / action.count;
+				}
 			} else {
 				action = Object.assign({ period: to_period }, entry);
+				delete action.distribution;
 				aggregate_actions.set(key, action);
+			}
+			if (distribution) {
+				distribution = distribution.map((entry) => (typeof entry === 'number' ? { value: entry, count: 1 } : entry));
+				const existing_distribution = distributions.get(key);
+				if (!existing_distribution) distributions.set(key, distribution);
+				else {
+					existing_distribution.push(...distribution);
+				}
 			}
 		}
 		await rest();
 	}
+	for (const [key, distribution] of distributions) {
+		// now iterate through the distributions finding the close bin to each percentile and interpolating the position in that bin
+		const action = aggregate_actions.get(key);
+		distribution.sort((a, b) => (a.value > b.value ? 1 : -1));
+		const count = action.count - 1;
+		const percentiles = [];
+		let count_position = 0;
+		let index = 0;
+		let bin;
+		for (const percentile of IDEAL_PERCENTILES) {
+			const next_target_count = count * percentile;
+			while (count_position < next_target_count) {
+				bin = distribution[index++];
+				count_position += bin.count;
+				// we decrement these counts so we are skipping the minimum value in our interpolation
+				if (index === 1) count_position--;
+			}
+			const previous_bin = distribution[index > 1 ? index - 2 : 0];
+			if (!bin) bin = distribution[0];
+			percentiles.push(
+				bin.value - ((bin.value - previous_bin.value) * (count_position - next_target_count)) / bin.count
+			);
+		}
+		const [p1, p10, p25, median, p75, p90, p95, p99, p999] = percentiles;
+		Object.assign(action, { p1, p10, p25, median, p75, p90, p95, p99, p999 });
+	}
+	let has_updates;
 	for (const [key, value] of aggregate_actions) {
 		value.id = AGGREGATE_PREFIX + Math.round(last_time) + '-' + key;
 		value.time = last_time;
 		AnalyticsTable.put(value);
+		has_updates = true;
 	}
 	const now = Date.now();
 	const { idle, active } = performance.eventLoopUtilization();
-	AnalyticsTable.put({
-		id: AGGREGATE_PREFIX + Math.round(now) + '-main-thread-utilization',
-		metric: 'main-thread-utilization',
-		idle: idle - last_idle,
-		active: active - last_active,
-		time: now,
-	});
+	// don't record boring entries
+	if (has_updates || active * 10 > idle) {
+		AnalyticsTable.put({
+			id: AGGREGATE_PREFIX + Math.round(now) + '-main-thread-utilization',
+			metric: 'main-thread-utilization',
+			idle: idle - last_idle,
+			active: active - last_active,
+			time: now,
+		});
+	}
 	last_idle = idle;
 	last_active = active;
 }
@@ -285,6 +365,9 @@ async function logAnalytics(report) {
 	await analytics_log.write(JSON.stringify(report) + '\n', position);
 }
 
+/**
+ * This section contains a possible/experimental approach to bucketing values as they come instead of pushing all into an array and sortin.
+ */
 const BUCKET_COUNT = 100;
 function addToBucket(action, value) {
 	if (!action.buckets) {
