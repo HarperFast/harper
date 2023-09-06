@@ -426,10 +426,10 @@ export function database({ database: database_name, table: table_name }) {
  */
 export async function dropDatabase(database_name) {
 	if (!databases[database_name]) throw new Error('Schema does not exist');
-	let database = databases[database_name];
+	const database = databases[database_name];
 	for (const table_name in database) {
-		let table = database[table_name];
-		let root_store = table.primaryStore.rootStore;
+		const table = database[table_name];
+		const root_store = table.primaryStore.rootStore;
 		database_envs.delete(root_store.path);
 		if (root_store.status === 'open') {
 			await root_store.close();
@@ -582,14 +582,18 @@ export function table({
 			Object.defineProperty(attribute, 'key', { value: dbi_key, configurable: true });
 			let attribute_descriptor = attributes_dbi.get(dbi_key);
 			if (attribute.isPrimaryKey) {
+				attribute_descriptor = attribute_descriptor || attributes_dbi.get((dbi_key = table_name + '/'));
 				// primary key can't change indexing, but settings can change
-				if (audit === true && !Table.audit) {
-					Table.enableAuditing();
-					if (!attribute_descriptor) {
-						dbi_key = table_name + '/';
-						attribute_descriptor = attributes_dbi.get(dbi_key);
+				if (
+					(audit === true && !Table.audit) ||
+					(+expiration || undefined) !== (+attribute_descriptor.expiration || undefined)
+				) {
+					const updated_primary_attribute = Object.assign({}, attribute_descriptor);
+					if (audit) {
+						Table.enableAuditing();
+						updated_primary_attribute.audit = true;
 					}
-					const updated_primary_attribute = Object.assign({}, attribute_descriptor, { audit: true });
+					if (expiration) updated_primary_attribute.expiration = +expiration;
 					has_changes = true; // send out notification of the change
 					startTxn();
 					attributes_dbi.put(dbi_key, updated_primary_attribute);
@@ -597,6 +601,7 @@ export function table({
 
 				continue;
 			}
+
 			// note that non-indexed attributes do not need a dbi
 			if (attribute_descriptor?.attribute && !attribute_descriptor.name) attribute_descriptor.indexed = true; // legacy descriptor
 			const changed =

@@ -114,6 +114,9 @@ export function makeTable(options) {
 		static expirationTimer;
 		static createdTimeProperty = created_time_property;
 		static updatedTimeProperty = updated_time_property;
+		static get expirationMS() {
+			return expiration_ms;
+		}
 		static dbisDB = dbis_db;
 		static schemaDefined = schema_defined;
 		/**
