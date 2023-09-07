@@ -3,18 +3,14 @@ set -euo pipefail
 
 # defaults
 NPM_ACCESS="--access=restricted"
-NPM_DRYRUN="--dry-run"
+NPM_DRYRUN="true"
 NPM_TAG="next"
 NPM_PACKAGE_NAME="@harperdb/harperdb"
 
 # Unpack package tarball artifact from build job
 tar -xf "harperdb-${HARPERDB_VERSION}.tgz"
 
-# If dryrun is set to false, remove tag
-if [[ "${DRYRUN}" == "false" ]]
-then
-  NPM_DRYRUN=""
-fi
+[ "${DRYRUN}" == "false" ] && NPM_DRYRUN="${DRYRUN}"
 
 # If publish_public is set to true, set access=public
 if [[ "${PUBLISH_DESTINATION}" == "public" ]]
@@ -33,7 +29,7 @@ echo "version in package.json: $(jq -r '.version' ./package/package.json)"
 if [[ "${EXTRA_TAGS}" == "latest+stable" ]]
 then
   NPM_TAG="stable"
-  npm publish ./package/ "${NPM_ACCESS}" "${NPM_DRYRUN}"
+  npm publish ./package/ "${NPM_ACCESS}" --dry-run="${NPM_DRYRUN}"
   if [[ "${DRYRUN}" == "true" ]]
   then
     echo "dry-run: npm dist-tag add ${NPM_PACKAGE_NAME}@${HARPERDB_VERSION} ${NPM_TAG}"
@@ -42,5 +38,5 @@ then
   fi
 # else no extra tag
 else
-  npm publish ./package/ --tag="${NPM_TAG}" "${NPM_ACCESS}" "${NPM_DRYRUN}"
+  npm publish ./package/ --tag="${NPM_TAG}" "${NPM_ACCESS}" --dry-run="${NPM_DRYRUN}"
 fi
