@@ -242,20 +242,34 @@ async function aggregation(from_period, to_period = 60000) {
 	for (const [key, value] of aggregate_actions) {
 		value.id = getNextMonotonicTime();
 		value.time = last_time;
-		analytics_table.put(value, { append: true });
+		analytics_table.primaryStore.put(value.id, value, { append: true }).then((success) => {
+			// if for some reason we can't append, try again without append
+			if (!success) {
+				analytics_table.put(value).then((success) => {
+					if (!success) {
+						console.log('still no success');
+					}
+				});
+			}
+		});
 		has_updates = true;
 	}
 	const now = Date.now();
 	const { idle, active } = performance.eventLoopUtilization();
 	// don't record boring entries
 	if (has_updates || active * 10 > idle) {
-		analytics_table.put({
-			id: getNextMonotonicTime(),
-			metric: 'main-thread-utilization',
-			idle: idle - last_idle,
-			active: active - last_active,
-			time: now,
-		}, { append: true });
+		const id = getNextMonotonicTime();
+		analytics_table.primaryStore.put(
+			id,
+			{
+				id,
+				metric: 'main-thread-utilization',
+				idle: idle - last_idle,
+				active: active - last_active,
+				time: now,
+			},
+			{ append: true }
+		);
 	}
 	last_idle = idle;
 	last_active = active;
@@ -293,7 +307,7 @@ function getRawAnalyticsTable() {
 					name: 'action',
 				},
 				{
-					name: 'values',
+					name: 'metrics',
 				},
 			],
 		}))
@@ -318,7 +332,7 @@ function getAnalyticsTable() {
 					name: 'action',
 				},
 				{
-					name: 'values',
+					name: 'metric',
 				},
 			],
 		}))
@@ -360,7 +374,7 @@ function recordAnalytics(message, worker?) {
 		last_utilizations.set(worker, worker.performance.eventLoopUtilization());
 	}
 	report.id = getNextMonotonicTime();
-	getAnalyticsTable().put(report);
+	getRawAnalyticsTable().put(report);
 	if (!scheduled_tasks_running) startScheduledTasks();
 	if (LOG_ANALYTICS) last_append = logAnalytics(report);
 }
