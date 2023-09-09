@@ -372,7 +372,7 @@ function recordAnalytics(message, worker?) {
 		last_utilizations.set(worker, worker.performance.eventLoopUtilization());
 	}
 	report.id = getNextMonotonicTime();
-	getRawAnalyticsTable().put(report);
+	getRawAnalyticsTable().primaryStore.put(report.id, report);
 	if (!scheduled_tasks_running) startScheduledTasks();
 	if (LOG_ANALYTICS) last_append = logAnalytics(report);
 }

@@ -239,6 +239,7 @@
     "hash_attribute": "id",
     "name": "hdb_analytics",
     "schema": "system",
+    "audit": false,
     "attributes":[
       {
         "attribute":"id"
@@ -255,6 +256,7 @@
     "hash_attribute": "id",
     "name": "hdb_raw_analytics",
     "schema": "system",
+    "audit": false,
     "attributes":[
       {
         "attribute":"id"
