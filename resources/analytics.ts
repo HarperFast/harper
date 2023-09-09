@@ -245,11 +245,7 @@ async function aggregation(from_period, to_period = 60000) {
 		analytics_table.primaryStore.put(value.id, value, { append: true }).then((success) => {
 			// if for some reason we can't append, try again without append
 			if (!success) {
-				analytics_table.put(value).then((success) => {
-					if (!success) {
-						console.log('still no success');
-					}
-				});
+				analytics_table.primaryStore.put(value.id, value);
 			}
 		});
 		has_updates = true;
@@ -259,17 +255,19 @@ async function aggregation(from_period, to_period = 60000) {
 	// don't record boring entries
 	if (has_updates || active * 10 > idle) {
 		const id = getNextMonotonicTime();
-		analytics_table.primaryStore.put(
+		const value = {
 			id,
-			{
-				id,
-				metric: 'main-thread-utilization',
-				idle: idle - last_idle,
-				active: active - last_active,
-				time: now,
-			},
-			{ append: true }
-		);
+			metric: 'main-thread-utilization',
+			idle: idle - last_idle,
+			active: active - last_active,
+			time: now,
+		};
+		analytics_table.primaryStore.put(id, value, { append: true }).then((success) => {
+			// if for some reason we can't append, try again without append
+			if (!success) {
+				analytics_table.primaryStore.put(value.id, value);
+			}
+		});
 	}
 	last_idle = idle;
 	last_active = active;

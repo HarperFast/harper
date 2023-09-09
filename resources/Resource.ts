@@ -144,7 +144,7 @@ export class Resource implements ResourceInterface {
 
 	static post = transactional(
 		function (resource: Resource, query?: Map, request: Request, data?: any) {
-			if (resource[ID_PROPERTY] != null) resource.update(); // save any changes made during post
+			if (resource[ID_PROPERTY] != null) resource.update?.(); // save any changes made during post
 			return resource.post(data, query);
 		},
 		{ hasContent: true, type: 'create' }
@@ -167,7 +167,7 @@ export class Resource implements ResourceInterface {
 
 	static publish = transactional(
 		function (resource: Resource, query?: Map, request: Request, data?: any) {
-			if (resource[ID_PROPERTY] != null) resource.update(); // save any changes made during publish
+			if (resource[ID_PROPERTY] != null) resource.update?.(); // save any changes made during publish
 			return resource.publish ? resource.publish(data, query) : missingMethod(resource, 'publish');
 		},
 		{ hasContent: true, type: 'create' }
@@ -320,10 +320,6 @@ export class Resource implements ResourceInterface {
 			iterable.on('close', () => subscription?.end());
 		}
 		return iterable;
-	}
-
-	update(keyOrRecord) {
-		throw new Error('Not implemented');
 	}
 
 	// Default permissions (super user only accesss):

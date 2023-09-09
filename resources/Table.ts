@@ -114,6 +114,9 @@ export function makeTable(options) {
 		static expirationTimer;
 		static createdTimeProperty = created_time_property;
 		static updatedTimeProperty = updated_time_property;
+		static get expirationMS() {
+			return expiration_ms;
+		}
 		static dbisDB = dbis_db;
 		static schemaDefined = schema_defined;
 		/**
@@ -1437,12 +1440,11 @@ export function makeTable(options) {
 		// we create a new context for the source, we want to determine the timestamp and don't want to
 		// attribute this to the current user (but we do want to use the current transaction)
 		const source_context = {
-			transaction: context?.transaction,
+			requestContext: context,
 			replacingRecord: existing_record,
 			replacingVersion: existing_version,
 		};
 		const response_headers = context?.responseHeaders;
-		if (response_headers) source_context.responseHeaders = response_headers;
 		try {
 			const start = performance.now();
 			let updated_record = await TableResource.Source.get(id, source_context);
