@@ -149,6 +149,7 @@ export function setNATSReplicator(table_name, db_name, Table) {
 						// if we are a cache of replicated data, we just pass through
 						this.get = (id, context) => source.get(id, context);
 					}
+					this.sourceForGets = other_source;
 				}
 				return this;
 			}

@@ -177,7 +177,7 @@ export function makeTable(options) {
 						event.id = value[Table.primaryKey];
 						if (event.id === undefined) throw new Error('Replication message without an id ' + JSON.stringify(event));
 					}
-					event.isNotification = true;
+					event.source = TableResource.Source;
 					const resource: TableResource = await Table.getResource(event.id, event, NOTIFICATION);
 					switch (event.type) {
 						case 'put':
@@ -224,6 +224,7 @@ export function makeTable(options) {
 									console.error('Bad subscription event');
 									continue;
 								}
+								event.source = TableResource.Source;
 								const commit_resolution = transaction(event, () => {
 									if (event.type === 'transaction') {
 										// if it is a transaction, we need to individually iterate through each write event
@@ -567,6 +568,11 @@ export function makeTable(options) {
 				if (own_data) updates = Object.assign(own_data, updates);
 				this[OWN_DATA] = own_data = updates;
 			}
+			if (!this[RECORD_PROPERTY] && primary_key && !(own_data || (own_data = this[OWN_DATA]))?.[primary_key]) {
+				// if no primary key in the data, we assign it
+				if (!own_data) own_data = this[OWN_DATA] = Object.create(null);
+				own_data[primary_key] = this[ID_PROPERTY];
+			}
 			this._writeUpdate(this);
 			return this;
 		}
@@ -590,10 +596,8 @@ export function makeTable(options) {
 					const source = TableResource.Source;
 					let completion;
 					const id = this[ID_PROPERTY];
-					if (!this[CONTEXT]?.isNotification) {
-						if (source?.shouldReceiveInvalidations) {
-							completion = source.invalidate(id, this);
-						}
+					if (this[CONTEXT]?.source !== source) {
+						completion = source.invalidate(id, this);
 					}
 					updateRecord(
 						id,
@@ -705,7 +709,7 @@ export function makeTable(options) {
 					}
 					if (!record_prepared) {
 						record_prepared = true;
-						if (!this[CONTEXT]?.isNotification) {
+						if (!this[CONTEXT]?.source) {
 							if (record[INCREMENTAL_UPDATE]) {
 								is_unchanged = !hasChanges(record);
 								if (is_unchanged) return;
@@ -730,15 +734,18 @@ export function makeTable(options) {
 											: txn_time;
 							}
 							record = deepFreeze(record); // this flatten and freeze the record
-							// send this to the source
-							const source = TableResource.Source;
-							if (source?.put && (!source.put.reliesOnPrototype || source.prototype.put)) {
-								completion = source.put(id, record, this);
-							}
 						} else record = deepFreeze(record); // TODO: I don't know that we need to freeze notification objects, might eliminate this for reduced overhead
 						if (record[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
 						this[RECORD_PROPERTY] = record;
 					}
+					// send this to the source
+					const source = TableResource.Source;
+					if (this[CONTEXT]?.source !== source) {
+						if (source?.put && (!source.put.reliesOnPrototype || source.prototype.put)) {
+							completion = source.put(id, record, this);
+						}
+					}
+
 					this[IS_SAVING] = false;
 					harper_logger.trace(
 						`Checking timestamp for put`,
@@ -799,8 +806,8 @@ export function makeTable(options) {
 					}
 					if (!delete_prepared) {
 						delete_prepared = true;
-						if (!this[CONTEXT]?.isNotification) {
-							const source = TableResource.Source;
+						const source = TableResource.Source;
+						if (!this[CONTEXT]?.source !== source) {
 							if (source?.delete && (!source.delete.reliesOnPrototype || source.prototype.delete))
 								completion = source.delete(id, this);
 						}
@@ -1114,8 +1121,8 @@ export function makeTable(options) {
 
 					if (!publish_prepared) {
 						publish_prepared = true;
-						if (!this[CONTEXT]?.isNotification) {
-							const source = TableResource.Source;
+						const source = TableResource.Source;
+						if (!this[CONTEXT]?.source !== source) {
 							if (source?.publish && (!source.publish.reliesOnPrototype || source.prototype.publish)) {
 								completion = source.publish(id, message, this);
 							}
@@ -1167,7 +1174,7 @@ export function makeTable(options) {
 									)
 								)
 									(validation_errors || (validation_errors = [])).push(
-										`Property ${attribute.name} must be a string, number, or an array (of strings and numbers)`
+										`Property ${attribute.name} must be a string, or an array of strings`
 									);
 								break;
 							case 'String':
@@ -1467,7 +1474,7 @@ export function makeTable(options) {
 			// provide access to previous data
 			replacingRecord: existing_record,
 			replacingVersion: existing_version,
-			isNotification: true, // treat as a notification, don't need validation for notifications
+			source: TableResource.Source.sourceForGets || TableResource.Source, // treat as a notification, don't need validation for notifications
 			// use the same resource cache as a parent context so that if modifications are made to resources,
 			// they are visible in the parent requesting context
 			resourceCache: context?.resourceCache,

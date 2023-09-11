@@ -188,7 +188,7 @@ async function messageProcessor(msg) {
 			// represented by simply a records array.
 			while (next_write) {
 				writes.push({
-					type: next_write.operation,
+					type: convertOperation(next_write.operation),
 					value: next_write.record,
 					id: next_write.id,
 					table: next_write.table,
