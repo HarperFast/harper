@@ -95,7 +95,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					mqtt_options.protocolVersion = packet.protocolVersion;
 					if (packet.username) {
 						try {
-							user = await server.auth(packet.username, packet.password.toString());
+							user = await server.getUser(packet.username, packet.password.toString());
 							if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL)) {
 								auth_event_log.notify({
 									username: user.username,
