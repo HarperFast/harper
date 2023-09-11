@@ -506,6 +506,7 @@ describe('test MQTT connections and commands', () => {
 				}
 			);
 		});
+		console.log(messages);
 		assert.equal(messages.length, 20);
 	});
 	it('subscribe sub-topic with history', async function () {
