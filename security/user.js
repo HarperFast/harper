@@ -47,8 +47,9 @@ const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdb_errors;
 const { UserEventMsg } = require('../server/threads/itc');
 const _ = require('lodash');
-const { _assignPackageExport } = require('../index');
-_assignPackageExport('getUser', findAndValidateUser);
+const { server } = require('../server/Server');
+const harper_logger = require('../utility/logging/harper_logger');
+server.getUser = findAndValidateUser;
 
 const USER_ATTRIBUTE_ALLOWLIST = {
 	username: true,
@@ -591,3 +592,18 @@ async function getClusterUser() {
 
 	return cluster_user;
 }
+
+let invalidate_callbacks = [];
+server.invalidateUser = function (user) {
+	for (let callback of invalidate_callbacks) {
+		try {
+			callback(user);
+		} catch (error) {
+			harper_logger.error('Error invalidating user', error);
+		}
+	}
+};
+
+server.onInvalidatedUser = function (callback) {
+	invalidate_callbacks.push(callback);
+};

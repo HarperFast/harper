@@ -1,4 +1,4 @@
-import { findAndValidateUser, getSuperUser } from './user';
+import { getSuperUser } from './user';
 import { server } from '../server/Server';
 import { resources } from '../resources/Resources';
 import { validateOperationToken, validateRefreshToken } from './tokenAuthentication';
@@ -18,7 +18,6 @@ const apps_cors = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORS);
 const operations_cors_accesslist = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSACCESSLIST);
 const operations_cors = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS);
 
-server.auth = findAndValidateUser;
 const session_table = table({
 	table: 'hdb_session',
 	database: 'system',
@@ -29,6 +28,11 @@ const AUTHORIZE_LOCAL = env.get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? 
 const LOG_AUTH_SUCCESSFUL = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL) ?? false;
 const LOG_AUTH_FAILED = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED) ?? false;
 let authorization_cache = new Map();
+server.onInvalidatedUser(() => {
+	// TODO: Eventually we probably want to be able to invalidate individual users
+	authorization_cache = new Map();
+});
+
 // TODO: Make this not return a promise if it can be fulfilled synchronously (from cache)
 export async function authentication(request, next_handler) {
 	const headers = request.headers;
@@ -108,7 +112,7 @@ export async function authentication(request, next_handler) {
 					case 'Basic':
 						[username, password] = atob(credentials).split(':');
 						// legacy support for passing in blank username and password to indicate no auth
-						new_user = username || password ? await server.auth(username, password) : null;
+						new_user = username || password ? await server.getUser(username, password) : null;
 						break;
 					case 'Bearer':
 						try {
@@ -152,7 +156,7 @@ export async function authentication(request, next_handler) {
 		request.user = new_user;
 	} else if (session?.user) {
 		// or should this be cached in the session?
-		request.user = await server.auth(session.user, null, false);
+		request.user = await server.getUser(session.user, null, false);
 	} else if (AUTHORIZE_LOCAL && (request.ip?.includes('127.0.0.1') || request.ip == '::1')) {
 		request.user = new_user = await getSuperUser();
 	}
@@ -172,7 +176,7 @@ export async function authentication(request, next_handler) {
 			return session_table.put(updated_session);
 		};
 		request.login = async function (user, password) {
-			request.user = await server.auth(user, password);
+			request.user = await server.getUser(user, password);
 			request.session.update({ user: request.user.username });
 		};
 		if (
