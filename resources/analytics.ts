@@ -145,14 +145,14 @@ function sendAnalytics() {
 		else recordAnalytics({ report });
 	}, ANALYTICS_DELAY).unref();
 }
-const AGGREGATE_PREFIX = 'sum-'; // we could have different levels of aggregation, but this denotes hourly aggregation
 async function aggregation(from_period, to_period = 60000) {
-	const AnalyticsTable = getAnalyticsTable();
+	const raw_analytics_table = getRawAnalyticsTable();
+	const analytics_table = getAnalyticsTable();
 	let last_for_period;
 	// find the last entry for this period
-	for (const entry of AnalyticsTable.primaryStore.getRange({
-		start: AGGREGATE_PREFIX + 'z',
-		end: AGGREGATE_PREFIX,
+	for (const entry of analytics_table.primaryStore.getRange({
+		start: Infinity,
+		end: false,
 		reverse: true,
 	})) {
 		if (!entry.value?.time) continue;
@@ -165,7 +165,7 @@ async function aggregation(from_period, to_period = 60000) {
 	const aggregate_actions = new Map();
 	const distributions = new Map();
 	let last_time;
-	for (const { key, value } of AnalyticsTable.primaryStore.getRange({
+	for (const { key, value } of raw_analytics_table.primaryStore.getRange({
 		start: last_for_period || false,
 		exclusiveStart: true,
 		end: Infinity,
@@ -240,21 +240,33 @@ async function aggregation(from_period, to_period = 60000) {
 	}
 	let has_updates;
 	for (const [key, value] of aggregate_actions) {
-		value.id = AGGREGATE_PREFIX + Math.round(last_time) + '-' + key;
+		value.id = getNextMonotonicTime();
 		value.time = last_time;
-		AnalyticsTable.put(value);
+		analytics_table.primaryStore.put(value.id, value, { append: true }).then((success) => {
+			// if for some reason we can't append, try again without append
+			if (!success) {
+				analytics_table.primaryStore.put(value.id, value);
+			}
+		});
 		has_updates = true;
 	}
 	const now = Date.now();
 	const { idle, active } = performance.eventLoopUtilization();
 	// don't record boring entries
 	if (has_updates || active * 10 > idle) {
-		AnalyticsTable.put({
-			id: AGGREGATE_PREFIX + Math.round(now) + '-main-thread-utilization',
+		const id = getNextMonotonicTime();
+		const value = {
+			id,
 			metric: 'main-thread-utilization',
 			idle: idle - last_idle,
 			active: active - last_active,
 			time: now,
+		};
+		analytics_table.primaryStore.put(id, value, { append: true }).then((success) => {
+			// if for some reason we can't append, try again without append
+			if (!success) {
+				analytics_table.primaryStore.put(value.id, value);
+			}
 		});
 	}
 	last_idle = idle;
@@ -265,8 +277,7 @@ let last_active = 0;
 
 const rest = () => new Promise(setImmediate);
 
-async function cleanup(expiration, period) {
-	const AnalyticsTable = getAnalyticsTable();
+async function cleanup(AnalyticsTable, expiration) {
 	const end = Date.now() - expiration;
 	for (const key of AnalyticsTable.primaryStore.getKeys({ start: false, end })) {
 		AnalyticsTable.primaryStore.remove(key);
@@ -274,7 +285,32 @@ async function cleanup(expiration, period) {
 }
 
 const RAW_EXPIRATION = 3600000;
-const AGGREGATE_EXPIRATION = 100000;
+const AGGREGATE_EXPIRATION = 31536000000; // one year
+let RawAnalyticsTable;
+function getRawAnalyticsTable() {
+	return (
+		RawAnalyticsTable ||
+		(RawAnalyticsTable = table({
+			table: 'hdb_raw_analytics',
+			database: 'system',
+			expiration: 864000,
+			audit: false,
+			trackDeletes: false,
+			attributes: [
+				{
+					name: 'id',
+					isPrimaryKey: true,
+				},
+				{
+					name: 'action',
+				},
+				{
+					name: 'metrics',
+				},
+			],
+		}))
+	);
+}
 let AnalyticsTable;
 function getAnalyticsTable() {
 	return (
@@ -294,7 +330,7 @@ function getAnalyticsTable() {
 					name: 'action',
 				},
 				{
-					name: 'values',
+					name: 'metric',
 				},
 			],
 		}))
@@ -309,8 +345,8 @@ function startScheduledTasks() {
 	if (AGGREGATE_PERIOD) {
 		setInterval(async () => {
 			await aggregation(ANALYTICS_DELAY, AGGREGATE_PERIOD);
-			await cleanup(RAW_EXPIRATION, ANALYTICS_DELAY);
-			//await cleanup(AGGREGATE_EXPIRATION, AGGREGATE_PERIOD);
+			await cleanup(getRawAnalyticsTable(), RAW_EXPIRATION);
+			await cleanup(getAnalyticsTable(), AGGREGATE_EXPIRATION);
 		}, AGGREGATE_PERIOD / 2).unref();
 	}
 }
@@ -336,7 +372,7 @@ function recordAnalytics(message, worker?) {
 		last_utilizations.set(worker, worker.performance.eventLoopUtilization());
 	}
 	report.id = getNextMonotonicTime();
-	getAnalyticsTable().put(report);
+	getRawAnalyticsTable().primaryStore.put(report.id, report);
 	if (!scheduled_tasks_running) startScheduledTasks();
 	if (LOG_ANALYTICS) last_append = logAnalytics(report);
 }

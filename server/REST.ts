@@ -20,8 +20,6 @@ const etag_float = new Float64Array(etag_bytes.buffer, 0, 1);
 async function http(request, next_handler) {
 	const method = request.headers.accept === 'text/event-stream' ? 'CONNECT' : request.method;
 	if (request.search) parseQuery(request);
-	const start = performance.now();
-	let resource_path;
 	const headers = new Headers();
 	try {
 		request.responseHeaders = headers;

@@ -239,6 +239,24 @@
     "hash_attribute": "id",
     "name": "hdb_analytics",
     "schema": "system",
+    "audit": false,
+    "attributes":[
+      {
+        "attribute":"id"
+      },
+      {
+        "attribute":"time"
+      },
+      {
+        "attribute":"metric"
+      }
+    ]
+  },
+  "hdb_raw_analytics":{
+    "hash_attribute": "id",
+    "name": "hdb_raw_analytics",
+    "schema": "system",
+    "audit": false,
     "attributes":[
       {
         "attribute":"id"
