@@ -263,8 +263,6 @@ async function aggregation(from_period, to_period = 60000) {
 let last_idle = 0;
 let last_active = 0;
 
-const rest = () => new Promise(setImmediate);
-
 async function cleanup(expiration, period) {
 	const AnalyticsTable = getAnalyticsTable();
 	const end = Date.now() - expiration;
@@ -440,3 +438,4 @@ function rebalance({ counts, values, totalCount }, reset_counts) {
 	if (reset_counts) counts.fill(0);
 	else counts.set(target_counts);
 }
+const rest = () => new Promise(setImmediate);

@@ -20,6 +20,7 @@ import { workerData, threadId } from 'worker_threads';
 import * as harper_logger from '../utility/logging/harper_logger';
 import * as manage_threads from '../server/threads/manageThreads';
 import { openAuditStore, transactionKeyEncoder } from './auditStore';
+import { handleLocalTimeForGets } from './RecordEncoder';
 
 const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
@@ -166,8 +167,7 @@ export function resetDatabases() {
 	getDatabases();
 	for (const [path, store] of database_envs) {
 		if (store.needsDeletion && !path.endsWith('system.mdb')) {
-			console.log('closing database', path);
-			store.close().then(() => console.log('closed database', path));
+			store.close();
 			database_envs.delete(path);
 		}
 	}
@@ -284,7 +284,7 @@ export function readMetaDb(
 				}
 				const dbi_init = new OpenDBIObject(!primary_attribute.is_hash_attribute, primary_attribute.is_hash_attribute);
 				harper_logger.trace(`openDB ${primary_attribute.key} from ${database_name}`);
-				primary_store = root_store.openDB(primary_attribute.key, dbi_init);
+				primary_store = handleLocalTimeForGets(root_store.openDB(primary_attribute.key, dbi_init));
 				primary_store.rootStore = root_store;
 				primary_store.tableId = table_id;
 			}
@@ -516,7 +516,7 @@ export function table({
 		const dbi_init = new OpenDBIObject(false, true);
 		const dbi_name = table_name + '/';
 		harper_logger.trace(`openDB ${dbi_name} from ${database_name}`);
-		const primary_store = root_store.openDB(dbi_name, dbi_init);
+		const primary_store = handleLocalTimeForGets(root_store.openDB(dbi_name, dbi_init));
 		primary_store.rootStore = root_store;
 		harper_logger.trace(`openDB ${INTERNAL_DBIS_NAME} from ${database_name}`);
 		attributes_dbi = root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
@@ -584,14 +584,11 @@ export function table({
 			if (attribute.isPrimaryKey) {
 				attribute_descriptor = attribute_descriptor || attributes_dbi.get((dbi_key = table_name + '/'));
 				// primary key can't change indexing, but settings can change
-				if (
-					(audit === true && !Table.audit) ||
-					(+expiration || undefined) !== (+attribute_descriptor.expiration || undefined)
-				) {
+				if (audit !== Table.audit || (+expiration || undefined) !== (+attribute_descriptor.expiration || undefined)) {
 					const updated_primary_attribute = Object.assign({}, attribute_descriptor);
-					if (audit) {
-						Table.enableAuditing();
-						updated_primary_attribute.audit = true;
+					if (typeof audit === 'boolean') {
+						if (audit) Table.enableAuditing(audit);
+						updated_primary_attribute.audit = audit;
 					}
 					if (expiration) updated_primary_attribute.expiration = +expiration;
 					has_changes = true; // send out notification of the change

@@ -50,13 +50,15 @@ export function assignTrackedAccessors(Target, type_def) {
 		switch (attribute.type) {
 			case 'String':
 				descriptor.set = function (value) {
-					if (typeof value !== 'string') throw ClientError(`${name} must be a string, attempt to assign ${value}`);
+					if (!(typeof value === 'string' || (value == null && attribute.nullable !== false)))
+						throw new ClientError(`${name} must be a string, attempt to assign ${value}`);
 					getChanges(this)[name] = value;
 				};
 				break;
 			case 'Int':
 				descriptor.set = function (value) {
-					if (typeof value !== 'number') throw ClientError(`${name} must be a string, attempt to assign ${value}`);
+					if (!(typeof value === 'number' || (value == null && attribute.nullable !== false)))
+						throw new ClientError(`${name} must be a number, attempt to assign ${value}`);
 					getChanges(this)[name] = value;
 				};
 				break;

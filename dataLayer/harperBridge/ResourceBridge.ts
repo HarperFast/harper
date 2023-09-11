@@ -423,6 +423,7 @@ export class ResourceBridge extends LMDBBridge {
 						if (operation === 'put') operation = 'upsert';
 						return {
 							operation,
+							timestamp: audit_record.version,
 							user_name: audit_record.user,
 							hash_values: [id],
 							records: [audit_record.value],
@@ -513,7 +514,7 @@ async function* groupRecordsInHistory(table, start?, end?) {
 	for await (const entry of table.getHistory(start, end)) {
 		let operation = entry.type;
 		if (operation === 'put') operation = 'upsert';
-		const { id, timestamp, value } = entry;
+		const { id, version: timestamp, value } = entry;
 		if (enqueued?.timestamp === timestamp) {
 			enqueued.hash_values.push(id);
 			enqueued.records.push(value);

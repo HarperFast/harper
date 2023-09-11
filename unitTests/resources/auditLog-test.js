@@ -27,6 +27,9 @@ describe('Audit log', () => {
 			events.push(event);
 		});
 	});
+	after(function () {
+		setAuditRetention(60000);
+	});
 	it('check log after writes and prune', async () => {
 		events = [];
 		await AuditedTable.put(1, { name: 'one' });

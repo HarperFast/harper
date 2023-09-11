@@ -64,7 +64,7 @@ logging:
   auditAuthEvents:
     logFailed: false
     logSuccessful: false
-  auditLog: false
+  auditLog: true
   auditRetention: 3d
   file: true
   level: error

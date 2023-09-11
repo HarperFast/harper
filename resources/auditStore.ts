@@ -4,6 +4,7 @@ import { AUDIT_STORE_NAME } from '../utility/lmdb/terms';
 import { CONFIG_PARAMS } from '../utility/hdbTerms';
 import { getWorkerIndex } from '../server/threads/manageThreads';
 import { convertToMS } from '../utility/common_utils';
+import { PREVIOUS_TIMESTAMP_PLACEHOLDER, LAST_TIMESTAMP_PLACEHOLDER } from './RecordEncoder';
 /**
  * This module is responsible for the binary representation of audit records in an efficient form.
  * This includes a custom key encoder that specifically encodes arrays with the first element (timestamp) as a
@@ -11,6 +12,10 @@ import { convertToMS } from '../utility/common_utils';
  *
  * This also defines a binary representation for the audit records themselves which is:
  * 1 or 2 bytes: action, describes the action of this record and any flags for which other parts are included
+ * table_id
+ * record_id
+ * origin version
+ * previous local version
  * 1 or 2 bytes: position of end of the username section. 0 if there is no username
  * 2 or 4 bytes: node-id
  * 8 bytes (optional): last version timestamp (allows for backwards traversal through history of a record)
@@ -23,21 +28,24 @@ const ENTRY_HEADER = Buffer.alloc(1024); // enough room for all usernames?
 const ENTRY_DATAVIEW = new DataView(ENTRY_HEADER.buffer, ENTRY_HEADER.byteOffset, 1024);
 export const transactionKeyEncoder = {
 	writeKey(key, buffer, position) {
-		if (Array.isArray(key)) {
+		if (key === LAST_TIMESTAMP_PLACEHOLDER) {
+			buffer.set(LAST_TIMESTAMP_PLACEHOLDER, position);
+			return position + 8;
+		}
+		if (typeof key === 'number') {
 			const data_view =
 				buffer.dataView || (buffer.dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength));
-			data_view.setFloat64(position, key[0]);
-			data_view.setUint32(position + 8, key[1]);
-			return writeKey(key[2], buffer, position + 12);
+			data_view.setFloat64(position, key);
+			return position + 8;
 		} else {
 			return writeKey(key, buffer, position);
 		}
 	},
 	readKey(buffer, start, end) {
-		if (buffer[start] > 40) {
+		if (buffer[start] === 66) {
 			const data_view =
 				buffer.dataView || (buffer.dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength));
-			return [data_view.getFloat64(start), data_view.getUint32(start + 8), readKey(buffer, start + 12, end)];
+			return data_view.getFloat64(start);
 		} else {
 			return readKey(buffer, start, end);
 		}
@@ -71,14 +79,15 @@ export function openAuditStore(root_store) {
 					// query for audit entries that are old and
 					if (audit_store.rootStore.status === 'closed') return;
 					for (const { key, value } of audit_store.getRange({
-						start: [0, 0],
-						end: [Date.now() - audit_retention, 0],
+						start: 0,
+						end: Date.now() - audit_retention,
 					})) {
 						if ((value[0] & 15) === DELETE) {
 							// if this is a delete, we remove the delete entry from the primary table
 							// at the same time so the audit table the primary table are in sync
-							const table_id = key[1];
-							delete_callbacks[table_id]?.(key[2]);
+							const audit_record = readAuditEntry(value);
+							const table_id = audit_record.tableId;
+							delete_callbacks[table_id]?.(audit_record.recordId);
 						}
 						audit_store.remove(key);
 					}
@@ -102,7 +111,6 @@ const PUT = 1;
 const DELETE = 2;
 const MESSAGE = 3;
 const INVALIDATE = 4;
-const HAS_SIX_BYTE_HEADER = 128;
 const HAS_PREVIOUS_VERSION = 64;
 
 const EVENT_TYPES = {
@@ -115,56 +123,123 @@ const EVENT_TYPES = {
 	invalidate: INVALIDATE,
 	[INVALIDATE]: 'invalidate',
 };
-export function createAuditEntry(last_version, username, audit_information) {
-	let action = EVENT_TYPES[audit_information.type];
+export function createAuditEntry(txn_time, table_id, record_id, previous_local_time, username, type, encoded_record) {
+	const action = EVENT_TYPES[type];
+	let position = 1;
+	if (previous_local_time) {
+		if (previous_local_time > 1) ENTRY_DATAVIEW.setFloat64(0, previous_local_time);
+		else ENTRY_HEADER.set(PREVIOUS_TIMESTAMP_PLACEHOLDER);
+		position = 9;
+	}
 
-	let position = 3;
-	if (username) {
-		if (username.length > 80) {
-			action |= HAS_SIX_BYTE_HEADER;
-			position = writeKey(username, ENTRY_HEADER, last_version ? 14 : 6);
-			ENTRY_DATAVIEW.setUint16(2, position);
+	const node_id = 0;
+	writeInt(node_id);
+	writeInt(table_id);
+	writeValue(record_id);
+	ENTRY_DATAVIEW.setFloat64(position, txn_time);
+	position += 8;
+	if (username) writeValue(username);
+	else ENTRY_HEADER[position++] = 0;
+	ENTRY_HEADER[previous_local_time ? 8 : 0] = action;
+	const header = ENTRY_HEADER.subarray(0, position);
+	if (encoded_record) {
+		return Buffer.concat([header, encoded_record]);
+	} else return header;
+	function writeValue(value) {
+		const value_length_position = position;
+		position += 1;
+		position = writeKey(value, ENTRY_HEADER, position);
+		if (position > 130) {
+			// TODO: Need to make room for extra byte
 		} else {
-			position = writeKey(username, ENTRY_HEADER, last_version ? 11 : 3);
-			ENTRY_HEADER[1] = position;
+			ENTRY_HEADER[value_length_position] = position - value_length_position - 1;
 		}
-	} else {
-		ENTRY_HEADER[1] = 0;
 	}
-	if (last_version) {
-		action |= HAS_PREVIOUS_VERSION;
-		const version_position = action & HAS_SIX_BYTE_HEADER ? 6 : 3;
-		ENTRY_DATAVIEW.setFloat64(version_position, last_version);
-		if (!username) position = version_position + 8;
+	function writeInt(number) {
+		if (number < 128) {
+			ENTRY_HEADER[position++] = number;
+		} else if (number < 0x4000) {
+			ENTRY_DATAVIEW.setUint16(position, number | 0x7fff);
+			position += 2;
+		} else if (number < 0x3f000000) {
+			ENTRY_DATAVIEW.setUint32(position, number | 0xcfffffff);
+			position += 4;
+		} else {
+			ENTRY_HEADER[position] = 0xff;
+			ENTRY_DATAVIEW.setUint32(position + 1, number);
+			position += 5;
+		}
 	}
-	ENTRY_HEADER[0] = action;
-	// TODO: This is reserved for the node id
-	if (action & HAS_SIX_BYTE_HEADER) ENTRY_DATAVIEW.setUint16(4, 0);
-	else ENTRY_HEADER[2] = 0;
-	if (audit_information.value) return Buffer.concat([ENTRY_HEADER.slice(0, position), audit_information.value]);
-	else return ENTRY_HEADER.subarray(0, position);
 }
-export function readAuditEntry(buffer, store) {
-	const action = buffer[0];
-	const data_view =
-		buffer.dataView || (buffer.dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength));
-	const has_six_byte_header = action & HAS_SIX_BYTE_HEADER;
-	let position = has_six_byte_header ? 6 : 3;
-	let last_version;
-	if (action & HAS_PREVIOUS_VERSION) {
-		last_version = data_view.getFloat64(position);
-		position += 8;
+export function readAuditEntry(buffer) {
+	const decoder =
+		buffer.dataView || (buffer.dataView = new Decoder(buffer.buffer, buffer.byteOffset, buffer.byteLength));
+	let previous_local_time;
+	if (buffer[0] == 66) {
+		// 66 is the first byte in a date double.
+		previous_local_time = decoder.readFloat64();
 	}
-	let username_end;
-	if (has_six_byte_header) username_end = data_view.getUint16(2);
-	else username_end = buffer[1];
-	const value = action & HAS_FULL_RECORD ? store.decoder.decode(buffer.subarray(username_end || position)) : undefined;
+	const action = decoder.readInt();
+	const node_id = decoder.readInt();
+	const table_id = decoder.readInt();
+	let length = decoder.readInt();
+	const record_id_start = decoder.position;
+	const record_id_end = (decoder.position += length);
+	const version = decoder.readFloat64();
+	length = decoder.readInt();
+	const username_start = decoder.position;
+	const username_end = (decoder.position += length);
 	return {
 		type: EVENT_TYPES[action & 7],
-		value,
-		lastVersion: last_version,
+		tableId: table_id,
+		get recordId() {
+			return readKeySafely(buffer, record_id_start, record_id_end);
+		},
+		version,
+		previousLocalTime: previous_local_time,
 		get user() {
-			return username_end ? readKey(buffer, position, username_end) : undefined;
+			return username_end > username_start ? readKeySafely(buffer, username_start, username_end) : undefined;
+		},
+		getValue(store) {
+			return action & HAS_FULL_RECORD ? store.decoder.decode(buffer.subarray(decoder.position)) : undefined;
 		},
 	};
+}
+
+class Decoder extends DataView {
+	position = 0;
+	readInt() {
+		let number = this.getUint8(this.position++);
+		if (number >= 0x80) {
+			if (number >= 0xc0) {
+				if (number === 0xff) {
+					number = this.getUint32(this.position - 1) & 0xcfffffff;
+					this.position += 4;
+					return number;
+				}
+				number = this.getUint32(this.position - 1) & 0xcfffffff;
+				this.position += 3;
+				return number;
+			}
+			number = this.getUint16(this.position - 1) & 0x7fff;
+			this.position++;
+			return number;
+		}
+		return number;
+	}
+	readFloat64() {
+		try {
+			const value = this.getFloat64(this.position);
+			this.position += 8;
+			return value;
+		} catch (error) {
+			debugger;
+		}
+	}
+}
+function readKeySafely(buffer, start, end) {
+	// ordered-binary's read key actually modifies the byte at end to be zero, we have to subarray this
+	// TODO: Can we fix this in ordered-binary?
+	const safe_buffer = buffer.subarray(start, end);
+	return readKey(safe_buffer, 0, end - start);
 }

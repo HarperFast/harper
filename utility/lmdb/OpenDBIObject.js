@@ -1,6 +1,7 @@
 'use strict';
 const env_mngr = require('../environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
+const { RecordEncoder } = require('../../resources/RecordEncoder');
 env_mngr.initSync();
 const LMDB_COMPRESSION = env_mngr.get(terms.CONFIG_PARAMS.STORAGE_COMPRESSION);
 const LMDB_CACHING = env_mngr.get(terms.CONFIG_PARAMS.STORAGE_CACHING) !== false;
@@ -17,12 +18,16 @@ class OpenDBIObject {
 		this.dupSort = dup_sort === true;
 		this.encoding = dup_sort ? 'ordered-binary' : 'msgpack';
 		this.useVersions = is_primary;
-		this.compression = LMDB_COMPRESSION && is_primary;
+		this.compression = LMDB_COMPRESSION &&
+			is_primary && {
+				startingOffset: 32, // don't compress headers
+			};
 		this.sharedStructuresKey = Symbol.for('structures');
 		if (is_primary) {
 			this.cache = LMDB_CACHING && { validated: true };
 			this.randomAccessStructure = true;
 			this.freezeData = true;
+			this.encoder = { Encoder: RecordEncoder };
 			this.alwaysLazyProperty = (property) => {
 				return property === UPDATES_PROPERTY;
 			};

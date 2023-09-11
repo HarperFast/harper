@@ -220,7 +220,14 @@ export async function loadComponent(
 					const files = join(folder, component_config.files);
 					for (const entry of await fg(files, { onlyFiles: false, objectMode: true })) {
 						const { path, dirent } = entry;
-						const relative_path = relative(folder, path);
+						let relative_path = relative(folder, path);
+						if (component_config.root) {
+							let root_path = component_config.root;
+							if (root_path.startsWith('/')) root_path = root_path.slice(1);
+							if (root_path.endsWith('/')) root_path = root_path.slice(0, -1);
+							root_path += '/';
+							if (relative_path.startsWith(root_path)) relative_path = relative_path.slice(root_path.length);
+						}
 						const app_name = basename(folder);
 						let url_path = component_config.path || '/';
 						url_path = url_path.startsWith('/')
@@ -258,7 +265,7 @@ export async function loadComponent(
 			}
 		}
 		// Auto restart threads on changes to any app folder. TODO: Make this configurable
-		if (isMainThread && !watches_setup) {
+		if (isMainThread && !watches_setup && !is_root) {
 			watchDir(folder, async () => {
 				return loadComponentDirectories(); // return the promise
 			});

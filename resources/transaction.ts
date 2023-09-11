@@ -26,7 +26,7 @@ export function transaction<T>(
 	if (context.timestamp) transaction.timestamp = context.timestamp;
 	transaction[CONTEXT] = context;
 	// create a resource cache so that multiple requests to the same resource return the same resource
-	context.resourceCache = [];
+	if (!context.resourceCache) context.resourceCache = [];
 	let result;
 	try {
 		result = callback(transaction);

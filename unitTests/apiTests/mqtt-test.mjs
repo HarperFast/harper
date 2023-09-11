@@ -403,7 +403,7 @@ describe('test MQTT connections and commands', () => {
 		await new Promise((resolve, reject) => {
 			client._handlePublish = async function (packet, done) {
 				const message = packet.payload;
-				messages.push(message);
+				messages.push(message.toString());
 				done();
 				if (message.toString().includes('session 2')) {// skip the first one to trigger out of order acking
 					return;

@@ -2,6 +2,7 @@ import { asBinary, Database, getLastVersion, RootDatabase, Transaction as LMDBTr
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { createAuditEntry } from './auditStore';
 import { databases } from './databases';
+import { LAST_TIMESTAMP_PLACEHOLDER } from './RecordEncoder';
 
 export const COMPLETION = Symbol('completion');
 const MAX_OPTIMISTIC_SIZE = 100;
@@ -46,32 +47,11 @@ export class DatabaseTransaction implements Transaction {
 			completions = [];
 		let write_index = 0;
 		let last_store;
-		this.hasWrittenTime = false;
 		const doWrite = (write) => {
-			const audit_record = write.commit(txn_time, retries);
-			if (audit_record) {
-				if (audit_record[COMPLETION]) {
-					if (!completions) completions = [];
-					completions.push(audit_record[COMPLETION]);
-				}
-				last_store = write.store;
-				if (this.auditStore) {
-					audit_record.user = this.username;
-					audit_record.lastVersion = write.lastVersion;
-					// we allow the operation to request a new transaction time (but should only happen if we haven't already written any records)
-					if (audit_record.newTxnTime && !this.hasWrittenTime) txn_time = audit_record.newTxnTime;
-					this.hasWrittenTime = true;
-					const key = [txn_time, write.store.tableId, write.key];
-					if (write.invalidated) key.invalidated = true; // this indicates that audit record is an invalidation, and will be replaced
-					/**
-					 TODO: We will need to pass in the node id, whether that is locally generated from node name, or there is a global registory
-					let node_id = audit_information.nodeName ? node_ids.get(audit_information.nodeName) : 0;
-					if (node_id == undefined) {
-						// store the node name to node id mapping
-					}
-					*/
-					this.auditStore.put(key, createAuditEntry(write.lastVersion, this.username, audit_record));
-				}
+			const completion = write.commit(txn_time, retries, this);
+			if (completion) {
+				if (!completions) completions = [];
+				completions.push(completion);
 			}
 		};
 		// this uses optimistic locking to submit a transaction, conditioning each write on the expected version

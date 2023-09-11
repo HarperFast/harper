@@ -167,7 +167,6 @@ export class Resource implements ResourceInterface {
 
 	static publish = transactional(
 		function (resource: Resource, query?: Map, request: Request, data?: any) {
-			if (resource[ID_PROPERTY] != null) resource.update?.(); // save any changes made during publish
 			return resource.publish ? resource.publish(data, query) : missingMethod(resource, 'publish');
 		},
 		{ hasContent: true, type: 'create' }
@@ -300,11 +299,15 @@ export class Resource implements ResourceInterface {
 	}
 
 	/**
-	 * This is called by protocols that wish to make a subscription for real-time notification/updates
+	 * This is called by protocols that wish to make a subscription for real-time notification/updates.
+	 * This default implementation simply provides a streaming iterator that does not deliver any notifications
+	 * but implementors can call send with
 	 * @param query
 	 * @param options
 	 */
-	subscribe(options?: {}): AsyncIterable<{ id: any; operation: string; value: object }>;
+	subscribe(options?: {}): AsyncIterable<{ id: any; operation: string; value: object }> {
+		return new IterableEventQueue();
+	}
 
 	connect(query?: {}): AsyncIterable<any> {
 		// convert subscription to an (async) iterator

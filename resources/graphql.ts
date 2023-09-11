@@ -59,7 +59,7 @@ export function start({ ensureTable }) {
 					function getProperty(type) {
 						if (type.kind === 'NonNullType') {
 							const property = getProperty(type.type);
-							property.nullable = true;
+							property.nullable = false;
 							return property;
 						}
 						if (type.kind === 'ListType') {
@@ -120,7 +120,8 @@ export function start({ ensureTable }) {
 			// with graphql database definitions, this is a declaration that the table should exist and that it
 			// should be created if it does not exist
 			type_def.tableClass = ensureTable(type_def);
-			if (type_def.export) resources.set(dirname(url_path) + '/' + (type_def.export.name || type_def.typeName), type_def.tableClass);
+			if (type_def.export)
+				resources.set(dirname(url_path) + '/' + (type_def.export.name || type_def.typeName), type_def.tableClass);
 		}
 		// and if there was a `type Query` definition, we use that to created exported resources
 		if (query) {

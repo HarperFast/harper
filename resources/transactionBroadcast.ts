@@ -26,8 +26,7 @@ export function addSubscription(table, key, listener?: (key) => any, start_time:
 	// (rather than having every subscriber filter every transaction)
 	if (!all_subscriptions) {
 		onMessageByType(TRANSACTION_EVENT_TYPE, (event) => {
-			const audit_ids = event.auditIds;
-			notifyFromTransactionData(event.path, audit_ids, event.txnId);
+			notifyFromTransactionData(event.path);
 		});
 		onMessageByType(TRANSACTION_AWAIT_EVENT_TYPE, (event) => {
 			trace('confirming to proceed with txn', event.txnId);
@@ -95,92 +94,43 @@ class Subscription extends IterableEventQueue {
 	}
 }
 
-let last_txn_id;
-const delayed_notifications = new Map();
-function notifyFromTransactionData(path, audit_ids, txn_id, same_thread?) {
+let last_txn_time = Date.now();
+
+function notifyFromTransactionData(path, same_thread?) {
 	if (!all_subscriptions) return;
 	const subscriptions = all_subscriptions[path];
 	if (!subscriptions) return; // if no subscriptions to this env path, don't need to read anything
-	if (last_txn_id && last_txn_id + 1 !== txn_id) {
-		// if the transactions are not in order, we broadcast to ensure that we have
-		// awaited any other threads that have out of order transactions to broadcast
-		// TODO: we don't actually have a listener for this, and generally this back
-		// and forth should usually be sufficient to get the other threads to broadcast
-		// their txns, but we should probably add a listener to verify
-		trace('Waiting to ensure latest txn id', last_txn_id, 'proceeds', txn_id, same_thread);
-		const completion = (async () => {
-			// wait for any other delayed notifications with earlier txn ids first
-			for (const [other_txn_id, completion] of delayed_notifications) {
-				if (other_txn_id < txn_id) {
-					trace('Txn', txn_id, 'waiting for txn', other_txn_id);
-					await completion;
-				}
-			}
-			if (last_txn_id + 1 !== txn_id) {
-				// if we still need to wait, send out request
-				await broadcastWithAcknowledgement({
-					type: TRANSACTION_AWAIT_EVENT_TYPE,
-					txnId: txn_id,
-				});
-				// wait for any other delayed notifications with earlier txn ids that were added
-				for (const [other_txn_id, completion] of delayed_notifications) {
-					if (other_txn_id < txn_id) {
-						trace('Txn', txn_id, 'waiting for txn', other_txn_id);
-						await completion;
-					}
-				}
-			}
-			delayed_notifications.delete(txn_id);
-			trace('Proceeding with txn id', txn_id);
-			last_txn_id = txn_id - 1; // give it the green light to proceed
-			notifyFromTransactionData(path, audit_ids, txn_id, same_thread);
-		})();
-		delayed_notifications.set(txn_id, completion);
-		return completion;
-	}
-	trace('Notifying with txn id', txn_id, same_thread);
-	last_txn_id = txn_id;
 	try {
 		subscriptions.auditStore.resetReadTxn();
 	} catch (error) {
 		error.message += ' in ' + path;
 		throw error;
 	}
-	audit_id_loop: for (const audit_id of audit_ids) {
-		const [txn_time, table_id, record_key] = audit_id;
-		const table_subscriptions = subscriptions[table_id];
+	for (const { key: local_time, value: audit_entry_encoded } of subscriptions.auditStore.getRange({
+		start: last_txn_time,
+		exclusiveStart: true,
+	})) {
+		last_txn_time = local_time;
+		const audit_entry = readAuditEntry(audit_entry_encoded);
+		const table_subscriptions = subscriptions[audit_entry.tableId];
 		if (!table_subscriptions) continue;
-		writeKey(audit_id, test, 0);
-		const is_invalidation = audit_id[3];
-		if (is_invalidation) audit_id.length = 3;
+		const record_id = audit_entry.recordId;
+		// TODO: How to handle invalidation
 		let audit_record;
-		let matching_key = keyArrayToString(record_key);
+		let matching_key = keyArrayToString(audit_entry.recordId);
 		let is_ancestor;
 		do {
 			const key_subscriptions = table_subscriptions.get(matching_key);
 			if (key_subscriptions) {
 				for (const subscription of key_subscriptions) {
 					if (is_ancestor && !subscription.includeDescendants) continue;
-					if (subscription.startTime >= txn_time) {
-						info('omitting', record_key, subscription.startTime, txn_time);
+					if (subscription.startTime >= local_time) {
+						info('omitting', record_id, subscription.startTime, local_time);
 						continue;
 					}
 					try {
 						if (subscription.crossThreads === false && !same_thread) continue;
-						if (audit_record === undefined) {
-							const audit_record_encoded = subscriptions.auditStore.get(audit_id);
-							if (!audit_record_encoded) continue audit_id_loop; // if the audit record is pruned before we get to it, this can be undefined/null
-							audit_record = readAuditEntry(audit_record_encoded, table_subscriptions.store);
-							if (
-								audit_record.type !== 'message' &&
-								// check to see if the latest is out-of-date, and if it is we skip it, except for messages were we try not to drop any
-								table_subscriptions.store.getEntry(audit_id[2])?.version !== audit_id[0]
-							)
-								continue audit_id_loop;
-
-							if (is_invalidation && audit_record.type !== 'invalidate') continue audit_id_loop; // this indicates that the invalidation entry has already been replaced, so just wait for the second update
-						}
-						subscription.listener(record_key, audit_record, txn_time);
+						subscription.listener(record_id, audit_entry, local_time);
 					} catch (error) {
 						console.error(error);
 						info(error);
@@ -209,37 +159,15 @@ export function listenToCommits(primary_store, audit_store) {
 		lmdb_env.hasBroadcastListener = true;
 		const path = lmdb_env.path;
 
-		store.on('aftercommit', ({ next, last, txnId }) => {
+		store.on('aftercommit', () => {
 			// after each commit, broadcast the transaction to all threads so subscribers can read the
-			// transactions and find changes of interest. We try to use the same binary format for
-			// transactions that is used by lmdb-js for minimal modification and since the binary
-			// format can readily be shared with other threads
-			let start;
-			const audit_ids = [];
-			if (audit_store) {
-				// get all the buffers (and starting position of the first) in this transaction
-				do {
-					if (next.flag & FAILED_CONDITION) continue;
-					let key;
-					if (next.meta && next.meta.store === audit_store && (key = next.meta.key)) {
-						if (typeof key[2] === 'symbol') key[2] = null;
-						if (key.invalidated) key[3] = true; // how we indicate invalidation for now
-						audit_ids.push(key);
-					}
-				} while (next != last && (next = next.next));
-			}
-			if (audit_ids.length === 0) return;
-			// broadcast all the transaction buffers so they can be (sequentially) read and subscriptions messages
-			// delivered on all other threads
+			// transactions and find changes of interest.
 			broadcast({
 				type: TRANSACTION_EVENT_TYPE,
 				path,
-				auditIds: audit_ids,
-				txnId,
-				start,
 			});
 			// and notify on our own thread too
-			notifyFromTransactionData(path, audit_ids, txnId, true);
+			notifyFromTransactionData(path, true);
 		});
 	}
 }
