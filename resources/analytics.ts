@@ -123,7 +123,12 @@ function sendAnalytics() {
 					})
 				);
 			} else {
-				metrics.push(action);
+				metrics.push(
+					Object.assign(action.description, {
+						total: action.total,
+						count: action.count,
+					})
+				);
 			}
 			await rest(); // sort's are expensive and we don't want to do two of them in the same event turn
 		}

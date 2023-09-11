@@ -1377,7 +1377,9 @@ export function makeTable(options) {
 				)
 					load_from_source = true;
 			} else load_from_source = true;
-			if (has_source_get) recordActionBinary(load_from_source, 'cache-hit', table_name);
+			if (has_source_get) {
+				recordActionBinary(!load_from_source, 'cache-hit', table_name);
+			}
 			if (load_from_source && !allow_invalidated) {
 				if (resource) resource[LOAD_FROM_SOURCE] = true;
 				if (has_source_get) {
