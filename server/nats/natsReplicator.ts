@@ -62,53 +62,31 @@ export function setNATSReplicator(table_name, db_name, Table) {
 		return console.error(`Attempt to replicate non-existent table ${table_name} from database ${db_name}`);
 	}
 	if (Table.Source?.isNATSReplicator) return;
-	let source;
 	Table.sourcedFrom(
 		class NATSReplicator extends Resource {
 			put(record) {
 				// add this to the transaction
-				let completion;
-				if (source?.put && (!source.put.reliesOnPrototype || source.prototype.put))
-					completion = source.put(this[ID_PROPERTY], record, this.getContext());
-				return getNATSTransaction(this.getContext()).addWrite(
-					db_name,
-					{
-						operation: 'put',
-						table: table_name,
-						id: this[ID_PROPERTY],
-						record,
-					},
-					completion
-				);
+				return getNATSTransaction(this.getContext()).addWrite(db_name, {
+					operation: 'put',
+					table: table_name,
+					id: this[ID_PROPERTY],
+					record,
+				});
 			}
 			delete() {
-				let completion;
-				if (source?.delete && (!source.delete.reliesOnPrototype || source.prototype.delete))
-					completion = source.delete(this[ID_PROPERTY], this.getContext());
-				return getNATSTransaction(this.getContext()).addWrite(
-					db_name,
-					{
-						operation: 'delete',
-						table: table_name,
-						id: this[ID_PROPERTY],
-					},
-					completion
-				);
+				return getNATSTransaction(this.getContext()).addWrite(db_name, {
+					operation: 'delete',
+					table: table_name,
+					id: this[ID_PROPERTY],
+				});
 			}
 			publish(message) {
-				let completion;
-				if (source?.publish && (!source.publish.reliesOnPrototype || source.prototype.publish))
-					completion = source.publish(this[ID_PROPERTY], message, this.getContext());
-				return getNATSTransaction(this.getContext()).addWrite(
-					db_name,
-					{
-						operation: 'publish',
-						table: table_name,
-						id: this[ID_PROPERTY],
-						record: message,
-					},
-					completion
-				);
+				return getNATSTransaction(this.getContext()).addWrite(db_name, {
+					operation: 'publish',
+					table: table_name,
+					id: this[ID_PROPERTY],
+					record: message,
+				});
 			}
 			invalidate(message) {
 				getNATSTransaction(this.getContext()).addWrite(db_name, {
@@ -119,39 +97,6 @@ export function setNATSReplicator(table_name, db_name, Table) {
 			}
 			static defineSchema(Table) {
 				publishSchema(Table);
-			}
-
-			/**
-			 * merge access to another source
-			 * @param other_source
-			 */
-			static mergeSource(other_source, options) {
-				// define the other source as our source, so we can pass through to it
-				source = other_source;
-				// we can just delegate directly to the other get
-				if (source?.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
-					if (options?.replicationSource) {
-						// if this source is a source for replication, we need to replicate data that
-						// is fulfilled from this source
-						this.get = async (id, context) => {
-							const result = await source.get(id, context);
-							if (result) {
-								getNATSTransaction(context).addWrite(db_name, {
-									operation: 'put',
-									table: table_name,
-									id,
-									record: result,
-								});
-							}
-							return result;
-						};
-					} else {
-						// if we are a cache of replicated data, we just pass through
-						this.get = (id, context) => source.get(id, context);
-					}
-					this.sourceForGets = other_source;
-				}
-				return this;
 			}
 
 			/**
@@ -170,7 +115,8 @@ export function setNATSReplicator(table_name, db_name, Table) {
 			}
 			static isNATSReplicator = true;
 			static shouldReceiveInvalidations = true;
-		}
+		},
+		{ runFirst: true }
 	);
 	/**
 	 * This gets the NATS transaction object for the current overall transaction. This will
@@ -221,10 +167,9 @@ class NATSTransaction {
 	user: string;
 	writes_by_db = new Map(); // TODO: short circuit of setting up a map if all the db paths are the same (99.9% of the time that will be the case)
 	constructor(protected transaction, protected options?) {}
-	addWrite(database_path, write, completion?) {
+	addWrite(database_path, write) {
 		let writes_for_path = this.writes_by_db.get(database_path);
 		if (!writes_for_path) this.writes_by_db.set(database_path, (writes_for_path = []));
-		if (completion?.then) return completion.then(() => writes_for_path.push(write));
 		else writes_for_path.push(write);
 	}
 
