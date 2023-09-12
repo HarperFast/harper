@@ -152,8 +152,8 @@ async function messageProcessor(msg) {
 		harper_logger.trace(`messageProcessor nats msg id: ${msg.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID)}`);
 		let onCommit;
 		if (!records) records = ids;
-		// TODO: Don't ack until this is completed
-		//let completion = new Promise((resolve) => (onCommit = resolve));
+		// Don't ack until this is completed
+		let completion = new Promise((resolve) => (onCommit = resolve));
 		let { timestamp, user, node_name } = origin || {};
 		let subscription = database_subscriptions.get(database_name)?.get(table_name);
 		if (!subscription) {
@@ -222,8 +222,7 @@ async function messageProcessor(msg) {
 			);
 		}
 
-		// TODO: onCommit is not being called, but not sure if we really need to do this
-		// await completion;
+		await completion;
 	} catch (e) {
 		harper_logger.error(e);
 	}
