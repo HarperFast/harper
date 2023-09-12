@@ -1,10 +1,9 @@
 import { getDatabases, onUpdatedTable } from '../../resources/databases';
 import { ID_PROPERTY, Resource } from '../../resources/Resource';
-import { publishToStream } from './utility/natsUtils';
+import { publishToStream as natsPublishToStream } from './utility/natsUtils';
 import { SUBJECT_PREFIXES } from './utility/natsTerms';
 import { createNatsTableStreamName } from '../../security/cryptoHash';
 import { IterableEventQueue } from '../../resources/IterableEventQueue';
-import { getWorkerIndex } from '../threads/manageThreads';
 import { setSubscription } from './natsIngestService';
 import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility';
 import env from '../../utility/environment/environmentManager';
@@ -18,6 +17,10 @@ export function start() {
 }
 export function disableNATS(disabled = true) {
 	nats_disabled = disabled;
+}
+export let publishToStream = natsPublishToStream;
+export function setPublishToStream(new_publish) {
+	publishToStream = new_publish;
 }
 const MAX_INGEST_THREADS = 2;
 let immediateNATSTransaction, subscribed_to_nodes;
