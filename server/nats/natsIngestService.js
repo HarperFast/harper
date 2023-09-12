@@ -138,6 +138,7 @@ async function messageProcessor(msg) {
 			records,
 			hash_values: ids,
 			__origin: origin,
+			expiresAt: expires_at,
 		} = entry;
 		harper_logger.trace(
 			'processing message:',
@@ -151,8 +152,8 @@ async function messageProcessor(msg) {
 		harper_logger.trace(`messageProcessor nats msg id: ${msg.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID)}`);
 		let onCommit;
 		if (!records) records = ids;
-		// TODO: Don't ack until this is completed
-		//let completion = new Promise((resolve) => (onCommit = resolve));
+		// Don't ack until this is completed
+		let completion = new Promise((resolve) => (onCommit = resolve));
 		let { timestamp, user, node_name } = origin || {};
 		let subscription = database_subscriptions.get(database_name)?.get(table_name);
 		if (!subscription) {
@@ -168,6 +169,7 @@ async function messageProcessor(msg) {
 				type: convertOperation(operation),
 				value: records[0],
 				id: ids?.[0],
+				expiresAt: expires_at,
 				timestamp,
 				table: table_name,
 				onCommit,
@@ -180,6 +182,7 @@ async function messageProcessor(msg) {
 			let writes = records.map((record, i) => ({
 				type: convertOperation(operation),
 				value: record,
+				expiresAt: expires_at,
 				id: ids?.[i],
 				table: table_name,
 			}));
@@ -188,8 +191,9 @@ async function messageProcessor(msg) {
 			// represented by simply a records array.
 			while (next_write) {
 				writes.push({
-					type: next_write.operation,
+					type: convertOperation(next_write.operation),
 					value: next_write.record,
+					expiresAt: next_write.expiresAt,
 					id: next_write.id,
 					table: next_write.table,
 				});
@@ -218,8 +222,7 @@ async function messageProcessor(msg) {
 			);
 		}
 
-		// TODO: onCommit is not being called, but not sure if we really need to do this
-		// await completion;
+		await completion;
 	} catch (e) {
 		harper_logger.error(e);
 	}

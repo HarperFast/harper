@@ -92,7 +92,7 @@
     "json2csv": "5.0.7",
     "jsonata": "1.8.6",
     "jsonwebtoken": "9.0.1",
-    "lmdb": "2.9.0-locks.1",
+    "lmdb": "2.9.0-locks.2",
     "lodash": "4.17.21",
     "mathjs": "11.9.1",
     "minimist": "1.2.8",

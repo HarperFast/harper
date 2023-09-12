@@ -6,7 +6,12 @@ const { Resource } = require('../../resources/Resource');
 const { setMainIsWorker } = require('../../server/threads/manageThreads');
 const { transaction } = require('../../resources/transaction');
 // might want to enable an iteration with NATS being assigned as a source
-//const { setNATSReplicator } = require('../../server/nats/natsReplicator');
+const {
+	setNATSReplicator,
+	setPublishToStream,
+	publishToStream,
+	setSubscription,
+} = require('../../server/nats/natsReplicator');
 describe('Caching', () => {
 	let CachingTable,
 		IndexedCachingTable,
@@ -15,7 +20,9 @@ describe('Caching', () => {
 	let timer = 0;
 	let return_value = true;
 	let return_error;
-
+	let natsPublishToStream = publishToStream;
+	let natsSetSubscription = setSubscription;
+	let published_messages = [];
 	before(async function () {
 		getMockLMDBPath();
 		setMainIsWorker(true); // TODO: Should be default until changed
@@ -48,7 +55,14 @@ describe('Caching', () => {
 				});
 			}
 		}
-		//setNATSReplicator('CachingTable', 'test', CachingTable);
+		setPublishToStream(
+			(subject, stream, header, message) => {
+				published_messages.push(message);
+			},
+			() => {}
+		);
+		setNATSReplicator('CachingTable', 'test', CachingTable);
+
 		CachingTable.sourcedFrom({
 			get(id) {
 				return new Promise((resolve) => {
@@ -72,6 +86,9 @@ describe('Caching', () => {
 			events.push(event);
 		});
 	});
+	after(() => {
+		setPublishToStream(natsPublishToStream, natsSetSubscription); // restore
+	});
 	it('Can load cached data', async function () {
 		source_requests = 0;
 		events = [];
@@ -91,6 +108,13 @@ describe('Caching', () => {
 		assert.equal(result.id, 23);
 		assert.equal(result.name, 'name ' + 23);
 		assert.equal(source_requests, 2);
+		assert.equal(published_messages.length, 2);
+		for (let message of published_messages) {
+			assert.equal(message.hash_values[0], 23);
+			assert.equal(message.table, 'CachingTable');
+		}
+		assert(published_messages[1].expiresAt > 1);
+		assert(published_messages[1].records[0].name, 'name 23');
 		if (events.length > 0) console.log(events);
 		//assert.equal(events.length, 0);
 	});

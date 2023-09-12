@@ -270,7 +270,7 @@ async function aggregation(from_period, to_period = 60000) {
 		analytics_table.primaryStore.put(id, value, { append: true }).then((success) => {
 			// if for some reason we can't append, try again without append
 			if (!success) {
-				analytics_table.primaryStore.put(value.id, value);
+				analytics_table.primaryStore.put(id, value);
 			}
 		});
 	}
