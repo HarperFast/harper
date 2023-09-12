@@ -61,7 +61,7 @@ export function setNATSReplicator(table_name, db_name, Table) {
 	if (!Table) {
 		return console.error(`Attempt to replicate non-existent table ${table_name} from database ${db_name}`);
 	}
-	if (Table.Source?.isNATSReplicator) return;
+	if (Table.sources.some((source) => source?.isNATSReplicator)) return;
 	Table.sourcedFrom(
 		class NATSReplicator extends Resource {
 			put(record) {
@@ -113,6 +113,10 @@ export function setNATSReplicator(table_name, db_name, Table) {
 			static subscribeOnThisThread(worker_index) {
 				return worker_index < MAX_INGEST_THREADS;
 			}
+			static isEqual(source) {
+				return source.isNATSReplicator;
+			}
+
 			static isNATSReplicator = true;
 			static shouldReceiveInvalidations = true;
 		},
@@ -132,6 +136,7 @@ export function setNATSReplicator(table_name, db_name, Table) {
 					(nats_transaction = context.transaction.nats = new NATSTransaction(context.transaction, context))
 				);
 				nats_transaction.user = context.user;
+				nats_transaction.context = context;
 			} else nats_transaction = immediateNATSTransaction;
 		}
 		return nats_transaction;
@@ -168,9 +173,10 @@ class NATSTransaction {
 	writes_by_db = new Map(); // TODO: short circuit of setting up a map if all the db paths are the same (99.9% of the time that will be the case)
 	constructor(protected transaction, protected options?) {}
 	addWrite(database_path, write) {
+		write.expiresAt = this.context?.expiresAt;
 		let writes_for_path = this.writes_by_db.get(database_path);
 		if (!writes_for_path) this.writes_by_db.set(database_path, (writes_for_path = []));
-		else writes_for_path.push(write);
+		writes_for_path.push(write);
 	}
 
 	/**
@@ -216,15 +222,18 @@ class NATSTransaction {
 						record: write.record,
 					};
 				}
+				if (write.expiresAt) last_write_event.expiresAt = write.expiresAt;
 			}
-			promises.push(
-				publishToStream(
-					`${SUBJECT_PREFIXES.TXN}.${db}.${transaction_event.table}`,
-					createNatsTableStreamName(db, transaction_event.table),
-					undefined,
-					transaction_event
-				)
-			);
+			if (transaction_event) {
+				promises.push(
+					publishToStream(
+						`${SUBJECT_PREFIXES.TXN}.${db}.${transaction_event.table}`,
+						createNatsTableStreamName(db, transaction_event.table),
+						undefined,
+						transaction_event
+					)
+				);
+			}
 		}
 		return Promise.all(promises);
 	}

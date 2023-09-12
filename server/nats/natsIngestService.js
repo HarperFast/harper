@@ -138,6 +138,7 @@ async function messageProcessor(msg) {
 			records,
 			hash_values: ids,
 			__origin: origin,
+			expiresAt: expires_at,
 		} = entry;
 		harper_logger.trace(
 			'processing message:',
@@ -168,6 +169,7 @@ async function messageProcessor(msg) {
 				type: convertOperation(operation),
 				value: records[0],
 				id: ids?.[0],
+				expiresAt: expires_at,
 				timestamp,
 				table: table_name,
 				onCommit,
@@ -180,6 +182,7 @@ async function messageProcessor(msg) {
 			let writes = records.map((record, i) => ({
 				type: convertOperation(operation),
 				value: record,
+				expiresAt: expires_at,
 				id: ids?.[i],
 				table: table_name,
 			}));
@@ -190,6 +193,7 @@ async function messageProcessor(msg) {
 				writes.push({
 					type: convertOperation(next_write.operation),
 					value: next_write.record,
+					expiresAt: next_write.expiresAt,
 					id: next_write.id,
 					table: next_write.table,
 				});

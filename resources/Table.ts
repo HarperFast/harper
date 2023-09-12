@@ -585,9 +585,11 @@ export function makeTable(options) {
 					let completion;
 					const id = this[ID_PROPERTY];
 					for (const source of TableResource.sources) {
-						if (this[CONTEXT]?.source === source) break;
-						const next_completion = source.invalidate?.(id, this);
-						completion = completion ? Promise.all([completion, next_completion]) : next_completion;
+						if (this[CONTEXT]?.source === source || this[CONTEXT]?.source?.isEqual?.(source)) break;
+						if (source.shouldReceiveInvalidations) {
+							const next_completion = source.invalidate?.(id, this);
+							completion = completion ? Promise.all([completion, next_completion]) : next_completion;
+						}
 					}
 					updateRecord(
 						id,
@@ -730,7 +732,7 @@ export function makeTable(options) {
 					}
 					// send this to the sources
 					for (const source of TableResource.sources) {
-						if (this[CONTEXT]?.source === source) break;
+						if (this[CONTEXT]?.source === source || this[CONTEXT]?.source?.isEqual?.(source)) break;
 						if (source?.put && (!source.put.reliesOnPrototype || source.prototype.put)) {
 							const next_completion = source.put(id, record, this);
 							completion = completion ? Promise.all([completion, next_completion]) : next_completion;
@@ -798,7 +800,7 @@ export function makeTable(options) {
 					if (!delete_prepared) {
 						delete_prepared = true;
 						for (const source of TableResource.sources) {
-							if (this[CONTEXT]?.source === source) break;
+							if (this[CONTEXT]?.source === source || this[CONTEXT]?.source?.isEqual?.(source)) break;
 							if (source?.delete && (!source.delete.reliesOnPrototype || source.prototype.delete)) {
 								const next_completion = source.delete(id, this);
 								completion = completion ? Promise.all([completion, next_completion]) : next_completion;
@@ -1115,7 +1117,7 @@ export function makeTable(options) {
 					if (!publish_prepared) {
 						publish_prepared = true;
 						for (const source of TableResource.sources) {
-							if (this[CONTEXT]?.source === source) break;
+							if (this[CONTEXT]?.source === source || this[CONTEXT]?.source?.isEqual?.(source)) break;
 							if (source?.publish && (!source.publish.reliesOnPrototype || source.prototype.publish)) {
 								const next_completion = source.publish(id, this);
 								completion = completion ? Promise.all([completion, next_completion]) : next_completion;
@@ -1521,7 +1523,15 @@ export function makeTable(options) {
 					commit: (txn_time, retry) => {
 						if (retry) return; // don't try to update on retry, just let the newer version win
 						const has_index_changes = updateIndices(id, existing_record, updated_record);
+						let completion;
 						if (updated_record) {
+							for (const source of TableResource.sources) {
+								if (source_context.source === source) break;
+								if (source.put && (!source.put.reliesOnPrototype || source.prototype.put)) {
+									const next_completion = source.put(id, updated_record, source_context);
+									completion = completion ? Promise.all([completion, next_completion]) : next_completion;
+								}
+							}
 							// TODO: We are doing a double check for ifVersion that should probably be cleaned out
 							updateRecord(
 								id,
@@ -1537,6 +1547,14 @@ export function makeTable(options) {
 								primary_store.unlock(id, existing_version);
 							});
 						} else {
+							for (const source of TableResource.sources) {
+								if (source_context.source === source) break;
+								if (source.delete && (!source.delete.reliesOnPrototype || source.prototype.delete)) {
+									const next_completion = source.delete(id, source_context);
+									completion = completion ? Promise.all([completion, next_completion]) : next_completion;
+								}
+							}
+
 							if (audit || track_deletes) {
 								updateRecord(
 									id,
@@ -1557,6 +1575,7 @@ export function makeTable(options) {
 								});
 							}
 						}
+						return completion;
 					},
 				});
 			}).catch((error) => {
