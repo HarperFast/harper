@@ -153,7 +153,7 @@ async function messageProcessor(msg) {
 		let onCommit;
 		if (!records) records = ids;
 		// Don't ack until this is completed
-		let completion = new Promise((resolve) => (onCommit = resolve));
+		//let completion = new Promise((resolve) => (onCommit = resolve));
 		let { timestamp, user, node_name } = origin || {};
 		let subscription = database_subscriptions.get(database_name)?.get(table_name);
 		if (!subscription) {
@@ -222,7 +222,7 @@ async function messageProcessor(msg) {
 			);
 		}
 
-		await completion;
+		//await completion;
 	} catch (e) {
 		harper_logger.error(e);
 	}
