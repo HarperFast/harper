@@ -6,7 +6,12 @@ const { Resource } = require('../../resources/Resource');
 const { setMainIsWorker } = require('../../server/threads/manageThreads');
 const { transaction } = require('../../resources/transaction');
 // might want to enable an iteration with NATS being assigned as a source
-const { setNATSReplicator, setPublishToStream, publishToStream } = require('../../server/nats/natsReplicator');
+const {
+	setNATSReplicator,
+	setPublishToStream,
+	publishToStream,
+	setSubscription,
+} = require('../../server/nats/natsReplicator');
 describe('Caching', () => {
 	let CachingTable,
 		IndexedCachingTable,
@@ -16,6 +21,7 @@ describe('Caching', () => {
 	let return_value = true;
 	let return_error;
 	let natsPublishToStream = publishToStream;
+	let natsSetSubscription = setSubscription;
 	let published_messages = [];
 	before(async function () {
 		getMockLMDBPath();
@@ -49,9 +55,12 @@ describe('Caching', () => {
 				});
 			}
 		}
-		setPublishToStream((subject, stream, header, message) => {
-			published_messages.push(message);
-		});
+		setPublishToStream(
+			(subject, stream, header, message) => {
+				published_messages.push(message);
+			},
+			() => {}
+		);
 		setNATSReplicator('CachingTable', 'test', CachingTable);
 
 		CachingTable.sourcedFrom({
@@ -78,7 +87,7 @@ describe('Caching', () => {
 		});
 	});
 	after(() => {
-		setPublishToStream(natsPublishToStream); // restore
+		setPublishToStream(natsPublishToStream, natsSetSubscription); // restore
 	});
 	it('Can load cached data', async function () {
 		source_requests = 0;

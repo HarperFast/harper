@@ -4,7 +4,7 @@ import { publishToStream as natsPublishToStream } from './utility/natsUtils';
 import { SUBJECT_PREFIXES } from './utility/natsTerms';
 import { createNatsTableStreamName } from '../../security/cryptoHash';
 import { IterableEventQueue } from '../../resources/IterableEventQueue';
-import { setSubscription } from './natsIngestService';
+import { setSubscription as natsSetSubscription } from './natsIngestService';
 import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility';
 import env from '../../utility/environment/environmentManager';
 import hdb_terms from '../../utility/hdbTerms';
@@ -19,8 +19,10 @@ export function disableNATS(disabled = true) {
 	nats_disabled = disabled;
 }
 export let publishToStream = natsPublishToStream;
-export function setPublishToStream(new_publish) {
+export let setSubscription = natsSetSubscription;
+export function setPublishToStream(new_publish, new_setSubscription) {
 	publishToStream = new_publish;
+	setSubscription = new_setSubscription;
 }
 const MAX_INGEST_THREADS = 2;
 let immediateNATSTransaction, subscribed_to_nodes;
