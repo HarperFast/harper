@@ -33,6 +33,7 @@ const password = process.env.HDB_LEADER_PASSWORD;
 const leader_url = process.env.HDB_LEADER_URL;
 const clustering_host = process.env.HDB_LEADER_CLUSTERING_HOST;
 const leader_clustering_port = process.env.HDB_LEADER_CLUSTERING_PORT;
+const fully_connected = process.env.HDB_FULLY_CONNECTED;
 
 let leader_clustering_enabled;
 let clone_node_config;
@@ -40,6 +41,8 @@ let leader_config;
 let leader_dbs;
 let clone_node_name;
 let root_path;
+let exclude_db;
+let excluded_table;
 
 async function cloneNode() {
 	if (await isHdbInstalled()) {
@@ -108,7 +111,7 @@ async function cloneConfig() {
 			: (routes = [{ host: clustering_host, port: lead_clustering_port }]);
 
 		// If the leader node has routes set in its config, concat them with any routes on clone node.
-		if (Array.isArray(leader_routes)) routes.concat(leader_routes);
+		if (Array.isArray(leader_routes)) routes = routes.concat(leader_routes);
 
 		config_update[CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_ROUTES] = routes;
 	}
@@ -146,7 +149,7 @@ async function cloneConfig() {
 	if (config_update.rootPath == null) delete config_update.rootPath;
 	if (config_update?.clustering_nodeName == null) config_update.clustering_nodeName = clone_node_name;
 	hdb_log.info('Cloning config:', config_update);
-	if (!_.isEmpty(config_update)) await config_utils.updateConfigValue(undefined, undefined, config_update, false, true);
+	if (!_.isEmpty(config_update)) config_utils.updateConfigValue(undefined, undefined, config_update, false, true);
 }
 
 async function installHDB() {
@@ -189,7 +192,7 @@ async function cloneTables() {
 	leader_dbs = await JSON.parse(leader_dbs.body);
 
 	// Create object where excluded db name is key
-	let exclude_db = clone_node_config?.databaseConfig?.excludeDatabases;
+	exclude_db = clone_node_config?.databaseConfig?.excludeDatabases;
 	exclude_db = exclude_db
 		? exclude_db.reduce((obj, item) => {
 				return { ...obj, [item['database']]: true };
@@ -209,7 +212,7 @@ async function cloneTables() {
 	}
 
 	// Build excluded table object where key is db + table
-	let excluded_table = clone_node_config?.databaseConfig?.excludeTables;
+	excluded_table = clone_node_config?.databaseConfig?.excludeTables;
 	excluded_table = excluded_table
 		? excluded_table.reduce((obj, item) => {
 				return { ...obj, [item['database'] == null ? null : item['database'] + item['table']]: true };
@@ -279,7 +282,7 @@ async function cloneTablesFetch() {
 	leader_dbs = await leader_dbs.json();
 
 	// Create object where excluded db name is key
-	let exclude_db = clone_node_config?.databaseConfig?.excludeDatabases;
+	exclude_db = clone_node_config?.databaseConfig?.excludeDatabases;
 	exclude_db = exclude_db
 		? exclude_db.reduce((obj, item) => {
 				return { ...obj, [item['database']]: true };
@@ -299,7 +302,7 @@ async function cloneTablesFetch() {
 	}
 
 	// Build excluded table object where key is db + table
-	let excluded_table = clone_node_config?.databaseConfig?.excludeTables;
+	excluded_table = clone_node_config?.databaseConfig?.excludeTables;
 	excluded_table = excluded_table
 		? excluded_table.reduce((obj, item) => {
 				return { ...obj, [item['database'] == null ? null : item['database'] + item['table']]: true };
@@ -322,6 +325,8 @@ async function cloneTablesFetch() {
 				tables_to_clone.push(table);
 			}
 		}
+
+		if (tables_to_clone.length === 0) return;
 
 		let backup;
 		if (excluded_tables) {
@@ -445,9 +450,12 @@ async function clusterTables() {
 
 	await global_schema.setSchemaDataToGlobalAsync();
 	const add_node = require('../clustering/addNode');
+	let leader_cluster_status = await leaderHttpReq({ operation: OPERATIONS_ENUM.CLUSTER_STATUS });
+	leader_cluster_status = await JSON.parse(leader_cluster_status.body);
 
 	const subscriptions = [];
 	const sys_db_file_stat = await fs.stat(join(getDbFileDir('system'), 'system.mdb'));
+	// Setup cloning on some system tables
 	for (const sys_table of SYSTEM_TABLES_TO_CLONE) {
 		subscriptions.push({
 			schema: SYSTEM_SCHEMA_NAME,
@@ -481,14 +489,58 @@ async function clusterTables() {
 		'with subscriptions:',
 		subscriptions
 	);
-	await add_node(
-		{
-			operation: OPERATIONS_ENUM.ADD_NODE,
-			node_name: leader_config?.clustering?.nodeName,
-			subscriptions,
-		},
-		true
-	);
+
+	if (leader_cluster_status.connections.length === 0) {
+		await add_node(
+			{
+				operation: OPERATIONS_ENUM.ADD_NODE,
+				node_name: leader_config?.clustering?.nodeName,
+				subscriptions,
+			},
+			true
+		);
+	}
+
+	if (fully_connected === 'true' && leader_cluster_status.connections.length > 0) {
+		// Fully connected logic
+		const configure_cluster = require('../clustering/configureCluster');
+		const config_cluster_cons = [
+			{
+				node_name: leader_config?.clustering?.nodeName,
+				subscriptions,
+			},
+		];
+		let no_connections = true;
+		// For all the connections in the leader nodes cluster status create a connection to clone node
+		for (const node of leader_cluster_status.connections) {
+			const node_con = {
+				node_name: node.node_name,
+				subscriptions: [],
+			};
+
+			// Build a connection object for all nodes getting connected to
+			for (const sub of node.subscriptions) {
+				// Honor any exclude config
+				if (exclude_db[sub.schema] || excluded_table[sub.schema + sub.table]) continue;
+				no_connections = false;
+				// Set a pub/sub start time 10s in the past of backup timestamp.
+				const db_file_stat = await fs.stat(join(getDbFileDir(sub.schema), sub.schema + '.mdb'));
+				db_file_stat.mtime.setSeconds(db_file_stat.mtime.getSeconds() - 10);
+				sub.start_time = db_file_stat.mtime.toISOString();
+				node_con.subscriptions.push(sub);
+			}
+			config_cluster_cons.push(node_con);
+		}
+
+		if (no_connections) return;
+
+		// configure_cluster op is used because it can setup subs to multiple nodes in one request
+		const config_cluster_res = await configure_cluster({
+			operation: OPERATIONS_ENUM.CONFIGURE_CLUSTER,
+			connections: config_cluster_cons,
+		});
+		console.info(JSON.stringify(config_cluster_res));
+	}
 
 	await nats_utils.closeConnection();
 }
