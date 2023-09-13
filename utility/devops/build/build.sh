@@ -60,6 +60,10 @@ dot-json ./npm_pack/package.json overrides --delete
 cd ./npm_pack/
 # Add the postinstall script back
 dot-json ./package.json scripts.postinstall "$post_install"
+
+# create a lock file
+npm install --package-lock-only
+
 cd ../
 
 # Copy LICENSE file
