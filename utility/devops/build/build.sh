@@ -55,7 +55,6 @@ post_install="$(jq -r '.scripts."postinstall"' package.json)"
 dot-json ./npm_pack/package.json devDependencies --delete
 dot-json ./npm_pack/package.json dependencies.esbuild --delete
 dot-json ./npm_pack/package.json scripts --delete
-dot-json ./npm_pack/package.json overrides --delete
 
 cd ./npm_pack/
 # Add the postinstall script back
@@ -63,6 +62,9 @@ dot-json ./package.json scripts.postinstall "$post_install"
 
 # create a lock file
 npm install --package-lock-only
+npm shrinkwrap
+
+dot-json ./npm_pack/package.json overrides --delete
 
 cd ../
 
