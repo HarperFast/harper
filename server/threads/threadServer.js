@@ -233,12 +233,12 @@ function getHTTPServer(port, secure, is_operations_server) {
 			const certificate = env.get(server_prefix + '_tls_certificate');
 			const certificateAuthority = env.get(server_prefix + '_tls_certificateauthority');
 
-			options = {
+			Object.assign(options, {
 				key: readFileSync(privateKey),
 				// if they have a CA, we append it, so it is included
 				cert: readFileSync(certificate) + (certificateAuthority ? '\n\n' + readFileSync(certificateAuthority) : ''),
 				ticketKeys: getTicketKeys(),
-			};
+			});
 		}
 		http_servers[port] = (secure ? createSecureServer : createServer)(options, async (node_request, node_response) => {
 			try {
