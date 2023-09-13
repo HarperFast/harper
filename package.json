@@ -172,9 +172,6 @@
     },
     "alasql": {
       "xlsx": "0.18.5"
-    },
-    "deep-equal": {
-      "regexp.prototype.flags": "1.5.0"
     }
   },
   "optionalDependencies": {
