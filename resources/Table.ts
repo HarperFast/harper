@@ -1439,8 +1439,15 @@ export function makeTable(options) {
 
 		const existing_version = existing_entry?.version;
 		let when_resolved, timer;
+		// We start by locking the record so that there is only one resolution happening at once;
+		// if there is already a resolution in process, we want to use the results of that resolution
+		// attemptLock() will return true if we got the lock, and the callback won't be called.
+		// If another thread has the lock it returns false and then the callback is called once
+		// the other thread releases the lock.
 		if (
 			!primary_store.attemptLock(id, existing_version, () => {
+				// This is called when another thread releases the lock on resolution. Hopefully
+				// it should be resolved now and we can use the value it saved.
 				clearTimeout(timer);
 				const entry = primary_store.getEntry(id);
 				if (!entry || !entry.value || entry.metadataFlags & (INVALIDATED | EVICTED))
@@ -1458,8 +1465,6 @@ export function makeTable(options) {
 		}
 
 		const existing_record = existing_entry?.value;
-		// TODO: We want to eventually use a "direct write" method to directly write to the locations
-		// of the record in place in the database, which requires a reserved space in the random access structures
 		// it is important to remember that this is _NOT_ part of the current transaction; nothing is changing
 		// with the canonical data, we are simply fulfilling our local copy of the canonical data, but still don't
 		// want a timestamp later than the current transaction
@@ -1485,6 +1490,7 @@ export function makeTable(options) {
 				const start = performance.now();
 				let updated_record;
 				try {
+					// find the first data source that will fulfill our request for data
 					for (const source of TableResource.sources) {
 						if (source.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
 							source_context.source = source;

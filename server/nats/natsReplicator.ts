@@ -212,7 +212,7 @@ class NATSTransaction {
 						},
 					};
 					transaction_event.hash_values = ids;
-					if (operation !== 'delete') {
+					if (operation !== 'delete' && operation !== 'invalidate') {
 						transaction_event.records = records;
 					}
 				}
