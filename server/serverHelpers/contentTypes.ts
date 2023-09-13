@@ -246,6 +246,8 @@ export function findBestSerializer(incoming_message) {
 	return { serializer: best_serializer, type: best_type, parameters: best_parameters };
 }
 
+// TODO: Add to configuration file
+const COMPRESSION_THRESHOLD = 1200; // about an average TCP packet size (if headers included)
 /**
  * Serialize a response
  * @param response_data
@@ -256,7 +258,7 @@ export function findBestSerializer(incoming_message) {
 export function serialize(response_data, request, response_object) {
 	// TODO: Maybe support other compression encodings; browsers basically universally support brotli, but Node's HTTP
 	//  client itself actually (just) supports gzip/deflate
-	const compress = request.headers['accept-encoding']?.includes('br');
+	const can_compress = request.headers['accept-encoding']?.includes('br');
 	let response_body;
 	if (response_data?.contentType != null && response_data.data != null) {
 		// we use this as a special marker for blobs of data that are explicitly one content type
@@ -278,7 +280,7 @@ export function serialize(response_data, request, response_object) {
 		response_object.headers.set('Content-Type', serializer.type);
 		if (response_data[Symbol.iterator] && serializer.serializer.serializeStream) {
 			let stream = serializer.serializer.serializeStream(response_data);
-			if (compress) {
+			if (can_compress) {
 				response_object.headers.set('Content-Encoding', 'br');
 				// TODO: Use the fastest setting here and only do it if load is low
 				stream = stream.pipe(
@@ -291,7 +293,7 @@ export function serialize(response_data, request, response_object) {
 		}
 		response_body = serializer.serializer.serialize(response_data);
 	}
-	if (compress) {
+	if (can_compress && response_body?.length > COMPRESSION_THRESHOLD) {
 		// TODO: Only do this if the size is large and we can cache the result (otherwise use logic above)
 		response_object.headers.set('Content-Encoding', 'br');
 		// if we have a single buffer (or string) we compress in a single async call

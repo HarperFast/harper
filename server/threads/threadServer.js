@@ -222,9 +222,13 @@ function httpServer(listener, options) {
 }
 function getHTTPServer(port, secure, is_operations_server) {
 	if (!http_servers[port]) {
-		let options = {};
+		const server_prefix = is_operations_server ? 'operationsapi' : 'customfunctions';
+		let options = {
+			keepAliveTimeout: env.get(server_prefix + '_network_keepalivetimeout'),
+			headersTimeout: env.get(server_prefix + '_network_headerstimeout'),
+			requestTimeout: env.get(server_prefix + '_network_timeout'),
+		};
 		if (secure) {
-			const server_prefix = is_operations_server ? 'operationsapi' : 'customfunctions';
 			const privateKey = env.get(server_prefix + '_tls_privatekey');
 			const certificate = env.get(server_prefix + '_tls_certificate');
 			const certificateAuthority = env.get(server_prefix + '_tls_certificateauthority');
