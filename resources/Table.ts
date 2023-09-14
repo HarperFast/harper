@@ -46,9 +46,9 @@ const INCREMENTAL_UPDATE = Symbol.for('incremental-update');
 const ENTRY_PROPERTY = Symbol('entry');
 const IS_SAVING = Symbol('is-saving');
 const SOURCE_PROPERTY = Symbol('source-resource');
-const LOAD_FROM_SOURCE = Symbol('load-from-source');
+const LOADED_FROM_SOURCE = Symbol('loaded-from-source');
 const LAZY_PROPERTY_ACCESS = { lazy: true };
-const NOTIFICATION = { isNotification: true, allowInvalidated: true };
+const NOTIFICATION = { isNotification: true, ensureLoaded: true };
 const INVALIDATED = 1;
 const EVICTED = 8; // note that 2 is reserved for timestamps
 export interface Table {
@@ -278,7 +278,7 @@ export function makeTable(options) {
 		 * of also loading the stored record into the resource instance.
 		 * @param id
 		 * @param request
-		 * @param options An important option is allowInvalidated, which can be used to indicate that it is not necessary for a caching table to load data from the source if there is not a local copy of the data in the table (usually not necessary for a delete, for example).
+		 * @param options An important option is ensureLoaded, which can be used to indicate that it is necessary for a caching table to load data from the source if there is not a local copy of the data in the table (usually not necessary for a delete, for example).
 		 * @returns
 		 */
 		static getResource(id: Id, request, resource_options?: any): Promise<TableResource> | TableResource {
@@ -290,32 +290,31 @@ export function makeTable(options) {
 					if (typeof id === 'object' && id && !Array.isArray(id)) {
 						throw new Error(`Invalid id ${JSON.stringify(id)}`);
 					}
-					let resolve_load, reject_load;
 					const read_txn = env_txn?.getReadTxn();
 					const options = { transaction: read_txn };
-					let finished;
-					loadRecord(id, request, options, resource, resource_options?.allowInvalidated, (entry, error) => {
-						if (error) reject_load(error);
-						else {
-							resource[RECORD_PROPERTY] = entry?.value;
-							resource[VERSION_PROPERTY] = entry?.version;
-							resource[ENTRY_PROPERTY] = entry;
-							finished = true;
-							resolve_load?.(resource);
-						}
-					});
-					if (finished) return resource;
-					else
-						return new Promise((resolve, reject) => {
-							resolve_load = resolve;
-							reject_load = reject;
-						});
+					return loadLocalRecord(id, request, options, resource, resource_options?.ensureLoaded);
 				} catch (error) {
 					if (error.message.includes('Unable to serialize object')) error.message += ': ' + JSON.stringify(id);
 					throw error;
 				}
 			}
 			return resource;
+		}
+		/**
+		 * This is a request to explicitly ensure that the record is loaded from source, rather than only using the local record.
+		 * This will load from source if the current record is expired, missing, or invalidated.
+		 * @returns
+		 */
+		ensureLoaded() {
+			const loaded_from_source = ensureLoadedFromSource(this[ID_PROPERTY], this[ENTRY_PROPERTY], this[CONTEXT]);
+			if (loaded_from_source) {
+				this[LOADED_FROM_SOURCE] = true;
+				return when(loaded_from_source, (entry) => {
+					this[ENTRY_PROPERTY] = entry;
+					this[RECORD_PROPERTY] = entry.value;
+					this[VERSION_PROPERTY] = entry.version;
+				});
+			}
 		}
 		/**
 		 * Set TTL expiration for records in this table. On retrieval, record timestamps are checked for expiration.
@@ -343,7 +342,7 @@ export function makeTable(options) {
 						}
 						await rest();
 					}
-				}, expiration_ms).unref();
+				}, Math.min(expiration_ms, 0x7fffffff)).unref(); // don't let this prevent closing the thread and make sure it can fit in 32-bit signed number
 			}
 		}
 
@@ -415,11 +414,7 @@ export function makeTable(options) {
 				return this.search(query);
 			}
 			if (query?.property) return this.getProperty(query.property);
-			if (
-				this.doesExist() ||
-				query?.allowInvalidated ||
-				(this[CONTEXT]?.hasOwnProperty('returnNonexistent') && this[CONTEXT].returnNonexistent)
-			) {
+			if (this.doesExist() || query?.ensureLoaded === false || this[CONTEXT]?.returnNonexistent) {
 				return this;
 			}
 		}
@@ -557,11 +552,6 @@ export function makeTable(options) {
 				own_data = this[OWN_DATA];
 				if (own_data) updates = Object.assign(own_data, updates);
 				this[OWN_DATA] = own_data = updates;
-			}
-			if (!this[RECORD_PROPERTY] && primary_key && !(own_data || (own_data = this[OWN_DATA]))?.[primary_key]) {
-				// if no primary key in the data, we assign it
-				if (!own_data) own_data = this[OWN_DATA] = Object.create(null);
-				own_data[primary_key] = this[ID_PROPERTY];
 			}
 			this._writeUpdate(this);
 			return this;
@@ -960,16 +950,14 @@ export function makeTable(options) {
 					// do not hog resources and give more processing opportunity for more efficient index-driven queries.
 					// this also gives an opportunity to prefetch and ensure any page faults happen in a different thread
 					(id) =>
-						new Promise((resolve) =>
-							loadRecord(id, context, options, null, false, (entry) => {
-								const record = entry?.value;
-								if (!record) return resolve(SKIP);
-								for (let i = 0; i < filters_length; i++) {
-									if (!filters[i](record)) return resolve(SKIP); // didn't match filters
-								}
-								resolve(record);
-							})
-						)
+						when(loadLocalRecord(id, context, options, null, request.ensureLoaded ?? true), (entry) => {
+							const record = entry?.value;
+							if (!record) return SKIP;
+							for (let i = 0; i < filters_length; i++) {
+								if (!filters[i](record)) return SKIP; // didn't match filters
+							}
+							return record;
+						})
 				);
 			}
 			return records;
@@ -1192,7 +1180,7 @@ export function makeTable(options) {
 			return this[VERSION_PROPERTY];
 		}
 		wasLoadedFromSource(): boolean | void {
-			return has_source_get ? Boolean(this[LOAD_FROM_SOURCE]) : undefined;
+			return has_source_get ? Boolean(this[LOADED_FROM_SOURCE]) : undefined;
 		}
 		static async addAttributes(attributes_to_add) {
 			const new_attributes = attributes.slice(0);
@@ -1344,7 +1332,7 @@ export function makeTable(options) {
 		}
 		return has_changes;
 	}
-	function loadRecord(id, context, options, resource, allow_invalidated, callback) {
+	function loadLocalRecord(id, context, options, resource, ensure_loaded) {
 		// TODO: determine if we use lazy access properties
 		const whenPrefetched = () => {
 			// this is all for debugging, should be removed eventually
@@ -1368,55 +1356,63 @@ export function makeTable(options) {
 				console.error('reader list', primary_store.readerList());
 				throw error;
 			}
-			let record, version;
-			let load_from_source;
-			if (entry) {
-				if (context && entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
-				version = entry.version;
-				record = entry.value;
-				if (
-					!record ||
-					entry.metadataFlags & 11 || // invalidated, evicted, and resolving all should go to load from source
-					(entry.expiresAt && entry.expiresAt < Date.now())
-				)
-					load_from_source = true;
-			} else load_from_source = true;
-			if (has_source_get) {
-				recordActionBinary(!load_from_source, 'cache-hit', table_name);
-			}
-			if (load_from_source && !allow_invalidated) {
-				if (resource) resource[LOAD_FROM_SOURCE] = true;
-				if (has_source_get) {
-					return getFromSource(id, entry, context).then(
-						(entry) => {
-							if (entry?.value?.[RECORD_PROPERTY]) console.error('Can not assign a record with a record property');
-							if (context && entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
-							callback(entry);
-						},
-						(error) => {
-							callback(null, error);
-						}
-					);
+			if (entry && context && entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
+			if (resource) {
+				if (entry) {
+					resource[ENTRY_PROPERTY] = entry;
+					resource[RECORD_PROPERTY] = entry.value;
+					resource[VERSION_PROPERTY] = entry.version;
 				}
+				if (ensure_loaded) {
+					const loaded_from_source = ensureLoadedFromSource(id, entry, context);
+					if (loaded_from_source) {
+						resource[LOADED_FROM_SOURCE] = true;
+						return when(loaded_from_source, (entry) => {
+							resource[ENTRY_PROPERTY] = entry;
+							resource[RECORD_PROPERTY] = entry?.value;
+							resource[VERSION_PROPERTY] = entry?.version;
+							return resource;
+						});
+					}
+				}
+				return resource;
+			} else if (ensure_loaded) {
+				const loaded_from_source = ensureLoadedFromSource(id, entry, context);
+				if (loaded_from_source) return loaded_from_source;
+				return entry;
 			}
-			if (entry?.value?.[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
-			callback(entry);
 		};
 		// if it is cached, we use that as indication that we can get the value very quickly
 		if (!options.alwaysPrefetch && (id == null || primary_store.cache?.get(id))) return whenPrefetched();
-		primary_store.prefetch([id], whenPrefetched);
+		return new Promise((resolve, reject) =>
+			primary_store.prefetch([id], () => {
+				try {
+					resolve(whenPrefetched());
+				} catch (error) {
+					reject(error);
+				}
+			})
+		);
 	}
-	function setupCommitListeners() {
-		// setup a new set of listeners for commits
-		commit_listeners = new Set();
-		// listen for commits from other threads
-		onMessageByType('transaction', onCommit);
-		// listen for commits from our own thread
-		primary_store.on('aftercommit', onCommit);
-		function onCommit() {
-			// make a copy of this before iterating so we don't call listeners added from listeners
-			for (const listener of Array.from(commit_listeners)) {
-				listener();
+
+	function ensureLoadedFromSource(id, entry, context) {
+		if (has_source_get) {
+			let needs_source_data;
+			if (entry) {
+				if (
+					!entry.value ||
+					entry.metadataFlags & (INVALIDATED | EVICTED) || // invalidated or evicted should go to load from source
+					(entry.expiresAt && entry.expiresAt < Date.now())
+				)
+					needs_source_data = true;
+			} else needs_source_data = true;
+			recordActionBinary(!needs_source_data, 'cache-hit', table_name);
+			if (needs_source_data) {
+				return getFromSource(id, entry, context).then((entry) => {
+					if (entry?.value?.[RECORD_PROPERTY]) console.error('Can not assign a record with a record property');
+					if (context && entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
+					return entry;
+				});
 			}
 		}
 	}
@@ -1515,7 +1511,7 @@ export function makeTable(options) {
 				if (expiration_ms && !source_context.expiresAt) source_context.expiresAt = Date.now() + expiration_ms;
 				if (updated_record) {
 					if (typeof updated_record.toJSON === 'function') updated_record = updated_record.toJSON();
-					if (primary_key) updated_record[primary_key] = id;
+					if (primary_key && updated_record[primary_key] !== id) updated_record[primary_key] = id;
 				}
 				resolve({
 					version,
@@ -1723,4 +1719,12 @@ function isDescendantId(ancestor_id, descendant_id): boolean {
 		return false;
 	} else if (descendant_id[0] === ancestor_id) return true;
 }
+
+// wait for an event turn (via a promise)
 const rest = () => new Promise(setImmediate);
+
+// wait for a promise or plain object to resolve
+function when(value, callback, reject?) {
+	if (value?.then) return value.then(callback, reject);
+	return callback(value);
+}

@@ -167,7 +167,7 @@ describe('Caching', () => {
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		assert.equal(source_requests, 0);
 		assert.equal(events.length, 1);
-		let resource = await CachingTable.get({ id: 23, allowInvalidated: true });
+		let resource = await CachingTable.get({ id: 23, ensureLoaded: false });
 		resource.invalidate(); // show not load from cache
 		await new Promise((resolve) => setTimeout(resolve, 20));
 		assert.equal(source_requests, 0);

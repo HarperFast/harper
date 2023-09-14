@@ -298,7 +298,6 @@ function getRawAnalyticsTable() {
 		(RawAnalyticsTable = table({
 			table: 'hdb_raw_analytics',
 			database: 'system',
-			expiration: 864000,
 			audit: false,
 			trackDeletes: false,
 			attributes: [
@@ -323,7 +322,6 @@ function getAnalyticsTable() {
 		(AnalyticsTable = table({
 			table: 'hdb_analytics',
 			database: 'system',
-			expiration: 864000,
 			audit: false,
 			trackDeletes: false,
 			attributes: [
@@ -352,7 +350,7 @@ function startScheduledTasks() {
 			await aggregation(ANALYTICS_DELAY, AGGREGATE_PERIOD);
 			await cleanup(getRawAnalyticsTable(), RAW_EXPIRATION);
 			await cleanup(getAnalyticsTable(), AGGREGATE_EXPIRATION);
-		}, AGGREGATE_PERIOD / 2).unref();
+		}, Math.min(AGGREGATE_PERIOD / 2, 0x7fffffff)).unref();
 	}
 }
 

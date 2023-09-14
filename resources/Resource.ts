@@ -79,7 +79,7 @@ export class Resource implements ResourceInterface {
 				return result;
 			}
 		},
-		{ type: 'read' }
+		{ type: 'read', ensureLoaded: true }
 	);
 	/**
 	 * Store the provided record by the provided id. If no id is provided, it is auto-generated.
@@ -105,7 +105,7 @@ export class Resource implements ResourceInterface {
 		function (resource: Resource, query?: Map, request: Request, data?: any) {
 			return resource.delete ? resource.delete(query) : missingMethod(resource, 'delete');
 		},
-		{ hasContent: false, type: 'delete', allowInvalidated: true }
+		{ hasContent: false, type: 'delete' }
 	);
 
 	/**
@@ -139,7 +139,7 @@ export class Resource implements ResourceInterface {
 		function (resource: Resource, query?: Map, request: Request, data?: any) {
 			return resource.invalidate ? resource.invalidate(query) : missingMethod(resource, 'delete');
 		},
-		{ hasContent: false, type: 'update', allowInvalidated: true }
+		{ hasContent: false, type: 'update' }
 	);
 
 	static post = transactional(
@@ -491,9 +491,9 @@ function transactional(action, options) {
 
 		if (!context) context = {};
 		let resource_options;
-		if (query?.allowInvalidated) {
+		if (query?.ensureLoaded != null) {
 			resource_options = Object.assign({}, options);
-			resource_options.allowInvalidated = true;
+			resource_options.ensureLoaded = query?.ensureLoaded;
 		} else resource_options = options;
 		if (context.transaction) {
 			// we are already in a transaction, proceed
