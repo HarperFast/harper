@@ -94,7 +94,7 @@
     "jsonwebtoken": "9.0.2",
     "lmdb": "2.9.0-locks.2",
     "lodash": "4.17.21",
-    "mathjs": "11.9.1",
+    "mathjs": "11.10.0",
     "minimist": "1.2.8",
     "mkcert": "1.5.1",
     "moment": "2.29.4",
