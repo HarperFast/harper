@@ -37,7 +37,7 @@ export function recordAction(value, metric, path?, method?, type?) {
 				values.set(old_values);
 				values.index = index + 1;
 			}
-			values[index] = Math.random();
+			values[index] = value;
 			action.total += value;
 		} else if (typeof value === 'boolean') {
 			if (value) action.total++;
@@ -107,8 +107,11 @@ function sendAnalytics() {
 					const value = values[upper_bound - 1];
 					if (upper_bound > last_upper_bound) {
 						const count = upper_bound - last_upper_bound;
-						if (value === last_value) distribution[distribution.length - 1].count += count;
-						else {
+						if (value === last_value) {
+							const entry = distribution[distribution.length - 1];
+							if (typeof entry === 'number') distribution[distribution.length - 1] = { value: entry, count: 1 + count };
+							else entry.count += count;
+						} else {
 							distribution.push(count > 1 ? { value, count } : value);
 							last_value = value;
 						}
