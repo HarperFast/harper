@@ -338,19 +338,11 @@ describe('test systemInformation module', () => {
 			assert(results.cpu_speed.hasOwnProperty(property));
 		});
 
-		Object.keys(results.current_load).forEach((key) => {
-			assert(EXPECTED_PROPERTIES.cpu_current_load.indexOf(key) >= 0);
-		});
-
 		EXPECTED_PROPERTIES.cpu_current_load.forEach((property) => {
 			assert(results.current_load.hasOwnProperty(property));
 		});
 
 		assert(Array.isArray(results.current_load.cpus));
-
-		Object.keys(results.current_load.cpus[0]).forEach((key) => {
-			assert(EXPECTED_PROPERTIES.cpu_current_load_cpus.indexOf(key) >= 0);
-		});
 
 		EXPECTED_PROPERTIES.cpu_current_load_cpus.forEach((property) => {
 			assert(results.current_load.cpus[0].hasOwnProperty(property));

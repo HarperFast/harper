@@ -475,14 +475,44 @@ function getRecords(search_object, return_key_value?) {
 	// we need to get the transaction and ensure that the transaction spans the entire duration
 	// of the iteration
 	const context = { user: search_object.hdb_user };
-	return transaction(context, async function* (transaction) {
-		for (const id of search_object.hash_values) {
-			let record = await table.get({ id, lazy, select }, context);
-			record = record && collapseData(record);
-			if (return_key_value) yield { key: id, value: record };
-			else yield record;
-		}
-	});
+	let finished_iteration;
+	transaction(context, () => new Promise((resolve) => (finished_iteration = resolve)));
+	const ids = search_object.ids || search_object.hash_values;
+	let i = 0;
+	return {
+		[Symbol.asyncIterator]() {
+			return {
+				async next() {
+					if (i < ids.length) {
+						const id = ids[i++];
+						let record = await table.get({ id, lazy, select }, context);
+						record = record && collapseData(record);
+						if (return_key_value)
+							return {
+								value: { key: id, value: record },
+							};
+						else return { value: record };
+					} else {
+						finished_iteration();
+						return { done: true };
+					}
+				},
+				return(value) {
+					finished_iteration();
+					return {
+						value,
+						done: true,
+					};
+				},
+				throw(error) {
+					finished_iteration();
+					return {
+						done: true,
+					};
+				},
+			};
+		},
+	};
 }
 function getTable(operation_object) {
 	const database_name = operation_object.database || operation_object.schema || DEFAULT_DATABASE;

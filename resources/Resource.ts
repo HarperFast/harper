@@ -79,7 +79,13 @@ export class Resource implements ResourceInterface {
 				return result;
 			}
 		},
-		{ type: 'read', ensureLoaded: true }
+		{
+			type: 'read',
+			// allows context to reset/remove transaction after completion so it can be used in immediate mode:
+			resetTransaction: true,
+			ensureLoaded: true, // load from source by default
+			async: true, // use async by default
+		}
 	);
 	/**
 	 * Store the provided record by the provided id. If no id is provided, it is auto-generated.
@@ -167,6 +173,7 @@ export class Resource implements ResourceInterface {
 
 	static publish = transactional(
 		function (resource: Resource, query?: Map, request: Request, data?: any) {
+			if (resource[ID_PROPERTY] != null) resource.update?.(); // save any changes made during publish
 			return resource.publish ? resource.publish(data, query) : missingMethod(resource, 'publish');
 		},
 		{ hasContent: true, type: 'create' }
@@ -491,9 +498,10 @@ function transactional(action, options) {
 
 		if (!context) context = {};
 		let resource_options;
-		if (query?.ensureLoaded != null) {
+		if (query?.ensureLoaded != null || query?.async) {
 			resource_options = Object.assign({}, options);
-			resource_options.ensureLoaded = query?.ensureLoaded;
+			if (query?.ensureLoaded != null) resource_options.ensureLoaded = query.ensureLoaded;
+			if (query.async) resource_options.async = query.async;
 		} else resource_options = options;
 		if (context.transaction) {
 			// we are already in a transaction, proceed
@@ -501,10 +509,14 @@ function transactional(action, options) {
 			return resource.then ? resource.then(authorizeActionOnResource) : authorizeActionOnResource(resource);
 		} else {
 			// start a transaction
-			return transaction(context, () => {
-				const resource = this.getResource(id, context, resource_options);
-				return resource.then ? resource.then(authorizeActionOnResource) : authorizeActionOnResource(resource);
-			});
+			return transaction(
+				context,
+				() => {
+					const resource = this.getResource(id, context, resource_options);
+					return resource.then ? resource.then(authorizeActionOnResource) : authorizeActionOnResource(resource);
+				},
+				resource_options
+			);
 		}
 		function authorizeActionOnResource(resource: ResourceInterface) {
 			if (options.type === 'read') resource[SAVE_UPDATES_PROPERTY] = false; // by default modifications aren't saved, they just yield a different result from get

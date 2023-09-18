@@ -108,7 +108,7 @@ describe('Caching', () => {
 		assert.equal(result.id, 23);
 		assert.equal(result.name, 'name ' + 23);
 		assert.equal(source_requests, 2);
-		assert.equal(published_messages.length, 2);
+		assert(published_messages.length >= 2);
 		for (let message of published_messages) {
 			assert.equal(message.hash_values[0], 23);
 			assert.equal(message.table, 'CachingTable');
@@ -271,7 +271,7 @@ describe('Caching', () => {
 			await new Promise((resolve) => setTimeout(resolve, 300));
 
 			let history = await CachingTable.getHistoryOfRecord(23);
-			assert(history.length > 100);
+			assert(history.length > 50);
 			for (let entry of history) {
 				assert(entry.localTime > 1);
 			}

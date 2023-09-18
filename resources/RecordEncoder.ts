@@ -81,7 +81,6 @@ export class RecordEncoder extends Encoder {
 		const end = options > -1 ? options : options?.end || buffer.length;
 		let next_byte = buffer[start];
 		let metadata_flags = 0;
-		const buffer_copy = Buffer.from(buffer.slice(start, end));
 		try {
 			if (next_byte < 32 && end > 2) {
 				// record with metadata
@@ -91,9 +90,13 @@ export class RecordEncoder extends Encoder {
 				let position = start;
 				let local_time;
 				if (next_byte === 2) {
-					buffer.copy(TIMESTAMP_HOLDER, 0, position);
+					if (buffer.copy) {
+						buffer.copy(TIMESTAMP_HOLDER, 0, position);
+						position += 8;
+					} else {
+						for (let i = 0; i < 8; i++) TIMESTAMP_HOLDER[i] = buffer[position++];
+					}
 					local_time = getTimestamp();
-					position += 8;
 					next_byte = buffer[position];
 				}
 				let expires_at;
@@ -117,7 +120,7 @@ export class RecordEncoder extends Encoder {
 			} // else a normal entry
 			return super.decode(buffer, options);
 		} catch (error) {
-			error.message += ', data: ' + buffer_copy.toString('hex');
+			error.message += ', data: ' + buffer.slice(0, 40).toString('hex');
 			throw error;
 		}
 	}

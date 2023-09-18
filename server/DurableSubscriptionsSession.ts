@@ -116,6 +116,7 @@ class SubscriptionsSession {
 		}
 		const request = {
 			search,
+			async: true,
 			user: this.user,
 			startTime: start_time,
 			omitCurrent: rh,
@@ -137,13 +138,7 @@ class SubscriptionsSession {
 				for await (const update of subscription) {
 					try {
 						let message_id;
-						if (
-							update.type &&
-							update.type !== 'put' &&
-							update.type !== 'delete' &&
-							update.type !== 'message'
-						)
-							continue;
+						if (update.type && update.type !== 'put' && update.type !== 'delete' && update.type !== 'message') continue;
 						if (filter && !filter(update)) continue;
 						if (needs_ack) {
 							update.topic = topic;
@@ -183,6 +178,7 @@ class SubscriptionsSession {
 		const { topic, retain } = message;
 		message.data = data;
 		message.user = this.user;
+		message.async = true;
 		const entry = resources.getMatch(topic);
 		if (!entry)
 			throw new Error(

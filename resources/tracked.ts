@@ -219,8 +219,9 @@ export function deepFreeze(target) {
  */
 export function hasChanges(target) {
 	const source = target[RECORD_PROPERTY];
-	if (!source) return true; // if no original source then it is always a change
+	if (source === undefined) return true; // if no original source then it is always a change
 	if (target.constructor === Array) {
+		if (!source) return true;
 		if (target[HAS_ARRAY_CHANGES]) return true;
 		if (target.length !== source.length) return true;
 		for (let i = 0, l = target.length; i < l; i++) {
@@ -232,6 +233,7 @@ export function hasChanges(target) {
 		}
 	} else {
 		const changes = target[OWN_DATA];
+		if (changes && !source) return true;
 		for (const key in changes) {
 			const value = changes[key];
 			if (value && typeof value === 'object') {

@@ -8,7 +8,7 @@ import { CONFIG_PARAMS, OPERATIONS_ENUM, SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME 
 import { asBinary, Database, DIRECT_WRITE_PLACEHOLDER, SKIP } from 'lmdb';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
-import { Query, ResourceInterface, Request, SubscriptionRequest, Id } from './ResourceInterface';
+import { Query, ResourceInterface, Request, SubscriptionRequest, Id, Context } from './ResourceInterface';
 import { workerData, threadId } from 'worker_threads';
 import { CONTEXT, ID_PROPERTY, RECORD_PROPERTY, Resource, IS_COLLECTION } from './Resource';
 import { COMPLETION, DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction';
@@ -48,7 +48,7 @@ const IS_SAVING = Symbol('is-saving');
 const SOURCE_PROPERTY = Symbol('source-resource');
 const LOADED_FROM_SOURCE = Symbol('loaded-from-source');
 const LAZY_PROPERTY_ACCESS = { lazy: true };
-const NOTIFICATION = { isNotification: true, ensureLoaded: true };
+const NOTIFICATION = { isNotification: true, ensureLoaded: false };
 const INVALIDATED = 1;
 const EVICTED = 8; // note that 2 is reserved for timestamps
 export interface Table {
@@ -286,13 +286,11 @@ export function makeTable(options) {
 			if (id != null) {
 				try {
 					if (resource.hasOwnProperty(RECORD_PROPERTY)) return resource; // already loaded, don't reload, current version may have modifications
-					const env_txn = txnForContext(resource[CONTEXT]);
 					if (typeof id === 'object' && id && !Array.isArray(id)) {
 						throw new Error(`Invalid id ${JSON.stringify(id)}`);
 					}
-					const read_txn = env_txn?.getReadTxn();
-					const options = { transaction: read_txn };
-					return loadLocalRecord(id, request, options, resource, resource_options?.ensureLoaded);
+					const sync = !resource_options?.async || primary_store.cache?.get(id);
+					return loadLocalRecord(id, request, null, resource, sync, resource_options?.ensureLoaded);
 				} catch (error) {
 					if (error.message.includes('Unable to serialize object')) error.message += ': ' + JSON.stringify(id);
 					throw error;
@@ -563,10 +561,10 @@ export function makeTable(options) {
 				key: this[ID_PROPERTY],
 				store: primary_store,
 				invalidated: true,
-				lastVersion: this[VERSION_PROPERTY],
+				entry: this[ENTRY_PROPERTY],
 				nodeName: this[CONTEXT]?.nodeName,
-				commit: (txn_time, retry) => {
-					if (retry) return;
+				noRetry: true,
+				commit: (txn_time) => {
 					let partial_record = null;
 					for (const name in indices) {
 						if (!partial_record) partial_record = {};
@@ -662,41 +660,37 @@ export function makeTable(options) {
 		// a notification that a write has already occurred in the canonical data source, we need to update our
 		// local copy
 		_writeUpdate(record, options?: any) {
-			const transaction = txnForContext(this[CONTEXT]);
+			const context = this[CONTEXT];
+			const transaction = txnForContext(context);
 
 			if (this[ID_PROPERTY] === undefined) {
 				throw new Error('Can not save record without an id');
 			}
-			let existing_record = this[RECORD_PROPERTY];
-			let is_unchanged;
 			let record_prepared;
 			const id = this[ID_PROPERTY];
 			this[IS_SAVING] = true; // mark that this resource is being saved so doesExist return true
-			transaction.addWrite({
+			const write = {
 				key: id,
 				store: primary_store,
-				lastVersion: this[VERSION_PROPERTY],
-				nodeName: this[CONTEXT]?.nodeName,
+				entry: this[ENTRY_PROPERTY],
+				nodeName: context?.nodeName,
 				validate: () => {
-					this.validate(record);
+					if (!record[INCREMENTAL_UPDATE] || hasChanges(record)) this.validate(record);
+					else {
+						transaction.removeWrite(write);
+					}
 				},
-				commit: (txn_time, retry) => {
+				commit: (txn_time, existing_entry, retry) => {
 					let completion;
 					if (retry) {
-						if (is_unchanged) return;
-						const existing_entry = (this[ENTRY_PROPERTY] = primary_store.getEntry(id));
-						existing_record = existing_entry?.value;
-						const context = this[CONTEXT];
 						if (context && existing_entry?.version > (context.lastModified || 0))
 							context.lastModified = existing_entry.version;
+						updateResource(this, existing_entry);
 					}
+					const existing_record = existing_entry?.value;
 					if (!record_prepared) {
 						record_prepared = true;
 						if (!this[CONTEXT]?.source) {
-							if (record[INCREMENTAL_UPDATE]) {
-								is_unchanged = !hasChanges(record);
-								if (is_unchanged) return;
-							}
 							if (primary_key && record[primary_key] !== id) record[primary_key] = id;
 							if (updated_time_property) {
 								record[updated_time_property.name] =
@@ -720,13 +714,13 @@ export function makeTable(options) {
 						} else record = deepFreeze(record); // TODO: I don't know that we need to freeze notification objects, might eliminate this for reduced overhead
 						if (record[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
 						this[RECORD_PROPERTY] = record;
-					}
-					// send this to the sources
-					for (const source of TableResource.sources) {
-						if (this[CONTEXT]?.source === source || this[CONTEXT]?.source?.isEqual?.(source)) break;
-						if (source?.put && (!source.put.reliesOnPrototype || source.prototype.put)) {
-							const next_completion = source.put(id, record, this);
-							completion = completion ? Promise.all([completion, next_completion]) : next_completion;
+						// send this to the sources
+						for (const source of TableResource.sources) {
+							if (context?.source === source || context?.source?.isEqual?.(source)) break;
+							if (source?.put && (!source.put.reliesOnPrototype || source.prototype.put)) {
+								const next_completion = source.put(id, record, this);
+								completion = completion ? Promise.all([completion, next_completion]) : next_completion;
+							}
 						}
 					}
 
@@ -734,14 +728,14 @@ export function makeTable(options) {
 					harper_logger.trace(
 						`Checking timestamp for put`,
 						id,
-						this[VERSION_PROPERTY] > txn_time,
-						this[VERSION_PROPERTY],
+						existing_entry?.version > txn_time,
+						existing_entry?.version,
 						txn_time
 					);
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
-					if (this[VERSION_PROPERTY] > txn_time) {
+					if (existing_entry?.version > txn_time) {
 						// This is not an error condition in our world of last-record-wins
 						// replication. If the existing record is newer than it just means the provided record
 						// is, well... older. And newer records are supposed to "win" over older records, and that
@@ -754,12 +748,13 @@ export function makeTable(options) {
 							}
 						);*/
 					}
-					updateIndices(this[ID_PROPERTY], existing_record, record);
-					updateRecord(id, record, this[ENTRY_PROPERTY], txn_time, 0, audit, this[CONTEXT]);
+					updateIndices(id, existing_record, record);
+					updateRecord(id, record, existing_entry, txn_time, 0, audit, context);
 					if (existing_record === null && !retry) recordDeletion(-1);
 					return completion;
 				},
-			});
+			};
+			transaction.addWrite(write);
 		}
 
 		async delete(request: Request): Promise<boolean> {
@@ -776,17 +771,15 @@ export function makeTable(options) {
 			transaction.addWrite({
 				key: id,
 				store: primary_store,
-				lastVersion: this[VERSION_PROPERTY],
+				resource: this,
 				nodeName: this[CONTEXT]?.nodeName,
-				commit: (txn_time, retry) => {
-					let existing_record = this[RECORD_PROPERTY];
+				commit: (txn_time, existing_entry, retry) => {
+					const existing_record = existing_entry?.value;
 					if (retry) {
-						const existing_entry = primary_store.getEntry(id);
-						this[ENTRY_PROPERTY] = existing_entry;
-						existing_record = existing_entry?.value;
 						const context = this[CONTEXT];
 						if (context && existing_entry?.version > (context.lastModified || 0))
 							context.lastModified = existing_entry.version;
+						updateResource(this, existing_entry);
 					}
 					if (!delete_prepared) {
 						delete_prepared = true;
@@ -798,7 +791,7 @@ export function makeTable(options) {
 							}
 						}
 					}
-					if (this[VERSION_PROPERTY] > txn_time)
+					if (existing_entry?.version > txn_time)
 						// a newer record exists locally
 						return;
 					updateIndices(this[ID_PROPERTY], existing_record);
@@ -950,7 +943,7 @@ export function makeTable(options) {
 					// do not hog resources and give more processing opportunity for more efficient index-driven queries.
 					// this also gives an opportunity to prefetch and ensure any page faults happen in a different thread
 					(id) =>
-						when(loadLocalRecord(id, context, options, null, request.ensureLoaded ?? true), (entry) => {
+						when(loadLocalRecord(id, context, options, null, false, request.ensureLoaded ?? true), (entry) => {
 							const record = entry?.value;
 							if (!record) return SKIP;
 							for (let i = 0; i < filters_length; i++) {
@@ -1090,14 +1083,14 @@ export function makeTable(options) {
 			let completion;
 			let publish_prepared;
 			transaction.addWrite({
-				store: primary_store,
 				key: id,
-				lastVersion: this[VERSION_PROPERTY],
+				store: primary_store,
+				entry: this[ENTRY_PROPERTY],
 				nodeName: this[CONTEXT]?.nodeName,
 				validate: () => {
 					this.validate(message);
 				},
-				commit: (txn_time, retries) => {
+				commit: (txn_time, existing_entry, retries) => {
 					this.validate(message);
 					// just need to update the version number of the record so it points to the latest audit record
 					// but have to update the version number of the record
@@ -1114,18 +1107,18 @@ export function makeTable(options) {
 						}
 					}
 
-					const existing_record = retries > 0 ? primary_store.get(id) : this[RECORD_PROPERTY];
-					if (existing_record === undefined && !retries && (audit || track_deletes)) {
+					if (existing_entry === undefined && !retries && (audit || track_deletes)) {
 						if (!audit) enqueueDeletionCleanup();
+						// TODO: There is a chance that that is wrong if we think the record doesn't exist and then on retry we discover it does exist
 						recordDeletion(1);
 					}
 					// always audit this, but don't change existing version
 					// TODO: Use direct writes in the future (copying binary data is hard because it invalidates the cache)
 					updateRecord(
 						id,
-						existing_record ?? null,
-						this[ENTRY_PROPERTY],
-						this[VERSION_PROPERTY] || txn_time,
+						existing_entry?.value ?? null,
+						existing_entry,
+						existing_entry?.version || txn_time,
 						0,
 						true,
 						this[CONTEXT],
@@ -1332,24 +1325,22 @@ export function makeTable(options) {
 		}
 		return has_changes;
 	}
-	function loadLocalRecord(id, context, options, resource, ensure_loaded) {
+	function loadLocalRecord(id, context, options, resource, sync, ensure_loaded) {
 		// TODO: determine if we use lazy access properties
 		const whenPrefetched = () => {
-			// this is all for debugging, should be removed eventually
-			const read_txn = options.transaction;
-			if (read_txn?.isDone) {
-				throw new Error('Invalid read transaction');
-			}
-			let first_load_record;
-			if (read_txn && !read_txn.hasRunLoadRecord) {
-				first_load_record = true;
-				read_txn.hasRunLoadRecord = true;
+			if (!options) {
+				const txn = txnForContext(context);
+				const read_txn = txn.getReadTxn();
+				options = { transaction: read_txn };
+				// this is all for debugging, should be removed eventually
+				if (read_txn?.isDone) {
+					throw new Error('Invalid read transaction');
+				}
 			}
 			let entry;
 			try {
 				entry = primary_store.getEntry(id, options);
 			} catch (error) {
-				error.message += '. The read txn is ' + JSON.stringify(read_txn) + ' first loadRecord: ' + first_load_record;
 				console.error(error);
 				console.error('reader list', primary_store.readerList());
 				console.error('reader check', primary_store.readerCheck());
@@ -1359,18 +1350,14 @@ export function makeTable(options) {
 			if (entry && context && entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
 			if (resource) {
 				if (entry) {
-					resource[ENTRY_PROPERTY] = entry;
-					resource[RECORD_PROPERTY] = entry.value;
-					resource[VERSION_PROPERTY] = entry.version;
-				}
+					updateResource(resource, entry);
+				} else resource[RECORD_PROPERTY] = null;
 				if (ensure_loaded) {
 					const loaded_from_source = ensureLoadedFromSource(id, entry, context);
 					if (loaded_from_source) {
 						resource[LOADED_FROM_SOURCE] = true;
 						return when(loaded_from_source, (entry) => {
-							resource[ENTRY_PROPERTY] = entry;
-							resource[RECORD_PROPERTY] = entry?.value;
-							resource[VERSION_PROPERTY] = entry?.version;
+							updateResource(resource, entry);
 							return resource;
 						});
 					}
@@ -1383,7 +1370,7 @@ export function makeTable(options) {
 			}
 		};
 		// if it is cached, we use that as indication that we can get the value very quickly
-		if (!options.alwaysPrefetch && (id == null || primary_store.cache?.get(id))) return whenPrefetched();
+		if (sync) return whenPrefetched();
 		return new Promise((resolve, reject) =>
 			primary_store.prefetch([id], () => {
 				try {
@@ -1416,15 +1403,32 @@ export function makeTable(options) {
 			}
 		}
 	}
-	function txnForContext(context) {
-		const transaction_set = context?.transaction;
-		if (transaction_set) {
-			let transaction;
-			if ((transaction = transaction_set?.find((txn) => txn.lmdbDb?.path === primary_store.path))) return transaction;
-			transaction_set.push((transaction = new DatabaseTransaction(primary_store, context.user, audit_store)));
-			return transaction;
+	function txnForContext(context: Context) {
+		let transaction = context?.transaction;
+		if (transaction) {
+			if (!transaction.open) {
+				throw new Error('Can not use a transaction that is not open');
+			}
+			if (!transaction.lmdbDb) {
+				// this is an uninitialized DatabaseTransaction, we can claim it
+				transaction.lmdbDb = primary_store;
+				return transaction;
+			}
+			do {
+				// See if this is a transaction for our database and if so, use it
+				if (transaction.lmdbDb?.path === primary_store.path) return transaction;
+				// try the next one:
+				const next_txn = transaction.next;
+				if (!next_txn) {
+					// no next one, then add our database
+					transaction = transaction.next = new DatabaseTransaction();
+					transaction.lmdbDb = primary_store;
+					return transaction;
+				}
+				transaction = next_txn;
+			} while (true);
 		} else {
-			return new ImmediateTransaction(primary_store, context.user, audit_store);
+			return new ImmediateTransaction();
 		}
 	}
 	/**
@@ -1521,10 +1525,10 @@ export function makeTable(options) {
 				db_txn.addWrite({
 					key: id,
 					store: primary_store,
-					lastVersion: existing_version,
+					entry: existing_entry,
+					noRetry: true, // don't try to update on retry, just let the newer version win
 					nodeName: 'source',
-					commit: (txn_time, retry) => {
-						if (retry) return; // don't try to update on retry, just let the newer version win
+					commit: (txn_time) => {
 						const has_index_changes = updateIndices(id, existing_record, updated_record);
 						let completion;
 						if (updated_record) {
@@ -1727,4 +1731,9 @@ const rest = () => new Promise(setImmediate);
 function when(value, callback, reject?) {
 	if (value?.then) return value.then(callback, reject);
 	return callback(value);
+}
+export function updateResource(resource, entry) {
+	resource[ENTRY_PROPERTY] = entry;
+	resource[RECORD_PROPERTY] = entry?.value ?? null;
+	resource[VERSION_PROPERTY] = entry?.version;
 }

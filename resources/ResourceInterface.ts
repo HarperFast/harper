@@ -1,3 +1,5 @@
+import { DatabaseTransaction } from './DatabaseTransaction';
+
 export interface ResourceInterface<Key = any, Record = any> {
 	get?(): Promise<UpdatableRecord<Record>>;
 	get?(query: Query): Promise<AsyncIterable<Record>>;
@@ -15,7 +17,7 @@ export interface ResourceInterface<Key = any, Record = any> {
 }
 export interface Context {
 	user?: any;
-	transaction: any[];
+	transaction: DatabaseTransaction;
 	responseData: {
 		lastModified: number;
 	};
@@ -38,6 +40,6 @@ export interface SubscriptionRequest extends Request {
 	previousCount?: number;
 }
 export type Id = number | string | (number | string | null)[] | null;
-type UpdatableRecord<T> = T
+type UpdatableRecord<T> = T;
 interface Subscription {}
-type ResourceId = Request|number|string;
+type ResourceId = Request | number | string;

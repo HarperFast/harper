@@ -137,9 +137,10 @@ export function setNATSReplicator(table_name, db_name, Table) {
 		let nats_transaction: NATSTransaction = context?.transaction?.nats;
 		if (!nats_transaction) {
 			if (context?.transaction) {
-				context.transaction.push(
-					(nats_transaction = context.transaction.nats = new NATSTransaction(context.transaction, context))
-				);
+				context.transaction.nats = nats_transaction = new NATSTransaction(context.transaction, context);
+				let last_transaction = context.transaction;
+				while (last_transaction.next) last_transaction = last_transaction.next;
+				last_transaction.next = context.transaction.nats;
 				nats_transaction.user = context.user;
 				nats_transaction.context = context;
 			} else nats_transaction = immediateNATSTransaction;
