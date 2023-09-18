@@ -1,5 +1,6 @@
 import { serialize, serializeMessage, getDeserializer } from '../server/serverHelpers/contentTypes';
 import { recordAction, recordActionBinary } from '../resources/analytics';
+import * as harper_logger from '../utility/logging/harper_logger';
 import { ServerOptions } from 'http';
 import { ServerError, ClientError } from '../utility/errors/hdbError';
 import { Resources } from '../resources/Resources';
@@ -31,7 +32,7 @@ async function http(request, next_handler) {
 		const resource = entry.Resource;
 		let response_data = await transaction(request, () => {
 			if (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'QUERY') {
-				// TODO: Support cancelation (if the request otherwise fails or takes too many bytes)
+				// TODO: Support cancellation (if the request otherwise fails or takes too many bytes)
 				try {
 					request.data = getDeserializer(request.headers['content-type'], true)(request.body);
 				} catch (error) {
@@ -57,7 +58,7 @@ async function http(request, next_handler) {
 					return;
 				case 'CONNECT':
 					// websockets? and event-stream
-					return resource.connect(resource_request, request);
+					return resource.connect(resource_request, null, request);
 				case 'TRACE':
 					return 'HarperDB is the terminating server';
 				case 'QUERY':
@@ -169,7 +170,6 @@ let started;
 let resources: Resources;
 
 let connection_count = 0;
-let printing_connection_count;
 
 export function start(options: ServerOptions & { path: string; port: number; server: any; resources: any }) {
 	if (started) return;
@@ -181,17 +181,11 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 	});
 	options.server.ws(async (ws, request, chain_completion) => {
 		connection_count++;
-		if (!printing_connection_count) {
-			setTimeout(() => {
-				console.log('connection count', connection_count, 'mem', Math.round(process.memoryUsage().heapUsed / 1000000));
-				printing_connection_count = false;
-			}, 1000);
-			printing_connection_count = true;
-		}
-		startRequest(request);
 		const incoming_messages = new IterableEventQueue();
 		// TODO: We should set a lower keep-alive ws.socket.setKeepAlive(600000);
-		ws.on('error', console.error);
+		ws.on('error', (error) => {
+			harper_logger.warn(error);
+		});
 		let deserializer;
 		ws.on('message', function message(body) {
 			if (!deserializer) deserializer = getDeserializer(request.headers['content-type']);
@@ -200,38 +194,41 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 		});
 		let iterator;
 		ws.on('close', () => {
-			//connection_count--
+			connection_count--;
 			incoming_messages.emit('close');
 			if (iterator) iterator.return();
 		});
 		await chain_completion;
-		let resource_found;
-		const response_stream = await resources.call(request.pathname.slice(1), request, (resource, path) => {
-			resource_found = true;
-			return resource.connect(incoming_messages);
-		});
-		if (!resource_found) {
+		const url = request.url.slice(1);
+		const entry = resources.getMatch(url);
+		if (!entry) {
 			ws.send(serializeMessage(`No resource was found to handle ${request.pathname}`, request));
 		} else {
+			request.handlerPath = entry.path;
+			recordAction(
+				(action) => ({
+					count: action.count,
+					total: connection_count,
+				}),
+				'connections',
+				request.handlerPath,
+				'connect',
+				'ws'
+			);
+			const resource_request = { url: entry.relativeURL, async: true }; // TODO: We don't want to have to remove the forward slash and then re-add it
+			const resource = entry.Resource;
+			const response_stream = await transaction(request, () => {
+				return resource.connect(resource_request, incoming_messages, request);
+			});
 			iterator = response_stream[Symbol.asyncIterator]();
 
 			let result;
 			while (!(result = await iterator.next()).done) {
-				ws.send(serializeMessage(result.value, request));
+				const message_binary = serializeMessage(result.value, request);
+				ws.send(message_binary);
+				recordAction(message_binary.length, 'bytes-sent', request.handlerPath, 'message', 'ws');
 			}
 		}
 		ws.close();
 	});
-
-	function startRequest(request) {
-		// TODO: check rate limiting here?
-		const path = request.pathname;
-		const dot_index = path.lastIndexOf('.');
-		if (dot_index > -1) {
-			// we can use .extensions to force the Accept header
-			const ext = path.slice(dot_index + 1);
-			const accept = EXTENSION_TYPES[ext];
-			if (accept) request.headers.accept = accept;
-		}
-	}
 }

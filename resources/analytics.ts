@@ -42,6 +42,9 @@ export function recordAction(value, metric, path?, method?, type?) {
 		} else if (typeof value === 'boolean') {
 			if (value) action.total++;
 			action.count++;
+		} else if (typeof value === 'function') {
+			// nothing to do except wait for the callback
+			action.count++;
 		} else throw new TypeError('Invalid metric value type ' + typeof value);
 	} else {
 		if (typeof value === 'number') {
@@ -53,6 +56,10 @@ export function recordAction(value, metric, path?, method?, type?) {
 			action = {};
 			action.total = value ? 1 : 0;
 			action.count = 1;
+		} else if (typeof value === 'function') {
+			action = {};
+			action.count = 1;
+			action.callback = value;
 		} else {
 			throw new TypeError('Invalid metric value type ' + typeof value);
 		}
@@ -125,6 +132,8 @@ function sendAnalytics() {
 						count,
 					})
 				);
+			} else if (action.callback) {
+				metrics.push(Object.assign(action.description, action.callback(action)));
 			} else {
 				metrics.push(
 					Object.assign(action.description, {

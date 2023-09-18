@@ -1,5 +1,5 @@
 export class Echo extends Resource {
-	static async connect(incoming_messages) {
+	async connect(incoming_messages) {
 		if (incoming_messages) {
 			// echo service for WebSockets
 			return (async function* () {

@@ -71,15 +71,20 @@ describe('test WebSockets connections and messaging', () => {
 			ws2.on('open', resolve);
 			ws2.on('error', reject);
 		});
-		let message = await new Promise(async resolve => {
+		let message = await new Promise(async (resolve, reject) => {
 			ws2.on('message', message => {
 				resolve(JSON.parse(message));
 			});
-			let response = await axios.put('http://localhost:9926/SimpleRecord/5', {
-				id: 5,
-				name: 'new name',
-			});
-			assert.equal(response.status, 204);
+			try {
+				let response = await axios.put('http://localhost:9926/SimpleRecord/5', {
+					id: '5',
+					name: 'new name',
+				});
+				assert.equal(response.status, 204);
+			} catch(error) {
+				console.error(error);
+				reject(error);
+			}
 		});
 		assert.equal(message.value.name, 'new name');
 	});

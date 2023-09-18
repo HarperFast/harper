@@ -278,7 +278,10 @@ export function serialize(response_data, request, response_object) {
 		// specifically for that content type (most useful for html).
 		response_object.headers.set('Vary', 'Accept, Accept-Encoding');
 		response_object.headers.set('Content-Type', serializer.type);
-		if (response_data[Symbol.iterator] && serializer.serializer.serializeStream) {
+		if (
+			(response_data[Symbol.iterator] || response_data[Symbol.asyncIterator]) &&
+			serializer.serializer.serializeStream
+		) {
 			let stream = serializer.serializer.serializeStream(response_data);
 			if (can_compress) {
 				response_object.headers.set('Content-Encoding', 'br');

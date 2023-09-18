@@ -158,9 +158,9 @@ export class Resource implements ResourceInterface {
 
 	static connect = transactional(
 		function (resource: Resource, query?: Map, request: Request, data?: any) {
-			return resource.connect ? resource.connect(query) : missingMethod(resource, 'connect');
+			return resource.connect ? resource.connect(data, query) : missingMethod(resource, 'connect');
 		},
-		{ type: 'read' }
+		{ hasContent: true, type: 'read' }
 	);
 
 	static subscribe(request: SubscriptionRequest): Promise<AsyncIterable<{ id: any; operation: string; value: object }>>;
@@ -318,18 +318,11 @@ export class Resource implements ResourceInterface {
 
 	connect(query?: {}): AsyncIterable<any> {
 		// convert subscription to an (async) iterator
-		const iterable = new IterableEventQueue();
 		if (query?.subscribe !== false) {
 			// subscribing is the default action, but can be turned off
-			const options = {
-				listener: (message) => {
-					iterable.send(message);
-				},
-			};
-			const subscription = this.subscribe?.(options);
-			iterable.on('close', () => subscription?.end());
+			return this.subscribe?.(query);
 		}
-		return iterable;
+		return new IterableEventQueue();
 	}
 
 	// Default permissions (super user only accesss):
