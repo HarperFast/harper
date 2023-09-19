@@ -3,21 +3,8 @@ FROM registry.access.redhat.com/ubi9/nodejs-18:latest as builder
 ARG HARPERDB_TARBALL
 ARG HARPERDB_VERSION
 
-# metadata for labels
-ARG BUILD_DATE
-ARG VCS_REF
-ARG VCS_TYPE=git
-
-#Expose HarperDB ports
-EXPOSE 9925
-EXPOSE 9926
-EXPOSE 9932
-
 # for install only
 USER root
-
-# install deps
-RUN dnf install --assumeyes hostname git && dnf clean all
 
 # RHCC Licensing files
 RUN mkdir /licenses
@@ -34,9 +21,6 @@ RUN mkdir -p /home/harperdb/hdb && \
     mkdir /home/harperdb/.harperdb && \
     touch /home/harperdb/.harperdb/hdb_boot_properties.file && \
     echo $'settings_path = /home/harperdb/hdb/harperdb-config.yaml\ninstall_user = default' > /home/harperdb/.harperdb/hdb_boot_properties.file
-
-#Create mount point
-VOLUME /home/harperdb/hdb
 
 # fix permissions -- requires root group
 RUN chown -R default:root /home/harperdb /home/harperdb/.harperdb /home/harperdb/hdb
@@ -55,6 +39,11 @@ RUN npm install $HARPERDB_TARBALL && \
 # Second stage
 FROM registry.access.redhat.com/ubi9/nodejs-18-minimal:latest
 COPY --from=builder $HOME $HOME
+
+# metadata for labels
+ARG BUILD_DATE
+ARG VCS_REF
+ARG VCS_TYPE=git
 
 # for use in labels
 ENV SUMMARY="HarperDB is a globally-distributed edge application platform comprised of an edge database, streaming broker, and user-defined applications with near-zero latency, huge cost savings, and a superior developer experience."
@@ -104,8 +93,21 @@ ENV HDB_ADMIN_USERNAME=HDB_ADMIN
 ENV HDB_ADMIN_PASSWORD=password
 ENV LOGGING_STDSTREAMS=true
 
+USER root
+
 # re-create symlink for compatibility
-RUN ln -s ${HOME} /home/harperdb && chmod -R u=rwx /home/harperdb
+RUN ln -sf ${HOME} /home/harperdb && chmod -R u=rwx /home/harperdb
+
+# install deps
+RUN microdnf install --assumeyes --nodocs --refresh hostname git && microdnf clean all
+
+#Create mount point
+VOLUME /home/harperdb/hdb
+
+#Expose HarperDB ports
+EXPOSE 9925
+EXPOSE 9926
+EXPOSE 9932
 
 #If no arguments are passed to docker run, execute HarperDB
 CMD ["harperdb"]

@@ -117,13 +117,13 @@ clean-image-fabric:
 	docker rm -f harperdb-fabric
 
 clean-image-directory-standard: clean-image-standard
-	rm $(HDB_DIRECTORY_PREFIX)-standard/*
+	rm -rf $(HDB_DIRECTORY_PREFIX)-standard/*
 
 clean-image-directory-openshift: clean-image-openshift
-	rm $(HDB_DIRECTORY_PREFIX)-openshift/*
+	rm -rf $(HDB_DIRECTORY_PREFIX)-openshift/*
 
 clean-image-directory-fabric: clean-image-fabric
-	rm $(HDB_DIRECTORY_PREFIX)-fabric/*
+	rm -rf $(HDB_DIRECTORY_PREFIX)-fabric/*
 
 clean: clean-images-and-dirs
 	rm harperdb-$(HDB_VERSION).tgz ../../harperdb-$(HDB_VERSION).tgz
