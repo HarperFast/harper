@@ -26,7 +26,7 @@ module.exports = fp(
 				type = 'fastify-route';
 				method = config.method;
 			}
-			recordAction(response_time, 'TTFB', action, method, type);
+			recordAction(response_time, 'duration', action, method, type);
 			recordActionBinary(reply.raw.statusCode < 400, 'success', action, method, type);
 			let bytes_sent = ESTIMATED_HEADER_SIZE;
 			if (payload?.pipe) {

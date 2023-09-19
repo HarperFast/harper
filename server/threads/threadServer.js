@@ -275,7 +275,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 				}
 				const handler_path = request.handlerPath;
 				const method = request.method;
-				recordAction(execution_time, 'TTFB', handler_path, method);
+				recordAction(execution_time, 'duration', handler_path, method);
 				recordActionBinary(status < 400, 'success', handler_path, method);
 
 				let body = response.body;
