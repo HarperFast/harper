@@ -1,4 +1,4 @@
-FROM registry.access.redhat.com/ubi9/nodejs-18:latest
+FROM registry.access.redhat.com/ubi9/nodejs-18:latest as builder
 
 ARG HARPERDB_TARBALL
 ARG HARPERDB_VERSION
@@ -7,6 +7,54 @@ ARG HARPERDB_VERSION
 ARG BUILD_DATE
 ARG VCS_REF
 ARG VCS_TYPE=git
+
+#Expose HarperDB ports
+EXPOSE 9925
+EXPOSE 9926
+EXPOSE 9932
+
+# for install only
+USER root
+
+# install deps
+RUN dnf install --assumeyes hostname git && dnf clean all
+
+# RHCC Licensing files
+RUN mkdir /licenses
+COPY utility/Docker/licenses/* /licenses/.
+
+# Create symlink for compatibility
+RUN ln -s ${HOME} /home/harperdb && chmod -R u=rwx /home/harperdb
+
+#Copy HarperDB tarball
+COPY $HARPERDB_TARBALL .
+
+#Create installation directory, .harperdb directory and hdb_boot_properties.file
+RUN mkdir -p /home/harperdb/hdb && \
+    mkdir /home/harperdb/.harperdb && \
+    touch /home/harperdb/.harperdb/hdb_boot_properties.file && \
+    echo $'settings_path = /home/harperdb/hdb/harperdb-config.yaml\ninstall_user = default' > /home/harperdb/.harperdb/hdb_boot_properties.file
+
+#Create mount point
+VOLUME /home/harperdb/hdb
+
+# fix permissions -- requires root group
+RUN chown -R default:root /home/harperdb /home/harperdb/.harperdb /home/harperdb/hdb
+
+#Set the user for the below instructions (respected by RUN, CMD, ENTRYPOINT only)
+USER default
+
+#Set the  working directory for the below instructions
+WORKDIR /home/harperdb/
+
+#Install HarperDB package and clean up tarball
+RUN npm install $HARPERDB_TARBALL && \
+    npm cache clean --force && \
+    rm -f $HARPERDB_TARBALL
+
+# Second stage
+FROM registry.access.redhat.com/ubi9/nodejs-18-minimal:latest
+COPY --from=builder $HOME $HOME
 
 # for use in labels
 ENV SUMMARY="HarperDB is a globally-distributed edge application platform comprised of an edge database, streaming broker, and user-defined applications with near-zero latency, huge cost savings, and a superior developer experience."
@@ -48,39 +96,6 @@ LABEL io.buildpacks.stack.id=""
 LABEL io.openshift.s2i.scripts-url=""
 LABEL io.s2i.scripts-url=""
 
-#Expose HarperDB ports
-EXPOSE 9925
-EXPOSE 9926
-EXPOSE 9932
-
-# for install only
-USER root
-
-# install deps
-RUN dnf install --assumeyes hostname git && dnf clean all
-
-# RHCC Licensing files
-RUN mkdir /licenses
-COPY utility/Docker/licenses/* /licenses/.
-
-# Create symlink for compatibility
-RUN ln -s ${HOME} /home/harperdb && chmod -R u=rwx /home/harperdb
-
-#Copy HarperDB tarball
-COPY $HARPERDB_TARBALL .
-
-#Create installation directory, .harperdb directory and hdb_boot_properties.file
-RUN mkdir -p /home/harperdb/hdb && \
-    mkdir /home/harperdb/.harperdb && \
-    touch /home/harperdb/.harperdb/hdb_boot_properties.file && \
-    echo $'settings_path = /home/harperdb/hdb/harperdb-config.yaml\ninstall_user = default' > /home/harperdb/.harperdb/hdb_boot_properties.file
-
-#Create mount point
-VOLUME /home/harperdb/hdb
-
-# fix permissions -- requires root group
-RUN chown -R default:root /home/harperdb /home/harperdb/.harperdb /home/harperdb/hdb
-
 #Set HarperDB installation parameters
 ENV TC_AGREEMENT=yes
 ENV ROOTPATH=/home/harperdb/hdb
@@ -88,17 +103,6 @@ ENV OPERATIONSAPI_NETWORK_PORT=9925
 ENV HDB_ADMIN_USERNAME=HDB_ADMIN
 ENV HDB_ADMIN_PASSWORD=password
 ENV LOGGING_STDSTREAMS=true
-
-#Set the user for the below instructions (respected by RUN, CMD, ENTRYPOINT only)
-USER default
-
-#Set the  working directory for the below instructions
-WORKDIR /home/harperdb/
-
-#Install HarperDB package and clean up tarball
-RUN npm install $HARPERDB_TARBALL && \
-    npm cache clean --force && \
-    rm -f $HARPERDB_TARBALL
 
 #If no arguments are passed to docker run, execute HarperDB
 CMD ["harperdb"]

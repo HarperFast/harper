@@ -1,4 +1,4 @@
-NODE_VERSION = 18.16.0
+NODE_VERSION = $(shell jq -r '.engines."preferred-node"' ../../package.json)
 HDB_VERSION = $(shell jq -r .version ../../package.json)
 WARNING = "The docker images created with this file are not suitable for publishing, so please don't do that."
 
@@ -35,7 +35,7 @@ build-image-standard: build-harperdb generate-fake-licenses
 		--output=type=docker \
 		--file Dockerfile \
 		--tag harperdb/harperdb:${HDB_VERSION} .
-	echo "$(WARNING)"
+	@echo $(WARNING)
 
 build-image-openshift: build-harperdb generate-fake-licenses
 	docker buildx build \
@@ -48,7 +48,7 @@ build-image-openshift: build-harperdb generate-fake-licenses
 		--output=type=docker \
 		--file Dockerfile-openshift \
 		--tag harperdb/harperdb-openshift:${HDB_VERSION} .
-	echo "$(WARNING)"
+	@echo $(WARNING)
 
 build-image-fabric: build-harperdb generate-fake-licenses
 	docker buildx build \
@@ -61,9 +61,10 @@ build-image-fabric: build-harperdb generate-fake-licenses
 		--output=type=docker \
 		--file Dockerfile-fabric \
 		--tag harperdb/harperdb-fabric:${HDB_VERSION} .
-	echo "$(WARNING)"
+	@echo $(WARNING)
 
-run-standard:
+run-standard: clean-image-standard
+	docker rm -f harperdb-standard
 	docker run -d \
 		-v $(HDB_DIRECTORY_PREFIX)-standard:/home/harperdb/hdb \
         -e HDB_ADMIN_USERNAME=HDB_ADMIN \
@@ -76,10 +77,10 @@ run-standard:
 		--name harperdb-standard \
 		harperdb/harperdb:${HDB_VERSION}
 
-run-openshift:
+run-openshift: clean-image-openshift
 	docker run -d \
 		-v $(HDB_DIRECTORY_PREFIX)-openshift:/home/harperdb/hdb \
-		-e HDB_ADMIN_USERNAME=HDB_ADMIN \
+        -e HDB_ADMIN_USERNAME=HDB_ADMIN \
 		-e HDB_ADMIN_PASSWORD=password \
 		-e HARPERDB_FINGERPRINT="4sADRM2e7dd501d7db58bb02d35bd0745146423a1" \
 		-e HARPERDB_LICENSE='{"license_key":"1373969b4cabd39e8b29c3c16e419c6abef4437d48168b4721e575610dcf656cf57016bd037cf1107f8232a1e94b7352c05b7c069560ac0e54ca156d3babc966289c664e5fb163e3429158a2f57afd39854ca51fa885abbca62f7e063a334498cd5ef0a038cbea80c6e063d174bbcc189a81dc4f2771ad90c9022cf20a322043ec4213fdef1d1e9eba36117c865acb6a13be3be218513ee80385e78bda0b9e27e7ec6532ac6e5416bc020f4f4be91cf6mofi25eYMW6aiRf6bd3d9b691699749569f6acd34a93e61","company":"harperdb.io"}' \
@@ -89,7 +90,7 @@ run-openshift:
 		--name harperdb-openshift \
 		harperdb/harperdb-openshift:${HDB_VERSION}
 
-run-fabric:
+run-fabric: clean-image-fabric
 	docker run -d \
 		-v $(HDB_DIRECTORY_PREFIX)-fabric:/home/harperdb/hdb \
 		-e HDB_ADMIN_USERNAME=HDB_ADMIN \
@@ -102,8 +103,9 @@ run-fabric:
 		--name harperdb-fabric \
 		harperdb/harperdb-fabric:${HDB_VERSION}
 
-get-version:
-	@echo $(HDB_VERSION)
+get-versions:
+	@echo "HDB_VERSION  = $(HDB_VERSION)"
+	@echo "NODE_VERSION = $(NODE_VERSION)"
 
 clean-image-standard:
 	docker rm -f harperdb-standard
