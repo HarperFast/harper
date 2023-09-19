@@ -1,6 +1,9 @@
 #!/bin/bash
 
-apt-get update && apt-get install -y jq rsync
+# only if we have a system with apt-get
+if command -v apt-get &> /dev/null; then
+  apt-get update && apt-get install -y jq rsync
+fi
 
 npm install -g dot-json
 

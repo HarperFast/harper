@@ -2,9 +2,9 @@
 
 ## HarperDB Overview
 
-HarperDB is a turn-key solution for the collection, distribution, and analysis of data throughout your organization. Projects that have historically taken months (or even years) of consulting, configuration, and custom development can be completed in days or weeks with HarperDB.
+HarperDB is a globally-distributed edge application platform. It reduces complexity, increases performance, and lowers costs by combining user-defined applications, a high-performance database, and an enterprise-grade streaming broker into a single package. The platform offers unlimited horizontal scale at the click of a button, and synchronizes data across all the nodes in a cluster in milliseconds. HarperDB simplifies the process of delivering applications and the data that drives them to the edge, which dramatically improves both the user experience and total cost of ownership for large-scale applications. Deploying HarperDB on global infrastructure enables a CDN-like solution for enterprise data and applications.
 
-HarperDB provides unmatched flexibility, security, and value for just about every use case, and we do it all with a single installation that can run in the cloud, on-premise, and at the edge.
+HarperDB is a database, streaming broker, and application development platform focused on performance and ease of use. With our flexible, component-based architecture, simple HTTP/S interface, and a high-performance single-model data store that accommodates any data structure, HarperDB scales with your application from proof of concept to production. Install and manage on your hardware, or have us host it with HarperDB Cloud.
 
 [Learn more about HarperDB](https://harperdb.io/?utm_source=repo&utm_medium=dockerhub)
 

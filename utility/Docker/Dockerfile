@@ -10,8 +10,8 @@ ARG VCS_REF
 ARG VCS_TYPE=git
 
 # for use in labels
-ENV SUMMARY="HarperDB is a turn-key solution for the collection, distribution, and analysis of data."
-ENV DESCRIPTION="HarperDB is a turn-key solution for the collection, distribution, and analysis of data throughout your organization. Projects that have historically taken months (or even years) of consulting, configuration, and custom development can be completed in days or weeks with HarperDB."
+ENV SUMMARY="HarperDB is a globally-distributed edge application platform comprised of an edge database, streaming broker, and user-defined applications with near-zero latency, huge cost savings, and a superior developer experience."
+ENV DESCRIPTION="HarperDB is a globally-distributed edge application platform. It reduces complexity, increases performance, and lowers costs by combining user-defined applications, a high-performance database, and an enterprise-grade streaming broker into a single package. The platform offers unlimited horizontal scale at the click of a button, and synchronizes data across all the nodes in a cluster in milliseconds. HarperDB simplifies the process of delivering applications and the data that drives them to the edge, which dramatically improves both the user experience and total cost of ownership for large-scale applications. Deploying HarperDB on global infrastructure enables a CDN-like solution for enterprise data and applications."
 
 # useful metadata
 LABEL name="harperdb/harperdb"
@@ -28,9 +28,10 @@ LABEL usage="https://hub.docker.com/r/harperdb/harperdb"
 #Expose HarperDB ports
 EXPOSE 9925
 EXPOSE 9926
+EXPOSE 9932
 
 # Install ps
-RUN apt-get update && apt-get install -y procps
+RUN apt-get update && apt-get install -y procps git
 
 # add Licensing files
 RUN mkdir /licenses
