@@ -131,6 +131,25 @@ describe('test REST with property updates', () => {
 		assert.equal(Object.keys(response.data).length, 3);
 	});
 
+	it('check headers on get', async () => {
+		let response = await axios.get('http://localhost:9926/namespace/SubObject/6', {
+			headers: {
+				'Custom-Header': 'custom-value',
+			}
+		});
+		assert.equal(headersTest.get('Custom-Header'), 'custom-value');
+		assert.equal(headersTest.get('CUSTOM-HEADER'), 'custom-value'); // shouldn't be case sensitive
+		let entries = []
+		for (let entry of headersTest) {
+			entries.push(entry);
+		}
+		assert(entries.some(entry => entry[0] === 'custom-header'));
+		let names = Array.from(headersTest.keys());
+		assert(names.includes('custom-header'));
+		assert(Array.from(headersTest.values()).includes('custom-value'));
+	});
+
+
 	describe('check operations', function () {
 		it('search_by_value returns all attributes', async function () {
 			let response = await axios.post('http://localhost:9925', {

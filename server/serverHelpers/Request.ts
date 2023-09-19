@@ -64,7 +64,7 @@ class Headers {
 		return this.asObject.hasOwnProperty(name.toLowerCase());
 	}
 	[Symbol.iterator]() {
-		return Object.entries(this.asObject);
+		return Object.entries(this.asObject)[Symbol.iterator]();
 	}
 	keys() {
 		return Object.keys(this.asObject);
