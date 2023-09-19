@@ -13,6 +13,7 @@ const { createServer: createSecureSocketServer } = require('tls');
 const { getTicketKeys } = require('./manageThreads');
 const { Headers } = require('../serverHelpers/Headers');
 const { recordAction, recordActionBinary } = require('../../resources/analytics');
+const { Request, node_request_key } = require('../serverHelpers/Request');
 
 process.on('uncaughtException', (error) => {
 	if (error.code === 'ECONNRESET') return; // that's what network connections do
@@ -402,7 +403,7 @@ function onWebSocket(listener, options) {
 				let request = new Request(node_request);
 				request.isWebSocket = true;
 				let chain_completion = http_chain[port_num](request);
-				let protocol = request.headers['sec-websocket-protocol'] || '';
+				let protocol = node_request.headers['sec-websocket-protocol'] || '';
 				// TODO: select listener by protocol
 				for (let i = 0; i < ws_listeners.length; i++) {
 					let handler = ws_listeners[i];
@@ -427,63 +428,4 @@ function onWebSocket(listener, options) {
 function defaultNotFound(request, response) {
 	response.writeHead(404);
 	response.end('Not found\n');
-}
-const node_request_key = Symbol('node request');
-/**
- * We define our own request class, to ensure that it has integrity against leaks in a secure environment
- * and for better conformance to WHATWG standards.
- */
-class Request {
-	[node_request_key];
-	#body;
-	constructor(node_request) {
-		this.method = node_request.method;
-		let url = node_request.url;
-		this[node_request_key] = node_request;
-		this.url = url;
-		this.headers = node_request.headers;
-		this.headers.get = get;
-	}
-	get absoluteURL() {
-		return this.protocol + '://' + this.host + this.url;
-	}
-	get pathname() {
-		let query_start = this.url.indexOf('?');
-		if (query_start > -1) return this.url.slice(0, query_start);
-		return this.url;
-	}
-	set pathname(pathname) {
-		let query_start = this.url.indexOf('?');
-		if (query_start > -1) this.url = pathname + this.url.slice(query_start);
-		else this.url = pathname;
-	}
-	get protocol() {
-		return this[node_request_key].socket.encrypted ? 'https' : 'http';
-	}
-	get ip() {
-		return this[node_request_key].socket.remoteAddress;
-	}
-	get body() {
-		return this.#body || (this.#body = new RequestBody(this[node_request_key]));
-	}
-	get host() {
-		return this[node_request_key].authority || this[node_request_key].headers.host;
-	}
-	get isAborted() {
-		// TODO: implement this
-		return false;
-	}
-}
-class RequestBody {
-	#node_request;
-	constructor(node_request) {
-		this.#node_request = node_request;
-	}
-	on(event, listener) {
-		this.#node_request.on(event, listener);
-		return this;
-	}
-}
-function get(name) {
-	return this[name.toLowerCase()];
 }

@@ -201,14 +201,14 @@ export class Resource implements ResourceInterface {
 
 	static copy = transactional(
 		function (resource: Resource, query?: Map, request: Request, data?: any) {
-			return resource.copy ? resource.copy(request.headers?.destination, query) : missingMethod(resource, 'copy');
+			return resource.copy ? resource.copy(data, query) : missingMethod(resource, 'copy');
 		},
 		{ type: 'create' }
 	);
 
 	static move = transactional(
 		function (resource: Resource, query?: Map, request: Request, data?: any) {
-			return resource.move ? resource.move(request.headers?.destination, query) : missingMethod(resource, 'move');
+			return resource.move ? resource.move(data, query) : missingMethod(resource, 'move');
 		},
 		{ type: 'delete' }
 	);

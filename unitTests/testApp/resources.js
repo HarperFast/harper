@@ -33,6 +33,7 @@ export class Echo extends Resource {
 
 class SubObject extends tables.SubObject {
 	get(query) {
+		global.headersTest = this.getContext().headers;
 		this.addedProperty = true;
 		return super.get(query);
 	}

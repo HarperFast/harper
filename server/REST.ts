@@ -19,7 +19,8 @@ const etag_bytes = new Uint8Array(8);
 const etag_float = new Float64Array(etag_bytes.buffer, 0, 1);
 
 async function http(request, next_handler) {
-	const method = request.headers.accept === 'text/event-stream' ? 'CONNECT' : request.method;
+	const headers_object = request.headers.asObject;
+	const method = headers_object.accept === 'text/event-stream' ? 'CONNECT' : request.method;
 	if (request.search) parseQuery(request);
 	const headers = new Headers();
 	try {
@@ -34,7 +35,7 @@ async function http(request, next_handler) {
 			if (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'QUERY') {
 				// TODO: Support cancellation (if the request otherwise fails or takes too many bytes)
 				try {
-					request.data = getDeserializer(request.headers['content-type'], true)(request.body);
+					request.data = getDeserializer(headers_object['content-type'], true)(request.body);
 				} catch (error) {
 					throw new ClientError(error, 400);
 				}
@@ -64,9 +65,9 @@ async function http(request, next_handler) {
 				case 'QUERY':
 					return resource.query(resource_request, request.data, request);
 				case 'COPY': // methods suggested from webdav RFC 4918
-					return resource.copy(resource_request, request.headers.destination, request);
+					return resource.copy(resource_request, headers_object.destination, request);
 				case 'MOVE':
-					return resource.move(resource_request, request.headers.destination, request);
+					return resource.move(resource_request, headers_object.destination, request);
 				case 'BREW': // RFC 2324
 					throw new ClientError("HarperDB is short and stout and can't brew coffee", 418);
 				default:
@@ -95,7 +96,7 @@ async function http(request, next_handler) {
 				(etag_bytes[6] >> 6) + ((etag_bytes[7] << 2) & 0x3f) + 62,
 				34
 			);
-			const last_etag = request.headers['if-none-match'];
+			const last_etag = headers_object['if-none-match'];
 			if (last_etag && etag == last_etag) {
 				if (response_data?.onDone) response_data.onDone();
 				status = 304;
@@ -188,7 +189,7 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 		});
 		let deserializer;
 		ws.on('message', function message(body) {
-			if (!deserializer) deserializer = getDeserializer(request.headers['content-type']);
+			if (!deserializer) deserializer = getDeserializer(request.headers.asObject['content-type']);
 			const data = deserializer(body);
 			incoming_messages.push(data);
 		});

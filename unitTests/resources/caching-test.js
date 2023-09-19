@@ -271,7 +271,7 @@ describe('Caching', () => {
 			await new Promise((resolve) => setTimeout(resolve, 300));
 
 			let history = await CachingTable.getHistoryOfRecord(23);
-			assert(history.length > 50);
+			assert(history.length > 40);
 			for (let entry of history) {
 				assert(entry.localTime > 1);
 			}

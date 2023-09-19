@@ -200,7 +200,8 @@ const registerFastifySerializers = fp(
  * @returns {{serializer, type: string, parameters: {q: number}}|{serializer(): void}}
  */
 export function findBestSerializer(incoming_message) {
-	const accept_header = incoming_message.headers.accept;
+	const headers_object = incoming_message.headers.asObject || incoming_message.headers;
+	const accept_header = headers_object.accept;
 	let best_serializer;
 	let best_quality = 0;
 	let best_type;
@@ -258,7 +259,7 @@ const COMPRESSION_THRESHOLD = 1200; // about an average TCP packet size (if head
 export function serialize(response_data, request, response_object) {
 	// TODO: Maybe support other compression encodings; browsers basically universally support brotli, but Node's HTTP
 	//  client itself actually (just) supports gzip/deflate
-	const can_compress = request.headers['accept-encoding']?.includes('br');
+	const can_compress = request.headers.asObject?.['accept-encoding']?.includes('br');
 	let response_body;
 	if (response_data?.contentType != null && response_data.data != null) {
 		// we use this as a special marker for blobs of data that are explicitly one content type
