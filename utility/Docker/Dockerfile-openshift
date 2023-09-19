@@ -104,5 +104,8 @@ ENV HDB_ADMIN_USERNAME=HDB_ADMIN
 ENV HDB_ADMIN_PASSWORD=password
 ENV LOGGING_STDSTREAMS=true
 
+# re-create symlink for compatibility
+RUN ln -s ${HOME} /home/harperdb && chmod -R u=rwx /home/harperdb
+
 #If no arguments are passed to docker run, execute HarperDB
 CMD ["harperdb"]
