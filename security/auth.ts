@@ -35,7 +35,7 @@ server.onInvalidatedUser(() => {
 
 // TODO: Make this not return a promise if it can be fulfilled synchronously (from cache)
 export async function authentication(request, next_handler) {
-	const headers = request.headers;
+	const headers = request.headers.asObject; // we cheat and use the node headers object since it is a little faster
 	const authorization = headers.authorization;
 	const cookie = headers.cookie;
 	const origin = headers.origin;
@@ -88,14 +88,14 @@ export async function authentication(request, next_handler) {
 			username,
 			status,
 			AUTH_AUDIT_TYPES.AUTHENTICATION,
-			request.headers['x-forwarded-for'] ?? request.ip,
+			headers['x-forwarded-for'] ?? request.ip,
 			request.method,
 			request.pathname
 		);
 		log.auth_strategy = strategy;
 		if (session_id) log.session_id = session_id;
-		if (request.headers['referer']) log.referer = request.headers['referer'];
-		if (request.headers['origin']) log.origin = request.headers['origin'];
+		if (headers['referer']) log.referer = headers['referer'];
+		if (headers['origin']) log.origin = headers['origin'];
 
 		if (status === AUTH_AUDIT_STATUS.SUCCESS) auth_event_log.notify(log);
 		else auth_event_log.error(log);

@@ -24,10 +24,10 @@ import * as harper_logger from '../utility/logging/harper_logger';
 import { assignTrackedAccessors, deepFreeze, hasChanges, OWN_DATA } from './tracked';
 import { transaction } from './transaction';
 import { MAXIMUM_KEY } from 'ordered-binary';
-import { getWorkerIndex, onMessageByType } from '../server/threads/manageThreads';
-import { createAuditEntry, readAuditEntry } from './auditStore';
+import { getWorkerIndex } from '../server/threads/manageThreads';
+import { readAuditEntry } from './auditStore';
 import { autoCast, convertToMS } from '../utility/common_utils';
-import { getUpdateRecord, HAS_EXPIRATION } from './RecordEncoder';
+import { getUpdateRecord } from './RecordEncoder';
 import { recordAction, recordActionBinary } from './analytics';
 
 const NULL_WITH_TIMESTAMP = new Uint8Array(9);
@@ -39,15 +39,12 @@ const RECORD_PRUNING_INTERVAL = 60000; // one minute
 env_mngr.initSync();
 const LMDB_PREFETCH_WRITES = env_mngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
-const DEFAULT_DELETION_ENTRY_TTL = 7200000;
 const DELETION_COUNT_KEY = Symbol.for('deletions');
 const VERSION_PROPERTY = Symbol.for('version');
 const INCREMENTAL_UPDATE = Symbol.for('incremental-update');
 const ENTRY_PROPERTY = Symbol('entry');
 const IS_SAVING = Symbol('is-saving');
-const SOURCE_PROPERTY = Symbol('source-resource');
 const LOADED_FROM_SOURCE = Symbol('loaded-from-source');
-const LAZY_PROPERTY_ACCESS = { lazy: true };
 const NOTIFICATION = { isNotification: true, ensureLoaded: false };
 const INVALIDATED = 1;
 const EVICTED = 8; // note that 2 is reserved for timestamps
@@ -1225,7 +1222,7 @@ export function makeTable(options) {
 			})) {
 				await rest(); // yield to other async operations
 				if (readAuditEntry(audit_entry).tableId !== table_id) continue;
-				completion = audit_store.remove(id);
+				completion = audit_store.remove(key);
 				// TODO: Cleanup delete entry from main table
 			}
 			await completion;

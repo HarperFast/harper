@@ -220,7 +220,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					const response_cmd = packet.qos === 2 ? 'pubrec' : 'puback';
 					// deserialize
 					const deserialize =
-						socket.deserialize || (socket.deserialize = getDeserializer(request?.headers['content-type']));
+						socket.deserialize || (socket.deserialize = getDeserializer(request?.headers.get?.('content-type')));
 					const data = packet.payload?.length > 0 ? deserialize(packet.payload) : undefined; // zero payload length maps to a delete
 					let published;
 					try {
