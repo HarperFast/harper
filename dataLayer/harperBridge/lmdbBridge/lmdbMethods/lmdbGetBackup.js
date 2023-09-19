@@ -6,7 +6,8 @@ const { readSync, openSync, createReadStream } = require('fs');
 const { open } = require('lmdb');
 const OpenDBIObject = require('../../../../utility/lmdb/OpenDBIObject');
 const OpenEnvironmentObject = require('../../../../utility/lmdb/OpenEnvironmentObject');
-const { INTERNAL_DBIS_NAME } = require('../../../../utility/lmdb/terms');
+const { AUDIT_STORE_OPTIONS } = require('../../../../resources/auditStore');
+const { INTERNAL_DBIS_NAME, AUDIT_STORE_NAME } = require('../../../../utility/lmdb/terms');
 
 module.exports = getBackup;
 const META_SIZE = 32768;
@@ -34,6 +35,19 @@ async function getBackup(get_backup_obj) {
 		let backup_attribute_store = backup_root.openDB(INTERNAL_DBIS_NAME, new OpenDBIObject(false));
 		let readTxn = attribute_store.useReadTransaction();
 		let i = 0;
+		const copyDatabase = async function (store_name, options) {
+			options.encoding = 'binary'; // directly copy bytes
+			options.encoder = undefined;
+			let backup_store = backup_root.openDB(store_name, options);
+			let source_store = attribute_store.openDB(store_name, options);
+			for (let { key, version, value } of source_store.getRange({
+				transaction: readTxn,
+				versions: source_store.useVersions,
+			})) {
+				resolution = backup_store.put(key, value, version);
+				if (i++ % DELAY_ITERATIONS === 0) await new Promise((resolve) => setTimeout(resolve, 20));
+			}
+		};
 		for (let { key, value: attribute_info } of attribute_store.getRange({ transaction: readTxn, start: false })) {
 			if (tables.some((table) => key.startsWith?.(table + '/'))) {
 				// it is a store we need to copy
@@ -41,14 +55,11 @@ async function getBackup(get_backup_obj) {
 				const [, attribute] = key.split('/');
 				let is_primary_key = !attribute;
 				let options = new OpenDBIObject(!is_primary_key, is_primary_key);
-				options.encoding = 'binary'; // directly copy bytes
-				let backup_store = backup_root.openDB(key, options);
-				let source_store = attribute_store.openDB(key, options);
-				for (let { key, version, value } of source_store.getRange({ transaction: readTxn, versions: is_primary_key })) {
-					resolution = backup_store.put(key, value, version);
-					if (i++ % DELAY_ITERATIONS === 0) await new Promise((resolve) => setTimeout(resolve, 20));
-				}
+				await copyDatabase(key, options);
 			}
+		}
+		if (get_backup_obj.include_audit) {
+			await copyDatabase(AUDIT_STORE_NAME, Object.assign({}, AUDIT_STORE_OPTIONS));
 		}
 		await resolution;
 		let stream = createReadStream(backup_root.path);

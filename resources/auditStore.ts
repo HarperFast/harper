@@ -51,7 +51,7 @@ export const transactionKeyEncoder = {
 		}
 	},
 };
-const AUDIT_STORE_OPTIONS = {
+export const AUDIT_STORE_OPTIONS = {
 	encoding: 'binary',
 	keyEncoder: transactionKeyEncoder,
 };
