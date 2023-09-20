@@ -59570,8 +59570,9 @@
 									"",
 									"pm.test(\"Github component deployed\", function () {",
 									"    const json_data = pm.response.json();",
-									"    pm.expect(json_data.message).to.equal(\"Successfully deployed: deploy-test-gh\");",
-									"});"
+									"    pm.expect(json_data.message).to.equal(\"Successfully deployed: deploy-test-gh, restarting...\");",
+									"});",
+									"setTimeout(()=>{}, 8000)"
 								],
 								"type": "text/javascript"
 							}
