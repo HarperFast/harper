@@ -186,7 +186,7 @@ async function removeNatsConfig(process_name) {
 
 	// This while loop ensures that the nats server is connected before its config file is deleted
 	let count = 0;
-	let wait_time = 500;
+	let wait_time = 2000;
 	while (count < MAX_SERVER_CONNECTION_RETRY) {
 		try {
 			const server_con = await nats_utils.createConnection(port, username, decrypt_hash, false);
@@ -205,7 +205,7 @@ async function removeNatsConfig(process_name) {
 			);
 		}
 
-		await hdb_utils.async_set_timeout(wait_time * count);
+		await hdb_utils.async_set_timeout(wait_time * (count * 2));
 	}
 
 	// We write a bunch of zeros over the existing config file so that any trace of the previous config is completely removed from disk.
