@@ -209,7 +209,7 @@ export function makeTable(options) {
 							try {
 								const first_write = event.type === 'transaction' ? event.writes[0] : event;
 								if (!first_write) {
-									console.error('Bad subscription event');
+									harper_logger.error('Bad subscription event', event);
 									continue;
 								}
 								event.source = source;
@@ -260,12 +260,12 @@ export function makeTable(options) {
 									else event.onCommit();
 								}
 							} catch (error) {
-								console.error('error in subscription handler', error);
+								harper_logger.error('error in subscription handler', error);
 							}
 						}
 					}
 				} catch (error) {
-					console.error(error);
+					harper_logger.error(error);
 				}
 			})();
 			return this;
@@ -965,7 +965,7 @@ export function makeTable(options) {
 						const value = audit_record.getValue(primary_store);
 						this.send({ id, timestamp, value, type: audit_record.type });
 					} catch (error) {
-						console.error(error);
+						harper_logger.error(error);
 					}
 				},
 				request.startTime,
@@ -1338,10 +1338,10 @@ export function makeTable(options) {
 			try {
 				entry = primary_store.getEntry(id, options);
 			} catch (error) {
-				console.error(error);
-				console.error('reader list', primary_store.readerList());
-				console.error('reader check', primary_store.readerCheck());
-				console.error('reader list', primary_store.readerList());
+				harper_logger.error(error);
+				harper_logger.error('reader list', primary_store.readerList());
+				harper_logger.error('reader check', primary_store.readerCheck());
+				harper_logger.error('reader list', primary_store.readerList());
 				throw error;
 			}
 			if (entry && context && entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
@@ -1393,7 +1393,7 @@ export function makeTable(options) {
 			recordActionBinary(!needs_source_data, 'cache-hit', table_name);
 			if (needs_source_data) {
 				return getFromSource(id, entry, context).then((entry) => {
-					if (entry?.value?.[RECORD_PROPERTY]) console.error('Can not assign a record with a record property');
+					if (entry?.value?.[RECORD_PROPERTY]) harper_logger.error('Can not assign a record with a record property');
 					if (context && entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
 					return entry;
 				});
@@ -1584,7 +1584,6 @@ export function makeTable(options) {
 				});
 			}).catch((error) => {
 				primary_store.unlock(id, existing_version);
-				console.error('txn error', error);
 				if (resolved) harper_logger.error('Error committing cache update', error);
 				// else the error was already propagated as part of the promise that we returned
 			});
