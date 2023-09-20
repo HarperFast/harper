@@ -412,7 +412,7 @@ async function startAllServices() {
 
 		await start(services_config.generateAllServiceConfigs());
 	} catch (err) {
-		pm2.disconnect();
+		pm2?.disconnect();
 		throw err;
 	}
 }
@@ -456,7 +456,7 @@ async function startService(service_name) {
 		}
 		await start(start_config);
 	} catch (err) {
-		pm2.disconnect();
+		pm2?.disconnect();
 		throw err;
 	}
 }
@@ -480,7 +480,7 @@ async function getUniqueServicesList() {
 		}
 		return services;
 	} catch (err) {
-		pm2.disconnect();
+		pm2?.disconnect();
 		throw err;
 	}
 }
@@ -511,7 +511,7 @@ async function restartAllServices(excluding = []) {
 			await reloadStopStart(hdb_terms.PROCESS_DESCRIPTORS.HDB);
 		}
 	} catch (err) {
-		pm2.disconnect();
+		pm2?.disconnect();
 		throw err;
 	}
 }
