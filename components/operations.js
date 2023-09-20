@@ -419,7 +419,7 @@ async function deployComponent(req) {
 	config_utils.updateConfigValue(`${project}_package`, pkg, undefined, false, false, true);
 	// The main thread can install the components, but we do it here and now so that if it fails, we can immediately
 	// know about it and report it.
-	await installComponents();
+	if (!payload) await installComponents();
 	restartWorkers();
 
 	return `Successfully deployed: ${project}, restarting...`;

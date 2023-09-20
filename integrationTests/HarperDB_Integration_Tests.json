@@ -59628,7 +59628,7 @@
 									"",
 									"pm.test(\"Payload component deployed\", function () {",
 									"    const json_data = pm.response.json();",
-									"    pm.expect(json_data.message).to.equal(\"Successfully deployed: deploy-test-payload\");",
+									"    pm.expect(json_data.message).to.equal(\"Successfully deployed: deploy-test-payload, restarting...\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -61049,7 +61049,7 @@
 									"",
 									"pm.test(\"Custom function deploy success message is returned\", function () {",
 									"    const json_data = pm.response.json();",
-									"    pm.expect(json_data.message).to.equal(\"Successfully deployed: test-deploy\");",
+									"    pm.expect(json_data.message).to.equal(\"Successfully deployed: test-deploy, restarting...\");",
 									"});",
 									"",
 									"// Deploy will restart, wait for that to complete.",
