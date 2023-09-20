@@ -15,6 +15,8 @@ const config_utils = require('../config/configUtils');
 const hdb_utils = require('../utility/common_utils');
 const { PACKAGE_ROOT } = require('../utility/hdbTerms');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
+const { restartWorkers } = require('../server/threads/manageThreads');
+const installComponents = require('../components/installComponents');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 const APPLICATION_TEMPLATE = path.join(PACKAGE_ROOT, 'application-template');
@@ -415,8 +417,12 @@ async function deployComponent(req) {
 
 	// Adds package to harperdb-config and then relies on restart to call install on the new app
 	config_utils.updateConfigValue(`${project}_package`, pkg, undefined, false, false, true);
+	// The main thread can install the components, but we do it here and now so that if it fails, we can immediately
+	// know about it and report it.
+	await installComponents();
+	restartWorkers();
 
-	return `Successfully deployed: ${project}`;
+	return `Successfully deployed: ${project}, restarting...`;
 }
 /**
  * Gets a JSON directory tree of the components dir and all nested files/folders
