@@ -49,7 +49,7 @@ async function installComponents() {
 		// If there is no package.json file go ahead and write package.json and npm install it
 		if (!pkg_json_exists) {
 			hdb_log.notify('Installing components');
-			await installPackages(pkg_json_path, pkg_json);
+			await installPackages(pkg_json_path, pkg_json, null);
 			return;
 		}
 
@@ -75,7 +75,7 @@ async function installComponents() {
 	if (update_occurred) {
 		hdb_log.notify('Updating components.');
 		// Write package.json, call npm install
-		await installPackages(pkg_json_path, pkg_json);
+		await installPackages(pkg_json_path, pkg_json, install_pkg_json);
 	}
 }
 
@@ -107,11 +107,19 @@ async function getPkgPrefix(pkg) {
  * Write package.json, call npm install
  * @param pkg_json_path
  * @param pkg_json
+ * @param install_pkg_json
  * @returns {Promise<void>}
  */
-async function installPackages(pkg_json_path, pkg_json) {
+async function installPackages(pkg_json_path, pkg_json, install_pkg_json) {
 	hdb_log.trace('npm installing components package.json', pkg_json);
 	await fs.writeFile(pkg_json_path, JSON.stringify(pkg_json, null, '  '));
-	const npm_utils = require('../utility/npmUtilities');
-	await npm_utils.installAllRootModules(eng_mgr.get(hdb_terms.CONFIG_PARAMS.IGNORE_SCRIPTS) === true);
+	try {
+		const npm_utils = require('../utility/npmUtilities');
+		await npm_utils.installAllRootModules(eng_mgr.get(hdb_terms.CONFIG_PARAMS.IGNORE_SCRIPTS) === true);
+	} catch (error) {
+		// revert back to previous package.json if we don't succeed
+		if (install_pkg_json) await fs.writeFile(pkg_json_path, JSON.stringify(install_pkg_json, null, '  '));
+		else await fs.unlink(pkg_json_path);
+		throw error;
+	}
 }
