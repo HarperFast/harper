@@ -93,6 +93,9 @@ function deliverSocket(fd_or_socket, port, data) {
 		: new Socket({ fd: fd_or_socket, readable: true, writable: true, allowHalfOpen: true });
 	// for each socket, deliver the connection to the HTTP server handler/parser
 	let server = SERVERS[port];
+	if (server.isSecure) {
+		socket.startTime = performance.now();
+	}
 	if (server) {
 		if (typeof server === 'function') server(socket);
 		else server.emit('connection', socket);
@@ -321,6 +324,13 @@ function getHTTPServer(port, secure, is_operations_server) {
 				wss.emit('connection', ws, request);
 			});
 		});*/
+		if (secure) {
+			http_servers[port].on('secureConnection', (socket) => {
+				if (socket._parent.startTime) recordAction(performance.now() - socket._parent.startTime, 'tls-handshake', port);
+				recordAction(socket.isSessionReused(), 'tls-reused', port);
+			});
+			http_servers[port].isSecure = true;
+		}
 		registerServer(http_servers[port], port);
 	}
 	return http_servers[port];
