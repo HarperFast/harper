@@ -3,6 +3,7 @@ import { createServer } from 'net';
 import * as hdb_terms from '../../utility/hdbTerms';
 import * as harper_logger from '../../utility/logging/harper_logger';
 import { unlinkSync, existsSync } from 'fs';
+import { recordAction, recordActionBinary } from '../../resources/analytics';
 const { isMainThread } = require('worker_threads');
 const workers = [];
 let queued_sockets = [];
@@ -142,15 +143,16 @@ export function startSocketServer(port = 0, session_affinity_identifier?) {
 						console.log('start up a dynamic thread to handle request');
 						startHTTPWorker(0);
 					}
+					recordAction(false, 'socket-routed');
 					return;
 				}
 				worker.requests++;
 				const fd = socket._handle.fd;
-				harper_logger.trace('Socket', fd, 'from', socket.remoteAddress, ' routed to worker', worker.threadId);
 				if (fd >= 0) worker.postMessage({ port, fd, data: received_data });
 				// valid file descriptor, forward it
 				// Windows doesn't support passing sockets by file descriptors, so we have manually proxy the socket data
 				else proxySocket(socket, worker, port);
+				recordAction(true, 'socket-routed');
 			});
 		})
 	).listen(port);

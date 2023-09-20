@@ -252,19 +252,16 @@ async function getMetrics() {
 		for (let table_name in schemas[schema_name]) {
 			try {
 				let env = database({ database: schema_name, table: table_name });
-				let stats = env.getStats();
-				table_stats[table_name] = {
-					puts: stats.puts,
-					deletes: stats.deletes,
-					txns: stats.txns,
-					pageFlushes: stats.pageFlushes,
-					writes: stats.writes,
-					pagesWritten: stats.pagesWritten,
-					timeDuringTxns: stats.timeDuringTxns,
-					timeStartTxns: stats.timeStartTxns,
-					timePageFlushes: stats.timePageFlushes,
-					timeSync: stats.timeSync,
-				};
+				const stats = env.getStats();
+				stats.readers = env
+					.readerList()
+					.split(/\n\s+/)
+					.slice(1)
+					.map((line) => {
+						const [pid, thread, txnid] = line.trim().split(' ');
+						return { pid, thread, txnid };
+					});
+				table_stats[table_name] = stats;
 			} catch (error) {
 				// if a schema no longer exists, don't want to throw an error
 				log.notify(`Error getting stats for table ${table_name}: ${error}`);
