@@ -298,21 +298,21 @@ function getHTTPServer(port, secure, is_operations_server) {
 				}
 				// else just send the buffer/string
 				else if (body?.then)
-					body.then(
-						(body) => {
-							node_response.end(body);
-						},
-						(error) => {
-							node_response.writeHead(error.statusCode || 500);
-							node_response.end(error.toString());
-							harper_logger.error(error);
-						}
-					);
+					body.then((body) => {
+						node_response.end(body);
+					}, onError);
 				else node_response.end(body);
 			} catch (error) {
+				onError(error);
+			}
+			function onError(error) {
 				node_response.writeHead(error.statusCode || 500);
 				node_response.end(error.toString());
-				harper_logger.error(error);
+				// a status code is interpreted as an expected error, so just info or warn, otherwise log as error
+				if (error.statusCode) {
+					if (error.statusCode === 500) harper_logger.warn(error);
+					else harper_logger.info(error);
+				} else harper_logger.error(error);
 			}
 		});
 		/* Should we use HTTP2 on upgrade?:

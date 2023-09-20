@@ -67,7 +67,7 @@ logging:
   auditLog: true
   auditRetention: 3d
   file: true
-  level: error
+  level: warn
   root: null
   rotation:
     enabled: false

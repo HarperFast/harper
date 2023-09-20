@@ -266,8 +266,7 @@ export function serialize(response_data, request, response_object) {
 		response_object.headers.set('Content-Type', response_data.contentType);
 		response_object.headers.set('Vary', 'Accept-Encoding');
 		response_body = response_data.data;
-	}
-	if (response_data instanceof Uint8Array) {
+	} else if (response_data instanceof Uint8Array) {
 		// If a user function or property returns a direct Buffer of binary data, this is the most appropriate content
 		// type for it.
 		response_object.headers.set('Content-Type', 'application/octet-stream');

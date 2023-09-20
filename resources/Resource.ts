@@ -235,7 +235,7 @@ export class Resource implements ResourceInterface {
 			const accept = context?.headers && EXTENSION_TYPES[property];
 			if (accept) {
 				// TODO: Might be preferable to pass this into getDeserializer instead of modifying the request itself
-				context.headers.accept = accept;
+				context.headers.set('accept', accept);
 			} else if (query) query.property = property;
 			else {
 				return {

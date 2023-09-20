@@ -57,6 +57,9 @@ class RequestBody {
 class Headers {
 	constructor(protected asObject) {}
 
+	set(name, value) {
+		this.asObject[name.toLowerCase()] = value;
+	}
 	get(name) {
 		return this.asObject[name.toLowerCase()];
 	}

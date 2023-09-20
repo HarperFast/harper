@@ -130,7 +130,10 @@ async function http(request, next_handler) {
 		}
 		return response_object;
 	} catch (error) {
-		if (!error.statusCode) console.error(error);
+		if (error.statusCode) {
+			if (error.statusCode === 500) harper_logger.warn(error);
+			else harper_logger.info(error);
+		} else harper_logger.error(error);
 		if (error.statusCode === 405) {
 			if (error.method) error.message += ` to handle HTTP method ${error.method.toUpperCase() || ''}`;
 			if (error.allow) {
@@ -138,11 +141,13 @@ async function http(request, next_handler) {
 				headers.set('Allow', error.allow.map((method) => method.toUpperCase()).join(', '));
 			}
 		}
-		return {
+		const response_object = {
 			status: error.statusCode || 500, // use specified error status, or default to generic server error
 			headers,
-			body: serializeMessage(error.toString(), request),
+			body: undefined,
 		};
+		response_object.body = serialize(error.contentType ? error : error.toString(), request, response_object);
+		return response_object;
 	}
 }
 
