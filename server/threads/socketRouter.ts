@@ -1,9 +1,9 @@
 import { startWorker, setMonitorListener, setMainIsWorker, shutdownWorkers } from './manageThreads';
-import { createServer } from 'net';
+import { createServer, Socket } from 'net';
 import * as hdb_terms from '../../utility/hdbTerms';
 import * as harper_logger from '../../utility/logging/harper_logger';
 import { unlinkSync, existsSync } from 'fs';
-import { recordAction, recordActionBinary } from '../../resources/analytics';
+import { recordAction } from '../../resources/analytics';
 const { isMainThread } = require('worker_threads');
 const workers = [];
 let queued_sockets = [];
@@ -79,7 +79,7 @@ function startHTTPWorker(index, thread_count = 1, shutdown_when_idle?) {
 				// if there are any queued sockets, we re-deliver them
 				const sockets = queued_sockets;
 				queued_sockets = [];
-				for (const socket of sockets) handle_socket[socket.localPort](socket);
+				for (const socket of sockets) handle_socket[socket.localPort](null, socket);
 			}
 		},
 	});
@@ -115,47 +115,63 @@ export function startSocketServer(port = 0, session_affinity_identifier?) {
 		// use a header for session affinity (like Authorization or Cookie)
 		else worker_strategy = makeFindByHeaderAffinity(session_affinity_identifier);
 	} else worker_strategy = findMostIdleWorker; // no session affinity, just delegate to most idle worker
-	const server = createServer(
-		{
-			allowHalfOpen: true,
-			pauseOnConnect: !worker_strategy.readsData,
-		},
-		(handle_socket[port] = (socket) => {
-			recent_request = true;
-			worker_strategy(socket, (worker, received_data) => {
-				if (!worker) {
-					if (direct_thread_server) {
-						direct_thread_server.deliverSocket(socket, port, received_data);
-						socket.resume();
-					} else if (current_thread_count > 0) {
-						// should be a thread coming on line
-						if (queued_sockets.length === 0) {
-							setTimeout(() => {
-								if (queued_sockets.length > 0) {
-									console.warn(
-										'Incoming sockets/requests have been queued for workers to start, and no workers have handled them. Check to make sure an error is not preventing workers from starting'
-									);
-								}
-							}, 10000).unref();
-						}
-						queued_sockets.push(socket);
-					} else {
-						console.log('start up a dynamic thread to handle request');
-						startHTTPWorker(0);
+	const server = createServer({
+		allowHalfOpen: true,
+		pauseOnConnect: !worker_strategy.readsData,
+	}).listen(port);
+	server._handle.onconnection = handle_socket[port] = function (err, client_handle) {
+		client_handle.reading = false;
+		client_handle.readStop();
+		recent_request = true;
+		/*if (clientHandle.getsockname) {
+				const localInfo = { __proto__: null };
+				clientHandle.getsockname(localInfo);
+				data.localAddress = localInfo.address;
+				data.localPort = localInfo.port;
+				data.localFamily = localInfo.family;
+			}
+			if (clientHandle.getpeername) {
+				const remoteInfo = { __proto__: null };
+				clientHandle.getpeername(remoteInfo);
+				data.remoteAddress = remoteInfo.address;
+				data.remotePort = remoteInfo.port;
+				data.remoteFamily = remoteInfo.family;
+			}*/
+		worker_strategy(client_handle, (worker, received_data) => {
+			if (!worker) {
+				if (direct_thread_server) {
+					const socket = new Socket({ handle: client_handle, writable: true, readable: true });
+					direct_thread_server.deliverSocket(socket, port, received_data);
+					socket.resume();
+				} else if (current_thread_count > 0) {
+					// should be a thread coming on line
+					if (queued_sockets.length === 0) {
+						setTimeout(() => {
+							if (queued_sockets.length > 0) {
+								console.warn(
+									'Incoming sockets/requests have been queued for workers to start, and no workers have handled them. Check to make sure an error is not preventing workers from starting'
+								);
+							}
+						}, 10000).unref();
 					}
-					recordAction(false, 'socket-routed');
-					return;
+					client_handle.localPort = port;
+					queued_sockets.push(client_handle);
+				} else {
+					console.log('start up a dynamic thread to handle request');
+					startHTTPWorker(0);
 				}
-				worker.requests++;
-				const fd = socket._handle.fd;
-				if (fd >= 0) worker.postMessage({ port, fd, data: received_data });
-				// valid file descriptor, forward it
-				// Windows doesn't support passing sockets by file descriptors, so we have manually proxy the socket data
-				else proxySocket(socket, worker, port);
-				recordAction(true, 'socket-routed');
-			});
-		})
-	).listen(port);
+				recordAction(false, 'socket-routed');
+				return;
+			}
+			worker.requests++;
+			const fd = client_handle.fd;
+			if (fd >= 0) worker.postMessage({ port, fd, data: received_data });
+			// valid file descriptor, forward it
+			// Windows doesn't support passing sockets by file descriptors, so we have manually proxy the socket data
+			else proxySocket(this, worker, port);
+			recordAction(true, 'socket-routed');
+		});
+	};
 	server.on('error', (error) => {
 		console.error('Error in socket server', error);
 	});
@@ -198,15 +214,18 @@ const sessions = new Map();
  * from the same remote address to the same worker.
  * @returns Worker
  */
-function findByRemoteAddressAffinity(socket, deliver) {
-	const address = socket.remoteAddress;
+function findByRemoteAddressAffinity(handle, deliver) {
+	const remote_info = {};
+	handle.getpeername(remote_info);
+	const address = remote_info.address;
+	// we might need to fallback to new Socket({handle}).remoteAddress for... bun?
 	const entry = sessions.get(address);
 	const now = Date.now();
 	if (entry && entry.worker.threadId !== -1) {
 		entry.lastUsed = now;
 		return deliver(entry.worker);
 	}
-	findMostIdleWorker(socket, (worker) => {
+	findMostIdleWorker(handle, (worker) => {
 		sessions.set(address, {
 			worker,
 			lastUsed: now,
