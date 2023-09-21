@@ -7,6 +7,8 @@
 
 import { Encoder } from 'msgpackr';
 import { createAuditEntry, readAuditEntry } from './auditStore';
+import * as harper_logger from '../utility/logging/harper_logger';
+
 // these are matched by lmdb-js for timestamp replacement. the first byte here is used to xor with the first byte of the date as a double so that it ends up less than 32 for easier identification (otherwise dates start with 66)
 export const TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 4, 0x40, 0, 0]);
 // the first byte here indicates that we use the last timestamp
@@ -200,10 +202,52 @@ export function handleLocalTimeForGets(store) {
 			} while (next != last && (next = next.next));
 		});
 	}
+	// add read transaction tracking
+	const txn = store.useReadTransaction();
+	txn.done();
+	if (!txn.done.isTracked) {
+		const Txn = txn.constructor;
+		const use = txn.use;
+		const done = txn.done;
+		Txn.prototype.use = function () {
+			if (!this.timerTracked) {
+				this.timerTracked = true;
+				tracked_txns.push(new WeakRef(this));
+			}
+			use.call(this);
+		};
+		Txn.prototype.done = function () {
+			done.call(this);
+			if (this.isDone) {
+				for (let i = 0; i < tracked_txns.length; i++) {
+					const txn = tracked_txns[i].deref();
+					if (!txn || txn === this || txn.isDone || txn.isCommitted) {
+						tracked_txns.splice(i--, 1);
+					}
+				}
+			}
+		};
+	}
 
 	return store;
 }
-
+const tracked_txns: WeakRef<any>[] = [];
+setInterval(() => {
+	for (let i = 0; i < tracked_txns.length; i++) {
+		const txn = tracked_txns[i].deref();
+		if (!txn || txn.isDone || txn.isCommitted) tracked_txns.splice(i--, 1);
+		else if (txn.isOnTimer) {
+			harper_logger.error(
+				'Read transaction detected that has been open too long (over 15 seconds), make sure read transactions are quickly closed',
+				txn
+			);
+			txn.isOnTimer++;
+			if (txn.isOnTimer > 3) txn.done();
+		} else if (txn.notCurrent && !txn.isOnTimer) {
+			txn.isOnTimer = 1;
+		}
+	}
+}, 15000).unref();
 export function getUpdateRecord(store, table_id, audit_store) {
 	return function (
 		id,
