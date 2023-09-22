@@ -249,12 +249,14 @@ export function readMetaDb(
 						break;
 					}
 				}
-				if (!primary_attribute)
-					throw new Error(
+				if (!primary_attribute) {
+					harper_logger.fatal(
 						`Unable to find a primary key attribute on table ${table_name}, with attributes: ${JSON.stringify(
 							attributes
 						)}`
 					);
+					continue;
+				}
 			}
 			// if the table has already been defined, use that class, don't create a new one
 			let table = tables[table_name];

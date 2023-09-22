@@ -363,10 +363,10 @@ export function makeTable(options) {
 			delete databases[database_name][table_name];
 			if (database_name === database_path) {
 				// part of a database
-				for (const attribute in indices) {
-					dbis_db.remove(TableResource.tableName + '/' + attribute);
-					const index = indices[attribute];
-					index.drop();
+				for (const attribute of attributes) {
+					dbis_db.remove(TableResource.tableName + '/' + attribute.name);
+					const index = indices[attribute.name];
+					index?.drop();
 				}
 				dbis_db.remove(TableResource.tableName + '/');
 				primary_store.drop();
@@ -1325,8 +1325,9 @@ export function makeTable(options) {
 	function loadLocalRecord(id, context, options, resource, sync, ensure_loaded) {
 		// TODO: determine if we use lazy access properties
 		const whenPrefetched = () => {
+			let txn;
 			if (!options) {
-				const txn = txnForContext(context);
+				txn = txnForContext(context);
 				const read_txn = txn.getReadTxn();
 				options = { transaction: read_txn };
 				// this is all for debugging, should be removed eventually
@@ -1352,6 +1353,7 @@ export function makeTable(options) {
 				if (ensure_loaded) {
 					const loaded_from_source = ensureLoadedFromSource(id, entry, context);
 					if (loaded_from_source) {
+						txn?.disregardReadTxn();
 						resource[LOADED_FROM_SOURCE] = true;
 						return when(loaded_from_source, (entry) => {
 							updateResource(resource, entry);
@@ -1486,6 +1488,7 @@ export function makeTable(options) {
 			transaction(source_context, async (txn) => {
 				const start = performance.now();
 				let updated_record;
+				let has_changes, invalidated;
 				try {
 					// find the first data source that will fulfill our request for data
 					for (const source of TableResource.sources) {
@@ -1495,29 +1498,29 @@ export function makeTable(options) {
 							if (updated_record) break;
 						}
 					}
+					invalidated = metadata_flags & INVALIDATED;
+					const version = source_context.lastModified || (invalidated && existing_version);
+					has_changes = invalidated || version > existing_version;
+					const resolve_duration = performance.now() - start;
+					recordAction(resolve_duration, 'cache-resolution', table_name);
+					if (response_headers) {
+						response_headers.append('Server-Timing', `cache-resolve;dur=${resolve_duration.toFixed(2)}`);
+					}
+					txn.timestamp = version;
+					if (expiration_ms && !source_context.expiresAt) source_context.expiresAt = Date.now() + expiration_ms;
+					if (updated_record) {
+						if (typeof updated_record.toJSON === 'function') updated_record = updated_record.toJSON();
+						if (primary_key && updated_record[primary_key] !== id) updated_record[primary_key] = id;
+					}
+					resolved = true;
+					resolve({
+						version,
+						value: updated_record,
+					});
 				} catch (error) {
 					reject(error);
 					throw error;
 				}
-				resolved = true;
-				const invalidated = metadata_flags & INVALIDATED;
-				const version = source_context.lastModified || (invalidated && existing_version);
-				const has_changes = invalidated || version > existing_version;
-				const resolve_duration = performance.now() - start;
-				recordAction(resolve_duration, 'cache-resolution', table_name);
-				if (response_headers) {
-					response_headers.append('Server-Timing', `cache-resolve;dur=${resolve_duration.toFixed(2)}`);
-				}
-				txn.timestamp = version;
-				if (expiration_ms && !source_context.expiresAt) source_context.expiresAt = Date.now() + expiration_ms;
-				if (updated_record) {
-					if (typeof updated_record.toJSON === 'function') updated_record = updated_record.toJSON();
-					if (primary_key && updated_record[primary_key] !== id) updated_record[primary_key] = id;
-				}
-				resolve({
-					version,
-					value: updated_record,
-				});
 				const db_txn = txnForContext(source_context);
 				db_txn.addWrite({
 					key: id,

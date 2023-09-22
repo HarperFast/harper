@@ -7,12 +7,19 @@ export class DatabaseTransaction implements Transaction {
 	writes = []; // the set of writes to commit if the conditions are met
 	lmdbDb: RootDatabase;
 	readTxn: LMDBTransaction;
+	readTxnRefCount: number;
 	validated = false;
 	declare next: DatabaseTransaction;
 	open = true;
 	getReadTxn(): LMDBTransaction | void {
 		// used optimistically
+		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
 		return this.readTxn || (this.readTxn = this.lmdbDb.useReadTransaction());
+	}
+	disregardReadTxn(): void {
+		if (--this.readTxnRefCount === 0) {
+			this.resetReadSnapshot();
+		}
 	}
 	resetReadSnapshot() {
 		if (this.readTxn) {
