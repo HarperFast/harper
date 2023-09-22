@@ -15,7 +15,6 @@ describe('Socket Router', () => {
 	before(async function () {
 		this.timeout(15000);
 		workers = await startHTTPThreads(4);
-		console.log({ workers });
 	});
 	it('Start HTTP threads and delegate evenly by most idle', function () {
 		server = startSocketServer(8925);
@@ -55,7 +54,7 @@ describe('Socket Router', () => {
 		}
 	});
 
-	it.skip('Start HTTP threads and delegate by remote address', function () {
+	it('Start HTTP threads and delegate by remote address', function () {
 		server = startSocketServer(8926, 'ip');
 
 		for (let worker of workers) {
@@ -69,7 +68,13 @@ describe('Socket Router', () => {
 			};
 		}
 		for (let i = 0; i < 100; i++) {
-			server.emit('connection', { _handle: { fd: 1 }, remoteAddress: i % 4 === 0 ? '1.2.3.4' : '5.6.7.8' });
+			server._handle.onconnection(null, {
+				fd: 1,
+				readStop() {},
+				getpeername(info) {
+					info.address = i % 4 === 0 ? '1.2.3.4' : '5.6.7.8';
+				},
+			});
 		}
 		// we don't care which worker got the most, but need to make sure they got the right amount
 		let sortedWorkers = workers.slice(0).sort((a, b) => (a.socketsRouted > b.socketsRouted ? -1 : 1));
@@ -84,7 +89,13 @@ describe('Socket Router', () => {
 		updateWorkerIdleness(); // should reset idleness
 
 		for (let i = 0; i < 100; i++) {
-			server.emit('connection', { _handle: { fd: 1 }, remoteAddress: i % 4 === 0 ? '1.2.3.4' : '5.6.7.8' });
+			server._handle.onconnection(null, {
+				fd: 1,
+				readStop() {},
+				getpeername(info) {
+					info.address = i % 4 === 0 ? '1.2.3.4' : '5.6.7.8';
+				},
+			});
 		}
 		assert.equal(sortedWorkers[0].socketsRouted, 150, 'Received correct connections');
 		assert.equal(sortedWorkers[1].socketsRouted, 50, 'Received correct connections');
@@ -92,7 +103,7 @@ describe('Socket Router', () => {
 		assert.equal(sortedWorkers[3].socketsRouted, 0, 'Received correct connections');
 	});
 
-	it.skip('Start HTTP threads and delegate by authorization header', async function () {
+	it('Start HTTP threads and delegate by authorization header', async function () {
 		server = startSocketServer(8927, 'Authorization');
 		for (let worker of workers) {
 			worker.recentELU = { idle: 0 };
@@ -108,15 +119,17 @@ describe('Socket Router', () => {
 			};
 		}
 		for (let i = 0; i < 100; i++) {
-			let data_listener;
-			server.emit('connection', {
-				_handle: { fd: 1, readStop() {} },
-				on(type, listener) {
-					if (type === 'data') data_listener = listener;
-				},
-			});
+			let handle = {
+				fd: 1,
+				readStop() {},
+				readStart() {},
+				close() {},
+			};
+			server._handle.onconnection(null, handle);
+
 			setTimeout(() => {
-				data_listener(
+				handle._socket.emit(
+					'data',
 					Buffer.from(
 						`POST / HTTP/1.1\nHost: somehost\nAuthorization: Basic ${
 							i % 4 === 0 ? '34afna2n23k=' : '4a4a5afaa5a5='

@@ -119,65 +119,56 @@ export function startSocketServer(port = 0, session_affinity_identifier?) {
 		allowHalfOpen: true,
 		pauseOnConnect: !worker_strategy.readsData,
 	}).listen(port);
-	server._handle.onconnection = handle_socket[port] = function (err, client_handle) {
-		client_handle.reading = false;
-		client_handle.readStop();
-		recent_request = true;
-		/*if (clientHandle.getsockname) {
-				const localInfo = { __proto__: null };
-				clientHandle.getsockname(localInfo);
-				data.localAddress = localInfo.address;
-				data.localPort = localInfo.port;
-				data.localFamily = localInfo.family;
+	if (server._handle) {
+		server._handle.onconnection = handle_socket[port] = function (err, client_handle) {
+			if (!worker_strategy.readsData) {
+				client_handle.reading = false;
+				client_handle.readStop();
 			}
-			if (clientHandle.getpeername) {
-				const remoteInfo = { __proto__: null };
-				clientHandle.getpeername(remoteInfo);
-				data.remoteAddress = remoteInfo.address;
-				data.remotePort = remoteInfo.port;
-				data.remoteFamily = remoteInfo.family;
-			}*/
-		worker_strategy(client_handle, (worker, received_data) => {
-			if (!worker) {
-				if (direct_thread_server) {
-					const socket = new Socket({ handle: client_handle, writable: true, readable: true });
-					direct_thread_server.deliverSocket(socket, port, received_data);
-					socket.resume();
-				} else if (current_thread_count > 0) {
-					// should be a thread coming on line
-					if (queued_sockets.length === 0) {
-						setTimeout(() => {
-							if (queued_sockets.length > 0) {
-								console.warn(
-									'Incoming sockets/requests have been queued for workers to start, and no workers have handled them. Check to make sure an error is not preventing workers from starting'
-								);
-							}
-						}, 10000).unref();
+			recent_request = true;
+			worker_strategy(client_handle, (worker, received_data) => {
+				if (!worker) {
+					if (direct_thread_server) {
+						const socket =
+							client_handle._socket || new Socket({ handle: client_handle, writable: true, readable: true });
+						direct_thread_server.deliverSocket(socket, port, received_data);
+						socket.resume();
+					} else if (current_thread_count > 0) {
+						// should be a thread coming on line
+						if (queued_sockets.length === 0) {
+							setTimeout(() => {
+								if (queued_sockets.length > 0) {
+									console.warn(
+										'Incoming sockets/requests have been queued for workers to start, and no workers have handled them. Check to make sure an error is not preventing workers from starting'
+									);
+								}
+							}, 10000).unref();
+						}
+						client_handle.localPort = port;
+						queued_sockets.push(client_handle);
+					} else {
+						console.log('start up a dynamic thread to handle request');
+						startHTTPWorker(0);
 					}
-					client_handle.localPort = port;
-					queued_sockets.push(client_handle);
-				} else {
-					console.log('start up a dynamic thread to handle request');
-					startHTTPWorker(0);
+					recordAction(false, 'socket-routed');
+					return;
 				}
-				recordAction(false, 'socket-routed');
-				return;
-			}
-			worker.requests++;
-			const fd = client_handle.fd;
-			if (fd >= 0) worker.postMessage({ port, fd, data: received_data });
-			// valid file descriptor, forward it
-			// Windows doesn't support passing sockets by file descriptors, so we have manually proxy the socket data
-			else proxySocket(this, worker, port);
-			recordAction(true, 'socket-routed');
-		});
-	};
+				worker.requests++;
+				const fd = client_handle.fd;
+				if (fd >= 0) worker.postMessage({ port, fd, data: received_data });
+				// valid file descriptor, forward it
+				// Windows doesn't support passing sockets by file descriptors, so we have manually proxy the socket data
+				else proxySocket(this, worker, port);
+				recordAction(true, 'socket-routed');
+			});
+		};
+		const pjson = require('../../package.json');
+		harper_logger.info(`HarperDB ${pjson.version} Server running on port ${port}`);
+	}
 	server.on('error', (error) => {
 		console.error('Error in socket server', error);
 	});
 	if (process.env._UNREF_SERVER) server.unref();
-	const pjson = require('../../package.json');
-	harper_logger.info(`HarperDB ${pjson.version} Server running on port ${port}`);
 	return server;
 }
 
@@ -187,7 +178,7 @@ let second_best_availability = 0;
  * Delegate to workers based on what worker is likely to be most idle/available.
  * @returns Worker
  */
-function findMostIdleWorker(socket, deliver) {
+function findMostIdleWorker(handle, deliver) {
 	// fast algorithm for delegating work to workers based on last idleness check (without constantly checking idleness)
 	let selected_worker;
 	let last_availability = 0;
@@ -246,11 +237,13 @@ function makeFindByHeaderAffinity(header) {
 	const header_expression = new RegExp(`${header}:\\s*(.+)`, 'i');
 	findByHeaderAffinity.readsData = true; // make sure we don't start with the socket being paused
 	return findByHeaderAffinity;
-	function findByHeaderAffinity(socket, deliver) {
+	function findByHeaderAffinity(handle, deliver) {
+		const socket = new Socket({ handle, readable: true, writable: true });
+		handle._socket = socket;
 		socket.on('data', (data) => {
 			// must forcibly stop the TCP handle to ensure no more data is read and that all further data is read by
 			// the child worker thread (once it resumes the socket)
-			socket._handle.readStop();
+			handle.readStop();
 			const header_block = data.toString('latin1'); // latin is standard HTTP header encoding and faster
 			const header_value = header_block.match(header_expression)?.[1];
 			const entry = sessions.get(header_value);
@@ -260,7 +253,7 @@ function makeFindByHeaderAffinity(header) {
 				return deliver(entry.worker);
 			}
 
-			findMostIdleWorker(socket, (worker) => {
+			findMostIdleWorker(handle, (worker) => {
 				sessions.set(header_value, {
 					worker,
 					lastUsed: now,
