@@ -1,4 +1,5 @@
 import send from 'send';
+import { realpathSync } from 'fs';
 const paths = new Map<string, string>();
 let started;
 export function start(options: { path: string; root: string; port: number; server: any; resources: any }) {
@@ -14,7 +15,7 @@ export function start(options: { path: string; root: string; port: number; serve
 							if (file_path) {
 								return {
 									handlesHeaders: true,
-									body: send(request, file_path),
+									body: send(request, realpathSync(file_path)),
 								};
 							}
 						}
