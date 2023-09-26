@@ -127,10 +127,8 @@ async function http(request, next_handler) {
 		const loaded_from_source = response_data?.wasLoadedFromSource?.();
 		if (loaded_from_source !== undefined) {
 			// this appears to be a caching table with a source
-			if (loaded_from_source) {
-				// indicate it was a missed cache
-				response_object.wasCacheMiss = true;
-			} else if (last_modification) {
+			response_object.wasCacheMiss = loaded_from_source; // indicate if it was a missed cache
+			if (!loaded_from_source && last_modification) {
 				headers.set('Age', Math.round((Date.now() - (request.lastRefreshed || last_modification)) / 1000));
 			}
 		}

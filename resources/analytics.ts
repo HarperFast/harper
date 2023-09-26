@@ -23,9 +23,10 @@ export function setAnalyticsEnabled(enabled) {
  */
 export function recordAction(value, metric, path?, method?, type?) {
 	if (!analytics_enabled) return;
-	// TODO: We may want to consider sampling a subset of queries if this has too high of overhead. It is primarily the sort operation that is expensive (computing median, p95, etc.)
+	// TODO: May want to consider nested paths, as they may yield faster hashing of (fixed) strings that hashing concatenated strings
 	let key = metric + (path ? '-' + path : '');
-	if (method) key += '-' + method;
+	if (method !== undefined) key += '-' + method;
+	if (type !== undefined) key += '-' + type;
 	let action = active_actions.get(key);
 	if (action) {
 		if (typeof value === 'number') {
@@ -197,7 +198,8 @@ async function aggregation(from_period, to_period = 60000) {
 			let { path, method, type, metric, count, total, distribution, ...measures } = entry;
 			if (!count) count = 1;
 			let key = metric + (path ? '-' + path : '');
-			if (method) key += '-' + method;
+			if (method !== undefined) key += '-' + method;
+			if (type !== undefined) key += '-' + type;
 			let action = aggregate_actions.get(key);
 			if (action) {
 				if (!action.count) action.count = 1;

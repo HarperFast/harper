@@ -279,7 +279,13 @@ function getHTTPServer(port, secure, is_operations_server) {
 				}
 				const handler_path = request.handlerPath;
 				const method = request.method;
-				recordAction(execution_time, 'duration', handler_path, method);
+				recordAction(
+					execution_time,
+					'duration',
+					handler_path,
+					method,
+					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
+				);
 				recordActionBinary(status < 400, 'success', handler_path, method);
 
 				let body = response.body;
