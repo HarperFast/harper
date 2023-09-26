@@ -158,7 +158,11 @@ export function startSocketServer(port = 0, session_affinity_identifier?) {
 				if (fd >= 0) worker.postMessage({ port, fd, data: received_data });
 				// valid file descriptor, forward it
 				// Windows doesn't support passing sockets by file descriptors, so we have manually proxy the socket data
-				else proxySocket(this, worker, port);
+				else {
+					const socket =
+							client_handle._socket || new Socket({ handle: client_handle, writable: true, readable: true });
+					proxySocket(socket, worker, port);
+				}
 				recordAction(true, 'socket-routed');
 			});
 		};
