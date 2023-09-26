@@ -209,6 +209,18 @@ describe('test REST calls', () => {
 			assert.equal(response.data.length, 2);
 			assert.equal(response.data[1], 21);
 		});
+		it('query with select one properties and limit', async () => {
+			let response = await axios('http://localhost:9926/FourProp?select(id)&limit(2)');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.length, 2);
+			assert.equal(response.data[1], "1");
+		});
+		it('query with only limit', async () => {
+			let response = await axios('http://localhost:9926/FourProp?limit(2)');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.length, 2);
+			assert.equal(response.data[1].id, "1");
+		});
 		it('query with select two properties as array', async () => {
 			let response = await axios('http://localhost:9926/FourProp?age=lt=22&select([age,id])');
 			assert.equal(response.status, 200);

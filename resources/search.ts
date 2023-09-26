@@ -198,6 +198,7 @@ export function parseQuery(query_string) {
 		const [, value, operator] = match;
 		switch (operator) {
 			case ')':
+			case ')&':
 				// finish call
 				switch (call) {
 					case 'limit':
@@ -233,6 +234,7 @@ export function parseQuery(query_string) {
 					default:
 						throw new Error(`Unknown query function call ${call}`);
 				}
+				attribute = undefined;
 				break;
 			case '(':
 				call = value;
