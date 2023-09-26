@@ -189,7 +189,6 @@ export function readMetaDb(
 	is_legacy?: boolean
 ) {
 	const env_init = new OpenEnvironmentObject(path, false);
-	if (path.includes('delete')) harper_logger.trace(`reading meta data from ${path}`);
 	try {
 		let root_store = database_envs.get(path);
 		if (root_store) root_store.needsDeletion = false;
@@ -218,7 +217,6 @@ export function readMetaDb(
 		const tables_to_load = new Map();
 		for (const { key, value } of dbis_store.getRange({ start: false })) {
 			let [table_name, attribute_name] = key.toString().split('/');
-			if (path.includes('delete')) harper_logger.trace(`read key ${key}`);
 			if (attribute_name === '') {
 				// primary key
 				attribute_name = value.name;
@@ -270,6 +268,7 @@ export function readMetaDb(
 					: env_get(CONFIG_PARAMS.LOGGING_AUDITLOG);
 			const track_deletes = primary_attribute.trackDeletes;
 			const expiration = primary_attribute.expiration;
+			const eviction = primary_attribute.eviction;
 			if (table) {
 				indices = table.indices;
 				existing_attributes = table.attributes;
@@ -285,7 +284,6 @@ export function readMetaDb(
 					dbis_store.putSync(primary_attribute.key, primary_attribute);
 				}
 				const dbi_init = new OpenDBIObject(!primary_attribute.is_hash_attribute, primary_attribute.is_hash_attribute);
-				harper_logger.trace(`openDB ${primary_attribute.key} from ${database_name}`);
 				primary_store = handleLocalTimeForGets(root_store.openDB(primary_attribute.key, dbi_init));
 				primary_store.rootStore = root_store;
 				primary_store.tableId = table_id;
@@ -297,7 +295,6 @@ export function readMetaDb(
 					if (!attribute.is_hash_attribute && (attribute.indexed || (attribute.attribute && !attribute.name))) {
 						if (!indices[attribute.name]) {
 							const dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
-							harper_logger.trace(`openDB ${attribute.key} from ${database_name}`);
 							indices[attribute.name] = root_store.openDB(attribute.key, dbi_init);
 						}
 						const existing_attribute = existing_attributes.find(
@@ -321,6 +318,7 @@ export function readMetaDb(
 						auditStore: audit_store,
 						audit,
 						expirationMS: expiration && expiration * 1000,
+						evictionMS: eviction && eviction * 1000,
 						trackDeletes: track_deletes,
 						tableName: table_name,
 						tableId: table_id,
@@ -350,6 +348,7 @@ interface TableDefinition {
 	database?: string;
 	path?: string;
 	expiration?: number;
+	eviction?: number;
 	audit?: boolean;
 	trackDeletes?: boolean;
 	attributes: any[];
@@ -453,6 +452,8 @@ export async function dropDatabase(database_name) {
  * @param database_name
  * @param custom_path
  * @param expiration
+ * @param eviction
+ * @param scanInterval
  * @param attributes
  * @param audit
  */
@@ -460,6 +461,8 @@ export function table({
 	table: table_name,
 	database: database_name,
 	expiration,
+	eviction,
+	scanInterval: scan_interval,
 	attributes,
 	audit,
 	trackDeletes: track_deletes,
@@ -510,6 +513,7 @@ export function table({
 		if (track_deletes) primary_key_attribute.trackDeletes = true;
 		audit = primary_key_attribute.audit = typeof audit === 'boolean' ? audit : env_get(CONFIG_PARAMS.LOGGING_AUDITLOG);
 		if (expiration) primary_key_attribute.expiration = expiration;
+		if (eviction) primary_key_attribute.eviction = eviction;
 		if (origin) {
 			if (!primary_key_attribute.origins) primary_key_attribute.origins = [origin];
 			else if (!primary_key_attribute.origins.includes(origin)) primary_key_attribute.origins.push(origin);
@@ -517,10 +521,8 @@ export function table({
 		harper_logger.trace(`${table_name} table loading, opening primary store`);
 		const dbi_init = new OpenDBIObject(false, true);
 		const dbi_name = table_name + '/';
-		harper_logger.trace(`openDB ${dbi_name} from ${database_name}`);
 		const primary_store = handleLocalTimeForGets(root_store.openDB(dbi_name, dbi_init));
 		primary_store.rootStore = root_store;
-		harper_logger.trace(`openDB ${INTERNAL_DBIS_NAME} from ${database_name}`);
 		attributes_dbi = root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
 		primary_store.tableId = attributes_dbi.get(NEXT_TABLE_ID);
 		if (!primary_store.tableId) primary_store.tableId = 1;
@@ -535,6 +537,7 @@ export function table({
 				audit,
 				trackDeletes: track_deletes,
 				expirationMS: expiration && expiration * 1000,
+				evictionMS: eviction && eviction * 1000,
 				primaryKey: primary_key,
 				tableName: table_name,
 				tableId: primary_store.tableId,
@@ -551,9 +554,7 @@ export function table({
 		startTxn();
 		attributes_dbi.put(dbi_name, primary_key_attribute);
 	}
-	harper_logger.trace(`${table_name} table loading, getting stored attributes`);
 	indices = Table.indices;
-	if (!attributes_dbi) harper_logger.trace(`openDB ${INTERNAL_DBIS_NAME} from ${database_name}`);
 	attributes_dbi = attributes_dbi || (root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init));
 	Table.dbisDB = attributes_dbi;
 	const indices_to_remove = [];
@@ -574,7 +575,6 @@ export function table({
 			if (index_dbi) indices_to_remove.push(index_dbi);
 		}
 	}
-	harper_logger.trace(`${table_name} table loading, comparing atributes`);
 	const attributes_to_index = [];
 	try {
 		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
@@ -586,13 +586,18 @@ export function table({
 			if (attribute.isPrimaryKey) {
 				attribute_descriptor = attribute_descriptor || attributes_dbi.get((dbi_key = table_name + '/'));
 				// primary key can't change indexing, but settings can change
-				if (audit !== Table.audit || (+expiration || undefined) !== (+attribute_descriptor.expiration || undefined)) {
+				if (
+					audit !== Table.audit ||
+					(+expiration || undefined) !== (+attribute_descriptor.expiration || undefined) ||
+					(+eviction || undefined) !== (+attribute_descriptor.eviction || undefined)
+				) {
 					const updated_primary_attribute = Object.assign({}, attribute_descriptor);
 					if (typeof audit === 'boolean') {
 						if (audit) Table.enableAuditing(audit);
 						updated_primary_attribute.audit = audit;
 					}
 					if (expiration) updated_primary_attribute.expiration = +expiration;
+					if (eviction) updated_primary_attribute.eviction = +eviction;
 					has_changes = true; // send out notification of the change
 					startTxn();
 					attributes_dbi.put(dbi_key, updated_primary_attribute);
@@ -611,7 +616,6 @@ export function table({
 				JSON.stringify(attribute_descriptor.elements) !== JSON.stringify(attribute.elements);
 			if (attribute.indexed) {
 				const dbi_init = new OpenDBIObject(true, false);
-				harper_logger.trace(`openDB ${dbi_key} from ${database_name}`);
 				const dbi = root_store.openDB(dbi_key, dbi_init);
 				if (
 					changed ||
@@ -663,7 +667,12 @@ export function table({
 			listener(Table, origin !== 'cluster');
 		}
 	}
-	if (expiration) Table.setTTLExpiration(+expiration);
+	if (expiration || eviction || scan_interval)
+		Table.setTTLExpiration({
+			expiration,
+			eviction,
+			scanInterval: scan_interval,
+		});
 	harper_logger.trace(`${table_name} table loaded`);
 
 	return Table;

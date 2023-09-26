@@ -15,7 +15,7 @@ import { COMPLETION, DatabaseTransaction, ImmediateTransaction } from './Databas
 import * as lmdb_terms from '../utility/lmdb/terms';
 import * as env_mngr from '../utility/environment/environmentManager';
 import { addSubscription, listenToCommits } from './transactionBroadcast';
-import { handleHDBError, ClientError } from '../utility/errors/hdbError';
+import { handleHDBError, ClientError, ServerError } from '../utility/errors/hdbError';
 import * as signalling from '../utility/signalling';
 import { SchemaEventMsg, UserEventMsg } from '../server/threads/itc';
 import { databases, table } from './databases';
@@ -86,7 +86,7 @@ export function makeTable(options) {
 		schemaDefined: schema_defined,
 		dbisDB: dbis_db,
 	} = options;
-	let { expirationMS: expiration_ms, audit, trackDeletes: track_deletes } = options;
+	let { expirationMS: expiration_ms, evictionMS: eviction_ms, audit, trackDeletes: track_deletes } = options;
 	let { attributes } = options;
 	if (!attributes) attributes = [];
 	listenToCommits(primary_store, audit_store);
@@ -96,8 +96,8 @@ export function makeTable(options) {
 	let has_source_get;
 	let pending_deletion_count_write;
 	let primary_key_attribute = {};
+	let last_eviction_completion: Promise<void> = Promise.resolve();
 	let created_time_property, updated_time_property, expires_at_property;
-	let commit_listeners: Set;
 	for (const attribute of attributes) {
 		if (attribute.assignCreatedTime || attribute.name === '__createdtime__') created_time_property = attribute;
 		if (attribute.assignUpdatedTime || attribute.name === '__updatedtime__') updated_time_property = attribute;
@@ -138,7 +138,7 @@ export function makeTable(options) {
 			// define a source for retrieving invalidated entries for caching purposes
 			if (options) {
 				this.sourceOptions = options;
-				if (options.expiration) this.setTTLExpiration(options.expiration);
+				if (options.expiration || options.eviction || options.scanInterval) this.setTTLExpiration(options);
 			}
 			this.sources[options?.runFirst ? 'unshift' : 'push'](source);
 			has_source_get = source && source.get && (!source.get.reliesOnPrototype || source.prototype.get);
@@ -287,7 +287,33 @@ export function makeTable(options) {
 						throw new Error(`Invalid id ${JSON.stringify(id)}`);
 					}
 					const sync = !resource_options?.async || primary_store.cache?.get(id);
-					return loadLocalRecord(id, request, null, resource, sync, resource_options?.ensureLoaded);
+					const txn = txnForContext(request);
+					const read_txn = txn.getReadTxn();
+					if (read_txn?.isDone) {
+						throw new Error('You can not read from a transaction that has already been committed/aborted');
+					}
+					return loadLocalRecord(id, request, { transaction: read_txn }, sync, (entry) => {
+						if (entry) {
+							updateResource(resource, entry);
+						} else resource[RECORD_PROPERTY] = null;
+						if (request.onlyIfCached && request.noCacheStore) {
+							// don't go into the loading from source condition, but HTTP spec says to
+							// return 504 (rather than 404) if there is no content and the cache-control header
+							// dictates not to go to source (and not store new value)
+							if (!resource.doesExist()) throw new ServerError('Entry is not cached', 504);
+						} else if (resource_options?.ensureLoaded) {
+							const loading_from_source = ensureLoadedFromSource(id, entry, request, resource);
+							if (loading_from_source) {
+								txn?.disregardReadTxn();
+								resource[LOADED_FROM_SOURCE] = true;
+								return when(loading_from_source, (entry) => {
+									updateResource(resource, entry);
+									return resource;
+								});
+							}
+						}
+						return resource;
+					});
 				} catch (error) {
 					if (error.message.includes('Unable to serialize object')) error.message += ': ' + JSON.stringify(id);
 					throw error;
@@ -314,30 +340,60 @@ export function makeTable(options) {
 		/**
 		 * Set TTL expiration for records in this table. On retrieval, record timestamps are checked for expiration.
 		 * This also informs the scheduling for record eviction.
-		 * @param expiration_time Time in seconds
+		 * @param expiration_time Time in seconds until records expire (are stale)
+		 * @param eviction_time Time in seconds until records are evicted (removed)
 		 */
-		static setTTLExpiration(expiration_time) {
+		static setTTLExpiration(expiration: number | { expiration: number; eviction?: number; scanInterval?: number }) {
 			// we set up a timer to remove expired entries. we only want the timer/reaper to run in one thread,
 			// so we use the first one
-			expiration_ms = expiration_time * 1000;
+			let scanning_interval;
+			if (typeof expiration === 'number') {
+				expiration_ms = expiration * 1000;
+				if (!eviction_ms) eviction_ms = 0; // by default, no extra time for eviction
+			} else if (expiration && typeof expiration === 'object') {
+				// an object with expiration times/options specified
+				expiration_ms = expiration.expiration * 1000;
+				eviction_ms = (expiration.eviction || 0) * 1000;
+				scanning_interval = expiration.scanInterval * 1000;
+			} else throw new Error('Invalid expiration value type');
+			if (expiration_ms < 0) throw new Error('Expiration can not be negative');
+			// default to one quarter of the total eviction time, and make sure it fits into a 32-bit signed integer
+			scanning_interval = Math.min(scanning_interval || (expiration_ms + eviction_ms) / 4, 0x7fffffff);
 			if (getWorkerIndex() === 0) {
-				if (this.expirationTimer) clearInterval(this.expirationTimer);
-				this.expirationTimer = setInterval(async () => {
-					if (this.primaryStore.rootStore.status !== 'open') return clearInterval(this.expirationTimer);
-					// iterate through all entries to find expired ones
-					for (const { key, value: record, version, expiresAt, metadataFlags } of this.primaryStore.getRange({
-						start: false,
-						snapshot: false,
-						versions: true,
-						lazy: true,
-					})) {
-						if (expiresAt && expiresAt < Date.now()) {
-							// evict!
-							TableResource.evict(key, record, version);
-						}
-						await rest();
-					}
-				}, Math.min(expiration_ms, 0x7fffffff)).unref(); // don't let this prevent closing the thread and make sure it can fit in 32-bit signed number
+				if (this.expirationTimer) clearTimeout(this.expirationTimer);
+				if (!scanning_interval) return;
+				const startNextTimer = () => {
+					harper_logger.trace(`Scheduled next eviction scan in ${scanning_interval}ms`);
+					this.expirationTimer = setTimeout(
+						() =>
+							(last_eviction_completion = last_eviction_completion.then(async () => {
+								startNextTimer();
+								if (this.primaryStore.rootStore.status !== 'open') {
+									clearTimeout(this.expirationTimer);
+									return;
+								}
+								harper_logger.trace(`Starting eviction scan for ${table_name}`);
+								let count = 0;
+								// iterate through all entries to find expired ones
+								for (const { key, value: record, version, expiresAt } of this.primaryStore.getRange({
+									start: false,
+									snapshot: false, // we don't want to keep read transaction snapshots open
+									versions: true,
+									lazy: true, // only want to access metadata
+								})) {
+									if (expiresAt && expiresAt + eviction_ms < Date.now()) {
+										// evict!
+										TableResource.evict(key, record, version);
+										count++;
+									}
+									await rest();
+								}
+								harper_logger.trace(`Finished eviction scan for ${table_name}, evicted ${count} entries`);
+							})),
+						scanning_interval
+					).unref(); // don't let this prevent closing the thread and make sure it can fit in 32-bit signed number
+				};
+				startNextTimer();
 			}
 		}
 
@@ -585,6 +641,7 @@ export function makeTable(options) {
 						INVALIDATED,
 						audit,
 						this[CONTEXT],
+						0,
 						'invalidate'
 					);
 					// TODO: record_deletion?
@@ -617,13 +674,13 @@ export function makeTable(options) {
 				// if we are evicting and not deleting, need to preserve the partial record
 				if (partial_record) {
 					// treat this as a record resolution (so previous version is checked) with no audit record
-					updateRecord(id, partial_record, entry, existing_version, EVICTED, null, null, null, true);
+					updateRecord(id, partial_record, entry, existing_version, EVICTED, null, null, 0, null, true);
 					return;
 				}
 			}
 			if (audit) {
 				// update the record to null it out, maintaining the reference to the audit history
-				updateRecord(id, null, entry, existing_version, EVICTED, null, null, null, true);
+				updateRecord(id, null, entry, existing_version, EVICTED, null, null, 0, null, true);
 			}
 			// if no timestamps for audit, just remove
 			else {
@@ -746,7 +803,16 @@ export function makeTable(options) {
 						);*/
 					}
 					updateIndices(id, existing_record, record);
-					updateRecord(id, record, existing_entry, txn_time, 0, audit, context);
+					updateRecord(
+						id,
+						record,
+						existing_entry,
+						txn_time,
+						0,
+						audit,
+						context,
+						context.expiresAt || (expiration_ms ? expiration_ms + Date.now() : 0)
+					);
 					if (existing_record === null && !retry) recordDeletion(-1);
 					return completion;
 				},
@@ -794,7 +860,7 @@ export function makeTable(options) {
 					updateIndices(this[ID_PROPERTY], existing_record);
 					harper_logger.trace(`Write delete entry`, audit || track_deletes, txn_time);
 					if (audit || track_deletes) {
-						updateRecord(id, null, this[ENTRY_PROPERTY], txn_time, 0, audit, this[CONTEXT], 'delete');
+						updateRecord(id, null, this[ENTRY_PROPERTY], txn_time, 0, audit, this[CONTEXT], 0, 'delete');
 						if (!audit) enqueueDeletionCleanup();
 						if (!retry) recordDeletion(1);
 					} else {
@@ -935,20 +1001,23 @@ export function makeTable(options) {
 					lazy: filters_length > 0 || select?.length < 4,
 					alwaysPrefetch: true,
 				};
-				return ids.map(
-					// for filter operations, we intentionally use async and yield the event turn so that scanning queries
-					// do not hog resources and give more processing opportunity for more efficient index-driven queries.
-					// this also gives an opportunity to prefetch and ensure any page faults happen in a different thread
-					(id) =>
-						when(loadLocalRecord(id, context, options, null, false, request.ensureLoaded ?? true), (entry) => {
-							const record = entry?.value;
-							if (!record) return SKIP;
-							for (let i = 0; i < filters_length; i++) {
-								if (!filters[i](record)) return SKIP; // didn't match filters
-							}
-							return record;
-						})
-				);
+				const ensure_loaded = request.ensureLoaded !== false;
+				// for filter operations, we intentionally use async and yield the event turn so that scanning queries
+				// do not hog resources and give more processing opportunity for more efficient index-driven queries.
+				// this also gives an opportunity to prefetch and ensure any page faults happen in a different thread
+				function processEntry(entry, id?) {
+					if (ensure_loaded && id !== undefined) {
+						const loading_from_source = !context.onlyIfCached && ensureLoadedFromSource(id, entry, context, this);
+						if (loading_from_source) return loading_from_source.then((entry) => processEntry(entry));
+					}
+					const record = entry?.value;
+					if (!record) return SKIP;
+					for (let i = 0; i < filters_length; i++) {
+						if (!filters[i](record)) return SKIP; // didn't match filters
+					}
+					return record;
+				}
+				return ids.map((id) => loadLocalRecord(id, context, options, false, processEntry));
 			}
 			return records;
 		}
@@ -1119,6 +1188,7 @@ export function makeTable(options) {
 						0,
 						true,
 						this[CONTEXT],
+						existing_entry?.expiresAt,
 						'message',
 						false,
 						message
@@ -1322,51 +1392,15 @@ export function makeTable(options) {
 		}
 		return has_changes;
 	}
-	function loadLocalRecord(id, context, options, resource, sync, ensure_loaded) {
+	function loadLocalRecord(id, context, options, sync, with_entry) {
 		// TODO: determine if we use lazy access properties
 		const whenPrefetched = () => {
-			let txn;
-			if (!options) {
-				txn = txnForContext(context);
-				const read_txn = txn.getReadTxn();
-				options = { transaction: read_txn };
-				// this is all for debugging, should be removed eventually
-				if (read_txn?.isDone) {
-					throw new Error('Invalid read transaction');
-				}
+			const entry = primary_store.getEntry(id, options);
+			if (entry && context) {
+				if (entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
+				if (entry?.localTime && !context.lastRefreshed) context.lastRefreshed = entry.localTime;
 			}
-			let entry;
-			try {
-				entry = primary_store.getEntry(id, options);
-			} catch (error) {
-				harper_logger.error(error);
-				harper_logger.error('reader list', primary_store.readerList());
-				harper_logger.error('reader check', primary_store.readerCheck());
-				harper_logger.error('reader list', primary_store.readerList());
-				throw error;
-			}
-			if (entry && context && entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
-			if (resource) {
-				if (entry) {
-					updateResource(resource, entry);
-				} else resource[RECORD_PROPERTY] = null;
-				if (ensure_loaded) {
-					const loaded_from_source = ensureLoadedFromSource(id, entry, context);
-					if (loaded_from_source) {
-						txn?.disregardReadTxn();
-						resource[LOADED_FROM_SOURCE] = true;
-						return when(loaded_from_source, (entry) => {
-							updateResource(resource, entry);
-							return resource;
-						});
-					}
-				}
-				return resource;
-			} else if (ensure_loaded) {
-				const loaded_from_source = ensureLoadedFromSource(id, entry, context);
-				if (loaded_from_source) return loaded_from_source;
-				return entry;
-			}
+			return with_entry(entry, id);
 		};
 		// if it is cached, we use that as indication that we can get the value very quickly
 		if (sync) return whenPrefetched();
@@ -1381,24 +1415,37 @@ export function makeTable(options) {
 		);
 	}
 
-	function ensureLoadedFromSource(id, entry, context) {
+	function ensureLoadedFromSource(id, entry, context, resource?) {
 		if (has_source_get) {
 			let needs_source_data;
-			if (entry) {
-				if (
-					!entry.value ||
-					entry.metadataFlags & (INVALIDATED | EVICTED) || // invalidated or evicted should go to load from source
-					(entry.expiresAt && entry.expiresAt < Date.now())
-				)
-					needs_source_data = true;
-			} else needs_source_data = true;
-			recordActionBinary(!needs_source_data, 'cache-hit', table_name);
+			if (context.noCache) needs_source_data = true;
+			else {
+				if (entry) {
+					if (
+						!entry.value ||
+						entry.metadataFlags & (INVALIDATED | EVICTED) || // invalidated or evicted should go to load from source
+						(entry.expiresAt && entry.expiresAt < Date.now())
+					)
+						needs_source_data = true;
+				} else needs_source_data = true;
+				recordActionBinary(!needs_source_data, 'cache-hit', table_name);
+			}
 			if (needs_source_data) {
-				return getFromSource(id, entry, context).then((entry) => {
+				const loading_from_source = getFromSource(id, entry, context).then((entry) => {
 					if (entry?.value?.[RECORD_PROPERTY]) harper_logger.error('Can not assign a record with a record property');
-					if (context && entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
+					if (context) {
+						if (entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
+						context.lastRefreshed = Date.now(); // localTime is probably not available yet
+					}
 					return entry;
 				});
+				// if the resource defines a method for indicating if stale-while-revalidate is allowed for a record
+				if (context?.onlyIfCached || (entry?.value && resource?.allowStaleWhileRevalidate?.(entry, id))) {
+					// since we aren't waiting for it any errors won't propagate so we should at least log them
+					loading_from_source.catch((error) => harper_logger.warn(error));
+					if (context?.onlyIfCached && !resource.doesExist()) throw new ServerError('Entry is not cached', 504);
+					return; // go ahead and return and let the current stale value be used while we re-validate
+				} else return loading_from_source; // return the promise for the resolved value
 			}
 		}
 	}
@@ -1485,111 +1532,132 @@ export function makeTable(options) {
 			// we don't want to wait for the transaction because we want to return as fast as possible
 			// and let the transaction commit in the background
 			let resolved;
-			transaction(source_context, async (txn) => {
-				const start = performance.now();
-				let updated_record;
-				let has_changes, invalidated;
-				try {
-					// find the first data source that will fulfill our request for data
-					for (const source of TableResource.sources) {
-						if (source.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
-							source_context.source = source;
-							updated_record = await source.get(id, source_context);
-							if (updated_record) break;
+			when(
+				transaction(source_context, async (txn) => {
+					const start = performance.now();
+					let updated_record;
+					let has_changes, invalidated;
+					try {
+						// find the first data source that will fulfill our request for data
+						for (const source of TableResource.sources) {
+							if (source.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
+								source_context.source = source;
+								updated_record = await source.get(id, source_context);
+								if (updated_record) break;
+							}
 						}
-					}
-					invalidated = metadata_flags & INVALIDATED;
-					const version = source_context.lastModified || (invalidated && existing_version);
-					has_changes = invalidated || version > existing_version;
-					const resolve_duration = performance.now() - start;
-					recordAction(resolve_duration, 'cache-resolution', table_name);
-					if (response_headers) {
-						response_headers.append('Server-Timing', `cache-resolve;dur=${resolve_duration.toFixed(2)}`);
-					}
-					txn.timestamp = version;
-					if (expiration_ms && !source_context.expiresAt) source_context.expiresAt = Date.now() + expiration_ms;
-					if (updated_record) {
-						if (typeof updated_record.toJSON === 'function') updated_record = updated_record.toJSON();
-						if (primary_key && updated_record[primary_key] !== id) updated_record[primary_key] = id;
-					}
-					resolved = true;
-					resolve({
-						version,
-						value: updated_record,
-					});
-				} catch (error) {
-					reject(error);
-					throw error;
-				}
-				const db_txn = txnForContext(source_context);
-				db_txn.addWrite({
-					key: id,
-					store: primary_store,
-					entry: existing_entry,
-					noRetry: true, // don't try to update on retry, just let the newer version win
-					nodeName: 'source',
-					commit: (txn_time) => {
-						const has_index_changes = updateIndices(id, existing_record, updated_record);
-						let completion;
+						invalidated = metadata_flags & INVALIDATED;
+						const version = source_context.lastModified || (invalidated && existing_version);
+						has_changes = invalidated || version > existing_version;
+						const resolve_duration = performance.now() - start;
+						recordAction(resolve_duration, 'cache-resolution', table_name);
+						if (response_headers) {
+							response_headers.append('Server-Timing', `cache-resolve;dur=${resolve_duration.toFixed(2)}`);
+						}
+						txn.timestamp = version;
+						if (expiration_ms && !source_context.expiresAt) source_context.expiresAt = Date.now() + expiration_ms;
 						if (updated_record) {
-							for (const source of TableResource.sources) {
-								if (source_context.source === source) break;
-								if (source.put && (!source.put.reliesOnPrototype || source.prototype.put)) {
-									const next_completion = source.put(id, updated_record, source_context);
-									completion = completion ? Promise.all([completion, next_completion]) : next_completion;
-								}
-							}
-							// TODO: We are doing a double check for ifVersion that should probably be cleaned out
-							updateRecord(
-								id,
-								updated_record,
-								existing_entry,
-								txn_time,
-								0,
-								(audit && has_changes) || null,
-								source_context,
-								'put',
-								Boolean(invalidated)
-							).then((success) => {
-								primary_store.unlock(id, existing_version);
+							if (typeof updated_record.toJSON === 'function') updated_record = updated_record.toJSON();
+							if (primary_key && updated_record[primary_key] !== id) updated_record[primary_key] = id;
+						}
+						resolved = true;
+						resolve({
+							version,
+							value: updated_record,
+						});
+					} catch (error) {
+						if (
+							(error.code === 'ECONNRESET' && !context?.mustRevalidate) ||
+							(context?.staleIfError &&
+								(error.statusCode === 500 ||
+									error.statusCode === 502 ||
+									error.statusCode === 503 ||
+									error.statusCode === 504))
+						)
+							// these are conditions under which we can use stale data after an error
+							resolve({
+								version: existing_version,
+								value: existing_record,
 							});
-						} else {
-							for (const source of TableResource.sources) {
-								if (source_context.source === source) break;
-								if (source.delete && (!source.delete.reliesOnPrototype || source.prototype.delete)) {
-									const next_completion = source.delete(id, source_context);
-									completion = completion ? Promise.all([completion, next_completion]) : next_completion;
+						else reject(error);
+						source_context.transaction.abort();
+						return;
+					}
+					if (context?.noCacheStore) {
+						// abort before we write any change
+						source_context.transaction.abort();
+						return;
+					}
+					const db_txn = txnForContext(source_context);
+					db_txn.addWrite({
+						key: id,
+						store: primary_store,
+						entry: existing_entry,
+						noRetry: true, // don't try to update on retry, just let the newer version win
+						nodeName: 'source',
+						commit: (txn_time) => {
+							const has_index_changes = updateIndices(id, existing_record, updated_record);
+							let completion;
+							if (updated_record) {
+								for (const source of TableResource.sources) {
+									if (source_context.source === source) break;
+									if (source.put && (!source.put.reliesOnPrototype || source.prototype.put)) {
+										const next_completion = source.put(id, updated_record, source_context);
+										completion = completion ? Promise.all([completion, next_completion]) : next_completion;
+									}
 								}
-							}
-
-							if (audit || track_deletes) {
+								// TODO: We are doing a double check for ifVersion that should probably be cleaned out
 								updateRecord(
 									id,
-									null,
+									updated_record,
 									existing_entry,
 									txn_time,
 									0,
 									(audit && has_changes) || null,
 									source_context,
-									'delete',
+									source_context.expiresAt,
+									'put',
 									Boolean(invalidated)
-								).then((success) => {
-									primary_store.unlock(id, existing_version);
-								});
+								);
 							} else {
-								primary_store.remove(id, updating_version).then((success) => {
-									primary_store.unlock(id, existing_version);
-								});
+								for (const source of TableResource.sources) {
+									if (source_context.source === source) break;
+									if (source.delete && (!source.delete.reliesOnPrototype || source.prototype.delete)) {
+										const next_completion = source.delete(id, source_context);
+										completion = completion ? Promise.all([completion, next_completion]) : next_completion;
+									}
+								}
+
+								if (audit || track_deletes) {
+									updateRecord(
+										id,
+										null,
+										existing_entry,
+										txn_time,
+										0,
+										(audit && has_changes) || null,
+										source_context,
+										0,
+										'delete',
+										Boolean(invalidated)
+									);
+								} else {
+									primary_store.remove(id, updating_version);
+								}
 							}
-						}
-						return completion;
-					},
-				});
-			}).catch((error) => {
-				primary_store.unlock(id, existing_version);
-				if (resolved) harper_logger.error('Error committing cache update', error);
-				// else the error was already propagated as part of the promise that we returned
-			});
+							return completion;
+						},
+					});
+				}),
+				() => {
+					primary_store.unlock(id, existing_version);
+				},
+				(error) => {
+					primary_store.unlock(id, existing_version);
+					if (resolved) harper_logger.error('Error committing cache update', error);
+					// else the error was already propagated as part of the promise that we returned
+				}
+			);
 		});
 	}
 	/*

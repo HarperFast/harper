@@ -31,6 +31,17 @@ async function http(request, next_handler) {
 		request.handlerPath = entry.path;
 		const resource_request = { url: entry.relativeURL, async: true }; // TODO: We don't want to have to remove the forward slash and then re-add it
 		const resource = entry.Resource;
+		let cache_control = headers_object['cache-control'];
+		if (cache_control) {
+			cache_control = cache_control.toLowerCase();
+			const max_age = cache_control.match(/max-age=(\d+)/)?.[1];
+			if (max_age) request.expiresAt = max_age * 1000 + Date.now();
+			if (cache_control.includes('only-if-cached')) request.onlyIfCached = true;
+			if (cache_control.includes('no-cache')) request.noCache = true;
+			if (cache_control.includes('no-store')) request.noCacheStore = true;
+			if (cache_control.includes('stale-if-error')) request.staleIfError = true;
+			if (cache_control.includes('must-revalidate')) request.mustRevalidate = true;
+		}
 		let response_data = await transaction(request, () => {
 			if (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'QUERY') {
 				// TODO: Support cancellation (if the request otherwise fails or takes too many bytes)
@@ -78,7 +89,7 @@ async function http(request, next_handler) {
 		let last_modification;
 		if (response_data == undefined) {
 			status = method === 'GET' || method === 'HEAD' ? 404 : 204;
-		} else if ((last_modification = request?.lastModified)) {
+		} else if ((last_modification = request.lastModified)) {
 			etag_float[0] = last_modification;
 			// base64 encoding of the 64-bit float encoding of the date in ms (with quotes)
 			// very fast and efficient
@@ -120,7 +131,7 @@ async function http(request, next_handler) {
 				// indicate it was a missed cache
 				response_object.wasCacheMiss = true;
 			} else if (last_modification) {
-				headers.set('Age', Math.round((Date.now() - last_modification) / 1000));
+				headers.set('Age', Math.round((Date.now() - (request.lastRefreshed || last_modification)) / 1000));
 			}
 		}
 		// TODO: Handle 201 Created

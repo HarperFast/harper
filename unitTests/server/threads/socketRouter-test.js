@@ -36,7 +36,10 @@ describe('Socket Router', () => {
 		}
 		// make sure that the messages are reasonably evenly distributed
 		for (let worker of workers) {
-			assert.ok(worker.socketsRouted > 10, 'Received enough connections ' + worker.socketsRouted);
+			assert.ok(
+				worker.socketsRouted > 10,
+				'Received enough connections ' + workers.map((worker) => worker.socketsRouted)
+			);
 		}
 		// make sure worker[2] got more because it had a higher expected idle
 		assert.ok(workers[2].socketsRouted > 30, 'Received enough connections' + workers[2].socketsRouted);
