@@ -433,14 +433,12 @@ if (isMainThread) {
 		}
 		try {
 			for await (let { filename } of watch(dir, { persistent: false })) {
-				if (extname(filename) === '.ts' || extname(filename) === '.js' || extname(filename) === '.graphql') {
-					if (queued_restart) clearTimeout(queued_restart);
-					queued_restart = setTimeout(async () => {
-						if (before_restart) await before_restart();
-						await restartWorkers();
-						console.log('Reloaded HarperDB components');
-					}, 100);
-				}
+				if (queued_restart) clearTimeout(queued_restart);
+				queued_restart = setTimeout(async () => {
+					if (before_restart) await before_restart();
+					await restartWorkers();
+					console.log('Reloaded HarperDB components');
+				}, 100);
 			}
 		} catch (error) {
 			console.warn('Error trying to watch component directory', dir, error);

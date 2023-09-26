@@ -11,7 +11,8 @@ import * as REST from '../server/REST';
 import * as fastify_routes_handler from '../server/fastifyRoutes';
 import * as staticFiles from '../server/static';
 import fg from 'fast-glob';
-import { watchDir, restartWorkers } from '../server/threads/manageThreads';
+import { watchDir, restartWorkers, getWorkerIndex } from '../server/threads/manageThreads';
+import harper_logger from '../utility/logging/harper_logger';
 import { secureImport } from '../security/jsLoader';
 import { server } from '../server/Server';
 import { Resources } from '../resources/Resources';
@@ -222,6 +223,13 @@ export async function loadComponent(
 				if (extension_module.handleFile && component_config.files) {
 					if (component_config.files.includes('..')) throw handleHDBError('Can not reference parent directories');
 					const files = join(folder, component_config.files);
+					const end_of_fixed_path = files.indexOf('/*');
+					if (end_of_fixed_path > -1 && !existsSync(files.slice(0, end_of_fixed_path)))
+						throw new Error(
+							`The path ${files.slice(0, end_of_fixed_path)} as the base of the resolved path of ${
+								component_config.files
+							} does not exist`
+						);
 					for (const entry of await fg(files, { onlyFiles: false, objectMode: true })) {
 						const { path, dirent } = entry;
 						let relative_path = relative(folder, path);
@@ -231,6 +239,10 @@ export async function loadComponent(
 							if (root_path.endsWith('/')) root_path = root_path.slice(0, -1);
 							root_path += '/';
 							if (relative_path.startsWith(root_path)) relative_path = relative_path.slice(root_path.length);
+							else
+								throw new Error(
+									`The root path ${component_config.root} does not reference a valid part of the file path ${relative_path}`
+								);
 						}
 						const app_name = basename(folder);
 						let url_path = component_config.path || '/';
@@ -253,7 +265,7 @@ export async function loadComponent(
 								if (resources.isWorker) await extension_module.handleDirectory?.(url_path, path, resources);
 							}
 						} catch (error) {
-							console.error(
+							(getWorkerIndex() === 0 ? console : harper_logger).error(
 								`Could not load ${dirent.isFile() ? 'file' : 'directory'} ${path} using ${
 									component_config.module
 								} for application ${folder}`,
@@ -264,7 +276,10 @@ export async function loadComponent(
 					}
 				}
 			} catch (error) {
-				console.error(`Could not load component ${component_name} for application ${folder}`, error);
+				(getWorkerIndex() === 0 ? console : harper_logger).error(
+					`Could not load component ${component_name} for application ${folder}`,
+					error
+				);
 				resources.set(component_config.path || '/', new ErrorResource(error), null, true);
 			}
 		}
