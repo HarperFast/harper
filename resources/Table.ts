@@ -822,8 +822,17 @@ export function makeTable(options) {
 
 		async delete(request: Request): Promise<boolean> {
 			if (typeof request === 'string') return this.deleteProperty(request);
-			if (!this[RECORD_PROPERTY]) return false;
 			// TODO: Handle deletion of a collection/query
+			if (this[IS_COLLECTION]) {
+				for await (const entry of this.search(request)) {
+					const resource = await TableResource.getResource(entry[primary_key], this.getContext(), {
+						ensureLoaded: false,
+					});
+					resource._writeDelete(request);
+				}
+				return;
+			}
+			if (!this[RECORD_PROPERTY]) return false;
 			return this._writeDelete(request);
 		}
 		_writeDelete(options?: any) {

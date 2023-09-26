@@ -105,6 +105,12 @@ describe('test REST with property updates', () => {
 		response = await axios.get('http://localhost:9926/namespace/SubObject/multi/?any=not-here');
 		assert.equal(response.status, 200);
 		assert.equal(response.data.length, 0);
+
+		response = await axios.delete('http://localhost:9926/namespace/SubObject/multi/part/');
+		response = await axios.get('http://localhost:9926/namespace/SubObject/multi/part/');
+		assert.equal(response.status, 200);
+		assert.equal(response.data.length, 0);
+
 	});
 
 	it('put with encoded slashes, dots', async () => {
