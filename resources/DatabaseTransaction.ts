@@ -88,6 +88,7 @@ export class DatabaseTransaction implements Transaction {
 			resolution = this.writes[0].store.transaction(() => {
 				for (const write of this.writes) {
 					// we load latest data while in the transaction
+					if (retries && write.noRetry) continue;
 					write.entry = write.store.getEntry(write.key);
 					doWrite(write);
 				}
