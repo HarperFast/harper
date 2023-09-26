@@ -241,7 +241,8 @@ export async function loadComponent(
 							if (relative_path.startsWith(root_path)) relative_path = relative_path.slice(root_path.length);
 							else
 								throw new Error(
-									`The root path ${component_config.root} does not reference a valid part of the file path ${relative_path}`
+									`The root path ${component_config.root} does not reference a valid part of the file path ${relative_path}.` +
+										`The root path should be used to indicate the relative path/part of the file path for determining the exported web path.`
 								);
 						}
 						const app_name = basename(folder);
