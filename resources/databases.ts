@@ -66,7 +66,7 @@ export function getDatabases(): Databases {
 	loaded_databases = true;
 	defined_databases = new Map();
 	let database_path = getHdbBasePath() && join(getHdbBasePath(), DATABASES_DIR_NAME);
-	const schema_configs = env_get(CONFIG_PARAMS.SCHEMAS) || {};
+	const schema_configs = env_get(CONFIG_PARAMS.DATABASES) || {};
 	// not sure why this doesn't work with the environmemt manager
 	if (process.env.SCHEMAS_DATA_PATH) schema_configs.data = { path: process.env.SCHEMAS_DATA_PATH };
 	database_path =
@@ -404,10 +404,10 @@ export function database({ database: database_name, table: table_name }) {
 	getDatabases();
 	const database = ensureDB(database_name);
 	let database_path = join(getHdbBasePath(), DATABASES_DIR_NAME);
-	const table_path = table_name && env_get(CONFIG_PARAMS.SCHEMAS)?.[database_name]?.tables?.[table_name]?.path;
+	const table_path = table_name && env_get(CONFIG_PARAMS.DATABASES)?.[database_name]?.tables?.[table_name]?.path;
 	database_path =
 		table_path ||
-		env_get(CONFIG_PARAMS.SCHEMAS)?.[database_name]?.path ||
+		env_get(CONFIG_PARAMS.DATABASES)?.[database_name]?.path ||
 		process.env.STORAGE_PATH ||
 		env_get(CONFIG_PARAMS.STORAGE_PATH) ||
 		(existsSync(database_path) ? database_path : join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME));

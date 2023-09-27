@@ -175,7 +175,7 @@ function proxyRequest(message) {
 function registerServer(server, port) {
 	if (!+port) {
 		// if no port is provided, default to custom functions port
-		port = parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10);
+		port = parseInt(env.get(terms.CONFIG_PARAMS.HTTP_PORT), 10);
 	}
 	let existing_server = SERVERS[port];
 	if (existing_server) {
@@ -202,13 +202,15 @@ function getPorts(options) {
 	port_num = parseInt(options?.port);
 	if (port_num) ports.push({ port: port_num, secure: false });
 	if (ports.length === 0) {
-		// if no port is provided, default to custom functions port
-		ports = [
-			{
-				port: parseInt(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT), 10),
+		// if no port is provided, default to http port
+		ports = [];
+		if (env.get(terms.CONFIG_PARAMS.HTTP_PORT) != null)
+			ports.push({
+				port: env.get(terms.CONFIG_PARAMS.HTTP_PORT),
 				secure: env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_HTTPS),
-			},
-		];
+			});
+		if (env.get(terms.CONFIG_PARAMS.HTTP_SECUREPORT) != null)
+			ports.push({ port: env.get(terms.CONFIG_PARAMS.HTTP_SECUREPORT), secure: true });
 	}
 	return ports;
 }
@@ -226,16 +228,17 @@ function httpServer(listener, options) {
 }
 function getHTTPServer(port, secure, is_operations_server) {
 	if (!http_servers[port]) {
-		const server_prefix = is_operations_server ? 'operationsapi' : 'customfunctions';
+		let server_prefix = is_operations_server ? 'operationsApi_network' : 'http';
 		let options = {
-			keepAliveTimeout: env.get(server_prefix + '_network_keepalivetimeout'),
-			headersTimeout: env.get(server_prefix + '_network_headerstimeout'),
-			requestTimeout: env.get(server_prefix + '_network_timeout'),
+			keepAliveTimeout: env.get(server_prefix + '_keepAliveTimeout'),
+			headersTimeout: env.get(server_prefix + '_headersTimeout'),
+			requestTimeout: env.get(server_prefix + '_timeout'),
 		};
 		if (secure) {
-			const privateKey = env.get(server_prefix + '_tls_privatekey');
-			const certificate = env.get(server_prefix + '_tls_certificate');
-			const certificateAuthority = env.get(server_prefix + '_tls_certificateauthority');
+			server_prefix = is_operations_server ? 'operationsApi_' : '';
+			const privateKey = env.get(server_prefix + 'tls_privateKey');
+			const certificate = env.get(server_prefix + 'tls_certificate');
+			const certificateAuthority = env.get(server_prefix + 'tls_certificateAuthority');
 
 			Object.assign(options, {
 				key: readFileSync(privateKey),
@@ -380,9 +383,9 @@ function onRequest(listener, options) {
  */
 function onSocket(listener, options) {
 	if (options.securePort) {
-		const privateKey = env.get('customfunctions_tls_privatekey');
-		const certificate = env.get('customfunctions_tls_certificate');
-		const certificateAuthority = env.get('customfunctions_tls_certificateauthority');
+		const privateKey = env.get('tls_privateKey');
+		const certificate = env.get('tls_certificate');
+		const certificateAuthority = env.get('tls_certificateAuthority');
 
 		let socket_server = createSecureSocketServer(
 			{

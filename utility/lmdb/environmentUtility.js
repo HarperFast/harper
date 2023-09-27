@@ -138,8 +138,8 @@ async function createEnvironment(base_path, env_name, is_txn = false, is_v3 = fa
 	let db_name = path.basename(base_path);
 
 	env_name = env_name.toString();
-	let schemas_config = env_mngr.get(hdb_terms.CONFIG_PARAMS.SCHEMAS);
-	if (!schemas_config) env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.SCHEMAS, (schemas_config = {}));
+	let schemas_config = env_mngr.get(hdb_terms.CONFIG_PARAMS.DATABASES);
+	if (!schemas_config) env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.DATABASES, (schemas_config = {}));
 	if (!schemas_config[db_name]) schemas_config[db_name] = {};
 	schemas_config[db_name].path = base_path;
 	try {

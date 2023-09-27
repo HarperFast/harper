@@ -89,9 +89,8 @@ const FAKE_CONFIG = {
 			privateKey: null,
 		},
 	},
-	http: {
-		threads: 2,
-	},
+	http: {},
+	threads: 2,
 	itc: {
 		network: {
 			port: 1234,
@@ -236,7 +235,11 @@ describe('Test configValidator module', () => {
 						},
 						nodeEnv: 'development',
 						root: '/test_custom_functions',
-						tls: {},
+						tls: {
+							certificate: null,
+							certificateAuthority: 'cf/test/ca.pem',
+							privateKey: null,
+						},
 					},
 					itc: {
 						network: {
@@ -259,6 +262,7 @@ describe('Test configValidator module', () => {
 						root: path.join(HDB_ROOT, 'log'),
 						stdStreams: true,
 					},
+					componentsRoot: path.join(__dirname, '/carrot/components'),
 					operationsApi: {
 						authentication: {
 							operationTokenTimeout: '2d',
@@ -277,9 +281,8 @@ describe('Test configValidator module', () => {
 						nodeEnv: 'development',
 						tls: {},
 					},
-					http: {
-						threads: 2,
-					},
+					http: {},
+					threads: 2,
 					rootPath: path.join(__dirname, '/carrot'),
 					storage: {
 						writeAsync: true,
@@ -403,38 +406,6 @@ describe('Test configValidator module', () => {
 			validate_pem_file_rw();
 		});
 
-		it('Test customFunctions, customFunctions.network in config_schema with bad values', () => {
-			let bad_config_obj = test_utils.deepClone(FAKE_CONFIG);
-			bad_config_obj.customFunctions.enabled = 'tree';
-			bad_config_obj.customFunctions.network.cors = 5;
-			bad_config_obj.customFunctions.network.corsAccessList = 'not_array';
-			bad_config_obj.customFunctions.network.headersTimeout = 0;
-			bad_config_obj.customFunctions.network.https = { isBoolean: 'not_boolean' };
-			bad_config_obj.customFunctions.network.keepAliveTimeout = [13];
-			bad_config_obj.customFunctions.network.port = 'not_a_number';
-			bad_config_obj.customFunctions.network.timeout = false;
-
-			const schema = configValidator(bad_config_obj);
-			const expected_schema_message =
-				"'customFunctions.enabled' must be a boolean. 'customFunctions.network.cors' must be a boolean. 'customFunctions.network.corsAccessList' must be an array. 'customFunctions.network.headersTimeout' must be greater than or equal to 1. 'customFunctions.network.https' must be a boolean. 'customFunctions.network.keepAliveTimeout' must be a number. 'customFunctions.network.port' must be a number. 'customFunctions.network.timeout' must be a number";
-
-			expect(schema.error.message).to.eql(expected_schema_message);
-		});
-
-		it('Test customFunctions.nodeEnv/processes/root in config_schema with bad values', () => {
-			let bad_config_obj = test_utils.deepClone(FAKE_CONFIG);
-			bad_config_obj.customFunctions.nodeEnv = 'testing';
-			bad_config_obj.http.threads = [2];
-			bad_config_obj.customFunctions.root = '/!';
-
-			const schema = configValidator(bad_config_obj);
-			const expected_error_message =
-				"'customFunctions.nodeEnv' must be one of [production, development]." +
-				" 'customFunctions.root' with value '/!' fails to match the directory path pattern. 'http.threads' must be a number";
-
-			expect(schema.error.message).to.eql(expected_error_message);
-		});
-
 		it('Test itc and localStudio in config_schema with bad values', () => {
 			let bad_config_obj = test_utils.deepClone(FAKE_CONFIG);
 			bad_config_obj.itc.network.port = 'bad_port';
@@ -484,7 +455,7 @@ describe('Test configValidator module', () => {
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'operationsApi.foreground' must be a boolean. 'operationsApi.network.cors' must be a boolean. 'operationsApi.network.headersTimeout' must be greater than or equal to 1. 'operationsApi.network.https' must be a boolean. 'operationsApi.network.keepAliveTimeout' must be a number. 'operationsApi.network.port' must be a number. 'operationsApi.network.timeout' must be a number. 'operationsApi.nodeEnv' must be one of [production, development]. 'rootPath' with value '/@@@' fails to match the directory path pattern. 'http.threads' must be a number. 'storage.writeAsync' is required";
+				"'operationsApi.network.cors' must be a boolean. 'operationsApi.network.headersTimeout' must be greater than or equal to 1. 'operationsApi.network.keepAliveTimeout' must be a number. 'operationsApi.network.port' must be a number. 'operationsApi.network.timeout' must be a number. 'rootPath' with value '/@@@' fails to match the directory path pattern. 'storage.writeAsync' is required";
 
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
@@ -650,7 +621,7 @@ describe('Test configValidator module', () => {
 
 		it('Test that if customFunctions.root is undefined, one is created', () => {
 			hdb_root_rw = config_val.__set__('hdb_root', HDB_ROOT);
-			const helpers = { state: { path: ['customFunctions', 'root'] } };
+			const helpers = { state: { path: ['componentsRoot'] } };
 			const result = set_default_root(parent, helpers);
 
 			expect(result).to.equal(path.join(HDB_ROOT, '/components'));

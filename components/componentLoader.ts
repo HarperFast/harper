@@ -24,11 +24,12 @@ import * as operationsServer from '../server/operationsServer';
 import * as auth from '../security/auth';
 import * as natsReplicator from '../server/nats/natsReplicator';
 import * as mqtt from '../server/mqtt';
+import { getConfigObj } from '../config/configUtils';
 
 const { readFile } = promises;
 
 const CONFIG_FILENAME = 'config.yaml';
-const CF_ROUTES_DIR = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT);
+const CF_ROUTES_DIR = env.get(CONFIG_PARAMS.COMPONENTSROOT);
 let loaded_components = new Map<any, any>();
 let watches_setup;
 let resources;
@@ -70,6 +71,7 @@ const TRUSTED_RESOURCE_LOADERS = {
 	static: staticFiles,
 	operationsApi: operationsServer,
 	customFunctions: {},
+	http: {},
 	clustering: natsReplicator,
 	authentication: auth,
 	mqtt,
@@ -132,7 +134,9 @@ export async function loadComponent(
 		let config;
 		const config_path = join(folder, is_root ? 'harperdb-config.yaml' : 'config.yaml');
 		if (existsSync(config_path)) {
-			config = parseDocument(readFileSync(config_path, 'utf8'), { simpleKeys: true }).toJSON();
+			config = is_root
+				? getConfigObj()
+				: parseDocument(readFileSync(config_path, 'utf8'), { simpleKeys: true }).toJSON();
 		} else {
 			config = DEFAULT_CONFIG;
 		}
@@ -192,7 +196,7 @@ export async function loadComponent(
 								if (+possible_port && !ports_started.includes(possible_port)) {
 									// if there is a TCP port associated with the plugin, we set up the routing on the main thread for it
 									ports_started.push(possible_port);
-									const session_affinity = env.get(CONFIG_PARAMS.HTTP_SESSION_AFFINITY);
+									const session_affinity = env.get(CONFIG_PARAMS.HTTP_SESSIONAFFINITY);
 									startSocketServer(possible_port, session_affinity);
 								}
 							} catch (error) {

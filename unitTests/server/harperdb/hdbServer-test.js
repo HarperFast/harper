@@ -121,7 +121,8 @@ describe('Test hdbServer module', () => {
 
 	describe('Test hdbServer function', () => {
 		it('should build HTTPS server when https_enabled set to true', async () => {
-			const test_config_settings = { https_enabled: true };
+			const test_config_settings = { operationsApi_network_securePort: 9925 };
+			env.setProperty('operationsApi_network_securePort', 9925);
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
@@ -137,6 +138,7 @@ describe('Test hdbServer module', () => {
 			expect(!!server.initialConfig.https).to.be.true;
 
 			server.close();
+			env.setProperty('operationsApi_network_securePort', null);
 		});
 
 		it('should build HTTP server when https_enabled set to false', async () => {
@@ -159,6 +161,7 @@ describe('Test hdbServer module', () => {
 		it('should build HTTPS server instance with started and listening state equal to true', async () => {
 			const test_config_settings = { https_enabled: true };
 			test_utils.preTestPrep(test_config_settings);
+			env.setProperty('operationsApi_network_securePort', 9925);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
 			await hdbServer_rw.hdbServer();
@@ -171,6 +174,7 @@ describe('Test hdbServer module', () => {
 			expect(server[state_key].listening).to.be.true;
 
 			server.close();
+			env.setProperty('operationsApi_network_securePort', null);
 		});
 
 		it('should build HTTP server instance with started and listening state equal to true', async () => {
@@ -185,25 +189,6 @@ describe('Test hdbServer module', () => {
 
 			const state_key = Object.getOwnPropertySymbols(server).find((s) => String(s) === 'Symbol(fastify.state)');
 			expect(server[state_key].started).to.be.true;
-
-			server.close();
-		});
-
-		it('should build HTTPS server instances with mixed cap boolean spelling', async () => {
-			const test_config_settings = { https_enabled: 'TRUe' };
-			test_utils.preTestPrep(test_config_settings);
-
-			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
-
-			await new Promise((resolve) => setTimeout(resolve, 100));
-			const server = hdbServer_rw.__get__('server');
-
-			expect(server).to.not.be.undefined;
-			expect(server.server.constructor.name).to.contain('Server');
-			expect(server.server.key).to.be.instanceOf(Buffer);
-			expect(typeof server.server.cert === 'string').to.be.true;
-			expect(!!server.initialConfig.https).to.be.true;
 
 			server.close();
 		});

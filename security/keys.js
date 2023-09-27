@@ -84,25 +84,27 @@ function updateConfigCert(public_cert, private_cert, ca_cert) {
 		[conf.CLUSTERING_TLS_CERT_AUTH]: cli_env_args[conf.CLUSTERING_TLS_CERT_AUTH.toLowerCase()]
 			? cli_env_args[conf.CLUSTERING_TLS_CERT_AUTH.toLowerCase()]
 			: ca_cert,
-		[conf.CUSTOMFUNCTIONS_TLS_CERTIFICATE]: cli_env_args[conf.CUSTOMFUNCTIONS_TLS_CERTIFICATE.toLowerCase()]
-			? cli_env_args[conf.CUSTOMFUNCTIONS_TLS_CERTIFICATE.toLowerCase()]
+		[conf.TLS_CERTIFICATE]: cli_env_args[conf.TLS_CERTIFICATE.toLowerCase()]
+			? cli_env_args[conf.TLS_CERTIFICATE.toLowerCase()]
 			: public_cert,
-		[conf.CUSTOMFUNCTIONS_TLS_PRIVATEKEY]: cli_env_args[conf.CUSTOMFUNCTIONS_TLS_PRIVATEKEY.toLowerCase()]
-			? cli_env_args[conf.CUSTOMFUNCTIONS_TLS_PRIVATEKEY.toLowerCase()]
+		[conf.TLS_PRIVATEKEY]: cli_env_args[conf.TLS_PRIVATEKEY.toLowerCase()]
+			? cli_env_args[conf.TLS_PRIVATEKEY.toLowerCase()]
 			: private_cert,
-		[conf.CUSTOMFUNCTIONS_TLS_CERT_AUTH]: cli_env_args[conf.CUSTOMFUNCTIONS_TLS_CERT_AUTH.toLowerCase()]
-			? cli_env_args[conf.CUSTOMFUNCTIONS_TLS_CERT_AUTH.toLowerCase()]
-			: ca_cert,
-		[conf.OPERATIONSAPI_TLS_CERTIFICATE]: cli_env_args[conf.OPERATIONSAPI_TLS_CERTIFICATE.toLowerCase()]
-			? cli_env_args[conf.OPERATIONSAPI_TLS_CERTIFICATE.toLowerCase()]
-			: public_cert,
-		[conf.OPERATIONSAPI_TLS_PRIVATEKEY]: cli_env_args[conf.OPERATIONSAPI_TLS_PRIVATEKEY.toLowerCase()]
-			? cli_env_args[conf.OPERATIONSAPI_TLS_PRIVATEKEY.toLowerCase()]
-			: private_cert,
-		[conf.OPERATIONSAPI_TLS_CERT_AUTH]: cli_env_args[conf.OPERATIONSAPI_TLS_CERT_AUTH.toLowerCase()]
-			? cli_env_args[conf.OPERATIONSAPI_TLS_CERT_AUTH.toLowerCase()]
+		[conf.TLS_CERTIFICATEAUTHORITY]: cli_env_args[conf.TLS_CERTIFICATEAUTHORITY.toLowerCase()]
+			? cli_env_args[conf.TLS_CERTIFICATEAUTHORITY.toLowerCase()]
 			: ca_cert,
 	};
+
+	if (cli_env_args[conf.OPERATIONSAPI_TLS_CERTIFICATE.toLowerCase()]) {
+		new_certs[conf.OPERATIONSAPI_TLS_CERTIFICATE] = cli_env_args[conf.OPERATIONSAPI_TLS_CERTIFICATE.toLowerCase()];
+	}
+	if (cli_env_args[conf.OPERATIONSAPI_TLS_PRIVATEKEY.toLowerCase()]) {
+		new_certs[conf.OPERATIONSAPI_TLS_PRIVATEKEY] = cli_env_args[conf.OPERATIONSAPI_TLS_PRIVATEKEY.toLowerCase()];
+	}
+	if (cli_env_args[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY.toLowerCase()]) {
+		new_certs[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY] =
+			cli_env_args[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY.toLowerCase()];
+	}
 
 	config_utils.updateConfigValue(undefined, undefined, new_certs, false, true);
 }

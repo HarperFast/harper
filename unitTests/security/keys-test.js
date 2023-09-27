@@ -65,22 +65,19 @@ describe('Test keys module', () => {
 
 	it('Test updateConfigCert builds new cert config correctly', () => {
 		process.env['CLUSTERING_TLS_CERTIFICATEAUTHORITY'] = 'howdy/im/a/ca.pem';
-		process.argv.push('--CUSTOMFUNCTIONS_TLS_PRIVATEKEY', 'hi/im/a/private_key.pem');
+		process.argv.push('--TLS_PRIVATEKEY', 'hi/im/a/private_key.pem');
 		keys.updateConfigCert('public/cert.pem', 'private/cert.pem', 'certificate/authority.pem');
 		expect(update_config_value_stub.args[0][2]).to.eql({
 			clustering_tls_certificate: 'public/cert.pem',
 			clustering_tls_privateKey: 'private/cert.pem',
 			clustering_tls_certificateAuthority: 'howdy/im/a/ca.pem',
-			customFunctions_tls_certificate: 'public/cert.pem',
-			customFunctions_tls_privateKey: 'hi/im/a/private_key.pem',
-			customFunctions_tls_certificateAuthority: 'certificate/authority.pem',
-			operationsApi_tls_certificate: 'public/cert.pem',
-			operationsApi_tls_privateKey: 'private/cert.pem',
-			operationsApi_tls_certificateAuthority: 'certificate/authority.pem',
+			tls_certificate: 'public/cert.pem',
+			tls_privateKey: 'hi/im/a/private_key.pem',
+			tls_certificateAuthority: 'certificate/authority.pem',
 		});
 
 		delete process.env['CLUSTERING_TLS_CERTIFICATEAUTHORITY'];
-		const command = process.argv.indexOf('--CUSTOMFUNCTIONS_TLS_PRIVATEKEY');
+		const command = process.argv.indexOf('--TLS_PRIVATEKEY');
 		const value = process.argv.indexOf('hi/im/a/private_key.pem');
 		if (command > -1) process.argv.splice(command, 1);
 		if (value > -1) process.argv.splice(value, 1);

@@ -106,7 +106,6 @@ describe('Test installer module', () => {
 
 	it('Test checkForPromptOverride gets prompts and config vars', () => {
 		process.env.OPERATIONSAPI_NETWORK_PORT = '7890';
-		process.env.OPERATIONSAPI_FOREGROUND = 'true';
 		process.env.ROOTPATH = 'user/unit/test';
 		process.env.TC_AGREEMENT = 'yes';
 		process.env.CLUSTERING = 'true';
@@ -120,7 +119,6 @@ describe('Test installer module', () => {
 		expect(result.CLUSTERING_NODENAME).to.equal('dog1');
 
 		delete process.env.OPERATIONSAPI_NETWORK_PORT;
-		delete process.env.OPERATIONSAPI_FOREGROUND;
 		delete process.env.ROOTPATH;
 		delete process.env.TC_AGREEMENT;
 		delete process.env.CLUSTERING;
@@ -190,14 +188,12 @@ describe('Test installer module', () => {
 		const expected_args = {
 			node_name: 'dog1',
 			clustering: 'true',
-			operationsapi_foreground: 'true',
 			ROOTPATH: 'user/unit/test',
 			OPERATIONSAPI_NETWORK_PORT: '8888',
 		};
 		const create_config_file_stub = sandbox.stub(config_utils, 'createConfigFile');
 		// not reliably reset
 		//const env_mng_init_stub = sandbox.stub(env_manager, 'initSync');
-		process.env.OPERATIONSAPI_FOREGROUND = 'true';
 		process.env.CLUSTERING = 'true';
 		process.env.NODE_NAME = 'dog1';
 		const fake_install_params = {
@@ -210,7 +206,6 @@ describe('Test installer module', () => {
 		expect(create_config_file_stub.args[0][0]).to.eql(expected_args);
 		//expect(env_mng_init_stub.called).to.be.true;
 
-		delete process.env.OPERATIONSAPI_FOREGROUND;
 		delete process.env.CLUSTERING;
 		delete process.env.NODE_NAME;
 		create_config_file_stub.restore();

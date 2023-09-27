@@ -41,12 +41,12 @@ describe('Test initializePaths module', () => {
 		get_hdb_base_path_stub = sandbox.stub(env_mgr, 'getHdbBasePath').returns(test_base_path);
 		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.STORAGE_PATH, undefined);
 		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.STORAGE_AUDIT_PATH, undefined);
-		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.SCHEMAS, test_schemas_config);
+		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.DATABASES, test_schemas_config);
 	});
 
 	after(() => {
 		sandbox.restore();
-		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.SCHEMAS, undefined);
+		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.DATABASES, undefined);
 	});
 
 	it('Test getBaseSchemaPath returns base path', () => {
@@ -99,7 +99,7 @@ describe('Test initializePaths module', () => {
 		result = init_paths.initSystemSchemaPaths('system', 'uncool_cat');
 		expect(result).to.equal('/init_path/test_location/system');
 
-		const test_schemas_env = env_mgr.get(hdb_terms.CONFIG_PARAMS.SCHEMAS);
+		const test_schemas_env = env_mgr.get(hdb_terms.CONFIG_PARAMS.DATABASES);
 		expect(test_schemas_env).to.eql({
 			init_paths_schema_test: {
 				tables: {

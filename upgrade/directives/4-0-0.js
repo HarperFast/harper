@@ -170,8 +170,8 @@ async function updateSettingsFile_4_0_0() {
 		const flat_config_obj = config_utils.initOldConfig(settings_path);
 
 		// These are stored here in case they are needed by the generateNewKeys function,
-		old_cert_path = flat_config_obj[terms.CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATE.toLowerCase()];
-		old_private_path = flat_config_obj[terms.CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY.toLowerCase()];
+		old_cert_path = flat_config_obj[terms.CONFIG_PARAMS.TLS_CERTIFICATE.toLowerCase()];
+		old_private_path = flat_config_obj[terms.CONFIG_PARAMS.TLS_PRIVATEKEY.toLowerCase()];
 
 		config_utils.createConfigFile(flat_config_obj);
 	} catch (err) {

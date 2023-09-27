@@ -1,5 +1,16 @@
 # HarperDB configuration file. Refer to https://harperdb.io/docs/reference/configuration-file/
 ---
+http:
+  compressionThreshold: 1200
+  cors: false
+  corsAccessList:
+    - null
+  keepAliveTimeout: 30000
+  port: 9926
+  securePort: null
+  sessionAffinity: null
+  timeout: 120000
+threads: null
 authentication:
   authorizeLocal: true
   cacheTTL: 30000
@@ -32,7 +43,7 @@ clustering:
       path: null
   logLevel: error
   nodeName: null
-  republishMessages: true
+  republishMessages: false
   databaseLevel: false
   tls:
     certificate: null
@@ -41,23 +52,7 @@ clustering:
     insecure: true
     verify: true
   user: null
-customFunctions:
-  enabled: true
-  network:
-    cors: false
-    corsAccessList:
-      - null
-    headersTimeout: 60000
-    https: false
-    keepAliveTimeout: 5000
-    port: 9926
-    timeout: 120000
-  nodeEnv: production
-  root: null
-  tls:
-    certificate: null
-    certificateAuthority: null
-    privateKey: null
+componentsRoot: null
 localStudio:
   enabled: false
 logging:
@@ -76,31 +71,19 @@ logging:
     maxSize: null
     path: null
   stdStreams: false
-operationsApi:
-  foreground: false
-  network:
-    cors: true
-    corsAccessList:
-      - "*"
-    headersTimeout: 60000
-    https: false
-    keepAliveTimeout: 5000
-    port: 9925
-    timeout: 120000
-  nodeEnv: production
-  tls:
-    certificate: null
-    certificateAuthority: null
-    privateKey: null
 mqtt:
   network:
     port: 1883
     securePort: 8883
   webSocket: true
   requireAuthentication: true
-http:
-  threads: null
-  sessionAffinity: null
+operationsApi:
+  network:
+    cors: true
+    corsAccessList:
+      - "*"
+    port: 9925
+    securePort: null
 rootPath: null
 storage:
   writeAsync: false
@@ -109,3 +92,7 @@ storage:
   noReadAhead: true
   path: null
   prefetchWrites: true
+tls:
+  certificate: null
+  certificateAuthority: null
+  privateKey: null

@@ -22,21 +22,6 @@ const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const APPLICATION_TEMPLATE = path.join(PACKAGE_ROOT, 'application-template');
 const TMP_PATH = path.join(env.get(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY), 'tmp');
 
-function isCFEnabled() {
-	const custom_functions_enabled = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY);
-	if (custom_functions_enabled === 'true' || custom_functions_enabled === true || custom_functions_enabled === 'TRUE') {
-		return;
-	}
-	throw handleHDBError(
-		new Error(),
-		HDB_ERROR_MSGS.NOT_ENABLED,
-		HTTP_STATUS_CODES.BAD_REQUEST,
-		undefined,
-		undefined,
-		true
-	);
-}
-
 /**
  * Read the settings.js file and return the
  *
@@ -48,9 +33,8 @@ function customFunctionsStatus() {
 
 	try {
 		response = {
-			is_enabled: env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY),
-			port: env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY),
-			directory: env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY),
+			port: env.get(terms.CONFIG_PARAMS.HTTP_PORT),
+			directory: env.get(terms.CONFIG_PARAMS.COMPONENTSROOT),
 		};
 	} catch (err) {
 		throw handleHDBError(
@@ -72,7 +56,7 @@ function customFunctionsStatus() {
 function getCustomFunctions() {
 	log.trace(`getting custom api endpoints`);
 	let response = {};
-	const dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+	const dir = env.get(terms.CONFIG_PARAMS.COMPONENTSROOT);
 
 	try {
 		const project_folders = fg.sync(normalize(`${dir}/*`), { onlyDirectories: true });
@@ -121,7 +105,7 @@ function getCustomFunction(req) {
 	}
 
 	log.trace(`getting custom api endpoint file content`);
-	const cf_dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+	const cf_dir = env.get(terms.CONFIG_PARAMS.COMPONENTSROOT);
 	const { project, type, file } = req;
 	const fileLocation = path.join(cf_dir, project, type, file + '.js');
 
@@ -145,7 +129,6 @@ function getCustomFunction(req) {
  * @returns {string}
  */
 function setCustomFunction(req) {
-	isCFEnabled();
 	if (req.project) {
 		req.project = path.parse(req.project).name;
 	}
@@ -160,7 +143,7 @@ function setCustomFunction(req) {
 	}
 
 	log.trace(`setting custom function file content`);
-	const cf_dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+	const cf_dir = env.get(terms.CONFIG_PARAMS.COMPONENTSROOT);
 	const { project, type, file, function_content } = req;
 
 	try {
@@ -198,7 +181,7 @@ function dropCustomFunction(req) {
 	}
 
 	log.trace(`dropping custom function file`);
-	const cf_dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+	const cf_dir = env.get(terms.CONFIG_PARAMS.COMPONENTSROOT);
 	const { project, type, file } = req;
 
 	try {
@@ -221,7 +204,6 @@ function dropCustomFunction(req) {
  * @returns {string}
  */
 function addComponent(req) {
-	isCFEnabled();
 	if (req.project) {
 		req.project = path.parse(req.project).name;
 	}
@@ -232,7 +214,7 @@ function addComponent(req) {
 	}
 
 	log.trace(`adding component`);
-	const cf_dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+	const cf_dir = env.get(terms.CONFIG_PARAMS.COMPONENTSROOT);
 	const { project } = req;
 
 	try {
@@ -268,7 +250,7 @@ function dropCustomFunctionProject(req) {
 	}
 
 	log.trace(`dropping custom function project`);
-	const cf_dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+	const cf_dir = env.get(terms.CONFIG_PARAMS.COMPONENTSROOT);
 	const { project } = req;
 
 	let apps = env.get(terms.CONFIG_PARAMS.APPS);
@@ -320,7 +302,7 @@ async function packageComponent(req) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	const cf_dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+	const cf_dir = env.get(terms.CONFIG_PARAMS.COMPONENTSROOT);
 	const { project } = req;
 	log.trace(`packaging component`, project);
 
@@ -381,7 +363,7 @@ async function deployComponent(req) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	const cf_dir = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+	const cf_dir = env.get(terms.CONFIG_PARAMS.COMPONENTSROOT);
 	let { project, payload, package: pkg } = req;
 	log.trace(`deploying component`, project);
 
@@ -469,8 +451,8 @@ async function getComponents() {
 		return result;
 	};
 
-	return walk_dir(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT), {
-		name: env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT).split(path.sep).slice(-1).pop(),
+	return walk_dir(env.get(terms.CONFIG_PARAMS.COMPONENTSROOT), {
+		name: env.get(terms.CONFIG_PARAMS.COMPONENTSROOT).split(path.sep).slice(-1).pop(),
 		entries: comps,
 	});
 }
@@ -488,10 +470,7 @@ async function getComponentFile(req) {
 
 	const options = req.encoding ? { encoding: req.encoding } : { encoding: 'utf8' };
 	try {
-		return await fs.readFile(
-			path.join(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT), req.project, req.file),
-			options
-		);
+		return await fs.readFile(path.join(env.get(terms.CONFIG_PARAMS.COMPONENTSROOT), req.project, req.file), options);
 	} catch (err) {
 		if (err.code === terms.NODE_ERROR_CODES.ENOENT) {
 			throw new Error(`Component file not found '${path.join(req.project, req.file)}'`);
@@ -512,7 +491,7 @@ async function setComponentFile(req) {
 	}
 
 	const options = req.encoding ? { encoding: req.encoding } : { encoding: 'utf8' };
-	const path_to_comp = path.join(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT), req.project, req.file);
+	const path_to_comp = path.join(env.get(terms.CONFIG_PARAMS.COMPONENTSROOT), req.project, req.file);
 	if (req.payload !== undefined) {
 		await fs.ensureFile(path_to_comp);
 		await fs.outputFile(path_to_comp, req.payload, options);
@@ -535,7 +514,7 @@ async function dropComponent(req) {
 	}
 
 	const project_path = req.file ? path.join(req.project, req.file) : req.project;
-	const path_to_comp = path.join(env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ROOT), project_path);
+	const path_to_comp = path.join(env.get(terms.CONFIG_PARAMS.COMPONENTSROOT), project_path);
 
 	if (await fs.pathExists(path_to_comp)) {
 		await fs.remove(path_to_comp);

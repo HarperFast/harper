@@ -13,7 +13,7 @@ const env = require('./environment/environmentManager');
 const validator = require('../validation/validationWrapper');
 const harper_logger = require('./logging/harper_logger');
 env.initSync();
-const CF_ROUTES_DIR = env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+const CF_ROUTES_DIR = env.get(terms.CONFIG_PARAMS.COMPONENTSROOT);
 const NPM_INSTALL_COMMAND = 'npm install --omit=dev --json';
 const NPM_INSTALL_DRY_RUN_COMMAND = `${NPM_INSTALL_COMMAND} --dry-run`;
 

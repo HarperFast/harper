@@ -32,9 +32,8 @@ describe('Test custom functions operations', () => {
 	});
 
 	it('Test initial cf status values', async () => {
-		const { is_enabled, port, directory } = await operations.customFunctionsStatus();
+		const { port, directory } = await operations.customFunctionsStatus();
 
-		expect(is_enabled).to.exist;
 		expect(port).to.exist;
 		expect(directory).to.equal(CF_DIR_ROOT);
 	});

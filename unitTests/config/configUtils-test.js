@@ -38,20 +38,17 @@ const TEST_ARGS = {
 	CLUSTERING_NODENAME: 'test_node_name',
 	CLUSTERING_REPUBLISHMESSAGES: true,
 	CLUSTERING_DATABASELEVEL: false,
-	CUSTOMFUNCTIONS_ENABLED: true,
-	CUSTOMFUNCTIONS_NETWORK_PORT: '9936',
-	CUSTOMFUNCTIONS_NETWORK_CORS: false,
-	CUSTOMFUNCTIONS_NETWORK_CORSACCESSLIST: '["test1", "test2"]',
-	CUSTOMFUNCTIONS_NETWORK_HEADERSTIMEOUT: '59999',
-	CUSTOMFUNCTIONS_NETWORK_HTTPS: true,
-	CUSTOMFUNCTIONS_NETWORK_KEEPALIVETIMEOUT: '4999',
-	CUSTOMFUNCTIONS_TLS_CERTIFICATE: TEST_CERT,
-	CUSTOMFUNCTIONS_TLS_CERT_AUTH: null,
-	CUSTOMFUNCTIONS_TLS_PRIVATEKEY: TEST_PRIVATE_KEY,
-	CUSTOMFUNCTIONS_NETWORK_TIMEOUT: '119999',
-	CUSTOMFUNCTIONS_NODEENV: 'development',
-	CUSTOMFUNCTIONS_ROOT: path.join(DIRNAME, 'test_custom_functions'),
-	HTTP_THREADS: '4',
+	HTTP_PORT: '9936',
+	HTTP_CORS: false,
+	HTTP_CORSACCESSLIST: '["test1", "test2"]',
+	HTTP_HEADERSTIMEOUT: '59999',
+	HTTP_KEEPALIVETIMEOUT: '4999',
+	TLS_CERTIFICATE: TEST_CERT,
+	TLS_CERTIFICATEAUTHORITY: null,
+	TLS_PRIVATEKEY: TEST_PRIVATE_KEY,
+	HTTP_TIMEOUT: '119999',
+	COMPONENTSROOT: path.join(DIRNAME, 'test_custom_functions'),
+	THREADS: '4',
 	HTTP_REMOTE_ADDRESS_AFFINITY: false,
 	LOCALSTUDIO_ENABLED: true,
 	LOGGING_FILE: false,
@@ -66,7 +63,6 @@ const TEST_ARGS = {
 	LOGGING_AUDITLOG: true,
 	AUTHENTICATION_OPERATIONTOKENTIMEOUT: '2d',
 	AUTHENTICATION_REFRESHTOKENTIMEOUT: '31d',
-	OPERATIONSAPI_FOREGROUND: true,
 	OPERATIONSAPI_NETWORK_CORS: false,
 	OPERATIONSAPI_NETWORK_CORSACCESSLIST: '["test1", "test2"]',
 	OPERATIONSAPI_NETWORK_HEADERSTIMEOUT: '60001',
@@ -74,7 +70,6 @@ const TEST_ARGS = {
 	OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT: '5001',
 	OPERATIONSAPI_NETWORK_PORT: '2599',
 	OPERATIONSAPI_NETWORK_TIMEOUT: '120001',
-	OPERATIONSAPI_NODEENV: 'development',
 	ROOTPATH: HDB_ROOT,
 	STORAGE_WRITEASYNC: true,
 	STORAGE_OVERLAPPINGSYNC: false,
@@ -83,13 +78,9 @@ const TEST_ARGS = {
 	STORAGE_NOREADAHEAD: false,
 	STORAGE_PREFETCHWRITES: false,
 	STORAGE_PATH: 'users/unit_test/path',
-	OPERATIONSAPI_TLS_CERTIFICATE: TEST_CERT,
-	OPERATIONSAPI_TLS_PRIVATEKEY: TEST_PRIVATE_KEY,
-	OPERATIONSAPI_TLS_CERT_AUTH: null,
 };
 const TEST_ARGS_2 = {
 	CLUSTERING_ENABLED: true,
-	CUSTOMFUNCTIONS_ENABLED: true,
 	ROOTPATH: HDB_ROOT,
 };
 let TEST_ARGS_3 = {
@@ -114,20 +105,18 @@ const FLAT_CONFIG_OBJ = {
 	clustering_tls_certificateauthority: null,
 	clustering_tls_privatekey: null,
 	clustering_user: null,
-	customfunctions_enabled: false,
-	customfunctions_network_cors: true,
-	customfunctions_network_corsaccesslist: [null],
-	customfunctions_network_headerstimeout: 60000,
+	http_cors: true,
+	http_corsaccesslist: [null],
+	http_headerstimeout: 60000,
 	customfunctions_network_https: false,
-	customfunctions_network_keepalivetimeout: 5000,
-	customfunctions_network_port: 9926,
-	customfunctions_network_timeout: 120000,
-	customfunctions_nodeenv: 'production',
+	http_keepalivetimeout: 5000,
+	http_port: 9926,
+	http_timeout: 120000,
 	customfunctions_processes: null,
-	customfunctions_root: null,
-	customfunctions_tls_certificate: null,
-	customfunctions_tls_certificateauthority: null,
-	customfunctions_tls_privatekey: null,
+	componentsroot: null,
+	tls_certificate: null,
+	tls_certificateauthority: null,
+	tls_privatekey: null,
 	localstudio_enabled: false,
 	logging_auditlog: true,
 	logging_file: true,
@@ -143,9 +132,8 @@ const FLAT_CONFIG_OBJ = {
 	logging_rotation_timezone: 'GMT',
 	logging_rotation_workerinterval: 30,
 	logging_stdstreams: false,
-	operationsapi_authentication_operationtokentimeout: '1d',
-	operationsapi_authentication_refreshtokentimeout: '30d',
-	operationsapi_foreground: false,
+	authentication_operationtokentimeout: '1d',
+	authentication_refreshtokentimeout: '30d',
 	operationsapi_network_cors: true,
 	operationsapi_network_corsaccesslist: [null],
 	operationsapi_network_headerstimeout: 60000,
@@ -153,14 +141,10 @@ const FLAT_CONFIG_OBJ = {
 	operationsapi_network_keepalivetimeout: 5000,
 	operationsapi_network_port: 9925,
 	operationsapi_network_timeout: 120000,
-	operationsapi_nodeenv: 'production',
 	operationsapi_processes: null,
 	rootpath: null,
 	storage_writeasync: true,
 	storage_overlappingsync: false,
-	operationsapi_tls_certificate: null,
-	operationsapi_tls_certificateauthority: null,
-	operationsapi_tls_privatekey: null,
 };
 const CONFIG_DOC_VALUE = {
 	clustering: {
@@ -280,15 +264,15 @@ describe('Test configUtils module', () => {
 
 		it('Test that given args are updated in new config file', () => {
 			const expected_config = {
-				analytics: {
-					aggregatePeriod: 60,
-				},
 				authentication: {
 					authorizeLocal: true,
 					cacheTTL: 30000,
 					enableSessions: true,
 					operationTokenTimeout: '2d',
 					refreshTokenTimeout: '31d',
+				},
+				analytics: {
+					aggregatePeriod: 60,
 				},
 				clustering: {
 					enabled: true,
@@ -334,29 +318,7 @@ describe('Test configUtils module', () => {
 					},
 					user: 'test_user',
 				},
-				customFunctions: {
-					enabled: true,
-					network: {
-						cors: false,
-						corsAccessList: ['test1', 'test2'],
-						headersTimeout: 59999,
-						https: true,
-						keepAliveTimeout: 4999,
-						port: 9936,
-						timeout: 119999,
-					},
-					nodeEnv: 'development',
-					root: path.join(DIRNAME, '/test_custom_functions'),
-					tls: {
-						certificate: TEST_CERT,
-						certificateAuthority: null,
-						privateKey: TEST_PRIVATE_KEY,
-					},
-				},
-				http: {
-					threads: 4,
-					sessionAffinity: null,
-				},
+				componentsRoot: path.join(DIRNAME, '/test_custom_functions'),
 				localStudio: {
 					enabled: true,
 				},
@@ -369,57 +331,78 @@ describe('Test configUtils module', () => {
 					auditRetention: '3d',
 					file: false,
 					level: 'notify',
+					root: path.join(DIRNAME, '/testlogging'),
 					rotation: {
 						enabled: true,
 						compress: true,
 						interval: '10D',
-						path: 'lets/send/log/here',
 						maxSize: '10M',
+						path: 'lets/send/log/here',
 					},
-					root: path.join(DIRNAME, '/testlogging'),
 					stdStreams: true,
 				},
 				mqtt: {
-					network: { port: 1883, securePort: 8883 },
+					network: {
+						port: 1883,
+						securePort: 8883,
+					},
 					webSocket: true,
 					requireAuthentication: true,
 				},
 				operationsApi: {
-					foreground: true,
 					network: {
+						compressionThreshold: 1200,
 						cors: false,
 						corsAccessList: ['test1', 'test2'],
+						port: 2599,
+						securePort: null,
+						sessionAffinity: null,
 						headersTimeout: 60001,
 						https: true,
 						keepAliveTimeout: 5001,
-						port: 2599,
 						timeout: 120001,
 					},
-					nodeEnv: 'development',
 					tls: {
 						certificate: TEST_CERT,
 						certificateAuthority: null,
 						privateKey: TEST_PRIVATE_KEY,
 					},
 				},
+				http: {
+					compressionThreshold: 1200,
+					cors: false,
+					corsAccessList: ['test1', 'test2'],
+					keepAliveTimeout: 4999,
+					port: 9936,
+					securePort: null,
+					sessionAffinity: null,
+					timeout: 119999,
+					headersTimeout: 59999,
+				},
+				threads: 4,
 				rootPath: path.join(DIRNAME, '/yaml'),
 				storage: {
 					writeAsync: true,
-					overlappingSync: false,
 					caching: false,
 					compression: false,
 					noReadAhead: false,
-					prefetchWrites: false,
 					path: 'users/unit_test/path',
+					prefetchWrites: false,
+					overlappingSync: false,
+				},
+				tls: {
+					certificate: TEST_CERT,
+					certificateAuthority: null,
+					privateKey: TEST_PRIVATE_KEY,
 				},
 			};
 			const expected_flat_config = {
-				analytics_aggregateperiod: 60,
 				authentication_authorizelocal: true,
 				authentication_cachettl: 30000,
 				authentication_enablesessions: true,
 				authentication_operationtokentimeout: '2d',
 				authentication_refreshtokentimeout: '31d',
+				analytics_aggregateperiod: 60,
 				clustering_enabled: true,
 				clustering_hubserver_cluster_name: 'testHarperDB',
 				clustering_hubserver_cluster_network_port: 9933,
@@ -442,21 +425,7 @@ describe('Test configUtils module', () => {
 				clustering_tls_insecure: true,
 				clustering_tls_verify: true,
 				clustering_user: 'test_user',
-				customfunctions_enabled: true,
-				customfunctions_network_cors: false,
-				customfunctions_network_corsaccesslist: ['test1', 'test2'],
-				customfunctions_network_headerstimeout: 59999,
-				customfunctions_network_https: true,
-				customfunctions_network_keepalivetimeout: 4999,
-				customfunctions_network_port: 9936,
-				customfunctions_network_timeout: 119999,
-				customfunctions_nodeenv: 'development',
-				customfunctions_root: path.join(DIRNAME, '/test_custom_functions'),
-				customfunctions_tls_certificate: TEST_CERT,
-				customfunctions_tls_certificateauthority: null,
-				customfunctions_tls_privatekey: TEST_PRIVATE_KEY,
-				http_threads: 4,
-				http_sessionaffinity: null,
+				componentsroot: path.join(DIRNAME, '/test_custom_functions'),
 				localstudio_enabled: true,
 				logging_auditauthevents_logfailed: false,
 				logging_auditauthevents_logsuccessful: false,
@@ -464,37 +433,51 @@ describe('Test configUtils module', () => {
 				logging_auditretention: '3d',
 				logging_file: false,
 				logging_level: 'notify',
+				logging_root: path.join(DIRNAME, '/testlogging'),
 				logging_rotation_enabled: true,
 				logging_rotation_compress: true,
 				logging_rotation_interval: '10D',
 				logging_rotation_maxsize: '10M',
 				logging_rotation_path: 'lets/send/log/here',
-				logging_root: path.join(DIRNAME, '/testlogging'),
 				logging_stdstreams: true,
 				mqtt_network_port: 1883,
 				mqtt_network_secureport: 8883,
-				mqtt_requireauthentication: true,
 				mqtt_websocket: true,
-				operationsapi_foreground: true,
+				mqtt_requireauthentication: true,
+				operationsapi_network_compressionthreshold: 1200,
+				operationsapi_network_sessionaffinity: null,
 				operationsapi_network_cors: false,
 				operationsapi_network_corsaccesslist: ['test1', 'test2'],
+				operationsapi_network_port: 2599,
+				operationsapi_network_secureport: null,
 				operationsapi_network_headerstimeout: 60001,
 				operationsapi_network_https: true,
 				operationsapi_network_keepalivetimeout: 5001,
-				operationsapi_network_port: 2599,
 				operationsapi_network_timeout: 120001,
-				operationsapi_nodeenv: 'development',
+				http_compressionthreshold: 1200,
+				http_cors: false,
+				http_corsaccesslist: ['test1', 'test2'],
+				http_keepalivetimeout: 4999,
+				http_port: 9936,
+				http_secureport: null,
+				http_sessionaffinity: null,
+				threads: 4,
+				http_timeout: 119999,
+				http_headerstimeout: 59999,
 				rootpath: path.join(DIRNAME, '/yaml'),
 				storage_writeasync: true,
-				storage_overlappingsync: false,
 				storage_caching: false,
 				storage_compression: false,
 				storage_noreadahead: false,
-				storage_prefetchwrites: false,
 				storage_path: 'users/unit_test/path',
+				storage_prefetchwrites: false,
+				storage_overlappingsync: false,
+				tls_certificate: TEST_CERT,
+				tls_certificateauthority: null,
+				tls_privatekey: TEST_PRIVATE_KEY,
 				operationsapi_tls_certificate: TEST_CERT,
-				operationsapi_tls_certificateauthority: null,
 				operationsapi_tls_privatekey: TEST_PRIVATE_KEY,
+				operationsapi_tls_certificateauthority: null,
 			};
 
 			config_utils_rw.createConfigFile(TEST_ARGS);
@@ -530,7 +513,7 @@ describe('Test configUtils module', () => {
 			clustering_leafserver_streams_path: null,
 			clustering_loglevel: 'error',
 			clustering_nodename: null,
-			clustering_republishmessages: true,
+			clustering_republishmessages: false,
 			clustering_databaselevel: false,
 			clustering_tls_certificate: null,
 			clustering_tls_certificateauthority: null,
@@ -538,20 +521,18 @@ describe('Test configUtils module', () => {
 			clustering_tls_insecure: true,
 			clustering_tls_verify: true,
 			clustering_user: null,
-			customfunctions_enabled: true,
-			customfunctions_network_cors: false,
-			customfunctions_network_corsaccesslist: [null],
-			customfunctions_network_headerstimeout: 60000,
-			customfunctions_network_https: false,
-			customfunctions_network_keepalivetimeout: 5000,
-			customfunctions_network_port: 9926,
-			customfunctions_network_timeout: 120000,
-			customfunctions_nodeenv: 'production',
-			customfunctions_root: null,
-			customfunctions_tls_certificate: null,
-			customfunctions_tls_certificateauthority: null,
-			customfunctions_tls_privatekey: null,
-			http_threads: null,
+			http_cors: false,
+			http_corsaccesslist: [null],
+			http_compressionthreshold: 1200,
+			http_keepalivetimeout: 30000,
+			http_port: 9926,
+			http_secureport: null,
+			http_timeout: 120000,
+			componentsroot: null,
+			tls_certificate: null,
+			tls_certificateauthority: null,
+			tls_privatekey: null,
+			threads: null,
 			http_sessionaffinity: null,
 			localstudio_enabled: false,
 			logging_auditauthevents_logfailed: false,
@@ -571,15 +552,17 @@ describe('Test configUtils module', () => {
 			mqtt_network_secureport: 8883,
 			mqtt_requireauthentication: true,
 			mqtt_websocket: true,
-			operationsapi_foreground: false,
 			operationsapi_network_cors: true,
 			operationsapi_network_corsaccesslist: ['*'],
-			operationsapi_network_headerstimeout: 60000,
-			operationsapi_network_https: false,
-			operationsapi_network_keepalivetimeout: 5000,
+			operationsapi_network_keepalivetimeout: 30000,
 			operationsapi_network_port: 9925,
+			operationsapi_network_secureport: null,
 			operationsapi_network_timeout: 120000,
-			operationsapi_nodeenv: 'production',
+			operationsapi_tls_certificate: null,
+			operationsapi_tls_certificateauthority: null,
+			operationsapi_tls_privatekey: null,
+			operationsapi_network_compressionthreshold: 1200,
+			operationsapi_network_sessionaffinity: null,
 			rootpath: null,
 			storage_writeasync: false,
 			storage_caching: true,
@@ -587,9 +570,6 @@ describe('Test configUtils module', () => {
 			storage_noreadahead: true,
 			storage_prefetchwrites: true,
 			storage_path: null,
-			operationsapi_tls_certificate: null,
-			operationsapi_tls_certificateauthority: null,
-			operationsapi_tls_privatekey: null,
 		};
 		let flat_default_config_obj_rw;
 
@@ -612,7 +592,7 @@ describe('Test configUtils module', () => {
 			const parse_document_spy = sandbox.spy(YAML, 'parseDocument');
 
 			const value = config_utils_rw.getDefaultConfig(hdbTerms.CONFIG_PARAMS.LOGGING_ROTATION_ENABLED);
-			const value2 = config_utils_rw.getDefaultConfig(hdbTerms.CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_CERTIFICATE);
+			const value2 = config_utils_rw.getDefaultConfig(hdbTerms.CONFIG_PARAMS.TLS_CERTIFICATE);
 			const value3 = config_utils_rw.getDefaultConfig(hdbTerms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT);
 
 			expect(value).to.be.false;
@@ -641,9 +621,9 @@ describe('Test configUtils module', () => {
 		it('Test if param is defined in instantiated default config, returns in-memory value', () => {
 			flat_config_obj_rw = config_utils_rw.__set__('flat_config_obj', FLAT_CONFIG_OBJ);
 
-			const value = config_utils_rw.getConfigValue(hdbTerms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED);
+			const value = config_utils_rw.getConfigValue(hdbTerms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NAME);
 
-			expect(value).to.be.false;
+			expect(value).to.equal('harperdb');
 		});
 
 		it('Test if param isnt defined in instantiated default config, returns undefined', () => {
@@ -659,7 +639,7 @@ describe('Test configUtils module', () => {
 		it('Test if in-memory obj doesnt exist, returns undefined', () => {
 			flat_config_obj_rw = config_utils_rw.__set__('flat_config_obj', undefined);
 
-			const value = config_utils_rw.getConfigValue(hdbTerms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED);
+			const value = config_utils_rw.getConfigValue(hdbTerms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NAME);
 
 			expect(logger_trace_stub.firstCall.args[0]).to.equal(UNINIT_GET_CONFIG_ERR);
 			expect(value).to.be.undefined;
@@ -807,8 +787,8 @@ describe('Test configUtils module', () => {
 							path: 'path/for/rotated/logs',
 						},
 					},
+					threads: 12,
 					http: {
-						threads: 12,
 						remoteAddressAffinity: false,
 					},
 					storage: {
@@ -836,10 +816,9 @@ describe('Test configUtils module', () => {
 
 			expect(error).to.not.exist;
 			expect(config_validator_stub.called).to.be.true;
-			expect(set_in_stub.firstCall.args[0]).to.eql(['http', 'threads']);
+			expect(set_in_stub.firstCall.args[0]).to.eql(['threads']);
 			expect(set_in_stub.firstCall.args[1]).to.equal(12);
-			expect(set_in_stub.secondCall.args[0]).to.eql(['customFunctions', 'root']);
-			expect(set_in_stub.secondCall.args[1]).to.equal(CF_ROOT);
+			expect(set_in_stub.secondCall.args[0]).to.eql(['componentsRoot']);
 			expect(set_in_stub.args[2][0]).to.eql(['logging', 'root']);
 			expect(set_in_stub.args[2][1]).to.equal(LOG_ROOT);
 			expect(set_in_stub.args[3][1]).to.equal('path/to/storage');
@@ -939,20 +918,18 @@ describe('Test configUtils module', () => {
 				clustering_tls_certificateauthority: null,
 				clustering_tls_privatekey: null,
 				clustering_user: null,
-				customfunctions_enabled: false,
-				customfunctions_network_cors: true,
-				customfunctions_network_corsaccesslist: [null],
-				customfunctions_network_headerstimeout: 60000,
+				http_cors: true,
+				http_corsaccesslist: [null],
+				http_headerstimeout: 60000,
 				customfunctions_network_https: false,
-				customfunctions_network_keepalivetimeout: 5000,
-				customfunctions_network_port: 9926,
-				customfunctions_network_timeout: 120000,
-				customfunctions_nodeenv: 'production',
+				http_keepalivetimeout: 5000,
+				http_port: 9926,
+				http_timeout: 120000,
 				customfunctions_processes: null,
-				customfunctions_root: null,
-				customfunctions_tls_certificate: null,
-				customfunctions_tls_certificateauthority: null,
-				customfunctions_tls_privatekey: null,
+				componentsroot: null,
+				tls_certificate: null,
+				tls_certificateauthority: null,
+				tls_privatekey: null,
 				localstudio_enabled: false,
 				logging_auditlog: true,
 				logging_file: true,
@@ -963,9 +940,8 @@ describe('Test configUtils module', () => {
 				logging_rotation_size: null,
 				logging_rotation_path: null,
 				logging_stdstreams: false,
-				operationsapi_authentication_operationtokentimeout: '1d',
-				operationsapi_authentication_refreshtokentimeout: '30d',
-				operationsapi_foreground: false,
+				authentication_operationtokentimeout: '1d',
+				authentication_refreshtokentimeout: '30d',
 				operationsapi_network_cors: true,
 				operationsapi_network_corsaccesslist: [null],
 				operationsapi_network_headerstimeout: 60000,
@@ -973,7 +949,6 @@ describe('Test configUtils module', () => {
 				operationsapi_network_keepalivetimeout: 5000,
 				operationsapi_network_port: 9925,
 				operationsapi_network_timeout: 120000,
-				operationsapi_nodeenv: 'production',
 				operationsapi_processes: null,
 				rootpath: HDB_ROOT,
 				storage_writeasync: true,
@@ -982,9 +957,6 @@ describe('Test configUtils module', () => {
 				storage_compression: false,
 				storage_noreadahead: false,
 				storage_prefetchwrites: false,
-				operationsapi_tls_certificate: null,
-				operationsapi_tls_certificateauthority: null,
-				operationsapi_tls_privatekey: null,
 			};
 			config_utils_rw.__set__('flat_config_obj', flat_config_obj);
 
@@ -1384,24 +1356,21 @@ describe('Test configUtils module', () => {
 			authentication_refreshtokentimeout: '30d',
 			rootpath: path.join(__dirname, '../../'),
 			operationsapi_network_port: 9925,
-			operationsapi_tls_certificate: path.join(__dirname, '../../keys/certificate.pem'),
-			operationsapi_tls_privatekey: path.join(__dirname, '../../keys/privateKey.pem'),
+			tls_certificate: path.join(__dirname, '../../keys/certificate.pem'),
+			tls_privatekey: path.join(__dirname, '../../keys/privateKey.pem'),
 			operationsapi_network_cors: true,
 			logging_level: 'error',
 			logging_root: path.join(__dirname, '../../log'),
-			operationsapi_nodeenv: [],
 			clustering_enabled: false,
-			http_threads: 12,
+			threads: 12,
 			operationsapi_network_timeout: 120000,
 			operationsapi_network_keepalivetimeout: 5000,
 			operationsapi_network_headerstimeout: 60000,
 			logging_auditlog: false,
-			customfunctions_enabled: false,
-			customfunctions_network_port: 9926,
-			customfunctions_root: path.join(__dirname, '../../custom_functions'),
+			http_port: 9926,
+			componentsroot: path.join(__dirname, '../../custom_functions'),
 			logging_file: true,
 			logging_stdstreams: false,
-			operationsapi_foreground: false,
 		};
 
 		after(() => {
@@ -1457,11 +1426,11 @@ describe('Test configUtils module', () => {
 		it('Test all schemas config is added to config doc', () => {
 			const setSchemasConfig = config_utils_rw.__get__('setSchemasConfig');
 			setSchemasConfig(fake_config_doc, schema_conf);
-			expect(add_in_stub.getCall(0).firstArg).to.eql(['schemas', 'dev_schema', 'tables', 'furry_friend', 'path']);
+			expect(add_in_stub.getCall(0).firstArg).to.eql(['databases', 'dev_schema', 'tables', 'furry_friend', 'path']);
 			expect(add_in_stub.getCall(0).lastArg).to.eql('path/to/the/fur');
-			expect(add_in_stub.getCall(1).firstArg).to.eql(['schemas', 'second_test_schema', 'path']);
+			expect(add_in_stub.getCall(1).firstArg).to.eql(['databases', 'second_test_schema', 'path']);
 			expect(add_in_stub.getCall(1).lastArg).to.eql('im/number/two');
-			expect(add_in_stub.getCall(2).firstArg).to.eql(['schemas', 'audit_test_schema', 'auditPath']);
+			expect(add_in_stub.getCall(2).firstArg).to.eql(['databases', 'audit_test_schema', 'auditPath']);
 			expect(add_in_stub.getCall(2).lastArg).to.eql('audit/path');
 		});
 	});

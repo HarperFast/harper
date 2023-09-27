@@ -34,7 +34,7 @@ module.exports = {
  */
 function checkProjectExists(check_exists, project, helpers) {
 	try {
-		const cf_dir = env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+		const cf_dir = env_mangr.get(hdb_terms.CONFIG_PARAMS.COMPONENTSROOT);
 		const project_dir = path.join(cf_dir, project);
 
 		if (!fs.existsSync(project_dir)) {
@@ -71,7 +71,7 @@ function checkFilePath(path, helpers) {
  */
 function checkFileExists(project, type, file, helpers) {
 	try {
-		const cf_dir = env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY);
+		const cf_dir = env_mangr.get(hdb_terms.CONFIG_PARAMS.COMPONENTSROOT);
 		const file_path = path.join(cf_dir, project, type, file + '.js');
 		if (!fs.existsSync(file_path)) {
 			return helpers.message(HDB_ERROR_MSGS.NO_FILE);

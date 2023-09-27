@@ -154,9 +154,7 @@ function updateSettingsFile_3_1_0() {
 			CONFIG_PARAMS.CUSTOMFUNCTIONS_ENABLED
 		)}\n` +
 		`   ;The port used to access the custom functions server.\n` +
-		`${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY} = ${config_utils.getDefaultConfig(
-			CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_PORT
-		)}\n` +
+		`${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY} = ${config_utils.getDefaultConfig(CONFIG_PARAMS.HTTP_PORT)}\n` +
 		`   ;The path to the folder containing HarperDB custom function files.\n` +
 		`${HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_DIRECTORY_KEY} = ${path.join(
 			getOldPropsValue(HDB_SETTINGS_NAMES.HDB_ROOT_KEY, old_hdb_props),

@@ -177,7 +177,7 @@ function getMockTestPath() {
 function getMockLMDBPath() {
 	let lmdb_path = path.join(UNIT_TEST_DIR, ENV_DIR_NAME, process.pid.toString());
 	env.setProperty(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, lmdb_path);
-	env.setProperty(terms.CONFIG_PARAMS.SCHEMAS, { data: { path: lmdb_path }, dev: { path: lmdb_path } });
+	env.setProperty(terms.CONFIG_PARAMS.DATABASES, { data: { path: lmdb_path }, dev: { path: lmdb_path } });
 	resetDatabases();
 	if (isMainThread) {
 		process.on('exit', function () {

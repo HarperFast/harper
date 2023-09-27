@@ -9,7 +9,7 @@ const fs = require('fs-extra');
 const _ = require('lodash');
 env.initSync();
 
-const { CONFIG_PARAMS, SCHEMAS_PARAM_CONFIG, SYSTEM_SCHEMA_NAME } = hdb_terms;
+const { CONFIG_PARAMS, DATABASES_PARAM_CONFIG, SYSTEM_SCHEMA_NAME } = hdb_terms;
 let BASE_SCHEMA_PATH = undefined;
 let SYSTEM_SCHEMA_PATH = undefined;
 let TRANSACTION_STORE_PATH = undefined;
@@ -59,7 +59,7 @@ function getTransactionAuditStoreBasePath() {
 }
 
 function getTransactionAuditStorePath(schema, table) {
-	let schema_config = env.get(CONFIG_PARAMS.SCHEMAS)?.[schema];
+	let schema_config = env.get(CONFIG_PARAMS.DATABASES)?.[schema];
 	return (
 		(table && schema_config?.tables?.[table]?.auditPath) ||
 		schema_config?.auditPath ||
@@ -70,7 +70,7 @@ function getTransactionAuditStorePath(schema, table) {
 function getSchemaPath(schema, table) {
 	schema = schema.toString();
 	table = table ? table.toString() : table;
-	let schema_config = env.get(hdb_terms.CONFIG_PARAMS.SCHEMAS)?.[schema];
+	let schema_config = env.get(hdb_terms.CONFIG_PARAMS.DATABASES)?.[schema];
 	return (
 		(table && schema_config?.tables?.[table]?.path) || schema_config?.path || path.join(getBaseSchemaPath(), schema)
 	);
@@ -91,7 +91,7 @@ function initSystemSchemaPaths(schema, table) {
 	const args = process.env;
 	Object.assign(args, minimist(process.argv));
 
-	const schema_conf_json = args[CONFIG_PARAMS.SCHEMAS.toUpperCase()];
+	const schema_conf_json = args[CONFIG_PARAMS.DATABASES.toUpperCase()];
 	if (schema_conf_json) {
 		let schemas_conf;
 		try {
@@ -104,26 +104,26 @@ function initSystemSchemaPaths(schema, table) {
 		for (const schema_conf of schemas_conf) {
 			const system_schema_conf = schema_conf[SYSTEM_SCHEMA_NAME];
 			if (!system_schema_conf) continue;
-			let schemas_obj = env.get(CONFIG_PARAMS.SCHEMAS);
+			let schemas_obj = env.get(CONFIG_PARAMS.DATABASES);
 			schemas_obj = schemas_obj ?? {};
 
 			// If path var exists for system table add it to schemas prop and return path.
-			const system_table_path = system_schema_conf?.tables?.[table]?.[SCHEMAS_PARAM_CONFIG.PATH];
+			const system_table_path = system_schema_conf?.tables?.[table]?.[DATABASES_PARAM_CONFIG.PATH];
 			if (system_table_path) {
 				_.set(
 					schemas_obj,
-					[SYSTEM_SCHEMA_NAME, SCHEMAS_PARAM_CONFIG.TABLES, table, SCHEMAS_PARAM_CONFIG.PATH],
+					[SYSTEM_SCHEMA_NAME, DATABASES_PARAM_CONFIG.TABLES, table, DATABASES_PARAM_CONFIG.PATH],
 					system_table_path
 				);
-				env.setProperty(CONFIG_PARAMS.SCHEMAS, schemas_obj);
+				env.setProperty(CONFIG_PARAMS.DATABASES, schemas_obj);
 				return system_table_path;
 			}
 
 			// If path exists for system schema add it to schemas prop and return path.
-			const system_schema_path = system_schema_conf?.[SCHEMAS_PARAM_CONFIG.PATH];
+			const system_schema_path = system_schema_conf?.[DATABASES_PARAM_CONFIG.PATH];
 			if (system_schema_path) {
-				_.set(schemas_obj, [SYSTEM_SCHEMA_NAME, SCHEMAS_PARAM_CONFIG.PATH], system_schema_path);
-				env.setProperty(CONFIG_PARAMS.SCHEMAS, schemas_obj);
+				_.set(schemas_obj, [SYSTEM_SCHEMA_NAME, DATABASES_PARAM_CONFIG.PATH], system_schema_path);
+				env.setProperty(CONFIG_PARAMS.DATABASES, schemas_obj);
 				return system_schema_path;
 			}
 		}
@@ -155,5 +155,5 @@ module.exports = {
 	getTransactionAuditStoreBasePath,
 	getSchemaPath,
 	initSystemSchemaPaths,
-	resetPaths
+	resetPaths,
 };

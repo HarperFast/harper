@@ -133,9 +133,6 @@ async function main(called_by_install = false) {
 		const clustering_enabled = hdb_utils.autoCastBoolean(env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY));
 		const is_scripted = process.env.IS_SCRIPTED_SERVICE && !cmd_args.service;
 		const start_clustering = clustering_enabled;
-		const custom_func_enabled = hdb_utils.autoCastBoolean(
-			env.get(terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_ENABLED_KEY)
-		);
 
 		// Run can be called with a --service argument which allows designated services to be started.
 		if (!hdb_utils.isEmpty(cmd_args.service)) {
@@ -151,12 +148,6 @@ async function main(called_by_install = false) {
 				const service = args.toLowerCase();
 				if (terms.PROCESS_DESCRIPTORS_VALIDATE[service] === undefined) {
 					hdb_logger.error(`Run received unrecognized service command argument: ${service}`);
-					continue;
-				}
-
-				// If custom functions not enabled in settings.js do not start.
-				if (service === terms.PROCESS_DESCRIPTORS.CUSTOM_FUNCTIONS.toLowerCase() && !custom_func_enabled) {
-					hdb_logger.error(`${service} is not enabled in settings`);
 					continue;
 				}
 
@@ -178,7 +169,7 @@ async function main(called_by_install = false) {
 				console.log(log_msg);
 			}
 		} else {
-			await startHTTPThreads(env.get(hdb_terms.CONFIG_PARAMS.HTTP_THREADS));
+			await startHTTPThreads(env.get(hdb_terms.CONFIG_PARAMS.THREADS));
 			if (start_clustering) {
 				if (!is_scripted) await pm2_utils.startClusteringProcesses();
 				await pm2_utils.startClusteringThreads();
@@ -208,9 +199,6 @@ function started() {
  * @returns {Promise<void>} // ha ha, it doesn't!
  */
 async function launch() {
-	if (getRunInForeground()) {
-		return main();
-	}
 	try {
 		if (pm2_utils === undefined) pm2_utils = require('../utility/processManagement/processManagement');
 		pm2_utils.enterPM2Mode();
@@ -322,8 +310,4 @@ async function isHdbInstalled() {
 	}
 
 	return true;
-}
-
-function getRunInForeground() {
-	return hdb_utils.autoCastBoolean(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_FOREGROUND));
 }

@@ -6,6 +6,8 @@ import { createBrotliCompress, brotliCompress } from 'zlib';
 import { Readable } from 'stream';
 import { server, ContentTypeHandler } from '../Server';
 import { _assignPackageExport } from '../../index';
+import env_mgr from '../../utility/environment/environmentManager';
+import { CONFIG_PARAMS } from '../../utility/hdbTerms';
 
 const PUBLIC_ENCODE_OPTIONS = {
 	useRecords: false,
@@ -247,8 +249,8 @@ export function findBestSerializer(incoming_message) {
 	return { serializer: best_serializer, type: best_type, parameters: best_parameters };
 }
 
-// TODO: Add to configuration file
-const COMPRESSION_THRESHOLD = 1200; // about an average TCP packet size (if headers included)
+// about an average TCP packet size (if headers included)
+const COMPRESSION_THRESHOLD = env_mgr.get(CONFIG_PARAMS.HTTP_COMPRESSIONTHRESHOLD);
 /**
  * Serialize a response
  * @param response_data

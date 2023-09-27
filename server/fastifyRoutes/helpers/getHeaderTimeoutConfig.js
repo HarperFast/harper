@@ -9,7 +9,7 @@ const terms = require('../../../utility/hdbTerms');
  * @returns {*}
  */
 function getHeaderTimeoutConfig() {
-	return env.get(terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_HEADERSTIMEOUT);
+	return env.get(terms.CONFIG_PARAMS.HTTP_HEADERSTIMEOUT) ?? 60000;
 }
 
 module.exports = getHeaderTimeoutConfig;

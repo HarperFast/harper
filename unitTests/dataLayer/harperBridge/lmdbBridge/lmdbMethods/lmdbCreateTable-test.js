@@ -94,7 +94,7 @@ describe('test lmdbCreateTable module', () => {
 		date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
 		await fs.remove(test_utils.getMockLMDBPath());
 		await fs.mkdirp(BASE_TEST_PATH);
-		env.setProperty(hdb_terms.CONFIG_PARAMS.SCHEMAS, {
+		env.setProperty(hdb_terms.CONFIG_PARAMS.DATABASES, {
 			prod: {
 				path: path.join(BASE_PATH, 'alt-prod-path'),
 				tables: {
@@ -128,7 +128,7 @@ describe('test lmdbCreateTable module', () => {
 		delete global.hdb_schema;
 		try {
 			await fs.remove(BASE_PATH);
-		} catch(error) {}
+		} catch (error) {}
 		global.lmdb_map = undefined;
 	});
 

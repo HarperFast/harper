@@ -15,7 +15,7 @@ const { HTTP_STATUS_CODES, HDB_ERROR_MSGS } = require('../utility/errors/commonE
 const minimist = require('minimist');
 const { server } = require('../server/Server');
 
-const { SCHEMAS_PARAM_CONFIG, CONFIG_PARAMS, CONFIG_PARAM_MAP } = hdb_terms;
+const { DATABASES_PARAM_CONFIG, CONFIG_PARAMS, CONFIG_PARAM_MAP } = hdb_terms;
 const UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is uninitialized';
 const CONFIG_INIT_MSG = 'Config successfully initialized';
 const BACKUP_ERR = 'Error backing up config file';
@@ -35,6 +35,7 @@ const DEPRECATED_CONFIG = {
 
 let flat_default_config_obj;
 let flat_config_obj;
+let config_obj;
 
 module.exports = {
 	createConfigFile,
@@ -53,6 +54,7 @@ module.exports = {
 	getConfigFilePath,
 	addConfig,
 	deleteConfigFromFile,
+	getConfigObj,
 };
 
 /**
@@ -69,7 +71,7 @@ function createConfigFile(args) {
 		const config_param = CONFIG_PARAM_MAP[arg.toLowerCase()];
 
 		// Schemas config args are handled differently, so if they exist set them to var that will be used by setSchemasConfig
-		if (config_param === CONFIG_PARAMS.SCHEMAS) {
+		if (config_param === CONFIG_PARAMS.DATABASES) {
 			schemas_args = args[arg];
 			continue;
 		}
@@ -118,12 +120,12 @@ function setSchemasConfig(config_doc, schema_conf_json) {
 
 		for (const schema_conf of schemas_conf) {
 			const schema = Object.keys(schema_conf)[0];
-			if (schema_conf[schema].hasOwnProperty(SCHEMAS_PARAM_CONFIG.TABLES)) {
-				for (const table in schema_conf[schema][SCHEMAS_PARAM_CONFIG.TABLES]) {
+			if (schema_conf[schema].hasOwnProperty(DATABASES_PARAM_CONFIG.TABLES)) {
+				for (const table in schema_conf[schema][DATABASES_PARAM_CONFIG.TABLES]) {
 					// Table path var can be 'path' or 'auditPath'
-					for (const table_path_var in schema_conf[schema][SCHEMAS_PARAM_CONFIG.TABLES][table]) {
-						const table_path = schema_conf[schema][SCHEMAS_PARAM_CONFIG.TABLES][table][table_path_var];
-						const keys = [CONFIG_PARAMS.SCHEMAS, schema, SCHEMAS_PARAM_CONFIG.TABLES, table, table_path_var];
+					for (const table_path_var in schema_conf[schema][DATABASES_PARAM_CONFIG.TABLES][table]) {
+						const table_path = schema_conf[schema][DATABASES_PARAM_CONFIG.TABLES][table][table_path_var];
+						const keys = [CONFIG_PARAMS.DATABASES, schema, DATABASES_PARAM_CONFIG.TABLES, table, table_path_var];
 						config_doc.hasIn(keys) ? config_doc.setIn(keys, table_path) : config_doc.addIn(keys, table_path);
 					}
 				}
@@ -131,7 +133,7 @@ function setSchemasConfig(config_doc, schema_conf_json) {
 				// Schema path var can be 'path' or 'auditPath'
 				for (const schema_path_var in schema_conf[schema]) {
 					const schema_path = schema_conf[schema][schema_path_var];
-					const keys = [CONFIG_PARAMS.SCHEMAS, schema, schema_path_var];
+					const keys = [CONFIG_PARAMS.DATABASES, schema, schema_path_var];
 					config_doc.hasIn(keys) ? config_doc.setIn(keys, schema_path) : config_doc.addIn(keys, schema_path);
 				}
 			}
@@ -300,6 +302,12 @@ function checkForUpdatedConfig(config_doc, config_file_path) {
  */
 function validateConfig(config_doc) {
 	const config_json = config_doc.toJSON();
+
+	// Config might have some legacy values that will be modified by validator. We need to set old to new here before
+	// validator sets any defaults
+	config_json.componentsRoot = config_json.componentsRoot ?? config_json?.customFunctions?.root;
+	config_json.threads = config_json.threads ?? config_json?.http?.threads;
+
 	const validation = configValidator(config_json);
 	if (validation.error) {
 		throw HDB_ERROR_MSGS.CONFIG_VALIDATION(validation.error.message);
@@ -307,8 +315,8 @@ function validateConfig(config_doc) {
 
 	// These parameters can be set by the validator if they arent provided by user,
 	// for this reason we need to update the config yaml doc after the validator has run.
-	config_doc.setIn(['http', 'threads'], validation.value.http.threads);
-	config_doc.setIn(['customFunctions', 'root'], validation.value.customFunctions.root);
+	config_doc.setIn(['threads'], validation.value.threads);
+	config_doc.setIn(['componentsRoot'], validation.value.componentsRoot); // TODO: check this works with old config
 	config_doc.setIn(['logging', 'root'], validation.value.logging.root);
 	config_doc.setIn(['storage', 'path'], validation.value.storage.path);
 	config_doc.setIn(['logging', 'rotation', 'path'], validation.value.logging.rotation.path);
@@ -365,7 +373,7 @@ function updateConfigValue(
 	const config_doc = parseYamlDoc(old_config_path);
 	let schemas_args;
 
-	if (parsed_args === undefined && param.toLowerCase() === CONFIG_PARAMS.SCHEMAS) {
+	if (parsed_args === undefined && param.toLowerCase() === CONFIG_PARAMS.DATABASES) {
 		schemas_args = value;
 	} else if (parsed_args === undefined) {
 		let config_param;
@@ -384,16 +392,22 @@ function updateConfigValue(
 	} else {
 		// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
 		for (const arg in parsed_args) {
-			const config_param = CONFIG_PARAM_MAP[arg.toLowerCase()];
+			let config_param = CONFIG_PARAM_MAP[arg.toLowerCase()];
 
 			// Schemas config args are handled differently, so if they exist set them to var that will be used by setSchemasConfig
-			if (config_param === CONFIG_PARAMS.SCHEMAS) {
+			if (config_param === CONFIG_PARAMS.DATABASES) {
 				schemas_args = parsed_args[arg];
 				continue;
 			}
 
 			if (config_param !== undefined) {
-				const split_param = config_param.split('_');
+				let split_param = config_param.split('_');
+				const legacy_param = hdb_terms.LEGACY_CONFIG_PARAMS[arg.toUpperCase()];
+				if (legacy_param && legacy_param.startsWith('customFunctions') && config_doc.hasIn(legacy_param.split('_'))) {
+					config_param = legacy_param;
+					split_param = legacy_param.split('_');
+				}
+
 				let new_value = castConfigValue(config_param, parsed_args[arg]);
 				if (config_param === 'rootPath' && new_value?.endsWith('/')) new_value = new_value.slice(0, -1);
 				try {
@@ -435,30 +449,46 @@ function backupConfigFile(config_path, hdb_root) {
 	}
 }
 
-const PRESERVED_PROPERTIES = ['schemas'];
+const PRESERVED_PROPERTIES = ['databases'];
 /**
  * Flattens the JSON version of HarperDB config with underscores separating each parent/child key.
  * @param obj
  * @returns {null}
  */
 function flattenConfig(obj) {
-	let result = {};
+	Object.assign(obj.http, obj?.customFunctions?.network);
+	if (obj?.operationsApi?.network) obj.operationsApi.network = Object.assign({}, obj.http, obj.operationsApi.network);
+	if (obj?.operationsApi) obj.operationsApi.tls = Object.assign({}, obj.tls, obj.operationsApi.tls);
 
-	for (const i in obj) {
-		if (!obj.hasOwnProperty(i)) continue;
+	config_obj = obj;
+	const flat_obj = squashObj(obj);
 
-		if (typeof obj[i] == 'object' && obj[i] !== null && !Array.isArray(obj[i]) && !PRESERVED_PROPERTIES.includes(i)) {
-			const flat_obj = flattenConfig(obj[i]);
-			for (const x in flat_obj) {
-				if (!flat_obj.hasOwnProperty(x)) continue;
+	return flat_obj;
 
-				result[i.toLowerCase() + '_' + x] = flat_obj[x];
+	function squashObj(obj) {
+		let result = {};
+		for (const i in obj) {
+			if (!obj.hasOwnProperty(i)) continue;
+
+			if (typeof obj[i] == 'object' && obj[i] !== null && !Array.isArray(obj[i]) && !PRESERVED_PROPERTIES.includes(i)) {
+				const flat_obj = squashObj(obj[i]);
+				for (const x in flat_obj) {
+					if (!flat_obj.hasOwnProperty(x)) continue;
+
+					const key = i.toLowerCase() + '_' + x;
+					// This is here to catch config param which has been renamed/moved
+					if (!CONFIG_PARAMS[key.toUpperCase()] && CONFIG_PARAM_MAP[key]) {
+						result[CONFIG_PARAM_MAP[key].toLowerCase()] = flat_obj[x];
+					}
+
+					result[key] = flat_obj[x];
+				}
+			} else {
+				result[i.toLowerCase()] = obj[i];
 			}
-		} else {
-			result[i.toLowerCase()] = obj[i];
 		}
+		return result;
 	}
-	return result;
 }
 
 /**
@@ -675,4 +705,13 @@ function deleteConfigFromFile(param) {
 	const hdb_root = config_doc.getIn(['rootPath']);
 	const config_file_location = path.join(hdb_root, hdb_terms.HDB_CONFIG_FILE);
 	fs.writeFileSync(config_file_location, String(config_doc));
+}
+
+function getConfigObj() {
+	if (!config_obj) {
+		initConfig();
+		return config_obj;
+	}
+
+	return config_obj;
 }

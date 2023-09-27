@@ -13,8 +13,8 @@ import { Headers } from '../server/serverHelpers/Headers';
 const auth_event_log = loggerWithTag('auth-event');
 env.initSync();
 
-const apps_cors_accesslist = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORSACCESSLIST);
-const apps_cors = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORS);
+const apps_cors_accesslist = env.get(CONFIG_PARAMS.HTTP_CORSACCESSLIST);
+const apps_cors = env.get(CONFIG_PARAMS.HTTP_CORS);
 const operations_cors_accesslist = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSACCESSLIST);
 const operations_cors = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS);
 

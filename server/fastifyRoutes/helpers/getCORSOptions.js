@@ -10,8 +10,8 @@ const { CONFIG_PARAMS } = require('../../../utility/hdbTerms');
  * @returns {{credentials: boolean, origin: boolean, allowedHeaders: [string, string]}}
  */
 function getCORSOptions() {
-	let props_cors_accesslist = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORSACCESSLIST);
-	let props_cors = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORS);
+	let props_cors_accesslist = env.get(CONFIG_PARAMS.HTTP_CORSACCESSLIST);
+	let props_cors = env.get(CONFIG_PARAMS.HTTP_CORS);
 	let cors_options;
 	if (props_cors) {
 		cors_options = {

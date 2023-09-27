@@ -14,8 +14,8 @@ const REQ_MAX_BODY_SIZE = 1024 * 1024 * 1024; //this is 1GB in bytes
  * @returns {{keepAliveTimeout: (*), bodyLimit: number, ignoreTrailingSlash: boolean, connectionTimeout: (*)}}
  */
 function getServerOptions(is_https) {
-	const server_timeout = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_TIMEOUT);
-	const keep_alive_timeout = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_KEEPALIVETIMEOUT);
+	const server_timeout = env.get(CONFIG_PARAMS.HTTP_TIMEOUT);
+	const keep_alive_timeout = env.get(CONFIG_PARAMS.HTTP_KEEPALIVETIMEOUT);
 	const server_opts = {
 		bodyLimit: REQ_MAX_BODY_SIZE,
 		connectionTimeout: server_timeout,
@@ -26,9 +26,9 @@ function getServerOptions(is_https) {
 	};
 
 	if (is_https) {
-		const privateKey = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_PRIVATEKEY);
-		const certificate = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_CERTIFICATE);
-		const certificateAuthority = env.get(CONFIG_PARAMS.OPERATIONSAPI_TLS_CERT_AUTH);
+		const privateKey = env.get(CONFIG_PARAMS.TLS_PRIVATEKEY);
+		const certificate = env.get(CONFIG_PARAMS.TLS_CERTIFICATE);
+		const certificateAuthority = env.get(CONFIG_PARAMS.TLS_CERTIFICATEAUTHORITY);
 		server_opts.https = {
 			allowHTTP1: true, // Support both HTTPS/1 and /2
 			key: fs.readFileSync(`${privateKey}`),

@@ -31,19 +31,11 @@ const {
 const net = require('net');
 const { registerContentHandlers } = require('./serverHelpers/contentTypes');
 
+const DEFAULT_HEADERS_TIMEOUT = 60000;
 const REQ_MAX_BODY_SIZE = 1024 * 1024 * 1024; //this is 1GB in bytes
 const TRUE_COMPARE_VAL = 'TRUE';
 
-const { HDB_SETTINGS_NAMES, CONFIG_PARAMS } = terms;
-const PROPS_CORS_KEY = HDB_SETTINGS_NAMES.CORS_ENABLED_KEY;
-const PROPS_CORS_ACCESSLIST_KEY = 'CORS_ACCESSLIST';
-const PROPS_SERVER_TIMEOUT_KEY = HDB_SETTINGS_NAMES.SERVER_TIMEOUT_KEY;
-const PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY = HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY;
-const PROPS_HEADER_TIMEOUT_KEY = HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY;
-const PROPS_PRIVATE_KEY = HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY;
-const PROPS_CERT_KEY = HDB_SETTINGS_NAMES.CERT_KEY;
-const PROPS_HTTP_SECURE_ON_KEY = HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY;
-
+const { CONFIG_PARAMS } = terms;
 let server;
 
 module.exports = {
@@ -64,11 +56,7 @@ async function operationsServer(options) {
 		global.isMaster = cluster.isMaster;
 
 		await setUp();
-
-		const props_http_secure_on = env.get(PROPS_HTTP_SECURE_ON_KEY);
-		const is_https =
-			props_http_secure_on &&
-			(props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL);
+		const is_https = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT) != null;
 
 		//generate a Fastify server instance
 		server = buildServer(is_https);
@@ -91,7 +79,7 @@ async function operationsServer(options) {
 		} catch (err) {
 			server.close();
 			harper_logger.error(err);
-			harper_logger.error(`Error configuring ${server_type} server`);
+			harper_logger.error(`Error configuring operations server`);
 			throw err;
 		}
 	} catch (err) {
@@ -188,8 +176,8 @@ function buildServer(is_https) {
  * @returns {{keepAliveTimeout: *, bodyLimit: number, connectionTimeout: *}}
  */
 function getServerOptions(is_https) {
-	const server_timeout = env.get(PROPS_SERVER_TIMEOUT_KEY);
-	const keep_alive_timeout = env.get(PROPS_SERVER_KEEP_ALIVE_TIMEOUT_KEY);
+	const server_timeout = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT);
+	const keep_alive_timeout = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT);
 	const server_opts = {
 		bodyLimit: REQ_MAX_BODY_SIZE,
 		connectionTimeout: server_timeout,
@@ -199,9 +187,9 @@ function getServerOptions(is_https) {
 	};
 
 	if (is_https) {
-		const privateKey = env.get(PROPS_PRIVATE_KEY);
-		const certificate = env.get(PROPS_CERT_KEY);
-		const certificateAuthority = env.get(CONFIG_PARAMS.OPERATIONSAPI_TLS_CERT_AUTH);
+		const privateKey = env.get(CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY);
+		const certificate = env.get(CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATE);
+		const certificateAuthority = env.get(CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY);
 		const credentials = {
 			allowHTTP1: true, // Support both HTTPS/1 and /2
 			key: fs.readFileSync(privateKey),
@@ -223,8 +211,8 @@ function getServerOptions(is_https) {
  * @returns {{credentials: boolean, origin: boolean, allowedHeaders: [string, string]}}
  */
 function getCORSOpts() {
-	let props_cors = env.get(PROPS_CORS_KEY);
-	let props_cors_accesslist = env.get(PROPS_CORS_ACCESSLIST_KEY);
+	let props_cors = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS);
+	let props_cors_accesslist = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSACCESSLIST);
 	let cors_options;
 
 	if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {
@@ -253,5 +241,5 @@ function getCORSOpts() {
  * @returns {*}
  */
 function getHeaderTimeoutConfig() {
-	return env.get(PROPS_HEADER_TIMEOUT_KEY);
+	return env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_HEADERSTIMEOUT) ?? DEFAULT_HEADERS_TIMEOUT;
 }

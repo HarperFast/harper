@@ -160,11 +160,11 @@ function initTestEnvironment(test_config_obj = {}) {
 			path.join(props_path, 'envDir', 'utility', 'keys', 'certificate.pem')
 		);
 		setProperty(
-			hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_PRIVATEKEY,
+			hdb_terms.CONFIG_PARAMS.TLS_PRIVATEKEY,
 			path.join(props_path, 'envDir', 'utility', 'keys', 'privateKey.pem')
 		);
 		setProperty(
-			hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_TLS_CERTIFICATE,
+			hdb_terms.CONFIG_PARAMS.TLS_CERTIFICATE,
 			path.join(props_path, 'envDir', 'utility', 'keys', 'certificate.pem')
 		);
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY, `debug`);
@@ -187,10 +187,7 @@ function initTestEnvironment(test_config_obj = {}) {
 			hdb_terms.HDB_SETTINGS_NAMES.CORS_ENABLED_KEY,
 			common_utils.isEmpty(cors_enabled) ? false : cors_enabled
 		);
-		setProperty(
-			hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORS,
-			common_utils.isEmpty(cors_enabled) ? false : cors_enabled
-		);
+		setProperty(hdb_terms.CONFIG_PARAMS.HTTP_CORS, common_utils.isEmpty(cors_enabled) ? false : cors_enabled);
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES, 2);
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES, 4);
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.CUSTOM_FUNCTIONS_PORT_KEY, 9926);
@@ -205,19 +202,19 @@ function initTestEnvironment(test_config_obj = {}) {
 		);
 		if (cors_accesslist) {
 			setProperty('CORS_ACCESSLIST', cors_accesslist);
-			setProperty(hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_CORSACCESSLIST, cors_accesslist);
+			setProperty(hdb_terms.CONFIG_PARAMS.HTTP_CORSACCESSLIST, cors_accesslist);
 		}
 		if (server_timeout) {
 			setProperty(hdb_terms.HDB_SETTINGS_NAMES.SERVER_TIMEOUT_KEY, server_timeout);
-			setProperty(hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_TIMEOUT, server_timeout);
+			setProperty(hdb_terms.CONFIG_PARAMS.HTTP_TIMEOUT, server_timeout);
 		}
 		if (keep_alive_timeout) {
 			setProperty(hdb_terms.HDB_SETTINGS_NAMES.SERVER_KEEP_ALIVE_TIMEOUT_KEY, keep_alive_timeout);
-			setProperty(hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_KEEPALIVETIMEOUT, keep_alive_timeout);
+			setProperty(hdb_terms.CONFIG_PARAMS.HTTP_KEEPALIVETIMEOUT, keep_alive_timeout);
 		}
 		if (headers_timeout) {
 			setProperty(hdb_terms.HDB_SETTINGS_NAMES.SERVER_HEADERS_TIMEOUT_KEY, headers_timeout);
-			setProperty(hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_HEADERSTIMEOUT, headers_timeout);
+			setProperty(hdb_terms.CONFIG_PARAMS.HTTP_HEADERSTIMEOUT, headers_timeout);
 		}
 	} catch (err) {
 		let msg = `Error reading in HDB environment variables from path ${BOOT_PROPS_FILE_PATH}.  Please check your boot props and settings files`;

@@ -13,7 +13,7 @@ const hdb_terms = require('../utility/hdbTerms');
 const validator = require('./validationWrapper');
 
 const DEFAULT_LOG_FOLDER = 'log';
-const DEFAULT_CUSTOM_FUNCTIONS_FOLDER = 'components';
+const DEFAULT_COMPONENTS_FOLDER = 'components';
 const DEFAULT_CORES_IF_ERR = 4;
 const INVALID_SIZE_UNIT_MSG = 'Invalid logging.rotation.maxSize unit. Available units are G, M or K';
 const INVALID_INTERVAL_UNIT_MSG = 'Invalid logging.rotation.interval unit. Available units are D, H or M (minutes)';
@@ -47,7 +47,6 @@ function configValidator(config_json) {
 	}
 
 	const enabled_constraints = boolean.required();
-	const node_env_constraints = Joi.valid('production', 'development').required();
 	const threads_constraints = number.min(0).max(1000).empty(null).default(setDefaultThreads);
 	const root_constraints = string
 		.pattern(/^[\\\/]$|([\\\/][a-zA-Z_0-9\:-]+)+$/, 'directory path')
@@ -133,32 +132,12 @@ function configValidator(config_json) {
 			authorizeLocal: boolean,
 			cacheTTL: number.required(),
 			enableSessions: boolean,
-			operationTokenTimeout: Joi.required(),
-			refreshTokenTimeout: Joi.required(),
 		}),
 		analytics: Joi.object({
 			aggregatePeriod: number,
 		}),
+		componentsRoot: root_constraints.optional(),
 		clustering: clustering_validation_schema,
-		customFunctions: Joi.object({
-			enabled: enabled_constraints,
-			network: Joi.object({
-				cors: boolean.required(),
-				corsAccessList: array.required(),
-				headersTimeout: number.min(1).required(),
-				https: boolean.required(),
-				keepAliveTimeout: number.min(1).required(),
-				port: port_constraints,
-				timeout: number.min(1).required(),
-			}),
-			nodeEnv: node_env_constraints,
-			root: root_constraints,
-			tls: Joi.object({
-				certificate: pem_file_constraints,
-				certificateAuthority: pem_file_constraints,
-				privateKey: pem_file_constraints,
-			}),
-		}).required(),
 		localStudio: Joi.object({
 			enabled: enabled_constraints,
 		}).required(),
@@ -181,17 +160,15 @@ function configValidator(config_json) {
 			auditLog: boolean.required(),
 		}).required(),
 		operationsApi: Joi.object({
-			foreground: boolean.required(),
 			network: Joi.object({
-				cors: boolean.required(),
-				corsAccessList: array.required(),
-				headersTimeout: number.min(1).required(),
-				https: boolean.required(),
-				keepAliveTimeout: number.min(1).required(),
-				port: port_constraints,
-				timeout: number.min(1).required(),
-			}).required(),
-			nodeEnv: node_env_constraints,
+				cors: boolean.optional(),
+				corsAccessList: array.optional(),
+				headersTimeout: number.min(1).optional(),
+				keepAliveTimeout: number.min(1).optional(),
+				port: number.optional(),
+				securePort: number.optional().empty(null),
+				timeout: number.min(1).optional(),
+			}).optional(),
 			tls: Joi.object({
 				certificate: pem_file_constraints,
 				certificateAuthority: pem_file_constraints,
@@ -208,8 +185,14 @@ function configValidator(config_json) {
 			requireAuthentication: boolean.optional(),
 		}),
 		http: Joi.object({
-			threads: threads_constraints,
+			compressionThreshold: number.optional(),
+			cors: boolean.optional(),
+			corsAccessList: array.optional(),
+			headersTimeout: number.min(1).optional(),
+			port: number.min(0).optional(),
+			securePort: number.min(0).optional().empty(null),
 		}).required(),
+		threads: threads_constraints.optional(),
 		storage: Joi.object({
 			writeAsync: boolean.required(),
 			overlappingSync: boolean.optional(),
@@ -220,6 +203,11 @@ function configValidator(config_json) {
 			prefetchWrites: boolean.optional(),
 		}).required(),
 		ignoreScripts: boolean.optional(),
+		tls: Joi.object({
+			certificate: pem_file_constraints.optional(),
+			certificateAuthority: pem_file_constraints.optional(),
+			privateKey: pem_file_constraints.optional(),
+		}),
 	});
 
 	// Not using the validation wrapper here because we need the result if validation is successful because
@@ -328,8 +316,8 @@ function setDefaultRoot(parent, helpers) {
 	}
 
 	switch (config_param) {
-		case 'customFunctions.root':
-			return path.join(hdb_root, DEFAULT_CUSTOM_FUNCTIONS_FOLDER);
+		case 'componentsRoot':
+			return path.join(hdb_root, DEFAULT_COMPONENTS_FOLDER);
 		case 'logging.root':
 			return path.join(hdb_root, DEFAULT_LOG_FOLDER);
 		case 'clustering.leafServer.streams.path':
