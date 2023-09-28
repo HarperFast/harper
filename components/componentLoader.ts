@@ -226,9 +226,12 @@ export async function loadComponent(
 					const end_of_fixed_path = files.indexOf('/*');
 					if (end_of_fixed_path > -1 && !existsSync(files.slice(0, end_of_fixed_path)))
 						throw new Error(
-							`The path ${files.slice(0, end_of_fixed_path)} as the base of the resolved path of ${
+							`The path '${files.slice(
+								0,
+								end_of_fixed_path
+							)}' does not exist and cannot be used as the base of the resolved 'files' path value '${
 								component_config.files
-							} does not exist`
+							}'`
 						);
 					for (const entry of await fg(files, { onlyFiles: false, objectMode: true })) {
 						const { path, dirent } = entry;
@@ -241,7 +244,7 @@ export async function loadComponent(
 							if (relative_path.startsWith(root_path)) relative_path = relative_path.slice(root_path.length);
 							else
 								throw new Error(
-									`The root path ${component_config.root} does not reference a valid part of the file path ${relative_path}.` +
+									`The root path '${component_config.root}' does not reference a valid part of the file path '${relative_path}'.` +
 										`The root path should be used to indicate the relative path/part of the file path for determining the exported web path.`
 								);
 						}
@@ -267,9 +270,9 @@ export async function loadComponent(
 							}
 						} catch (error) {
 							(getWorkerIndex() === 0 ? console : harper_logger).error(
-								`Could not load ${dirent.isFile() ? 'file' : 'directory'} ${path} using ${
+								`Could not load ${dirent.isFile() ? 'file' : 'directory'} '${path}' using '${
 									component_config.module
-								} for application ${folder}`,
+								}' for application '${folder}'`,
 								error
 							);
 							resources.set(component_config.path || '/', new ErrorResource(error));
@@ -278,8 +281,8 @@ export async function loadComponent(
 				}
 			} catch (error) {
 				(getWorkerIndex() === 0 ? console : harper_logger).error(
-					`Could not load component ${component_name} for application ${folder}`,
-					error
+					`Could not load component '${component_name}' for application '${basename(folder)}':`,
+					error.message
 				);
 				resources.set(component_config.path || '/', new ErrorResource(error), null, true);
 			}
