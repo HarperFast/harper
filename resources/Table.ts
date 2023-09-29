@@ -616,8 +616,8 @@ export function makeTable(options) {
 				invalidated: true,
 				entry: this[ENTRY_PROPERTY],
 				nodeName: this[CONTEXT]?.nodeName,
-				noRetry: true,
-				commit: (txn_time) => {
+				commit: (txn_time, existing_entry) => {
+					if (existing_entry?.version > txn_time) return;
 					let partial_record = null;
 					for (const name in indices) {
 						if (!partial_record) partial_record = {};
@@ -1523,7 +1523,6 @@ export function makeTable(options) {
 		// it is important to remember that this is _NOT_ part of the current transaction; nothing is changing
 		// with the canonical data, we are simply fulfilling our local copy of the canonical data, but still don't
 		// want a timestamp later than the current transaction
-		const updating_version = existing_entry?.version;
 		// we create a new context for the source, we want to determine the timestamp and don't want to
 		// attribute this to the current user
 		const source_context = {
@@ -1556,8 +1555,9 @@ export function makeTable(options) {
 							}
 						}
 						invalidated = metadata_flags & INVALIDATED;
-						const version = source_context.lastModified || (invalidated && existing_version);
-						has_changes = invalidated || version > existing_version;
+						let version = source_context.lastModified || (invalidated && existing_version);
+						has_changes = invalidated || version > existing_version || !existing_record;
+						if (!version) version = getNextMonotonicTime();
 						const resolve_duration = performance.now() - start;
 						recordAction(resolve_duration, 'cache-resolution', table_name);
 						if (response_headers) {
@@ -1602,9 +1602,12 @@ export function makeTable(options) {
 						key: id,
 						store: primary_store,
 						entry: existing_entry,
-						noRetry: true, // don't try to update on retry, just let the newer version win
 						nodeName: 'source',
-						commit: (txn_time) => {
+						commit: (txn_time, existing_entry) => {
+							if (existing_entry?.version !== existing_version) {
+								// don't do anything if the version has changed
+								return;
+							}
 							const has_index_changes = updateIndices(id, existing_record, updated_record);
 							let completion;
 							if (updated_record) {
@@ -1651,7 +1654,7 @@ export function makeTable(options) {
 										Boolean(invalidated)
 									);
 								} else {
-									primary_store.remove(id, updating_version);
+									primary_store.remove(id, existing_version);
 								}
 							}
 							return completion;

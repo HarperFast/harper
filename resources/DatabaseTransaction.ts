@@ -44,7 +44,7 @@ export class DatabaseTransaction implements Transaction {
 	/**
 	 * Resolves with information on the timestamp and success of the commit
 	 */
-	commit(txn_time = getNextMonotonicTime(), flush = true, retries = 0): Promise<CommitResolution> {
+	commit(txn_time = this.timestamp || getNextMonotonicTime(), flush = true, retries = 0): Promise<CommitResolution> {
 		this.resetReadSnapshot();
 		if (!this.validated) {
 			this.validate();
@@ -66,11 +66,8 @@ export class DatabaseTransaction implements Transaction {
 			if (write) {
 				if (write.key) {
 					if (retries > 0) {
-						if (write.noRetry) nextCondition();
-						else {
-							// if the first optimistic attempt failed, we need to try again with the very latest version
-							write.entry = write.store.getEntry(write.key);
-						}
+						// if the first optimistic attempt failed, we need to try again with the very latest version
+						write.entry = write.store.getEntry(write.key);
 					}
 					const condition_resolution = write.store.ifVersion(write.key, write.entry?.version ?? null, nextCondition);
 					resolution = resolution || condition_resolution;
@@ -88,14 +85,12 @@ export class DatabaseTransaction implements Transaction {
 			resolution = this.writes[0].store.transaction(() => {
 				for (const write of this.writes) {
 					// we load latest data while in the transaction
-					if (retries && write.noRetry) continue;
 					write.entry = write.store.getEntry(write.key);
 					doWrite(write);
 				}
 				return true; // success. always success
 			});
 		}
-		//this.auditStore.ifNoExists('txn_time-fix this', nextCondition);
 
 		if (resolution) {
 			return resolution.then((resolution) => {

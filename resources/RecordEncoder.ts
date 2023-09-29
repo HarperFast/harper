@@ -178,11 +178,15 @@ export function handleLocalTimeForGets(store) {
 
 	if (!store.env.metadataRetriever) {
 		store.env.metadataRetriever = true;
-		store.on('aftercommit', ({ next, last, txnId }) => {
+		store.on('aftercommit', ({ next, last }) => {
 			do {
 				const meta = next.meta;
 				const store = meta && meta.store;
-				if (store) {
+				if (
+					store &&
+					// don't do anything on a failure code
+					!(next.flag & 0x4000000)
+				) {
 					const cache = store.cache;
 					if (meta.key) {
 						const entry = mapGet.call(cache, meta.key);
@@ -287,9 +291,9 @@ export function getUpdateRecord(store, table_id, audit_store) {
 		try {
 			// we use resolve_record outside of transaction, so must explicitly make it conditional
 			if (resolve_record) options.ifVersion = ifVersion = existing_entry?.version ?? null;
-			const my_ts = timestamp_next_encoding;
 			const result = store.put(id, record, options);
-			if (store.cache) {
+			if (store.cache && result.result !== false) {
+				// if we have a cache and the put didn't immediately fail
 				const new_entry = store.cache.get(id);
 				if (new_entry) {
 					// we can immediately update the metadata flags on the new entry
@@ -327,7 +331,8 @@ export function getUpdateRecord(store, table_id, audit_store) {
 						const previous_local_time = readAuditEntry(replacing_entry).previousLocalTime;
 						audit_store.put(
 							replacing_id,
-							createAuditEntry(new_version, table_id, id, previous_local_time, username, type, last_value_encoding)
+							createAuditEntry(new_version, table_id, id, previous_local_time, username, type, last_value_encoding),
+							{ ifVersion }
 						);
 						return result;
 					}
@@ -338,7 +343,7 @@ export function getUpdateRecord(store, table_id, audit_store) {
 						new_version,
 						table_id,
 						id,
-						existing_entry?.version ? 1 : 0,
+						existing_entry?.localTime ? 1 : 0,
 						username,
 						type,
 						last_value_encoding
@@ -346,6 +351,7 @@ export function getUpdateRecord(store, table_id, audit_store) {
 					{
 						append: type !== 'invalidate', // for invalidation, we expect the record to be rewritten, so we don't want to necessary create full pages
 						instructedWrite: true,
+						ifVersion,
 					}
 				);
 			}
