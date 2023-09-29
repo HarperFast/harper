@@ -4,11 +4,11 @@ import { parser as makeParser, generate } from 'mqtt-packet';
 import { getSession, DurableSubscriptionsSession } from './DurableSubscriptionsSession';
 import { getSuperUser } from '../security/user';
 import { serializeMessage, getDeserializer } from './serverHelpers/contentTypes';
-import { recordAction, addAnalyticsListener } from '../resources/analytics';
+import { recordAction, addAnalyticsListener, recordActionBinary } from '../resources/analytics';
 import { server } from '../server/Server';
 import { get } from '../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms';
-import { loggerWithTag, error as log_error, info } from '../utility/logging/harper_logger.js';
+import { loggerWithTag, error as log_error, warn, info } from '../utility/logging/harper_logger.js';
 const auth_event_log = loggerWithTag('auth-event');
 
 const AUTHORIZE_LOCAL = true;
@@ -68,12 +68,15 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 	if (!adding_metrics) {
 		adding_metrics = true;
 		addAnalyticsListener((metrics) => {
-			metrics.push({
-				metric: 'mqtt-connections',
-				connections: number_of_connections,
-			});
+			if (number_of_connections > 0)
+				metrics.push({
+					metric: 'mqtt-connections',
+					connections: number_of_connections,
+					byThread: true,
+				});
 		});
 	}
+	let disconnected;
 	number_of_connections++;
 	let session: DurableSubscriptionsSession;
 	const mqtt_options = { protocolVersion: 4 };
@@ -83,7 +86,11 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 	}
 	function onClose() {
 		number_of_connections--;
-		session?.disconnect();
+		if (!disconnected) {
+			disconnected = true;
+			session?.disconnect();
+			recordActionBinary(false, 'connection', 'mqtt', 'disconnect');
+		}
 	}
 
 	parser.on('packet', async (packet) => {
@@ -124,13 +131,15 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 							});
 						}
 					}
-					if (!user && mqtt_settings.requireAuthentication)
+					if (!user && mqtt_settings.requireAuthentication) {
+						recordActionBinary(false, 'connection', 'mqtt', 'connect');
 						return sendPacket({
 							// Send a connection acknowledgment with indication of auth failure
 							cmd: 'connack',
 							reasonCode: 0x86,
 							returnCode: 0x86, // bad username or password
 						});
+					}
 					try {
 						// TODO: Do we want to prefix the user name to the client id (to prevent collisions when poor ids are used) or is this sufficient?
 						mqtt_settings.authorizeClient?.(packet, user);
@@ -143,6 +152,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 						session = await session;
 					} catch (error) {
 						log_error(error);
+						recordActionBinary(false, 'connection', 'mqtt', 'connect');
 						return sendPacket({
 							// Send a connection acknowledgment with indication of auth failure
 							cmd: 'connack',
@@ -150,6 +160,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 							returnCode: error.code || 0x80, // generic error
 						});
 					}
+					recordActionBinary(true, 'connection', 'mqtt', 'connect');
 					sendPacket({
 						// Send a connection acknowledgment
 						cmd: 'connack',
@@ -226,7 +237,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					try {
 						published = await session.publish(packet, data);
 					} catch (error) {
-						console.warn(error);
+						warn(error);
 						if (packet.qos > 0) {
 							sendPacket(
 								{
@@ -270,13 +281,15 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					sendPacket({ cmd: 'pingresp' });
 					break;
 				case 'disconnect':
+					disconnected = true;
 					session?.disconnect();
+					recordActionBinary(true, 'connection', 'mqtt', 'disconnect');
 					if (socket.close) socket.close();
 					else socket.end();
 					break;
 			}
 		} catch (error) {
-			console.error(error);
+			log_error(error);
 			sendPacket({
 				// Send a subscription acknowledgment
 				cmd: 'disconnect',

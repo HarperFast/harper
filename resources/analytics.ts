@@ -149,6 +149,7 @@ function sendAnalytics() {
 		metrics.push({
 			metric: 'memory',
 			threadId,
+			byThread: true,
 			...memory_usage,
 		});
 		for (const listener of analytics_listeners) {
@@ -182,6 +183,7 @@ async function aggregation(from_period, to_period = 60000) {
 	let first_for_period;
 	const aggregate_actions = new Map();
 	const distributions = new Map();
+	const threads_to_average = [];
 	let last_time;
 	for (const { key, value } of raw_analytics_table.primaryStore.getRange({
 		start: last_for_period || false,
@@ -195,13 +197,21 @@ async function aggregation(from_period, to_period = 60000) {
 		last_time = key;
 		const { metrics, threadId } = value;
 		for (const entry of metrics || []) {
-			let { path, method, type, metric, count, total, distribution, ...measures } = entry;
+			let { path, method, type, metric, count, total, distribution, threads, ...measures } = entry;
 			if (!count) count = 1;
 			let key = metric + (path ? '-' + path : '');
 			if (method !== undefined) key += '-' + method;
 			if (type !== undefined) key += '-' + type;
 			let action = aggregate_actions.get(key);
 			if (action) {
+				if (action.threads) {
+					const action_for_thread = action.threads[threadId];
+					if (action_for_thread) action = action_for_thread;
+					else {
+						action.threads[threadId] = Object.assign({}, measures);
+						continue;
+					}
+				}
 				if (!action.count) action.count = 1;
 				const previous_count = action.count;
 				for (const measure_name in measures) {
@@ -219,6 +229,11 @@ async function aggregation(from_period, to_period = 60000) {
 				action = Object.assign({ period: to_period }, entry);
 				delete action.distribution;
 				aggregate_actions.set(key, action);
+				if (action.byThread) {
+					action.threads = [];
+					action.threads[threadId] = Object.assign({}, measures);
+					threads_to_average.push(action);
+				}
 			}
 			if (distribution) {
 				distribution = distribution.map((entry) => (typeof entry === 'number' ? { value: entry, count: 1 } : entry));
@@ -230,6 +245,24 @@ async function aggregation(from_period, to_period = 60000) {
 			}
 		}
 		await rest();
+	}
+	for (const entry of threads_to_average) {
+		let { path, method, type, metric, count, total, distribution, threads, ...measures } = entry;
+		threads = threads.filter((thread) => thread);
+		for (const measure_name in measures) {
+			if (typeof entry[measure_name] !== 'number') continue;
+			let total = 0;
+			for (const thread of threads) {
+				const value = thread[measure_name];
+				if (typeof value === 'number') {
+					total += value;
+				}
+			}
+			entry[measure_name] = total;
+		}
+		entry.count = threads.length;
+		delete entry.threads;
+		delete entry.byThread;
 	}
 	for (const [key, distribution] of distributions) {
 		// now iterate through the distributions finding the close bin to each percentile and interpolating the position in that bin
@@ -344,10 +377,16 @@ function getAnalyticsTable() {
 					isPrimaryKey: true,
 				},
 				{
-					name: 'action',
+					name: 'metric',
 				},
 				{
-					name: 'metric',
+					name: 'path',
+				},
+				{
+					name: 'method',
+				},
+				{
+					name: 'type',
 				},
 			],
 		}))

@@ -44,7 +44,7 @@ const search_by_conditions_schema = Joi.object({
 						'less_than_equal',
 						'between'
 					)
-					.required(),
+					.optional(),
 				search_value: Joi.when('search_type', {
 					switch: [
 						{ is: 'equals', then: Joi.any() },
