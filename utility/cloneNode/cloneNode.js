@@ -74,7 +74,7 @@ async function cloneNode() {
 	leader_config = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_CONFIGURATION });
 	leader_config = await JSON.parse(leader_config.body);
 
-	if (global.fetch) {
+	if (process.env.HDB_FETCH === 'true') {
 		await cloneTablesFetch();
 		// Setting this env var was causing run `npm install` to fail, so deleting it here.
 		if (process.env.NODE_TLS_REJECT_UNAUTHORIZED) delete process.env.NODE_TLS_REJECT_UNAUTHORIZED;
@@ -138,7 +138,8 @@ async function cloneConfig() {
 	}
 
 	// Map any config in clone config to config that exists in harperdb-config and add to config update
-	const flat_config = config_utils.flattenConfig(clone_node_config);
+	let flat_config;
+	if (clone_node_config) flat_config = config_utils.flattenConfig(clone_node_config);
 	for (const clone_cfg in flat_config) {
 		const config_param = hdb_terms.CONFIG_PARAM_MAP[clone_cfg.toLowerCase()];
 		if (config_param) {
@@ -258,7 +259,7 @@ async function cloneTables() {
 
 async function cloneTablesFetch() {
 	//Clone system database
-	console.info('Cloning system database');
+	console.info('Cloning system database using fetch');
 	const sys_backup = await leaderHttpReqFetch(
 		{
 			operation: OPERATIONS_ENUM.GET_BACKUP,
@@ -490,17 +491,6 @@ async function clusterTables() {
 		subscriptions
 	);
 
-	if (leader_cluster_status.connections.length === 0) {
-		await add_node(
-			{
-				operation: OPERATIONS_ENUM.ADD_NODE,
-				node_name: leader_config?.clustering?.nodeName,
-				subscriptions,
-			},
-			true
-		);
-	}
-
 	if (fully_connected === 'true' && leader_cluster_status.connections.length > 0) {
 		// Fully connected logic
 		const configure_cluster = require('../clustering/configureCluster');
@@ -540,6 +530,15 @@ async function clusterTables() {
 			connections: config_cluster_cons,
 		});
 		console.info(JSON.stringify(config_cluster_res));
+	} else {
+		await add_node(
+			{
+				operation: OPERATIONS_ENUM.ADD_NODE,
+				node_name: leader_config?.clustering?.nodeName,
+				subscriptions,
+			},
+			true
+		);
 	}
 
 	await nats_utils.closeConnection();
@@ -585,6 +584,10 @@ async function leaderHttpStream(data, stream) {
 
 	return new Promise((resolve, reject) => {
 		const req = https.request(options, (res) => {
+			if (res.statusCode !== 200) {
+				reject('Request to leader node failed with code: ' + res.statusCode);
+			}
+
 			res.pipe(stream);
 			res.on('end', () => {
 				stream.close();
