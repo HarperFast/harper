@@ -2,7 +2,7 @@ import { streamAsJSON } from './JSONStream';
 import { toCsvStream } from '../../dataLayer/export';
 import { pack, unpack, encodeIter } from 'msgpackr';
 import { decode, Encoder, EncoderStream } from 'cbor-x';
-import { createBrotliCompress, brotliCompress } from 'zlib';
+import { createBrotliCompress, brotliCompress, constants } from 'zlib';
 import { Readable } from 'stream';
 import { server, ContentTypeHandler } from '../Server';
 import { _assignPackageExport } from '../../index';
@@ -261,7 +261,7 @@ const COMPRESSION_THRESHOLD = env_mgr.get(CONFIG_PARAMS.HTTP_COMPRESSIONTHRESHOL
 export function serialize(response_data, request, response_object) {
 	// TODO: Maybe support other compression encodings; browsers basically universally support brotli, but Node's HTTP
 	//  client itself actually (just) supports gzip/deflate
-	const can_compress = request.headers.asObject?.['accept-encoding']?.includes('br');
+	const can_compress = COMPRESSION_THRESHOLD && request.headers.asObject?.['accept-encoding']?.includes('br');
 	let response_body;
 	if (response_data?.contentType != null && response_data.data != null) {
 		// we use this as a special marker for blobs of data that are explicitly one content type
@@ -287,10 +287,15 @@ export function serialize(response_data, request, response_object) {
 			let stream = serializer.serializer.serializeStream(response_data);
 			if (can_compress) {
 				response_object.headers.set('Content-Encoding', 'br');
-				// TODO: Use the fastest setting here and only do it if load is low
 				stream = stream.pipe(
 					createBrotliCompress({
-						//flush: constants.BROTLI_OPERATION_FLUSH,
+						params: {
+							[constants.BROTLI_PARAM_MODE]:
+								serializer.type.includes('json') || serializer.type.includes('text')
+									? constants.BROTLI_MODE_TEXT
+									: constants.BROTLI_MODE_GENERIC,
+							[constants.BROTLI_PARAM_QUALITY]: 2, // go fast
+						},
 					})
 				);
 			}

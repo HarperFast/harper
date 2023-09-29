@@ -13,7 +13,7 @@ const util = require('util');
 const auth = require('../../security/fastifyAuth');
 const p_authorize = util.promisify(auth.authorize);
 const server_utilities = require('./serverUtilities');
-const { Gzip } = require('zlib');
+const { createGzip, constants } = require('zlib');
 
 function handleServerUncaughtException(err) {
 	let message = `Found an uncaught exception with message: ${err.message}. ${os.EOL}Stack: ${err.stack} ${
@@ -104,7 +104,7 @@ async function handlePostRequest(req, res, bypass_auth = false) {
 			// handle the case of returning a stream
 			if (req.headers['accept-encoding']?.includes('gzip')) {
 				res.header('content-encoding', 'gzip');
-				result = result.pipe(new Gzip());
+				result = result.pipe(createGzip({ level: constants.Z_BEST_SPEED })); // go fast
 			}
 		}
 		return result;
