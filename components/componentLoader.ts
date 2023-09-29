@@ -110,6 +110,9 @@ const DEFAULT_CONFIG = {
 		path: '/login', // relative to the app-name, like http://server/login
 	},*/
 };
+// make this non-enumerable so we don't load by default, but has a default 'files' so we don't show errors on
+// templates that want to have a default static handler:
+Object.defineProperty(DEFAULT_CONFIG, 'static', { value: { files: 'web/**' } });
 
 const ports_started = [];
 const loaded_paths = new Map();
@@ -224,7 +227,11 @@ export async function loadComponent(
 					if (component_config.files.includes('..')) throw handleHDBError('Can not reference parent directories');
 					const files = join(folder, component_config.files);
 					const end_of_fixed_path = files.indexOf('/*');
-					if (end_of_fixed_path > -1 && !existsSync(files.slice(0, end_of_fixed_path)))
+					if (
+						end_of_fixed_path > -1 &&
+						component_config.files !== DEFAULT_CONFIG[component_name]?.files &&
+						!existsSync(files.slice(0, end_of_fixed_path))
+					)
 						throw new Error(
 							`The path '${files.slice(
 								0,
