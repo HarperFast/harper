@@ -121,13 +121,25 @@ async function messageProcessor(msg) {
 
 	// If the msg origin header matches this node the msg can be ignored because it would have already been processed.
 	let nats_msg_header = msg.headers;
+	let echo_received = false;
+	const this_node_name = env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
+	if (nats_msg_header.has(nats_terms.MSG_HEADERS.TRANSACTED_NODES)) {
+		const txn_nodes = nats_msg_header.values(nats_terms.MSG_HEADERS.TRANSACTED_NODES);
+		if (txn_nodes.indexOf(this_node_name) > -1) {
+			echo_received = true;
+		}
+	}
+
 	const origin = nats_msg_header.get(nats_terms.MSG_HEADERS.ORIGIN);
-	const echo_received = origin === env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME) && !ignore_origin;
+	if (!echo_received) echo_received = origin === this_node_name && !ignore_origin;
 	recordActionBinary(echo_received, 'echo', msg.subject, entry.operation, 'ingest');
+
 	if (echo_received) {
 		msg.ack();
 		return;
 	}
+
+	nats_msg_header.append(nats_terms.MSG_HEADERS.TRANSACTED_NODES, this_node_name);
 
 	try {
 		let {

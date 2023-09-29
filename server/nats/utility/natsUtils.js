@@ -25,7 +25,6 @@ const encoder = new Encoder(); // use default encoder options
 const { isEmpty } = hdb_utils;
 const user = require('../../../security/user');
 
-const STREAM_DUPE_WINDOW = 120000000000;
 const INGEST_MAX_MSG_AGE = 48 * 3600000000000; // nanoseconds
 const INGEST_MAX_BYTES = 5000000000;
 
@@ -329,7 +328,6 @@ async function createLocalStream(stream_name, subjects) {
 		retention: RetentionPolicy.Limits,
 		subjects: subjects,
 		discard: DiscardPolicy.Old,
-		duplicate_window: STREAM_DUPE_WINDOW,
 		max_msgs,
 		max_bytes,
 		max_age,
@@ -424,7 +422,6 @@ async function viewStream(stream_name, start_time = undefined, max = undefined) 
 
 		if (m.headers) {
 			wrapper.origin = m.headers.get(nats_terms.MSG_HEADERS.ORIGIN);
-			wrapper.nats_msg_id = m.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID);
 		}
 
 		entries.push(wrapper);
@@ -480,7 +477,6 @@ async function* viewStreamIterator(stream_name, start_time = undefined, max = un
 
 			if (m.headers) {
 				wrapper.origin = m.headers.get(nats_terms.MSG_HEADERS.ORIGIN);
-				wrapper.nats_msg_id = m.headers.get(nats_terms.MSG_HEADERS.NATS_MSG_ID);
 			}
 
 			yield wrapper;
@@ -508,6 +504,7 @@ async function publishToStream(subject_name, stream_name, msg_header, message) {
 		`publishToStream called with subject: ${subject_name}, stream: ${stream_name}, entries:`,
 		message.operation
 	);
+
 	msg_header = addNatsMsgHeader(message, msg_header);
 
 	const { js } = await getNATSReferences();
@@ -557,16 +554,6 @@ async function publishToStream(subject_name, stream_name, msg_header, message) {
 function addNatsMsgHeader(req, nats_msg_header) {
 	if (nats_msg_header === undefined) nats_msg_header = headers();
 	const node_name = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
-
-	// If the msg header does not have a msg id property, add one.
-	if (!nats_msg_header.has(nats_terms.MSG_HEADERS.NATS_MSG_ID)) {
-		const table_hash_attr = hdb_utils.getTableHashAttribute(req.schema, req.table);
-		const operation = req.action ? req.action : req.operation;
-		const nats_msg_id = `${node_name}.${req.schema}.${
-			req.table
-		}.${operation}.${table_hash_attr}.${Date.now()}.${ulid()}`;
-		nats_msg_header.append(nats_terms.MSG_HEADERS.NATS_MSG_ID, nats_msg_id);
-	}
 
 	if (!nats_msg_header.has(nats_terms.MSG_HEADERS.ORIGIN)) {
 		nats_msg_header.append(nats_terms.MSG_HEADERS.ORIGIN, node_name);
@@ -634,7 +621,6 @@ async function createWorkQueueStream(CONSUMER_NAMES) {
 			name: CONSUMER_NAMES.stream_name,
 			storage: StorageType.File,
 			retention: RetentionPolicy.Limits,
-			duplicate_window: STREAM_DUPE_WINDOW,
 			max_age: INGEST_MAX_MSG_AGE,
 			max_bytes: INGEST_MAX_BYTES,
 			subjects: [`${nats_terms.SUBJECT_PREFIXES.TXN}.${CONSUMER_NAMES.stream_name}.${server_name}`],

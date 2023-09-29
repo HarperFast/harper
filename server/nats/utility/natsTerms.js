@@ -15,6 +15,7 @@ const REQUEST_SUBJECT = (remote_node) => `${remote_node}.${REQUEST_SUFFIX}`;
 const MSG_HEADERS = {
 	NATS_MSG_ID: 'Nats-Msg-Id',
 	ORIGIN: 'origin',
+	TRANSACTED_NODES: 'transacted_nodes',
 };
 
 const NATS_CONFIG_FILES = {

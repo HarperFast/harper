@@ -169,11 +169,11 @@ async function main(called_by_install = false) {
 				console.log(log_msg);
 			}
 		} else {
-			await startHTTPThreads(env.get(hdb_terms.CONFIG_PARAMS.THREADS));
 			if (start_clustering) {
 				if (!is_scripted) await pm2_utils.startClusteringProcesses();
 				await pm2_utils.startClusteringThreads();
 			}
+			await startHTTPThreads(env.get(hdb_terms.CONFIG_PARAMS.THREADS));
 		}
 
 		if (env.get(terms.CONFIG_PARAMS.LOGGING_ROTATION_ENABLED)) await log_rotator();
