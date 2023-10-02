@@ -722,6 +722,8 @@ async function addSourceToWorkStream(node, work_queue_name, subscription) {
 	if (found === true) {
 		// If the source already exists in the work stream and there is no change to the start time, do nothing.
 		if (source.opt_start_time === start_time) return;
+		const subject = `txn.${schema}.${table}.${node}`;
+		await jsm.streams.purge(work_queue_name, { filter: subject });
 
 		// When updating an exising source that source first needs to be removed from the work stream.
 		w_q_stream.config.sources.splice(source_index, 1);
@@ -765,10 +767,14 @@ function extractServerName(api_prefix) {
  * @returns {Promise<void>}
  */
 async function removeSourceFromWorkStream(node, work_queue_name, subscription) {
+	const { jsm } = await getNATSReferences();
 	const { schema, table } = subscription;
+	const subject = `txn.${schema}.${table}.${node}`;
+	await jsm.streams.purge(work_queue_name, { filter: subject });
+
 	// Name of remote stream to no longer source from
 	const stream_name = crypto_hash.createNatsTableStreamName(schema, table);
-	const { jsm } = await getNATSReferences();
+
 	const w_q_stream = await jsm.streams.info(work_queue_name);
 	if (!Array.isArray(w_q_stream.config.sources) || w_q_stream.config.sources.length === 0) {
 		return;
