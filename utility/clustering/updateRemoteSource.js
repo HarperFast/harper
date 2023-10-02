@@ -78,6 +78,11 @@ async function updateRemoteSource(request) {
 				await nats_utils.createLocalTableStream(schema, table);
 			}
 
+			// System tables might not have a nats stream, if they want to replicate, they will need one.
+			if (schema === hdb_terms.SYSTEM_SCHEMA_NAME) {
+				await nats_utils.createLocalTableStream(schema, table);
+			}
+
 			// Add or remove remote source from the work queue stream.
 			await nats_utils.updateWorkStream(sub, node_name);
 
