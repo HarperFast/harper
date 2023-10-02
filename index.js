@@ -1,7 +1,7 @@
 'use strict';
 global.Resource = exports.Resource = undefined;
 global.tables = exports.tables = {};
-global.databases = {};
+global.databases = exports.databases = {};
 global.getUser = exports.getUser = undefined;
 global.server = exports.server = {};
 global.contentTypes = exports.contentTypes = null;

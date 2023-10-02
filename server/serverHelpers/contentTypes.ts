@@ -31,6 +31,7 @@ media_types.set('application/json', {
 const cbor_encoder = new Encoder(PUBLIC_ENCODE_OPTIONS);
 media_types.set('application/cbor', {
 	serializeStream(data) {
+		if (data[Symbol.asyncIterator]) data[Symbol.iterator] = null; // choose async iteration if possible
 		return new EncoderStream(PUBLIC_ENCODE_OPTIONS).end(data);
 	},
 	serialize: cbor_encoder.encode,

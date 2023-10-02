@@ -56,6 +56,15 @@ describe('test REST calls', () => {
 			},
 		});
 		assert.equal(response.status, 304);
+		response = await axios({
+			url: 'http://localhost:9926/VariedProps/',
+			method: 'GET',
+			responseType: 'arraybuffer',
+			headers,
+		});
+		assert.equal(response.status, 200);
+		data = decode(response.data);
+		assert(data[3].id);
 	});
 	it('PUT with CBOR', async () => {
 		setTimeout(() => {

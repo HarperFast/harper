@@ -105,6 +105,12 @@ export function makeTable(options) {
 		if (attribute.isPrimaryKey) primary_key_attribute = attribute;
 	}
 	let delete_callback_handle;
+	let prefetch_ids = [];
+	let prefetch_callbacks = [];
+	let until_next_prefetch = 1;
+	let non_prefetch_sequence = 2;
+	const MAX_PREFETCH_SEQUENCE = 10;
+	const MAX_PREFETCH_BUNDLE = 6;
 	if (audit) addDeleteRemoval();
 	class TableResource extends Resource {
 		static name = table_name; // for display/debugging purposes
@@ -1411,17 +1417,82 @@ export function makeTable(options) {
 			}
 			return with_entry(entry, id);
 		};
-		// if it is cached, we use that as indication that we can get the value very quickly
+		// To prefetch or not to prefetch is one of the biggest questions HarperDB has to make.
+		// Prefetching has important benefits as it allows any page fault to be executed asynchronously
+		// in the work threads, and it provides event turn yielding, allowing other async functions
+		// to execute. However, prefetching is expensive, and the cost of enqueuing a task with the
+		// worker threads and enqueuing the callback on the JS thread and the downstream promise handling
+		// is usually at least several times more expensive than skipping the prefetch and just directly
+		// getting the entry.
+		// Determining if we should prefetch is challenging. It is not possible to determine if a page
+		// fault will happen, OSes intentionally hide that information. So here we use some heuristics
+		// to evaluate if prefetching is a good idea.
+		// First, the caller can tell us. If the record is in our local cache, we use that as indication
+		// that we can get the value very quickly without a page fault.
 		if (sync) return whenPrefetched();
-		return new Promise((resolve, reject) =>
-			primary_store.prefetch([id], () => {
+		// Next, we allow for non-prefetch mode where we can execute some gets without prefetching,
+		// but we will limit the number before we do another prefetch
+		if (until_next_prefetch > 0) {
+			until_next_prefetch--;
+			return whenPrefetched();
+		}
+		// Now, we are going to prefetch before loading, so need a promise:
+		return new Promise((resolve, reject) => {
+			if (until_next_prefetch === 0) {
+				// If we were in non-prefetch mode and used up our non-prefetch gets, we immediately trigger
+				// a prefetch for the current id
+				until_next_prefetch--;
+				primary_store.prefetch([id], () => {
+					prefetch();
+					load();
+				});
+			} else {
+				// If there is a prefetch in flight, we accumulate ids so we can attempt to batch prefetch
+				// requests into a single or just a few async operations, reducing the cost of async queuing.
+				prefetch_ids.push(id);
+				prefetch_callbacks.push(load);
+				if (prefetch_ids.length > MAX_PREFETCH_BUNDLE) {
+					until_next_prefetch--;
+					prefetch();
+				}
+			}
+			function prefetch() {
+				if (prefetch_ids.length > 0) {
+					const callbacks = prefetch_callbacks;
+					primary_store.prefetch(prefetch_ids, () => {
+						if (until_next_prefetch === -1) {
+							prefetch();
+						} else {
+							// if there is another prefetch callback pending, we don't need to trigger another prefetch
+							until_next_prefetch++;
+						}
+						for (const callback of callbacks) callback();
+					});
+					prefetch_ids = [];
+					prefetch_callbacks = [];
+					// Here is the where the feedback mechanism informs future execution. If we were able
+					// to enqueue multiple prefetch requests, this is an indication that we have concurrency
+					// and/or page fault/slow data retrieval, and the prefetches are valuable to us, so
+					// we stay in prefetch mode.
+					// We also reduce the number of non-prefetches we allow in next non-prefetch sequence
+					if (non_prefetch_sequence > 2) non_prefetch_sequence--;
+				} else {
+					// If we have not enqueued any prefetch requests, this is a hint that prefetching may
+					// not have been that advantageous, so we let it go back to the non-prefetch mode,
+					// for the next few requests. We also increment the number of non-prefetches that
+					// we allow so there is a "memory" of how well prefetch vs non-prefetch is going.
+					until_next_prefetch = non_prefetch_sequence;
+					if (non_prefetch_sequence < MAX_PREFETCH_SEQUENCE) non_prefetch_sequence++;
+				}
+			}
+			function load() {
 				try {
 					resolve(whenPrefetched());
 				} catch (error) {
 					reject(error);
 				}
-			})
-		);
+			}
+		});
 	}
 
 	function ensureLoadedFromSource(id, entry, context, resource?) {

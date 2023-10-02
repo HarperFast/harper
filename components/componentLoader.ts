@@ -277,9 +277,9 @@ export async function loadComponent(
 							}
 						} catch (error) {
 							(getWorkerIndex() === 0 ? console : harper_logger).error(
-								`Could not load ${dirent.isFile() ? 'file' : 'directory'} '${path}' using '${
-									component_config.module
-								}' for application '${folder}'`,
+								`Could not load ${dirent.isFile() ? 'file' : 'directory'} '${path}'${
+									component_config.module ? " using '" + component_config.module + "'" : ''
+								} for application '${folder}'`,
 								error
 							);
 							resources.set(component_config.path || '/', new ErrorResource(error));
