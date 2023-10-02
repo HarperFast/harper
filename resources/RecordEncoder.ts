@@ -210,6 +210,7 @@ export function handleLocalTimeForGets(store) {
 	const txn = store.useReadTransaction();
 	txn.done();
 	if (!txn.done.isTracked) {
+		txn.done.isTracked = true;
 		const Txn = txn.constructor;
 		const use = txn.use;
 		const done = txn.done;
@@ -241,14 +242,14 @@ setInterval(() => {
 		const txn = tracked_txns[i].deref();
 		if (!txn || txn.isDone || txn.isCommitted) tracked_txns.splice(i--, 1);
 		else if (txn.notCurrent) {
-			if (txn.isOnTimer) {
-				harper_logger.error(
-					'Read transaction detected that has been open too long (over 15 seconds), make sure read transactions are quickly closed',
-					txn
-				);
-				txn.isOnTimer++;
-				if (txn.isOnTimer > 3 && txn.refCount > 0) txn.done();
-			} else txn.isOnTimer = 1;
+			if (txn.openTimer) {
+				if (txn.openTimer > 3)
+					harper_logger.error(
+						'Read transaction detected that has been open too long (over one minute), make sure read transactions are quickly closed',
+						txn
+					);
+				txn.openTimer++;
+			} else txn.openTimer = 1;
 		}
 	}
 }, 15000).unref();

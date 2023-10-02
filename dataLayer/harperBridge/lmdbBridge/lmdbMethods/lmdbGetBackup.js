@@ -33,7 +33,7 @@ async function getBackup(get_backup_obj) {
 		// close on completion)
 		let resolution;
 		let backup_attribute_store = backup_root.openDB(INTERNAL_DBIS_NAME, new OpenDBIObject(false));
-		let readTxn = attribute_store.useReadTransaction();
+		let read_txn = attribute_store.useReadTransaction();
 		let i = 0;
 		const copyDatabase = async function (store_name, options) {
 			options.encoding = 'binary'; // directly copy bytes
@@ -41,14 +41,17 @@ async function getBackup(get_backup_obj) {
 			let backup_store = backup_root.openDB(store_name, options);
 			let source_store = attribute_store.openDB(store_name, options);
 			for (let { key, version, value } of source_store.getRange({
-				transaction: readTxn,
+				transaction: read_txn,
 				versions: source_store.useVersions,
 			})) {
 				resolution = backup_store.put(key, value, version);
-				if (i++ % DELAY_ITERATIONS === 0) await new Promise((resolve) => setTimeout(resolve, 20));
+				if (i++ % DELAY_ITERATIONS === 0) {
+					await new Promise((resolve) => setTimeout(resolve, 20));
+					if (read_txn.openTimer) read_txn.openTimer = 0; // reset any timer monitoring this
+				}
 			}
 		};
-		for (let { key, value: attribute_info } of attribute_store.getRange({ transaction: readTxn, start: false })) {
+		for (let { key, value: attribute_info } of attribute_store.getRange({ transaction: read_txn, start: false })) {
 			if (tables.some((table) => key.startsWith?.(table + '/'))) {
 				// it is a store we need to copy
 				backup_attribute_store.put(key, attribute_info);
@@ -65,7 +68,7 @@ async function getBackup(get_backup_obj) {
 		let stream = createReadStream(backup_root.path);
 		stream.headers = getHeaders();
 		stream.on('close', () => {
-			readTxn.done();
+			read_txn.done();
 			backup_root.close(); // this should delete it
 		});
 		return stream;
@@ -77,16 +80,17 @@ async function getBackup(get_backup_obj) {
 	return store.transaction(() => {
 		let metaBuffers = Buffer.alloc(META_SIZE);
 		readSync(fd, metaBuffers, 0, META_SIZE); // sync, need to do this as fast as possible since we are in a write txn
-		let readTxn = store.useReadTransaction(); // this guarantees the current transaction is preserved in the backup
+		let read_txn = store.useReadTransaction(); // this guarantees the current transaction is preserved in the backup
 		// create a file stream that starts after the meta area
 		let file_stream = createReadStream(null, { fd, start: META_SIZE });
 		let stream = new Readable.from(
 			(async function* () {
 				yield metaBuffers; // return the meta area that was frozen inside the write transaction
 				for await (const chunk of file_stream) {
+					if (read_txn.openTimer) read_txn.openTimer = 0; // reset any timer monitoring this
 					yield chunk;
 				}
-				readTxn.done(); // done with the read txn
+				read_txn.done(); // done with the read txn
 			})()
 		);
 		stream.headers = getHeaders();
