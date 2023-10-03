@@ -18,8 +18,8 @@ interface Server {
 		listener: (ws: WebSocket, request: Request, requestCompletion: Promise<any>) => any,
 		options?: WebSocketOptions
 	): void;
-	contentType(mime_type, handler: ContentTypeHandler): void;
-	auth(username: string, password?: string): any;
+	contentTypes: Map<string, ContentTypeHandler>;
+	getUser(username: string, password?: string): any;
 }
 interface ServerOptions {
 	port?: number;

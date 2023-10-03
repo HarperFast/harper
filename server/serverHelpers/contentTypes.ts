@@ -4,7 +4,7 @@ import { pack, unpack, encodeIter } from 'msgpackr';
 import { decode, Encoder, EncoderStream } from 'cbor-x';
 import { createBrotliCompress, brotliCompress, constants } from 'zlib';
 import { Readable } from 'stream';
-import { server, ContentTypeHandler } from '../Server';
+import { server } from '../Server';
 import { _assignPackageExport } from '../../index';
 import env_mgr from '../../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms';
@@ -14,12 +14,9 @@ const PUBLIC_ENCODE_OPTIONS = {
 	useToJSON: true,
 };
 
-server.contentType = function (mime_type: string, handler: ContentTypeHandler) {
-	media_types.set(mime_type, handler);
-};
-
 const media_types = new Map();
 export const contentTypes = media_types;
+server.contentTypes = contentTypes;
 _assignPackageExport('contentTypes', contentTypes);
 // TODO: Make these monomorphic for faster access. And use a Map
 media_types.set('application/json', {
