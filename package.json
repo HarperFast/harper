@@ -19,7 +19,6 @@
   },
   "engines": {
     "node": ">=14.0.0",
-    "preferred-node": "18.15.0",
     "go-lang": "1.21.1",
     "nats-server": "2.10.1"
   },

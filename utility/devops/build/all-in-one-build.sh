@@ -14,13 +14,6 @@ then
   exit 1
 fi
 
-node_version="v$(jq -r '.engines."preferred-node"' package.json)"
-
-if ! [ "$node_version_installed" = "$node_version" ]; then
-    echo "Node.js $node_version must be installed"
-    exit 1
-fi
-
 if ! command -v dot-json &> /dev/null
 then
   echo "dot-json must be installed, run command 'npm install dot-json -g'"
