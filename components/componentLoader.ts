@@ -116,6 +116,11 @@ Object.defineProperty(DEFAULT_CONFIG, 'static', { value: { files: 'web/**' } });
 
 const ports_started = [];
 const loaded_paths = new Map();
+let error_reporter;
+export function setErrorReporter(reporter) {
+	error_reporter = reporter;
+}
+
 /**
  * Load a component from the specified directory
  * @param component_path
@@ -145,6 +150,7 @@ export async function loadComponent(
 			config = DEFAULT_CONFIG;
 		}
 		const handler_modules = [];
+		let has_functionality = is_root;
 		// iterate through the app handlers so they can each do their own loading process
 		for (const component_name in config) {
 			const component_config = config[component_name];
@@ -163,6 +169,7 @@ export async function loadComponent(
 				}
 				if (component_path) {
 					extension_module = await loadComponent(component_path, resources, origin, false);
+					has_functionality = true;
 				} else {
 					throw new Error(`Unable to find package ${component_name}:${pkg}`);
 				}
@@ -242,6 +249,7 @@ export async function loadComponent(
 						);
 					for (const entry of await fg(files, { onlyFiles: false, objectMode: true })) {
 						const { path, dirent } = entry;
+						has_functionality = true;
 						let relative_path = relative(folder, path);
 						if (component_config.root) {
 							let root_path = component_config.root;
@@ -276,21 +284,21 @@ export async function loadComponent(
 								if (resources.isWorker) await extension_module.handleDirectory?.(url_path, path, resources);
 							}
 						} catch (error) {
-							(getWorkerIndex() === 0 ? console : harper_logger).error(
-								`Could not load ${dirent.isFile() ? 'file' : 'directory'} '${path}'${
-									component_config.module ? " using '" + component_config.module + "'" : ''
-								} for application '${folder}'`,
-								error
-							);
+							error.message = `Could not load ${dirent.isFile() ? 'file' : 'directory'} '${path}'${
+								component_config.module ? " using '" + component_config.module + "'" : ''
+							} for application '${folder}' due to: ${error.message}`;
+							error_reporter?.(error);
+							(getWorkerIndex() === 0 ? console : harper_logger).error(error);
 							resources.set(component_config.path || '/', new ErrorResource(error));
 						}
 					}
 				}
 			} catch (error) {
-				(getWorkerIndex() === 0 ? console : harper_logger).error(
-					`Could not load component '${component_name}' for application '${basename(folder)}':`,
+				error.message = `Could not load component '${component_name}' for application '${basename(folder)}' due to: ${
 					error.message
-				);
+				}`;
+				error_reporter?.(error);
+				(getWorkerIndex() === 0 ? console : harper_logger).error(error);
 				resources.set(component_config.path || '/', new ErrorResource(error), null, true);
 			}
 		}
@@ -303,8 +311,15 @@ export async function loadComponent(
 		if (config.extensionModule) {
 			return await secureImport(join(folder, config.extensionModule));
 		}
+		if (!has_functionality) {
+			const error_message = `${folder} did not load any modules, resources, or files, is this a valid component?`;
+			error_reporter?.(new Error(error_message));
+			(getWorkerIndex() === 0 ? console : harper_logger).error(error_message);
+		}
 	} catch (error) {
 		console.error(`Could not load application directory ${folder}`, error);
+		error.message = `Could not load application due to ${error.message}`;
+		error_reporter?.(error);
 		resources.set('', new ErrorResource(error));
 	}
 }

@@ -17,6 +17,8 @@ const { PACKAGE_ROOT } = require('../utility/hdbTerms');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { restartWorkers } = require('../server/threads/manageThreads');
 const installComponents = require('../components/installComponents');
+const eng_mgr = require('../utility/environment/environmentManager');
+const hdb_terms = require('../utility/hdbTerms');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 const APPLICATION_TEMPLATE = path.join(PACKAGE_ROOT, 'application-template');
@@ -402,6 +404,19 @@ async function deployComponent(req) {
 	// The main thread can install the components, but we do it here and now so that if it fails, we can immediately
 	// know about it and report it.
 	if (!payload) await installComponents();
+
+	// now we attempt to actually load the component in case there is
+	// an error we can immediately detect and report
+	const root_path = eng_mgr.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
+	const component_path = path.join(root_path, 'node_modules', project);
+	const pseudo_resources = new Map();
+	pseudo_resources.isWorker = true;
+	const component_loader = require('./componentLoader');
+	let last_error;
+	component_loader.setErrorReporter((error) => (last_error = error));
+	await component_loader.loadComponent(component_path, pseudo_resources);
+	if (last_error) throw last_error;
+	// if everything checks out, we then restart so all threads can use it
 	restartWorkers();
 
 	return `Successfully deployed: ${project}, restarting...`;
