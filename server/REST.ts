@@ -1,5 +1,5 @@
 import { serialize, serializeMessage, getDeserializer } from '../server/serverHelpers/contentTypes';
-import { recordAction, recordActionBinary } from '../resources/analytics';
+import { addAnalyticsListener, recordAction, recordActionBinary } from '../resources/analytics';
 import * as harper_logger from '../utility/logging/harper_logger';
 import { ServerOptions } from 'http';
 import { ServerError, ClientError } from '../utility/errors/hdbError';
@@ -183,7 +183,7 @@ function checkAllowed(method_allowed, user, resource): void | Promise<void> {
 
 let started;
 let resources: Resources;
-
+let added_metrics;
 let connection_count = 0;
 
 export function start(options: ServerOptions & { path: string; port: number; server: any; resources: any }) {
@@ -197,8 +197,21 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 	options.server.ws(async (ws, request, chain_completion) => {
 		connection_count++;
 		const incoming_messages = new IterableEventQueue();
+		if (!added_metrics) {
+			added_metrics = true;
+			addAnalyticsListener((metrics) => {
+				if (connection_count > 0)
+					metrics.push({
+						metric: 'ws-connections',
+						connections: connection_count,
+						byThread: true,
+					});
+			});
+		}
 		// TODO: We should set a lower keep-alive ws.socket.setKeepAlive(600000);
+		let has_error;
 		ws.on('error', (error) => {
+			has_error = true;
 			harper_logger.warn(error);
 		});
 		let deserializer;
@@ -210,12 +223,14 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 		let iterator;
 		ws.on('close', () => {
 			connection_count--;
+			recordActionBinary(!has_error, 'connection', 'ws', 'disconnect');
 			incoming_messages.emit('close');
 			if (iterator) iterator.return();
 		});
 		await chain_completion;
 		const url = request.url.slice(1);
 		const entry = resources.getMatch(url);
+		recordActionBinary(Boolean(entry), 'connection', 'ws', 'connect');
 		if (!entry) {
 			ws.send(serializeMessage(`No resource was found to handle ${request.pathname}`, request));
 		} else {
@@ -230,6 +245,7 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 				'connect',
 				'ws'
 			);
+
 			const resource_request = { url: entry.relativeURL, async: true }; // TODO: We don't want to have to remove the forward slash and then re-add it
 			const resource = entry.Resource;
 			const response_stream = await transaction(request, () => {
