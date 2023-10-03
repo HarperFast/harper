@@ -14,10 +14,11 @@ describe('Tracked Object', () => {
 		arrayOfObjects: [{ name: 'objectInArray' }],
 	};
 	let attributes = [
-		{ name: 'str' },
-		{ name: 'num' },
-		{ name: 'bool' },
-		{ name: 'arrayOfStrings' },
+		{ name: 'str', type: 'String' },
+		{ name: 'num', type: 'Float' },
+		{ name: 'bool', type: 'Boolean' },
+		{ name: 'bytes', type: 'Bytes' },
+		{ name: 'arrayOfStrings', type: 'array', elements: { type: 'String ' } },
 		{ name: 'subObject', properties: [{ name: 'name' }] },
 		{ name: 'arrayOfObjects' },
 	];
@@ -42,11 +43,13 @@ describe('Tracked Object', () => {
 		instance.str = 'new string';
 		instance.num = 32;
 		instance.set('newProperty', 'new value');
+		let bytes = (instance.bytes = Buffer.from([1, 2, 3]));
 		instance.transitiveProperty = 'here for now';
 		assert.equal(hasChanges(instance), true);
 		assert.equal(instance.str, 'new string');
 		assert.equal(instance.num, 32);
 		assert.equal(instance.get('newProperty'), 'new value');
+		assert.equal(instance.bytes, bytes);
 		assert.equal(collapseData(instance).str, 'new string');
 		assert.equal(collapseData(instance).num, 32);
 		assert.equal(collapseData(instance).newProperty, 'new value');
@@ -56,6 +59,18 @@ describe('Tracked Object', () => {
 		assert.equal(deepFreeze(instance).newProperty, 'new value');
 		assert.equal(deepFreeze(instance).transitiveProperty, undefined);
 	});
+
+	it('Can reject invalid types', async function () {
+		let instance = new ResourceClass();
+		instance[RECORD_PROPERTY] = source;
+		assert.equal(hasChanges(instance), false);
+		assert.throws(() => (instance.str = 4));
+		assert.throws(() => (instance.num = 'wrong type'));
+		assert.throws(() => (instance.bool = 'wrong type'));
+		assert.throws(() => (instance.bytes = 'wrong type'));
+		assert.throws(() => (instance.arrayOfStrings = 'wrong type'));
+	});
+
 	it('Can update detect sub object change', async function () {
 		let instance = new ResourceClass();
 		instance[RECORD_PROPERTY] = source;

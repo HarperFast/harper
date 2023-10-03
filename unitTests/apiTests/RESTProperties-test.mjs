@@ -24,13 +24,13 @@ describe('test REST with property updates', () => {
 		assert.equal(response.status, 204);
 		response = await axios.post('http://localhost:9926/namespace/SubObject/5', {
 			subPropertyValue: 'a new value',
-			subArrayItem: 'a new item',
+			subArrayItem: { name: 'a new item' },
 		});
 		assert.equal(response.status, 200);
 		response = await axios.get('http://localhost:9926/namespace/SubObject/5');
 		assert.equal(response.status, 200);
 		assert.equal(response.data.subObject.subProperty, 'a new value');
-		assert.equal(response.data.subArray[1], 'a new item');
+		assert.equal(response.data.subArray[1].name, 'a new item');
 	});
 	it('get with sub-property access via dot', async () => {
 		let response = await axios.put('http://localhost:9926/namespace/SubObject/6', {

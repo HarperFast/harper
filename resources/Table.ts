@@ -1172,7 +1172,6 @@ export function makeTable(options) {
 					this.validate(message);
 				},
 				commit: (txn_time, existing_entry, retries) => {
-					this.validate(message);
 					// just need to update the version number of the record so it points to the latest audit record
 					// but have to update the version number of the record
 					// TODO: would be faster to use getBinaryFast here and not have the record loaded
@@ -1213,18 +1212,37 @@ export function makeTable(options) {
 		}
 		validate(record) {
 			let validation_errors;
-			for (let i = 0, l = attributes.length; i < l; i++) {
-				const attribute = attributes[i];
-				if (attribute.type) {
-					const value = record[attribute.name];
-					if (value != null) {
+			const validateValue = (value, attribute, name) => {
+				if (attribute.type && value != null) {
+					if (attribute.properties) {
+						if (typeof value !== 'object') {
+							(validation_errors || (validation_errors = [])).push(
+								`Property ${name} must be an object${attribute.type ? ' (' + attribute.type + ')' : ''}`
+							);
+						}
+						const properties = attribute.properties;
+						for (let i = 0, l = properties.length; i < l; i++) {
+							const attribute = properties[i];
+							const updated = validateValue(value[attribute.name], attribute, name + '.' + attribute.name);
+							if (updated) value[attribute.name] = updated;
+						}
+					} else {
 						switch (attribute.type) {
 							case 'Int':
-							case 'Float':
-								if (typeof value !== 'number' || (attribute.type === 'Int' && value !== Math.floor(value)))
+								if (typeof value !== 'number' || value >> 0 !== value)
 									(validation_errors || (validation_errors = [])).push(
-										`Property ${attribute.name} must be an ${attribute.type === 'Int' ? 'integer' : 'number'}`
+										`Property ${name} must be an integer (from -2147483648 to 2147483647)`
 									);
+								break;
+							case 'Long':
+								if (typeof value !== 'number' || !(Math.floor(value) === value && Math.abs(value) <= 9007199254740992))
+									(validation_errors || (validation_errors = [])).push(
+										`Property ${name} must be an integer (from -9007199254740992 to 9007199254740992)`
+									);
+								break;
+							case 'Float':
+								if (typeof value !== 'number')
+									(validation_errors || (validation_errors = [])).push(`Property ${name} must be a number`);
 								break;
 							case 'ID':
 								if (
@@ -1234,19 +1252,59 @@ export function makeTable(options) {
 									)
 								)
 									(validation_errors || (validation_errors = [])).push(
-										`Property ${attribute.name} must be a string, or an array of strings`
+										`Property ${name} must be a string, or an array of strings`
 									);
 								break;
 							case 'String':
 								if (typeof value !== 'string')
-									(validation_errors || (validation_errors = [])).push(`Property ${attribute.name} must be a string`);
+									(validation_errors || (validation_errors = [])).push(`Property ${name} must be a string`);
+								break;
+							case 'Boolean':
+								if (typeof value !== 'boolean')
+									(validation_errors || (validation_errors = [])).push(`Property ${name} must be a boolean`);
+								break;
+							case 'Date':
+								if (!(value instanceof Date)) {
+									if (typeof value === 'string' || typeof value === 'number') return new Date(value);
+									else (validation_errors || (validation_errors = [])).push(`Property ${name} must be a Date`);
+								}
+								break;
+							case 'Bytes':
+								if (!(value instanceof Uint8Array))
+									(validation_errors || (validation_errors = [])).push(
+										`Property ${name} must be a Buffer or Uint8Array`
+									);
+								break;
+							case 'array':
+								if (Array.isArray(value)) {
+									if (attribute.elements) {
+										for (let i = 0, l = value.length; i < l; i++) {
+											const element = value[i];
+											const updated = validateValue(element, attribute.elements, name + '[*]');
+											if (updated) value[i] = updated;
+										}
+									}
+								} else
+									(validation_errors || (validation_errors = [])).push(
+										`Property ${name} must be a Buffer or Uint8Array`
+									);
+
+								break;
 						}
 					}
 				}
-				if (attribute.required && record[attribute.name] == null) {
-					(validation_errors || (validation_errors = [])).push(`Property ${attribute.name} is required`);
+				if (attribute.nullable === false && value == null) {
+					(validation_errors || (validation_errors = [])).push(
+						`Property ${name} is required (and not does not allow null values)`
+					);
 				}
+			};
+			for (let i = 0, l = attributes.length; i < l; i++) {
+				const attribute = attributes[i];
+				const updated = validateValue(record[attribute.name], attribute, attribute.name);
+				if (updated) record[attribute.name] = updated;
 			}
+
 			if (validation_errors) {
 				throw new ClientError(validation_errors.join('. '));
 			}
@@ -1637,6 +1695,8 @@ export function makeTable(options) {
 						txn.timestamp = version;
 						if (expiration_ms && !source_context.expiresAt) source_context.expiresAt = Date.now() + expiration_ms;
 						if (updated_record) {
+							if (typeof updated_record !== 'object')
+								throw new Error('Only objects can be cached and stored in tables');
 							if (typeof updated_record.toJSON === 'function') updated_record = updated_record.toJSON();
 							if (primary_key && updated_record[primary_key] !== id) updated_record[primary_key] = id;
 						}
