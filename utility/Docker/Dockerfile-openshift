@@ -99,7 +99,7 @@ USER root
 RUN ln -sf ${HOME} /home/harperdb && chmod -R u=rwx /home/harperdb
 
 # install deps
-RUN microdnf install --assumeyes --nodocs --refresh hostname git && microdnf clean all
+RUN microdnf install --assumeyes --nodocs --refresh hostname git procps && microdnf clean all
 
 #Create mount point
 VOLUME /home/harperdb/hdb
