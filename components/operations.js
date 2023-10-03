@@ -372,9 +372,9 @@ async function deployComponent(req) {
 	if (!payload && !pkg) {
 		throw new Error("'payload' or 'package' must be provided");
 	}
-
+	let path_to_project;
 	if (payload) {
-		const path_to_project = path.join(cf_dir, project);
+		path_to_project = path.join(cf_dir, project);
 		pkg = 'file:' + path_to_project;
 		// check if the project exists, if it doesn't, create it.
 		await fs.ensureDir(path_to_project);
@@ -403,18 +403,19 @@ async function deployComponent(req) {
 	config_utils.updateConfigValue(`${project}_package`, pkg, undefined, false, false, true);
 	// The main thread can install the components, but we do it here and now so that if it fails, we can immediately
 	// know about it and report it.
-	if (!payload) await installComponents();
-
-	// now we attempt to actually load the component in case there is
-	// an error we can immediately detect and report
-	const root_path = eng_mgr.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
-	const component_path = path.join(root_path, 'node_modules', project);
+	if (!payload) {
+		await installComponents();
+		// now we attempt to actually load the component in case there is
+		// an error we can immediately detect and report
+		const root_path = eng_mgr.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
+		path_to_project = path.join(root_path, 'node_modules', project);
+	}
 	const pseudo_resources = new Map();
 	pseudo_resources.isWorker = true;
 	const component_loader = require('./componentLoader');
 	let last_error;
 	component_loader.setErrorReporter((error) => (last_error = error));
-	await component_loader.loadComponent(component_path, pseudo_resources);
+	await component_loader.loadComponent(path_to_project, pseudo_resources);
 	if (last_error) throw last_error;
 	// if everything checks out, we then restart so all threads can use it
 	restartWorkers();
