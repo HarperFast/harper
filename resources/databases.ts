@@ -2,7 +2,7 @@ import { initSync, getHdbBasePath, get as env_get } from '../utility/environment
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms';
 import { open } from 'lmdb';
 import { join, extname, basename } from 'path';
-import { existsSync, readdirSync, DirEnt } from 'fs';
+import { existsSync, readdirSync } from 'fs';
 import {
 	getBaseSchemaPath,
 	getTransactionAuditStoreBasePath,
@@ -77,7 +77,7 @@ export function getDatabases(): Databases {
 	if (existsSync(database_path)) {
 		// First load all the databases from our main database folder
 		// TODO: Load any databases defined with explicit storage paths from the config
-		for (const database_entry: DirEnt of readdirSync(database_path, { withFileTypes: true })) {
+		for (const database_entry of readdirSync(database_path, { withFileTypes: true })) {
 			const db_name = basename(database_entry.name, '.mdb');
 			if (
 				database_entry.isFile() &&
@@ -90,11 +90,11 @@ export function getDatabases(): Databases {
 	}
 	// now we load databases from the legacy "schema" directory folder structure
 	if (existsSync(getBaseSchemaPath())) {
-		for (const schema_entry: DirEnt of readdirSync(getBaseSchemaPath(), { withFileTypes: true })) {
+		for (const schema_entry of readdirSync(getBaseSchemaPath(), { withFileTypes: true })) {
 			if (!schema_entry.isFile()) {
 				const schema_path = join(getBaseSchemaPath(), schema_entry.name);
 				const schema_audit_path = join(getTransactionAuditStoreBasePath(), schema_entry.name);
-				for (const table_entry: DirEnt of readdirSync(schema_path, { withFileTypes: true })) {
+				for (const table_entry of readdirSync(schema_path, { withFileTypes: true })) {
 					if (table_entry.isFile() && extname(table_entry.name).toLowerCase() === '.mdb') {
 						const audit_path = join(schema_audit_path, table_entry.name);
 						readMetaDb(
@@ -114,7 +114,7 @@ export function getDatabases(): Databases {
 			const schema_config = schema_configs[db_name];
 			const database_path = schema_config.path;
 			if (existsSync(database_path)) {
-				for (const database_entry: DirEnt of readdirSync(database_path, { withFileTypes: true })) {
+				for (const database_entry of readdirSync(database_path, { withFileTypes: true })) {
 					if (database_entry.isFile() && extname(database_entry.name).toLowerCase() === '.mdb') {
 						readMetaDb(join(database_path, database_entry.name), basename(database_entry.name, '.mdb'), db_name);
 					}
@@ -349,6 +349,7 @@ interface TableDefinition {
 	path?: string;
 	expiration?: number;
 	eviction?: number;
+	scanInterval?: number;
 	audit?: boolean;
 	trackDeletes?: boolean;
 	attributes: any[];

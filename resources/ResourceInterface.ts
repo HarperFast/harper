@@ -13,7 +13,6 @@ export interface ResourceInterface<Key = any, Record = any> {
 	allowUpdate(user: any, record: any, full_update?: boolean): boolean | Promise<boolean>;
 	allowCreate(user: any, record: any): boolean | Promise<boolean>;
 	allowDelete(user: any, query?: Query): boolean | Promise<boolean>;
-	[CONTEXT]: Request;
 }
 export interface Context {
 	user?: any;
