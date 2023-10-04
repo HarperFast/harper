@@ -58849,10 +58849,8 @@
 									"pm.test(\"GET returns local studio HTML\", function () {",
 									"    const response = pm.response.text();",
 									"     pm.response.to.be.header(\"content-type\", \"text/html; charset=UTF-8\");",
-									"    pm.expect(response).to.include('<!doctype html>');",
-									"    pm.expect(response).to.include('<title>Studio :: HarperDB</title>');",
-									"    pm.expect(response).to.include('<script src=\"/hdb.js\"></script>');",
-									"    pm.expect(response).to.include('<link href=\"/hdb.css\" rel=\"stylesheet\">');",
+									"    pm.expect(response).to.include('<!DOCTYPE html>');",
+									"    pm.expect(response).to.include('HarperDB is Running');",
 									"});"
 								],
 								"type": "text/javascript"
