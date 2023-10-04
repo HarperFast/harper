@@ -19,7 +19,7 @@ jobs:
       harperdbVersion: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
     steps:
     - uses: actions/checkout@v3
-    - uses: action/setup-node@v2
+    - uses: action/setup-node@v3
     - id: getNode
       name: Get node version
       run: |
