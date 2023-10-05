@@ -60934,7 +60934,9 @@
 									"    const json_data = pm.response.json();",
 									"    pm.expect(json_data).to.haveOwnProperty(\"test-deploy\");",
 									"    pm.expect(json_data[\"test-deploy\"][\"routes\"]).to.not.be.undefined;",
+									"    pm.expect(json_data[\"test-deploy\"][\"routes\"][0]).to.equal('examples')",
 									"    pm.expect(json_data[\"test-deploy\"][\"helpers\"]).to.not.be.undefined;",
+									"    pm.expect(json_data[\"test-deploy\"][\"helpers\"][0]).to.equal('example')",
 									"});"
 								],
 								"type": "text/javascript"
