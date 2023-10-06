@@ -1,4 +1,5 @@
-REST: true
+REST:
+  lastModified: true
 graphqlSchema:
   files: '*.graphql'
   # path: / # exported queries are on the root path by default
