@@ -34,25 +34,11 @@ const EXTENSION_TYPES = {
  * methods can be overriden to provide specific implementations of actions like get, put, post, delete, and subscribe.
  */
 export class Resource implements ResourceInterface {
-	[CONTEXT]: Context;
-	[ID_PROPERTY]: any;
 	static transactions: Transaction[] & { timestamp: number };
-	constructor(identifier: Id, source: Context | { [CONTEXT]: Context }) {
+	constructor(identifier: Id, source: any) {
 		this[ID_PROPERTY] = identifier;
 		const context = source?.[CONTEXT];
 		this[CONTEXT] = context !== undefined ? context : source || null;
-	}
-
-	/**
-	 * Resources track the last modified time, which is essential for all caching layers in a system (and beyond to
-	 * clients that may do caching). Any type a source is accessed with a modification time, this can be called to ensure
-	 * the current resource has this time or later as its aggregate modification time.
-	 * @param latest
-	 */
-	updateModificationTime(latest = Date.now()) {
-		if (latest > this[LAST_MODIFICATION_PROPERTY]) {
-			this[LAST_MODIFICATION_PROPERTY] = latest;
-		}
 	}
 
 	/**
@@ -87,6 +73,7 @@ export class Resource implements ResourceInterface {
 			async: true, // use async by default
 		}
 	);
+	get?(query?): Promise<any>;
 	/**
 	 * Store the provided record by the provided id. If no id is provided, it is auto-generated.
 	 */

@@ -91,9 +91,18 @@ export function idsForCondition(search_condition, transaction, reverse, Table, a
 		}
 		// for filter operations, we intentionally yield the event turn so that scanning queries
 		// do not hog resources
-		return Table.primaryStore
-			.getRange({ start: true, transaction, reverse })
-			.map(({ key, value }) => new Promise((resolve) => setImmediate(() => resolve(filter(value) ? key : SKIP))));
+		return Table.primaryStore.getRange({ start: true, transaction, reverse }).map(
+			({ key, value }) =>
+				new Promise((resolve, reject) =>
+					setImmediate(() => {
+						try {
+							resolve(value && filter(value) ? key : SKIP);
+						} catch (error) {
+							reject(error);
+						}
+					})
+				)
+		);
 	}
 	const range_options = { start, end, inclusiveEnd, exclusiveStart, values: !is_primary_key, transaction, reverse };
 	if (is_primary_key) {

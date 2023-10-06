@@ -562,7 +562,7 @@ describe('Test hdbServer module', () => {
 			const test_response = await server.inject({ method: 'get', url: '/' });
 
 			expect(test_response.statusCode).to.equal(200);
-			expect(test_response.body).to.equal(fs.readFileSync(path.join(__dirname, '../../../docs/index.html'), 'utf8'));
+			expect(test_response.body).to.equal(fs.readFileSync(path.join(__dirname, '../../../studio/index.html'), 'utf8'));
 
 			server.close();
 		});
@@ -579,7 +579,7 @@ describe('Test hdbServer module', () => {
 			const test_response = await server.inject({ method: 'get', url: '/' });
 
 			expect(test_response.statusCode).to.equal(200);
-			expect(test_response.body).to.equal(fs.readFileSync(path.join(__dirname, '../../../docs/index.html'), 'utf8'));
+			expect(test_response.body).to.equal(fs.readFileSync(path.join(__dirname, '../../../studio/index.html'), 'utf8'));
 
 			server.close();
 		});
@@ -595,8 +595,10 @@ describe('Test hdbServer module', () => {
 
 			const test_response = await server.inject({ method: 'get', url: '/' });
 
-			expect(test_response.statusCode).to.equal(404);
-			expect(test_response.body).to.include('Not found');
+			expect(test_response.statusCode).to.equal(200);
+			expect(test_response.body).to.equal(
+				fs.readFileSync(path.join(__dirname, '../../../studio/running.html'), 'utf8')
+			);
 
 			server.close();
 		});
@@ -612,8 +614,10 @@ describe('Test hdbServer module', () => {
 
 			const test_response = await server.inject({ method: 'get', url: '/' });
 
-			expect(test_response.statusCode).to.equal(404);
-			expect(test_response.body).to.include('Not found');
+			expect(test_response.statusCode).to.equal(200);
+			expect(test_response.body).to.equal(
+				fs.readFileSync(path.join(__dirname, '../../../studio/running.html'), 'utf8')
+			);
 
 			server.close();
 		});

@@ -24,7 +24,100 @@ export function assignTrackedAccessors(Target, type_def) {
 	const attributes = type_def.attributes || type_def.properties || [];
 	for (const attribute of attributes) {
 		const name = attribute.name;
-		const descriptor = {
+		let set;
+		switch (attribute.type) {
+			case 'String':
+				set = function (value) {
+					if (!(typeof value === 'string' || (value == null && attribute.nullable !== false)))
+						throw new ClientError(`${name} must be a string, attempt to assign ${value}`);
+					getChanges(this)[name] = value;
+				};
+				break;
+			case 'ID':
+				set = function (value) {
+					if (
+						!(
+							typeof value === 'string' ||
+							(value?.length > 0 && value.every?.((value) => typeof value === 'string')) ||
+							(value == null && attribute.nullable !== false)
+						)
+					)
+						throw new ClientError(`${name} must be a string, attempt to assign ${value}`);
+					getChanges(this)[name] = value;
+				};
+				break;
+			case 'Float':
+				set = function (value) {
+					if (!(typeof value === 'number' || (value == null && attribute.nullable !== false)))
+						throw new ClientError(`${name} must be a number, attempt to assign ${value}`);
+					getChanges(this)[name] = value;
+				};
+				break;
+			case 'Int':
+				set = function (value) {
+					if (!(value >> 0 === value || (value == null && attribute.nullable !== false))) {
+						if (typeof value === 'number' && Math.abs((value >> 0) - value) <= 1) {
+							// if it just needs to be rounded, do the conversion without complaining
+							value = Math.round(value);
+						} else
+							throw new ClientError(
+								`${name} must be an integer between -2147483648 and 2147483647, attempt to assign ${value}`
+							);
+					}
+					getChanges(this)[name] = value;
+				};
+				break;
+				case 'Long':
+					set = function (value) {
+						if (!(Math.round(value) === value && Math.abs(value) <= 9007199254740992 || (value == null && attribute.nullable !== false))) {
+							if (typeof value === 'number' && Math.abs(value) <= 9007199254740992) {
+								// if it just needs to be rounded, do the conversion without complaining
+								value = Math.round(value);
+							} else
+								throw new ClientError(
+									`${name} must be an integer between -9007199254740992 and 9007199254740992, attempt to assign ${value}`
+								);
+						}
+						getChanges(this)[name] = value;
+					};
+					break;
+				case 'Boolean':
+				set = function (value) {
+					if (!(typeof value === 'boolean' || (value == null && attribute.nullable !== false)))
+						throw new ClientError(`${name} must be a boolean, attempt to assign ${value}`);
+					getChanges(this)[name] = value;
+				};
+				break;
+			case 'Date':
+				set = function (value) {
+					if (!(value instanceof Date || (value == null && attribute.nullable !== false))) {
+						if (typeof value === 'string' || typeof value === 'number') value = new Date(value);
+						else throw new ClientError(`${name} must be a Date, attempt to assign ${value}`);
+					}
+					getChanges(this)[name] = value;
+				};
+				break;
+			case 'Bytes':
+				set = function (value) {
+					if (!(value instanceof Uint8Array || (value == null && attribute.nullable !== false)))
+						throw new ClientError(`${name} must be a Buffer or Uint8Array, attempt to assign ${value}`);
+					getChanges(this)[name] = value;
+				};
+				break;
+			case 'Any':
+			case undefined:
+				set = function (value) {
+					getChanges(this)[name] = value;
+				};
+				break;
+			default: // for all user defined types, they must at least be an object
+				set = function (value) {
+					if (!(typeof value === 'object' || (value == null && attribute.nullable !== false)))
+						throw new ClientError(`${name} must be an object, attempt to assign ${value}`);
+					getChanges(this)[name] = value;
+				};
+		}
+		const descriptor = (descriptors[name] = {
 			get() {
 				let changes = this[OWN_DATA];
 				if (changes && name in changes) {
@@ -40,31 +133,11 @@ export function assignTrackedAccessors(Target, type_def) {
 				}
 				return source_value;
 			},
-			set(value) {
-				getChanges(this)[name] = value;
-			},
+			set,
 			enumerable: true,
 			configurable: true, // we need to be able to reconfigure these as schemas change (attributes can be added/removed at runtime)
-		};
+		});
 		descriptor.get.isAttribute = true;
-		switch (attribute.type) {
-			case 'String':
-				descriptor.set = function (value) {
-					if (!(typeof value === 'string' || (value == null && attribute.nullable !== false)))
-						throw new ClientError(`${name} must be a string, attempt to assign ${value}`);
-					getChanges(this)[name] = value;
-				};
-				break;
-			case 'Int':
-				descriptor.set = function (value) {
-					if (!(typeof value === 'number' || (value == null && attribute.nullable !== false)))
-						throw new ClientError(`${name} must be a number, attempt to assign ${value}`);
-					getChanges(this)[name] = value;
-				};
-				break;
-		}
-
-		descriptors[name] = descriptor;
 		if (
 			!(name in prototype) ||
 			// this means that we are re-defining an attribute accessor (which is fine)
@@ -210,7 +283,11 @@ export function deepFreeze(target) {
 		}
 		copied_source[key] = value;
 	}
-	return copied_source ? Object.freeze(copied_source) : target[RECORD_PROPERTY] || Object.freeze(target);
+	return copied_source
+		? Object.freeze(copied_source)
+		: target[RECORD_PROPERTY] ||
+				// freeze, but don't freeze buffers/typed arrays, that doesn't work
+				(target.buffer ? target : Object.freeze(target));
 }
 /**
  * Determine if any changes have been made to this tracked object

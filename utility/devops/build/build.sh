@@ -15,13 +15,6 @@ then
   exit 1
 fi
 
-node_version="v$(jq -r '.engines."preferred-node"' package.json)"
-
-if ! [ "$node_version_installed" = "$node_version" ]; then
-    echo "Node.js $node_version must be installed"
-    exit 1
-fi
-
 if ! command -v dot-json &> /dev/null
 then
   echo "dot-json must be installed, run command 'npm install dot-json -g'"
@@ -35,8 +28,7 @@ rm -rf ./npm_pack/
 # npm install from source
 # we need to install because we have build.js that run that need to be installed
 # --silent sets npm log level to silent
-# --production prevents install of dev dependencies
-npm --silent install --production --legacy-peer-deps
+npm --silent install --legacy-peer-deps
 sleep 2
 
 # Remove architecture specific binaries from dependencies
@@ -44,6 +36,10 @@ rm -rf dependencies/*/
 
 # Obfuscate code
 node ./utility/devops/build/build.js
+
+# Rerun install with production to remove devDependencies packages
+# --production prevents install of dev dependencies
+npm --silent install --production --legacy-peer-deps
 
 # Pull in application-template repo
 git submodule update --init --recursive
@@ -56,10 +52,10 @@ post_install="$(jq -r '.scripts."postinstall"' package.json)"
 
 # Delete scripts and devDependencies from ./npm_pack/package.json
 dot-json ./npm_pack/package.json devDependencies --delete
-dot-json ./npm_pack/package.json dependencies.esbuild --delete
 dot-json ./npm_pack/package.json scripts --delete
 
 cd ./npm_pack/
+rm -rf ./node_modules/
 # Add the postinstall script back
 dot-json ./package.json scripts.postinstall "$post_install"
 

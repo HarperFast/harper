@@ -14,13 +14,6 @@ then
   exit 1
 fi
 
-node_version="v$(jq -r '.engines."preferred-node"' package.json)"
-
-if ! [ "$node_version_installed" = "$node_version" ]; then
-    echo "Node.js $node_version must be installed"
-    exit 1
-fi
-
 if ! command -v dot-json &> /dev/null
 then
   echo "dot-json must be installed, run command 'npm install dot-json -g'"
@@ -38,9 +31,15 @@ export PATH=~/.npm-global/bin:$PATH
 # npm install from source
 # we need to install because we have build.js that run that need to be installed
 # --silent sets npm log level to silent
+npm --silent install --legacy-peer-deps
+sleep 2
+
+# Obfuscate code
+node ./utility/devops/build/build.js
+
+# Rerun install with production to remove devDependencies packages
 # --production prevents install of dev dependencies
 npm --silent install --production --legacy-peer-deps
-sleep 2
 
 # # Download binaries for common platforms
 # supported_architectures=("darwin-arm64" "darwin-x64" "linux-arm64" "linux-x64" "win32-x64")
@@ -49,9 +48,6 @@ sleep 2
 #   mkdir dependencies/$sa
 # done
 npm run download-prebuilds
-
-# Obfuscate code
-node ./utility/devops/build/build.js
 
 # Pull in application-template repo
 git submodule update --init --recursive
@@ -64,7 +60,6 @@ post_install="$(jq -r '.scripts."postinstall"' package.json)"
 
 # Delete scripts and devDependencies from ./npm_pack/package.json
 dot-json ./npm_pack/package.json devDependencies --delete
-dot-json ./npm_pack/package.json dependencies.esbuild --delete
 dot-json ./npm_pack/package.json scripts --delete
 dot-json ./npm_pack/package.json overrides --delete
 
@@ -80,6 +75,12 @@ cp LICENSE ./npm_pack/
 
 # Copy node_modules
 cp --preserve --recursive ./node_modules/ ./npm_pack/
+cp --preserve --recursive ./dependencies/ ./npm_pack/
+
+# npm pack honors the "files" section of package.json and omits anything not in there,
+# but we want to include prebuilds
+dot-json ./npm_pack/node_modules/lmdb/package.json files --delete
+dot-json ./npm_pack/node_modules/msgpackr-extract/package.json files --delete
 
 # Append README with commit ID
 git rev-parse HEAD >> ./npm_pack/README.md

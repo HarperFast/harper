@@ -37,6 +37,7 @@ function customFunctionsStatus() {
 		response = {
 			port: env.get(terms.CONFIG_PARAMS.HTTP_PORT),
 			directory: env.get(terms.CONFIG_PARAMS.COMPONENTSROOT),
+			is_enabled: true,
 		};
 	} catch (err) {
 		throw handleHDBError(
@@ -394,6 +395,12 @@ async function deployComponent(req) {
 		const stream = fs.createReadStream(temp_file_path);
 		stream.pipe(tar.extract(path_to_project));
 		await new Promise((resolve) => stream.on('end', resolve));
+
+		const comp_dir = await fs.readdir(path_to_project);
+		if (comp_dir.length === 1 && comp_dir[0] === 'package') {
+			await fs.copy(path.join(path_to_project, 'package'), path_to_project);
+			await fs.remove(path.join(path_to_project, 'package'));
+		}
 
 		// delete the file
 		await fs.unlink(temp_file_path);

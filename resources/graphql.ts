@@ -1,5 +1,9 @@
 import { dirname } from 'path';
 import { table } from './databases';
+import { getWorkerIndex } from '../server/threads/manageThreads';
+
+const PRIMITIVE_TYPES = ['ID', 'Int', 'Float', 'Long', 'String', 'Boolean', 'Date', 'Bytes', 'Any'];
+
 /**
  * This is the entry point for handling GraphQL schemas (and server-side defined queries, eventually). This will be
  * called for schemas, and this will parse the schema (into an AST), and use it to ensure all specified tables and their
@@ -69,7 +73,7 @@ export function start({ ensureTable }) {
 							};
 						}
 						const type_name = (type as NamedTypeNode).name?.value;
-						return { type: type_name };
+						return { type: type_name, location: type.loc.startToken };
 					}
 					for (const field of definition.fields) {
 						const property = getProperty(field.type);
@@ -106,14 +110,20 @@ export function start({ ensureTable }) {
 					}
 			}
 		}
-		// if any types reference other types, fill those in.
-		for (const [name, type_def] of types) {
-			for (const property of type_def.properties) {
-				const target_type_def = types.get(property.type);
-				if (target_type_def) {
-					property.properties = target_type_def.properties;
-				}
+		// check the types and if any types reference other types, fill those in.
+		function connectPropertyType(property) {
+			const target_type_def = types.get(property.type);
+			if (target_type_def) property.properties = target_type_def.properties;
+			else if (property.type === 'array') connectPropertyType(property.elements);
+			else if (!PRIMITIVE_TYPES.includes(property.type)) {
+				if (getWorkerIndex() === 0)
+					console.error(
+						`The type ${property.type} is unknown at line ${property.location.line}, column ${property.location.column}, in ${file_path}`
+					);
 			}
+		}
+		for (const type_def of types.values()) {
+			for (const property of type_def.properties) connectPropertyType(property);
 		}
 		// any tables that are defined in the schema can now be registered
 		for (const type_def of tables) {

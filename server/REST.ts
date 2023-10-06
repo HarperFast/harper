@@ -1,5 +1,5 @@
 import { serialize, serializeMessage, getDeserializer } from '../server/serverHelpers/contentTypes';
-import { recordAction, recordActionBinary } from '../resources/analytics';
+import { addAnalyticsListener, recordAction, recordActionBinary } from '../resources/analytics';
 import * as harper_logger from '../utility/logging/harper_logger';
 import { ServerOptions } from 'http';
 import { ServerError, ClientError } from '../utility/errors/hdbError';
@@ -17,6 +17,7 @@ interface Response {
 }
 const etag_bytes = new Uint8Array(8);
 const etag_float = new Float64Array(etag_bytes.buffer, 0, 1);
+let http_options = {};
 
 async function http(request, next_handler) {
 	const headers_object = request.headers.asObject;
@@ -89,6 +90,9 @@ async function http(request, next_handler) {
 		let last_modification;
 		if (response_data == undefined) {
 			status = method === 'GET' || method === 'HEAD' ? 404 : 204;
+			// deleted entries can have a timestamp of when they were deleted
+			if (http_options.lastModified && request.lastModified)
+				headers.set('Last-Modified', new Date(request.lastModified).toUTCString());
 		} else if ((last_modification = request.lastModified)) {
 			etag_float[0] = last_modification;
 			// base64 encoding of the 64-bit float encoding of the date in ms (with quotes)
@@ -115,6 +119,7 @@ async function http(request, next_handler) {
 			} else {
 				headers.set('ETag', etag);
 			}
+			if (http_options.lastModified) headers.set('Last-Modified', new Date(last_modification).toUTCString());
 		}
 		if (request.createdResource) status = 201;
 		if (request.newLocation) headers.set('Location', request.newLocation);
@@ -160,33 +165,13 @@ async function http(request, next_handler) {
 	}
 }
 
-function checkAllowed(method_allowed, user, resource): void | Promise<void> {
-	const allowed = method_allowed ?? resource.allowAccess?.() ?? user?.role.permission.super_user; // default permission check
-	if (allowed?.then) {
-		// handle promises, waiting for them using fast path (not await)
-		return allowed.then(() => {
-			if (!allowed) checkAllowed(false, user, resource);
-		});
-	} else if (!allowed) {
-		let error;
-		if (user) {
-			error = new Error('Unauthorized access to resource');
-			error.status = 403;
-		} else {
-			error = new Error('Must login');
-			error.status = 401;
-			// TODO: Optionally allow a Location header to redirect to
-		}
-		throw error;
-	}
-}
-
 let started;
 let resources: Resources;
-
+let added_metrics;
 let connection_count = 0;
 
 export function start(options: ServerOptions & { path: string; port: number; server: any; resources: any }) {
+	http_options = options;
 	if (started) return;
 	started = true;
 	resources = options.resources;
@@ -197,8 +182,21 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 	options.server.ws(async (ws, request, chain_completion) => {
 		connection_count++;
 		const incoming_messages = new IterableEventQueue();
+		if (!added_metrics) {
+			added_metrics = true;
+			addAnalyticsListener((metrics) => {
+				if (connection_count > 0)
+					metrics.push({
+						metric: 'ws-connections',
+						connections: connection_count,
+						byThread: true,
+					});
+			});
+		}
 		// TODO: We should set a lower keep-alive ws.socket.setKeepAlive(600000);
+		let has_error;
 		ws.on('error', (error) => {
+			has_error = true;
 			harper_logger.warn(error);
 		});
 		let deserializer;
@@ -210,12 +208,14 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 		let iterator;
 		ws.on('close', () => {
 			connection_count--;
+			recordActionBinary(!has_error, 'connection', 'ws', 'disconnect');
 			incoming_messages.emit('close');
 			if (iterator) iterator.return();
 		});
 		await chain_completion;
 		const url = request.url.slice(1);
 		const entry = resources.getMatch(url);
+		recordActionBinary(Boolean(entry), 'connection', 'ws', 'connect');
 		if (!entry) {
 			ws.send(serializeMessage(`No resource was found to handle ${request.pathname}`, request));
 		} else {
@@ -230,6 +230,7 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 				'connect',
 				'ws'
 			);
+
 			const resource_request = { url: entry.relativeURL, async: true }; // TODO: We don't want to have to remove the forward slash and then re-add it
 			const resource = entry.Resource;
 			const response_stream = await transaction(request, () => {

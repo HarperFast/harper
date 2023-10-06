@@ -18,8 +18,7 @@
     "harperdb": "./bin/harperdb.js"
   },
   "engines": {
-    "node": ">=14.0.0",
-    "preferred-node": "18.15.0",
+    "minimum-node": "16.0.0",
     "go-lang": "1.21.1",
     "nats-server": "2.10.1"
   },
@@ -79,7 +78,6 @@
     "chalk": "4.1.2",
     "cli-progress": "3.12.0",
     "clone": "2.1.2",
-    "esbuild": "^0.19.1",
     "fast-glob": "3.3.1",
     "fastify": "~4.22.0",
     "fastify-plugin": "~4.5.0",
@@ -94,7 +92,7 @@
     "jsonwebtoken": "9.0.2",
     "lmdb": "2.9.0-alpha.1",
     "lodash": "4.17.21",
-    "mathjs": "11.10.1",
+    "mathjs": "11.11.0",
     "minimist": "1.2.8",
     "mkcert": "1.5.1",
     "moment": "2.29.4",
@@ -136,6 +134,7 @@
     "axios": "0.27.2",
     "chai": "4.3.7",
     "chai-integer": "0.1.0",
+    "esbuild": "^0.19.1",
     "eslint": "8.22.0",
     "eslint-config-prettier": "8.3.0",
     "eslint-plugin-prettier": "3.4.1",
@@ -160,7 +159,7 @@
     "sinon": "10.0.0",
     "sinon-chai": "3.7.0",
     "source-map-support": "^0.5.21",
-    "typescript": "^4.9.4",
+    "typescript": "^5.2.2",
     "why-is-node-still-running": "^1.0.0"
   },
   "overrides": {

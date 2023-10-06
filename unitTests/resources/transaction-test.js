@@ -2,7 +2,6 @@ require('../test_utils');
 const assert = require('assert');
 const { getMockLMDBPath } = require('../test_utils');
 const { table } = require('../../resources/databases');
-const { Resource } = require('../../resources/Resource');
 const { setMainIsWorker } = require('../../server/threads/manageThreads');
 const { transaction } = require('../../resources/transaction');
 // might want to enable an iteration with NATS being assigned as a source
