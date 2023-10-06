@@ -26,6 +26,7 @@ describe('test REST calls', () => {
 			headers,
 		});
 		assert.equal(response.status, 200);
+		assert(Date.parse(response.headers['last-modified']) > 1696617497581);
 		let data = JSON.parse(response.data);
 		assert.equal(available_records[1], data.id);
 	});

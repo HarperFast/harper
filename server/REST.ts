@@ -17,6 +17,7 @@ interface Response {
 }
 const etag_bytes = new Uint8Array(8);
 const etag_float = new Float64Array(etag_bytes.buffer, 0, 1);
+let http_options = {};
 
 async function http(request, next_handler) {
 	const headers_object = request.headers.asObject;
@@ -89,6 +90,9 @@ async function http(request, next_handler) {
 		let last_modification;
 		if (response_data == undefined) {
 			status = method === 'GET' || method === 'HEAD' ? 404 : 204;
+			// deleted entries can have a timestamp of when they were deleted
+			if (http_options.lastModified && request.lastModified)
+				headers.set('Last-Modified', new Date(request.lastModified).toUTCString());
 		} else if ((last_modification = request.lastModified)) {
 			etag_float[0] = last_modification;
 			// base64 encoding of the 64-bit float encoding of the date in ms (with quotes)
@@ -115,6 +119,7 @@ async function http(request, next_handler) {
 			} else {
 				headers.set('ETag', etag);
 			}
+			if (http_options.lastModified) headers.set('Last-Modified', new Date(last_modification).toUTCString());
 		}
 		if (request.createdResource) status = 201;
 		if (request.newLocation) headers.set('Location', request.newLocation);
@@ -160,33 +165,13 @@ async function http(request, next_handler) {
 	}
 }
 
-function checkAllowed(method_allowed, user, resource): void | Promise<void> {
-	const allowed = method_allowed ?? resource.allowAccess?.() ?? user?.role.permission.super_user; // default permission check
-	if (allowed?.then) {
-		// handle promises, waiting for them using fast path (not await)
-		return allowed.then(() => {
-			if (!allowed) checkAllowed(false, user, resource);
-		});
-	} else if (!allowed) {
-		let error;
-		if (user) {
-			error = new Error('Unauthorized access to resource');
-			error.status = 403;
-		} else {
-			error = new Error('Must login');
-			error.status = 401;
-			// TODO: Optionally allow a Location header to redirect to
-		}
-		throw error;
-	}
-}
-
 let started;
 let resources: Resources;
 let added_metrics;
 let connection_count = 0;
 
 export function start(options: ServerOptions & { path: string; port: number; server: any; resources: any }) {
+	http_options = options;
 	if (started) return;
 	started = true;
 	resources = options.resources;

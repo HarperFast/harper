@@ -1047,7 +1047,7 @@ export function makeTable(options) {
 				function (id, audit_record, timestamp) {
 					try {
 						const value = audit_record.getValue(primary_store);
-						this.send({ id, timestamp, value, type: audit_record.type });
+						this.send({ id, timestamp, value, version: audit_record.version, type: audit_record.type });
 					} catch (error) {
 						harper_logger.error(error);
 					}
@@ -1088,7 +1088,7 @@ export function makeTable(options) {
 							const id = audit_record.recordId;
 							if (this_id == null || isDescendantId(this_id, id)) {
 								const value = audit_record.getValue(primary_store);
-								history.push({ id, timestamp: key, value, type: audit_record.type });
+								history.push({ id, timestamp: key, value, version: audit_record.version, type: audit_record.type });
 								if (--count <= 0) break;
 							}
 						} catch (error) {
@@ -1102,43 +1102,48 @@ export function makeTable(options) {
 					}
 					if (history[0]) subscription.startTime = history[0].timestamp; // update so don't double send
 				} else if (!request.omitCurrent) {
-					for (const { key: id, value, version } of primary_store.getRange({
+					for (const { key: id, value, version, localTime } of primary_store.getRange({
 						start: this_id ?? false,
 						end: this_id == null ? undefined : [this_id, MAXIMUM_KEY],
 						versions: true,
 					})) {
 						if (!value) continue;
-						subscription.send({ id, timestamp: version, value });
+						subscription.send({ id, version, timestamp: localTime, value });
 					}
 				}
 			} else {
 				if (count && !start_time) start_time = 0;
-				const local_version = this[ENTRY_PROPERTY]?.localTime;
-				if (start_time < local_version) {
+				const local_time = this[ENTRY_PROPERTY]?.localTime;
+				if (start_time < local_time) {
 					// start time specified, get the audit history for this record
 					const history = [];
-					let next_version = local_version;
+					let next_time = local_time;
 					do {
 						//TODO: Would like to do this asynchronously, but we will need to run catch after this to ensure we didn't miss anything
 						//await audit_store.prefetch([key]); // do it asynchronously for better fairness/concurrency and avoid page faults
-						const audit_entry = audit_store.get(next_version);
+						const audit_entry = audit_store.get(next_time);
 						if (audit_entry) {
 							request.omitCurrent = true; // we are sending the current version from history, so don't double send
 							const audit_record = readAuditEntry(audit_entry);
 							const value = audit_record.getValue(primary_store);
-							history.push({ id: this_id, value, timestamp: next_version, ...audit_record });
-							next_version = audit_record.previousLocalTime;
+							history.push({ id: this_id, value, timestamp: next_time, ...audit_record });
+							next_time = audit_record.previousLocalTime;
 						} else break;
 						if (count) count--;
-					} while (next_version > start_time && count !== 0);
+					} while (next_time > start_time && count !== 0);
 					for (let i = history.length; i > 0; ) {
 						subscription.send(history[--i]);
 					}
-					subscription.startTime = local_version; // make sure we don't re-broadcast the current version that we already sent
+					subscription.startTime = local_time; // make sure we don't re-broadcast the current version that we already sent
 				}
 				if (!request.omitCurrent && this.doesExist()) {
 					// if retain and it exists, send the current value first
-					subscription.send({ id: this_id, timestamp: this[ENTRY_PROPERTY]?.localTime, value: this });
+					subscription.send({
+						id: this_id,
+						version: this[VERSION_PROPERTY],
+						timestamp: this[ENTRY_PROPERTY]?.localTime,
+						value: this,
+					});
 				}
 			}
 			if (request.listener) subscription.on('data', request.listener);
@@ -1905,7 +1910,7 @@ export function coerceType(value, attribute) {
 	//if a type is String is it safe to execute a .toString() on the value and return? Does not work for Array/Object so we would need to detect if is either of those first
 	if (value === null) {
 		return value;
-	} else if (type === 'Int') return parseInt(value);
+	} else if (type === 'Int' || type === 'Long') return parseInt(value);
 	else if (type === 'Float') return parseFloat(value);
 	else if (type === 'Date') {
 		//if the value is not an integer (to handle epoch values) and does not end in a timezone we suffiz with 'Z' tom make sure the Date is GMT timezone
