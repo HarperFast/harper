@@ -8,8 +8,8 @@ const { watch, readdir } = require('fs/promises');
 const { totalmem } = require('os');
 const hdb_terms = require('../../utility/hdbTerms');
 const harper_logger = require('../../utility/logging/harper_logger');
-const terms = require('../../utility/hdbTerms');
 const { randomBytes } = require('crypto');
+const { _assignPackageExport } = require('../../index');
 const MB = 1024 * 1024;
 const workers = []; // these are our child workers that we are managing
 const connected_ports = []; // these are all known connected worker ports (siblings, children, parents)
@@ -22,6 +22,7 @@ const THREAD_INFO = 'thread_info';
 const ADDED_PORT = 'added-port';
 const ACKNOWLEDGEMENT = 'ack';
 let getThreadInfo;
+_assignPackageExport('threads', connected_ports);
 
 module.exports = {
 	startWorker,
@@ -39,6 +40,17 @@ module.exports = {
 	setMainIsWorker,
 	restartNumber: workerData?.restartNumber || 1,
 };
+
+connected_ports.onMessageByType = onMessageByType;
+connected_ports.sendToThread = function (thread_id, message) {
+	if (!message?.type) throw new Error('A message with a type must be provided');
+	const port = connected_ports.find((port) => port.threadId === thread_id);
+	if (port) {
+		port.postMessage(message);
+		return true;
+	}
+};
+
 let isMainWorker;
 function getWorkerIndex() {
 	return workerData ? workerData.workerIndex : isMainWorker ? 0 : undefined;
@@ -87,19 +99,17 @@ function startWorker(path, options = {}) {
 	// https://plaid.com/blog/how-we-parallelized-our-node-service-by-30x/
 	const max_young_memory = Math.min(Math.max(max_old_memory >> 7, 16), 64);
 
-	let ports_to_send = [];
+	const channels_to_connect = [];
+	const ports_to_send = [];
 	for (let existing_port of connected_ports) {
-		let { port1, port2 } = new MessageChannel();
-		existing_port.postMessage(
-			{
-				type: ADDED_PORT,
-				port: port1,
-			},
-			[port1]
-		);
-		ports_to_send.push(port2);
+		const channel = new MessageChannel();
+		channel.existingPort = existing_port;
+		channels_to_connect.push(channel);
+		ports_to_send.push(channel.port2);
 	}
+
 	if (!extname(path)) path += '.js';
+
 	const worker = new Worker(
 		isAbsolute(path) ? path : join(PACKAGE_ROOT, path),
 		Object.assign(
@@ -113,6 +123,7 @@ function startWorker(path, options = {}) {
 				// pass these in synchronously to the worker so it has them on startup:
 				workerData: {
 					addPorts: ports_to_send,
+					addThreadIds: channels_to_connect.map((channel) => channel.existingPort.threadId),
 					workerIndex: options.workerIndex,
 					name: options.name,
 					restartNumber: module.exports.restartNumber,
@@ -123,6 +134,18 @@ function startWorker(path, options = {}) {
 			options
 		)
 	);
+	// now that we have the new thread ids, we can finishing connecting the channel and notify the existing
+	// worker of the new port with thread id.
+	for (let { port1, existingPort: existing_port } of channels_to_connect) {
+		existing_port.postMessage(
+			{
+				type: ADDED_PORT,
+				port: port1,
+				threadId: worker.threadId,
+			},
+			[port1]
+		);
+	}
 	addPort(worker, true);
 	worker.unexpectedRestarts = options.unexpectedRestarts || 0;
 	worker.startCopy = () => {
@@ -242,10 +265,17 @@ function onMessageByType(type, listener) {
 	listeners.push(listener);
 }
 
-function broadcast(message) {
+const MAX_SYNC_BROADCAST = 10;
+async function broadcast(message) {
+	let count = 0;
 	for (let port of connected_ports) {
 		try {
 			port.postMessage(message);
+			if (count++ > MAX_SYNC_BROADCAST) {
+				// posting messages can be somewhat expensive, so we yield the event turn occassionally to not cause any delays.
+				count = 0;
+				await new Promise(setImmediate);
+			}
 		} catch (error) {
 			harper_logger.error(`Unable to send message to worker`, error);
 		}
@@ -358,7 +388,9 @@ const REPORTING_INTERVAL = 1000;
 
 if (parentPort) {
 	addPort(parentPort);
-	for (let port of workerData.addPorts) {
+	for (let i = 0, l = workerData.addPorts.length; i < l; i++) {
+		let port = workerData.addPorts[i];
+		port.threadId = workerData.addThreadIds[i];
 		addPort(port);
 	}
 	setInterval(() => {
@@ -393,8 +425,10 @@ function addPort(port, keep_ref) {
 	connected_ports.push(port);
 	port
 		.on('message', (message) => {
-			if (message.type === ADDED_PORT) addPort(message.port);
-			else if (message.type === ACKNOWLEDGEMENT) {
+			if (message.type === ADDED_PORT) {
+				message.port.threadId = message.threadId;
+				addPort(message.port);
+			} else if (message.type === ACKNOWLEDGEMENT) {
 				let completion = awaiting_responses.get(message.id);
 				if (completion) {
 					completion();

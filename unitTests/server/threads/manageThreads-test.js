@@ -59,6 +59,13 @@ describe('(Re)start/monitor workers', () => {
 				}
 			});
 		});
+		threads.sendToThread(worker1.threadId, { type: 'broadcast1' });
+		await new Promise((resolve) => {
+			threads.onMessageByType('received-broadcast', (event, thread) => {
+				assert.equal(worker2.threadId, thread.threadId);
+				resolve(event);
+			});
+		});
 	});
 	it('getThreadInfo should return stats', async function () {
 		this.timeout(5000);
