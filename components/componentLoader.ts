@@ -201,7 +201,7 @@ export async function loadComponent(
 							resources,
 							...component_config,
 						})) || extension_module;
-					if (is_root && network) {
+					/*if (is_root && network) {
 						for (const possible_port of [port, securePort]) {
 							try {
 								if (+possible_port && !ports_started.includes(possible_port)) {
@@ -214,7 +214,7 @@ export async function loadComponent(
 								console.error('Error listening on socket', possible_port, error, component_name);
 							}
 						}
-					}
+					}*/
 				}
 				if (resources.isWorker)
 					extension_module =

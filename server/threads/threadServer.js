@@ -1,6 +1,6 @@
 'use strict';
 const { isMainThread, parentPort, threadId } = require('worker_threads');
-const { Socket } = require('net');
+const { Socket, createServer: createSocketServer } = require('net');
 const { createServer, IncomingMessage } = require('http');
 const { createServer: createSecureServer } = require('https');
 const { readFileSync } = require('fs');
@@ -14,6 +14,7 @@ const { getTicketKeys } = require('./manageThreads');
 const { Headers } = require('../serverHelpers/Headers');
 const { recordAction, recordActionBinary } = require('../../resources/analytics');
 const { Request, node_request_key } = require('../serverHelpers/Request');
+const { createReuseportFd } = require('node-unix-socket');
 
 process.on('uncaughtException', (error) => {
 	if (error.code === 'ECONNRESET') return; // that's what network connections do
@@ -192,6 +193,10 @@ function registerServer(server, port) {
 		existing_server.lastServer = server;
 	} else {
 		SERVERS[port] = server;
+		const fd = createReuseportFd(port, '0.0.0.0');
+		server.listen({ fd }, () => {
+			harper_logger.trace('Listening on for HTTP port ' + port);
+		});
 	}
 	server.on('unhandled', defaultNotFound);
 }
@@ -395,12 +400,20 @@ function onSocket(listener, options) {
 			},
 			listener
 		);
-
-		SERVERS[options.securePort] = (socket) => {
-			socket_server.emit('connection', socket);
-		};
+		const fd = createReuseportFd(options.securePort, '0.0.0.0');
+		socket_server.listen({ fd }, () => {
+			harper_logger.trace('listening on secure port ' + options.securePort);
+		});
+		SERVERS[options.securePort] = socket_server;
 	}
-	if (options.port) SERVERS[options.port] = listener;
+	if (options.port) {
+		const fd = createReuseportFd(options.port, '0.0.0.0');
+		const socket_server = createSocketServer(listener);
+		socket_server.listen({ fd }, () => {
+			harper_logger.trace('listening on port ' + options.port);
+		});
+		SERVERS[options.port] = socket_server;
+	}
 }
 // workaround for inability to defer upgrade from https://github.com/nodejs/node/issues/6339#issuecomment-570511836
 Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
