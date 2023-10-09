@@ -143,7 +143,12 @@ class SubscriptionsSession {
 						if (needs_ack) {
 							update.topic = topic;
 							message_id = this.needsAcknowledge(update);
-						} else message_id = getNextMessageId();
+						} else {
+							// There is no ack to wait for. We can immediately notify any interested source
+							// that we have sent the message
+							update.acknowledge?.();
+							message_id = getNextMessageId();
+						}
 						let path = update.id;
 						if (Array.isArray(path)) path = keyArrayToString(path);
 						if (path == null) path = '';
@@ -164,10 +169,20 @@ class SubscriptionsSession {
 		// nothing to do in a clean session
 	}
 	needsAcknowledge(update) {
-		return getNextMessageId();
+		const message_id = getNextMessageId();
+		if (update.acknowledge) {
+			// only need to track if the source wants acknowledgements
+			if (!this.awaitingAcks) this.awaitingAcks = new Map();
+			this.awaitingAcks.set(message_id, update.acknowledge);
+		}
+		return message_id;
 	}
 	acknowledge(message_id) {
-		// nothing to do in a clean session
+		const acknowledge = this.awaitingAcks.get(message_id);
+		if (acknowledge) {
+			this.awaitingAcks.delete(message_id);
+			acknowledge();
+		}
 	}
 	async removeSubscription(topic) {
 		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
@@ -231,12 +246,18 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	needsAcknowledge(update) {
 		if (!this.awaitingAcks) this.awaitingAcks = new Map();
 		const message_id = getNextMessageId();
-		this.awaitingAcks.set(message_id, { topic: update.topic, timestamp: update.timestamp });
+		const ack_info = {
+			topic: update.topic,
+			timestamp: update.timestamp,
+		};
+		if (update.acknowledge) ack_info.acknowledge = update.acknowledge;
+		this.awaitingAcks.set(message_id, ack_info);
 		return message_id;
 	}
 	acknowledge(message_id) {
 		const update = this.awaitingAcks.get(message_id);
 		this.awaitingAcks.delete(message_id);
+		update.acknowledge?.();
 		const topic = update.topic;
 		for (const [, remaining_update] of this.awaitingAcks) {
 			if (remaining_update.topic === topic) {

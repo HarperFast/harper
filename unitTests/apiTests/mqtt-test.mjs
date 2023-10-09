@@ -506,10 +506,19 @@ describe('test MQTT connections and commands', () => {
 				}
 			);
 		});
+		const { FourPropWithHistory } = await import('../testApp/resources.js');
 		assert.equal(messages.length, 20);
+		assert.equal(FourPropWithHistory.acknowledgements, 10);
+		await FourPropWithHistory.put('something new', {name: 'something new'});
+		await delay(50);
+		assert.equal(messages.length, 22);
+		assert.equal(FourPropWithHistory.acknowledgements, 11);
+		client.end();
 	});
 	it('subscribe sub-topic with history', async function () {
 		// this first connection is a tear down to remove any previous durable session with this id
+		const { FourPropWithHistory } = await import('../testApp/resources.js');
+		FourPropWithHistory.acknowledgements = 0;
 		let client = connect('mqtt://localhost:1883', {
 			clean: true,
 			clientId: 'test-client1',
@@ -537,6 +546,7 @@ describe('test MQTT connections and commands', () => {
 			);
 		});
 		assert.equal(messages.length, 4);
+		assert.equal(FourPropWithHistory.acknowledgements, 2);
 	});
 	after(() => {
 		client.end();

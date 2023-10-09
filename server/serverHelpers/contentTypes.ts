@@ -69,6 +69,7 @@ media_types.set('text/event-stream', {
 		return Readable.from(transformIterable(iterable, this.serialize));
 	},
 	serialize: function (message) {
+		if (message.acknowledge) message.acknowledge();
 		if (message.data || message.event) {
 			let serialized = '';
 			if (message.event) serialized += 'event: ' + message.event + '\n';

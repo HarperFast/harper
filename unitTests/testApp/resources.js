@@ -53,8 +53,23 @@ export class SimpleCache extends tables.SimpleCache.sourcedFrom(SimpleCacheSourc
 	}
 }
 export class FourPropWithHistory extends tables.FourProp {
-	subscribe(options) {
+	static acknowledgements = 0;
+	async subscribe(options) {
 		options.previousCount = 10;
-		return super.subscribe(options);
+		const subscription = await super.subscribe(options);
+		for (let update of subscription.queue) {
+			update.acknowledge = () => {
+				FourPropWithHistory.acknowledgements++;
+			};
+		}
+
+		const super_send = subscription.send;
+		subscription.send = (event) => {
+			event.acknowledge = () => {
+				FourPropWithHistory.acknowledgements++;
+			};
+			return super_send.call(subscription, event);
+		};
+		return subscription;
 	}
 }
