@@ -17,6 +17,9 @@ const { PACKAGE_ROOT } = require('../utility/hdbTerms');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { restartWorkers } = require('../server/threads/manageThreads');
 const installComponents = require('../components/installComponents');
+const eng_mgr = require('../utility/environment/environmentManager');
+const hdb_terms = require('../utility/hdbTerms');
+const { Readable } = require('stream');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 const APPLICATION_TEMPLATE = path.join(PACKAGE_ROOT, 'application-template');
@@ -371,44 +374,45 @@ async function deployComponent(req) {
 	if (!payload && !pkg) {
 		throw new Error("'payload' or 'package' must be provided");
 	}
-
+	let path_to_project;
 	if (payload) {
-		const path_to_project = path.join(cf_dir, project);
+		path_to_project = path.join(cf_dir, project);
 		pkg = 'file:' + path_to_project;
 		// check if the project exists, if it doesn't, create it.
 		await fs.ensureDir(path_to_project);
 
-		// Create a temp file to store project tar in. Check that is doesn't already exist, if it does create another path and test.
-		let temp_file_path;
-		let temp_file_exists;
-		do {
-			temp_file_path = path.join(TMP_PATH, uuidV4() + '.tar');
-			temp_file_exists = await fs.pathExists(temp_file_path);
-		} while (temp_file_exists);
-
-		// pack the directory
-		await fs.outputFile(temp_file_path, payload, { encoding: 'base64' });
-
 		// extract the reconstituted file to the proper project directory
-		const stream = fs.createReadStream(temp_file_path);
-		stream.pipe(tar.extract(path_to_project));
-		await new Promise((resolve) => stream.on('end', resolve));
+		const stream = Readable.from(Buffer.from(payload, 'base64'));
+		await new Promise((resolve, reject) => {
+			stream.pipe(tar.extract(path_to_project, { finish: resolve })).on('error', reject);
+		});
 
 		const comp_dir = await fs.readdir(path_to_project);
 		if (comp_dir.length === 1 && comp_dir[0] === 'package') {
 			await fs.copy(path.join(path_to_project, 'package'), path_to_project);
 			await fs.remove(path.join(path_to_project, 'package'));
 		}
-
-		// delete the file
-		await fs.unlink(temp_file_path);
 	}
 
 	// Adds package to harperdb-config and then relies on restart to call install on the new app
 	config_utils.updateConfigValue(`${project}_package`, pkg, undefined, false, false, true);
 	// The main thread can install the components, but we do it here and now so that if it fails, we can immediately
 	// know about it and report it.
-	if (!payload) await installComponents();
+	if (!payload) {
+		await installComponents();
+		// now we attempt to actually load the component in case there is
+		// an error we can immediately detect and report
+		const root_path = eng_mgr.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
+		path_to_project = path.join(root_path, 'node_modules', project);
+	}
+	const pseudo_resources = new Map();
+	pseudo_resources.isWorker = true;
+	const component_loader = require('./componentLoader');
+	let last_error;
+	component_loader.setErrorReporter((error) => (last_error = error));
+	await component_loader.loadComponent(path_to_project, pseudo_resources);
+	if (last_error) throw last_error;
+	// if everything checks out, we then restart so all threads can use it
 	restartWorkers();
 
 	return `Successfully deployed: ${project}, restarting...`;
