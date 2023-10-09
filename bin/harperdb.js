@@ -43,7 +43,14 @@ function harperDBService() {
 		let result = undefined;
 		switch (service) {
 			case SERVICE_ACTIONS_ENUM.DEBUG:
-				require('inspector').open(9229);
+				try {
+					require('inspector').open(9229);
+				} catch (error) {
+					console.error(
+						'Could not start debugging on port 9229, make sure you are not already debugging:',
+						error.message
+					);
+				}
 				socket_router.debugMode = true;
 			// fall through
 			case SERVICE_ACTIONS_ENUM.RUN:
