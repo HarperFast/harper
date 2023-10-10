@@ -59,9 +59,13 @@ if (!isMainThread) {
 							// TODO: If fastify has fielded a route and messed up the closing, then have to manually exit the
 							//  process otherwise we can use a graceful exit
 							// if (SERVERS[server_type].hasRequests)
+							console.log('closing server', port, threadId);
 							const server = SERVERS[port];
+							let close_all_timer;
 							server // TODO: Should we try to interact with fastify here?
 								.close?.(() => {
+									console.log('closed server', port, threadId);
+									clearInterval(close_all_timer);
 									// if we are cleaning up after fastify, it will fail to release all its refs
 									// and so normally we have to kill the thread forcefully, unfortunately.
 									// If that is the case, do it relatively quickly, there is no sense in waiting
@@ -69,6 +73,7 @@ if (!isMainThread) {
 									// a longer timeout (and log it as warning since it would be unusual).
 									setTimeout(
 										() => {
+											console.log('forced close server', port, threadId);
 											if (!server.cantCleanupProperly)
 												harper_logger.warn('Had to forcefully exit the thread', threadId);
 											process.exit(0);
@@ -77,12 +82,36 @@ if (!isMainThread) {
 									).unref();
 								});
 							server.closeIdleConnections?.();
+							close_all_timer = setTimeout(() => {
+								console.log('closing all connections', port, threadId);
+								server.closeAllConnections?.();
+							}, 1500).unref();
 						}
 					}
 				})
 				.ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
+			const listening = [];
+			if (createReuseportFd && !session_affinity) {
+				for (let port in SERVERS) {
+					const server = SERVERS[port];
+					const fd = createReuseportFd(+port, '0.0.0.0');
+					listening.push(
+						new Promise((resolve, reject) => {
+							server.listen({ fd }, () => {
+								resolve();
+								console.log('Listening on port ' + port, threadId);
+							});
+						})
+					);
+				}
+			} else {
+				debugger;
+			}
 			// notify that we are now ready to start receiving requests
-			parentPort.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
+			Promise.all(listening).then(() => {
+				console.log('notifying parent of start', threadId);
+				parentPort.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
+			});
 		});
 }
 
@@ -193,12 +222,6 @@ function registerServer(server, port) {
 		existing_server.lastServer = server;
 	} else {
 		SERVERS[port] = server;
-		if (createReuseportFd && !session_affinity) {
-			const fd = createReuseportFd(port, '0.0.0.0');
-			server.listen({ fd }, () => {
-				harper_logger.trace('Listening on for HTTP port ' + port);
-			});
-		}
 	}
 	server.on('unhandled', defaultNotFound);
 }
@@ -258,6 +281,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 			try {
 				let start_time = performance.now();
 				let request = new Request(node_request);
+				if (Math.random() < 0.0001) console.log('another reuqest', threadId);
 				if (is_operations_server) request.isOperationsServer = true;
 				// assign a more WHATWG compliant headers object, this is our real standard interface
 				let response = await http_chain[port](request);
@@ -402,22 +426,10 @@ function onSocket(listener, options) {
 			},
 			listener
 		);
-		if (createReuseportFd && !session_affinity) {
-			const fd = createReuseportFd(options.securePort, '0.0.0.0');
-			socket_server.listen({ fd }, () => {
-				harper_logger.trace('listening on secure port ' + options.securePort);
-			});
-		}
 		SERVERS[options.securePort] = socket_server;
 	}
 	if (options.port) {
-		if (createReuseportFd && !session_affinity) {
-			const fd = createReuseportFd(options.port, '0.0.0.0');
-			const socket_server = createSocketServer(listener);
-			socket_server.listen({ fd }, () => {
-				harper_logger.trace('listening on port ' + options.port);
-			});
-		}
+		const socket_server = createSocketServer(listener);
 		SERVERS[options.port] = socket_server;
 	}
 }
