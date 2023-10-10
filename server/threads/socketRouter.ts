@@ -11,7 +11,6 @@ const handle_socket = [];
 let direct_thread_server;
 let current_thread_count = 0;
 const workers_ready = [];
-export let debugMode;
 
 if (isMainThread) {
 	process.on('uncaughtException', (error) => {
@@ -25,13 +24,14 @@ export async function startHTTPThreads(thread_count = 2, dynamic_threads?: boole
 		startHTTPWorker(0, 1, true);
 	} else {
 		const { loadRootComponents } = require('../loadRootComponents');
-		if (thread_count === 0 || debugMode) {
+		if (thread_count === 0) {
 			setMainIsWorker(true);
 			await require('./threadServer').startServers();
 			return Promise.resolve([]);
 		}
 		await loadRootComponents();
 	}
+	if (process.env.DEV_MODE) thread_count = 1;
 	for (let i = 0; i < thread_count; i++) {
 		startHTTPWorker(i, thread_count);
 	}

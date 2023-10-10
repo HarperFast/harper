@@ -15,6 +15,13 @@ const { Headers } = require('../serverHelpers/Headers');
 const { recordAction, recordActionBinary } = require('../../resources/analytics');
 const { Request, node_request_key, createReuseportFd } = require('../serverHelpers/Request');
 
+if (process.env.DEV_MODE) {
+	try {
+		require('inspector').open(9229);
+	} catch (error) {
+		console.error('Could not start debugging on port 9229, you may already be debugging:', error.message);
+	}
+}
 process.on('uncaughtException', (error) => {
 	if (error.code === 'ECONNRESET') return; // that's what network connections do
 	console.error('uncaughtException', error);
@@ -86,6 +93,13 @@ function startServers() {
 							close_all_timer = setTimeout(() => {
 								server.closeAllConnections?.();
 							}, 1500).unref();
+						}
+						if (process.env.DEV_MODE) {
+							try {
+								require('inspector').close();
+							} catch (error) {
+								console.error('Could not close debugger', error);
+							}
 						}
 					}
 				})

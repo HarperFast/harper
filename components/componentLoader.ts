@@ -57,7 +57,7 @@ export function loadComponentDirectories(loaded_plugin_modules?: Map<any, any>, 
 	}
 	const hdb_app_folder = process.env.RUN_HDB_APP;
 	if (hdb_app_folder) {
-		cfs_loaded.push(loadComponent(hdb_app_folder, resources, hdb_app_folder));
+		cfs_loaded.push(loadComponent(hdb_app_folder, resources, hdb_app_folder, false, null, process.env.DEV_MODE));
 	}
 	return Promise.all(cfs_loaded).then(() => {
 		watches_setup = true;
@@ -135,7 +135,8 @@ export async function loadComponent(
 	resources: Resources,
 	origin: string,
 	is_root?: boolean,
-	provided_loaded_components?: Map
+	provided_loaded_components?: Map,
+	auto_reload?: boolean
 ) {
 	if (loaded_paths.has(folder)) return;
 	loaded_paths.set(folder, true);
@@ -308,7 +309,7 @@ export async function loadComponent(
 			}
 		}
 		// Auto restart threads on changes to any app folder. TODO: Make this configurable
-		if (false && isMainThread && !watches_setup && !is_root) {
+		if (isMainThread && !watches_setup && auto_reload) {
 			watchDir(folder, async () => {
 				return loadComponentDirectories(); // return the promise
 			});
