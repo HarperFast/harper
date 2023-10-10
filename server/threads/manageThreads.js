@@ -213,6 +213,7 @@ async function restartWorkers(name = null, max_workers_down = 2, start_replaceme
 		let waiting_to_start = [];
 		for (let worker of workers.slice(0)) {
 			if ((name && worker.name !== name) || worker.wasShutdown) continue; // filter by type, if specified
+			harper_logger.trace('sending shutdown request to ', worker.threadId);
 			worker.postMessage({
 				restartNumber: module.exports.restartNumber,
 				type: hdb_terms.ITC_EVENT_TYPES.SHUTDOWN,

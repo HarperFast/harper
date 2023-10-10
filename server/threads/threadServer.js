@@ -54,6 +54,7 @@ function startServers() {
 						// data for each request
 						proxyRequest(message);
 					} else if (message.type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
+						harper_logger.trace('received shutdown request', threadId);
 						// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
 						// then let the event loop complete
 						for (let port in SERVERS) {
