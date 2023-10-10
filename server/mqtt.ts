@@ -122,12 +122,11 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 									remote_address: socket.remoteAddress,
 								});
 							}
-
 							return sendPacket({
 								// Send a connection acknowledgment with indication of auth failure
 								cmd: 'connack',
-								reasonCode: 0x86,
-								returnCode: 0x86, // bad username or password
+								reasonCode: 0x04, // bad username or password, v3.1.1
+								returnCode: 0x86, // bad username or password, v5
 							});
 						}
 					}
@@ -136,8 +135,8 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 						return sendPacket({
 							// Send a connection acknowledgment with indication of auth failure
 							cmd: 'connack',
-							reasonCode: 0x86,
-							returnCode: 0x86, // bad username or password
+							reasonCode: 0x04, // bad username or password, v3.1.1
+							returnCode: 0x86, // bad username or password, v5
 						});
 					}
 					try {
@@ -156,7 +155,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 						return sendPacket({
 							// Send a connection acknowledgment with indication of auth failure
 							cmd: 'connack',
-							reasonCode: error.code || 0x80,
+							reasonCode: error.code || 0x05,
 							returnCode: error.code || 0x80, // generic error
 						});
 					}
@@ -245,6 +244,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 									cmd: response_cmd,
 									messageId: packet.messageId,
 									reasonCode: 0x80, // unspecified error
+									returnCode: 0x80, // unspecified error
 								},
 								packet.topic
 							);
@@ -257,6 +257,10 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 								cmd: response_cmd,
 								messageId: packet.messageId,
 								reasonCode:
+									published === false
+										? 0x90 // Topic name invalid
+										: 0, //success
+								returnCode:
 									published === false
 										? 0x90 // Topic name invalid
 										: 0, //success
