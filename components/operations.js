@@ -414,7 +414,7 @@ async function deployComponent(req) {
 	if (last_error) throw last_error;
 	log.info('Installed component, restarting workers');
 	// if everything checks out, we then restart so all threads can use it
-	restartWorkers();
+	restartWorkers('http_workers');
 
 	return `Successfully deployed: ${project}, restarting...`;
 }
