@@ -313,6 +313,7 @@ async function aggregation(from_period, to_period = 60000) {
 			idle: idle - last_idle,
 			active: active - last_active,
 			time: now,
+			...process.memoryUsage(),
 		};
 		analytics_table.primaryStore.put(id, value, { append: true }).then((success) => {
 			// if for some reason we can't append, try again without append

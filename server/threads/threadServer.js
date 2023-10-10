@@ -99,6 +99,7 @@ function startServers() {
 							server
 								.listen({ fd }, () => {
 									resolve();
+									harper_logger.trace('Listening on port ' + port, threadId);
 								})
 								.on('error', reject);
 						})
