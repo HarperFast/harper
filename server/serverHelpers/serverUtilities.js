@@ -42,6 +42,7 @@ const { setServerUtilities } = require('../../resources/Table');
 const { CONTEXT } = require('../../resources/Resource');
 const { _assignPackageExport } = require('../../index');
 const { transformReq } = require('../../utility/common_utils');
+const { server } = require('../../server/Server');
 
 const operation_function_caller = require(`../../utility/OperationFunctionCaller`);
 
@@ -116,6 +117,7 @@ module.exports = {
 	processLocalTransaction,
 };
 setServerUtilities(module.exports);
+server.operation = operation;
 
 function chooseOperation(json) {
 	let getOpResult;

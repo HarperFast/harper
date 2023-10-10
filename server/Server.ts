@@ -4,8 +4,6 @@ import { _assignPackageExport } from '../index';
 /**
  * This is the central interface by which we define entry points for different server protocol plugins to listen for
  * incoming connections and requests.
- * For now this is not exposed through the main 'harperdb' index entry point, as this should only be used through
- * plugins (not resource handlers).
  */
 interface Server {
 	socket?(listener: (socket: Socket) => void, options: ServerOptions): void;
@@ -20,6 +18,7 @@ interface Server {
 	): void;
 	contentTypes: Map<string, ContentTypeHandler>;
 	getUser(username: string, password?: string): any;
+	operation(operation: any, authorize?: boolean): Promise<any>;
 }
 interface ServerOptions {
 	port?: number;
