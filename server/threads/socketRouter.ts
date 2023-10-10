@@ -27,8 +27,7 @@ export async function startHTTPThreads(thread_count = 2, dynamic_threads?: boole
 		const { loadRootComponents } = require('../loadRootComponents');
 		if (thread_count === 0 || debugMode) {
 			setMainIsWorker(true);
-			direct_thread_server = require('./threadServer');
-			await loadRootComponents(true);
+			await require('./threadServer').startServers();
 			return Promise.resolve([]);
 		}
 		await loadRootComponents();
@@ -159,8 +158,7 @@ export function startSocketServer(port = 0, session_affinity_identifier?) {
 				// valid file descriptor, forward it
 				// Windows doesn't support passing sockets by file descriptors, so we have manually proxy the socket data
 				else {
-					const socket =
-							client_handle._socket || new Socket({ handle: client_handle, writable: true, readable: true });
+					const socket = client_handle._socket || new Socket({ handle: client_handle, writable: true, readable: true });
 					proxySocket(socket, worker, port);
 				}
 				recordAction(true, 'socket-routed');

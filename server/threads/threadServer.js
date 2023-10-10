@@ -26,6 +26,7 @@ const SERVERS = {};
 exports.registerServer = registerServer;
 exports.httpServer = httpServer;
 exports.deliverSocket = deliverSocket;
+exports.startServers = startServers;
 server.http = httpServer;
 server.request = onRequest;
 server.socket = onSocket;
@@ -38,12 +39,12 @@ let http_servers = {},
 	request_listeners = [],
 	http_responders = [];
 
-if (!isMainThread) {
-	require('../loadRootComponents')
+function startServers() {
+	return require('../loadRootComponents')
 		.loadRootComponents(true)
 		.then(() => {
 			parentPort
-				.on('message', (message) => {
+				?.on('message', (message) => {
 					const { port, fd, data } = message;
 					if (fd) {
 						// Create a socket from the file descriptor for the socket that was routed to us.
@@ -81,7 +82,6 @@ if (!isMainThread) {
 										server.cantCleanupProperly ? 2500 : 5000
 									).unref();
 								});
-							server.closeIdleConnections?.();
 							close_all_timer = setTimeout(() => {
 								console.log('closing all connections', port, threadId);
 								server.closeAllConnections?.();
@@ -110,9 +110,12 @@ if (!isMainThread) {
 			// notify that we are now ready to start receiving requests
 			Promise.all(listening).then(() => {
 				console.log('notifying parent of start', threadId);
-				parentPort.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
+				parentPort?.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
 			});
 		});
+}
+if (!isMainThread) {
+	startServers();
 }
 
 function deliverSocket(fd_or_socket, port, data) {
@@ -281,7 +284,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 			try {
 				let start_time = performance.now();
 				let request = new Request(node_request);
-				if (Math.random() < 0.0001) console.log('another reuqest', threadId);
+				if (Math.random() < 0.0003) console.log('another reuqest', threadId);
 				if (is_operations_server) request.isOperationsServer = true;
 				// assign a more WHATWG compliant headers object, this is our real standard interface
 				let response = await http_chain[port](request);

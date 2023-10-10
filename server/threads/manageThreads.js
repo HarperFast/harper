@@ -235,7 +235,7 @@ async function restartWorkers(name = null, max_workers_down = 2, start_replaceme
 				let new_worker = worker.startCopy();
 				let when_started = new Promise((resolve) => {
 					const startListener = (message) => {
-						console.log('got message', message.type);
+						console.log('got message', message.type, new_worker.threadId);
 						if (message.type === terms.ITC_EVENT_TYPES.CHILD_STARTED) {
 							console.log('worker has started', new_worker.threadId);
 							resolve();
@@ -243,7 +243,7 @@ async function restartWorkers(name = null, max_workers_down = 2, start_replaceme
 							new_worker.off('message', startListener);
 						}
 					};
-					console.log('waiting worker to start', worker.threadId);
+					console.log('waiting worker to start', new_worker.threadId);
 					new_worker.on('message', startListener);
 				});
 				waiting_to_start.push(when_started);
