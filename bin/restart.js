@@ -153,7 +153,7 @@ async function restartService(req) {
 			if (called_from_cli) console.log(`Restarting http_workers`);
 			hdb_logger.notify('Restarting http_workers');
 
-			if (pm2_mode) {
+			if (called_from_cli) {
 				await process_man.restart(hdb_terms.HDB_PROC_DESCRIPTOR);
 			} else {
 				setTimeout(() => {
