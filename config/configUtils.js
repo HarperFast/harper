@@ -456,7 +456,7 @@ const PRESERVED_PROPERTIES = ['databases'];
  * @returns {null}
  */
 function flattenConfig(obj) {
-	Object.assign(obj.http, obj?.customFunctions?.network);
+	if (obj.http) Object.assign(obj.http, obj?.customFunctions?.network);
 	if (obj?.operationsApi?.network) obj.operationsApi.network = Object.assign({}, obj.http, obj.operationsApi.network);
 	if (obj?.operationsApi) obj.operationsApi.tls = Object.assign({}, obj.tls, obj.operationsApi.tls);
 
@@ -500,6 +500,7 @@ function flattenConfig(obj) {
 function castConfigValue(param, value) {
 	// Some params should be string numbers if only a number is passed, for those cases we need to cast them to string.
 	if (param === CONFIG_PARAMS.CLUSTERING_NODENAME || param === CONFIG_PARAMS.CLUSTERING_USER) {
+		if (value == null) return value;
 		if (!isNaN(value)) {
 			return value.toString();
 		}

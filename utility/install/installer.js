@@ -8,6 +8,7 @@ const chalk = require('chalk');
 const path = require('path');
 const hri = require('human-readable-ids').hri;
 const ora = require('ora');
+const YAML = require('yaml');
 
 const hdb_logger = require('../logging/harper_logger');
 const env_manager = require('../environment/environmentManager');
@@ -62,8 +63,9 @@ const INSTALL_PROMPTS = {
 	CLUSTER_PASS: 'Please enter a password for the CLUSTER_USER:',
 };
 
-const env_cli_root = hdb_utils.getEnvCliRootPath();
+const cfg_env = assignCMDENVVariables([hdb_terms.INSTALL_PROMPTS.HDB_CONFIG]);
 let hdb_root = undefined;
+let conditional_rollback = false;
 
 /**
  * This module orchestrates the installation of HarperDB.
@@ -80,8 +82,14 @@ async function install() {
 	console.log(HDB_PROMPT_MSG(LINE_BREAK + INSTALL_START_MSG + LINE_BREAK));
 	hdb_logger.notify(INSTALL_START_MSG);
 
+	let config_from_file;
+	if (cfg_env[hdb_terms.INSTALL_PROMPTS.HDB_CONFIG]) {
+		config_from_file = getConfigFromFile();
+	}
+
 	// Check to see if any cmd/env vars are passed that override install prompts.
 	const prompt_override = checkForPromptOverride();
+	Object.assign(prompt_override, config_from_file);
 
 	// Validate any cmd/env params passed to install
 	const validation_error = install_validator(prompt_override);
@@ -100,8 +108,13 @@ async function install() {
 	// HDB root is the one of the first params we need for install.
 	hdb_root = install_params[hdb_terms.INSTALL_PROMPTS.ROOTPATH];
 
+	if (path.dirname(cfg_env[hdb_terms.INSTALL_PROMPTS.HDB_CONFIG]) === hdb_root) conditional_rollback = true;
+
 	// We allow HDB to run without a boot file we check for a harperdb-config.yaml
-	if (await fs.pathExists(path.join(hdb_root, hdb_terms.HDB_CONFIG_FILE))) {
+	if (
+		!cfg_env[hdb_terms.INSTALL_PROMPTS.HDB_CONFIG] &&
+		(await fs.pathExists(path.join(hdb_root, hdb_terms.HDB_CONFIG_FILE)))
+	) {
 		console.error(HDB_EXISTS_MSG);
 		process.exit();
 	}
@@ -149,6 +162,19 @@ async function install() {
 
 	console.log(HDB_PROMPT_MSG(LINE_BREAK + INSTALL_COMPLETE_MSG + LINE_BREAK));
 	hdb_logger.notify(INSTALL_COMPLETE_MSG);
+}
+
+function getConfigFromFile() {
+	let doc = YAML.parseDocument(fs.readFileSync(cfg_env[hdb_terms.INSTALL_PROMPTS.HDB_CONFIG], 'utf8'), {
+		simpleKeys: true,
+	});
+	const flat_cfg = config_utils.flattenConfig(doc.toJSON());
+
+	// This ensures that if config file has rootpath, rootpath install prompt uses this value
+	if (flat_cfg[hdb_terms.CONFIG_PARAMS.ROOTPATH.toLowerCase()])
+		flat_cfg.ROOTPATH = flat_cfg[hdb_terms.CONFIG_PARAMS.ROOTPATH.toLowerCase()];
+
+	return flat_cfg;
 }
 
 /**
@@ -524,7 +550,18 @@ function rollbackInstall(err_msg) {
 
 	// Remove HDB.
 	if (hdb_root) {
-		fs.removeSync(hdb_root);
+		// We do a conditional rollback if installing from config file that exists in the hdb rootpath
+		if (conditional_rollback) {
+			const dir = fs.readdirSync(hdb_root, { withFileTypes: true });
+			dir.forEach((d) => {
+				const full_path = path.join(d.path, d.name);
+				if (full_path !== cfg_env[hdb_terms.INSTALL_PROMPTS.HDB_CONFIG]) {
+					fs.removeSync(full_path);
+				}
+			});
+		} else {
+			fs.removeSync(hdb_root);
+		}
 	}
 
 	process.exit(1);
