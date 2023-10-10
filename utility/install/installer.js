@@ -108,7 +108,12 @@ async function install() {
 	// HDB root is the one of the first params we need for install.
 	hdb_root = install_params[hdb_terms.INSTALL_PROMPTS.ROOTPATH];
 
-	if (path.dirname(cfg_env[hdb_terms.INSTALL_PROMPTS.HDB_CONFIG]) === hdb_root) conditional_rollback = true;
+	if (
+		cfg_env[hdb_terms.INSTALL_PROMPTS.HDB_CONFIG] &&
+		path.dirname(cfg_env[hdb_terms.INSTALL_PROMPTS.HDB_CONFIG]) === hdb_root
+	) {
+		conditional_rollback = true;
+	}
 
 	// We allow HDB to run without a boot file we check for a harperdb-config.yaml
 	if (
