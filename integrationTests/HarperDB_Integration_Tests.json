@@ -59570,7 +59570,7 @@
 									"    const json_data = pm.response.json();",
 									"    pm.expect(json_data.message).to.equal(\"Successfully deployed: deploy-test-gh, restarting...\");",
 									"});",
-									"setTimeout(()=>{}, 20000)"
+									"setTimeout(()=>{}, 25000)"
 								],
 								"type": "text/javascript"
 							}
@@ -59628,7 +59628,7 @@
 									"    const json_data = pm.response.json();",
 									"    pm.expect(json_data.message).to.equal(\"Successfully deployed: deploy-test-payload, restarting...\");",
 									"});",
-                                    "setTimeout(()=>{}, 20000)"
+                                    "setTimeout(()=>{}, 25000)"
 								],
 								"type": "text/javascript"
 							}
@@ -60870,7 +60870,7 @@
 									"});",
 									"",
 									"// Deploy will restart, wait for that to complete.",
-									"setTimeout(()=>{}, 15000)"
+									"setTimeout(()=>{}, 22000)"
 								],
 								"type": "text/javascript"
 							}

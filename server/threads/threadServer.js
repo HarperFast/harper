@@ -282,7 +282,6 @@ function getHTTPServer(port, secure, is_operations_server) {
 			try {
 				let start_time = performance.now();
 				let request = new Request(node_request);
-				if (Math.random() < 0.0003) console.log('another reuqest', threadId);
 				if (is_operations_server) request.isOperationsServer = true;
 				// assign a more WHATWG compliant headers object, this is our real standard interface
 				let response = await http_chain[port](request);
