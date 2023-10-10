@@ -24,7 +24,7 @@ const session_table = table({
 	attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'user' }],
 });
 const ENABLE_SESSIONS = env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS) ?? true;
-const AUTHORIZE_LOCAL = env.get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? process.env.DEV_MODE;
+let AUTHORIZE_LOCAL = env.get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? process.env.DEV_MODE;
 const LOG_AUTH_SUCCESSFUL = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL) ?? false;
 const LOG_AUTH_FAILED = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED) ?? false;
 let authorization_cache = new Map();
@@ -32,6 +32,9 @@ server.onInvalidatedUser(() => {
 	// TODO: Eventually we probably want to be able to invalidate individual users
 	authorization_cache = new Map();
 });
+export function bypassAuth() {
+	AUTHORIZE_LOCAL = true;
+}
 
 // TODO: Make this not return a promise if it can be fulfilled synchronously (from cache)
 export async function authentication(request, next_handler) {
