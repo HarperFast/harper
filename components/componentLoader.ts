@@ -26,6 +26,7 @@ import * as auth from '../security/auth';
 import * as natsReplicator from '../server/nats/natsReplicator';
 import * as mqtt from '../server/mqtt';
 import { getConfigObj } from '../config/configUtils';
+import { createReuseportFd } from '../server/serverHelpers/Request';
 
 const { readFile } = promises;
 
@@ -201,20 +202,24 @@ export async function loadComponent(
 							resources,
 							...component_config,
 						})) || extension_module;
-					/*if (is_root && network) {
+					if (is_root && network) {
 						for (const possible_port of [port, securePort]) {
 							try {
 								if (+possible_port && !ports_started.includes(possible_port)) {
-									// if there is a TCP port associated with the plugin, we set up the routing on the main thread for it
-									ports_started.push(possible_port);
 									const session_affinity = env.get(CONFIG_PARAMS.HTTP_SESSIONAFFINITY);
-									startSocketServer(possible_port, session_affinity);
+									if (session_affinity)
+										harper_logger.warn('Session affinity is not recommended and may cause memory leaks');
+									if (session_affinity || !createReuseportFd) {
+										// if there is a TCP port associated with the plugin, we set up the routing on the main thread for it
+										ports_started.push(possible_port);
+										startSocketServer(possible_port, session_affinity);
+									}
 								}
 							} catch (error) {
 								console.error('Error listening on socket', possible_port, error, component_name);
 							}
 						}
-					}*/
+					}
 				}
 				if (resources.isWorker)
 					extension_module =

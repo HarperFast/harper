@@ -1,3 +1,4 @@
+import { platform } from 'os';
 export const node_request_key = Symbol('node request');
 /**
  * We define our own request class, to ensure that it has integrity against leaks in a secure environment
@@ -81,3 +82,5 @@ class Headers {
 		}
 	}
 }
+export let createReuseportFd;
+if (platform() != 'win32') createReuseportFd = require('node-unix-socket').createReuseportFd;

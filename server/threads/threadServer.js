@@ -13,8 +13,7 @@ const { createServer: createSecureSocketServer } = require('tls');
 const { getTicketKeys } = require('./manageThreads');
 const { Headers } = require('../serverHelpers/Headers');
 const { recordAction, recordActionBinary } = require('../../resources/analytics');
-const { Request, node_request_key } = require('../serverHelpers/Request');
-const { createReuseportFd } = require('node-unix-socket');
+const { Request, node_request_key, createReuseportFd } = require('../serverHelpers/Request');
 
 process.on('uncaughtException', (error) => {
 	if (error.code === 'ECONNRESET') return; // that's what network connections do
@@ -22,6 +21,7 @@ process.on('uncaughtException', (error) => {
 });
 const { HDB_SETTINGS_NAMES, CONFIG_PARAMS } = terms;
 env.initSync();
+const session_affinity = env.get(CONFIG_PARAMS.HTTP_SESSIONAFFINITY);
 const SERVERS = {};
 exports.registerServer = registerServer;
 exports.httpServer = httpServer;
@@ -193,10 +193,12 @@ function registerServer(server, port) {
 		existing_server.lastServer = server;
 	} else {
 		SERVERS[port] = server;
-		const fd = createReuseportFd(port, '0.0.0.0');
-		server.listen({ fd }, () => {
-			harper_logger.trace('Listening on for HTTP port ' + port);
-		});
+		if (createReuseportFd && !session_affinity) {
+			const fd = createReuseportFd(port, '0.0.0.0');
+			server.listen({ fd }, () => {
+				harper_logger.trace('Listening on for HTTP port ' + port);
+			});
+		}
 	}
 	server.on('unhandled', defaultNotFound);
 }
@@ -400,18 +402,22 @@ function onSocket(listener, options) {
 			},
 			listener
 		);
-		const fd = createReuseportFd(options.securePort, '0.0.0.0');
-		socket_server.listen({ fd }, () => {
-			harper_logger.trace('listening on secure port ' + options.securePort);
-		});
+		if (createReuseportFd && !session_affinity) {
+			const fd = createReuseportFd(options.securePort, '0.0.0.0');
+			socket_server.listen({ fd }, () => {
+				harper_logger.trace('listening on secure port ' + options.securePort);
+			});
+		}
 		SERVERS[options.securePort] = socket_server;
 	}
 	if (options.port) {
-		const fd = createReuseportFd(options.port, '0.0.0.0');
-		const socket_server = createSocketServer(listener);
-		socket_server.listen({ fd }, () => {
-			harper_logger.trace('listening on port ' + options.port);
-		});
+		if (createReuseportFd && !session_affinity) {
+			const fd = createReuseportFd(options.port, '0.0.0.0');
+			const socket_server = createSocketServer(listener);
+			socket_server.listen({ fd }, () => {
+				harper_logger.trace('listening on port ' + options.port);
+			});
+		}
 		SERVERS[options.port] = socket_server;
 	}
 }

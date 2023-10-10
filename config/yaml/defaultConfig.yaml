@@ -8,7 +8,6 @@ http:
   keepAliveTimeout: 30000
   port: 9926
   securePort: null
-  sessionAffinity: null
   timeout: 120000
 threads: null
 authentication:
