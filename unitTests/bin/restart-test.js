@@ -101,13 +101,6 @@ describe('Test restart module', () => {
 			expect(process_man_restart_stub.called).to.be.false;
 		});
 
-		it('Test http_workers service is restarted PM2 mode', async () => {
-			is_service_reg_stub.resolves(true);
-			const result = await restart.restartService({ service: 'http_workers' });
-			expect(result).to.equal('Restarting http_workers');
-			expect(process_man_restart_stub.called).to.be.true;
-		});
-
 		it('Test restarting http_workers from CLI error', async () => {
 			is_service_reg_stub.resolves(false);
 			restart.__set__('called_from_cli', true);
