@@ -414,6 +414,8 @@ describe('test MQTT connections and commands', () => {
 		});
 		await delay(50);
 		client.end();
+		if (messages.length !== 3)
+			console.error('Incorrect messages', {messages});
 		assert.equal(messages.length, 3);
 		messages = [];
 		client = connect('mqtt://localhost:1883', {

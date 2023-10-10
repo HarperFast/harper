@@ -308,7 +308,7 @@ export async function loadComponent(
 			}
 		}
 		// Auto restart threads on changes to any app folder. TODO: Make this configurable
-		if (isMainThread && !watches_setup && !is_root) {
+		if (false && isMainThread && !watches_setup && !is_root) {
 			watchDir(folder, async () => {
 				return loadComponentDirectories(); // return the promise
 			});
