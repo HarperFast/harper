@@ -412,6 +412,7 @@ async function deployComponent(req) {
 	component_loader.setErrorReporter((error) => (last_error = error));
 	await component_loader.loadComponent(path_to_project, pseudo_resources);
 	if (last_error) throw last_error;
+	log.info('Installed component, restarting workers');
 	// if everything checks out, we then restart so all threads can use it
 	restartWorkers();
 

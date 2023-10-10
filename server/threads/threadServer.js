@@ -60,12 +60,12 @@ function startServers() {
 							// TODO: If fastify has fielded a route and messed up the closing, then have to manually exit the
 							//  process otherwise we can use a graceful exit
 							// if (SERVERS[server_type].hasRequests)
-							console.log('closing server', port, threadId);
+							harper_logger.trace('closing server', port, threadId);
 							const server = SERVERS[port];
 							let close_all_timer;
 							server // TODO: Should we try to interact with fastify here?
 								.close?.(() => {
-									console.log('closed server', port, threadId);
+									harper_logger.trace('closed server', port, threadId);
 									clearInterval(close_all_timer);
 									// if we are cleaning up after fastify, it will fail to release all its refs
 									// and so normally we have to kill the thread forcefully, unfortunately.
@@ -83,7 +83,6 @@ function startServers() {
 									).unref();
 								});
 							close_all_timer = setTimeout(() => {
-								console.log('closing all connections', port, threadId);
 								server.closeAllConnections?.();
 							}, 1500).unref();
 						}
@@ -97,19 +96,17 @@ function startServers() {
 					const fd = createReuseportFd(+port, '0.0.0.0');
 					listening.push(
 						new Promise((resolve, reject) => {
-							server.listen({ fd }, () => {
-								resolve();
-								console.log('Listening on port ' + port, threadId);
-							});
+							server
+								.listen({ fd }, () => {
+									resolve();
+								})
+								.on('error', reject);
 						})
 					);
 				}
-			} else {
-				debugger;
 			}
 			// notify that we are now ready to start receiving requests
 			Promise.all(listening).then(() => {
-				console.log('notifying parent of start', threadId);
 				parentPort?.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
 			});
 		});
