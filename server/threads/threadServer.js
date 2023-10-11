@@ -94,7 +94,7 @@ function startServers() {
 			if (createReuseportFd && !session_affinity) {
 				for (let port in SERVERS) {
 					const server = SERVERS[port];
-					const fd = createReuseportFd(+port, '0.0.0.0');
+					const fd = createReuseportFd(+port, '::');
 					listening.push(
 						new Promise((resolve, reject) => {
 							server
