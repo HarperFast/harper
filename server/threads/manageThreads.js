@@ -260,6 +260,9 @@ async function restartWorkers(name = null, max_workers_down = 2, start_replaceme
 		// seems appropriate to wait for this to finish, but the API doesn't actually wait for this function
 		// to finish, so not that important
 		await Promise.all(waiting_to_finish);
+		await Promise.all(waiting_to_start);
+		const { restartService } = require('../../bin/restart');
+		if (name === 'http' || !name) await restartService({ service: 'clustering' });
 	} else {
 		parentPort.postMessage({
 			type: RESTART_TYPE,

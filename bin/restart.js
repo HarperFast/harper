@@ -81,7 +81,6 @@ async function restart(req) {
 
 	if (isMainThread) {
 		hdb_logger.notify(RESTART_RESPONSE);
-		await restartClustering();
 
 		setTimeout(() => {
 			restartWorkers();
