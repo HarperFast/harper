@@ -185,7 +185,7 @@ describe('Test harper_logger module', () => {
 
 			expect(log_to_file).to.be.true;
 			expect(log_to_stdstreams).to.be.false;
-			expect(log_level).to.equal('error');
+			expect(log_level).to.equal('warn');
 			expect(log_path).to.eql(INSTALL_LOG_LOCATION);
 		});
 
