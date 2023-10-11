@@ -5,6 +5,7 @@ import { encode } from 'cbor-x';
 import { createRequire } from 'module';
 import analytics from '../../ts-build/resources/analytics.js';
 import { disableNATS } from '../../ts-build/server/nats/natsReplicator.js';
+import { bypassAuth } from '../../ts-build/security/auth.js';
 const require = createRequire(import.meta.url);
 const config = {};
 
@@ -32,7 +33,6 @@ let created_records;
 export async function setupTestApp() {
 	analytics.setAnalyticsEnabled(false);
 	disableNATS();
-	const { bypassAuth } = await import('../../ts-build/security/auth.js');
 	bypassAuth();
 
 	// exit if it is already setup or we are running in the browser
