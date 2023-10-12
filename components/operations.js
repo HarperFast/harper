@@ -421,7 +421,6 @@ async function deployComponent(req) {
 	}
 	if (last_error) throw last_error;
 	log.info('Installed component');
-	// if everything checks out, we then restart so all threads can use it
 
 	return `Successfully deployed: ${project}`;
 }

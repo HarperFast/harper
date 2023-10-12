@@ -178,7 +178,7 @@ class SubscriptionsSession {
 		return message_id;
 	}
 	acknowledge(message_id) {
-		const acknowledge = this.awaitingAcks.get(message_id);
+		const acknowledge = this.awaitingAcks?.get(message_id);
 		if (acknowledge) {
 			this.awaitingAcks.delete(message_id);
 			acknowledge();

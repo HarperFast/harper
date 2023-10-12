@@ -26,6 +26,7 @@ import * as auth from '../security/auth';
 import * as natsReplicator from '../server/nats/natsReplicator';
 import * as mqtt from '../server/mqtt';
 import { getConfigObj } from '../config/configUtils';
+import { createReuseportFd } from '../server/serverHelpers/Request';
 
 const { readFile } = promises;
 
@@ -208,10 +209,14 @@ export async function loadComponent(
 						for (const possible_port of [port, securePort]) {
 							try {
 								if (+possible_port && !ports_started.includes(possible_port)) {
-									// if there is a TCP port associated with the plugin, we set up the routing on the main thread for it
-									ports_started.push(possible_port);
 									const session_affinity = env.get(CONFIG_PARAMS.HTTP_SESSIONAFFINITY);
-									startSocketServer(possible_port, session_affinity);
+									if (session_affinity)
+										harper_logger.warn('Session affinity is not recommended and may cause memory leaks');
+									if (session_affinity || !createReuseportFd) {
+										// if there is a TCP port associated with the plugin, we set up the routing on the main thread for it
+										ports_started.push(possible_port);
+										startSocketServer(possible_port, session_affinity);
+									}
 								}
 							} catch (error) {
 								console.error('Error listening on socket', possible_port, error, component_name);
@@ -308,7 +313,7 @@ export async function loadComponent(
 			}
 		}
 		// Auto restart threads on changes to any app folder. TODO: Make this configurable
-		if (isMainThread && !watches_setup && !is_root) {
+		if (false && isMainThread && !watches_setup && !is_root) {
 			watchDir(folder, async () => {
 				return loadComponentDirectories(); // return the promise
 			});

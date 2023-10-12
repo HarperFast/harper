@@ -309,7 +309,6 @@ export function readMetaDb(
 				}
 			}
 			if (!table) {
-				harper_logger.trace(`creating table class ${table_name}`, Object.keys(tables));
 				table = setTable(
 					tables,
 					table_name,
@@ -495,7 +494,6 @@ export function table({
 	let has_changes;
 	let txn_commit;
 	if (Table) {
-		harper_logger.trace(`${table_name} table already exists`);
 		primary_key = Table.primaryKey;
 		if (Table.primaryStore.rootStore.status === 'closed') {
 			throw new Error(`Can not use a closed data store from ${table_name} class`);

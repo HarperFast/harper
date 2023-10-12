@@ -9,6 +9,9 @@ cd /home/ubuntu/harperdb/bin/
 node harperdb.js stop
 npm run cover:test
 
+npx pm2 kill
+
+
 # Re-register HarperDB after unit tests
 cd /home/ubuntu/harperdb/utility/devops
 node register.js --reset_license --ram_allocation=16384

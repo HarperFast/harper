@@ -10,6 +10,7 @@ const hdb_terms = require('../../utility/hdbTerms');
 const harper_logger = require('../../utility/logging/harper_logger');
 const { randomBytes } = require('crypto');
 const { _assignPackageExport } = require('../../index');
+const terms = require('../../utility/hdbTerms');
 const MB = 1024 * 1024;
 const workers = []; // these are our child workers that we are managing
 const connected_ports = []; // these are all known connected worker ports (siblings, children, parents)
@@ -151,7 +152,7 @@ function startWorker(path, options = {}) {
 	worker.startCopy = () => {
 		// in a shutdown sequence we use overlapping restarts, starting the new thread while waiting for the old thread
 		// to die, to ensure there is no loss of service and maximum availability.
-		startWorker(path, options);
+		return startWorker(path, options);
 	};
 	worker.on('error', (error) => {
 		// log errors, and it also important that we catch errors so we can recover if a thread dies (in a recoverable
@@ -209,8 +210,10 @@ async function restartWorkers(name = null, max_workers_down = 2, start_replaceme
 		let waiting_to_finish = []; // array of workers that we are waiting to restart
 		// make a copy of the workers before iterating them, as the workers
 		// array will be mutating a lot during this
+		let waiting_to_start = [];
 		for (let worker of workers.slice(0)) {
 			if ((name && worker.name !== name) || worker.wasShutdown) continue; // filter by type, if specified
+			harper_logger.trace('sending shutdown request to ', worker.threadId);
 			worker.postMessage({
 				restartNumber: module.exports.restartNumber,
 				type: hdb_terms.ITC_EVENT_TYPES.SHUTDOWN,
@@ -230,16 +233,38 @@ async function restartWorkers(name = null, max_workers_down = 2, start_replaceme
 			});
 			waiting_to_finish.push(when_done);
 			if (overlapping && start_replacement_threads) {
-				worker.startCopy();
+				let new_worker = worker.startCopy();
+				let when_started = new Promise((resolve) => {
+					const startListener = (message) => {
+						if (message.type === terms.ITC_EVENT_TYPES.CHILD_STARTED) {
+							harper_logger.trace('Worker has started', new_worker.threadId);
+							resolve();
+							waiting_to_start.splice(waiting_to_start.indexOf(when_started));
+							new_worker.off('message', startListener);
+						}
+					};
+					harper_logger.trace('Waiting for worker to start', new_worker.threadId);
+					new_worker.on('message', startListener);
+				});
+				waiting_to_start.push(when_started);
 				if (waiting_to_finish.length >= max_workers_down) {
-					// wait for one to finish before continuing to restart more
+					// wait for one to finish before terminating to restart more
 					await Promise.race(waiting_to_finish);
+				}
+				if (waiting_to_start.length >= max_workers_down) {
+					// wait for one to finish before starting to restart more
+					await Promise.race(waiting_to_start);
 				}
 			}
 		}
 		// seems appropriate to wait for this to finish, but the API doesn't actually wait for this function
 		// to finish, so not that important
 		await Promise.all(waiting_to_finish);
+		await Promise.all(waiting_to_start);
+		const { restartService } = require('../../bin/restart');
+		if (start_replacement_threads && (name === 'http' || !name)) {
+			await restartService({ service: 'clustering' });
+		}
 	} else {
 		parentPort.postMessage({
 			type: RESTART_TYPE,

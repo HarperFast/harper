@@ -1,6 +1,6 @@
 'use strict';
 const { isMainThread, parentPort, threadId } = require('worker_threads');
-const { Socket } = require('net');
+const { Socket, createServer: createSocketServer } = require('net');
 const { createServer, IncomingMessage } = require('http');
 const { createServer: createSecureServer } = require('https');
 const { readFileSync } = require('fs');
@@ -13,7 +13,7 @@ const { createServer: createSecureSocketServer } = require('tls');
 const { getTicketKeys } = require('./manageThreads');
 const { Headers } = require('../serverHelpers/Headers');
 const { recordAction, recordActionBinary } = require('../../resources/analytics');
-const { Request, node_request_key } = require('../serverHelpers/Request');
+const { Request, node_request_key, createReuseportFd } = require('../serverHelpers/Request');
 
 process.on('uncaughtException', (error) => {
 	if (error.code === 'ECONNRESET') return; // that's what network connections do
@@ -21,10 +21,12 @@ process.on('uncaughtException', (error) => {
 });
 const { HDB_SETTINGS_NAMES, CONFIG_PARAMS } = terms;
 env.initSync();
+const session_affinity = env.get(CONFIG_PARAMS.HTTP_SESSIONAFFINITY);
 const SERVERS = {};
 exports.registerServer = registerServer;
 exports.httpServer = httpServer;
 exports.deliverSocket = deliverSocket;
+exports.startServers = startServers;
 server.http = httpServer;
 server.request = onRequest;
 server.socket = onSocket;
@@ -37,12 +39,12 @@ let http_servers = {},
 	request_listeners = [],
 	http_responders = [];
 
-if (!isMainThread) {
-	require('../loadRootComponents')
+function startServers() {
+	return require('../loadRootComponents')
 		.loadRootComponents(true)
 		.then(() => {
 			parentPort
-				.on('message', (message) => {
+				?.on('message', (message) => {
 					const { port, fd, data } = message;
 					if (fd) {
 						// Create a socket from the file descriptor for the socket that was routed to us.
@@ -52,15 +54,21 @@ if (!isMainThread) {
 						// data for each request
 						proxyRequest(message);
 					} else if (message.type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
+						harper_logger.trace('received shutdown request', threadId);
 						// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
 						// then let the event loop complete
 						for (let port in SERVERS) {
 							// TODO: If fastify has fielded a route and messed up the closing, then have to manually exit the
 							//  process otherwise we can use a graceful exit
 							// if (SERVERS[server_type].hasRequests)
+							harper_logger.trace('closing server', port, threadId);
 							const server = SERVERS[port];
+							let close_all_timer;
+							server.closeIdleConnections?.();
 							server // TODO: Should we try to interact with fastify here?
 								.close?.(() => {
+									harper_logger.trace('closed server', port, threadId);
+									clearInterval(close_all_timer);
 									// if we are cleaning up after fastify, it will fail to release all its refs
 									// and so normally we have to kill the thread forcefully, unfortunately.
 									// If that is the case, do it relatively quickly, there is no sense in waiting
@@ -68,6 +76,7 @@ if (!isMainThread) {
 									// a longer timeout (and log it as warning since it would be unusual).
 									setTimeout(
 										() => {
+											console.log('forced close server', port, threadId);
 											if (!server.cantCleanupProperly)
 												harper_logger.warn('Had to forcefully exit the thread', threadId);
 											process.exit(0);
@@ -75,14 +84,38 @@ if (!isMainThread) {
 										server.cantCleanupProperly ? 2500 : 5000
 									).unref();
 								});
-							server.closeIdleConnections?.();
+							close_all_timer = setTimeout(() => {
+								server.closeAllConnections?.();
+							}, 1500).unref();
 						}
 					}
 				})
 				.ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
+			const listening = [];
+			if (createReuseportFd && !session_affinity) {
+				for (let port in SERVERS) {
+					const server = SERVERS[port];
+					const fd = createReuseportFd(+port, '::');
+					listening.push(
+						new Promise((resolve, reject) => {
+							server
+								.listen({ fd }, () => {
+									resolve();
+									harper_logger.trace('Listening on port ' + port, threadId);
+								})
+								.on('error', reject);
+						})
+					);
+				}
+			}
 			// notify that we are now ready to start receiving requests
-			parentPort.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
+			Promise.all(listening).then(() => {
+				parentPort?.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
+			});
 		});
+}
+if (!isMainThread) {
+	startServers();
 }
 
 function deliverSocket(fd_or_socket, port, data) {
@@ -395,12 +428,12 @@ function onSocket(listener, options) {
 			},
 			listener
 		);
-
-		SERVERS[options.securePort] = (socket) => {
-			socket_server.emit('connection', socket);
-		};
+		SERVERS[options.securePort] = socket_server;
 	}
-	if (options.port) SERVERS[options.port] = listener;
+	if (options.port) {
+		const socket_server = createSocketServer(listener);
+		SERVERS[options.port] = socket_server;
+	}
 }
 // workaround for inability to defer upgrade from https://github.com/nodejs/node/issues/6339#issuecomment-570511836
 Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
