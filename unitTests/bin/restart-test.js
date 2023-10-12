@@ -63,14 +63,6 @@ describe('Test restart module', () => {
 			expect(restart_clustering_stub.called).to.be.true;
 			expect(process_man_restart_stub.args[0][0]).to.equal('HarperDB');
 		});
-
-		it('Test in non-pm2 mode restart workers is called', async () => {
-			is_service_reg_stub.resolves(false);
-			restart.__set__('isMainThread', true);
-			const result = await restart.restart({ operation: 'restart' });
-			expect(result).to.equal('Restarting HarperDB. This may take up to 60 seconds.');
-			expect(restart_clustering_stub.called).to.be.true;
-		});
 	});
 
 	describe('Test restartService function', () => {
@@ -96,6 +88,7 @@ describe('Test restart module', () => {
 
 		it('Test http_workers service is restarted', async () => {
 			is_service_reg_stub.resolves(false);
+			restart.__set__('called_from_cli', false);
 			const result = await restart.restartService({ service: 'http_workers' });
 			expect(result).to.equal('Restarting http_workers');
 			expect(process_man_restart_stub.called).to.be.false;

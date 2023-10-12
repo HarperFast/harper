@@ -71,6 +71,7 @@ function startServers() {
 							harper_logger.trace('closing server', port, threadId);
 							const server = SERVERS[port];
 							let close_all_timer;
+							server.closeIdleConnections?.();
 							server // TODO: Should we try to interact with fastify here?
 								.close?.(() => {
 									harper_logger.trace('closed server', port, threadId);
@@ -108,7 +109,7 @@ function startServers() {
 			if (createReuseportFd && !session_affinity) {
 				for (let port in SERVERS) {
 					const server = SERVERS[port];
-					const fd = createReuseportFd(+port, '0.0.0.0');
+					const fd = createReuseportFd(+port, '::');
 					listening.push(
 						new Promise((resolve, reject) => {
 							server

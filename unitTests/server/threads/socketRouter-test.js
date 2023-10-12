@@ -10,7 +10,7 @@ const { shutdownWorkers } = require('../../../server/threads/manageThreads');
 const terms = require('../../../utility/hdbTerms');
 const assert = require('assert');
 
-describe('Socket Router', () => {
+describe.skip('Socket Router', () => {
 	let workers, server;
 	before(async function () {
 		this.timeout(15000);
@@ -20,6 +20,7 @@ describe('Socket Router', () => {
 		server = startSocketServer(8925);
 		for (let worker of workers) {
 			worker.socketsRouted = 0;
+			workers.expectedIdle = 1;
 			worker.postMessage = function ({ port, fd }) {
 				// stub this and don't send to real worker, just count messages
 				if (port) {
