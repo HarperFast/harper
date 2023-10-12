@@ -472,6 +472,7 @@ async function getComponents() {
 		name: env.get(terms.CONFIG_PARAMS.COMPONENTSROOT).split(path.sep).slice(-1).pop(),
 		entries: comps,
 	});
+	const component_loader = require('./componentLoader');
 	const component_errors = component_loader.component_errors;
 	for (const component of comps) {
 		const error = component_errors.get(component.name);
