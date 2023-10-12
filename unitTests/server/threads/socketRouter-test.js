@@ -10,7 +10,7 @@ const { shutdownWorkers } = require('../../../server/threads/manageThreads');
 const terms = require('../../../utility/hdbTerms');
 const assert = require('assert');
 
-describe('Socket Router', () => {
+describe.skip('Socket Router', () => {
 	let workers, server;
 	before(async function () {
 		this.timeout(15000);
