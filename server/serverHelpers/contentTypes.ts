@@ -70,6 +70,14 @@ media_types.set('text/event-stream', {
 	},
 	serialize: function (message) {
 		if (message.acknowledge) message.acknowledge();
+		if ('value' in message && message.timestamp) {
+			// native messages
+			message = {
+				data: message.value,
+				event: message.type,
+				id: message.timestamp,
+			};
+		}
 		if (message.data || message.event) {
 			let serialized = '';
 			if (message.event) serialized += 'event: ' + message.event + '\n';
@@ -82,7 +90,8 @@ media_types.set('text/event-stream', {
 			if (message.retry) serialized += 'retry: ' + message.retry + '\n';
 			return serialized + '\n';
 		} else {
-			return 'data: ' + message + '\n\n';
+			if (typeof message === 'object') return `data: ${JSON.stringify(message)}\n\n`;
+			return `data: ${message}\n\n`;
 		}
 	},
 	q: 0.8,
@@ -280,6 +289,7 @@ export function serialize(response_data, request, response_object) {
 		response_object.headers.set('Vary', 'Accept, Accept-Encoding');
 		response_object.headers.set('Content-Type', serializer.type);
 		if (
+			typeof response_data === 'object' &&
 			(response_data[Symbol.iterator] || response_data[Symbol.asyncIterator]) &&
 			serializer.serializer.serializeStream
 		) {

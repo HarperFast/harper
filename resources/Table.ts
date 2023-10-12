@@ -1041,6 +1041,7 @@ export function makeTable(options) {
 			if (!audit) {
 				table({ table: table_name, database: database_name, schemaDefined: schema_defined, attributes, audit: true });
 			}
+			if (!request) request = {};
 			const subscription = addSubscription(
 				TableResource,
 				this[ID_PROPERTY] ?? null, // treat undefined and null as the root
