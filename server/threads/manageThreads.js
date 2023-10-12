@@ -262,7 +262,7 @@ async function restartWorkers(name = null, max_workers_down = 2, start_replaceme
 		await Promise.all(waiting_to_finish);
 		await Promise.all(waiting_to_start);
 		const { restartService } = require('../../bin/restart');
-		if (name === 'http' || !name) await restartService({ service: 'clustering' });
+		if (start_replacement_threads && (name === 'http' || !name)) await restartService({ service: 'clustering' });
 	} else {
 		parentPort.postMessage({
 			type: RESTART_TYPE,
