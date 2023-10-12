@@ -20,8 +20,11 @@ async function loadRootComponents(is_worker_thread = false) {
 		// The await is purposely omitted here so that is doesnt slow down startup time
 		getConnection();
 	}
-
-	if (isMainThread) await install_components();
+	try {
+		if (isMainThread) await install_components();
+	} catch (error) {
+		console.error(error);
+	}
 
 	let resources = resetResources();
 	getTables();

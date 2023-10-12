@@ -15,11 +15,12 @@ const config_utils = require('../config/configUtils');
 const hdb_utils = require('../utility/common_utils');
 const { PACKAGE_ROOT } = require('../utility/hdbTerms');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
-const { restartWorkers } = require('../server/threads/manageThreads');
+const { basename } = require('path');
 const installComponents = require('../components/installComponents');
 const eng_mgr = require('../utility/environment/environmentManager');
 const hdb_terms = require('../utility/hdbTerms');
 const { Readable } = require('stream');
+const component_loader = require('./componentLoader');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 const APPLICATION_TEMPLATE = path.join(PACKAGE_ROOT, 'application-template');
@@ -410,12 +411,19 @@ async function deployComponent(req) {
 	const component_loader = require('./componentLoader');
 	let last_error;
 	component_loader.setErrorReporter((error) => (last_error = error));
-	await component_loader.loadComponent(path_to_project, pseudo_resources);
+	const component_name = basename(path_to_project);
+	const original_error = component_loader.component_errors.get(component_name); // we don't want this to change to preserve
+	// consistency with other threads
+	try {
+		await component_loader.loadComponent(path_to_project, pseudo_resources);
+	} finally {
+		component_loader.component_errors.set(component_name, original_error);
+	}
 	if (last_error) throw last_error;
+	log.info('Installed component');
 	// if everything checks out, we then restart so all threads can use it
-	restartWorkers();
 
-	return `Successfully deployed: ${project}, restarting...`;
+	return `Successfully deployed: ${project}`;
 }
 /**
  * Gets a JSON directory tree of the components dir and all nested files/folders
@@ -430,7 +438,7 @@ async function getComponents() {
 			if (all_config[element].package.startsWith('file:')) {
 				continue;
 			}
-			comps.push(Object.assign(all_config[element], { name: element }));
+			comps.push(Object.assign({}, all_config[element], { name: element }));
 		}
 	}
 
@@ -442,7 +450,7 @@ async function getComponents() {
 			const item_name = item.name;
 			if (item_name.startsWith('.') || item_name === 'node_modules') continue;
 			const item_path = path.join(dir, item_name);
-			if (await item.isDirectory()) {
+			if (item.isDirectory() || item.isSymbolicLink()) {
 				let res = {
 					name: item_name,
 					entries: [],
@@ -462,10 +470,18 @@ async function getComponents() {
 		return result;
 	};
 
-	return walk_dir(env.get(terms.CONFIG_PARAMS.COMPONENTSROOT), {
+	const results = await walk_dir(env.get(terms.CONFIG_PARAMS.COMPONENTSROOT), {
 		name: env.get(terms.CONFIG_PARAMS.COMPONENTSROOT).split(path.sep).slice(-1).pop(),
 		entries: comps,
 	});
+	const component_errors = component_loader.component_errors;
+	for (const component of comps) {
+		const error = component_errors.get(component.name);
+		// if it is loaded properly, this should be false
+		if (error) component.error = component_errors.get(component.name);
+		else if (error === undefined) component.error = 'The component has not been loaded yet (may need a restart)';
+	}
+	return results;
 }
 
 /**
