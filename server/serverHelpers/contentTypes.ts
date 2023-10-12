@@ -70,7 +70,7 @@ media_types.set('text/event-stream', {
 	},
 	serialize: function (message) {
 		if (message.acknowledge) message.acknowledge();
-		if ('value' in message && message.timestamp) {
+		if (typeof message === 'object' && 'value' in message && message.timestamp) {
 			// native messages
 			message = {
 				data: message.value,
