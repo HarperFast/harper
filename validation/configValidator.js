@@ -52,7 +52,7 @@ function configValidator(config_json) {
 		.pattern(/^[\\\/]$|([\\\/][a-zA-Z_0-9\:-]+)+$/, 'directory path')
 		.empty(null)
 		.default(setDefaultRoot);
-	const pem_file_constraints = Joi.custom(validatePemFile).messages({ 'any.custom': '{:#label} {:#error}' });
+	const pem_file_constraints = string.optional().empty(null);
 	const nats_term_constraints = string
 		.pattern(/^[^\s.,*>]+$/)
 		.messages({ 'string.pattern.base': '{:#label} invalid, must not contain ., * or >' })

@@ -35,6 +35,7 @@ const CF_ROUTES_DIR = env.get(CONFIG_PARAMS.COMPONENTSROOT);
 let loaded_components = new Map<any, any>();
 let watches_setup;
 let resources;
+export let component_errors = new Map();
 
 /**
  * Load all the applications registered in HarperDB, those in the components directory as well as any directly
@@ -143,6 +144,7 @@ export async function loadComponent(
 	if (provided_loaded_components) loaded_components = provided_loaded_components;
 	try {
 		let config;
+		if (is_root) component_errors = new Map();
 		const config_path = join(folder, is_root ? 'harperdb-config.yaml' : 'config.yaml');
 		if (existsSync(config_path)) {
 			config = is_root
@@ -156,28 +158,29 @@ export async function loadComponent(
 		// iterate through the app handlers so they can each do their own loading process
 		for (const component_name in config) {
 			const component_config = config[component_name];
+			component_errors.set(is_root ? component_name : basename(folder), false);
 			if (!component_config) continue;
 			let extension_module;
 			const pkg = component_config.package;
-			if (pkg) {
-				let container_folder = folder;
-				let component_path;
-				while (!existsSync((component_path = join(container_folder, 'node_modules', component_name)))) {
-					container_folder = dirname(container_folder);
-					if (container_folder.length < getHdbBasePath().length) {
-						component_path = null;
-						break;
-					}
-				}
-				if (component_path) {
-					extension_module = await loadComponent(component_path, resources, origin, false);
-					has_functionality = true;
-				} else {
-					throw new Error(`Unable to find package ${component_name}:${pkg}`);
-				}
-			} else extension_module = TRUSTED_RESOURCE_LOADERS[component_name];
-			if (!extension_module) continue;
 			try {
+				if (pkg) {
+					let container_folder = folder;
+					let component_path;
+					while (!existsSync((component_path = join(container_folder, 'node_modules', component_name)))) {
+						container_folder = dirname(container_folder);
+						if (container_folder.length < getHdbBasePath().length) {
+							component_path = null;
+							break;
+						}
+					}
+					if (component_path) {
+						extension_module = await loadComponent(component_path, resources, origin, false);
+						has_functionality = true;
+					} else {
+						throw new Error(`Unable to find package ${component_name}:${pkg}`);
+					}
+				} else extension_module = TRUSTED_RESOURCE_LOADERS[component_name];
+				if (!extension_module) continue;
 				// our own trusted modules can be directly retrieved from our map, otherwise use the (configurable) secure
 				// module loader
 				handler_modules.push(extension_module);
@@ -296,6 +299,7 @@ export async function loadComponent(
 							error_reporter?.(error);
 							(getWorkerIndex() === 0 ? console : harper_logger).error(error);
 							resources.set(component_config.path || '/', new ErrorResource(error));
+							component_errors.set(is_root ? component_name : basename(folder), error.message);
 						}
 					}
 				}
@@ -306,6 +310,7 @@ export async function loadComponent(
 				error_reporter?.(error);
 				(getWorkerIndex() === 0 ? console : harper_logger).error(error);
 				resources.set(component_config.path || '/', new ErrorResource(error), null, true);
+				component_errors.set(is_root ? component_name : basename(folder), error.message);
 			}
 		}
 		// Auto restart threads on changes to any app folder. TODO: Make this configurable
@@ -321,6 +326,7 @@ export async function loadComponent(
 			const error_message = `${folder} did not load any modules, resources, or files, is this a valid component?`;
 			error_reporter?.(new Error(error_message));
 			(getWorkerIndex() === 0 ? console : harper_logger).error(error_message);
+			component_errors.set(basename(folder), error_message);
 		}
 	} catch (error) {
 		console.error(`Could not load application directory ${folder}`, error);

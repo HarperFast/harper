@@ -218,7 +218,9 @@ describe('Test configValidator module', () => {
 							processes: 3,
 						},
 						tls: {
+							certificate: 'clustering/cert/unit_test.pem',
 							insecure: true,
+							privateKey: 'clustering/test/key.pem',
 						},
 						user: 'ItsMe',
 					},
@@ -279,7 +281,9 @@ describe('Test configValidator module', () => {
 							timeout: 120001,
 						},
 						nodeEnv: 'development',
-						tls: {},
+						tls: {
+							certificate: 'op_api/cert.pem',
+						},
 					},
 					http: {},
 					threads: 2,
@@ -331,8 +335,9 @@ describe('Test configValidator module', () => {
 			bad_config_obj.clustering.user = 9999;
 
 			const schema = configValidator(bad_config_obj);
-			const expected_schema_message = "'clustering.user' must" + ' be a string';
-			expect(schema.error.message).to.eql(expected_schema_message);
+			expect(schema.error.message).to.eql(
+				"'clustering.tls.certificateAuthority' must be a string. 'clustering.user' must be a string"
+			);
 		});
 
 		it('Test null/undefined values for required keys in clustering.hubServer', () => {
