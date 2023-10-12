@@ -264,11 +264,6 @@ async function restartWorkers(name = null, max_workers_down = 2, start_replaceme
 		const { restartService } = require('../../bin/restart');
 		if (start_replacement_threads && (name === 'http' || !name)) {
 			await restartService({ service: 'clustering' });
-			setTimeout(() => {
-				require('child_process').execFile('netstat', ['-l', '-p'], (error, stdout, stderr) => {
-					console.error('netstat', error, stdout, stderr);
-				});
-			}, 10000);
 		}
 	} else {
 		parentPort.postMessage({

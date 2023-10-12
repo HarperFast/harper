@@ -64,6 +64,7 @@ function startServers() {
 							harper_logger.trace('closing server', port, threadId);
 							const server = SERVERS[port];
 							let close_all_timer;
+							server.closeIdleConnections?.();
 							server // TODO: Should we try to interact with fastify here?
 								.close?.(() => {
 									harper_logger.trace('closed server', port, threadId);

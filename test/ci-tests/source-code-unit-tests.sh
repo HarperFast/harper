@@ -16,6 +16,5 @@ npx pm2 kill
 cd /home/ubuntu/harperdb/utility/devops
 node register.js --reset_license --ram_allocation=16384
 
-ps -ef | grep pm2 || echo "no ps?"
 cd /home/ubuntu/harperdb/bin/
 node harperdb.js start
