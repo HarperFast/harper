@@ -88,6 +88,7 @@ describe('Test restart module', () => {
 
 		it('Test http_workers service is restarted', async () => {
 			is_service_reg_stub.resolves(false);
+			restart.__set__('called_from_cli', false);
 			const result = await restart.restartService({ service: 'http_workers' });
 			expect(result).to.equal('Restarting http_workers');
 			expect(process_man_restart_stub.called).to.be.false;
