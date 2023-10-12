@@ -20,7 +20,6 @@ const installComponents = require('../components/installComponents');
 const eng_mgr = require('../utility/environment/environmentManager');
 const hdb_terms = require('../utility/hdbTerms');
 const { Readable } = require('stream');
-const component_loader = require('./componentLoader');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 const APPLICATION_TEMPLATE = path.join(PACKAGE_ROOT, 'application-template');
