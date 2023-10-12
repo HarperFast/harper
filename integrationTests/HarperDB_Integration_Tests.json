@@ -59568,7 +59568,7 @@
 									"",
 									"pm.test(\"Github component deployed\", function () {",
 									"    const json_data = pm.response.json();",
-									"    pm.expect(json_data.message).to.equal(\"Successfully deployed: deploy-test-gh, restarting...\");",
+									"    pm.expect(json_data.message).to.equal(\"Successfully deployed: deploy-test-gh\");",
 									"});",
 									"setTimeout(()=>{}, 15000)"
 								],
@@ -59626,7 +59626,7 @@
 									"",
 									"pm.test(\"Payload component deployed\", function () {",
 									"    const json_data = pm.response.json();",
-									"    pm.expect(json_data.message).to.equal(\"Successfully deployed: deploy-test-payload, restarting...\");",
+									"    pm.expect(json_data.message).to.equal(\"Successfully deployed: deploy-test-payload\");",
 									"});",
                                     "setTimeout(()=>{}, 15000)"
 								],
@@ -60866,7 +60866,7 @@
 									"",
 									"pm.test(\"Custom function deploy success message is returned\", function () {",
 									"    const json_data = pm.response.json();",
-									"    pm.expect(json_data.message).to.equal(\"Successfully deployed: test-deploy, restarting...\");",
+									"    pm.expect(json_data.message).to.equal(\"Successfully deployed: test-deploy\");",
 									"});",
 									"",
 									"// Deploy will restart, wait for that to complete.",
