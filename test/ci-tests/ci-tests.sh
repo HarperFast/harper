@@ -8,7 +8,7 @@ npm --loglevel=error install -g newman
 npm --loglevel=error install -g newman-reporter-html
 npm --loglevel=error install -g newman-reporter-htmlextra
 
-apt-get update && apt-get install -y net-tools
+sudo apt-get install -y net-tools
 
 cd /home/ubuntu/harperdb/integrationTests
 
