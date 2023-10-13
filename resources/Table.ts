@@ -379,22 +379,26 @@ export function makeTable(options) {
 									return;
 								}
 								harper_logger.trace(`Starting eviction scan for ${table_name}`);
-								let count = 0;
-								// iterate through all entries to find expired ones
-								for (const { key, value: record, version, expiresAt } of this.primaryStore.getRange({
-									start: false,
-									snapshot: false, // we don't want to keep read transaction snapshots open
-									versions: true,
-									lazy: true, // only want to access metadata
-								})) {
-									if (expiresAt && expiresAt + eviction_ms < Date.now()) {
-										// evict!
-										TableResource.evict(key, record, version);
-										count++;
+								try {
+									let count = 0;
+									// iterate through all entries to find expired ones
+									for (const { key, value: record, version, expiresAt } of this.primaryStore.getRange({
+										start: false,
+										snapshot: false, // we don't want to keep read transaction snapshots open
+										versions: true,
+										lazy: true, // only want to access metadata
+									})) {
+										if (expiresAt && expiresAt + eviction_ms < Date.now()) {
+											// evict!
+											TableResource.evict(key, record, version);
+											count++;
+										}
+										await rest();
 									}
-									await rest();
+									harper_logger.trace(`Finished eviction scan for ${table_name}, evicted ${count} entries`);
+								} catch (error) {
+									harper_logger.trace(`Error in eviction scan for ${table_name}:`, error);
 								}
-								harper_logger.trace(`Finished eviction scan for ${table_name}, evicted ${count} entries`);
 							})),
 						scanning_interval
 					).unref(); // don't let this prevent closing the thread and make sure it can fit in 32-bit signed number
