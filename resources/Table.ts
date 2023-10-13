@@ -1833,15 +1833,19 @@ export function makeTable(options) {
 			deletion_cleanup = setTimeout(() => {
 				deletion_cleanup = null;
 				if (primary_store.rootStore.status !== 'open') return;
-				for (const { key, value } of primary_store.getRange({ start: true })) {
-					if (value === null) {
-						const entry = primary_store.getEntry(key);
-						// make sure it is still deleted when we do the removal
-						if (entry?.value === null) {
-							primary_store.remove(key, entry.version);
+				try {
+					for (const { key, value } of primary_store.getRange({ start: true })) {
+						if (value === null) {
+							const entry = primary_store.getEntry(key);
+							// make sure it is still deleted when we do the removal
+							if (entry?.value === null) {
+								primary_store.remove(key, entry.version);
+							}
+							recordDeletion(-1);
 						}
-						recordDeletion(-1);
 					}
+				} catch (error) {
+					harper_logger.error('Error in deletion cleanup', error);
 				}
 			}, TableResource.getRecordCount() * 100 + DELETE_ENTRY_EXPIRATION).unref(); // heuristic for how often to do cleanup, we want to do it less frequently as tables get bigger because it will take longer
 		}
