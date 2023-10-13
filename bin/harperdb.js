@@ -9,7 +9,6 @@ const path = require('path');
 const os = require('os');
 const { PACKAGE_ROOT } = require('../utility/hdbTerms');
 const check_node = require('../launchServiceScripts/utility/checkNodeVersion');
-const env = require('../utility/environment/environmentManager');
 const socket_router = require('../server/threads/socketRouter');
 const { SERVICE_ACTIONS_ENUM } = hdb_terms;
 
@@ -42,16 +41,8 @@ function harperDBService() {
 
 		let result = undefined;
 		switch (service) {
-			case SERVICE_ACTIONS_ENUM.DEBUG:
-				try {
-					require('inspector').open(9229);
-				} catch (error) {
-					console.error(
-						'Could not start debugging on port 9229, make sure you are not already debugging:',
-						error.message
-					);
-				}
-				socket_router.debugMode = true;
+			case SERVICE_ACTIONS_ENUM.DEV:
+				process.env.DEV_MODE = true;
 			// fall through
 			case SERVICE_ACTIONS_ENUM.RUN:
 				// Run a specific application folder
@@ -170,7 +161,7 @@ With no command, harperdb will simply run HarperDB (in the foreground)
 
 Commands:
   run <path> - Run the application in the specified path
-  debug <path> - Debug the application in the specified path
+  dev <path> - Run the application in dev mode with debugging, foreground logging, no auth
   version - Print the version
   start - Starts a separate background process for harperdb and CLI will exit
   stop - Stop the harperdb background process

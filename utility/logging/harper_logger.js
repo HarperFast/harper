@@ -158,6 +158,7 @@ function initLogSettings(force_init = false) {
 		error(err);
 		throw err;
 	}
+	if (process.env.DEV_MODE) log_to_stdstreams = true;
 	setupConsoleLogging();
 }
 let logging_enabled = true;

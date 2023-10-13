@@ -265,7 +265,6 @@ describe('Test configUtils module', () => {
 		it('Test that given args are updated in new config file', () => {
 			const expected_config = {
 				authentication: {
-					authorizeLocal: true,
 					cacheTTL: 30000,
 					enableSessions: true,
 					operationTokenTimeout: '2d',
@@ -395,7 +394,6 @@ describe('Test configUtils module', () => {
 				},
 			};
 			const expected_flat_config = {
-				authentication_authorizelocal: true,
 				authentication_cachettl: 30000,
 				authentication_enablesessions: true,
 				authentication_operationtokentimeout: '2d',
@@ -490,7 +488,6 @@ describe('Test configUtils module', () => {
 	describe('Test getDefaultConfig function', () => {
 		const expected_flat_default_config_obj = {
 			analytics_aggregateperiod: 60,
-			authentication_authorizelocal: true,
 			authentication_cachettl: 30000,
 			authentication_enablesessions: true,
 			authentication_operationtokentimeout: '1d',

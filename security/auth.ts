@@ -7,7 +7,6 @@ import { v4 as uuid } from 'uuid';
 import * as env from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms';
 import { loggerWithTag, AuthAuditLog } from '../utility/logging/harper_logger.js';
-import { serializeMessage } from '../server/serverHelpers/contentTypes';
 import { user } from '../server/itc/serverHandlers';
 import { Headers } from '../server/serverHelpers/Headers';
 const auth_event_log = loggerWithTag('auth-event');
@@ -24,7 +23,7 @@ const session_table = table({
 	attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'user' }],
 });
 const ENABLE_SESSIONS = env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS) ?? true;
-const AUTHORIZE_LOCAL = env.get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? true;
+let AUTHORIZE_LOCAL = env.get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? process.env.DEV_MODE;
 const LOG_AUTH_SUCCESSFUL = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL) ?? false;
 const LOG_AUTH_FAILED = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED) ?? false;
 let authorization_cache = new Map();
@@ -32,6 +31,9 @@ server.onInvalidatedUser(() => {
 	// TODO: Eventually we probably want to be able to invalidate individual users
 	authorization_cache = new Map();
 });
+export function bypassAuth() {
+	AUTHORIZE_LOCAL = true;
+}
 
 // TODO: Make this not return a promise if it can be fulfilled synchronously (from cache)
 export async function authentication(request, next_handler) {
@@ -242,3 +244,4 @@ export async function logout(logout_object) {
 	await logout_object.baseRequest.session.update({ user: null });
 	return 'Logout successful';
 }
+import { serializeMessage } from '../server/serverHelpers/contentTypes';

@@ -20,7 +20,6 @@ const installComponents = require('../components/installComponents');
 const eng_mgr = require('../utility/environment/environmentManager');
 const hdb_terms = require('../utility/hdbTerms');
 const { Readable } = require('stream');
-const component_loader = require('./componentLoader');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 const APPLICATION_TEMPLATE = path.join(PACKAGE_ROOT, 'application-template');
@@ -473,6 +472,7 @@ async function getComponents() {
 		name: env.get(terms.CONFIG_PARAMS.COMPONENTSROOT).split(path.sep).slice(-1).pop(),
 		entries: comps,
 	});
+	const component_loader = require('./componentLoader');
 	const component_errors = component_loader.component_errors;
 	for (const component of comps) {
 		const error = component_errors.get(component.name);
