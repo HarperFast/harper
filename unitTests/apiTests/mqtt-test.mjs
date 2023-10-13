@@ -416,7 +416,8 @@ describe('test MQTT connections and commands', () => {
 		client.end();
 		if (messages.length !== 3)
 			console.error('Incorrect messages', {messages});
-		assert(messages.length >= 2);
+		console.log('history', await tables.SimpleRecord.getHistoryOfRecord('42'));
+		assert(messages.length === 3);
 		messages = [];
 		client = connect('mqtt://localhost:1883', {
 			clean: false,

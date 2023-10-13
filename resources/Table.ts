@@ -1115,6 +1115,7 @@ export function makeTable(options) {
 			} else {
 				if (count && !start_time) start_time = 0;
 				const local_time = this[ENTRY_PROPERTY]?.localTime;
+				harper_logger.trace('Subscription from', start_time, 'from', this_id);
 				if (start_time < local_time) {
 					// start time specified, get the audit history for this record
 					const history = [];
