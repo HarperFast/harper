@@ -1,12 +1,12 @@
 const fg = require('fast-glob');
 const { statSync, existsSync, readFileSync, writeFileSync } = require('fs');
-const { spawnSync, spawn } = require('child_process');
+const { spawnSync, spawn, execFileSync } = require('child_process');
 const { isMainThread } = require('worker_threads');
 const { join, relative } = require('path');
 const { PACKAGE_ROOT } = require('../hdbTerms');
-const { tmpdir } = require('os');
+const { tmpdir, platform } = require('os');
 require('source-map-support').install();
-const SRC_DIRECTORIES = ['resources', 'server', 'dataLayer'];
+const SRC_DIRECTORIES = ['resources', 'server', 'dataLayer', 'components'];
 const TS_DIRECTORY = 'ts-build';
 let needs_compile;
 const is_source_code = __filename.endsWith('tsBuild.js');
@@ -53,8 +53,10 @@ if (is_source_code) {
 			needs_compile = true;
 		}
 		if (needs_compile) {
+			let tsc_path = join(PACKAGE_ROOT, 'node_modules/.bin/tsc');
+			if (platform() === 'win32') tsc_path += '.cmd';
 			// if we need it, run typescript compiler
-			let result = spawnSync(process.argv[0], [join(PACKAGE_ROOT, 'node_modules/.bin/tsc')], { cwd: PACKAGE_ROOT });
+			let result = spawnSync(tsc_path, { cwd: PACKAGE_ROOT });
 			if (result.stdout.length) console.log(result.stdout.toString());
 			if (result.stderr.length) console.log(result.stderr.toString());
 			if (target_directory_existed) {
@@ -69,7 +71,7 @@ if (is_source_code) {
 				}
 				if (!is_running) {
 					console.log('starting tsc background process');
-					let tsc_process = spawn(process.argv[0], [join(PACKAGE_ROOT, 'node_modules/.bin/tsc'), '--watch'], {
+					let tsc_process = spawn(tsc_path, ['--watch'], {
 						cwd: PACKAGE_ROOT,
 						detached: true,
 						stdio: 'ignore',

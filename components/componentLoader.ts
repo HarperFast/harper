@@ -242,7 +242,7 @@ export async function loadComponent(
 				// access to the file system.
 				if (extension_module.handleFile && component_config.files) {
 					if (component_config.files.includes('..')) throw handleHDBError('Can not reference parent directories');
-					const files = join(folder, component_config.files);
+					const files = join(folder, component_config.files).replace(/\\/g, '/'); // must normalize to slashes for fast-glob to work
 					const end_of_fixed_path = files.indexOf('/*');
 					if (
 						end_of_fixed_path > -1 &&
@@ -260,7 +260,7 @@ export async function loadComponent(
 					for (const entry of await fg(files, { onlyFiles: false, objectMode: true })) {
 						const { path, dirent } = entry;
 						has_functionality = true;
-						let relative_path = relative(folder, path);
+						let relative_path = relative(folder, path).replace(/\\/g, '/');
 						if (component_config.root) {
 							let root_path = component_config.root;
 							if (root_path.startsWith('/')) root_path = root_path.slice(1);
