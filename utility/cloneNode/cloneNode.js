@@ -2,6 +2,7 @@
 
 const os = require('os');
 const https = require('https');
+let http = require('http');
 const fs = require('fs-extra');
 const YAML = require('yaml');
 const hri = require('human-readable-ids').hri;
@@ -579,11 +580,14 @@ async function leaderHttpStream(data, stream) {
 		headers,
 	};
 
-	if (url.protocol === 'https:') options.agent = https_agent;
+	if (url.protocol === 'https:') {
+		options.agent = https_agent;
+		http = https;
+	}
 	if (url.port) options.port = url.port;
 
 	return new Promise((resolve, reject) => {
-		const req = https.request(options, (res) => {
+		const req = http.request(options, (res) => {
 			if (res.statusCode !== 200) {
 				reject('Request to leader node failed with code: ' + res.statusCode);
 			}

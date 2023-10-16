@@ -142,6 +142,29 @@ async function descTable(describe_table_object, attr_perms) {
 			HTTP_STATUS_CODES.NOT_FOUND
 		);
 
+	function pushAtt(att) {
+		attributes.push(
+			Object.assign(
+				{},
+				{
+					attribute: att.attribute,
+					type: att.type,
+					elements: att.elements?.type,
+					indexed: att.indexed,
+					is_primary_key: att.isPrimaryKey,
+					assigned_created_time: att.assignCreatedTime,
+					assigned_updated_time: att.assignUpdatedTime,
+					nullable: att.nullable,
+					properties: att.properties
+						? att.properties.map((prop) => {
+								return { type: prop.type, name: prop.name };
+						  })
+						: undefined,
+				}
+			)
+		);
+	}
+
 	let attributes = [];
 	if (table_attr_perms) {
 		let permitted_attr = {};
@@ -150,19 +173,22 @@ async function descTable(describe_table_object, attr_perms) {
 		});
 
 		table_obj.attributes.forEach((a) => {
-			if (permitted_attr[a.name]) attributes.push(a);
+			if (permitted_attr[a.name]) pushAtt(a);
 		});
 	} else {
-		attributes = table_obj.attributes;
+		table_obj.attributes?.forEach((att) => pushAtt(att));
 	}
 
 	let table_result = {
 		schema,
 		name: table_obj.tableName,
-		attributes,
 		hash_attribute: table_obj.attributes.find((attribute) => attribute.isPrimaryKey || attribute.is_hash_attribute)
 			?.name,
+		audit: table_obj.audit,
+		schema_defined: table_obj.schemaDefined,
+		attributes,
 	};
+
 	// Nats/clustering stream names are hashed to ensure constant length alphanumeric values.
 	// String will always hash to the same value.
 	table_result.clustering_stream_name = crypto_hash.createNatsTableStreamName(table_result.schema, table_result.name);
