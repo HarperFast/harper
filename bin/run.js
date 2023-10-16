@@ -36,6 +36,7 @@ const schema_describe = require('../dataLayer/schemaDescribe');
 const lmdb_create_txn_environment = require('../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsAuditEnvironment');
 const CreateTableObject = require('../dataLayer/CreateTableObject');
 const hdb_terms = require('../utility/hdbTerms');
+const { getHDBProcessInfo } = require('../utility/environment/systemInformation');
 let pm2_utils;
 
 // These may change to match unix return codes (i.e. 0, 1)
@@ -65,6 +66,12 @@ async function initialize(called_by_install = false, called_by_main = false) {
 			hdb_logger.error(err);
 			process.exit(1);
 		}
+	}
+
+	const hdb_ps = await getHDBProcessInfo();
+	if (hdb_ps.core.length > 0) {
+		console.error('HarperDB is already running');
+		process.exit();
 	}
 
 	// Write HarperDB PID to file for tracking purposes
