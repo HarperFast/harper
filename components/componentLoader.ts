@@ -66,7 +66,8 @@ export function loadComponentDirectories(loaded_plugin_modules?: Map<any, any>, 
 }
 
 const TRUSTED_RESOURCE_LOADERS = {
-	REST,
+	REST, // for backwards compatibility with older configs
+	rest: REST,
 	graphqlSchema: graphql_handler,
 	jsResource: js_handler,
 	fastifyRoutes: fastify_routes_handler,
@@ -85,7 +86,7 @@ const TRUSTED_RESOURCE_LOADERS = {
 };
 
 const DEFAULT_CONFIG = {
-	REST: true,
+	rest: true,
 	graphqlSchema: {
 		files: '*.graphql',
 		//path: '/', // from root path by default, like http://server/query
