@@ -379,22 +379,26 @@ export function makeTable(options) {
 									return;
 								}
 								harper_logger.trace(`Starting eviction scan for ${table_name}`);
-								let count = 0;
-								// iterate through all entries to find expired ones
-								for (const { key, value: record, version, expiresAt } of this.primaryStore.getRange({
-									start: false,
-									snapshot: false, // we don't want to keep read transaction snapshots open
-									versions: true,
-									lazy: true, // only want to access metadata
-								})) {
-									if (expiresAt && expiresAt + eviction_ms < Date.now()) {
-										// evict!
-										TableResource.evict(key, record, version);
-										count++;
+								try {
+									let count = 0;
+									// iterate through all entries to find expired ones
+									for (const { key, value: record, version, expiresAt } of this.primaryStore.getRange({
+										start: false,
+										snapshot: false, // we don't want to keep read transaction snapshots open
+										versions: true,
+										lazy: true, // only want to access metadata
+									})) {
+										if (expiresAt && expiresAt + eviction_ms < Date.now()) {
+											// evict!
+											TableResource.evict(key, record, version);
+											count++;
+										}
+										await rest();
 									}
-									await rest();
+									harper_logger.trace(`Finished eviction scan for ${table_name}, evicted ${count} entries`);
+								} catch (error) {
+									harper_logger.trace(`Error in eviction scan for ${table_name}:`, error);
 								}
-								harper_logger.trace(`Finished eviction scan for ${table_name}, evicted ${count} entries`);
 							})),
 						scanning_interval
 					).unref(); // don't let this prevent closing the thread and make sure it can fit in 32-bit signed number
@@ -1041,6 +1045,7 @@ export function makeTable(options) {
 			if (!audit) {
 				table({ table: table_name, database: database_name, schemaDefined: schema_defined, attributes, audit: true });
 			}
+			if (!request) request = {};
 			const subscription = addSubscription(
 				TableResource,
 				this[ID_PROPERTY] ?? null, // treat undefined and null as the root
@@ -1114,6 +1119,7 @@ export function makeTable(options) {
 			} else {
 				if (count && !start_time) start_time = 0;
 				const local_time = this[ENTRY_PROPERTY]?.localTime;
+				harper_logger.trace('Subscription from', start_time, 'from', this_id);
 				if (start_time < local_time) {
 					// start time specified, get the audit history for this record
 					const history = [];
@@ -1827,15 +1833,19 @@ export function makeTable(options) {
 			deletion_cleanup = setTimeout(() => {
 				deletion_cleanup = null;
 				if (primary_store.rootStore.status !== 'open') return;
-				for (const { key, value } of primary_store.getRange({ start: true })) {
-					if (value === null) {
-						const entry = primary_store.getEntry(key);
-						// make sure it is still deleted when we do the removal
-						if (entry?.value === null) {
-							primary_store.remove(key, entry.version);
+				try {
+					for (const { key, value } of primary_store.getRange({ start: true })) {
+						if (value === null) {
+							const entry = primary_store.getEntry(key);
+							// make sure it is still deleted when we do the removal
+							if (entry?.value === null) {
+								primary_store.remove(key, entry.version);
+							}
+							recordDeletion(-1);
 						}
-						recordDeletion(-1);
 					}
+				} catch (error) {
+					harper_logger.error('Error in deletion cleanup', error);
 				}
 			}, TableResource.getRecordCount() * 100 + DELETE_ENTRY_EXPIRATION).unref(); // heuristic for how often to do cleanup, we want to do it less frequently as tables get bigger because it will take longer
 		}
