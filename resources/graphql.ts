@@ -73,7 +73,9 @@ export function start({ ensureTable }) {
 							};
 						}
 						const type_name = (type as NamedTypeNode).name?.value;
-						return { type: type_name, location: type.loc.startToken };
+						const property = { type: type_name };
+						Object.defineProperty(property, 'location', { value: type.loc.startToken });
+						return property;
 					}
 					for (const field of definition.fields) {
 						const property = getProperty(field.type);

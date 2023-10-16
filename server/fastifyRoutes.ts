@@ -44,7 +44,15 @@ export async function handleFile(js_content, relative_path, file_path, project_n
 	if (prefix.startsWith('/')) prefix = prefix.slice(1);
 	if (!route_folders.has(route_folder)) {
 		route_folders.add(route_folder);
-		resolved_server.register(buildRouteFolder(route_folder, prefix));
+		try {
+			resolved_server.register(buildRouteFolder(route_folder, prefix));
+		} catch (error) {
+			if (error.message === 'Root plugin has already booted')
+				harper_logger.warn(
+					`Could not load root fastify route for ${file_path}, this may require a restart to install properly`
+				);
+			else throw error;
+		}
 	}
 }
 /**
