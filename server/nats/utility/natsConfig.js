@@ -201,7 +201,7 @@ async function removeNatsConfig(process_name) {
 		count++;
 		if (count >= MAX_SERVER_CONNECTION_RETRY) {
 			throw new Error(
-				`Operations API timed out attempting to connect to ${process_name}. This is commonly caused by incorrect clustering config. Check the ${process_name} log for further details.`
+				`Operations API timed out attempting to connect to ${process_name}. This is commonly caused by incorrect clustering config. Check hdb.log for further details.`
 			);
 		}
 
