@@ -472,6 +472,17 @@ async function getComponents() {
 		name: env.get(terms.CONFIG_PARAMS.COMPONENTSROOT).split(path.sep).slice(-1).pop(),
 		entries: comps,
 	});
+
+	for (const c of results.entries) {
+		if (c.package) {
+			const c_dir = await walk_dir(path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), 'node_modules', c.name), {
+				name: c.name,
+				entries: [],
+			});
+			Object.assign(c, c_dir);
+		}
+	}
+
 	const component_loader = require('./componentLoader');
 	const component_errors = component_loader.component_errors;
 	for (const component of comps) {
