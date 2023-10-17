@@ -4,7 +4,6 @@ import { compareKeys, MAXIMUM_KEY } from 'ordered-binary';
 import { SKIP } from 'lmdb';
 import { Request } from './ResourceInterface';
 
-const QUERY_PARSER = /([^?&|=<>!()*]+)([&|=<>!()*]*)/g;
 const SYMBOL_OPERATORS = {
 	'<': 'lt',
 	'<=': 'le',
@@ -189,6 +188,9 @@ function attributeComparator(attribute, filter) {
 	};
 }
 
+const QUERY_PARSER = /([^?&|=<>!()*]+)([&|=<>!()*]*)/g;
+const VALUE_PARSER = /([^&|*=]+)([&|*=]*)/g;
+
 /**
  * This is responsible for taking a query string (from a get()) and converting it to a standard query object
  * structure
@@ -201,9 +203,10 @@ export function parseQuery(query_string) {
 	let attribute, comparator;
 	let last_index;
 	let call;
+	let parser = QUERY_PARSER;
 	// TODO: Use URLSearchParams with a fallback for when it can parse everything (USP is very fast)
-	while ((match = QUERY_PARSER.exec(query_string))) {
-		last_index = QUERY_PARSER.lastIndex;
+	while ((match = parser.exec(query_string))) {
+		last_index = parser.lastIndex;
 		const [, value, operator] = match;
 		switch (operator) {
 			case ')':
@@ -294,6 +297,8 @@ export function parseQuery(query_string) {
 			default:
 				throw new Error(`Unknown operator ${operator} in query ${query_string}`);
 		}
+		parser = attribute ? VALUE_PARSER : QUERY_PARSER;
+		parser.lastIndex = last_index;
 	}
 	if (last_index !== query_string.length) throw new Error(`Unable to parse query, unexpected end in ${query_string}`);
 	return query;

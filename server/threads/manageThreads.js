@@ -37,6 +37,7 @@ module.exports = {
 	broadcastWithAcknowledgement,
 	setChildListenerByType,
 	getWorkerIndex,
+	getWorkerCount,
 	getTicketKeys,
 	setMainIsWorker,
 	restartNumber: workerData?.restartNumber || 1,
@@ -56,6 +57,9 @@ let isMainWorker;
 function getWorkerIndex() {
 	return workerData ? workerData.workerIndex : isMainWorker ? 0 : undefined;
 }
+function getWorkerCount() {
+	return workerData ? workerData.workerCount : isMainWorker ? 1 : undefined;
+}
 function setMainIsWorker(isWorker) {
 	isMainWorker = isWorker;
 }
@@ -68,6 +72,11 @@ function getTicketKeys() {
 Object.defineProperty(server, 'workerIndex', {
 	get() {
 		return getWorkerIndex();
+	},
+});
+Object.defineProperty(server, 'workerCount', {
+	get() {
+		return getWorkerCount();
 	},
 });
 let childListenerByType = {
@@ -126,6 +135,7 @@ function startWorker(path, options = {}) {
 					addPorts: ports_to_send,
 					addThreadIds: channels_to_connect.map((channel) => channel.existingPort.threadId),
 					workerIndex: options.workerIndex,
+					workerCount: options.threadCount,
 					name: options.name,
 					restartNumber: module.exports.restartNumber,
 					ticketKeys: getTicketKeys(),

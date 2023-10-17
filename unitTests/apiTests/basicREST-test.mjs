@@ -245,6 +245,12 @@ describe('test REST calls', () => {
 			assert.equal(response.data[0].birthday.slice(0,4), '1993');
 			assert.equal(response.data[1].birthday.slice(0,4), '1994');
 		});
+		it('query with parenthesis in value', async () => {
+			// at least shouldn't throw an error
+			let response = await axios('http://localhost:9926/FourProp?birthday=no(match)for[this]');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.length, 0);
+		});
 	});
 	it('invalidate and get from cache and check headers', async () => {
 		let response = await axios.post('http://localhost:9926/SimpleCache/3', {

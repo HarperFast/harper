@@ -26,9 +26,8 @@ const TEST_TABLE2 = 'capybara';
 const TEST_STREAM_NAME = crypto_hash.createNatsTableStreamName(TEST_SCHEMA, TEST_TABLE1);
 const TEST_SUBJECT_NAME_2 = 'txn.devTest.capybara.testLeafServer-leaf';
 const TEST_STREAM_NAME_2 = crypto_hash.createNatsTableStreamName(TEST_SCHEMA, TEST_TABLE2);
-const TEST_MSG_ID = 'dev.test.123';
 const TEST_HEADERS = headers();
-TEST_HEADERS.append(nats_terms.MSG_HEADERS.NATS_MSG_ID, TEST_MSG_ID);
+TEST_HEADERS.append(nats_terms.MSG_HEADERS.TRANSACTED_NODES, 'another_node');
 TEST_HEADERS.append(nats_terms.MSG_HEADERS.ORIGIN, 'testLeafServer');
 
 function CreateStreamMessage(operation, schema, table, records) {
@@ -454,7 +453,6 @@ describe('Test natsUtils module', () => {
 
 			expect(result.length).to.equal(3);
 			expect(result[0].origin).to.equal('testLeafServer');
-			expect(result[0].nats_msg_id).to.not.be.undefined;
 			expect(result[0].entry).to.eql({
 				operation: 'insert',
 				records: {
@@ -464,7 +462,6 @@ describe('Test natsUtils module', () => {
 				table: 'capybara',
 			});
 			expect(result[1].origin).to.equal('testLeafServer');
-			expect(result[1].nats_msg_id).to.not.be.undefined;
 			expect(result[1].entry).to.eql({
 				operation: 'insert',
 				records: {
@@ -474,7 +471,6 @@ describe('Test natsUtils module', () => {
 				table: 'capybara',
 			});
 			expect(result[2].origin).to.equal('testLeafServer');
-			expect(result[2].nats_msg_id).to.not.be.undefined;
 			expect(result[2].entry).to.eql({
 				operation: 'insert',
 				records: {
@@ -523,7 +519,6 @@ describe('Test natsUtils module', () => {
 
 			expect(result.length).to.equal(3);
 			expect(result[0].origin).to.equal('testLeafServer');
-			expect(result[0].nats_msg_id).to.not.be.undefined;
 			expect(result[0].entry).to.eql({
 				operation: 'insert',
 				schema: 'devTest',
@@ -753,7 +748,7 @@ describe('Test natsUtils module', () => {
 			await nats_utils.publishToStream(
 				'txn.devTest.capybara',
 				TEST_STREAM_NAME_2,
-				TEST_HEADERS.set(nats_terms.MSG_HEADERS.NATS_MSG_ID, 'msg.id.1'),
+				TEST_HEADERS,
 				new CreateStreamMessage('insert', 'devTest', 'capybara', [{ id: 1 }])
 			);
 			// Wait half a second
@@ -765,7 +760,7 @@ describe('Test natsUtils module', () => {
 			await nats_utils.publishToStream(
 				'txn.devTest.capybara',
 				TEST_STREAM_NAME_2,
-				TEST_HEADERS.set(nats_terms.MSG_HEADERS.NATS_MSG_ID, 'msg.id.2'),
+				TEST_HEADERS,
 				new CreateStreamMessage('insert', 'devTest', 'capybara', [{ id: 2 }])
 			);
 			// Create a work queue stream
@@ -800,105 +795,11 @@ describe('Test natsUtils module', () => {
 			await nats_utils.deleteLocalStream(TEST_STREAM_NAME_2);
 		}).timeout(TEST_TIMEOUT);
 
-		it('Test multiple msgs in a stream with different nats msg ids', async () => {
-			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
-
-			TEST_HEADERS.set(nats_terms.MSG_HEADERS.NATS_MSG_ID, 'dev.test.1');
-			await nats_utils.publishToStream(
-				'txn.devTest.capybara',
-				TEST_STREAM_NAME_2,
-				TEST_HEADERS,
-				new CreateStreamMessage('insert', 'devTest', 'capybara', { id: 2 })
-			);
-
-			TEST_HEADERS.set(nats_terms.MSG_HEADERS.NATS_MSG_ID, 'dev.test.2');
-			await nats_utils.publishToStream(
-				'txn.devTest.capybara',
-				TEST_STREAM_NAME_2,
-				TEST_HEADERS,
-				new CreateStreamMessage('insert', 'devTest', 'capybara', { id: 3 })
-			);
-
-			TEST_HEADERS.set(nats_terms.MSG_HEADERS.NATS_MSG_ID, 'dev.test.3');
-			await nats_utils.publishToStream(
-				'txn.devTest.capybara',
-				TEST_STREAM_NAME_2,
-				TEST_HEADERS,
-				new CreateStreamMessage('insert', 'devTest', 'capybara', { id: 4 })
-			);
-			const result = await nats_utils.viewStream(TEST_STREAM_NAME_2);
-
-			expect(result.length).to.equal(3);
-			expect(result[0].nats_msg_id).to.equal('dev.test.1');
-			expect(result[1].nats_msg_id).to.equal('dev.test.2');
-			expect(result[2].nats_msg_id).to.equal('dev.test.3');
-
-			await nats_utils.deleteLocalStream(TEST_STREAM_NAME_2);
-		}).timeout(TEST_TIMEOUT);
-
-		it('Test multiple msgs in a stream with same id', async () => {
-			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
-
-			TEST_HEADERS.set(nats_terms.MSG_HEADERS.NATS_MSG_ID, 'dev.test.1');
-			await nats_utils.publishToStream(
-				'txn.devTest.capybara',
-				TEST_STREAM_NAME_2,
-				TEST_HEADERS,
-				new CreateStreamMessage('insert', 'devTest', 'capybara', { id: 2 })
-			);
-
-			TEST_HEADERS.set(nats_terms.MSG_HEADERS.NATS_MSG_ID, 'dev.test.1');
-			await nats_utils.publishToStream(
-				'txn.devTest.capybara',
-				TEST_STREAM_NAME_2,
-				TEST_HEADERS,
-				new CreateStreamMessage('insert', 'devTest', 'capybara', { id: 3 })
-			);
-
-			const result = await nats_utils.viewStream(TEST_STREAM_NAME_2);
-			expect(result.length).to.equal(1);
-			expect(result[0].nats_msg_id).to.equal('dev.test.1');
-
-			await nats_utils.deleteLocalStream(TEST_STREAM_NAME_2);
-		}).timeout(TEST_TIMEOUT);
-
-		it('Test multiple msgs in a stream with same id but outside od dupe window', async () => {
-			const dupe_window_rw = nats_utils.__set__('STREAM_DUPE_WINDOW', 100000000);
-			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
-
-			TEST_HEADERS.set(nats_terms.MSG_HEADERS.NATS_MSG_ID, 'dev.test.1');
-			await nats_utils.publishToStream(
-				'txn.devTest.capybara',
-				TEST_STREAM_NAME_2,
-				TEST_HEADERS,
-				new CreateStreamMessage('insert', 'devTest', 'capybara', { id: 2 })
-			);
-
-			await hdb_utils.async_set_timeout(200);
-
-			TEST_HEADERS.set(nats_terms.MSG_HEADERS.NATS_MSG_ID, 'dev.test.1');
-			await nats_utils.publishToStream(
-				'txn.devTest.capybara',
-				TEST_STREAM_NAME_2,
-				TEST_HEADERS,
-				new CreateStreamMessage('insert', 'devTest', 'capybara', { id: 3 })
-			);
-
-			const result = await nats_utils.viewStream(TEST_STREAM_NAME_2);
-			expect(result.length).to.equal(2);
-			expect(result[0].nats_msg_id).to.equal('dev.test.1');
-			expect(result[1].nats_msg_id).to.equal('dev.test.1');
-
-			await nats_utils.deleteLocalStream(TEST_STREAM_NAME_2);
-			dupe_window_rw();
-		}).timeout(TEST_TIMEOUT);
-
 		it('Test addNatsMsgHeader creates header and adds ID and origin', async () => {
 			const addNatsMsgHeader = nats_utils.__get__('addNatsMsgHeader');
 			const result = addNatsMsgHeader({ operation: 'insert', schema: 'pet', table: 'dragon' });
 
 			expect(typeof result).to.equal('object');
-			expect(result.has('Nats-Msg-Id')).to.be.true;
 			expect(result.has('origin')).to.be.true;
 		});
 

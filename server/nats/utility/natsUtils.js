@@ -31,7 +31,7 @@ const INGEST_MAX_MSG_AGE = 48 * 3600000000000; // nanoseconds
 const INGEST_MAX_BYTES = 5000000000;
 
 if (isMainThread) {
-	onMessageByType(hdb_terms.ITC_EVENT_TYPES.RESTART, (message) => {
+	onMessageByType(hdb_terms.ITC_EVENT_TYPES.RESTART, () => {
 		nats_connection = undefined
 		nats_connection_promise = undefined
 	});

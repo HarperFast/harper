@@ -68,12 +68,16 @@ function createConfigFile(args) {
 	// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
 	let schemas_args;
 	for (const arg in args) {
-		const config_param = CONFIG_PARAM_MAP[arg.toLowerCase()];
+		let config_param = CONFIG_PARAM_MAP[arg.toLowerCase()];
 
 		// Schemas config args are handled differently, so if they exist set them to var that will be used by setSchemasConfig
 		if (config_param === CONFIG_PARAMS.DATABASES) {
 			schemas_args = args[arg];
 			continue;
+		}
+
+		if (!config_param && arg.endsWith('_package')) {
+			config_param = arg;
 		}
 
 		if (config_param !== undefined) {
@@ -400,6 +404,10 @@ function updateConfigValue(
 				continue;
 			}
 
+			if (!config_param && arg.endsWith('_package')) {
+				config_param = arg;
+			}
+
 			if (config_param !== undefined) {
 				let split_param = config_param.split('_');
 				const legacy_param = hdb_terms.LEGACY_CONFIG_PARAMS[arg.toUpperCase()];
@@ -467,7 +475,7 @@ function flattenConfig(obj) {
 
 	function squashObj(obj) {
 		let result = {};
-		for (const i in obj) {
+		for (let i in obj) {
 			if (!obj.hasOwnProperty(i)) continue;
 
 			if (typeof obj[i] == 'object' && obj[i] !== null && !Array.isArray(obj[i]) && !PRESERVED_PROPERTIES.includes(i)) {
@@ -475,7 +483,8 @@ function flattenConfig(obj) {
 				for (const x in flat_obj) {
 					if (!flat_obj.hasOwnProperty(x)) continue;
 
-					const key = i.toLowerCase() + '_' + x;
+					if (x !== 'package') i = i.toLowerCase();
+					const key = i + '_' + x;
 					// This is here to catch config param which has been renamed/moved
 					if (!CONFIG_PARAMS[key.toUpperCase()] && CONFIG_PARAM_MAP[key]) {
 						result[CONFIG_PARAM_MAP[key].toLowerCase()] = flat_obj[x];

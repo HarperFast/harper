@@ -63,7 +63,13 @@ async function clusterNetwork(req) {
 		if (server.name.endsWith('-hub')) {
 			const node = { name: server.name.slice(0, -4), response_time: all_servers[x].response_time };
 			if (get_connected_nodes) {
-				node.connected_nodes = statsz[server.name] ? statsz[server.name].map((r) => r.name.slice(0, -4)) : [];
+				// When duplicate routes exists there can be duplicate connected nodes, this filters out duplicates.
+				node.connected_nodes = [];
+				if (statsz[server.name]) {
+					statsz[server.name].forEach((n) => {
+						if (!node.connected_nodes.includes(n.name.slice(0, -4))) node.connected_nodes.push(n.name.slice(0, -4));
+					});
+				}
 			}
 
 			if (get_routes) {
