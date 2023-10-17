@@ -24,7 +24,7 @@ import * as harper_logger from '../utility/logging/harper_logger';
 import { assignTrackedAccessors, deepFreeze, hasChanges, OWN_DATA } from './tracked';
 import { transaction } from './transaction';
 import { MAXIMUM_KEY } from 'ordered-binary';
-import { getWorkerIndex } from '../server/threads/manageThreads';
+import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads';
 import { readAuditEntry } from './auditStore';
 import { autoCast, convertToMS } from '../utility/common_utils';
 import { getUpdateRecord } from './RecordEncoder';
@@ -36,6 +36,7 @@ let server_utilities;
 const RANGE_ESTIMATE = 100000000;
 const STARTS_WITH_ESTIMATE = 10000000;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
+const DELETED_RECORD_EXPIRATION = 86400000; // one day for non-audit records that have been deleted
 env_mngr.initSync();
 const LMDB_PREFETCH_WRITES = env_mngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
@@ -58,7 +59,6 @@ export interface Table {
 	attributes: any[];
 	primaryKey: string;
 	subscriptions: Map<any, Function[]>;
-	expirationTimer: ReturnType<typeof setInterval>;
 	expirationMS: number;
 	indexingOperations?: Promise<void>;
 	sources: { new (): ResourceInterface }[];
@@ -109,6 +109,9 @@ export function makeTable(options) {
 	let prefetch_callbacks = [];
 	let until_next_prefetch = 1;
 	let non_prefetch_sequence = 2;
+	let cleanup_interval = 86400000;
+	let last_cleanup_interval;
+	let cleanup_timer;
 	const MAX_PREFETCH_SEQUENCE = 10;
 	const MAX_PREFETCH_BUNDLE = 6;
 	if (audit) addDeleteRemoval();
@@ -352,7 +355,6 @@ export function makeTable(options) {
 		static setTTLExpiration(expiration: number | { expiration: number; eviction?: number; scanInterval?: number }) {
 			// we set up a timer to remove expired entries. we only want the timer/reaper to run in one thread,
 			// so we use the first one
-			let scanning_interval;
 			if (typeof expiration === 'number') {
 				expiration_ms = expiration * 1000;
 				if (!eviction_ms) eviction_ms = 0; // by default, no extra time for eviction
@@ -360,51 +362,12 @@ export function makeTable(options) {
 				// an object with expiration times/options specified
 				expiration_ms = expiration.expiration * 1000;
 				eviction_ms = (expiration.eviction || 0) * 1000;
-				scanning_interval = expiration.scanInterval * 1000;
+				cleanup_interval = expiration.scanInterval * 1000;
 			} else throw new Error('Invalid expiration value type');
 			if (expiration_ms < 0) throw new Error('Expiration can not be negative');
 			// default to one quarter of the total eviction time, and make sure it fits into a 32-bit signed integer
-			scanning_interval = Math.min(scanning_interval || (expiration_ms + eviction_ms) / 4, 0x7fffffff);
-			if (getWorkerIndex() === 0) {
-				if (this.expirationTimer) clearTimeout(this.expirationTimer);
-				if (!scanning_interval) return;
-				const startNextTimer = () => {
-					harper_logger.trace(`Scheduled next eviction scan in ${scanning_interval}ms`);
-					this.expirationTimer = setTimeout(
-						() =>
-							(last_eviction_completion = last_eviction_completion.then(async () => {
-								startNextTimer();
-								if (this.primaryStore.rootStore.status !== 'open') {
-									clearTimeout(this.expirationTimer);
-									return;
-								}
-								harper_logger.trace(`Starting eviction scan for ${table_name}`);
-								try {
-									let count = 0;
-									// iterate through all entries to find expired ones
-									for (const { key, value: record, version, expiresAt } of this.primaryStore.getRange({
-										start: false,
-										snapshot: false, // we don't want to keep read transaction snapshots open
-										versions: true,
-										lazy: true, // only want to access metadata
-									})) {
-										if (expiresAt && expiresAt + eviction_ms < Date.now()) {
-											// evict!
-											TableResource.evict(key, record, version);
-											count++;
-										}
-										await rest();
-									}
-									harper_logger.trace(`Finished eviction scan for ${table_name}, evicted ${count} entries`);
-								} catch (error) {
-									harper_logger.trace(`Error in eviction scan for ${table_name}:`, error);
-								}
-							})),
-						scanning_interval
-					).unref(); // don't let this prevent closing the thread and make sure it can fit in 32-bit signed number
-				};
-				startNextTimer();
-			}
+			cleanup_interval = cleanup_interval || (expiration_ms + eviction_ms) / 4;
+			scheduleCleanup();
 		}
 
 		/**
@@ -880,7 +843,7 @@ export function makeTable(options) {
 					harper_logger.trace(`Write delete entry`, audit || track_deletes, txn_time);
 					if (audit || track_deletes) {
 						updateRecord(id, null, this[ENTRY_PROPERTY], txn_time, 0, audit, this[CONTEXT], 0, 'delete');
-						if (!audit) enqueueDeletionCleanup();
+						if (!audit) scheduleCleanup();
 						if (!retry) recordDeletion(1);
 					} else {
 						primary_store.remove(this[ID_PROPERTY]);
@@ -1199,7 +1162,7 @@ export function makeTable(options) {
 					}
 
 					if (existing_entry === undefined && !retries && (audit || track_deletes)) {
-						if (!audit) enqueueDeletionCleanup();
+						if (!audit) scheduleCleanup();
 						// TODO: There is a chance that that is wrong if we think the record doesn't exist and then on retry we discover it does exist
 						recordDeletion(1);
 					}
@@ -1717,20 +1680,24 @@ export function makeTable(options) {
 							value: updated_record,
 						});
 					} catch (error) {
+						error.message += ` while resolving record ${id} for ${table_name}`;
 						if (
-							(error.code === 'ECONNRESET' && !context?.mustRevalidate) ||
-							(context?.staleIfError &&
-								(error.statusCode === 500 ||
-									error.statusCode === 502 ||
-									error.statusCode === 503 ||
-									error.statusCode === 504))
-						)
+							existing_record &&
+							(((error.code === 'ECONNRESET' || error.code === 'ECONNREFUSED' || error.code === 'EAI_AGAIN') &&
+								!context?.mustRevalidate) ||
+								(context?.staleIfError &&
+									(error.statusCode === 500 ||
+										error.statusCode === 502 ||
+										error.statusCode === 503 ||
+										error.statusCode === 504)))
+						) {
 							// these are conditions under which we can use stale data after an error
 							resolve({
 								version: existing_version,
 								value: existing_record,
 							});
-						else reject(error);
+							harper_logger.trace(error.message, '(returned stale record)');
+						} else reject(error);
 						source_context.transaction.abort();
 						return;
 					}
@@ -1828,26 +1795,68 @@ export function makeTable(options) {
 			}, 50);
 		}
 	}
-	function enqueueDeletionCleanup() {
-		if (!deletion_cleanup) {
-			deletion_cleanup = setTimeout(() => {
-				deletion_cleanup = null;
-				if (primary_store.rootStore.status !== 'open') return;
-				try {
-					for (const { key, value } of primary_store.getRange({ start: true })) {
-						if (value === null) {
-							const entry = primary_store.getEntry(key);
-							// make sure it is still deleted when we do the removal
-							if (entry?.value === null) {
-								primary_store.remove(key, entry.version);
+	function scheduleCleanup() {
+		// Periodically evict expired records and deleted records searching for records who expiresAt timestamp is before now
+		if (cleanup_interval === last_cleanup_interval) return;
+		last_cleanup_interval = cleanup_interval;
+		if (getWorkerIndex() === getWorkerCount() - 1) {
+			// run on the last thread so we aren't overloading lower-numbered threads
+			if (cleanup_timer) clearTimeout(cleanup_timer);
+			if (!cleanup_interval) return;
+			const start_of_year = new Date();
+			start_of_year.setMonth(0);
+			start_of_year.setDate(1);
+			start_of_year.setHours(0);
+			start_of_year.setMinutes(0);
+			start_of_year.setSeconds(0);
+			// find the next scheduled run based on regular cycles from the beginning of the year (if we restart, this enables a good continuation of scheduling)
+			const next_scheduled =
+				Math.ceil((Date.now() - start_of_year.getTime()) / cleanup_interval) * cleanup_interval +
+				start_of_year.getTime();
+			const startNextTimer = (next_scheduled) => {
+				harper_logger.trace(`Scheduled next cleanup scan at ${new Date(next_scheduled)}ms`);
+				// noinspection JSVoidFunctionReturnValueUsed
+				cleanup_timer = setTimeout(
+					() =>
+						(last_eviction_completion = last_eviction_completion.then(async () => {
+							// schedule the next run for when the next cleanup interval should occur (or now if it is in the past)
+							startNextTimer(Math.max(next_scheduled + cleanup_interval, Date.now()));
+							if (primary_store.rootStore.status !== 'open') {
+								clearTimeout(cleanup_timer);
+								return;
 							}
-							recordDeletion(-1);
-						}
-					}
-				} catch (error) {
-					harper_logger.error('Error in deletion cleanup', error);
-				}
-			}, TableResource.getRecordCount() * 100 + DELETE_ENTRY_EXPIRATION).unref(); // heuristic for how often to do cleanup, we want to do it less frequently as tables get bigger because it will take longer
+							harper_logger.trace(`Starting cleanup scan for ${table_name}`);
+							try {
+								let count = 0;
+								// iterate through all entries to find expired records and deleted records
+								for (const { key, value: record, version, expiresAt } of primary_store.getRange({
+									start: false,
+									snapshot: false, // we don't want to keep read transaction snapshots open
+									versions: true,
+									lazy: true, // only want to access metadata most of the time
+								})) {
+									// if there is no auditing and we are tracking deletion, need to do cleanup of
+									// these deletion entries (audit has its own scheduled job for this)
+									if (record === null && !audit && version + DELETED_RECORD_EXPIRATION < Date.now()) {
+										// make sure it is still deleted when we do the removal
+										primary_store.remove(key, version);
+										recordDeletion(-1);
+									} else if (expiresAt && expiresAt + eviction_ms < Date.now()) {
+										// evict!
+										TableResource.evict(key, record, version);
+										count++;
+									}
+									await rest();
+								}
+								harper_logger.trace(`Finished cleanup scan for ${table_name}, evicted ${count} entries`);
+							} catch (error) {
+								harper_logger.trace(`Error in cleanup scan for ${table_name}:`, error);
+							}
+						})),
+					Math.min(next_scheduled - Date.now(), 0x7fffffff) // make sure it can fit in 32-bit signed number
+				).unref(); // don't let this prevent closing the thread
+			};
+			startNextTimer(next_scheduled);
 		}
 	}
 	function addDeleteRemoval() {
@@ -1860,6 +1869,7 @@ export function makeTable(options) {
 			recordDeletion(-1);
 		});
 	}
+
 	function runRecordExpirationEviction() {
 		// Periodically evict expired records, searching for records who expiresAt timestamp is before now
 		if (getWorkerIndex() === 0) {

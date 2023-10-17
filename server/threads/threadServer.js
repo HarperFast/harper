@@ -10,7 +10,7 @@ const terms = require('../../utility/hdbTerms');
 const { server } = require('../Server');
 const { WebSocketServer } = require('ws');
 const { createServer: createSecureSocketServer } = require('tls');
-const { getTicketKeys } = require('./manageThreads');
+const { getTicketKeys, restartNumber } = require('./manageThreads');
 const { Headers } = require('../serverHelpers/Headers');
 const { recordAction, recordActionBinary } = require('../../resources/analytics');
 const { Request, node_request_key, createReuseportFd } = require('../serverHelpers/Request');
@@ -19,7 +19,8 @@ if (process.env.DEV_MODE) {
 	try {
 		require('inspector').open(9229);
 	} catch (error) {
-		console.error('Could not start debugging on port 9229, you may already be debugging:', error.message);
+		if (restartNumber <= 1)
+			console.error('Could not start debugging on port 9229, you may already be debugging:', error.message);
 	}
 }
 process.on('uncaughtException', (error) => {

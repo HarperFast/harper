@@ -289,7 +289,7 @@ describe('Caching', () => {
 			} catch (error) {
 				returned_error = error;
 			}
-			assert.equal(returned_error?.message, 'test source error');
+			assert.equal(returned_error?.message, 'test source error while resolving record 30 for IndexedCachingTable');
 			assert.equal(source_requests, 1);
 
 			IndexedCachingTable.setTTLExpiration({
