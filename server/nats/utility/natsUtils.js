@@ -19,6 +19,8 @@ const hdb_logger = require('../../../utility/logging/harper_logger');
 const crypto_hash = require('../../../security/cryptoHash');
 const transaction = require('../../../dataLayer/transaction');
 const config_utils = require('../../../config/configUtils');
+const { onMessageByType } = require('../../threads/manageThreads');
+const { isMainThread } = require('worker_threads');
 const { Encoder, decode } = require('msgpackr');
 const encoder = new Encoder(); // use default encoder options
 
@@ -27,6 +29,14 @@ const user = require('../../../security/user');
 
 const INGEST_MAX_MSG_AGE = 48 * 3600000000000; // nanoseconds
 const INGEST_MAX_BYTES = 5000000000;
+
+if (isMainThread) {
+	onMessageByType(hdb_terms.ITC_EVENT_TYPES.RESTART, () => {
+		nats_connection = undefined
+		nats_connection_promise = undefined
+	});
+}
+
 
 const {
 	connect,
