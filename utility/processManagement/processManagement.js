@@ -11,11 +11,8 @@ const hdb_logger = require('../../utility/logging/harper_logger');
 const clustering_utils = require('../clustering/clusterUtilities');
 const { startWorker, onMessageFromWorkers } = require('../../server/threads/manageThreads');
 const sys_info = require('../environment/systemInformation');
-const util = require('util');
 const child_process = require('child_process');
 const { execFile } = child_process;
-const exec = util.promisify(child_process.exec);
-const si = require('systeminformation');
 let pm2;
 
 module.exports = {
@@ -43,10 +40,6 @@ module.exports = {
 	stopClustering,
 	reloadClustering,
 };
-
-const { PACKAGE_ROOT } = require('../hdbTerms');
-const terms = require('../hdbTerms');
-const { loggerWithTag } = hdb_logger;
 
 // This indicates when we are running as a CLI scripting command (kind of taking the place of processManagement's CLI), and so we
 // are generally starting and stopping processes through PM2.
@@ -165,6 +158,7 @@ function start(proc_config) {
 	}
 	child_processes.push(subprocess);
 }
+
 function startWithPM2(proc_config) {
 	return new Promise(async (resolve, reject) => {
 		try {

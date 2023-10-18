@@ -9,6 +9,7 @@ const terms = require('../utility/hdbTerms');
 const hdb_logger = require('../utility/logging/harper_logger');
 const fs = require('fs-extra');
 const path = require('path');
+const si = require('systeminformation');
 const check_jwt_tokens = require('../utility/install/checkJWTTokensExist');
 const install = require('../utility/install/installer');
 const chalk = require('chalk');
@@ -36,7 +37,7 @@ const schema_describe = require('../dataLayer/schemaDescribe');
 const lmdb_create_txn_environment = require('../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsAuditEnvironment');
 const CreateTableObject = require('../dataLayer/CreateTableObject');
 const hdb_terms = require('../utility/hdbTerms');
-const { getHDBProcessInfo } = require('../utility/environment/systemInformation');
+
 let pm2_utils;
 
 // These may change to match unix return codes (i.e. 0, 1)
@@ -47,6 +48,25 @@ const UPGRADE_ERR = 'Got an error while trying to upgrade your HarperDB instance
 const HDB_NOT_FOUND_MSG = 'HarperDB not found, starting install process.';
 const INSTALL_ERR = 'There was an error during install, check install_log.log for more details.  Exiting.';
 const HDB_STARTED = 'HarperDB successfully started.';
+
+function addExitListeners() {
+	const remove_hdb_pid = () => {
+		fs.removeSync(path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE));
+		process.exit(0);
+	};
+	process.on('exit', () => {
+		remove_hdb_pid();
+	});
+	process.on('SIGINT', () => {
+		remove_hdb_pid();
+	});
+	process.on('SIGQUIT', () => {
+		remove_hdb_pid();
+	});
+	process.on('SIGTERM', () => {
+		remove_hdb_pid();
+	});
+}
 
 /**
  * Do the initial checks and potential upgrades/installation
@@ -68,11 +88,24 @@ async function initialize(called_by_install = false, called_by_main = false) {
 		}
 	}
 
-	const hdb_ps = await getHDBProcessInfo();
-	if (hdb_ps.core.length > 0) {
-		console.error('HarperDB is already running');
-		process.exit();
+	// Check to see if HarperDB is already running by checking for a pid file
+	// If found confirm it matches a currently running process
+	try {
+		const hdb_pid = Number.parseInt(
+			await fs.readFile(path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE), 'utf8')
+		);
+		let processes = await si.processes();
+		for (const p of processes.list) {
+			if (p.pid === hdb_pid) {
+				console.log('HarperDB is already running');
+				process.exit(0);
+			}
+		}
+	} catch (err) {
+		// Ignore error, If readFile finds no pid file we can assume that HDB is not already running
 	}
+
+	addExitListeners();
 
 	// Write HarperDB PID to file for tracking purposes
 	await fs.writeFile(path.join(env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH), hdb_terms.HDB_PID_FILE), `${process.pid}`);
