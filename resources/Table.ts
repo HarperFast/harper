@@ -1155,7 +1155,7 @@ export function makeTable(options) {
 						for (const source of TableResource.sources) {
 							if (this[CONTEXT]?.source === source || this[CONTEXT]?.source?.isEqual?.(source)) break;
 							if (source?.publish && (!source.publish.reliesOnPrototype || source.prototype.publish)) {
-								const next_completion = source.publish(id, this);
+								const next_completion = source.publish(id, message, this);
 								completion = completion ? Promise.all([completion, next_completion]) : next_completion;
 							}
 						}
