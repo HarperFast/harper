@@ -89,7 +89,7 @@ async function initialize(called_by_install = false, called_by_main = false) {
 	}
 
 	// Check to see if HarperDB is already running by checking for a pid file
-	// If found confirm it matches a currently running process
+	// If found confirm it matches a currently running processes
 	try {
 		const hdb_pid = Number.parseInt(
 			await fs.readFile(path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE), 'utf8')
