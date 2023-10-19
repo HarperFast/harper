@@ -40,7 +40,6 @@ const DELETED_RECORD_EXPIRATION = 86400000; // one day for non-audit records tha
 env_mngr.initSync();
 const LMDB_PREFETCH_WRITES = env_mngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
-const DELETION_COUNT_KEY = Symbol.for('deletions');
 const VERSION_PROPERTY = Symbol.for('version');
 const INCREMENTAL_UPDATE = Symbol.for('incremental-update');
 const ENTRY_PROPERTY = Symbol('entry');
@@ -91,7 +90,7 @@ export function makeTable(options) {
 	if (!attributes) attributes = [];
 	listenToCommits(primary_store, audit_store);
 	const updateRecord = getUpdateRecord(primary_store, table_id, audit_store);
-	let deletion_count = 0;
+	const deletion_count = 0;
 	let deletion_cleanup;
 	let has_source_get;
 	let pending_deletion_count_write;
@@ -786,7 +785,6 @@ export function makeTable(options) {
 						context,
 						context.expiresAt || (expiration_ms ? expiration_ms + Date.now() : 0)
 					);
-					if (existing_record === null && !retry) recordDeletion(-1);
 					return completion;
 				},
 			};
@@ -844,7 +842,6 @@ export function makeTable(options) {
 					if (audit || track_deletes) {
 						updateRecord(id, null, this[ENTRY_PROPERTY], txn_time, 0, audit, this[CONTEXT], 0, 'delete');
 						if (!audit) scheduleCleanup();
-						if (!retry) recordDeletion(1);
 					} else {
 						primary_store.remove(this[ID_PROPERTY]);
 					}
@@ -1161,10 +1158,8 @@ export function makeTable(options) {
 						}
 					}
 
-					if (existing_entry === undefined && !retries && (audit || track_deletes)) {
-						if (!audit) scheduleCleanup();
-						// TODO: There is a chance that that is wrong if we think the record doesn't exist and then on retry we discover it does exist
-						recordDeletion(1);
+					if (existing_entry === undefined && track_deletes && !audit) {
+						scheduleCleanup();
 					}
 					// always audit this, but don't change existing version
 					// TODO: Use direct writes in the future (copying binary data is hard because it invalidates the cache)
@@ -1316,14 +1311,31 @@ export function makeTable(options) {
 			});
 			return TableResource.indexingOperation;
 		}
-		static getRecordCount() {
+		static getRecordCount(options) {
 			// iterate through the metadata entries to exclude their count and exclude the deletion counts
-			let excluded_count = 0;
-			for (const { key, value } of primary_store.getRange({ end: false })) {
-				excluded_count++;
-				if (key[0]?.description === 'deletions') excluded_count += value || 0;
+			const entry_count = primary_store.getStats().entryCount;
+			const MAX_EXACT_COUNT = 5000;
+			const SAMPLE_END_SIZE = 1000;
+			let limit;
+			if (entry_count > MAX_EXACT_COUNT && !options?.preciseCount) limit = SAMPLE_END_SIZE;
+			let record_count = 0;
+			for (const { value } of primary_store.getRange({ start: true, lazy: true, limit })) {
+				if (value != null) record_count++;
 			}
-			return primary_store.getStats().entryCount - excluded_count;
+			if (limit) {
+				for (const { key, value } of primary_store.getRange({ start: '\uffff', reverse: true, lazy: true, limit })) {
+					if (value != null) record_count++;
+				}
+				record_count = Math.round((record_count / (limit * 2)) * entry_count);
+				return {
+					recordCount: record_count,
+					estimated: true,
+				};
+			}
+			return {
+				recordCount: record_count,
+				estimated: false,
+			};
 		}
 		/**
 		 * When attributes have been changed, we update the accessors that are assigned to this table
@@ -1781,20 +1793,6 @@ export function makeTable(options) {
 			);
 		});
 	}
-	/*
-	Here we write the deletion count for our thread id
-	 */
-	function recordDeletion(increment: number) {
-		if (!deletion_count) deletion_count = primary_store.get([DELETION_COUNT_KEY, threadId]) || 0;
-		deletion_count += increment;
-		if (!pending_deletion_count_write) {
-			pending_deletion_count_write = setTimeout(() => {
-				pending_deletion_count_write = null;
-				if (primary_store.rootStore.status === 'open')
-					primary_store.put([DELETION_COUNT_KEY, threadId], deletion_count);
-			}, 50);
-		}
-	}
 	function scheduleCleanup() {
 		// Periodically evict expired records and deleted records searching for records who expiresAt timestamp is before now
 		if (cleanup_interval === last_cleanup_interval) return;
@@ -1840,7 +1838,6 @@ export function makeTable(options) {
 									if (record === null && !audit && version + DELETED_RECORD_EXPIRATION < Date.now()) {
 										// make sure it is still deleted when we do the removal
 										primary_store.remove(key, version);
-										recordDeletion(-1);
 									} else if (expiresAt && expiresAt + eviction_ms < Date.now()) {
 										// evict!
 										TableResource.evict(key, record, version);
@@ -1866,7 +1863,6 @@ export function makeTable(options) {
 			if (entry?.value === null) {
 				primary_store.remove(id, entry.version);
 			}
-			recordDeletion(-1);
 		});
 	}
 
