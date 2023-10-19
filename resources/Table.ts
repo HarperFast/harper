@@ -1317,7 +1317,7 @@ export function makeTable(options) {
 			const MAX_EXACT_COUNT = 5000;
 			const SAMPLE_END_SIZE = 1000;
 			let limit;
-			if (entry_count > MAX_EXACT_COUNT && !options?.preciseCount) limit = SAMPLE_END_SIZE;
+			if (entry_count > MAX_EXACT_COUNT && !options?.exactCount) limit = SAMPLE_END_SIZE;
 			let record_count = 0;
 			for (const { value } of primary_store.getRange({ start: true, lazy: true, limit })) {
 				if (value != null) record_count++;
