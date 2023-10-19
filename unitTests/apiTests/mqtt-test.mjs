@@ -6,13 +6,29 @@ import { decode, encode, DecoderStream } from 'cbor-x';
 import { getVariables, callOperation } from './utility.js';
 import { setupTestApp } from './setupTestApp.mjs';
 import { connect } from 'mqtt';
+import {
+	setNATSReplicator,
+	setPublishToStream,
+	publishToStream,
+	setSubscription,
+} from '../../ts-build/server/nats/natsReplicator.js';
 const { authorization, url } = getVariables();
-
 describe('test MQTT connections and commands', () => {
 	let available_records;
 	let client, client2;
+	let natsPublishToStream = publishToStream;
+	let natsSetSubscription = setSubscription;
+	let replicated_published_messages = [];
 	before(async () => {
 		available_records = await setupTestApp();
+		setPublishToStream(
+			(subject, stream, header, message) => {
+				replicated_published_messages.push(message);
+			},
+			() => {}
+		);
+		setNATSReplicator('SimpleRecord', 'data', tables.SimpleRecord);
+
 		client = connect('ws://localhost:9926', {
 			wsOptions: {
 				headers: {
@@ -40,6 +56,10 @@ describe('test MQTT connections and commands', () => {
 			});
 		});
 	});
+	after(() => {
+		setPublishToStream(natsPublishToStream, natsSetSubscription); // restore
+	});
+
 	it('subscribe to retained/persisted record', async function () {
 		let path = 'VariedProps/' + available_records[1];
 		await new Promise((resolve, reject) => {
@@ -111,6 +131,7 @@ describe('test MQTT connections and commands', () => {
 		assert(received.length > 10);
 		assert.equal(received[0].name, 'radbot 9000');
 		//console.log({ published, received });
+		assert(replicated_published_messages.length > 10);
 	});
 	it('subscribe to retained record with upsert operation', async function () {
 		let path = 'SimpleRecord/77';
