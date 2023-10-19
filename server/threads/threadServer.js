@@ -25,6 +25,7 @@ if (process.env.DEV_MODE) {
 }
 process.on('uncaughtException', (error) => {
 	if (error.code === 'ECONNRESET') return; // that's what network connections do
+	if (error.message === 'write EIO') return; // that means the terminal is closed
 	console.error('uncaughtException', error);
 });
 const { HDB_SETTINGS_NAMES, CONFIG_PARAMS } = terms;
