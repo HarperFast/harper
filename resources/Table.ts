@@ -1322,10 +1322,12 @@ export function makeTable(options) {
 			let limit;
 			if (entry_count > MAX_EXACT_COUNT && !options?.exactCount) limit = SAMPLE_END_SIZE;
 			let record_count = 0;
-			for (const { key, value } of primary_store.getRange({ start: true, lazy: true, limit })) {
+			for (const { value } of primary_store.getRange({ start: true, lazy: true, limit })) {
 				if (value != null) record_count++;
 			}
 			if (limit) {
+				// in this case we are going to make an estimate of the table count using the first thousand
+				// entries and last thousand entries
 				const first_record_count = record_count;
 				record_count = 0;
 				for (const { value } of primary_store.getRange({ start: '\uffff', reverse: true, lazy: true, limit })) {
