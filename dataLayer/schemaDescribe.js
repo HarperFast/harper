@@ -197,7 +197,7 @@ async function descTable(describe_table_object, attr_perms) {
 	try {
 		const record_count = table_obj.getRecordCount({ exactCount: describe_table_object.exact_count === 'true' });
 		table_result.record_count = record_count.recordCount;
-		table_result.estimated_record_count = record_count.estimated;
+		table_result.estimated_record_range = record_count.estimatedRange;
 		let audit_store = table_obj.auditStore;
 		if (audit_store) {
 			for (let key of audit_store.getKeys({ reverse: true, limit: 1 })) {

@@ -421,7 +421,7 @@ export function makeTable(options) {
 				return {
 					// basically a describe call
 					recordCount: record_count.recordCount,
-					estimatedRecordCount: record_count.estimated,
+					estimatedRecordRange: record_count.estimatedRange,
 					records: './', // an href to the records themselves
 					name: table_name,
 					database: database_name,
@@ -1322,22 +1322,34 @@ export function makeTable(options) {
 			let limit;
 			if (entry_count > MAX_EXACT_COUNT && !options?.exactCount) limit = SAMPLE_END_SIZE;
 			let record_count = 0;
-			for (const { value } of primary_store.getRange({ start: true, lazy: true, limit })) {
+			for (const { key, value } of primary_store.getRange({ start: true, lazy: true, limit })) {
 				if (value != null) record_count++;
 			}
 			if (limit) {
-				for (const { key, value } of primary_store.getRange({ start: '\uffff', reverse: true, lazy: true, limit })) {
+				const first_record_count = record_count;
+				record_count = 0;
+				for (const { value } of primary_store.getRange({ start: '\uffff', reverse: true, lazy: true, limit })) {
 					if (value != null) record_count++;
 				}
-				record_count = Math.round((record_count / (limit * 2)) * entry_count);
+				const sample_size = limit * 2;
+				const record_rate = (record_count + first_record_count) / sample_size;
+				const variance =
+					Math.pow((record_count - first_record_count + 1) / limit / 2, 2) + // variance between samples
+					(record_rate * (1 - record_rate)) / sample_size;
+				const sd = Math.max(Math.sqrt(variance) * entry_count, 1);
+				const estimated_record_count = Math.round(record_rate * entry_count);
+				const lower_ci_limit = Math.max(estimated_record_count - 1.96 * sd, 0);
+				const upper_ci_limit = Math.min(estimated_record_count + 1.96 * sd, entry_count);
+				let significant_unit = Math.pow(10, Math.round(Math.log10(sd)));
+				if (significant_unit > estimated_record_count) significant_unit = significant_unit / 10;
+				record_count = Math.round(estimated_record_count / significant_unit) * significant_unit;
 				return {
 					recordCount: record_count,
-					estimated: true,
+					estimatedRange: [Math.round(lower_ci_limit), Math.round(upper_ci_limit)],
 				};
 			}
 			return {
 				recordCount: record_count,
-				estimated: false,
 			};
 		}
 		/**
