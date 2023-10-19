@@ -416,15 +416,18 @@ export function makeTable(options) {
 		}
 
 		static get(request, context) {
-			if (request && typeof request === 'object' && !Array.isArray(request) && request.url === '')
+			if (request && typeof request === 'object' && !Array.isArray(request) && request.url === '') {
+				const record_count = this.getRecordCount();
 				return {
 					// basically a describe call
-					recordCount: this.getRecordCount(),
+					recordCount: record_count.recordCount,
+					estimatedRecordCount: record_count.estimated,
 					records: './', // an href to the records themselves
 					name: table_name,
 					database: database_name,
 					attributes,
 				};
+			}
 			return super.get(request, context);
 		}
 		/**
