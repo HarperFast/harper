@@ -120,11 +120,11 @@ async function getHDBProcessInfo() {
 			}
 		}
 
-		processes.list.forEach((process) => {
-			if (process.pid === hdb_pid) {
-				harperdb_processes.core.push(process);
-			} else if (process.name === 'nats-server') {
-				harperdb_processes.clustering.push(process);
+		processes.list.forEach((p) => {
+			if (p.pid === hdb_pid) {
+				harperdb_processes.core.push(p);
+			} else if (p.name === 'nats-server') {
+				harperdb_processes.clustering.push(p);
 			}
 		});
 
