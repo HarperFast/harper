@@ -37,6 +37,7 @@ async function describeAll(op_obj) {
 		let schema_list = {};
 		let schema_perms = {};
 		let t_results = [];
+		const exact_count = op_obj.exact_count;
 		for (let schema in databases) {
 			schema_list[schema] = true;
 			if (!sys_call && !is_su) schema_perms[schema] = op_obj.hdb_user.role.permission[schema].describe;
@@ -45,10 +46,10 @@ async function describeAll(op_obj) {
 				try {
 					let desc;
 					if (sys_call || is_su) {
-						desc = await descTable({ schema, table });
+						desc = await descTable({ schema, table, exact_count });
 					} else if (role_perms && role_perms[schema].describe && role_perms[schema].tables[table].describe) {
 						const t_attr_perms = role_perms[schema].tables[table].attribute_permissions;
-						desc = await descTable({ schema, table }, t_attr_perms);
+						desc = await descTable({ schema, table, exact_count }, t_attr_perms);
 					}
 					if (desc) {
 						t_results.push(desc);
@@ -194,7 +195,9 @@ async function descTable(describe_table_object, attr_perms) {
 	table_result.clustering_stream_name = crypto_hash.createNatsTableStreamName(table_result.schema, table_result.name);
 
 	try {
-		table_result.record_count = table_obj.getRecordCount();
+		const record_count = table_obj.getRecordCount({ exactCount: describe_table_object.exact_count === 'true' });
+		table_result.record_count = record_count.recordCount;
+		table_result.estimated_record_range = record_count.estimatedRange;
 		let audit_store = table_obj.auditStore;
 		if (audit_store) {
 			for (let key of audit_store.getKeys({ reverse: true, limit: 1 })) {
@@ -250,7 +253,7 @@ async function describeSchema(describe_schema_object) {
 		}
 		if (hdb_utils.isEmpty(table_perms) || table_perms.describe) {
 			let data = await descTable(
-				{ schema: describe_schema_object.schema, table: table_name },
+				{ schema: describe_schema_object.schema, table: table_name, exact_count: describe_schema_object.exact_count },
 				table_perms ? table_perms.attribute_permissions : null
 			);
 			if (data) {
