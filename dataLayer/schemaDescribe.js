@@ -37,7 +37,7 @@ async function describeAll(op_obj) {
 		let schema_list = {};
 		let schema_perms = {};
 		let t_results = [];
-		const exact_count = op_obj.exact_count;
+		const exact_count = op_obj?.exact_count;
 		for (let schema in databases) {
 			schema_list[schema] = true;
 			if (!sys_call && !is_su) schema_perms[schema] = op_obj.hdb_user.role.permission[schema].describe;
