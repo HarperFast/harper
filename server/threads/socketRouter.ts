@@ -14,7 +14,9 @@ const workers_ready = [];
 
 if (isMainThread) {
 	process.on('uncaughtException', (error) => {
+		// TODO: Maybe we should try to log the first of each type of error
 		if (error.code === 'ECONNRESET') return; // that's what network connections do
+		if (error.message === 'write EIO') return; // that means the terminal is closed
 		console.error('uncaughtException', error);
 	});
 }
