@@ -97,8 +97,7 @@ async function initialize(called_by_install = false, called_by_main = false) {
 		let processes = await si.processes();
 		for (const p of processes.list) {
 			if (p.pid === hdb_pid) {
-				console.log('HarperDB is already running');
-				process.exit(0);
+				console.log('HarperDB appears to be already running.');
 			}
 		}
 	} catch (err) {
