@@ -1,16 +1,15 @@
 import { platform } from 'os';
-export const node_request_key = Symbol('node request');
 /**
  * We define our own request class, to ensure that it has integrity against leaks in a secure environment
  * and for better conformance to WHATWG standards.
  */
 export class Request {
-	[node_request_key];
 	#body;
-	constructor(node_request) {
+	constructor(node_request, node_response) {
 		this.method = node_request.method;
 		const url = node_request.url;
-		this[node_request_key] = node_request;
+		this._nodeRequest = node_request;
+		this._nodeResponse = node_response;
 		this.url = url;
 		this.headers = new Headers(node_request.headers);
 	}
@@ -28,16 +27,16 @@ export class Request {
 		else this.url = pathname;
 	}
 	get protocol() {
-		return this[node_request_key].socket.encrypted ? 'https' : 'http';
+		return this._nodeRequest.socket.encrypted ? 'https' : 'http';
 	}
 	get ip() {
-		return this[node_request_key].socket.remoteAddress;
+		return this._nodeRequest.socket.remoteAddress;
 	}
 	get body() {
-		return this.#body || (this.#body = new RequestBody(this[node_request_key]));
+		return this.#body || (this.#body = new RequestBody(this._nodeRequest));
 	}
 	get host() {
-		return this[node_request_key].authority || this[node_request_key].headers.host;
+		return this._nodeRequest.authority || this._nodeRequest.headers.host;
 	}
 	get isAborted() {
 		// TODO: implement this

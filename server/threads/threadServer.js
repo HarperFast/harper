@@ -299,10 +299,16 @@ function getHTTPServer(port, secure, is_operations_server) {
 		http_servers[port] = (secure ? createSecureServer : createServer)(options, async (node_request, node_response) => {
 			try {
 				let start_time = performance.now();
-				let request = new Request(node_request);
+				let request = new Request(node_request, node_response);
 				if (is_operations_server) request.isOperationsServer = true;
 				// assign a more WHATWG compliant headers object, this is our real standard interface
 				let response = await http_chain[port](request);
+				if (!response) {
+					// this means that the request was completely handled, presumably through the
+					// node_response and we are actually just done
+					if (request._nodeResponse.statusCode) return;
+					response = unhandled(request);
+				}
 				response.headers?.set?.('Server', 'HarperDB');
 				if (response.status === -1) {
 					// This means the HDB stack didn't handle the request, and we can then cascade the request
@@ -413,7 +419,7 @@ function makeCallbackChain(responders, port_num) {
 function unhandled(request) {
 	if (request.user) {
 		// pass on authentication information to the next server
-		request[node_request_key].user = request.user;
+		request._nodeRequest.user = request.user;
 	}
 	return {
 		status: -1,
