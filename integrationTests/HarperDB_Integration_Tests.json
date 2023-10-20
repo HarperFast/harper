@@ -65137,13 +65137,14 @@
 						{
 							"listen": "test",
 							"script": {
-								"type": "text/javascript",
 								"exec": [
 									"tests[\"Delete Schema\"] = responseBody.has(\"successfully delete\");\r",
+									"setTimeout(()=>{}, 1000)\r",
 									"\r",
 									"\r",
 									""
-								]
+								],
+								"type": "text/javascript"
 							}
 						}
 					],
@@ -65421,7 +65422,7 @@
 								"exec": [
 									"pm.test(\"Validation Check Schema Not found\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData).to.eql({});",
+									"    pm.expect(jsonData).to.not.haveOwnProperty('northnwd')",
 									"});",
 									""
 								],
@@ -65459,7 +65460,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"operation\":\"describe_schema\",\n  \"schema\":\"northnwd\"\n}"
+							"raw": "{\n  \"operation\":\"describe_all\"\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
