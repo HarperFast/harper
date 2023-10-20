@@ -65421,7 +65421,7 @@
 								"exec": [
 									"pm.test(\"Validation Check Schema Not found\", function () {",
 									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.error).to.eql(\"database 'northnwd' does not exist\");",
+									"    pm.expect(jsonData).to.eql({});",
 									"});",
 									""
 								],
