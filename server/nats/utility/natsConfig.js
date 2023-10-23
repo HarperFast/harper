@@ -24,8 +24,13 @@ const MAX_SERVER_CONNECTION_RETRY = 5;
 module.exports = {
 	generateNatsConfig,
 	removeNatsConfig,
+	getHubConfigPath,
 };
 
+function getHubConfigPath() {
+	const HDB_ROOT = env_manager.get(CONFIG_PARAMS.ROOTPATH);
+	return path.join(HDB_ROOT, HDB_CLUSTERING_FOLDER, nats_terms.NATS_CONFIG_FILES.HUB_SERVER);
+}
 /**
  * Generates and writes to file Nats config for hub and leaf servers.
  * Config params come from harperdb-config.yaml and users table.

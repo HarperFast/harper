@@ -13,9 +13,9 @@ const { startWorker, onMessageFromWorkers } = require('../../server/threads/mana
 const sys_info = require('../environment/systemInformation');
 const util = require('util');
 const child_process = require('child_process');
+const fs = require('fs');
 const { execFile } = child_process;
-const exec = util.promisify(child_process.exec);
-const si = require('systeminformation');
+
 let pm2;
 
 module.exports = {
@@ -43,10 +43,6 @@ module.exports = {
 	stopClustering,
 	reloadClustering,
 };
-
-const { PACKAGE_ROOT } = require('../hdbTerms');
-const terms = require('../hdbTerms');
-const { loggerWithTag } = hdb_logger;
 
 // This indicates when we are running as a CLI scripting command (kind of taking the place of processManagement's CLI), and so we
 // are generally starting and stopping processes through PM2.
@@ -93,13 +89,21 @@ function start(proc_config) {
 	if (pm2_mode) return startWithPM2(proc_config);
 	let subprocess = execFile(proc_config.script, proc_config.args.split(' '), proc_config);
 	subprocess.name = proc_config.name;
-	subprocess.on('exit', (code) => {
+	subprocess.on('exit', async (code) => {
 		let index = child_processes.indexOf(subprocess); // dead, remove it from processes to kill now
 		if (index > -1) child_processes.splice(index, 1);
-		if (!shutting_down && code > 0) {
+		if (!shutting_down && code !== 0) {
 			proc_config.restarts = (proc_config.restarts || 0) + 1;
 			// restart the child process
-			if (proc_config.restarts < MAX_RESTARTS) start(proc_config);
+			if (proc_config.restarts < MAX_RESTARTS) {
+				if (!fs.existsSync(nats_config.getHubConfigPath())) {
+					await nats_config.generateNatsConfig(true);
+					start(proc_config);
+					await new Promise((resolve) => setTimeout(resolve, 3000));
+					await nats_config.removeNatsConfig(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB);
+					await nats_config.removeNatsConfig(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
+				} else start(proc_config);
+			}
 		}
 	});
 	const SERVICE_DEFINITION = {
