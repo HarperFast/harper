@@ -85,7 +85,7 @@ let shutting_down;
  * @param proc_config
  * @returns {Promise<unknown>}
  */
-function start(proc_config) {
+function start(proc_config, no_kill = false) {
 	if (pm2_mode) return startWithPM2(proc_config);
 	let subprocess = execFile(proc_config.script, proc_config.args.split(' '), proc_config);
 	subprocess.name = proc_config.name;
@@ -154,8 +154,8 @@ function start(proc_config) {
 	subprocess.unref();
 
 	// if we are running in standard mode, then we want to clean up our child processes when we exit
-	if (!child_processes) {
-		child_processes = [];
+	child_processes = [];
+	if (!child_processes && !no_kill) {
 		const kill_children = () => {
 			shutting_down = true;
 			if (!child_processes) return;
@@ -426,7 +426,7 @@ async function startAllServices() {
  * @param service_name
  * @returns {Promise<void>}
  */
-async function startService(service_name) {
+async function startService(service_name, no_kill = false) {
 	try {
 		let start_config;
 		service_name = service_name.toLowerCase();
@@ -442,13 +442,13 @@ async function startService(service_name) {
 				break;
 			case hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB.toLowerCase():
 				start_config = services_config.generateNatsHubServerConfig();
-				await start(start_config);
+				await start(start_config, no_kill);
 				// For security reasons remove the Nats servers config file from disk after service has started.
 				await nats_config.removeNatsConfig(service_name);
 				return;
 			case hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF.toLowerCase():
 				start_config = services_config.generateNatsLeafServerConfig();
-				await start(start_config);
+				await start(start_config, no_kill);
 				// For security reasons remove the Nats servers config file from disk after service has started.
 				await nats_config.removeNatsConfig(service_name);
 				return;
@@ -561,10 +561,10 @@ let replyWorker;
  * Starts all the processes that make up clustering
  * @returns {Promise<void>}
  */
-async function startClusteringProcesses() {
+async function startClusteringProcesses(no_kill = false) {
 	for (const proc in hdb_terms.CLUSTERING_PROCESSES) {
 		const service = hdb_terms.CLUSTERING_PROCESSES[proc];
-		await startService(service);
+		await startService(service, no_kill);
 	}
 }
 /**

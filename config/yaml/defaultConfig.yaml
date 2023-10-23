@@ -39,7 +39,7 @@ clustering:
       maxBytes: null
       maxMsgs: null
       path: null
-  logLevel: error
+  logLevel: info
   nodeName: null
   republishMessages: false
   databaseLevel: false

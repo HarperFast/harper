@@ -38,7 +38,8 @@ const lmdb_create_txn_environment = require('../dataLayer/harperBridge/lmdbBridg
 const CreateTableObject = require('../dataLayer/CreateTableObject');
 const hdb_terms = require('../utility/hdbTerms');
 
-let pm2_utils;
+let pm_utils;
+let cmd_args;
 
 // These may change to match unix return codes (i.e. 0, 1)
 const ENOENT_ERR_CODE = -2;
@@ -90,6 +91,13 @@ async function initialize(called_by_install = false, called_by_main = false) {
 
 	// Check to see if HarperDB is already running by checking for a pid file
 	// If found confirm it matches a currently running processes
+	let is_hdb_running;
+	let service_clustering = cmd_args?.service === 'clustering';
+	if (cmd_args?.service && !service_clustering) {
+		console.error('Unrecognized service argument');
+		process.exit(1);
+	}
+
 	try {
 		const hdb_pid = Number.parseInt(
 			await fs.readFile(path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE), 'utf8')
@@ -97,11 +105,38 @@ async function initialize(called_by_install = false, called_by_main = false) {
 		let processes = await si.processes();
 		for (const p of processes.list) {
 			if (p.pid === hdb_pid) {
-				console.log('HarperDB appears to be already running.');
+				if (!service_clustering) {
+					console.log('HarperDB appears to be already running.');
+				} else {
+					is_hdb_running = true;
+				}
+				break;
 			}
 		}
 	} catch (err) {
 		// Ignore error, If readFile finds no pid file we can assume that HDB is not already running
+	}
+
+	// Requiring the processManagement mod will create the .pm2 dir. This code is here to allow install to set
+	// pm2 env vars before that is done.
+	if (pm_utils === undefined) pm_utils = require('../utility/processManagement/processManagement');
+
+	if (service_clustering) {
+		if (!is_hdb_running) {
+			console.error('HarperDB must be running to start clustering.');
+			process.exit();
+		}
+
+		if (!env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY)) {
+			console.error('Clustering must be setup and enabled in harperdb-config.');
+			process.exit();
+		}
+
+		// Start all services that are required for clustering
+		console.log('Starting clustering.');
+		await nats_config.generateNatsConfig();
+		await pm_utils.startClusteringProcesses(true);
+		process.exit();
 	}
 
 	addExitListeners();
@@ -109,10 +144,6 @@ async function initialize(called_by_install = false, called_by_main = false) {
 	// Write HarperDB PID to file for tracking purposes
 	await fs.writeFile(path.join(env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH), hdb_terms.HDB_PID_FILE), `${process.pid}`);
 	hdb_logger.info('HarperDB PID', process.pid);
-
-	// Requiring the processManagement mod will create the .pm2 dir. This code is here to allow install to set
-	// pm2 env vars before that is done.
-	if (pm2_utils === undefined) pm2_utils = require('../utility/processManagement/processManagement');
 
 	// Check to see if an upgrade is needed based on existing hdb_info data.  If so, we need to force the user to upgrade
 	// before the server can be started.
@@ -164,56 +195,19 @@ async function initialize(called_by_install = false, called_by_main = false) {
  */
 async function main(called_by_install = false) {
 	try {
-		const cmd_args = minimist(process.argv);
+		cmd_args = minimist(process.argv);
 		if (cmd_args.ROOTPATH) {
 			config_utils.updateConfigObject('settings_path', path.join(cmd_args.ROOTPATH, terms.HDB_CONFIG_FILE));
 		}
 		await initialize(called_by_install, true);
-		const clustering_enabled = hdb_utils.autoCastBoolean(env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY));
+
 		const is_scripted = process.env.IS_SCRIPTED_SERVICE && !cmd_args.service;
-		const start_clustering = clustering_enabled;
 
-		// Run can be called with a --service argument which allows designated services to be started.
-		if (!hdb_utils.isEmpty(cmd_args.service)) {
-			if (typeof cmd_args.service !== 'string') {
-				const service_err_msg = `Run service argument expected a string but received: ${cmd_args.service}`;
-				hdb_logger.error(service_err_msg);
-				console.log(service_err_msg);
-				process.exit(1);
-			}
-
-			const cmd_args_array = cmd_args.service.split(',');
-			for (const args of cmd_args_array) {
-				const service = args.toLowerCase();
-				if (terms.PROCESS_DESCRIPTORS_VALIDATE[service] === undefined) {
-					hdb_logger.error(`Run received unrecognized service command argument: ${service}`);
-					continue;
-				}
-
-				// If clustering not enabled in settings.js do not start.
-				if (service.includes('clustering') && !clustering_enabled) {
-					hdb_logger.error(`${service} is not enabled in settings`);
-					continue;
-				}
-
-				if (service === 'clustering') {
-					// Start all services that are required for clustering
-					await pm2_utils.startClusteringProcesses();
-				} else {
-					await pm2_utils.startService(terms.PROCESS_DESCRIPTORS_VALIDATE[service]);
-				}
-
-				const log_msg = `${terms.PROCESS_DESCRIPTORS_VALIDATE[service]} successfully started.`;
-				hdb_logger.notify(log_msg);
-				console.log(log_msg);
-			}
-		} else {
-			if (start_clustering) {
-				if (!is_scripted) await pm2_utils.startClusteringProcesses();
-				await pm2_utils.startClusteringThreads();
-			}
-			await startHTTPThreads(env.get(hdb_terms.CONFIG_PARAMS.THREADS));
+		if (hdb_utils.autoCastBoolean(env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY))) {
+			if (!is_scripted) await pm_utils.startClusteringProcesses();
+			await pm_utils.startClusteringThreads();
 		}
+		await startHTTPThreads(env.get(hdb_terms.CONFIG_PARAMS.THREADS));
 
 		if (env.get(terms.CONFIG_PARAMS.LOGGING_ROTATION_ENABLED)) await log_rotator();
 		if (!is_scripted) started();
@@ -239,12 +233,12 @@ function started() {
  */
 async function launch() {
 	try {
-		if (pm2_utils === undefined) pm2_utils = require('../utility/processManagement/processManagement');
-		pm2_utils.enterPM2Mode();
+		if (pm_utils === undefined) pm_utils = require('../utility/processManagement/processManagement');
+		pm_utils.enterPM2Mode();
 		await initialize();
 		const clustering_enabled = hdb_utils.autoCastBoolean(env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY));
-		if (clustering_enabled) await pm2_utils.startClusteringProcesses();
-		await pm2_utils.startService(terms.PROCESS_DESCRIPTORS.HDB);
+		if (clustering_enabled) await pm_utils.startClusteringProcesses();
+		await pm_utils.startService(terms.PROCESS_DESCRIPTORS.HDB);
 		started();
 		process.exit(0);
 	} catch (err) {
