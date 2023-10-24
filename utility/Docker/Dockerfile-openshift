@@ -3,7 +3,7 @@ FROM registry.access.redhat.com/ubi9/nodejs-18:latest as builder
 ARG HARPERDB_TARBALL
 
 # for install only
-USER root
+USER 0
 
 # Create symlink for compatibility
 RUN ln -s ${HOME} /home/harperdb && chmod -R u=rwx /home/harperdb
@@ -18,10 +18,10 @@ RUN mkdir -p /home/harperdb/hdb && \
     echo $'settings_path = /home/harperdb/hdb/harperdb-config.yaml\ninstall_user = default' > /home/harperdb/.harperdb/hdb_boot_properties.file
 
 # fix permissions -- requires root group
-RUN chown -R default:root /home/harperdb /home/harperdb/.harperdb /home/harperdb/hdb
+RUN chown -R 1001:0 /home/harperdb /home/harperdb/.harperdb /home/harperdb/hdb
 
 #Set the user for the below instructions (respected by RUN, CMD, ENTRYPOINT only)
-USER default
+USER 1001
 
 #Set the  working directory for the below instructions
 WORKDIR /home/harperdb/
@@ -89,7 +89,7 @@ ENV HDB_ADMIN_USERNAME=HDB_ADMIN
 ENV HDB_ADMIN_PASSWORD=password
 ENV LOGGING_STDSTREAMS=true
 
-USER root
+USER 0
 
 # re-create symlink for compatibility
 RUN ln -sf ${HOME} /home/harperdb && chmod -R u=rwx /home/harperdb
@@ -110,7 +110,7 @@ EXPOSE 9926
 EXPOSE 9932
 
 #Set the user for the below instructions (respected by RUN, CMD, ENTRYPOINT only)
-USER default
+USER 1001
 
 #If no arguments are passed to docker run, execute HarperDB
 CMD ["harperdb"]
