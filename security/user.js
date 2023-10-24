@@ -335,7 +335,7 @@ async function userInfo(body) {
 			return 'There was no user info in the body';
 		}
 
-		user = body.hdb_user;
+		user = _.cloneDeep(body.hdb_user);
 		let search_obj = {
 			schema: 'system',
 			table: 'hdb_role',
