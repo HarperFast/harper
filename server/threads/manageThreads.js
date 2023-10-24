@@ -7,6 +7,7 @@ const { server } = require('../Server');
 const { watch, readdir } = require('fs/promises');
 const { totalmem } = require('os');
 const hdb_terms = require('../../utility/hdbTerms');
+const env_mgr = require('../../utility/environment/environmentManager');
 const harper_logger = require('../../utility/logging/harper_logger');
 const { randomBytes } = require('crypto');
 const { _assignPackageExport } = require('../../index');
@@ -276,7 +277,11 @@ async function restartWorkers(name = null, max_workers_down = 2, start_replaceme
 		await Promise.all(waiting_to_finish);
 		await Promise.all(waiting_to_start);
 		const { restartService } = require('../../bin/restart');
-		if (start_replacement_threads && (name === 'http' || !name)) {
+		if (
+			start_replacement_threads &&
+			(name === 'http' || !name) &&
+			env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)
+		) {
 			await restartService({ service: 'clustering' });
 		}
 	} else {
