@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-set -euo pipefail
 
+set -euo pipefail
 
 #  harperdb install parameters
 hdb_system_user="${HDB_SYSTEM_USER:-harperdb}"

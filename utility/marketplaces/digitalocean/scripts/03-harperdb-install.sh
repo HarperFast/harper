@@ -2,6 +2,7 @@
 set -euo pipefail
 
 hdb_system_user="${HDB_SYSTEM_USER:-harperdb}"
+harperdb_version="${HARPERDB_VERSION:-latest}"
 node_version="v${NODE_VERSION:-18.15.0}"
 hdb_root="${HDB_ROOT:-/opt/hdb}"
 nvm_version="${NVM_VERSION:-v0.39.3}"
@@ -86,7 +87,7 @@ fi
 su -l "${hdb_system_user}" -c "source /home/${hdb_system_user}/.nvm/nvm.sh; nvm install \"${node_version}\""
 
 # Install HarperDB
-su -l "${hdb_system_user}" -c "PATH=\"/home/${hdb_system_user}/.nvm/versions/node/${node_version}/bin:${PATH}\"; npm install -g harperdb"
+su -l "${hdb_system_user}" -c "PATH=\"/home/${hdb_system_user}/.nvm/versions/node/${node_version}/bin:${PATH}\"; npm install -g harperdb@${harperdb_version}"
 
 # create systemd file
 cat <<EOF > /etc/systemd/system/harperdb.service

@@ -247,6 +247,8 @@ and publish/unpublish images as needed.
 
 ### Update DigitalOcean Marketplace
 
+> NOTE: the `digitalocean-create-snapshot.yaml` workflow referenced here only works with versions of HarperDB that have been published to [www.npmjs.com/package/harperdb](https://www.npmjs.com/package/harperdb)
+
 1. Run the `DigitalOcean Create Snapshot` workflow ([digitalocean-create-snapshot.yaml](https://github.com/HarperDB/harperdb/blob/main/.github/workflows/digitalocean-create-snapshot.yaml))
    1. You will need to supply both `harperdbVersion` and `nodeVersion` for this step.
 2. Goto [digital ocean images](https://cloud.digitalocean.com/images/snapshots/droplets) and locate the newly created snapshot after the workflow has completed
