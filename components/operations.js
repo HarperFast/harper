@@ -505,9 +505,15 @@ async function getComponentFile(req) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
+	// If comp is in config we know it is a referenced comp and lives in node_modules
+	const config_obj = config_utils.getConfigObj();
+	const comp_root =
+		config_obj[req.project] || req.project === 'harperdb'
+			? path.join(eng_mgr.get(terms.CONFIG_PARAMS.ROOTPATH), 'node_modules')
+			: env.get(terms.CONFIG_PARAMS.COMPONENTSROOT);
 	const options = req.encoding ? { encoding: req.encoding } : { encoding: 'utf8' };
 	try {
-		return await fs.readFile(path.join(env.get(terms.CONFIG_PARAMS.COMPONENTSROOT), req.project, req.file), options);
+		return await fs.readFile(path.join(comp_root, req.project, req.file), options);
 	} catch (err) {
 		if (err.code === terms.NODE_ERROR_CODES.ENOENT) {
 			throw new Error(`Component file not found '${path.join(req.project, req.file)}'`);
