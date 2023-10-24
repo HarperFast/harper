@@ -63,10 +63,15 @@ async function linkHarperdb() {
  * @returns {Promise<*>}
  */
 async function runCommand(command, cwd = undefined) {
-	const { stdout, stderr } = await p_exec(command, { cwd });
+	let stdout, stderr;
+	try {
+		({ stdout, stderr } = await p_exec(command, { cwd }));
+	} catch (err) {
+		throw new Error(err.stderr.replace('\n', ''));
+	}
 
 	if (stderr && !stderr.includes('Debugger listening')) {
-		throw new Error(stderr.replace('\n', ''));
+		harper_logger.error('Error running NPM command:', command, stderr);
 	}
 
 	harper_logger.trace(stdout, stderr);
