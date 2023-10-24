@@ -106,6 +106,7 @@ function notifyFromTransactionData(path, same_thread?) {
 		error.message += ' in ' + path;
 		throw error;
 	}
+	let subscribers_with_txns;
 	for (const { key: local_time, value: audit_entry_encoded } of subscriptions.auditStore.getRange({
 		start: last_txn_time,
 		exclusiveStart: true,
@@ -130,7 +131,23 @@ function notifyFromTransactionData(path, same_thread?) {
 					}
 					try {
 						if (subscription.crossThreads === false && !same_thread) continue;
-						subscription.listener(record_id, audit_entry, local_time);
+						let begin_txn;
+						if (subscription.supportsTransactions && subscription.txnInProgress !== audit_entry.version) {
+							// if the subscriber supports transactions, we mark this as the beginning of a new transaction
+							// tracking the subscription so that we can delimit the transaction on next transaction
+							// (with a beginTxn flag, which may be on an end_txn event)
+							begin_txn = true;
+							if (!subscription.txnInProgress) {
+								// if first txn for subscriber of this cycle, add to the transactional subscribers that we are tracking
+								if (!subscribers_with_txns) subscribers_with_txns = [subscription];
+								else subscribers_with_txns.push(subscription);
+							}
+							// the version defines the extent of a transaction, all audit records with the same version
+							// are part of the same transaction, and when the version changes, we know it is a new
+							// transaction
+							subscription.txnInProgress = audit_entry.version;
+						}
+						subscription.listener(record_id, audit_entry, local_time, begin_txn);
 					} catch (error) {
 						console.error(error);
 						info(error);
@@ -144,6 +161,13 @@ function notifyFromTransactionData(path, same_thread?) {
 			} else matching_key = null;
 			is_ancestor = true;
 		} while (true);
+	}
+	if (subscribers_with_txns) {
+		// any subscribers with open transactions need to have an event to indicate that their transaction has been ended
+		for (const subscription of subscribers_with_txns) {
+			subscription.txnInProgress = null; // clean up
+			subscription.listener(null, { type: 'end_txn' }, last_txn_time, true);
+		}
 	}
 }
 

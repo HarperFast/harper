@@ -20,7 +20,7 @@ if (process.env.DEV_MODE) {
 		require('inspector').open(9229);
 	} catch (error) {
 		if (restartNumber <= 1)
-			console.error('Could not start debugging on port 9229, you may already be debugging:', error.message);
+			harper_logger.trace('Could not start debugging on port 9229, you may already be debugging:', error.message);
 	}
 }
 process.on('uncaughtException', (error) => {
@@ -86,6 +86,7 @@ function startServers() {
 									setTimeout(
 										() => {
 											console.log('forced close server', port, threadId);
+
 											if (!server.cantCleanupProperly)
 												harper_logger.warn('Had to forcefully exit the thread', threadId);
 											process.exit(0);
@@ -111,7 +112,13 @@ function startServers() {
 			if (createReuseportFd && !session_affinity) {
 				for (let port in SERVERS) {
 					const server = SERVERS[port];
-					const fd = createReuseportFd(+port, '::');
+					let fd;
+					try {
+						fd = createReuseportFd(+port, '::');
+					} catch (error) {
+						console.error(`Unable to bind to port ${port}`, error);
+						continue;
+					}
 					listening.push(
 						new Promise((resolve, reject) => {
 							server

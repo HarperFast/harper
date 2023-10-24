@@ -15,7 +15,7 @@ const MB = 1024 * 1024;
 const workers = []; // these are our child workers that we are managing
 const connected_ports = []; // these are all known connected worker ports (siblings, children, parents)
 const MAX_UNEXPECTED_RESTARTS = 50;
-const THREAD_TERMINATION_TIMEOUT = 10000; // threads, you got 10 seconds to die
+let thread_termination_timeout = 10000; // threads, you got 10 seconds to die
 const RESTART_TYPE = 'restart';
 const REQUEST_THREAD_INFO = 'request_thread_info';
 const RESOURCE_REPORT = 'resource_report';
@@ -40,6 +40,7 @@ module.exports = {
 	getWorkerCount,
 	getTicketKeys,
 	setMainIsWorker,
+	setTerminateTimeout,
 	restartNumber: workerData?.restartNumber || 1,
 };
 
@@ -54,6 +55,9 @@ connected_ports.sendToThread = function (thread_id, message) {
 };
 
 let isMainWorker;
+function setTerminateTimeout(new_timeout) {
+	thread_termination_timeout = new_timeout;
+}
 function getWorkerIndex() {
 	return workerData ? workerData.workerIndex : isMainWorker ? 0 : undefined;
 }
@@ -233,7 +237,7 @@ async function restartWorkers(name = null, max_workers_down = 2, start_replaceme
 			const overlapping = OVERLAPPING_RESTART_TYPES.indexOf(worker.name) > -1;
 			let when_done = new Promise((resolve) => {
 				// in case the exit inside the thread doesn't timeout, call terminate if necessary
-				let timeout = setTimeout(() => worker.terminate(), THREAD_TERMINATION_TIMEOUT * 2).unref();
+				let timeout = setTimeout(() => worker.terminate(), thread_termination_timeout * 2).unref();
 				worker.on('exit', () => {
 					clearTimeout(timeout);
 					waiting_to_finish.splice(waiting_to_finish.indexOf(when_done));
@@ -526,7 +530,7 @@ if (isMainThread) {
 				// Note that if this occurs, you may want to use this to debug what is currently running:
 				// require('why-is-node-running')();
 				process.exit(0);
-			}, THREAD_TERMINATION_TIMEOUT).unref(); // don't block the shutdown
+			}, thread_termination_timeout).unref(); // don't block the shutdown
 		}
 	});
 }

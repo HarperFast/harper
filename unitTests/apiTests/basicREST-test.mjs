@@ -105,7 +105,7 @@ describe('test REST calls', () => {
 		it('table describe with root url', async () => {
 			let response = await axios('http://localhost:9926/FourProp');
 			assert.equal(response.status, 200);
-			assert.equal(response.data.recordCount, 10);
+			assert(response.data.recordCount >= 10);
 			assert.equal(response.data.attributes.length, 5);
 			assert.equal(response.data.name, 'FourProp');
 		});

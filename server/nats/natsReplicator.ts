@@ -13,7 +13,9 @@ import { Context } from '../../resources/ResourceInterface';
 
 let nats_disabled;
 export function start() {
-	if (env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) assignReplicationSource();
+	if (env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+		assignReplicationSource();
+	}
 }
 export function disableNATS(disabled = true) {
 	nats_disabled = disabled;
@@ -34,7 +36,7 @@ let immediateNATSTransaction, subscribed_to_nodes;
  * any tables that aren't caching tables for another source).
  */
 function assignReplicationSource() {
-	if (nats_disabled) return;
+	if (nats_disabled || process.env._DISABLE_NATS) return;
 	const databases = getDatabases();
 	const database_names = Object.keys(databases);
 	database_names.push('system');
@@ -93,7 +95,7 @@ export function setNATSReplicator(table_name, db_name, Table) {
 					record: message,
 				});
 			}
-			invalidate(message) {
+			invalidate() {
 				getNATSTransaction(this.getContext()).addWrite(db_name, {
 					operation: 'invalidate',
 					table: table_name,
@@ -125,7 +127,7 @@ export function setNATSReplicator(table_name, db_name, Table) {
 			static isNATSReplicator = true;
 			static shouldReceiveInvalidations = true;
 		},
-		{ runFirst: true }
+		{ intermediateSource: true }
 	);
 	/**
 	 * This gets the NATS transaction object for the current overall transaction. This will
@@ -189,7 +191,7 @@ class NATSTransaction {
 	 * Once a transaction is completed, we put all the accumulated writes into a single NATS
 	 * message and publish it to the cluster
 	 */
-	commit(timestamp) {
+	commit({ timestamp }) {
 		const node_name = env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 		const promises = [];
 		for (const [db, writes] of this.writes_by_db) {

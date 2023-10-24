@@ -16,7 +16,7 @@ const headers = {
 };
 
 let seed = 0;
-function random() {
+export function random() {
 	seed++;
 	let a = seed * 15485863;
 	return (a * a * a % 2038074743) / 2038074743;
@@ -36,7 +36,7 @@ export async function setupTestApp() {
 	bypassAuth();
 
 	// exit if it is already setup or we are running in the browser
-	if (created_records || typeof navigator !== 'undefined') return created_records;
+	if (created_records || typeof process === 'undefined') return created_records;
 	let path = getMockLMDBPath();
 	process.env.SCHEMAS_DATA_PATH = path;
 	// make it easy to see what is going on when unit testing
@@ -44,6 +44,7 @@ export async function setupTestApp() {
 	// might need fileURLToPath
 	process.env.RUN_HDB_APP = fileURLToPath(new URL('../testApp', import.meta.url));
 	process.env._UNREF_SERVER = true; // unref the server so when we are done nothing should block us from exiting
+	process.env._DISABLE_NATS = true;
 	created_records = [];
 
 	const { startHTTPThreads } = require('../../server/threads/socketRouter');
@@ -92,4 +93,9 @@ export async function setupTestApp() {
 		throw error;
 	}
 	return created_records;
+}
+
+export async function addThreads() {
+	const { startHTTPThreads } = require('../../server/threads/socketRouter');
+	await startHTTPThreads(2);
 }

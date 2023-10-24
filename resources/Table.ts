@@ -108,6 +108,8 @@ export function makeTable(options) {
 	let prefetch_callbacks = [];
 	let until_next_prefetch = 1;
 	let non_prefetch_sequence = 2;
+	let apply_to_sources = {};
+	let apply_to_sources_intermediate = {};
 	let cleanup_interval = 86400000;
 	let last_cleanup_interval;
 	let cleanup_timer;
@@ -148,8 +150,68 @@ export function makeTable(options) {
 				this.sourceOptions = options;
 				if (options.expiration || options.eviction || options.scanInterval) this.setTTLExpiration(options);
 			}
-			this.sources[options?.runFirst ? 'unshift' : 'push'](source);
-			has_source_get = source && source.get && (!source.get.reliesOnPrototype || source.prototype.get);
+			if (options?.intermediateSource) {
+				source.intermediateSource = true;
+				this.sources.unshift(source);
+			} else {
+				this.sources.push(source);
+			}
+			has_source_get = source.get && (!source.get.reliesOnPrototype || source.prototype.get);
+			// These functions define how write operations are propagate to the sources.
+			// We define the last source in the array as the "canonical" source, the one that can authoritatively
+			// reject or accept a write. The other sources are "intermediate" sources that can also be
+			// notified of writes and/or fulfill gets.
+			const getApplyToIntermediateSource = (method) => {
+				let sources = this.sources.slice(0, -1);
+				sources = sources.filter(
+					(source) => source[method] && (!source[method].reliesOnPrototype || source.prototype[method])
+				);
+				if (sources.length > 0) {
+					if (sources.length === 1) {
+						// the simple case, can directly call it
+						const intermediate_source = sources[0];
+						return (context, id, data) => {
+							if (context?.source !== intermediate_source) return intermediate_source[method](id, data, context);
+						};
+					} else {
+						return (context, id, data) => {
+							// if multiple intermediate sources, call them in parallel
+							const results = [];
+							for (const source of sources) {
+								if (context?.source === source) break;
+								results.push(source[method](id, data, context));
+							}
+							return Promise.all(results);
+						};
+					}
+				}
+			};
+			const canonical_source = this.sources[this.sources.length - 1];
+			const getApplyToCanonicalSource = (method) => {
+				if (
+					canonical_source[method] &&
+					(!canonical_source[method].reliesOnPrototype || canonical_source.prototype[method])
+				) {
+					return (context, id, data) => {
+						if (!context?.source) return canonical_source[method](id, data, context);
+					};
+				}
+			};
+			// define a set of methods for each operation so we can apply these in each write as part
+			// of the commit
+			apply_to_sources = {
+				put: getApplyToCanonicalSource('put'),
+				delete: getApplyToCanonicalSource('delete'),
+				publish: getApplyToCanonicalSource('publish'),
+				// note that invalidate event does not go to the canonical source, invalidate means that
+				// caches are invalidated, which specifically excludes the canonical source from being affected.
+			};
+			apply_to_sources_intermediate = {
+				put: getApplyToIntermediateSource('put'),
+				delete: getApplyToIntermediateSource('delete'),
+				publish: getApplyToIntermediateSource('publish'),
+				invalidate: getApplyToIntermediateSource('invalidate'),
+			};
 
 			// External data source may provide a subscribe method, allowing for real-time proactive delivery
 			// of data from the source to this caching table. This is generally greatly superior to expiration-based
@@ -160,7 +222,7 @@ export function makeTable(options) {
 			(async () => {
 				let user_role_update = false;
 				// perform the write of an individual write event
-				const writeUpdate = async (event) => {
+				const writeUpdate = async (event, context) => {
 					const value = event.value;
 					const Table = event.table ? databases[database_name][event.table] : TableResource;
 					if (
@@ -174,7 +236,7 @@ export function makeTable(options) {
 						if (event.id === undefined) throw new Error('Replication message without an id ' + JSON.stringify(event));
 					}
 					event.source = source;
-					const resource: TableResource = await Table.getResource(event.id, event, NOTIFICATION);
+					const resource: TableResource = await Table.getResource(event.id, context, NOTIFICATION);
 					switch (event.type) {
 						case 'put':
 							return resource._writeUpdate(value, NOTIFICATION);
@@ -212,6 +274,7 @@ export function makeTable(options) {
 							omitCurrent: true,
 						}));
 					if (subscription) {
+						let txn_in_progress;
 						// we listen for events by iterating through the async iterator provided by the subscription
 						for await (const event of subscription) {
 							try {
@@ -221,14 +284,24 @@ export function makeTable(options) {
 									continue;
 								}
 								event.source = source;
+								if (txn_in_progress) {
+									if (event.beginTxn) {
+										// if we are starting a new transaction, finish the existing one
+										txn_in_progress.resolve();
+									} else {
+										// write in the current transaction if one is in progress
+										writeUpdate(event, txn_in_progress);
+										continue;
+									}
+								}
+								if (event.type === 'end_txn') continue;
 								const commit_resolution = transaction(event, () => {
 									if (event.type === 'transaction') {
 										// if it is a transaction, we need to individually iterate through each write event
 										const promises = [];
 										for (const write of event.writes) {
-											write[CONTEXT] = event;
 											try {
-												promises.push(writeUpdate(write));
+												promises.push(writeUpdate(write, event));
 											} catch (error) {
 												error.message += ' writing ' + JSON.stringify(write) + ' of event ' + JSON.stringify(event);
 												throw error;
@@ -256,7 +329,20 @@ export function makeTable(options) {
 												new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_TABLE, database_name, table_name)
 											);
 										}
-									} else return writeUpdate(event);
+									} else {
+										if (event.beginTxn) {
+											// if we are beginning a new transaction, we record the current
+											// event/context as transaction in progress and then future events
+											// are applied with that context until the next transaction begins/ends
+											txn_in_progress = event;
+											writeUpdate(event, event);
+											return new Promise((resolve) => {
+												// callback for when this transaction is finished (will be called on next txn begin/end)
+												txn_in_progress.resolve = resolve;
+											});
+										}
+										return writeUpdate(event, event);
+									}
 								});
 								if (user_role_update) {
 									await commit_resolution;
@@ -571,26 +657,33 @@ export function makeTable(options) {
 			let own_data;
 			if (typeof updates === 'object' && updates) {
 				if (full_update) {
+					if (Object.isFrozen(updates)) updates = Object.assign({}, updates);
 					for (const key in this[RECORD_PROPERTY]) {
 						if (updates[key] === undefined) updates[key] = undefined;
 					}
+					this[OWN_DATA] = updates;
+				} else {
+					own_data = this[OWN_DATA];
+					if (own_data) updates = Object.assign(own_data, updates);
+					this[OWN_DATA] = own_data = updates;
 				}
-				own_data = this[OWN_DATA];
-				if (own_data) updates = Object.assign(own_data, updates);
-				this[OWN_DATA] = own_data = updates;
 			}
 			this._writeUpdate(this);
 			return this;
 		}
 
 		invalidate(options) {
+			const context = this[CONTEXT];
+			const id = this[ID_PROPERTY];
 			const transaction = txnForContext(this[CONTEXT]);
 			transaction.addWrite({
-				key: this[ID_PROPERTY],
+				key: id,
 				store: primary_store,
 				invalidated: true,
 				entry: this[ENTRY_PROPERTY],
 				nodeName: this[CONTEXT]?.nodeName,
+				before: apply_to_sources.invalidate?.bind(this, context, id),
+				beforeIntermediate: apply_to_sources_intermediate.invalidate?.bind(this, context, id),
 				commit: (txn_time, existing_entry) => {
 					if (existing_entry?.version > txn_time) return;
 					let partial_record = null;
@@ -599,15 +692,7 @@ export function makeTable(options) {
 						// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
 						partial_record[name] = this.getProperty(name);
 					}
-					let completion;
-					const id = this[ID_PROPERTY];
-					for (const source of TableResource.sources) {
-						if (this[CONTEXT]?.source === source || this[CONTEXT]?.source?.isEqual?.(source)) break;
-						if (source.shouldReceiveInvalidations) {
-							const next_completion = source.invalidate?.(id, this);
-							completion = completion ? Promise.all([completion, next_completion]) : next_completion;
-						}
-					}
+
 					updateRecord(
 						id,
 						partial_record,
@@ -620,7 +705,6 @@ export function makeTable(options) {
 						'invalidate'
 					);
 					// TODO: record_deletion?
-					return completion;
 				},
 			});
 		}
@@ -653,6 +737,9 @@ export function makeTable(options) {
 					return;
 				}
 			}
+			primary_store.ifVersion(existing_version, () => {
+				updateIndices(id, existing_record, null);
+			});
 			if (audit) {
 				// update the record to null it out, maintaining the reference to the audit history
 				updateRecord(id, null, entry, existing_version, EVICTED, null, null, 0, null, true);
@@ -692,34 +779,21 @@ export function makeTable(options) {
 			const context = this[CONTEXT];
 			const transaction = txnForContext(context);
 
-			if (this[ID_PROPERTY] === undefined) {
+			const id = this[ID_PROPERTY];
+			if (id === undefined) {
 				throw new Error('Can not save record without an id');
 			}
-			let record_prepared;
-			const id = this[ID_PROPERTY];
+			const entry = this[ENTRY_PROPERTY];
 			this[IS_SAVING] = true; // mark that this resource is being saved so doesExist return true
 			const write = {
 				key: id,
 				store: primary_store,
-				entry: this[ENTRY_PROPERTY],
+				entry,
 				nodeName: context?.nodeName,
-				validate: () => {
-					if (!record[INCREMENTAL_UPDATE] || hasChanges(record)) this.validate(record);
-					else {
-						transaction.removeWrite(write);
-					}
-				},
-				commit: (txn_time, existing_entry, retry) => {
-					let completion;
-					if (retry) {
-						if (context && existing_entry?.version > (context.lastModified || 0))
-							context.lastModified = existing_entry.version;
-						updateResource(this, existing_entry);
-					}
-					const existing_record = existing_entry?.value;
-					if (!record_prepared) {
-						record_prepared = true;
-						if (!this[CONTEXT]?.source) {
+				validate: (txn_time) => {
+					if (!record[INCREMENTAL_UPDATE] || hasChanges(record)) {
+						this.validate(record);
+						if (!context?.source) {
 							if (primary_key && record[primary_key] !== id) record[primary_key] = id;
 							if (updated_time_property) {
 								record[updated_time_property.name] =
@@ -730,7 +804,7 @@ export function makeTable(options) {
 										: txn_time;
 							}
 							if (created_time_property) {
-								if (existing_record) record[created_time_property.name] = existing_record[created_time_property.name];
+								if (entry?.value) record[created_time_property.name] = entry?.value[created_time_property.name];
 								else
 									record[created_time_property.name] =
 										created_time_property.type === 'Date'
@@ -743,15 +817,20 @@ export function makeTable(options) {
 						} else record = deepFreeze(record); // TODO: I don't know that we need to freeze notification objects, might eliminate this for reduced overhead
 						if (record[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
 						this[RECORD_PROPERTY] = record;
-						// send this to the sources
-						for (const source of TableResource.sources) {
-							if (context?.source === source || context?.source?.isEqual?.(source)) break;
-							if (source?.put && (!source.put.reliesOnPrototype || source.prototype.put)) {
-								const next_completion = source.put(id, record, this);
-								completion = completion ? Promise.all([completion, next_completion]) : next_completion;
-							}
-						}
+					} else {
+						transaction.removeWrite(write);
 					}
+				},
+				before: apply_to_sources.put && (() => apply_to_sources.put(context, id, record)),
+				beforeIntermediate:
+					apply_to_sources_intermediate.put && (() => apply_to_sources_intermediate.put(context, id, record)),
+				commit: (txn_time, existing_entry, retry) => {
+					if (retry) {
+						if (context && existing_entry?.version > (context.lastModified || 0))
+							context.lastModified = existing_entry.version;
+						updateResource(this, existing_entry);
+					}
+					const existing_record = existing_entry?.value;
 
 					this[IS_SAVING] = false;
 					harper_logger.trace(
@@ -769,7 +848,7 @@ export function makeTable(options) {
 						// replication. If the existing record is newer than it just means the provided record
 						// is, well... older. And newer records are supposed to "win" over older records, and that
 						// is normal, non-error behavior. So we still record an audit entry
-						return completion; /*(
+						return; /*(
 							audit && {
 								// return the audit record that should be recorded
 								type: 'put',
@@ -788,7 +867,6 @@ export function makeTable(options) {
 						context,
 						context.expiresAt || (expiration_ms ? expiration_ms + Date.now() : 0)
 					);
-					return completion;
 				},
 			};
 			transaction.addWrite(write);
@@ -813,42 +891,32 @@ export function makeTable(options) {
 			const transaction = txnForContext(this[CONTEXT]);
 			let delete_prepared;
 			const id = this[ID_PROPERTY];
-			let completion;
+			const context = this[CONTEXT];
 			transaction.addWrite({
 				key: id,
 				store: primary_store,
 				resource: this,
-				nodeName: this[CONTEXT]?.nodeName,
+				nodeName: context?.nodeName,
+				before: apply_to_sources.delete?.bind(this, context, id),
+				beforeIntermediate: apply_to_sources_intermediate.delete?.bind(this, context, id),
 				commit: (txn_time, existing_entry, retry) => {
 					const existing_record = existing_entry?.value;
 					if (retry) {
-						const context = this[CONTEXT];
 						if (context && existing_entry?.version > (context.lastModified || 0))
 							context.lastModified = existing_entry.version;
 						updateResource(this, existing_entry);
-					}
-					if (!delete_prepared) {
-						delete_prepared = true;
-						for (const source of TableResource.sources) {
-							if (this[CONTEXT]?.source === source || this[CONTEXT]?.source?.isEqual?.(source)) break;
-							if (source?.delete && (!source.delete.reliesOnPrototype || source.prototype.delete)) {
-								const next_completion = source.delete(id, this);
-								completion = completion ? Promise.all([completion, next_completion]) : next_completion;
-							}
-						}
 					}
 					if (existing_entry?.version > txn_time)
 						// a newer record exists locally
 						return;
 					updateIndices(this[ID_PROPERTY], existing_record);
-					harper_logger.trace(`Write delete entry`, audit || track_deletes, txn_time);
+					harper_logger.trace(`Write delete entry`, id, txn_time);
 					if (audit || track_deletes) {
 						updateRecord(id, null, this[ENTRY_PROPERTY], txn_time, 0, audit, this[CONTEXT], 0, 'delete');
 						if (!audit) scheduleCleanup();
 					} else {
 						primary_store.remove(this[ID_PROPERTY]);
 					}
-					return completion;
 				},
 			});
 			return true;
@@ -1012,10 +1080,17 @@ export function makeTable(options) {
 			const subscription = addSubscription(
 				TableResource,
 				this[ID_PROPERTY] ?? null, // treat undefined and null as the root
-				function (id, audit_record, timestamp) {
+				function (id, audit_record, timestamp, begin_txn) {
 					try {
-						const value = audit_record.getValue(primary_store);
-						this.send({ id, timestamp, value, version: audit_record.version, type: audit_record.type });
+						const value = audit_record.getValue?.(primary_store);
+						this.send({
+							id,
+							timestamp,
+							value,
+							version: audit_record.version,
+							type: audit_record.type,
+							beginTxn: begin_txn,
+						});
 					} catch (error) {
 						harper_logger.error(error);
 					}
@@ -1023,6 +1098,8 @@ export function makeTable(options) {
 				request.startTime,
 				this[IS_COLLECTION]
 			);
+			if (request.crossThreads === false) subscription.crossThreads = false;
+			if (request.supportsTransactions) subscription.supportsTransactions = true;
 			const this_id = this[ID_PROPERTY];
 			let count = request.previousCount;
 			if (count > 1000) count = 1000; // don't allow too many, we have to hold these in memory
@@ -1135,31 +1212,21 @@ export function makeTable(options) {
 		_writePublish(message, options?: any) {
 			const transaction = txnForContext(this[CONTEXT]);
 			const id = this[ID_PROPERTY] || null;
-			let completion;
-			let publish_prepared;
+			const context = this[CONTEXT];
 			transaction.addWrite({
 				key: id,
 				store: primary_store,
 				entry: this[ENTRY_PROPERTY],
-				nodeName: this[CONTEXT]?.nodeName,
+				nodeName: context?.nodeName,
 				validate: () => {
 					this.validate(message);
 				},
+				before: apply_to_sources.publish?.bind(this, context, id, message),
+				beforeIntermediate: apply_to_sources_intermediate.publish?.bind(this, context, id, message),
 				commit: (txn_time, existing_entry, retries) => {
 					// just need to update the version number of the record so it points to the latest audit record
 					// but have to update the version number of the record
 					// TODO: would be faster to use getBinaryFast here and not have the record loaded
-
-					if (!publish_prepared) {
-						publish_prepared = true;
-						for (const source of TableResource.sources) {
-							if (this[CONTEXT]?.source === source || this[CONTEXT]?.source?.isEqual?.(source)) break;
-							if (source?.publish && (!source.publish.reliesOnPrototype || source.prototype.publish)) {
-								const next_completion = source.publish(id, message, this);
-								completion = completion ? Promise.all([completion, next_completion]) : next_completion;
-							}
-						}
-					}
 
 					if (existing_entry === undefined && track_deletes && !audit) {
 						scheduleCleanup();
@@ -1173,7 +1240,7 @@ export function makeTable(options) {
 						existing_entry?.version || txn_time,
 						0,
 						true,
-						this[CONTEXT],
+						context,
 						existing_entry?.expiresAt,
 						'message',
 						false,
@@ -1747,15 +1814,8 @@ export function makeTable(options) {
 								return;
 							}
 							const has_index_changes = updateIndices(id, existing_record, updated_record);
-							let completion;
 							if (updated_record) {
-								for (const source of TableResource.sources) {
-									if (source_context.source === source) break;
-									if (source.put && (!source.put.reliesOnPrototype || source.prototype.put)) {
-										const next_completion = source.put(id, updated_record, source_context);
-										completion = completion ? Promise.all([completion, next_completion]) : next_completion;
-									}
-								}
+								apply_to_sources_intermediate.put?.(source_context, id, updated_record);
 								// TODO: We are doing a double check for ifVersion that should probably be cleaned out
 								updateRecord(
 									id,
@@ -1770,13 +1830,7 @@ export function makeTable(options) {
 									Boolean(invalidated)
 								);
 							} else {
-								for (const source of TableResource.sources) {
-									if (source_context.source === source) break;
-									if (source.delete && (!source.delete.reliesOnPrototype || source.prototype.delete)) {
-										const next_completion = source.delete(id, source_context);
-										completion = completion ? Promise.all([completion, next_completion]) : next_completion;
-									}
-								}
+								apply_to_sources_intermediate.delete?.(source_context, id);
 
 								if (audit || track_deletes) {
 									updateRecord(
@@ -1795,7 +1849,6 @@ export function makeTable(options) {
 									primary_store.remove(id, existing_version);
 								}
 							}
-							return completion;
 						},
 					});
 				}),

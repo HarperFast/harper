@@ -33,7 +33,6 @@ export async function startHTTPThreads(thread_count = 2, dynamic_threads?: boole
 		}
 		await loadRootComponents();
 	}
-	if (process.env.DEV_MODE) thread_count = 1;
 	for (let i = 0; i < thread_count; i++) {
 		startHTTPWorker(i, thread_count);
 	}

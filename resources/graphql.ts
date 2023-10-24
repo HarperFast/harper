@@ -132,8 +132,11 @@ export function start({ ensureTable }) {
 			// with graphql database definitions, this is a declaration that the table should exist and that it
 			// should be created if it does not exist
 			type_def.tableClass = ensureTable(type_def);
-			if (type_def.export)
-				resources.set(dirname(url_path) + '/' + (type_def.export.name || type_def.typeName), type_def.tableClass);
+			if (type_def.export) {
+				// allow empty string to be used to declare a table on the root path
+				if (type_def.export.name === '') resources.set(dirname(url_path), type_def.tableClass);
+				else resources.set(dirname(url_path) + '/' + (type_def.export.name || type_def.typeName), type_def.tableClass);
+			}
 		}
 		// and if there was a `type Query` definition, we use that to created exported resources
 		if (query) {

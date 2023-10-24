@@ -565,7 +565,7 @@ function addNatsMsgHeader(req, nats_msg_header) {
 	if (nats_msg_header === undefined) nats_msg_header = headers();
 	const node_name = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 
-	if (!nats_msg_header.has(nats_terms.MSG_HEADERS.ORIGIN)) {
+	if (!nats_msg_header.has(nats_terms.MSG_HEADERS.ORIGIN) && node_name) {
 		nats_msg_header.append(nats_terms.MSG_HEADERS.ORIGIN, node_name);
 	}
 

@@ -7,7 +7,7 @@
     "noImplicitAny": false,
     "target": "ES2022",
     "moduleResolution": "NodeNext",
-    "module": "commonjs",
+    "module": "NodeNext",
     "sourceMap": true
   }
 }

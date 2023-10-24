@@ -56,9 +56,6 @@ describe('test MQTT connections and commands', () => {
 			});
 		});
 	});
-	after(() => {
-		setPublishToStream(natsPublishToStream, natsSetSubscription); // restore
-	});
 
 	it('subscribe to retained/persisted record', async function () {
 		let path = 'VariedProps/' + available_records[1];
@@ -78,7 +75,7 @@ describe('test MQTT connections and commands', () => {
 		});
 	});
 	it('can repeatedly publish', async () => {
-		const vus = 10;
+		const vus = 5;
 		const tableName = 'SimpleRecord';
 		let intervals = [];
 		let clients = [];

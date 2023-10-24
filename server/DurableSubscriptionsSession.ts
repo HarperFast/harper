@@ -124,6 +124,7 @@ class SubscriptionsSession {
 			shallowWildcard: is_shallow_wildcard,
 			url: '',
 		};
+		if (start_time) trace('Resuming subscription from', topic, 'from', start_time);
 		const entry = resources.getMatch(path);
 		if (!entry) throw new Error(`The topic ${topic} does not exist, no resource has been defined to handle this topic`);
 		request.url = entry.relativeURL;

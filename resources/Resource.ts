@@ -83,10 +83,14 @@ export class Resource implements ResourceInterface {
 				const results = [];
 				const authorize = request.authorize;
 				for (const element of data) {
-					if (authorize) request.authorize = true; // authorize each record
-					results.push(this.put(resource, query, request, element));
+					const resource_class = resource.constructor;
+					const element_resource = resource_class.getResource(element[resource_class.primaryKey], request, {
+						async: true,
+					});
+					if (element_resource.then) results.push(element_resource.then((resource) => resource.put(element, request)));
+					else results.push(element_resource.put(element, request));
 				}
-				return results;
+				return Promise.all(results);
 			}
 			return resource.put ? resource.put(data, query) : missingMethod(resource, 'put');
 		},

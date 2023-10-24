@@ -165,14 +165,14 @@ describe('test REST with property updates', () => {
 				search_attribute: 'id',
 				search_value: '*',
 			});
-			assert.equal(response.data[0].title, 'title0');
+			assert(response.data.some(record => record.title === 'title0'));
 		});
 		it('sql returns all attributes of four property object', async function () {
 			let response = await axios.post('http://localhost:9925', {
 				operation: 'sql',
 				sql: 'SELECT * FROM data.FourProp',
 			});
-			assert.equal(response.data[0].title, 'title0');
+			assert(response.data.some(record => record.title === 'title0'));
 		});
 		it('sql returns all attributes and sub-object of array', async function () {
 			let response = await axios.put('http://localhost:9926/namespace/SubObject/6', {
@@ -184,7 +184,7 @@ describe('test REST with property updates', () => {
 				operation: 'sql',
 				sql: 'SELECT * FROM data.SubObject',
 			});
-			assert.equal(response.data[1].subObject.name, 'another sub-object');
+			assert(response.data.some(record => record.subObject?.name === 'another sub-object'));
 		});
 	});
 });

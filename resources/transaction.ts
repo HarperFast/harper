@@ -40,8 +40,7 @@ export function transaction<T>(
 	return onComplete(result);
 	// when the transaction function completes, run this to commit the transaction
 	function onComplete(result) {
-		transaction.open = false;
-		const committed = transaction.commit();
+		const committed = transaction.commit({ close: true });
 		if (committed.then) {
 			return committed.then(() => {
 				if (options?.resetTransaction) context.transaction = null;
@@ -72,4 +71,3 @@ transaction.abort = function (context_source) {
 	if (!transaction) throw new Error('No active transaction is available to abort');
 	return transaction.abort();
 };
-

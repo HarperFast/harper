@@ -8,7 +8,8 @@ export class DatabaseTransaction implements Transaction {
 	lmdbDb: RootDatabase;
 	readTxn: LMDBTransaction;
 	readTxnRefCount: number;
-	validated = false;
+	validated = 0;
+	timestamp = 0;
 	declare next: DatabaseTransaction;
 	open = true;
 	getReadTxn(): LMDBTransaction | void {
@@ -32,33 +33,69 @@ export class DatabaseTransaction implements Transaction {
 	}
 	removeWrite(operation) {
 		const index = this.writes.indexOf(operation);
-		if (index > -1) this.writes.splice(index, 1);
+		if (index > -1) this.writes[index] = null;
 	}
 
-	validate() {
-		this.validated = true;
-		for (const write of this.writes || []) {
-			write.validate?.();
-		}
-	}
 	/**
 	 * Resolves with information on the timestamp and success of the commit
 	 */
-	commit(txn_time = this.timestamp || getNextMonotonicTime(), flush = true, retries = 0): Promise<CommitResolution> {
+	commit(options: { close?: boolean; timestamp?: number } = {}): Promise<CommitResolution> {
+		let txn_time = this.timestamp;
+		if (!txn_time) txn_time = this.timestamp = options.timestamp = options.timestamp || getNextMonotonicTime();
+		const retries = options.retries || 0;
+		// release the read snapshot so we don't keep it open longer than necessary
 		this.resetReadSnapshot();
-		if (!this.validated) {
-			this.validate();
-			if (this.next) this.next.validate?.();
+		// now validate
+		if (this.validated < this.writes.length) {
+			const start = this.validated;
+			// record the number of writes that have been validated so if we re-execute
+			// and the number is increased we can validate the new entries
+			this.validated = this.writes.length;
+			for (let i = start; i < this.validated; i++) {
+				const write = this.writes[i];
+				write?.validate?.(this.timestamp);
+			}
+			let has_before;
+			for (let i = start; i < this.validated; i++) {
+				const write = this.writes[i];
+				if (!write) continue;
+				if (write.before || write.beforeIntermediate) {
+					has_before = true;
+				}
+			}
+			// Now we need to let any "before" actions execute. These are calls to the sources,
+			// and we want to follow the order of the source sequence so that later, more canonical
+			// source writes will finish (with right to refuse/abort) before proceeeding to less
+			// canonical sources.
+			if (has_before) {
+				return (async () => {
+					for (let phase = 0; phase < 2; phase++) {
+						let completion;
+						for (let i = start; i < this.validated; i++) {
+							const write = this.writes[i];
+							if (!write) continue;
+							const before = write[phase === 0 ? 'before' : 'beforeIntermediate'];
+							if (before) {
+								const next_completion = before();
+								if (completion) {
+									if (completion.push) completion.push(next_completion);
+									else completion = [completion, next_completion];
+								} else completion = next_completion;
+							}
+						}
+						if (completion) await (completion.push ? Promise.all(completion) : completion);
+					}
+					return this.commit(options);
+				})();
+			}
 		}
+		if (options?.close) this.open = false;
 		let resolution,
 			completions = [];
 		let write_index = 0;
+		this.writes = this.writes.filter((write) => write); // filter out removed entries
 		const doWrite = (write) => {
-			const completion = write.commit(txn_time, write.entry, retries);
-			if (completion) {
-				if (!completions) completions = [];
-				completions.push(completion);
-			}
+			write.commit(txn_time, write.entry, retries);
 		};
 		// this uses optimistic locking to submit a transaction, conditioning each write on the expected version
 		const nextCondition = () => {
@@ -95,8 +132,12 @@ export class DatabaseTransaction implements Transaction {
 		if (resolution) {
 			return resolution.then((resolution) => {
 				if (resolution) {
-					if (this.next) completions.push(this.next.commit(txn_time, flush));
-					if (flush) completions.push(this.writes[0].store.flushed);
+					if (this.next) {
+						completions.push(this.next.commit(options));
+					}
+					if (options?.flush) {
+						completions.push(this.writes[0].store.flushed);
+					}
 					return Promise.all(completions).then(() => {
 						// now reset transactions tracking; this transaction be reused and committed again
 						this.writes = [];
@@ -105,13 +146,26 @@ export class DatabaseTransaction implements Transaction {
 						};
 					});
 				} else {
-					return this.commit(txn_time, flush, retries + 1); // try again
+					if (options) options.retries = retries + 1;
+					else options = { retries: 1 };
+					return this.commit(options); // try again
 				}
 			});
 		}
-		return {
+		const txn_resolution: CommitResolution = {
 			txnTime: txn_time,
 		};
+		if (this.next) {
+			// now run any other transactions
+			const next_resolution = this.next?.commit(options);
+			if (next_resolution?.then)
+				return next_resolution?.then((next_resolution) => ({
+					txnTime: txn_time,
+					next: next_resolution,
+				}));
+			txn_resolution.next = next_resolution;
+		}
+		return txn_resolution;
 	}
 	abort(): void {
 		this.resetReadSnapshot();
@@ -121,10 +175,10 @@ export class DatabaseTransaction implements Transaction {
 }
 interface CommitResolution {
 	txnTime: number;
-	resolution: boolean;
+	next?: CommitResolution;
 }
 export interface Transaction {
-	commit(timestamp: number, flush?: boolean): Promise<CommitResolution>;
+	commit(options): Promise<CommitResolution>;
 	abort?(flush?: boolean): any;
 }
 export class ImmediateTransaction extends DatabaseTransaction {
@@ -132,7 +186,7 @@ export class ImmediateTransaction extends DatabaseTransaction {
 	addWrite(operation) {
 		super.addWrite(operation);
 		// immediately commit the write
-		this.commit(this.timestamp, false);
+		this.commit();
 	}
 	get timestamp() {
 		return this._timestamp || (this._timestamp = getNextMonotonicTime());

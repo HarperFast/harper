@@ -404,10 +404,12 @@ export function database({ database: database_name, table: table_name }) {
 	getDatabases();
 	const database = ensureDB(database_name);
 	let database_path = join(getHdbBasePath(), DATABASES_DIR_NAME);
-	const table_path = table_name && env_get(CONFIG_PARAMS.DATABASES)?.[database_name]?.tables?.[table_name]?.path;
+	const database_config = env_get(CONFIG_PARAMS.DATABASES) || {};
+	if (process.env.SCHEMAS_DATA_PATH) database_config.data = { path: process.env.SCHEMAS_DATA_PATH };
+	const table_path = table_name && database_config[database_name]?.tables?.[table_name]?.path;
 	database_path =
 		table_path ||
-		env_get(CONFIG_PARAMS.DATABASES)?.[database_name]?.path ||
+		database_config[database_name]?.path ||
 		process.env.STORAGE_PATH ||
 		env_get(CONFIG_PARAMS.STORAGE_PATH) ||
 		(existsSync(database_path) ? database_path : join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME));
@@ -583,7 +585,7 @@ export function table({
 			Object.defineProperty(attribute, 'key', { value: dbi_key, configurable: true });
 			let attribute_descriptor = attributes_dbi.get(dbi_key);
 			if (attribute.isPrimaryKey) {
-				attribute_descriptor = attribute_descriptor || attributes_dbi.get((dbi_key = table_name + '/'));
+				attribute_descriptor = attribute_descriptor || attributes_dbi.get((dbi_key = table_name + '/')) || {};
 				// primary key can't change indexing, but settings can change
 				if (
 					audit !== Table.audit ||
