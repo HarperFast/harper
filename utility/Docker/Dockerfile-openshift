@@ -1,14 +1,9 @@
 FROM registry.access.redhat.com/ubi9/nodejs-18:latest as builder
 
 ARG HARPERDB_TARBALL
-ARG HARPERDB_VERSION
 
 # for install only
 USER root
-
-# RHCC Licensing files
-RUN mkdir /licenses
-COPY utility/Docker/licenses/* /licenses/.
 
 # Create symlink for compatibility
 RUN ln -s ${HOME} /home/harperdb && chmod -R u=rwx /home/harperdb
@@ -41,6 +36,7 @@ FROM registry.access.redhat.com/ubi9/nodejs-18-minimal:latest
 COPY --from=builder $HOME $HOME
 
 # metadata for labels
+ARG HARPERDB_VERSION
 ARG BUILD_DATE
 ARG VCS_REF
 ARG VCS_TYPE=git
@@ -101,6 +97,10 @@ RUN ln -sf ${HOME} /home/harperdb && chmod -R u=rwx /home/harperdb
 # install deps
 RUN microdnf install --assumeyes --nodocs --refresh hostname git procps && microdnf clean all
 
+# RHCC Licensing files
+RUN mkdir /licenses
+COPY utility/Docker/licenses/* /licenses/.
+
 #Create mount point
 VOLUME /home/harperdb/hdb
 
@@ -108,6 +108,9 @@ VOLUME /home/harperdb/hdb
 EXPOSE 9925
 EXPOSE 9926
 EXPOSE 9932
+
+#Set the user for the below instructions (respected by RUN, CMD, ENTRYPOINT only)
+USER default
 
 #If no arguments are passed to docker run, execute HarperDB
 CMD ["harperdb"]
