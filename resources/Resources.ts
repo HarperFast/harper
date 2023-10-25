@@ -72,7 +72,8 @@ export class Resources extends Map<string, typeof Resource> {
 			// still not found, see if there is an explicit root path
 			found_entry = this.get('');
 			if (found_entry) {
-				found_entry.relativeURL = '';
+				if (url[0] !== '/') url = '/' + url;
+				found_entry.relativeURL = url;
 			}
 		}
 		return found_entry;

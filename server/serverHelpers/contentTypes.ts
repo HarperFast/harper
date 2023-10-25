@@ -333,11 +333,10 @@ export function serialize(response_data, request, response_object) {
  * @returns {*}
  */
 export function serializeMessage(message, request) {
+	if (message?.contentType != null && message.data != null) return message.data;
 	if (!request) {
-		if (message?.contentType != null && message.data != null) return message.data;
 		return JSON.stringify(message);
 	}
-	if (message?.contentType != null && message.data != null) return message;
 	let serialize = request.serialize;
 	if (serialize) return serialize(message);
 	const serializer = findBestSerializer(request);
