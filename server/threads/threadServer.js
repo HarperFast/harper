@@ -481,23 +481,27 @@ function onWebSocket(listener, options) {
 		if (!ws_servers[port_num]) {
 			ws_servers[port_num] = new WebSocketServer({ server: getHTTPServer(port_num, secure) });
 			ws_servers[port_num].on('connection', async (ws, node_request) => {
-				let request = new Request(node_request);
-				request.isWebSocket = true;
-				let chain_completion = http_chain[port_num](request);
-				let protocol = node_request.headers['sec-websocket-protocol'] || '';
-				// TODO: select listener by protocol
-				for (let i = 0; i < ws_listeners.length; i++) {
-					let handler = ws_listeners[i];
-					if (handler.protocol) {
-						// if we have a handler for a specific protocol, allow it to select on that protocol
-						// to the exclusion of other handlers
-						if (handler.protocol === protocol) {
+				try {
+					let request = new Request(node_request);
+					request.isWebSocket = true;
+					let chain_completion = http_chain[port_num](request);
+					let protocol = node_request.headers['sec-websocket-protocol'] || '';
+					// TODO: select listener by protocol
+					for (let i = 0; i < ws_listeners.length; i++) {
+						let handler = ws_listeners[i];
+						if (handler.protocol) {
+							// if we have a handler for a specific protocol, allow it to select on that protocol
+							// to the exclusion of other handlers
+							if (handler.protocol === protocol) {
+								handler.listener(ws, request, chain_completion);
+								break;
+							}
+						} else {
 							handler.listener(ws, request, chain_completion);
-							break;
 						}
-					} else {
-						handler.listener(ws, request, chain_completion);
 					}
+				} catch (error) {
+					harper_logger.warn('Error handling WebSocket connection', error);
 				}
 			});
 		}

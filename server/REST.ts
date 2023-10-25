@@ -67,7 +67,7 @@ async function http(request, next_handler) {
 				case 'PATCH':
 					return resource.patch(resource_request, request.data, request);
 				case 'OPTIONS': // used primarily for CORS
-					headers.set('Allow', 'GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS, TRACE, QUERY, COPY, MOVE');
+					headers.setIfNone('Allow', 'GET, HEAD, POST, PUT, DELETE, PATCH, OPTIONS, TRACE, QUERY, COPY, MOVE');
 					return;
 				case 'CONNECT':
 					// websockets? and event-stream
@@ -92,7 +92,7 @@ async function http(request, next_handler) {
 			status = method === 'GET' || method === 'HEAD' ? 404 : 204;
 			// deleted entries can have a timestamp of when they were deleted
 			if (http_options.lastModified && request.lastModified)
-				headers.set('Last-Modified', new Date(request.lastModified).toUTCString());
+				headers.setIfNone('Last-Modified', new Date(request.lastModified).toUTCString());
 		} else if ((last_modification = request.lastModified)) {
 			etag_float[0] = last_modification;
 			// base64 encoding of the 64-bit float encoding of the date in ms (with quotes)
@@ -117,12 +117,12 @@ async function http(request, next_handler) {
 				status = 304;
 				response_data = undefined;
 			} else {
-				headers.set('ETag', etag);
+				headers.setIfNone('ETag', etag);
 			}
-			if (http_options.lastModified) headers.set('Last-Modified', new Date(last_modification).toUTCString());
+			if (http_options.lastModified) headers.setIfNone('Last-Modified', new Date(last_modification).toUTCString());
 		}
 		if (request.createdResource) status = 201;
-		if (request.newLocation) headers.set('Location', request.newLocation);
+		if (request.newLocation) headers.setIfNone('Location', request.newLocation);
 
 		const response_object = {
 			status,
@@ -134,7 +134,7 @@ async function http(request, next_handler) {
 			// this appears to be a caching table with a source
 			response_object.wasCacheMiss = loaded_from_source; // indicate if it was a missed cache
 			if (!loaded_from_source && last_modification) {
-				headers.set('Age', Math.round((Date.now() - (request.lastRefreshed || last_modification)) / 1000));
+				headers.setIfNone('Age', Math.round((Date.now() - (request.lastRefreshed || last_modification)) / 1000));
 			}
 		}
 		// TODO: Handle 201 Created
@@ -152,7 +152,7 @@ async function http(request, next_handler) {
 			if (error.method) error.message += ` to handle HTTP method ${error.method.toUpperCase() || ''}`;
 			if (error.allow) {
 				error.allow.push('trace', 'head', 'options');
-				headers.set('Allow', error.allow.map((method) => method.toUpperCase()).join(', '));
+				headers.setIfNone('Allow', error.allow.map((method) => method.toUpperCase()).join(', '));
 			}
 		}
 		const response_object = {

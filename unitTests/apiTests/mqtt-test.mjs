@@ -81,6 +81,7 @@ describe('test MQTT connections and commands', () => {
 		let clients = [];
 		let published = 0;
 		let received = [];
+		let subscriptions = [];
 		for (let x = 1; x < vus + 1; x++) {
 			const topic = `${tableName}/1`;
 			const client = connect({
@@ -91,23 +92,25 @@ describe('test MQTT connections and commands', () => {
 				protocol: 'mqtt',
 			});
 			clients.push(client);
-			let interval;
-			client.on('connect', function (connack) {
-				client.subscribe(topic, function (err) {
-					console.error(err);
-					if (!err) {
-						intervals.push(
-							setInterval(() => {
-								published++;
-								client.publish(topic, JSON.stringify({ name: 'radbot 9000', pub_time: Date.now() }), {
-									qos: 1,
-									retain: false,
-								});
-							}, 1)
-						);
-					}
+			subscriptions.push(new Promise((resolve) => {
+				client.on('connect', function (connack) {
+					client.subscribe(topic, function (err) {
+						console.error(err);
+						if (!err) {
+							resolve();
+							intervals.push(
+								setInterval(() => {
+									published++;
+									client.publish(topic, JSON.stringify({name: 'radbot 9000', pub_time: Date.now()}), {
+										qos: 1,
+										retain: false,
+									});
+								}, 1)
+							);
+						}
+					});
 				});
-			});
+			}));
 
 			client.on('message', function (topic, message) {
 				let now = Date.now();
@@ -121,6 +124,7 @@ describe('test MQTT connections and commands', () => {
 				console.error(error);
 			});
 		}
+		await Promise.all(subscriptions);
 		await new Promise((resolve) => setTimeout(resolve, 200));
 		for (let interval of intervals) clearInterval(interval);
 		await new Promise((resolve) => setTimeout(resolve, 20));
@@ -435,15 +439,15 @@ describe('test MQTT connections and commands', () => {
 				qos: 1,
 			}
 		);
-		await client2.publish(
+		await new Promise((resolve) => client2.publish(
 			'SimpleRecord/42',
 			JSON.stringify({
 				name: 'This is a test of publishing to a disconnected durable session 3',
 			}),
 			{
 				qos: 1,
-			}
-		);
+			}, resolve
+		));
 		await delay(10);
 		client = connect('mqtt://localhost:1883', {
 			clean: false,

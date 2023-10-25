@@ -11,6 +11,16 @@ export class Headers extends Map<string, { name: string; value: string }> {
 		if (typeof name !== 'string') name = '' + name;
 		return super.get(name.toLowerCase())?.[1];
 	}
+	has(name) {
+		if (typeof name !== 'string') name = '' + name;
+		return super.has(name.toLowerCase());
+	}
+	setIfNone(name, value) {
+		if (typeof name !== 'string') name = '' + name;
+		if (typeof value !== 'string') value = '' + value;
+		const lower_name = name.toLowerCase();
+		if (!super.has(lower_name)) return super.set(lower_name, [name, value]);
+	}
 	append(name, value, comma_delimited) {
 		if (typeof name !== 'string') name = '' + name;
 		if (typeof value !== 'string') value = '' + value;
