@@ -9,8 +9,8 @@ ARG VCS_REF
 ARG VCS_TYPE=git
 
 # for use in labels
-ENV SUMMARY="HarperDB is a turn-key solution for the collection, distribution, and analysis of data."
-ENV DESCRIPTION="HarperDB is a turn-key solution for the collection, distribution, and analysis of data throughout your organization. Projects that have historically taken months (or even years) of consulting, configuration, and custom development can be completed in days or weeks with HarperDB."
+ENV SUMMARY="HarperDB is a globally-distributed edge application platform."
+ENV DESCRIPTION="HarperDB is a globally-distributed edge application platform comprised of an edge database, streaming broker, and user-defined applications delivering near-zero latency, huge cost savings, and a superior developer experience."
 
 # useful metadata
 LABEL name="harperdb/harperdb-openshift"
