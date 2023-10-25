@@ -1,8 +1,10 @@
 import { RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
+import * as harper_logger from '../utility/logging/harper_logger';
+import { CONTEXT } from './Resource';
 
 const MAX_OPTIMISTIC_SIZE = 100;
-let node_ids: Map;
+const tracked_txns = new Set<DatabaseTransaction>();
 export class DatabaseTransaction implements Transaction {
 	writes = []; // the set of writes to commit if the conditions are met
 	lmdbDb: RootDatabase;
@@ -11,11 +13,16 @@ export class DatabaseTransaction implements Transaction {
 	validated = 0;
 	timestamp = 0;
 	declare next: DatabaseTransaction;
+	declare stale: boolean;
 	open = true;
 	getReadTxn(): LMDBTransaction | void {
 		// used optimistically
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
-		return this.readTxn || (this.readTxn = this.lmdbDb.useReadTransaction());
+		if (this.stale) this.stale = false;
+		if (this.readTxn) return this.readTxn;
+		this.readTxn = this.lmdbDb.useReadTransaction();
+		tracked_txns.add(this);
+		return this.readTxn;
 	}
 	disregardReadTxn(): void {
 		if (--this.readTxnRefCount === 0) {
@@ -24,6 +31,7 @@ export class DatabaseTransaction implements Transaction {
 	}
 	resetReadSnapshot() {
 		if (this.readTxn) {
+			tracked_txns.delete(this);
 			this.readTxn.done();
 			this.readTxn = null;
 		}
@@ -194,4 +202,28 @@ export class ImmediateTransaction extends DatabaseTransaction {
 	getReadTxn() {
 		return; // no transaction means read latest
 	}
+}
+let txn_expiration = 3000;
+let timer;
+function startMonitoringTxns() {
+	timer = setInterval(function () {
+		for (const txn of tracked_txns) {
+			if (txn.stale) {
+				const url = txn[CONTEXT]?.url;
+				harper_logger.error(
+					`Transaction was open too long and has been aborted, from table: ${
+						txn.lmdbDb?.name + (url ? ' path: ' + url : '')
+					}`
+				);
+				txn.resetReadSnapshot();
+			} else txn.stale = true;
+		}
+	}, txn_expiration).unref();
+}
+startMonitoringTxns();
+export function setTxnExpiration(ms) {
+	clearInterval(timer);
+	txn_expiration = ms;
+	startMonitoringTxns();
+	return tracked_txns;
 }

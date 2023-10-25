@@ -1538,6 +1538,7 @@ export function makeTable(options) {
 	function loadLocalRecord(id, context, options, sync, with_entry) {
 		// TODO: determine if we use lazy access properties
 		const whenPrefetched = () => {
+			if (context?.transaction?.stale) context.transaction.stale = false;
 			const entry = primary_store.getEntry(id, options);
 			if (entry && context) {
 				if (entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
