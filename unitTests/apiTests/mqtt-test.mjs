@@ -130,6 +130,39 @@ describe('test MQTT connections and commands', () => {
 		//console.log({ published, received });
 		assert(replicated_published_messages.length > 10);
 	});
+
+	it('can publish non-JSON', async () => {
+		const topic = `SimpleRecord/51`;
+		const client = connect({
+			host: 'localhost',
+			clean: true,
+			connectTimeout: 2000,
+			protocol: 'mqtt',
+		});
+		await new Promise(resolve => {
+			client.on('connect', function (connack) {
+				client.subscribe(topic, function (err) {
+					console.error(err);
+					client.publish(topic, Buffer.from([1,2,3,4,5]), {
+						qos: 1,
+						retain: false,
+					});
+				});
+			});
+
+			client.on('message', function (topic, message) {
+				let now = Date.now();
+				// message is Buffer
+				assert.deepEqual(Array.from(message), [1,2,3,4,5]);
+				resolve();
+			});
+
+			client.on('error', function (error) {
+				// message is Buffer
+				console.error(error);
+			});
+		});
+	});
 	it('subscribe to retained record with upsert operation', async function () {
 		let path = 'SimpleRecord/77';
 		let client;
@@ -434,7 +467,6 @@ describe('test MQTT connections and commands', () => {
 		client.end();
 		if (messages.length !== 3)
 			console.error('Incorrect messages', {messages});
-		console.log('history', await tables.SimpleRecord.getHistoryOfRecord('42'));
 		assert(messages.length === 3);
 		messages = [];
 		client = connect('mqtt://localhost:1883', {

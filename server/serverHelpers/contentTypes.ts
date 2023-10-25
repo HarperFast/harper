@@ -333,6 +333,10 @@ export function serialize(response_data, request, response_object) {
  * @returns {*}
  */
 export function serializeMessage(message, request) {
+	if (!request) {
+		if (message?.contentType != null && message.data != null) return message.data;
+		return JSON.stringify(message);
+	}
 	if (message?.contentType != null && message.data != null) return message;
 	let serialize = request.serialize;
 	if (serialize) return serialize(message);
@@ -363,7 +367,9 @@ export function getDeserializer(content_type, streaming) {
 		const deserialize = media_types.get(content_type)?.deserialize || deserializerUnknownType(content_type, parameters);
 		return (stream) => streamToBuffer(stream).then(deserialize);
 	}
-	return media_types.get(content_type)?.deserialize || deserializerUnknownType(content_type, parameters);
+	return (
+		(content_type && media_types.get(content_type)?.deserialize) || deserializerUnknownType(content_type, parameters)
+	);
 }
 function deserializerUnknownType(content_type, parameters) {
 	// TODO: store the content-disposition too
@@ -378,8 +384,16 @@ function deserializerUnknownType(content_type, parameters) {
 		// use this type as a way of directly transferring binary data (since that is what it means)
 		return (data) => data;
 	} else {
-		// else record the type and binary data as a pair
-		return (data) => ({ contentType: content_type, data });
+		return (data) => {
+			if (!content_type) {
+				// try to parse as JSON if no content type
+				try {
+					if (data?.[0] === 123) return JSON.parse(data);
+				} catch (error) {}
+			}
+			// else record the type and binary data as a pair
+			return { contentType: content_type || 'application/octet-stream', data };
+		};
 	}
 }
 

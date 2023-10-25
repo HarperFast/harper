@@ -305,7 +305,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 			recordAction(send_packet.length, 'bytes-sent', path, packet_data.cmd, 'mqtt');
 		}
 		function serialize(data) {
-			return request ? serializeMessage(data, request) : JSON.stringify(data);
+			return serializeMessage(data, request);
 		}
 	});
 	return { onMessage, onClose };
