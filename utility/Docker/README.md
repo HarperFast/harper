@@ -32,7 +32,6 @@ The complete [HarperDB Operations API documentation](https://docs.harperdb.io/do
 
 If no environment variables are passed to `docker run`, HarperDB will run with default configuration settings, except for the following:
 - `ROOTPATH=/home/harperdb/hdb`
-- `OPERATIONSAPI_NETWORK_PORT=9925`
 - `HDB_ADMIN_USERNAME=HDB_ADMIN`
 - `HDB_ADMIN_PASSWORD=password`
 - `LOGGING_STDSTREAMS=true`
@@ -42,7 +41,7 @@ Containers created from this image will store all data and HarperDB configuratio
 
 ### Examples
 
-Run a HarperDB container in the background, with the ROOTPATH directory mounted to the container host, and expose the HarperDB API and Custom Functions ports on the container host:
+Run a HarperDB container in the background, with the ROOTPATH directory mounted to the container host, and expose the HarperDB Operations API and HTTP ports on the container host:
 ```
 docker run -d \
   -v <host directory>:/home/harperdb/hdb \
@@ -54,7 +53,7 @@ docker run -d \
   harperdb/harperdb
 ```
 
-Enable HTTPS for the HarperDB API and Custom Functions, enable HarperDB clustering, and expose the HarperDB clustering port on the container host:
+Enable HTTPS, enable HarperDB clustering, and expose the HarperDB clustering port on the container host:
 ```
 docker run -d \
   -v <host directory>:/home/harperdb/hdb \
