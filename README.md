@@ -23,12 +23,12 @@ Every Installation of HarperDB can be administered online using HarperDB Studio.
 
 The preferred way to interact with HarperDB for typical querying, accessing, and updating data (CRUD) operations is through the REST interface, described in the REST documentation.
 
-The complete [HarperDB Operations API documentation](https://docs.harperdb.io/docs/operations-api/README.md) provides important administrative functions. Generally it is recommended that use the [RESTful interface](https://docs.harperdb.io/docs/rest/README.md) as your primary interface for scalable and performant data interaction for building production applications, and the operations API for administrative purposes.
+The complete [HarperDB Operations API documentation](https://api.harperdb.io/) provides important administrative functions. Generally it is recommended that use the [RESTful interface](https://docs.harperdb.io/docs/rest/) as your primary interface for scalable and performant data interaction for building production applications, and the operations API for administrative purposes.
 
 ## Documentation and Support
 [Docs](https://docs.harperdb.io/)
 
-[Support](https://harperdb.io/docs/support/)
+[Support](https://harperdb.io/support/)
 
 ## Prerequisites
 HarperDB requires Node.js 14 or higher. Our fully tested and supported Node.js version is 18.15.0.

@@ -23,7 +23,7 @@ The complete HarperDB Operations API documentation is available at api.harperdb.
 
 [Docs](https://docs.harperdb.io/)
 
-[Support](https://harperdb.io/docs/support/)
+[Support](https://harperdb.io/support/)
 
 ## How to Use This Image
 
