@@ -23,7 +23,7 @@ import { idsForCondition, filterByType } from './search';
 import * as harper_logger from '../utility/logging/harper_logger';
 import { assignTrackedAccessors, deepFreeze, hasChanges, OWN_DATA } from './tracked';
 import { transaction } from './transaction';
-import { MAXIMUM_KEY } from 'ordered-binary';
+import { MAXIMUM_KEY, writeKey } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads';
 import { readAuditEntry } from './auditStore';
 import { autoCast, convertToMS } from '../utility/common_utils';
@@ -48,6 +48,8 @@ const LOADED_FROM_SOURCE = Symbol('loaded-from-source');
 const NOTIFICATION = { isNotification: true, ensureLoaded: false };
 const INVALIDATED = 1;
 const EVICTED = 8; // note that 2 is reserved for timestamps
+const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
+const MAX_KEY_BYTES = 1978;
 export interface Table {
 	primaryStore: Database;
 	auditStore: Database;
@@ -375,6 +377,7 @@ export function makeTable(options) {
 		static getResource(id: Id, request, resource_options?: any): Promise<TableResource> | TableResource {
 			const resource: TableResource = super.getResource(id, request, resource_options) as any;
 			if (id != null) {
+				checkValidId(id);
 				try {
 					if (resource.hasOwnProperty(RECORD_PROPERTY)) return resource; // already loaded, don't reload, current version may have modifications
 					if (typeof id === 'object' && id && !Array.isArray(id)) {
@@ -675,6 +678,7 @@ export function makeTable(options) {
 		invalidate(options) {
 			const context = this[CONTEXT];
 			const id = this[ID_PROPERTY];
+			checkValidId(id);
 			const transaction = txnForContext(this[CONTEXT]);
 			transaction.addWrite({
 				key: id,
@@ -780,9 +784,7 @@ export function makeTable(options) {
 			const transaction = txnForContext(context);
 
 			const id = this[ID_PROPERTY];
-			if (id === undefined) {
-				throw new Error('Can not save record without an id');
-			}
+			checkValidId(id);
 			const entry = this[ENTRY_PROPERTY];
 			this[IS_SAVING] = true; // mark that this resource is being saved so doesExist return true
 			const write = {
@@ -889,8 +891,8 @@ export function makeTable(options) {
 		}
 		_writeDelete(options?: any) {
 			const transaction = txnForContext(this[CONTEXT]);
-			let delete_prepared;
 			const id = this[ID_PROPERTY];
+			checkValidId(id);
 			const context = this[CONTEXT];
 			transaction.addWrite({
 				key: id,
@@ -1212,6 +1214,7 @@ export function makeTable(options) {
 		_writePublish(message, options?: any) {
 			const transaction = txnForContext(this[CONTEXT]);
 			const id = this[ID_PROPERTY] || null;
+			checkValidId(id);
 			const context = this[CONTEXT];
 			transaction.addWrite({
 				key: id,
@@ -1534,6 +1537,30 @@ export function makeTable(options) {
 			}
 		}
 		return has_changes;
+	}
+	function checkValidId(id) {
+		switch (typeof id) {
+			case 'number':
+				return true;
+			case 'string':
+				if (id.length < 659) return true; // max number of characters that can't expand our key size limit
+				if (id.length > MAX_KEY_BYTES) {
+					// we can quickly determine this is too big
+					throw new Error('Primary key size is too large: ' + id.length);
+				}
+				// TODO: We could potentially have a faster test here, Buffer.byteLength is close, but we have to handle characters < 4 that are escaped in ordered-binary
+				break; // otherwise we have to test it, in this range, unicode characters could put it over the limit
+			case 'object':
+				if (id === null) return true;
+				break; // otherwise we have to test it
+			default:
+				throw new Error('Invalid primary key type: ' + typeof id);
+		}
+		// otherwise it is difficult to determine if the key size is too large
+		// without actually attempting to serialize it
+		const length = writeKey(id, TEST_WRITE_KEY_BUFFER, 0);
+		if (length > MAX_KEY_BYTES) throw new Error('Primary key size is too large: ' + id.length);
+		return true;
 	}
 	function loadLocalRecord(id, context, options, sync, with_entry) {
 		// TODO: determine if we use lazy access properties
