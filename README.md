@@ -3,7 +3,7 @@
 ## Contents
 1. [HarperDB Overview](#harperdb-overview)
 2. [HarperDB Studio](#harperdb-studio)
-3. [Built-In API](#built-in-api)
+3. [HarperDB APIs](#harperdb-apis)
 4. [Documentation and Support](#documentation-and-support)
 5. [Prerequisites](#prerequisites)
 6. [Installing HarperDB](#installing-harperdb)
