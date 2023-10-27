@@ -380,7 +380,11 @@ function getHTTPServer(port, secure, is_operations_server) {
 				onError(error);
 			}
 			function onError(error) {
-				node_response.writeHead(error.statusCode || 500);
+				const headers = error.headers;
+				node_response.writeHead(
+					error.statusCode || 500,
+					headers && (headers[Symbol.iterator] ? Array.from(headers) : headers)
+				);
 				node_response.end(error.toString());
 				// a status code is interpreted as an expected error, so just info or warn, otherwise log as error
 				if (error.statusCode) {
