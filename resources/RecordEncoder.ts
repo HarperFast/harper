@@ -210,7 +210,6 @@ export function handleLocalTimeForGets(store) {
 	const txn = store.useReadTransaction();
 	txn.done();
 	if (!txn.done.isTracked) {
-		txn.done.isTracked = true;
 		const Txn = txn.constructor;
 		const use = txn.use;
 		const done = txn.done;
@@ -232,6 +231,7 @@ export function handleLocalTimeForGets(store) {
 				}
 			}
 		};
+		Txn.prototype.done.isTracked = true;
 	}
 
 	return store;
