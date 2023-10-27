@@ -17,7 +17,7 @@ Every Installation of HarperDB can be administered online using HarperDB Studio.
 
 The preferred way to interact with HarperDB for typical querying, accessing, and updating data (CRUD) operations is through the REST interface, described in the REST documentation.
 
-The complete HarperDB Operations API documentation is available at api.harperdb.io, and provides important administrative functions. Generally it is recommended that use the RESTful interface as your primary interface for scalable and performant data interaction for building production applications, and the operations API for administrative purposes.
+The complete [HarperDB Operations API documentation](https://docs.harperdb.io/docs/operations-api) provides important administrative functions. Generally it is recommended that use the [RESTful interface](https://docs.harperdb.io/docs/rest/) as your primary interface for scalable and performant data interaction for building production applications, and the operations API for administrative purposes.
 
 ## Documentation and Support
 
