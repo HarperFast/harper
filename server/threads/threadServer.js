@@ -357,10 +357,11 @@ function getHTTPServer(port, secure, is_operations_server) {
 				// if it is a stream, pipe it
 				if (body?.pipe) {
 					body.pipe(node_response);
-					if (body.destroy)
+					if (body.destroy) {
 						node_response.on('close', () => {
 							body.destroy();
 						});
+					}
 					let bytes_sent = 0;
 					body.on('data', (data) => {
 						bytes_sent += data.length;
