@@ -1,5 +1,7 @@
 # HarperDB Build and Release Process
 
+DevOps process for release.
+
 ## Table of Contents
 
 <!-- TOC -->
@@ -8,11 +10,7 @@
   * [Pre-Flight Checklist](#pre-flight-checklist)
   * [Pre-Production Release](#pre-production-release)
     * [Build Package](#build-package)
-      * [CI Tests](#ci-tests)
-      * [Cluster CI Tests](#cluster-ci-tests)
-    * [Docker Image](#docker-image)
-      * [CI Tests](#ci-tests-1)
-      * [Cluster CI Tests](#cluster-ci-tests-1)
+      * [Tests](#tests)
     * [Cloud AMIs](#cloud-amis)
       * [Build and Release](#build-and-release)
       * [Verification](#verification)
@@ -21,7 +19,7 @@
     * [Private Docker Hub Release](#private-docker-hub-release)
   * [Prod Release](#prod-release)
     * [Publish Public NPM Package](#publish-public-npm-package)
-      * [Publishing a non-alpha/beta/RC version:](#publishing-a-non-alphabetarc-version)
+      * [Publishing a GA release version:](#publishing-a-ga-release-version)
       * [Publishing an alpha/beta/RC version:](#publishing-an-alphabetarc-version)
     * [Docker Hub Release](#docker-hub-release)
     * [Redhat Container Image Release](#redhat-container-image-release)
@@ -38,67 +36,22 @@
  - [ ] Ensure `package.json` is up to date with new HarperDB version, and any other needed changes
  - [ ] Ensure `README.md` is up to date
  - [ ] Ensure `utility/Docker/README.md` is up to date
- - [ ] Ensure `utility/Docker/Dockerfile` is up to date
+ - [ ] Ensure `utility/Docker/Dockerfile*` are up to date
  - [ ] Ensure any edits done in the release branch/tag to the above files, are also done in main, if appropriate
- - [ ] Review documentation for changes that may be needed. In particular:
-   - [ ] [https://docs.harperdb.io/docs/install-harperdb](https://docs.harperdb.io/docs/install-harperdb)
-   - [ ] [https://docs.harperdb.io/docs/install-harperdb/linux](https://docs.harperdb.io/docs/install-harperdb/linux)
-   - [ ] Create PR for [HarperDB/documentation](https://github.com/HarperDB/documentation) if needed
-- [ ] Remind/coordinate with developers that they may need to update the following:
-    - [ ] Release notes
-    - [ ] Documentation updates
-    - [ ] Open Source license notices 
+ - [ ] Review documentation and release notes for needed changes, and sync with development to make sure docs are updated alongside release
+    - development is responsible for documentation, however, look out for any updates that are more devops oriented and provide input as needed
+ - [ ] Open Source license notices 
 
 [Marketing logos](https://drive.google.com/drive/u/2/folders/1-ZO1yuBsskfohFiFZKLl9k0FFbIqntkk)
-are on Google Drive (`Google Drive > HarperDB Corporate Drive > Brand & Marketing > HDB Logos`)
+are on Google Drive (`Google Drive > Go-to-Market > Design/Brand Files > HDB Logos`)
 
 ## Pre-Production Release
 
 ### Build Package
 
-#### CI Tests
+#### Tests
 
-Ensure the `Run Build Package CI Tests` workflow 
-([build-package-ci-test.yaml](https://github.com/HarperDB/harperdb/blob/main/.github/workflows/build-package-ci-test.yaml))
-has completed successfully against the release branch/tag.
-
-> Note: this workflow is currently run automatically on PR, changes to `main`, and on a schedule for `main`
-
-#### Cluster CI Tests
-
-Verify the following workflows have completed successfully against the release branch/tag:
-
-- [runBuildPackageClusterTestA](https://github.com/HarperDB/harperdb/blob/main/.github/workflows/build-package-cluster-test-a.yaml)
-- [runBuildPackageClusterTestB](https://github.com/HarperDB/harperdb/blob/main/.github/workflows/build-package-cluster-test-b.yaml)
-- [runBuildPackageClusterTestC](https://github.com/HarperDB/harperdb/blob/main/.github/workflows/build-package-cluster-test-c.yaml)
-
-Test are defined [here](https://github.com/HarperDB/harperdb/tree/main/integrationTests/clusterTests)
-Logs are downloaded as artifacts, and a message is posted to `#development` in slack.
-
-> Note: these workflows are set to also run on PR, changes to `main`, and on a schedule for `main`
-
-### Docker Image
-
-#### CI Tests
-
-Verify the `Run Docker CI Tests` workflow
-([docker-ci-tests.yaml](https://github.com/HarperDB/harperdb/blob/main/.github/workflows/docker-ci-tests.yaml))
-has completed successfully against the release branch/tag.
-
-> Note: this workflow is currently run automatically on PR and on a schedule
-
-#### Cluster CI Tests
-
-Verify the following workflows have completed successfully against the release branch/tag:
-
-- [runDockerClusterTestA](https://github.com/HarperDB/harperdb/blob/main/.github/workflows/docker-cluster-test-a.yaml)
-- [runDockerClusterTestB](https://github.com/HarperDB/harperdb/blob/main/.github/workflows/docker-cluster-test-b.yaml)
-- [runDockerClusterTestC](https://github.com/HarperDB/harperdb/blob/main/.github/workflows/docker-cluster-test-c.yaml)
-
-Tests are defined [here](https://github.com/HarperDB/harperdb/tree/main/integrationTests/clusterTests)
-Logs are downloaded as artifacts, and a message is posted to `#development` in slack.
-
-> Note: these workflows are set to run on PR and on a schedule for `main`.
+Verify with development that appropriate tests have completed successfully on release tag.
 
 ### Cloud AMIs
 
@@ -143,10 +96,15 @@ Run the `npm Publish Private`
 workflow against the release branch/tag
 
 > Setting `dry-run` to `true` as an input does everything publish would do except actually publishing to the registry
+Select the following drop-down options on the `npm publish` workflow:
+
+- select appropriate release branch or tag
+- `private` to choose publishing to the private/restricted npm repo
+- choose the mutable tag assigned to this publication, either `next` or `latest+stable` as appropriate
+- `false` on whether we should use the `--dry-run` flag to test this process
 
 1. Verify package was published at [@harperdb/harperdb](https://www.npmjs.com/package/@harperdb/harperdb) 
-2. Verify tags and version at 
-   [@harperdb/harperdb](https://www.npmjs.com/package/@harperdb/harperdb)
+2. Verify tags and version at [@harperdb/harperdb](https://www.npmjs.com/package/@harperdb/harperdb)
 
 ### Private Docker Hub Release
 
@@ -168,34 +126,27 @@ workflow against the release branch/tag
 
 > Setting `dry-run` to `true` as an input does everything publish would do except actually publishing to the registry
 
-#### Publishing a non-alpha/beta/RC version:
+#### Publishing a GA release version:
 
-1. Verify package was published at [harperdb/harperdb](https://www.npmjs.com/package/harperdb/harperdb)
-2. Add `stable` tag to new package
-   ```shell 
-   npm dist-tag add harperdb/harperdb@<new version> stable
-   ```
-3. Deprecate old package version
-   ```shell
-   npm deprecate harperdb/harperdb@<old version> "Please use the latest stable version of HarperDB"
-   ```
-4. Verify tags and deprecated version at
-   [harperdb/harperdb](https://www.npmjs.com/package/harperdb/harperdb)
+Select the following drop-down options on the `npm publish` workflow:
+
+ - select appropriate release branch or tag
+ - `public` to choose publishing to the public npm repo
+ - `latest+stable` as the mutable tag assigned to this publication
+ - `false` on whether we should use the `--dry-run` flag to test this process
+  
+Verify tags and deprecated version at [harperdb/harperdb](https://www.npmjs.com/package/harperdb/harperdb)
 
 #### Publishing an alpha/beta/RC version:
 
-1. Verify package was published at [harperdb/harperdb](https://www.npmjs.com/package/harperdb/harperdb)
-2. Move `latest` tag back to the version that had previously had the tag
-   ```shell
-   npm dist-tag add harperdb/harperdb@<old version> latest
-   ```
-3. Do not move `stable` tag
-4. Deprecate any older alpha/beta/RC versions
-   ```shell
-   npm deprecate harperdb/harperdb@<old alpha/beta/RC version> "Please use the latest stable version of HarperDB"
-   ```
-5. Verify tags and deprecated version at
-   [harperdb/harperdb](https://www.npmjs.com/package/harperdb/harperdb)
+Select the following drop-down options on the `npm publish` workflow:
+
+- select appropriate release branch or tag
+- `public` to choose publishing to the public npm repo
+- `next` as the mutable tag assigned to this publication
+- `false` on whether we should use the `--dry-run` flag to test this process
+
+Verify tags and deprecated version at [harperdb/harperdb](https://www.npmjs.com/package/harperdb/harperdb)
 
 ### Docker Hub Release
 
@@ -230,9 +181,9 @@ podman login registry.hub.docker.com --authfile ./temp-auth.json
 ```
 
 Next is to push these images to Redhat. You will want to `docker pull` the image first. You will need to have built the `openshift-preflight` utility from above.
-They `pyxis` key can be found in LastPass under the redhat.com haperdb account entry in the notes. 
+They `pyxis` key can be found in LastPass under the redhat.com harperdb account entry in the notes. 
 
-> You have to run this for each platform we support (currenty `amd64` and `arm64`)
+> You have to run this for each platform we support (currently `amd64` and `arm64`)
 ```shell
 preflight check container registry.hub.docker.com/harperdb/harperdb-openshift:[version] \
   --submit \
