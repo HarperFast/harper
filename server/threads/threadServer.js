@@ -65,38 +65,29 @@ function startServers() {
 					} else if (message.type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
 						harper_logger.trace('received shutdown request', threadId);
 						// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
-						// then let the event loop complete
+						// close connections as possible, then let the event loop complete
 						for (let port in SERVERS) {
-							// TODO: If fastify has fielded a route and messed up the closing, then have to manually exit the
-							//  process otherwise we can use a graceful exit
-							// if (SERVERS[server_type].hasRequests)
-							harper_logger.trace('closing server', port, threadId);
 							const server = SERVERS[port];
 							let close_all_timer;
-							server.closeIdleConnections?.();
-							server // TODO: Should we try to interact with fastify here?
-								.close?.(() => {
-									harper_logger.trace('closed server', port, threadId);
-									clearInterval(close_all_timer);
-									// if we are cleaning up after fastify, it will fail to release all its refs
-									// and so normally we have to kill the thread forcefully, unfortunately.
-									// If that is the case, do it relatively quickly, there is no sense in waiting
-									// otherwise we can expect a more graceful exit and only forcefully exit after
-									// a longer timeout (and log it as warning since it would be unusual).
-									setTimeout(
-										() => {
-											console.log('forced close server', port, threadId);
-
-											if (!server.cantCleanupProperly)
-												harper_logger.warn('Had to forcefully exit the thread', threadId);
-											process.exit(0);
-										},
-										server.cantCleanupProperly ? 2500 : 5000
-									).unref();
-								});
-							close_all_timer = setTimeout(() => {
-								server.closeAllConnections?.();
-							}, 1500).unref();
+							if (server.closeIdleConnections) {
+								// Here we attempt to gracefully close all outstanding keep-alive connections,
+								// repeatedly closing any connections that are idle. This allows any active requests
+								// to finish sending their response, then we close their connections.
+								setInterval(() => {
+									server.closeIdleConnections();
+								}, 25).unref();
+							}
+							// And we tell the server not to accept any more incoming connections
+							server.close?.(() => {
+								clearInterval(close_all_timer);
+								// We hope for a graceful exit once all connections have been closed, and no
+								// more incoming connections are accepted, but if we need to, we eventually will exit
+								setTimeout(() => {
+									console.log('forced close server', port, threadId);
+									if (!server.cantCleanupProperly) harper_logger.warn('Had to forcefully exit the thread', threadId);
+									process.exit(0);
+								}, 5000).unref();
+							});
 						}
 						if (process.env.DEV_MODE) {
 							try {
@@ -331,9 +322,19 @@ function getHTTPServer(port, secure, is_operations_server) {
 				const status = response.status || 200;
 				const end_time = performance.now();
 				const execution_time = end_time - start_time;
+				let body = response.body;
+				let sent_body;
 				if (!response.handlesHeaders) {
-					const headers = response.headers;
-					if (headers?.append) {
+					const headers = response.headers || new Headers();
+					if (!body) {
+						headers.set('Content-Length', '0');
+						sent_body = true;
+					} else if (body.length >= 0) {
+						if (typeof body === 'string') headers.set('Content-Length', Buffer.byteLength(body));
+						else headers.set('Content-Length', body.length);
+						sent_body = true;
+					}
+					if (headers.append) {
 						let server_timing = `hdb;dur=${execution_time.toFixed(2)}`;
 						if (response.wasCacheMiss) {
 							server_timing += ', miss';
@@ -341,6 +342,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 						headers.append('Server-Timing', server_timing, true);
 					}
 					node_response.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
+					if (sent_body) node_response.end(body);
 				}
 				const handler_path = request.handlerPath;
 				const method = request.method;
@@ -352,31 +354,30 @@ function getHTTPServer(port, secure, is_operations_server) {
 					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
 				);
 				recordActionBinary(status < 400, 'success', handler_path, method);
-
-				let body = response.body;
-				// if it is a stream, pipe it
-				if (body?.pipe) {
-					body.pipe(node_response);
-					if (body.destroy) {
-						node_response.on('close', () => {
-							body.destroy();
+				if (!sent_body) {
+					// if it is a stream, pipe it
+					if (body?.pipe) {
+						body.pipe(node_response);
+						if (body.destroy)
+							node_response.on('close', () => {
+								body.destroy();
+							});
+						let bytes_sent = 0;
+						body.on('data', (data) => {
+							bytes_sent += data.length;
+						});
+						body.on('end', () => {
+							recordAction(performance.now() - end_time, 'transfer', handler_path, method);
+							recordAction(bytes_sent, 'bytes-sent', handler_path, method);
 						});
 					}
-					let bytes_sent = 0;
-					body.on('data', (data) => {
-						bytes_sent += data.length;
-					});
-					body.on('end', () => {
-						recordAction(performance.now() - end_time, 'transfer', handler_path, method);
-						recordAction(bytes_sent, 'bytes-sent', handler_path, method);
-					});
+					// else just send the buffer/string
+					else if (body?.then)
+						body.then((body) => {
+							node_response.end(body);
+						}, onError);
+					else node_response.end(body);
 				}
-				// else just send the buffer/string
-				else if (body?.then)
-					body.then((body) => {
-						node_response.end(body);
-					}, onError);
-				else node_response.end(body);
 			} catch (error) {
 				onError(error);
 			}
