@@ -34,4 +34,40 @@ describe('Querying through Resource API', () => {
 		}
 		assert.equal(results.length, 1);
 	});
+	it('Get with big key should fail', async function () {
+		const key = [];
+		for (let i = 0; i < 50; i++) key.push('testing a big key that is too big for HarperDB');
+		let get_error;
+		for (let i = 0; i < 5; i++) {
+			get_error = null;
+			try {
+				let result;
+				result = await QueryTable.get(key);
+				console.log(result);
+			} catch (error) {
+				get_error = error;
+			}
+			assert(get_error.message.includes('key size is too large'));
+		}
+		for (let i = 0; i < 5; i++) {
+			get_error = null;
+			try {
+				let result;
+				result = await QueryTable.get(key.toString());
+				console.log(result);
+			} catch (error) {
+				get_error = error;
+			}
+			assert(get_error.message.includes('key size is too large'));
+		}
+		let put_error;
+		try {
+			let result;
+			result = await QueryTable.put(key, { name: 'should be too big' });
+			console.log(result);
+		} catch (error) {
+			put_error = error;
+		}
+		assert(put_error.message.includes('key size is too large'));
+	});
 });

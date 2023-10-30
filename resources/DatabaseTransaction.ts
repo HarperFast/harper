@@ -203,7 +203,7 @@ export class ImmediateTransaction extends DatabaseTransaction {
 		return; // no transaction means read latest
 	}
 }
-let txn_expiration = 3000;
+let txn_expiration = 30000;
 let timer;
 function startMonitoringTxns() {
 	timer = setInterval(function () {

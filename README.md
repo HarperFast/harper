@@ -21,7 +21,7 @@ Every Installation of HarperDB can be administered online using HarperDB Studio.
 
 [HarperDB Studio](https://studio.harperdb.io/sign-up)
 
-### HarperDB APIs
+## HarperDB APIs
 
 The preferred way to interact with HarperDB for typical querying, accessing, and updating data (CRUD) operations is through the REST interface, described in the REST documentation.
 

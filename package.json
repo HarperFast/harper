@@ -19,8 +19,8 @@
   },
   "engines": {
     "minimum-node": "16.0.0",
-    "go-lang": "1.21.1",
-    "nats-server": "2.10.1"
+    "go-lang": "1.21.3",
+    "nats-server": "2.10.3"
   },
   "exports": {
     ".": "./index.js"
@@ -57,7 +57,7 @@
   },
   "dependencies": {
     "@aws-sdk/abort-controller": "3.374.0",
-    "@aws-sdk/client-s3": "3.418.0",
+    "@aws-sdk/client-s3": "3.425.0",
     "@aws-sdk/lib-storage": "3.418.0",
     "@endo/static-module-record": "^0.8.1",
     "@fastify/autoload": "~5.7.1",
@@ -86,7 +86,7 @@
     "human-readable-ids": "1.0.4",
     "inquirer": "8.2.6",
     "is-number": "7.0.0",
-    "joi": "17.10.2",
+    "joi": "17.11.0",
     "json2csv": "5.0.7",
     "jsonata": "1.8.6",
     "jsonwebtoken": "9.0.2",
@@ -109,7 +109,7 @@
     "passport": "0.6.0",
     "passport-http": "0.3.0",
     "passport-local": "1.0.0",
-    "pino": "8.15.3",
+    "pino": "8.15.6",
     "pm2": "5.3.0",
     "prompt": "1.3.0",
     "properties-reader": "2.3.0",
@@ -119,7 +119,7 @@
     "ses": "^0.18.1",
     "stream-chain": "2.2.5",
     "stream-json": "1.8.0",
-    "systeminformation": "5.21.9",
+    "systeminformation": "5.21.10",
     "tar-fs": "2.1.1",
     "ulidx": "0.5.0",
     "uuid": "9.0.1",

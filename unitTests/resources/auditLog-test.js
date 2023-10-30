@@ -27,7 +27,7 @@ describe('Audit log', () => {
 			events.push(event);
 		});
 	});
-	after(function () {
+	afterEach(function () {
 		setAuditRetention(60000);
 	});
 	it('check log after writes and prune', async () => {
@@ -51,5 +51,27 @@ describe('Audit log', () => {
 		}
 		assert.equal(results.length, 0);
 		assert.equal(AuditedTable.primaryStore.getEntry(1), undefined); // verify that the delete entry was removed
+	});
+	it('write big key with big user name', async () => {
+		const key = [];
+		for (let i = 0; i < 10; i++) key.push('write big key with big user name');
+		await AuditedTable.put(
+			key,
+			{ name: key },
+			{
+				user: { username: key.toString() },
+			}
+		);
+		let history = await AuditedTable.getHistoryOfRecord(key);
+		assert.equal(history.length, 1);
+		await AuditedTable.delete(key);
+		history = await AuditedTable.getHistoryOfRecord(key);
+		assert.equal(history.length, 2);
+		assert.equal(history[0].type, 'put');
+		assert.equal(history[1].type, 'delete');
+		assert.deepEqual(history[0].id, key);
+		assert.deepEqual(history[1].id, key);
+		assert.equal(history[0].user, key.toString());
+		assert.deepEqual(history[0].value.id, key);
 	});
 });
