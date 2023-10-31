@@ -98,8 +98,8 @@ export class DatabaseTransaction implements Transaction {
 			}
 		}
 		if (options?.close) this.open = false;
-		let resolution,
-			completions = [];
+		let resolution;
+		const completions = [];
 		let write_index = 0;
 		this.writes = this.writes.filter((write) => write); // filter out removed entries
 		const doWrite = (write) => {
@@ -146,9 +146,10 @@ export class DatabaseTransaction implements Transaction {
 					if (options?.flush) {
 						completions.push(this.writes[0].store.flushed);
 					}
+					// now reset transactions tracking; this transaction be reused and committed again
+					this.writes = [];
+					this.next = null;
 					return Promise.all(completions).then(() => {
-						// now reset transactions tracking; this transaction be reused and committed again
-						this.writes = [];
 						return {
 							txnTime: txn_time,
 						};
