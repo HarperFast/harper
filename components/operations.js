@@ -395,7 +395,8 @@ async function deployComponent(req) {
 	}
 
 	// Adds package to harperdb-config and then relies on restart to call install on the new app
-	config_utils.updateConfigValue(`${project}_package`, pkg, undefined, false, false, true);
+	await config_utils.addConfig(project, { package: pkg });
+
 	// The main thread can install the components, but we do it here and now so that if it fails, we can immediately
 	// know about it and report it.
 	if (!payload) {
