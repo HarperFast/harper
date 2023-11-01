@@ -75,6 +75,20 @@ describe('Querying through Resource API', () => {
 		}
 		assert(caught_error.message.includes('Unknown query comparator'));
 	});
+	it('Prevent query data in a table with null', async function () {
+		let results = [];
+		let caught_error;
+		try {
+			for await (let record of QueryTable.search({
+				conditions: [{ attribute: 'id', value: null }],
+			})) {
+				results.push(record);
+			}
+		} catch (error) {
+			caught_error = error;
+		}
+		assert(caught_error.message.includes('Invalid value'));
+	});
 	it('Get with big key should fail', async function () {
 		const key = [];
 		for (let i = 0; i < 50; i++) key.push('testing a big key that is too big for HarperDB');

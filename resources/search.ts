@@ -17,6 +17,7 @@ export function idsForCondition(search_condition, transaction, reverse, Table, a
 	let start;
 	let end, inclusiveEnd, exclusiveStart;
 	let value = search_condition[1] ?? search_condition.value;
+	if (value == null) throw new ClientError('Invalid value provided for query, must be non-null value');
 	if (value instanceof Date) value = value.getTime();
 	const comparator = search_condition.comparator;
 	let need_full_scan;
