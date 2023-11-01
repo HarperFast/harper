@@ -22,6 +22,18 @@ describe('Querying through Resource API', () => {
 			QueryTable.put({ id: 'id-' + i, name: i > 0 ? 'name-' + i : null });
 		}
 	});
+	it('Query data in a table', async function () {
+		let results = [];
+		for await (let record of QueryTable.search({
+			conditions: [
+				{ attribute: 'id', comparator: 'le', value: 'id-1' },
+				{ attribute: 'name', comparator: 'ne', value: null },
+			],
+		})) {
+			results.push(record);
+		}
+		assert.equal(results.length, 1);
+	});
 	it('Get with big key should fail', async function () {
 		const key = [];
 		for (let i = 0; i < 50; i++) key.push('testing a big key that is too big for HarperDB');

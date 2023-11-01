@@ -129,12 +129,12 @@ const ALTERNATE_COMPARATOR_NAMES = {
  * @returns {({}) => boolean}
  */
 export function filterByType(search_condition) {
-	const search_type = search_condition.comparator;
+	const comparator = search_condition.comparator;
 	const attribute = search_condition[0] ?? search_condition.attribute;
 	let value = search_condition[1] ?? search_condition.value;
 	if (value instanceof Date) value = value.getTime();
 
-	switch (search_type) {
+	switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
 		case lmdb_terms.SEARCH_TYPES.EQUALS:
 		case undefined:
 			return attributeComparator(attribute, (record_value) => record_value === value);

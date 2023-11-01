@@ -1042,6 +1042,7 @@ export function makeTable(options) {
 					request.limit !== undefined ? (request.offset || 0) + request.limit : undefined
 				);
 			records.onDone = () => {
+				records.onDone = null; // ensure that it isn't called twice
 				read_txn.done();
 			};
 			const context = this[CONTEXT];
@@ -1566,6 +1567,9 @@ export function makeTable(options) {
 		// TODO: determine if we use lazy access properties
 		const whenPrefetched = () => {
 			if (context?.transaction?.stale) context.transaction.stale = false;
+			// if the transaction was closed, which can happen if we are iterating
+			// through query results and the iterator ends (abruptly)
+			if (options.transaction?.isDone) return with_entry(null, id);
 			const entry = primary_store.getEntry(id, options);
 			if (entry && context) {
 				if (entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
