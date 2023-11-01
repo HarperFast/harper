@@ -513,8 +513,15 @@ async function getComponentFile(req) {
 			? path.join(eng_mgr.get(terms.CONFIG_PARAMS.ROOTPATH), 'node_modules')
 			: env.get(terms.CONFIG_PARAMS.COMPONENTSROOT);
 	const options = req.encoding ? { encoding: req.encoding } : { encoding: 'utf8' };
+
 	try {
-		return await fs.readFile(path.join(comp_root, req.project, req.file), options);
+		const stats = await fs.stat(path.join(comp_root, req.project, req.file));
+		return {
+			message: await fs.readFile(path.join(comp_root, req.project, req.file), options),
+			size: stats.size,
+			birthtime: stats.birthtime,
+			mtime: stats.mtime,
+		};
 	} catch (err) {
 		if (err.code === terms.NODE_ERROR_CODES.ENOENT) {
 			throw new Error(`Component file not found '${path.join(req.project, req.file)}'`);
