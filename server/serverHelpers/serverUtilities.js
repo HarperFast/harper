@@ -321,6 +321,7 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.READ_LOG, new OperationFunctionObject(read_log));
 	op_func_map.set(terms.OPERATIONS_ENUM.ADD_NODE, new OperationFunctionObject(add_node));
 	op_func_map.set(terms.OPERATIONS_ENUM.UPDATE_NODE, new OperationFunctionObject(update_node));
+	op_func_map.set(terms.OPERATIONS_ENUM.SET_NODE_REPLICATION, new OperationFunctionObject(update_node));
 	op_func_map.set(terms.OPERATIONS_ENUM.REMOVE_NODE, new OperationFunctionObject(remove_node));
 	op_func_map.set(terms.OPERATIONS_ENUM.CONFIGURE_CLUSTER, new OperationFunctionObject(configure_cluster));
 	op_func_map.set(terms.OPERATIONS_ENUM.PURGE_STREAM, new OperationFunctionObject(purge_stream));
