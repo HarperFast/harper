@@ -19,8 +19,8 @@
   },
   "engines": {
     "minimum-node": "16.0.0",
-    "go-lang": "1.21.3",
-    "nats-server": "2.10.3"
+    "go-lang": "1.21.1",
+    "nats-server": "2.10.1"
   },
   "exports": {
     ".": "./index.js"
