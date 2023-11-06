@@ -80,7 +80,11 @@ async function getBackup(get_backup_obj) {
 	return store.transaction(() => {
 		let metaBuffers = Buffer.alloc(META_SIZE);
 		readSync(fd, metaBuffers, 0, META_SIZE); // sync, need to do this as fast as possible since we are in a write txn
+		store.resetReadTxn(); // make sure we are not using a cached read transaction, force a fresh one
 		let read_txn = store.useReadTransaction(); // this guarantees the current transaction is preserved in the backup
+		// renew is necessary because normally renew is actually lazily called on the next db operation, but
+		// we are not performing any db operations
+		read_txn.renew();
 		// create a file stream that starts after the meta area
 		let file_stream = createReadStream(null, { fd, start: META_SIZE });
 		let stream = new Readable.from(
