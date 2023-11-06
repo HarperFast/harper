@@ -239,7 +239,7 @@ async function getJetStreamManager() {
 		throw new Error('Error getting JetStream domain. Unable to get JetStream manager.');
 	}
 
-	jetstream_manager = await nats_connection.jetstreamManager({ domain });
+	jetstream_manager = await nats_connection.jetstreamManager({ domain, timeout: 60000 });
 	return jetstream_manager;
 }
 
@@ -258,7 +258,7 @@ async function getJetStream() {
 		throw new Error('Error getting JetStream domain. Unable to get JetStream manager.');
 	}
 
-	jetstream = nats_connection.jetstream({ domain });
+	jetstream = nats_connection.jetstream({ domain, timeout: 60000 });
 	return jetstream;
 }
 
@@ -808,10 +808,10 @@ async function removeSourceFromWorkStream(node, work_queue_name, subscription) {
  * @param {String} subject - the subject the request broadcast upon
  * @param {String|Object} data - the data being sent in the request
  * @param {String} [reply] - the subject name that the receiver will use to reply back - optional (defaults to createInbox())
- * @param {Number} [timeout] - how long to wait for a response - optional (defaults to 20000 ms)
+ * @param {Number} [timeout] - how long to wait for a response - optional (defaults to 60000 ms)
  * @returns {Promise<*>}
  */
-async function request(subject, data, timeout = 20000, reply = createInbox()) {
+async function request(subject, data, timeout = 60000, reply = createInbox()) {
 	if (!hdb_utils.isObject(data)) {
 		throw new Error('data param must be an object');
 	}
