@@ -509,14 +509,14 @@ function transactional(action, options) {
 				context.authorize = false;
 				const allowed =
 					options.type === 'read'
-						? resource.allowRead(context.user, context)
+						? resource.allowRead(context.user, query, context)
 						: options.type === 'update'
 						? resource.doesExist?.() === false
-							? resource.allowCreate(context.user, context)
-							: resource.allowUpdate(context.user, context)
+							? resource.allowCreate(context.user, data, context)
+							: resource.allowUpdate(context.user, data, context)
 						: options.type === 'create'
-						? resource.allowCreate(context.user, context)
-						: resource.allowDelete(context.user, context);
+						? resource.allowCreate(context.user, data, context)
+						: resource.allowDelete(context.user, query, context);
 				if (allowed?.then) {
 					return allowed.then((allowed) => {
 						if (!allowed) {
