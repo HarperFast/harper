@@ -76,6 +76,10 @@ function startServers() {
 								setInterval(() => {
 									server.closeIdleConnections();
 								}, 25).unref();
+								setTimeout(() => {
+									server.closeAllConnections();
+									harper_logger.info('Closed all http connections', port, threadId);
+								}, 4000).unref();
 							}
 							// And we tell the server not to accept any more incoming connections
 							server.close?.(() => {

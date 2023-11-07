@@ -186,6 +186,7 @@ async function createConnection(port, username, password, wait_on_first_connect 
 			rejectUnauthorized: false,
 		},
 	});
+	c.protocol.transport.socket.unref();
 	hdb_logger.trace(`create connection established a nats client connection with id`, c?.info?.client_id);
 
 	return c;
