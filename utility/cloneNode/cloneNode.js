@@ -471,6 +471,7 @@ async function clusterTables() {
 	for (const db in leader_dbs) {
 		if (leader_dbs[db] === 'excluded') continue;
 		const db_file_stat = await fs.stat(join(getDbFileDir(db), db + '.mdb'));
+		db_file_stat.mtime.setSeconds(db_file_stat.mtime.getSeconds() - 10);
 		for (const table in leader_dbs[db]) {
 			if (leader_dbs[db][table] === 'excluded') continue;
 			subscriptions.push({
@@ -491,7 +492,7 @@ async function clusterTables() {
 		'with subscriptions:',
 		subscriptions
 	);
-
+	let config_cluster_res;
 	if (fully_connected === 'true' && leader_cluster_status.connections.length > 0) {
 		// Fully connected logic
 		const configure_cluster = require('../clustering/configureCluster');
@@ -501,9 +502,12 @@ async function clusterTables() {
 				subscriptions,
 			},
 		];
-		let no_connections = true;
+		let has_connections = false;
+		clone_node_name = env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 		// For all the connections in the leader nodes cluster status create a connection to clone node
 		for (const node of leader_cluster_status.connections) {
+			// in case this node is already in the connections, we can skip ourself
+			if (node.node_name === clone_node_name) continue;
 			const node_con = {
 				node_name: node.node_name,
 				subscriptions: [],
@@ -513,7 +517,7 @@ async function clusterTables() {
 			for (const sub of node.subscriptions) {
 				// Honor any exclude config
 				if (exclude_db[sub.schema] || excluded_table[sub.schema + sub.table]) continue;
-				no_connections = false;
+				has_connections = true;
 				// Set a pub/sub start time 10s in the past of backup timestamp.
 				const db_file_stat = await fs.stat(join(getDbFileDir(sub.schema), sub.schema + '.mdb'));
 				db_file_stat.mtime.setSeconds(db_file_stat.mtime.getSeconds() - 10);
@@ -523,15 +527,16 @@ async function clusterTables() {
 			config_cluster_cons.push(node_con);
 		}
 
-		if (no_connections) return;
-
-		// configure_cluster op is used because it can setup subs to multiple nodes in one request
-		const config_cluster_res = await configure_cluster({
-			operation: OPERATIONS_ENUM.CONFIGURE_CLUSTER,
-			connections: config_cluster_cons,
-		});
-		console.info(JSON.stringify(config_cluster_res));
-	} else {
+		if (has_connections) {
+			// configure_cluster op is used because it can setup subs to multiple nodes in one request
+			config_cluster_res = await configure_cluster({
+				operation: OPERATIONS_ENUM.CONFIGURE_CLUSTER,
+				connections: config_cluster_cons,
+			});
+			console.info(JSON.stringify(config_cluster_res));
+		}
+	}
+	if (!config_cluster_res) {
 		await add_node(
 			{
 				operation: OPERATIONS_ENUM.ADD_NODE,
