@@ -161,7 +161,7 @@ export function handleLocalTimeForGets(store) {
 		if (options.valuesForKey) {
 			return iterable.map((value) => value?.value);
 		}
-		if (options.values === false) return iterable;
+		if (options.values === false || options.onlyCount) return iterable;
 		return iterable.map((entry) => {
 			const record_entry = entry.value;
 			// if we have metadata, move the metadata to the entry
