@@ -1,12 +1,7 @@
 import { databases, getDatabases, onUpdatedTable } from '../../resources/databases';
 import { ID_PROPERTY, Resource } from '../../resources/Resource';
-import { publishToStream } from './utility/natsUtils';
-import { SUBJECT_PREFIXES } from './utility/natsTerms';
-import { createNatsTableStreamName } from '../../security/cryptoHash';
 import { IterableEventQueue } from '../../resources/IterableEventQueue';
 import { getWorkerIndex } from '../threads/manageThreads';
-import { setSubscription } from './natsIngestService';
-import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility';
 import env from '../../utility/environment/environmentManager';
 import hdb_terms from '../../utility/hdbTerms';
 import * as harper_logger from '../../utility/logging/harper_logger';
@@ -14,15 +9,18 @@ import { Context } from '../../resources/ResourceInterface';
 import { readAuditEntry } from '../../resources/auditStore';
 import { readKey, writeKey } from 'ordered-binary';
 import { addSubscription } from '../../resources/transactionBroadcast';
+import { getClusteringRoutes } from '../../config/configUtils';
+import { server } from '../Server';
 
 const SUBSCRIPTION_CODE = 129;
 const SEND_TABLE_NAME = 130;
 const SEND_TABLE_STRUCTURE = 131;
 const SEND_TABLE_FIXED_STRUCTURE = 132;
-let nats_disabled;
+const table_update_listeners = new Map();
+let replication_disabled;
 export function start(options) {
 	if (env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) assignReplicationSource();
-	options.server.ws(
+	server.ws(
 		(ws, request, ready) => {
 			ws.on('message', (body) => {
 				const action = body[0];
@@ -70,9 +68,15 @@ export function start(options) {
 					start_time,
 					false
 				);
+				let listeners = table_update_listeners.get(first_table);
+				if (!listeners) table_update_listeners.set(first_table, (listeners = []));
+				listeners.push((table) => {
+					// TODO: send table update
+				});
 			});
 		},
-		Object.assign( // We generally expect this to use the operations API ports (9925)
+		Object.assign(
+			// We generally expect this to use the operations API ports (9925)
 			{
 				protocol: 'harperdb-replication',
 			},
@@ -83,7 +87,7 @@ export function start(options) {
 let encoding_start = 0;
 let encoding_buffer = Buffer.allocUnsafeSlow(1024);
 let position = 0;
-let data_view = new DataView(encoding_buffer, 0, 1024);
+let data_view = new DataView(encoding_buffer.buffer, 0, 1024);
 function writeInt(number) {
 	if (number < 128) {
 		encoding_buffer[position++] = 0;
@@ -137,8 +141,8 @@ class Decoder extends DataView {
 		return number;
 	}
 }
-export function disableNATS(disabled = true) {
-	nats_disabled = disabled;
+export function disableReplication(disabled = true) {
+	replication_disabled = disabled;
 }
 const MAX_INGEST_THREADS = 1;
 let immediateNATSTransaction, subscribed_to_nodes;
@@ -150,7 +154,7 @@ let immediateNATSTransaction, subscribed_to_nodes;
  * any tables that aren't caching tables for another source).
  */
 function assignReplicationSource() {
-	if (nats_disabled) return;
+	if (replication_disabled) return;
 	const databases = getDatabases();
 	for (const database_name in databases) {
 		const database = databases[database_name];
@@ -161,7 +165,9 @@ function assignReplicationSource() {
 	}
 	onUpdatedTable((Table, is_changed) => {
 		setReplicator(Table.tableName, Table.databaseName, Table);
-		if (is_changed) publishSchema(Table);
+		if (is_changed) {
+			table_update_listeners.get(Table)?.forEach((listener) => listener(Table));
+		}
 	});
 	if (subscribed_to_nodes) return;
 	subscribed_to_nodes = true;
@@ -182,6 +188,8 @@ export function setReplicator(table_name, db_name, Table, options) {
 	}
 	if (Table.Source?.isNATSReplicator) return;
 	let source;
+	// We may try to consult this to get the other nodes for back-compat
+	// const { hub_routes } = getClusteringRoutes();
 	Table.sourcedFrom(
 		class Replicator extends Resource {
 			/**
@@ -189,37 +197,34 @@ export function setReplicator(table_name, db_name, Table, options) {
 			 * requests for data changes, so they circumvent the validation and replication layers
 			 * of the table classes.
 			 */
-			static subscribe() {
-				if (getWorkerIndex() < MAX_INGEST_THREADS) {
-					const subscription = (this.subscription = new IterableEventQueue());
-					const nodes = (options?.nodes || databases.system.hdb_nodes).search([]);
-					const addNode = (node) => {
-						if (
-							node.subscriptions.some((subscription) => {
-								return (
-									subscription.schema === Table.databaseName &&
-									subscription.table === Table.tableName &&
-									subscription.subscribe
-								);
-							})
-						) {
-							const node_name = node.node_name;
-							// TODO: get URL/IP for node_name
-							let url;
-							// Node suscription also needs to be aware of other nodes that will be excluded from the current subscription
-							new NodeSubscriptionConnection(node.url, subscription, Table.databaseName);
-						}
-					};
-
-					// TODO: We all need to subscribe to the hdb_nodes, so we know when new nodes are added
-					for (const node of nodes) {
-						addNode(node);
+			static async subscribe() {
+				const subscription = (this.subscription = new IterableEventQueue());
+				const nodes = (options?.nodes || databases.system.hdb_nodes).search([]);
+				const addNode = (node) => {
+					if (
+						node.subscriptions.some((subscription) => {
+							return (
+								subscription.schema === Table.databaseName &&
+								subscription.table === Table.tableName &&
+								subscription.subscribe
+							);
+						})
+					) {
+						const url = node.url;
+						// TODO: Do we need to have another way to determine URL?
+						// Node suscription also needs to be aware of other nodes that will be excluded from the current subscription
+						new NodeSubscriptionConnection(url, subscription, Table.databaseName);
 					}
-					return subscription;
+				};
+
+				// TODO: We all need to subscribe to the hdb_nodes, so we know when new nodes are added
+				for await (const node of nodes) {
+					addNode(node);
 				}
+				return subscription;
 			}
-			subscribeOnThisThread(worker_index, total_workers) {
-				return worker_index < this.nodes.length;
+			static subscribeOnThisThread(worker_index, total_workers) {
+				return worker_index < MAX_INGEST_THREADS;
 			}
 
 			connections: NodeSubscriptionConnection[];
@@ -227,7 +232,7 @@ export function setReplicator(table_name, db_name, Table, options) {
 				this.connections.push(new NodeSubscriptionConnection(node_url, this.subscription));
 			}
 			static isNATSReplicator = true;
-		}
+		},{ intermediateSource: true }
 	);
 	/**
 	 * This gets the NATS transaction object for the current overall transaction. This will

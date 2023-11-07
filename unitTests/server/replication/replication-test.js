@@ -1,17 +1,17 @@
-import whyIsNodeStillRunning from 'why-is-node-still-running';
-import { assert, expect } from 'chai';
-import axios from 'axios';
-import { start, setReplicator } from '../../ts-build/server/replication/replication.js';
-import { getVariables } from './utility.js';
-import { setupTestApp } from './setupTestApp.mjs';
-const { authorization, url } = getVariables();
+require('../../test_utils');
+const assert = require('assert');
+const sinon = require('sinon');
+const { start, setReplicator } = require('../../../server/replication/replicator');
+const { table } = require('../../../resources/databases');
+const { setMainIsWorker } = require('../../../server/threads/manageThreads');
+require('../../../server/threads/threadServer');
 
 describe('Replication', () => {
 	let TestTable;
+	const test_tables = [];
+	setMainIsWorker(true);
 	before(async () => {
-		await setupTestApp();
 		const NODE_COUNT = 2;
-		const test_tables = [];
 		function createNode(index) {
 			let nodes = table({
 				table: 'hdb_nodes',
@@ -52,7 +52,7 @@ describe('Replication', () => {
 		//await removeAllSchemas();
 	});
 
-	it('do get with JSON', async () => {
+	it('A write to one table should replicate', async () => {
 		test_tables[0].put({
 			id: '1',
 			name: 'name1',
