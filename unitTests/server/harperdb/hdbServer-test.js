@@ -121,12 +121,12 @@ describe('Test hdbServer module', () => {
 
 	describe('Test hdbServer function', () => {
 		it('should build HTTPS server when https_enabled set to true', async () => {
-			const test_config_settings = { operationsApi_network_securePort: 9925 };
-			env.setProperty('operationsApi_network_securePort', 9925);
+			const test_config_settings = { operationsApi_network_securePort: 9927 };
+			env.setProperty('operationsApi_network_securePort', 9927);
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ securePort: 9927 }); // need to use explicit ports
 
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
@@ -146,7 +146,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
@@ -161,10 +161,10 @@ describe('Test hdbServer module', () => {
 		it('should build HTTPS server instance with started and listening state equal to true', async () => {
 			const test_config_settings = { https_enabled: true };
 			test_utils.preTestPrep(test_config_settings);
-			env.setProperty('operationsApi_network_securePort', 9925);
+			env.setProperty('operationsApi_network_securePort', 9927);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ securePort: 9927 });
 
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
@@ -182,7 +182,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
@@ -198,7 +198,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
@@ -212,7 +212,7 @@ describe('Test hdbServer module', () => {
 
 		it('should build HTTPS server instance with default config settings', async () => {
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
@@ -234,7 +234,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
@@ -261,7 +261,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
@@ -282,7 +282,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
@@ -298,7 +298,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep();
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
@@ -317,7 +317,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
@@ -336,7 +336,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
@@ -355,7 +355,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
@@ -372,7 +372,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
@@ -398,7 +398,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
@@ -426,7 +426,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
@@ -451,7 +451,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -476,7 +476,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
@@ -504,7 +504,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
@@ -529,7 +529,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -555,7 +555,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -572,7 +572,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -589,7 +589,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -608,7 +608,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -627,7 +627,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -646,7 +646,7 @@ describe('Test hdbServer module', () => {
 
 		it('should call handlePostRequest on HTTPS post request', async () => {
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -659,7 +659,7 @@ describe('Test hdbServer module', () => {
 
 		it('should return op result w/ status 200 for valid HTTPS post request', async () => {
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -677,7 +677,7 @@ describe('Test hdbServer module', () => {
 
 		it('should return 400 error for post request w/o body', async () => {
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -696,7 +696,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -718,7 +718,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
@@ -738,7 +738,7 @@ describe('Test hdbServer module', () => {
 	describe('buildServer() method', () => {
 		it('should return an http server', async () => {
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 			const buildServer_rw = hdbServer_rw.__get__('buildServer');
@@ -754,7 +754,7 @@ describe('Test hdbServer module', () => {
 
 		it('should return an https server', async () => {
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 			const buildServer_rw = hdbServer_rw.__get__('buildServer');
@@ -775,7 +775,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 			const getServerOptions_rw = hdbServer_rw.__get__('getServerOptions');
@@ -796,7 +796,7 @@ describe('Test hdbServer module', () => {
 			test_utils.preTestPrep(test_config_settings);
 
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 			const getServerOptions_rw = hdbServer_rw.__get__('getServerOptions');
@@ -818,7 +818,7 @@ describe('Test hdbServer module', () => {
 	describe('getHeaderTimeoutConfig() method', () => {
 		it('should return the header timeout config value', async () => {
 			const hdbServer_rw = await rewire(HDB_SERVER_PATH);
-			await hdbServer_rw.hdbServer();
+			await hdbServer_rw.hdbServer({ port: 9925 });
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 			const getHeaderTimeoutConfig_rw = hdbServer_rw.__get__('getHeaderTimeoutConfig');
