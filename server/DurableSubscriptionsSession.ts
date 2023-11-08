@@ -117,6 +117,7 @@ class SubscriptionsSession {
 		const request = {
 			search,
 			async: true,
+			authorize: true,
 			user: this.user,
 			startTime: start_time,
 			omitCurrent: rh,
@@ -195,6 +196,7 @@ class SubscriptionsSession {
 		message.data = data;
 		message.user = this.user;
 		message.async = true;
+		message.authorize = true;
 		const entry = resources.getMatch(topic);
 		if (!entry)
 			throw new Error(
