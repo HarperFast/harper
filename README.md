@@ -3,15 +3,13 @@
 ## Contents
 1. [HarperDB Overview](#harperdb-overview)
 2. [HarperDB Studio](#harperdb-studio)
-3. [Built-In API](#built-in-api)
+3. [HarperDB APIs](#harperdb-apis)
 4. [Documentation and Support](#documentation-and-support)
 5. [Prerequisites](#prerequisites)
 6. [Installing HarperDB](#installing-harperdb)
 
 ## HarperDB Overview
-HarperDB is a turn-key solution for the collection, distribution, and analysis of data throughout your organization. Projects that have historically taken months (or even years) of consulting, configuration, and custom development can be completed in days or weeks with HarperDB.
-
-HarperDB provides unmatched flexibility, security, and value for just about every use case, and we do it all with a single installation that can run in the cloud, on-premises, and at the edge.
+HarperDB is a globally-distributed edge application platform. It reduces complexity, increases performance, and lowers costs by combining user-defined applications, a high-performance database, and an enterprise-grade streaming broker into a single package. The platform offers unlimited horizontal scale at the click of a button, and syncs data across the cluster in milliseconds. HarperDB simplifies the process of delivering applications and the data that drives them to the edge, which dramatically improves both the user experience and total cost of ownership for large-scale applications. Deploying HarperDB on global infrastructure enables a CDN-like solution for enterprise data and applications.
 
 [Learn more about HarperDB](https://harperdb.io/?utm_source=repo&utm_medium=npm)
 
@@ -21,16 +19,16 @@ Every Installation of HarperDB can be administered online using HarperDB Studio.
 
 [HarperDB Studio](https://studio.harperdb.io/sign-up)
 
-### HarperDB APIs
+## HarperDB APIs
 
 The preferred way to interact with HarperDB for typical querying, accessing, and updating data (CRUD) operations is through the REST interface, described in the REST documentation.
 
-The complete [HarperDB Operations API documentation](https://docs.harperdb.io/docs/operations-api/README.md) provides important administrative functions. Generally it is recommended that use the [RESTful interface](https://docs.harperdb.io/docs/rest/README.md) as your primary interface for scalable and performant data interaction for building production applications, and the operations API for administrative purposes.
+The complete [HarperDB Operations API documentation](https://docs.harperdb.io/docs/operations-api) provides important administrative functions. Generally it is recommended that use the [RESTful interface](https://docs.harperdb.io/docs/rest/) as your primary interface for scalable and performant data interaction for building production applications, and the operations API for administrative purposes.
 
 ## Documentation and Support
 [Docs](https://docs.harperdb.io/)
 
-[Support](https://harperdb.io/docs/support/)
+[Support](https://harperdb.io/support/)
 
 ## Prerequisites
 HarperDB requires Node.js 14 or higher. Our fully tested and supported Node.js version is 18.15.0.

@@ -5,6 +5,8 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms';
 import { getWorkerIndex } from '../server/threads/manageThreads';
 import { convertToMS } from '../utility/common_utils';
 import { PREVIOUS_TIMESTAMP_PLACEHOLDER, LAST_TIMESTAMP_PLACEHOLDER } from './RecordEncoder';
+import * as harper_logger from '../utility/logging/harper_logger';
+
 /**
  * This module is responsible for the binary representation of audit records in an efficient form.
  * This includes a custom key encoder that specifically encodes arrays with the first element (timestamp) as a
@@ -149,20 +151,33 @@ export function createAuditEntry(txn_time, table_id, record_id, previous_local_t
 		const value_length_position = position;
 		position += 1;
 		position = writeKey(value, ENTRY_HEADER, position);
-		if (position > 130) {
-			// TODO: Need to make room for extra byte
+		const key_length = position - value_length_position - 1;
+		if (key_length > 0x7f) {
+			if (key_length > 0x3fff) {
+				harper_logger.error('Key or username was too large for audit entry', value);
+				position = value_length_position + 1;
+				ENTRY_HEADER[value_length_position] = 0;
+			} else {
+				// requires two byte length header, need to move the value/key to make room for it
+				ENTRY_HEADER.copyWithin(value_length_position + 2, value_length_position + 1, position);
+				// now write a two-byte length header
+				ENTRY_DATAVIEW.setUint16(value_length_position, key_length | 0x8000);
+				// must adjust the position by one since we moved everything one position
+				position++;
+			}
 		} else {
-			ENTRY_HEADER[value_length_position] = position - value_length_position - 1;
+			// one byte length header, as expected
+			ENTRY_HEADER[value_length_position] = key_length;
 		}
 	}
 	function writeInt(number) {
 		if (number < 128) {
 			ENTRY_HEADER[position++] = number;
 		} else if (number < 0x4000) {
-			ENTRY_DATAVIEW.setUint16(position, number | 0x7fff);
+			ENTRY_DATAVIEW.setUint16(position, number | 0x8000);
 			position += 2;
 		} else if (number < 0x3f000000) {
-			ENTRY_DATAVIEW.setUint32(position, number | 0xcfffffff);
+			ENTRY_DATAVIEW.setUint32(position, number | 0xc0000000);
 			position += 4;
 		} else {
 			ENTRY_HEADER[position] = 0xff;
@@ -172,38 +187,43 @@ export function createAuditEntry(txn_time, table_id, record_id, previous_local_t
 	}
 }
 export function readAuditEntry(buffer) {
-	const decoder =
-		buffer.dataView || (buffer.dataView = new Decoder(buffer.buffer, buffer.byteOffset, buffer.byteLength));
-	let previous_local_time;
-	if (buffer[0] == 66) {
-		// 66 is the first byte in a date double.
-		previous_local_time = decoder.readFloat64();
+	try {
+		const decoder =
+			buffer.dataView || (buffer.dataView = new Decoder(buffer.buffer, buffer.byteOffset, buffer.byteLength));
+		let previous_local_time;
+		if (buffer[0] == 66) {
+			// 66 is the first byte in a date double.
+			previous_local_time = decoder.readFloat64();
+		}
+		const action = decoder.readInt();
+		const node_id = decoder.readInt();
+		const table_id = decoder.readInt();
+		let length = decoder.readInt();
+		const record_id_start = decoder.position;
+		const record_id_end = (decoder.position += length);
+		const version = decoder.readFloat64();
+		length = decoder.readInt();
+		const username_start = decoder.position;
+		const username_end = (decoder.position += length);
+		return {
+			type: EVENT_TYPES[action & 7],
+			tableId: table_id,
+			get recordId() {
+				return readKeySafely(buffer, record_id_start, record_id_end);
+			},
+			version,
+			previousLocalTime: previous_local_time,
+			get user() {
+				return username_end > username_start ? readKeySafely(buffer, username_start, username_end) : undefined;
+			},
+			getValue(store) {
+				return action & HAS_FULL_RECORD ? store.decoder.decode(buffer.subarray(decoder.position)) : undefined;
+			},
+		};
+	} catch (error) {
+		harper_logger.error('Reading audit entry error', buffer);
+		return {};
 	}
-	const action = decoder.readInt();
-	const node_id = decoder.readInt();
-	const table_id = decoder.readInt();
-	let length = decoder.readInt();
-	const record_id_start = decoder.position;
-	const record_id_end = (decoder.position += length);
-	const version = decoder.readFloat64();
-	length = decoder.readInt();
-	const username_start = decoder.position;
-	const username_end = (decoder.position += length);
-	return {
-		type: EVENT_TYPES[action & 7],
-		tableId: table_id,
-		get recordId() {
-			return readKeySafely(buffer, record_id_start, record_id_end);
-		},
-		version,
-		previousLocalTime: previous_local_time,
-		get user() {
-			return username_end > username_start ? readKeySafely(buffer, username_start, username_end) : undefined;
-		},
-		getValue(store) {
-			return action & HAS_FULL_RECORD ? store.decoder.decode(buffer.subarray(decoder.position)) : undefined;
-		},
-	};
 }
 
 class Decoder extends DataView {
@@ -213,11 +233,11 @@ class Decoder extends DataView {
 		if (number >= 0x80) {
 			if (number >= 0xc0) {
 				if (number === 0xff) {
-					number = this.getUint32(this.position - 1) & 0xcfffffff;
+					number = this.getUint32(this.position);
 					this.position += 4;
 					return number;
 				}
-				number = this.getUint32(this.position - 1) & 0xcfffffff;
+				number = this.getUint32(this.position - 1) & 0x3fffffff;
 				this.position += 3;
 				return number;
 			}

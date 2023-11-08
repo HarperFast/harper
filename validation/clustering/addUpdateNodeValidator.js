@@ -20,12 +20,13 @@ const node_name_constraint = string
 	.required();
 
 const validation_schema = {
-	operation: string.valid('add_node', 'update_node'),
+	operation: string.valid('add_node', 'update_node', 'set_node_replication'),
 	node_name: node_name_constraint,
 	subscriptions: Joi.array()
 		.items({
 			table: string.optional(),
-			schema: string.required(),
+			schema: string.optional(),
+			database: string.optional(),
 			subscribe: boolean.required(),
 			publish: boolean.required().custom(checkForFalsy),
 			start_time: date.iso(),

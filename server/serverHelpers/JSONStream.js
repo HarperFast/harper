@@ -16,6 +16,7 @@ class JSONStream extends Readable {
 		this.buffer = [];
 		this.bufferSize = 0;
 		this.iterator = this.serialize(options.value, true);
+		this.activeIterators = [];
 	}
 
 	*serialize(object) {
@@ -29,6 +30,7 @@ class JSONStream extends Readable {
 				let first = true;
 				if ((hasAsyncIterator || hasIterator) && !(object instanceof Array)) {
 					let iterator = hasAsyncIterator ? object[Symbol.asyncIterator]() : object[Symbol.iterator]();
+					this.activeIterators.push(iterator);
 					let iteratorResult;
 					while (true) {
 						iteratorResult = iterator.next();
@@ -39,6 +41,7 @@ class JSONStream extends Readable {
 							});
 						}
 						if (iteratorResult.done) {
+							this.activeIterators.splice(this.activeIterators.indexOf(iterator), 1);
 							yield ']';
 							return;
 						} else {
@@ -63,7 +66,7 @@ class JSONStream extends Readable {
 			}
 			if (object.then) {
 				try {
-					yield object.then(object => this.serialize(object), handleError);
+					yield object.then((object) => this.serialize(object), handleError);
 				} catch (error) {
 					yield handleError(error);
 				}
@@ -84,19 +87,23 @@ class JSONStream extends Readable {
 		if (this.done) {
 			return this.push(null);
 		}
-		when(this.readIterator(this.iterator), done => {
-			if (done) {
+		when(
+			this.readIterator(this.iterator),
+			(done) => {
+				if (done) {
+					this.done = true;
+					this.push(null);
+				} else {
+					this._amReading = false;
+				}
+			},
+			(error) => {
+				console.error(error);
 				this.done = true;
+				this.push(error.toString());
 				this.push(null);
-			} else {
-				this._amReading = false;
 			}
-		}, error => {
-			console.error(error);
-			this.done = true;
-			this.push(error.toString());
-			this.push(null);
-		})
+		);
 	}
 
 	push(content) {
@@ -120,11 +127,12 @@ class JSONStream extends Readable {
 	}
 
 	readIterator(iterator) {
-		try { // eventually we should be able to just put this around iterator.next()
+		try {
+			// eventually we should be able to just put this around iterator.next()
 			let nextString;
 			if (iterator.childIterator) {
 				// resuming in a child iterator
-				return when(this.readIterator(iterator.childIterator), done => {
+				return when(this.readIterator(iterator.childIterator), (done) => {
 					if (done) {
 						iterator.childIterator = null;
 						// continue on with the current iterator
@@ -165,6 +173,14 @@ class JSONStream extends Readable {
 			return true;
 		}
 	}
+
+	_destroy(error, callback) {
+		for (let iterator of this.activeIterators) {
+			if (error) iterator.throw(error);
+			else iterator.return();
+		}
+		callback();
+	}
 }
 
 function handleError(error) {
@@ -174,9 +190,7 @@ function handleError(error) {
 
 function when(promise, callback, errback) {
 	if (promise && promise.then) {
-		return errback ?
-			promise.then(callback, errback) :
-			promise.then(callback);
+		return errback ? promise.then(callback, errback) : promise.then(callback);
 	}
 	return callback(promise);
 }

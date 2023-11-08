@@ -12,7 +12,7 @@ const clustering_utils = require('./clusterUtilities');
 const env_manager = require('../environment/environmentManager');
 const { cloneDeep } = require('lodash');
 const review_subscriptions = require('./reviewSubscriptions');
-const { NodeSubscription } = require('./NodeObject');
+const { Node, NodeSubscription } = require('./NodeObject');
 const { broadcast } = require('../../server/threads/manageThreads');
 
 const UNSUCCESSFUL_MSG =
@@ -24,7 +24,8 @@ const local_node_name = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODEN
 module.exports = updateNode;
 
 /**
- * Updates subscriptions between nodes
+ * Updates subscriptions between nodes.
+ * Also called by set_node_replication
  * @param req - request from API. An object containing a node_name and an array of subscriptions.
  * @returns {Promise<{message: undefined, updated: [], skipped: []}>}
  */
@@ -37,17 +38,9 @@ async function updateNode(req) {
 	}
 
 	const remote_node_name = req.node_name;
-	const record = cloneDeep(await clustering_utils.getNodeRecord(remote_node_name));
-	if (hdb_utils.isEmptyOrZeroLength(record)) {
-		throw handleHDBError(
-			new Error(),
-			`Node '${remote_node_name}' has not been added, perform add_node to proceed.`,
-			HTTP_STATUS_CODES.BAD_REQUEST,
-			undefined,
-			undefined,
-			true
-		);
-	}
+	let record;
+	let existing_record = await clustering_utils.getNodeRecord(remote_node_name);
+	if (existing_record.length > 0) record = cloneDeep(existing_record);
 
 	// This function requests a describe all from remote node, from the response it will decide if it should/can create
 	// schema/tables for each subscription in the request. A schema/table needs to exist on at least the local or remote node
@@ -103,6 +96,7 @@ async function updateNode(req) {
 		if (added[i].start_time === undefined) delete added[i].start_time;
 	}
 
+	if (!record) record = [new Node(remote_node_name, [], reply.system_info)];
 	await updateNodeTable(record[0], added, reply.system_info);
 
 	if (skipped.length > 0) {
