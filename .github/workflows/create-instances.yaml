@@ -6,7 +6,7 @@ on:
         type: string
       instanceType:
         type: string
-        default: "c5.2xlarge"
+        default: "c7i.2xlarge"
       volumeSize:
         type: string
         default: "32"
