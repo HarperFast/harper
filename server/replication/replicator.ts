@@ -10,6 +10,7 @@ import { readAuditEntry } from '../../resources/auditStore';
 import { readKey, writeKey } from 'ordered-binary';
 import { addSubscription } from '../../resources/transactionBroadcast';
 import { getClusteringRoutes } from '../../config/configUtils';
+import { WebSocket } from 'ws';
 import { server } from '../Server';
 
 const SUBSCRIPTION_CODE = 129;
@@ -19,14 +20,16 @@ const SEND_TABLE_FIXED_STRUCTURE = 132;
 const table_update_listeners = new Map();
 let replication_disabled;
 export function start(options) {
-	if (env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) assignReplicationSource();
+	if (!options?.manualAssignment) assignReplicationSource();
 	server.ws(
 		(ws, request, ready) => {
 			ws.on('message', (body) => {
 				const action = body[0];
 
 				const decoder = (body.dataView = new Decoder(body.buffer, body.byteOffset, body.byteLength));
-				const database_name = decoder.readString();
+				const db_length = body[1];
+				const database_name = body.toString('utf8', 2, db_length + 2);
+				const start_time = decoder.getFloat64(2 + db_length);
 				const database = (options.databases || databases)[database_name];
 				let first_table;
 				const table_by_id = [];
@@ -40,8 +43,10 @@ export function start(options) {
 				addSubscription(
 					first_table,
 					null,
-					function (audit_id, audit_record) {
-						const [txn_time, table_id, record_id] = audit_id || [];
+					function (audit_record, local_time) {
+						const table_id = audit_record.tableId;
+						const record_id_binary = audit_record.getBinaryRecordId();
+						const txn_time = audit_record.version;
 						if (current_transaction.txnTime !== txn_time) {
 							// send the queued transaction
 							ws.send(encoding_buffer.subarray(encoding_start, position));
@@ -51,7 +56,7 @@ export function start(options) {
 							encoder.position = writeFloat64(txn_time);
 						}
 						writeInt(table_id);
-						const key_length = audit_binary_key.length - 12;
+						const key_length = record_id_binary.length - 12;
 						writeInt(key_length);
 						writeBytes(audit_id.buffer, audit_id.start, audit_id.end);
 						writeInt(audit_record.encodedValue.length);
@@ -66,7 +71,7 @@ export function start(options) {
 						}
 					},
 					start_time,
-					false
+					'full-database'
 				);
 				let listeners = table_update_listeners.get(first_table);
 				if (!listeners) table_update_listeners.set(first_table, (listeners = []));
@@ -204,16 +209,21 @@ export function setReplicator(table_name, db_name, Table, options) {
 					if (
 						node.subscriptions.some((subscription) => {
 							return (
-								subscription.schema === Table.databaseName &&
+								subscription.database === Table.databaseName &&
 								subscription.table === Table.tableName &&
 								subscription.subscribe
 							);
 						})
 					) {
-						const url = node.url;
-						// TODO: Do we need to have another way to determine URL?
-						// Node suscription also needs to be aware of other nodes that will be excluded from the current subscription
-						new NodeSubscriptionConnection(url, subscription, Table.databaseName);
+						try {
+							const url = node.url;
+							// TODO: Do we need to have another way to determine URL?
+							// Node suscription also needs to be aware of other nodes that will be excluded from the current subscription
+							let connection = new NodeSubscriptionConnection(url, subscription, Table.databaseName);
+							connection.connect();
+						} catch(error) {
+							console.error(error);
+						}
 					}
 				};
 
@@ -264,13 +274,19 @@ class NodeSubscriptionConnection {
 	connect() {
 		const tables = [];
 		this.socket = new WebSocket(this.url, 'harperdb-replication');
+		this.socket.on('open', () => {
+			console.log('connected to ' + this.url);
+			const subscription_message = Buffer.alloc(this.databaseName.length * 3 + 8);
+			subscription_message[0] = SUBSCRIPTION_CODE; // indicate we want a subscription
+			let position = (subscription_message[1] = subscription_message.write(this.databaseName, 2)) + 2;
+			subscription_message.writeDoubleBE(this.startTime, position);
+			position += 8;
+			this.socket.send(subscription_message.subarray(0, position));
+		});
+		this.socket.on('error', (error) => {
+			console.log('Error in connection to ' + this.url, error);
+		});
 		const table_decoders = [];
-		const subscription_message = Buffer.alloc(this.databaseName.length * 3 + 8);
-		subscription_message[0] = SUBSCRIPTION_CODE; // indicate we want a subscription
-		let position = (subscription_message[1] = subscription_message.write(this.databaseName, 2)) + 2;
-		subscription_message.writeDoubleBE(this.startTime, position);
-		position += 8;
-		this.socket.send(subscription_message.subarray(0, position));
 		this.socket.on('message', (body) => {
 			// The routing header should consist of:
 			// transaction timestamp
@@ -309,8 +325,11 @@ class NodeSubscriptionConnection {
 		});
 
 		this.socket.on('close', () => {
+			console.log('disconnected from ' + this.url);
 			// try to reconnect
-			this.connect();
+			setTimeout(() => {
+				this.connect();
+			}, 200).unref();
 		});
 	}
 	send(message) {}

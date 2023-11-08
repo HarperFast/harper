@@ -211,6 +211,9 @@ export function readAuditEntry(buffer) {
 			get recordId() {
 				return readKeySafely(buffer, record_id_start, record_id_end);
 			},
+			getBinaryRecordId() {
+				return buffer.subarray(record_id_start, record_id_end);
+			},
 			version,
 			previousLocalTime: previous_local_time,
 			get user() {
@@ -218,6 +221,9 @@ export function readAuditEntry(buffer) {
 			},
 			getValue(store) {
 				return action & HAS_FULL_RECORD ? store.decoder.decode(buffer.subarray(decoder.position)) : undefined;
+			},
+			getBinaryValue() {
+				return action & HAS_FULL_RECORD ? buffer.subarray(decoder.position) : undefined;
 			},
 		};
 	} catch (error) {

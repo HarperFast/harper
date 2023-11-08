@@ -1,4 +1,5 @@
 'use strict';
+
 const { isMainThread, parentPort, threadId } = require('worker_threads');
 const { Socket, createServer: createSocketServer } = require('net');
 const { createServer, IncomingMessage } = require('http');
@@ -13,7 +14,7 @@ const { createServer: createSecureSocketServer } = require('tls');
 const { getTicketKeys, restartNumber } = require('./manageThreads');
 const { Headers } = require('../serverHelpers/Headers');
 const { recordAction, recordActionBinary } = require('../../resources/analytics');
-const { Request, node_request_key, createReuseportFd } = require('../serverHelpers/Request');
+const { Request, createReuseportFd } = require('../serverHelpers/Request');
 
 if (process.env.DEV_MODE) {
 	try {
@@ -36,6 +37,7 @@ exports.registerServer = registerServer;
 exports.httpServer = httpServer;
 exports.deliverSocket = deliverSocket;
 exports.startServers = startServers;
+exports.listenOnPorts = listenOnPorts;
 server.http = httpServer;
 server.request = onRequest;
 server.socket = onSocket;
@@ -99,34 +101,39 @@ function startServers() {
 					}
 				})
 				.ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
-			const listening = [];
+			let listening;
 			if (createReuseportFd && !session_affinity) {
-				for (let port in SERVERS) {
-					const server = SERVERS[port];
-					let fd;
-					try {
-						fd = createReuseportFd(+port, '::');
-					} catch (error) {
-						console.error(`Unable to bind to port ${port}`, error);
-						continue;
-					}
-					listening.push(
-						new Promise((resolve, reject) => {
-							server
-								.listen({ fd }, () => {
-									resolve();
-									harper_logger.trace('Listening on port ' + port, threadId);
-								})
-								.on('error', reject);
-						})
-					);
-				}
+				listening = listenOnPorts();
 			}
 			// notify that we are now ready to start receiving requests
-			Promise.all(listening).then(() => {
+			Promise.resolve(listening).then(() => {
 				parentPort?.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
 			});
 		});
+}
+function listenOnPorts() {
+	const listening = [];
+	for (let port in SERVERS) {
+		const server = SERVERS[port];
+		let fd;
+		try {
+			fd = createReuseportFd(+port, '::');
+		} catch (error) {
+			console.error(`Unable to bind to port ${port}`, error);
+			continue;
+		}
+		listening.push(
+			new Promise((resolve, reject) => {
+				server
+					.listen({ fd }, () => {
+						resolve();
+						harper_logger.trace('Listening on port ' + port, threadId);
+					})
+					.on('error', reject);
+			})
+		);
+	}
+	return Promise.all(listening);
 }
 if (!isMainThread) {
 	startServers();

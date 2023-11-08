@@ -1,4 +1,4 @@
-import { info, trace } from '../utility/logging/harper_logger';
+import { info, trace, warn } from '../utility/logging/harper_logger';
 import { threadId } from 'worker_threads';
 import { onMessageByType, broadcast, broadcastWithAcknowledgement } from '../server/threads/manageThreads';
 import { writeKey } from 'ordered-binary';
@@ -35,6 +35,11 @@ export function addSubscription(table, key, listener?: (key) => any, start_time:
 	}
 	const database_subscriptions = all_subscriptions[path] || (all_subscriptions[path] = []);
 	database_subscriptions.auditStore = table.auditStore;
+	if (include_descendants === 'full-database') {
+		database_subscriptions.allTables = database_subscriptions.allTables || [];
+		database_subscriptions.allTables.push(listener);
+		return;
+	}
 	let table_subscriptions = database_subscriptions[table_id];
 	if (!table_subscriptions) {
 		table_subscriptions = database_subscriptions[table_id] = new Map();
@@ -113,11 +118,19 @@ function notifyFromTransactionData(path, same_thread?) {
 	})) {
 		last_txn_time = local_time;
 		const audit_entry = readAuditEntry(audit_entry_encoded);
+		if (subscriptions.allTables) {
+			for (const listener of subscriptions.allTables) {
+				try {
+					listener(audit_entry, local_time);
+				} catch (error) {
+					warn('Error database listener', error);
+				}
+			}
+		}
 		const table_subscriptions = subscriptions[audit_entry.tableId];
 		if (!table_subscriptions) continue;
 		const record_id = audit_entry.recordId;
 		// TODO: How to handle invalidation
-		let audit_record;
 		let matching_key = keyArrayToString(audit_entry.recordId);
 		let is_ancestor;
 		do {
