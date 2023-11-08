@@ -20,6 +20,7 @@ const installComponents = require('../components/installComponents');
 const eng_mgr = require('../utility/environment/environmentManager');
 const hdb_terms = require('../utility/hdbTerms');
 const { Readable } = require('stream');
+const { isMainThread } = require('worker_threads');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 const APPLICATION_TEMPLATE = path.join(PACKAGE_ROOT, 'application-template');
@@ -406,6 +407,8 @@ async function deployComponent(req) {
 		const root_path = eng_mgr.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
 		path_to_project = path.join(root_path, 'node_modules', project);
 	}
+	// the main thread should never actually load component, just do a deploy
+	if (isMainThread) return;
 	const pseudo_resources = new Map();
 	pseudo_resources.isWorker = true;
 	const component_loader = require('./componentLoader');
