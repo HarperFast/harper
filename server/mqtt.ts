@@ -243,12 +243,12 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 									// Send a publish acknowledgment
 									cmd: response_cmd,
 									messageId: packet.messageId,
-									reasonCode: 0x80, // unspecified error
-									returnCode: 0x80, // unspecified error
+									reasonCode: 0x80, // unspecified error (only MQTT v5 supports error codes)
 								},
 								packet.topic
 							);
 						}
+						break;
 					}
 					if (packet.qos > 0) {
 						sendPacket(
@@ -257,10 +257,6 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 								cmd: response_cmd,
 								messageId: packet.messageId,
 								reasonCode:
-									published === false
-										? 0x90 // Topic name invalid
-										: 0, //success
-								returnCode:
 									published === false
 										? 0x90 // Topic name invalid
 										: 0, //success

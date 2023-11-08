@@ -167,6 +167,49 @@ describe('test MQTT connections and commands', () => {
 			});
 		});
 	});
+	it('publish and subscribe are restricted', async () => {
+		const topic = `SimpleRecord/51`;
+		const client_authorized = connect({
+			host: 'localhost',
+			clean: true,
+			connectTimeout: 2000,
+			protocol: 'mqtt',
+		});
+		const client = connect({
+			host: 'localhost',
+			clean: true,
+			connectTimeout: 2000,
+			protocol: 'mqtt',
+			username: 'restricted',
+			password: 'restricted',
+		});
+		let published_messages = [];
+		await new Promise(resolve => {
+			client.on('connect', function () {
+				client.subscribe(topic, function (err, subscriptions) {
+					assert.equal(subscriptions[0].qos, 128);
+					client_authorized.subscribe(topic, function (err, subscriptions) {
+						console.log(err);
+						client.publish(topic, JSON.stringify({name: 'should not be published '}), {
+							qos: 1,
+							retain: false,
+						});
+						setTimeout(resolve, 50);
+					});
+				});
+			});
+
+			client_authorized.on('message', function (topic, message) {
+				published_messages.push(topic);
+			});
+
+			client.on('error', function (error) {
+				// message is Buffer
+				console.error(error);
+			});
+		});
+		assert.equal(published_messages.length, 0);
+	});
 	it('subscribe to retained record with upsert operation', async function () {
 		let path = 'SimpleRecord/77';
 		let client;
