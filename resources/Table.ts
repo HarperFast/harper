@@ -50,6 +50,12 @@ const INVALIDATED = 1;
 const EVICTED = 8; // note that 2 is reserved for timestamps
 const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
 const MAX_KEY_BYTES = 1978;
+const FULL_PERMISSIONS = {
+	read: true,
+	insert: true,
+	update: true,
+	delete: true,
+};
 export interface Table {
 	primaryStore: Database;
 	auditStore: Database;
@@ -538,12 +544,10 @@ export function makeTable(options) {
 		 * @param user The current, authenticated user
 		 * @param query The parsed query from the search part of the URL
 		 */
-		static allowRead(user, query) {
-			if (!user) return false;
-			const permission = user.role.permission;
-			if (permission.super_user) return true;
-			if (permission[table_name]?.read) {
-				const attribute_permissions = permission[table_name].attribute_permissions;
+		allowRead(user, query) {
+			const table_permission = getTablePermissions(user);
+			if (table_permission?.read) {
+				const attribute_permissions = table_permission.attribute_permissions;
 				if (attribute_permissions) {
 					// if attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
 					if (!query) query = {};
@@ -569,64 +573,53 @@ export function makeTable(options) {
 		 * @param updated_data
 		 * @param full_update
 		 */
-		allowUpdate(user, updated_data: any, full_update: boolean) {
-			if (!user) return false;
-			const permission = user.role.permission;
-			if (permission.super_user) return true;
-			if (permission[table_name]?.update) {
-				const attribute_permissions = permission[table_name].attribute_permissions;
+		allowUpdate(user, updated_data: any) {
+			const table_permission = getTablePermissions(user);
+			if (table_permission?.update) {
+				const attribute_permissions = table_permission.attribute_permissions;
 				if (attribute_permissions) {
 					// if attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
 					const attrs_for_type = attributesAsObject(attribute_permissions, 'update');
 					for (const key in updated_data) {
 						if (!attrs_for_type[key]) return false;
 					}
-					if (full_update) {
-						// if this is a full put operation that removes missing properties, we don't want to remove properties
-						// that the user doesn't have permission to remove
-						for (const permission of attribute_permissions) {
-							const key = permission.attribute_name;
-							if (!permission.update && !(key in updated_data)) {
-								updated_data[key] = this.getProperty(key);
-							}
+					// if this is a full put operation that removes missing properties, we don't want to remove properties
+					// that the user doesn't have permission to remove
+					for (const permission of attribute_permissions) {
+						const key = permission.attribute_name;
+						if (!permission.update && !(key in updated_data)) {
+							updated_data[key] = this.getProperty(key);
 						}
 					}
-				} else {
-					return true;
 				}
+				return true;
 			}
-		}
-		/**
-		 * Determine if the user is allowed to create new data in the current resource
-		 * @param user The current, authenticated user
-		 * @param updated_data
-		 */
-		allowCreate(user, updated_data: {}) {
-			// creating *within* a record resource just means we are adding some data to a current record, which is
-			// an update to the record, it is not an insert of a new record into the table, so not a table create operation
-			// so does not use table insert permissions
-			return this.allowUpdate(user, {});
 		}
 		/**
 		 * Determine if the user is allowed to create new data in the current resource
 		 * @param user The current, authenticated user
 		 * @param new_data
 		 */
-		static allowCreate(user, new_data: {}) {
-			if (!user) return false;
-			const permission = user.role.permission;
-			if (permission.super_user) return true;
-			if (permission[table_name]?.insert) {
-				const attribute_permissions = permission[table_name].attribute_permissions;
-				if (attribute_permissions) {
-					// if attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
-					const attrs_for_type = attributesAsObject(attribute_permissions, 'insert');
-					for (const key in new_data) {
-						if (!attrs_for_type[key]) return false;
+		allowCreate(user, new_data: {}) {
+			if (this[IS_COLLECTION]) {
+				const table_permission = getTablePermissions(user);
+				if (table_permission?.insert) {
+					const attribute_permissions = table_permission.attribute_permissions;
+					if (attribute_permissions) {
+						// if attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
+						const attrs_for_type = attributesAsObject(attribute_permissions, 'insert');
+						for (const key in new_data) {
+							if (!attrs_for_type[key]) return false;
+						}
+					} else {
+						return true;
 					}
-				} else {
-					return true;
 				}
+			} else {
+				// creating *within* a record resource just means we are adding some data to a current record, which is
+				// an update to the record, it is not an insert of a new record into the table, so not a table create operation
+				// so does not use table insert permissions
+				return this.allowUpdate(user, {});
 			}
 		}
 
@@ -634,13 +627,9 @@ export function makeTable(options) {
 		 * Determine if the user is allowed to delete from the current resource
 		 * @param user The current, authenticated user
 		 */
-		static allowDelete(user) {
-			if (!user) return false;
-			const permission = user.role.permission;
-			if (permission.super_user) return true;
-			if (permission[table_name]?.delete) {
-				return true;
-			}
+		allowDelete(user) {
+			const table_permission = getTablePermissions(user);
+			return table_permission?.delete;
 		}
 
 		/**
@@ -1653,6 +1642,18 @@ export function makeTable(options) {
 				}
 			}
 		});
+	}
+	function getTablePermissions(user) {
+		if (!user) return;
+		const permission = user.role.permission;
+		if (permission.super_user) return FULL_PERMISSIONS;
+		const db_permission = permission[database_name];
+		let table, tables = db_permission?.tables;
+		if (tables) {
+			return tables[table_name];
+		} else if (database_name === 'data' && (table = permission[table_name]) && !table.tables) {
+			return table;
+		}
 	}
 
 	function ensureLoadedFromSource(id, entry, context, resource?) {

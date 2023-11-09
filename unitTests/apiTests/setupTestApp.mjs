@@ -12,14 +12,14 @@ const config = {};
 const headers = {
 	//authorization,
 	'content-type': 'application/cbor',
-	accept: 'application/cbor'
+	'accept': 'application/cbor',
 };
 
 let seed = 0;
 export function random() {
 	seed++;
 	let a = seed * 15485863;
-	return (a * a * a % 2038074743) / 2038074743;
+	return ((a * a * a) % 2038074743) / 2038074743;
 }
 
 function makeString() {
@@ -34,6 +34,26 @@ export async function setupTestApp() {
 	analytics.setAnalyticsEnabled(false);
 	disableNATS();
 	bypassAuth();
+	let superGetUser = server.getUser;
+	server.getUser = function (user, password) {
+		if (user === 'test' && password === 'test') {
+			return {
+				id: 'test',
+				role: {
+					permission: {
+						FourProp: {
+							read: true,
+							insert: true,
+							update: true,
+							delete: true,
+							attribute_permissions: [{ attribute_name: 'name', read: true, insert: true, update: true }],
+						},
+					},
+				},
+			};
+		}
+		return superGetUser(user, password);
+	};
 
 	// exit if it is already setup or we are running in the browser
 	if (created_records || typeof process === 'undefined') return created_records;
@@ -51,12 +71,19 @@ export async function setupTestApp() {
 	await startHTTPThreads(config.threads || 0);
 	try {
 		for (let i = 0; i < 20; i++) {
-			let object = {id: Math.round(random() * 1000000).toString(36)};
+			let object = { id: Math.round(random() * 1000000).toString(36) };
 			for (let i = 0; i < 20; i++) {
 				if (random() > 0.1) {
 					object['prop' + i] =
-						random() < 0.3 ? Math.floor(random() * 400) / 2 :
-							random() < 0.3 ? makeString() : random() < 0.3 ? true : random() < 0.3 ? {sub: 'data'} : null;
+						random() < 0.3
+							? Math.floor(random() * 400) / 2
+							: random() < 0.3
+							? makeString()
+							: random() < 0.3
+							? true
+							: random() < 0.3
+							? { sub: 'data' }
+							: null;
 				}
 			}
 
@@ -69,7 +96,7 @@ export async function setupTestApp() {
 		}
 
 		for (let i = 0; i < 15; i++) {
-			let birthday = new Date((1990 + i) + '-03-22T22:41:12.176Z');
+			let birthday = new Date(1990 + i + '-03-22T22:41:12.176Z');
 
 			let object = {
 				id: i.toString(),
@@ -88,7 +115,7 @@ export async function setupTestApp() {
 				await axios.delete('http://localhost:9926/FourProp/' + object.id);
 			}
 		}
-	} catch(error) {
+	} catch (error) {
 		error.message += ': ' + error.response?.data.toString();
 		throw error;
 	}

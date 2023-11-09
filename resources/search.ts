@@ -17,6 +17,7 @@ export function idsForCondition(search_condition, transaction, reverse, Table, a
 	let start;
 	let end, inclusiveEnd, exclusiveStart;
 	let value = search_condition[1] ?? search_condition.value;
+	if (value == null) throw new ClientError('Invalid value provided for query, must be non-null value');
 	if (value instanceof Date) value = value.getTime();
 	const comparator = search_condition.comparator;
 	let need_full_scan;
@@ -65,6 +66,8 @@ export function idsForCondition(search_condition, transaction, reverse, Table, a
 			// we have to revert to full table scan here
 			need_full_scan = true;
 			break;
+		default:
+			throw new ClientError(`Unknown query comparator "${comparator}"`);
 	}
 	if (reverse) {
 		let new_end = start;
@@ -174,7 +177,7 @@ export function filterByType(search_condition) {
 		case 'ne':
 			return attributeComparator(attribute, (record_value) => compareKeys(record_value, value) !== 0);
 		default:
-			return; // Object.create(null);
+			throw new ClientError(`Unknown query comparator "${comparator}"`);
 	}
 }
 /** Create a comparison function that can take the record and check the attribute's value with the filter function */
