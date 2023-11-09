@@ -239,7 +239,11 @@ class NATSTransaction {
 						createNatsTableStreamName(db, transaction_event.table),
 						undefined,
 						transaction_event
-					)
+					)?.catch((error) => {
+						harper_logger.error('An error has occurred trying to replicate transaction', transaction_event, error);
+						error.statusCode = 504; // Gateway timeout is the best description of this type of failure
+						throw error;
+					})
 				);
 			}
 		}

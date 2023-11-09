@@ -251,6 +251,17 @@ describe('test REST calls', () => {
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 0);
 		});
+		it('query has restricted properties for restricted user', async () => {
+			let response = await axios('http://localhost:9926/FourProp?limit(2)', {
+				headers: {
+					Authorization: 'Basic ' + Buffer.from('test:test').toString('base64'),
+				},
+			});
+			assert.equal(response.status, 200);
+			assert.equal(response.data.length, 2);
+			assert.equal(response.data[0].name, 'name0');
+			assert.equal(response.data[0].birthday, undefined); // shouldn't be returned
+		});
 	});
 	it('invalidate and get from cache and check headers', async () => {
 		let response = await axios.post('http://localhost:9926/SimpleCache/3', {
@@ -265,5 +276,7 @@ describe('test REST calls', () => {
 		assert(!response.headers['server-timing'].includes('miss'));
 		assert.equal(response.data.name, 'name3');
 	});
+
+
 
 });

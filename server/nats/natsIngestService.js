@@ -84,6 +84,12 @@ async function workQueueListener() {
 		nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name
 	);
 	const messages = await consumer.consume();
+	parentPort?.on('message', async (message) => {
+		const { type } = message;
+		if (type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
+			messages.close();
+		}
+	});
 	for await (const message of messages) {
 		// ring style queue for awaiting operations for concurrency. await the entry from 100 operations ago:
 		await outstanding_operations[operation_index];
@@ -94,14 +100,6 @@ async function workQueueListener() {
 	}
 }
 
-if (!isMainThread) {
-	parentPort.on('message', async (message) => {
-		const { type } = message;
-		if (type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
-			nats_utils.closeConnection();
-		}
-	});
-}
 /**
  * Processes a message from the NATS work queue and delivers to through the table subscription to the NATS
  * cluster which effectively acts as a source for tables. When a table makes a subscriptions, the subscription

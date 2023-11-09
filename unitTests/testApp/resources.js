@@ -73,3 +73,25 @@ export class FourPropWithHistory extends tables.FourProp {
 		return subscription;
 	}
 }
+let superGetUser = server.getUser;
+server.getUser = function (username, password) {
+	if (username === 'restricted' && password === 'restricted') {
+		return {
+			role: {
+				permission: {
+					test: {
+						tables: {
+							SimpleRecord: {
+								read: false,
+								insert: false,
+								update: false,
+								delete: false,
+							},
+						},
+					},
+				},
+			},
+		};
+	}
+	return superGetUser(username, password);
+};
