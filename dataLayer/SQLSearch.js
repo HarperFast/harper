@@ -941,6 +941,7 @@ class SQLSearch {
 		//TODO there is an error with between statements being converted back to string.  need to handle
 		//TODO - CORE-1095 - update how WHERE clause is translated back to SQL query for where expression values include escaped characters
 		let where_clause = this.statement.where ? 'WHERE ' + this.statement.where : '';
+		where_clause = where_clause.replace(/NOT\(NULL\)/g, 'NOT NULL');
 
 		let order_clause = '';
 		//the only time we need to include the order by statement in the first pass is when there are no aggregators,
@@ -973,7 +974,7 @@ class SQLSearch {
 
 		let limit = '';
 		let offset = '';
-		if (!this.has_aggregator && !this.statement.group && !this.has_ordinal) {
+		if (!this.has_aggregator && !this.statement.group && !this.has_ordinal && !this.statement.joins) {
 			limit = this.statement.limit ? 'LIMIT ' + this.statement.limit : '';
 			offset = this.statement.offset ? 'OFFSET ' + this.statement.offset : '';
 		}
@@ -1192,13 +1193,15 @@ class SQLSearch {
 
 		//if we processed the offset in first sql pass it will force it again which will cause no records to be returned
 		// this deletes the offset and also the limit if they were already run in the first pass
-		if (!this.has_aggregator && !this.statement.group && !this.has_ordinal) {
-			if (this.statement.limit) {
-				delete this.statement.limit;
-			}
-			if (this.statement.offset) {
-				delete this.statement.offset;
-			}
+		if (
+			!this.has_aggregator &&
+			!this.statement.group &&
+			!this.has_ordinal &&
+			this.statement.limit &&
+			!this.statement.joins
+		) {
+			delete this.statement.limit;
+			delete this.statement.offset;
 		}
 
 		let final_results = undefined;
@@ -1249,6 +1252,7 @@ class SQLSearch {
 	 */
 	_buildSQL(call_convert_to_indexes = true) {
 		let sql = this.statement.toString();
+		sql = sql.replace(/NOT\(NULL\)/g, 'NOT NULL');
 
 		this.statement.columns.forEach((column) => {
 			if (column.funcid && column.as) {
