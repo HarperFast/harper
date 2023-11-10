@@ -124,6 +124,7 @@ export function makeTable(options) {
 		static auditStore = audit_store;
 		static primaryKey = primary_key;
 		static tableName = table_name;
+		static tableId = table_id;
 		static indices = indices;
 		static audit = audit;
 		static databasePath = database_path;

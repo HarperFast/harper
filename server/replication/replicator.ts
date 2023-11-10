@@ -9,7 +9,7 @@ import { Context } from '../../resources/ResourceInterface';
 import { readAuditEntry } from '../../resources/auditStore';
 import { readKey, writeKey } from 'ordered-binary';
 import { addSubscription } from '../../resources/transactionBroadcast';
-import { getClusteringRoutes } from '../../config/configUtils';
+import { decode, encode } from 'msgpackr';
 import { WebSocket } from 'ws';
 import { server } from '../Server';
 
@@ -34,9 +34,9 @@ export function start(options) {
 				let first_table;
 				const table_by_id = [];
 				for (const key in database) {
-					first_table = first_table || database[key];
-
-					break;
+					const table = database[key];
+					first_table = first_table || table;
+					table_by_id[table.tableId] = { table };
 				}
 				const encoder = new Encoder();
 				const current_transaction = { txnTime: 0 };
@@ -44,30 +44,37 @@ export function start(options) {
 					first_table,
 					null,
 					function (audit_record, local_time) {
+						if (!audit_record) {
+							if (current_transaction.txnTime) ws.send(encoding_buffer.subarray(encoding_start, position));
+							current_transaction.txnTime = 0;
+							return; // end of transaction, nothing more to do
+						}
 						const table_id = audit_record.tableId;
 						const record_id_binary = audit_record.getBinaryRecordId();
 						const txn_time = audit_record.version;
 						if (current_transaction.txnTime !== txn_time) {
 							// send the queued transaction
-							ws.send(encoding_buffer.subarray(encoding_start, position));
+							if (current_transaction.txnTime) ws.send(encoding_buffer.subarray(encoding_start, position));
 							current_transaction.txnTime = txn_time;
-							if (!txn_time) return; // end of transaction, nothing more to do
 							encoding_start = position;
-							encoder.position = writeFloat64(txn_time);
+							writeFloat64(txn_time);
 						}
 						writeInt(table_id);
 						const key_length = record_id_binary.length - 12;
 						writeInt(key_length);
-						writeBytes(audit_id.buffer, audit_id.start, audit_id.end);
-						writeInt(audit_record.encodedValue.length);
-						writeBytes(audit_record.encodedValue);
+						writeBytes(record_id_binary);
+						const encoded_record = audit_record.getBinaryValue();
+						writeInt(encoded_record.length);
+						writeBytes(encoded_record);
 						const table_entry = table_by_id[table_id];
 						if (!table_entry.sentName) {
 							table_entry.sentName = true;
-							ws.send(encoder.encode([SEND_TABLE_NAME, table_id, table_entry.table.tableName]));
+							ws.send(encode([SEND_TABLE_NAME, table_id, table_entry.table.tableName]));
 						}
-						if (table_entry.encoder.structures.typed.length != table_entry.typed_length) {
-							ws.send(encoder.encode([SEND_TABLE_FIXED_STRUCTURE, table_entry.encoder.structures.typed]));
+						const typed_structs = table_entry.table.primaryStore.encoder.typedStructs;
+						if (typed_structs.length != table_entry.typed_length) {
+							table_entry.typed_length = typed_structs.length;
+							ws.send(encode([SEND_TABLE_FIXED_STRUCTURE, typed_structs]));
 						}
 					},
 					start_time,
@@ -121,6 +128,19 @@ function writeBytes(src, start = 0, end = src.length) {
 	src.copy(encoding_buffer, position, start, end);
 	position += length;
 }
+function writeFloat64(number) {
+	if (8 > encoding_buffer.length - position) {
+		const new_buffer = Buffer.allocUnsafeSlow(((length + 4096) >> 10) << 11);
+		encoding_buffer.copy(new_buffer, encoding_start);
+		position = position - encoding_start;
+		encoding_start = 0;
+		encoding_buffer = new_buffer;
+		data_view = new DataView(encoding_buffer, 0, encoding_buffer.length);
+	}
+	data_view.setFloat64(position, number);
+	position += 8;
+}
+
 class Encoder {
 	constructor() {}
 }
@@ -158,18 +178,18 @@ let immediateNATSTransaction, subscribed_to_nodes;
  * This function will assign the NATS replicator as a source to all tables don't have an otherwise defined source (basically
  * any tables that aren't caching tables for another source).
  */
-function assignReplicationSource() {
+function assignReplicationSource(options) {
 	if (replication_disabled) return;
 	const databases = getDatabases();
 	for (const database_name in databases) {
 		const database = databases[database_name];
 		for (const table_name in database) {
 			const Table = database[table_name];
-			setReplicator(table_name, database_name, Table);
+			setReplicator(table_name, database_name, Table, options);
 		}
 	}
 	onUpdatedTable((Table, is_changed) => {
-		setReplicator(Table.tableName, Table.databaseName, Table);
+		setReplicator(Table.tableName, Table.databaseName, Table, options);
 		if (is_changed) {
 			table_update_listeners.get(Table)?.forEach((listener) => listener(Table));
 		}
@@ -191,7 +211,7 @@ export function setReplicator(table_name, db_name, Table, options) {
 	if (!Table) {
 		return console.error(`Attempt to replicate non-existent table ${table_name} from database ${db_name}`);
 	}
-	if (Table.Source?.isNATSReplicator) return;
+	if (Table.replicated === false || Table.Source?.isNATSReplicator) return;
 	let source;
 	// We may try to consult this to get the other nodes for back-compat
 	// const { hub_routes } = getClusteringRoutes();
@@ -204,32 +224,16 @@ export function setReplicator(table_name, db_name, Table, options) {
 			 */
 			static async subscribe() {
 				const subscription = (this.subscription = new IterableEventQueue());
-				const nodes = (options?.nodes || databases.system.hdb_nodes).search([]);
-				const addNode = (node) => {
-					if (
-						node.subscriptions.some((subscription) => {
-							return (
-								subscription.database === Table.databaseName &&
-								subscription.table === Table.tableName &&
-								subscription.subscribe
-							);
-						})
-					) {
-						try {
-							const url = node.url;
-							// TODO: Do we need to have another way to determine URL?
-							// Node suscription also needs to be aware of other nodes that will be excluded from the current subscription
-							let connection = new NodeSubscriptionConnection(url, subscription, Table.databaseName);
-							connection.connect();
-						} catch(error) {
-							console.error(error);
-						}
+				for (const node of options.nodes) {
+					try {
+						const url = node.url;
+						// TODO: Do we need to have another way to determine URL?
+						// Node suscription also needs to be aware of other nodes that will be excluded from the current subscription
+						const connection = new NodeSubscriptionConnection(url, subscription, Table.databaseName);
+						connection.connect();
+					} catch (error) {
+						console.error(error);
 					}
-				};
-
-				// TODO: We all need to subscribe to the hdb_nodes, so we know when new nodes are added
-				for await (const node of nodes) {
-					addNode(node);
 				}
 				return subscription;
 			}
@@ -242,7 +246,8 @@ export function setReplicator(table_name, db_name, Table, options) {
 				this.connections.push(new NodeSubscriptionConnection(node_url, this.subscription));
 			}
 			static isNATSReplicator = true;
-		},{ intermediateSource: true }
+		},
+		{ intermediateSource: true }
 	);
 	/**
 	 * This gets the NATS transaction object for the current overall transaction. This will
@@ -321,6 +326,7 @@ class NodeSubscriptionConnection {
 				const record_key = readKey(body, decoder.position, (decoder.position += key_length));
 				const audit_record = readAuditEntry(body, table_decoders[table_id].decoder);
 				this.localQueue.send(audit_record);
+				// TODO: Once it is committed, also record the localtime in the table with symbol metadata, so we can resume from that point
 			} while (decoder.position < body.byteLength);
 		});
 

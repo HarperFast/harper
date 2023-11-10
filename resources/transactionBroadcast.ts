@@ -37,7 +37,7 @@ export function addSubscription(table, key, listener?: (key) => any, start_time:
 	database_subscriptions.auditStore = table.auditStore;
 	if (include_descendants === 'full-database') {
 		database_subscriptions.allTables = database_subscriptions.allTables || [];
-		database_subscriptions.allTables.push(listener);
+		database_subscriptions.allTables.push({ listener });
 		return;
 	}
 	let table_subscriptions = database_subscriptions[table_id];
@@ -119,9 +119,14 @@ function notifyFromTransactionData(path, same_thread?) {
 		last_txn_time = local_time;
 		const audit_entry = readAuditEntry(audit_entry_encoded);
 		if (subscriptions.allTables) {
-			for (const listener of subscriptions.allTables) {
+			for (const subscriber of subscriptions.allTables) {
 				try {
-					listener(audit_entry, local_time);
+					if (!subscriber.txnInProgress) {
+						subscriber.txnInProgress = local_time;
+						if (!subscribers_with_txns) subscribers_with_txns = [subscriber];
+						else subscribers_with_txns.push(subscriber);
+					}
+					subscriber.listener(audit_entry, local_time);
 				} catch (error) {
 					warn('Error database listener', error);
 				}

@@ -13,21 +13,14 @@ describe('Replication', () => {
 	before(async () => {
 		const NODE_COUNT = 2;
 		async function createNode(index) {
-			let nodes = table({
-				table: 'hdb_nodes',
-				database: 'test-replication-' + index,
-				attributes: [{ name: 'id', isPrimaryKey: true }],
-			});
-			let completed_write;
+			let nodes = []
 			for (let i = 0; i < NODE_COUNT; i++) {
 				if (i === index) continue;
-				completed_write = nodes.put({
+				nodes.push({
 					id: 'node-' + i,
 					url: 'ws://localhost:' + (9325 + i),
-					subscriptions: [{ database: 'test', table: 'TestTable', publish: true, subscribe: true }],
 				});
 			}
-			await completed_write;
 			TestTable = table({
 				table: 'TestTable',
 				database: 'test-replication-' + index,
