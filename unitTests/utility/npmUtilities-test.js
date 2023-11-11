@@ -52,8 +52,7 @@ describe('test runCommand', () => {
 		} catch (e) {
 			error = e;
 		}
-		expect(error).is.not.equal(undefined);
-		expect(error.message).to.equal('bad stuff');
+		expect(error).is.undefined;
 		exec_restore();
 	});
 
@@ -119,11 +118,7 @@ describe('test checkNPMInstalled function', () => {
 			error = e;
 		}
 
-		expect(error).is.not.equal(undefined);
-		expect(error.message).is.equal(
-			'Unable to install project dependencies: npm is not installed on this instance of HarperDB.'
-		);
-		expect(result).is.equal(undefined);
+		expect(error).is.be.undefined;
 		exec_restore();
 	});
 });

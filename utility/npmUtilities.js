@@ -75,7 +75,7 @@ async function runCommand(command, cwd = undefined) {
 	}
 
 	harper_logger.trace(stdout, stderr);
-	return stdout.replace('\n', '');
+	return stdout?.replace('\n', '');
 }
 
 /**
