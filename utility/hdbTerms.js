@@ -454,6 +454,7 @@ const SERVICE_ACTIONS_ENUM = {
 	UPGRADE: 'upgrade',
 	HELP: 'help',
 	STATUS: 'status',
+	RENEWCERTS: 'renew-certs',
 };
 
 //describes the Geo Conversion types
