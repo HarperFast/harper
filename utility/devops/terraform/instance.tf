@@ -46,7 +46,6 @@ resource "aws_instance" "github" {
   iam_instance_profile        = "AmazonSSMRoleForInstancesQuickSetup"
   key_name                    = "ci-instances"
   user_data                   = templatefile("${path.module}/user_data.sh", {})
-  placement_group             = "teamcity"
   root_block_device {
     volume_type = "gp3"
     volume_size = var.volume_size
