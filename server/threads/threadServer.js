@@ -3,14 +3,14 @@ const { isMainThread, parentPort, threadId } = require('worker_threads');
 const { Socket, createServer: createSocketServer } = require('net');
 const { createServer, IncomingMessage } = require('http');
 const { createServer: createSecureServer } = require('https');
-const { readFileSync } = require('fs');
+const { readFileSync, unlinkSync } = require('fs');
 const harper_logger = require('../../utility/logging/harper_logger');
 const env = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 const { server } = require('../Server');
 const { WebSocketServer } = require('ws');
 const { createServer: createSecureSocketServer } = require('tls');
-const { getTicketKeys, restartNumber } = require('./manageThreads');
+const { getTicketKeys, restartNumber, getWorkerIndex } = require('./manageThreads');
 const { Headers } = require('../serverHelpers/Headers');
 const { recordAction, recordActionBinary } = require('../../resources/analytics');
 const { Request, node_request_key, createReuseportFd } = require('../serverHelpers/Request');
@@ -83,6 +83,12 @@ function startServers() {
 							}
 							// And we tell the server not to accept any more incoming connections
 							server.close?.(() => {
+								if (env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)) {
+									try {
+										unlinkSync(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET));
+									} catch (err) {}
+								}
+
 								clearInterval(close_all_timer);
 								// We hope for a graceful exit once all connections have been closed, and no
 								// more incoming connections are accepted, but if we need to, we eventually will exit
@@ -107,6 +113,22 @@ function startServers() {
 			if (createReuseportFd && !session_affinity) {
 				for (let port in SERVERS) {
 					const server = SERVERS[port];
+
+					// If server is unix domain socket
+					if (isNaN(port) && getWorkerIndex() == 0) {
+						listening.push(
+							new Promise((resolve, reject) => {
+								server
+									.listen({ path: port }, () => {
+										resolve();
+										harper_logger.notify('Domain socket listening on ' + port);
+									})
+									.on('error', reject);
+							})
+						);
+						continue;
+					}
+
 					let fd;
 					try {
 						fd = createReuseportFd(+port, '::');
@@ -224,7 +246,8 @@ function proxyRequest(message) {
 }
 
 function registerServer(server, port) {
-	if (!+port) {
+	// TODO: Ask about this
+	if (!+port && !isNaN(port)) {
 		// if no port is provided, default to custom functions port
 		port = parseInt(env.get(terms.CONFIG_PARAMS.HTTP_PORT), 10);
 	}
@@ -262,6 +285,10 @@ function getPorts(options) {
 			});
 		if (env.get(terms.CONFIG_PARAMS.HTTP_SECUREPORT) != null)
 			ports.push({ port: env.get(terms.CONFIG_PARAMS.HTTP_SECUREPORT), secure: true });
+	}
+
+	if (env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)) {
+		ports.push({ port: env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET), secure: false });
 	}
 	return ports;
 }

@@ -328,6 +328,10 @@ function validateConfig(config_doc) {
 		['clustering', 'leafServer', 'streams', 'path'],
 		validation.value.clustering.leafServer.streams?.path
 	);
+	config_doc.setIn(
+		['operationsApi', 'network', 'domainSocket'],
+		validation.value?.operationsApi?.network?.domainSocket
+	);
 }
 
 /**
