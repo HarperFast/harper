@@ -175,18 +175,20 @@ export async function authentication(request, next_handler) {
 					}`;
 					if (response_headers) {
 						response_headers.push('Set-Cookie', cookie);
-						if (origin && request.protocol === 'https') {
-							response_headers.push('Access-Control-Expose-Headers', 'X-HDB-Session');
-							response_headers.push('X-HDB-Session', 'Secure');
-						}
 					} else if (response?.headers?.set) {
 						response.headers.set('Set-Cookie', cookie);
-						// we make sure this is allowed by CORS so that a client can determine if it has
-						// a valid cookie-authenticated session (studio needs this)
-						if (origin && request.protocol === 'https') {
-							response.headers.set('Access-Control-Expose-Headers', 'X-HDB-Session');
-							response.headers.set('X-HDB-Session', 'Secure');
-						}
+					}
+				}
+				if (request.protocol === 'https') {
+					// Indicate that we have successfully updated a session
+					// We make sure this is allowed by CORS so that a client can determine if it has
+					// a valid cookie-authenticated session (studio needs this)
+					if (response_headers) {
+						if (origin) response_headers.push('Access-Control-Expose-Headers', 'X-Hdb-Session');
+						response_headers.push('X-Hdb-Session', 'Secure');
+					} else if (response?.headers?.set) {
+						if (origin) response.headers.set('Access-Control-Expose-Headers', 'X-Hdb-Session');
+						response.headers.set('X-Hdb-Session', 'Secure');
 					}
 				}
 				updated_session.id = session_id;
