@@ -22,6 +22,7 @@ if (isMainThread) {
 	});
 }
 
+const LICENSE_NAG_PERIOD = 600000; // ten minutes
 export async function startHTTPThreads(thread_count = 2, dynamic_threads?: boolean) {
 	if (dynamic_threads) {
 		startHTTPWorker(0, 1, true);
@@ -39,7 +40,7 @@ export async function startHTTPThreads(thread_count = 2, dynamic_threads?: boole
 		console.error(license_warning);
 		setInterval(() => {
 			harper_logger.notify(license_warning);
-		}, 600000);
+		}, LICENSE_NAG_PERIOD).unref();
 	}
 	for (let i = 0; i < thread_count; i++) {
 		startHTTPWorker(i, thread_count);
