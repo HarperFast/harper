@@ -1,7 +1,7 @@
 {
   "files": {
     "main.css": "/static/css/main.00dcd858.css",
-    "main.js": "/static/js/main.907a736a.js",
+    "main.js": "/static/js/main.25b2bbc4.js",
     "online-app.js": "/static/js/online-app.14e9bb16.chunk.js",
     "offline-app.js": "/static/js/offline-app.889f3e4b.chunk.js",
     "topnav.js": "/static/js/topnav.5eafe4e9.chunk.js",
@@ -25,7 +25,7 @@
     "instance-charts.js": "/static/js/instance-charts.8841adb7.chunk.js",
     "instance-query.js": "/static/js/instance-query.e05df2da.chunk.js",
     "instance-cluster.js": "/static/js/instance-cluster.e9d7e528.chunk.js",
-    "instance-config.js": "/static/js/instance-config.f34a3fbe.chunk.js",
+    "instance-config.js": "/static/js/instance-config.a6d21032.chunk.js",
     "instance-status.js": "/static/js/instance-status.eabef8a8.chunk.js",
     "instance-users.js": "/static/js/instance-users.b14a32da.chunk.js",
     "instance-roles.js": "/static/js/instance-roles.0c086526.chunk.js",
@@ -67,6 +67,6 @@
   },
   "entrypoints": [
     "static/css/main.00dcd858.css",
-    "static/js/main.907a736a.js"
+    "static/js/main.25b2bbc4.js"
   ]
 }
