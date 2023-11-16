@@ -1,7 +1,7 @@
 {
   "files": {
-    "main.css": "/static/css/main.00dcd858.css",
-    "main.js": "/static/js/main.25b2bbc4.js",
+    "main.css": "/static/css/main.e255b953.css",
+    "main.js": "/static/js/main.2d32bf98.js",
     "online-app.js": "/static/js/online-app.14e9bb16.chunk.js",
     "offline-app.js": "/static/js/offline-app.889f3e4b.chunk.js",
     "topnav.js": "/static/js/topnav.5eafe4e9.chunk.js",
@@ -13,7 +13,7 @@
     "organizations.js": "/static/js/organizations.1ae28817.chunk.js",
     "resources.js": "/static/js/resources.6b270dc2.chunk.js",
     "instances.js": "/static/js/instances.72146ea3.chunk.js",
-    "instance.js": "/static/js/instance.35c41eac.chunk.js",
+    "instance.js": "/static/js/instance.ead3c864.chunk.js",
     "profile.js": "/static/js/profile.737e522c.chunk.js",
     "organization-users.js": "/static/js/organization-users.11d3f53c.chunk.js",
     "organization-billing.js": "/static/js/organization-billing.32b5874c.chunk.js",
@@ -29,7 +29,7 @@
     "instance-status.js": "/static/js/instance-status.eabef8a8.chunk.js",
     "instance-users.js": "/static/js/instance-users.b14a32da.chunk.js",
     "instance-roles.js": "/static/js/instance-roles.0c086526.chunk.js",
-    "custom-functions.js": "/static/js/custom-functions.3e8110db.chunk.js",
+    "custom-functions.js": "/static/js/custom-functions.5513d17d.chunk.js",
     "browse-datatable.js": "/static/js/browse-datatable.368a1b7f.chunk.js",
     "browse-entitymanager.js": "/static/js/browse-entitymanager.9de78f54.chunk.js",
     "browse-jsonviewer.js": "/static/js/browse-jsonviewer.92dc99b0.chunk.js",
@@ -66,7 +66,7 @@
     "static/media/kotlin.svg": "/static/media/kotlin.55e6fbe30a05297f1e462c1ad9ec25d2.svg"
   },
   "entrypoints": [
-    "static/css/main.00dcd858.css",
-    "static/js/main.25b2bbc4.js"
+    "static/css/main.e255b953.css",
+    "static/js/main.2d32bf98.js"
   ]
 }
