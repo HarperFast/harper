@@ -4,7 +4,8 @@ import * as hdb_terms from '../../utility/hdbTerms';
 import * as harper_logger from '../../utility/logging/harper_logger';
 import { unlinkSync, existsSync } from 'fs';
 import { recordAction } from '../../resources/analytics';
-const { isMainThread } = require('worker_threads');
+import { isMainThread } from 'worker_threads';
+import { checkMemoryLimit } from '../../utility/registration/hdb_license';
 const workers = [];
 let queued_sockets = [];
 const handle_socket = [];
@@ -32,6 +33,13 @@ export async function startHTTPThreads(thread_count = 2, dynamic_threads?: boole
 			return Promise.resolve([]);
 		}
 		await loadRootComponents();
+	}
+	const license_warning = checkMemoryLimit();
+	if (license_warning && !process.env.DEV_MODE) {
+		console.error(license_warning);
+		setInterval(() => {
+			harper_logger.notify(license_warning);
+		}, 600000);
 	}
 	for (let i = 0; i < thread_count; i++) {
 		startHTTPWorker(i, thread_count);

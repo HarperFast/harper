@@ -9,6 +9,7 @@ const log = require('../logging/harper_logger');
 const path = require('path');
 const hdb_utils = require('../common_utils');
 const terms = require('../hdbTerms');
+const { totalmem } = require('os');
 const License = require('../../utility/registration/licenseObjects').ExtendedLicense;
 const INVALID_LICENSE_FORMAT_MSG = 'invalid license key format';
 const LICENSE_HASH_PREFIX = '061183';
@@ -26,6 +27,7 @@ module.exports = {
 	generateFingerPrint: generateFingerPrint,
 	licenseSearch,
 	getLicense,
+	checkMemoryLimit,
 };
 
 function getLicenseDirPath() {
@@ -263,4 +265,12 @@ async function getLicense() {
 		await licenseSearch();
 	}
 	return current_license;
+}
+function checkMemoryLimit() {
+	const licensed_memory = licenseSearch().ram_allocation;
+	let total_memory = process.constrainedMemory?.() || totalmem();
+	total_memory = Math.round(Math.min(total_memory, totalmem()) / 2 ** 20);
+	if (total_memory > licensed_memory) {
+		return `This server has more memory (${total_memory}MB) than HarperDB is licensed for (${licensed_memory}MB), this should only be used for educational and development purposes.`;
+	}
 }

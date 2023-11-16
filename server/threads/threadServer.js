@@ -13,7 +13,8 @@ const { createServer: createSecureSocketServer } = require('tls');
 const { getTicketKeys, restartNumber, getWorkerIndex } = require('./manageThreads');
 const { Headers } = require('../serverHelpers/Headers');
 const { recordAction, recordActionBinary } = require('../../resources/analytics');
-const { Request, node_request_key, createReuseportFd } = require('../serverHelpers/Request');
+const { Request, createReuseportFd } = require('../serverHelpers/Request');
+const { checkMemoryLimit } = require('../../utility/registration/hdb_license');
 
 if (process.env.DEV_MODE) {
 	try {
@@ -337,6 +338,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 				ticketKeys: getTicketKeys(),
 			});
 		}
+		let license_warning = checkMemoryLimit();
 		http_servers[port] = (secure ? createSecureServer : createServer)(options, async (node_request, node_response) => {
 			try {
 				let start_time = performance.now();
@@ -350,7 +352,14 @@ function getHTTPServer(port, secure, is_operations_server) {
 					if (request._nodeResponse.statusCode) return;
 					response = unhandled(request);
 				}
-				response.headers?.set?.('Server', 'HarperDB');
+
+				if (license_warning)
+					response.headers?.set?.(
+						'Server',
+						'Unlicensed HarperDB, this should only be used for educational and development purposes'
+					);
+				else response.headers?.set?.('Server', 'HarperDB');
+
 				if (response.status === -1) {
 					// This means the HDB stack didn't handle the request, and we can then cascade the request
 					// to the server-level handler, forming the bridge to the slower legacy fastify framework that expects
