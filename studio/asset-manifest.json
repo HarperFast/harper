@@ -1,6 +1,6 @@
 {
   "files": {
-    "main.css": "/static/css/main.e255b953.css",
+    "main.css": "/static/css/main.31857df6.css",
     "main.js": "/static/js/main.2d32bf98.js",
     "online-app.js": "/static/js/online-app.14e9bb16.chunk.js",
     "offline-app.js": "/static/js/offline-app.889f3e4b.chunk.js",
@@ -66,7 +66,7 @@
     "static/media/kotlin.svg": "/static/media/kotlin.55e6fbe30a05297f1e462c1ad9ec25d2.svg"
   },
   "entrypoints": [
-    "static/css/main.e255b953.css",
+    "static/css/main.31857df6.css",
     "static/js/main.2d32bf98.js"
   ]
 }
