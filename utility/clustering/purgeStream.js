@@ -15,22 +15,23 @@ module.exports = purgeStream;
  * @returns {Promise<string>}
  */
 async function purgeStream(req) {
-	const validation_err = purge_stream_validator(req);
-	if (validation_err) {
-		throw handleHDBError(
-			validation_err,
-			validation_err.message,
-			HTTP_STATUS_CODES.BAD_REQUEST,
-			undefined,
-			undefined,
-			true
-		);
+	if (req.purge_ingest !== true) {
+		const validation_err = purge_stream_validator(req);
+		if (validation_err) {
+			throw handleHDBError(
+				validation_err,
+				validation_err.message,
+				HTTP_STATUS_CODES.BAD_REQUEST,
+				undefined,
+				undefined,
+				true
+			);
+		}
 	}
 
 	clustering_utils.checkClusteringEnabled();
+	const { schema, table, purge_ingest } = req;
+	await nats_utils.purgeTableStream(schema, table, purge_ingest);
 
-	const { schema, table } = req;
-	await nats_utils.purgeTableStream(schema, table);
-
-	return `Successfully purged table '${schema}.${table}'`;
+	return purge_ingest ? 'Successfully purged ingest' : `Successfully purged table '${schema}.${table}'`;
 }

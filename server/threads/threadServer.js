@@ -3,7 +3,7 @@ const { isMainThread, parentPort, threadId } = require('worker_threads');
 const { Socket, createServer: createSocketServer } = require('net');
 const { createServer, IncomingMessage } = require('http');
 const { createServer: createSecureServer } = require('https');
-const { readFileSync, unlinkSync } = require('fs');
+const { readFileSync, unlinkSync, existsSync } = require('fs');
 const harper_logger = require('../../utility/logging/harper_logger');
 const env = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
@@ -83,7 +83,7 @@ function startServers() {
 							}
 							// And we tell the server not to accept any more incoming connections
 							server.close?.(() => {
-								if (env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)) {
+								if (env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET) && getWorkerIndex() == 0) {
 									try {
 										unlinkSync(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET));
 									} catch (err) {}
@@ -116,12 +116,13 @@ function startServers() {
 
 					// If server is unix domain socket
 					if (isNaN(port) && getWorkerIndex() == 0) {
+						if (existsSync(port)) unlinkSync(port);
 						listening.push(
 							new Promise((resolve, reject) => {
 								server
 									.listen({ path: port }, () => {
 										resolve();
-										harper_logger.notify('Domain socket listening on ' + port);
+										harper_logger.info('Domain socket listening on ' + port);
 									})
 									.on('error', reject);
 							})
@@ -148,6 +149,7 @@ function startServers() {
 					);
 				}
 			}
+
 			// notify that we are now ready to start receiving requests
 			Promise.all(listening).then(() => {
 				parentPort?.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
@@ -540,6 +542,10 @@ function onWebSocket(listener, options) {
 				} catch (error) {
 					harper_logger.warn('Error handling WebSocket connection', error);
 				}
+			});
+
+			ws_servers[port_num].on('error', (error) => {
+				console.log('Error in setting up WebSocket server', error);
 			});
 		}
 		let protocol = options?.subProtocol || '';
