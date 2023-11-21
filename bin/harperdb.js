@@ -177,7 +177,8 @@ Commands:
   install - Install harperdb
   register - Register harperdb
   upgrade - Upgrade harperdb
-  status - Print the status of HarperDB and clustering`);
+  status - Print the status of HarperDB and clustering
+  <api-operation> <parameter>=<value> - Run an API operation and return result to the CLI, not all operations are supported`);
 		}
 	});
 }

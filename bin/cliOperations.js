@@ -76,14 +76,14 @@ function buildRequest() {
 			continue;
 		}
 
-		const prop = arg.split('=');
-		if (prop.length === 2) {
-			let value = prop[1];
+		if (arg.includes('=')) {
+			let [first, ...rest] = arg.split('=');
+			rest = rest.join('=');
 			try {
-				value = JSON.parse(prop[1]);
-			} catch (err) {}
+				rest = JSON.parse(rest);
+			} catch (e) {}
 
-			req[prop[0]] = value;
+			req[first] = rest;
 		}
 	}
 
