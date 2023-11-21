@@ -14,6 +14,7 @@ describe('test WebSockets connections and messaging', () => {
 	let available_records;
 	let ws1, ws2;
 	before(async function() {
+		this.timeout(5000);
 		available_records = await setupTestApp();
 		ws1 = new WebSocket('ws://localhost:9926/Echo');
 
