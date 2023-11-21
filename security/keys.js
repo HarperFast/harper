@@ -26,7 +26,7 @@ async function generateKeys() {
 
 	let cert = await mkcert.createCert({
 		domains: ['127.0.0.1', 'localhost', '::1'],
-		validityDays: 365,
+		validityDays: 3650,
 		caKey: certificates_terms.CERTIFICATE_VALUES.key,
 		caCert: certificates_terms.CERTIFICATE_VALUES.cert,
 	});

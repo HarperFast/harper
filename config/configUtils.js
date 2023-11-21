@@ -402,6 +402,22 @@ function updateConfigValue(
 		for (const arg in parsed_args) {
 			let config_param = CONFIG_PARAM_MAP[arg.toLowerCase()];
 
+			// If setting http.securePort to the same value as http.port, set http.port to null to avoid clashing ports
+			if (
+				config_param === CONFIG_PARAMS.HTTP_SECUREPORT &&
+				parsed_args[arg] === flat_config_obj[CONFIG_PARAMS.HTTP_PORT]?.toString()
+			) {
+				config_doc.setIn(['http', 'port'], null);
+			}
+
+			// If setting operationsApi.network.securePort to the same value as operationsApi.network.port, set operationsApi.network.port to null to avoid clashing ports
+			if (
+				config_param === CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT &&
+				parsed_args[arg] === flat_config_obj[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT.toLowerCase()]?.toString()
+			) {
+				config_doc.setIn(['operationsApi', 'network', 'port'], null);
+			}
+
 			// Schemas config args are handled differently, so if they exist set them to var that will be used by setSchemasConfig
 			if (config_param === CONFIG_PARAMS.DATABASES) {
 				schemas_args = parsed_args[arg];

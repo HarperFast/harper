@@ -174,8 +174,16 @@ async function dropRole(role) {
 	}
 
 	if (active_users === true) {
-		throw new Error(`Cannot drop role ${role_name[0].role} as it has active user(s) tied to this role`);
+		throw handleHDBError(
+			new Error(),
+			`Cannot drop role ${role_name[0].role} as it has active user(s) tied to this role`,
+			HTTP_STATUS_CODES.CONFLICT,
+			undefined,
+			undefined,
+			true
+		);
 	}
+
 	let delete_object = {
 		table: 'hdb_role',
 		schema: 'system',

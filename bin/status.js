@@ -13,12 +13,14 @@ const cluster_network = require('../utility/clustering/clusterNetwork');
 const cluster_status = require('../utility/clustering/clusterStatus');
 const sys_info = require('../utility/environment/systemInformation');
 const env_mgr = require('../utility/environment/environmentManager');
+const { isHdbInstalled } = require('./run');
 env_mgr.initSync();
 
 const STATUSES = {
 	RUNNING: 'running',
 	STOPPED: 'stopped',
 	ERRORED: 'errored',
+	NOT_INSTALLED: 'not installed',
 };
 const NATS_SERVER_NAME = {
 	LEAF: 'leaf server',
@@ -30,19 +32,28 @@ let hdb_root;
 module.exports = status;
 
 async function status() {
-	hdb_root = env_mgr.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
 	let status = {
 		harperdb: {
 			status: STATUSES.STOPPED,
 		},
 	};
 
+	if (!(await isHdbInstalled())) {
+		status.harperdb.status = STATUSES.NOT_INSTALLED;
+		console.log(YAML.stringify(status));
+		return;
+	}
+
+	hdb_root = env_mgr.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
 	let hdb_pid;
 	try {
 		hdb_pid = Number.parseInt(await fs.readFile(path.join(hdb_root, hdb_terms.HDB_PID_FILE), 'utf8'));
 	} catch (err) {
 		if (err.code === hdb_terms.NODE_ERROR_CODES.ENOENT) {
-			throw new Error(`Unable to locate 'hdb.pid' file, try stopping and starting HarperDB`);
+			hdb_log.info('`harperdb status` did not find a hdb.pid file');
+			status.harperdb.status = STATUSES.STOPPED;
+			console.log(YAML.stringify(status));
+			return;
 		}
 
 		throw err;
