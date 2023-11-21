@@ -18,6 +18,7 @@ const turf_booleanDisjoint = require('@turf/boolean-disjoint');
 const turf_helpers = require('@turf/helpers');
 const hdb_terms = require('../hdbTerms');
 const common_utils = require('../common_utils');
+const hdb_log = require('../logging/harper_logger');
 
 module.exports = {
 	geoArea: geoArea,
@@ -155,11 +156,13 @@ function geoDistance(point1, point2, units) {
  */
 function geoNear(point1, point2, distance, units) {
 	if (common_utils.isEmpty(point1)) {
-		throw new Error('point1 is required');
+		hdb_log.warn('geoNear received null or undefined value for point 1');
+		return false;
 	}
 
 	if (common_utils.isEmpty(point2)) {
-		throw new Error('point2 is required');
+		hdb_log.warn('geoNear received null or undefined value for point 2');
+		return false;
 	}
 
 	if (common_utils.isEmpty(distance)) {
