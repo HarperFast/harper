@@ -94,6 +94,7 @@ media_types.set('text/event-stream', {
 			return `data: ${message}\n\n`;
 		}
 	},
+	compressible: false,
 	q: 0.8,
 });
 // TODO: Support this as well:
@@ -269,7 +270,7 @@ const COMPRESSION_THRESHOLD = env_mgr.get(CONFIG_PARAMS.HTTP_COMPRESSIONTHRESHOL
 export function serialize(response_data, request, response_object) {
 	// TODO: Maybe support other compression encodings; browsers basically universally support brotli, but Node's HTTP
 	//  client itself actually (just) supports gzip/deflate
-	const can_compress = COMPRESSION_THRESHOLD && request.headers.asObject?.['accept-encoding']?.includes('br');
+	let can_compress = COMPRESSION_THRESHOLD && request.headers.asObject?.['accept-encoding']?.includes('br');
 	let response_body;
 	if (response_data?.contentType != null && response_data.data != null) {
 		// we use this as a special marker for blobs of data that are explicitly one content type
@@ -284,6 +285,7 @@ export function serialize(response_data, request, response_object) {
 		response_body = response_data;
 	} else {
 		const serializer = findBestSerializer(request);
+		if (serializer.serializer.compressible === false) can_compress = false;
 		// TODO: If a different content type is preferred, look through resources to see if there is one
 		// specifically for that content type (most useful for html).
 		response_object.headers.set('Vary', 'Accept, Accept-Encoding');
