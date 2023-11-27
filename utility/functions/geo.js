@@ -32,9 +32,6 @@ module.exports = {
 	geoConvert: geoConvert,
 };
 
-const geo1_required_string = 'geo1 is required';
-const geo2_required_string = 'geo2 is required';
-
 /***
  * Takes one or more features and returns the area in square meters
  * @param geoJSON
@@ -42,7 +39,7 @@ const geo2_required_string = 'geo2 is required';
  */
 function geoArea(geoJSON) {
 	if (common_utils.isEmpty(geoJSON)) {
-		throw new Error('geoJSON is required');
+		return NaN;
 	}
 
 	if (typeof geoJSON === 'string') {
@@ -60,7 +57,7 @@ function geoArea(geoJSON) {
  */
 function geoLength(geoJSON, units) {
 	if (common_utils.isEmpty(geoJSON)) {
-		throw new Error('geoJSON is required');
+		return NaN;
 	}
 
 	if (typeof geoJSON === 'string') {
@@ -79,11 +76,11 @@ function geoLength(geoJSON, units) {
  */
 function geoCircle(point, radius, units) {
 	if (common_utils.isEmpty(point)) {
-		throw new Error('point is required');
+		return NaN;
 	}
 
 	if (common_utils.isEmpty(radius)) {
-		throw new Error('radius is required');
+		return NaN;
 	}
 
 	if (typeof point === 'string') {
@@ -101,11 +98,11 @@ function geoCircle(point, radius, units) {
  */
 function geoDifference(poly1, poly2) {
 	if (common_utils.isEmpty(poly1)) {
-		throw new Error('poly1 is required');
+		return NaN;
 	}
 
 	if (common_utils.isEmpty(poly2)) {
-		throw new Error('poly2 is required');
+		return NaN;
 	}
 
 	if (typeof poly1 === 'string') {
@@ -128,11 +125,11 @@ function geoDifference(poly1, poly2) {
  */
 function geoDistance(point1, point2, units) {
 	if (common_utils.isEmpty(point1)) {
-		throw new Error('point1 is required');
+		return NaN;
 	}
 
 	if (common_utils.isEmpty(point2)) {
-		throw new Error('point2 is required');
+		return NaN;
 	}
 
 	if (typeof point1 === 'string') {
@@ -155,11 +152,11 @@ function geoDistance(point1, point2, units) {
  */
 function geoNear(point1, point2, distance, units) {
 	if (common_utils.isEmpty(point1)) {
-		throw new Error('point1 is required');
+		return false;
 	}
 
 	if (common_utils.isEmpty(point2)) {
-		throw new Error('point2 is required');
+		return false;
 	}
 
 	if (common_utils.isEmpty(distance)) {
@@ -189,11 +186,19 @@ function geoNear(point1, point2, distance, units) {
  */
 function geoContains(geo1, geo2) {
 	if (common_utils.isEmpty(geo1)) {
-		throw new Error(geo1_required_string);
+		return false;
 	}
 
-	if (common_utils.isEmpty(geo1)) {
-		throw new Error(geo2_required_string);
+	if (common_utils.isEmpty(geo2)) {
+		return false;
+	}
+
+	if (geo1.coordinates && geo1.coordinates.includes?.(null)) {
+		return false;
+	}
+
+	if (geo2.coordinates && geo2.coordinates.includes?.(null)) {
+		return false;
 	}
 
 	if (typeof geo1 === 'string') {
@@ -214,11 +219,19 @@ function geoContains(geo1, geo2) {
  */
 function geoEqual(geo1, geo2) {
 	if (common_utils.isEmpty(geo1)) {
-		throw new Error(geo1_required_string);
+		return false;
 	}
 
-	if (common_utils.isEmpty(geo1)) {
-		throw new Error(geo2_required_string);
+	if (common_utils.isEmpty(geo2)) {
+		return false;
+	}
+
+	if (geo1.coordinates && geo1.coordinates.includes?.(null)) {
+		return false;
+	}
+
+	if (geo2.coordinates && geo2.coordinates.includes?.(null)) {
+		return false;
 	}
 
 	if (typeof geo1 === 'string') {
@@ -239,11 +252,19 @@ function geoEqual(geo1, geo2) {
  */
 function geoCrosses(geo1, geo2) {
 	if (common_utils.isEmpty(geo1)) {
-		throw new Error(geo1_required_string);
+		return false;
 	}
 
-	if (common_utils.isEmpty(geo1)) {
-		throw new Error(geo2_required_string);
+	if (common_utils.isEmpty(geo2)) {
+		return false;
+	}
+
+	if (geo1.coordinates && geo1.coordinates.includes?.(null)) {
+		return false;
+	}
+
+	if (geo2.coordinates && geo2.coordinates.includes?.(null)) {
+		return false;
 	}
 
 	if (typeof geo1 === 'string') {
@@ -279,6 +300,10 @@ function geoConvert(coordinates, geo_type, properties) {
 				hdb_terms.GEO_CONVERSION_ENUM
 			).join(',')}`
 		);
+	}
+
+	if (typeof coordinates === 'string') {
+		coordinates = common_utils.autoCastJSON(coordinates);
 	}
 
 	return turf_helpers[geo_type](coordinates, properties);
