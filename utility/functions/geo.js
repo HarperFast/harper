@@ -155,11 +155,11 @@ function geoDistance(point1, point2, units) {
  */
 function geoNear(point1, point2, distance, units) {
 	if (common_utils.isEmpty(point1)) {
-		throw new Error('point1 is required');
+		return false;
 	}
 
 	if (common_utils.isEmpty(point2)) {
-		throw new Error('point2 is required');
+		return false;
 	}
 
 	if (common_utils.isEmpty(distance)) {
