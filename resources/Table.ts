@@ -1300,6 +1300,13 @@ export function makeTable(options) {
 									else (validation_errors || (validation_errors = [])).push(`Property ${name} must be a Date`);
 								}
 								break;
+							case 'BigInt':
+								if (typeof value !== 'bigint') {
+									// do coercion because otherwise it is rather difficult to get numbers to consistently be bigints
+									if (typeof value === 'string' || typeof value === 'number') return BigInt(value);
+									(validation_errors || (validation_errors = [])).push(`Property ${name} must be a bigint`);
+								}
+								break;
 							case 'Bytes':
 								if (!(value instanceof Uint8Array))
 									(validation_errors || (validation_errors = [])).push(
@@ -1541,6 +1548,9 @@ export function makeTable(options) {
 				break; // otherwise we have to test it, in this range, unicode characters could put it over the limit
 			case 'object':
 				if (id === null) return true;
+				break; // otherwise we have to test it
+			case 'bigint':
+				if (id < 2n ** 64n && id > -(2n ** 64n)) return true;
 				break; // otherwise we have to test it
 			default:
 				throw new Error('Invalid primary key type: ' + typeof id);
@@ -2042,6 +2052,7 @@ export function coerceType(value, attribute) {
 		return value;
 	} else if (type === 'Int' || type === 'Long') return parseInt(value);
 	else if (type === 'Float') return parseFloat(value);
+	else if (type === 'BigInt') return BigInt(value);
 	else if (type === 'Date') {
 		//if the value is not an integer (to handle epoch values) and does not end in a timezone we suffiz with 'Z' tom make sure the Date is GMT timezone
 		if (typeof value !== 'number' && !ENDS_WITH_TIMEZONE.test(value)) {

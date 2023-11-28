@@ -32,6 +32,7 @@ let last_encoding,
 	expires_at_next_encoding = 0;
 export class RecordEncoder extends Encoder {
 	constructor(options) {
+		options.useBigIntExtension = true;
 		super(options);
 		const super_encode = this.encode;
 		this.encode = function (record, options?) {

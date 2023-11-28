@@ -607,6 +607,7 @@ const CONFIG_PARAMS = {
 	OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY: 'operationsApi_tls_certificateAuthority',
 	OPERATIONSAPI_NETWORK_TIMEOUT: 'operationsApi_network_timeout',
 	ROOTPATH: 'rootPath',
+	SERIALIZATION_BIGINT: 'serialization_bigInt',
 	STORAGE_WRITEASYNC: 'storage_writeAsync',
 	STORAGE_OVERLAPPINGSYNC: 'storage_overlappingSync',
 	STORAGE_CACHING: 'storage_caching',

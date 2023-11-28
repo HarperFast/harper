@@ -2,7 +2,7 @@ import { dirname } from 'path';
 import { table } from './databases';
 import { getWorkerIndex } from '../server/threads/manageThreads';
 
-const PRIMITIVE_TYPES = ['ID', 'Int', 'Float', 'Long', 'String', 'Boolean', 'Date', 'Bytes', 'Any'];
+const PRIMITIVE_TYPES = ['ID', 'Int', 'Float', 'Long', 'String', 'Boolean', 'Date', 'Bytes', 'Any', 'BigInt'];
 
 /**
  * This is the entry point for handling GraphQL schemas (and server-side defined queries, eventually). This will be
