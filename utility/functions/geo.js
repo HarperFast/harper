@@ -18,6 +18,7 @@ const turf_booleanDisjoint = require('@turf/boolean-disjoint');
 const turf_helpers = require('@turf/helpers');
 const hdb_terms = require('../hdbTerms');
 const common_utils = require('../common_utils');
+const hdb_log = require('../logging/harper_logger');
 
 module.exports = {
 	geoArea: geoArea,
@@ -45,8 +46,12 @@ function geoArea(geoJSON) {
 	if (typeof geoJSON === 'string') {
 		geoJSON = common_utils.autoCastJSON(geoJSON);
 	}
-
-	return turf_area.default(geoJSON);
+	try {
+		return turf_area.default(geoJSON);
+	} catch (err) {
+		hdb_log.trace(err, geoJSON);
+		return NaN;
+	}
 }
 
 /***
@@ -64,7 +69,12 @@ function geoLength(geoJSON, units) {
 		geoJSON = common_utils.autoCastJSON(geoJSON);
 	}
 
-	return turf_length.default(geoJSON, { units: units ? units : 'kilometers' });
+	try {
+		return turf_length.default(geoJSON, { units: units ? units : 'kilometers' });
+	} catch (err) {
+		hdb_log.trace(err, geoJSON);
+		return NaN;
+	}
 }
 
 /***
@@ -87,7 +97,12 @@ function geoCircle(point, radius, units) {
 		point = common_utils.autoCastJSON(point);
 	}
 
-	return turf_circle.default(point, radius, { units: units ? units : 'kilometers' });
+	try {
+		return turf_circle.default(point, radius, { units: units ? units : 'kilometers' });
+	} catch (err) {
+		hdb_log.trace(err, point, radius);
+		return NaN;
+	}
 }
 
 /***
@@ -113,7 +128,12 @@ function geoDifference(poly1, poly2) {
 		poly2 = common_utils.autoCastJSON(poly2);
 	}
 
-	return turf_difference(poly1, poly2);
+	try {
+		return turf_difference(poly1, poly2);
+	} catch (err) {
+		hdb_log.trace(err, poly1, poly2);
+		return NaN;
+	}
 }
 
 /***
@@ -139,7 +159,12 @@ function geoDistance(point1, point2, units) {
 		point2 = common_utils.autoCastJSON(point2);
 	}
 
-	return turf_distance.default(point1, point2, { units: units ? units : 'kilometers' });
+	try {
+		return turf_distance.default(point1, point2, { units: units ? units : 'kilometers' });
+	} catch (err) {
+		hdb_log.trace(err, point1, point2);
+		return NaN;
+	}
 }
 
 /***
@@ -174,8 +199,13 @@ function geoNear(point1, point2, distance, units) {
 		throw new Error('distance must be a number');
 	}
 
-	let points_distance = geoDistance(point1, point2, units);
-	return points_distance <= distance;
+	try {
+		let points_distance = geoDistance(point1, point2, units);
+		return points_distance <= distance;
+	} catch (err) {
+		hdb_log.trace(err, point1, point2);
+		return false;
+	}
 }
 
 /***
@@ -208,7 +238,12 @@ function geoContains(geo1, geo2) {
 		geo2 = common_utils.autoCastJSON(geo2);
 	}
 
-	return turf_booleanContains.default(geo1, geo2);
+	try {
+		return turf_booleanContains.default(geo1, geo2);
+	} catch (err) {
+		hdb_log.trace(err, geo1, geo2);
+		return false;
+	}
 }
 
 /***
@@ -241,7 +276,12 @@ function geoEqual(geo1, geo2) {
 		geo2 = common_utils.autoCastJSON(geo2);
 	}
 
-	return turf_booleanEqual.default(geo1, geo2);
+	try {
+		return turf_booleanEqual.default(geo1, geo2);
+	} catch (err) {
+		hdb_log.trace(err, geo1, geo2);
+		return false;
+	}
 }
 
 /***
@@ -274,8 +314,13 @@ function geoCrosses(geo1, geo2) {
 		geo2 = common_utils.autoCastJSON(geo2);
 	}
 
-	//need to do ! as this checks for non-intersections of geometries
-	return !turf_booleanDisjoint.default(geo1, geo2);
+	try {
+		//need to do ! as this checks for non-intersections of geometries
+		return !turf_booleanDisjoint.default(geo1, geo2);
+	} catch (err) {
+		hdb_log.trace(err, geo1, geo2);
+		return false;
+	}
 }
 
 /***

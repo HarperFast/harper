@@ -692,9 +692,7 @@ describe(`Test geoArea`, function () {
 		assert.equal(geo.geoArea(null), NaN);
 	});
 	it('Pass in number value, expect error', function () {
-		assert.throws(() => {
-			geo.geoArea(42);
-		});
+		assert.equal(geo.geoArea(42), NaN);
 	});
 	it('Pass in polygon geojson, expect 4559449.809365065', function () {
 		assert.equal(geo.geoArea(GEO_JSON_MULTIPOLYGON_FIVE_POINTS), 4559449.809365065);
@@ -712,14 +710,10 @@ describe(`Test geoLength`, function () {
 		assert.equal(geo.geoLength(null), NaN);
 	});
 	it('Pass in number value, expect error', function () {
-		assert.throws(() => {
-			geo.geoLength(42);
-		});
+		assert.equal(geo.geoLength(42), NaN);
 	});
 	it('Pass in polygon geojson and invalid units, expect error', function () {
-		assert.throws(() => {
-			geo.geoLength(GEO_JSON_MULTIPOLYGON_FIVE_POINTS, 'spans');
-		});
+		assert.equal(geo.geoLength(GEO_JSON_MULTIPOLYGON_FIVE_POINTS, 'spans'), NaN);
 	});
 	it('Pass in polygon geojson, expect 10.037307809946478', function () {
 		assert.equal(geo.geoLength(GEO_JSON_MULTIPOLYGON_FIVE_POINTS), 10.037307809946478);
@@ -749,9 +743,7 @@ describe(`Test geoCircle`, function () {
 		assert.equal(geo.geoCircle(GEO_JSON_POINT_ENTERPRISE_COWORKING), NaN);
 	});
 	it('Pass in point, radius and invalid units, expect error', function () {
-		assert.throws(() => {
-			geo.geoCircle(GEO_JSON_POINT_ENTERPRISE_COWORKING, 1, 'spans');
-		});
+		assert.equal(geo.geoCircle(GEO_JSON_POINT_ENTERPRISE_COWORKING, 1, 'spans'), NaN);
 	});
 	it('Pass in point, radius of 1, expect matching polygons', function () {
 		let geo_circle = geo.geoCircle(GEO_JSON_POINT_ENTERPRISE_COWORKING, 1);
