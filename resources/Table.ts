@@ -726,8 +726,7 @@ export function makeTable(options) {
 				// if we are evicting and not deleting, need to preserve the partial record
 				if (partial_record) {
 					// treat this as a record resolution (so previous version is checked) with no audit record
-					updateRecord(id, partial_record, entry, existing_version, EVICTED, null, null, 0, null, true);
-					return;
+					return updateRecord(id, partial_record, entry, existing_version, EVICTED, null, null, 0, null, true);
 				}
 			}
 			primary_store.ifVersion(existing_version, () => {
@@ -735,7 +734,7 @@ export function makeTable(options) {
 			});
 			if (audit) {
 				// update the record to null it out, maintaining the reference to the audit history
-				updateRecord(id, null, entry, existing_version, EVICTED, null, null, 0, null, true);
+				return updateRecord(id, null, entry, existing_version, EVICTED, null, null, 0, null, true);
 			}
 			// if no timestamps for audit, just remove
 			else {
@@ -1648,7 +1647,8 @@ export function makeTable(options) {
 		const permission = user.role.permission;
 		if (permission.super_user) return FULL_PERMISSIONS;
 		const db_permission = permission[database_name];
-		let table, tables = db_permission?.tables;
+		let table,
+			tables = db_permission?.tables;
 		if (tables) {
 			return tables[table_name];
 		} else if (database_name === 'data' && (table = permission[table_name]) && !table.tables) {
@@ -1926,6 +1926,9 @@ export function makeTable(options) {
 								clearTimeout(cleanup_timer);
 								return;
 							}
+							const MAX_CLEANUP_CONCURRENCY = 50;
+							const outstanding_cleanup_operations = new Array(MAX_CLEANUP_CONCURRENCY);
+							let cleanup_index = 0;
 							harper_logger.trace(`Starting cleanup scan for ${table_name}`);
 							try {
 								let count = 0;
@@ -1938,13 +1941,21 @@ export function makeTable(options) {
 								})) {
 									// if there is no auditing and we are tracking deletion, need to do cleanup of
 									// these deletion entries (audit has its own scheduled job for this)
+									let resolution;
 									if (record === null && !audit && version + DELETED_RECORD_EXPIRATION < Date.now()) {
 										// make sure it is still deleted when we do the removal
-										primary_store.remove(key, version);
+										resolution = primary_store.remove(key, version);
 									} else if (expiresAt && expiresAt + eviction_ms < Date.now()) {
 										// evict!
-										TableResource.evict(key, record, version);
+										resolution = TableResource.evict(key, record, version);
 										count++;
+									}
+									if (resolution) {
+										await outstanding_cleanup_operations[cleanup_index];
+										outstanding_cleanup_operations[cleanup_index] = resolution.catch((error) => {
+											harper_logger.error('Cleanup error', error);
+										});
+										if (++cleanup_index >= MAX_CLEANUP_CONCURRENCY) cleanup_index = 0;
 									}
 									await rest();
 								}
