@@ -11961,7 +11961,7 @@
 											"",
 											"pm.test(\"Records inserted\", function () {",
 											"    var jsonData = pm.response.json();",
-											"    pm.expect(jsonData.message).to.eql(\"inserted 7 of 7 records\");",
+											"    pm.expect(jsonData.message).to.eql(\"inserted 8 of 8 records\");",
 											"});"
 										],
 										"type": "text/javascript"
