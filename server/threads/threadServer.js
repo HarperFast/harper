@@ -259,7 +259,7 @@ function registerServer(server, port) {
 		// server and if doesn't handle the request, cascade to next server (until finally we 404)
 		let last_server = existing_server.lastServer || existing_server;
 		if (last_server === server) throw new Error(`Can not register the same server twice for the same port ${port}`);
-		if (Boolean(last_server.isSecure) !== Boolean(server.isSecure))
+		if (Boolean(last_server.sessionIdContext) !== Boolean(server.sessionIdContext) && +port)
 			throw new Error(`Can not mix secure HTTPS and insecure HTTP on the same port ${port}`);
 		last_server.off('unhandled', defaultNotFound);
 		last_server.on('unhandled', (request, response) => {
