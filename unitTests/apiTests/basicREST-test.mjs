@@ -34,7 +34,7 @@ describe('test REST calls', () => {
 	it('do get with CBOR', async () => {
 		const headers = {
 			//authorization,
-			accept: 'application/cbor'
+			accept: 'application/cbor',
 		};
 		let response = await axios({
 			url: 'http://localhost:9926/VariedProps/' + available_records[1],
@@ -51,7 +51,7 @@ describe('test REST calls', () => {
 			responseType: 'arraybuffer',
 			headers: {
 				'If-None-Match': response.headers.etag,
-				...headers
+				...headers,
 			},
 			validateStatus: function (status) {
 				return status >= 200 && status < 400;
@@ -75,15 +75,19 @@ describe('test REST calls', () => {
 		const headers = {
 			//authorization,
 			'content-type': 'application/cbor',
-			accept: 'application/cbor'
+			'accept': 'application/cbor',
 		};
-		let response = await axios.put('http://localhost:9926/VariedProps/33', encode({
-			id: '33',
-			name: 'new record',
-		}), {
-			responseType: 'arraybuffer',
-			headers,
-		});
+		let response = await axios.put(
+			'http://localhost:9926/VariedProps/33',
+			encode({
+				id: '33',
+				name: 'new record',
+			}),
+			{
+				responseType: 'arraybuffer',
+				headers,
+			}
+		);
 		assert.equal(response.status, 204);
 		response = await axios('http://localhost:9926/VariedProps/33');
 		assert.equal(response.data.name, 'new record');
@@ -100,9 +104,8 @@ describe('test REST calls', () => {
 		let id = response.data;
 		response = await axios.delete('http://localhost:9926/VariedProps/' + id);
 		assert.equal(response.status, 200);
-
 	});
-	describe('describe', function() {
+	describe('describe', function () {
 		it('table describe with root url', async () => {
 			let response = await axios('http://localhost:9926/FourProp');
 			assert.equal(response.status, 200);
@@ -110,9 +113,8 @@ describe('test REST calls', () => {
 			assert.equal(response.data.attributes.length, 5);
 			assert.equal(response.data.name, 'FourProp');
 		});
-
 	});
-	describe('querying with query parameters', function() {
+	describe('querying with query parameters', function () {
 		it('do query by string property', async () => {
 			let response = await axios('http://localhost:9926/FourProp/?name=name3');
 			assert.equal(response.status, 200);
@@ -200,7 +202,7 @@ describe('test REST calls', () => {
 			// this test also tests to ensure deleted values are not reachable
 			let response = await axios('http://localhost:9926/VariedProps/?id=8*');
 			assert.equal(response.status, 200);
-			if (response.data.length > 2) console.log('Record starting with 8',response.data);
+			if (response.data.length > 2) console.log('Record starting with 8', response.data);
 			assert.equal(response.data.length, 2);
 			assert.equal(response.data[0].id[0], '8');
 		});
@@ -224,13 +226,13 @@ describe('test REST calls', () => {
 			let response = await axios('http://localhost:9926/FourProp?select(id)&limit(2)');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 2);
-			assert.equal(response.data[1], "1");
+			assert.equal(response.data[1], '1');
 		});
 		it('query with only limit', async () => {
 			let response = await axios('http://localhost:9926/FourProp?limit(2)');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 2);
-			assert.equal(response.data[1].id, "1");
+			assert.equal(response.data[1].id, '1');
 		});
 		it('query with select two properties as array', async () => {
 			let response = await axios('http://localhost:9926/FourProp?age=lt=22&select([age,id])');
@@ -243,8 +245,8 @@ describe('test REST calls', () => {
 			let response = await axios('http://localhost:9926/FourProp?birthday=gt=1993-01-22&birthday=lt=1994-11-22');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 2);
-			assert.equal(response.data[0].birthday.slice(0,4), '1993');
-			assert.equal(response.data[1].birthday.slice(0,4), '1994');
+			assert.equal(response.data[0].birthday.slice(0, 4), '1993');
+			assert.equal(response.data[1].birthday.slice(0, 4), '1994');
 		});
 		it('query with parenthesis in value', async () => {
 			// at least shouldn't throw an error
@@ -266,7 +268,7 @@ describe('test REST calls', () => {
 	});
 	it('invalidate and get from cache and check headers', async () => {
 		let response = await axios.post('http://localhost:9926/SimpleCache/3', {
-			invalidate: true
+			invalidate: true,
 		});
 		response = await axios('http://localhost:9926/SimpleCache/3');
 		assert.equal(response.status, 200);
@@ -277,7 +279,43 @@ describe('test REST calls', () => {
 		assert(!response.headers['server-timing'].includes('miss'));
 		assert.equal(response.data.name, 'name3');
 	});
+	describe('BigInt', function () {
+		let bigint64BitAsString = '12345678901234567890';
+		let json = `{"id":12345678901234567890,"name":"new record with a bigint","anotherBigint":-12345678901234567890}`;
+		const headers = {
+			'content-type': 'application/json',
+			'accept': 'application/json',
+		};
+		before(async () => {
+			let response = await axios.put('http://localhost:9926/HasBigInt/12345678901234567890', json, { headers });
+			assert.equal(response.status, 204);
+		});
+		it('GET with BigInt', async () => {
+			let response = await axios.get('http://localhost:9926/HasBigInt/12345678901234567890', {
+				responseType: 'arraybuffer',
+				headers,
+			});
+			assert.equal(response.status, 200);
+			const returned_json = response.data.toString();
+			assert.equal(returned_json, json);
+			assert(returned_json.includes(bigint64BitAsString));
+			// make sure it parses and the number is correct as far as JS is concerned
+			let data = JSON.parse(response.data);
+			assert.equal(data.anotherBigint, -Number(bigint64BitAsString));
+		});
+		it('Query with BigInt', async () => {
+			let response = await axios.get('http://localhost:9926/HasBigInt/?id=12345678901234567890', {
+				responseType: 'arraybuffer',
+				headers,
+			});
+			assert.equal(response.status, 200);
+			const returned_json = response.data.toString();
+			assert.equal(returned_json, '[' + json + ']');
+			assert(returned_json.includes(bigint64BitAsString));
+			// make sure it parses and the number is correct as far as JS is concerned
+			let data = JSON.parse(response.data);
+			assert.equal(data[0].anotherBigint, -Number(bigint64BitAsString));
+		});
 
-
-
+	});
 });
