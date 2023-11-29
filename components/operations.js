@@ -447,29 +447,34 @@ async function getComponents() {
 	// Recursive function that will traverse the components dir and build json
 	// directory tree as it goes.
 	const walk_dir = async (dir, result) => {
-		const list = await fs.readdir(dir, { withFileTypes: true });
-		for (let item of list) {
-			const item_name = item.name;
-			if (item_name.startsWith('.') || item_name === 'node_modules') continue;
-			const item_path = path.join(dir, item_name);
-			if (item.isDirectory() || item.isSymbolicLink()) {
-				let res = {
-					name: item_name,
-					entries: [],
-				};
-				result.entries.push(res);
-				await walk_dir(item_path, res);
-			} else {
-				const stats = await fs.stat(item_path);
-				const res = {
-					name: path.basename(item_name),
-					mtime: stats.mtime,
-					size: stats.size,
-				};
-				result.entries.push(res);
+		try {
+			const list = await fs.readdir(dir, { withFileTypes: true });
+			for (let item of list) {
+				const item_name = item.name;
+				if (item_name.startsWith('.') || item_name === 'node_modules') continue;
+				const item_path = path.join(dir, item_name);
+				if (item.isDirectory() || item.isSymbolicLink()) {
+					let res = {
+						name: item_name,
+						entries: [],
+					};
+					result.entries.push(res);
+					await walk_dir(item_path, res);
+				} else {
+					const stats = await fs.stat(item_path);
+					const res = {
+						name: path.basename(item_name),
+						mtime: stats.mtime,
+						size: stats.size,
+					};
+					result.entries.push(res);
+				}
 			}
+			return result;
+		} catch (error) {
+			log.warn('Error loading package', error);
+			return { error: error.toString(), entries: [] };
 		}
-		return result;
 	};
 
 	const results = await walk_dir(env.get(terms.CONFIG_PARAMS.COMPONENTSROOT), {
