@@ -21,6 +21,7 @@ const common_utils = require('../utility/common_utils');
 const user_schema = require('../security/user');
 const hdb_license = require('../utility/registration/hdb_license');
 const { server: server_registration } = require('../server/Server');
+const { node_request_key } = require('./serverHelpers/Request');
 
 const {
 	authHandler,
@@ -56,7 +57,8 @@ async function operationsServer(options) {
 		global.isMaster = cluster.isMaster;
 
 		await setUp();
-		const is_https = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT) != null;
+		// if we have a secure port, need to use the secure HTTP server for fastify (it can be used for HTTP as well)
+		const is_https = options.securePort > 0;
 
 		//generate a Fastify server instance
 		server = buildServer(is_https);
@@ -66,7 +68,6 @@ async function operationsServer(options) {
 		if (!options) options = {};
 		options.isOperationsServer = true;
 		// fastify can't clean up properly
-		server.server.cantCleanupProperly = true;
 		try {
 			// now that server is fully loaded/ready, start listening on port provided in config settings or just use
 			// zero to wait for sockets from the main thread
@@ -109,7 +110,18 @@ async function setUp() {
 function buildServer(is_https) {
 	harper_logger.debug(`HarperDB process starting to build ${is_https ? 'HTTPS' : 'HTTP'} server.`);
 	let server_opts = getServerOptions(is_https);
+	/*
+	TODO: Eventually we may want to directly forward requests to fastify rather than having it create a
+	(pseudo) server.
+	let request_handler;
+	server_opts.serverFactory = (handler) => {
+		request_handler = (request) => {
+			return handler(request[node_request_key], request[node_response_key]);
+		};
+		return { on() {} };
+	};*/
 	const app = fastify(server_opts);
+
 	//Fastify does not set this property in the initial app construction
 	app.server.headersTimeout = getHeaderTimeoutConfig();
 
@@ -178,31 +190,17 @@ function buildServer(is_https) {
 function getServerOptions(is_https) {
 	const server_timeout = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT);
 	const keep_alive_timeout = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT);
-	const server_opts = {
+	return {
 		bodyLimit: REQ_MAX_BODY_SIZE,
 		connectionTimeout: server_timeout,
 		keepAliveTimeout: keep_alive_timeout,
 		forceCloseConnections: true,
 		return503OnClosing: false,
+		// http2: is_https, // for now we are not enabling HTTP/2 since it seems to show slower performance
+		https: is_https /* && {
+			allowHTTP1: true,
+		},*/,
 	};
-
-	if (is_https) {
-		const privateKey = env.get(CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY);
-		const certificate = env.get(CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATE);
-		const certificateAuthority = env.get(CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY);
-		const credentials = {
-			allowHTTP1: true, // Support both HTTPS/1 and /2
-			key: fs.readFileSync(privateKey),
-			// if they have a CA, we append it, so it is included
-			cert: fs.readFileSync(certificate) + (certificateAuthority ? '\n\n' + fs.readFileSync(certificateAuthority) : ''),
-		};
-		// ALPN negotiation will not upgrade non-TLS HTTP/1, so we only turn on HTTP/2 when we have secure HTTPS,
-		// plus browsers do not support unsecured HTTP/2, so there isn't a lot of value in trying to use insecure HTTP/2.
-		server_opts.http2 = true;
-		server_opts.https = credentials;
-	}
-
-	return server_opts;
 }
 
 /**

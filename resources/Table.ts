@@ -726,8 +726,7 @@ export function makeTable(options) {
 				// if we are evicting and not deleting, need to preserve the partial record
 				if (partial_record) {
 					// treat this as a record resolution (so previous version is checked) with no audit record
-					updateRecord(id, partial_record, entry, existing_version, EVICTED, null, null, 0, null, true);
-					return;
+					return updateRecord(id, partial_record, entry, existing_version, EVICTED, null, null, 0, null, true);
 				}
 			}
 			primary_store.ifVersion(existing_version, () => {
@@ -735,7 +734,7 @@ export function makeTable(options) {
 			});
 			if (audit) {
 				// update the record to null it out, maintaining the reference to the audit history
-				updateRecord(id, null, entry, existing_version, EVICTED, null, null, 0, null, true);
+				return updateRecord(id, null, entry, existing_version, EVICTED, null, null, 0, null, true);
 			}
 			// if no timestamps for audit, just remove
 			else {
@@ -1301,6 +1300,13 @@ export function makeTable(options) {
 									else (validation_errors || (validation_errors = [])).push(`Property ${name} must be a Date`);
 								}
 								break;
+							case 'BigInt':
+								if (typeof value !== 'bigint') {
+									// do coercion because otherwise it is rather difficult to get numbers to consistently be bigints
+									if (typeof value === 'string' || typeof value === 'number') return BigInt(value);
+									(validation_errors || (validation_errors = [])).push(`Property ${name} must be a bigint`);
+								}
+								break;
 							case 'Bytes':
 								if (!(value instanceof Uint8Array))
 									(validation_errors || (validation_errors = [])).push(
@@ -1543,6 +1549,9 @@ export function makeTable(options) {
 			case 'object':
 				if (id === null) return true;
 				break; // otherwise we have to test it
+			case 'bigint':
+				if (id < 2n ** 64n && id > -(2n ** 64n)) return true;
+				break; // otherwise we have to test it
 			default:
 				throw new Error('Invalid primary key type: ' + typeof id);
 		}
@@ -1648,7 +1657,8 @@ export function makeTable(options) {
 		const permission = user.role.permission;
 		if (permission.super_user) return FULL_PERMISSIONS;
 		const db_permission = permission[database_name];
-		let table, tables = db_permission?.tables;
+		let table,
+			tables = db_permission?.tables;
 		if (tables) {
 			return tables[table_name];
 		} else if (database_name === 'data' && (table = permission[table_name]) && !table.tables) {
@@ -1926,6 +1936,9 @@ export function makeTable(options) {
 								clearTimeout(cleanup_timer);
 								return;
 							}
+							const MAX_CLEANUP_CONCURRENCY = 50;
+							const outstanding_cleanup_operations = new Array(MAX_CLEANUP_CONCURRENCY);
+							let cleanup_index = 0;
 							harper_logger.trace(`Starting cleanup scan for ${table_name}`);
 							try {
 								let count = 0;
@@ -1938,13 +1951,21 @@ export function makeTable(options) {
 								})) {
 									// if there is no auditing and we are tracking deletion, need to do cleanup of
 									// these deletion entries (audit has its own scheduled job for this)
+									let resolution;
 									if (record === null && !audit && version + DELETED_RECORD_EXPIRATION < Date.now()) {
 										// make sure it is still deleted when we do the removal
-										primary_store.remove(key, version);
+										resolution = primary_store.remove(key, version);
 									} else if (expiresAt && expiresAt + eviction_ms < Date.now()) {
 										// evict!
-										TableResource.evict(key, record, version);
+										resolution = TableResource.evict(key, record, version);
 										count++;
+									}
+									if (resolution) {
+										await outstanding_cleanup_operations[cleanup_index];
+										outstanding_cleanup_operations[cleanup_index] = resolution.catch((error) => {
+											harper_logger.error('Cleanup error', error);
+										});
+										if (++cleanup_index >= MAX_CLEANUP_CONCURRENCY) cleanup_index = 0;
 									}
 									await rest();
 								}
@@ -2031,6 +2052,7 @@ export function coerceType(value, attribute) {
 		return value;
 	} else if (type === 'Int' || type === 'Long') return parseInt(value);
 	else if (type === 'Float') return parseFloat(value);
+	else if (type === 'BigInt') return BigInt(value);
 	else if (type === 'Date') {
 		//if the value is not an integer (to handle epoch values) and does not end in a timezone we suffiz with 'Z' tom make sure the Date is GMT timezone
 		if (typeof value !== 'number' && !ENDS_WITH_TIMEZONE.test(value)) {

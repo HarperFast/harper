@@ -173,8 +173,23 @@ export async function authentication(request, next_handler) {
 					const cookie = `${cookie_prefix}${session_id}; Path=/; Expires=Tue, 01 Oct 8307 19:33:20 GMT; HttpOnly${
 						request.protocol === 'https' ? '; SameSite=None; Secure' : ''
 					}`;
-					if (response_headers) response_headers.push('Set-Cookie', cookie);
-					else if (response?.headers?.set) response.headers.set('Set-Cookie', cookie);
+					if (response_headers) {
+						response_headers.push('Set-Cookie', cookie);
+					} else if (response?.headers?.set) {
+						response.headers.set('Set-Cookie', cookie);
+					}
+				}
+				if (request.protocol === 'https') {
+					// Indicate that we have successfully updated a session
+					// We make sure this is allowed by CORS so that a client can determine if it has
+					// a valid cookie-authenticated session (studio needs this)
+					if (response_headers) {
+						if (origin) response_headers.push('Access-Control-Expose-Headers', 'X-Hdb-Session');
+						response_headers.push('X-Hdb-Session', 'Secure');
+					} else if (response?.headers?.set) {
+						if (origin) response.headers.set('Access-Control-Expose-Headers', 'X-Hdb-Session');
+						response.headers.set('X-Hdb-Session', 'Secure');
+					}
 				}
 				updated_session.id = session_id;
 				return session_table.put(updated_session);

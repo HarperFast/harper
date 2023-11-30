@@ -686,19 +686,13 @@ const POLYGON_COORDINATES = [
 
 describe(`Test geoArea`, function () {
 	it('Pass in no argument geoJSON, expect error', function () {
-		assert.throws(() => {
-			geo.geoArea();
-		});
+		assert.equal(geo.geoArea(), NaN);
 	});
 	it('Pass in null value, expect error', function () {
-		assert.throws(() => {
-			geo.geoArea(null);
-		});
+		assert.equal(geo.geoArea(null), NaN);
 	});
 	it('Pass in number value, expect error', function () {
-		assert.throws(() => {
-			geo.geoArea(42);
-		});
+		assert.equal(geo.geoArea(42), NaN);
 	});
 	it('Pass in polygon geojson, expect 4559449.809365065', function () {
 		assert.equal(geo.geoArea(GEO_JSON_MULTIPOLYGON_FIVE_POINTS), 4559449.809365065);
@@ -710,24 +704,16 @@ describe(`Test geoArea`, function () {
 
 describe(`Test geoLength`, function () {
 	it('Pass in no argument geoJSON, expect error', function () {
-		assert.throws(() => {
-			geo.geoLength();
-		});
+		assert.equal(geo.geoLength(), NaN);
 	});
 	it('Pass in null value, expect error', function () {
-		assert.throws(() => {
-			geo.geoLength(null);
-		});
+		assert.equal(geo.geoLength(null), NaN);
 	});
 	it('Pass in number value, expect error', function () {
-		assert.throws(() => {
-			geo.geoLength(42);
-		});
+		assert.equal(geo.geoLength(42), NaN);
 	});
 	it('Pass in polygon geojson and invalid units, expect error', function () {
-		assert.throws(() => {
-			geo.geoLength(GEO_JSON_MULTIPOLYGON_FIVE_POINTS, 'spans');
-		});
+		assert.equal(geo.geoLength(GEO_JSON_MULTIPOLYGON_FIVE_POINTS, 'spans'), NaN);
 	});
 	it('Pass in polygon geojson, expect 10.037307809946478', function () {
 		assert.equal(geo.geoLength(GEO_JSON_MULTIPOLYGON_FIVE_POINTS), 10.037307809946478);
@@ -745,29 +731,19 @@ describe(`Test geoLength`, function () {
 
 describe(`Test geoCircle`, function () {
 	it('Pass in no argument geoJSON, expect error', function () {
-		assert.throws(() => {
-			geo.geoCircle();
-		});
+		assert.equal(geo.geoCircle(), NaN);
 	});
 	it('Pass in null value, expect error', function () {
-		assert.throws(() => {
-			geo.geoCircle(null);
-		});
+		assert.equal(geo.geoCircle(null), NaN);
 	});
 	it('Pass in number value, expect error', function () {
-		assert.throws(() => {
-			geo.geoCircle(42);
-		});
+		assert.equal(geo.geoCircle(42), NaN);
 	});
 	it('Pass in point value but no radius, expect error', function () {
-		assert.throws(() => {
-			geo.geoCircle(GEO_JSON_POINT_ENTERPRISE_COWORKING);
-		});
+		assert.equal(geo.geoCircle(GEO_JSON_POINT_ENTERPRISE_COWORKING), NaN);
 	});
 	it('Pass in point, radius and invalid units, expect error', function () {
-		assert.throws(() => {
-			geo.geoCircle(GEO_JSON_POINT_ENTERPRISE_COWORKING, 1, 'spans');
-		});
+		assert.equal(geo.geoCircle(GEO_JSON_POINT_ENTERPRISE_COWORKING, 1, 'spans'), NaN);
 	});
 	it('Pass in point, radius of 1, expect matching polygons', function () {
 		let geo_circle = geo.geoCircle(GEO_JSON_POINT_ENTERPRISE_COWORKING, 1);
@@ -781,29 +757,19 @@ describe(`Test geoCircle`, function () {
 
 describe(`Test geoDifference`, function () {
 	it('Pass in no argument geoJSON, expect error', function () {
-		assert.throws(() => {
-			geo.geoDifference();
-		});
+		assert.equal(geo.geoDifference(), NaN);
 	});
 	it('Pass in null value, expect error', function () {
-		assert.throws(() => {
-			geo.geoDifference(null);
-		});
+		assert.equal(geo.geoDifference(null), NaN);
 	});
 	it('Pass in first poly and null, expect error', function () {
-		assert.throws(() => {
-			geo.geoDifference(GEO_JSON_POLYGON_1_KILOMETER_RADIUS);
-		});
+		assert.equal(geo.geoDifference(GEO_JSON_POLYGON_1_KILOMETER_RADIUS), NaN);
 	});
 	it('Pass in null, second poly, expect error', function () {
-		assert.throws(() => {
-			geo.geoDifference(null, GEO_JSON_POLYGON_1_KILOMETER_RADIUS);
-		});
+		assert.equal(geo.geoDifference(null, GEO_JSON_POLYGON_1_KILOMETER_RADIUS), NaN);
 	});
 	it('Pass in number value, expect error', function () {
-		assert.throws(() => {
-			geo.geoDifference(42);
-		});
+		assert.equal(geo.geoDifference(42), NaN);
 	});
 	it('Pass mile poly and kilometer poly to diff, expect matching polygons', function () {
 		let geo_difference = geo.geoDifference(GEO_JSON_POLYGON_1_MILE_RADIUS, GEO_JSON_POLYGON_1_KILOMETER_RADIUS);
@@ -817,38 +783,34 @@ describe(`Test geoDifference`, function () {
 
 describe(`Test geoDistance`, function () {
 	it('Pass in no argument geoJSON, expect error', function () {
-		assert.throws(() => {
-			geo.geoDistance();
-		});
+		assert.equal(geo.geoDistance(), NaN);
 	});
 	it('Pass in null value, expect error', function () {
-		assert.throws(() => {
-			geo.geoDistance(null);
-		});
+		assert.equal(geo.geoDistance(null), NaN);
 	});
 	it('Pass in first poly and null, expect error', function () {
-		assert.throws(() => {
-			geo.geoDistance(GEO_JSON_POINT2);
-		});
+		assert.equal(geo.geoDistance(GEO_JSON_POINT2), NaN);
 	});
 	it('Pass in null, second poly, expect error', function () {
-		assert.throws(() => {
-			geo.geoDistance(null, GEO_JSON_POINT_ENTERPRISE_COWORKING);
-		});
+		assert.equal(geo.geoDistance(null, GEO_JSON_POINT_ENTERPRISE_COWORKING), NaN);
 	});
 	it('Pass in number value, expect error', function () {
-		assert.throws(() => {
-			geo.geoDistance(42);
-		});
+		assert.equal(geo.geoDistance(42), NaN);
 	});
 	it('Pass in 2 points, no units, expect 1.359089002130181', function () {
 		assert.equal(geo.geoDistance(GEO_JSON_POINT2, GEO_JSON_POINT_ENTERPRISE_COWORKING), 1.359089002130181);
 	});
 	it('Pass in 2 points, second as array, expect 1.359089002130181', function () {
-		assert.equal(geo.geoDistance(GEO_JSON_POINT2, GEO_JSON_POINT_ENTERPRISE_COWORKING.geometry.coordinates), 1.359089002130181);
+		assert.equal(
+			geo.geoDistance(GEO_JSON_POINT2, GEO_JSON_POINT_ENTERPRISE_COWORKING.geometry.coordinates),
+			1.359089002130181
+		);
 	});
 	it('Pass in 2 points, second as array as string, expect 1.359089002130181', function () {
-		assert.equal(geo.geoDistance(GEO_JSON_POINT2, JSON.stringify(GEO_JSON_POINT_ENTERPRISE_COWORKING.geometry.coordinates)), 1.359089002130181);
+		assert.equal(
+			geo.geoDistance(GEO_JSON_POINT2, JSON.stringify(GEO_JSON_POINT_ENTERPRISE_COWORKING.geometry.coordinates)),
+			1.359089002130181
+		);
 	});
 	it('Pass in 2 points, miles, expect 0.8444987536102792', function () {
 		assert.equal(geo.geoDistance(GEO_JSON_POINT2, GEO_JSON_POINT_ENTERPRISE_COWORKING, 'miles'), 0.8444987536102792);
@@ -857,29 +819,19 @@ describe(`Test geoDistance`, function () {
 
 describe(`Test geoNear`, function () {
 	it('Pass in no argument geoJSON, expect error', function () {
-		assert.throws(() => {
-			geo.geoNear();
-		});
+		assert.equal(geo.geoNear(), false);
 	});
 	it('Pass in null value, expect error', function () {
-		assert.throws(() => {
-			geo.geoNear(null);
-		});
+		assert.equal(geo.geoNear(null), false);
 	});
 	it('Pass in first poly and null, expect error', function () {
-		assert.throws(() => {
-			geo.geoNear(GEO_JSON_POINT2);
-		});
+		assert.equal(geo.geoNear(GEO_JSON_POINT2), false);
 	});
 	it('Pass in null, second poly, expect error', function () {
-		assert.throws(() => {
-			geo.geoNear(null, GEO_JSON_POINT_ENTERPRISE_COWORKING);
-		});
+		assert.equal(geo.geoNear(null, GEO_JSON_POINT_ENTERPRISE_COWORKING), false);
 	});
 	it('Pass in number value, expect error', function () {
-		assert.throws(() => {
-			geo.geoNear(42);
-		});
+		assert.equal(geo.geoNear(42), false);
 	});
 	it('Pass in 2 points and a non-numeric value for distance, expect error', function () {
 		assert.throws(() => {
@@ -890,7 +842,10 @@ describe(`Test geoNear`, function () {
 		assert.equal(geo.geoNear(GEO_JSON_POINT2, GEO_JSON_POINT_ENTERPRISE_COWORKING, 1), false);
 	});
 	it('Pass in 2 points, distance of 1, no units, second as string expect false', function () {
-		assert.equal(geo.geoNear(GEO_JSON_POINT2, JSON.stringify(GEO_JSON_POINT_ENTERPRISE_COWORKING.geometry.coordinates), 1), false);
+		assert.equal(
+			geo.geoNear(GEO_JSON_POINT2, JSON.stringify(GEO_JSON_POINT_ENTERPRISE_COWORKING.geometry.coordinates), 1),
+			false
+		);
 	});
 	it('Pass in 2 points,distance of 1, units of miles, expect true', function () {
 		assert.equal(geo.geoNear(GEO_JSON_POINT2, GEO_JSON_POINT_ENTERPRISE_COWORKING, 1, 'miles'), true);
@@ -899,29 +854,19 @@ describe(`Test geoNear`, function () {
 
 describe(`Test geoContains`, function () {
 	it('Pass in no argument geoJSON, expect error', function () {
-		assert.throws(() => {
-			geo.geoContains();
-		});
+		assert.equal(geo.geoContains(), false);
 	});
 	it('Pass in null value, expect error', function () {
-		assert.throws(() => {
-			geo.geoContains(null);
-		});
+		assert.equal(geo.geoContains(null), false);
 	});
 	it('Pass in first poly and null, expect error', function () {
-		assert.throws(() => {
-			geo.geoContains(GEO_JSON_POLYGON_1_MILE_RADIUS);
-		});
+		assert.equal(geo.geoContains(GEO_JSON_POLYGON_1_MILE_RADIUS), false);
 	});
 	it('Pass in null, second poly, expect error', function () {
-		assert.throws(() => {
-			geo.geoContains(null, GEO_JSON_POLYGON_1_KILOMETER_RADIUS);
-		});
+		assert.equal(geo.geoContains(null, GEO_JSON_POLYGON_1_KILOMETER_RADIUS), false);
 	});
 	it('Pass in number value, expect error', function () {
-		assert.throws(() => {
-			geo.geoContains(42);
-		});
+		assert.equal(geo.geoContains(42), false);
 	});
 	it('Pass in 1 mile radius and enterprise coworking point, expect true', function () {
 		assert.equal(geo.geoContains(GEO_JSON_POLYGON_1_MILE_RADIUS, GEO_JSON_POINT_ENTERPRISE_COWORKING), true);
@@ -933,29 +878,19 @@ describe(`Test geoContains`, function () {
 
 describe(`Test geoEqual`, function () {
 	it('Pass in no argument geoJSON, expect error', function () {
-		assert.throws(() => {
-			geo.geoEqual();
-		});
+		assert.equal(geo.geoEqual(), false);
 	});
 	it('Pass in null value, expect error', function () {
-		assert.throws(() => {
-			geo.geoEqual(null);
-		});
+		assert.equal(geo.geoEqual(null), false);
 	});
 	it('Pass in first poly and null, expect error', function () {
-		assert.throws(() => {
-			geo.geoEqual(GEO_JSON_POLYGON_1_MILE_RADIUS);
-		});
+		assert.equal(geo.geoEqual(GEO_JSON_POLYGON_1_MILE_RADIUS), false);
 	});
 	it('Pass in null, second poly, expect error', function () {
-		assert.throws(() => {
-			geo.geoEqual(null, GEO_JSON_POLYGON_1_KILOMETER_RADIUS);
-		});
+		assert.equal(geo.geoEqual(null, GEO_JSON_POLYGON_1_KILOMETER_RADIUS), false);
 	});
 	it('Pass in number value, expect error', function () {
-		assert.throws(() => {
-			geo.geoEqual(42);
-		});
+		assert.equal(geo.geoEqual(42), false);
 	});
 	it('Pass in 1 mile radius and enterprise coworking point, expect false', function () {
 		assert.equal(geo.geoEqual(GEO_JSON_POLYGON_1_MILE_RADIUS, GEO_JSON_POINT_ENTERPRISE_COWORKING), false);
@@ -967,35 +902,28 @@ describe(`Test geoEqual`, function () {
 		assert.equal(geo.geoEqual(GEO_JSON_POINT_ENTERPRISE_COWORKING2, GEO_JSON_POINT_ENTERPRISE_COWORKING), true);
 	});
 	it('Pass in 2 matching points, second as string, expect true', function () {
-		assert.equal(geo.geoEqual(GEO_JSON_POINT_ENTERPRISE_COWORKING2, JSON.stringify(GEO_JSON_POINT_ENTERPRISE_COWORKING)), true);
+		assert.equal(
+			geo.geoEqual(GEO_JSON_POINT_ENTERPRISE_COWORKING2, JSON.stringify(GEO_JSON_POINT_ENTERPRISE_COWORKING)),
+			true
+		);
 	});
 });
 
 describe(`Test geoCrosses`, function () {
 	it('Pass in no argument geoJSON, expect error', function () {
-		assert.throws(() => {
-			geo.geoCrosses();
-		});
+		assert.equal(geo.geoCrosses(), false);
 	});
 	it('Pass in null value, expect error', function () {
-		assert.throws(() => {
-			geo.geoCrosses(null);
-		});
+		assert.equal(geo.geoCrosses(null), false);
 	});
 	it('Pass in first poly and null, expect error', function () {
-		assert.throws(() => {
-			geo.geoCrosses(GEO_JSON_POLYGON_1_MILE_RADIUS);
-		});
+		assert.equal(geo.geoCrosses(GEO_JSON_POLYGON_1_MILE_RADIUS), false);
 	});
 	it('Pass in null, second poly, expect error', function () {
-		assert.throws(() => {
-			geo.geoCrosses(null, GEO_JSON_POLYGON_1_KILOMETER_RADIUS);
-		});
+		assert.equal(geo.geoCrosses(null, GEO_JSON_POLYGON_1_KILOMETER_RADIUS), false);
 	});
 	it('Pass in number value, expect error', function () {
-		assert.throws(() => {
-			geo.geoCrosses(42);
-		});
+		assert.equal(geo.geoCrosses(42), false);
 	});
 	it('Pass in 1 mile radius and enterprise coworking point, expect true', function () {
 		assert.equal(geo.geoCrosses(GEO_JSON_POLYGON_1_MILE_RADIUS, GEO_JSON_POINT_ENTERPRISE_COWORKING), true);
