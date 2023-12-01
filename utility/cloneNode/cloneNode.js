@@ -105,6 +105,7 @@ module.exports = async function cloneNode(background = false) {
 	await cloneComponents();
 	await clusterTables(background);
 	console.info('Successfully cloned node: ' + leader_url);
+	if (background) process.exit();
 };
 
 async function cloneConfig() {
