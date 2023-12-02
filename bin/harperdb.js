@@ -68,11 +68,9 @@ function harperDBService() {
 			case SERVICE_ACTIONS_ENUM.START:
 				if (process.env.HDB_LEADER_URL) {
 					const clone_node = require('../utility/cloneNode/cloneNode');
-					clone_node(true)
-						.then()
-						.catch((err) => {
-							console.log(err);
-						});
+					clone_node(true).catch((err) => {
+						console.log(err);
+					});
 				} else {
 					// The require is here to better control the flow of imports when this module is called.
 					const run = require('./run');
@@ -154,11 +152,9 @@ function harperDBService() {
 			case undefined:
 				if (process.env.HDB_LEADER_URL) {
 					const clone_node = require('../utility/cloneNode/cloneNode');
-					clone_node()
-						.then()
-						.catch((err) => {
-							console.log(err);
-						});
+					clone_node().catch((err) => {
+						console.log(err);
+					});
 				} else {
 					// The require is here to better control the flow of imports when this module is called.
 					require('./run').main();
