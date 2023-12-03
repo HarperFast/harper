@@ -1,9 +1,9 @@
 {
   "files": {
     "main.css": "/static/css/main.46c0e86f.css",
-    "main.js": "/static/js/main.6a56b84e.js",
-    "online-app.js": "/static/js/online-app.b03cb524.chunk.js",
-    "offline-app.js": "/static/js/offline-app.63e33a35.chunk.js",
+    "main.js": "/static/js/main.86ebb15f.js",
+    "online-app.js": "/static/js/online-app.2ac03c15.chunk.js",
+    "offline-app.js": "/static/js/offline-app.b3ad12ac.chunk.js",
     "topnav.js": "/static/js/topnav.5e7913a5.chunk.js",
     "signUp.js": "/static/js/signUp.482f9fe4.chunk.js",
     "signIn.js": "/static/js/signIn.97bded2f.chunk.js",
@@ -11,7 +11,7 @@
     "updatePassword.js": "/static/js/updatePassword.e23019c7.chunk.js",
     "organization.js": "/static/js/organization.0abc89ca.chunk.js",
     "organizations.js": "/static/js/organizations.e536b86f.chunk.js",
-    "instances.js": "/static/js/instances.52323fde.chunk.js",
+    "instances.js": "/static/js/instances.74b65cac.chunk.js",
     "instance.js": "/static/js/instance.b8863754.chunk.js",
     "profile.js": "/static/js/profile.92f9be59.chunk.js",
     "organization-users.js": "/static/js/organization-users.523136d9.chunk.js",
@@ -44,11 +44,10 @@
     "static/js/718.74e9355d.chunk.js": "/static/js/718.74e9355d.chunk.js",
     "static/js/926.88d6f9ce.chunk.js": "/static/js/926.88d6f9ce.chunk.js",
     "static/js/731.8a941eb3.chunk.js": "/static/js/731.8a941eb3.chunk.js",
-    "static/js/777.539b88af.chunk.js": "/static/js/777.539b88af.chunk.js",
     "index.html": "/index.html"
   },
   "entrypoints": [
     "static/css/main.46c0e86f.css",
-    "static/js/main.6a56b84e.js"
+    "static/js/main.86ebb15f.js"
   ]
 }
