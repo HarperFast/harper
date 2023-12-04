@@ -248,8 +248,7 @@ function proxyRequest(message) {
 }
 
 function registerServer(server, port) {
-	// TODO: Ask about this
-	if (!+port && !isNaN(port)) {
+	if (!+port && port !== env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)) {
 		// if no port is provided, default to custom functions port
 		port = parseInt(env.get(terms.CONFIG_PARAMS.HTTP_PORT), 10);
 	}

@@ -5,7 +5,7 @@ import fs from 'fs-extra';
 import { setupTestApp } from '../apiTests/setupTestApp.mjs';
 import { buildRequest, cliOperations } from '../../bin/cliOperations.js'
 
-describe('test REST calls', () => {
+describe('test CLI operations', () => {
 	let available_records;
 	let sandbox;
 	let log_spy;

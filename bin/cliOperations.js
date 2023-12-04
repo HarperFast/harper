@@ -3,6 +3,7 @@
 const env_mgr = require('../utility/environment/environmentManager');
 env_mgr.initSync();
 const terms = require('../utility/hdbTerms');
+const { httpRequest } = require('../utility/common_utils');
 const path = require('path');
 const fs = require('fs-extra');
 const axios = require('axios');
@@ -102,20 +103,27 @@ async function cliOperations(req) {
 	}
 
 	if (!(await fs.exists(env_mgr.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)))) {
-		console.error('No domain socket found, unable perform this operation');
+		console.error('No domain socket found, unable to perform this operation');
 		process.exit();
 	}
 
 	try {
-		const res = await axios.post('/', JSON.stringify(req), {
-			socketPath: env_mgr.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET),
-			headers: { 'Content-Type': 'application/json' },
-		});
+		let res = await httpRequest(
+			{
+				method: 'POST',
+				protocol: 'http:',
+				socketPath: env_mgr.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET),
+				headers: { 'Content-Type': 'application/json' },
+			},
+			req
+		);
+
+		res = JSON.parse(res.body);
 
 		if (req.json) {
-			console.log(JSON.stringify(res.data, null, 2));
+			console.log(JSON.stringify(res, null, 2));
 		} else {
-			console.log(YAML.stringify(res.data).trim());
+			console.log(YAML.stringify(res).trim());
 		}
 	} catch (err) {
 		let err_msg = 'Error: ';
