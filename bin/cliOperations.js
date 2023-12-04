@@ -6,7 +6,6 @@ const terms = require('../utility/hdbTerms');
 const { httpRequest } = require('../utility/common_utils');
 const path = require('path');
 const fs = require('fs-extra');
-const axios = require('axios');
 const YAML = require('yaml');
 
 const SUPPORTED_OPS = {
