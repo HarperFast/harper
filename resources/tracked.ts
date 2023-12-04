@@ -67,21 +67,35 @@ export function assignTrackedAccessors(Target, type_def) {
 					getChanges(this)[name] = value;
 				};
 				break;
-				case 'Long':
-					set = function (value) {
-						if (!(Math.round(value) === value && Math.abs(value) <= 9007199254740992 || (value == null && attribute.nullable !== false))) {
-							if (typeof value === 'number' && Math.abs(value) <= 9007199254740992) {
-								// if it just needs to be rounded, do the conversion without complaining
-								value = Math.round(value);
-							} else
-								throw new ClientError(
-									`${name} must be an integer between -9007199254740992 and 9007199254740992, attempt to assign ${value}`
-								);
-						}
-						getChanges(this)[name] = value;
-					};
-					break;
-				case 'Boolean':
+			case 'Long':
+				set = function (value) {
+					if (
+						!(
+							(Math.round(value) === value && Math.abs(value) <= 9007199254740992) ||
+							(value == null && attribute.nullable !== false)
+						)
+					) {
+						if (typeof value === 'number' && Math.abs(value) <= 9007199254740992) {
+							// if it just needs to be rounded, do the conversion without complaining
+							value = Math.round(value);
+						} else
+							throw new ClientError(
+								`${name} must be an integer between -9007199254740992 and 9007199254740992, attempt to assign ${value}`
+							);
+					}
+					getChanges(this)[name] = value;
+				};
+				break;
+			case 'BigInt':
+				set = function (value) {
+					if (!(typeof value === 'bigint' || (value == null && attribute.nullable !== false))) {
+						if (typeof value === 'string' || typeof value === 'number') value = BigInt(value);
+						else throw new ClientError(`${name} must be a number, attempt to assign ${value}`);
+					}
+					getChanges(this)[name] = value;
+				};
+				break;
+			case 'Boolean':
 				set = function (value) {
 					if (!(typeof value === 'boolean' || (value == null && attribute.nullable !== false)))
 						throw new ClientError(`${name} must be a boolean, attempt to assign ${value}`);

@@ -23,41 +23,51 @@ In reviewing the third party package or dependency, the following questions shou
 Generally, dependencies are added by simply adding them to the dependencies list in package.json. If the dependency is not necessary for the actual execution of the application (testing or building), it can be placed in devDependencies, or in optionalDependencies (we have done that with packages with binary compilations).
 
 ## graphql
-Need for usage: For supporting GraphQL schemas and queries.
-Size/memory cost: About 500KB
-Security: No reported vulnerabilities (impressive for a popular package) https://security.snyk.io/package/npm/graphql
-Overlap: None
-Can be deferred: Yes, this only loaded when a GraphQL schema is loaded.
-Binary compilation: No
-Eventual removal: It may be feasible to implement GraphQL parsing separately
+* Need for usage: For supporting GraphQL schemas and queries.
+* Size/memory cost: About 500KB
+* Security: No reported vulnerabilities (impressive for a popular package) https://security.snyk.io/package/npm/graphql
+* Overlap: None
+* Can be deferred: Yes, this only loaded when a GraphQL schema is loaded.
+* Binary compilation: No
+* Eventual removal: It may be feasible to implement GraphQL parsing separately
 
 
 ## mqtt-packet
-Need for usage: We need to support MQTT
-Size/memory-cost: a couple hundred kilobytes with transitive dependencies
-Security: Had a vulnerability several major versions ago: https://security.snyk.io/package/npm/mqtt-packet
-Environment interaction: None
-Overlap: None
-Binary compilation: No
-Eventual removal: MQTT is a very well documented, and relatively simple specification, we can definitely implement this ourselves.
+* Need for usage: We need to support MQTT
+* Size/memory-cost: a couple hundred kilobytes with transitive dependencies
+* Security: Had a vulnerability several major versions ago: https://security.snyk.io/package/npm/mqtt-packet
+* Environment interaction: None
+* Overlap: None
+* Binary compilation: No
+* Eventual removal: MQTT is a very well documented, and relatively simple specification, we can definitely implement this ourselves.
 
 ## ses
-Need for usage: Provides secure sand-boxing JavaScript environment
-Security: Developed by security experts with bounties for security issues
-Environment interaction: This creates a `lockdown` global function for deep freezing objects.
-Can be deferred: Yes, this only loaded when secure sand-boxing is enabled and modules are loaded.
-Eventual removal: Secure EcmaScript consists of a set of functionality that is all proposed as additions to EcmaScript itself, and the developers are probably the most influential people in TC-39.
+* Need for usage: Provides secure sand-boxing JavaScript environment
+* Security: Developed by security experts with bounties for security issues
+* Environment interaction: This creates a `lockdown` global function for deep freezing objects.
+* Can be deferred: Yes, this only loaded when secure sand-boxing is enabled and modules are loaded.
+* Eventual removal: Secure EcmaScript consists of a set of functionality that is all proposed as additions to EcmaScript itself, and the developers are probably the most influential people in TC-39.
 
 ## @endo/static-module-record
-Need for usage: Provides the safety verification of modules for loading into a secure JavaScript environment
+* Need for usage: Provides the safety verification of modules for loading into a secure JavaScript environment
 Environment interaction: None
-Can be deferred: Yes, this only loaded when secure sand-boxing is enabled and modules are loaded.
-Eventual removal: Same as above
+* Can be deferred: Yes, this only loaded when secure sand-boxing is enabled and modules are loaded.
+* Eventual removal: Same as above
 
 ## ws
-Need for usage: We need to support WebSockets
-Security: Had vulnerabilities, but quickly addressed: https://security.snyk.io/package/npm/ws
-Environment interaction: None
-Overlap: None
-Binary compilation: Has optional dependencies with binary compilation for acceleration
-Eventual removal: Because this is a standard-based API, this will hopefully be rolled into a core JavaScript runtime feature at some point (and already is in Deno).
+* Need for usage: We need to support WebSockets
+* Security: Had vulnerabilities, but quickly addressed: https://security.snyk.io/package/npm/ws
+* Environment interaction: None
+* Overlap: None
+* Binary compilation: Has optional dependencies with binary compilation for acceleration
+* Eventual removal: Because this is a standard-based API, this will hopefully be rolled into a core JavaScript runtime feature at some point (and already is in Deno).
+
+## json-bigint (forked as json-bigint-fixes)
+* Need for usage: We need to support parsing and serializing ("stringify") JSON with big integers.
+* Size/memory cost: About 30KB
+* Security: Prototype pollution vulnerability was addressed: https://security.snyk.io/package/npm/json-bigint
+Unfortuneately this project has not been published for three years, although it does have commits in the last two years. Consequently, we have forked and published the latest, with the fixes it provides.
+* Overlap: None
+* Can be deferred: Too small to matter
+* Binary compilation: No
+* Eventual removal: This code could be maintained within our codebase, if necessary, as it is not very large.

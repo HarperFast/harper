@@ -32,28 +32,33 @@ const route_folders = new Set();
  * @param file_path
  * @param project_name
  */
-export async function handleFile(js_content, relative_path, file_path, project_name) {
-	if (!fastify_server) {
-		const props_http_secure_on = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_HTTPS);
-		fastify_server = buildServer(props_http_secure_on);
-		server.http((await fastify_server).server);
-	}
-	const resolved_server = await fastify_server;
-	const route_folder = dirname(file_path);
-	let prefix = relative_path.replace(/\/routes\/.*/g, '');
-	if (prefix.startsWith('/')) prefix = prefix.slice(1);
-	if (!route_folders.has(route_folder)) {
-		route_folders.add(route_folder);
-		try {
-			resolved_server.register(buildRouteFolder(route_folder, prefix));
-		} catch (error) {
-			if (error.message === 'Root plugin has already booted')
-				harper_logger.warn(
-					`Could not load root fastify route for ${file_path}, this may require a restart to install properly`
-				);
-			else throw error;
-		}
-	}
+export function start(options) {
+	// if we have a secure port, need to use the secure HTTP server for fastify (it can be used for HTTP as well)
+	const is_https = options.securePort > 0;
+	return {
+		async handleFile(js_content, relative_path, file_path, project_name) {
+			if (!fastify_server) {
+				fastify_server = buildServer(is_https);
+				server.http((await fastify_server).server);
+			}
+			const resolved_server = await fastify_server;
+			const route_folder = dirname(file_path);
+			let prefix = relative_path.replace(/\/routes\/.*/g, '');
+			if (prefix.startsWith('/')) prefix = prefix.slice(1);
+			if (!route_folders.has(route_folder)) {
+				route_folders.add(route_folder);
+				try {
+					resolved_server.register(buildRouteFolder(route_folder, prefix));
+				} catch (error) {
+					if (error.message === 'Root plugin has already booted')
+						harper_logger.warn(
+							`Could not load root fastify route for ${file_path}, this may require a restart to install properly`
+						);
+					else throw error;
+				}
+			}
+		},
+	};
 }
 /**
  * Function called to start up server instance on a forked process - this method is called from customFunctionServer after process is
@@ -71,10 +76,7 @@ export async function customFunctionsServer() {
 
 		await setUp();
 
-		const props_http_secure_on = env.get(CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_HTTPS);
-		const is_https =
-			props_http_secure_on &&
-			(props_http_secure_on === true || props_http_secure_on.toUpperCase() === TRUE_COMPARE_VAL);
+		const is_https = env.get(CONFIG_PARAMS.HTTP_SECUREPORT) > 0;
 		let server;
 		try {
 			//generate a Fastify server instance

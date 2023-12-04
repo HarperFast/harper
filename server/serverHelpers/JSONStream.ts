@@ -1,13 +1,14 @@
-'use strict';
-
-const { Readable } = require('stream');
+import { Readable } from 'stream';
+import JSONbig from 'json-bigint-fixes';
+const JSONbigint = JSONbig({ useNativeBigInt: true });
 const BUFFER_SIZE = 10000;
-
-module.exports = {
-	streamAsJSON(value) {
-		return new JSONStream({ value });
-	},
+const BIGINT_SERIALIZATION = {};
+BigInt.prototype.toJSON = function () {
+	throw BIGINT_SERIALIZATION;
 };
+export function streamAsJSON(value) {
+	return new JSONStream({ value });
+}
 // a readable stream for serializing a set of variables to a JSON stream
 class JSONStream extends Readable {
 	constructor(options) {
@@ -23,13 +24,13 @@ class JSONStream extends Readable {
 		// using a generator to serialize JSON for convenience of recursive pause and resume functionality
 		// serialize a value to an iterator that can be consumed by streaming API
 		if (object && typeof object === 'object') {
-			let hasAsyncIterator = object[Symbol.asyncIterator];
-			let hasIterator = object[Symbol.iterator];
+			const hasAsyncIterator = object[Symbol.asyncIterator];
+			const hasIterator = object[Symbol.iterator];
 			if ((hasIterator || hasAsyncIterator) && !object.then) {
 				yield '[';
 				let first = true;
 				if ((hasAsyncIterator || hasIterator) && !(object instanceof Array)) {
-					let iterator = hasAsyncIterator ? object[Symbol.asyncIterator]() : object[Symbol.iterator]();
+					const iterator = hasAsyncIterator ? object[Symbol.asyncIterator]() : object[Symbol.iterator]();
 					this.activeIterators.push(iterator);
 					let iteratorResult;
 					while (true) {
@@ -54,7 +55,7 @@ class JSONStream extends Readable {
 						}
 					}
 				}
-				for (let element of object) {
+				for (const element of object) {
 					if (first) first = false;
 					else {
 						yield ',';
@@ -71,10 +72,10 @@ class JSONStream extends Readable {
 					yield handleError(error);
 				}
 			} else {
-				yield JSON.stringify(object);
+				yield stringify(object);
 			}
 		} else {
-			yield JSON.stringify(object);
+			yield stringify(object);
 		}
 	}
 
@@ -120,7 +121,7 @@ class JSONStream extends Readable {
 	}
 
 	flush() {
-		let pushResult = super.push(this.buffer.join(''));
+		const pushResult = super.push(this.buffer.join(''));
 		this.buffer = [];
 		this.bufferSize = 0;
 		return pushResult;
@@ -141,7 +142,7 @@ class JSONStream extends Readable {
 				});
 			}
 			do {
-				let stepReturn = iterator.next();
+				const stepReturn = iterator.next();
 				if (stepReturn.done) {
 					return true;
 				}
@@ -175,7 +176,7 @@ class JSONStream extends Readable {
 	}
 
 	_destroy(error, callback) {
-		for (let iterator of this.activeIterators) {
+		for (const iterator of this.activeIterators) {
 			if (error) iterator.throw(error);
 			else iterator.return();
 		}
@@ -189,8 +190,57 @@ function handleError(error) {
 }
 
 function when(promise, callback, errback) {
-	if (promise && promise.then) {
+	if (promise?.then) {
 		return errback ? promise.then(callback, errback) : promise.then(callback);
 	}
 	return callback(promise);
+}
+
+export function stringify(value) {
+	try {
+		return JSON.stringify(value);
+	} catch (error) {
+		if (error === BIGINT_SERIALIZATION) {
+			return jsStringify(value);
+		}
+		throw error;
+	}
+}
+
+function jsStringify(value) {
+	const type = typeof value;
+	if (type === 'object') {
+		if (value === null) return 'null';
+		if (value.toJSON) value = value.toJSON();
+		let str;
+		if (Array.isArray(value)) {
+			str = '[';
+			for (let i = 0; i < value.length; i++) {
+				if (i > 0) str += ',';
+				// we continue to use jsStringify assuming that if one element has a BigInt, they all do
+				str += jsStringify(value[i]);
+			}
+			return str + ']';
+		} else {
+			str = '{';
+			let first = true;
+			for (const key in value) {
+				if (first) first = false;
+				else str += ',';
+				// we assume probably only one element has a BigInt, so we can use stringify for the rest
+				str += JSON.stringify(key) + ':' + stringify(value[key]);
+			}
+			return str + '}';
+		}
+	} else if (type === 'string') {
+		return JSON.stringify(value);
+	}
+	return value.toString(); // this handles bigint, number, boolean, undefined, symbol
+}
+const HAS_BIG_NUMBER = /-?\d{16,}/;
+export function parse(json) {
+	// we use JSONbig if there is a big number in the JSON, otherwise we use the native JSON parser
+	// because JSONbig is much slower (about 4x slower)
+	if (HAS_BIG_NUMBER.test(json)) return JSONbigint.parse(json);
+	else return JSON.parse(json);
 }

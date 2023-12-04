@@ -37,3 +37,9 @@ type Query {
 	SimpleRecord: SimpleRecord
 	FourProp: FourProp
 }
+
+type HasBigInt @table @export {
+	id: BigInt @primaryKey
+	name: String @indexed
+	anotherBigint: BigInt
+}
