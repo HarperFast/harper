@@ -20,7 +20,7 @@ set -euo pipefail
 #   LINES_PER_CONTENT_FIELD - how many lines that csplit will create per file. this is mostly a guess on how much content we can fit into each content field.
 
 # fail if we don't set TOKEN
-[[ -z "${token}" ]] && echo "TOKEN not set" && exit 1
+[[ -z "${TOKEN}" ]] && echo "TOKEN not set" && exit 1
 
 # this is for the live flag in the PATCH api call. defaults to false
 publish=${PUBLISH:-false}
@@ -138,50 +138,15 @@ patch_data=$(echo ${patch_data} | jq '.fields += {_archived: false}')
 patch_data=$(echo ${patch_data} | jq '.fields += {_draft: true}')
 
 # add files that we have to content fields
-if [ -f "${directory}/${prefix}-0" ]; then
-  new_content=$(cat ${directory}/${prefix}-0)
-  patch_data=$(echo ${patch_data} | jq --arg content "${new_content}" '.fields += {content: $content}')
-fi
-
-if [ -f "${directory}/${prefix}-1" ]; then
-  new_content=$(cat ${directory}/${prefix}-1)
-  patch_data=$(echo ${patch_data} | jq --arg content "${new_content}" '.fields += {"content-2": $content}')
-fi
-
-if [ -f "${directory}/${prefix}-2" ]; then
-  new_content=$(cat ${directory}/${prefix}-2)
-  patch_data=$(echo ${patch_data} | jq --arg content "${new_content}" '.fields += {"content-3": $content}')
-fi
-
-if [ -f "${directory}/${prefix}-3" ]; then
-  new_content=$(cat ${directory}/${prefix}-3)
-  patch_data=$(echo ${patch_data} | jq --arg content "${new_content}" '.fields += {"content-4": $content}')
-fi
-
-if [ -f "${directory}/${prefix}-4" ]; then
-  new_content=$(cat ${directory}/${prefix}-4)
-  patch_data=$(echo ${patch_data} | jq --arg content "${new_content}" '.fields += {"content-5": $content}')
-fi
-
-if [ -f "${directory}/${prefix}-5" ]; then
-  new_content=$(cat ${directory}/${prefix}-5)
-  patch_data=$(echo ${patch_data} | jq --arg content "${new_content}" '.fields += {"content-6": $content}')
-fi
-
-if [ -f "${directory}/${prefix}-6" ]; then
-  new_content=$(cat ${directory}/${prefix}-6)
-  patch_data=$(echo ${patch_data} | jq --arg content "${new_content}" '.fields += {"content-7": $content}')
-fi
-
-if [ -f "${directory}/${prefix}-7" ]; then
-  new_content=$(cat ${directory}/${prefix}-7)
-  patch_data=$(echo ${patch_data} | jq --arg content "${new_content}" '.fields += {"content-8": $content}')
-fi
-
-if [ -f "${directory}/${prefix}-8" ]; then
-  new_content=$(cat ${directory}/${prefix}-8)
-  patch_data=$(echo ${patch_data} | jq --arg content "${new_content}" '.fields += {"content-9": $content}')
-fi
+[ -f "${directory}/${prefix}-0" ] && patch_data=$(echo ${patch_data} | jq --rawfile new_content "${directory}/${prefix}-0" '.fields += {"content": $new_content}')
+[ -f "${directory}/${prefix}-1" ] && patch_data=$(echo ${patch_data} | jq --rawfile new_content "${directory}/${prefix}-1" '.fields += {"content-2": $new_content}')
+[ -f "${directory}/${prefix}-2" ] && patch_data=$(echo ${patch_data} | jq --rawfile new_content "${directory}/${prefix}-2" '.fields += {"content-3": $new_content}')
+[ -f "${directory}/${prefix}-3" ] && patch_data=$(echo ${patch_data} | jq --rawfile new_content "${directory}/${prefix}-3" '.fields += {"content-4": $new_content}')
+[ -f "${directory}/${prefix}-4" ] && patch_data=$(echo ${patch_data} | jq --rawfile new_content "${directory}/${prefix}-4" '.fields += {"content-5": $new_content}')
+[ -f "${directory}/${prefix}-5" ] && patch_data=$(echo ${patch_data} | jq --rawfile new_content "${directory}/${prefix}-5" '.fields += {"content-6": $new_content}')
+[ -f "${directory}/${prefix}-6" ] && patch_data=$(echo ${patch_data} | jq --rawfile new_content "${directory}/${prefix}-6" '.fields += {"content-7": $new_content}')
+[ -f "${directory}/${prefix}-7" ] && patch_data=$(echo ${patch_data} | jq --rawfile new_content "${directory}/${prefix}-7" '.fields += {"content-8": $new_content}')
+[ -f "${directory}/${prefix}-8" ] && patch_data=$(echo ${patch_data} | jq --rawfile new_content "${directory}/${prefix}-8" '.fields += {"content-9": $new_content}')
 
 echo "${patch_data}" | \
   curl --silent \
@@ -191,4 +156,4 @@ echo "${patch_data}" | \
     --header 'content-type: application/json' \
     --data @-
 
-[[ "${publish}" -eq "false" ]] && echo "${patch_data}"
+[[ "${publish}" == "false" ]] && echo "${patch_data}"
