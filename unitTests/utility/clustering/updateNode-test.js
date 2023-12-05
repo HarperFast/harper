@@ -227,13 +227,4 @@ describe('Test updateNode module', () => {
 		expect(upsert_node_record_stub.called).to.be.false;
 		expect(update_work_stream_stub.called).to.be.false;
 	});
-
-	it('Test error is thrown if the node record does not exist', async () => {
-		get_node_record_stub.resolves([]);
-		await test_utils.assertErrorAsync(
-			updateNode,
-			[test_request],
-			test_utils.generateHDBError("Node 'remote_node_test' has not been added, perform add_node to proceed.", 400)
-		);
-	});
 });

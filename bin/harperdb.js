@@ -120,7 +120,7 @@ function harperDBService() {
 					.then()
 					.catch((restart_err) => {
 						logger.error(restart_err);
-						console.error(`There was an error restarting harperdb. ${restart_err}`);
+						console.error(`There was an error restarting HarperDB. ${restart_err}`);
 						process.exit(1);
 					});
 				break;
@@ -135,7 +135,7 @@ function harperDBService() {
 					.upgrade(null)
 					.then(() => {
 						// all done, no-op
-						console.log(`Your instance of HDB is up to date!`);
+						console.log(`Your instance of HarperDB is up to date!`);
 					})
 					.catch((e) => {
 						logger.error(`Got an error during upgrade ${e}`);
@@ -146,6 +146,16 @@ function harperDBService() {
 				status()
 					.then()
 					.catch((err) => {
+						console.error(err);
+					});
+				break;
+			case SERVICE_ACTIONS_ENUM.RENEWCERTS:
+				const { generateKeys } = require('../security/keys');
+				generateKeys()
+					.then(() => {
+						console.log('Successfully renewed self-signed certificates');
+					})
+					.catch(() => {
 						console.error(err);
 					});
 				break;
@@ -180,6 +190,7 @@ Commands:
   install - Install harperdb
   register - Register harperdb
   upgrade - Upgrade harperdb
+  renew-certs - Generate a new set of self-signed certificates
   status - Print the status of HarperDB and clustering`);
 		}
 	});

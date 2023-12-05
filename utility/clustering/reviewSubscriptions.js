@@ -47,7 +47,8 @@ async function reviewSubscriptions(subs, remote_node_name) {
 	let skipped = [];
 	let added = [];
 	for (const sub of subs) {
-		const { schema: schema_req, table: table_req } = sub;
+		const { table: table_req } = sub;
+		const schema_req = sub.database ?? sub.schema ?? 'data';
 		// System schema/table should exist on all nodes so no need to review
 		if (schema_req === hdb_terms.SYSTEM_SCHEMA_NAME) {
 			await nats_utils.createLocalTableStream(schema_req, table_req);

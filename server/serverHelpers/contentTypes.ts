@@ -1,4 +1,4 @@
-import { streamAsJSON } from './JSONStream';
+import { streamAsJSON, stringify, parse } from './JSONStream';
 import { toCsvStream } from '../../dataLayer/export';
 import { pack, unpack, encodeIter } from 'msgpackr';
 import { decode, Encoder, EncoderStream } from 'cbor-x';
@@ -8,6 +8,9 @@ import { server } from '../Server';
 import { _assignPackageExport } from '../../index';
 import env_mgr from '../../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms';
+const SERIALIZATION_BIGINT = env_mgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
+const JSONStringify = SERIALIZATION_BIGINT ? stringify : JSON.stringify;
+const JSONParse = SERIALIZATION_BIGINT ? parse : JSON.parse;
 
 const PUBLIC_ENCODE_OPTIONS = {
 	useRecords: false,
@@ -21,8 +24,8 @@ _assignPackageExport('contentTypes', contentTypes);
 // TODO: Make these monomorphic for faster access. And use a Map
 media_types.set('application/json', {
 	serializeStream: streamAsJSON,
-	serialize: JSON.stringify,
-	deserialize: JSON.parse,
+	serialize: JSONStringify,
+	deserialize: JSONParse,
 	q: 0.8,
 });
 const cbor_encoder = new Encoder(PUBLIC_ENCODE_OPTIONS);
@@ -83,14 +86,14 @@ media_types.set('text/event-stream', {
 			if (message.event) serialized += 'event: ' + message.event + '\n';
 			if (message.data) {
 				let data = message.data;
-				if (typeof data === 'object') data = JSON.stringify(data);
+				if (typeof data === 'object') data = JSONStringify(data);
 				serialized += 'data: ' + data + '\n';
 			}
 			if (message.id) serialized += 'id: ' + message.id + '\n';
 			if (message.retry) serialized += 'retry: ' + message.retry + '\n';
 			return serialized + '\n';
 		} else {
-			if (typeof message === 'object') return `data: ${JSON.stringify(message)}\n\n`;
+			if (typeof message === 'object') return `data: ${JSONStringify(message)}\n\n`;
 			return `data: ${message}\n\n`;
 		}
 	},
@@ -122,7 +125,7 @@ media_types.set('application/x-www-form-urlencoded', {
 const generic_handler = {
 	type: 'application/json',
 	serializeStream: streamAsJSON,
-	serialize: JSON.stringify,
+	serialize: JSONStringify,
 	deserialize: tryJSONParse,
 	q: 0.8,
 };
@@ -132,7 +135,7 @@ media_types.set('', generic_handler);
 // otherwise
 function tryJSONParse(input) {
 	try {
-		if (input?.[0] === 123) return JSON.parse(input);
+		if (input?.[0] === 123) return JSONParse(input);
 		else return input;
 	} catch (error) {
 		return input;
@@ -337,7 +340,7 @@ export function serialize(response_data, request, response_object) {
 export function serializeMessage(message, request) {
 	if (message?.contentType != null && message.data != null) return message.data;
 	if (!request) {
-		return JSON.stringify(message);
+		return JSONStringify(message);
 	}
 	let serialize = request.serialize;
 	if (serialize) return serialize(message);
@@ -389,7 +392,7 @@ function deserializerUnknownType(content_type, parameters) {
 			if (!content_type) {
 				// try to parse as JSON if no content type
 				try {
-					if (data?.[0] === 123) return JSON.parse(data);
+					if (data?.[0] === 123) return JSONParse(data);
 				} catch (error) {}
 			}
 			// else record the type and binary data as a pair

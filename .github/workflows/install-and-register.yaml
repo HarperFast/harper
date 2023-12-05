@@ -68,7 +68,7 @@ jobs:
 
         if [ "${{ inputs.installType }}" == "sourceCode" ];
         then
-          echo "hdb_install_type paramater set to ${{inputs.installType }}. Installing HarperDB from source code..."
+          echo "hdb_install_type parameter set to ${{inputs.installType }}. Installing HarperDB from source code..."
     
           echo "npm install..."
           cd /home/ubuntu/harperdb

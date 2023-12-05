@@ -28,6 +28,16 @@ jobs:
           scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/integrationTests/newman/extra_report.html" "logs-artifact/$log_folder_name/newman_extra_report.html" || (true && echo "Newman report not found")
           scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/hdb/log/" "logs-artifact/$log_folder_name/"
           scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/hdb/harperdb-config.yaml" "logs-artifact/$log_folder_name/harperdb-config.yaml"
+          scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/.pm2/pm2.log" "logs-artifact/$log_folder_name/pm2.log"
+          scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/.pm2/dump.pm2" "logs-artifact/$log_folder_name/dump.pm2" || (true && echo "dump.pm2 not found")
+        
+          # This is an attempt to find and download core dump files
+          scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/var/lib/systemd/coredump/" "logs-artifact/$log_folder_name/coredump/" || (true && echo "/var/lib/systemd/coredump/ not found")
+          scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/var/crash/*" "logs-artifact/$log_folder_name/coredump/." || (true && echo "/var/crash/ not found")
+          scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/var/lib/apport/coredump/*" "logs-artifact/$log_folder_name/coredump/." || (true && echo "/var/lib/apport/coredump/ not found")
+          for file in $(ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name" find /home/ubuntu -regex '.*core\.[0-9]+' -type f); do
+            scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:${file}" "logs-artifact/$log_folder_name/${file//\//_}"
+          done
 
           echo "Ending work on: $public_dns_name"
         done

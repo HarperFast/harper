@@ -322,6 +322,7 @@ const OPERATIONS_ENUM = {
 	READ_LOG: 'read_log',
 	ADD_NODE: 'add_node',
 	UPDATE_NODE: 'update_node',
+	SET_NODE_REPLICATION: 'set_node_replication',
 	EXPORT_TO_S3: 'export_to_s3',
 	IMPORT_FROM_S3: 'import_from_s3',
 	DELETE_FILES_BEFORE: 'delete_files_before',
@@ -453,6 +454,7 @@ const SERVICE_ACTIONS_ENUM = {
 	UPGRADE: 'upgrade',
 	HELP: 'help',
 	STATUS: 'status',
+	RENEWCERTS: 'renew-certs',
 };
 
 //describes the Geo Conversion types
@@ -605,6 +607,7 @@ const CONFIG_PARAMS = {
 	OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY: 'operationsApi_tls_certificateAuthority',
 	OPERATIONSAPI_NETWORK_TIMEOUT: 'operationsApi_network_timeout',
 	ROOTPATH: 'rootPath',
+	SERIALIZATION_BIGINT: 'serialization_bigInt',
 	STORAGE_WRITEASYNC: 'storage_writeAsync',
 	STORAGE_OVERLAPPINGSYNC: 'storage_overlappingSync',
 	STORAGE_CACHING: 'storage_caching',
