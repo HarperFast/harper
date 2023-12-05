@@ -12,6 +12,7 @@ require('../threads/manageThreads');
 const crypto_hash = require('../../security/cryptoHash');
 const { recordAction, recordActionBinary } = require('../../resources/analytics');
 const { publishToStream } = nats_utils;
+const { ConsumerEvents } = require('nats');
 
 const SUBSCRIPTION_OPTIONS = {
 	durable: nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name,
@@ -83,20 +84,49 @@ async function workQueueListener() {
 		nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
 		nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name
 	);
-	const messages = await consumer.consume();
+
+	let shutdown = false;
 	parentPort?.on('message', async (message) => {
+		shutdown = true;
 		const { type } = message;
 		if (type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
 			messages.close();
 		}
 	});
-	for await (const message of messages) {
-		// ring style queue for awaiting operations for concurrency. await the entry from 100 operations ago:
-		await outstanding_operations[operation_index];
-		outstanding_operations[operation_index] = messageProcessor(message).catch((error) => {
-			harper_logger.error(error);
-		});
-		if (++operation_index >= MAX_CONCURRENCY) operation_index = 0;
+
+	while (!shutdown) {
+		const messages = await consumer.consume();
+
+		// watch the to see if the consume operation misses heartbeats
+		(async () => {
+			for await (const s of await messages.status()) {
+				if (s.type === ConsumerEvents.HeartbeatsMissed) {
+					// you can decide how many heartbeats you are willing to miss
+					const n = s.data;
+					harper_logger.trace(`${n} clustering ingest consumer heartbeats missed`);
+					if (n === 2) {
+						harper_logger.warn('Restarting clustering ingest consumer due to missed heartbeat threshold being met');
+						// by calling `stop()` the message processing loop ends.
+						// in this case this is wrapped by a loop, so it attempts
+						// to re-setup the consumer
+						messages.stop();
+					}
+				}
+			}
+		})();
+
+		try {
+			for await (const message of messages) {
+				// ring style queue for awaiting operations for concurrency. await the entry from 100 operations ago:
+				await outstanding_operations[operation_index];
+				outstanding_operations[operation_index] = messageProcessor(message).catch((error) => {
+					harper_logger.error(error);
+				});
+				if (++operation_index >= MAX_CONCURRENCY) operation_index = 0;
+			}
+		} catch (err) {
+			harper_logger.error('Error consuming clustering ingest, restarting consumer', err);
+		}
 	}
 }
 
