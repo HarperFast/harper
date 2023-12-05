@@ -133,7 +133,7 @@
     "@types/node": "latest",
     "@typescript-eslint/eslint-plugin": "^5.55.0",
     "@typescript-eslint/parser": "^5.55.0",
-    "axios": "0.27.2",
+    "axios": "1.6.2",
     "chai": "4.3.7",
     "chai-integer": "0.1.0",
     "esbuild": "^0.19.1",
