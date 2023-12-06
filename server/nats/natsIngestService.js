@@ -88,10 +88,12 @@ async function workQueueListener() {
 	let shutdown = false;
 	let messages;
 	parentPort?.on('message', async (message) => {
-		shutdown = true;
 		const { type } = message;
-		if (type === terms.ITC_EVENT_TYPES.SHUTDOWN && messages && messages.close?.()) {
-			messages.close();
+		if (type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
+			shutdown = true;
+			if (messages && messages.close?.()) {
+				messages.close();
+			}
 		}
 	});
 
