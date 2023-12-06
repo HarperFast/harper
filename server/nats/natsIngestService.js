@@ -86,16 +86,17 @@ async function workQueueListener() {
 	);
 
 	let shutdown = false;
+	let messages;
 	parentPort?.on('message', async (message) => {
 		shutdown = true;
 		const { type } = message;
-		if (type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
+		if (type === terms.ITC_EVENT_TYPES.SHUTDOWN && messages && messages.close?.()) {
 			messages.close();
 		}
 	});
 
 	while (!shutdown) {
-		const messages = await consumer.consume();
+		messages = await consumer.consume();
 
 		// watch the to see if the consume operation misses heartbeats
 		(async () => {
