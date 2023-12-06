@@ -60,7 +60,7 @@
     "@aws-sdk/client-s3": "3.441.0",
     "@aws-sdk/lib-storage": "3.441.0",
     "@endo/static-module-record": "^0.8.1",
-    "@fastify/autoload": "~5.7.2",
+    "@fastify/autoload": "5.7.1",
     "@fastify/compress": "~6.4.0",
     "@fastify/cors": "~8.4.1",
     "@fastify/static": "~6.11.2",
