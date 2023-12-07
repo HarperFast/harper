@@ -10,6 +10,7 @@ const os = require('os');
 const { PACKAGE_ROOT } = require('../utility/hdbTerms');
 const check_node = require('../launchServiceScripts/utility/checkNodeVersion');
 const socket_router = require('../server/threads/socketRouter');
+const cli_operations = require('./cliOperations');
 const { SERVICE_ACTIONS_ENUM } = hdb_terms;
 
 harperDBService();
@@ -39,8 +40,15 @@ function harperDBService() {
 			service = process.argv[2].toLowerCase();
 		}
 
+		const cli_api_op = cli_operations.buildRequest();
+		if (cli_api_op.operation) service = SERVICE_ACTIONS_ENUM.OPERATION;
+
 		let result = undefined;
 		switch (service) {
+			case SERVICE_ACTIONS_ENUM.OPERATION:
+				logger.trace('calling cli operations with:', cli_api_op);
+				cli_operations.cliOperations(cli_api_op).then();
+				break;
 			case SERVICE_ACTIONS_ENUM.DEV:
 				process.env.DEV_MODE = true;
 			// fall through
@@ -191,7 +199,8 @@ Commands:
   register - Register harperdb
   upgrade - Upgrade harperdb
   renew-certs - Generate a new set of self-signed certificates
-  status - Print the status of HarperDB and clustering`);
+  status - Print the status of HarperDB and clustering
+  <api-operation> <parameter>=<value> - Run an API operation and return result to the CLI, not all operations are supported`);
 		}
 	});
 }

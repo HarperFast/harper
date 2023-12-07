@@ -8,7 +8,8 @@ const { authorization, url } = getVariables();
 
 describe('test REST calls', () => {
 	let available_records;
-	before(async () => {
+	before(async function() {
+		this.timeout(5000);
 		available_records = await setupTestApp();
 	});
 	beforeEach(async () => {

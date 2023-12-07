@@ -80,6 +80,7 @@ operationsApi:
     cors: true
     corsAccessList:
       - "*"
+    domainSocket: hdb/operations-server
     port: 9925
     securePort: null
 rootPath: null

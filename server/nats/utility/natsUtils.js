@@ -32,11 +32,10 @@ const INGEST_MAX_BYTES = 5000000000;
 
 if (isMainThread) {
 	onMessageByType(hdb_terms.ITC_EVENT_TYPES.RESTART, () => {
-		nats_connection = undefined
-		nats_connection_promise = undefined
+		nats_connection = undefined;
+		nats_connection_promise = undefined;
 	});
 }
-
 
 const {
 	connect,
@@ -973,12 +972,16 @@ async function createTableStreams(subscriptions) {
  * @param table
  * @returns {Promise<void>}
  */
-async function purgeTableStream(schema, table) {
+async function purgeTableStream(schema, table, purge_ingest = false) {
 	if (env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
 		try {
 			const stream_name = crypto_hash.createNatsTableStreamName(schema, table);
 			const { jsm } = await getNATSReferences();
-			await jsm.streams.purge(stream_name);
+			if (purge_ingest) {
+				await jsm.streams.purge(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
+			} else {
+				await jsm.streams.purge(stream_name);
+			}
 		} catch (err) {
 			if (err.message === 'stream not found') {
 				// There can be situations where we are trying to purge a stream that doesn't exist.

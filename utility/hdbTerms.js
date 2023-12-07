@@ -454,6 +454,7 @@ const SERVICE_ACTIONS_ENUM = {
 	UPGRADE: 'upgrade',
 	HELP: 'help',
 	STATUS: 'status',
+	OPERATION: 'operation',
 	RENEWCERTS: 'renew-certs',
 };
 
@@ -601,6 +602,7 @@ const CONFIG_PARAMS = {
 	OPERATIONSAPI_NETWORK_HTTPS: 'operationsApi_network_https',
 	OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT: 'operationsApi_network_keepAliveTimeout',
 	OPERATIONSAPI_NETWORK_PORT: 'operationsApi_network_port',
+	OPERATIONSAPI_NETWORK_DOMAINSOCKET: 'operationsApi_network_domainSocket',
 	OPERATIONSAPI_NETWORK_SECUREPORT: 'operationsApi_network_securePort',
 	OPERATIONSAPI_TLS_CERTIFICATE: 'operationsApi_tls_certificate',
 	OPERATIONSAPI_TLS_PRIVATEKEY: 'operationsApi_tls_privateKey',
@@ -746,6 +748,7 @@ const CONFIG_PARAM_MAP = {
 	operationsapi_network_https: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_HTTPS,
 	operationsapi_network_keepalivetimeout: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT,
 	operationsapi_network_port: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT,
+	operationsapi_network_domainsocket: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET,
 	operationsapi_network_secureport: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT,
 	operationsapi_tls_certificate: CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATE,
 	operationsapi_tls_privatekey: CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY,
