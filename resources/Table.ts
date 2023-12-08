@@ -548,7 +548,7 @@ export function makeTable(options) {
 			const table_permission = getTablePermissions(user);
 			if (table_permission?.read) {
 				const attribute_permissions = table_permission.attribute_permissions;
-				if (attribute_permissions) {
+				if (attribute_permissions?.length > 0) {
 					// if attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
 					if (!query) query = {};
 					const select = query.select;
@@ -577,7 +577,7 @@ export function makeTable(options) {
 			const table_permission = getTablePermissions(user);
 			if (table_permission?.update) {
 				const attribute_permissions = table_permission.attribute_permissions;
-				if (attribute_permissions) {
+				if (attribute_permissions?.length > 0) {
 					// if attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
 					const attrs_for_type = attributesAsObject(attribute_permissions, 'update');
 					for (const key in updated_data) {
@@ -605,7 +605,7 @@ export function makeTable(options) {
 				const table_permission = getTablePermissions(user);
 				if (table_permission?.insert) {
 					const attribute_permissions = table_permission.attribute_permissions;
-					if (attribute_permissions) {
+					if (attribute_permissions?.length > 0) {
 						// if attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
 						const attrs_for_type = attributesAsObject(attribute_permissions, 'insert');
 						for (const key in new_data) {
