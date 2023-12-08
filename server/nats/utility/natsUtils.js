@@ -32,11 +32,10 @@ const INGEST_MAX_BYTES = 5000000000;
 
 if (isMainThread) {
 	onMessageByType(hdb_terms.ITC_EVENT_TYPES.RESTART, () => {
-		nats_connection = undefined
-		nats_connection_promise = undefined
+		nats_connection = undefined;
+		nats_connection_promise = undefined;
 	});
 }
-
 
 const {
 	connect,
@@ -112,6 +111,7 @@ module.exports = {
 	getJsmServerName,
 	addNatsMsgHeader,
 	updateIngestStreamConsumer,
+	clearClientCache,
 };
 
 /**
@@ -189,7 +189,22 @@ async function createConnection(port, username, password, wait_on_first_connect 
 	c.protocol.transport.socket.unref();
 	hdb_logger.trace(`create connection established a nats client connection with id`, c?.info?.client_id);
 
+	c.closed().then((err) => {
+		if (err) {
+			hdb_logger.error('Error with Nats client connection, connection closed', err);
+		}
+
+		clearClientCache();
+	});
+
 	return c;
+}
+
+function clearClientCache() {
+	nats_connection = undefined;
+	jetstream_manager = undefined;
+	jetstream = undefined;
+	nats_connection_promise = undefined;
 }
 
 /**
