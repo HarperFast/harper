@@ -40,6 +40,7 @@ const hdb_terms = require('../utility/hdbTerms');
 
 let pm_utils;
 let cmd_args;
+let skip_exit_listeners = false;
 
 // These may change to match unix return codes (i.e. 0, 1)
 const ENOENT_ERR_CODE = -2;
@@ -51,22 +52,24 @@ const INSTALL_ERR = 'There was an error during install, check install_log.log fo
 const HDB_STARTED = 'HarperDB successfully started.';
 
 function addExitListeners() {
-	const remove_hdb_pid = () => {
-		fs.removeSync(path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE));
-		process.exit(0);
-	};
-	process.on('exit', () => {
-		remove_hdb_pid();
-	});
-	process.on('SIGINT', () => {
-		remove_hdb_pid();
-	});
-	process.on('SIGQUIT', () => {
-		remove_hdb_pid();
-	});
-	process.on('SIGTERM', () => {
-		remove_hdb_pid();
-	});
+	if (!skip_exit_listeners) {
+		const remove_hdb_pid = () => {
+			fs.removeSync(path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE));
+			process.exit(0);
+		};
+		process.on('exit', () => {
+			remove_hdb_pid();
+		});
+		process.on('SIGINT', () => {
+			remove_hdb_pid();
+		});
+		process.on('SIGQUIT', () => {
+			remove_hdb_pid();
+		});
+		process.on('SIGTERM', () => {
+			remove_hdb_pid();
+		});
+	}
 }
 
 /**
@@ -231,7 +234,8 @@ function started() {
  * is retained for legacy purposes.
  * @returns {Promise<void>} // ha ha, it doesn't!
  */
-async function launch() {
+async function launch(exit = true) {
+	skip_exit_listeners = !exit;
 	try {
 		if (pm_utils === undefined) pm_utils = require('../utility/processManagement/processManagement');
 		pm_utils.enterPM2Mode();
@@ -240,7 +244,7 @@ async function launch() {
 		if (clustering_enabled) await pm_utils.startClusteringProcesses();
 		await pm_utils.startService(terms.PROCESS_DESCRIPTORS.HDB);
 		started();
-		process.exit(0);
+		if (exit) process.exit(0);
 	} catch (err) {
 		console.error(err);
 		hdb_logger.error(err);

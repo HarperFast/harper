@@ -166,6 +166,7 @@ function configValidator(config_json) {
 				headersTimeout: number.min(1).optional(),
 				keepAliveTimeout: number.min(1).optional(),
 				port: number.optional().empty(null),
+				domainSocket: Joi.optional().empty('hdb/operations-server').default(setDefaultRoot),
 				securePort: number.optional().empty(null),
 				timeout: number.min(1).optional(),
 			}).optional(),
@@ -306,11 +307,11 @@ function setDefaultThreads(parent, helpers) {
 function setDefaultRoot(parent, helpers) {
 	// For some reason Joi is still calling set default when value is not null.
 	// For that reason we do this check.
-	if (!hdb_utils.isEmpty(helpers.original)) {
+	const config_param = helpers.state.path.join('.');
+	if (!hdb_utils.isEmpty(helpers.original) && config_param !== 'operationsApi.network.domainSocket') {
 		return helpers.original;
 	}
 
-	const config_param = helpers.state.path.join('.');
 	if (hdb_utils.isEmpty(hdb_root)) {
 		throw new Error(`Error setting default root for: ${config_param}. HDB root is not defined`);
 	}
@@ -328,6 +329,8 @@ function setDefaultRoot(parent, helpers) {
 			return path.join(hdb_root, hdb_terms.DATABASES_DIR_NAME);
 		case 'logging.rotation.path':
 			return path.join(hdb_root, DEFAULT_LOG_FOLDER);
+		case 'operationsApi.network.domainSocket':
+			return config_param == null ? null : path.join(hdb_root, 'operations-server');
 		default:
 			throw new Error(
 				`Error setting default root for config parameter: ${config_param}. Unrecognized config parameter`

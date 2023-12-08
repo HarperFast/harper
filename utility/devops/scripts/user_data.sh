@@ -8,9 +8,15 @@ mkswap /swapfile
 swapon /swapfile
 echo "/swapfile swap swap defaults 0 0" | tee -a /etc/fstab
 
+cat <<EOF > /etc/security/limits.d/90-harperdb.conf
 # Adjust the per-user open file limits
-echo "ubuntu soft nofile 1000000" | tee -a /etc/security/limits.conf
-echo "ubuntu hard nofile 1000000" | tee -a /etc/security/limits.conf
+ubuntu - nofile 1000000
+
+# Adjust the size of core dumps - 100MB and just making sure that core dumps are allowed
+ubuntu - core unlimited
+EOF
+
+systemctl enable --now apport.service
 
 useradd -m harperdbadmin
 rm -rf /home/harperdbadmin/.ssh/*

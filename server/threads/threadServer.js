@@ -3,14 +3,14 @@ const { isMainThread, parentPort, threadId } = require('worker_threads');
 const { Socket, createServer: createSocketServer } = require('net');
 const { createServer, IncomingMessage } = require('http');
 const { createServer: createSecureServer } = require('https');
-const { readFileSync } = require('fs');
+const { readFileSync, unlinkSync, existsSync } = require('fs');
 const harper_logger = require('../../utility/logging/harper_logger');
 const env = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 const { server } = require('../Server');
 const { WebSocketServer } = require('ws');
 const { createServer: createSecureSocketServer } = require('tls');
-const { getTicketKeys, restartNumber } = require('./manageThreads');
+const { getTicketKeys, restartNumber, getWorkerIndex } = require('./manageThreads');
 const { Headers } = require('../serverHelpers/Headers');
 const { recordAction, recordActionBinary } = require('../../resources/analytics');
 const { Request, node_request_key, createReuseportFd } = require('../serverHelpers/Request');
@@ -83,6 +83,12 @@ function startServers() {
 							}
 							// And we tell the server not to accept any more incoming connections
 							server.close?.(() => {
+								if (env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET) && getWorkerIndex() == 0) {
+									try {
+										unlinkSync(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET));
+									} catch (err) {}
+								}
+
 								clearInterval(close_all_timer);
 								// We hope for a graceful exit once all connections have been closed, and no
 								// more incoming connections are accepted, but if we need to, we eventually will exit
@@ -107,6 +113,23 @@ function startServers() {
 			if (createReuseportFd && !session_affinity) {
 				for (let port in SERVERS) {
 					const server = SERVERS[port];
+
+					// If server is unix domain socket
+					if (isNaN(port) && getWorkerIndex() == 0) {
+						if (existsSync(port)) unlinkSync(port);
+						listening.push(
+							new Promise((resolve, reject) => {
+								server
+									.listen({ path: port }, () => {
+										resolve();
+										harper_logger.info('Domain socket listening on ' + port);
+									})
+									.on('error', reject);
+							})
+						);
+						continue;
+					}
+
 					let fd;
 					try {
 						fd = createReuseportFd(+port, '::');
@@ -126,6 +149,7 @@ function startServers() {
 					);
 				}
 			}
+
 			// notify that we are now ready to start receiving requests
 			Promise.all(listening).then(() => {
 				parentPort?.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
@@ -224,7 +248,7 @@ function proxyRequest(message) {
 }
 
 function registerServer(server, port) {
-	if (!+port) {
+	if (!+port && port !== env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)) {
 		// if no port is provided, default to custom functions port
 		port = parseInt(env.get(terms.CONFIG_PARAMS.HTTP_PORT), 10);
 	}
@@ -234,7 +258,7 @@ function registerServer(server, port) {
 		// server and if doesn't handle the request, cascade to next server (until finally we 404)
 		let last_server = existing_server.lastServer || existing_server;
 		if (last_server === server) throw new Error(`Can not register the same server twice for the same port ${port}`);
-		if (Boolean(last_server.isSecure) !== Boolean(server.isSecure))
+		if (Boolean(last_server.sessionIdContext) !== Boolean(server.sessionIdContext) && +port)
 			throw new Error(`Can not mix secure HTTPS and insecure HTTP on the same port ${port}`);
 		last_server.off('unhandled', defaultNotFound);
 		last_server.on('unhandled', (request, response) => {
@@ -265,6 +289,10 @@ function getPorts(options) {
 			});
 		if (env.get(terms.CONFIG_PARAMS.HTTP_SECUREPORT) != null)
 			ports.push({ port: env.get(terms.CONFIG_PARAMS.HTTP_SECUREPORT), secure: true });
+	}
+
+	if (options?.isOperationsServer && env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)) {
+		ports.push({ port: env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET), secure: false });
 	}
 	return ports;
 }
@@ -521,6 +549,10 @@ function onWebSocket(listener, options) {
 				} catch (error) {
 					harper_logger.warn('Error handling WebSocket connection', error);
 				}
+			});
+
+			ws_servers[port_num].on('error', (error) => {
+				console.log('Error in setting up WebSocket server', error);
 			});
 		}
 		let protocol = options?.subProtocol || '';

@@ -161,7 +161,10 @@ export async function authentication(request, next_handler) {
 		} else if (session?.user) {
 			// or should this be cached in the session?
 			request.user = await server.getUser(session.user, null, false);
-		} else if (AUTHORIZE_LOCAL && (request.ip?.includes('127.0.0.1') || request.ip == '::1')) {
+		} else if (
+			(AUTHORIZE_LOCAL && (request.ip?.includes('127.0.0.1') || request.ip == '::1')) ||
+			(request?._nodeRequest?.socket?.server?._pipeName && request.ip === undefined) // allow socket domain
+		) {
 			request.user = await getSuperUser();
 		}
 		if (ENABLE_SESSIONS) {
