@@ -5,7 +5,7 @@ const { table } = require('../../resources/databases');
 const { setMainIsWorker } = require('../../server/threads/manageThreads');
 // might want to enable an iteration with NATS being assigned as a source
 describe('Permissions through Resource API', () => {
-	let TestTable, restricted_user, authorized_user;
+	let TestTable, restricted_user, authorized_role, attribute_authorized_role;
 	before(async function () {
 		getMockLMDBPath();
 		setMainIsWorker(true); // TODO: Should be default until changed
@@ -33,7 +33,24 @@ describe('Permissions through Resource API', () => {
 				},
 			},
 		};
-		authorized_user = {
+		authorized_role = {
+			role: {
+				permission: {
+					test: {
+						tables: {
+							TestTable: {
+								read: true,
+								insert: false,
+								update: false,
+								delete: false,
+								attribute_permissions: [],
+							},
+						},
+					},
+				},
+			},
+		};
+		attribute_authorized_role = {
 			role: {
 				permission: {
 					test: {
@@ -97,9 +114,19 @@ describe('Permissions through Resource API', () => {
 		assert(caught_error.message.includes('Unauthorized access'));
 	});
 
+	it('Can get with permission', async function () {
+		const request = {
+			user: authorized_role,
+			authorize: true,
+			id: 'id-2',
+		};
+		let result = TestTable.get(request, request);
+		assert.equal(result.name, 'name-2');
+		assert.equal(result.prop1, 'test');
+	});
 	it('Can get with (limited) permission', async function () {
 		const request = {
-			user: authorized_user,
+			user: attribute_authorized_role,
 			authorize: true,
 			id: 'id-2',
 		};
@@ -112,12 +139,12 @@ describe('Permissions through Resource API', () => {
 			'id-2',
 			{ name: 'new record' },
 			{
-				user: authorized_user,
+				user: attribute_authorized_role,
 				authorize: true,
 			}
 		);
 		TestTable.delete('id-2', {
-			user: authorized_user,
+			user: attribute_authorized_role,
 			authorize: true,
 		});
 	});

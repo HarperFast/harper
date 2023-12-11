@@ -130,6 +130,10 @@ async function workQueueListener() {
 		} catch (err) {
 			harper_logger.error('Error consuming clustering ingest, restarting consumer', err);
 		}
+
+		// Re-init any cached Nats client connections
+		nats_utils.clearClientCache();
+		await initialize();
 	}
 }
 

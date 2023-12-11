@@ -292,8 +292,8 @@ async function getNatsStreamInfo() {
 			},
 		};
 
-		if (ingest_info.config?.sources) {
-			res.ingest.stream.sources = ingest_info.config.sources;
+		if (ingest_info.sources) {
+			res.ingest.stream.sources = ingest_info.sources;
 		}
 
 		return res;
