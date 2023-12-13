@@ -119,5 +119,7 @@ npm run lint-prod
 npm run build:local
 cd ..
 
+mkdir npm_pack/studio
+cp -r ./studio/build-local ./npm_pack/studio/build-local
 # Create package from package creation directory
 npm --force pack ./npm_pack/
