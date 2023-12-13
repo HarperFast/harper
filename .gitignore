@@ -25,7 +25,6 @@ yarn.lock
 yarn-error.log
 package-lock.json
 ts-build
-studio
 
 /npm_pack/*
 *.jsc
