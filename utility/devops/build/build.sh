@@ -77,15 +77,13 @@ PACKAGE_VERSION=$(sed -nr 's/^\s*\"version": "([0-9]{1,}\.[0-9]{1,}.*)",$/\1/p' 
 cat <<EOF > ./studio/src/config/index.js
 export default {
   env: 'prod',
-  stripe_public_key: '${{secrets.STRIPE_PUBLIC_KEY_PROD}}',
   lms_api_url: 'https://prod.harperdbcloudservices.com/',
-  google_analytics_code: '${{secrets.GOOGLE_ANALYTICS_CODE_PROD}}',
   tc_version: '2020-01-01',
   check_version_interval: 300000,
   refresh_content_interval: 15000,
   free_cloud_instance_limit: 1,
   max_file_upload_size: 10380902,
-  studio_version:'$PACKAGE_VERSION',
+  studio_version:'1.0',
   alarm_badge_threshold: 86400,
   maintenance: 0,
   errortest: 0,
@@ -116,7 +114,7 @@ cat <<EOF > ./studio/public/manifest.json
 EOF
 
 cd studio
-npm install
+npm install --force
 npm run lint-prod
 npm run build:local
 cd ..
