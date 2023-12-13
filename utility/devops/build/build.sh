@@ -73,7 +73,7 @@ cp LICENSE ./npm_pack/
 # Append README with commit ID
 git rev-parse HEAD >> ./npm_pack/README.md
 
-PACKAGE_VERSION=$(sed -nr 's/^\s*\"version": "([0-9]{1,}\.[0-9]{1,}.*)",$/\1/p' studio/package.json)
+PACKAGE_VERSION=$(sed -nr 's/^\s*\"version": "([0-9]{1,}\.[0-9]{1,}.*)",$/\1/p' package.json)
 cat <<EOF > ./studio/src/config/index.js
 export default {
   env: 'prod',
