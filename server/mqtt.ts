@@ -12,7 +12,7 @@ import { loggerWithTag, error as log_error, warn, info } from '../utility/loggin
 const auth_event_log = loggerWithTag('auth-event');
 
 const AUTHORIZE_LOCAL = true;
-export async function start({ server, port, webSocket, securePort, requireAuthentication }) {
+export async function start({ server, port, mtls, webSocket, securePort, requireAuthentication }) {
 	// here we basically normalize the different types of sockets to pass to our socket/message handler
 	const mqtt_settings = (server.mqtt = { requireAuthentication });
 	if (webSocket)
@@ -47,6 +47,20 @@ export async function start({ server, port, webSocket, securePort, requireAuthen
 		server.socket(
 			async (socket) => {
 				let user;
+				if (socket.authorized) {
+					try {
+						let username = mtls.username;
+						if (username) {
+							if (username === 'Common Name') username = socket.getPeerCertificate().subject.CN;
+							user = await server.getUser(username);
+						}
+					} catch (error) {
+						log_error(error);
+					}
+				} else if (mtls.required) {
+					info('Unauthorized connection attempt, no authorized client certificate provided');
+					socket.end();
+				}
 				if (AUTHORIZE_LOCAL && socket.remoteAddress.includes('127.0.0.1')) {
 					user = await getSuperUser();
 				}
@@ -58,7 +72,7 @@ export async function start({ server, port, webSocket, securePort, requireAuthen
 					info('Socket error', error);
 				});
 			},
-			{ port, securePort }
+			{ port, securePort, mtls }
 		);
 	}
 }

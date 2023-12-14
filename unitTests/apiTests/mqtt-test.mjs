@@ -6,6 +6,7 @@ import { decode, encode, DecoderStream } from 'cbor-x';
 import { getVariables, callOperation } from './utility.js';
 import { setupTestApp } from './setupTestApp.mjs';
 import { connect } from 'mqtt';
+import { start as startMQTT } from '../../ts-build/server/mqtt/mqtt.js';
 import {
 	setNATSReplicator,
 	setPublishToStream,
@@ -307,8 +308,13 @@ describe('test MQTT connections and commands', () => {
 		});
 		client.end();
 	});
-	it('subscribe and unsubscribe', async function () {
-		let client = connect('mqtt://localhost:1883', {
+	it('subscribe and unsubscribe with mTLS', async function () {
+		let server;
+		await new Promise((resolve, reject) => {
+			server = startMQTT({ securePort: 8884, mtls: { user: 'HDB_ADMIN' }}).listen(8884, resolve);
+			server.on('error', reject);
+		});
+		let client = connect('mqtts://localhost:8884', {
 			clean: true,
 			clientId: 'test-client-sub2',
 		});

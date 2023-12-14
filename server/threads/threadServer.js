@@ -490,25 +490,28 @@ function onRequest(listener, options) {
  * @param options
  */
 function onSocket(listener, options) {
+	let socket_server;
 	if (options.securePort) {
 		const privateKey = env.get('tls_privateKey');
 		const certificate = env.get('tls_certificate');
 		const certificateAuthority = env.get('tls_certificateAuthority');
 
-		let socket_server = createSecureSocketServer(
+		socket_server = createSecureSocketServer(
 			{
 				key: readFileSync(privateKey),
 				// if they have a CA, we append it, so it is included
 				cert: readFileSync(certificate) + (certificateAuthority ? '\n\n' + readFileSync(certificateAuthority) : ''),
+				requestCert: options.mtls,
 			},
 			listener
 		);
 		SERVERS[options.securePort] = socket_server;
 	}
 	if (options.port) {
-		const socket_server = createSocketServer(listener);
+		socket_server = createSocketServer(listener);
 		SERVERS[options.port] = socket_server;
 	}
+	return socket_server;
 }
 // workaround for inability to defer upgrade from https://github.com/nodejs/node/issues/6339#issuecomment-570511836
 Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
