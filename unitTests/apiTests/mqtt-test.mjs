@@ -1,12 +1,13 @@
 'use strict';
 
 import { assert, expect } from 'chai';
-import axios from 'axios';
 import { decode, encode, DecoderStream } from 'cbor-x';
 import { getVariables, callOperation } from './utility.js';
 import { setupTestApp } from './setupTestApp.mjs';
+import { get as env_get } from '../../utility/environment/environmentManager.js';
 import { connect } from 'mqtt';
-import { start as startMQTT } from '../../ts-build/server/mqtt/mqtt.js';
+import { readFileSync } from 'fs';
+import { start as startMQTT } from '../../ts-build/server/mqtt.js';
 import {
 	setNATSReplicator,
 	setPublishToStream,
@@ -93,25 +94,27 @@ describe('test MQTT connections and commands', () => {
 				protocol: 'mqtt',
 			});
 			clients.push(client);
-			subscriptions.push(new Promise((resolve) => {
-				client.on('connect', function (connack) {
-					client.subscribe(topic, function (err) {
-						console.error(err);
-						if (!err) {
-							resolve();
-							intervals.push(
-								setInterval(() => {
-									published++;
-									client.publish(topic, JSON.stringify({name: 'radbot 9000', pub_time: Date.now()}), {
-										qos: 1,
-										retain: false,
-									});
-								}, 1)
-							);
-						}
+			subscriptions.push(
+				new Promise((resolve) => {
+					client.on('connect', function (connack) {
+						client.subscribe(topic, function (err) {
+							console.error(err);
+							if (!err) {
+								resolve();
+								intervals.push(
+									setInterval(() => {
+										published++;
+										client.publish(topic, JSON.stringify({ name: 'radbot 9000', pub_time: Date.now() }), {
+											qos: 1,
+											retain: false,
+										});
+									}, 1)
+								);
+							}
+						});
 					});
-				});
-			}));
+				})
+			);
 
 			client.on('message', function (topic, message) {
 				let now = Date.now();
@@ -144,11 +147,11 @@ describe('test MQTT connections and commands', () => {
 			connectTimeout: 2000,
 			protocol: 'mqtt',
 		});
-		await new Promise(resolve => {
+		await new Promise((resolve) => {
 			client.on('connect', function (connack) {
 				client.subscribe(topic, function (err) {
 					console.error(err);
-					client.publish(topic, Buffer.from([1,2,3,4,5]), {
+					client.publish(topic, Buffer.from([1, 2, 3, 4, 5]), {
 						qos: 1,
 						retain: false,
 					});
@@ -158,7 +161,7 @@ describe('test MQTT connections and commands', () => {
 			client.on('message', function (topic, message) {
 				let now = Date.now();
 				// message is Buffer
-				assert.deepEqual(Array.from(message), [1,2,3,4,5]);
+				assert.deepEqual(Array.from(message), [1, 2, 3, 4, 5]);
 				resolve();
 			});
 
@@ -185,13 +188,13 @@ describe('test MQTT connections and commands', () => {
 			password: 'restricted',
 		});
 		let published_messages = [];
-		await new Promise(resolve => {
+		await new Promise((resolve) => {
 			client.on('connect', function () {
 				client.subscribe(topic, function (err, subscriptions) {
 					assert.equal(subscriptions[0].qos, 128);
 					client_authorized.subscribe(topic, function (err, subscriptions) {
 						console.log(err);
-						client.publish(topic, JSON.stringify({name: 'should not be published '}), {
+						client.publish(topic, JSON.stringify({ name: 'should not be published ' }), {
 							qos: 1,
 							retain: false,
 						});
@@ -311,14 +314,30 @@ describe('test MQTT connections and commands', () => {
 	it('subscribe and unsubscribe with mTLS', async function () {
 		let server;
 		await new Promise((resolve, reject) => {
-			server = startMQTT({ securePort: 8884, mtls: { user: 'HDB_ADMIN' }}).listen(8884, resolve);
+			server = startMQTT({ server: global.server, securePort: 8884, network: { mtls: { user: 'HDB_ADMIN' } } }).listen(8884, resolve);
 			server.on('error', reject);
 		});
+		let bad_client = connect('mqtts://localhost:8884', {
+			clientId: 'test-bad-mtls',
+		});
+
+		const private_key_path = env_get('tls_privateKey');
+		const certificate_path = env_get('tls_certificate');
+		const certificate_authority_path = env_get('tls_certificateAuthority');
 		let client = connect('mqtts://localhost:8884', {
+			key: readFileSync(private_key_path),
+			// if they have a CA, we append it, so it is included
+			cert:
+				readFileSync(certificate_path) +
+				(certificate_authority_path ? '\n\n' + readFileSync(certificate_authority_path) : ''),
+			ca: certificate_authority_path && readFileSync(certificate_authority_path),
 			clean: true,
-			clientId: 'test-client-sub2',
+			clientId: 'test-client-mtls',
 		});
 		await new Promise((resolve, reject) => {
+			bad_client.on('connect', () => {
+				reject('Client should not be able to connect to mTLS without a certificate');
+			})
 			client.on('connect', resolve);
 			client.on('error', reject);
 		});
@@ -488,15 +507,18 @@ describe('test MQTT connections and commands', () => {
 				qos: 1,
 			}
 		);
-		await new Promise((resolve) => client2.publish(
-			'SimpleRecord/42',
-			JSON.stringify({
-				name: 'This is a test of publishing to a disconnected durable session 3',
-			}),
-			{
-				qos: 1,
-			}, resolve
-		));
+		await new Promise((resolve) =>
+			client2.publish(
+				'SimpleRecord/42',
+				JSON.stringify({
+					name: 'This is a test of publishing to a disconnected durable session 3',
+				}),
+				{
+					qos: 1,
+				},
+				resolve
+			)
+		);
 		await delay(10);
 		client = connect('mqtt://localhost:1883', {
 			clean: false,
@@ -509,17 +531,17 @@ describe('test MQTT connections and commands', () => {
 				const message = packet.payload;
 				messages.push(message.toString());
 				done();
-				if (message.toString().includes('session 2')) {// skip the first one to trigger out of order acking
+				if (message.toString().includes('session 2')) {
+					// skip the first one to trigger out of order acking
 					return;
 				}
-				client._sendPacket({cmd: 'puback', messageId: packet.messageId, reasonCode: 0}, () => {});
+				client._sendPacket({ cmd: 'puback', messageId: packet.messageId, reasonCode: 0 }, () => {});
 				if (message.toString().includes('session 3')) resolve();
 			};
 		});
 		await delay(50);
 		client.end();
-		if (messages.length !== 3)
-			console.error('Incorrect messages', {messages});
+		if (messages.length !== 3) console.error('Incorrect messages', { messages });
 		assert(messages.length === 3);
 		messages = [];
 		client = connect('mqtt://localhost:1883', {
@@ -615,7 +637,7 @@ describe('test MQTT connections and commands', () => {
 		const { FourPropWithHistory } = await import('../testApp/resources.js');
 		assert.equal(messages.length, 20);
 		assert.equal(FourPropWithHistory.acknowledgements, 10);
-		await FourPropWithHistory.put('something new', {name: 'something new'});
+		await FourPropWithHistory.put('something new', { name: 'something new' });
 		await delay(50);
 		assert.equal(messages.length, 22);
 		assert.equal(FourPropWithHistory.acknowledgements, 11);

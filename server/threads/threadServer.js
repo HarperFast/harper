@@ -317,6 +317,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 			headersTimeout: env.get(server_prefix + '_headersTimeout'),
 			requestTimeout: env.get(server_prefix + '_timeout'),
 		};
+		let mtls = env.get(server_prefix + '_mtls');
 		if (secure) {
 			server_prefix = is_operations_server ? 'operationsApi_' : '';
 			const private_key = env.get(server_prefix + 'tls_privateKey');
@@ -331,6 +332,8 @@ function getHTTPServer(port, secure, is_operations_server) {
 				key: readFileSync(private_key),
 				// if they have a CA, we append it, so it is included
 				cert: readFileSync(certificate) + (certificate_authority ? '\n\n' + readFileSync(certificate_authority) : ''),
+				ca: certificate_authority && readFileSync(certificate_authority),
+				requestCert: Boolean(mtls),
 				ticketKeys: getTicketKeys(),
 			});
 		}
@@ -492,16 +495,19 @@ function onRequest(listener, options) {
 function onSocket(listener, options) {
 	let socket_server;
 	if (options.securePort) {
-		const privateKey = env.get('tls_privateKey');
-		const certificate = env.get('tls_certificate');
-		const certificateAuthority = env.get('tls_certificateAuthority');
+		const private_key_path = env.get('tls_privateKey');
+		const certificate_path = env.get('tls_certificate');
+		const certificate_authority_path = env.get('tls_certificateAuthority');
 
 		socket_server = createSecureSocketServer(
 			{
-				key: readFileSync(privateKey),
+				key: readFileSync(private_key_path),
 				// if they have a CA, we append it, so it is included
-				cert: readFileSync(certificate) + (certificateAuthority ? '\n\n' + readFileSync(certificateAuthority) : ''),
-				requestCert: options.mtls,
+				cert:
+					readFileSync(certificate_path) +
+					(certificate_authority_path ? '\n\n' + readFileSync(certificate_authority_path) : ''),
+				ca: certificate_authority_path && readFileSync(certificate_authority_path),
+				requestCert: Boolean(options.mtls),
 			},
 			listener
 		);

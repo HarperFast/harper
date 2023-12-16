@@ -49,7 +49,9 @@ const { UserEventMsg } = require('../server/threads/itc');
 const _ = require('lodash');
 const { server } = require('../server/Server');
 const harper_logger = require('../utility/logging/harper_logger');
-server.getUser = findAndValidateUser;
+server.getUser = (username, password) => {
+	return findAndValidateUser(username, password, password != null);
+};
 
 const USER_ATTRIBUTE_ALLOWLIST = {
 	username: true,
