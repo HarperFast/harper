@@ -181,6 +181,9 @@ function configValidator(config_json) {
 			network: Joi.object({
 				port: port_constraints,
 				securePort: port_constraints,
+				mtls: Joi.alternatives([boolean.optional(), Joi.object({
+					user: string.optional()
+				})])
 			}).required(),
 			webSocket: boolean.optional(),
 			requireAuthentication: boolean.optional(),
