@@ -215,7 +215,14 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 							granted_qos = (await session.addSubscription(subscription, subscription.qos >= 1)).qos || 0;
 						} catch (error) {
 							log_error(error);
-							granted_qos = 0x80; // failure
+							granted_qos =
+								mqtt_options.protocolVersion < 5
+									? 0x80 // the only error code in v3.1.1
+									: error.statusCode === 403
+									? 0x87 // unauthorized
+									: error.statusCode === 404
+									? 0x8f // invalid topic
+									: 0x80; // generic failure
 						}
 						granted.push(granted_qos);
 					}

@@ -377,6 +377,16 @@ describe('test MQTT connections and commands', () => {
 		});
 		client.end();
 	});
+	it('subscribe to bad topic', async function () {
+		await new Promise((resolve, reject) => {
+			client2.subscribe('DoesNotExist/+', function (err, granted) {console.log('subscribed', err);
+				if (err) reject(err);
+				else {
+					resolve(assert.equal(granted[0].qos, 0x8f));
+				}
+			});
+		});
+	});
 	it('subscribe to wildcard/full table', async function () {
 		await new Promise((resolve, reject) => {
 			client2.subscribe('SimpleRecord/+', function (err) {

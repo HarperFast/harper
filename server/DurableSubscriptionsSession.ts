@@ -127,13 +127,21 @@ class SubscriptionsSession {
 		};
 		if (start_time) trace('Resuming subscription from', topic, 'from', start_time);
 		const entry = resources.getMatch(path);
-		if (!entry) throw new Error(`The topic ${topic} does not exist, no resource has been defined to handle this topic`);
+		if (!entry) {
+			const not_found_error = new Error(
+				`The topic ${topic} does not exist, no resource has been defined to handle this topic`
+			);
+			not_found_error.statusCode = 404;
+			throw not_found_error;
+		}
 		request.url = entry.relativeURL;
 		const resource_path = entry.path;
 		const resource = entry.Resource;
 		const subscription = await transaction(request, async () => {
 			const subscription = await resource.subscribe(request);
-			if (!subscription) throw new Error(`No subscription was returned from subscribe for topic ${topic}`);
+			if (!subscription) {
+				throw new Error(`No subscription was returned from subscribe for topic ${topic}`);
+			}
 			if (!subscription[Symbol.asyncIterator])
 				throw new Error(`Subscription is not (async) iterable for topic ${topic}`);
 			(async () => {

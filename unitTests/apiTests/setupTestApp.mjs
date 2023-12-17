@@ -1,7 +1,7 @@
 import { getMockLMDBPath } from '../test_utils.js';
 import { fileURLToPath } from 'url';
-import { setProperty } from '../../utility/environment/environmentManager.js'
-import terms from '../../utility/hdbTerms.js'
+import { setProperty } from '../../utility/environment/environmentManager.js';
+import terms from '../../utility/hdbTerms.js';
 import { join } from 'path';
 import axios from 'axios';
 import { encode } from 'cbor-x';
