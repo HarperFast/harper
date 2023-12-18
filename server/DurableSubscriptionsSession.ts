@@ -3,6 +3,7 @@ import { keyArrayToString, resources } from '../resources/Resources';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { warn, trace } from '../utility/logging/harper_logger';
 import { transaction } from '../resources/transaction';
+import { getWorkerIndex } from '../server/threads/manageThreads';
 const DurableSession = table({
 	database: 'system',
 	table: 'hdb_durable_session',
@@ -17,6 +18,30 @@ const DurableSession = table({
 		},
 	],
 });
+const LastWill = table({
+	database: 'system',
+	table: 'hdb_session_will',
+	attributes: [
+		{ name: 'id', isPrimaryKey: true },
+		{ name: 'topic', type: 'string' },
+		{ name: 'data' },
+		{ name: 'qos', type: 'number' },
+		{ name: 'retain', type: 'boolean' },
+		{ name: 'user', type: 'any' },
+	],
+});
+if (getWorkerIndex() === 0) {
+	(async () => {
+		for await (const will of LastWill.search({})) {
+			const data = will.data;
+			const message = Object.assign({}, will);
+			transaction(message, () => {
+				publish(message, data);
+				LastWill.delete(will.id, message);
+			});
+		}
+	})();
+}
 
 /**
  * This is used for durable sessions, that is sessions in MQTT that are not "clean" sessions (and with QoS >= 1
@@ -47,8 +72,8 @@ const DurableSession = table({
 export async function getSession({
 	clientId: session_id,
 	user,
-	listener,
 	clean: non_durable,
+	will,
 }: {
 	clientId;
 	user;
@@ -67,6 +92,11 @@ export async function getSession({
 			if (session_resource) session_resource.delete();
 		}
 		session = new SubscriptionsSession(session_id, user);
+	}
+	if (will) {
+		will.id = session_id;
+		will.user = { username: user?.username };
+		LastWill.put(will);
 	}
 	return session;
 }
@@ -192,36 +222,52 @@ class SubscriptionsSession {
 		if (existing_subscription) existing_subscription.end();
 	}
 	async publish(message, data) {
-		const { topic, retain } = message;
-		message.data = data;
 		message.user = this.user;
-		message.async = true;
-		message.authorize = true;
-		const entry = resources.getMatch(topic);
-		if (!entry)
-			throw new Error(
-				`Can not publish to topic ${topic} as it does not exist, no resource has been defined to handle this topic`
-			);
-		message.url = entry.relativeURL;
-		const resource = entry.Resource;
-
-		return transaction(message, () => {
-			return retain
-				? data === undefined
-					? resource.delete(message, message)
-					: resource.put(message, message.data, message)
-				: resource.publish(message, message.data, message);
-		});
+		return publish(message, data);
 	}
 	setListener(listener: (message) => any) {
 		this.listener = listener;
 	}
-	disconnect() {
+	disconnect(client_terminated) {
+		const context = {};
+		transaction(context, async () => {
+			if (!client_terminated) {
+				const will = await LastWill.get(this.sessionId, context);
+				if (will.doesExist()) {
+					await publish(will, will.data, context);
+				}
+			}
+			await LastWill.delete(this.sessionId, context);
+		}).catch((error) => {
+			warn(`Error publishing MQTT will for ${this.sessionId}`, error);
+		});
+
 		for (const subscription of this.subscriptions) {
 			subscription.end();
 		}
 		this.subscriptions = [];
 	}
+}
+function publish(message, data, context = message) {
+	const { topic, retain } = message;
+	message.data = data;
+	message.async = true;
+	message.authorize = true;
+	const entry = resources.getMatch(topic);
+	if (!entry)
+		throw new Error(
+			`Can not publish to topic ${topic} as it does not exist, no resource has been defined to handle this topic`
+		);
+	message.url = entry.relativeURL;
+	const resource = entry.Resource;
+
+	return transaction(context, () => {
+		return retain
+			? data === undefined
+				? resource.delete(message, context)
+				: resource.put(message, message.data, context)
+			: resource.publish(message, message.data, context);
+	});
 }
 export class DurableSubscriptionsSession extends SubscriptionsSession {
 	sessionRecord: any;

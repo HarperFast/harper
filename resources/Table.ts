@@ -1197,7 +1197,7 @@ export function makeTable(options) {
 		 * @param message
 		 * @param options
 		 */
-		async publish(message, options?) {
+		publish(message, options?) {
 			this._writePublish(message, options);
 		}
 		_writePublish(message, options?: any) {

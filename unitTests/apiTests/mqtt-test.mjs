@@ -92,25 +92,27 @@ describe('test MQTT connections and commands', () => {
 				protocol: 'mqtt',
 			});
 			clients.push(client);
-			subscriptions.push(new Promise((resolve) => {
-				client.on('connect', function (connack) {
-					client.subscribe(topic, function (err) {
-						console.error(err);
-						if (!err) {
-							resolve();
-							intervals.push(
-								setInterval(() => {
-									published++;
-									client.publish(topic, JSON.stringify({name: 'radbot 9000', pub_time: Date.now()}), {
-										qos: 1,
-										retain: false,
-									});
-								}, 1)
-							);
-						}
+			subscriptions.push(
+				new Promise((resolve) => {
+					client.on('connect', function (connack) {
+						client.subscribe(topic, function (err) {
+							console.error(err);
+							if (!err) {
+								resolve();
+								intervals.push(
+									setInterval(() => {
+										published++;
+										client.publish(topic, JSON.stringify({ name: 'radbot 9000', pub_time: Date.now() }), {
+											qos: 1,
+											retain: false,
+										});
+									}, 1)
+								);
+							}
+						});
 					});
-				});
-			}));
+				})
+			);
 
 			client.on('message', function (topic, message) {
 				let now = Date.now();
@@ -135,6 +137,77 @@ describe('test MQTT connections and commands', () => {
 		assert(replicated_published_messages.length > 10);
 	});
 
+	it('last will should be published on connection loss', async () => {
+		const topic = `SimpleRecord/52`;
+		const client_to_die = connect({
+			host: 'localhost',
+			clean: true,
+			will: {
+				topic,
+				payload: JSON.stringify({ name: 'last will and testimony' }),
+				qos: 1,
+				retain: false,
+			},
+		});
+		await new Promise((resolve, reject) => {
+			client_to_die.on('connect', function (connack) {
+				resolve(connack);
+			});
+			client_to_die.on('error', reject);
+		});
+		await new Promise((resolve, reject) => {
+			client.subscribe(topic, function (err) {
+				if (err) reject(err);
+			});
+
+			client.once('message', function (topic, message) {
+				try {
+					let data = decode(message);
+				// message is Buffer
+					assert.deepEqual(data, {name: 'last will and testimony'});
+					resolve();
+				} catch(error) { reject(error); }
+			});
+			client_to_die.end(true); // this closes the connection without a disconnect packet
+		});
+	});
+
+	it('last will should not be published on explicit disconnect', async () => {
+		const topic = `SimpleRecord/53`;
+		const client_to_die = connect({
+			host: 'localhost',
+			clean: true,
+			will: {
+				topic,
+				payload: JSON.stringify({ name: 'last will and testimony' }),
+				qos: 1,
+				retain: false,
+			},
+		});
+		let onMessage;
+		await new Promise((resolve, reject) => {
+			client_to_die.on('connect', function (connack) {
+				resolve(connack);
+			});
+			client_to_die.on('error', reject);
+		});
+		await new Promise((resolve, reject) => {
+			client.subscribe(topic, function (err) {
+				if (err) reject(err);
+			});
+			onMessage = function(topic, message) {
+				try {
+					reject('Should not get a message on topic ' + topic);
+				} catch(error) { reject(error); }
+			}
+			client.once('message', onMessage);
+			setTimeout(resolve, 50);
+			client_to_die.end(); // this closes the connection with a disconnect packet
+		});
+
+		client.off('message', onMessage);
+	});
+
 	it('can publish non-JSON', async () => {
 		const topic = `SimpleRecord/51`;
 		const client = connect({
@@ -143,11 +216,11 @@ describe('test MQTT connections and commands', () => {
 			connectTimeout: 2000,
 			protocol: 'mqtt',
 		});
-		await new Promise(resolve => {
+		await new Promise((resolve) => {
 			client.on('connect', function (connack) {
 				client.subscribe(topic, function (err) {
 					console.error(err);
-					client.publish(topic, Buffer.from([1,2,3,4,5]), {
+					client.publish(topic, Buffer.from([1, 2, 3, 4, 5]), {
 						qos: 1,
 						retain: false,
 					});
@@ -157,7 +230,7 @@ describe('test MQTT connections and commands', () => {
 			client.on('message', function (topic, message) {
 				let now = Date.now();
 				// message is Buffer
-				assert.deepEqual(Array.from(message), [1,2,3,4,5]);
+				assert.deepEqual(Array.from(message), [1, 2, 3, 4, 5]);
 				resolve();
 			});
 
@@ -184,13 +257,13 @@ describe('test MQTT connections and commands', () => {
 			password: 'restricted',
 		});
 		let published_messages = [];
-		await new Promise(resolve => {
+		await new Promise((resolve) => {
 			client.on('connect', function () {
 				client.subscribe(topic, function (err, subscriptions) {
 					assert.equal(subscriptions[0].qos, 128);
 					client_authorized.subscribe(topic, function (err, subscriptions) {
 						console.log(err);
-						client.publish(topic, JSON.stringify({name: 'should not be published '}), {
+						client.publish(topic, JSON.stringify({ name: 'should not be published ' }), {
 							qos: 1,
 							retain: false,
 						});
@@ -482,15 +555,18 @@ describe('test MQTT connections and commands', () => {
 				qos: 1,
 			}
 		);
-		await new Promise((resolve) => client2.publish(
-			'SimpleRecord/42',
-			JSON.stringify({
-				name: 'This is a test of publishing to a disconnected durable session 3',
-			}),
-			{
-				qos: 1,
-			}, resolve
-		));
+		await new Promise((resolve) =>
+			client2.publish(
+				'SimpleRecord/42',
+				JSON.stringify({
+					name: 'This is a test of publishing to a disconnected durable session 3',
+				}),
+				{
+					qos: 1,
+				},
+				resolve
+			)
+		);
 		await delay(10);
 		client = connect('mqtt://localhost:1883', {
 			clean: false,
@@ -503,17 +579,17 @@ describe('test MQTT connections and commands', () => {
 				const message = packet.payload;
 				messages.push(message.toString());
 				done();
-				if (message.toString().includes('session 2')) {// skip the first one to trigger out of order acking
+				if (message.toString().includes('session 2')) {
+					// skip the first one to trigger out of order acking
 					return;
 				}
-				client._sendPacket({cmd: 'puback', messageId: packet.messageId, reasonCode: 0}, () => {});
+				client._sendPacket({ cmd: 'puback', messageId: packet.messageId, reasonCode: 0 }, () => {});
 				if (message.toString().includes('session 3')) resolve();
 			};
 		});
 		await delay(50);
 		client.end();
-		if (messages.length !== 3)
-			console.error('Incorrect messages', {messages});
+		if (messages.length !== 3) console.error('Incorrect messages', { messages });
 		assert(messages.length === 3);
 		messages = [];
 		client = connect('mqtt://localhost:1883', {
@@ -609,7 +685,7 @@ describe('test MQTT connections and commands', () => {
 		const { FourPropWithHistory } = await import('../testApp/resources.js');
 		assert.equal(messages.length, 20);
 		assert.equal(FourPropWithHistory.acknowledgements, 10);
-		await FourPropWithHistory.put('something new', {name: 'something new'});
+		await FourPropWithHistory.put('something new', { name: 'something new' });
 		await delay(50);
 		assert.equal(messages.length, 22);
 		assert.equal(FourPropWithHistory.acknowledgements, 11);

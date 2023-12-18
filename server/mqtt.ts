@@ -144,6 +144,12 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 						mqtt_settings.authorizeClient?.(packet, user);
 
 						// TODO: Handle the will & testament, and possibly use the will's content type as a hint for expected content
+						if (packet.will) {
+							const deserialize =
+								socket.deserialize || (socket.deserialize = getDeserializer(request?.headers.get?.('content-type')));
+							packet.will.data = packet.will.payload?.length > 0 ? deserialize(packet.will.payload) : undefined;
+							delete packet.will.payload;
+						}
 						session = getSession({
 							user,
 							...packet,
@@ -282,7 +288,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					break;
 				case 'disconnect':
 					disconnected = true;
-					session?.disconnect();
+					session?.disconnect(true);
 					recordActionBinary(true, 'connection', 'mqtt', 'disconnect');
 					if (socket.close) socket.close();
 					else socket.end();
