@@ -240,7 +240,7 @@ export async function loadComponent(
 				// a loader is configured to specify a glob of files to be loaded, we pass each of those to the plugin
 				// handling files ourselves allows us to pass files to sandboxed modules that might not otherwise have
 				// access to the file system.
-				if (extension_module.handleFile && component_config.files) {
+				if ((extension_module.handleFile || extension_module.handleDirectory) && component_config.files) {
 					if (component_config.files.includes('..')) throw handleHDBError('Can not reference parent directories');
 					const files = join(folder, component_config.files).replace(/\\/g, '/'); // must normalize to slashes for fast-glob to work
 					const end_of_fixed_path = files.indexOf('/*');
@@ -257,15 +257,40 @@ export async function loadComponent(
 								component_config.files
 							}'`
 						);
+					const app_name = basename(folder);
+					let base_url_path = component_config.path || '/';
+					base_url_path = base_url_path.startsWith('/')
+						? base_url_path
+						: base_url_path.startsWith('./')
+						? '/' + app_name + base_url_path.slice(2)
+						: base_url_path === '.'
+						? '/' + app_name
+						: '/' + app_name + '/' + base_url_path;
+					let root_path, root_file_path;
+					let root_end;
+					if (component_config.root) {
+						let root_path = component_config.root;
+						if (root_path.startsWith('/')) root_path = root_path.slice(1);
+						if (root_path.endsWith('/')) root_path = root_path.slice(0, -1);
+						root_path += '/';
+						root_file_path = join(folder, root_path);
+					} else if ((root_end = files.indexOf('/*')) > -1) {
+						root_file_path = files.slice(0, root_end + 1);
+						root_path = relative(folder, root_file_path);
+					}
+					let directory_handled = false;
+					if (isMainThread && extension_module.setupDirectory) {
+						directory_handled = await extension_module.setupDirectory?.(base_url_path, root_file_path, resources);
+					}
+					if (resources.isWorker && extension_module.handleDirectory) {
+						directory_handled = await extension_module.handleDirectory?.(base_url_path, root_file_path, resources);
+					}
+					if (directory_handled) continue;
 					for (const entry of await fg(files, { onlyFiles: false, objectMode: true })) {
 						const { path, dirent } = entry;
 						has_functionality = true;
 						let relative_path = relative(folder, path).replace(/\\/g, '/');
-						if (component_config.root) {
-							let root_path = component_config.root;
-							if (root_path.startsWith('/')) root_path = root_path.slice(1);
-							if (root_path.endsWith('/')) root_path = root_path.slice(0, -1);
-							root_path += '/';
+						if (root_path) {
 							if (relative_path.startsWith(root_path)) relative_path = relative_path.slice(root_path.length);
 							else
 								throw new Error(
@@ -273,16 +298,7 @@ export async function loadComponent(
 										`The root path should be used to indicate the relative path/part of the file path for determining the exported web path.`
 								);
 						}
-						const app_name = basename(folder);
-						let url_path = component_config.path || '/';
-						url_path = url_path.startsWith('/')
-							? url_path
-							: url_path.startsWith('./')
-							? '/' + app_name + url_path.slice(2)
-							: url_path === '.'
-							? '/' + app_name
-							: '/' + app_name + '/' + url_path;
-						url_path += (url_path.endsWith('/') ? '' : '/') + relative_path;
+						const url_path = base_url_path + (base_url_path.endsWith('/') ? '' : '/') + relative_path;
 						try {
 							if (dirent.isFile()) {
 								const contents = await readFile(path);
