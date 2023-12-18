@@ -514,6 +514,7 @@ async function findAndValidateUser(username, pw, validate_password = true) {
 	let user_tmp = global.hdb_users.get(username);
 
 	if (!user_tmp) {
+		if (!validate_password) return { username };
 		throw handleHDBError(
 			new Error(),
 			AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL,
