@@ -1089,6 +1089,10 @@ export function makeTable(options) {
 				request.startTime,
 				this[IS_COLLECTION]
 			);
+			if (this[IS_COLLECTION]) {
+				subscription.includeDescendants = true;
+				if (request.onlyChildren) subscription.onlyChildren = true;
+			}
 			if (request.crossThreads === false) subscription.crossThreads = false;
 			if (request.supportsTransactions) subscription.supportsTransactions = true;
 			const this_id = this[ID_PROPERTY];

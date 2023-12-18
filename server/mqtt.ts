@@ -214,16 +214,19 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 						messageId: packet.messageId,
 					});
 					break;
-				case 'unsubscribe':
+				case 'unsubscribe': {
+					const granted = [];
 					for (const subscription of packet.unsubscriptions) {
-						session.removeSubscription(subscription);
+						granted.push(session.removeSubscription(subscription) ? 0 : 17);
 					}
 					sendPacket({
 						// Send a subscription acknowledgment
 						cmd: 'unsuback',
+						granted,
 						messageId: packet.messageId,
 					});
 					break;
+				}
 				case 'pubrel':
 					sendPacket({
 						// Send a publish response

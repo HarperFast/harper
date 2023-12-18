@@ -127,17 +127,7 @@ class SubscriptionsSession {
 			path = topic.slice(0, search_index);
 		} else path = topic;
 		if (!path) throw new Error('No topic provided');
-		let is_collection = false;
-		let is_shallow_wildcard;
-		if (path.endsWith('+') || path.endsWith('#')) {
-			is_collection = true;
-			if (path.endsWith('+')) is_shallow_wildcard = true;
-			// handle wildcard
-			path = path.slice(0, path.length - 1);
-		}
-
 		if (path.indexOf('.') > -1) throw new Error('Dots are not allowed in topic names');
-		if (path.indexOf('#') > -1 || path.indexOf('+') > -1) throw new Error('Only trailing wildcards are supported');
 		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
 		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
 		if (existing_subscription) {
@@ -151,14 +141,58 @@ class SubscriptionsSession {
 			user: this.user,
 			startTime: start_time,
 			omitCurrent: rh,
-			isCollection: is_collection,
-			shallowWildcard: is_shallow_wildcard,
 			url: '',
 		};
 		if (start_time) trace('Resuming subscription from', topic, 'from', start_time);
 		const entry = resources.getMatch(path);
 		if (!entry) throw new Error(`The topic ${topic} does not exist, no resource has been defined to handle this topic`);
 		request.url = entry.relativeURL;
+		if (request.url.indexOf('+') > -1 || request.url.indexOf('#') > -1) {
+			const path = request.url.slice(1); // remove leading slash
+			if (path.indexOf('#') > -1 && path.indexOf('#') !== path.length - 1)
+				throw new Error('Multi-level wildcards can only be used at the end of a topic');
+			// treat as a collection to get all children, but we will need to filter out any that are not direct children or matching the pattern
+			request.isCollection = true;
+			if (path.indexOf('+') === path.length - 1) {
+				// if it is only a trailing single-level wildcard, we can treat it as a shallow wildcard
+				// and use the optimized onlyChildren option, which will be faster, and does not require any filtering
+				request.onlyChildren = true;
+				request.url = '/' + path.slice(0, path.length - 1);
+			} else {
+				// otherwise we have a potentially complex wildcard, so we will need to filter out any that are not direct children or matching the pattern
+				const matching_path = path.split('/');
+				let needs_filter;
+				for (let i = 0; i < matching_path.length; i++) {
+					if (matching_path[i].indexOf('+') > -1) {
+						if (matching_path[i] === '+') needs_filter = true;
+						else throw new Error('Single-level wildcards can only be used as a topic level (between or after slashes)');
+					}
+				}
+				if (filter && needs_filter) throw new Error('Filters can not be combined');
+
+				let must_match_length = true;
+				if (matching_path[matching_path.length - 1] === '#') {
+					// only for any extra topic levels beyond the matching path
+					matching_path.length--;
+					must_match_length = false;
+				}
+				if (needs_filter) {
+					filter = (update) => {
+						const update_path = update.id;
+						if (!Array.isArray(update_path)) return false;
+						if (must_match_length && update_path.length !== matching_path.length) return false;
+						for (let i = 0; i < matching_path.length; i++) {
+							if (matching_path[i] !== '+' && matching_path[i] !== update_path[i]) return false;
+						}
+						return true;
+					};
+				}
+				const first_wildcard = matching_path.indexOf('+');
+				request.url =
+					'/' + (first_wildcard > -1 ? matching_path.slice(0, first_wildcard) : matching_path).concat('').join('/');
+			}
+		}
+
 		const resource_path = entry.path;
 		const resource = entry.Resource;
 		const subscription = await transaction(request, async () => {
@@ -219,7 +253,10 @@ class SubscriptionsSession {
 	async removeSubscription(topic) {
 		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
 		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
-		if (existing_subscription) existing_subscription.end();
+		if (existing_subscription) {
+			existing_subscription.end();
+			return true;
+		}
 	}
 	async publish(message, data) {
 		message.user = this.user;
