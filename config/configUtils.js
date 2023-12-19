@@ -439,6 +439,11 @@ function updateConfigValue(
 				let new_value = castConfigValue(config_param, parsed_args[arg]);
 				if (config_param === 'rootPath' && new_value?.endsWith('/')) new_value = new_value.slice(0, -1);
 				try {
+					if (split_param.length > 1) {
+						if (typeof config_doc.getIn(split_param.slice(0, -1)) === 'boolean') {
+							config_doc.deleteIn(split_param.slice(0, -1));
+						}
+					}
 					config_doc.setIn([...split_param], new_value);
 				} catch (err) {
 					logger.error(err);

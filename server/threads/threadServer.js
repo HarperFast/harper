@@ -497,7 +497,7 @@ function onSocket(listener, options) {
 	if (options.securePort) {
 		const private_key_path = env.get('tls_privateKey');
 		const certificate_path = env.get('tls_certificate');
-		const certificate_authority_path = env.get('tls_certificateAuthority');
+		const certificate_authority_path = options.mtls?.certificateAuthority || env.get('tls_certificateAuthority');
 
 		socket_server = createSecureSocketServer(
 			{
