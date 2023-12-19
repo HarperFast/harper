@@ -11,6 +11,7 @@ const { createWriteStream, ensureDir } = require('fs-extra');
 const { join } = require('path');
 const _ = require('lodash');
 const minimist = require('minimist');
+const Joi = require('joi');
 const env_mgr = require('../environment/environmentManager');
 const sys_info = require('../environment/systemInformation');
 const hdb_log = require('../logging/harper_logger');
@@ -24,6 +25,7 @@ const { isHdbInstalled, main, launch } = require('../../bin/run');
 const install = require('../install/installer');
 const hdb_terms = require('../hdbTerms');
 const { SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME, CONFIG_PARAMS, OPERATIONS_ENUM } = hdb_terms;
+const { validateBySchema } = require('../../validation/validationWrapper');
 
 const DEFAULT_HDB_PORT = 9925;
 const DEFAULT_CLUSTERING_LOG_LEVEL = 'info';
@@ -76,6 +78,8 @@ module.exports = async function cloneNode(background = false) {
 		return;
 	}
 
+	validateInput();
+
 	const clone_msg = clone_overtop
 		? `Cloning node ${leader_url} overtop of existing HarperDB install`
 		: `Cloning node: ${leader_url}`;
@@ -118,10 +122,33 @@ module.exports = async function cloneNode(background = false) {
 	if (!clone_overtop) await installHDB();
 	await cloneConfig();
 	await cloneComponents();
-	await clusterTables(background);
+	await startHDB(background);
+	if (clustering_host) await clusterTables();
 	console.info('Successfully cloned node: ' + leader_url);
 	if (background) process.exit();
 };
+
+function validateInput() {
+	const validation = {
+		[CLONE_VARS.HDB_LEADER_USERNAME]: Joi.required(),
+		[CLONE_VARS.HDB_LEADER_PASSWORD]: Joi.required(),
+		[CLONE_VARS.HDB_LEADER_URL]: Joi.required(),
+	};
+
+	const validate = validateBySchema(
+		{
+			[CLONE_VARS.HDB_LEADER_USERNAME]: username,
+			[CLONE_VARS.HDB_LEADER_PASSWORD]: password,
+			[CLONE_VARS.HDB_LEADER_URL]: leader_url,
+		},
+		Joi.object(validation)
+	);
+
+	if (validate) {
+		console.error(validate.message);
+		process.exit(1);
+	}
+}
 
 async function cloneConfig() {
 	console.info('Cloning configuration');
@@ -129,8 +156,7 @@ async function cloneConfig() {
 	let config_update = { [CONFIG_PARAMS.ROOTPATH]: root_path };
 
 	// If clustering is enabled on leader node, clone clustering config
-	if (leader_clustering_enabled && clone_node_config?.clustering?.enabled !== false) {
-		if (clustering_host == null) throw new Error(`'HDB_LEADER_CLUSTERING_HOST' must be defined`);
+	if (clustering_host && leader_clustering_enabled && clone_node_config?.clustering?.enabled !== false) {
 		config_update[CONFIG_PARAMS.CLUSTERING_ENABLED] = true;
 
 		const leader_routes = leader_config?.clustering?.hubServer?.cluster?.network?.routes;
@@ -473,10 +499,7 @@ async function cloneComponents() {
 	}
 }
 
-async function clusterTables(background) {
-	// If clustering is not enabled on leader do not cluster tables.
-	if (!leader_clustering_enabled) return;
-
+async function startHDB(background) {
 	const hdb_proc = await sys_info.getHDBProcessInfo();
 	if (hdb_proc.clustering.length === 0 || hdb_proc.core.length === 0) {
 		if (background) {
@@ -489,8 +512,15 @@ async function clusterTables(background) {
 		await hdb_utils.async_set_timeout(WAIT_FOR_RESTART_TIME);
 	}
 
-	console.info('Clustering cloned tables');
 	if (background) await hdb_utils.async_set_timeout(2000);
+}
+
+async function clusterTables() {
+	// If clustering is not enabled on leader do not cluster tables.
+	if (!leader_clustering_enabled) return;
+
+	console.info('Clustering cloned tables');
+
 	const subscribe = clone_node_config?.clusteringConfig?.subscribeToLeaderNode !== false;
 	const publish = clone_node_config?.clusteringConfig?.publishToLeaderNode !== false;
 
