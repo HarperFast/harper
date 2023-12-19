@@ -1,11 +1,13 @@
 'use strict';
 
 import { assert, expect } from 'chai';
-import axios from 'axios';
 import { decode, encode, DecoderStream } from 'cbor-x';
 import { getVariables, callOperation } from './utility.js';
 import { setupTestApp } from './setupTestApp.mjs';
+import { get as env_get } from '../../utility/environment/environmentManager.js';
 import { connect } from 'mqtt';
+import { readFileSync } from 'fs';
+import { start as startMQTT } from '../../ts-build/server/mqtt.js';
 import {
 	setNATSReplicator,
 	setPublishToStream,
@@ -61,7 +63,6 @@ describe('test MQTT connections and commands', () => {
 		let path = 'VariedProps/' + available_records[1];
 		await new Promise((resolve, reject) => {
 			client.subscribe(path, function (err) {
-				//console.log('subscribed', err);
 				if (err) reject(err);
 				else {
 					//	client.publish('VariedProps/' + available_records[2], 'Hello mqtt')
@@ -74,6 +75,25 @@ describe('test MQTT connections and commands', () => {
 			});
 		});
 	});
+	it('subscribe to retained/persisted record but with retain handling disabling retain messages', async function () {
+		let path = 'VariedProps/' + available_records[1];
+		await new Promise((resolve, reject) => {
+			client2.subscribe(path, { rh: 2 }, function (err) {
+				if (err) reject(err);
+			});
+			const onMessage = (topic, payload, packet) => {
+				let record = decode(payload);
+				console.log(topic, record);
+				reject(new Error('Should not receive any retained messages'));
+			}
+			client2.once('message', onMessage);
+			setTimeout(() => {
+				client2.off('message', onMessage);
+				resolve();
+			}, 50);
+		});
+	});
+
 	it('can repeatedly publish', async () => {
 		const vus = 5;
 		const tableName = 'SimpleRecord';
@@ -380,12 +400,33 @@ describe('test MQTT connections and commands', () => {
 		});
 		client.end();
 	});
-	it('subscribe and unsubscribe', async function () {
-		let client = connect('mqtt://localhost:1883', {
+	it('subscribe and unsubscribe with mTLS', async function () {
+		let server;
+		await new Promise((resolve, reject) => {
+			server = startMQTT({ server: global.server, securePort: 8884, network: { mtls: { user: 'HDB_ADMIN' } } }).listen(8884, resolve);
+			server.on('error', reject);
+		});
+		let bad_client = connect('mqtts://localhost:8884', {
+			clientId: 'test-bad-mtls',
+		});
+
+		const private_key_path = env_get('tls_privateKey');
+		const certificate_path = env_get('tls_certificate');
+		const certificate_authority_path = env_get('tls_certificateAuthority');
+		let client = connect('mqtts://localhost:8884', {
+			key: readFileSync(private_key_path),
+			// if they have a CA, we append it, so it is included
+			cert:
+				readFileSync(certificate_path) +
+				(certificate_authority_path ? '\n\n' + readFileSync(certificate_authority_path) : ''),
+			ca: certificate_authority_path && readFileSync(certificate_authority_path),
 			clean: true,
-			clientId: 'test-client-sub2',
+			clientId: 'test-client-mtls',
 		});
 		await new Promise((resolve, reject) => {
+			bad_client.on('connect', () => {
+				reject('Client should not be able to connect to mTLS without a certificate');
+			})
 			client.on('connect', resolve);
 			client.on('error', reject);
 		});
@@ -424,6 +465,16 @@ describe('test MQTT connections and commands', () => {
 			setTimeout(resolve, 50);
 		});
 		client.end();
+	});
+	it('subscribe to bad topic', async function () {
+		await new Promise((resolve, reject) => {
+			client2.subscribe('DoesNotExist/+', function (err, granted) {console.log('subscribed', err);
+				if (err) reject(err);
+				else {
+					resolve(assert.equal(granted[0].qos, 0x8f));
+				}
+			});
+		});
 	});
 	it('subscribe to single-level wildcard/full table', async function () {
 		const topic_expectations = {
@@ -601,7 +652,7 @@ describe('test MQTT connections and commands', () => {
 			client2.subscribe('+/SimpleRecord/test', function (err, granted) {
 				if (err) reject(err);
 				else {
-					resolve(assert.equal(granted[0].qos, 128)); // assert that the subscription was rejected
+					resolve(assert.equal(granted[0].qos, 0x8f)); // assert that the subscription was rejected
 				}
 			});
 		});
@@ -857,8 +908,8 @@ describe('test MQTT connections and commands', () => {
 		assert.equal(FourPropWithHistory.acknowledgements, 2);
 	});
 	after(() => {
-		client.end();
-		client2.end();
+		client?.end();
+		client2?.end();
 	});
 });
 function delay(ms) {

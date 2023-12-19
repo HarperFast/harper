@@ -12,11 +12,13 @@ import { loggerWithTag, error as log_error, warn, info } from '../utility/loggin
 const auth_event_log = loggerWithTag('auth-event');
 
 const AUTHORIZE_LOCAL = true;
-export async function start({ server, port, webSocket, securePort, requireAuthentication }) {
+export function start({ server, port, network, webSocket, securePort, requireAuthentication }) {
 	// here we basically normalize the different types of sockets to pass to our socket/message handler
 	const mqtt_settings = (server.mqtt = { requireAuthentication });
+	let server_instance;
+	const mtls = network?.mtls;
 	if (webSocket)
-		server.ws(
+		server_instance = server.ws(
 			(ws, request, chain_completion) => {
 				if (ws.protocol === 'mqtt') {
 					const { onMessage, onClose } = onSocket(
@@ -44,9 +46,25 @@ export async function start({ server, port, webSocket, securePort, requireAuthen
 		); // if there is no port, we are piggy-backing off of default app http server
 	// standard TCP socket
 	if (port || securePort) {
-		server.socket(
+		server_instance = server.socket(
 			async (socket) => {
 				let user;
+				if (mtls) {
+					if (socket.authorized) {
+						try {
+							let username = mtls.user;
+							if (username) {
+								if (username === 'Common Name' || username === 'CN') username = socket.getPeerCertificate().subject.CN;
+								user = await server.getUser(username, null, null);
+							}
+						} catch (error) {
+							log_error(error);
+						}
+					} else {
+						info('Unauthorized connection attempt, no authorized client certificate provided');
+						socket.end();
+					}
+				}
 				if (AUTHORIZE_LOCAL && socket.remoteAddress.includes('127.0.0.1')) {
 					user = await getSuperUser();
 				}
@@ -58,9 +76,10 @@ export async function start({ server, port, webSocket, securePort, requireAuthen
 					info('Socket error', error);
 				});
 			},
-			{ port, securePort }
+			{ port, securePort, mtls }
 		);
 	}
+	return server_instance;
 }
 let adding_metrics,
 	number_of_connections = 0;
@@ -102,7 +121,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					mqtt_options.protocolVersion = packet.protocolVersion;
 					if (packet.username) {
 						try {
-							user = await server.getUser(packet.username, packet.password.toString());
+							user = await server.getUser(packet.username, packet.password.toString(), request);
 							if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL)) {
 								auth_event_log.notify({
 									username: user.username,
@@ -202,7 +221,14 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 							granted_qos = (await session.addSubscription(subscription, subscription.qos >= 1)).qos || 0;
 						} catch (error) {
 							log_error(error);
-							granted_qos = 0x80; // failure
+							granted_qos =
+								mqtt_options.protocolVersion < 5
+									? 0x80 // the only error code in v3.1.1
+									: error.statusCode === 403
+									? 0x87 // unauthorized
+									: error.statusCode === 404
+									? 0x8f // invalid topic
+									: 0x80; // generic failure
 						}
 						granted.push(granted_qos);
 					}

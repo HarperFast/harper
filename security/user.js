@@ -49,7 +49,9 @@ const { UserEventMsg } = require('../server/threads/itc');
 const _ = require('lodash');
 const { server } = require('../server/Server');
 const harper_logger = require('../utility/logging/harper_logger');
-server.getUser = findAndValidateUser;
+server.getUser = (username, password) => {
+	return findAndValidateUser(username, password, password != null);
+};
 
 const USER_ATTRIBUTE_ALLOWLIST = {
 	username: true,
@@ -512,6 +514,7 @@ async function findAndValidateUser(username, pw, validate_password = true) {
 	let user_tmp = global.hdb_users.get(username);
 
 	if (!user_tmp) {
+		if (!validate_password) return { username };
 		throw handleHDBError(
 			new Error(),
 			AUTHENTICATION_ERROR_MSGS.GENERIC_AUTH_FAIL,

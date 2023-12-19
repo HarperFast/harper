@@ -104,6 +104,7 @@ export async function authentication(request, next_handler) {
 			if (status === AUTH_AUDIT_STATUS.SUCCESS) auth_event_log.notify(log);
 			else auth_event_log.error(log);
 		};
+		// TODO: If we have mTLS enabled, we need to verify the socket, and potentially get user name from the certificate
 
 		let new_user;
 		if (authorization) {
@@ -116,7 +117,7 @@ export async function authentication(request, next_handler) {
 						case 'Basic':
 							[username, password] = atob(credentials).split(':');
 							// legacy support for passing in blank username and password to indicate no auth
-							new_user = username || password ? await server.getUser(username, password) : null;
+							new_user = username || password ? await server.getUser(username, password, request) : null;
 							break;
 						case 'Bearer':
 							try {
@@ -160,7 +161,7 @@ export async function authentication(request, next_handler) {
 			request.user = new_user;
 		} else if (session?.user) {
 			// or should this be cached in the session?
-			request.user = await server.getUser(session.user, null, false);
+			request.user = await server.getUser(session.user, null, request);
 		} else if (
 			(AUTHORIZE_LOCAL && (request.ip?.includes('127.0.0.1') || request.ip == '::1')) ||
 			(request?._nodeRequest?.socket?.server?._pipeName && request.ip === undefined) // allow socket domain
@@ -198,7 +199,7 @@ export async function authentication(request, next_handler) {
 				return session_table.put(updated_session);
 			};
 			request.login = async function (user, password) {
-				request.user = await server.getUser(user, password);
+				request.user = await server.getUser(user, password, request);
 				request.session.update({ user: request.user.username });
 			};
 			if (

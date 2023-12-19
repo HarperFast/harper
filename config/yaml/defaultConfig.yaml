@@ -73,6 +73,7 @@ mqtt:
   network:
     port: 1883
     securePort: 8883
+    mtls: false
   webSocket: true
   requireAuthentication: true
 operationsApi:
