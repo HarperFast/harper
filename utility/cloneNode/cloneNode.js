@@ -10,6 +10,7 @@ const { pipeline } = require('stream/promises');
 const { createWriteStream, ensureDir } = require('fs-extra');
 const { join } = require('path');
 const _ = require('lodash');
+const minimist = require('minimist');
 const env_mgr = require('../environment/environmentManager');
 const sys_info = require('../environment/systemInformation');
 const hdb_log = require('../logging/harper_logger');
@@ -30,13 +31,27 @@ const WAIT_FOR_RESTART_TIME = 10000;
 const CLONE_CONFIG_FILE = 'clone-node-config.yaml';
 const SYSTEM_TABLES_TO_CLONE = [SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME, SYSTEM_TABLE_NAMES.USER_TABLE_NAME];
 
-const username = process.env.HDB_LEADER_USERNAME;
-const password = process.env.HDB_LEADER_PASSWORD;
-const leader_url = process.env.HDB_LEADER_URL;
-const clustering_host = process.env.HDB_LEADER_CLUSTERING_HOST;
-const leader_clustering_port = process.env.HDB_LEADER_CLUSTERING_PORT;
-const fully_connected = process.env.HDB_FULLY_CONNECTED === 'true'; // optional var - will connect the clone node to the leader AND all the nodes the leader is connected to
-const clone_overtop = process.env.HDB_CLONE_OVERTOP === 'true'; // optional var - will allow clone to work overtop of an existing HDB install
+const CLONE_VARS = {
+	HDB_LEADER_USERNAME: 'HDB_LEADER_USERNAME',
+	HDB_LEADER_PASSWORD: 'HDB_LEADER_PASSWORD',
+	HDB_LEADER_URL: 'HDB_LEADER_URL',
+	HDB_LEADER_CLUSTERING_HOST: 'HDB_LEADER_CLUSTERING_HOST',
+	HDB_LEADER_CLUSTERING_PORT: 'HDB_LEADER_CLUSTERING_PORT',
+	HDB_FULLY_CONNECTED: 'HDB_FULLY_CONNECTED',
+	HDB_CLONE_OVERTOP: 'HDB_CLONE_OVERTOP',
+};
+
+const cli_args = minimist(process.argv);
+const username = cli_args[CLONE_VARS.HDB_LEADER_USERNAME] ?? process.env[CLONE_VARS.HDB_LEADER_USERNAME];
+const password = cli_args[CLONE_VARS.HDB_LEADER_PASSWORD] ?? process.env[CLONE_VARS.HDB_LEADER_PASSWORD];
+const leader_url = cli_args[CLONE_VARS.HDB_LEADER_URL] ?? process.env[CLONE_VARS.HDB_LEADER_URL];
+const clustering_host =
+	cli_args[CLONE_VARS.HDB_LEADER_CLUSTERING_HOST] ?? process.env[CLONE_VARS.HDB_LEADER_CLUSTERING_HOST];
+const leader_clustering_port =
+	cli_args[CLONE_VARS.HDB_LEADER_CLUSTERING_PORT] ?? process.env[CLONE_VARS.HDB_LEADER_CLUSTERING_PORT];
+let fully_connected =
+	(cli_args[CLONE_VARS.HDB_FULLY_CONNECTED] ?? process.env[CLONE_VARS.HDB_FULLY_CONNECTED]) === 'true'; // optional var - will connect the clone node to the leader AND all the nodes the leader is connected to
+const clone_overtop = (cli_args[CLONE_VARS.HDB_CLONE_OVERTOP] ?? process.env[CLONE_VARS.HDB_CLONE_OVERTOP]) === 'true'; // optional var - will allow clone to work overtop of an existing HDB install
 
 let leader_clustering_enabled;
 let clone_node_config;
@@ -52,7 +67,7 @@ module.exports = async function cloneNode(background = false) {
 	delete process.env.HDB_LEADER_URL;
 	const is_hdb_installed = await isHdbInstalled();
 	if (!clone_overtop && is_hdb_installed) {
-		console.info('HarperDB is already installed, no clone node will be performed');
+		console.info('HarperDB is already installed, clone will not be performed');
 		return main();
 	}
 
