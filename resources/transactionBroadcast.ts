@@ -19,7 +19,7 @@ const test = Buffer.alloc(4096);
  * @param key
  * @param listener
  */
-export function addSubscription(table, key, listener?: (key) => any, start_time: number, include_descendants) {
+export function addSubscription(table, key, listener?: (key) => any, start_time: number) {
 	const path = table.primaryStore.env.path;
 	const table_id = table.primaryStore.tableId;
 	// set up the subscriptions map. We want to just use a single map (per table) for efficient delegation
@@ -46,7 +46,6 @@ export function addSubscription(table, key, listener?: (key) => any, start_time:
 	key = keyArrayToString(key);
 	const subscription = new Subscription(listener);
 	subscription.startTime = start_time;
-	if (include_descendants) subscription.includeDescendants = include_descendants;
 	let subscriptions: any[] = table_subscriptions.get(key);
 
 	if (subscriptions) subscriptions.push(subscription);
@@ -119,12 +118,16 @@ function notifyFromTransactionData(path, same_thread?) {
 		// TODO: How to handle invalidation
 		let audit_record;
 		let matching_key = keyArrayToString(audit_entry.recordId);
-		let is_ancestor;
+		let ancestor_level = 0;
 		do {
 			const key_subscriptions = table_subscriptions.get(matching_key);
 			if (key_subscriptions) {
 				for (const subscription of key_subscriptions) {
-					if (is_ancestor && !subscription.includeDescendants) continue;
+					if (
+						ancestor_level > 0 && // only ancestors if the subscription is for ancestors (and apply onlyChildren filtering as necessary)
+						!(subscription.includeDescendants && !(subscription.onlyChildren && ancestor_level > 1))
+					)
+						continue;
 					if (subscription.startTime >= local_time) {
 						info('omitting', record_id, subscription.startTime, local_time);
 						continue;
@@ -159,7 +162,7 @@ function notifyFromTransactionData(path, same_thread?) {
 			if (last_slash > -1) {
 				matching_key = matching_key.slice(0, last_slash + 1);
 			} else matching_key = null;
-			is_ancestor = true;
+			ancestor_level++;
 		} while (true);
 	}
 	if (subscribers_with_txns) {

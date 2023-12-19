@@ -139,6 +139,77 @@ describe('test MQTT connections and commands', () => {
 		assert(replicated_published_messages.length > 10);
 	});
 
+	it('last will should be published on connection loss', async () => {
+		const topic = `SimpleRecord/52`;
+		const client_to_die = connect({
+			host: 'localhost',
+			clean: true,
+			will: {
+				topic,
+				payload: JSON.stringify({ name: 'last will and testimony' }),
+				qos: 1,
+				retain: false,
+			},
+		});
+		await new Promise((resolve, reject) => {
+			client_to_die.on('connect', function (connack) {
+				resolve(connack);
+			});
+			client_to_die.on('error', reject);
+		});
+		await new Promise((resolve, reject) => {
+			client.subscribe(topic, function (err) {
+				if (err) reject(err);
+			});
+
+			client.once('message', function (topic, message) {
+				try {
+					let data = decode(message);
+				// message is Buffer
+					assert.deepEqual(data, {name: 'last will and testimony'});
+					resolve();
+				} catch(error) { reject(error); }
+			});
+			client_to_die.end(true); // this closes the connection without a disconnect packet
+		});
+	});
+
+	it('last will should not be published on explicit disconnect', async () => {
+		const topic = `SimpleRecord/53`;
+		const client_to_die = connect({
+			host: 'localhost',
+			clean: true,
+			will: {
+				topic,
+				payload: JSON.stringify({ name: 'last will and testimony' }),
+				qos: 1,
+				retain: false,
+			},
+		});
+		let onMessage;
+		await new Promise((resolve, reject) => {
+			client_to_die.on('connect', function (connack) {
+				resolve(connack);
+			});
+			client_to_die.on('error', reject);
+		});
+		await new Promise((resolve, reject) => {
+			client.subscribe(topic, function (err) {
+				if (err) reject(err);
+			});
+			onMessage = function(topic, message) {
+				try {
+					reject('Should not get a message on topic ' + topic);
+				} catch(error) { reject(error); }
+			}
+			client.once('message', onMessage);
+			setTimeout(resolve, 50);
+			client_to_die.end(); // this closes the connection with a disconnect packet
+		});
+
+		client.off('message', onMessage);
+	});
+
 	it('can publish non-JSON', async () => {
 		const topic = `SimpleRecord/51`;
 		const client = connect({
@@ -387,26 +458,133 @@ describe('test MQTT connections and commands', () => {
 			});
 		});
 	});
-	it('subscribe to wildcard/full table', async function () {
+	it('subscribe to single-level wildcard/full table', async function () {
+		const topic_expectations = {
+			'SimpleRecord/+': ['SimpleRecord/', 'SimpleRecord/44', 'SimpleRecord/47'],
+			'SimpleRecord/+/33': ['SimpleRecord/sub/33'],
+			'SimpleRecord/sub/+': ['SimpleRecord/sub/33'],
+			'SimpleRecord/sub/+/33': ['SimpleRecord/sub/sub2/33'],
+			'SimpleRecord/+/+/+': ['SimpleRecord/sub/sub2/33'],
+			'SimpleRecord/+/sub2/+': ['SimpleRecord/sub/sub2/33'],
+			'SimpleRecord/+/+': ['SimpleRecord/sub/33'],
+			'SimpleRecord/sub/#': ['SimpleRecord/sub/33', 'SimpleRecord/sub/sub2/33'],
+			'SimpleRecord/+/sub2/#': ['SimpleRecord/sub/sub2/33'],
+		};
+		for (const subscription_topic in topic_expectations) {
+			let expected_topics = topic_expectations[subscription_topic];
+			await new Promise((resolve, reject) => {
+				client2.subscribe(subscription_topic, function (err) {
+					if (err) reject(err);
+					else {
+						resolve();
+					}
+				});
+			});
+			let message_count = 0;
+			let message_listener;
+			await new Promise((resolve, reject) => {
+				client2.on(
+					'message',
+					(message_listener = (topic, payload, packet) => {
+						assert(expected_topics.includes(topic));
+						let record = JSON.parse(payload);
+						assert(record.name);
+						if (++message_count == expected_topics.length) resolve();
+					})
+				);
+				client2.publish(
+					'SimpleRecord/44',
+					JSON.stringify({
+						name: 'This is a test 1',
+					}),
+					{
+						retain: false,
+						qos: 1,
+					}
+				);
+				client2.publish(
+					'SimpleRecord/sub/33',
+					JSON.stringify({
+						name: 'This is a test to a sub-topic',
+					}),
+					{
+						retain: false,
+						qos: 1,
+					}
+				);
+				client2.publish(
+					'SimpleRecord/sub/sub2/33',
+					JSON.stringify({
+						name: 'This is a test to a deeper sub-topic',
+					}),
+					{
+						retain: false,
+						qos: 1,
+					}
+				);
+
+				client.publish(
+					'SimpleRecord/47',
+					JSON.stringify({
+						name: 'This is a test 2',
+					}),
+					{
+						retain: true,
+						qos: 1,
+					}
+				);
+
+				client.publish(
+					'SimpleRecord/',
+					JSON.stringify({
+						name: 'This is a test to the generic table topic',
+					}),
+					{
+						qos: 1,
+					}
+				);
+			});
+			client2.off('message', message_listener);
+			await new Promise((resolve, reject) => {
+				client2.unsubscribe(subscription_topic, function (err) {
+					if (err) reject(err);
+					else resolve();
+				});
+			});
+		}
+	});
+	it('subscribe to multi-level wildcard/full table', async function () {
 		await new Promise((resolve, reject) => {
-			client2.subscribe('SimpleRecord/+', function (err) {
-				console.log('subscribed', err);
+			client2.subscribe('SimpleRecord/#', function (err) {
 				if (err) reject(err);
-				else {
-					resolve();
-				}
+				else resolve();
 			});
 		});
 		let message_count = 0;
+		let message_listener;
 		await new Promise((resolve, reject) => {
-			client2.on('message', (topic, payload, packet) => {
-				let record = JSON.parse(payload);
-				if (++message_count == 3) resolve();
-			});
+			client2.on(
+				'message',
+				(message_listener = (topic, payload, packet) => {
+					let record = JSON.parse(payload);
+					assert(record.name);
+					if (++message_count == 4) resolve();
+				})
+			);
 			client2.publish(
 				'SimpleRecord/44',
 				JSON.stringify({
 					name: 'This is a test 1',
+				}),
+				{
+					retain: false,
+					qos: 1,
+				}
+			);
+			client2.publish(
+				'SimpleRecord/sub/33',
+				JSON.stringify({
+					name: 'This is a test to a sub-topic', // should go to multi-level wildcard
 				}),
 				{
 					retain: false,
@@ -434,6 +612,31 @@ describe('test MQTT connections and commands', () => {
 					qos: 1,
 				}
 			);
+		});
+		client2.off('message', message_listener);
+		await new Promise((resolve, reject) => {
+			client2.unsubscribe('SimpleRecord/#', function (err) {
+				if (err) reject(err);
+				else resolve();
+			});
+		});
+	});
+	it('subscribe to wildcards we do not support', async function () {
+		await new Promise((resolve, reject) => {
+			client2.subscribe('SimpleRecord/+test', function (err, granted) {
+				if (err) resolve(err);
+				else {
+					resolve(assert.equal(granted[0].qos, 128)); // assert that the subscription was rejected
+				}
+			});
+		});
+		await new Promise((resolve, reject) => {
+			client2.subscribe('+/SimpleRecord/test', function (err, granted) {
+				if (err) reject(err);
+				else {
+					resolve(assert.equal(granted[0].qos, 0x8f)); // assert that the subscription was rejected
+				}
+			});
 		});
 	});
 	it('subscribe with QoS=1 and reconnect with non-clean session', async function () {
@@ -687,8 +890,8 @@ describe('test MQTT connections and commands', () => {
 		assert.equal(FourPropWithHistory.acknowledgements, 2);
 	});
 	after(() => {
-		client.end();
-		client2.end();
+		client?.end();
+		client2?.end();
 	});
 });
 function delay(ms) {

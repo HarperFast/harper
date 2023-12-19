@@ -163,6 +163,12 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 						mqtt_settings.authorizeClient?.(packet, user);
 
 						// TODO: Handle the will & testament, and possibly use the will's content type as a hint for expected content
+						if (packet.will) {
+							const deserialize =
+								socket.deserialize || (socket.deserialize = getDeserializer(request?.headers.get?.('content-type')));
+							packet.will.data = packet.will.payload?.length > 0 ? deserialize(packet.will.payload) : undefined;
+							delete packet.will.payload;
+						}
 						session = getSession({
 							user,
 							...packet,
@@ -234,16 +240,19 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 						messageId: packet.messageId,
 					});
 					break;
-				case 'unsubscribe':
+				case 'unsubscribe': {
+					const granted = [];
 					for (const subscription of packet.unsubscriptions) {
-						session.removeSubscription(subscription);
+						granted.push(session.removeSubscription(subscription) ? 0 : 17);
 					}
 					sendPacket({
 						// Send a subscription acknowledgment
 						cmd: 'unsuback',
+						granted,
 						messageId: packet.messageId,
 					});
 					break;
+				}
 				case 'pubrel':
 					sendPacket({
 						// Send a publish response
@@ -308,7 +317,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					break;
 				case 'disconnect':
 					disconnected = true;
-					session?.disconnect();
+					session?.disconnect(true);
 					recordActionBinary(true, 'connection', 'mqtt', 'disconnect');
 					if (socket.close) socket.close();
 					else socket.end();

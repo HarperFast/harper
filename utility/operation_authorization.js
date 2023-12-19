@@ -318,7 +318,7 @@ function verifyPerms(request_json, operation) {
 	//we need to use the action value, if present, to ensure the correct permission is checked below
 	let action = request_json.action;
 
-	let operation_schema = request_json.schema;
+	let operation_schema = request_json.schema ?? request_json.database;
 	let table = request_json.table;
 
 	let schema_table_map = new Map();

@@ -74,7 +74,7 @@ function harperDBService() {
 				require('./run').main();
 				break;
 			case SERVICE_ACTIONS_ENUM.START:
-				if (process.env.HDB_LEADER_URL) {
+				if (process.env.HDB_LEADER_URL || process.argv.includes('--HDB_LEADER_URL')) {
 					const clone_node = require('../utility/cloneNode/cloneNode');
 					clone_node(true).catch((err) => {
 						console.log(err);
@@ -168,7 +168,7 @@ function harperDBService() {
 					});
 				break;
 			case undefined:
-				if (process.env.HDB_LEADER_URL) {
+				if (process.env.HDB_LEADER_URL || process.argv.includes('--HDB_LEADER_URL')) {
 					const clone_node = require('../utility/cloneNode/cloneNode');
 					clone_node().catch((err) => {
 						console.log(err);

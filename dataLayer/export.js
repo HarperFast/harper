@@ -16,7 +16,7 @@ const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const { streamAsJSON } = require('../server/serverHelpers/JSONStream');
 const { Upload } = require('@aws-sdk/lib-storage');
 
-const VALID_SEARCH_OPERATIONS = ['search_by_value', 'search_by_hash', 'sql'];
+const VALID_SEARCH_OPERATIONS = ['search_by_value', 'search_by_hash', 'sql', 'search_by_conditions'];
 const VALID_EXPORT_FORMATS = ['json', 'csv'];
 const JSON_TEXT = 'json';
 const CSV = 'csv';
@@ -369,6 +369,9 @@ async function getRecords(export_object) {
 			break;
 		case 'search_by_hash':
 			operation = p_search_by_hash;
+			break;
+		case 'search_by_conditions':
+			operation = search.searchByConditions;
 			break;
 		case 'sql':
 			operation = p_sql;
