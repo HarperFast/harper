@@ -119,7 +119,7 @@ class SubscriptionsSession {
 		this.user = user;
 	}
 	async addSubscription(subscription_request, needs_ack, filter?) {
-		const { topic, omitCurrent: rh, startTime: start_time } = subscription_request;
+		const { topic, rh: retain_handling, startTime: start_time } = subscription_request;
 		const search_index = topic.indexOf('?');
 		let search, path;
 		if (search_index > -1) {
@@ -130,9 +130,13 @@ class SubscriptionsSession {
 		if (path.indexOf('.') > -1) throw new Error('Dots are not allowed in topic names');
 		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
 		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
+		let omit_current;
 		if (existing_subscription) {
+			omit_current = retain_handling > 0;
 			existing_subscription.end();
 			this.subscriptions.splice(this.subscriptions.indexOf(existing_subscription), 1);
+		} else {
+			omit_current = retain_handling === 2;
 		}
 		const request = {
 			search,
@@ -140,7 +144,7 @@ class SubscriptionsSession {
 			authorize: true,
 			user: this.user,
 			startTime: start_time,
-			omitCurrent: rh,
+			omitCurrent: omit_current,
 			url: '',
 		};
 		if (start_time) trace('Resuming subscription from', topic, 'from', start_time);

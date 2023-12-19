@@ -63,7 +63,6 @@ describe('test MQTT connections and commands', () => {
 		let path = 'VariedProps/' + available_records[1];
 		await new Promise((resolve, reject) => {
 			client.subscribe(path, function (err) {
-				//console.log('subscribed', err);
 				if (err) reject(err);
 				else {
 					//	client.publish('VariedProps/' + available_records[2], 'Hello mqtt')
@@ -76,6 +75,25 @@ describe('test MQTT connections and commands', () => {
 			});
 		});
 	});
+	it('subscribe to retained/persisted record but with retain handling disabling retain messages', async function () {
+		let path = 'VariedProps/' + available_records[1];
+		await new Promise((resolve, reject) => {
+			client2.subscribe(path, { rh: 2 }, function (err) {
+				if (err) reject(err);
+			});
+			const onMessage = (topic, payload, packet) => {
+				let record = decode(payload);
+				console.log(topic, record);
+				reject(new Error('Should not receive any retained messages'));
+			}
+			client2.once('message', onMessage);
+			setTimeout(() => {
+				client2.off('message', onMessage);
+				resolve();
+			}, 50);
+		});
+	});
+
 	it('can repeatedly publish', async () => {
 		const vus = 5;
 		const tableName = 'SimpleRecord';
