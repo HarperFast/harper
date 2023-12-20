@@ -342,6 +342,7 @@ describe('Test configUtils module', () => {
 				},
 				mqtt: {
 					network: {
+						mtls: false,
 						port: 1883,
 						securePort: 8883,
 					},
@@ -437,6 +438,7 @@ describe('Test configUtils module', () => {
 				logging_rotation_maxsize: '10M',
 				logging_rotation_path: 'lets/send/log/here',
 				logging_stdstreams: true,
+				mqtt_network_mtls: false,
 				mqtt_network_port: 1883,
 				mqtt_network_secureport: 8883,
 				mqtt_websocket: true,
@@ -542,6 +544,7 @@ describe('Test configUtils module', () => {
 			logging_rotation_maxsize: null,
 			logging_rotation_path: null,
 			logging_stdstreams: false,
+			mqtt_network_mtls: false,
 			mqtt_network_port: 1883,
 			mqtt_network_secureport: 8883,
 			mqtt_requireauthentication: true,

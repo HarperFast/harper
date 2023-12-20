@@ -8,7 +8,7 @@ function createHash(password) {
 }
 
 function validateHash(hash, password) {
-	let salt = hash.substr(0, SaltLength);
+	let salt = hash?.substr(0, SaltLength);
 	let validHash = salt + md5(password + salt);
 	return hash === validHash;
 }
