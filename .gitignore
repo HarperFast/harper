@@ -28,6 +28,7 @@ ts-build
 
 /npm_pack/*
 *.jsc
+*.cpuprofile
 
 harperdb-*.tgz
 utility/Docker/licenses

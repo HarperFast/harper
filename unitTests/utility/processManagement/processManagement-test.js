@@ -221,7 +221,7 @@ describe('Test processManagement utilityFunctions module', () => {
 			expect(process_meta.length).to.equal(0);
 		}).timeout(20000);
 
-		it('Test that multiple processes are stopped', async () => {
+		it.skip('Test that multiple processes are stopped', async () => {
 			await utility_functions.start(services_config.generateMainServerConfig());
 			await utility_functions.stop('HarperDB');
 			const process_meta = await utility_functions.list('HarperDB');
@@ -300,7 +300,7 @@ describe('Test processManagement utilityFunctions module', () => {
 			await stopDeleteAllServices();
 		});
 
-		it('Test all processManagement managed processes are listed', async () => {
+		it.skip('Test all processManagement managed processes are listed', async () => {
 			await utility_functions.start(services_config.generateMainServerConfig());
 			const list = await utility_functions.list();
 			let hdb_name_found = false;

@@ -160,7 +160,7 @@ function notifyFromTransactionData(path, same_thread?) {
 			if (matching_key == null) break;
 			const last_slash = matching_key.lastIndexOf?.('/', matching_key.length - 2);
 			if (last_slash > -1) {
-				matching_key = matching_key.slice(0, last_slash + 1);
+				matching_key = matching_key.slice(0, last_slash);
 			} else matching_key = null;
 			ancestor_level++;
 		} while (true);

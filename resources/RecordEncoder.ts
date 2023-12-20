@@ -136,7 +136,9 @@ const mapGet = Map.prototype.get;
 
 export function handleLocalTimeForGets(store) {
 	const storeGetEntry = store.getEntry;
+	store.readCount = 0;
 	store.getEntry = function (id, options) {
+		store.readCount++;
 		const entry = storeGetEntry.call(this, id, options);
 		// if we have decoded with metadata, we want to pull it out and assign to this entry
 		const record_entry = entry?.value;
@@ -147,6 +149,7 @@ export function handleLocalTimeForGets(store) {
 			entry.value = record_entry.value;
 			if (record_entry.expiresAt > 0) entry.expiresAt = record_entry.expiresAt;
 		}
+		if (entry) entry.key = id;
 		return entry;
 	};
 	const storeGet = store.get;

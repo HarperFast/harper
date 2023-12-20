@@ -1,7 +1,7 @@
 import { Request } from './ResourceInterface';
 import { _assignPackageExport } from '../index';
 import { CONTEXT } from './Resource';
-import { DatabaseTransaction } from './DatabaseTransaction';
+import { DatabaseTransaction, FinishedTransaction } from './DatabaseTransaction';
 
 export function transaction<T>(context: Request, callback: (transaction: TransactionSet) => T, options?: any): T;
 export function transaction<T>(callback: (transaction: TransactionSet) => T): T;
@@ -21,7 +21,7 @@ export function transaction<T>(
 		callback = context;
 		context = {};
 	} else if (!context) context = {}; // request argument included, but null or undefined, so create anew one
-	else if (context?.transaction && typeof callback === 'function') return callback(context.transaction); // nothing to be done, already in transaction
+	else if (context?.transaction?.open && typeof callback === 'function') return callback(context.transaction); // nothing to be done, already in open transaction
 	if (typeof callback !== 'function') throw new Error('Callback function must be provided to transaction');
 	const transaction = (context.transaction = new DatabaseTransaction());
 	if (context.timestamp) transaction.timestamp = context.timestamp;
@@ -40,21 +40,27 @@ export function transaction<T>(
 	return onComplete(result);
 	// when the transaction function completes, run this to commit the transaction
 	function onComplete(result) {
-		const committed = transaction.commit({ close: true });
+		const committed = transaction.commit(
+			options?.resetTransaction
+				? {
+						prepared() {
+							// once the transaction is prepared, we can remove transaction from context
+							transaction.autoCommitMode = true;
+						},
+				  }
+				: {}
+		);
 		if (committed.then) {
 			return committed.then(() => {
-				if (options?.resetTransaction) context.transaction = null;
 				return result;
 			});
 		} else {
-			if (options?.resetTransaction) context.transaction = null;
 			return result;
 		}
 	}
 	// if the transaction function throws an error, we abort
 	function onError(error) {
-		transaction.abort();
-		if (options?.resetTransaction) context.transaction = null;
+		transaction.abort({});
 		throw error;
 	}
 }

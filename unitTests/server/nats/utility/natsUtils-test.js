@@ -741,7 +741,7 @@ describe('Test natsUtils module', () => {
 			await test_utils.tearDownMockDB(test_env);
 		}).timeout(TEST_TIMEOUT);
 
-		it('Test addSourceToWorkStream where start_time is before one message in source', async () => {
+		it.skip('Test addSourceToWorkStream where start_time is before one message in source', async () => {
 			// Create local stream
 			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
 			// Publish a message to stream

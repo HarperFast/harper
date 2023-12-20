@@ -161,8 +161,9 @@ class SelectValidator {
 	[setColumnsForTable](table_name) {
 		this.attributes.forEach((attribute) => {
 			if (
-				!table_name ||
-				(table_name && (attribute.table.tableid === table_name || attribute.table.as === table_name))
+				(!table_name ||
+					(table_name && (attribute.table.tableid === table_name || attribute.table.as === table_name))) &&
+				!attribute.relation
 			) {
 				this.statement.columns.push(
 					new alasql.yy.Column({

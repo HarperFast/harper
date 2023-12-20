@@ -90,6 +90,12 @@ export function start({ ensureTable }) {
 								}
 							} else if (directive.name.value === 'indexed') {
 								property.indexed = true;
+							} else if (directive.name.value === 'relationship') {
+								const relationship_definition = {};
+								for (const arg of directive.arguments) {
+									relationship_definition[arg.name.value] = (arg.value as StringValueNode).value;
+								}
+								property.relationship = relationship_definition;
 							} else if (directive.name.value === 'createdTime') {
 								property.assignCreatedTime = true;
 							} else if (directive.name.value === 'updatedTime') {
@@ -106,7 +112,7 @@ export function start({ ensureTable }) {
 							}
 						}
 					}
-					type_def.typeName = type_name;
+					type_def.type = type_name;
 					if (type_name === 'Query') {
 						query = type_def;
 					}
@@ -115,8 +121,10 @@ export function start({ ensureTable }) {
 		// check the types and if any types reference other types, fill those in.
 		function connectPropertyType(property) {
 			const target_type_def = types.get(property.type);
-			if (target_type_def) property.properties = target_type_def.properties;
-			else if (property.type === 'array') connectPropertyType(property.elements);
+			if (target_type_def) {
+				Object.defineProperty(property, 'properties', { value: target_type_def.properties });
+				Object.defineProperty(property, 'definition', { value: target_type_def });
+			} else if (property.type === 'array') connectPropertyType(property.elements);
 			else if (!PRIMITIVE_TYPES.includes(property.type)) {
 				if (getWorkerIndex() === 0)
 					console.error(
@@ -135,7 +143,7 @@ export function start({ ensureTable }) {
 			if (type_def.export) {
 				// allow empty string to be used to declare a table on the root path
 				if (type_def.export.name === '') resources.set(dirname(url_path), type_def.tableClass);
-				else resources.set(dirname(url_path) + '/' + (type_def.export.name || type_def.typeName), type_def.tableClass);
+				else resources.set(dirname(url_path) + '/' + (type_def.export.name || type_def.type), type_def.tableClass);
 			}
 		}
 		// and if there was a `type Query` definition, we use that to created exported resources

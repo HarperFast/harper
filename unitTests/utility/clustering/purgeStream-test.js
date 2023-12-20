@@ -31,7 +31,7 @@ describe('Test purgeStream module', () => {
 	it('Test everything is called as expected', async () => {
 		const result = await purge_stream(test_req);
 		expect(check_clustering_enabled_stub.called).to.be.true;
-		expect(purge_table_stream_stub.args[0]).to.eql(['dev', 'chicken']);
+		expect(purge_table_stream_stub.args[0]).to.eql(['dev', 'chicken', undefined]);
 		expect(result).to.equal("Successfully purged table 'dev.chicken'");
 	});
 

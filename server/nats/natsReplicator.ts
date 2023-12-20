@@ -266,7 +266,7 @@ class ImmmediateNATSTransaction extends NATSTransaction {
 
 	addWrite(database_path, write) {
 		super.addWrite(database_path, write);
-		this.commit();
+		this.commit({});
 	}
 }
 immediateNATSTransaction = new ImmmediateNATSTransaction();

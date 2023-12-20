@@ -50,52 +50,52 @@ describe('Types Validation', () => {
 		});
 	});
 	it('Rejects incorrect types', async function () {
-		await assert.rejects(() =>
+		assert.throws(() =>
 			ValidationTest.put(42, {
 				str: 444,
 			})
 		);
-		await assert.rejects(() =>
+		assert.throws(() =>
 			ValidationTest.put(42, {
 				num: 'wrong type',
 			})
 		);
-		await assert.rejects(() =>
+		assert.throws(() =>
 			ValidationTest.put(42, {
 				bool: 'wrong type',
 			})
 		);
-		await assert.rejects(() =>
+		assert.throws(() =>
 			ValidationTest.put(42, {
 				bytes: 'wrong type',
 			})
 		);
-		await assert.rejects(() =>
+		assert.throws(() =>
 			ValidationTest.put(42, {
 				int: 2147483658,
 			})
 		);
-		await assert.rejects(() =>
+		assert.throws(() =>
 			ValidationTest.put(42, {
 				long: 9007199254740999,
 			})
 		);
-		await assert.rejects(() =>
+		assert.throws(() =>
 			ValidationTest.put(42, {
 				subObject: 'wrong type',
 			})
 		);
-		await assert.rejects(() =>
+		assert.throws(() =>
 			ValidationTest.put(42, {
 				subObject: { name: 32 },
 			})
 		);
-		await assert.rejects(() =>
+		assert.throws(() =>
 			ValidationTest.put(42, {
 				subObject: { name: null },
 			})
 		);
-		await assert.rejects(() =>
+		assert.throws(() =>
 			ValidationTest.put(42, {
 				arrayOfStrings: [32],
 			})

@@ -13,7 +13,7 @@ const search_by_value_schema = Joi.object({
 	table: hdb_table,
 	search_attribute: hdb_schema_table,
 	search_value: Joi.any().required(),
-	get_attributes: Joi.array().min(1).items(hdb_schema_table).optional(),
+	get_attributes: Joi.array().min(1).items(Joi.alternatives(hdb_schema_table, Joi.object())).optional(),
 	desc: Joi.bool(),
 	limit: Joi.number().integer().min(1),
 	offset: Joi.number().integer().min(0),
@@ -26,38 +26,46 @@ const search_by_conditions_schema = Joi.object({
 	operator: Joi.string().valid('and', 'or').default('and').lowercase(),
 	offset: Joi.number().integer().min(0),
 	limit: Joi.number().integer().min(1),
-	get_attributes: Joi.array().min(1).items(hdb_schema_table).optional(),
+	get_attributes: Joi.array().min(1).items(Joi.alternatives(hdb_schema_table, Joi.object())).optional(),
+	sort: Joi.object({
+		attribute: Joi.alternatives(hdb_schema_table, Joi.array().min(1)),
+		descending: Joi.bool().optional(),
+	}).optional(),
 	conditions: Joi.array()
 		.min(1)
 		.items(
-			Joi.object({
-				search_attribute: hdb_schema_table,
-				search_type: Joi.string()
-					.valid(
-						'equals',
-						'contains',
-						'starts_with',
-						'ends_with',
-						'greater_than',
-						'greater_than_equal',
-						'less_than',
-						'less_than_equal',
-						'between'
-					)
-					.optional(),
-				search_value: Joi.when('search_type', {
-					switch: [
-						{ is: 'equals', then: Joi.any() },
-						{
-							is: 'between',
-							then: Joi.array()
-								.items(Joi.alternatives([Joi.string(), Joi.number()]))
-								.length(2),
-						},
-					],
-					otherwise: Joi.alternatives(Joi.string(), Joi.number()),
-				}).required(),
-			})
+			Joi.alternatives(
+				Joi.object({ operator: Joi.string().valid('and', 'or').default('and').lowercase(), conditions: Joi.array() }),
+				Joi.object({
+					search_attribute: Joi.alternatives(hdb_schema_table, Joi.array().min(1)),
+					search_type: Joi.string()
+						.valid(
+							'equals',
+							'contains',
+							'starts_with',
+							'ends_with',
+							'greater_than',
+							'greater_than_equal',
+							'less_than',
+							'less_than_equal',
+							'between',
+							'not_equal'
+						)
+						.optional(),
+					search_value: Joi.when('search_type', {
+						switch: [
+							{ is: 'equals', then: Joi.any() },
+							{
+								is: 'between',
+								then: Joi.array()
+									.items(Joi.alternatives([Joi.string(), Joi.number()]))
+									.length(2),
+							},
+						],
+						otherwise: Joi.alternatives(Joi.string(), Joi.number()),
+					}).required(),
+				})
+			)
 		)
 		.required(),
 });
@@ -114,12 +122,16 @@ module.exports = function (search_object, type) {
 		}
 
 		//if search type is conditions add conditions fields to see if the fields exist
-		if (type === 'conditions') {
+		const addConditions = (search_object) => {
 			//this is used to validate condition attributes exist in the schema
 			for (let x = 0, length = search_object.conditions.length; x < length; x++) {
 				let condition = search_object.conditions[x];
-				check_attributes.push(condition.search_attribute);
+				if (condition.conditions) addConditions(condition);
+				else check_attributes.push(condition.search_attribute);
 			}
+		};
+		if (type === 'conditions') {
+			addConditions(search_object);
 		}
 
 		let unknown_attributes = _.filter(
@@ -127,6 +139,7 @@ module.exports = function (search_object, type) {
 			(attribute) =>
 				attribute !== '*' &&
 				attribute.attribute !== '*' && // skip check for asterik attribute
+				!Array.isArray(attribute) &&
 				!_.some(
 					all_table_attributes,
 					(

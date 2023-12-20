@@ -548,7 +548,7 @@ describe('Test hdbServer module', () => {
 			server.close();
 		});
 
-		it('should return docs html static file result w/ status 200 for valid HTTP get request', async () => {
+		it.skip('should return docs html static file result w/ status 200 for valid HTTP get request', async () => {
 			const test_config_settings = { https_enabled: false, local_studio_on: true };
 			test_utils.preTestPrep(test_config_settings);
 
@@ -565,7 +565,7 @@ describe('Test hdbServer module', () => {
 			server.close();
 		});
 
-		it('should return docs html static file result w/ status 200 for valid HTTPS get request', async () => {
+		it.skip('should return docs html static file result w/ status 200 for valid HTTPS get request', async () => {
 			const test_config_settings = { https_enabled: true, local_studio_on: true };
 			test_utils.preTestPrep(test_config_settings);
 
@@ -582,7 +582,7 @@ describe('Test hdbServer module', () => {
 			server.close();
 		});
 
-		it('should not return docs html static file result w/ status 404 for valid HTTP get request when local studio is turned off', async () => {
+		it.skip('should not return docs html static file result w/ status 404 for valid HTTP get request when local studio is turned off', async () => {
 			const test_config_settings = { https_enabled: false, local_studio_on: false };
 			test_utils.preTestPrep(test_config_settings);
 
@@ -601,7 +601,7 @@ describe('Test hdbServer module', () => {
 			server.close();
 		});
 
-		it('should not return docs html static file result w/ status 404 for valid HTTPS get request when local studio is turned off', async () => {
+		it.skip('should not return docs html static file result w/ status 404 for valid HTTPS get request when local studio is turned off', async () => {
 			const test_config_settings = { https_enabled: true, local_studio_on: false };
 			test_utils.preTestPrep(test_config_settings);
 

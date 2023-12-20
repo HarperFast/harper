@@ -5,11 +5,10 @@
  */
 
 import { CONFIG_PARAMS, OPERATIONS_ENUM, SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME } from '../utility/hdbTerms';
-import { asBinary, Database, DIRECT_WRITE_PLACEHOLDER, SKIP } from 'lmdb';
+import { Database, DIRECT_WRITE_PLACEHOLDER, SKIP } from 'lmdb';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
 import { Query, ResourceInterface, Request, SubscriptionRequest, Id, Context } from './ResourceInterface';
-import { workerData, threadId } from 'worker_threads';
 import { CONTEXT, ID_PROPERTY, RECORD_PROPERTY, Resource, IS_COLLECTION } from './Resource';
 import { COMPLETION, DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction';
 import * as lmdb_terms from '../utility/lmdb/terms';
@@ -19,11 +18,11 @@ import { handleHDBError, ClientError, ServerError } from '../utility/errors/hdbE
 import * as signalling from '../utility/signalling';
 import { SchemaEventMsg, UserEventMsg } from '../server/threads/itc';
 import { databases, table } from './databases';
-import { idsForCondition, filterByType } from './search';
+import { searchByIndex, filterByType, findAttribute, estimateCondition, flattenKey } from './search';
 import * as harper_logger from '../utility/logging/harper_logger';
 import { assignTrackedAccessors, deepFreeze, hasChanges, OWN_DATA } from './tracked';
 import { transaction } from './transaction';
-import { MAXIMUM_KEY, writeKey } from 'ordered-binary';
+import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads';
 import { readAuditEntry } from './auditStore';
 import { autoCast, convertToMS } from '../utility/common_utils';
@@ -33,8 +32,6 @@ import { recordAction, recordActionBinary } from './analytics';
 const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 let server_utilities;
-const RANGE_ESTIMATE = 100000000;
-const STARTS_WITH_ESTIMATE = 10000000;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
 const DELETED_RECORD_EXPIRATION = 86400000; // one day for non-audit records that have been deleted
 env_mngr.initSync();
@@ -55,6 +52,7 @@ const FULL_PERMISSIONS = {
 	insert: true,
 	update: true,
 	delete: true,
+	isSuperUser: true,
 };
 export interface Table {
 	primaryStore: Database;
@@ -121,6 +119,9 @@ export function makeTable(options) {
 	let cleanup_interval = 86400000;
 	let last_cleanup_interval;
 	let cleanup_timer;
+	let property_resolvers;
+	let has_relationships = false;
+	let last_entry;
 	const MAX_PREFETCH_SEQUENCE = 10;
 	const MAX_PREFETCH_BUNDLE = 6;
 	if (audit) addDeleteRemoval();
@@ -138,6 +139,7 @@ export function makeTable(options) {
 		static expirationTimer;
 		static createdTimeProperty = created_time_property;
 		static updatedTimeProperty = updated_time_property;
+		static propertyResolvers;
 		static sources = [];
 		static get expirationMS() {
 			return expiration_ms;
@@ -510,9 +512,18 @@ export function makeTable(options) {
 			);
 		}
 
-		static get(request, context) {
-			if (request && typeof request === 'object' && !Array.isArray(request) && request.url === '') {
-				const record_count = this.getRecordCount();
+		/**
+		 * This retrieves the data of this resource. By default, with no argument, just return `this`.
+		 * @param query - If included, specifies a query to perform on the record
+		 */
+		get(query?: Query | string): Promise<object | void> | object | void {
+			if (typeof query === 'string') return this.getProperty(query);
+			if (this[IS_COLLECTION]) {
+				return this.search(query);
+			}
+			if (this[ID_PROPERTY] === null) {
+				if (query?.conditions) return this.search(query); // if there is a query, assume it was meant to be a root level query
+				const record_count = TableResource.getRecordCount();
 				return {
 					// basically a describe call
 					recordCount: record_count.recordCount,
@@ -522,17 +533,6 @@ export function makeTable(options) {
 					database: database_name,
 					attributes,
 				};
-			}
-			return super.get(request, context);
-		}
-		/**
-		 * This retrieves the data of this resource. By default, with no argument, just return `this`.
-		 * @param query - If included, specifies a query to perform on the record
-		 */
-		get(query?: Query | string): Promise<object | void> | object | void {
-			if (typeof query === 'string') return this.getProperty(query);
-			if (this[IS_COLLECTION]) {
-				return this.search(query);
 			}
 			if (query?.property) return this.getProperty(query.property);
 			if (this.doesExist() || query?.ensureLoaded === false || this[CONTEXT]?.returnNonexistent) {
@@ -547,17 +547,35 @@ export function makeTable(options) {
 		allowRead(user, query) {
 			const table_permission = getTablePermissions(user);
 			if (table_permission?.read) {
+				if (table_permission.isSuperUser) return true;
 				const attribute_permissions = table_permission.attribute_permissions;
-				if (attribute_permissions?.length > 0) {
-					// if attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
+				const select = query?.select;
+				if (attribute_permissions?.length > 0 || (has_relationships && select)) {
+					// If attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
+					// or if there are relationships, we need to ensure that the user has permission to read from the related table
+					// Note that if we do not have a select, we do not return any relationships by default.
 					if (!query) query = {};
-					const select = query.select;
 					if (select) {
-						const attrs_for_type = attributesAsObject(attribute_permissions, 'read');
-						query.select = select.filter((property) => attrs_for_type[property]);
+						const attrs_for_type =
+							attribute_permissions?.length > 0 && attributesAsObject(attribute_permissions, 'read');
+						query.select = select
+							.map((property) => {
+								const property_name = property.name || property;
+								if (!attrs_for_type || attrs_for_type[property_name]) {
+									const related_table = property_resolvers[property_name]?.definition?.tableClass;
+									if (related_table) {
+										// if there is a related table, we need to ensure the user has permission to read from that table and that attributes are properly restricted
+										if (!property.name) property = { name: property };
+										if (!related_table.prototype.allowRead.call(null, user, property)) return false;
+										if (!property.select) return property.name; // no select was applied, just return the name
+									}
+									return property;
+								}
+							})
+							.filter(Boolean);
 					} else {
 						query.select = attribute_permissions
-							.filter((attribute) => attribute.read)
+							.filter((attribute) => attribute.read && !property_resolvers[attribute.attribute_name])
 							.map((attribute) => attribute.attribute_name);
 					}
 					return query;
@@ -761,7 +779,7 @@ export function makeTable(options) {
 		 * @param record
 		 * @param options
 		 */
-		async put(record): Promise<void> {
+		put(record): Promise<void> {
 			this.update(record, true);
 		}
 		// perform the actual write operation; this may come from a user request to write (put, post, etc.), or
@@ -823,13 +841,6 @@ export function makeTable(options) {
 					const existing_record = existing_entry?.value;
 
 					this[IS_SAVING] = false;
-					harper_logger.trace(
-						`Checking timestamp for put`,
-						id,
-						existing_entry?.version > txn_time,
-						existing_entry?.version,
-						txn_time
-					);
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
@@ -913,30 +924,110 @@ export function makeTable(options) {
 		}
 
 		search(request: Query): AsyncIterable<any> {
-			const txn = txnForContext(this[CONTEXT]);
+			const context = this[CONTEXT];
+			const txn = txnForContext(context);
 			if (!request) throw new Error('No query provided');
-			const reverse = request.reverse === true;
 			let conditions = request.conditions;
 			if (!conditions)
 				conditions = Array.isArray(request) ? request : request[Symbol.iterator] ? Array.from(request) : [];
-			else if (conditions.length === undefined) conditions = Array.from(conditions);
+			else if (conditions.length === undefined) {
+				conditions = conditions[Symbol.iterator] ? Array.from(conditions) : [conditions];
+			}
 			if (this[ID_PROPERTY]) {
 				conditions = [{ attribute: null, comparator: 'prefix', value: this[ID_PROPERTY] }].concat(conditions);
 			}
-			for (const condition of conditions) {
-				const attribute_name = condition[0] ?? condition.attribute;
-				const attribute =
-					attribute_name == null
-						? primary_key_attribute
-						: attributes.find((attribute) => attribute.name == attribute_name);
-				if (!attribute) {
-					if (attribute_name != null)
-						throw handleHDBError(new Error(), `${attribute_name} is not a defined attribute`, 404);
-				} else if (attribute.type) {
-					// convert to a number if that is expected
-					if (condition[1] === undefined) condition.value = coerceTypedValues(condition.value, attribute);
-					else condition[1] = coerceTypedValues(condition[1], attribute);
+			let order_aligned_condition;
+			const filtered = {};
+
+			function prepareConditions(conditions, operator) {
+				// some validation:
+				let is_intersection;
+				switch (operator) {
+					case 'and':
+					case undefined:
+						if (conditions.length < 1) throw new Error('An "and" operator requires at least one condition');
+						is_intersection = true;
+						break;
+					case 'or':
+						if (conditions.length < 2) throw new Error('An "or" operator requires at least two conditions');
+						break;
+					default:
+						throw new Error('Invalid operator ' + operator);
 				}
+				const condition_by_name = is_intersection && {};
+				let has_multiple_for_name;
+				for (const condition of conditions) {
+					if (condition.conditions) {
+						condition.conditions = prepareConditions(condition.conditions, condition.operator);
+						continue;
+					}
+					const attribute_name = condition[0] ?? condition.attribute;
+					const attribute = attribute_name == null ? primary_key_attribute : findAttribute(attributes, attribute_name);
+					if (!attribute) {
+						if (attribute_name != null)
+							throw handleHDBError(new Error(), `${attribute_name} is not a defined attribute`, 404);
+					} else {
+						if (is_intersection) {
+							const key = flattenKey(attribute_name);
+							const named_conditions = condition_by_name[key];
+							if (named_conditions) {
+								named_conditions.push(condition);
+								has_multiple_for_name = true;
+							} else condition_by_name[key] = [condition];
+						}
+						if (attribute.type) {
+							// convert to a number if that is expected
+							if (condition[1] === undefined) condition.value = coerceTypedValues(condition.value, attribute);
+							else condition[1] = coerceTypedValues(condition[1], attribute);
+						}
+					}
+				}
+				if (request.enforceExecutionOrder) return conditions; // don't rearrange conditions
+				if (has_multiple_for_name) {
+					for (const name in condition_by_name) {
+						const conditions_for_name = condition_by_name[name];
+						const l = conditions_for_name.length;
+						if (l > 1) {
+							// if there are multiple conditions for the same attribute, see if we can collapse them into a single condition
+							for (let i = 0; i < l; i++) {
+								const condition = conditions_for_name[i];
+								if (condition.comparator === 'ge' || condition.comparator === 'greater_than_equal') {
+									for (let j = 0; j < l; j++) {
+										const other_condition = conditions_for_name[j];
+										if (other_condition.comparator === 'le' || other_condition.comparator === 'less_than_equal') {
+											condition.comparator = 'between';
+											condition.value = [condition.value, other_condition.value];
+											conditions.splice(conditions.indexOf(other_condition), 1);
+										}
+									}
+								}
+								if (condition.comparator === 'equals' || !condition.comparator) {
+									// if there is an equals condition, we can remove all other conditions
+									// and just use the equals condition
+									for (let j = 0; j < l; j++) {
+										if (j !== i) {
+											const other_condition = conditions_for_name[j];
+											conditions.splice(conditions.indexOf(other_condition), 1);
+										}
+									}
+									break;
+								}
+							}
+						}
+					}
+				}
+				return conditions;
+			}
+			function orderConditions(conditions, operator) {
+				if (request.enforceExecutionOrder) return conditions; // don't rearrange conditions
+				for (const condition of conditions) {
+					if (condition.conditions) condition.conditions = orderConditions(condition.conditions, condition.operator);
+				}
+				// Sort the query by narrowest to broadest, so we can use the fastest index as possible with minimal filtering.
+				// Note, that we do allow users to disable condition re-ordering, in case they have knowledge of a preferred
+				// order for their query.
+				if (conditions.length > 1 && operator !== 'or') return sortBy(conditions, estimateCondition(TableResource));
+				else return conditions;
 			}
 			function coerceTypedValues(value, attribute) {
 				if (Array.isArray(value)) {
@@ -944,124 +1035,434 @@ export function makeTable(options) {
 				}
 				return coerceType(value, attribute);
 			}
-			// Sort the query by narrowest to broadest. Note that we want to do this both for intersection where
-			// it allows us to do minimal filtering, and for union where we can return the fastest results first
-			// in an iterator/stream.
+			const operator = request.operator;
+			if (conditions.length > 0 || operator) conditions = prepareConditions(conditions, operator);
+			const sort = typeof request.sort === 'object' && request.sort;
+			let post_ordering;
+			if (sort) {
+				// TODO: Support index-assisted sorts of unions, which will require potentially recursively adding/modifying an order aligned condition and be able to recursively undo it if necessary
+				if (operator !== 'or') {
+					const attribute_name = sort.attribute;
+					order_aligned_condition = conditions.find(
+						(condition) => flattenKey(condition.attribute) === flattenKey(attribute_name)
+					);
+					if (order_aligned_condition) {
+						// if there is a condition on the same attribute as the first sort, we can use it to align the sort
+						// and avoid a sort operation
+					} else {
+						const attribute = findAttribute(attributes, attribute_name);
+						if (!attribute) throw handleHDBError(new Error(), `${attribute_name} is not a defined attribute`, 404);
 
-			if (conditions.length > 1)
-				conditions = sortBy(conditions, (condition) => {
-					if (condition.estimated_count === undefined) {
-						// skip if it is cached
-						const search_type = condition.comparator || condition.search_type;
-						if (search_type === lmdb_terms.SEARCH_TYPES.EQUALS) {
-							const attribute_name = condition[0] ?? condition.attribute;
-							if (attribute_name == null || attribute_name === primary_key) condition.estimated_count = 1;
-							else {
-								// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
-								const index = indices[attribute_name];
-								condition.estimated_count = index ? index.getValuesCount(condition[1] ?? condition.value) : Infinity;
-							}
-						} else if (
-							search_type === lmdb_terms.SEARCH_TYPES.CONTAINS ||
-							search_type === lmdb_terms.SEARCH_TYPES.ENDS_WITH ||
-							search_type === 'ne'
-						)
-							condition.estimated_count = Infinity;
-						else if (search_type === lmdb_terms.SEARCH_TYPES.STARTS_WITH || search_type === 'prefix')
-							condition.estimated_count = STARTS_WITH_ESTIMATE;
-						// this search types can't/doesn't use indices, so try do them last
-						// for range queries (betweens, starts-with, greater, etc.), just arbitrarily guess
-						else condition.estimated_count = RANGE_ESTIMATE;
+						order_aligned_condition = { attribute: attribute_name };
+						conditions.push(order_aligned_condition);
 					}
-					return condition.estimated_count; // use cached count
-				});
-			// we mark the read transaction as in use (necessary for a stable read
-			// transaction, and we really don't care if the
-			// counts are done in the same read transaction because they are just estimates) until the search
-			// results have been iterated and finished.
-			const read_txn = txn.getReadTxn();
-			read_txn.use();
-			const select = request.select;
-			const first_search = conditions[0];
-			let records;
-			if (!first_search) {
-				// if not conditions at all, just return entire table, iteratively
-				records = primary_store
-					.getRange(
-						reverse
-							? { end: false, reverse: true, transaction: read_txn, lazy: select?.length < 4 }
-							: { start: false, transaction: read_txn, lazy: select?.length < 4 }
-					)
-					.map(({ value }) => {
-						if (!value) return SKIP;
-						return new Promise((resolve) => setImmediate(() => resolve(value)));
-					});
-			} else {
-				// both AND and OR start by getting an iterator for the ids for first condition
-				let ids = idsForCondition(first_search, read_txn, reverse, TableResource, request.allowFullScan);
-				// and then things diverge...
-				if (!request.operator || request.operator.toLowerCase() === 'and') {
-					// get the intersection of condition searches by using the indexed query for the first condition
-					// and then filtering by all subsequent conditions
-					const filters = conditions.slice(1).map(filterByType);
-					records = idsToRecords(ids, filters);
+					order_aligned_condition.descending = Boolean(sort.descending);
+				}
+			}
+			conditions = orderConditions(conditions, operator);
+
+			if (sort) {
+				if (conditions[0] === order_aligned_condition) {
+					// The db index is providing the order for the first sort, may need post ordering next sort order
+					if (sort.next) {
+						post_ordering = {
+							dbOrderedAttribute: sort.attribute,
+							attribute: sort.next.attribute,
+							descending: sort.next.descending,
+							next: sort.next.next,
+						};
+					}
 				} else {
+					// if we had to add an aligned condition that isn't first, we remove it and do ordering later
+					if (order_aligned_condition) conditions.splice(conditions.indexOf(order_aligned_condition), 1);
+					post_ordering = sort;
+				}
+			}
+			function executeConditions(conditions, operator) {
+				const first_search = conditions[0];
+				// both AND and OR start by getting an iterator for the ids for first condition
+				// and then things diverge...
+				if (operator === 'or') {
+					let results = executeCondition(first_search);
 					//get the union of ids from all condition searches
 					for (let i = 1; i < conditions.length; i++) {
 						const condition = conditions[i];
 						// might want to lazily execute this after getting to this point in the iteration
-						const next_ids = idsForCondition(condition, read_txn, reverse, TableResource, request.allowFullScan);
-						ids = ids.concat(next_ids);
+						const next_results = executeCondition(condition);
+						results = results.concat(next_results);
 					}
 					const returned_ids = new Set();
-					ids = ids.filter((id) => {
+					return results.filter((entry) => {
+						const id = entry.key ?? entry;
 						if (returned_ids.has(id))
-							// skip duplicates
+							// skip duplicate ids
 							return false;
 						returned_ids.add(id);
 						return true;
 					});
-					records = idsToRecords(ids);
+				} else {
+					// AND
+					const results = executeCondition(first_search);
+					// get the intersection of condition searches by using the indexed query for the first condition
+					// and then filtering by all subsequent conditions
+					const filters = conditions
+						.slice(1)
+						.map((condition) => filterByType(condition, TableResource, context, filtered))
+						.filter(Boolean);
+					return filters.length > 0 ? transformToEntries(results, filters) : results;
 				}
 			}
+			const reverse = request.reverse === true;
+			function executeCondition(condition) {
+				if (condition.conditions) return executeConditions(condition.conditions, condition.operator);
+				return searchByIndex(
+					condition,
+					txn,
+					condition.descending || reverse,
+					TableResource,
+					request.allowFullScan,
+					filtered
+				);
+			}
+			// we mark the read transaction as in use (necessary for a stable read
+			// transaction, and we really don't care if the
+			// counts are done in the same read transaction because they are just estimates) until the search
+			// results have been iterated and finished.
+			const select = request.select;
+			if (conditions.length === 0) {
+				conditions = [{ attribute: primary_key, comparator: 'greater_than', value: true }];
+			}
+			if (request.explain) {
+				return {
+					conditions,
+					operator,
+					postOrdering: post_ordering,
+					selectApplied: Boolean(select),
+				};
+			}
+			const read_txn = txn.useReadTxn();
+			let entries = executeConditions(conditions, operator);
 			if (request.offset || request.limit !== undefined)
-				records = records.slice(
+				entries = entries.slice(
 					request.offset,
 					request.limit !== undefined ? (request.offset || 0) + request.limit : undefined
 				);
-			records.onDone = () => {
-				records.onDone = null; // ensure that it isn't called twice
-				read_txn.done();
-			};
-			const context = this[CONTEXT];
-			function idsToRecords(ids, filters?) {
+			const ensure_loaded = request.ensureLoaded !== false;
+
+			function transformToEntries(ids, filters?) {
 				// TODO: Test and ensure that we break out of these loops when a connection is lost
 				const filters_length = filters?.length;
-				const options = {
+				const load_options = {
 					transaction: read_txn,
-					lazy: filters_length > 0 || select?.length < 4,
+					lazy: filters_length > 0 || typeof select === 'string' || select?.length < 4,
 					alwaysPrefetch: true,
 				};
-				const ensure_loaded = request.ensureLoaded !== false;
 				// for filter operations, we intentionally use async and yield the event turn so that scanning queries
 				// do not hog resources and give more processing opportunity for more efficient index-driven queries.
 				// this also gives an opportunity to prefetch and ensure any page faults happen in a different thread
 				function processEntry(entry, id?) {
-					if (ensure_loaded && id !== undefined) {
-						const loading_from_source = !context.onlyIfCached && ensureLoadedFromSource(id, entry, context, this);
-						if (loading_from_source) return loading_from_source.then((entry) => processEntry(entry));
-					}
 					const record = entry?.value;
 					if (!record) return SKIP;
 					for (let i = 0; i < filters_length; i++) {
-						if (!filters[i](record)) return SKIP; // didn't match filters
+						if (!filters[i](record, entry)) return SKIP; // didn't match filters
 					}
-					return record;
+					if (id !== undefined) entry.key = id;
+					return entry;
 				}
-				return ids.map((id) => loadLocalRecord(id, context, options, false, processEntry));
+				const results =
+					filters_length > 0 || !ids.hasEntries
+						? ids.map((id_or_entry) => {
+								if (typeof id_or_entry === 'object' && id_or_entry.key !== undefined)
+									return filters_length > 0 ? processEntry(id_or_entry) : id_or_entry; // already an entry
+								return loadLocalRecord(id_or_entry, context, load_options, false, processEntry);
+						  })
+						: ids;
+				results.hasEntries = true;
+				return results;
 			}
-			return records;
+			let results;
+			const transformToRecord = TableResource.transformEntryForSelect(select, context, filtered, ensure_loaded, true);
+			if (post_ordering) {
+				// there might be some situations where we don't need to transform to entries for post_ordering, not sure
+				entries = transformToEntries(entries, null);
+				let ordered;
+				// if we are doing post-ordering, we need to get records first, then sort them
+				results = new entries.constructor({
+					[Symbol.iterator]() {
+						let sorted_array_iterator;
+						const db_iterator = entries[Symbol.asyncIterator]();
+						let db_done;
+						const db_ordered_attribute = post_ordering.dbOrderedAttribute;
+						let enqueued_entry_for_next_group;
+						let last_grouping_value;
+						let first_entry = true;
+						function createComparator(order) {
+							const next_comparator = order.next && createComparator(order.next);
+							const descending = order.descending;
+							return (entry_a, entry_b) => {
+								const a = getAttributeValue(entry_a, order.attribute, context);
+								const b = getAttributeValue(entry_b, order.attribute, context);
+								const diff = descending ? compareKeys(b, a) : compareKeys(a, b);
+								if (diff === 0) return next_comparator?.(entry_a, entry_b) || 0;
+								return diff;
+							};
+						}
+						const comparator = createComparator(post_ordering);
+						return {
+							async next() {
+								let iteration;
+								if (sorted_array_iterator) {
+									iteration = sorted_array_iterator.next();
+									if (iteration.done) {
+										if (db_done) {
+											if (results.onDone) results.onDone();
+											return iteration;
+										}
+									} else
+										return {
+											value: transformToRecord(iteration.value),
+										};
+								}
+								ordered = [];
+								if (enqueued_entry_for_next_group) ordered.push(enqueued_entry_for_next_group);
+								// need to load all the entries into ordered
+								do {
+									iteration = await db_iterator.next();
+									if (iteration.done) {
+										db_done = true;
+										if (!ordered.length) {
+											if (results.onDone) results.onDone();
+											return iteration;
+										} else break;
+									} else {
+										const entry = iteration.value;
+										// if the index has already provided the first order of sorting, we only need to sort
+										// within each grouping
+										if (db_ordered_attribute) {
+											const grouping_value = getAttributeValue(entry, db_ordered_attribute, context);
+											if (first_entry) {
+												first_entry = false;
+												last_grouping_value = grouping_value;
+											} else if (grouping_value !== last_grouping_value) {
+												last_grouping_value = grouping_value;
+												enqueued_entry_for_next_group = entry;
+												break;
+											}
+										}
+										// we store the value we will sort on, for fast sorting, and the entry so the records can be GC'ed if necessary
+										// before the sorting is completed
+										ordered.push(entry);
+									}
+								} while (true);
+								if (post_ordering.isGrouped) {
+									// TODO: Return grouped results
+								}
+								ordered.sort(comparator);
+								sorted_array_iterator = ordered[Symbol.iterator]();
+								iteration = sorted_array_iterator.next();
+								if (!iteration.done)
+									return {
+										value: await transformToRecord(iteration.value),
+									};
+								if (results.onDone) results.onDone();
+								return iteration;
+							},
+							return() {
+								if (results.onDone) results.onDone();
+								db_iterator.return();
+							},
+							throw() {
+								if (results.onDone) results.onDone();
+								db_iterator.throw();
+							},
+						};
+					},
+				});
+			} else results = entries.map(transformToRecord);
+			results.onDone = () => {
+				results.results = null; // ensure that it isn't called twice
+				txn.doneReadTxn();
+			};
+
+			results.selectApplied = true;
+			return results;
 		}
+		/**
+		 * This is responsible for select()ing the attributes/properties from returned entries
+		 * @param select
+		 * @param context
+		 * @param filtered
+		 * @param ensure_loaded
+		 * @param can_skip
+		 * @returns
+		 */
+		static transformEntryForSelect(select, context, filtered, ensure_loaded?, can_skip?) {
+			if (select === primary_key || (select?.length === 1 && select[0] === primary_key)) {
+				// fast path if only the primary key is selected, so we don't have to load records
+				const transform = (entry) => {
+					return entry?.key ?? entry;
+				};
+				if (select === primary_key) return transform;
+				else if (select.asArray) return (entry) => [transform(entry)];
+				else return (entry) => ({ [primary_key]: transform(entry) });
+			}
+			let check_loaded;
+			if (
+				ensure_loaded &&
+				has_source_get &&
+				// determine if we need to fully loading the records ahead of time, this is why we would not need to load the full record:
+				!select?.every((attribute) => {
+					let attribute_name;
+					if (typeof attribute === 'object') {
+						attribute_name = attribute.name;
+					} else attribute_name = attribute;
+					// TODO: Resolvers may not need a full record, either because they are not using the record, or because they are a redirected property
+					return indices[attribute_name] || attribute_name === primary_key;
+				})
+			) {
+				check_loaded = true;
+			}
+			let transform_cache;
+			const transform = (entry) => {
+				let record;
+				if (entry) {
+					// TODO: remove this:
+					last_entry = entry;
+					record = entry.value || entry.deref?.();
+					if (!record && (entry.key === undefined || entry.deref)) {
+						// if the record is not loaded, either due to the entry actually be a key, or the entry's value
+						// being GC'ed, we need to load it now
+						entry = loadLocalRecord(
+							entry.key ?? entry,
+							context,
+							{
+								transaction: txnForContext(context).getReadTxn(),
+								lazy: select?.length < 4,
+							},
+							false,
+							(entry) => entry
+						);
+						if (entry?.then) return entry.then(transform);
+						record = entry?.value;
+					}
+					if (
+						check_loaded &&
+						(entry.metadataFlags & (INVALIDATED | EVICTED) || // invalidated or evicted should go to load from source
+							(entry.expiresAt && entry.expiresAt < Date.now()))
+					) {
+						// should expiration really apply?
+						const loading_from_source = ensureLoadedFromSource(entry.key ?? entry, entry, context);
+						if (loading_from_source?.then) {
+							return loading_from_source.then(transform);
+						}
+					}
+				}
+				if (record == null) return can_skip ? SKIP : record;
+				if (select && !(select[0] === '*' && select.length === 1)) {
+					let promises;
+					const selectAttribute = (attribute, callback) => {
+						let attribute_name;
+						if (typeof attribute === 'object') {
+							attribute_name = attribute.name;
+						} else attribute_name = attribute;
+						const resolver = property_resolvers?.[attribute_name];
+						let value;
+						if (resolver) {
+							const filter_map = filtered?.[attribute_name];
+							if (filter_map) {
+								if (filter_map.fromRecord) {
+									value = filter_map.fromRecord(record);
+								} else {
+									const key = flattenKey(entry.key);
+									value = filter_map.get(key);
+									if (!value) value = [];
+								}
+							} else {
+								value = resolver(record, context, entry);
+							}
+							const handleResolvedValue = (value) => {
+								if (value && typeof value === 'object') {
+									const related_table = resolver.definition?.tableClass;
+									if (!transform_cache) transform_cache = {};
+									const transform =
+										transform_cache[attribute_name] ||
+										(transform_cache[attribute_name] = (related_table || TableResource).transformEntryForSelect(
+											// if it is a simple string, there is no select for the next level,
+											// otherwise pass along the nested selected
+											attribute_name === attribute ? null : attribute.select || attribute,
+											context,
+											filter_map,
+											ensure_loaded
+										));
+									if (Array.isArray(value)) {
+										let has_promises;
+										value = value.map((element) => {
+											const transformed = transform(element);
+											if (transformed?.then) has_promises = true;
+											return transformed;
+										});
+										if (has_promises) {
+											if (!promises) promises = [];
+											promises.push(Promise.all(value).then((values) => callback(values, attribute_name)));
+											return;
+										}
+									} else {
+										value = transform(value);
+										if (value?.then) {
+											if (!promises) promises = [];
+											promises.push(value.then((value) => callback(value, attribute_name)));
+											return;
+										}
+									}
+								}
+								callback(value, attribute_name);
+							};
+							if (value?.then) {
+								if (!promises) promises = [];
+								promises.push(value.then(handleResolvedValue));
+							} else handleResolvedValue(value);
+							return;
+						} else {
+							value = record[attribute_name];
+							if (value && typeof value === 'object' && attribute_name !== attribute) {
+								value = this.transformEntryForSelect(attribute.select || attribute, context, null)({ value });
+							}
+						}
+						callback(value, attribute_name);
+					};
+					let selected;
+					if (typeof select === 'string') {
+						selectAttribute(select, (value) => {
+							selected = value;
+						});
+					} else if (Array.isArray(select)) {
+						if (select.asArray) {
+							selected = [];
+							select.forEach((attribute, index) => {
+								if (attribute === '*') select[index] = record;
+								else selectAttribute(attribute, (value) => (selected[index] = value));
+							});
+						} else {
+							selected = {};
+							for (const attribute of select) {
+								if (attribute === '*')
+									for (const key in record) {
+										selected[key] = record[key];
+									}
+								else selectAttribute(attribute, (value, attribute_name) => (selected[attribute_name] = value));
+							}
+						}
+					} else throw new ClientError('Invalid select' + select);
+					if (promises) {
+						return Promise.all(promises).then(() => selected);
+					}
+					return selected;
+				}
+				return record;
+			};
+			return transform;
+		}
+
 		async subscribe(request: SubscriptionRequest) {
 			if (!audit_store) throw new Error('Can not subscribe to a table without an audit log');
 			if (!audit) {
@@ -1343,6 +1744,7 @@ export function makeTable(options) {
 			};
 			for (let i = 0, l = attributes.length; i < l; i++) {
 				const attribute = attributes[i];
+				if (attribute.relationship) continue;
 				const updated = validateValue(record[attribute.name], attribute, attribute.name);
 				if (updated) record[attribute.name] = updated;
 			}
@@ -1428,6 +1830,95 @@ export function makeTable(options) {
 		 * When attributes have been changed, we update the accessors that are assigned to this table
 		 */
 		static updatedAttributes() {
+			property_resolvers = this.propertyResolvers = {
+				$id: (object, context, entry) => entry.key,
+				$updatedtime: (object, context, entry) => entry.version,
+				$record: (object, context, entry) => (entry ? { value: object } : object),
+			};
+			for (const attribute of this.attributes) {
+				attribute.resolve = null; // reset this
+				const relationship = attribute.relationship;
+				if (relationship) {
+					has_relationships = true;
+					if (relationship.to) {
+						if (attribute.elements?.definition) {
+							property_resolvers[attribute.name] = attribute.resolve = (object, context, direct_entry?) => {
+								// TODO: Get raw record/entry?
+								const id = object[relationship.from ? relationship.from : primary_key];
+								const related_table = attribute.elements.definition.tableClass;
+								if (direct_entry) {
+									return searchByIndex(
+										{ attribute: relationship.to, value: id },
+										txnForContext(context).getReadTxn(),
+										false,
+										related_table
+									).asArray;
+								}
+								return related_table.search([{ attribute: relationship.to, value: id }], context).asArray;
+							};
+							attribute.set = () => {
+								throw new Error('Setting a one-to-many relationship property is not supported');
+							};
+							attribute.resolve.definition = attribute.elements.definition;
+						} else
+							console.error(
+								`The one-to-many/many-to-many relationship property "${attribute.name}" in table "${table_name}" must have an array type referencing a table as the elements`
+							);
+					} else if (relationship.from) {
+						const definition = attribute.definition || attribute.elements?.definition;
+						if (definition) {
+							property_resolvers[attribute.name] = attribute.resolve = (object, context, direct_entry?) => {
+								const ids = object[relationship.from];
+								if (ids === undefined) return undefined;
+								if (attribute.elements) {
+									let has_promises;
+									const results = ids.map((id) => {
+										const value = direct_entry
+											? definition.tableClass.primaryStore.getEntry(id, {
+													transaction: txnForContext(context).getReadTxn(),
+											  })
+											: definition.tableClass.get(id, context);
+										if (value?.then) has_promises = true;
+										return value;
+									});
+									return relationship.filterMissing
+										? has_promises
+											? Promise.all(results).then((results) => results.filter(exists))
+											: results.filter(exists)
+										: has_promises
+										? Promise.all(results)
+										: results;
+								}
+								return direct_entry
+									? definition.tableClass.primaryStore.getEntry(ids, {
+											transaction: txnForContext(context).getReadTxn(),
+									  })
+									: definition.tableClass.get(ids, context);
+							};
+							attribute.set = (object, related) => {
+								if (Array.isArray(related)) {
+									const target_ids = related.map(
+										(related) => related[ID_PROPERTY] || related[definition.tableClass.primaryKey]
+									);
+									object[relationship.from] = target_ids;
+								} else {
+									const target_id = related[ID_PROPERTY] || related[definition.tableClass.primaryKey];
+									object[relationship.from] = target_id;
+								}
+							};
+							attribute.resolve.definition = attribute.definition || attribute.elements?.definition;
+						} else {
+							console.error(
+								`The relationship property "${attribute.name}" in table "${table_name}" must be a type that references a table`
+							);
+						}
+					} else {
+						console.error(
+							`The relationship directive on "${attribute.name}" in table "${table_name}" must use either "from" or "to" arguments`
+						);
+					}
+				}
+			}
 			assignTrackedAccessors(this, this);
 		}
 		static async deleteHistory(end_time = 0) {
@@ -1512,8 +2003,9 @@ export function makeTable(options) {
 				continue;
 			}
 			has_changes = true;
+			const index_nulls = index.indexNulls;
 			//if the update cleared out the attribute value we need to delete it from the index
-			let values = getIndexedValues(existing_value);
+			let values = getIndexedValues(existing_value, index_nulls);
 			if (values) {
 				if (LMDB_PREFETCH_WRITES)
 					index.prefetch(
@@ -1524,7 +2016,7 @@ export function makeTable(options) {
 					index.remove(values[i], id);
 				}
 			}
-			values = getIndexedValues(value);
+			values = getIndexedValues(value, index_nulls);
 			if (values) {
 				if (LMDB_PREFETCH_WRITES)
 					index.prefetch(
@@ -1707,9 +2199,6 @@ export function makeTable(options) {
 	function txnForContext(context: Context) {
 		let transaction = context?.transaction;
 		if (transaction) {
-			if (!transaction.open) {
-				throw new Error('Can not use a transaction that is not open');
-			}
 			if (!transaction.lmdbDb) {
 				// this is an uninitialized DatabaseTransaction, we can claim it
 				transaction.lmdbDb = primary_store;
@@ -1732,6 +2221,28 @@ export function makeTable(options) {
 			return new ImmediateTransaction();
 		}
 	}
+	function getAttributeValue(entry, attribute_name, context) {
+		if (!entry) {
+			return;
+		}
+		last_entry = entry;
+		const record = entry.value || entry.deref?.() || (last_entry = primary_store.getEntry(entry.key))?.value;
+		if (typeof attribute_name === 'object') {
+			// attribute_name is an array of attributes, pointing to nested attribute
+			let resolvers = property_resolvers;
+			let value = record;
+			for (let i = 0, l = attribute_name.length; i < l; i++) {
+				const attribute = attribute_name[i];
+				const resolver = resolvers?.[attribute];
+				value = resolver ? resolver(value, context) : value?.[attribute];
+				resolvers = resolver?.definition?.tableClass?.propertyResolvers;
+			}
+			return value;
+		}
+		const resolver = property_resolvers[attribute_name];
+		return resolver ? resolver(record, context) : record[attribute_name];
+	}
+
 	/**
 	 * This is used to record that a retrieve a record from source
 	 */
@@ -2054,16 +2565,17 @@ export function coerceType(value, attribute) {
 	//if a type is String is it safe to execute a .toString() on the value and return? Does not work for Array/Object so we would need to detect if is either of those first
 	if (value === null) {
 		return value;
-	} else if (type === 'Int' || type === 'Long') return parseInt(value);
-	else if (type === 'Float') return parseFloat(value);
-	else if (type === 'BigInt') return BigInt(value);
+	} else if (type === 'Int' || type === 'Long') return value === 'null' ? null : parseInt(value);
+	else if (type === 'Float') return value === 'null' ? null : parseFloat(value);
+	else if (type === 'BigInt') return value === 'null' ? null : BigInt(value);
 	else if (type === 'Date') {
 		//if the value is not an integer (to handle epoch values) and does not end in a timezone we suffiz with 'Z' tom make sure the Date is GMT timezone
 		if (typeof value !== 'number' && !ENDS_WITH_TIMEZONE.test(value)) {
 			value += 'Z';
 		}
+		if (value === 'null') return null;
 		return new Date(value);
-	} else if (!type) {
+	} else if (!type || type === 'Any') {
 		return autoCast(value);
 	}
 	return value;
@@ -2096,4 +2608,8 @@ export function updateResource(resource, entry) {
 	resource[ENTRY_PROPERTY] = entry;
 	resource[RECORD_PROPERTY] = entry?.value ?? null;
 	resource[VERSION_PROPERTY] = entry?.version;
+}
+// for filtering
+function exists(value) {
+	return value != null;
 }

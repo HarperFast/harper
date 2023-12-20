@@ -43,7 +43,7 @@ describe('Transactions', () => {
 		} catch (e) {
 			error = e;
 		}
-		assert(error.message?.includes('Can not use'));
+		assert(error.message?.includes('Can not'));
 	});
 	it('Can run txn with three tables and two databases', async function () {
 		const context = {};

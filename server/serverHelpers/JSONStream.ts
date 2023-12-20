@@ -198,10 +198,13 @@ function when(promise, callback, errback) {
 
 export function stringify(value) {
 	try {
-		return JSON.stringify(value);
+		return JSON.stringify(value) ?? 'null';
 	} catch (error) {
 		if (error === BIGINT_SERIALIZATION) {
 			return jsStringify(value);
+		}
+		if (error.resolution) {
+			return error.resolution.then(() => stringify(value));
 		}
 		throw error;
 	}
@@ -234,6 +237,8 @@ function jsStringify(value) {
 		}
 	} else if (type === 'string') {
 		return JSON.stringify(value);
+	} else if (type === 'undefined') {
+		return 'null';
 	}
 	return value.toString(); // this handles bigint, number, boolean, undefined, symbol
 }

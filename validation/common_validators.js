@@ -24,7 +24,8 @@ const hdb_schema_table = Joi.alternatives(
 		.max(common_validators.schema_length.maximum)
 		.pattern(schema_regex)
 		.messages({ 'string.pattern.base': '{:#label} ' + common_validators.schema_format.message }),
-	Joi.number()
+	Joi.number(),
+	Joi.array()
 ).required();
 
 const hdb_database = Joi.alternatives(

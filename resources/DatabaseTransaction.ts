@@ -10,6 +10,7 @@ export class DatabaseTransaction implements Transaction {
 	lmdbDb: RootDatabase;
 	readTxn: LMDBTransaction;
 	readTxnRefCount: number;
+	readTxnsUsed: number;
 	validated = 0;
 	timestamp = 0;
 	declare next: DatabaseTransaction;
@@ -20,24 +21,37 @@ export class DatabaseTransaction implements Transaction {
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
 		if (this.stale) this.stale = false;
 		if (this.readTxn) return this.readTxn;
+		if (!this.open) throw new Error('Can not start a read on a transaction that is no longer open');
+		this.readTxnsUsed = 1;
 		this.readTxn = this.lmdbDb.useReadTransaction();
 		tracked_txns.add(this);
 		return this.readTxn;
 	}
-	disregardReadTxn(): void {
-		if (--this.readTxnRefCount === 0) {
-			this.resetReadSnapshot();
-		}
+	useReadTxn() {
+		this.getReadTxn();
+		this.readTxn.use();
+		this.readTxnsUsed++;
+		return this.readTxn;
 	}
-	resetReadSnapshot() {
-		if (this.readTxn) {
+	doneReadTxn() {
+		if (!this.readTxn) return;
+		this.readTxn.done();
+		if (--this.readTxnsUsed === 0) {
 			tracked_txns.delete(this);
-			this.readTxn.done();
 			this.readTxn = null;
 		}
 	}
+	disregardReadTxn(): void {
+		if (--this.readTxnRefCount === 0 && this.readTxnsUsed === 1) {
+			this.doneReadTxn();
+		}
+	}
 	addWrite(operation) {
+		if (!this.open && !this.autoCommitMode) {
+			throw new Error('Can not use a transaction that is no longer open');
+		}
 		this.writes.push(operation);
+		if (this.autoCommitMode) this.commit();
 	}
 	removeWrite(operation) {
 		const index = this.writes.indexOf(operation);
@@ -51,8 +65,6 @@ export class DatabaseTransaction implements Transaction {
 		let txn_time = this.timestamp;
 		if (!txn_time) txn_time = this.timestamp = options.timestamp = options.timestamp || getNextMonotonicTime();
 		const retries = options.retries || 0;
-		// release the read snapshot so we don't keep it open longer than necessary
-		this.resetReadSnapshot();
 		// now validate
 		if (this.validated < this.writes.length) {
 			const start = this.validated;
@@ -97,7 +109,10 @@ export class DatabaseTransaction implements Transaction {
 				})();
 			}
 		}
-		if (options?.close) this.open = false;
+		// release the read snapshot so we don't keep it open longer than necessary
+		if (!retries) this.doneReadTxn();
+		options?.prepared?.();
+		this.open = false;
 		let resolution;
 		const completions = [];
 		let write_index = 0;
@@ -176,8 +191,9 @@ export class DatabaseTransaction implements Transaction {
 		}
 		return txn_resolution;
 	}
-	abort(): void {
-		this.resetReadSnapshot();
+	abort(options): void {
+		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
+		this.open = false;
 		// reset the transaction
 		this.writes = [];
 	}
@@ -216,7 +232,7 @@ function startMonitoringTxns() {
 						txn.lmdbDb?.name + (url ? ' path: ' + url : '')
 					}`
 				);
-				txn.resetReadSnapshot();
+				txn.abort();
 			} else txn.stale = true;
 		}
 	}, txn_expiration).unref();
