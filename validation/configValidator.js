@@ -198,6 +198,7 @@ function configValidator(config_json) {
 			securePort: number.min(0).optional().empty(null),
 		}).required(),
 		threads: threads_constraints.optional(),
+		maxHeapMemory: number.min(0).optional(),
 		storage: Joi.object({
 			writeAsync: boolean.required(),
 			overlappingSync: boolean.optional(),
