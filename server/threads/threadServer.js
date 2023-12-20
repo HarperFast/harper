@@ -350,7 +350,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 			Object.assign(options, {
 				allowHTTP1: true,
 				key: readFileSync(private_key),
-				// if they have a CA, we append it, so it is included
+				ciphers: env.get('tls_ciphers'),
 				cert: readFileSync(certificate),
 				ca: certificate_authority && readFileSync(certificate_authority),
 				requestCert: Boolean(mtls),
@@ -528,6 +528,7 @@ function onSocket(listener, options) {
 
 		socket_server = createSecureSocketServer(
 			{
+				ciphers: env.get('tls_ciphers'),
 				key: readFileSync(private_key_path),
 				// if they have a CA, we append it, so it is included
 				cert: readFileSync(certificate_path),

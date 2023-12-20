@@ -11,7 +11,7 @@ import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/h
 import { loggerWithTag, error as log_error, warn, info } from '../utility/logging/harper_logger.js';
 const auth_event_log = loggerWithTag('auth-event');
 
-const AUTHORIZE_LOCAL = true;
+const AUTHORIZE_LOCAL = get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? process.env.DEV_MODE;
 export function start({ server, port, network, webSocket, securePort, requireAuthentication }) {
 	// here we basically normalize the different types of sockets to pass to our socket/message handler
 	const mqtt_settings = (server.mqtt = { requireAuthentication });
@@ -69,7 +69,7 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 						return socket.end();
 					}
 				}
-				if (AUTHORIZE_LOCAL && socket.remoteAddress.includes('127.0.0.1')) {
+				if (!user && AUTHORIZE_LOCAL && socket.remoteAddress.includes('127.0.0.1')) {
 					user = await getSuperUser();
 				}
 
