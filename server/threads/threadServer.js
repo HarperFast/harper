@@ -331,7 +331,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 				allowHTTP1: true,
 				key: readFileSync(private_key),
 				// if they have a CA, we append it, so it is included
-				cert: readFileSync(certificate) + (certificate_authority ? '\n\n' + readFileSync(certificate_authority) : ''),
+				cert: readFileSync(certificate),
 				ca: certificate_authority && readFileSync(certificate_authority),
 				requestCert: Boolean(mtls),
 				ticketKeys: getTicketKeys(),
@@ -503,9 +503,7 @@ function onSocket(listener, options) {
 			{
 				key: readFileSync(private_key_path),
 				// if they have a CA, we append it, so it is included
-				cert:
-					readFileSync(certificate_path) +
-					(certificate_authority_path ? '\n\n' + readFileSync(certificate_authority_path) : ''),
+				cert: readFileSync(certificate_path),
 				ca: certificate_authority_path && readFileSync(certificate_authority_path),
 				requestCert: Boolean(options.mtls),
 			},

@@ -53,8 +53,10 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 					if (socket.authorized) {
 						try {
 							let username = mtls.user;
-							if (username) {
-								if (username === 'Common Name' || username === 'CN') username = socket.getPeerCertificate().subject.CN;
+							if (user !== null) {
+								// null means no user is defined from certificate, need regular authentication as well
+								if (username === undefined || username === 'Common Name' || username === 'CN')
+									username = socket.getPeerCertificate().subject.CN;
 								user = await server.getUser(username, null, null);
 							}
 						} catch (error) {
