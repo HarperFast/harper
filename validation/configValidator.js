@@ -213,6 +213,7 @@ function configValidator(config_json) {
 			certificate: pem_file_constraints.optional(),
 			certificateAuthority: pem_file_constraints.optional(),
 			privateKey: pem_file_constraints.optional(),
+			ciphers: string.optional(),
 		}),
 	});
 

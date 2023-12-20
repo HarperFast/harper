@@ -633,6 +633,7 @@ const CONFIG_PARAMS = {
 	TLS_CERTIFICATE: 'tls_certificate',
 	TLS_PRIVATEKEY: 'tls_privateKey',
 	TLS_CERTIFICATEAUTHORITY: 'tls_certificateAuthority',
+	TLS_CIPHERS: 'tls_ciphers',
 };
 
 const CONFIG_PARAM_MAP = {
@@ -780,6 +781,7 @@ const CONFIG_PARAM_MAP = {
 	tls_certificate: CONFIG_PARAMS.TLS_CERTIFICATE,
 	tls_privatekey: CONFIG_PARAMS.TLS_PRIVATEKEY,
 	tls_certificateauthority: CONFIG_PARAMS.TLS_CERTIFICATEAUTHORITY,
+	tls_ciphers: CONFIG_PARAMS.TLS_CIPHERS,
 };
 for (let key in CONFIG_PARAMS) {
 	let name = CONFIG_PARAMS[key];
