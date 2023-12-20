@@ -16,6 +16,25 @@ const { recordAction, recordActionBinary } = require('../../resources/analytics'
 const { Request, createReuseportFd } = require('../serverHelpers/Request');
 const { checkMemoryLimit } = require('../../utility/registration/hdb_license');
 
+// this horifying hack is brought to you by https://github.com/nodejs/node/issues/36655
+const tls = require('tls');
+
+const origCreateSecureContext = tls.createSecureContext;
+tls.createSecureContext = function(options) {
+	if (!options.cert || !options.key) {
+		return origCreateSecureContext(options);
+	}
+
+	let lessOptions = { ...options };
+	delete lessOptions.key;
+	delete lessOptions.cert;
+	let ctx = origCreateSecureContext(lessOptions);
+	ctx.context.setCert(options.cert);
+	ctx.context.setKey(options.key, undefined);
+	return ctx;
+};
+
+
 if (process.env.DEV_MODE) {
 	try {
 		require('inspector').open(9229);
@@ -495,7 +514,6 @@ function unhandled(request) {
 function onRequest(listener, options) {
 	httpServer(listener, { requestOnly: true, ...options });
 }
-
 /**
  * Direct socket listener
  * @param listener

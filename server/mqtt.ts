@@ -63,8 +63,10 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 							log_error(error);
 						}
 					} else {
-						info('Unauthorized connection attempt, no authorized client certificate provided');
-						socket.end();
+						info(
+							`Unauthorized connection attempt, no authorized client certificate provided, error: ${socket.authorizationError}`
+						);
+						return socket.end();
 					}
 				}
 				if (AUTHORIZE_LOCAL && socket.remoteAddress.includes('127.0.0.1')) {
