@@ -339,7 +339,7 @@ export async function loadComponent(
 		if (config.extensionModule) {
 			return await secureImport(join(folder, config.extensionModule));
 		}
-		if (!has_functionality) {
+		if (!has_functionality && resources.isWorker) {
 			const error_message = `${folder} did not load any modules, resources, or files, is this a valid component?`;
 			error_reporter?.(new Error(error_message));
 			(getWorkerIndex() === 0 ? console : harper_logger).error(error_message);
