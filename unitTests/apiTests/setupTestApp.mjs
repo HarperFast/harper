@@ -9,6 +9,7 @@ import { createRequire } from 'module';
 import analytics from '../../ts-build/resources/analytics.js';
 import { disableNATS } from '../../ts-build/server/nats/natsReplicator.js';
 import { bypassAuth } from '../../ts-build/security/auth.js';
+import { bypassAuth as bypassAuthMQTT } from '../../ts-build/server/mqtt.js';
 const require = createRequire(import.meta.url);
 const config = {};
 
@@ -37,6 +38,7 @@ export async function setupTestApp() {
 	analytics.setAnalyticsEnabled(false);
 	disableNATS();
 	bypassAuth();
+	bypassAuthMQTT();
 	let superGetUser = server.getUser;
 	server.getUser = function (user, password) {
 		if (user === 'test' && password === 'test') {

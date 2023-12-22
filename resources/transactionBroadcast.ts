@@ -6,7 +6,6 @@ import { IterableEventQueue } from './IterableEventQueue';
 import { keyArrayToString } from './Resources';
 import { readAuditEntry } from './auditStore';
 const TRANSACTION_EVENT_TYPE = 'transaction';
-const TRANSACTION_AWAIT_EVENT_TYPE = 'transaction-await';
 const FAILED_CONDITION = 0x4000000;
 let all_subscriptions;
 const test = Buffer.alloc(4096);
@@ -28,13 +27,13 @@ export function addSubscription(table, key, listener?: (key) => any, start_time:
 		onMessageByType(TRANSACTION_EVENT_TYPE, (event) => {
 			notifyFromTransactionData(event.path);
 		});
-		onMessageByType(TRANSACTION_AWAIT_EVENT_TYPE, (event) => {
-			trace('confirming to proceed with txn', event.txnId);
-		});
 		all_subscriptions = Object.create(null); // using it as a map that doesn't change much
 	}
 	const database_subscriptions = all_subscriptions[path] || (all_subscriptions[path] = []);
 	database_subscriptions.auditStore = table.auditStore;
+	if (database_subscriptions.lastTxnTime == null) {
+		database_subscriptions.lastTxnTime = Date.now();
+	}
 	let table_subscriptions = database_subscriptions[table_id];
 	if (!table_subscriptions) {
 		table_subscriptions = database_subscriptions[table_id] = new Map();
@@ -93,8 +92,6 @@ class Subscription extends IterableEventQueue {
 	}
 }
 
-let last_txn_time = Date.now();
-
 function notifyFromTransactionData(path, same_thread?) {
 	if (!all_subscriptions) return;
 	const subscriptions = all_subscriptions[path];
@@ -107,10 +104,10 @@ function notifyFromTransactionData(path, same_thread?) {
 	}
 	let subscribers_with_txns;
 	for (const { key: local_time, value: audit_entry_encoded } of subscriptions.auditStore.getRange({
-		start: last_txn_time,
+		start: subscriptions.lastTxnTime,
 		exclusiveStart: true,
 	})) {
-		last_txn_time = local_time;
+		subscriptions.lastTxnTime = local_time;
 		const audit_entry = readAuditEntry(audit_entry_encoded);
 		const table_subscriptions = subscriptions[audit_entry.tableId];
 		if (!table_subscriptions) continue;
@@ -169,7 +166,7 @@ function notifyFromTransactionData(path, same_thread?) {
 		// any subscribers with open transactions need to have an event to indicate that their transaction has been ended
 		for (const subscription of subscribers_with_txns) {
 			subscription.txnInProgress = null; // clean up
-			subscription.listener(null, { type: 'end_txn' }, last_txn_time, true);
+			subscription.listener(null, { type: 'end_txn' }, subscriptions.lastTxnTime, true);
 		}
 	}
 }
