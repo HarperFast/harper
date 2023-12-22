@@ -20,7 +20,7 @@ const { checkMemoryLimit } = require('../../utility/registration/hdb_license');
 const tls = require('tls');
 
 const origCreateSecureContext = tls.createSecureContext;
-tls.createSecureContext = function(options) {
+tls.createSecureContext = function (options) {
 	if (!options.cert || !options.key) {
 		return origCreateSecureContext(options);
 	}
@@ -33,7 +33,6 @@ tls.createSecureContext = function(options) {
 	ctx.context.setKey(options.key, undefined);
 	return ctx;
 };
-
 
 if (process.env.DEV_MODE) {
 	try {
@@ -267,7 +266,7 @@ function proxyRequest(message) {
 	}
 }
 
-function registerServer(server, port) {
+function registerServer(server, port, check_port = true) {
 	if (!+port && port !== env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)) {
 		// if no port is provided, default to custom functions port
 		port = parseInt(env.get(terms.CONFIG_PARAMS.HTTP_PORT), 10);
@@ -278,7 +277,7 @@ function registerServer(server, port) {
 		// server and if doesn't handle the request, cascade to next server (until finally we 404)
 		let last_server = existing_server.lastServer || existing_server;
 		if (last_server === server) throw new Error(`Can not register the same server twice for the same port ${port}`);
-		if (Boolean(last_server.sessionIdContext) !== Boolean(server.sessionIdContext) && +port)
+		if (check_port && Boolean(last_server.sessionIdContext) !== Boolean(server.sessionIdContext) && +port)
 			throw new Error(`Can not mix secure HTTPS and insecure HTTP on the same port ${port}`);
 		last_server.off('unhandled', defaultNotFound);
 		last_server.on('unhandled', (request, response) => {
@@ -323,7 +322,7 @@ function httpServer(listener, options) {
 			http_responders[options?.runFirst ? 'unshift' : 'push']({ listener, port: options?.port || port });
 		} else {
 			listener.isSecure = secure;
-			registerServer(listener, port);
+			registerServer(listener, port, false);
 		}
 		http_chain[port] = makeCallbackChain(http_responders, port);
 		ws_chain = makeCallbackChain(request_listeners, port);
