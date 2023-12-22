@@ -42,7 +42,8 @@ describe('Audit log', () => {
 		}
 		assert.equal(results.length, 3);
 		assert.equal(events.length, 3);
-		setAuditRetention(0.001);
+		setAuditRetention(0.001, 1);
+		AuditedTable.auditStore.scheduleAuditCleanup(1);
 		await AuditedTable.put(3, { name: 'three' });
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		results = [];
