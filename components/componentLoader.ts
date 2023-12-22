@@ -291,7 +291,7 @@ export async function loadComponent(
 						has_functionality = true;
 						let relative_path = relative(folder, path).replace(/\\/g, '/');
 						if (root_path) {
-							if (relative_path.startsWith(root_path)) relative_path = relative_path.slice(root_path.length);
+							if (relative_path.startsWith(root_path)) relative_path = relative_path.slice(root_path.length + 1);
 							else
 								throw new Error(
 									`The root path '${component_config.root}' does not reference a valid part of the file path '${relative_path}'.` +

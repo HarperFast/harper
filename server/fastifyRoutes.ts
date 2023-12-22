@@ -43,7 +43,7 @@ export function start(options) {
 			}
 			const resolved_server = await fastify_server;
 			const route_folder = dirname(file_path);
-			let prefix = relative_path.replace(/\/routes\/.*/g, '');
+			let prefix = dirname(relative_path);
 			if (prefix.startsWith('/')) prefix = prefix.slice(1);
 			if (!route_folders.has(route_folder)) {
 				route_folders.add(route_folder);
@@ -58,6 +58,7 @@ export function start(options) {
 				}
 			}
 		},
+		ready,
 	};
 }
 /**
@@ -193,7 +194,10 @@ async function buildServer(is_https) {
 
 export function ready() {
 	if (fastify_server) {
-		if (fastify_server.then) return fastify_server.then((server) => server.ready());
+		if (fastify_server.then)
+			return fastify_server.then((server) => {
+				return server.ready();
+			});
 		return fastify_server.ready();
 	}
 }
