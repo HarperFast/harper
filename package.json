@@ -154,7 +154,7 @@
     "mqtt": "~4.3.7",
     "newman": "5.3.2",
     "newman-reporter-html": "1.0.5",
-    "newman-reporter-htmlextra": "^1.2.3",
+    "newman-reporter-htmlextra": "^1.23.0",
     "newman-reporter-teamcity": "^0.1.12",
     "node-fetch": "2.6.7",
     "nyc": "15.1.0",
