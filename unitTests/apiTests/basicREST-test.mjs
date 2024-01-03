@@ -146,17 +146,17 @@ describe('test REST calls', () => {
 			assert.equal(response.status, 404);
 		});
 		it('do query by starts with', async () => {
-			let response = await axios('http://localhost:9926/FourProp/?name=name*');
+			let response = await axios('http://localhost:9926/FourProp/?name=sw=name');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 10);
 		});
 		it('do query by starts with and ends with', async () => {
-			let response = await axios('http://localhost:9926/FourProp/?name=name*&name=*4');
+			let response = await axios('http://localhost:9926/FourProp/?name=sw=name&name=ew=4');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 1);
 		});
 		it('do query with contains', async () => {
-			let response = await axios('http://localhost:9926/FourProp/?name=name*&name=*4*');
+			let response = await axios('http://localhost:9926/FourProp/?name=sw=name&name=ct=4');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 1);
 		});
@@ -184,6 +184,13 @@ describe('test REST calls', () => {
 			assert.equal(response.data.length, 5);
 			assert.equal(response.data[4].age, 25);
 		});
+		it('do a less than or equal and operator precedence', async () => {
+			let response = await axios('http://localhost:9926/FourProp/?age=le=29&[age=ge=27|[age=gt=21&age=lt=23]]');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.length, 4);
+			assert.equal(response.data[0].age, 22);
+			assert.equal(response.data[3].age, 29);
+		});
 		it('do a less than query by numeric property with limit and offset', async () => {
 			let response = await axios('http://localhost:9926/FourProp/?age=lt=25&limit(1,3)');
 			assert.equal(response.status, 200);
@@ -200,7 +207,7 @@ describe('test REST calls', () => {
 
 		it('by primary key', async () => {
 			// this test also tests to ensure deleted values are not reachable
-			let response = await axios('http://localhost:9926/VariedProps/?id=8*');
+			let response = await axios('http://localhost:9926/VariedProps/?id=sw=8');
 			assert.equal(response.status, 200);
 			if (response.data.length > 2) console.log('Record starting with 8', response.data);
 			assert.equal(response.data.length, 2);

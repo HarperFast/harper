@@ -98,6 +98,7 @@ describe('Querying through Resource API', () => {
 				relatedId: i % 5,
 				sparse: i % 6 === 2 ? i : null,
 				manyToManyIds: many_ids,
+				nestedData: [{ id: 'nested-' + i, name: 'nested name ' + i }],
 			});
 		}
 		await last;
@@ -720,6 +721,47 @@ describe('Querying through Resource API', () => {
 		assert.equal(results[0].id, 'id-84');
 		assert.equal(results[1].id, 'id-89');
 		assert.equal(results[14].id, 'id-95');
+	});
+	it('Parsed query data in a table with one-to-many joined sort that is not primary', async function () {
+		let results = [];
+		for await (let record of RelatedTable.search({
+			url: '?name=related name 3&sort(-relatedToMany.name)&select(id,relatedToMany)',
+		})) {
+			results.push(record);
+		}
+		assert.equal(results.length, 1);
+		const related = await results[0].relatedToMany;
+		assert.equal(related[0].id, 'id-98');
+		assert.equal(related[1].id, 'id-93');
+		assert.equal(related[14].id, 'id-33');
+	});
+	it('Parsed query data in a table with many-to-many joined sort that is not primary', async function () {
+		let results = [];
+		for await (let record of QueryTable.search({
+			url: '?id=id-14&sort(-manyToMany.name)&select(id,manyToMany)',
+		})) {
+			results.push(record);
+		}
+		assert.equal(results.length, 1);
+		const related = await results[0].manyToMany;
+		assert.equal(related[0].id, 17);
+		assert.equal(related[1].id, 16);
+		assert.equal(related.length, 4);
+	});
+	it('Parsed query data in a table with many-to-many joined sort that has missing entries and multiple sorts', async function () {
+		let results = [];
+		for await (let record of QueryTable.search({
+			url: '?id=id-12|id=id-24&sort(-id,-manyToMany.name)&select(id,manyToMany,manyToManyIds)',
+		})) {
+			results.push(record);
+		}
+		assert.equal(results.length, 2);
+		let related = await results[0].manyToMany;
+		assert.equal(related[0].id, 24);
+		assert.equal(related.length, 1);
+		related = await results[1].manyToMany;
+		assert.equal(related.length, 2);
+		assert.equal(related[0].id, 13);
 	});
 
 	it('Query data in a table returning primary key and do not load records', async function () {

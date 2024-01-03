@@ -369,6 +369,9 @@ const ALTERNATE_COMPARATOR_NAMES = {
 	'less_than_equal': 'le',
 	'not_equal': 'ne',
 	'equal': 'equals',
+	'sw': 'starts_with',
+	'ew': 'ends_with',
+	'ct': 'contains',
 	'>': 'gt',
 	'>=': 'ge',
 	'<': 'lt',
@@ -556,9 +559,9 @@ export function estimateCondition(table) {
 		return condition.estimated_count; // use cached count
 	};
 }
-const NEEDS_PARSER = /[()[\]*|!<>.]|(=\w+=)/;
-const QUERY_PARSER = /([^?&|=<>!([{}\])*,]*)([([{}\])|,&]|[=<>!*]*)/g;
-const VALUE_PARSER = /([^&|*=[\]{}]+)([[\]{}]|[&|*=]*)/g;
+const NEEDS_PARSER = /[()[\]|!<>.]|(=\w+=)/;
+const QUERY_PARSER = /([^?&|=<>!([{}\]),]*)([([{}\])|,&]|[=<>!]*)/g;
+const VALUE_PARSER = /([^&|=[\]{}]+)([[\]{}]|[&|=]*)/g;
 let last_index;
 let query_string;
 /**
@@ -605,6 +608,7 @@ function parseBlock(query, expected_end) {
 				if (attribute) {
 					// a FIQL operator like =gt= (and don't allow just any string)
 					if (value.length <= 2) comparator = value;
+					else throw new SyntaxError(`invalid FIQL operator ${value}`);
 				} else {
 					comparator = 'equals';
 					if (!value) throw new SyntaxError(`attribute must be specified before equality comparator`);
@@ -619,25 +623,6 @@ function parseBlock(query, expected_end) {
 				comparator = SYMBOL_OPERATORS[operator];
 				if (!value) throw new SyntaxError(`attribute must be specified before comparator ${operator}`);
 				attribute = decodeProperty(value);
-				break;
-			case '=*':
-				comparator = 'ends_with';
-				attribute = decodeProperty(value);
-				break;
-			case '*':
-				expecting_delimiter = true;
-			// fall through
-			case '*&':
-				if (query.conditions) {
-					query.conditions.push({
-						comparator: comparator === 'ends_with' ? 'contains' : 'starts_with',
-						attribute,
-						value: decodeURIComponent(value),
-					});
-				} else {
-					query.push(value + operator);
-				}
-				attribute = null;
 				break;
 			case '|':
 				query.operator = 'or';

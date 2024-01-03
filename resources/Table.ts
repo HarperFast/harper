@@ -5,13 +5,12 @@
  */
 
 import { CONFIG_PARAMS, OPERATIONS_ENUM, SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME } from '../utility/hdbTerms';
-import { Database, DIRECT_WRITE_PLACEHOLDER, SKIP } from 'lmdb';
+import { Database, SKIP } from 'lmdb';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
 import { Query, ResourceInterface, Request, SubscriptionRequest, Id, Context } from './ResourceInterface';
 import { CONTEXT, ID_PROPERTY, RECORD_PROPERTY, Resource, IS_COLLECTION } from './Resource';
-import { COMPLETION, DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction';
-import * as lmdb_terms from '../utility/lmdb/terms';
+import { DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction';
 import * as env_mngr from '../utility/environment/environmentManager';
 import { addSubscription, listenToCommits } from './transactionBroadcast';
 import { handleHDBError, ClientError, ServerError } from '../utility/errors/hdbError';
@@ -122,6 +121,7 @@ export function makeTable(options) {
 	let property_resolvers;
 	let has_relationships = false;
 	let last_entry;
+	const RangeIterable = primary_store.getRange({ start: false, end: false }).constructor;
 	const MAX_PREFETCH_SEQUENCE = 10;
 	const MAX_PREFETCH_BUNDLE = 6;
 	if (audit) addDeleteRemoval();
@@ -1051,7 +1051,14 @@ export function makeTable(options) {
 						// and avoid a sort operation
 					} else {
 						const attribute = findAttribute(attributes, attribute_name);
-						if (!attribute) throw handleHDBError(new Error(), `${attribute_name} is not a defined attribute`, 404);
+						if (!attribute)
+							throw handleHDBError(
+								new Error(),
+								`${
+									Array.isArray(attribute_name) ? attribute_name.join('.') : attribute_name
+								} is not a defined attribute`,
+								404
+							);
 
 						order_aligned_condition = { attribute: attribute_name };
 						conditions.push(order_aligned_condition);
@@ -1109,7 +1116,7 @@ export function makeTable(options) {
 						.slice(1)
 						.map((condition) => filterByType(condition, TableResource, context, filtered))
 						.filter(Boolean);
-					return filters.length > 0 ? transformToEntries(results, filters) : results;
+					return filters.length > 0 ? transformToEntries(results, select, context, filters) : results;
 				}
 			}
 			const reverse = request.reverse === true;
@@ -1148,143 +1155,157 @@ export function makeTable(options) {
 					request.limit !== undefined ? (request.offset || 0) + request.limit : undefined
 				);
 			const ensure_loaded = request.ensureLoaded !== false;
-
-			function transformToEntries(ids, filters?) {
-				// TODO: Test and ensure that we break out of these loops when a connection is lost
-				const filters_length = filters?.length;
-				const load_options = {
-					transaction: read_txn,
-					lazy: filters_length > 0 || typeof select === 'string' || select?.length < 4,
-					alwaysPrefetch: true,
-				};
-				// for filter operations, we intentionally use async and yield the event turn so that scanning queries
-				// do not hog resources and give more processing opportunity for more efficient index-driven queries.
-				// this also gives an opportunity to prefetch and ensure any page faults happen in a different thread
-				function processEntry(entry, id?) {
-					const record = entry?.value;
-					if (!record) return SKIP;
-					for (let i = 0; i < filters_length; i++) {
-						if (!filters[i](record, entry)) return SKIP; // didn't match filters
-					}
-					if (id !== undefined) entry.key = id;
-					return entry;
-				}
-				const results =
-					filters_length > 0 || !ids.hasEntries
-						? ids.map((id_or_entry) => {
-								if (typeof id_or_entry === 'object' && id_or_entry.key !== undefined)
-									return filters_length > 0 ? processEntry(id_or_entry) : id_or_entry; // already an entry
-								return loadLocalRecord(id_or_entry, context, load_options, false, processEntry);
-						  })
-						: ids;
-				results.hasEntries = true;
-				return results;
-			}
-			let results;
 			const transformToRecord = TableResource.transformEntryForSelect(select, context, filtered, ensure_loaded, true);
-			if (post_ordering) {
-				// there might be some situations where we don't need to transform to entries for post_ordering, not sure
-				entries = transformToEntries(entries, null);
-				let ordered;
-				// if we are doing post-ordering, we need to get records first, then sort them
-				results = new entries.constructor({
-					[Symbol.iterator]() {
-						let sorted_array_iterator;
-						const db_iterator = entries[Symbol.asyncIterator]();
-						let db_done;
-						const db_ordered_attribute = post_ordering.dbOrderedAttribute;
-						let enqueued_entry_for_next_group;
-						let last_grouping_value;
-						let first_entry = true;
-						function createComparator(order) {
-							const next_comparator = order.next && createComparator(order.next);
-							const descending = order.descending;
-							return (entry_a, entry_b) => {
-								const a = getAttributeValue(entry_a, order.attribute, context);
-								const b = getAttributeValue(entry_b, order.attribute, context);
-								const diff = descending ? compareKeys(b, a) : compareKeys(a, b);
-								if (diff === 0) return next_comparator?.(entry_a, entry_b) || 0;
-								return diff;
-							};
-						}
-						const comparator = createComparator(post_ordering);
-						return {
-							async next() {
-								let iteration;
-								if (sorted_array_iterator) {
-									iteration = sorted_array_iterator.next();
-									if (iteration.done) {
-										if (db_done) {
-											if (results.onDone) results.onDone();
-											return iteration;
-										}
-									} else
-										return {
-											value: transformToRecord(iteration.value),
-										};
-								}
-								ordered = [];
-								if (enqueued_entry_for_next_group) ordered.push(enqueued_entry_for_next_group);
-								// need to load all the entries into ordered
-								do {
-									iteration = await db_iterator.next();
-									if (iteration.done) {
-										db_done = true;
-										if (!ordered.length) {
-											if (results.onDone) results.onDone();
-											return iteration;
-										} else break;
-									} else {
-										const entry = iteration.value;
-										// if the index has already provided the first order of sorting, we only need to sort
-										// within each grouping
-										if (db_ordered_attribute) {
-											const grouping_value = getAttributeValue(entry, db_ordered_attribute, context);
-											if (first_entry) {
-												first_entry = false;
-												last_grouping_value = grouping_value;
-											} else if (grouping_value !== last_grouping_value) {
-												last_grouping_value = grouping_value;
-												enqueued_entry_for_next_group = entry;
-												break;
-											}
-										}
-										// we store the value we will sort on, for fast sorting, and the entry so the records can be GC'ed if necessary
-										// before the sorting is completed
-										ordered.push(entry);
-									}
-								} while (true);
-								if (post_ordering.isGrouped) {
-									// TODO: Return grouped results
-								}
-								ordered.sort(comparator);
-								sorted_array_iterator = ordered[Symbol.iterator]();
-								iteration = sorted_array_iterator.next();
-								if (!iteration.done)
-									return {
-										value: await transformToRecord(iteration.value),
-									};
-								if (results.onDone) results.onDone();
-								return iteration;
-							},
-							return() {
-								if (results.onDone) results.onDone();
-								db_iterator.return();
-							},
-							throw() {
-								if (results.onDone) results.onDone();
-								db_iterator.throw();
-							},
-						};
-					},
-				});
-			} else results = entries.map(transformToRecord);
+			const results = TableResource.transformToOrderedSelect(
+				entries,
+				select,
+				post_ordering,
+				context,
+				transformToRecord
+			);
 			results.onDone = () => {
 				results.results = null; // ensure that it isn't called twice
 				txn.doneReadTxn();
 			};
-
 			results.selectApplied = true;
+			return results;
+		}
+		/**
+		 * This is responsible for ordering and select()ing the attributes/properties from returned entries
+		 * @param select
+		 * @param context
+		 * @param filtered
+		 * @param ensure_loaded
+		 * @param can_skip
+		 * @returns
+		 */
+		static transformToOrderedSelect(entries, select, sort, context, transformToRecord) {
+			let results = new RangeIterable();
+			if (sort) {
+				// there might be some situations where we don't need to transform to entries for sorting, not sure
+				entries = transformToEntries(entries, select, context, null);
+				let ordered;
+				// if we are doing post-ordering, we need to get records first, then sort them
+				results.iterate = function () {
+					let sorted_array_iterator;
+					const db_iterator = entries[Symbol.asyncIterator]
+						? entries[Symbol.asyncIterator]()
+						: entries[Symbol.iterator]();
+					let db_done;
+					const db_ordered_attribute = sort.dbOrderedAttribute;
+					let enqueued_entry_for_next_group;
+					let last_grouping_value;
+					let first_entry = true;
+					function createComparator(order) {
+						const next_comparator = order.next && createComparator(order.next);
+						const descending = order.descending;
+						return (entry_a, entry_b) => {
+							const a = getAttributeValue(entry_a, order.attribute, context);
+							const b = getAttributeValue(entry_b, order.attribute, context);
+							const diff = descending ? compareKeys(b, a) : compareKeys(a, b);
+							if (diff === 0) return next_comparator?.(entry_a, entry_b) || 0;
+							return diff;
+						};
+					}
+					const comparator = createComparator(sort);
+					return {
+						async next() {
+							let iteration;
+							if (sorted_array_iterator) {
+								iteration = sorted_array_iterator.next();
+								if (iteration.done) {
+									if (db_done) {
+										if (results.onDone) results.onDone();
+										return iteration;
+									}
+								} else
+									return {
+										value: await transformToRecord(iteration.value),
+									};
+							}
+							ordered = [];
+							if (enqueued_entry_for_next_group) ordered.push(enqueued_entry_for_next_group);
+							// need to load all the entries into ordered
+							do {
+								iteration = await db_iterator.next();
+								if (iteration.done) {
+									db_done = true;
+									if (!ordered.length) {
+										if (results.onDone) results.onDone();
+										return iteration;
+									} else break;
+								} else {
+									let entry = iteration.value;
+									if (entry?.then) entry = await entry;
+									// if the index has already provided the first order of sorting, we only need to sort
+									// within each grouping
+									if (db_ordered_attribute) {
+										const grouping_value = getAttributeValue(entry, db_ordered_attribute, context);
+										if (first_entry) {
+											first_entry = false;
+											last_grouping_value = grouping_value;
+										} else if (grouping_value !== last_grouping_value) {
+											last_grouping_value = grouping_value;
+											enqueued_entry_for_next_group = entry;
+											break;
+										}
+									}
+									// we store the value we will sort on, for fast sorting, and the entry so the records can be GC'ed if necessary
+									// before the sorting is completed
+									ordered.push(entry);
+								}
+							} while (true);
+							if (sort.isGrouped) {
+								// TODO: Return grouped results
+							}
+							ordered.sort(comparator);
+							sorted_array_iterator = ordered[Symbol.iterator]();
+							iteration = sorted_array_iterator.next();
+							if (!iteration.done)
+								return {
+									value: await transformToRecord(iteration.value),
+								};
+							if (results.onDone) results.onDone();
+							return iteration;
+						},
+						return() {
+							if (results.onDone) results.onDone();
+							db_iterator.return();
+						},
+						throw() {
+							if (results.onDone) results.onDone();
+							db_iterator.throw();
+						},
+					};
+				};
+				const applySortingOnSelect = (sort) => {
+					if (typeof select === 'object' && Array.isArray(sort.attribute)) {
+						for (let i = 0; i < select.length; i++) {
+							const column = select[i];
+							let column_sort;
+							if (column.name === sort.attribute[0]) {
+								column_sort = column.sort || (column.sort = {});
+								while (column_sort.next) column_sort = column_sort.next;
+								column_sort.attribute = sort.attribute.slice(1);
+								column_sort.descending = sort.descending;
+							} else if (column === sort.attribute[0]) {
+								select[i] = column_sort = {
+									name: column,
+									sort: {
+										attribute: sort.attribute.slice(1),
+										descending: sort.descending,
+									},
+								};
+							}
+						}
+					}
+					if (sort.next) applySortingOnSelect(sort.next);
+				};
+				applySortingOnSelect(sort);
+			} else {
+				results.iterate = (entries[Symbol.asyncIterator] || entries[Symbol.iterator]).bind(entries);
+				results = results.map(transformToRecord);
+			}
 			return results;
 		}
 		/**
@@ -1297,7 +1318,7 @@ export function makeTable(options) {
 		 * @returns
 		 */
 		static transformEntryForSelect(select, context, filtered, ensure_loaded?, can_skip?) {
-			if (select === primary_key || (select?.length === 1 && select[0] === primary_key)) {
+			if (select && (select === primary_key || (select?.length === 1 && select[0] === primary_key))) {
 				// fast path if only the primary key is selected, so we don't have to load records
 				const transform = (entry) => {
 					return entry?.key ?? entry;
@@ -1382,30 +1403,45 @@ export function makeTable(options) {
 							}
 							const handleResolvedValue = (value) => {
 								if (value && typeof value === 'object') {
-									const related_table = resolver.definition?.tableClass;
+									const target_table = resolver.definition?.tableClass || TableResource;
 									if (!transform_cache) transform_cache = {};
 									const transform =
 										transform_cache[attribute_name] ||
-										(transform_cache[attribute_name] = (related_table || TableResource).transformEntryForSelect(
+										(transform_cache[attribute_name] = target_table.transformEntryForSelect(
 											// if it is a simple string, there is no select for the next level,
 											// otherwise pass along the nested selected
-											attribute_name === attribute ? null : attribute.select || attribute,
+											attribute_name === attribute
+												? null
+												: attribute.select || (Array.isArray(attribute) ? attribute : null),
 											context,
 											filter_map,
 											ensure_loaded
 										));
 									if (Array.isArray(value)) {
-										let has_promises;
-										value = value.map((element) => {
-											const transformed = transform(element);
-											if (transformed?.then) has_promises = true;
-											return transformed;
-										});
-										if (has_promises) {
+										const results = [];
+										const iterator = target_table
+											.transformToOrderedSelect(
+												value,
+												attribute.select,
+												typeof attribute.sort === 'object' && attribute.sort,
+												context,
+												transform
+											)
+											[Symbol.asyncIterator]();
+										const nextValue = (iteration) => {
+											while (!iteration.done) {
+												if (iteration?.then) return iteration.then(nextValue);
+												results.push(iteration.value);
+												iteration = iterator.next();
+											}
+											callback(results, attribute_name);
+										};
+										const promised = nextValue(iterator.next());
+										if (promised) {
 											if (!promises) promises = [];
-											promises.push(Promise.all(value).then((values) => callback(values, attribute_name)));
-											return;
+											promises.push(promised);
 										}
+										return;
 									} else {
 										value = transform(value);
 										if (value?.then) {
@@ -1831,7 +1867,7 @@ export function makeTable(options) {
 		 */
 		static updatedAttributes() {
 			property_resolvers = this.propertyResolvers = {
-				$id: (object, context, entry) => entry.key,
+				$id: (object, context, entry) => ({ value: entry.key }),
 				$updatedtime: (object, context, entry) => entry.version,
 				$record: (object, context, entry) => (entry ? { value: object } : object),
 			};
@@ -2234,13 +2270,49 @@ export function makeTable(options) {
 			for (let i = 0, l = attribute_name.length; i < l; i++) {
 				const attribute = attribute_name[i];
 				const resolver = resolvers?.[attribute];
-				value = resolver ? resolver(value, context) : value?.[attribute];
+				value = resolver && value ? resolver(value, context, true)?.value : value?.[attribute];
 				resolvers = resolver?.definition?.tableClass?.propertyResolvers;
 			}
 			return value;
 		}
 		const resolver = property_resolvers[attribute_name];
 		return resolver ? resolver(record, context) : record[attribute_name];
+	}
+	function transformToEntries(ids, select, context, filters?) {
+		const read_txn = txnForContext(context).getReadTxn();
+		// TODO: Test and ensure that we break out of these loops when a connection is lost
+		const filters_length = filters?.length;
+		const load_options = {
+			transaction: read_txn,
+			lazy: filters_length > 0 || typeof select === 'string' || select?.length < 4,
+			alwaysPrefetch: true,
+		};
+		// for filter operations, we intentionally use async and yield the event turn so that scanning queries
+		// do not hog resources and give more processing opportunity for more efficient index-driven queries.
+		// this also gives an opportunity to prefetch and ensure any page faults happen in a different thread
+		function processEntry(entry, id?) {
+			const record = entry?.value;
+			if (!record) return SKIP;
+			for (let i = 0; i < filters_length; i++) {
+				if (!filters[i](record, entry)) return SKIP; // didn't match filters
+			}
+			if (id !== undefined) entry.key = id;
+			return entry;
+		}
+		if (filters_length > 0 || !ids.hasEntries) {
+			let results = ids.map((id_or_entry) => {
+				if (typeof id_or_entry === 'object' && id_or_entry.key !== undefined)
+					return filters_length > 0 ? processEntry(id_or_entry) : id_or_entry; // already an entry
+				if (id_or_entry == undefined) {
+					return SKIP;
+				}
+				return loadLocalRecord(id_or_entry, context, load_options, false, processEntry);
+			});
+			if (Array.isArray(ids)) results = results.filter((entry) => entry !== SKIP);
+			results.hasEntries = true;
+			return results;
+		}
+		return ids;
 	}
 
 	/**
