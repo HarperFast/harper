@@ -37,7 +37,7 @@ jobs:
       run: |
         #!/usr/bin/env bash
         cd harperdb_open_source_license_generator
-        npm install --omit-dev 
+        npm install --omit=dev 
         cd -
         node harperdb_open_source_license_generator/index.js
     - name: 'Upload Artifact'
@@ -79,3 +79,4 @@ jobs:
         GITHUB_RUN_NUMBER: ${{ vars.GITHUB_RUN_NUMBER }}
         TAG_LATEST: "${{ inputs.tag_latest }}"
       run: ./.github/scripts/docker-publish.sh
+      timeout-minutes: 30
