@@ -8,6 +8,7 @@ import { get as env_get } from '../../utility/environment/environmentManager.js'
 import { connect } from 'mqtt';
 import { readFileSync } from 'fs';
 import { start as startMQTT } from '../../ts-build/server/mqtt.js';
+import axios from 'axios';
 import {
 	setNATSReplicator,
 	setPublishToStream,
@@ -49,11 +50,9 @@ describe('test MQTT connections and commands', () => {
 		});
 		await new Promise((resolve, reject) => {
 			client2.on('connect', (connack) => {
-				console.log(connack);
 				resolve();
 			});
 			client2.on('error', (error) => {
-				console.error(error);
 				reject(error);
 			});
 		});
@@ -70,7 +69,6 @@ describe('test MQTT connections and commands', () => {
 			});
 			client.once('message', (topic, payload, packet) => {
 				let record = decode(payload);
-				console.log(topic, record);
 				resolve();
 			});
 		});
@@ -116,7 +114,6 @@ describe('test MQTT connections and commands', () => {
 				new Promise((resolve) => {
 					client.on('connect', function (connack) {
 						client.subscribe(topic, function (err) {
-							console.error(err);
 							if (!err) {
 								resolve();
 								intervals.push(
@@ -348,6 +345,84 @@ describe('test MQTT connections and commands', () => {
 				}
 			);
 		});
+		client.end();
+	});
+	it('subscribe to retained record with patch operations', async function () {
+		let path = 'SimpleRecord/78';
+		let client;
+		await new Promise((resolve, reject) => {
+			client = connect('mqtt://localhost:1883', {
+				clean: false,
+				clientId: 'with-patches',
+			});
+			client.on('connect', resolve);
+			client.on('error', reject);
+		});
+		let headers = {
+			'Content-Type': 'application/json',
+		};
+
+		await new Promise(async (resolve, reject) => {
+			let messages = [];
+			client.subscribe(path, { qos: 1 }, function (err) {
+				if (err) reject(err);
+			});
+			const onMessage = (topic, payload, packet) => {
+				let record = JSON.parse(payload);
+				messages.push(record);
+				if (messages.length == 2) {
+					assert.equal(messages[0].name, 'a starting point');
+					assert.equal(messages[0].count, 2);
+					assert.equal(messages[1].count, 3);
+					assert.equal(messages[1].name, 'an updated name');
+					assert.equal(messages[1].newProperty, 'new value');
+					resolve();
+					client.off('message', onMessage);
+				}
+			};
+			client.on('message', onMessage);
+			await axios.put('http://localhost:9926/SimpleRecord/78',
+				{ name: 'a starting point', count: 2 },
+				{ headers });
+			await axios.patch('http://localhost:9926/SimpleRecord/78',
+				{ name: 'an updated name', newProperty: 'new value', count: { __op__: 'add', value: 1 } },
+				{ headers });
+			console.log('finished patch');
+		});
+		await new Promise((resolve) => client.end(resolve));
+		await delay(10);
+		await axios.patch('http://localhost:9926/SimpleRecord/78',
+			{ name: 'update 2', newProperty: 'newer value', count: { __op__: 'add', value: 1 } },
+			{ headers });
+		await axios.patch('http://localhost:9926/SimpleRecord/78',
+			{ name: 'update 3', count: { __op__: 'add', value: 1 } },
+			{ headers });
+		await new Promise(async (resolve, reject) => {
+			let messages = [];
+			client = connect('mqtt://localhost:1883', {
+				clean: false,
+				clientId: 'with-patches',
+			});
+			client.on('error', reject);
+			client.on('message', (topic, payload, packet) => {
+				let record = JSON.parse(payload);
+				messages.push(record);
+				if (messages.length == 3) {
+					assert.equal(messages[0].name, 'update 2');
+					assert.equal(messages[0].count, 4);
+					assert.equal(messages[1].newProperty, 'newer value');
+					assert.equal(messages[1].name, 'update 3');
+					assert.equal(messages[1].count, 5);
+					assert.equal(messages[2].name, 'update 4');
+					assert.equal(messages[2].count, 6);
+					resolve();
+				}
+			});
+			await axios.patch('http://localhost:9926/SimpleRecord/78',
+				{ name: 'update 4', count: { __op__: 'add', value: 1 } },
+				{ headers });
+		});
+
 		client.end();
 	});
 	it('subscribe twice', async function () {
@@ -811,7 +886,6 @@ describe('test MQTT connections and commands', () => {
 					qos: 2,
 				},
 				function (err) {
-					console.log('subscribed', err);
 					if (err) reject(err);
 					else {
 						resolve();

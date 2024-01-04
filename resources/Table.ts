@@ -19,14 +19,15 @@ import { SchemaEventMsg, UserEventMsg } from '../server/threads/itc';
 import { databases, table } from './databases';
 import { searchByIndex, filterByType, findAttribute, estimateCondition, flattenKey } from './search';
 import * as harper_logger from '../utility/logging/harper_logger';
-import { assignTrackedAccessors, deepFreeze, hasChanges, OWN_DATA } from './tracked';
+import { Addition, assignTrackedAccessors, deepFreeze, hasChanges, OWN_DATA } from './tracked';
 import { transaction } from './transaction';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads';
 import { readAuditEntry } from './auditStore';
 import { autoCast, convertToMS } from '../utility/common_utils';
-import { getUpdateRecord } from './RecordEncoder';
+import { getUpdateRecord, PENDING_LOCAL_TIME } from './RecordEncoder';
 import { recordAction, recordActionBinary } from './analytics';
+import { rebuildUpdateBefore } from './crdt';
 
 const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
@@ -39,7 +40,9 @@ const LOCK_TIMEOUT = 10000;
 const VERSION_PROPERTY = Symbol.for('version');
 const INCREMENTAL_UPDATE = Symbol.for('incremental-update');
 const ENTRY_PROPERTY = Symbol('entry');
-const IS_SAVING = Symbol('is-saving');
+const SAVE_MODE = Symbol('is-saving');
+const SAVING_FULL_UPDATE = 1;
+const SAVING_CRDT_UPDATE = 2;
 const LOADED_FROM_SOURCE = Symbol('loaded-from-source');
 const NOTIFICATION = { isNotification: true, ensureLoaded: false };
 const INVALIDATED = 1;
@@ -211,6 +214,7 @@ export function makeTable(options) {
 			// of the commit
 			apply_to_sources = {
 				put: getApplyToCanonicalSource('put'),
+				patch: getApplyToCanonicalSource('patch'),
 				delete: getApplyToCanonicalSource('delete'),
 				publish: getApplyToCanonicalSource('publish'),
 				// note that invalidate event does not go to the canonical source, invalidate means that
@@ -218,6 +222,7 @@ export function makeTable(options) {
 			};
 			apply_to_sources_intermediate = {
 				put: getApplyToIntermediateSource('put'),
+				patch: getApplyToIntermediateSource('patch'),
 				delete: getApplyToIntermediateSource('delete'),
 				publish: getApplyToIntermediateSource('publish'),
 				invalidate: getApplyToIntermediateSource('invalidate'),
@@ -249,7 +254,9 @@ export function makeTable(options) {
 					const resource: TableResource = await Table.getResource(event.id, context, NOTIFICATION);
 					switch (event.type) {
 						case 'put':
-							return resource._writeUpdate(value, NOTIFICATION);
+							return resource._writeUpdate(value, true, NOTIFICATION);
+						case 'patch':
+							return resource._writeUpdate(value, false, NOTIFICATION);
 						case 'delete':
 							return resource._writeDelete(NOTIFICATION);
 						case 'publish':
@@ -668,9 +675,7 @@ export function makeTable(options) {
 			if (typeof updates === 'object' && updates) {
 				if (full_update) {
 					if (Object.isFrozen(updates)) updates = Object.assign({}, updates);
-					for (const key in this[RECORD_PROPERTY]) {
-						if (updates[key] === undefined) updates[key] = undefined;
-					}
+					this[RECORD_PROPERTY] = {}; // clear out the existing record
 					this[OWN_DATA] = updates;
 				} else {
 					own_data = this[OWN_DATA];
@@ -678,8 +683,27 @@ export function makeTable(options) {
 					this[OWN_DATA] = own_data = updates;
 				}
 			}
-			this._writeUpdate(this);
+			this._writeUpdate(this[OWN_DATA], full_update);
 			return this;
+		}
+
+		addTo(property, value) {
+			if (typeof value === 'number') {
+				if (this[SAVE_MODE] === SAVING_FULL_UPDATE) this.set(property, (+this.getProperty(property) || 0) + value);
+				else {
+					if (!this[SAVE_MODE]) this.update();
+					this.set(property, new Addition(value));
+				}
+			} else {
+				throw new Error('Can not add a non-numeric value');
+			}
+		}
+		subtractFrom(property, value) {
+			if (typeof value === 'number') {
+				return this.addTo(property, -value);
+			} else {
+				throw new Error('Can not subtract a non-numeric value');
+			}
 		}
 
 		invalidate(options) {
@@ -779,94 +803,148 @@ export function makeTable(options) {
 		 * @param record
 		 * @param options
 		 */
-		put(record): Promise<void> {
+		put(record): void {
 			this.update(record, true);
+		}
+		patch(record_update): void {
+			this.update(record_update, false);
 		}
 		// perform the actual write operation; this may come from a user request to write (put, post, etc.), or
 		// a notification that a write has already occurred in the canonical data source, we need to update our
 		// local copy
-		_writeUpdate(record, options?: any) {
+		_writeUpdate(record_update, full_update: boolean, options?: any) {
 			const context = this[CONTEXT];
 			const transaction = txnForContext(context);
 
 			const id = this[ID_PROPERTY];
 			checkValidId(id);
 			const entry = this[ENTRY_PROPERTY];
-			this[IS_SAVING] = true; // mark that this resource is being saved so doesExist return true
+			this[SAVE_MODE] = full_update ? SAVING_FULL_UPDATE : SAVING_CRDT_UPDATE; // mark that this resource is being saved so doesExist return true
 			const write = {
 				key: id,
 				store: primary_store,
 				entry,
 				nodeName: context?.nodeName,
 				validate: (txn_time) => {
-					if (!record[INCREMENTAL_UPDATE] || hasChanges(record)) {
-						this.validate(record);
+					if (!record_update) record_update = this[OWN_DATA];
+					if (full_update || (record_update && hasChanges(record_update))) {
+						this.validate(record_update, !full_update);
 						if (!context?.source) {
-							if (primary_key && record[primary_key] !== id) record[primary_key] = id;
 							if (updated_time_property) {
-								record[updated_time_property.name] =
+								record_update[updated_time_property.name] =
 									updated_time_property.type === 'Date'
 										? new Date(txn_time)
 										: updated_time_property.type === 'String'
 										? new Date(txn_time).toISOString()
 										: txn_time;
 							}
-							if (created_time_property) {
-								if (entry?.value) record[created_time_property.name] = entry?.value[created_time_property.name];
-								else
-									record[created_time_property.name] =
-										created_time_property.type === 'Date'
-											? new Date(txn_time)
-											: created_time_property.type === 'String'
-											? new Date(txn_time).toISOString()
-											: txn_time;
+							if (full_update) {
+								if (primary_key && record_update[primary_key] !== id) record_update[primary_key] = id;
+								if (created_time_property) {
+									if (entry?.value)
+										record_update[created_time_property.name] = entry?.value[created_time_property.name];
+									else
+										record_update[created_time_property.name] =
+											created_time_property.type === 'Date'
+												? new Date(txn_time)
+												: created_time_property.type === 'String'
+												? new Date(txn_time).toISOString()
+												: txn_time;
+								}
+								record_update = deepFreeze(record_update); // this flatten and freeze the record
 							}
-							record = deepFreeze(record); // this flatten and freeze the record
-						} else record = deepFreeze(record); // TODO: I don't know that we need to freeze notification objects, might eliminate this for reduced overhead
-						if (record[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
-						this[RECORD_PROPERTY] = record;
+							// TODO: else freeze after we have applied the changes
+						}
 					} else {
 						transaction.removeWrite(write);
 					}
 				},
-				before: apply_to_sources.put && (() => apply_to_sources.put(context, id, record)),
-				beforeIntermediate:
-					apply_to_sources_intermediate.put && (() => apply_to_sources_intermediate.put(context, id, record)),
+				before: full_update
+					? apply_to_sources.put // full update is a put, so we can use the put method if available
+						? () => apply_to_sources.put(context, id, record_update)
+						: null
+					: apply_to_sources.patch // otherwise, we need to use the patch method if available
+					? () => apply_to_sources.patch(context, id, record_update)
+					: apply_to_sources.put // if this is incremental, but only have put, we can use that by generating the full record (at least the expected one)
+					? () => apply_to_sources.put(context, id, deepFreeze(this))
+					: null,
+				beforeIntermediate: full_update
+					? apply_to_sources_intermediate.put
+						? () => apply_to_sources_intermediate.put(context, id, record_update)
+						: null
+					: apply_to_sources_intermediate.patch
+					? () => apply_to_sources_intermediate.patch(context, id, record_update)
+					: apply_to_sources_intermediate.put
+					? () => apply_to_sources_intermediate.put(context, id, deepFreeze(this))
+					: null,
 				commit: (txn_time, existing_entry, retry) => {
 					if (retry) {
 						if (context && existing_entry?.version > (context.lastModified || 0))
 							context.lastModified = existing_entry.version;
-						updateResource(this, existing_entry);
+						this[ENTRY_PROPERTY] = existing_entry;
+						if (!full_update) this[RECORD_PROPERTY] = existing_entry?.value ?? null;
 					}
+					this[OWN_DATA] = record_update;
+					this[VERSION_PROPERTY] = txn_time;
 					const existing_record = existing_entry?.value;
+					let update_to_apply = record_update;
 
-					this[IS_SAVING] = false;
+					this[SAVE_MODE] = 0;
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
 					if (existing_entry?.version > txn_time) {
-						// This is not an error condition in our world of last-record-wins
-						// replication. If the existing record is newer than it just means the provided record
-						// is, well... older. And newer records are supposed to "win" over older records, and that
-						// is normal, non-error behavior. So we still record an audit entry
-						return; /*(
-							audit && {
-								// return the audit record that should be recorded
-								type: 'put',
-								value: primary_store.encoder.encode(record_entry),
+						// TODO: can the previous version be older, by a prior version be newer?
+						if (audit) {
+							// incremental CRDT updates are only available with audit logging on
+							let local_time = existing_entry.localTime;
+							let audited_version = existing_entry.version;
+							while (update_to_apply && (local_time > txn_time || (audited_version > txn_time && local_time > 0))) {
+								const audit_entry = audit_store.get(local_time);
+								const audit_record = readAuditEntry(audit_entry);
+								audited_version = audit_record.version;
+								if (audited_version > txn_time) {
+									if (audit_record.type === 'patch') {
+										const newer_update = audit_record.getValue(primary_store);
+										update_to_apply = rebuildUpdateBefore(update_to_apply, newer_update);
+									} else if (audit_record.type === 'put' || audit_record.type === 'delete') {
+										// There is newer full record update, so this incremental update is completely superseded
+										update_to_apply = null;
+									}
+								}
+								local_time = audit_record.previousLocalTime;
 							}
-						);*/
+						} else if (full_update) {
+							// if no audit, we can't accurately do incremental updates, so we just assume the last update
+							// was the same type. Assuming a full update this record update loses and there are no changes
+							update_to_apply = null;
+						} else {
+							// no audit, assume updates are overwritten except CRDT operations or properties that didn't exist
+							update_to_apply = rebuildUpdateBefore(update_to_apply, existing_record);
+						}
 					}
-					updateIndices(id, existing_record, record);
+					const record_to_store = deepFreeze(this, update_to_apply);
+					this[RECORD_PROPERTY] = record_to_store;
+					let audit_record;
+					if (!full_update) {
+						// that is a CRDT, we use our own data as the basis for the audit record, which will include information about the incremental updates
+						audit_record = record_update;
+					}
+					updateIndices(id, existing_record, record_to_store);
+					const type = full_update ? 'put' : 'patch';
+
 					updateRecord(
 						id,
-						record,
+						record_to_store,
 						existing_entry,
 						txn_time,
 						0,
 						audit,
 						context,
-						context.expiresAt || (expiration_ms ? expiration_ms + Date.now() : 0)
+						context.expiresAt || (expiration_ms ? expiration_ms + Date.now() : 0),
+						type,
+						false,
+						audit_record
 					);
 				},
 			};
@@ -1480,12 +1558,17 @@ export function makeTable(options) {
 							});
 						} else {
 							selected = {};
+							const force_nulls = select.forceNulls;
 							for (const attribute of select) {
 								if (attribute === '*')
 									for (const key in record) {
 										selected[key] = record[key];
 									}
-								else selectAttribute(attribute, (value, attribute_name) => (selected[attribute_name] = value));
+								else
+									selectAttribute(attribute, (value, attribute_name) => {
+										if (value === undefined && force_nulls) value = null;
+										selected[attribute_name] = value;
+									});
 							}
 						}
 					} else throw new ClientError('Invalid select' + select);
@@ -1505,12 +1588,24 @@ export function makeTable(options) {
 				table({ table: table_name, database: database_name, schemaDefined: schema_defined, attributes, audit: true });
 			}
 			if (!request) request = {};
+			const get_full_record = !request.rawEvents;
 			const subscription = addSubscription(
 				TableResource,
 				this[ID_PROPERTY] ?? null, // treat undefined and null as the root
 				function (id, audit_record, timestamp, begin_txn) {
 					try {
-						const value = audit_record.getValue?.(primary_store);
+						let value = audit_record.getValue?.(primary_store, get_full_record);
+						if (!value && audit_record.type === 'patch' && get_full_record) {
+							// we don't have the full record, need to get it
+							const entry = primary_store.getEntry(id);
+							// if the current record matches the timestamp, we can use that
+							if (entry?.version === audit_record.version) {
+								value = entry.value;
+							} else {
+								// otherwise try to go back in the audit log
+								value = audit_record.getValue?.(primary_store, true, timestamp);
+							}
+						}
 						this.send({
 							id,
 							timestamp,
@@ -1523,7 +1618,7 @@ export function makeTable(options) {
 						harper_logger.error(error);
 					}
 				},
-				request.startTime,
+				request.startTime || 0,
 				this[IS_COLLECTION]
 			);
 			if (this[IS_COLLECTION]) {
@@ -1546,7 +1641,7 @@ export function makeTable(options) {
 						start: start_time,
 						exclusiveStart: true,
 					})) {
-						const audit_record = readAuditEntry(audit_entry, primary_store);
+						const audit_record = readAuditEntry(audit_entry);
 						if (audit_record.tableId !== table_id) continue;
 						const id = audit_record.recordId;
 						if (this_id == null || isDescendantId(this_id, id))
@@ -1564,7 +1659,7 @@ export function makeTable(options) {
 							if (audit_record.tableId !== table_id) continue;
 							const id = audit_record.recordId;
 							if (this_id == null || isDescendantId(this_id, id)) {
-								const value = audit_record.getValue(primary_store);
+								const value = audit_record.getValue(primary_store, get_full_record, key);
 								history.push({ id, timestamp: key, value, version: audit_record.version, type: audit_record.type });
 								if (--count <= 0) break;
 							}
@@ -1590,8 +1685,16 @@ export function makeTable(options) {
 				}
 			} else {
 				if (count && !start_time) start_time = 0;
-				const local_time = this[ENTRY_PROPERTY]?.localTime;
-				harper_logger.trace('Subscription from', start_time, 'from', this_id);
+				let local_time = this[ENTRY_PROPERTY]?.localTime;
+				if (local_time === PENDING_LOCAL_TIME) {
+					// we can't use the pending commit because it doesn't have the local audit time yet,
+					// so try to retrieve the previous/committed record
+					primary_store.cache?.delete(this_id);
+					this[ENTRY_PROPERTY] = primary_store.getEntry(this_id);
+					harper_logger.warn('re-retrieved record', local_time, this[ENTRY_PROPERTY]?.localTime);
+					local_time = this[ENTRY_PROPERTY]?.localTime;
+				}
+				harper_logger.trace('Subscription from', start_time, 'from', this_id, local_time);
 				if (start_time < local_time) {
 					// start time specified, get the audit history for this record
 					const history = [];
@@ -1603,7 +1706,7 @@ export function makeTable(options) {
 						if (audit_entry) {
 							request.omitCurrent = true; // we are sending the current version from history, so don't double send
 							const audit_record = readAuditEntry(audit_entry);
-							const value = audit_record.getValue(primary_store);
+							const value = audit_record.getValue(primary_store, get_full_record, next_time);
 							history.push({ id: this_id, value, timestamp: next_time, ...audit_record });
 							next_time = audit_record.previousLocalTime;
 						} else break;
@@ -1619,7 +1722,7 @@ export function makeTable(options) {
 					subscription.send({
 						id: this_id,
 						version: this[VERSION_PROPERTY],
-						timestamp: this[ENTRY_PROPERTY]?.localTime,
+						timestamp: local_time,
 						value: this,
 					});
 				}
@@ -1628,7 +1731,7 @@ export function makeTable(options) {
 			return subscription;
 		}
 		doesExist() {
-			return Boolean(this[RECORD_PROPERTY] || this[IS_SAVING]);
+			return Boolean(this[RECORD_PROPERTY] || this[SAVE_MODE]);
 		}
 
 		/**
@@ -1682,10 +1785,11 @@ export function makeTable(options) {
 				},
 			});
 		}
-		validate(record) {
+		validate(record, patch?) {
 			let validation_errors;
 			const validateValue = (value, attribute, name) => {
 				if (attribute.type && value != null) {
+					if (patch && value.__op__) value = value.value;
 					if (attribute.properties) {
 						if (typeof value !== 'object') {
 							(validation_errors || (validation_errors = [])).push(
@@ -1781,8 +1885,10 @@ export function makeTable(options) {
 			for (let i = 0, l = attributes.length; i < l; i++) {
 				const attribute = attributes[i];
 				if (attribute.relationship) continue;
-				const updated = validateValue(record[attribute.name], attribute, attribute.name);
-				if (updated) record[attribute.name] = updated;
+				if (!patch || attribute.name in record) {
+					const updated = validateValue(record[attribute.name], attribute, attribute.name);
+					if (updated) record[attribute.name] = updated;
+				}
 			}
 
 			if (validation_errors) {
@@ -1983,16 +2089,18 @@ export function makeTable(options) {
 					localTime: key,
 					version: audit_record.version,
 					type: audit_record.type,
-					value: audit_record.getValue(primary_store),
+					value: audit_record.getValue(primary_store, true, key),
 					user: audit_record.user,
 				};
 			}
 		}
 		static async getHistoryOfRecord(id) {
 			const history = [];
+			if (id == undefined) throw new Error('An id is required');
 			const entry = primary_store.getEntry(id);
 			if (!entry) return history;
 			let next_local_time = entry.localTime;
+			if (!next_local_time) throw new Error('The entry does not have a local audit time');
 			const count = 0;
 			do {
 				await rest(); // yield to other async operations
@@ -2006,7 +2114,7 @@ export function makeTable(options) {
 						localTime: next_local_time,
 						version: audit_record.version,
 						type: audit_record.type,
-						value: audit_record.getValue(primary_store),
+						value: audit_record.getValue(primary_store, true, next_local_time),
 						user: audit_record.user,
 					});
 					next_local_time = audit_record.previousLocalTime;
@@ -2185,7 +2293,7 @@ export function makeTable(options) {
 		});
 	}
 	function getTablePermissions(user) {
-		if (!user) return;
+		if (!user?.role) return;
 		const permission = user.role.permission;
 		if (permission.super_user) return FULL_PERMISSIONS;
 		const db_permission = permission[database_name];

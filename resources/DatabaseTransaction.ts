@@ -67,46 +67,56 @@ export class DatabaseTransaction implements Transaction {
 		const retries = options.retries || 0;
 		// now validate
 		if (this.validated < this.writes.length) {
-			const start = this.validated;
-			// record the number of writes that have been validated so if we re-execute
-			// and the number is increased we can validate the new entries
-			this.validated = this.writes.length;
-			for (let i = start; i < this.validated; i++) {
-				const write = this.writes[i];
-				write?.validate?.(this.timestamp);
-			}
-			let has_before;
-			for (let i = start; i < this.validated; i++) {
-				const write = this.writes[i];
-				if (!write) continue;
-				if (write.before || write.beforeIntermediate) {
-					has_before = true;
+			try {
+				const start = this.validated;
+				// record the number of writes that have been validated so if we re-execute
+				// and the number is increased we can validate the new entries
+				this.validated = this.writes.length;
+				for (let i = start; i < this.validated; i++) {
+					const write = this.writes[i];
+					write?.validate?.(this.timestamp);
 				}
-			}
-			// Now we need to let any "before" actions execute. These are calls to the sources,
-			// and we want to follow the order of the source sequence so that later, more canonical
-			// source writes will finish (with right to refuse/abort) before proceeeding to less
-			// canonical sources.
-			if (has_before) {
-				return (async () => {
-					for (let phase = 0; phase < 2; phase++) {
-						let completion;
-						for (let i = start; i < this.validated; i++) {
-							const write = this.writes[i];
-							if (!write) continue;
-							const before = write[phase === 0 ? 'before' : 'beforeIntermediate'];
-							if (before) {
-								const next_completion = before();
-								if (completion) {
-									if (completion.push) completion.push(next_completion);
-									else completion = [completion, next_completion];
-								} else completion = next_completion;
-							}
-						}
-						if (completion) await (completion.push ? Promise.all(completion) : completion);
+				let has_before;
+				for (let i = start; i < this.validated; i++) {
+					const write = this.writes[i];
+					if (!write) continue;
+					if (write.before || write.beforeIntermediate) {
+						has_before = true;
 					}
-					return this.commit(options);
-				})();
+				}
+				// Now we need to let any "before" actions execute. These are calls to the sources,
+				// and we want to follow the order of the source sequence so that later, more canonical
+				// source writes will finish (with right to refuse/abort) before proceeeding to less
+				// canonical sources.
+				if (has_before) {
+					return (async () => {
+						try {
+							for (let phase = 0; phase < 2; phase++) {
+								let completion;
+								for (let i = start; i < this.validated; i++) {
+									const write = this.writes[i];
+									if (!write) continue;
+									const before = write[phase === 0 ? 'before' : 'beforeIntermediate'];
+									if (before) {
+										const next_completion = before();
+										if (completion) {
+											if (completion.push) completion.push(next_completion);
+											else completion = [completion, next_completion];
+										} else completion = next_completion;
+									}
+								}
+								if (completion) await (completion.push ? Promise.all(completion) : completion);
+							}
+						} catch (error) {
+							this.abort();
+							throw error;
+						}
+						return this.commit(options);
+					})();
+				}
+			} catch (error) {
+				this.abort();
+				throw error;
 			}
 		}
 		// release the read snapshot so we don't keep it open longer than necessary
@@ -191,7 +201,7 @@ export class DatabaseTransaction implements Transaction {
 		}
 		return txn_resolution;
 	}
-	abort(options): void {
+	abort(): void {
 		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
 		this.open = false;
 		// reset the transaction

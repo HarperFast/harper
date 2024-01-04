@@ -4,6 +4,9 @@ import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { warn, trace } from '../utility/logging/harper_logger';
 import { transaction } from '../resources/transaction';
 import { getWorkerIndex } from '../server/threads/manageThreads';
+import { when_components_loaded } from '../server/threads/threadServer';
+import { server } from '../server/Server';
+
 const DurableSession = table({
 	database: 'system',
 	table: 'hdb_durable_session',
@@ -32,12 +35,18 @@ const LastWill = table({
 });
 if (getWorkerIndex() === 0) {
 	(async () => {
+		await when_components_loaded;
+		await new Promise((resolve) => setTimeout(resolve, 2000));
 		for await (const will of LastWill.search({})) {
 			const data = will.data;
 			const message = Object.assign({}, will);
+			if (message.user?.username) message.user = await server.getUser(message.user.username);
 			transaction(message, () => {
-				publish(message, data);
-				LastWill.delete(will.id, message);
+				try {
+					publish(message, data);
+				} finally {
+					LastWill.delete(will.id, message);
+				}
 			});
 		}
 	})();
@@ -216,7 +225,14 @@ class SubscriptionsSession {
 				for await (const update of subscription) {
 					try {
 						let message_id;
-						if (update.type && update.type !== 'put' && update.type !== 'delete' && update.type !== 'message') continue;
+						if (
+							update.type &&
+							update.type !== 'put' &&
+							update.type !== 'delete' &&
+							update.type !== 'message' &&
+							update.type !== 'patch'
+						)
+							continue;
 						if (filter && !filter(update)) continue;
 						if (needs_ack) {
 							update.topic = topic;
@@ -282,7 +298,7 @@ class SubscriptionsSession {
 		transaction(context, async () => {
 			if (!client_terminated) {
 				const will = await LastWill.get(this.sessionId, context);
-				if (will.doesExist()) {
+				if (will?.doesExist()) {
 					await publish(will, will.data, context);
 				}
 			}

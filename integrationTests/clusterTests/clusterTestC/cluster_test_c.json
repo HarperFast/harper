@@ -5225,7 +5225,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 20000)"
+									"setTimeout(()=> {}, 15000)"
 								],
 								"type": "text/javascript"
 							}
@@ -5833,7 +5833,7 @@
 									"});",
 									"",
 									"// Give time for update to do its thing.",
-									"setTimeout(()=>{}, 45000)"
+									"setTimeout(()=>{}, 20000)"
 								],
 								"type": "text/javascript"
 							}
@@ -6600,7 +6600,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 20000)"
+									"setTimeout(()=> {}, 15000)"
 								],
 								"type": "text/javascript"
 							}
@@ -7929,7 +7929,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 20000)",
+									"setTimeout(()=> {}, 15000)",
 									""
 								],
 								"type": "text/javascript"
@@ -8171,7 +8171,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 20000)",
+									"setTimeout(()=> {}, 15000)",
 									""
 								],
 								"type": "text/javascript"
@@ -9109,7 +9109,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"setTimeout(()=>{}, 30000)"
+									"setTimeout(()=>{}, 15000)"
 								],
 								"type": "text/javascript"
 							}
@@ -9169,7 +9169,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"setTimeout(()=>{}, 30000)"
+									"setTimeout(()=>{}, 15000)"
 								],
 								"type": "text/javascript"
 							}
@@ -10391,7 +10391,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 20000)",
+									"setTimeout(()=> {}, 15000)",
 									""
 								],
 								"type": "text/javascript"
@@ -11295,7 +11295,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 20000)",
+									"setTimeout(()=> {}, 15000)",
 									""
 								],
 								"type": "text/javascript"
@@ -14912,7 +14912,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 20000)",
+									"setTimeout(()=> {}, 15000)",
 									""
 								],
 								"type": "text/javascript"
@@ -15978,7 +15978,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 20000)",
+									"setTimeout(()=> {}, 15000)",
 									""
 								],
 								"type": "text/javascript"

@@ -1,5 +1,6 @@
 import { CONTEXT, ID_PROPERTY, RECORD_PROPERTY } from './Resource';
 import { ClientError } from '../utility/errors/hdbError';
+import * as crdtOperations from './crdt';
 // perhaps we want these in the global registry, not sure:
 export const OWN_DATA = Symbol('own-data'); // property that references an object with any changed properties or cloned/writable sub-objects
 const record_class_cache = {}; // we cache the WritableRecord classes because they are pretty expensive to create
@@ -148,7 +149,12 @@ export function assignTrackedAccessors(Target, type_def) {
 				get() {
 					let changes = this[OWN_DATA];
 					if (changes && name in changes) {
-						return changes[name];
+						const value = changes[name];
+						if (value?.__op__) {
+							const source_value = this[RECORD_PROPERTY]?.[name];
+							return value.update(source_value);
+						}
+						return value;
 					}
 					const source_value = this[RECORD_PROPERTY]?.[name];
 					if (source_value && typeof source_value === 'object') {
@@ -197,7 +203,12 @@ export function assignTrackedAccessors(Target, type_def) {
 		for (const key in changes) {
 			// copy the source first so we have properties in the right order and can override them
 			if (!copied_source) copied_source = Object.assign({}, this[RECORD_PROPERTY]);
-			copied_source[key] = changes[key]; // let recursive calls to toJSON handle sub-objects
+			let value = changes[key];
+			if (value?.__op__) {
+				const source_value = copied_source[key];
+				value = value.update(source_value);
+			}
+			copied_source[key] = value; // let recursive calls to toJSON handle sub-objects
 		}
 		const keys = Object.keys(this); // we use Object.keys because it is expected that the many inherited enumerables would slow a for-in loop down
 		if (keys.length > 0) {
@@ -243,6 +254,8 @@ function trackObject(source_object, type_def) {
 			}
 			return tracked_array;
 		// any other objects (like Date) are left unchanged
+		default:
+			return source_object;
 	}
 }
 class GenericTrackedObject {
@@ -265,7 +278,10 @@ export function collapseData(target) {
 		if (!copied_source) copied_source = Object.assign({}, target[RECORD_PROPERTY]);
 		let value = changes[key];
 		if (value && typeof value === 'object') {
-			value = collapseData(value);
+			if (value.__op__) {
+				const source_value = copied_source[key];
+				value = value.update(source_value);
+			} else value = collapseData(value);
 		}
 		copied_source[key] = value;
 	}
@@ -282,7 +298,7 @@ export function collapseData(target) {
  * @param target
  * @returns
  */
-export function deepFreeze(target) {
+export function deepFreeze(target, changes = target[OWN_DATA]) {
 	let copied_source;
 	if (target[RECORD_PROPERTY] && target.constructor === Array && !Object.isFrozen(target)) {
 		// a tracked array, by default we can freeze the tracked array itself
@@ -302,21 +318,21 @@ export function deepFreeze(target) {
 		}
 		return Object.freeze(copied_source);
 	}
-	const changes = target[OWN_DATA];
 	for (const key in changes) {
 		// copy the source first so we have properties in the right order and can override them
 		if (!copied_source) copied_source = Object.assign({}, target[RECORD_PROPERTY]);
 		let value = changes[key];
 		if (value && typeof value === 'object') {
-			value = deepFreeze(value);
+			if (value.__op__) {
+				const operation = crdtOperations[value?.__op__];
+				if (!operation) throw new Error('Invalid CRDT operation ' + value.__op__);
+				else operation(copied_source, key, value);
+				continue;
+			} else value = deepFreeze(value);
 		}
 		copied_source[key] = value;
 	}
-	return copied_source
-		? Object.freeze(copied_source)
-		: target[RECORD_PROPERTY] ||
-				// freeze, but don't freeze buffers/typed arrays, that doesn't work
-				(target.buffer ? target : Object.freeze(target));
+	return copied_source ? Object.freeze(copied_source) : target[RECORD_PROPERTY] || target;
 }
 /**
  * Determine if any changes have been made to this tracked object
@@ -446,5 +462,12 @@ function copyArray(stored_array, target_array) {
 			else if (value.constructor === Array) copyArray(value, (value = new UpdatableArray()));
 		}
 		target_array[i] = value;
+	}
+}
+export class Addition {
+	__op__ = 'add';
+	constructor(public value) {}
+	update(previous_value) {
+		return (+previous_value || 0) + this.value;
 	}
 }

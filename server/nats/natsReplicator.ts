@@ -95,6 +95,14 @@ export function setNATSReplicator(table_name, db_name, Table) {
 					record: message,
 				});
 			}
+			patch(update) {
+				return getNATSTransaction(this.getContext()).addWrite(db_name, {
+					operation: 'patch',
+					table: table_name,
+					id: this[ID_PROPERTY],
+					record: update,
+				});
+			}
 			invalidate() {
 				getNATSTransaction(this.getContext()).addWrite(db_name, {
 					operation: 'invalidate',

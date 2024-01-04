@@ -11,7 +11,6 @@ import { parseQuery } from './search';
 export const CONTEXT = Symbol.for('context');
 export const ID_PROPERTY = Symbol.for('primary-key');
 export const IS_COLLECTION = Symbol('is-collection');
-export const SAVE_UPDATES_PROPERTY = Symbol('save-updates');
 export const RECORD_PROPERTY = Symbol('stored-record');
 
 const EXTENSION_TYPES = {
@@ -96,6 +95,15 @@ export class Resource implements ResourceInterface {
 		},
 		{ hasContent: true, type: 'update' }
 	);
+
+	static patch = transactional(
+		function (resource: Resource, query?: Map, request: Request, data?: any) {
+			// TODO: Allow array like put?
+			return resource.patch ? resource.patch(data, query) : missingMethod(resource, 'patch');
+		},
+		{ hasContent: true, type: 'update' }
+	);
+
 	static delete(identifier: Id, context?: Context): Promise<boolean>;
 	static delete(request: Request, context?: Context): Promise<object>;
 	static delete = transactional(
@@ -536,7 +544,6 @@ function transactional(action, options) {
 			);
 		}
 		function authorizeActionOnResource(resource: ResourceInterface) {
-			if (options.type === 'read') resource[SAVE_UPDATES_PROPERTY] = false; // by default modifications aren't saved, they just yield a different result from get
 			if (context.authorize) {
 				// do permission checks (and don't require subsequent uses of this request/context to need to do it)
 				context.authorize = false;
@@ -630,7 +637,7 @@ export function transformForSelect(select, resource) {
 				}
 				return results;
 			};
-		const forceNulls = select.forceNulls;
+		const force_nulls = select.forceNulls;
 		return function transform(object) {
 			if (object.then) return object.then(transform);
 			if (Array.isArray(object))
@@ -641,7 +648,7 @@ export function transformForSelect(select, resource) {
 			let promises;
 			for (const property of select) {
 				let value = getProperty(property);
-				if (value === undefined && forceNulls) value = null;
+				if (value === undefined && force_nulls) value = null;
 				if (value?.then) {
 					if (!promises) promises = [];
 					promises.push(value.then((value) => (selected_data[property.name || property] = value)));

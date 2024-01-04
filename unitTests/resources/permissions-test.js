@@ -155,7 +155,7 @@ describe('Permissions through Resource API', () => {
 			authorize: true,
 			id: 'id-2',
 		};
-		let result = TestTable.get(request, request);
+		let result = await TestTable.get(request, request);
 		assert.equal(result.name, 'name-2');
 		assert.equal(result.prop1, 'test');
 	});

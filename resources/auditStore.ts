@@ -6,6 +6,7 @@ import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads'
 import { convertToMS } from '../utility/common_utils';
 import { PREVIOUS_TIMESTAMP_PLACEHOLDER, LAST_TIMESTAMP_PLACEHOLDER } from './RecordEncoder';
 import * as harper_logger from '../utility/logging/harper_logger';
+import { getRecordAtTime } from './crdt';
 
 /**
  * This module is responsible for the binary representation of audit records in an efficient form.
@@ -126,26 +127,30 @@ export function setAuditRetention(retention_time, default_delay = DEFAULT_AUDIT_
 	DEFAULT_AUDIT_CLEANUP_DELAY = default_delay;
 }
 
-const HAS_FULL_RECORD = 16;
+const HAS_RECORD = 16;
 const HAS_PARTIAL_RECORD = 32; // will be used for CRDTs
 const PUT = 1;
 const DELETE = 2;
 const MESSAGE = 3;
 const INVALIDATE = 4;
+const PATCH = 5;
 const HAS_PREVIOUS_VERSION = 64;
 
 const EVENT_TYPES = {
-	put: PUT | HAS_FULL_RECORD,
+	put: PUT | HAS_RECORD,
 	[PUT]: 'put',
 	delete: DELETE,
 	[DELETE]: 'delete',
-	message: MESSAGE | HAS_FULL_RECORD,
+	message: MESSAGE | HAS_RECORD,
 	[MESSAGE]: 'message',
 	invalidate: INVALIDATE,
 	[INVALIDATE]: 'invalidate',
+	patch: PATCH | HAS_PARTIAL_RECORD,
+	[PATCH]: 'patch',
 };
 export function createAuditEntry(txn_time, table_id, record_id, previous_local_time, username, type, encoded_record) {
 	const action = EVENT_TYPES[type];
+	if (!action) throw new Error(`Invalid audit entry type ${type}`);
 	let position = 1;
 	if (previous_local_time) {
 		if (previous_local_time > 1) ENTRY_DATAVIEW.setFloat64(0, previous_local_time);
@@ -235,8 +240,12 @@ export function readAuditEntry(buffer) {
 			get user() {
 				return username_end > username_start ? readKeySafely(buffer, username_start, username_end) : undefined;
 			},
-			getValue(store) {
-				return action & HAS_FULL_RECORD ? store.decoder.decode(buffer.subarray(decoder.position)) : undefined;
+			getValue(store, full_record?, audit_time?) {
+				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !full_record))
+					return store.decoder.decode(buffer.subarray(decoder.position));
+				if (action & HAS_PARTIAL_RECORD && audit_time) {
+					return getRecordAtTime(store.getEntry(this.recordId), audit_time, store);
+				} // TODO: If we store a partial and full record, may need to read both sequentially
 			},
 		};
 	} catch (error) {

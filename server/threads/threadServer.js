@@ -55,6 +55,7 @@ exports.registerServer = registerServer;
 exports.httpServer = httpServer;
 exports.deliverSocket = deliverSocket;
 exports.startServers = startServers;
+exports.when_components_loaded = null;
 server.http = httpServer;
 server.request = onRequest;
 server.socket = onSocket;
@@ -68,7 +69,7 @@ let http_servers = {},
 	http_responders = [];
 
 function startServers() {
-	return require('../loadRootComponents')
+	return (exports.when_components_loaded = require('../loadRootComponents')
 		.loadRootComponents(true)
 		.then(() => {
 			parentPort
@@ -173,7 +174,7 @@ function startServers() {
 			Promise.all(listening).then(() => {
 				parentPort?.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
 			});
-		});
+		}));
 }
 if (!isMainThread) {
 	startServers();
