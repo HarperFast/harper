@@ -51,7 +51,7 @@ jobs:
       - build
       - getLicenses
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
     - uses: actions/checkout@v3
     - name: Set up QEMU
