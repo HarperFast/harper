@@ -32,7 +32,12 @@ jobs:
           project_path: "."
           output_file: "open-source-licenses-notices.md"
           template_file: "harperdb_open_source_license_generator/template.txt"
-        run: npm install harperdb_open_source_license_generator/ && node harperdb_open_source_license_generator/index.js
+        run: |
+          #!/usr/bin/env bash
+          cd harperdb_open_source_license_generator
+          npm install --omit-dev 
+          cd -
+          node harperdb_open_source_license_generator/index.js
       - name: "Push Draft: open-source-licenses-notices"
         if: github.ref != 'refs/heads/main' && github.event_name != 'pull_request'
         env:
