@@ -36,7 +36,12 @@ jobs:
         project_path: "."
         output_file: "utility/Docker/licenses/open-source-licenses-notices.md"
         template_file: "harperdb_open_source_license_generator/template.txt"
-      run: npm install harperdb_open_source_license_generator/ && node harperdb_open_source_license_generator/index.js
+      run: |
+        #!/usr/bin/env bash
+        cd harperdb_opensource_license_generator
+        npm install .
+        cd ..
+        node harperdb_open_source_license_generator/index.js
     - name: "Setup Docker buildx"
       uses: docker/setup-buildx-action@v2
     - uses: actions/download-artifact@v3
