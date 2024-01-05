@@ -50,7 +50,8 @@ jobs:
     needs:
       - build
       - getLicenses
-    runs-on: ubuntu-latest
+    #runs-on: ubuntu-latest
+    runs-on: ubuntu-latest-8-cores
     timeout-minutes: 35
     steps:
     - uses: actions/checkout@v3
