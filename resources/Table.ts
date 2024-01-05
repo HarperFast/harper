@@ -17,7 +17,14 @@ import { handleHDBError, ClientError, ServerError } from '../utility/errors/hdbE
 import * as signalling from '../utility/signalling';
 import { SchemaEventMsg, UserEventMsg } from '../server/threads/itc';
 import { databases, table } from './databases';
-import { searchByIndex, filterByType, findAttribute, estimateCondition, flattenKey } from './search';
+import {
+	searchByIndex,
+	filterByType,
+	findAttribute,
+	estimateCondition,
+	flattenKey,
+	intersectionEstimate,
+} from './search';
 import * as harper_logger from '../utility/logging/harper_logger';
 import { Addition, assignTrackedAccessors, deepFreeze, hasChanges, OWN_DATA } from './tracked';
 import { transaction } from './transaction';
@@ -101,7 +108,6 @@ export function makeTable(options) {
 	const deletion_count = 0;
 	let deletion_cleanup;
 	let has_source_get;
-	let pending_deletion_count_write;
 	let primary_key_attribute = {};
 	let last_eviction_completion: Promise<void> = Promise.resolve();
 	let created_time_property, updated_time_property, expires_at_property;
@@ -1189,10 +1195,30 @@ export function makeTable(options) {
 					// AND
 					const results = executeCondition(first_search);
 					// get the intersection of condition searches by using the indexed query for the first condition
-					// and then filtering by all subsequent conditions
+					// and then filtering by all subsequent conditions.
+					// now apply filters that require looking up records
+					let estimated_incoming_count = first_search.estimated_count;
 					const filters = conditions
 						.slice(1)
-						.map((condition) => filterByType(condition, TableResource, context, filtered))
+						.map((condition, index) => {
+							const is_primary_key = (condition.attribute || condition[0]) === primary_key;
+							const filter = filterByType(
+								condition,
+								TableResource,
+								context,
+								filtered,
+								is_primary_key,
+								estimated_incoming_count
+							);
+							if (index < conditions.length - 2 && estimated_incoming_count) {
+								estimated_incoming_count = intersectionEstimate(
+									primary_store,
+									condition.estimated_count,
+									estimated_incoming_count
+								);
+							}
+							return filter;
+						})
 						.filter(Boolean);
 					return filters.length > 0 ? transformToEntries(results, select, context, filters) : results;
 				}
@@ -2395,13 +2421,16 @@ export function makeTable(options) {
 			lazy: filters_length > 0 || typeof select === 'string' || select?.length < 4,
 			alwaysPrefetch: true,
 		};
+		let id_filters_applied;
 		// for filter operations, we intentionally use async and yield the event turn so that scanning queries
 		// do not hog resources and give more processing opportunity for more efficient index-driven queries.
 		// this also gives an opportunity to prefetch and ensure any page faults happen in a different thread
 		function processEntry(entry, id?) {
 			const record = entry?.value;
 			if (!record) return SKIP;
+			// apply the record-level filters
 			for (let i = 0; i < filters_length; i++) {
+				if (id_filters_applied?.includes(i)) continue; // already applied
 				if (!filters[i](record, entry)) return SKIP; // didn't match filters
 			}
 			if (id !== undefined) entry.key = id;
@@ -2409,10 +2438,21 @@ export function makeTable(options) {
 		}
 		if (filters_length > 0 || !ids.hasEntries) {
 			let results = ids.map((id_or_entry) => {
+				id_filters_applied = null;
 				if (typeof id_or_entry === 'object' && id_or_entry.key !== undefined)
 					return filters_length > 0 ? processEntry(id_or_entry) : id_or_entry; // already an entry
 				if (id_or_entry == undefined) {
 					return SKIP;
+				}
+				// it is an id, so we can try to use id any filters that are available (note that these can come into existence later, during the query)
+				for (let i = 0; i < filters_length; i++) {
+					const filter = filters[i];
+					const idFilter = filter.idFilter;
+					if (idFilter) {
+						if (!idFilter(id_or_entry)) return SKIP; // didn't match filters
+						if (!id_filters_applied) id_filters_applied = [];
+						id_filters_applied.push(i);
+					}
 				}
 				return loadLocalRecord(id_or_entry, context, load_options, false, processEntry);
 			});

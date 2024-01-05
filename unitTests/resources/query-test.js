@@ -5,6 +5,13 @@ const { parseQuery } = require('../../resources/search');
 const { table } = require('../../resources/databases');
 const { setMainIsWorker } = require('../../server/threads/manageThreads');
 const { transaction } = require('../../resources/transaction');
+let x = 532532;
+function random(max) {
+	x = (x * 16843009 + 3014898611) >>> 0;
+
+	return x % max;
+}
+
 // might want to enable an iteration with NATS being assigned as a source
 describe('Querying through Resource API', () => {
 	let QueryTable, RelatedTable, ManyToMany, many_to_many_attribute;
@@ -356,7 +363,7 @@ describe('Querying through Resource API', () => {
 			})) {
 				results.push(record);
 			}
-			assert.equal(results.length, 24);
+			assert.equal(results.length, 14);
 			for (let result of results) {
 				const related = await result.manyToMany;
 				assert(related.every((record) => record.name > 'many-to-many entry 4'));
@@ -491,7 +498,7 @@ describe('Querying through Resource API', () => {
 		it('Explain query in a table with join, returning primary key and but use records', function () {
 			const explanation = QueryTable.search({
 				conditions: [
-					{ attribute: 'name', comparator: 'greater_than', value: 'name' },
+					{ attribute: 'name', comparator: 'ne', value: null },
 					{ attribute: ['related', 'name'], comparator: 'equals', value: 'related name 3' },
 				],
 				select: ['id'],
@@ -636,6 +643,180 @@ describe('Querying through Resource API', () => {
 			assert.equal(results[1].id, 'id-38');
 			assert.equal(results[7].id, 'id-92');
 			assert.equal(results[8].id, 'id-98');
+		});
+	});
+	describe('Query optimizations', function () {
+		let Bigger;
+		before(async function () {
+			Bigger = table({
+				table: 'Bigger',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: '10values', type: 'Int', indexed: true },
+					{ name: '20values', type: 'Int', indexed: true },
+					{ name: '40values', type: 'Int', indexed: true },
+					{ name: '50values', type: 'Int', indexed: true },
+					{ name: '100values', type: 'Int', indexed: true },
+					{ name: 'relatedId', type: 'Int', indexed: true },
+					{
+						name: 'related',
+						type: 'RelatedTable',
+						relationship: { from: 'relatedId' },
+						definition: { tableClass: RelatedTable },
+					},
+				],
+			});
+			let last;
+			for (let i = 0; i < 1000; i++) {
+				last = Bigger.put({
+					'id': [i >> 8, i & 255],
+					'10values': random(10),
+					'20values': random(20),
+					'40values': random(40),
+					'50values': random(50),
+					'100values': random(100),
+					'relatedId': random(5),
+				});
+			}
+			await last;
+		});
+		it('Uses both indices for two similar conditions', async function () {
+			let results = [];
+			let start_read_count = Bigger.primaryStore.readCount;
+			for await (let record of Bigger.search({
+				conditions: [
+					{ attribute: '20values', value: 4 },
+					{ attribute: '40values', value: 24 },
+				],
+			})) {
+				results.push(record);
+			}
+
+			assert.equal(results.length, 15);
+			for (let result of results) {
+				assert.equal(result['20values'], 4);
+				assert.equal(result['40values'], 24);
+			}
+			assert(Bigger.primaryStore.readCount - start_read_count < 20);
+		});
+		it('Uses both indices for two kinda similar conditions', async function () {
+			let results = [];
+			let start_read_count = Bigger.primaryStore.readCount;
+			for await (let record of Bigger.search({
+				conditions: [
+					{ attribute: '20values', value: 4 },
+					{ attribute: '100values', value: 20 },
+				],
+			})) {
+				results.push(record);
+			}
+
+			assert.equal(results.length, 10);
+			for (let result of results) {
+				assert.equal(result['20values'], 4);
+				assert.equal(result['100values'], 20);
+			}
+			assert(Bigger.primaryStore.readCount - start_read_count < 15);
+		});
+		it('Uses at least two indices for three similar conditions', async function () {
+			let results = [];
+			let start_read_count = Bigger.primaryStore.readCount;
+			for await (let record of Bigger.search({
+				conditions: [
+					{ attribute: '20values', value: 4 },
+					{ attribute: '40values', value: 24 },
+					{ attribute: '50values', value: 0 },
+				],
+			})) {
+				results.push(record);
+			}
+
+			assert.equal(results.length, 3);
+			for (let result of results) {
+				assert.equal(result['20values'], 4);
+				assert.equal(result['40values'], 24);
+				assert.equal(result['50values'], 0);
+			}
+			assert(Bigger.primaryStore.readCount - start_read_count < 15);
+		});
+
+		it('Stick to filtering for wide secondary condition', async function () {
+			let results = [];
+			let start_read_count = Bigger.primaryStore.readCount;
+			for await (let record of Bigger.search({
+				conditions: [
+					{ attribute: '20values', comparator: 'greater_than', value: 4 },
+					{ attribute: '100values', value: 20 },
+				],
+			})) {
+				results.push(record);
+			}
+
+			assert.equal(results.length, 25);
+			for (let result of results) {
+				assert(result['20values'] > 4);
+				assert.equal(result['100values'], 20);
+			}
+			assert(Bigger.primaryStore.readCount - start_read_count > 35);
+		});
+
+		it('Uses primary key filtering after indexed search', async function () {
+			let results = [];
+			let start_read_count = Bigger.primaryStore.readCount;
+			for await (let record of Bigger.search({
+				conditions: [
+					{ attribute: '40values', value: 24 },
+					{ attribute: 'id', comparator: 'ge', value: [1, 240 ] },
+				],
+			})) {
+				results.push(record);
+			}
+
+			assert.equal(results.length, 58);
+			for (let result of results) {
+				assert.equal(result['40values'], 24);
+				assert(result.id[0] > 1 || result.id[1] >= 240);
+			}
+			assert(Bigger.primaryStore.readCount - start_read_count < 60);
+		});
+		it('Uses primary key filtering with prefix after indexed search', async function () {
+			let results = [];
+			let start_read_count = Bigger.primaryStore.readCount;
+			for await (let record of Bigger.search({
+				conditions: [
+					{ attribute: '40values', value: 24 },
+					{ attribute: 'id', comparator: 'prefix', value: [2] },
+				],
+			})) {
+				results.push(record);
+			}
+
+			assert.equal(results.length, 27);
+			for (let result of results) {
+				assert.equal(result['40values'], 24);
+				assert.equal(result.id[0], 2);
+			}
+			assert(Bigger.primaryStore.readCount - start_read_count < 30);
+		});
+		it('Combine medium condition with join', async function () {
+			let results = [];
+			let start_read_count = Bigger.primaryStore.readCount;
+			for await (let record of Bigger.search({
+				conditions: [
+					{ attribute: '10values', value: 2 },
+					{ attribute: ['related', 'name'], value: 'related name 3' },
+				],
+			})) {
+				results.push(record);
+			}
+
+			assert.equal(results.length, 36);
+			for (let result of results) {
+				assert.equal(result['10values'], 2);
+				assert.equal(result.relatedId, 3);
+			}
+			assert(Bigger.primaryStore.readCount - start_read_count < 40);
 		});
 	});
 	it('Query data in a table with greater_than_equal comparator', async function () {

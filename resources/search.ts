@@ -2,9 +2,11 @@ import { ClientError } from '../utility/errors/hdbError';
 import * as lmdb_terms from '../utility/lmdb/terms';
 import { compareKeys, MAXIMUM_KEY } from 'ordered-binary';
 import { RangeIterable, SKIP } from 'lmdb';
-const OPEN_RANGE_ESTIMATE = 100_000_000;
-const BETWEEN_ESTIMATE = 15_000_000;
-const STARTS_WITH_ESTIMATE = 10_000_000;
+import { join } from 'path';
+// these are ratios/percentages of overall table size
+const OPEN_RANGE_ESTIMATE = 0.3;
+const BETWEEN_ESTIMATE = 0.1;
+const STARTS_WITH_ESTIMATE = 0.05;
 
 const SYMBOL_OPERATORS = {
 	'<': 'lt',
@@ -301,12 +303,19 @@ function joinFrom(right_iterable, attribute, store, joined: Map<any, any[]>, sea
 		[Symbol.iterator]() {
 			let id_iterator;
 			let joined_iterator;
+			const seen_ids = new Set();
 			return {
 				next() {
 					let joined_entry;
 					if (joined_iterator) {
-						joined_entry = joined_iterator.next();
-						if (!joined_entry.done) return joined_entry;
+						while (true) {
+							joined_entry = joined_iterator.next();
+							if (joined_entry.done) break; // and continue to find next
+							const id = flattenKey(joined_entry.value);
+							if (seen_ids.has(id)) continue;
+							seen_ids.add(id);
+							return joined_entry;
+						}
 					}
 					if (!id_iterator) {
 						return (async () => {
@@ -316,6 +325,7 @@ function joinFrom(right_iterable, attribute, store, joined: Map<any, any[]>, sea
 							// Define the fromRecord function so that we can use it to filter the related records
 							// that are in the select(), to only those that are in this set of ids
 							joined.fromRecord = (record) => {
+								// TODO: Sort based on order ids
 								return record[attribute.relationship.from]?.filter?.((id) => ids.has(flattenKey(id)));
 							};
 							let i = 0;
@@ -384,7 +394,7 @@ const ALTERNATE_COMPARATOR_NAMES = {
  * @param {SearchObject} search_condition
  * @returns {({}) => boolean}
  */
-export function filterByType(search_condition, Table, context, filtered) {
+export function filterByType(search_condition, Table, context, filtered, is_primary_key?, estimated_incoming_count?) {
 	if (search_condition.conditions) {
 		// this is a group of conditions, we need to combine them
 		const conditions = search_condition.conditions.map(filterByType);
@@ -414,9 +424,11 @@ export function filterByType(search_condition, Table, context, filtered) {
 					value,
 					comparator,
 				},
-				Table,
+				related_table,
 				context,
-				filter_map?.[first_attribute_name]?.joined
+				filter_map?.[first_attribute_name]?.joined,
+				attribute[1] === related_table.primaryKey,
+				estimated_incoming_count
 			);
 			if (!next_filter) return;
 			if (filter_map) {
@@ -442,7 +454,7 @@ export function filterByType(search_condition, Table, context, filtered) {
 	switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
 		case lmdb_terms.SEARCH_TYPES.EQUALS:
 		case undefined:
-			return attributeComparator(attribute, (record_value) => record_value === value);
+			return attributeComparator(attribute, (record_value) => record_value === value, true);
 		case lmdb_terms.SEARCH_TYPES.CONTAINS:
 			return attributeComparator(attribute, (record_value) => record_value?.toString().includes(value));
 		case lmdb_terms.SEARCH_TYPES.ENDS_WITH:
@@ -452,14 +464,33 @@ export function filterByType(search_condition, Table, context, filtered) {
 		case lmdb_terms.SEARCH_TYPES._STARTS_WITH:
 			return attributeComparator(
 				attribute,
-				(record_value) => typeof record_value === 'string' && record_value.startsWith(value)
+				(record_value) => typeof record_value === 'string' && record_value.startsWith(value),
+				true
+			);
+		case 'prefix':
+			if (!Array.isArray(value)) value = [value];
+			else if (value[value.length - 1] == null) value = value.slice(0, -1);
+			return attributeComparator(
+				attribute,
+				(record_value) => {
+					if (!Array.isArray(record_value)) return false;
+					for (let i = 0, l = value.length; i < l; i++) {
+						if (record_value[i] !== value[i]) return false;
+					}
+					return true;
+				},
+				true
 			);
 		case lmdb_terms.SEARCH_TYPES.BETWEEN:
 			if (value[0] instanceof Date) value[0] = value[0].getTime();
 			if (value[1] instanceof Date) value[1] = value[1].getTime();
-			return attributeComparator(attribute, (record_value) => {
-				return compareKeys(record_value, value[0]) >= 0 && compareKeys(record_value, value[1]) <= 0;
-			});
+			return attributeComparator(
+				attribute,
+				(record_value) => {
+					return compareKeys(record_value, value[0]) >= 0 && compareKeys(record_value, value[1]) <= 0;
+				},
+				true
+			);
 		case 'gt':
 		case lmdb_terms.SEARCH_TYPES.GREATER_THAN:
 		case lmdb_terms.SEARCH_TYPES._GREATER_THAN:
@@ -481,20 +512,53 @@ export function filterByType(search_condition, Table, context, filtered) {
 		default:
 			throw new ClientError(`Unknown query comparator "${comparator}"`);
 	}
-}
-/** Create a comparison function that can take the record and check the attribute's value with the filter function */
-function attributeComparator(attribute, filter) {
-	return (record) => {
-		const value = record[attribute];
-		if (typeof value !== 'object' || !value) return filter(value);
-		if (Array.isArray(value)) return value.some(filter);
-		if (value instanceof Date) return filter(value.getTime());
-		return false;
-	};
+	/** Create a comparison function that can take the record and check the attribute's value with the filter function */
+	function attributeComparator(attribute, filter, can_use_index?) {
+		const threshold_remaining_misses = search_condition.estimated_count >> 4;
+		can_use_index =
+			can_use_index && // is it a comparator that makes sense to use index
+			!is_primary_key && // no need to use index for primary keys, since we will be iterating over the primary keys
+			Table?.indices[attribute] && // is there an index for this attribute
+			threshold_remaining_misses > -1 && // do we have a valid estimate
+			search_condition.estimated_count > 0;
+		let misses = 0;
+		let filtered_so_far = 5; // what we use to calculate miss rate; we give some buffer so we don't jump to indexed retrieval too quickly
+		function recordFilter(record) {
+			const value = record[attribute];
+			let matches;
+			if (typeof value !== 'object' || !value) matches = filter(value);
+			else if (Array.isArray(value)) matches = value.some(filter);
+			else if (value instanceof Date) matches = filter(value.getTime());
+			//else matches = false;
+			// As we are filtering, we can lazily/reactively switch to indexing if we are getting a low match rate, allowing use to load
+			// a set of ids instead of loading each record. This can be a significant performance improvement for large queries with low match rates
+			if (can_use_index) {
+				filtered_so_far++;
+				if (
+					!matches &&
+					!recordFilter.idFilter &&
+					// miss rate x estimated remaining to filter > 10% of estimated incoming
+					(++misses / filtered_so_far) * (estimated_incoming_count - filtered_so_far) > threshold_remaining_misses
+				) {
+					// if we have missed too many times, we need to switch to indexed retrieval
+					const matching_ids = searchByIndex(search_condition, context.transaction, false, Table).map(flattenKey);
+					// now generate a hash set that we can efficiently check primary keys against
+					// TODO: Do this asynchronously
+					const id_set = new Set(matching_ids);
+					recordFilter.idFilter = (id) => id_set.has(flattenKey(id));
+				}
+			}
+			return matches;
+		}
+		if (is_primary_key) {
+			recordFilter.idFilter = filter;
+		}
+		return recordFilter;
+	}
 }
 
 export function estimateCondition(table) {
-	return (condition) => {
+	function estimateConditionForTable(condition) {
 		if (condition.estimated_count === undefined) {
 			if (condition.conditions) {
 				// for a group of conditions, we can estimate the count by combining the estimates of the sub-conditions
@@ -503,13 +567,17 @@ export function estimateCondition(table) {
 					// with a union, we can just add the estimated counts
 					estimated_count = 0;
 					for (const sub_condition of condition.conditions) {
+						estimateConditionForTable(sub_condition);
 						estimated_count += sub_condition.estimated_count;
 					}
 				} else {
-					// with an intersection, we have to take the inverse of the sum of the inverse of the estimated counts
+					// with an intersection, we have to use the rate of the sub-conditions to apply to estimate count of last condition
 					estimated_count = Infinity;
 					for (const sub_condition of condition.conditions) {
-						estimated_count = 1 / (1 / estimated_count + 1 / sub_condition.estimated_count);
+						estimateConditionForTable(sub_condition);
+						estimated_count = isFinite(estimated_count)
+							? (estimated_count * sub_condition.estimated_count) / estimatedEntryCount(table.primaryStore)
+							: sub_condition.estimated_count;
 					}
 				}
 				condition.estimated_count = estimated_count;
@@ -517,11 +585,11 @@ export function estimateCondition(table) {
 			}
 			// skip if it is cached
 			const search_type = condition.comparator || condition.search_type;
-			if (search_type === lmdb_terms.SEARCH_TYPES.EQUALS) {
+			if (search_type === lmdb_terms.SEARCH_TYPES.EQUALS || !search_type) {
 				const attribute_name = condition[0] ?? condition.attribute;
 				if (attribute_name == null || attribute_name === table.primaryKey) condition.estimated_count = 1;
 				else {
-					if (Array.isArray(attribute_name)) {
+					if (Array.isArray(attribute_name) && attribute_name.length > 1) {
 						const attribute = findAttribute(table.attributes, attribute_name[0]);
 						const related_table = attribute.definition?.tableClass || attribute.elements.definition?.tableClass;
 						const estimate = estimateCondition(related_table)({
@@ -530,10 +598,8 @@ export function estimateCondition(table) {
 							comparator: 'equals',
 						});
 						condition.estimated_count =
-							(estimate *
-								4 *
-								(table.indices[attribute.relationship.from] || table.primaryStore).getStats().entryCount) /
-							(related_table.primaryStore.getStats().entryCount || 1);
+							(estimate * estimatedEntryCount(table.indices[attribute.relationship.from] || table.primaryStore)) /
+							(estimatedEntryCount(related_table.primaryStore) || 1);
 					} else {
 						// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
 						const index = table.indices[attribute_name];
@@ -545,19 +611,25 @@ export function estimateCondition(table) {
 				search_type === lmdb_terms.SEARCH_TYPES.ENDS_WITH ||
 				search_type === 'ne'
 			) {
-				if (condition.value === null && search_type === 'ne') condition.estimated_count = STARTS_WITH_ESTIMATE;
-				else condition.estimated_count = Infinity;
-				// for range queries (betweens, starts-with, greater, etc.), just arbitrarily guess
+				const attribute_name = condition[0] ?? condition.attribute;
+				const index = table.indices[attribute_name];
+				if (condition.value === null && search_type === 'ne') {
+					condition.estimated_count =
+						estimatedEntryCount(table.primaryStore) - (index ? index.getValuesCount(null) : 0);
+				} else condition.estimated_count = Infinity;
+				// for range queries (betweens, starts_with, greater, etc.), just arbitrarily guess
 			} else if (search_type === lmdb_terms.SEARCH_TYPES.STARTS_WITH || search_type === 'prefix')
-				condition.estimated_count = STARTS_WITH_ESTIMATE;
-			else if (search_type === lmdb_terms.SEARCH_TYPES.BETWEEN) condition.estimated_count = BETWEEN_ESTIMATE;
+				condition.estimated_count = STARTS_WITH_ESTIMATE * estimatedEntryCount(table.primaryStore);
+			else if (search_type === lmdb_terms.SEARCH_TYPES.BETWEEN)
+				condition.estimated_count = BETWEEN_ESTIMATE * estimatedEntryCount(table.primaryStore);
 			// for the search types that use the broadest range, try do them last
-			else condition.estimated_count = OPEN_RANGE_ESTIMATE;
+			else condition.estimated_count = OPEN_RANGE_ESTIMATE * estimatedEntryCount(table.primaryStore);
 			// we give a condition significantly more weight/preference if we will be ordering by it
 			if (typeof condition.descending === 'boolean') condition.estimated_count /= 4;
 		}
 		return condition.estimated_count; // use cached count
-	};
+	}
+	return estimateConditionForTable;
 }
 const NEEDS_PARSER = /[()[\]|!<>.]|(=\w+=)/;
 const QUERY_PARSER = /([^?&|=<>!([{}\]),]*)([([{}\])|,&]|[=<>!]*)/g;
@@ -821,4 +893,17 @@ class Query {
 export function flattenKey(key) {
 	if (Array.isArray(key)) return key.join('\x00');
 	return key;
+}
+
+function estimatedEntryCount(store) {
+	const now = Date.now();
+	if ((store.estimatedEntryCountExpires || 0) < now) {
+		store.estimatedEntryCount = store.getStats().entryCount;
+		store.estimatedEntryCountExpires = now + 10000;
+	}
+	return store.estimatedEntryCount;
+}
+
+export function intersectionEstimate(store, left, right) {
+	return (left * right) / estimatedEntryCount(store);
 }
