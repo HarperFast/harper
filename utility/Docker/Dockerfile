@@ -74,11 +74,8 @@ USER harperdb
 #Set the  working directory for the below instructions
 WORKDIR /home/harperdb/
 
-#Increase timeout for npm
-npm config set fetch-retry-maxtimeout 60000 -g
-
 #Install HarperDB package and clean up tarball
-RUN npm install -g $HARPERDB_TARBALL && \
+RUN npm install --fetch-timeout=60000 -g $HARPERDB_TARBALL && \
     npm cache clean --force && \
     rm -f $HARPERDB_TARBALL
 
