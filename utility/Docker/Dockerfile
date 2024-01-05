@@ -31,7 +31,7 @@ EXPOSE 9926
 EXPOSE 9932
 
 # Install ps
-RUN apt-get update && apt-get install -y procps git
+RUN apt-get update && apt-get install -y procps git curl
 
 # add Licensing files
 RUN mkdir /licenses
