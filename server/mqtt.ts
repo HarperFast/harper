@@ -18,7 +18,7 @@ export function bypassAuth() {
 
 export function start({ server, port, network, webSocket, securePort, requireAuthentication }) {
 	// here we basically normalize the different types of sockets to pass to our socket/message handler
-	const mqtt_settings = (server.mqtt = { requireAuthentication });
+	const mqtt_settings = (server.mqtt = { requireAuthentication, sessions: new Set() });
 	let server_instance;
 	const mtls = network?.mtls;
 	if (webSocket)
@@ -116,6 +116,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 		if (!disconnected) {
 			disconnected = true;
 			session?.disconnect();
+			mqtt_settings.sessions.delete(session);
 			recordActionBinary(false, 'connection', 'mqtt', 'disconnect');
 		}
 	}
@@ -182,6 +183,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 							...packet,
 						});
 						session = await session;
+						mqtt_settings.sessions.add(session);
 					} catch (error) {
 						log_error(error);
 						recordActionBinary(false, 'connection', 'mqtt', 'connect');
@@ -217,6 +219,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 						} catch (error) {
 							log_error(error);
 							session?.disconnect();
+							mqtt_settings.sessions.delete(session);
 						}
 					});
 					if (session.sessionWasPresent) await session.resume();
@@ -326,6 +329,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 				case 'disconnect':
 					disconnected = true;
 					session?.disconnect(true);
+					mqtt_settings.sessions.delete(session);
 					recordActionBinary(true, 'connection', 'mqtt', 'disconnect');
 					if (socket.close) socket.close();
 					else socket.end();
