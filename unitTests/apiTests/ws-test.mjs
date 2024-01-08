@@ -74,12 +74,17 @@ describe('test WebSockets connections and messaging', () => {
 		});
 		let message = await new Promise(async (resolve, reject) => {
 			ws2.on('message', message => {
-				resolve(JSON.parse(message));
+				console.log(JSON.parse(message));
 			});
 			try {
 				let response = await axios.put('http://localhost:9926/SimpleRecord/5', {
 					id: '5',
 					name: 'new name',
+				});
+				assert.equal(response.status, 204);
+				response = await axios.patch('http://localhost:9926/SimpleRecord/5', {
+					id: '5',
+					newProperty: 'test',
 				});
 				assert.equal(response.status, 204);
 			} catch(error) {

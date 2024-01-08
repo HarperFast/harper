@@ -1729,7 +1729,7 @@ export function makeTable(options) {
 					// so try to retrieve the previous/committed record
 					primary_store.cache?.delete(this_id);
 					this[ENTRY_PROPERTY] = primary_store.getEntry(this_id);
-					harper_logger.warn('re-retrieved record', local_time, this[ENTRY_PROPERTY]?.localTime);
+					harper_logger.trace('re-retrieved record', local_time, this[ENTRY_PROPERTY]?.localTime);
 					local_time = this[ENTRY_PROPERTY]?.localTime;
 				}
 				harper_logger.trace('Subscription from', start_time, 'from', this_id, local_time);
@@ -1745,6 +1745,7 @@ export function makeTable(options) {
 							request.omitCurrent = true; // we are sending the current version from history, so don't double send
 							const audit_record = readAuditEntry(audit_entry);
 							const value = audit_record.getValue(primary_store, get_full_record, next_time);
+							if (get_full_record) audit_record.type = 'put';
 							history.push({ id: this_id, value, timestamp: next_time, ...audit_record });
 							next_time = audit_record.previousLocalTime;
 						} else break;
