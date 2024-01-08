@@ -26294,7 +26294,7 @@
 									"});",
 									"",
 									"pm.test(\"search by condition returns 6 sorted rows with Denver in location and in group A-C\", function () {",
-									"    const expected_hash_order = [1,2,8,5,7,11];",
+									"    const expected_hash_order = [1,2,5,7,8,11];",
 									"\tconst jsonData = pm.response.json();",
 									"    pm.expect(jsonData.length).to.eql(6);",
 									"\tjsonData.forEach((row, i) => {",
@@ -26342,7 +26342,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"operator\": \"AND\",\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t\"A\",\n\t\t\t\t\"C\"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"starts_with\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\"sort\":{\"attribute\":\"id\"},\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"operator\": \"AND\",\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t\"A\",\n\t\t\t\t\"C\"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"starts_with\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -26366,7 +26366,7 @@
 									"});",
 									"",
 									"pm.test(\"search by condition returns 5 sorted rows with Denver in location and in group A-C\", function () {",
-									"    const expected_hash_order = [2,8,5,7,11];",
+									"    const expected_hash_order = [2,5,7,8,11];",
 									"\tconst jsonData = pm.response.json();",
 									"    pm.expect(jsonData.length).to.eql(5);",
 									"\tjsonData.forEach((row, i) => {",
@@ -26414,7 +26414,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"offset\": 1,\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t\"A\",\n\t\t\t\t\"C\"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"starts_with\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\"sort\":{\"attribute\":\"id\"},\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"offset\": 1,\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t\"A\",\n\t\t\t\t\"C\"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"starts_with\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -26438,7 +26438,7 @@
 									"});",
 									"",
 									"pm.test(\"search by condition returns 4 sorted rows with Denver in location and in group A-C\", function () {",
-									"    const expected_hash_order = [1,2,8,5];",
+									"    const expected_hash_order = [1,2,5,7];",
 									"\tconst jsonData = pm.response.json();",
 									"    pm.expect(jsonData.length).to.eql(4);",
 									"\tjsonData.forEach((row, i) => {",
@@ -26486,7 +26486,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"limit\": 4,\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t\"A\",\n\t\t\t\t\"C\"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"starts_with\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\"sort\":{\"attribute\":\"id\"},\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"limit\": 4,\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t\"A\",\n\t\t\t\t\"C\"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"starts_with\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -26510,7 +26510,7 @@
 									"});",
 									"",
 									"pm.test(\"search by condition returns 3 sorted rows with Denver in location and in group A-C\", function () {",
-									"    const expected_hash_order = [2,8,5];",
+									"    const expected_hash_order = [2,5,7];",
 									"\tconst jsonData = pm.response.json();",
 									"    pm.expect(jsonData.length).to.eql(expected_hash_order.length);",
 									"\tjsonData.forEach((row, i) => {",
@@ -26558,7 +26558,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"offset\": 1,\n\t\"limit\": 3,\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t\"A\",\n\t\t\t\t\"C\"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"starts_with\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\"sort\":{\"attribute\":\"id\"},\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"offset\": 1,\n\t\"limit\": 3,\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t\"A\",\n\t\t\t\t\"C\"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"starts_with\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",

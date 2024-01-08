@@ -107,6 +107,18 @@ describe('Parsing queries', () => {
 		assert.equal(query.offset, 5);
 		assert.equal(query.limit, 5);
 	});
+	it('Coercible vs strict', function () {
+		let query = parseQuery('id=1&foo==number:5&bar==null&baz!=boolean:true&qux!=date:2024-01-05T20%3A07%3A27.955Z&strict===number:5');
+		assert.equal(query.conditions.length, 6);
+		assert.equal(query.conditions[0].attribute, 'id');
+		assert.equal(query.conditions[0].value, '1');
+		assert.equal(query.conditions[1].value, 5);
+		assert.equal(query.conditions[2].value, null);
+		assert.equal(query.conditions[3].value, true);
+		assert(query.conditions[4].value instanceof Date);
+		assert.equal(query.conditions[5].value, 'number:5');
+	});
+
 	it('Nested select', function () {
 		let query = parseQuery('select(related{name,otherTable{other_name}},id,name)');
 		assert.equal(query.conditions.length, 0);

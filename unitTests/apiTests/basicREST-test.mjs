@@ -146,12 +146,12 @@ describe('test REST calls', () => {
 			assert.equal(response.status, 404);
 		});
 		it('do query by starts with', async () => {
-			let response = await axios('http://localhost:9926/FourProp/?name=sw=name');
+			let response = await axios('http://localhost:9926/FourProp/?name==name*');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 10);
 		});
 		it('do query by starts with and ends with', async () => {
-			let response = await axios('http://localhost:9926/FourProp/?name=sw=name&name=ew=4');
+			let response = await axios('http://localhost:9926/FourProp/?name==name*&name=ew=4');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 1);
 		});

@@ -1,14 +1,13 @@
+
 require('../test_utils');
 const assert = require('assert');
 const { getMockLMDBPath } = require('../test_utils');
 const { parseQuery } = require('../../resources/search');
 const { table } = require('../../resources/databases');
 const { setMainIsWorker } = require('../../server/threads/manageThreads');
-const { transaction } = require('../../resources/transaction');
 let x = 532532;
 function random(max) {
 	x = (x * 16843009 + 3014898611) >>> 0;
-
 	return x % max;
 }
 
@@ -665,6 +664,12 @@ describe('Querying through Resource API', () => {
 						relationship: { from: 'relatedId' },
 						definition: { tableClass: RelatedTable },
 					},
+					{ name: 'relatedName', type: 'String', indexed: true },
+					{
+						name: 'relatedByName',
+						relationship: { from: 'relatedName', to: 'name' },
+						elements: { type: 'RelatedTable', definition: { tableClass: RelatedTable } },
+					},
 				],
 			});
 			let last;
@@ -677,6 +682,7 @@ describe('Querying through Resource API', () => {
 					'50values': random(50),
 					'100values': random(100),
 					'relatedId': random(5),
+					'relatedName': 'related name ' + (i % 7),
 				});
 			}
 			await last;
@@ -767,7 +773,7 @@ describe('Querying through Resource API', () => {
 			for await (let record of Bigger.search({
 				conditions: [
 					{ attribute: '40values', value: 24 },
-					{ attribute: 'id', comparator: 'ge', value: [1, 240 ] },
+					{ attribute: 'id', comparator: 'ge', value: [1, 240] },
 				],
 			})) {
 				results.push(record);
@@ -817,6 +823,52 @@ describe('Querying through Resource API', () => {
 				assert.equal(result.relatedId, 3);
 			}
 			assert(Bigger.primaryStore.readCount - start_read_count < 40);
+		});
+
+		it('Combine medium condition with join to non-primary key', async function () {
+			let results = [];
+			let start_read_count = Bigger.primaryStore.readCount;
+			for await (let record of Bigger.search({
+				conditions: [
+					{ attribute: '10values', value: 2 },
+					{ attribute: ['relatedByName', 'name'], value: 'related name 3' },
+				],
+				select: ['10values', 'relatedByName', 'relatedName'],
+			})) {
+				results.push(record);
+			}
+
+			assert.equal(results.length, 27);
+			for (let result of results) {
+				assert.equal(result['10values'], 2);
+				assert.equal(result.relatedName, 'related name 3');
+				assert.equal(result.relatedByName[0].name, 'related name 3');
+				assert.equal(result.relatedByName[0].id, 3);
+			}
+			assert(Bigger.primaryStore.readCount - start_read_count < 40);
+		});
+
+		it('Combine narrower condition with join', async function () {
+			let results = [];
+			let start_read_count = Bigger.primaryStore.readCount;
+			let start_related_count = RelatedTable.primaryStore.readCount;
+			for await (let record of Bigger.search({
+				conditions: [
+					{ attribute: '100values', value: 64 },
+					{ attribute: ['related', 'name'], value: 'related name 2' },
+				],
+				select: ['100values', 'relatedId'],
+			})) {
+				results.push(record);
+			}
+
+			assert.equal(results.length, 16);
+			for (let result of results) {
+				assert.equal(result['100values'], 64);
+				assert.equal(result.relatedId, 2);
+			}
+			assert(RelatedTable.primaryStore.readCount - start_related_count < 3);
+			assert(Bigger.primaryStore.readCount - start_read_count < 20);
 		});
 	});
 	it('Query data in a table with greater_than_equal comparator', async function () {
@@ -945,6 +997,19 @@ describe('Querying through Resource API', () => {
 		assert.equal(related[0].id, 13);
 	});
 
+	it('Parsed query data in a table with not equal to null', async function () {
+		let results = [];
+		for await (let record of QueryTable.search({
+			url: '?sparse!=null',
+		})) {
+			results.push(record);
+		}
+		assert.equal(results.length, 17);
+		for (let result of results) {
+			assert(result.sparse !== null);
+		}
+	});
+
 	it('Query data in a table returning primary key and do not load records', async function () {
 		let results = [];
 		let start_count = QueryTable.primaryStore.readCount;
@@ -958,6 +1023,20 @@ describe('Querying through Resource API', () => {
 		assert.equal(results[0], 'id-90');
 		// should not have to load any records:
 		assert.equal(start_count, QueryTable.primaryStore.readCount);
+	});
+
+	it('Query data in a table with bad attribute', async function () {
+		let caught_error;
+		try {
+			for await (let record of QueryTable.search({
+				conditions: [{ attribute: [], value: 'id-1' }],
+			})) {
+				results.push(record);
+			}
+		} catch (error) {
+			caught_error = error;
+		}
+		assert(caught_error.message.includes('is not a defined attribute'));
 	});
 
 	it('Query data in a table with bad comparator', async function () {

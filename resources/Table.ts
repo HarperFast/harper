@@ -24,6 +24,7 @@ import {
 	estimateCondition,
 	flattenKey,
 	intersectionEstimate,
+	COERCIBLE_OPERATORS,
 } from './search';
 import * as harper_logger from '../utility/logging/harper_logger';
 import { Addition, assignTrackedAccessors, deepFreeze, hasChanges, OWN_DATA } from './tracked';
@@ -1059,8 +1060,8 @@ export function makeTable(options) {
 								has_multiple_for_name = true;
 							} else condition_by_name[key] = [condition];
 						}
-						if (attribute.type) {
-							// convert to a number if that is expected
+						if (attribute.type || COERCIBLE_OPERATORS[condition.comparator]) {
+							// Do auto-coercion or coercion as required by the attribute type
 							if (condition[1] === undefined) condition.value = coerceTypedValues(condition.value, attribute);
 							else condition[1] = coerceTypedValues(condition[1], attribute);
 						}
@@ -1495,12 +1496,12 @@ export function makeTable(options) {
 						if (resolver) {
 							const filter_map = filtered?.[attribute_name];
 							if (filter_map) {
-								if (filter_map.fromRecord) {
-									value = filter_map.fromRecord(record);
-								} else {
-									const key = flattenKey(entry.key);
+								if (filter_map.hasMappings) {
+									const key = resolver.from ? record[resolver.from] : flattenKey(entry.key);
 									value = filter_map.get(key);
 									if (!value) value = [];
+								} else {
+									value = filter_map.fromRecord?.(record);
 								}
 							} else {
 								value = resolver(record, context, entry);
@@ -2028,6 +2029,7 @@ export function makeTable(options) {
 								throw new Error('Setting a one-to-many relationship property is not supported');
 							};
 							attribute.resolve.definition = attribute.elements.definition;
+							if (relationship.from) attribute.resolve.from = relationship.from;
 						} else
 							console.error(
 								`The one-to-many/many-to-many relationship property "${attribute.name}" in table "${table_name}" must have an array type referencing a table as the elements`
@@ -2075,6 +2077,7 @@ export function makeTable(options) {
 								}
 							};
 							attribute.resolve.definition = attribute.definition || attribute.elements?.definition;
+							attribute.resolve.from = relationship.from;
 						} else {
 							console.error(
 								`The relationship property "${attribute.name}" in table "${table_name}" must be a type that references a table`

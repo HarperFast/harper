@@ -9,11 +9,24 @@ const BETWEEN_ESTIMATE = 0.1;
 const STARTS_WITH_ESTIMATE = 0.05;
 
 const SYMBOL_OPERATORS = {
+	// these are coercing operators
 	'<': 'lt',
 	'<=': 'le',
 	'>': 'gt',
 	'>=': 'ge',
 	'!=': 'ne',
+	'==': 'eq',
+	// these are strict operators:
+	'===': 'equals',
+	'!==': 'not_equal',
+};
+export const COERCIBLE_OPERATORS = {
+	lt: true,
+	le: true,
+	gt: true,
+	ge: true,
+	ne: true,
+	eq: true,
 };
 
 export function searchByIndex(search_condition, transaction, reverse, Table, allow_full_scan?, filtered?) {
@@ -120,7 +133,7 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 			if (end instanceof Date) end = end.getTime();
 			inclusiveEnd = true;
 			break;
-		case lmdb_terms.SEARCH_TYPES.EQUALS:
+		case 'equals':
 		case undefined:
 			start = value;
 			end = value;
@@ -234,6 +247,7 @@ function joinTo(right_iterable, attribute, store, is_many_to_many, joined: Map<a
 	return new right_iterable.constructor({
 		[Symbol.iterator]() {
 			let joined_iterator;
+			joined.hasMappings = true;
 			let has_multi_part_keys;
 			return {
 				next() {
@@ -373,14 +387,22 @@ function joinFrom(right_iterable, attribute, store, joined: Map<any, any[]>, sea
 }
 
 const ALTERNATE_COMPARATOR_NAMES = {
+	'eq': 'equals',
 	'greater_than': 'gt',
+	'greaterThan': 'gt',
 	'greater_than_equal': 'ge',
+	'greaterThanEqual': 'ge',
 	'less_than': 'lt',
+	'lessThan': 'lt',
 	'less_than_equal': 'le',
+	'lessThanEqual': 'le',
 	'not_equal': 'ne',
+	'notEqual': 'ne',
 	'equal': 'equals',
 	'sw': 'starts_with',
+	'startsWith': 'starts_with',
 	'ew': 'ends_with',
+	'endsWith': 'ends_with',
 	'ct': 'contains',
 	'>': 'gt',
 	'>=': 'ge',
@@ -437,9 +459,31 @@ export function filterByType(search_condition, Table, context, filtered, is_prim
 				return;
 			}
 			const resolver = Table.propertyResolvers?.[first_attribute_name];
-			return (record, entry) => {
+			let sub_id_filter;
+			const recordFilter = (record, entry) => {
 				let sub_object, sub_entry;
 				if (resolver) {
+					if (resolver.from && next_filter.idFilter) {
+						// if we are filtering by id, we can use the idFilter to avoid loading the record
+						if (!sub_id_filter) {
+							if (next_filter.idFilter.idSet?.size === 1) {
+								// if there is a single id we are looking for, we can create a new search condition that the
+								// attribute comparator could eventually use to create a recursive id set
+								// TODO: Eventually we should be able to handle multiple ids by creating a union
+								for (const id of next_filter.idFilter.idSet) {
+									search_condition = {
+										attribute: resolver.from,
+										value: id,
+									};
+								}
+								// indicate that we can use an index for this
+								sub_id_filter = attributeComparator(resolver.from, next_filter.idFilter, true);
+							} else sub_id_filter = attributeComparator(resolver.from, next_filter.idFilter, false);
+						}
+						const matches = sub_id_filter(record);
+						if (sub_id_filter.idFilter) recordFilter.idFilter = sub_id_filter.idFilter;
+						return matches;
+					}
 					sub_entry = resolver(record, context, entry);
 					sub_object = sub_entry?.value;
 				} else sub_object = record[first_attribute_name];
@@ -447,6 +491,7 @@ export function filterByType(search_condition, Table, context, filtered, is_prim
 				if (!Array.isArray(sub_object)) return next_filter(sub_object, sub_entry);
 				return sub_object.some(next_filter);
 			};
+			return recordFilter;
 		}
 	}
 	if (value instanceof Date) value = value.getTime();
@@ -455,13 +500,11 @@ export function filterByType(search_condition, Table, context, filtered, is_prim
 		case lmdb_terms.SEARCH_TYPES.EQUALS:
 		case undefined:
 			return attributeComparator(attribute, (record_value) => record_value === value, true);
-		case lmdb_terms.SEARCH_TYPES.CONTAINS:
+		case 'contains':
 			return attributeComparator(attribute, (record_value) => record_value?.toString().includes(value));
-		case lmdb_terms.SEARCH_TYPES.ENDS_WITH:
-		case lmdb_terms.SEARCH_TYPES._ENDS_WITH:
+		case 'ends_with':
 			return attributeComparator(attribute, (record_value) => record_value?.toString().endsWith(value));
-		case lmdb_terms.SEARCH_TYPES.STARTS_WITH:
-		case lmdb_terms.SEARCH_TYPES._STARTS_WITH:
+		case 'starts_with':
 			return attributeComparator(
 				attribute,
 				(record_value) => typeof record_value === 'string' && record_value.startsWith(value),
@@ -481,7 +524,7 @@ export function filterByType(search_condition, Table, context, filtered, is_prim
 				},
 				true
 			);
-		case lmdb_terms.SEARCH_TYPES.BETWEEN:
+		case 'between':
 			if (value[0] instanceof Date) value[0] = value[0].getTime();
 			if (value[1] instanceof Date) value[1] = value[1].getTime();
 			return attributeComparator(
@@ -492,20 +535,12 @@ export function filterByType(search_condition, Table, context, filtered, is_prim
 				true
 			);
 		case 'gt':
-		case lmdb_terms.SEARCH_TYPES.GREATER_THAN:
-		case lmdb_terms.SEARCH_TYPES._GREATER_THAN:
 			return attributeComparator(attribute, (record_value) => compareKeys(record_value, value) > 0);
 		case 'ge':
-		case lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL:
-		case lmdb_terms.SEARCH_TYPES._GREATER_THAN_EQUAL:
 			return attributeComparator(attribute, (record_value) => compareKeys(record_value, value) >= 0);
-		case lmdb_terms.SEARCH_TYPES.LESS_THAN:
 		case 'lt':
-		case lmdb_terms.SEARCH_TYPES._LESS_THAN:
 			return attributeComparator(attribute, (record_value) => compareKeys(record_value, value) < 0);
 		case 'le':
-		case lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL:
-		case lmdb_terms.SEARCH_TYPES._LESS_THAN_EQUAL:
 			return attributeComparator(attribute, (record_value) => compareKeys(record_value, value) <= 0);
 		case 'ne':
 			return attributeComparator(attribute, (record_value) => compareKeys(record_value, value) !== 0);
@@ -514,15 +549,21 @@ export function filterByType(search_condition, Table, context, filtered, is_prim
 	}
 	/** Create a comparison function that can take the record and check the attribute's value with the filter function */
 	function attributeComparator(attribute, filter, can_use_index?) {
-		const threshold_remaining_misses = search_condition.estimated_count >> 4;
+		let threshold_remaining_misses;
 		can_use_index =
 			can_use_index && // is it a comparator that makes sense to use index
 			!is_primary_key && // no need to use index for primary keys, since we will be iterating over the primary keys
 			Table?.indices[attribute] && // is there an index for this attribute
-			threshold_remaining_misses > -1 && // do we have a valid estimate
-			search_condition.estimated_count > 0;
+			estimated_incoming_count > 3; // do we have a valid estimate of multiple incoming records (that is worth using an index for)
+		if (can_use_index) {
+			if (search_condition.estimated_count == undefined) estimateCondition(Table)(search_condition);
+			threshold_remaining_misses = search_condition.estimated_count >> 4;
+			if (isNaN(threshold_remaining_misses) || threshold_remaining_misses >= estimated_incoming_count)
+				// invalid or can't be ever reached
+				can_use_index = false;
+		}
 		let misses = 0;
-		let filtered_so_far = 5; // what we use to calculate miss rate; we give some buffer so we don't jump to indexed retrieval too quickly
+		let filtered_so_far = 3; // what we use to calculate miss rate; we give some buffer so we don't jump to indexed retrieval too quickly
 		function recordFilter(record) {
 			const value = record[attribute];
 			let matches;
@@ -546,6 +587,7 @@ export function filterByType(search_condition, Table, context, filtered, is_prim
 					// TODO: Do this asynchronously
 					const id_set = new Set(matching_ids);
 					recordFilter.idFilter = (id) => id_set.has(flattenKey(id));
+					recordFilter.idFilter.idSet = id_set;
 				}
 			}
 			return matches;
@@ -584,7 +626,8 @@ export function estimateCondition(table) {
 				return condition.estimated_count;
 			}
 			// skip if it is cached
-			const search_type = condition.comparator || condition.search_type;
+			let search_type = condition.comparator || condition.search_type;
+			search_type = ALTERNATE_COMPARATOR_NAMES[search_type] || search_type;
 			if (search_type === lmdb_terms.SEARCH_TYPES.EQUALS || !search_type) {
 				const attribute_name = condition[0] ?? condition.attribute;
 				if (attribute_name == null || attribute_name === table.primaryKey) condition.estimated_count = 1;
@@ -606,11 +649,7 @@ export function estimateCondition(table) {
 						condition.estimated_count = index ? index.getValuesCount(condition[1] ?? condition.value) : Infinity;
 					}
 				}
-			} else if (
-				search_type === lmdb_terms.SEARCH_TYPES.CONTAINS ||
-				search_type === lmdb_terms.SEARCH_TYPES.ENDS_WITH ||
-				search_type === 'ne'
-			) {
+			} else if (search_type === 'contains' || search_type === 'ends_with' || search_type === 'ne') {
 				const attribute_name = condition[0] ?? condition.attribute;
 				const index = table.indices[attribute_name];
 				if (condition.value === null && search_type === 'ne') {
@@ -618,12 +657,12 @@ export function estimateCondition(table) {
 						estimatedEntryCount(table.primaryStore) - (index ? index.getValuesCount(null) : 0);
 				} else condition.estimated_count = Infinity;
 				// for range queries (betweens, starts_with, greater, etc.), just arbitrarily guess
-			} else if (search_type === lmdb_terms.SEARCH_TYPES.STARTS_WITH || search_type === 'prefix')
-				condition.estimated_count = STARTS_WITH_ESTIMATE * estimatedEntryCount(table.primaryStore);
-			else if (search_type === lmdb_terms.SEARCH_TYPES.BETWEEN)
-				condition.estimated_count = BETWEEN_ESTIMATE * estimatedEntryCount(table.primaryStore);
+			} else if (search_type === 'starts_with' || search_type === 'prefix')
+				condition.estimated_count = STARTS_WITH_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
+			else if (search_type === 'between')
+				condition.estimated_count = BETWEEN_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
 			// for the search types that use the broadest range, try do them last
-			else condition.estimated_count = OPEN_RANGE_ESTIMATE * estimatedEntryCount(table.primaryStore);
+			else condition.estimated_count = OPEN_RANGE_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
 			// we give a condition significantly more weight/preference if we will be ordering by it
 			if (typeof condition.descending === 'boolean') condition.estimated_count /= 4;
 		}
@@ -631,7 +670,7 @@ export function estimateCondition(table) {
 	}
 	return estimateConditionForTable;
 }
-const NEEDS_PARSER = /[()[\]|!<>.]|(=\w+=)/;
+const NEEDS_PARSER = /[()[\]|!<>.]|(=\w*=)/;
 const QUERY_PARSER = /([^?&|=<>!([{}\]),]*)([([{}\])|,&]|[=<>!]*)/g;
 const VALUE_PARSER = /([^&|=[\]{}]+)([[\]{}]|[&|=]*)/g;
 let last_index;
@@ -666,6 +705,7 @@ function parseBlock(query, expected_end) {
 	let parser = QUERY_PARSER;
 	let match;
 	let attribute, comparator, expecting_delimiter, expecting_value;
+	let valueDecoder = decodeURIComponent;
 	while ((match = parser.exec(query_string))) {
 		last_index = parser.lastIndex;
 		const [, value, operator] = match;
@@ -681,18 +721,27 @@ function parseBlock(query, expected_end) {
 					// a FIQL operator like =gt= (and don't allow just any string)
 					if (value.length <= 2) comparator = value;
 					else throw new SyntaxError(`invalid FIQL operator ${value}`);
+					valueDecoder = typedDecoding; // use typed/auto-cast decoding for FIQL operators
 				} else {
-					comparator = 'equals';
+					// standard equal comparison
+					valueDecoder = decodeURIComponent; // use strict decoding
+					comparator = 'equals'; // strict equals
 					if (!value) throw new SyntaxError(`attribute must be specified before equality comparator`);
 					attribute = decodeProperty(value);
 				}
 				break;
+			case '==':
+			// TODO: Separate decoder to handle * operator here for starts_with, ends_with, and contains?
+			// fall through
 			case '!=':
 			case '<':
 			case '<=':
 			case '>':
 			case '>=':
+			case '===':
+			case '!==':
 				comparator = SYMBOL_OPERATORS[operator];
+				valueDecoder = COERCIBLE_OPERATORS[comparator] ? typedDecoding : decodeURIComponent;
 				if (!value) throw new SyntaxError(`attribute must be specified before comparator ${operator}`);
 				attribute = decodeProperty(value);
 				break;
@@ -716,11 +765,13 @@ function parseBlock(query, expected_end) {
 					}
 				} else {
 					if (!query.conditions) throw new SyntaxError('conditions/comparisons are not allowed in a property list');
-					query.conditions.push({
+					const condition = {
 						comparator: comparator,
 						attribute,
-						value: decodeURIComponent(value),
-					});
+						value: valueDecoder(value),
+					};
+					if (comparator === 'eq') wildcardDecoding(condition, value);
+					query.conditions.push(condition);
 				}
 				attribute = undefined;
 				break;
@@ -812,11 +863,13 @@ function parseBlock(query, expected_end) {
 					if (query.conditions) {
 						// finish condition
 						if (attribute) {
-							query.conditions.push({
+							const condition = {
 								comparator: comparator || 'equals',
 								attribute,
-								value: decodeURIComponent(value),
-							});
+								value: valueDecoder(value),
+							};
+							if (comparator === 'eq') wildcardDecoding(condition, value);
+							query.conditions.push(condition);
 						} else if (value) {
 							throw new SyntaxError('no attribute or comparison specified');
 						}
@@ -843,6 +896,35 @@ function decodeProperty(name) {
 		return name.split('.').map(decodeProperty);
 	}
 	return decodeURIComponent(name);
+}
+
+function typedDecoding(value) {
+	// for non-strict operators, we allow for coercion of types
+	if (value === 'null') return null;
+	if (value.indexOf(':') > -1) {
+		const [type, value_to_coerce] = value.split(':');
+		if (type === 'number') return +value_to_coerce;
+		else if (type === 'boolean') return value_to_coerce === 'true';
+		else if (type === 'date') return new Date(decodeURIComponent(value_to_coerce));
+		else if (type === 'string') return decodeURIComponent(value_to_coerce);
+		else throw new ClientError(`Unknown type ${type}`);
+	}
+	return decodeURIComponent(value);
+}
+/**
+ * Perform wildcard detection and conversion to correct comparator
+ * @param condition
+ * @param value
+ */
+function wildcardDecoding(condition, value) {
+	if (value.indexOf('*') > -1) {
+		if (value.endsWith('*')) {
+			condition.comparator = 'starts_with';
+			condition.value = decodeURIComponent(value.slice(0, -1));
+		} else {
+			throw new ClientError('wildcard can only be used at the end of a string');
+		}
+	}
 }
 
 function toSortObject(sort) {
