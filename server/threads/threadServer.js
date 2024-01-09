@@ -533,6 +533,7 @@ function onSocket(listener, options) {
 				// if they have a CA, we append it, so it is included
 				cert: readFileSync(certificate_path),
 				ca: certificate_authority_path && readFileSync(certificate_authority_path),
+				rejectUnauthorized: Boolean(options.mtls?.required),
 				requestCert: Boolean(options.mtls),
 			},
 			listener

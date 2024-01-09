@@ -66,7 +66,7 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 						} catch (error) {
 							log_error(error);
 						}
-					} else {
+					} else if (mtls.required) {
 						info(
 							`Unauthorized connection attempt, no authorized client certificate provided, error: ${socket.authorizationError}`
 						);

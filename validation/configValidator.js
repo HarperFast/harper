@@ -184,6 +184,7 @@ function configValidator(config_json) {
 				mtls: Joi.alternatives([boolean.optional(), Joi.object({
 					user: string.optional(),
 					certificateAuthority: pem_file_constraints,
+					required: boolean.optional(),
 				})])
 			}).required(),
 			webSocket: boolean.optional(),

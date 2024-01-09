@@ -83,7 +83,7 @@ describe('test MQTT connections and commands', () => {
 				let record = decode(payload);
 				console.log(topic, record);
 				reject(new Error('Should not receive any retained messages'));
-			}
+			};
 			client2.once('message', onMessage);
 			setTimeout(() => {
 				client2.off('message', onMessage);
@@ -180,10 +180,12 @@ describe('test MQTT connections and commands', () => {
 			client.once('message', function (topic, message) {
 				try {
 					let data = decode(message);
-				// message is Buffer
-					assert.deepEqual(data, {name: 'last will and testimony'});
+					// message is Buffer
+					assert.deepEqual(data, { name: 'last will and testimony' });
 					resolve();
-				} catch(error) { reject(error); }
+				} catch (error) {
+					reject(error);
+				}
 			});
 			client_to_die.end(true); // this closes the connection without a disconnect packet
 		});
@@ -212,11 +214,13 @@ describe('test MQTT connections and commands', () => {
 			client.subscribe(topic, function (err) {
 				if (err) reject(err);
 			});
-			onMessage = function(topic, message) {
+			onMessage = function (topic, message) {
 				try {
 					reject('Should not get a message on topic ' + topic);
-				} catch(error) { reject(error); }
-			}
+				} catch (error) {
+					reject(error);
+				}
+			};
 			client.once('message', onMessage);
 			setTimeout(resolve, 50);
 			client_to_die.end(); // this closes the connection with a disconnect packet
@@ -381,22 +385,26 @@ describe('test MQTT connections and commands', () => {
 				}
 			};
 			client.on('message', onMessage);
-			await axios.put('http://localhost:9926/SimpleRecord/78',
-				{ name: 'a starting point', count: 2 },
-				{ headers });
-			await axios.patch('http://localhost:9926/SimpleRecord/78',
+			await axios.put('http://localhost:9926/SimpleRecord/78', { name: 'a starting point', count: 2 }, { headers });
+			await axios.patch(
+				'http://localhost:9926/SimpleRecord/78',
 				{ name: 'an updated name', newProperty: 'new value', count: { __op__: 'add', value: 1 } },
-				{ headers });
+				{ headers }
+			);
 			console.log('finished patch');
 		});
 		await new Promise((resolve) => client.end(resolve));
 		await delay(10);
-		await axios.patch('http://localhost:9926/SimpleRecord/78',
+		await axios.patch(
+			'http://localhost:9926/SimpleRecord/78',
 			{ name: 'update 2', newProperty: 'newer value', count: { __op__: 'add', value: 1 } },
-			{ headers });
-		await axios.patch('http://localhost:9926/SimpleRecord/78',
+			{ headers }
+		);
+		await axios.patch(
+			'http://localhost:9926/SimpleRecord/78',
 			{ name: 'update 3', count: { __op__: 'add', value: 1 } },
-			{ headers });
+			{ headers }
+		);
 		await new Promise(async (resolve, reject) => {
 			let messages = [];
 			client = connect('mqtt://localhost:1883', {
@@ -418,9 +426,11 @@ describe('test MQTT connections and commands', () => {
 					resolve();
 				}
 			});
-			await axios.patch('http://localhost:9926/SimpleRecord/78',
+			await axios.patch(
+				'http://localhost:9926/SimpleRecord/78',
 				{ name: 'update 4', count: { __op__: 'add', value: 1 } },
-				{ headers });
+				{ headers }
+			);
 		});
 
 		client.end();
@@ -478,7 +488,11 @@ describe('test MQTT connections and commands', () => {
 	it('subscribe and unsubscribe with mTLS', async function () {
 		let server;
 		await new Promise((resolve, reject) => {
-			server = startMQTT({ server: global.server, securePort: 8884, network: { mtls: { user: 'HDB_ADMIN' } } }).listen(8884, resolve);
+			server = startMQTT({
+				server: global.server,
+				securePort: 8884,
+				network: { mtls: { user: 'HDB_ADMIN', required: true } },
+			}).listen(8884, resolve);
 			server.on('error', reject);
 		});
 		let bad_client = connect('mqtts://localhost:8884', {
@@ -501,7 +515,7 @@ describe('test MQTT connections and commands', () => {
 		await new Promise((resolve, reject) => {
 			bad_client.on('connect', () => {
 				reject('Client should not be able to connect to mTLS without a certificate');
-			})
+			});
 			client.on('connect', resolve);
 			client.on('error', reject);
 		});
@@ -543,7 +557,8 @@ describe('test MQTT connections and commands', () => {
 	});
 	it('subscribe to bad topic', async function () {
 		await new Promise((resolve, reject) => {
-			client2.subscribe('DoesNotExist/+', function (err, granted) {console.log('subscribed', err);
+			client2.subscribe('DoesNotExist/+', function (err, granted) {
+				console.log('subscribed', err);
 				if (err) reject(err);
 				else {
 					resolve(assert.equal(granted[0].qos, 0x8f));
