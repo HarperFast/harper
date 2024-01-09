@@ -72,9 +72,13 @@ describe('test WebSockets connections and messaging', () => {
 			ws2.on('open', resolve);
 			ws2.on('error', reject);
 		});
-		let message = await new Promise(async (resolve, reject) => {
+		let messages = [];
+		await new Promise(async (resolve, reject) => {
 			ws2.on('message', message => {
-				console.log(JSON.parse(message));
+				messages.push(JSON.parse(message));
+				if (messages.length === 2) {
+					resolve();
+				}
 			});
 			try {
 				let response = await axios.put('http://localhost:9926/SimpleRecord/5', {
@@ -92,6 +96,10 @@ describe('test WebSockets connections and messaging', () => {
 				reject(error);
 			}
 		});
-		assert.equal(message.value.name, 'new name');
+		assert.equal(messages[0].value.name, 'new name');
+		assert.equal(messages[0].type, 'put');
+		assert.equal(messages[1].value.name, 'new name');
+		assert.equal(messages[1].value.newProperty, 'test');
+		assert.equal(messages[1].type, 'put');
 	});
 });

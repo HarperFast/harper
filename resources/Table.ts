@@ -1643,6 +1643,7 @@ export function makeTable(options) {
 								// otherwise try to go back in the audit log
 								value = audit_record.getValue?.(primary_store, true, timestamp);
 							}
+							audit_record.type = 'put';
 						}
 						this.send({
 							id,
