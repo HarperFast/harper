@@ -8,7 +8,7 @@ const { authorization, url } = getVariables();
 
 describe('test REST calls', () => {
 	let available_records;
-	before(async function() {
+	before(async function () {
 		this.timeout(5000);
 		available_records = await setupTestApp();
 	});
@@ -255,6 +255,20 @@ describe('test REST calls', () => {
 			assert.equal(response.data[0].birthday.slice(0, 4), '1993');
 			assert.equal(response.data[1].birthday.slice(0, 4), '1994');
 		});
+		it('query and return text/csv', async () => {
+			let response = await axios('http://localhost:9926/FourProp?birthday=gt=1993-01-22&birthday=lt=1994-11-22', {
+				headers: { accept: 'text/csv' },
+			});
+			assert.equal(response.status, 200);
+			assert.deepEqual(response.data.split('\n')[0].split(',').map(JSON.parse), [
+				'id',
+				'name',
+				'age',
+				'title',
+				'birthday',
+			]);
+		});
+
 		it('query with parenthesis in value', async () => {
 			// at least shouldn't throw an error
 			let response = await axios('http://localhost:9926/FourProp?birthday=no(match)for this)');
@@ -323,6 +337,5 @@ describe('test REST calls', () => {
 			let data = JSON.parse(response.data);
 			assert.equal(data[0].anotherBigint, -Number(bigint64BitAsString));
 		});
-
 	});
 });

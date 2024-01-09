@@ -1261,7 +1261,7 @@ export function makeTable(options) {
 				);
 			const ensure_loaded = request.ensureLoaded !== false;
 			const transformToRecord = TableResource.transformEntryForSelect(select, context, filtered, ensure_loaded, true);
-			const results = TableResource.transformToOrderedSelect(
+			let results = TableResource.transformToOrderedSelect(
 				entries,
 				select,
 				post_ordering,
@@ -1269,10 +1269,21 @@ export function makeTable(options) {
 				transformToRecord
 			);
 			results.onDone = () => {
-				results.results = null; // ensure that it isn't called twice
+				results.onDone = null; // ensure that it isn't called twice
 				txn.doneReadTxn();
 			};
 			results.selectApplied = true;
+			results.getColumns = () => {
+				if (select) {
+					const columns = [];
+					for (const column of select) {
+						if (column === '*') columns.push(...attributes.map((attribute) => attribute.name));
+						else columns.push(column.name || column);
+					}
+					return columns;
+				}
+				return attributes.map((attribute) => attribute.name);
+			};
 			return results;
 		}
 		/**

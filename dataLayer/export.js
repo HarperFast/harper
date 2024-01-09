@@ -313,10 +313,15 @@ async function export_to_s3(export_object) {
  * @param data
  * @returns stream
  */
-function toCsvStream(data) {
+function toCsvStream(data, columns) {
 	// ensure that we pass it an iterable
 	let read_stream = stream.Readable.from(data?.[Symbol.iterator] || data?.[Symbol.asyncIterator] ? data : [data]);
 	let options = {};
+	if (columns)
+		options.fields = columns.map((column) => ({
+			label: column,
+			value: column,
+		}));
 	let transform_options = { objectMode: true };
 	// Create a json2csv stream transform.
 	const json2csv = new Transform(options, transform_options);

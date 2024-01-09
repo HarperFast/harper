@@ -50,9 +50,9 @@ media_types.set('application/x-msgpack', {
 	q: 0.9,
 });
 media_types.set('text/csv', {
-	serializeStream(data) {
-		this.header('Content-Disposition', 'attachment; filename="data.csv"');
-		return toCsvStream(data);
+	serializeStream(data, response) {
+		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
+		return toCsvStream(data, data?.getColumns?.());
 	},
 	q: 0.1,
 });
@@ -201,7 +201,16 @@ const registerFastifySerializers = fp(
 			if (content_type) return;
 			const { serializer, type } = findBestSerializer(request.raw);
 			reply.type(type);
-			reply.serializer(serializer.serializeStream || serializer.serialize);
+			reply.serializer(function (data) {
+				return (serializer.serializeStream || serializer.serialize)(data, {
+					// a small header shim to allow us to set headers in serializers
+					headers: {
+						set: (key, value) => {
+							reply.header(key, value);
+						},
+					},
+				});
+			});
 		});
 		done();
 	},
@@ -298,7 +307,7 @@ export function serialize(response_data, request, response_object) {
 			(response_data[Symbol.iterator] || response_data[Symbol.asyncIterator]) &&
 			serializer.serializer.serializeStream
 		) {
-			let stream = serializer.serializer.serializeStream(response_data);
+			let stream = serializer.serializer.serializeStream(response_data, response_object);
 			if (can_compress) {
 				response_object.headers.set('Content-Encoding', 'br');
 				stream = stream.pipe(
@@ -315,7 +324,7 @@ export function serialize(response_data, request, response_object) {
 			}
 			return stream;
 		}
-		response_body = serializer.serializer.serialize(response_data);
+		response_body = serializer.serializer.serialize(response_data, response_object);
 	}
 	if (can_compress && response_body?.length > COMPRESSION_THRESHOLD) {
 		// TODO: Only do this if the size is large and we can cache the result (otherwise use logic above)
