@@ -8,6 +8,7 @@ import { server } from '../Server';
 import { _assignPackageExport } from '../../index';
 import env_mgr from '../../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms';
+import * as YAML from 'yaml';
 const SERIALIZATION_BIGINT = env_mgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
 const JSONStringify = SERIALIZATION_BIGINT ? stringify : JSON.stringify;
 const JSONParse = SERIALIZATION_BIGINT ? parse : JSON.parse;
@@ -65,6 +66,15 @@ media_types.set('text/plain', {
 	},
 	q: 0.01,
 });
+
+media_types.set('text/yaml', {
+	serialize(data) {
+		return YAML.stringify(data, { aliasDuplicateObjects: false });
+	},
+
+	q: 0.7,
+});
+
 media_types.set('text/event-stream', {
 	// Server-Sent Events (SSE)
 	serializeStream: function (iterable) {
