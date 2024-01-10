@@ -31,7 +31,7 @@ EXPOSE 9926
 EXPOSE 9932
 
 # Install ps
-RUN apt-get update && apt-get install -y procps git curl
+RUN apt-get update && apt-get install -y procps git
 
 # add Licensing files
 RUN mkdir /licenses
@@ -75,7 +75,7 @@ USER harperdb
 WORKDIR /home/harperdb/
 
 #Install HarperDB package and clean up tarball
-RUN npm install --fetch-timeout=60000 -g $HARPERDB_TARBALL && \
+RUN npm install -g $HARPERDB_TARBALL && \
     npm cache clean --force && \
     rm -f $HARPERDB_TARBALL
 
