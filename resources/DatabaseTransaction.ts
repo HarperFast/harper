@@ -2,6 +2,7 @@ import { RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import * as harper_logger from '../utility/logging/harper_logger';
 import { CONTEXT } from './Resource';
+import { fromResource } from './RecordEncoder';
 
 const MAX_OPTIMISTIC_SIZE = 100;
 const tracked_txns = new Set<DatabaseTransaction>();
@@ -23,13 +24,17 @@ export class DatabaseTransaction implements Transaction {
 		if (this.readTxn) return this.readTxn;
 		if (!this.open) throw new Error('Can not start a read on a transaction that is no longer open');
 		this.readTxnsUsed = 1;
-		this.readTxn = this.lmdbDb.useReadTransaction();
+		fromResource(() => {
+			this.readTxn = this.lmdbDb.useReadTransaction();
+		});
 		tracked_txns.add(this);
 		return this.readTxn;
 	}
 	useReadTxn() {
 		this.getReadTxn();
-		this.readTxn.use();
+		fromResource(() => {
+			this.readTxn.use();
+		});
 		this.readTxnsUsed++;
 		return this.readTxn;
 	}

@@ -135,6 +135,16 @@ function getTimestamp() {
 }
 const mapGet = Map.prototype.get;
 
+let in_resource;
+export function fromResource(callback) {
+	in_resource = true;
+	try {
+		return callback();
+	} finally {
+		in_resource = false;
+	}
+};
+
 export function handleLocalTimeForGets(store) {
 	const storeGetEntry = store.getEntry;
 	store.readCount = 0;
@@ -193,6 +203,13 @@ export function handleLocalTimeForGets(store) {
 				this.timerTracked = true;
 				tracked_txns.push(new WeakRef(this));
 			}
+			if (!in_resource) {
+				try {
+					throw new Error('Read transaction used outside of resource');
+				} catch (error) {
+					this.readStack = error.stack;
+				}
+			}
 			use.call(this);
 		};
 		Txn.prototype.done = function () {
@@ -200,7 +217,7 @@ export function handleLocalTimeForGets(store) {
 			if (this.isDone) {
 				for (let i = 0; i < tracked_txns.length; i++) {
 					const txn = tracked_txns[i].deref();
-					if (!txn || txn === this || txn.isDone || txn.isCommitted) {
+					if (!txn || txn.isDone || txn.isCommitted) {
 						tracked_txns.splice(i--, 1);
 					}
 				}
