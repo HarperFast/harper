@@ -176,6 +176,12 @@ async function saveToLocal(file_path, source_data_format, data) {
 		// Create a read stream with the data.
 		let readable_stream = stream.Readable.from(data);
 		let options = {};
+		const columns = data.getColumns?.();
+		if (columns)
+			options.fields = columns.map((column) => ({
+				label: column,
+				value: column,
+			}));
 		let transform_options = { objectMode: true };
 		// Initialize json2csv parser
 		let async_parser = new AsyncParser(options, transform_options);
@@ -255,7 +261,7 @@ async function export_to_s3(export_object) {
 		// Create a read stream with the data.
 
 		// Create a json2csv stream transform.
-		const csv_stream = toCsvStream(data);
+		const csv_stream = toCsvStream(data, data.getColumns?.());
 		csv_stream.on('error', (err) => {
 			throw err;
 		});
