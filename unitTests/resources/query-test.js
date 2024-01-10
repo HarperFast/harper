@@ -1,4 +1,3 @@
-
 require('../test_utils');
 const assert = require('assert');
 const { getMockLMDBPath } = require('../test_utils');
@@ -243,6 +242,18 @@ describe('Querying through Resource API', () => {
 			assert.equal(many_to_one_to_many.length, 20);
 			assert(many_to_one_to_many[1].id.startsWith('id-'));
 			assert.equal(many_to_one_to_many[1].name, undefined);
+		});
+
+		it('Query by simple join in nested condition using parser', async function () {
+			let results = [];
+			for await (let record of QueryTable.search(
+				parseQuery('id!=null&[id=id-3|id=id-4|related.name=related name' + ' 2]')
+			)) {
+				results.push(record);
+			}
+			assert.equal(results.length, 22);
+			assert.equal(results[0].id, 'id-3');
+			assert.equal(results[2].relatedId, 2);
 		});
 
 		it('Query by two joined conditions with many-to-one', async function () {
