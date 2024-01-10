@@ -21,11 +21,15 @@ export class DatabaseTransaction implements Transaction {
 		// used optimistically
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
 		if (this.stale) this.stale = false;
-		if (this.readTxn) return this.readTxn;
+		if (this.readTxn) {
+			if (this.readTxn.openTimer) this.readTxn.openTimer = 0;
+			return this.readTxn;
+		}
 		if (!this.open) throw new Error('Can not start a read on a transaction that is no longer open');
 		this.readTxnsUsed = 1;
 		fromResource(() => {
 			this.readTxn = this.lmdbDb.useReadTransaction();
+			if (this.readTxn.openTimer) this.readTxn.openTimer = 0;
 		});
 		tracked_txns.add(this);
 		return this.readTxn;
