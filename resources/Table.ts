@@ -1198,32 +1198,41 @@ export function makeTable(options) {
 					// get the intersection of condition searches by using the indexed query for the first condition
 					// and then filtering by all subsequent conditions.
 					// now apply filters that require looking up records
-					let estimated_incoming_count = first_search.estimated_count;
-					const filters = conditions
-						.slice(1)
-						.map((condition, index) => {
-							const is_primary_key = (condition.attribute || condition[0]) === primary_key;
-							const filter = filterByType(
-								condition,
-								TableResource,
-								context,
-								filtered,
-								is_primary_key,
-								estimated_incoming_count
-							);
-							if (index < conditions.length - 2 && estimated_incoming_count) {
-								estimated_incoming_count = intersectionEstimate(
-									primary_store,
-									condition.estimated_count,
-									estimated_incoming_count
-								);
-							}
-							return filter;
-						})
-						.filter(Boolean);
+					const filters = mapConditionsToFilters(conditions.slice(1), true, first_search.estimated_count);
 					return filters.length > 0 ? transformToEntries(results, select, context, filters) : results;
 				}
 			}
+			function mapConditionsToFilters(conditions, intersection, estimated_incoming_count) {
+				return conditions
+					.map((condition, index) => {
+						if (condition.conditions) {
+							// this is a group of conditions, we need to combine them
+							const union = condition.operator === 'or';
+							const filters = mapConditionsToFilters(condition.conditions, !union, estimated_incoming_count);
+							if (union) return (record) => filters.some((filter) => filter(record));
+							else return (record) => filters.every((filter) => filter(record));
+						}
+						const is_primary_key = (condition.attribute || condition[0]) === primary_key;
+						const filter = filterByType(
+							condition,
+							TableResource,
+							context,
+							filtered,
+							is_primary_key,
+							estimated_incoming_count
+						);
+						if (intersection && index < conditions.length - 1 && estimated_incoming_count) {
+							estimated_incoming_count = intersectionEstimate(
+								primary_store,
+								condition.estimated_count,
+								estimated_incoming_count
+							);
+						}
+						return filter;
+					})
+					.filter(Boolean);
+			}
+
 			const reverse = request.reverse === true;
 			function executeCondition(condition) {
 				if (condition.conditions) return executeConditions(condition.conditions, condition.operator);
@@ -1261,7 +1270,7 @@ export function makeTable(options) {
 				);
 			const ensure_loaded = request.ensureLoaded !== false;
 			const transformToRecord = TableResource.transformEntryForSelect(select, context, filtered, ensure_loaded, true);
-			let results = TableResource.transformToOrderedSelect(
+			const results = TableResource.transformToOrderedSelect(
 				entries,
 				select,
 				post_ordering,

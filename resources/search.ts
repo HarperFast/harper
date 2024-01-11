@@ -417,15 +417,6 @@ const ALTERNATE_COMPARATOR_NAMES = {
  * @returns {({}) => boolean}
  */
 export function filterByType(search_condition, Table, context, filtered, is_primary_key?, estimated_incoming_count?) {
-	if (search_condition.conditions) {
-		// this is a group of conditions, we need to combine them
-		const conditions = search_condition.conditions.map(filterByType);
-		if (search_condition.operator === 'or') {
-			return (record) => conditions.some((condition) => condition(record));
-		} else {
-			return (record) => conditions.every((condition) => condition(record));
-		}
-	}
 	const comparator = search_condition.comparator;
 	let attribute = search_condition[0] ?? search_condition.attribute;
 	let value = search_condition[1] ?? search_condition.value;
