@@ -43,7 +43,7 @@ RUN usermod -d /home/harperdb -l harperdb node && \
     rm -rf /home/node
 
 #Copy HarperDB tarball
-COPY --chown=harperdb:harperdb ./$HARPERDB_TARBALL /home/harperdb/
+COPY --chown=harperdb:harperdb ./$HARPERDB_TARBALL /home/harperdb/$HARPERDB_TARBALL
 
 #Create installation directory, .harperdb directory and hdb_boot_properties.file
 RUN mkdir -p /home/harperdb/hdb && \
