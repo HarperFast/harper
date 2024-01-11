@@ -90,7 +90,7 @@ jobs:
           "harperdb/private:${{ env.TAG_LATEST == 'true' && 'latest' || 'next' }}"
           "harperdb/private:${{ env.HARPERDB_VERSION }}-${{ env.GITHUB_RUN_NUMBER }}"
         build-args: |
-          NODE_VERSION=$({ env.NODE_VERSION }}
+          NODE_VERSION=${{ env.NODE_VERSION }}
           HARPERDB_VERSION=${{ env.HARPERDB_VERSION }}
           HARPERDB_TARBALL=harperdb-${{ env.HARPERDB_VERSION }}.tgz
           VCS_REF=${{ github.sha }}
