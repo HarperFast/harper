@@ -81,5 +81,12 @@ jobs:
         PUBLISH: "private"
         GITHUB_RUN_NUMBER: ${{ vars.GITHUB_RUN_NUMBER }}
         TAG_LATEST: "${{ inputs.tag_latest }}"
-      run: ./.github/scripts/docker-publish.sh
+      #run: ./.github/scripts/docker-publish.sh
+      uses: docker/build-push-action@v5
+      with:
+        context: utility/Docker
+        platforms: linux/amd64,linux/arm64
+        tags: | 
+          "harperdb/private:${{ env.TAG_LATEST == 'true' && 'latest' || 'next' }}"
+          "harperdb/private:${{ env.HARPERDB_VERSION }}-${{ env.GITHUB_RUN_NUMBER }}"
       timeout-minutes: 30
