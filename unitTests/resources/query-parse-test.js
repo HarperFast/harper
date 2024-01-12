@@ -38,7 +38,7 @@ describe('Parsing queries', () => {
 		let query = parseQuery('(value!=4&name=2)|id=5|(foo=bar&name=2&(value=gt=4|name=2))');
 		assert.equal(query.operator, 'or');
 		assert.equal(query.conditions.length, 3);
-		assert.equal(query.conditions[0].operator, undefined);
+		assert.equal(query.conditions[0].operator, 'and');
 		assert.equal(query.conditions[0].conditions[0].attribute, 'value');
 		assert.equal(query.conditions[0].conditions[0].comparator, 'ne');
 		assert.equal(query.conditions[0].conditions[0].value, '4');
@@ -47,7 +47,7 @@ describe('Parsing queries', () => {
 		assert.equal(query.conditions[0].conditions[1].value, '2');
 		assert.equal(query.conditions[1].attribute, 'id');
 		assert.equal(query.conditions[1].value, '5');
-		assert.equal(query.conditions[2].operator, undefined);
+		assert.equal(query.conditions[2].operator, 'and');
 		assert.equal(query.conditions[2].conditions[0].attribute, 'foo');
 		assert.equal(query.conditions[2].conditions[0].comparator, 'equals');
 		assert.equal(query.conditions[2].conditions[0].value, 'bar');
@@ -65,7 +65,7 @@ describe('Parsing queries', () => {
 		let query = parseQuery('[value!=4&name=2]|id=5|[foo=ba)r&name=2&[value=gt=(4)|name=2]]|id=6');
 		assert.equal(query.operator, 'or');
 		assert.equal(query.conditions.length, 4);
-		assert.equal(query.conditions[0].operator, undefined);
+		assert.equal(query.conditions[0].operator, 'and');
 		assert.equal(query.conditions[0].conditions[0].attribute, 'value');
 		assert.equal(query.conditions[0].conditions[0].comparator, 'ne');
 		assert.equal(query.conditions[0].conditions[0].value, '4');
@@ -74,7 +74,7 @@ describe('Parsing queries', () => {
 		assert.equal(query.conditions[0].conditions[1].value, '2');
 		assert.equal(query.conditions[1].attribute, 'id');
 		assert.equal(query.conditions[1].value, '5');
-		assert.equal(query.conditions[2].operator, undefined);
+		assert.equal(query.conditions[2].operator, 'and');
 		assert.equal(query.conditions[2].conditions[0].attribute, 'foo');
 		assert.equal(query.conditions[2].conditions[0].comparator, 'equals');
 		assert.equal(query.conditions[2].conditions[0].value, 'ba)r');
@@ -108,7 +108,9 @@ describe('Parsing queries', () => {
 		assert.equal(query.limit, 5);
 	});
 	it('Coercible vs strict', function () {
-		let query = parseQuery('id=1&foo==number:5&bar==null&baz!=boolean:true&qux!=date:2024-01-05T20%3A07%3A27.955Z&strict===number:5');
+		let query = parseQuery(
+			'id=1&foo==number:5&bar==null&baz!=boolean:true&qux!=date:2024-01-05T20%3A07%3A27.955Z&strict===number:5'
+		);
 		assert.equal(query.conditions.length, 6);
 		assert.equal(query.conditions[0].attribute, 'id');
 		assert.equal(query.conditions[0].value, '1');
@@ -177,5 +179,6 @@ describe('Parsing queries', () => {
 		assert.throws(() => parseQuery('(name))'), /no attribute/);
 		assert.throws(() => parseQuery('(=value&=test)'), /attribute must be specified/);
 		assert.throws(() => parseQuery('(name=(value))'), /no attribute/);
+		assert.throws(() => parseQuery('name=value|test=3&foo=bar'), /mix operators/);
 	});
 });

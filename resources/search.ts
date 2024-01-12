@@ -28,6 +28,82 @@ export const COERCIBLE_OPERATORS = {
 	ne: true,
 	eq: true,
 };
+export function executeConditions(conditions, operator, table, txn, request, context, transformToEntries, filtered) {
+	const first_search = conditions[0];
+	// both AND and OR start by getting an iterator for the ids for first condition
+	// and then things diverge...
+	if (operator === 'or') {
+		let results = executeCondition(first_search);
+		//get the union of ids from all condition searches
+		for (let i = 1; i < conditions.length; i++) {
+			const condition = conditions[i];
+			// might want to lazily execute this after getting to this point in the iteration
+			const next_results = executeCondition(condition);
+			results = results.concat(next_results);
+		}
+		const returned_ids = new Set();
+		return results.filter((entry) => {
+			const id = entry.key ?? entry;
+			if (returned_ids.has(id))
+				// skip duplicate ids
+				return false;
+			returned_ids.add(id);
+			return true;
+		});
+	} else {
+		// AND
+		const results = executeCondition(first_search);
+		// get the intersection of condition searches by using the indexed query for the first condition
+		// and then filtering by all subsequent conditions.
+		// now apply filters that require looking up records
+		const filters = mapConditionsToFilters(conditions.slice(1), true, first_search.estimated_count);
+		return filters.length > 0 ? transformToEntries(results, filters) : results;
+	}
+	function executeCondition(condition) {
+		if (condition.conditions)
+			return executeConditions(
+				condition.conditions,
+				condition.operator,
+				table,
+				txn,
+				request,
+				context,
+				transformToEntries,
+				filtered
+			);
+		return searchByIndex(
+			condition,
+			txn,
+			condition.descending || request.reverse === true,
+			table,
+			request.allowFullScan,
+			filtered
+		);
+	}
+	function mapConditionsToFilters(conditions, intersection, estimated_incoming_count) {
+		return conditions
+			.map((condition, index) => {
+				if (condition.conditions) {
+					// this is a group of conditions, we need to combine them
+					const union = condition.operator === 'or';
+					const filters = mapConditionsToFilters(condition.conditions, !union, estimated_incoming_count);
+					if (union) return (record) => filters.some((filter) => filter(record));
+					else return (record) => filters.every((filter) => filter(record));
+				}
+				const is_primary_key = (condition.attribute || condition[0]) === table.primaryKey;
+				const filter = filterByType(condition, table, context, filtered, is_primary_key, estimated_incoming_count);
+				if (intersection && index < conditions.length - 1 && estimated_incoming_count) {
+					estimated_incoming_count = intersectionEstimate(
+						table.primaryStore,
+						condition.estimated_count,
+						estimated_incoming_count
+					);
+				}
+				return filter;
+			})
+			.filter(Boolean);
+	}
+}
 
 export function searchByIndex(search_condition, transaction, reverse, Table, allow_full_scan?, filtered?) {
 	let attribute_name = search_condition[0] ?? search_condition.attribute;
@@ -697,6 +773,7 @@ function parseBlock(query, expected_end) {
 	let match;
 	let attribute, comparator, expecting_delimiter, expecting_value;
 	let valueDecoder = decodeURIComponent;
+	let last_binary_operator;
 	while ((match = parser.exec(query_string))) {
 		last_index = parser.lastIndex;
 		const [, value, operator] = match;
@@ -737,11 +814,9 @@ function parseBlock(query, expected_end) {
 				attribute = decodeProperty(value);
 				break;
 			case '|':
-				query.operator = 'or';
-			// fall through
+			case '&':
 			case '':
 			case undefined:
-			case '&':
 				if (attribute == null) {
 					if (attribute === undefined) {
 						if (expected_end)
@@ -763,7 +838,10 @@ function parseBlock(query, expected_end) {
 					};
 					if (comparator === 'eq') wildcardDecoding(condition, value);
 					query.conditions.push(condition);
+					assignOperator(query, last_binary_operator);
 				}
+				if (operator === '&') last_binary_operator = 'and';
+				if (operator === '|') last_binary_operator = 'or';
 				attribute = undefined;
 				break;
 			case ',':
@@ -781,6 +859,7 @@ function parseBlock(query, expected_end) {
 				switch (value) {
 					case '': // nested/grouped condition
 						query.conditions.push(args);
+						assignOperator(query, last_binary_operator);
 						break;
 					case 'limit':
 						switch (args.length) {
@@ -840,6 +919,7 @@ function parseBlock(query, expected_end) {
 				}
 				if (query.conditions) {
 					query.conditions.push(entry);
+					assignOperator(query, last_binary_operator);
 					attribute = null;
 				} else query.push(entry);
 				if (query_string[last_index] === ',') {
@@ -861,6 +941,7 @@ function parseBlock(query, expected_end) {
 							};
 							if (comparator === 'eq') wildcardDecoding(condition, value);
 							query.conditions.push(condition);
+							assignOperator(query, last_binary_operator);
 						} else if (value) {
 							throw new SyntaxError('no attribute or comparison specified');
 						}
@@ -881,7 +962,12 @@ function parseBlock(query, expected_end) {
 	}
 	if (expected_end) throw new SyntaxError(`expected '${expected_end}', but encountered end of string`);
 }
-
+function assignOperator(query, last_binary_operator) {
+	if (query.operator) {
+		if (query.operator !== last_binary_operator)
+			throw new SyntaxError('Can not mix operators within a condition grouping');
+	} else query.operator = last_binary_operator;
+}
 function decodeProperty(name) {
 	if (name.indexOf('.') > -1) {
 		return name.split('.').map(decodeProperty);

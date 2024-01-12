@@ -25,6 +25,7 @@ import {
 	flattenKey,
 	intersectionEstimate,
 	COERCIBLE_OPERATORS,
+	executeConditions,
 } from './search';
 import * as harper_logger from '../utility/logging/harper_logger';
 import { Addition, assignTrackedAccessors, deepFreeze, hasChanges, OWN_DATA } from './tracked';
@@ -1170,81 +1171,6 @@ export function makeTable(options) {
 					post_ordering = sort;
 				}
 			}
-			function executeConditions(conditions, operator) {
-				const first_search = conditions[0];
-				// both AND and OR start by getting an iterator for the ids for first condition
-				// and then things diverge...
-				if (operator === 'or') {
-					let results = executeCondition(first_search);
-					//get the union of ids from all condition searches
-					for (let i = 1; i < conditions.length; i++) {
-						const condition = conditions[i];
-						// might want to lazily execute this after getting to this point in the iteration
-						const next_results = executeCondition(condition);
-						results = results.concat(next_results);
-					}
-					const returned_ids = new Set();
-					return results.filter((entry) => {
-						const id = entry.key ?? entry;
-						if (returned_ids.has(id))
-							// skip duplicate ids
-							return false;
-						returned_ids.add(id);
-						return true;
-					});
-				} else {
-					// AND
-					const results = executeCondition(first_search);
-					// get the intersection of condition searches by using the indexed query for the first condition
-					// and then filtering by all subsequent conditions.
-					// now apply filters that require looking up records
-					const filters = mapConditionsToFilters(conditions.slice(1), true, first_search.estimated_count);
-					return filters.length > 0 ? transformToEntries(results, select, context, filters) : results;
-				}
-			}
-			function mapConditionsToFilters(conditions, intersection, estimated_incoming_count) {
-				return conditions
-					.map((condition, index) => {
-						if (condition.conditions) {
-							// this is a group of conditions, we need to combine them
-							const union = condition.operator === 'or';
-							const filters = mapConditionsToFilters(condition.conditions, !union, estimated_incoming_count);
-							if (union) return (record) => filters.some((filter) => filter(record));
-							else return (record) => filters.every((filter) => filter(record));
-						}
-						const is_primary_key = (condition.attribute || condition[0]) === primary_key;
-						const filter = filterByType(
-							condition,
-							TableResource,
-							context,
-							filtered,
-							is_primary_key,
-							estimated_incoming_count
-						);
-						if (intersection && index < conditions.length - 1 && estimated_incoming_count) {
-							estimated_incoming_count = intersectionEstimate(
-								primary_store,
-								condition.estimated_count,
-								estimated_incoming_count
-							);
-						}
-						return filter;
-					})
-					.filter(Boolean);
-			}
-
-			const reverse = request.reverse === true;
-			function executeCondition(condition) {
-				if (condition.conditions) return executeConditions(condition.conditions, condition.operator);
-				return searchByIndex(
-					condition,
-					txn,
-					condition.descending || reverse,
-					TableResource,
-					request.allowFullScan,
-					filtered
-				);
-			}
 			// we mark the read transaction as in use (necessary for a stable read
 			// transaction, and we really don't care if the
 			// counts are done in the same read transaction because they are just estimates) until the search
@@ -1262,7 +1188,16 @@ export function makeTable(options) {
 				};
 			}
 			const read_txn = txn.useReadTxn();
-			let entries = executeConditions(conditions, operator);
+			let entries = executeConditions(
+				conditions,
+				operator,
+				TableResource,
+				read_txn,
+				request,
+				context,
+				(results, filters) => transformToEntries(results, select, context, filters),
+				filtered
+			);
 			if (request.offset || request.limit !== undefined)
 				entries = entries.slice(
 					request.offset,

@@ -255,7 +255,7 @@ describe('Querying through Resource API', () => {
 			assert.equal(results[0].id, 'id-3');
 			assert.equal(results[2].relatedId, 2);
 		});
-		it('Query by simple join in nested condition 2 using parser', async function () {
+		it('Query by simple join in more nested condition using parser', async function () {
 			let results = [];
 			for await (let record of QueryTable.search(
 				parseQuery('id!=null&[[id=id-32|id=gt=id-4]&related.name=related name 2]')
@@ -265,6 +265,15 @@ describe('Querying through Resource API', () => {
 			assert.equal(results.length, 14);
 			assert.equal(results[0].id, 'id-32');
 			assert.equal(results[2].relatedId, 2);
+		});
+		it('Query by simple join in other nested condition using parser', async function () {
+			let results = [];
+			for await (let record of QueryTable.search(
+				parseQuery('related.name=lt=related name 2|[id=gt=id-3&[id=lt=id-4|[sparse==null&id=id-89]]]')
+			)) {
+				results.push(record);
+			}
+			assert.equal(results.length, 47);
 		});
 		it('Query by two joined conditions with many-to-one', async function () {
 			let results = [];
