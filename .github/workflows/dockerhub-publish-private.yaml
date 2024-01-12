@@ -69,7 +69,7 @@ jobs:
     - uses: actions/download-artifact@v3
       with:
         name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
-        path: utility/Docker/
+        path: ./
     - uses: actions/download-artifact@v3
       with:
         name: "licenses"
