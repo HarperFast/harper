@@ -275,6 +275,15 @@ describe('Querying through Resource API', () => {
 			}
 			assert.equal(results.length, 47);
 		});
+		it('Query by simple join in nested condition with non-matching condition using parser', async function () {
+			let results = [];
+			for await (let record of QueryTable.search(
+				parseQuery('sparse==null&[[name=none|id=lt=id-2]&related.name=ge=related name 4]')
+			)) {
+				results.push(record);
+			}
+			assert.equal(results.length, 1);
+		});
 		it('Query by two joined conditions with many-to-one', async function () {
 			let results = [];
 			for await (let record of QueryTable.search({

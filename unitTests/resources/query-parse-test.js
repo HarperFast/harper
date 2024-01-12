@@ -161,6 +161,13 @@ describe('Parsing queries', () => {
 		assert.equal(query.sort.next.attribute, 'otherName');
 		assert.equal(query.sort.next.descending, true);
 	});
+	it('Union with calls', function () {
+		let query = parseQuery('select(name,age)&name=2|name=3&sort(+name)');
+		assert.equal(query.sort.attribute, 'name');
+		assert.equal(query.operator, 'or');
+		assert.equal(query.conditions.length, 2);
+		assert.deepEqual(query.select, ['name', 'age']);
+	});
 	it('Bad calls', function () {
 		assert.throws(() => parseQuery('limit(5,10'), /expected '\)'/);
 		assert.throws(() => parseQuery('unknown(5,10)'), /unknown query function call/);
@@ -180,5 +187,6 @@ describe('Parsing queries', () => {
 		assert.throws(() => parseQuery('(=value&=test)'), /attribute must be specified/);
 		assert.throws(() => parseQuery('(name=(value))'), /no attribute/);
 		assert.throws(() => parseQuery('name=value|test=3&foo=bar'), /mix operators/);
+		assert.throws(() => parseQuery('name=value&[test=3&foo=bar|test=4]'), /mix operators/);
 	});
 });

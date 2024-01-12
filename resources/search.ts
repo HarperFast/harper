@@ -837,8 +837,8 @@ function parseBlock(query, expected_end) {
 						value: valueDecoder(value),
 					};
 					if (comparator === 'eq') wildcardDecoding(condition, value);
-					query.conditions.push(condition);
 					assignOperator(query, last_binary_operator);
+					query.conditions.push(condition);
 				}
 				if (operator === '&') last_binary_operator = 'and';
 				if (operator === '|') last_binary_operator = 'or';
@@ -858,8 +858,8 @@ function parseBlock(query, expected_end) {
 				const args = parseBlock(value ? [] : new Query(), ')');
 				switch (value) {
 					case '': // nested/grouped condition
-						query.conditions.push(args);
 						assignOperator(query, last_binary_operator);
+						query.conditions.push(args);
 						break;
 					case 'limit':
 						switch (args.length) {
@@ -918,8 +918,8 @@ function parseBlock(query, expected_end) {
 					entry = parseBlock(query.conditions ? new Query() : [], ']');
 				}
 				if (query.conditions) {
-					query.conditions.push(entry);
 					assignOperator(query, last_binary_operator);
+					query.conditions.push(entry);
 					attribute = null;
 				} else query.push(entry);
 				if (query_string[last_index] === ',') {
@@ -940,8 +940,8 @@ function parseBlock(query, expected_end) {
 								value: valueDecoder(value),
 							};
 							if (comparator === 'eq') wildcardDecoding(condition, value);
-							query.conditions.push(condition);
 							assignOperator(query, last_binary_operator);
+							query.conditions.push(condition);
 						} else if (value) {
 							throw new SyntaxError('no attribute or comparison specified');
 						}
@@ -963,10 +963,12 @@ function parseBlock(query, expected_end) {
 	if (expected_end) throw new SyntaxError(`expected '${expected_end}', but encountered end of string`);
 }
 function assignOperator(query, last_binary_operator) {
-	if (query.operator) {
-		if (query.operator !== last_binary_operator)
-			throw new SyntaxError('Can not mix operators within a condition grouping');
-	} else query.operator = last_binary_operator;
+	if (query.conditions.length > 0) {
+		if (query.operator) {
+			if (query.operator !== last_binary_operator)
+				throw new SyntaxError('Can not mix operators within a condition grouping');
+		} else query.operator = last_binary_operator;
+	}
 }
 function decodeProperty(name) {
 	if (name.indexOf('.') > -1) {
