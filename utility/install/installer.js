@@ -105,6 +105,10 @@ async function install() {
 
 	// Prompt the user with params needed for install.
 	const install_params = await installPrompts(prompt_override);
+	if (install_params[hdb_terms.INSTALL_PROMPTS.OPERATIONSAPI_NETWORK_SECUREPORT]) {
+		install_params[hdb_terms.INSTALL_PROMPTS.OPERATIONSAPI_NETWORK_PORT] = null;
+	}
+
 	// HDB root is the one of the first params we need for install.
 	hdb_root = install_params[hdb_terms.INSTALL_PROMPTS.ROOTPATH];
 
@@ -212,7 +216,8 @@ async function installPrompts(prompt_override) {
 			type: 'input',
 			transformer: PROMPT_ANSWER_TRANSFORMER,
 			when: displayCmdEnvVar(
-				prompt_override[hdb_terms.INSTALL_PROMPTS.OPERATIONSAPI_NETWORK_PORT],
+				prompt_override[hdb_terms.INSTALL_PROMPTS.OPERATIONSAPI_NETWORK_PORT] ??
+					prompt_override[hdb_terms.INSTALL_PROMPTS.OPERATIONSAPI_NETWORK_SECUREPORT],
 				INSTALL_PROMPTS.HDB_PORT
 			),
 			name: hdb_terms.INSTALL_PROMPTS.OPERATIONSAPI_NETWORK_PORT,

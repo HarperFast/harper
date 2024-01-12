@@ -1,5 +1,6 @@
-import { RECORD_PROPERTY } from './Resource';
+import { CONTEXT, ID_PROPERTY, RECORD_PROPERTY } from './Resource';
 import { ClientError } from '../utility/errors/hdbError';
+import * as crdtOperations from './crdt';
 // perhaps we want these in the global registry, not sure:
 export const OWN_DATA = Symbol('own-data'); // property that references an object with any changed properties or cloned/writable sub-objects
 const record_class_cache = {}; // we cache the WritableRecord classes because they are pretty expensive to create
@@ -25,51 +26,69 @@ export function assignTrackedAccessors(Target, type_def) {
 	for (const attribute of attributes) {
 		const name = attribute.name;
 		let set;
-		switch (attribute.type) {
-			case 'String':
-				set = function (value) {
-					if (!(typeof value === 'string' || (value == null && attribute.nullable !== false)))
-						throw new ClientError(`${name} must be a string, attempt to assign ${value}`);
-					getChanges(this)[name] = value;
-				};
-				break;
-			case 'ID':
-				set = function (value) {
-					if (
-						!(
-							typeof value === 'string' ||
-							(value?.length > 0 && value.every?.((value) => typeof value === 'string')) ||
-							(value == null && attribute.nullable !== false)
+		let descriptor;
+		if (attribute.resolve) {
+			descriptor = {
+				get() {
+					return attribute.resolve(this, this[CONTEXT]);
+				},
+				set(related) {
+					return attribute.set(this, related);
+				},
+				configurable: true,
+			};
+		} else {
+			switch (attribute.type) {
+				case 'String':
+					set = function (value) {
+						if (!(typeof value === 'string' || (value == null && attribute.nullable !== false)))
+							throw new ClientError(`${name} must be a string, attempt to assign ${value}`);
+						getChanges(this)[name] = value;
+					};
+					break;
+				case 'ID':
+					set = function (value) {
+						if (
+							!(
+								typeof value === 'string' ||
+								(value?.length > 0 && value.every?.((value) => typeof value === 'string')) ||
+								(value == null && attribute.nullable !== false)
+							)
 						)
-					)
-						throw new ClientError(`${name} must be a string, attempt to assign ${value}`);
-					getChanges(this)[name] = value;
-				};
-				break;
-			case 'Float':
-				set = function (value) {
-					if (!(typeof value === 'number' || (value == null && attribute.nullable !== false)))
-						throw new ClientError(`${name} must be a number, attempt to assign ${value}`);
-					getChanges(this)[name] = value;
-				};
-				break;
-			case 'Int':
-				set = function (value) {
-					if (!(value >> 0 === value || (value == null && attribute.nullable !== false))) {
-						if (typeof value === 'number' && Math.abs((value >> 0) - value) <= 1) {
-							// if it just needs to be rounded, do the conversion without complaining
-							value = Math.round(value);
-						} else
-							throw new ClientError(
-								`${name} must be an integer between -2147483648 and 2147483647, attempt to assign ${value}`
-							);
-					}
-					getChanges(this)[name] = value;
-				};
-				break;
+							throw new ClientError(`${name} must be a string, attempt to assign ${value}`);
+						getChanges(this)[name] = value;
+					};
+					break;
+				case 'Float':
+				case 'Number':
+					set = function (value) {
+						if (!(typeof value === 'number' || (value == null && attribute.nullable !== false)))
+							throw new ClientError(`${name} must be a number, attempt to assign ${value}`);
+						getChanges(this)[name] = value;
+					};
+					break;
+				case 'Int':
+					set = function (value) {
+						if (!(value >> 0 === value || (value == null && attribute.nullable !== false))) {
+							if (typeof value === 'number' && Math.abs((value >> 0) - value) <= 1) {
+								// if it just needs to be rounded, do the conversion without complaining
+								value = Math.round(value);
+							} else
+								throw new ClientError(
+									`${name} must be an integer between -2147483648 and 2147483647, attempt to assign ${value}`
+								);
+						}
+						getChanges(this)[name] = value;
+					};
+					break;
 				case 'Long':
 					set = function (value) {
-						if (!(Math.round(value) === value && Math.abs(value) <= 9007199254740992 || (value == null && attribute.nullable !== false))) {
+						if (
+							!(
+								(Math.round(value) === value && Math.abs(value) <= 9007199254740992) ||
+								(value == null && attribute.nullable !== false)
+							)
+						) {
 							if (typeof value === 'number' && Math.abs(value) <= 9007199254740992) {
 								// if it just needs to be rounded, do the conversion without complaining
 								value = Math.round(value);
@@ -81,63 +100,79 @@ export function assignTrackedAccessors(Target, type_def) {
 						getChanges(this)[name] = value;
 					};
 					break;
+				case 'BigInt':
+					set = function (value) {
+						if (!(typeof value === 'bigint' || (value == null && attribute.nullable !== false))) {
+							if (typeof value === 'string' || typeof value === 'number') value = BigInt(value);
+							else throw new ClientError(`${name} must be a number, attempt to assign ${value}`);
+						}
+						getChanges(this)[name] = value;
+					};
+					break;
 				case 'Boolean':
-				set = function (value) {
-					if (!(typeof value === 'boolean' || (value == null && attribute.nullable !== false)))
-						throw new ClientError(`${name} must be a boolean, attempt to assign ${value}`);
-					getChanges(this)[name] = value;
-				};
-				break;
-			case 'Date':
-				set = function (value) {
-					if (!(value instanceof Date || (value == null && attribute.nullable !== false))) {
-						if (typeof value === 'string' || typeof value === 'number') value = new Date(value);
-						else throw new ClientError(`${name} must be a Date, attempt to assign ${value}`);
+					set = function (value) {
+						if (!(typeof value === 'boolean' || (value == null && attribute.nullable !== false)))
+							throw new ClientError(`${name} must be a boolean, attempt to assign ${value}`);
+						getChanges(this)[name] = value;
+					};
+					break;
+				case 'Date':
+					set = function (value) {
+						if (!(value instanceof Date || (value == null && attribute.nullable !== false))) {
+							if (typeof value === 'string' || typeof value === 'number') value = new Date(value);
+							else throw new ClientError(`${name} must be a Date, attempt to assign ${value}`);
+						}
+						getChanges(this)[name] = value;
+					};
+					break;
+				case 'Bytes':
+					set = function (value) {
+						if (!(value instanceof Uint8Array || (value == null && attribute.nullable !== false)))
+							throw new ClientError(`${name} must be a Buffer or Uint8Array, attempt to assign ${value}`);
+						getChanges(this)[name] = value;
+					};
+					break;
+				case 'Any':
+				case undefined:
+					set = function (value) {
+						getChanges(this)[name] = value;
+					};
+					break;
+				default: // for all user defined types, they must at least be an object
+					set = function (value) {
+						if (!(typeof value === 'object' || (value == null && attribute.nullable !== false)))
+							throw new ClientError(`${name} must be an object, attempt to assign ${value}`);
+						getChanges(this)[name] = value;
+					};
+			}
+			descriptor = {
+				get() {
+					let changes = this[OWN_DATA];
+					if (changes && name in changes) {
+						const value = changes[name];
+						if (value?.__op__) {
+							const source_value = this[RECORD_PROPERTY]?.[name];
+							return value.update(source_value);
+						}
+						return value;
 					}
-					getChanges(this)[name] = value;
-				};
-				break;
-			case 'Bytes':
-				set = function (value) {
-					if (!(value instanceof Uint8Array || (value == null && attribute.nullable !== false)))
-						throw new ClientError(`${name} must be a Buffer or Uint8Array, attempt to assign ${value}`);
-					getChanges(this)[name] = value;
-				};
-				break;
-			case 'Any':
-			case undefined:
-				set = function (value) {
-					getChanges(this)[name] = value;
-				};
-				break;
-			default: // for all user defined types, they must at least be an object
-				set = function (value) {
-					if (!(typeof value === 'object' || (value == null && attribute.nullable !== false)))
-						throw new ClientError(`${name} must be an object, attempt to assign ${value}`);
-					getChanges(this)[name] = value;
-				};
+					const source_value = this[RECORD_PROPERTY]?.[name];
+					if (source_value && typeof source_value === 'object') {
+						const updated_value = trackObject(source_value, attribute);
+						if (updated_value) {
+							if (!changes) changes = this[OWN_DATA] = Object.create(null);
+							return (changes[name] = updated_value);
+						}
+					}
+					return source_value;
+				},
+				set,
+				enumerable: true,
+				configurable: true, // we need to be able to reconfigure these as schemas change (attributes can be added/removed at runtime)
+			};
 		}
-		const descriptor = (descriptors[name] = {
-			get() {
-				let changes = this[OWN_DATA];
-				if (changes && name in changes) {
-					return changes[name];
-				}
-				const source_value = this[RECORD_PROPERTY]?.[name];
-				if (source_value && typeof source_value === 'object') {
-					const updated_value = trackObject(source_value, attribute);
-					if (updated_value) {
-						if (!changes) changes = this[OWN_DATA] = Object.create(null);
-						return (changes[name] = updated_value);
-					}
-				}
-				return source_value;
-			},
-			set,
-			enumerable: true,
-			configurable: true, // we need to be able to reconfigure these as schemas change (attributes can be added/removed at runtime)
-		});
 		descriptor.get.isAttribute = true;
+		descriptors[name] = descriptor;
 		if (
 			!(name in prototype) ||
 			// this means that we are re-defining an attribute accessor (which is fine)
@@ -168,7 +203,12 @@ export function assignTrackedAccessors(Target, type_def) {
 		for (const key in changes) {
 			// copy the source first so we have properties in the right order and can override them
 			if (!copied_source) copied_source = Object.assign({}, this[RECORD_PROPERTY]);
-			copied_source[key] = changes[key]; // let recursive calls to toJSON handle sub-objects
+			let value = changes[key];
+			if (value?.__op__) {
+				const source_value = copied_source[key];
+				value = value.update(source_value);
+			}
+			copied_source[key] = value; // let recursive calls to toJSON handle sub-objects
 		}
 		const keys = Object.keys(this); // we use Object.keys because it is expected that the many inherited enumerables would slow a for-in loop down
 		if (keys.length > 0) {
@@ -214,6 +254,8 @@ function trackObject(source_object, type_def) {
 			}
 			return tracked_array;
 		// any other objects (like Date) are left unchanged
+		default:
+			return source_object;
 	}
 }
 class GenericTrackedObject {
@@ -236,7 +278,10 @@ export function collapseData(target) {
 		if (!copied_source) copied_source = Object.assign({}, target[RECORD_PROPERTY]);
 		let value = changes[key];
 		if (value && typeof value === 'object') {
-			value = collapseData(value);
+			if (value.__op__) {
+				const source_value = copied_source[key];
+				value = value.update(source_value);
+			} else value = collapseData(value);
 		}
 		copied_source[key] = value;
 	}
@@ -253,7 +298,7 @@ export function collapseData(target) {
  * @param target
  * @returns
  */
-export function deepFreeze(target) {
+export function deepFreeze(target, changes = target[OWN_DATA]) {
 	let copied_source;
 	if (target[RECORD_PROPERTY] && target.constructor === Array && !Object.isFrozen(target)) {
 		// a tracked array, by default we can freeze the tracked array itself
@@ -273,21 +318,21 @@ export function deepFreeze(target) {
 		}
 		return Object.freeze(copied_source);
 	}
-	const changes = target[OWN_DATA];
 	for (const key in changes) {
 		// copy the source first so we have properties in the right order and can override them
 		if (!copied_source) copied_source = Object.assign({}, target[RECORD_PROPERTY]);
 		let value = changes[key];
 		if (value && typeof value === 'object') {
-			value = deepFreeze(value);
+			if (value.__op__) {
+				const operation = crdtOperations[value?.__op__];
+				if (!operation) throw new Error('Invalid CRDT operation ' + value.__op__);
+				else operation(copied_source, key, value);
+				continue;
+			} else value = deepFreeze(value);
 		}
 		copied_source[key] = value;
 	}
-	return copied_source
-		? Object.freeze(copied_source)
-		: target[RECORD_PROPERTY] ||
-				// freeze, but don't freeze buffers/typed arrays, that doesn't work
-				(target.buffer ? target : Object.freeze(target));
+	return copied_source ? Object.freeze(copied_source) : target[RECORD_PROPERTY] || target;
 }
 /**
  * Determine if any changes have been made to this tracked object
@@ -417,5 +462,12 @@ function copyArray(stored_array, target_array) {
 			else if (value.constructor === Array) copyArray(value, (value = new UpdatableArray()));
 		}
 		target_array[i] = value;
+	}
+}
+export class Addition {
+	__op__ = 'add';
+	constructor(public value) {}
+	update(previous_value) {
+		return (+previous_value || 0) + this.value;
 	}
 }

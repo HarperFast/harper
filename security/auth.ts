@@ -104,6 +104,7 @@ export async function authentication(request, next_handler) {
 			if (status === AUTH_AUDIT_STATUS.SUCCESS) auth_event_log.notify(log);
 			else auth_event_log.error(log);
 		};
+		// TODO: If we have mTLS enabled, we need to verify the socket, and potentially get user name from the certificate
 
 		let new_user;
 		if (authorization) {
@@ -116,7 +117,7 @@ export async function authentication(request, next_handler) {
 						case 'Basic':
 							[username, password] = atob(credentials).split(':');
 							// legacy support for passing in blank username and password to indicate no auth
-							new_user = username || password ? await server.getUser(username, password) : null;
+							new_user = username || password ? await server.getUser(username, password, request) : null;
 							break;
 						case 'Bearer':
 							try {
@@ -160,8 +161,11 @@ export async function authentication(request, next_handler) {
 			request.user = new_user;
 		} else if (session?.user) {
 			// or should this be cached in the session?
-			request.user = await server.getUser(session.user, null, false);
-		} else if (AUTHORIZE_LOCAL && (request.ip?.includes('127.0.0.1') || request.ip == '::1')) {
+			request.user = await server.getUser(session.user, null, request);
+		} else if (
+			(AUTHORIZE_LOCAL && (request.ip?.includes('127.0.0.1') || request.ip == '::1')) ||
+			(request?._nodeRequest?.socket?.server?._pipeName && request.ip === undefined) // allow socket domain
+		) {
 			request.user = await getSuperUser();
 		}
 		if (ENABLE_SESSIONS) {
@@ -173,14 +177,29 @@ export async function authentication(request, next_handler) {
 					const cookie = `${cookie_prefix}${session_id}; Path=/; Expires=Tue, 01 Oct 8307 19:33:20 GMT; HttpOnly${
 						request.protocol === 'https' ? '; SameSite=None; Secure' : ''
 					}`;
-					if (response_headers) response_headers.push('Set-Cookie', cookie);
-					else if (response?.headers?.set) response.headers.set('Set-Cookie', cookie);
+					if (response_headers) {
+						response_headers.push('Set-Cookie', cookie);
+					} else if (response?.headers?.set) {
+						response.headers.set('Set-Cookie', cookie);
+					}
+				}
+				if (request.protocol === 'https') {
+					// Indicate that we have successfully updated a session
+					// We make sure this is allowed by CORS so that a client can determine if it has
+					// a valid cookie-authenticated session (studio needs this)
+					if (response_headers) {
+						if (origin) response_headers.push('Access-Control-Expose-Headers', 'X-Hdb-Session');
+						response_headers.push('X-Hdb-Session', 'Secure');
+					} else if (response?.headers?.set) {
+						if (origin) response.headers.set('Access-Control-Expose-Headers', 'X-Hdb-Session');
+						response.headers.set('X-Hdb-Session', 'Secure');
+					}
 				}
 				updated_session.id = session_id;
 				return session_table.put(updated_session);
 			};
 			request.login = async function (user, password) {
-				request.user = await server.getUser(user, password);
+				request.user = await server.getUser(user, password, request);
 				request.session.update({ user: request.user.username });
 			};
 			if (

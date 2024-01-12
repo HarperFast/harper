@@ -14,11 +14,11 @@ module.exports = fp(
 		fastify.addHook('onSend', async (request, reply, payload) => {
 			let response_time = reply.getResponseTime();
 			let start_transfer = performance.now();
-			let config = reply.context.config;
+			let config = reply.request.routeOptions;
 			let action;
 			let type;
 			let method;
-			if (config.isOperation) {
+			if (config.config?.isOperation) {
 				action = request.body?.operation;
 				type = 'operation';
 			} else {

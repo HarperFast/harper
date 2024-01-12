@@ -151,22 +151,6 @@ function initTestEnvironment(test_config_obj = {}) {
 		install_props[BOOT_PROPS_FILE_PATH] = path.join(props_path, 'hdb_boot_properties.file');
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY, path.join(props_path, 'settings.test'));
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.INSTALL_USER, os.userInfo() ? os.userInfo().username : undefined);
-		setProperty(
-			hdb_terms.HDB_SETTINGS_NAMES.PRIVATE_KEY_KEY,
-			path.join(props_path, 'envDir', 'utility', 'keys', 'privateKey.pem')
-		);
-		setProperty(
-			hdb_terms.HDB_SETTINGS_NAMES.CERT_KEY,
-			path.join(props_path, 'envDir', 'utility', 'keys', 'certificate.pem')
-		);
-		setProperty(
-			hdb_terms.CONFIG_PARAMS.TLS_PRIVATEKEY,
-			path.join(props_path, 'envDir', 'utility', 'keys', 'privateKey.pem')
-		);
-		setProperty(
-			hdb_terms.CONFIG_PARAMS.TLS_CERTIFICATE,
-			path.join(props_path, 'envDir', 'utility', 'keys', 'certificate.pem')
-		);
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY, `debug`);
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY, path.join(props_path, 'envDir', 'log'));
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.LOG_DAILY_ROTATE_KEY, false);
@@ -174,14 +158,11 @@ function initTestEnvironment(test_config_obj = {}) {
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.CLUSTERING_NODE_NAME_KEY, '1231412de213');
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY, path.join(props_path, 'envDir'));
 		setProperty(hdb_terms.CONFIG_PARAMS.STORAGE_PATH, path.join(props_path, 'envDir'));
-		setProperty(
-			hdb_terms.HDB_SETTINGS_NAMES.HTTP_SECURE_ENABLED_KEY,
-			common_utils.isEmpty(https_enabled) ? true : https_enabled
-		);
-		setProperty(
-			hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_HTTPS,
-			common_utils.isEmpty(https_enabled) ? true : https_enabled
-		);
+		if (https_enabled) {
+			setProperty(hdb_terms.CONFIG_PARAMS.HTTP_SECUREPORT, get(hdb_terms.CONFIG_PARAMS.HTTP_PORT));
+			setProperty(hdb_terms.CONFIG_PARAMS.HTTP_PORT, null);
+		}
+		setProperty(hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_HTTPS, Boolean(https_enabled));
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.SERVER_PORT_KEY, 9925);
 		setProperty(
 			hdb_terms.HDB_SETTINGS_NAMES.CORS_ENABLED_KEY,

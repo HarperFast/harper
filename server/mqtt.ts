@@ -11,12 +11,18 @@ import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/h
 import { loggerWithTag, error as log_error, warn, info } from '../utility/logging/harper_logger.js';
 const auth_event_log = loggerWithTag('auth-event');
 
-const AUTHORIZE_LOCAL = true;
-export async function start({ server, port, webSocket, securePort, requireAuthentication }) {
+let AUTHORIZE_LOCAL = get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? process.env.DEV_MODE;
+export function bypassAuth() {
+	AUTHORIZE_LOCAL = true;
+}
+
+export function start({ server, port, network, webSocket, securePort, requireAuthentication }) {
 	// here we basically normalize the different types of sockets to pass to our socket/message handler
-	const mqtt_settings = (server.mqtt = { requireAuthentication });
+	const mqtt_settings = (server.mqtt = { requireAuthentication, sessions: new Set() });
+	let server_instance;
+	const mtls = network?.mtls;
 	if (webSocket)
-		server.ws(
+		server_instance = server.ws(
 			(ws, request, chain_completion) => {
 				if (ws.protocol === 'mqtt') {
 					const { onMessage, onClose } = onSocket(
@@ -44,10 +50,30 @@ export async function start({ server, port, webSocket, securePort, requireAuthen
 		); // if there is no port, we are piggy-backing off of default app http server
 	// standard TCP socket
 	if (port || securePort) {
-		server.socket(
+		server_instance = server.socket(
 			async (socket) => {
 				let user;
-				if (AUTHORIZE_LOCAL && socket.remoteAddress.includes('127.0.0.1')) {
+				if (mtls) {
+					if (socket.authorized) {
+						try {
+							let username = mtls.user;
+							if (user !== null) {
+								// null means no user is defined from certificate, need regular authentication as well
+								if (username === undefined || username === 'Common Name' || username === 'CN')
+									username = socket.getPeerCertificate().subject.CN;
+								user = await server.getUser(username, null, null);
+							}
+						} catch (error) {
+							log_error(error);
+						}
+					} else if (mtls.required) {
+						info(
+							`Unauthorized connection attempt, no authorized client certificate provided, error: ${socket.authorizationError}`
+						);
+						return socket.end();
+					}
+				}
+				if (!user && AUTHORIZE_LOCAL && socket.remoteAddress.includes('127.0.0.1')) {
 					user = await getSuperUser();
 				}
 
@@ -58,9 +84,10 @@ export async function start({ server, port, webSocket, securePort, requireAuthen
 					info('Socket error', error);
 				});
 			},
-			{ port, securePort }
+			{ port, securePort, mtls }
 		);
 	}
+	return server_instance;
 }
 let adding_metrics,
 	number_of_connections = 0;
@@ -89,6 +116,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 		if (!disconnected) {
 			disconnected = true;
 			session?.disconnect();
+			mqtt_settings.sessions.delete(session);
 			recordActionBinary(false, 'connection', 'mqtt', 'disconnect');
 		}
 	}
@@ -102,7 +130,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					mqtt_options.protocolVersion = packet.protocolVersion;
 					if (packet.username) {
 						try {
-							user = await server.getUser(packet.username, packet.password.toString());
+							user = await server.getUser(packet.username, packet.password.toString(), request);
 							if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL)) {
 								auth_event_log.notify({
 									username: user.username,
@@ -144,11 +172,18 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 						mqtt_settings.authorizeClient?.(packet, user);
 
 						// TODO: Handle the will & testament, and possibly use the will's content type as a hint for expected content
+						if (packet.will) {
+							const deserialize =
+								socket.deserialize || (socket.deserialize = getDeserializer(request?.headers.get?.('content-type')));
+							packet.will.data = packet.will.payload?.length > 0 ? deserialize(packet.will.payload) : undefined;
+							delete packet.will.payload;
+						}
 						session = getSession({
 							user,
 							...packet,
 						});
 						session = await session;
+						mqtt_settings.sessions.add(session);
 					} catch (error) {
 						log_error(error);
 						recordActionBinary(false, 'connection', 'mqtt', 'connect');
@@ -184,6 +219,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 						} catch (error) {
 							log_error(error);
 							session?.disconnect();
+							mqtt_settings.sessions.delete(session);
 						}
 					});
 					if (session.sessionWasPresent) await session.resume();
@@ -196,7 +232,14 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 							granted_qos = (await session.addSubscription(subscription, subscription.qos >= 1)).qos || 0;
 						} catch (error) {
 							log_error(error);
-							granted_qos = 0x80; // failure
+							granted_qos =
+								mqtt_options.protocolVersion < 5
+									? 0x80 // the only error code in v3.1.1
+									: error.statusCode === 403
+									? 0x87 // unauthorized
+									: error.statusCode === 404
+									? 0x8f // invalid topic
+									: 0x80; // generic failure
 						}
 						granted.push(granted_qos);
 					}
@@ -208,16 +251,19 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 						messageId: packet.messageId,
 					});
 					break;
-				case 'unsubscribe':
+				case 'unsubscribe': {
+					const granted = [];
 					for (const subscription of packet.unsubscriptions) {
-						session.removeSubscription(subscription);
+						granted.push(session.removeSubscription(subscription) ? 0 : 17);
 					}
 					sendPacket({
 						// Send a subscription acknowledgment
 						cmd: 'unsuback',
+						granted,
 						messageId: packet.messageId,
 					});
 					break;
+				}
 				case 'pubrel':
 					sendPacket({
 						// Send a publish response
@@ -243,12 +289,12 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 									// Send a publish acknowledgment
 									cmd: response_cmd,
 									messageId: packet.messageId,
-									reasonCode: 0x80, // unspecified error
-									returnCode: 0x80, // unspecified error
+									reasonCode: 0x80, // unspecified error (only MQTT v5 supports error codes)
 								},
 								packet.topic
 							);
 						}
+						break;
 					}
 					if (packet.qos > 0) {
 						sendPacket(
@@ -257,10 +303,6 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 								cmd: response_cmd,
 								messageId: packet.messageId,
 								reasonCode:
-									published === false
-										? 0x90 // Topic name invalid
-										: 0, //success
-								returnCode:
 									published === false
 										? 0x90 // Topic name invalid
 										: 0, //success
@@ -286,7 +328,8 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					break;
 				case 'disconnect':
 					disconnected = true;
-					session?.disconnect();
+					session?.disconnect(true);
+					mqtt_settings.sessions.delete(session);
 					recordActionBinary(true, 'connection', 'mqtt', 'disconnect');
 					if (socket.close) socket.close();
 					else socket.end();

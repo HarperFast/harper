@@ -4,17 +4,36 @@ const { isMainThread, parentPort, threadId } = require('worker_threads');
 const { Socket, createServer: createSocketServer } = require('net');
 const { createServer, IncomingMessage } = require('http');
 const { createServer: createSecureServer } = require('https');
-const { readFileSync } = require('fs');
+const { readFileSync, unlinkSync, existsSync } = require('fs');
 const harper_logger = require('../../utility/logging/harper_logger');
 const env = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 const { server } = require('../Server');
 const { WebSocketServer } = require('ws');
 const { createServer: createSecureSocketServer } = require('tls');
-const { getTicketKeys, restartNumber } = require('./manageThreads');
+const { getTicketKeys, restartNumber, getWorkerIndex } = require('./manageThreads');
 const { Headers } = require('../serverHelpers/Headers');
 const { recordAction, recordActionBinary } = require('../../resources/analytics');
 const { Request, createReuseportFd } = require('../serverHelpers/Request');
+const { checkMemoryLimit } = require('../../utility/registration/hdb_license');
+
+// this horifying hack is brought to you by https://github.com/nodejs/node/issues/36655
+const tls = require('tls');
+
+const origCreateSecureContext = tls.createSecureContext;
+tls.createSecureContext = function (options) {
+	if (!options.cert || !options.key) {
+		return origCreateSecureContext(options);
+	}
+
+	let lessOptions = { ...options };
+	delete lessOptions.key;
+	delete lessOptions.cert;
+	let ctx = origCreateSecureContext(lessOptions);
+	ctx.context.setCert(options.cert);
+	ctx.context.setKey(options.key, undefined);
+	return ctx;
+};
 
 if (process.env.DEV_MODE) {
 	try {
@@ -38,6 +57,7 @@ exports.httpServer = httpServer;
 exports.deliverSocket = deliverSocket;
 exports.startServers = startServers;
 exports.listenOnPorts = listenOnPorts;
+exports.when_components_loaded = null;
 server.http = httpServer;
 server.request = onRequest;
 server.socket = onSocket;
@@ -51,7 +71,7 @@ let http_servers = {},
 	http_responders = [];
 
 function startServers() {
-	return require('../loadRootComponents')
+	return (exports.when_components_loaded = require('../loadRootComponents')
 		.loadRootComponents(true)
 		.then(() => {
 			parentPort
@@ -78,9 +98,19 @@ function startServers() {
 								setInterval(() => {
 									server.closeIdleConnections();
 								}, 25).unref();
+								setTimeout(() => {
+									server.closeAllConnections();
+									harper_logger.info('Closed all http connections', port, threadId);
+								}, 4000).unref();
 							}
 							// And we tell the server not to accept any more incoming connections
 							server.close?.(() => {
+								if (env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET) && getWorkerIndex() == 0) {
+									try {
+										unlinkSync(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET));
+									} catch (err) {}
+								}
+
 								clearInterval(close_all_timer);
 								// We hope for a graceful exit once all connections have been closed, and no
 								// more incoming connections are accepted, but if we need to, we eventually will exit
@@ -105,16 +135,34 @@ function startServers() {
 			if (createReuseportFd && !session_affinity) {
 				listening = listenOnPorts();
 			}
+
 			// notify that we are now ready to start receiving requests
 			Promise.resolve(listening).then(() => {
 				parentPort?.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
 			});
-		});
+		}));
 }
 function listenOnPorts() {
 	const listening = [];
 	for (let port in SERVERS) {
 		const server = SERVERS[port];
+
+		// If server is unix domain socket
+		if (isNaN(port) && getWorkerIndex() == 0) {
+			if (existsSync(port)) unlinkSync(port);
+			listening.push(
+				new Promise((resolve, reject) => {
+					server
+						.listen({ path: port }, () => {
+							resolve();
+							harper_logger.info('Domain socket listening on ' + port);
+						})
+						.on('error', reject);
+				})
+			);
+			continue;
+		}
+
 		let fd;
 		try {
 			fd = createReuseportFd(+port, '::');
@@ -226,8 +274,8 @@ function proxyRequest(message) {
 	}
 }
 
-function registerServer(server, port) {
-	if (!+port) {
+function registerServer(server, port, check_port = true) {
+	if (!+port && port !== env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)) {
 		// if no port is provided, default to custom functions port
 		port = parseInt(env.get(terms.CONFIG_PARAMS.HTTP_PORT), 10);
 	}
@@ -236,6 +284,9 @@ function registerServer(server, port) {
 		// if there is an existing server on this port, we create a cascading delegation to try the request with one
 		// server and if doesn't handle the request, cascade to next server (until finally we 404)
 		let last_server = existing_server.lastServer || existing_server;
+		if (last_server === server) throw new Error(`Can not register the same server twice for the same port ${port}`);
+		if (check_port && Boolean(last_server.sessionIdContext) !== Boolean(server.sessionIdContext) && +port)
+			throw new Error(`Can not mix secure HTTPS and insecure HTTP on the same port ${port}`);
 		last_server.off('unhandled', defaultNotFound);
 		last_server.on('unhandled', (request, response) => {
 			// fastify can't clean up properly, and as soon as we have received a fastify request, must mark our mode
@@ -266,6 +317,10 @@ function getPorts(options) {
 		if (env.get(terms.CONFIG_PARAMS.HTTP_SECUREPORT) != null)
 			ports.push({ port: env.get(terms.CONFIG_PARAMS.HTTP_SECUREPORT), secure: true });
 	}
+
+	if (options?.isOperationsServer && env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)) {
+		ports.push({ port: env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET), secure: false });
+	}
 	return ports;
 }
 function httpServer(listener, options) {
@@ -274,7 +329,8 @@ function httpServer(listener, options) {
 		if (typeof listener === 'function') {
 			http_responders[options?.runFirst ? 'unshift' : 'push']({ listener, port: options?.port || port });
 		} else {
-			registerServer(listener, port);
+			listener.isSecure = secure;
+			registerServer(listener, port, false);
 		}
 		http_chain[port] = makeCallbackChain(http_responders, port);
 		ws_chain = makeCallbackChain(request_listeners, port);
@@ -288,19 +344,27 @@ function getHTTPServer(port, secure, is_operations_server) {
 			headersTimeout: env.get(server_prefix + '_headersTimeout'),
 			requestTimeout: env.get(server_prefix + '_timeout'),
 		};
+		let mtls = env.get(server_prefix + '_mtls');
 		if (secure) {
 			server_prefix = is_operations_server ? 'operationsApi_' : '';
-			const privateKey = env.get(server_prefix + 'tls_privateKey');
+			const private_key = env.get(server_prefix + 'tls_privateKey');
 			const certificate = env.get(server_prefix + 'tls_certificate');
-			const certificateAuthority = env.get(server_prefix + 'tls_certificateAuthority');
-
+			const certificate_authority = env.get(server_prefix + 'tls_certificateAuthority');
+			// If we are in secure mode, we use HTTP/2 (createSecureServer from http2), with back-compat support
+			// HTTP/1. We do not use HTTP/2 for insecure mode for a few reasons: browsers do not support insecure
+			// HTTP/2. We have seen slower performance with HTTP/2, when used for directly benchmarking. We have
+			// also seen problems with insecure HTTP/2 clients negotiating properly (Java HttpClient).
 			Object.assign(options, {
-				key: readFileSync(privateKey),
-				// if they have a CA, we append it, so it is included
-				cert: readFileSync(certificate) + (certificateAuthority ? '\n\n' + readFileSync(certificateAuthority) : ''),
+				allowHTTP1: true,
+				key: readFileSync(private_key),
+				ciphers: env.get('tls_ciphers'),
+				cert: readFileSync(certificate),
+				ca: certificate_authority && readFileSync(certificate_authority),
+				requestCert: Boolean(mtls),
 				ticketKeys: getTicketKeys(),
 			});
 		}
+		let license_warning = checkMemoryLimit();
 		http_servers[port] = (secure ? createSecureServer : createServer)(options, async (node_request, node_response) => {
 			try {
 				let start_time = performance.now();
@@ -314,7 +378,14 @@ function getHTTPServer(port, secure, is_operations_server) {
 					if (request._nodeResponse.statusCode) return;
 					response = unhandled(request);
 				}
-				response.headers?.set?.('Server', 'HarperDB');
+
+				if (license_warning)
+					response.headers?.set?.(
+						'Server',
+						'Unlicensed HarperDB, this should only be used for educational and development purposes'
+					);
+				else response.headers?.set?.('Server', 'HarperDB');
+
 				if (response.status === -1) {
 					// This means the HDB stack didn't handle the request, and we can then cascade the request
 					// to the server-level handler, forming the bridge to the slower legacy fastify framework that expects
@@ -450,32 +521,37 @@ function unhandled(request) {
 function onRequest(listener, options) {
 	httpServer(listener, { requestOnly: true, ...options });
 }
-
 /**
  * Direct socket listener
  * @param listener
  * @param options
  */
 function onSocket(listener, options) {
+	let socket_server;
 	if (options.securePort) {
-		const privateKey = env.get('tls_privateKey');
-		const certificate = env.get('tls_certificate');
-		const certificateAuthority = env.get('tls_certificateAuthority');
+		const private_key_path = env.get('tls_privateKey');
+		const certificate_path = env.get('tls_certificate');
+		const certificate_authority_path = options.mtls?.certificateAuthority || env.get('tls_certificateAuthority');
 
-		let socket_server = createSecureSocketServer(
+		socket_server = createSecureSocketServer(
 			{
-				key: readFileSync(privateKey),
+				ciphers: env.get('tls_ciphers'),
+				key: readFileSync(private_key_path),
 				// if they have a CA, we append it, so it is included
-				cert: readFileSync(certificate) + (certificateAuthority ? '\n\n' + readFileSync(certificateAuthority) : ''),
+				cert: readFileSync(certificate_path),
+				ca: certificate_authority_path && readFileSync(certificate_authority_path),
+				rejectUnauthorized: Boolean(options.mtls?.required),
+				requestCert: Boolean(options.mtls),
 			},
 			listener
 		);
 		SERVERS[options.securePort] = socket_server;
 	}
 	if (options.port) {
-		const socket_server = createSocketServer(listener);
+		socket_server = createSocketServer(listener);
 		SERVERS[options.port] = socket_server;
 	}
+	return socket_server;
 }
 // workaround for inability to defer upgrade from https://github.com/nodejs/node/issues/6339#issuecomment-570511836
 Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
@@ -516,6 +592,10 @@ function onWebSocket(listener, options) {
 				} catch (error) {
 					harper_logger.warn('Error handling WebSocket connection', error);
 				}
+			});
+
+			ws_servers[port_num].on('error', (error) => {
+				console.log('Error in setting up WebSocket server', error);
 			});
 		}
 		let protocol = options?.subProtocol || '';

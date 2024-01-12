@@ -9,10 +9,10 @@ export interface ResourceInterface<Key = any, Record = any> {
 	delete?(): boolean;
 	search?(query: Query): AsyncIterable<any>;
 	subscribe?(request: SubscriptionRequest): Subscription;
-	allowRead(user: any, query?: Query): boolean | Promise<boolean>;
+	allowRead(user: any, query?: Query, context: Context): boolean | Promise<boolean>;
 	allowUpdate(user: any, record: any, full_update?: boolean): boolean | Promise<boolean>;
-	allowCreate(user: any, record: any): boolean | Promise<boolean>;
-	allowDelete(user: any, query?: Query): boolean | Promise<boolean>;
+	allowCreate(user: any, record: any, context: Context): boolean | Promise<boolean>;
+	allowDelete(user: any, query: Query, context: Context): boolean | Promise<boolean>;
 }
 export interface Context {
 	user?: any;

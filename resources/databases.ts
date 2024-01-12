@@ -296,6 +296,7 @@ export function readMetaDb(
 						if (!indices[attribute.name]) {
 							const dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
 							indices[attribute.name] = root_store.openDB(attribute.key, dbi_init);
+							indices[attribute.name].indexNulls = attribute.indexNulls;
 						}
 						const existing_attribute = existing_attributes.find(
 							(existing_attribute) => existing_attribute.name === attribute.name
@@ -581,6 +582,7 @@ export function table({
 		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
 		// iterate through the attributes to ensure that we have all the dbis created and indexed
 		for (const attribute of attributes || []) {
+			if (attribute.relationship) continue;
 			let dbi_key = table_name + '/' + (attribute.name || '');
 			Object.defineProperty(attribute, 'key', { value: dbi_key, configurable: true });
 			let attribute_descriptor = attributes_dbi.get(dbi_key);
@@ -636,10 +638,14 @@ export function table({
 						attribute.indexingPID = process.pid;
 						dbi.isIndexing = true;
 						Object.defineProperty(attribute, 'dbi', { value: dbi });
+						// we only set indexing nulls to true if new or reindexing, we can't have partial indexing of null
+						if (attribute.indexNulls === undefined) attribute.indexNulls = true;
 						attributes_to_index.push(attribute);
 					}
 					attributes_dbi.put(dbi_key, attribute);
 				}
+				if (attribute_descriptor?.indexNulls && attribute.indexNulls === undefined) attribute.indexNulls = true;
+				dbi.indexNulls = attribute.indexNulls;
 				indices[attribute.name] = dbi;
 			} else if (changed) {
 				has_changes = true;

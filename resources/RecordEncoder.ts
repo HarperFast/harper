@@ -24,6 +24,7 @@ export const TIMESTAMP_ASSIGN_LAST = 1;
 export const TIMESTAMP_ASSIGN_PREVIOUS = 3;
 export const TIMESTAMP_RECORD_PREVIOUS = 4;
 export const HAS_EXPIRATION = 16;
+export const PENDING_LOCAL_TIME = 1;
 
 let last_encoding,
 	last_value_encoding,
@@ -32,6 +33,7 @@ let last_encoding,
 	expires_at_next_encoding = 0;
 export class RecordEncoder extends Encoder {
 	constructor(options) {
+		options.useBigIntExtension = true;
 		super(options);
 		const super_encode = this.encode;
 		this.encode = function (record, options?) {
@@ -133,9 +135,22 @@ function getTimestamp() {
 }
 const mapGet = Map.prototype.get;
 
+let in_resource;
+export function fromResource(callback) {
+	in_resource = true;
+	try {
+		return callback();
+	} finally {
+		in_resource = false;
+	}
+}
+
 export function handleLocalTimeForGets(store) {
 	const storeGetEntry = store.getEntry;
+	store.readCount = 0;
+	store.cachePuts = false;
 	store.getEntry = function (id, options) {
+		store.readCount++;
 		const entry = storeGetEntry.call(this, id, options);
 		// if we have decoded with metadata, we want to pull it out and assign to this entry
 		const record_entry = entry?.value;
@@ -146,6 +161,7 @@ export function handleLocalTimeForGets(store) {
 			entry.value = record_entry.value;
 			if (record_entry.expiresAt > 0) entry.expiresAt = record_entry.expiresAt;
 		}
+		if (entry) entry.key = id;
 		return entry;
 	};
 	const storeGet = store.get;
@@ -161,7 +177,7 @@ export function handleLocalTimeForGets(store) {
 		if (options.valuesForKey) {
 			return iterable.map((value) => value?.value);
 		}
-		if (options.values === false) return iterable;
+		if (options.values === false || options.onlyCount) return iterable;
 		return iterable.map((entry) => {
 			const record_entry = entry.value;
 			// if we have metadata, move the metadata to the entry
@@ -175,37 +191,6 @@ export function handleLocalTimeForGets(store) {
 			return entry;
 		});
 	};
-
-	if (!store.env.metadataRetriever) {
-		store.env.metadataRetriever = true;
-		store.on('aftercommit', ({ next, last }) => {
-			do {
-				const meta = next.meta;
-				const store = meta && meta.store;
-				if (
-					store &&
-					// don't do anything on a failure code
-					!(next.flag & 0x4000000)
-				) {
-					const cache = store.cache;
-					if (meta.key) {
-						const entry = mapGet.call(cache, meta.key);
-						if (entry && entry.timestampBytes) {
-							const offset = entry.timestampOffset;
-							// note that if there are multiple writes to the same entry, this offset will point
-							// to the latest entry, so previous writes may finish prior to the latest entry being updated
-							// so we verify the starting byte for date that has been assigned:
-							if (entry.timestampBytes[offset] === 2) {
-								entry.timestampBytes.copy(TIMESTAMP_HOLDER, 0, offset);
-								entry.timestampBytes = null;
-								entry.localTime = getTimestamp();
-							}
-						}
-					}
-				}
-			} while (next != last && (next = next.next));
-		});
-	}
 	// add read transaction tracking
 	const txn = store.useReadTransaction();
 	txn.done();
@@ -218,6 +203,13 @@ export function handleLocalTimeForGets(store) {
 				this.timerTracked = true;
 				tracked_txns.push(new WeakRef(this));
 			}
+			if (!in_resource) {
+				try {
+					throw new Error('Read transaction used outside of resource');
+				} catch (error) {
+					this.readStack = error.stack;
+				}
+			}
 			use.call(this);
 		};
 		Txn.prototype.done = function () {
@@ -225,7 +217,7 @@ export function handleLocalTimeForGets(store) {
 			if (this.isDone) {
 				for (let i = 0; i < tracked_txns.length; i++) {
 					const txn = tracked_txns[i].deref();
-					if (!txn || txn === this || txn.isDone || txn.isCommitted) {
+					if (!txn || txn.isDone || txn.isCommitted) {
 						tracked_txns.splice(i--, 1);
 					}
 				}
@@ -243,11 +235,19 @@ setInterval(() => {
 		if (!txn || txn.isDone || txn.isCommitted) tracked_txns.splice(i--, 1);
 		else if (txn.notCurrent) {
 			if (txn.openTimer) {
-				if (txn.openTimer > 3)
-					harper_logger.error(
-						'Read transaction detected that has been open too long (over one minute), make sure read transactions are quickly closed',
-						txn
-					);
+				if (txn.openTimer > 3) {
+					if (txn.openTimer > 60) {
+						harper_logger.error(
+							'Read transaction detected that has been open too long (over 15 minutes), ending transaction',
+							txn
+						);
+						txn.done();
+					} else
+						harper_logger.error(
+							'Read transaction detected that has been open too long (over one minute), make sure read transactions are quickly closed',
+							txn
+						);
+				}
 				txn.openTimer++;
 			} else txn.openTimer = 1;
 		}
@@ -293,27 +293,6 @@ export function getUpdateRecord(store, table_id, audit_store) {
 			// we use resolve_record outside of transaction, so must explicitly make it conditional
 			if (resolve_record) options.ifVersion = ifVersion = existing_entry?.version ?? null;
 			const result = store.put(id, record, options);
-			if (store.cache && result.result !== false) {
-				// if we have a cache and the put didn't immediately fail
-				const new_entry = store.cache.get(id);
-				if (new_entry) {
-					// we can immediately update the metadata flags on the new entry
-					if (assign_metadata >= 0) new_entry.metadataFlags = assign_metadata;
-					else if (new_entry.metadataFlags >= 0) new_entry.metadataFlags = undefined;
-					if (expires_at || !new_entry.expiresAt) new_entry.expiresAt = expires_at;
-
-					// we have to wait for the commit to assign the localTime because it is assigned in the lmdb-js write thread
-					if (options.instructedWrite) {
-						// TODO: Add support for id as arrays to lmdb-js
-						if (!new_entry.localTime) {
-							new_entry.localTime = 1;
-						} // placeholder
-						// record the buffer/position so we can read it after commit
-						new_entry.timestampBytes = last_encoding;
-						new_entry.timestampOffset = last_encoding.start || 0;
-					}
-				}
-			}
 
 			/**
 			 TODO: We will need to pass in the node id, whether that is locally generated from node name, or there is a global registory
@@ -350,7 +329,7 @@ export function getUpdateRecord(store, table_id, audit_store) {
 						last_value_encoding
 					),
 					{
-						append: type !== 'invalidate', // for invalidation, we expect the record to be rewritten, so we don't want to necessary create full pages
+						append: type !== 'invalidate', // for invalidation, we expect the record to be rewritten, so we don't want to necessarily expect pure sequential writes that create full pages
 						instructedWrite: true,
 						ifVersion,
 					}

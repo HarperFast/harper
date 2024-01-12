@@ -1,9 +1,32 @@
 import send from 'send';
 import { realpathSync } from 'fs';
+import serve_static from 'serve-static';
 const paths = new Map<string, string>();
 let started;
-export function start(options: { path: string; root: string; port: number; server: any; resources: any }) {
+export function start(options: {
+	path: string;
+	root: string;
+	files: string;
+	port: number;
+	server: any;
+	resources: any;
+}) {
 	return {
+		handleDirectory(url_path, dir_path) {
+			if (url_path === '/') {
+				const serve_dir = serve_static(dir_path, options);
+				options.server.http(async (request: Request, next_handler) => {
+					if (!request.isWebSocket) {
+						return new Promise((resolve) =>
+							serve_dir(request._nodeRequest, request._nodeResponse, () => {
+								resolve(next_handler(request));
+							})
+						);
+					}
+				});
+				return true;
+			}
+		},
 		handleFile(contents, url_path, file_path) {
 			if (!started) {
 				// don't start until we actually have a file to handle

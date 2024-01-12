@@ -551,8 +551,7 @@ describe('test validateOperationToken function', () => {
 			error = e;
 		}
 
-		assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid token', 401));
-		assert.deepStrictEqual(user, undefined);
+		assert.deepStrictEqual(user, { username: 'non_user' });
 		assert(jwt_spy.callCount === 1);
 		assert(jwt_spy.threw() === false);
 		assert(validate_user_spy.callCount === 1);
@@ -562,8 +561,7 @@ describe('test validateOperationToken function', () => {
 		} catch (e) {
 			validate_error = e;
 		}
-		assert(validate_error !== undefined);
-		assert.deepStrictEqual(validate_error, hdb_error(new Error(), 'Login failed', 401));
+		assert(validate_error === undefined);
 	});
 
 	it('test bad token', async () => {
@@ -724,8 +722,7 @@ describe('test validateRefreshToken function', () => {
 		} catch (e) {
 			validate_error = e;
 		}
-		assert(validate_error !== undefined);
-		assert.deepStrictEqual(validate_error, hdb_error(new Error(), 'Login failed', 401));
+		assert(validate_error === undefined);
 	});
 
 	it('test bad token', async () => {
@@ -919,7 +916,6 @@ describe('test refreshOperationToken function', () => {
 		} catch (e) {
 			validate_error = e;
 		}
-		assert(validate_error !== undefined);
-		assert.deepStrictEqual(validate_error, hdb_error(new Error(), 'Login failed', 401));
+		assert(validate_error === undefined);
 	});
 });

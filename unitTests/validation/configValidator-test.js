@@ -274,6 +274,7 @@ describe('Test configValidator module', () => {
 						network: {
 							cors: false,
 							corsAccessList: ['test1', 'test2'],
+							domainSocket: path.join(__dirname, '/carrot/operations-server'),
 							headersTimeout: 60001,
 							https: true,
 							keepAliveTimeout: 5001,

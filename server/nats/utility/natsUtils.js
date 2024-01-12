@@ -32,11 +32,10 @@ const INGEST_MAX_BYTES = 5000000000;
 
 if (isMainThread) {
 	onMessageByType(hdb_terms.ITC_EVENT_TYPES.RESTART, () => {
-		nats_connection = undefined
-		nats_connection_promise = undefined
+		nats_connection = undefined;
+		nats_connection_promise = undefined;
 	});
 }
-
 
 const {
 	connect,
@@ -112,6 +111,7 @@ module.exports = {
 	getJsmServerName,
 	addNatsMsgHeader,
 	updateIngestStreamConsumer,
+	clearClientCache,
 };
 
 /**
@@ -186,9 +186,25 @@ async function createConnection(port, username, password, wait_on_first_connect 
 			rejectUnauthorized: false,
 		},
 	});
+	c.protocol.transport.socket.unref();
 	hdb_logger.trace(`create connection established a nats client connection with id`, c?.info?.client_id);
 
+	c.closed().then((err) => {
+		if (err) {
+			hdb_logger.error('Error with Nats client connection, connection closed', err);
+		}
+
+		clearClientCache();
+	});
+
 	return c;
+}
+
+function clearClientCache() {
+	nats_connection = undefined;
+	jetstream_manager = undefined;
+	jetstream = undefined;
+	nats_connection_promise = undefined;
 }
 
 /**
@@ -239,7 +255,7 @@ async function getJetStreamManager() {
 		throw new Error('Error getting JetStream domain. Unable to get JetStream manager.');
 	}
 
-	jetstream_manager = await nats_connection.jetstreamManager({ domain });
+	jetstream_manager = await nats_connection.jetstreamManager({ domain, timeout: 60000 });
 	return jetstream_manager;
 }
 
@@ -258,7 +274,7 @@ async function getJetStream() {
 		throw new Error('Error getting JetStream domain. Unable to get JetStream manager.');
 	}
 
-	jetstream = nats_connection.jetstream({ domain });
+	jetstream = nats_connection.jetstream({ domain, timeout: 60000 });
 	return jetstream;
 }
 
@@ -808,10 +824,10 @@ async function removeSourceFromWorkStream(node, work_queue_name, subscription) {
  * @param {String} subject - the subject the request broadcast upon
  * @param {String|Object} data - the data being sent in the request
  * @param {String} [reply] - the subject name that the receiver will use to reply back - optional (defaults to createInbox())
- * @param {Number} [timeout] - how long to wait for a response - optional (defaults to 20000 ms)
+ * @param {Number} [timeout] - how long to wait for a response - optional (defaults to 60000 ms)
  * @returns {Promise<*>}
  */
-async function request(subject, data, timeout = 20000, reply = createInbox()) {
+async function request(subject, data, timeout = 60000, reply = createInbox()) {
 	if (!hdb_utils.isObject(data)) {
 		throw new Error('data param must be an object');
 	}
@@ -972,12 +988,16 @@ async function createTableStreams(subscriptions) {
  * @param table
  * @returns {Promise<void>}
  */
-async function purgeTableStream(schema, table) {
+async function purgeTableStream(schema, table, purge_ingest = false) {
 	if (env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
 		try {
 			const stream_name = crypto_hash.createNatsTableStreamName(schema, table);
 			const { jsm } = await getNATSReferences();
-			await jsm.streams.purge(stream_name);
+			if (purge_ingest) {
+				await jsm.streams.purge(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
+			} else {
+				await jsm.streams.purge(stream_name);
+			}
 		} catch (err) {
 			if (err.message === 'stream not found') {
 				// There can be situations where we are trying to purge a stream that doesn't exist.

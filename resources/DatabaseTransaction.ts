@@ -2,6 +2,7 @@ import { RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import * as harper_logger from '../utility/logging/harper_logger';
 import { CONTEXT } from './Resource';
+import { fromResource } from './RecordEncoder';
 
 const MAX_OPTIMISTIC_SIZE = 100;
 const tracked_txns = new Set<DatabaseTransaction>();
@@ -10,6 +11,7 @@ export class DatabaseTransaction implements Transaction {
 	lmdbDb: RootDatabase;
 	readTxn: LMDBTransaction;
 	readTxnRefCount: number;
+	readTxnsUsed: number;
 	validated = 0;
 	timestamp = 0;
 	declare next: DatabaseTransaction;
@@ -19,25 +21,46 @@ export class DatabaseTransaction implements Transaction {
 		// used optimistically
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
 		if (this.stale) this.stale = false;
-		if (this.readTxn) return this.readTxn;
-		this.readTxn = this.lmdbDb.useReadTransaction();
+		if (this.readTxn) {
+			if (this.readTxn.openTimer) this.readTxn.openTimer = 0;
+			return this.readTxn;
+		}
+		if (!this.open) throw new Error('Can not start a read on a transaction that is no longer open');
+		this.readTxnsUsed = 1;
+		fromResource(() => {
+			this.readTxn = this.lmdbDb.useReadTransaction();
+			if (this.readTxn.openTimer) this.readTxn.openTimer = 0;
+		});
 		tracked_txns.add(this);
 		return this.readTxn;
 	}
-	disregardReadTxn(): void {
-		if (--this.readTxnRefCount === 0) {
-			this.resetReadSnapshot();
-		}
+	useReadTxn() {
+		this.getReadTxn();
+		fromResource(() => {
+			this.readTxn.use();
+		});
+		this.readTxnsUsed++;
+		return this.readTxn;
 	}
-	resetReadSnapshot() {
-		if (this.readTxn) {
+	doneReadTxn() {
+		if (!this.readTxn) return;
+		this.readTxn.done();
+		if (--this.readTxnsUsed === 0) {
 			tracked_txns.delete(this);
-			this.readTxn.done();
 			this.readTxn = null;
 		}
 	}
+	disregardReadTxn(): void {
+		if (--this.readTxnRefCount === 0 && this.readTxnsUsed === 1) {
+			this.doneReadTxn();
+		}
+	}
 	addWrite(operation) {
+		if (!this.open && !this.autoCommitMode) {
+			throw new Error('Can not use a transaction that is no longer open');
+		}
 		this.writes.push(operation);
+		if (this.autoCommitMode) this.commit();
 	}
 	removeWrite(operation) {
 		const index = this.writes.indexOf(operation);
@@ -51,53 +74,64 @@ export class DatabaseTransaction implements Transaction {
 		let txn_time = this.timestamp;
 		if (!txn_time) txn_time = this.timestamp = options.timestamp = options.timestamp || getNextMonotonicTime();
 		const retries = options.retries || 0;
-		// release the read snapshot so we don't keep it open longer than necessary
-		this.resetReadSnapshot();
 		// now validate
 		if (this.validated < this.writes.length) {
-			const start = this.validated;
-			// record the number of writes that have been validated so if we re-execute
-			// and the number is increased we can validate the new entries
-			this.validated = this.writes.length;
-			for (let i = start; i < this.validated; i++) {
-				const write = this.writes[i];
-				write?.validate?.(this.timestamp);
-			}
-			let has_before;
-			for (let i = start; i < this.validated; i++) {
-				const write = this.writes[i];
-				if (!write) continue;
-				if (write.before || write.beforeIntermediate) {
-					has_before = true;
+			try {
+				const start = this.validated;
+				// record the number of writes that have been validated so if we re-execute
+				// and the number is increased we can validate the new entries
+				this.validated = this.writes.length;
+				for (let i = start; i < this.validated; i++) {
+					const write = this.writes[i];
+					write?.validate?.(this.timestamp);
 				}
-			}
-			// Now we need to let any "before" actions execute. These are calls to the sources,
-			// and we want to follow the order of the source sequence so that later, more canonical
-			// source writes will finish (with right to refuse/abort) before proceeeding to less
-			// canonical sources.
-			if (has_before) {
-				return (async () => {
-					for (let phase = 0; phase < 2; phase++) {
-						let completion;
-						for (let i = start; i < this.validated; i++) {
-							const write = this.writes[i];
-							if (!write) continue;
-							const before = write[phase === 0 ? 'before' : 'beforeIntermediate'];
-							if (before) {
-								const next_completion = before();
-								if (completion) {
-									if (completion.push) completion.push(next_completion);
-									else completion = [completion, next_completion];
-								} else completion = next_completion;
-							}
-						}
-						if (completion) await (completion.push ? Promise.all(completion) : completion);
+				let has_before;
+				for (let i = start; i < this.validated; i++) {
+					const write = this.writes[i];
+					if (!write) continue;
+					if (write.before || write.beforeIntermediate) {
+						has_before = true;
 					}
-					return this.commit(options);
-				})();
+				}
+				// Now we need to let any "before" actions execute. These are calls to the sources,
+				// and we want to follow the order of the source sequence so that later, more canonical
+				// source writes will finish (with right to refuse/abort) before proceeeding to less
+				// canonical sources.
+				if (has_before) {
+					return (async () => {
+						try {
+							for (let phase = 0; phase < 2; phase++) {
+								let completion;
+								for (let i = start; i < this.validated; i++) {
+									const write = this.writes[i];
+									if (!write) continue;
+									const before = write[phase === 0 ? 'before' : 'beforeIntermediate'];
+									if (before) {
+										const next_completion = before();
+										if (completion) {
+											if (completion.push) completion.push(next_completion);
+											else completion = [completion, next_completion];
+										} else completion = next_completion;
+									}
+								}
+								if (completion) await (completion.push ? Promise.all(completion) : completion);
+							}
+						} catch (error) {
+							this.abort();
+							throw error;
+						}
+						return this.commit(options);
+					})();
+				}
+			} catch (error) {
+				this.abort();
+				throw error;
 			}
 		}
-		if (options?.close) this.open = false;
+		// release the read snapshot so we don't keep it open longer than necessary
+		if (!retries) this.doneReadTxn();
+		options?.prepared?.();
+		this.open = false;
 		let resolution;
 		const completions = [];
 		let write_index = 0;
@@ -177,7 +211,8 @@ export class DatabaseTransaction implements Transaction {
 		return txn_resolution;
 	}
 	abort(): void {
-		this.resetReadSnapshot();
+		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
+		this.open = false;
 		// reset the transaction
 		this.writes = [];
 	}
@@ -216,7 +251,7 @@ function startMonitoringTxns() {
 						txn.lmdbDb?.name + (url ? ' path: ' + url : '')
 					}`
 				);
-				txn.resetReadSnapshot();
+				txn.abort();
 			} else txn.stale = true;
 		}
 	}, txn_expiration).unref();

@@ -166,6 +166,7 @@ function configValidator(config_json) {
 				headersTimeout: number.min(1).optional(),
 				keepAliveTimeout: number.min(1).optional(),
 				port: number.optional().empty(null),
+				domainSocket: Joi.optional().empty('hdb/operations-server').default(setDefaultRoot),
 				securePort: number.optional().empty(null),
 				timeout: number.min(1).optional(),
 			}).optional(),
@@ -180,6 +181,11 @@ function configValidator(config_json) {
 			network: Joi.object({
 				port: port_constraints,
 				securePort: port_constraints,
+				mtls: Joi.alternatives([boolean.optional(), Joi.object({
+					user: string.optional(),
+					certificateAuthority: pem_file_constraints,
+					required: boolean.optional(),
+				})])
 			}).required(),
 			webSocket: boolean.optional(),
 			requireAuthentication: boolean.optional(),
@@ -193,6 +199,7 @@ function configValidator(config_json) {
 			securePort: number.min(0).optional().empty(null),
 		}).required(),
 		threads: threads_constraints.optional(),
+		maxHeapMemory: number.min(0).optional(),
 		storage: Joi.object({
 			writeAsync: boolean.required(),
 			overlappingSync: boolean.optional(),
@@ -207,6 +214,7 @@ function configValidator(config_json) {
 			certificate: pem_file_constraints.optional(),
 			certificateAuthority: pem_file_constraints.optional(),
 			privateKey: pem_file_constraints.optional(),
+			ciphers: string.optional(),
 		}),
 	});
 
@@ -306,11 +314,11 @@ function setDefaultThreads(parent, helpers) {
 function setDefaultRoot(parent, helpers) {
 	// For some reason Joi is still calling set default when value is not null.
 	// For that reason we do this check.
-	if (!hdb_utils.isEmpty(helpers.original)) {
+	const config_param = helpers.state.path.join('.');
+	if (!hdb_utils.isEmpty(helpers.original) && config_param !== 'operationsApi.network.domainSocket') {
 		return helpers.original;
 	}
 
-	const config_param = helpers.state.path.join('.');
 	if (hdb_utils.isEmpty(hdb_root)) {
 		throw new Error(`Error setting default root for: ${config_param}. HDB root is not defined`);
 	}
@@ -328,6 +336,8 @@ function setDefaultRoot(parent, helpers) {
 			return path.join(hdb_root, hdb_terms.DATABASES_DIR_NAME);
 		case 'logging.rotation.path':
 			return path.join(hdb_root, DEFAULT_LOG_FOLDER);
+		case 'operationsApi.network.domainSocket':
+			return config_param == null ? null : path.join(hdb_root, 'operations-server');
 		default:
 			throw new Error(
 				`Error setting default root for config parameter: ${config_param}. Unrecognized config parameter`

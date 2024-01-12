@@ -142,7 +142,7 @@ describe('Test custom functions operations', () => {
 
 		it('Test getComponentFile happy path', async () => {
 			const result = await operations.getComponentFile({ project: 'my-other-component', file: 'config.yaml' });
-			expect(result).to.eql(test_yaml_string);
+			expect(result.message).to.eql(test_yaml_string);
 		});
 
 		it('Test setComponentFile happy path', async () => {
@@ -152,7 +152,7 @@ describe('Test custom functions operations', () => {
 				payload: 'im the new payload',
 			});
 			const updated_file = await operations.getComponentFile({ project: 'my-other-component', file: 'config.yaml' });
-			expect(updated_file).to.eql('im the new payload');
+			expect(updated_file.message).to.eql('im the new payload');
 			expect(result).to.equal('Successfully set component: config.yaml');
 		});
 	});

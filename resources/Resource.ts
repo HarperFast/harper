@@ -11,7 +11,6 @@ import { parseQuery } from './search';
 export const CONTEXT = Symbol.for('context');
 export const ID_PROPERTY = Symbol.for('primary-key');
 export const IS_COLLECTION = Symbol('is-collection');
-export const SAVE_UPDATES_PROPERTY = Symbol('save-updates');
 export const RECORD_PROPERTY = Symbol('stored-record');
 
 const EXTENSION_TYPES = {
@@ -54,8 +53,8 @@ export class Resource implements ResourceInterface {
 			return handleSelect(result);
 			function handleSelect(result) {
 				let select;
-				if ((select = query?.select) && result != null) {
-					const transform = transformForSelect(select);
+				if ((select = query?.select) && result != null && !result.selectApplied) {
+					const transform = transformForSelect(select, resource.constructor);
 					if (typeof result?.map === 'function') {
 						return result.map(transform);
 					} else {
@@ -96,6 +95,15 @@ export class Resource implements ResourceInterface {
 		},
 		{ hasContent: true, type: 'update' }
 	);
+
+	static patch = transactional(
+		function (resource: Resource, query?: Map, request: Request, data?: any) {
+			// TODO: Allow array like put?
+			return resource.patch ? resource.patch(data, query) : missingMethod(resource, 'patch');
+		},
+		{ hasContent: true, type: 'update' }
+	);
+
 	static delete(identifier: Id, context?: Context): Promise<boolean>;
 	static delete(request: Request, context?: Context): Promise<object>;
 	static delete = transactional(
@@ -126,7 +134,7 @@ export class Resource implements ResourceInterface {
 		}
 		return transaction(context, () => {
 			const resource = new this(id, context);
-			const results = resource.put ? resource.put(record) : missingMethod(resource, 'put');
+			const results = resource.update ? resource.update(record) : missingMethod(resource, 'update');
 			context.newLocation = id;
 			context.createdResource = true;
 			return results?.then ? results.then(() => id) : id;
@@ -174,8 +182,8 @@ export class Resource implements ResourceInterface {
 		function (resource: Resource, query?: Map, request: Request, data?: any) {
 			const result = resource.search ? resource.search(query) : missingMethod(resource, 'search');
 			const select = request.select;
-			if (select && request.hasOwnProperty('select') && result != null) {
-				const transform = transformForSelect(select);
+			if (select && request.hasOwnProperty('select') && result != null && !result.selectApplied) {
+				const transform = transformForSelect(select, resource.constructor);
 				return result.map(transform);
 			}
 			return result;
@@ -232,11 +240,16 @@ export class Resource implements ResourceInterface {
 				return {
 					query: { property },
 					id: pathToId(path, this),
+					isCollection: id_was_collection,
 				};
 			}
 		}
 		// convert paths to arrays like /nested/path/4 -> ['nested', 'path', 4]
-		return pathToId(path, this);
+		const id = pathToId(path, this);
+		if (id_was_collection) {
+			return { id, isCollection: true };
+		}
+		return id;
 	}
 	/**
 	 * Gets an instance of a resource by id
@@ -251,7 +264,7 @@ export class Resource implements ResourceInterface {
 		let is_collection;
 		if (typeof request.isCollection === 'boolean' && request.hasOwnProperty('isCollection'))
 			is_collection = request.isCollection;
-		else is_collection = id == null || (Array.isArray(id) && id[id.length - 1] == null);
+		else is_collection = options?.isCollection;
 		// if it is a collection and we have a collection class defined, use it
 		const constructor = (is_collection && this.Collection) || this;
 		if (!context) context = context === undefined ? request : {};
@@ -366,17 +379,29 @@ class AccessError extends Error {
 		}
 	}
 }
+let id_was_collection;
 function pathToId(path, Resource) {
+	id_was_collection = false;
+	if (path === '') return null;
 	path = path.slice(1);
 	if (path.indexOf('/') === -1) {
+		if (path === '') {
+			id_was_collection = true;
+			return null;
+		}
 		// special syntax for more compact numeric representations
 		if (path.startsWith('$')) path = parseInt(path, 36);
 		return Resource.coerceId(decodeURIComponent(path));
 	}
 	const string_ids = path.split('/');
-	const ids = new MulitPartId(string_ids.length);
+	const ids = new MulitPartId();
 	for (let i = 0; i < string_ids.length; i++) {
-		ids[i] = Resource.coerceId(decodeURIComponent(string_ids[i]));
+		const id_part = string_ids[i];
+		if (!id_part && i === string_ids.length - 1) {
+			id_was_collection = true;
+			break;
+		}
+		ids[i] = Resource.coerceId(decodeURIComponent(id_part));
 	}
 	return ids;
 }
@@ -399,7 +424,7 @@ function transactional(action, options) {
 	const has_content = options.hasContent;
 	return applyContext;
 	function applyContext(id_or_query: string | Id, data_or_context?: any, context?: Context) {
-		let id, query;
+		let id, query, is_collection;
 		let data;
 		// First we do our argument normalization. There are two main types of methods, with or without content
 		if (has_content) {
@@ -428,6 +453,7 @@ function transactional(action, options) {
 				data = id_or_query;
 				id = data[ID_PROPERTY] ?? data[this.primaryKey] ?? null;
 			}
+			if (id == null) is_collection = true;
 			// otherwise handle methods for get, delete, etc.
 			// first, check to see if it is two argument
 		} else if (data_or_context) {
@@ -446,6 +472,7 @@ function transactional(action, options) {
 				if (id_or_query[Symbol.iterator]) {
 					// get the id part from an iterable query
 					id = [];
+					is_collection = true;
 					for (const part of id_or_query) {
 						if (typeof part === 'object' && part) break;
 						id.push(part);
@@ -455,7 +482,10 @@ function transactional(action, options) {
 						if (id.length === 1) id = id[0];
 						if (query.slice) {
 							query = query.slice(id.length, query.length);
-							if (query.length === 0) query = null;
+							if (query.length === 0) {
+								query = null;
+								is_collection = false;
+							}
 						}
 					}
 				} else {
@@ -470,28 +500,40 @@ function transactional(action, options) {
 						}
 						// handle paths of the form /path/id.property
 						const parsed_id = this.parsePath(id, context, query);
-						if (parsed_id?.query) {
-							query = parsed_id.query;
+						if (parsed_id?.id !== undefined) {
+							if (parsed_id.query) {
+								if (query) query = Object.assign(parsed_id.query, query);
+								else query = parsed_id.query;
+							}
+							is_collection = parsed_id.isCollection;
 							id = parsed_id.id;
 						} else id = parsed_id;
 					}
-					if (id === undefined) id = id_or_query.id ?? null;
+					if (id === undefined) {
+						id = id_or_query.id ?? null;
+						if (id == null) is_collection = true;
+					}
 				}
-			} else id = id_or_query ?? null;
+			} else {
+				id = id_or_query ?? null;
+				if (id == null) is_collection = true;
+			}
 		}
 
 		if (!context) context = {};
 		let resource_options;
-		if (query?.ensureLoaded != null || query?.async) {
+		if (query?.ensureLoaded != null || query?.async || is_collection) {
 			resource_options = Object.assign({}, options);
 			if (query?.ensureLoaded != null) resource_options.ensureLoaded = query.ensureLoaded;
-			if (query.async) resource_options.async = query.async;
+			if (query?.async) resource_options.async = query.async;
+			if (is_collection) resource_options.isCollection = true;
 		} else resource_options = options;
 		if (context.transaction) {
 			// we are already in a transaction, proceed
 			const resource = this.getResource(id, context, resource_options);
 			return resource.then ? resource.then(authorizeActionOnResource) : authorizeActionOnResource(resource);
 		} else {
+			resource_options.resetTransaction = true;
 			// start a transaction
 			return transaction(
 				context,
@@ -503,20 +545,19 @@ function transactional(action, options) {
 			);
 		}
 		function authorizeActionOnResource(resource: ResourceInterface) {
-			if (options.type === 'read') resource[SAVE_UPDATES_PROPERTY] = false; // by default modifications aren't saved, they just yield a different result from get
 			if (context.authorize) {
 				// do permission checks (and don't require subsequent uses of this request/context to need to do it)
 				context.authorize = false;
 				const allowed =
 					options.type === 'read'
-						? resource.allowRead(context.user, context)
+						? resource.allowRead(context.user, query, context)
 						: options.type === 'update'
 						? resource.doesExist?.() === false
-							? resource.allowCreate(context.user, context)
-							: resource.allowUpdate(context.user, context)
+							? resource.allowCreate(context.user, data, context)
+							: resource.allowUpdate(context.user, data, context)
 						: options.type === 'create'
-						? resource.allowCreate(context.user, context)
-						: resource.allowDelete(context.user, context);
+						? resource.allowCreate(context.user, data, context)
+						: resource.allowDelete(context.user, query, context);
 				if (allowed?.then) {
 					return allowed.then((allowed) => {
 						if (!allowed) {
@@ -550,50 +591,92 @@ function missingMethod(resource, method) {
  * @param object
  * @returns
  */
-function selectFromObject(object) {
+function selectFromObject(object, property_resolvers, context) {
 	// TODO: eventually we will do aggregate functions here
 	const record = object[RECORD_PROPERTY];
 	if (record) {
 		const own_data = object[OWN_DATA];
 		return (property) => {
-			let value;
+			let value, resolver;
 			if (object.hasOwnProperty(property) && typeof (value = object[property]) !== 'function') {
 				return value;
 			}
 			if (own_data && property in own_data) {
 				return own_data[property];
+			} else if ((resolver = property_resolvers?.[property])) {
+				return resolver(object, context);
 			} else return record[property];
+		};
+	} else if (property_resolvers) {
+		return (property) => {
+			const resolver = property_resolvers[property];
+			return resolver ? resolver(object, context) : object[property];
 		};
 	} else return (property) => object[property];
 }
-function transformForSelect(select) {
+export function transformForSelect(select, resource) {
+	const property_resolvers = resource?.propertyResolvers;
+	const context = resource[CONTEXT];
+	let sub_transforms;
 	if (typeof select === 'string')
 		// if select is a single string then return property value
-		return (object) => {
-			return selectFromObject(object)(select);
+		return function transform(object) {
+			if (object.then) return object.then(transform);
+			if (Array.isArray(object)) return object.map(transform);
+			return selectFromObject(object, property_resolvers, context)(select);
 		};
 	else if (typeof select === 'object') {
 		// if it is an array, return an array
 		if (select.asArray)
-			return (object) => {
+			return function transform(object) {
+				if (object.then) return object.then(transform);
+				if (Array.isArray(object)) return object.map(transform);
 				const results = [];
-				const getProperty = selectFromObject(object);
+				const getProperty = handleProperty(selectFromObject(object, property_resolvers, context));
 				for (const property of select) {
 					results.push(getProperty(property));
 				}
 				return results;
 			};
-		const forceNulls = select.forceNulls;
-		return (object) => {
+		const force_nulls = select.forceNulls;
+		return function transform(object) {
+			if (object.then) return object.then(transform);
+			if (Array.isArray(object))
+				return object.map((value) => (value && typeof value === 'object' ? transform(value) : value));
 			// finally the case of returning objects
 			const selected_data = {};
-			const getProperty = selectFromObject(object);
+			const getProperty = handleProperty(selectFromObject(object, property_resolvers, context));
+			let promises;
 			for (const property of select) {
 				let value = getProperty(property);
-				if (value === undefined && forceNulls) value = null;
-				selected_data[property] = value;
+				if (value === undefined && force_nulls) value = null;
+				if (value?.then) {
+					if (!promises) promises = [];
+					promises.push(value.then((value) => (selected_data[property.name || property] = value)));
+				} else selected_data[property.name || property] = value;
 			}
+			if (promises) return Promise.all(promises).then(() => selected_data);
 			return selected_data;
 		};
 	} else throw new Error('Invalid select argument type ' + typeof select);
+	function handleProperty(getProperty) {
+		return (property) => {
+			if (typeof property === 'string') {
+				return getProperty(property);
+			} else if (typeof property === 'object') {
+				// TODO: Handle aggregate functions
+				if (property.name) {
+					if (!sub_transforms) sub_transforms = {};
+					// TODO: Get the resource, cache this transform, and apply above
+					let transform = sub_transforms[property.name];
+					if (!transform) {
+						const resource = property_resolvers[property.name]?.definition?.tableClass;
+						transform = sub_transforms[property.name] = transformForSelect(property.select || property, resource);
+					}
+					const value = getProperty(property.name);
+					return transform(value);
+				} else return getProperty(property);
+			} else return property;
+		};
+	}
 }

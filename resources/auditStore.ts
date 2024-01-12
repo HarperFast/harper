@@ -2,10 +2,11 @@ import { readKey, writeKey } from 'ordered-binary';
 import { initSync, get as env_get } from '../utility/environment/environmentManager';
 import { AUDIT_STORE_NAME } from '../utility/lmdb/terms';
 import { CONFIG_PARAMS } from '../utility/hdbTerms';
-import { getWorkerIndex } from '../server/threads/manageThreads';
+import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads';
 import { convertToMS } from '../utility/common_utils';
 import { PREVIOUS_TIMESTAMP_PLACEHOLDER, LAST_TIMESTAMP_PLACEHOLDER } from './RecordEncoder';
 import * as harper_logger from '../utility/logging/harper_logger';
+import { getRecordAtTime } from './crdt';
 
 /**
  * This module is responsible for the binary representation of audit records in an efficient form.
@@ -59,7 +60,8 @@ export const AUDIT_STORE_OPTIONS = {
 };
 
 let audit_retention = convertToMS(env_get(CONFIG_PARAMS.LOGGING_AUDITRETENTION)) || 86400 * 3;
-let pending_cleanup = null;
+const MAX_DELETES_PER_CLEANUP = 1000;
+let DEFAULT_AUDIT_CLEANUP_DELAY = 10000; // default delay of 10 seconds
 export function openAuditStore(root_store) {
 	const audit_store = (root_store.auditStore = root_store.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS));
 	audit_store.rootStore = root_store;
@@ -72,61 +74,83 @@ export function openAuditStore(root_store) {
 			},
 		};
 	};
-	if (getWorkerIndex() === 0) {
-		root_store.on('aftercommit', () => {
-			// TODO: Maybe determine there were really any audits in here
-			if (!pending_cleanup) {
-				pending_cleanup = setTimeout(() => {
-					pending_cleanup = null;
-					// query for audit entries that are old and
-					if (audit_store.rootStore.status === 'closed') return;
-					for (const { key, value } of audit_store.getRange({
-						start: 0,
-						end: Date.now() - audit_retention,
-					})) {
-						if ((value[0] & 15) === DELETE) {
-							// if this is a delete, we remove the delete entry from the primary table
-							// at the same time so the audit table the primary table are in sync
-							const audit_record = readAuditEntry(value);
-							const table_id = audit_record.tableId;
-							delete_callbacks[table_id]?.(audit_record.recordId);
-						}
-						audit_store.remove(key);
+	let pending_cleanup = null;
+	function scheduleAuditCleanup(audit_cleanup_delay = DEFAULT_AUDIT_CLEANUP_DELAY) {
+		clearTimeout(pending_cleanup);
+		pending_cleanup = setTimeout(async () => {
+			// query for audit entries that are old
+			if (audit_store.rootStore.status === 'closed') return;
+			let deleted = 0;
+			let committed;
+			try {
+				for (const { key, value } of audit_store.getRange({
+					start: 0,
+					snapshot: false,
+					end: Date.now() - audit_retention,
+				})) {
+					if ((value[0] & 15) === DELETE) {
+						// if this is a delete, we remove the delete entry from the primary table
+						// at the same time so the audit table the primary table are in sync
+						const audit_record = readAuditEntry(value);
+						const table_id = audit_record.tableId;
+						delete_callbacks[table_id]?.(audit_record.recordId);
 					}
-					// we can run this pretty frequently since there is very little overhead to these queries
-				}, audit_retention / 10).unref();
+					committed = audit_store.remove(key);
+					await new Promise(setImmediate);
+					if (++deleted >= MAX_DELETES_PER_CLEANUP) {
+						// limit the amount we cleanup per event turn so we don't use too much memory/CPU
+						audit_cleanup_delay = 10; // and keep trying very soon
+						break;
+					}
+				}
+				await committed;
+			} finally {
+				if (deleted === 0) {
+					// if we didn't delete anything, we can increase the delay (double until we get to one tenth of the retention time)
+					audit_cleanup_delay = Math.min(audit_cleanup_delay << 1, audit_retention / 10);
+				}
+				scheduleAuditCleanup(audit_cleanup_delay);
 			}
-		});
+			// we can run this pretty frequently since there is very little overhead to these queries
+		}, audit_cleanup_delay).unref();
 	}
+	audit_store.scheduleAuditCleanup = scheduleAuditCleanup;
+	if (getWorkerIndex() === getWorkerCount() - 1) {
+		scheduleAuditCleanup(DEFAULT_AUDIT_CLEANUP_DELAY);
+	}
+
 	return audit_store;
 }
 
-export function setAuditRetention(retention_time) {
-	clearTimeout(pending_cleanup);
-	pending_cleanup = null;
+export function setAuditRetention(retention_time, default_delay = DEFAULT_AUDIT_CLEANUP_DELAY) {
 	audit_retention = retention_time;
+	DEFAULT_AUDIT_CLEANUP_DELAY = default_delay;
 }
 
-const HAS_FULL_RECORD = 16;
+const HAS_RECORD = 16;
 const HAS_PARTIAL_RECORD = 32; // will be used for CRDTs
 const PUT = 1;
 const DELETE = 2;
 const MESSAGE = 3;
 const INVALIDATE = 4;
+const PATCH = 5;
 const HAS_PREVIOUS_VERSION = 64;
 
 const EVENT_TYPES = {
-	put: PUT | HAS_FULL_RECORD,
+	put: PUT | HAS_RECORD,
 	[PUT]: 'put',
 	delete: DELETE,
 	[DELETE]: 'delete',
-	message: MESSAGE | HAS_FULL_RECORD,
+	message: MESSAGE | HAS_RECORD,
 	[MESSAGE]: 'message',
 	invalidate: INVALIDATE,
 	[INVALIDATE]: 'invalidate',
+	patch: PATCH | HAS_PARTIAL_RECORD,
+	[PATCH]: 'patch',
 };
 export function createAuditEntry(txn_time, table_id, record_id, previous_local_time, username, type, encoded_record) {
 	const action = EVENT_TYPES[type];
+	if (!action) throw new Error(`Invalid audit entry type ${type}`);
 	let position = 1;
 	if (previous_local_time) {
 		if (previous_local_time > 1) ENTRY_DATAVIEW.setFloat64(0, previous_local_time);
@@ -219,8 +243,12 @@ export function readAuditEntry(buffer) {
 			get user() {
 				return username_end > username_start ? readKeySafely(buffer, username_start, username_end) : undefined;
 			},
-			getValue(store) {
-				return action & HAS_FULL_RECORD ? store.decoder.decode(buffer.subarray(decoder.position)) : undefined;
+			getValue(store, full_record?, audit_time?) {
+				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !full_record))
+					return store.decoder.decode(buffer.subarray(decoder.position));
+				if (action & HAS_PARTIAL_RECORD && audit_time) {
+					return getRecordAtTime(store.getEntry(this.recordId), audit_time, store);
+				} // TODO: If we store a partial and full record, may need to read both sequentially
 			},
 			getBinaryValue() {
 				return action & HAS_FULL_RECORD ? buffer.subarray(decoder.position) : undefined;

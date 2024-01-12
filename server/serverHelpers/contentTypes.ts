@@ -1,4 +1,4 @@
-import { streamAsJSON } from './JSONStream';
+import { streamAsJSON, stringify, parse } from './JSONStream';
 import { toCsvStream } from '../../dataLayer/export';
 import { pack, unpack, encodeIter } from 'msgpackr';
 import { decode, Encoder, EncoderStream } from 'cbor-x';
@@ -8,6 +8,10 @@ import { server } from '../Server';
 import { _assignPackageExport } from '../../index';
 import env_mgr from '../../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms';
+import * as YAML from 'yaml';
+const SERIALIZATION_BIGINT = env_mgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
+const JSONStringify = SERIALIZATION_BIGINT ? stringify : JSON.stringify;
+const JSONParse = SERIALIZATION_BIGINT ? parse : JSON.parse;
 
 const PUBLIC_ENCODE_OPTIONS = {
 	useRecords: false,
@@ -21,8 +25,8 @@ _assignPackageExport('contentTypes', contentTypes);
 // TODO: Make these monomorphic for faster access. And use a Map
 media_types.set('application/json', {
 	serializeStream: streamAsJSON,
-	serialize: JSON.stringify,
-	deserialize: JSON.parse,
+	serialize: JSONStringify,
+	deserialize: JSONParse,
 	q: 0.8,
 });
 const cbor_encoder = new Encoder(PUBLIC_ENCODE_OPTIONS);
@@ -47,9 +51,9 @@ media_types.set('application/x-msgpack', {
 	q: 0.9,
 });
 media_types.set('text/csv', {
-	serializeStream(data) {
-		this.header('Content-Disposition', 'attachment; filename="data.csv"');
-		return toCsvStream(data);
+	serializeStream(data, response) {
+		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
+		return toCsvStream(data, data?.getColumns?.());
 	},
 	q: 0.1,
 });
@@ -62,6 +66,15 @@ media_types.set('text/plain', {
 	},
 	q: 0.01,
 });
+
+media_types.set('text/yaml', {
+	serialize(data) {
+		return YAML.stringify(data, { aliasDuplicateObjects: false });
+	},
+
+	q: 0.7,
+});
+
 media_types.set('text/event-stream', {
 	// Server-Sent Events (SSE)
 	serializeStream: function (iterable) {
@@ -83,17 +96,18 @@ media_types.set('text/event-stream', {
 			if (message.event) serialized += 'event: ' + message.event + '\n';
 			if (message.data) {
 				let data = message.data;
-				if (typeof data === 'object') data = JSON.stringify(data);
+				if (typeof data === 'object') data = JSONStringify(data);
 				serialized += 'data: ' + data + '\n';
 			}
 			if (message.id) serialized += 'id: ' + message.id + '\n';
 			if (message.retry) serialized += 'retry: ' + message.retry + '\n';
 			return serialized + '\n';
 		} else {
-			if (typeof message === 'object') return `data: ${JSON.stringify(message)}\n\n`;
+			if (typeof message === 'object') return `data: ${JSONStringify(message)}\n\n`;
 			return `data: ${message}\n\n`;
 		}
 	},
+	compressible: false,
 	q: 0.8,
 });
 // TODO: Support this as well:
@@ -121,7 +135,7 @@ media_types.set('application/x-www-form-urlencoded', {
 const generic_handler = {
 	type: 'application/json',
 	serializeStream: streamAsJSON,
-	serialize: JSON.stringify,
+	serialize: JSONStringify,
 	deserialize: tryJSONParse,
 	q: 0.8,
 };
@@ -131,7 +145,7 @@ media_types.set('', generic_handler);
 // otherwise
 function tryJSONParse(input) {
 	try {
-		if (input?.[0] === 123) return JSON.parse(input);
+		if (input?.[0] === 123) return JSONParse(input);
 		else return input;
 	} catch (error) {
 		return input;
@@ -197,7 +211,16 @@ const registerFastifySerializers = fp(
 			if (content_type) return;
 			const { serializer, type } = findBestSerializer(request.raw);
 			reply.type(type);
-			reply.serializer(serializer.serializeStream || serializer.serialize);
+			reply.serializer(function (data) {
+				return (serializer.serializeStream || serializer.serialize)(data, {
+					// a small header shim to allow us to set headers in serializers
+					headers: {
+						set: (key, value) => {
+							reply.header(key, value);
+						},
+					},
+				});
+			});
 		});
 		done();
 	},
@@ -269,7 +292,7 @@ const COMPRESSION_THRESHOLD = env_mgr.get(CONFIG_PARAMS.HTTP_COMPRESSIONTHRESHOL
 export function serialize(response_data, request, response_object) {
 	// TODO: Maybe support other compression encodings; browsers basically universally support brotli, but Node's HTTP
 	//  client itself actually (just) supports gzip/deflate
-	const can_compress = COMPRESSION_THRESHOLD && request.headers.asObject?.['accept-encoding']?.includes('br');
+	let can_compress = COMPRESSION_THRESHOLD && request.headers.asObject?.['accept-encoding']?.includes('br');
 	let response_body;
 	if (response_data?.contentType != null && response_data.data != null) {
 		// we use this as a special marker for blobs of data that are explicitly one content type
@@ -284,6 +307,7 @@ export function serialize(response_data, request, response_object) {
 		response_body = response_data;
 	} else {
 		const serializer = findBestSerializer(request);
+		if (serializer.serializer.compressible === false) can_compress = false;
 		// TODO: If a different content type is preferred, look through resources to see if there is one
 		// specifically for that content type (most useful for html).
 		response_object.headers.set('Vary', 'Accept, Accept-Encoding');
@@ -293,7 +317,7 @@ export function serialize(response_data, request, response_object) {
 			(response_data[Symbol.iterator] || response_data[Symbol.asyncIterator]) &&
 			serializer.serializer.serializeStream
 		) {
-			let stream = serializer.serializer.serializeStream(response_data);
+			let stream = serializer.serializer.serializeStream(response_data, response_object);
 			if (can_compress) {
 				response_object.headers.set('Content-Encoding', 'br');
 				stream = stream.pipe(
@@ -310,7 +334,7 @@ export function serialize(response_data, request, response_object) {
 			}
 			return stream;
 		}
-		response_body = serializer.serializer.serialize(response_data);
+		response_body = serializer.serializer.serialize(response_data, response_object);
 	}
 	if (can_compress && response_body?.length > COMPRESSION_THRESHOLD) {
 		// TODO: Only do this if the size is large and we can cache the result (otherwise use logic above)
@@ -335,7 +359,7 @@ export function serialize(response_data, request, response_object) {
 export function serializeMessage(message, request) {
 	if (message?.contentType != null && message.data != null) return message.data;
 	if (!request) {
-		return JSON.stringify(message);
+		return JSONStringify(message);
 	}
 	let serialize = request.serialize;
 	if (serialize) return serialize(message);
@@ -387,7 +411,7 @@ function deserializerUnknownType(content_type, parameters) {
 			if (!content_type) {
 				// try to parse as JSON if no content type
 				try {
-					if (data?.[0] === 123) return JSON.parse(data);
+					if (data?.[0] === 123) return JSONParse(data);
 				} catch (error) {}
 			}
 			// else record the type and binary data as a pair

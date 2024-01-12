@@ -16,7 +16,7 @@ const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const { streamAsJSON } = require('../server/serverHelpers/JSONStream');
 const { Upload } = require('@aws-sdk/lib-storage');
 
-const VALID_SEARCH_OPERATIONS = ['search_by_value', 'search_by_hash', 'sql'];
+const VALID_SEARCH_OPERATIONS = ['search_by_value', 'search_by_hash', 'sql', 'search_by_conditions'];
 const VALID_EXPORT_FORMATS = ['json', 'csv'];
 const JSON_TEXT = 'json';
 const CSV = 'csv';
@@ -176,6 +176,12 @@ async function saveToLocal(file_path, source_data_format, data) {
 		// Create a read stream with the data.
 		let readable_stream = stream.Readable.from(data);
 		let options = {};
+		const columns = data.getColumns?.();
+		if (columns)
+			options.fields = columns.map((column) => ({
+				label: column,
+				value: column,
+			}));
 		let transform_options = { objectMode: true };
 		// Initialize json2csv parser
 		let async_parser = new AsyncParser(options, transform_options);
@@ -255,7 +261,7 @@ async function export_to_s3(export_object) {
 		// Create a read stream with the data.
 
 		// Create a json2csv stream transform.
-		const csv_stream = toCsvStream(data);
+		const csv_stream = toCsvStream(data, data.getColumns?.());
 		csv_stream.on('error', (err) => {
 			throw err;
 		});
@@ -313,10 +319,15 @@ async function export_to_s3(export_object) {
  * @param data
  * @returns stream
  */
-function toCsvStream(data) {
+function toCsvStream(data, columns) {
 	// ensure that we pass it an iterable
 	let read_stream = stream.Readable.from(data?.[Symbol.iterator] || data?.[Symbol.asyncIterator] ? data : [data]);
 	let options = {};
+	if (columns)
+		options.fields = columns.map((column) => ({
+			label: column,
+			value: column,
+		}));
 	let transform_options = { objectMode: true };
 	// Create a json2csv stream transform.
 	const json2csv = new Transform(options, transform_options);
@@ -369,6 +380,9 @@ async function getRecords(export_object) {
 			break;
 		case 'search_by_hash':
 			operation = p_search_by_hash;
+			break;
+		case 'search_by_conditions':
+			operation = search.searchByConditions;
 			break;
 		case 'sql':
 			operation = p_sql;

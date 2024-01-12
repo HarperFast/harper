@@ -20,6 +20,7 @@ const installComponents = require('../components/installComponents');
 const eng_mgr = require('../utility/environment/environmentManager');
 const hdb_terms = require('../utility/hdbTerms');
 const { Readable } = require('stream');
+const { isMainThread } = require('worker_threads');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 const APPLICATION_TEMPLATE = path.join(PACKAGE_ROOT, 'application-template');
@@ -406,6 +407,8 @@ async function deployComponent(req) {
 		const root_path = eng_mgr.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
 		path_to_project = path.join(root_path, 'node_modules', project);
 	}
+	// the main thread should never actually load component, just do a deploy
+	if (isMainThread) return;
 	const pseudo_resources = new Map();
 	pseudo_resources.isWorker = true;
 	const component_loader = require('./componentLoader');
@@ -444,29 +447,34 @@ async function getComponents() {
 	// Recursive function that will traverse the components dir and build json
 	// directory tree as it goes.
 	const walk_dir = async (dir, result) => {
-		const list = await fs.readdir(dir, { withFileTypes: true });
-		for (let item of list) {
-			const item_name = item.name;
-			if (item_name.startsWith('.') || item_name === 'node_modules') continue;
-			const item_path = path.join(dir, item_name);
-			if (item.isDirectory() || item.isSymbolicLink()) {
-				let res = {
-					name: item_name,
-					entries: [],
-				};
-				result.entries.push(res);
-				await walk_dir(item_path, res);
-			} else {
-				const stats = await fs.stat(item_path);
-				const res = {
-					name: path.basename(item_name),
-					mtime: stats.mtime,
-					size: stats.size,
-				};
-				result.entries.push(res);
+		try {
+			const list = await fs.readdir(dir, { withFileTypes: true });
+			for (let item of list) {
+				const item_name = item.name;
+				if (item_name.startsWith('.') || item_name === 'node_modules') continue;
+				const item_path = path.join(dir, item_name);
+				if (item.isDirectory() || item.isSymbolicLink()) {
+					let res = {
+						name: item_name,
+						entries: [],
+					};
+					result.entries.push(res);
+					await walk_dir(item_path, res);
+				} else {
+					const stats = await fs.stat(item_path);
+					const res = {
+						name: path.basename(item_name),
+						mtime: stats.mtime,
+						size: stats.size,
+					};
+					result.entries.push(res);
+				}
 			}
+			return result;
+		} catch (error) {
+			log.warn('Error loading package', error);
+			return { error: error.toString(), entries: [] };
 		}
-		return result;
 	};
 
 	const results = await walk_dir(env.get(terms.CONFIG_PARAMS.COMPONENTSROOT), {
@@ -513,8 +521,15 @@ async function getComponentFile(req) {
 			? path.join(eng_mgr.get(terms.CONFIG_PARAMS.ROOTPATH), 'node_modules')
 			: env.get(terms.CONFIG_PARAMS.COMPONENTSROOT);
 	const options = req.encoding ? { encoding: req.encoding } : { encoding: 'utf8' };
+
 	try {
-		return await fs.readFile(path.join(comp_root, req.project, req.file), options);
+		const stats = await fs.stat(path.join(comp_root, req.project, req.file));
+		return {
+			message: await fs.readFile(path.join(comp_root, req.project, req.file), options),
+			size: stats.size,
+			birthtime: stats.birthtime,
+			mtime: stats.mtime,
+		};
 	} catch (err) {
 		if (err.code === terms.NODE_ERROR_CODES.ENOENT) {
 			throw new Error(`Component file not found '${path.join(req.project, req.file)}'`);

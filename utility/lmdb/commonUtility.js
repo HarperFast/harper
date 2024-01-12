@@ -67,8 +67,9 @@ function primitiveCheck(value) {
 /**
  * Return all the indexable values from an attribute, ready to be indexed
  */
-function getIndexedValues(value) {
-	if (value === null || value === undefined) return;
+function getIndexedValues(value, index_nulls) {
+	if (value === null) return index_nulls ? [null] : undefined;
+	if (value === undefined) return;
 	if (PRIMITIVES.includes(typeof value)) {
 		if (value.length > MAX_SEARCH_KEY_LENGTH) {
 			return [value.slice(0, MAX_SEARCH_KEY_LENGTH) + OVERFLOW_MARKER];
@@ -84,7 +85,8 @@ function getIndexedValues(value) {
 				if (element.length > MAX_SEARCH_KEY_LENGTH)
 					values.push(element.slice(0, MAX_SEARCH_KEY_LENGTH) + OVERFLOW_MARKER);
 				else values.push(element);
-			} else if (element instanceof Date) return values.push(element.getTime());
+			} else if (element === null && index_nulls) return values.push(null);
+			else if (element instanceof Date) return values.push(element.getTime());
 		}
 	} else if (value instanceof Date) return [value.getTime()];
 	return values;

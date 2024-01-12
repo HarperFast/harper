@@ -11870,6 +11870,1866 @@
 					]
 				},
 				{
+					"name": "Geospatial",
+					"item": [
+						{
+							"name": "Create table 'geo'",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Geo table created\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message).to.eql(\"table 'data.geo' successfully created.\");",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"create_table\",\n  \"table\":\"geo\",\n  \"hash_attribute\": \"id\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Insert values into 'geo' table",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Records inserted\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message).to.eql(\"inserted 8 of 8 records\");",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n   \n\t\"operation\":\"insert\",\n\t\"table\":\"geo\",\n\t\"records\": [\n        {\n            \"id\": 1,\n            \"name\": \"Wellington\",\n            \"geo_point\" : {\n                \"type\": \"Point\",\n                \"coordinates\": [174.776230, -41.286461]\n            },\n            \"geo_poly\": {\n                \"type\": \"Polygon\",\n                \"coordinates\": [[ // 167,980,385.88 m²\n                    [174.615474867904,-41.34148585702194],\n                    [174.8800567396483,-41.31574371071801],\n                    [174.6896944170223,-41.19759744824616],\n                    [174.615474867904,-41.34148585702194]\n                ]]\n            },\n            \"geo_line\": {\n                \"type\": \"LineString\",\n                \"coordinates\": [\n                    [174.615474867904,-41.34148585702194],\n                    [174.8800567396483,-41.31574371071801]\n                ]\n            }\n        },\n        {\n            \"id\": 2,\n            \"name\": \"North Adams\",\n            \"geo_point\" : {\n                \"type\": \"Point\",\n                \"coordinates\": [-73.108704, 42.700539]\n            },\n            \"geo_poly\": {\n                \"type\": \"Polygon\",\n                \"coordinates\": [[ // 2,079,394.35 m²\n                    [-73.12391499193579,42.70656096680374],\n                    [-73.12255557219314,42.69646774251972],\n                    [-73.09908993001123,42.6984753377431],\n                    [-73.10369107948782,42.70876034407737],\n                    [-73.12391499193579,42.70656096680374]\n                ]]\n            }\n        },\n        {\n            \"id\": 3,\n            \"name\": \"Denver\",\n            \"geo_point\" : {\n                \"type\": \"Point\",\n                \"coordinates\": [-104.990250, 39.739235]\n            },\n            \"geo_poly\": {\n                \"type\": \"Polygon\",\n                \"coordinates\": [[ // 53,824,797.22 m²\n                    [-105.0487835030464,39.77676227285275],\n                    [-105.0175466672944,39.68744341857906],\n                    [-104.9113967289065,39.74637288224356],\n                    [-105.0487835030464,39.77676227285275]\n                ]]\n            }\n        },\n        {\n            \"id\": 4,\n            \"name\": \"New York City\",\n            \"geo_point\" : {\n                \"type\": \"Point\",\n                \"coordinates\": [-74.005974, 40.712776]\n            },\n            \"geo_poly\": {\n                \"type\": \"Polygon\",\n                \"coordinates\": [[ // 6,140,626.38 m²\n                    [-74.00852603549784,40.73107908806126],\n                    [-74.03702059033735,40.70472625054263],\n                    [-73.98786450714653,40.70419899758365],\n                    [-74.00852603549784,40.73107908806126]\n                ]]\n            }\n        },\n        {\n            \"id\": 5,\n            \"name\": \"Salt Lake City\",\n            \"geo_point\" : {\n                \"type\": \"Point\",\n                \"coordinates\": [-111.920485, 40.7766079]\n            },\n            \"geo_poly\": {\n                \"type\": \"Polygon\",\n                \"coordinates\": [[ // 13,966,557,738.41 m²\n                    [-112.8291507578281,40.88206673094385],\n                    [-112.8956858211181,40.30332102898777],\n                    [-111.6032172200158,40.02757615254776],\n                    [-111.1456265349256,40.95908300700454],\n                    [-111.9047878338339,41.3291504973315],\n                    [-112.8291507578281,40.88206673094385]\n                ]]\n            },\n            \"geo_line\": {\n                \"type\": \"LineString\",\n                \"coordinates\": [// 13,966,557,738.41 m² 365.1 km\n                    [-112.8291507578281,40.88206673094385],\n                    [-112.8956858211181,40.30332102898777],\n                    [-111.6032172200158,40.02757615254776],\n                    [-111.1456265349256,40.95908300700454],\n                    [-111.9047878338339,41.3291504973315],\n                    [-112.8291507578281,40.88206673094385]\n                ]\n            }\n        },\n        {\n            \"id\": 6,\n            \"name\": \"Null Island\",\n            \"geo_point\" : {\n                \"type\": \"Point\",\n                \"coordinates\": [null, null]\n            },\n            \"geo_poly\": null,\n            \"geo_line\": {\n                \"type\": \"LineString\",\n                \"coordinates\": [\n                    [-112.8291507578281,40.88206673094385],\n                    [null, null]\n                ]\n            }\n        },\n        {\n            \"id\": 7\n        },\n        {\n            \"id\": 8,\n            \"name\": \"Hobbiton\",\n            \"geo_point\" : [174.776230, -41.286461],\n            \"geo_poly\": \"Somewhere in the shire\",\n            \"geo_line\": {\n                \"type\": \"LineString\"\n            }\n        }\n    ]\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "geoArea test 1",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"All records returned with area\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData).to.eql([",
+											"    {",
+											"        \"id\": 6,",
+											"        \"name\": \"Null Island\"",
+											"    },",
+											"    {",
+											"        \"id\": 7,",
+											"        \"name\": null",
+											"    },",
+											"    {",
+											"        \"id\": 8,",
+											"        \"name\": \"Hobbiton\"",
+											"    },",
+											"    {",
+											"        \"id\": 2,",
+											"        \"name\": \"North Adams\",",
+											"        \"area\": 2084050.5321900067",
+											"    },",
+											"    {",
+											"        \"id\": 4,",
+											"        \"name\": \"New York City\",",
+											"        \"area\": 6153970.008639627",
+											"    },",
+											"    {",
+											"        \"id\": 3,",
+											"        \"name\": \"Denver\",",
+											"        \"area\": 53950986.64863105",
+											"    },",
+											"    {",
+											"        \"id\": 1,",
+											"        \"name\": \"Wellington\",",
+											"        \"area\": 168404308.63474682",
+											"    },",
+											"    {",
+											"        \"id\": 5,",
+											"        \"name\": \"Salt Lake City\",",
+											"        \"area\": 14011200847.709723",
+											"    }",
+											"]);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"SELECT id, name, geoArea(geo_poly) as area FROM data.geo ORDER BY area ASC\"\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "geoArea test 2",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Two records are returned\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData).to.eql([",
+											"    {",
+											"        \"id\": 1,",
+											"        \"name\": \"Wellington\"",
+											"    },",
+											"    {",
+											"        \"id\": 5,",
+											"        \"name\": \"Salt Lake City\"",
+											"    }",
+											"]);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"SELECT id, name FROM data.geo where geoArea(geo_poly) > 53950986.64863106\"\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "geoArea test 3",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Passing geo data in SQL\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData).to.eql([",
+											"    {",
+											"        \"geoArea('{\\\"type\\\":\\\"Feature\\\",\\\"geometry\\\":{\\\"type\\\":\\\"Polygon\\\",\\\"coordinates\\\":[[[0,0],[0.123456,0],[0.123456,0.123456],[0,0.123456]]]}}')\": 188871526.05092356",
+											"    }",
+											"]);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"SELECT geoArea('{\\\"type\\\":\\\"Feature\\\",\\\"geometry\\\":{\\\"type\\\":\\\"Polygon\\\",\\\"coordinates\\\":[[[0,0],[0.123456,0],[0.123456,0.123456],[0,0.123456]]]}}')\"\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "geoLength test 1",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Passing geo data in SQL\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData).to.eql([",
+											"    {",
+											"        \"geoLength('{\\\"type\\\": \\\"Feature\\\",\\\"geometry\\\": {\\\"type\\\": \\\"LineString\\\",\\\"coordinates\\\": [[-104.97963309288025,39.76163265441438],[-104.9823260307312,39.76365323407955],[-104.99193906784058,39.75616442110704]]}}')\": 1.491544504248235",
+											"    }",
+											"]);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"SELECT geoLength('{\\\"type\\\": \\\"Feature\\\",\\\"geometry\\\": {\\\"type\\\": \\\"LineString\\\",\\\"coordinates\\\": [[-104.97963309288025,39.76163265441438],[-104.9823260307312,39.76365323407955],[-104.99193906784058,39.75616442110704]]}}')\"\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "geoLength test 2",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"All records com back, some with length\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData).to.eql([",
+											"    {",
+											"        \"id\": 1,",
+											"        \"name\": \"Wellington\",",
+											"        \"geoLength(geo_line,\\\"miles\\\")\": 13.842468187961332",
+											"    },",
+											"    {",
+											"        \"id\": 2,",
+											"        \"name\": \"North Adams\"",
+											"    },",
+											"    {",
+											"        \"id\": 3,",
+											"        \"name\": \"Denver\"",
+											"    },",
+											"    {",
+											"        \"id\": 4,",
+											"        \"name\": \"New York City\"",
+											"    },",
+											"    {",
+											"        \"id\": 5,",
+											"        \"name\": \"Salt Lake City\",",
+											"        \"geoLength(geo_line,\\\"miles\\\")\": 283.9341846273217",
+											"    },",
+											"    {",
+											"        \"id\": 6,",
+											"        \"name\": \"Null Island\",",
+											"        \"geoLength(geo_line,\\\"miles\\\")\": 7397.000649273201",
+											"    },",
+											"    {",
+											"        \"id\": 7,",
+											"        \"name\": null",
+											"    },",
+											"    {",
+											"        \"id\": 8,",
+											"        \"name\": \"Hobbiton\"",
+											"    }",
+											"]);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"SELECT id, name, geoLength(geo_line, 'miles') FROM data.geo\"\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "geoLength test 3",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"One record comes back\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData).to.eql([",
+											"    {",
+											"        \"id\": 1,",
+											"        \"name\": \"Wellington\"",
+											"    }",
+											"]);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"SELECT id, name FROM data.geo WHERE geoLength(geo_line, 'miles') < 100\"\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "geoDifference test 1",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"geoDifference to be returned\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData).to.eql([",
+											"    {",
+											"        \"geoDifference('{\\\"type\\\": \\\"Feature\\\",\\\"properties\\\": {\\\"name\\\":\\\"Colorado\\\"},\\\"geometry\\\": {\\\"type\\\": \\\"Polygon\\\",\\\"coordinates\\\": [[[-109.072265625,37.00255267215955],[-102.01904296874999,37.00255267215955],[-102.01904296874999,41.0130657870063],[-109.072265625,41.0130657870063],[-109.072265625,37.00255267215955]]]}}','{\\\"type\\\": \\\"Feature\\\",\\\"properties\\\": {\\\"name\\\":\\\"City Park\\\"},\\\"geometry\\\": {\\\"type\\\": \\\"Polygon\\\",\\\"coordinates\\\": [[[-104.95973110198975,39.7543828214657],[-104.95955944061278,39.744781185675386],[-104.95904445648193,39.74422022399989],[-104.95835781097412,39.74402223643582],[-104.94097709655762,39.74392324244047],[-104.9408483505249,39.75434982844515],[-104.95973110198975,39.7543828214657]]]}}')\": {",
+											"            \"type\": \"Feature\",",
+											"            \"properties\": {",
+											"                \"name\": \"Colorado\"",
+											"            },",
+											"            \"geometry\": {",
+											"                \"type\": \"Polygon\",",
+											"                \"coordinates\": [",
+											"                    [",
+											"                        [",
+											"                            -109.072265625,",
+											"                            37.00255267215955",
+											"                        ],",
+											"                        [",
+											"                            -102.01904296874999,",
+											"                            37.00255267215955",
+											"                        ],",
+											"                        [",
+											"                            -102.01904296874999,",
+											"                            41.0130657870063",
+											"                        ],",
+											"                        [",
+											"                            -109.072265625,",
+											"                            41.0130657870063",
+											"                        ],",
+											"                        [",
+											"                            -109.072265625,",
+											"                            37.00255267215955",
+											"                        ]",
+											"                    ],",
+											"                    [",
+											"                        [",
+											"                            -104.95973110198975,",
+											"                            39.7543828214657",
+											"                        ],",
+											"                        [",
+											"                            -104.9408483505249,",
+											"                            39.75434982844515",
+											"                        ],",
+											"                        [",
+											"                            -104.94097709655762,",
+											"                            39.74392324244047",
+											"                        ],",
+											"                        [",
+											"                            -104.95835781097412,",
+											"                            39.74402223643582",
+											"                        ],",
+											"                        [",
+											"                            -104.95904445648193,",
+											"                            39.74422022399989",
+											"                        ],",
+											"                        [",
+											"                            -104.95955944061278,",
+											"                            39.744781185675386",
+											"                        ],",
+											"                        [",
+											"                            -104.95973110198975,",
+											"                            39.7543828214657",
+											"                        ]",
+											"                    ]",
+											"                ]",
+											"            }",
+											"        }",
+											"    }",
+											"]);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"SELECT geoDifference('{\\\"type\\\": \\\"Feature\\\",\\\"properties\\\": {\\\"name\\\":\\\"Colorado\\\"},\\\"geometry\\\": {\\\"type\\\": \\\"Polygon\\\",\\\"coordinates\\\": [[[-109.072265625,37.00255267215955],[-102.01904296874999,37.00255267215955],[-102.01904296874999,41.0130657870063],[-109.072265625,41.0130657870063],[-109.072265625,37.00255267215955]]]}}','{\\\"type\\\": \\\"Feature\\\",\\\"properties\\\": {\\\"name\\\":\\\"City Park\\\"},\\\"geometry\\\": {\\\"type\\\": \\\"Polygon\\\",\\\"coordinates\\\": [[[-104.95973110198975,39.7543828214657],[-104.95955944061278,39.744781185675386],[-104.95904445648193,39.74422022399989],[-104.95835781097412,39.74402223643582],[-104.94097709655762,39.74392324244047],[-104.9408483505249,39.75434982844515],[-104.95973110198975,39.7543828214657]]]}}')\"\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "geoDifference test 2",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"geoDifference with null\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData).to.eql([",
+											"    {}",
+											"]);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"SELECT geoDifference('{\\\"type\\\": \\\"Feature\\\",\\\"properties\\\": {\\\"name\\\":\\\"Colorado\\\"},\\\"geometry\\\": {\\\"type\\\": \\\"Polygon\\\",\\\"coordinates\\\": [[[-109.072265625,37.00255267215955],[-102.01904296874999,37.00255267215955],[-102.01904296874999,41.0130657870063],[-109.072265625,41.0130657870063],[-109.072265625,37.00255267215955]]]}}', null)\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "geoDistance test 1",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"geoDistance with in SQL\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData).to.eql([",
+											"    {",
+											"        \"geoDistance('[-104.979127,39.761563]','[-77.035248,38.889475]','miles')\": 1488.6913067538915",
+											"    }",
+											"]);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"SELECT geoDistance('[-104.979127,39.761563]', '[-77.035248,38.889475]', 'miles')\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "geoDistance test 2",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"geoDistance returns one record\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData).to.eql([",
+											"    {",
+											"        \"id\": 3,",
+											"        \"name\": \"Denver\",",
+											"        \"distance\": 1.6520011088478226",
+											"    }",
+											"]);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"SELECT id, name, geoDistance('[-104.979127,39.761563]', geo_point, 'miles') as distance FROM data.geo WHERE geoDistance('[-104.979127,39.761563]', geo_point, 'kilometers') < 40 ORDER BY distance ASC\"\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "geoDistance test 3",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"geoDistance returns all records\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData).to.eql([",
+											"    {",
+											"        \"id\": 1,",
+											"        \"name\": \"Wellington\",",
+											"        \"distance\": 7525.228704326891",
+											"    },",
+											"    {",
+											"        \"id\": 2,",
+											"        \"name\": \"North Adams\",",
+											"        \"distance\": 1658.5109905949885",
+											"    },",
+											"    {",
+											"        \"id\": 3,",
+											"        \"name\": \"Denver\",",
+											"        \"distance\": 1.6520011088478226",
+											"    },",
+											"    {",
+											"        \"id\": 4,",
+											"        \"name\": \"New York City\",",
+											"        \"distance\": 1626.4974205601618",
+											"    },",
+											"    {",
+											"        \"id\": 5,",
+											"        \"name\": \"Salt Lake City\",",
+											"        \"distance\": 372.4978228173876",
+											"    },",
+											"    {",
+											"        \"id\": 6,",
+											"        \"name\": \"Null Island\",",
+											"        \"distance\": 7010.231359296063",
+											"    },",
+											"    {",
+											"        \"id\": 7,",
+											"        \"name\": null",
+											"    },",
+											"    {",
+											"        \"id\": 8,",
+											"        \"name\": \"Hobbiton\",",
+											"        \"distance\": 7525.228704326891",
+											"    }",
+											"]);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"SELECT id, name, geoDistance('[-104.979127,39.761563]', geo_point, 'miles') as distance FROM data.geo\"\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "geoNear test 1",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"geoNear returns one record\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData).to.eql([",
+											"    {",
+											"        \"id\": 3,",
+											"        \"name\": \"Denver\"",
+											"    }",
+											"]);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"SELECT id, name FROM data.geo WHERE geoNear('[-104.979127,39.761563]', geo_point, 50, 'miles')\"\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "geoNear test 2",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"geoNear returns two records\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData).to.eql([",
+											"    {",
+											"        \"id\": 3,",
+											"        \"name\": \"Denver\",",
+											"        \"distance\": 1.6520011088478226",
+											"    },",
+											"    {",
+											"        \"id\": 5,",
+											"        \"name\": \"Salt Lake City\",",
+											"        \"distance\": 372.4978228173876",
+											"    }",
+											"]);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"SELECT id, name, geoDistance('[-104.979127,39.761563]', geo_point, 'miles') as distance FROM data.geo WHERE geoNear('[-104.979127,39.761563]', geo_point, 20, 'degrees') ORDER BY distance ASC\"}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "geoContains test 1",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"geoContains returns one record\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData).to.eql([",
+											"    {",
+											"        \"id\": 3,",
+											"        \"name\": \"Denver\"",
+											"    }",
+											"]);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"SELECT id, name FROM data.geo WHERE geoContains('{\\\"type\\\": \\\"Feature\\\",\\\"properties\\\": {\\\"name\\\":\\\"Colorado\\\"},\\\"geometry\\\": {\\\"type\\\": \\\"Polygon\\\",\\\"coordinates\\\": [[[-109.072265625,37.00255267],[-102.01904296874999,37.00255267],[-102.01904296874999,41.01306579],[-109.072265625,41.01306579],[-109.072265625,37.00255267]]]}}', geo_point)\"\n    }\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "geoContains test 2",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"geoContains returns one record\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData).to.eql([",
+											"    {",
+											"        \"id\": 3,",
+											"        \"name\": \"Denver\"",
+											"    }",
+											"]);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"SELECT id, name FROM data.geo WHERE geoContains(geo_poly, '{\\\"type\\\": \\\"Feature\\\",\\\"properties\\\": {\\\"name\\\": \\\"HarperDB Headquarters\\\"},\\\"geometry\\\": {\\\"type\\\": \\\"Polygon\\\",\\\"coordinates\\\": [[[-104.98060941696167,39.760704817357905],[-104.98053967952728,39.76065120861263],[-104.98055577278137,39.760642961109674],[-104.98037070035934,39.76049450588716],[-104.9802714586258,39.76056254790385],[-104.9805235862732,39.76076461167841],[-104.98060941696167,39.760704817357905]]]}}')\"\n    }\n\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "geoEqual test 1",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"geoEqual returns no records\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData).to.eql([]);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"SELECT * FROM data.geo WHERE geoEqual(geo_poly, '{\\\"type\\\": \\\"Feature\\\",\\\"properties\\\": {\\\"name\\\": \\\"HarperDB Headquarters\\\"},\\\"geometry\\\": {\\\"type\\\": \\\"Polygon\\\",\\\"coordinates\\\": [[[-104.98060941696167,39.760704817357905],[-104.98053967952728,39.76065120861263],[-104.98055577278137,39.760642961109674],[-104.98037070035934,39.76049450588716],[-104.9802714586258,39.76056254790385],[-104.9805235862732,39.76076461167841],[-104.98060941696167,39.760704817357905]]]}}')\"\n    }\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "geoCrosses test 1",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"geoCrosses returns Denver\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData).to.eql([",
+											"    {",
+											"        \"id\": 3,",
+											"        \"name\": \"Denver\"",
+											"    }",
+											"]);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"SELECT id, name FROM data.geo WHERE geoCrosses(geo_poly,'{\\\"type\\\": \\\"Feature\\\",\\\"properties\\\": {\\\"name\\\": \\\"Highway I-25\\\"},\\\"geometry\\\": {\\\"type\\\": \\\"LineString\\\",\\\"coordinates\\\": [[-104.9139404296875,41.00477542222947],[-105.0238037109375,39.715638134796336],[-104.853515625,39.53370327008705],[-104.853515625,38.81403111409755],[-104.61181640625,38.39764411353178],[-104.8974609375,37.68382032669382],[-104.501953125,37.00255267215955]]}}')\"\n}\n\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "geoConvert test 1",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"geoConvert returns the goods\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData).to.eql([",
+											"    {",
+											"        \"geoConvert('[-104.979127,39.761563]','point','{\\\"name\\\": \\\"HarperDB Headquarters\\\"}')\": {",
+											"            \"type\": \"Feature\",",
+											"            \"properties\": \"{\\\"name\\\": \\\"HarperDB Headquarters\\\"}\",",
+											"            \"geometry\": {",
+											"                \"type\": \"Point\",",
+											"                \"coordinates\": [",
+											"                    -104.979127,",
+											"                    39.761563",
+											"                ]",
+											"            }",
+											"        }",
+											"    }",
+											"]);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"SELECT geoConvert('[-104.979127,39.761563]','point','{\\\"name\\\": \\\"HarperDB Headquarters\\\"}')\"\n}\n"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Drop table 'geo'",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"Geo table dropped\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message).to.eql(\"successfully deleted table 'data.geo'\");",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(() => {}, 100);"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"value": true,
+											"type": "boolean"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n  \"operation\":\"drop_table\",\n  \"schema\": \"data\",\n  \"table\":\"geo\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						}
+					]
+				},
+				{
 					"name": "insert value into table",
 					"event": [
 						{
@@ -12497,83 +14357,6 @@
 					"response": []
 				},
 				{
-					"name": "select by hash as string multiple results",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test(\"Status code is 200\", function () {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test(\"verify an array with two object\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.length).to.eql(2);",
-									"    pm.expect((typeof jsonData[0])).to.eql(\"object\");",
-									"    pm.expect((typeof jsonData[1])).to.eql(\"object\");",
-									"});",
-									"",
-									"pm.test(\"verify an array with correct objects\", function () {",
-									"    var jsonData = pm.response.json();",
-									"    pm.expect(jsonData.length).to.eql(2);",
-									"    pm.expect(jsonData[0].employeeid).to.eql(3);",
-									"    pm.expect(jsonData[1].employeeid).to.eql(5);",
-									"});",
-									""
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "username",
-									"value": "{{username}}",
-									"type": "string"
-								},
-								{
-									"key": "password",
-									"value": "{{password}}",
-									"type": "string"
-								},
-								{
-									"key": "saveHelperData",
-									"value": true,
-									"type": "boolean"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [
-							{
-								"key": "Content-Type",
-								"value": "application/json"
-							}
-						],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"SELECT * FROM {{schema}}.{{emps_tb}} WHERE {{emps_id}} = '3' OR {{emps_id}} = '5' ORDER BY {{emps_id}}\"\n}\n"
-						},
-						"url": {
-							"raw": "{{host}}:{{port}}",
-							"host": [
-								"{{host}}"
-							],
-							"port": "{{port}}"
-						}
-					},
-					"response": []
-				},
-				{
 					"name": "select w/ where in numeric values as strings",
 					"event": [
 						{
@@ -12784,7 +14567,7 @@
 					"response": []
 				},
 				{
-					"name": "select w/ where value equals \"0\"",
+					"name": "select w/ where value equals 0",
 					"event": [
 						{
 							"listen": "test",
@@ -12841,7 +14624,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from dev.books WHERE books_count = '0' \"\n}"
+							"raw": "{\n  \"operation\":\"sql\",\n  \"sql\":\"select * from dev.books WHERE books_count = 0 \"\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -24511,7 +26294,7 @@
 									"});",
 									"",
 									"pm.test(\"search by condition returns 6 sorted rows with Denver in location and in group A-C\", function () {",
-									"    const expected_hash_order = [1,2,8,5,7,11];",
+									"    const expected_hash_order = [1,2,5,7,8,11];",
 									"\tconst jsonData = pm.response.json();",
 									"    pm.expect(jsonData.length).to.eql(6);",
 									"\tjsonData.forEach((row, i) => {",
@@ -24559,7 +26342,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"operator\": \"AND\",\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t\"A\",\n\t\t\t\t\"C\"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"starts_with\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\"sort\":{\"attribute\":\"id\"},\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"operator\": \"AND\",\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t\"A\",\n\t\t\t\t\"C\"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"starts_with\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -24583,7 +26366,7 @@
 									"});",
 									"",
 									"pm.test(\"search by condition returns 5 sorted rows with Denver in location and in group A-C\", function () {",
-									"    const expected_hash_order = [2,8,5,7,11];",
+									"    const expected_hash_order = [2,5,7,8,11];",
 									"\tconst jsonData = pm.response.json();",
 									"    pm.expect(jsonData.length).to.eql(5);",
 									"\tjsonData.forEach((row, i) => {",
@@ -24631,7 +26414,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"offset\": 1,\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t\"A\",\n\t\t\t\t\"C\"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"starts_with\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\"sort\":{\"attribute\":\"id\"},\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"offset\": 1,\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t\"A\",\n\t\t\t\t\"C\"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"starts_with\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -24655,7 +26438,7 @@
 									"});",
 									"",
 									"pm.test(\"search by condition returns 4 sorted rows with Denver in location and in group A-C\", function () {",
-									"    const expected_hash_order = [1,2,8,5];",
+									"    const expected_hash_order = [1,2,5,7];",
 									"\tconst jsonData = pm.response.json();",
 									"    pm.expect(jsonData.length).to.eql(4);",
 									"\tjsonData.forEach((row, i) => {",
@@ -24703,7 +26486,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"limit\": 4,\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t\"A\",\n\t\t\t\t\"C\"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"starts_with\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\"sort\":{\"attribute\":\"id\"},\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"limit\": 4,\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t\"A\",\n\t\t\t\t\"C\"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"starts_with\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -24727,7 +26510,7 @@
 									"});",
 									"",
 									"pm.test(\"search by condition returns 3 sorted rows with Denver in location and in group A-C\", function () {",
-									"    const expected_hash_order = [2,8,5];",
+									"    const expected_hash_order = [2,5,7];",
 									"\tconst jsonData = pm.response.json();",
 									"    pm.expect(jsonData.length).to.eql(expected_hash_order.length);",
 									"\tjsonData.forEach((row, i) => {",
@@ -24775,7 +26558,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"offset\": 1,\n\t\"limit\": 3,\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t\"A\",\n\t\t\t\t\"C\"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"starts_with\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\"sort\":{\"attribute\":\"id\"},\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"offset\": 1,\n\t\"limit\": 3,\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"group\",\n\t\t\t\"search_type\": \"between\",\n\t\t\t\"search_value\": [\n\t\t\t\t\"A\",\n\t\t\t\t\"C\"\n\t\t\t]\n\t\t},\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"starts_with\",\n\t\t\t\"search_value\": \"Denver\"\n\t\t}\n\t]\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -38058,6 +39841,374 @@
 											"            break;",
 											"        default:",
 											"            postman.setNextRequest('Check S3 export');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											"console.log(\"Checking Job CSV URL load\" + pm.environment.get(\"job_id\"));"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Export to S3 search_by_conditions",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"    ",
+											"    eval(pm.globals.get(\"function:getJobId\"))(jsonData, \"Create S3 test table\");",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"export_to_s3\",\n\t\"format\":\"csv\",\n\t\"s3\":{\n\t\t\"aws_access_key_id\":\"{{s3_key}}\",\n\t\t\"aws_secret_access_key\":\"{{s3_secret}}\",\n\t\t\"bucket\":\"harperdb-integration-test-data\",\n\t\t\"key\":\"non_public_folder/test_export\",\n        \"region\": \"us-east-2\"\n\t},\n\t\"search_operation\":{\n    \"operation\": \"search_by_conditions\",\n    \"database\": \"S3_DATA\",\n    \"table\": \"dogs\",\n    \"operator\": \"and\",\n    \"get_attributes\": [\n        \"*\"\n    ],\n    \"conditions\": [{\n        \"search_attribute\": \"breed_id\",\n        \"search_type\": \"between\",\n        \"search_value\": [\n            199, 280\n        ]\n    }\n    ]\n    }\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Check S3 export search_by_conditions",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            console.log(\"Error checking S3 import job.\")",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            pm.expect(status).to.not.eql('ERROR');",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"                pm.environment.set(\"next_request\", \"Export local search_by_conditions\");",
+											"            }",
+											"           ",
+											"            pm.expect(jsonData[0].message.ETag).to.exist;",
+											"            pm.expect(jsonData[0].message.VersionId).to.exist;",
+											"            pm.expect(status).to.eql('COMPLETE');",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            setTimeout(()=>{}, 1000);",
+											"            postman.setNextRequest('Check S3 export search_by_conditions');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check S3 export search_by_conditions');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
+											"            break;",
+											"    }",
+											"});",
+											""
+										],
+										"type": "text/javascript"
+									}
+								},
+								{
+									"listen": "prerequest",
+									"script": {
+										"exec": [
+											"setTimeout(()=>{}, 200);",
+											"console.log(\"Checking Job CSV URL load\" + pm.environment.get(\"job_id\"));"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "saveHelperData",
+											"type": "any"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"get_job\",\n\t\"id\": \"{{job_id}}\"\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Export local search_by_conditions",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"pm.test(\"Check for job message\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.message.indexOf('Starting job')).to.eql(0);",
+											"    ",
+											"    eval(pm.globals.get(\"function:getJobId\"))(jsonData, \"Create S3 test table\");",
+											"});",
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});"
+										],
+										"type": "text/javascript"
+									}
+								}
+							],
+							"request": {
+								"auth": {
+									"type": "basic",
+									"basic": [
+										{
+											"key": "password",
+											"value": "{{password}}",
+											"type": "string"
+										},
+										{
+											"key": "username",
+											"value": "{{username}}",
+											"type": "string"
+										},
+										{
+											"key": "showPassword",
+											"value": false,
+											"type": "boolean"
+										}
+									]
+								},
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Authorization",
+										"value": "Basic c2dvbGRiZXJnOnRlc3QxMjM0IQ=="
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n\t\"operation\":\"export_local\",\n\t\"path\": \"./\",\n    \"format\": \"json\",\n    \"filename\": \"integration-test\",\n\t\"search_operation\":{\n    \"operation\": \"search_by_conditions\",\n    \"database\": \"S3_DATA\",\n    \"table\": \"dogs\",\n    \"operator\": \"and\",\n    \"get_attributes\": [\n        \"*\"\n    ],\n    \"conditions\": [{\n        \"search_attribute\": \"breed_id\",\n        \"search_type\": \"between\",\n        \"search_value\": [\n            199, 200\n        ]\n    }\n    ]\n    }\n}"
+								},
+								"url": {
+									"raw": "{{host}}:{{port}}",
+									"host": [
+										"{{host}}"
+									],
+									"port": "{{port}}"
+								}
+							},
+							"response": []
+						},
+						{
+							"name": "Check export local search_by_conditions",
+							"event": [
+								{
+									"listen": "test",
+									"script": {
+										"exec": [
+											"",
+											"pm.test(\"Status code is 200\", function () {",
+											"    pm.response.to.have.status(200);",
+											"});",
+											"",
+											"pm.test(\"test Job Found\", function () {",
+											"    var jsonData = pm.response.json();",
+											"    pm.expect(jsonData.length).to.eql(1);",
+											"    ",
+											"    pm.expect(jsonData[0]).to.have.property('status');",
+											"    ",
+											"    let status = jsonData[0].status;",
+											"    ",
+											"    switch(status){",
+											"        case 'ERROR':",
+											"            console.log(jsonData[0]);",
+											"            console.log(\"Error checking export local search_by_conditions\")",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"            }",
+											"            pm.expect(status).to.not.eql('ERROR');",
+											"            break;",
+											"        case 'COMPLETE':",
+											"            console.log(jsonData[0]);",
+											"            if(pm.environment.get(\"next_request\")){",
+											"                postman.setNextRequest(pm.environment.get(\"next_request\"));",
+											"                pm.environment.set(\"next_request\", \"Create S3 test table\");",
+											"            }",
+											"           ",
+											"            pm.expect(jsonData[0].message.message).to.equal(\"Successfully exported JSON locally.\")",
+											"            pm.expect(jsonData[0].type).to.equal(\"export_local\");",
+											"            pm.expect(status).to.eql('COMPLETE');",
+											"            break;",
+											"        case '0':",
+											"        case 0:",
+											"        case 'IN_PROGRESS':",
+											"            console.log('in progress, checking again');",
+											"            setTimeout(()=>{}, 1000);",
+											"            postman.setNextRequest('Check export local search_by_conditions');",
+											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0']);",
+											"            break;",
+											"        default:",
+											"            postman.setNextRequest('Check export local search_by_conditions');",
 											"            pm.expect(status).to.be.oneOf(['IN_PROGRESS', 0, '0', 'ERROR', 'COMPLETE']);",
 											"            break;",
 											"    }",
@@ -58849,7 +61000,7 @@
 									"pm.test(\"GET returns local studio HTML\", function () {",
 									"    const response = pm.response.text();",
 									"     pm.response.to.be.header(\"content-type\", \"text/html; charset=UTF-8\");",
-									"    pm.expect(response).to.include('<!DOCTYPE html>');",
+									"    pm.expect(response).to.include('<!doctype html>');",
 									"    pm.expect(response).to.include('Studio :: HarperDB');",
 									"});"
 								],

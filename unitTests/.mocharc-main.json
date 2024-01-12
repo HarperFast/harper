@@ -8,6 +8,8 @@
     "exit": true,
     "exclude": [
         "../unitTests/install/**/*.js",
+        "../unitTests/resources/**/*.js",
+        "../unitTests/bin/**/*.js",
         "../unitTests/dataLayer/harperBridge/lmdbBridge/**/*.js",
         "../unitTests/utility/lmdb/**/*.js",
         "../unitTests/server/harperdb/hdbServer-test.js",

@@ -73,5 +73,9 @@ cp LICENSE ./npm_pack/
 # Append README with commit ID
 git rev-parse HEAD >> ./npm_pack/README.md
 
+./utility/devops/build/build-studio.sh
+
+mkdir npm_pack/studio
+cp -r ./studio/build-local ./npm_pack/studio/build-local
 # Create package from package creation directory
 npm --force pack ./npm_pack/

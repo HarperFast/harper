@@ -14,6 +14,7 @@ describe('test WebSockets connections and messaging', () => {
 	let available_records;
 	let ws1, ws2;
 	before(async function() {
+		this.timeout(5000);
 		available_records = await setupTestApp();
 		ws1 = new WebSocket('ws://localhost:9926/Echo');
 
@@ -71,9 +72,13 @@ describe('test WebSockets connections and messaging', () => {
 			ws2.on('open', resolve);
 			ws2.on('error', reject);
 		});
-		let message = await new Promise(async (resolve, reject) => {
+		let messages = [];
+		await new Promise(async (resolve, reject) => {
 			ws2.on('message', message => {
-				resolve(JSON.parse(message));
+				messages.push(JSON.parse(message));
+				if (messages.length === 2) {
+					resolve();
+				}
 			});
 			try {
 				let response = await axios.put('http://localhost:9926/SimpleRecord/5', {
@@ -81,11 +86,20 @@ describe('test WebSockets connections and messaging', () => {
 					name: 'new name',
 				});
 				assert.equal(response.status, 204);
+				response = await axios.patch('http://localhost:9926/SimpleRecord/5', {
+					id: '5',
+					newProperty: 'test',
+				});
+				assert.equal(response.status, 204);
 			} catch(error) {
 				console.error(error);
 				reject(error);
 			}
 		});
-		assert.equal(message.value.name, 'new name');
+		assert.equal(messages[0].value.name, 'new name');
+		assert.equal(messages[0].type, 'put');
+		assert.equal(messages[1].value.name, 'new name');
+		assert.equal(messages[1].value.newProperty, 'test');
+		assert.equal(messages[1].type, 'put');
 	});
 });

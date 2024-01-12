@@ -104,12 +104,13 @@ describe('Caching', () => {
 	it('Can load cached data', async function () {
 		source_requests = 0;
 		events = [];
-		CachingTable.setTTLExpiration(0.008);
+		CachingTable.setTTLExpiration(0.01);
 		await CachingTable.invalidate(23);
 		let result = await CachingTable.get(23);
 		assert.equal(result.id, 23);
 		assert.equal(result.name, 'name ' + 23);
 		assert.equal(source_requests, 1);
+		await new Promise((resolve) => setTimeout(resolve, 5));
 		result = await CachingTable.get(23);
 		assert.equal(result.wasLoadedFromSource(), false);
 		assert.equal(result.id, 23);
@@ -199,6 +200,7 @@ describe('Caching', () => {
 			eviction: 0.01,
 		});
 		CachingTable.invalidate(23); // reset the entry
+		await new Promise((resolve) => setTimeout(resolve, 10));
 		await CachingTable.get(23);
 		source_requests = 0;
 		events = [];
@@ -216,6 +218,7 @@ describe('Caching', () => {
 			eviction: 0.01,
 		});
 		CachingTable.invalidate(23); // reset the entry
+		await new Promise((resolve) => setTimeout(resolve, 10));
 		await CachingTable.get(23);
 		source_requests = 0;
 		source_responses = 0;
@@ -239,6 +242,7 @@ describe('Caching', () => {
 			eviction: 0.01,
 		});
 		CachingTable.invalidate(23); // reset the entry
+		await new Promise((resolve) => setTimeout(resolve, 10));
 		await CachingTable.get(23);
 		source_requests = 0;
 		source_responses = 0;

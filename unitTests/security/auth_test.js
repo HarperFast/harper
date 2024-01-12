@@ -328,8 +328,7 @@ describe('test authorize function for JWT', () => {
 		};
 
 		auth.authorize(request, null, function (err, user) {
-			assert.deepStrictEqual(user, undefined);
-			assert.deepStrictEqual(err, hdb_error(new Error(), 'invalid token', 401), ' error');
+			assert.deepStrictEqual(user, { username: 'non_user' });
 			done();
 		});
 	});

@@ -8,6 +8,7 @@ import { parseQuery } from '../resources/search';
 import { IterableEventQueue } from '../resources/IterableEventQueue';
 import { transaction } from '../resources/transaction';
 import { Headers } from '../server/serverHelpers/Headers';
+import { generateJsonApi } from '../resources/openApi';
 
 interface Response {
 	status?: number;
@@ -19,6 +20,8 @@ const etag_bytes = new Uint8Array(8);
 const etag_float = new Float64Array(etag_bytes.buffer, 0, 1);
 let http_options = {};
 
+const OPENAPI_DOMAIN = 'openapi';
+
 async function http(request, next_handler) {
 	const headers_object = request.headers.asObject;
 	const method = headers_object.accept === 'text/event-stream' ? 'CONNECT' : request.method;
@@ -27,11 +30,17 @@ async function http(request, next_handler) {
 	try {
 		request.responseHeaders = headers;
 		const url = request.url.slice(1);
-		const entry = resources.getMatch(url);
-		if (!entry) return next_handler(request); // no resource handler found
-		request.handlerPath = entry.path;
-		const resource_request = { url: entry.relativeURL, async: true }; // TODO: We don't want to have to remove the forward slash and then re-add it
-		const resource = entry.Resource;
+
+		let resource_request;
+		let resource;
+		if (url !== OPENAPI_DOMAIN) {
+			const entry = resources.getMatch(url);
+			if (!entry) return next_handler(request); // no resource handler found
+			request.handlerPath = entry.path;
+			resource_request = { url: entry.relativeURL, async: true }; // TODO: We don't want to have to remove the forward slash and then re-add it
+			resource = entry.Resource;
+		}
+
 		let cache_control = headers_object['cache-control'];
 		if (cache_control) {
 			cache_control = cache_control.toLowerCase();
@@ -53,6 +62,10 @@ async function http(request, next_handler) {
 				}
 			}
 			request.authorize = true;
+
+			if (url === OPENAPI_DOMAIN && method === 'GET') {
+				return generateJsonApi(resources);
+			}
 
 			switch (method) {
 				case 'GET':

@@ -193,12 +193,6 @@ class SQLSearch {
 					const where_val = common_utils.autoCast(node.right.value);
 					if ([true, false].indexOf(where_val) >= 0) {
 						node.right = new alasql.yy.LogicValue({ value: where_val });
-					} else if (
-						node.right instanceof alasql.yy.StringValue &&
-						!common_utils.isEmpty(where_val) &&
-						common_utils.autoCasterIsNumberCheck(where_val.toString())
-					) {
-						node.right = new alasql.yy.NumValue({ value: where_val });
 					}
 				} else if (Array.isArray(node.right)) {
 					node.right.forEach((col, i) => {
@@ -653,7 +647,7 @@ class SQLSearch {
 											attribute.attribute,
 											record[attribute.attribute]
 										);
-										this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
+										this._setMergedHashAttribute(schema_table, hash_val);
 									} else {
 										this._updateMergedAttribute(
 											schema_table,
@@ -691,7 +685,7 @@ class SQLSearch {
 								for (const [hash_val] of matching_data) {
 									if (!this.data[schema_table].__merged_data[hash_val]) {
 										this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
-										this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
+										this._setMergedHashAttribute(schema_table, hash_val);
 									}
 								}
 							} else {
@@ -704,7 +698,7 @@ class SQLSearch {
 											attribute.attribute,
 											record[attribute.attribute]
 										);
-										this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
+										this._setMergedHashAttribute(schema_table, hash_val);
 									} else {
 										this._updateMergedAttribute(
 											schema_table,
@@ -733,7 +727,7 @@ class SQLSearch {
 							for (const [hash_val] of matching_data) {
 								if (!this.data[schema_table].__merged_data[hash_val]) {
 									this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
-									this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
+									this._setMergedHashAttribute(schema_table, hash_val);
 								}
 							}
 						} else {
@@ -741,7 +735,7 @@ class SQLSearch {
 								if (!this.data[schema_table].__merged_data[hash_val]) {
 									this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
 									this._updateMergedAttribute(schema_table, hash_val, attribute.attribute, record[attribute.attribute]);
-									this._setMergedHashAttribute(schema_table, common_utils.autoCast(hash_val));
+									this._setMergedHashAttribute(schema_table, hash_val);
 								} else {
 									this._updateMergedAttribute(schema_table, hash_val, attribute.attribute, record[attribute.attribute]);
 								}
@@ -941,6 +935,7 @@ class SQLSearch {
 		//TODO there is an error with between statements being converted back to string.  need to handle
 		//TODO - CORE-1095 - update how WHERE clause is translated back to SQL query for where expression values include escaped characters
 		let where_clause = this.statement.where ? 'WHERE ' + this.statement.where : '';
+		where_clause = where_clause.replace(/NOT\(NULL\)/g, 'NOT NULL');
 
 		let order_clause = '';
 		//the only time we need to include the order by statement in the first pass is when there are no aggregators,
@@ -973,7 +968,7 @@ class SQLSearch {
 
 		let limit = '';
 		let offset = '';
-		if (!this.has_aggregator && !this.statement.group && !this.has_ordinal) {
+		if (!this.has_aggregator && !this.statement.group && !this.has_ordinal && !this.statement.joins) {
 			limit = this.statement.limit ? 'LIMIT ' + this.statement.limit : '';
 			offset = this.statement.offset ? 'OFFSET ' + this.statement.offset : '';
 		}
@@ -1192,13 +1187,15 @@ class SQLSearch {
 
 		//if we processed the offset in first sql pass it will force it again which will cause no records to be returned
 		// this deletes the offset and also the limit if they were already run in the first pass
-		if (!this.has_aggregator && !this.statement.group && !this.has_ordinal) {
-			if (this.statement.limit) {
-				delete this.statement.limit;
-			}
-			if (this.statement.offset) {
-				delete this.statement.offset;
-			}
+		if (
+			!this.has_aggregator &&
+			!this.statement.group &&
+			!this.has_ordinal &&
+			this.statement.limit &&
+			!this.statement.joins
+		) {
+			delete this.statement.limit;
+			delete this.statement.offset;
 		}
 
 		let final_results = undefined;
@@ -1249,6 +1246,7 @@ class SQLSearch {
 	 */
 	_buildSQL(call_convert_to_indexes = true) {
 		let sql = this.statement.toString();
+		sql = sql.replace(/NOT\(NULL\)/g, 'NOT NULL');
 
 		this.statement.columns.forEach((column) => {
 			if (column.funcid && column.as) {

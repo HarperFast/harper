@@ -56,7 +56,7 @@ for (let entry_module of entry_modules) {
 		'README.md',
 		'docs/**',
 		'logs/*',
-		'studio/*',
+		'studio/**',
 	])) {
 		let target = path.join('npm_pack', filename);
 		await fs.copy(filename, target);

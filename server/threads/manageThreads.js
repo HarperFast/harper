@@ -105,14 +105,16 @@ function startWorker(path, options = {}) {
 	// (and then limit to their license limit, if they have one)
 	let available_memory = process.constrainedMemory?.() || totalmem(); // used constrained memory if it is available
 	// and lower than total memory
-	available_memory = Math.min(available_memory, totalmem());
-	const max_old_memory = Math.max(Math.floor(available_memory / MB / (1 + (options.threadCount || 1) / 4)), 512);
+	available_memory = Math.min(available_memory, totalmem(), 20000 * MB);
+	const max_old_memory =
+		env_mgr.get(hdb_terms.CONFIG_PARAMS.MAXHEAPMEMORY) ??
+		Math.max(Math.floor(available_memory / MB / (10 + (options.threadCount || 1) / 4)), 512);
 	// Max young memory space (semi-space for scavenger) is 1/128 of max memory (limited to 16-64). For most of our m5
 	// machines this will be 64MB (less for t3's). This is based on recommendations from:
 	// https://www.alibabacloud.com/blog/node-js-application-troubleshooting-manual---comprehensive-gc-problems-and-optimization_594965
 	// https://github.com/nodejs/node/issues/42511
 	// https://plaid.com/blog/how-we-parallelized-our-node-service-by-30x/
-	const max_young_memory = Math.min(Math.max(max_old_memory >> 7, 16), 64);
+	const max_young_memory = Math.min(Math.max(max_old_memory >> 6, 16), 64);
 
 	const channels_to_connect = [];
 	const ports_to_send = [];

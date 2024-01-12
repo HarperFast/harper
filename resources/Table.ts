@@ -5,36 +5,41 @@
  */
 
 import { CONFIG_PARAMS, OPERATIONS_ENUM, SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME } from '../utility/hdbTerms';
-import { asBinary, Database, DIRECT_WRITE_PLACEHOLDER, SKIP } from 'lmdb';
+import { Database, SKIP } from 'lmdb';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
 import { Query, ResourceInterface, Request, SubscriptionRequest, Id, Context } from './ResourceInterface';
-import { workerData, threadId } from 'worker_threads';
 import { CONTEXT, ID_PROPERTY, RECORD_PROPERTY, Resource, IS_COLLECTION } from './Resource';
-import { COMPLETION, DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction';
-import * as lmdb_terms from '../utility/lmdb/terms';
+import { DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction';
 import * as env_mngr from '../utility/environment/environmentManager';
 import { addSubscription, listenToCommits } from './transactionBroadcast';
 import { handleHDBError, ClientError, ServerError } from '../utility/errors/hdbError';
 import * as signalling from '../utility/signalling';
 import { SchemaEventMsg, UserEventMsg } from '../server/threads/itc';
 import { databases, table } from './databases';
-import { idsForCondition, filterByType } from './search';
+import {
+	searchByIndex,
+	filterByType,
+	findAttribute,
+	estimateCondition,
+	flattenKey,
+	intersectionEstimate,
+	COERCIBLE_OPERATORS,
+} from './search';
 import * as harper_logger from '../utility/logging/harper_logger';
-import { assignTrackedAccessors, deepFreeze, hasChanges, OWN_DATA } from './tracked';
+import { Addition, assignTrackedAccessors, deepFreeze, hasChanges, OWN_DATA } from './tracked';
 import { transaction } from './transaction';
-import { MAXIMUM_KEY, writeKey } from 'ordered-binary';
+import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads';
 import { readAuditEntry } from './auditStore';
 import { autoCast, convertToMS } from '../utility/common_utils';
-import { getUpdateRecord } from './RecordEncoder';
+import { getUpdateRecord, PENDING_LOCAL_TIME } from './RecordEncoder';
 import { recordAction, recordActionBinary } from './analytics';
+import { rebuildUpdateBefore } from './crdt';
 
 const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 let server_utilities;
-const RANGE_ESTIMATE = 100000000;
-const STARTS_WITH_ESTIMATE = 10000000;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
 const DELETED_RECORD_EXPIRATION = 86400000; // one day for non-audit records that have been deleted
 env_mngr.initSync();
@@ -43,13 +48,22 @@ const LOCK_TIMEOUT = 10000;
 const VERSION_PROPERTY = Symbol.for('version');
 const INCREMENTAL_UPDATE = Symbol.for('incremental-update');
 const ENTRY_PROPERTY = Symbol('entry');
-const IS_SAVING = Symbol('is-saving');
+const SAVE_MODE = Symbol('is-saving');
+const SAVING_FULL_UPDATE = 1;
+const SAVING_CRDT_UPDATE = 2;
 const LOADED_FROM_SOURCE = Symbol('loaded-from-source');
 const NOTIFICATION = { isNotification: true, ensureLoaded: false };
 const INVALIDATED = 1;
 const EVICTED = 8; // note that 2 is reserved for timestamps
 const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
 const MAX_KEY_BYTES = 1978;
+const FULL_PERMISSIONS = {
+	read: true,
+	insert: true,
+	update: true,
+	delete: true,
+	isSuperUser: true,
+};
 export interface Table {
 	primaryStore: Database;
 	auditStore: Database;
@@ -95,7 +109,6 @@ export function makeTable(options) {
 	const deletion_count = 0;
 	let deletion_cleanup;
 	let has_source_get;
-	let pending_deletion_count_write;
 	let primary_key_attribute = {};
 	let last_eviction_completion: Promise<void> = Promise.resolve();
 	let created_time_property, updated_time_property, expires_at_property;
@@ -115,6 +128,10 @@ export function makeTable(options) {
 	let cleanup_interval = 86400000;
 	let last_cleanup_interval;
 	let cleanup_timer;
+	let property_resolvers;
+	let has_relationships = false;
+	let last_entry;
+	const RangeIterable = primary_store.getRange({ start: false, end: false }).constructor;
 	const MAX_PREFETCH_SEQUENCE = 10;
 	const MAX_PREFETCH_BUNDLE = 6;
 	if (audit) addDeleteRemoval();
@@ -133,6 +150,7 @@ export function makeTable(options) {
 		static expirationTimer;
 		static createdTimeProperty = created_time_property;
 		static updatedTimeProperty = updated_time_property;
+		static propertyResolvers;
 		static sources = [];
 		static get expirationMS() {
 			return expiration_ms;
@@ -204,6 +222,7 @@ export function makeTable(options) {
 			// of the commit
 			apply_to_sources = {
 				put: getApplyToCanonicalSource('put'),
+				patch: getApplyToCanonicalSource('patch'),
 				delete: getApplyToCanonicalSource('delete'),
 				publish: getApplyToCanonicalSource('publish'),
 				// note that invalidate event does not go to the canonical source, invalidate means that
@@ -211,6 +230,7 @@ export function makeTable(options) {
 			};
 			apply_to_sources_intermediate = {
 				put: getApplyToIntermediateSource('put'),
+				patch: getApplyToIntermediateSource('patch'),
 				delete: getApplyToIntermediateSource('delete'),
 				publish: getApplyToIntermediateSource('publish'),
 				invalidate: getApplyToIntermediateSource('invalidate'),
@@ -242,7 +262,9 @@ export function makeTable(options) {
 					const resource: TableResource = await Table.getResource(event.id, context, NOTIFICATION);
 					switch (event.type) {
 						case 'put':
-							return resource._writeUpdate(value, NOTIFICATION);
+							return resource._writeUpdate(value, true, NOTIFICATION);
+						case 'patch':
+							return resource._writeUpdate(value, false, NOTIFICATION);
 						case 'delete':
 							return resource._writeDelete(NOTIFICATION);
 						case 'publish':
@@ -505,9 +527,18 @@ export function makeTable(options) {
 			);
 		}
 
-		static get(request, context) {
-			if (request && typeof request === 'object' && !Array.isArray(request) && request.url === '') {
-				const record_count = this.getRecordCount();
+		/**
+		 * This retrieves the data of this resource. By default, with no argument, just return `this`.
+		 * @param query - If included, specifies a query to perform on the record
+		 */
+		get(query?: Query | string): Promise<object | void> | object | void {
+			if (typeof query === 'string') return this.getProperty(query);
+			if (this[IS_COLLECTION]) {
+				return this.search(query);
+			}
+			if (this[ID_PROPERTY] === null) {
+				if (query?.conditions) return this.search(query); // if there is a query, assume it was meant to be a root level query
+				const record_count = TableResource.getRecordCount();
 				return {
 					// basically a describe call
 					recordCount: record_count.recordCount,
@@ -517,17 +548,6 @@ export function makeTable(options) {
 					database: database_name,
 					attributes,
 				};
-			}
-			return super.get(request, context);
-		}
-		/**
-		 * This retrieves the data of this resource. By default, with no argument, just return `this`.
-		 * @param query - If included, specifies a query to perform on the record
-		 */
-		get(query?: Query | string): Promise<object | void> | object | void {
-			if (typeof query === 'string') return this.getProperty(query);
-			if (this[IS_COLLECTION]) {
-				return this.search(query);
 			}
 			if (query?.property) return this.getProperty(query.property);
 			if (this.doesExist() || query?.ensureLoaded === false || this[CONTEXT]?.returnNonexistent) {
@@ -539,22 +559,38 @@ export function makeTable(options) {
 		 * @param user The current, authenticated user
 		 * @param query The parsed query from the search part of the URL
 		 */
-		static allowRead(user, query) {
-			if (!user) return false;
-			const permission = user.role.permission;
-			if (permission.super_user) return true;
-			if (permission[table_name]?.read) {
-				const attribute_permissions = permission[table_name].attribute_permissions;
-				if (attribute_permissions) {
-					// if attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
+		allowRead(user, query) {
+			const table_permission = getTablePermissions(user);
+			if (table_permission?.read) {
+				if (table_permission.isSuperUser) return true;
+				const attribute_permissions = table_permission.attribute_permissions;
+				const select = query?.select;
+				if (attribute_permissions?.length > 0 || (has_relationships && select)) {
+					// If attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
+					// or if there are relationships, we need to ensure that the user has permission to read from the related table
+					// Note that if we do not have a select, we do not return any relationships by default.
 					if (!query) query = {};
-					const select = query.select;
 					if (select) {
-						const attrs_for_type = attributesAsObject(attribute_permissions, 'read');
-						query.select = select.filter((property) => attrs_for_type[property]);
+						const attrs_for_type =
+							attribute_permissions?.length > 0 && attributesAsObject(attribute_permissions, 'read');
+						query.select = select
+							.map((property) => {
+								const property_name = property.name || property;
+								if (!attrs_for_type || attrs_for_type[property_name]) {
+									const related_table = property_resolvers[property_name]?.definition?.tableClass;
+									if (related_table) {
+										// if there is a related table, we need to ensure the user has permission to read from that table and that attributes are properly restricted
+										if (!property.name) property = { name: property };
+										if (!related_table.prototype.allowRead.call(null, user, property)) return false;
+										if (!property.select) return property.name; // no select was applied, just return the name
+									}
+									return property;
+								}
+							})
+							.filter(Boolean);
 					} else {
 						query.select = attribute_permissions
-							.filter((attribute) => attribute.read)
+							.filter((attribute) => attribute.read && !property_resolvers[attribute.attribute_name])
 							.map((attribute) => attribute.attribute_name);
 					}
 					return query;
@@ -570,64 +606,53 @@ export function makeTable(options) {
 		 * @param updated_data
 		 * @param full_update
 		 */
-		allowUpdate(user, updated_data: any, full_update: boolean) {
-			if (!user) return false;
-			const permission = user.role.permission;
-			if (permission.super_user) return true;
-			if (permission[table_name]?.update) {
-				const attribute_permissions = permission[table_name].attribute_permissions;
-				if (attribute_permissions) {
+		allowUpdate(user, updated_data: any) {
+			const table_permission = getTablePermissions(user);
+			if (table_permission?.update) {
+				const attribute_permissions = table_permission.attribute_permissions;
+				if (attribute_permissions?.length > 0) {
 					// if attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
 					const attrs_for_type = attributesAsObject(attribute_permissions, 'update');
 					for (const key in updated_data) {
 						if (!attrs_for_type[key]) return false;
 					}
-					if (full_update) {
-						// if this is a full put operation that removes missing properties, we don't want to remove properties
-						// that the user doesn't have permission to remove
-						for (const permission of attribute_permissions) {
-							const key = permission.attribute_name;
-							if (!permission.update && !(key in updated_data)) {
-								updated_data[key] = this.getProperty(key);
-							}
+					// if this is a full put operation that removes missing properties, we don't want to remove properties
+					// that the user doesn't have permission to remove
+					for (const permission of attribute_permissions) {
+						const key = permission.attribute_name;
+						if (!permission.update && !(key in updated_data)) {
+							updated_data[key] = this.getProperty(key);
 						}
 					}
-				} else {
-					return true;
 				}
+				return true;
 			}
-		}
-		/**
-		 * Determine if the user is allowed to create new data in the current resource
-		 * @param user The current, authenticated user
-		 * @param updated_data
-		 */
-		allowCreate(user, updated_data: {}) {
-			// creating *within* a record resource just means we are adding some data to a current record, which is
-			// an update to the record, it is not an insert of a new record into the table, so not a table create operation
-			// so does not use table insert permissions
-			return this.allowUpdate(user, {});
 		}
 		/**
 		 * Determine if the user is allowed to create new data in the current resource
 		 * @param user The current, authenticated user
 		 * @param new_data
 		 */
-		static allowCreate(user, new_data: {}) {
-			if (!user) return false;
-			const permission = user.role.permission;
-			if (permission.super_user) return true;
-			if (permission[table_name]?.insert) {
-				const attribute_permissions = permission[table_name].attribute_permissions;
-				if (attribute_permissions) {
-					// if attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
-					const attrs_for_type = attributesAsObject(attribute_permissions, 'insert');
-					for (const key in new_data) {
-						if (!attrs_for_type[key]) return false;
+		allowCreate(user, new_data: {}) {
+			if (this[IS_COLLECTION]) {
+				const table_permission = getTablePermissions(user);
+				if (table_permission?.insert) {
+					const attribute_permissions = table_permission.attribute_permissions;
+					if (attribute_permissions?.length > 0) {
+						// if attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
+						const attrs_for_type = attributesAsObject(attribute_permissions, 'insert');
+						for (const key in new_data) {
+							if (!attrs_for_type[key]) return false;
+						}
+					} else {
+						return true;
 					}
-				} else {
-					return true;
 				}
+			} else {
+				// creating *within* a record resource just means we are adding some data to a current record, which is
+				// an update to the record, it is not an insert of a new record into the table, so not a table create operation
+				// so does not use table insert permissions
+				return this.allowUpdate(user, {});
 			}
 		}
 
@@ -635,13 +660,9 @@ export function makeTable(options) {
 		 * Determine if the user is allowed to delete from the current resource
 		 * @param user The current, authenticated user
 		 */
-		static allowDelete(user) {
-			if (!user) return false;
-			const permission = user.role.permission;
-			if (permission.super_user) return true;
-			if (permission[table_name]?.delete) {
-				return true;
-			}
+		allowDelete(user) {
+			const table_permission = getTablePermissions(user);
+			return table_permission?.delete;
 		}
 
 		/**
@@ -662,9 +683,7 @@ export function makeTable(options) {
 			if (typeof updates === 'object' && updates) {
 				if (full_update) {
 					if (Object.isFrozen(updates)) updates = Object.assign({}, updates);
-					for (const key in this[RECORD_PROPERTY]) {
-						if (updates[key] === undefined) updates[key] = undefined;
-					}
+					this[RECORD_PROPERTY] = {}; // clear out the existing record
 					this[OWN_DATA] = updates;
 				} else {
 					own_data = this[OWN_DATA];
@@ -672,8 +691,27 @@ export function makeTable(options) {
 					this[OWN_DATA] = own_data = updates;
 				}
 			}
-			this._writeUpdate(this);
+			this._writeUpdate(this[OWN_DATA], full_update);
 			return this;
+		}
+
+		addTo(property, value) {
+			if (typeof value === 'number') {
+				if (this[SAVE_MODE] === SAVING_FULL_UPDATE) this.set(property, (+this.getProperty(property) || 0) + value);
+				else {
+					if (!this[SAVE_MODE]) this.update();
+					this.set(property, new Addition(value));
+				}
+			} else {
+				throw new Error('Can not add a non-numeric value');
+			}
+		}
+		subtractFrom(property, value) {
+			if (typeof value === 'number') {
+				return this.addTo(property, -value);
+			} else {
+				throw new Error('Can not subtract a non-numeric value');
+			}
 		}
 
 		invalidate(options) {
@@ -738,8 +776,7 @@ export function makeTable(options) {
 				// if we are evicting and not deleting, need to preserve the partial record
 				if (partial_record) {
 					// treat this as a record resolution (so previous version is checked) with no audit record
-					updateRecord(id, partial_record, entry, existing_version, EVICTED, null, null, 0, null, true);
-					return;
+					return updateRecord(id, partial_record, entry, existing_version, EVICTED, null, null, 0, null, true);
 				}
 			}
 			primary_store.ifVersion(existing_version, () => {
@@ -747,7 +784,7 @@ export function makeTable(options) {
 			});
 			if (audit) {
 				// update the record to null it out, maintaining the reference to the audit history
-				updateRecord(id, null, entry, existing_version, EVICTED, null, null, 0, null, true);
+				return updateRecord(id, null, entry, existing_version, EVICTED, null, null, 0, null, true);
 			}
 			// if no timestamps for audit, just remove
 			else {
@@ -774,101 +811,148 @@ export function makeTable(options) {
 		 * @param record
 		 * @param options
 		 */
-		async put(record): Promise<void> {
+		put(record): void {
 			this.update(record, true);
+		}
+		patch(record_update): void {
+			this.update(record_update, false);
 		}
 		// perform the actual write operation; this may come from a user request to write (put, post, etc.), or
 		// a notification that a write has already occurred in the canonical data source, we need to update our
 		// local copy
-		_writeUpdate(record, options?: any) {
+		_writeUpdate(record_update, full_update: boolean, options?: any) {
 			const context = this[CONTEXT];
 			const transaction = txnForContext(context);
 
 			const id = this[ID_PROPERTY];
 			checkValidId(id);
 			const entry = this[ENTRY_PROPERTY];
-			this[IS_SAVING] = true; // mark that this resource is being saved so doesExist return true
+			this[SAVE_MODE] = full_update ? SAVING_FULL_UPDATE : SAVING_CRDT_UPDATE; // mark that this resource is being saved so doesExist return true
 			const write = {
 				key: id,
 				store: primary_store,
 				entry,
 				nodeName: context?.nodeName,
 				validate: (txn_time) => {
-					if (!record[INCREMENTAL_UPDATE] || hasChanges(record)) {
-						this.validate(record);
+					if (!record_update) record_update = this[OWN_DATA];
+					if (full_update || (record_update && hasChanges(record_update))) {
+						this.validate(record_update, !full_update);
 						if (!context?.source) {
-							if (primary_key && record[primary_key] !== id) record[primary_key] = id;
 							if (updated_time_property) {
-								record[updated_time_property.name] =
+								record_update[updated_time_property.name] =
 									updated_time_property.type === 'Date'
 										? new Date(txn_time)
 										: updated_time_property.type === 'String'
 										? new Date(txn_time).toISOString()
 										: txn_time;
 							}
-							if (created_time_property) {
-								if (entry?.value) record[created_time_property.name] = entry?.value[created_time_property.name];
-								else
-									record[created_time_property.name] =
-										created_time_property.type === 'Date'
-											? new Date(txn_time)
-											: created_time_property.type === 'String'
-											? new Date(txn_time).toISOString()
-											: txn_time;
+							if (full_update) {
+								if (primary_key && record_update[primary_key] !== id) record_update[primary_key] = id;
+								if (created_time_property) {
+									if (entry?.value)
+										record_update[created_time_property.name] = entry?.value[created_time_property.name];
+									else
+										record_update[created_time_property.name] =
+											created_time_property.type === 'Date'
+												? new Date(txn_time)
+												: created_time_property.type === 'String'
+												? new Date(txn_time).toISOString()
+												: txn_time;
+								}
+								record_update = deepFreeze(record_update); // this flatten and freeze the record
 							}
-							record = deepFreeze(record); // this flatten and freeze the record
-						} else record = deepFreeze(record); // TODO: I don't know that we need to freeze notification objects, might eliminate this for reduced overhead
-						if (record[RECORD_PROPERTY]) throw new Error('Can not assign a record with a record property');
-						this[RECORD_PROPERTY] = record;
+							// TODO: else freeze after we have applied the changes
+						}
 					} else {
 						transaction.removeWrite(write);
 					}
 				},
-				before: apply_to_sources.put && (() => apply_to_sources.put(context, id, record)),
-				beforeIntermediate:
-					apply_to_sources_intermediate.put && (() => apply_to_sources_intermediate.put(context, id, record)),
+				before: full_update
+					? apply_to_sources.put // full update is a put, so we can use the put method if available
+						? () => apply_to_sources.put(context, id, record_update)
+						: null
+					: apply_to_sources.patch // otherwise, we need to use the patch method if available
+					? () => apply_to_sources.patch(context, id, record_update)
+					: apply_to_sources.put // if this is incremental, but only have put, we can use that by generating the full record (at least the expected one)
+					? () => apply_to_sources.put(context, id, deepFreeze(this))
+					: null,
+				beforeIntermediate: full_update
+					? apply_to_sources_intermediate.put
+						? () => apply_to_sources_intermediate.put(context, id, record_update)
+						: null
+					: apply_to_sources_intermediate.patch
+					? () => apply_to_sources_intermediate.patch(context, id, record_update)
+					: apply_to_sources_intermediate.put
+					? () => apply_to_sources_intermediate.put(context, id, deepFreeze(this))
+					: null,
 				commit: (txn_time, existing_entry, retry) => {
 					if (retry) {
 						if (context && existing_entry?.version > (context.lastModified || 0))
 							context.lastModified = existing_entry.version;
-						updateResource(this, existing_entry);
+						this[ENTRY_PROPERTY] = existing_entry;
+						if (!full_update) this[RECORD_PROPERTY] = existing_entry?.value ?? null;
 					}
+					this[OWN_DATA] = record_update;
+					this[VERSION_PROPERTY] = txn_time;
 					const existing_record = existing_entry?.value;
+					let update_to_apply = record_update;
 
-					this[IS_SAVING] = false;
-					harper_logger.trace(
-						`Checking timestamp for put`,
-						id,
-						existing_entry?.version > txn_time,
-						existing_entry?.version,
-						txn_time
-					);
+					this[SAVE_MODE] = 0;
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
 					if (existing_entry?.version > txn_time) {
-						// This is not an error condition in our world of last-record-wins
-						// replication. If the existing record is newer than it just means the provided record
-						// is, well... older. And newer records are supposed to "win" over older records, and that
-						// is normal, non-error behavior. So we still record an audit entry
-						return; /*(
-							audit && {
-								// return the audit record that should be recorded
-								type: 'put',
-								value: primary_store.encoder.encode(record_entry),
+						// TODO: can the previous version be older, by a prior version be newer?
+						if (audit) {
+							// incremental CRDT updates are only available with audit logging on
+							let local_time = existing_entry.localTime;
+							let audited_version = existing_entry.version;
+							while (update_to_apply && (local_time > txn_time || (audited_version > txn_time && local_time > 0))) {
+								const audit_entry = audit_store.get(local_time);
+								const audit_record = readAuditEntry(audit_entry);
+								audited_version = audit_record.version;
+								if (audited_version > txn_time) {
+									if (audit_record.type === 'patch') {
+										const newer_update = audit_record.getValue(primary_store);
+										update_to_apply = rebuildUpdateBefore(update_to_apply, newer_update);
+									} else if (audit_record.type === 'put' || audit_record.type === 'delete') {
+										// There is newer full record update, so this incremental update is completely superseded
+										update_to_apply = null;
+									}
+								}
+								local_time = audit_record.previousLocalTime;
 							}
-						);*/
+						} else if (full_update) {
+							// if no audit, we can't accurately do incremental updates, so we just assume the last update
+							// was the same type. Assuming a full update this record update loses and there are no changes
+							update_to_apply = null;
+						} else {
+							// no audit, assume updates are overwritten except CRDT operations or properties that didn't exist
+							update_to_apply = rebuildUpdateBefore(update_to_apply, existing_record);
+						}
 					}
-					updateIndices(id, existing_record, record);
+					const record_to_store = deepFreeze(this, update_to_apply);
+					this[RECORD_PROPERTY] = record_to_store;
+					let audit_record;
+					if (!full_update) {
+						// that is a CRDT, we use our own data as the basis for the audit record, which will include information about the incremental updates
+						audit_record = record_update;
+					}
+					updateIndices(id, existing_record, record_to_store);
+					const type = full_update ? 'put' : 'patch';
+
 					updateRecord(
 						id,
-						record,
+						record_to_store,
 						existing_entry,
 						txn_time,
 						0,
 						audit,
 						context,
-						context.expiresAt || (expiration_ms ? expiration_ms + Date.now() : 0)
+						context.expiresAt || (expiration_ms ? expiration_ms + Date.now() : 0),
+						type,
+						false,
+						audit_record
 					);
 				},
 			};
@@ -926,30 +1010,110 @@ export function makeTable(options) {
 		}
 
 		search(request: Query): AsyncIterable<any> {
-			const txn = txnForContext(this[CONTEXT]);
+			const context = this[CONTEXT];
+			const txn = txnForContext(context);
 			if (!request) throw new Error('No query provided');
-			const reverse = request.reverse === true;
 			let conditions = request.conditions;
 			if (!conditions)
 				conditions = Array.isArray(request) ? request : request[Symbol.iterator] ? Array.from(request) : [];
-			else if (conditions.length === undefined) conditions = Array.from(conditions);
+			else if (conditions.length === undefined) {
+				conditions = conditions[Symbol.iterator] ? Array.from(conditions) : [conditions];
+			}
 			if (this[ID_PROPERTY]) {
 				conditions = [{ attribute: null, comparator: 'prefix', value: this[ID_PROPERTY] }].concat(conditions);
 			}
-			for (const condition of conditions) {
-				const attribute_name = condition[0] ?? condition.attribute;
-				const attribute =
-					attribute_name == null
-						? primary_key_attribute
-						: attributes.find((attribute) => attribute.name == attribute_name);
-				if (!attribute) {
-					if (attribute_name != null)
-						throw handleHDBError(new Error(), `${attribute_name} is not a defined attribute`, 404);
-				} else if (attribute.type) {
-					// convert to a number if that is expected
-					if (condition[1] === undefined) condition.value = coerceTypedValues(condition.value, attribute);
-					else condition[1] = coerceTypedValues(condition[1], attribute);
+			let order_aligned_condition;
+			const filtered = {};
+
+			function prepareConditions(conditions, operator) {
+				// some validation:
+				let is_intersection;
+				switch (operator) {
+					case 'and':
+					case undefined:
+						if (conditions.length < 1) throw new Error('An "and" operator requires at least one condition');
+						is_intersection = true;
+						break;
+					case 'or':
+						if (conditions.length < 2) throw new Error('An "or" operator requires at least two conditions');
+						break;
+					default:
+						throw new Error('Invalid operator ' + operator);
 				}
+				const condition_by_name = is_intersection && {};
+				let has_multiple_for_name;
+				for (const condition of conditions) {
+					if (condition.conditions) {
+						condition.conditions = prepareConditions(condition.conditions, condition.operator);
+						continue;
+					}
+					const attribute_name = condition[0] ?? condition.attribute;
+					const attribute = attribute_name == null ? primary_key_attribute : findAttribute(attributes, attribute_name);
+					if (!attribute) {
+						if (attribute_name != null)
+							throw handleHDBError(new Error(), `${attribute_name} is not a defined attribute`, 404);
+					} else {
+						if (is_intersection) {
+							const key = flattenKey(attribute_name);
+							const named_conditions = condition_by_name[key];
+							if (named_conditions) {
+								named_conditions.push(condition);
+								has_multiple_for_name = true;
+							} else condition_by_name[key] = [condition];
+						}
+						if (attribute.type || COERCIBLE_OPERATORS[condition.comparator]) {
+							// Do auto-coercion or coercion as required by the attribute type
+							if (condition[1] === undefined) condition.value = coerceTypedValues(condition.value, attribute);
+							else condition[1] = coerceTypedValues(condition[1], attribute);
+						}
+					}
+				}
+				if (request.enforceExecutionOrder) return conditions; // don't rearrange conditions
+				if (has_multiple_for_name) {
+					for (const name in condition_by_name) {
+						const conditions_for_name = condition_by_name[name];
+						const l = conditions_for_name.length;
+						if (l > 1) {
+							// if there are multiple conditions for the same attribute, see if we can collapse them into a single condition
+							for (let i = 0; i < l; i++) {
+								const condition = conditions_for_name[i];
+								if (condition.comparator === 'ge' || condition.comparator === 'greater_than_equal') {
+									for (let j = 0; j < l; j++) {
+										const other_condition = conditions_for_name[j];
+										if (other_condition.comparator === 'le' || other_condition.comparator === 'less_than_equal') {
+											condition.comparator = 'between';
+											condition.value = [condition.value, other_condition.value];
+											conditions.splice(conditions.indexOf(other_condition), 1);
+										}
+									}
+								}
+								if (condition.comparator === 'equals' || !condition.comparator) {
+									// if there is an equals condition, we can remove all other conditions
+									// and just use the equals condition
+									for (let j = 0; j < l; j++) {
+										if (j !== i) {
+											const other_condition = conditions_for_name[j];
+											conditions.splice(conditions.indexOf(other_condition), 1);
+										}
+									}
+									break;
+								}
+							}
+						}
+					}
+				}
+				return conditions;
+			}
+			function orderConditions(conditions, operator) {
+				if (request.enforceExecutionOrder) return conditions; // don't rearrange conditions
+				for (const condition of conditions) {
+					if (condition.conditions) condition.conditions = orderConditions(condition.conditions, condition.operator);
+				}
+				// Sort the query by narrowest to broadest, so we can use the fastest index as possible with minimal filtering.
+				// Note, that we do allow users to disable condition re-ordering, in case they have knowledge of a preferred
+				// order for their query.
+				if (conditions.length > 1 && operator !== 'or') return sortBy(conditions, estimateCondition(TableResource));
+				else return conditions;
 			}
 			function coerceTypedValues(value, attribute) {
 				if (Array.isArray(value)) {
@@ -957,136 +1121,531 @@ export function makeTable(options) {
 				}
 				return coerceType(value, attribute);
 			}
-			// Sort the query by narrowest to broadest. Note that we want to do this both for intersection where
-			// it allows us to do minimal filtering, and for union where we can return the fastest results first
-			// in an iterator/stream.
+			const operator = request.operator;
+			if (conditions.length > 0 || operator) conditions = prepareConditions(conditions, operator);
+			const sort = typeof request.sort === 'object' && request.sort;
+			let post_ordering;
+			if (sort) {
+				// TODO: Support index-assisted sorts of unions, which will require potentially recursively adding/modifying an order aligned condition and be able to recursively undo it if necessary
+				if (operator !== 'or') {
+					const attribute_name = sort.attribute;
+					order_aligned_condition = conditions.find(
+						(condition) => flattenKey(condition.attribute) === flattenKey(attribute_name)
+					);
+					if (order_aligned_condition) {
+						// if there is a condition on the same attribute as the first sort, we can use it to align the sort
+						// and avoid a sort operation
+					} else {
+						const attribute = findAttribute(attributes, attribute_name);
+						if (!attribute)
+							throw handleHDBError(
+								new Error(),
+								`${
+									Array.isArray(attribute_name) ? attribute_name.join('.') : attribute_name
+								} is not a defined attribute`,
+								404
+							);
 
-			if (conditions.length > 1)
-				conditions = sortBy(conditions, (condition) => {
-					if (condition.estimated_count === undefined) {
-						// skip if it is cached
-						const search_type = condition.comparator || condition.search_type;
-						if (search_type === lmdb_terms.SEARCH_TYPES.EQUALS) {
-							const attribute_name = condition[0] ?? condition.attribute;
-							if (attribute_name == null || attribute_name === primary_key) condition.estimated_count = 1;
-							else {
-								// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
-								const index = indices[attribute_name];
-								condition.estimated_count = index ? index.getValuesCount(condition[1] ?? condition.value) : Infinity;
-							}
-						} else if (
-							search_type === lmdb_terms.SEARCH_TYPES.CONTAINS ||
-							search_type === lmdb_terms.SEARCH_TYPES.ENDS_WITH ||
-							search_type === 'ne'
-						)
-							condition.estimated_count = Infinity;
-						else if (search_type === lmdb_terms.SEARCH_TYPES.STARTS_WITH || search_type === 'prefix')
-							condition.estimated_count = STARTS_WITH_ESTIMATE;
-						// this search types can't/doesn't use indices, so try do them last
-						// for range queries (betweens, starts-with, greater, etc.), just arbitrarily guess
-						else condition.estimated_count = RANGE_ESTIMATE;
+						order_aligned_condition = { attribute: attribute_name };
+						conditions.push(order_aligned_condition);
 					}
-					return condition.estimated_count; // use cached count
-				});
-			// we mark the read transaction as in use (necessary for a stable read
-			// transaction, and we really don't care if the
-			// counts are done in the same read transaction because they are just estimates) until the search
-			// results have been iterated and finished.
-			const read_txn = txn.getReadTxn();
-			read_txn.use();
-			const select = request.select;
-			const first_search = conditions[0];
-			let records;
-			if (!first_search) {
-				// if not conditions at all, just return entire table, iteratively
-				records = primary_store
-					.getRange(
-						reverse
-							? { end: false, reverse: true, transaction: read_txn, lazy: select?.length < 4 }
-							: { start: false, transaction: read_txn, lazy: select?.length < 4 }
-					)
-					.map(({ value }) => {
-						if (!value) return SKIP;
-						return new Promise((resolve) => setImmediate(() => resolve(value)));
-					});
-			} else {
-				// both AND and OR start by getting an iterator for the ids for first condition
-				let ids = idsForCondition(first_search, read_txn, reverse, TableResource, request.allowFullScan);
-				// and then things diverge...
-				if (!request.operator || request.operator.toLowerCase() === 'and') {
-					// get the intersection of condition searches by using the indexed query for the first condition
-					// and then filtering by all subsequent conditions
-					const filters = conditions.slice(1).map(filterByType);
-					records = idsToRecords(ids, filters);
+					order_aligned_condition.descending = Boolean(sort.descending);
+				}
+			}
+			conditions = orderConditions(conditions, operator);
+
+			if (sort) {
+				if (conditions[0] === order_aligned_condition) {
+					// The db index is providing the order for the first sort, may need post ordering next sort order
+					if (sort.next) {
+						post_ordering = {
+							dbOrderedAttribute: sort.attribute,
+							attribute: sort.next.attribute,
+							descending: sort.next.descending,
+							next: sort.next.next,
+						};
+					}
 				} else {
+					// if we had to add an aligned condition that isn't first, we remove it and do ordering later
+					if (order_aligned_condition) conditions.splice(conditions.indexOf(order_aligned_condition), 1);
+					post_ordering = sort;
+				}
+			}
+			function executeConditions(conditions, operator) {
+				const first_search = conditions[0];
+				// both AND and OR start by getting an iterator for the ids for first condition
+				// and then things diverge...
+				if (operator === 'or') {
+					let results = executeCondition(first_search);
 					//get the union of ids from all condition searches
 					for (let i = 1; i < conditions.length; i++) {
 						const condition = conditions[i];
 						// might want to lazily execute this after getting to this point in the iteration
-						const next_ids = idsForCondition(condition, read_txn, reverse, TableResource, request.allowFullScan);
-						ids = ids.concat(next_ids);
+						const next_results = executeCondition(condition);
+						results = results.concat(next_results);
 					}
 					const returned_ids = new Set();
-					ids = ids.filter((id) => {
+					return results.filter((entry) => {
+						const id = entry.key ?? entry;
 						if (returned_ids.has(id))
-							// skip duplicates
+							// skip duplicate ids
 							return false;
 						returned_ids.add(id);
 						return true;
 					});
-					records = idsToRecords(ids);
+				} else {
+					// AND
+					const results = executeCondition(first_search);
+					// get the intersection of condition searches by using the indexed query for the first condition
+					// and then filtering by all subsequent conditions.
+					// now apply filters that require looking up records
+					let estimated_incoming_count = first_search.estimated_count;
+					const filters = conditions
+						.slice(1)
+						.map((condition, index) => {
+							const is_primary_key = (condition.attribute || condition[0]) === primary_key;
+							const filter = filterByType(
+								condition,
+								TableResource,
+								context,
+								filtered,
+								is_primary_key,
+								estimated_incoming_count
+							);
+							if (index < conditions.length - 2 && estimated_incoming_count) {
+								estimated_incoming_count = intersectionEstimate(
+									primary_store,
+									condition.estimated_count,
+									estimated_incoming_count
+								);
+							}
+							return filter;
+						})
+						.filter(Boolean);
+					return filters.length > 0 ? transformToEntries(results, select, context, filters) : results;
 				}
 			}
+			const reverse = request.reverse === true;
+			function executeCondition(condition) {
+				if (condition.conditions) return executeConditions(condition.conditions, condition.operator);
+				return searchByIndex(
+					condition,
+					txn,
+					condition.descending || reverse,
+					TableResource,
+					request.allowFullScan,
+					filtered
+				);
+			}
+			// we mark the read transaction as in use (necessary for a stable read
+			// transaction, and we really don't care if the
+			// counts are done in the same read transaction because they are just estimates) until the search
+			// results have been iterated and finished.
+			const select = request.select;
+			if (conditions.length === 0) {
+				conditions = [{ attribute: primary_key, comparator: 'greater_than', value: true }];
+			}
+			if (request.explain) {
+				return {
+					conditions,
+					operator,
+					postOrdering: post_ordering,
+					selectApplied: Boolean(select),
+				};
+			}
+			const read_txn = txn.useReadTxn();
+			let entries = executeConditions(conditions, operator);
 			if (request.offset || request.limit !== undefined)
-				records = records.slice(
+				entries = entries.slice(
 					request.offset,
 					request.limit !== undefined ? (request.offset || 0) + request.limit : undefined
 				);
-			records.onDone = () => {
-				records.onDone = null; // ensure that it isn't called twice
-				read_txn.done();
+			const ensure_loaded = request.ensureLoaded !== false;
+			const transformToRecord = TableResource.transformEntryForSelect(select, context, filtered, ensure_loaded, true);
+			let results = TableResource.transformToOrderedSelect(
+				entries,
+				select,
+				post_ordering,
+				context,
+				transformToRecord
+			);
+			results.onDone = () => {
+				results.onDone = null; // ensure that it isn't called twice
+				txn.doneReadTxn();
 			};
-			const context = this[CONTEXT];
-			function idsToRecords(ids, filters?) {
-				// TODO: Test and ensure that we break out of these loops when a connection is lost
-				const filters_length = filters?.length;
-				const options = {
-					transaction: read_txn,
-					lazy: filters_length > 0 || select?.length < 4,
-					alwaysPrefetch: true,
-				};
-				const ensure_loaded = request.ensureLoaded !== false;
-				// for filter operations, we intentionally use async and yield the event turn so that scanning queries
-				// do not hog resources and give more processing opportunity for more efficient index-driven queries.
-				// this also gives an opportunity to prefetch and ensure any page faults happen in a different thread
-				function processEntry(entry, id?) {
-					if (ensure_loaded && id !== undefined) {
-						const loading_from_source = !context.onlyIfCached && ensureLoadedFromSource(id, entry, context, this);
-						if (loading_from_source) return loading_from_source.then((entry) => processEntry(entry));
+			results.selectApplied = true;
+			results.getColumns = () => {
+				if (select) {
+					const columns = [];
+					for (const column of select) {
+						if (column === '*') columns.push(...attributes.map((attribute) => attribute.name));
+						else columns.push(column.name || column);
 					}
-					const record = entry?.value;
-					if (!record) return SKIP;
-					for (let i = 0; i < filters_length; i++) {
-						if (!filters[i](record)) return SKIP; // didn't match filters
-					}
-					return record;
+					return columns;
 				}
-				return ids.map((id) => loadLocalRecord(id, context, options, false, processEntry));
-			}
-			return records;
+				return attributes.map((attribute) => attribute.name);
+			};
+			return results;
 		}
+		/**
+		 * This is responsible for ordering and select()ing the attributes/properties from returned entries
+		 * @param select
+		 * @param context
+		 * @param filtered
+		 * @param ensure_loaded
+		 * @param can_skip
+		 * @returns
+		 */
+		static transformToOrderedSelect(entries, select, sort, context, transformToRecord) {
+			let results = new RangeIterable();
+			if (sort) {
+				// there might be some situations where we don't need to transform to entries for sorting, not sure
+				entries = transformToEntries(entries, select, context, null);
+				let ordered;
+				// if we are doing post-ordering, we need to get records first, then sort them
+				results.iterate = function () {
+					let sorted_array_iterator;
+					const db_iterator = entries[Symbol.asyncIterator]
+						? entries[Symbol.asyncIterator]()
+						: entries[Symbol.iterator]();
+					let db_done;
+					const db_ordered_attribute = sort.dbOrderedAttribute;
+					let enqueued_entry_for_next_group;
+					let last_grouping_value;
+					let first_entry = true;
+					function createComparator(order) {
+						const next_comparator = order.next && createComparator(order.next);
+						const descending = order.descending;
+						return (entry_a, entry_b) => {
+							const a = getAttributeValue(entry_a, order.attribute, context);
+							const b = getAttributeValue(entry_b, order.attribute, context);
+							const diff = descending ? compareKeys(b, a) : compareKeys(a, b);
+							if (diff === 0) return next_comparator?.(entry_a, entry_b) || 0;
+							return diff;
+						};
+					}
+					const comparator = createComparator(sort);
+					return {
+						async next() {
+							let iteration;
+							if (sorted_array_iterator) {
+								iteration = sorted_array_iterator.next();
+								if (iteration.done) {
+									if (db_done) {
+										if (results.onDone) results.onDone();
+										return iteration;
+									}
+								} else
+									return {
+										value: await transformToRecord(iteration.value),
+									};
+							}
+							ordered = [];
+							if (enqueued_entry_for_next_group) ordered.push(enqueued_entry_for_next_group);
+							// need to load all the entries into ordered
+							do {
+								iteration = await db_iterator.next();
+								if (iteration.done) {
+									db_done = true;
+									if (!ordered.length) {
+										if (results.onDone) results.onDone();
+										return iteration;
+									} else break;
+								} else {
+									let entry = iteration.value;
+									if (entry?.then) entry = await entry;
+									// if the index has already provided the first order of sorting, we only need to sort
+									// within each grouping
+									if (db_ordered_attribute) {
+										const grouping_value = getAttributeValue(entry, db_ordered_attribute, context);
+										if (first_entry) {
+											first_entry = false;
+											last_grouping_value = grouping_value;
+										} else if (grouping_value !== last_grouping_value) {
+											last_grouping_value = grouping_value;
+											enqueued_entry_for_next_group = entry;
+											break;
+										}
+									}
+									// we store the value we will sort on, for fast sorting, and the entry so the records can be GC'ed if necessary
+									// before the sorting is completed
+									ordered.push(entry);
+								}
+							} while (true);
+							if (sort.isGrouped) {
+								// TODO: Return grouped results
+							}
+							ordered.sort(comparator);
+							sorted_array_iterator = ordered[Symbol.iterator]();
+							iteration = sorted_array_iterator.next();
+							if (!iteration.done)
+								return {
+									value: await transformToRecord(iteration.value),
+								};
+							if (results.onDone) results.onDone();
+							return iteration;
+						},
+						return() {
+							if (results.onDone) results.onDone();
+							db_iterator.return();
+						},
+						throw() {
+							if (results.onDone) results.onDone();
+							db_iterator.throw();
+						},
+					};
+				};
+				const applySortingOnSelect = (sort) => {
+					if (typeof select === 'object' && Array.isArray(sort.attribute)) {
+						for (let i = 0; i < select.length; i++) {
+							const column = select[i];
+							let column_sort;
+							if (column.name === sort.attribute[0]) {
+								column_sort = column.sort || (column.sort = {});
+								while (column_sort.next) column_sort = column_sort.next;
+								column_sort.attribute = sort.attribute.slice(1);
+								column_sort.descending = sort.descending;
+							} else if (column === sort.attribute[0]) {
+								select[i] = column_sort = {
+									name: column,
+									sort: {
+										attribute: sort.attribute.slice(1),
+										descending: sort.descending,
+									},
+								};
+							}
+						}
+					}
+					if (sort.next) applySortingOnSelect(sort.next);
+				};
+				applySortingOnSelect(sort);
+			} else {
+				results.iterate = (entries[Symbol.asyncIterator] || entries[Symbol.iterator]).bind(entries);
+				results = results.map(transformToRecord);
+			}
+			return results;
+		}
+		/**
+		 * This is responsible for select()ing the attributes/properties from returned entries
+		 * @param select
+		 * @param context
+		 * @param filtered
+		 * @param ensure_loaded
+		 * @param can_skip
+		 * @returns
+		 */
+		static transformEntryForSelect(select, context, filtered, ensure_loaded?, can_skip?) {
+			if (select && (select === primary_key || (select?.length === 1 && select[0] === primary_key))) {
+				// fast path if only the primary key is selected, so we don't have to load records
+				const transform = (entry) => {
+					return entry?.key ?? entry;
+				};
+				if (select === primary_key) return transform;
+				else if (select.asArray) return (entry) => [transform(entry)];
+				else return (entry) => ({ [primary_key]: transform(entry) });
+			}
+			let check_loaded;
+			if (
+				ensure_loaded &&
+				has_source_get &&
+				// determine if we need to fully loading the records ahead of time, this is why we would not need to load the full record:
+				!select?.every((attribute) => {
+					let attribute_name;
+					if (typeof attribute === 'object') {
+						attribute_name = attribute.name;
+					} else attribute_name = attribute;
+					// TODO: Resolvers may not need a full record, either because they are not using the record, or because they are a redirected property
+					return indices[attribute_name] || attribute_name === primary_key;
+				})
+			) {
+				check_loaded = true;
+			}
+			let transform_cache;
+			const transform = (entry) => {
+				let record;
+				if (entry) {
+					// TODO: remove this:
+					last_entry = entry;
+					record = entry.value || entry.deref?.();
+					if (!record && (entry.key === undefined || entry.deref)) {
+						// if the record is not loaded, either due to the entry actually be a key, or the entry's value
+						// being GC'ed, we need to load it now
+						entry = loadLocalRecord(
+							entry.key ?? entry,
+							context,
+							{
+								transaction: txnForContext(context).getReadTxn(),
+								lazy: select?.length < 4,
+							},
+							false,
+							(entry) => entry
+						);
+						if (entry?.then) return entry.then(transform);
+						record = entry?.value;
+					}
+					if (
+						check_loaded &&
+						(entry.metadataFlags & (INVALIDATED | EVICTED) || // invalidated or evicted should go to load from source
+							(entry.expiresAt && entry.expiresAt < Date.now()))
+					) {
+						// should expiration really apply?
+						const loading_from_source = ensureLoadedFromSource(entry.key ?? entry, entry, context);
+						if (loading_from_source?.then) {
+							return loading_from_source.then(transform);
+						}
+					}
+				}
+				if (record == null) return can_skip ? SKIP : record;
+				if (select && !(select[0] === '*' && select.length === 1)) {
+					let promises;
+					const selectAttribute = (attribute, callback) => {
+						let attribute_name;
+						if (typeof attribute === 'object') {
+							attribute_name = attribute.name;
+						} else attribute_name = attribute;
+						const resolver = property_resolvers?.[attribute_name];
+						let value;
+						if (resolver) {
+							const filter_map = filtered?.[attribute_name];
+							if (filter_map) {
+								if (filter_map.hasMappings) {
+									const key = resolver.from ? record[resolver.from] : flattenKey(entry.key);
+									value = filter_map.get(key);
+									if (!value) value = [];
+								} else {
+									value = filter_map.fromRecord?.(record);
+								}
+							} else {
+								value = resolver(record, context, entry);
+							}
+							const handleResolvedValue = (value) => {
+								if (value && typeof value === 'object') {
+									const target_table = resolver.definition?.tableClass || TableResource;
+									if (!transform_cache) transform_cache = {};
+									const transform =
+										transform_cache[attribute_name] ||
+										(transform_cache[attribute_name] = target_table.transformEntryForSelect(
+											// if it is a simple string, there is no select for the next level,
+											// otherwise pass along the nested selected
+											attribute_name === attribute
+												? null
+												: attribute.select || (Array.isArray(attribute) ? attribute : null),
+											context,
+											filter_map,
+											ensure_loaded
+										));
+									if (Array.isArray(value)) {
+										const results = [];
+										const iterator = target_table
+											.transformToOrderedSelect(
+												value,
+												attribute.select,
+												typeof attribute.sort === 'object' && attribute.sort,
+												context,
+												transform
+											)
+											[Symbol.asyncIterator]();
+										const nextValue = (iteration) => {
+											while (!iteration.done) {
+												if (iteration?.then) return iteration.then(nextValue);
+												results.push(iteration.value);
+												iteration = iterator.next();
+											}
+											callback(results, attribute_name);
+										};
+										const promised = nextValue(iterator.next());
+										if (promised) {
+											if (!promises) promises = [];
+											promises.push(promised);
+										}
+										return;
+									} else {
+										value = transform(value);
+										if (value?.then) {
+											if (!promises) promises = [];
+											promises.push(value.then((value) => callback(value, attribute_name)));
+											return;
+										}
+									}
+								}
+								callback(value, attribute_name);
+							};
+							if (value?.then) {
+								if (!promises) promises = [];
+								promises.push(value.then(handleResolvedValue));
+							} else handleResolvedValue(value);
+							return;
+						} else {
+							value = record[attribute_name];
+							if (value && typeof value === 'object' && attribute_name !== attribute) {
+								value = this.transformEntryForSelect(attribute.select || attribute, context, null)({ value });
+							}
+						}
+						callback(value, attribute_name);
+					};
+					let selected;
+					if (typeof select === 'string') {
+						selectAttribute(select, (value) => {
+							selected = value;
+						});
+					} else if (Array.isArray(select)) {
+						if (select.asArray) {
+							selected = [];
+							select.forEach((attribute, index) => {
+								if (attribute === '*') select[index] = record;
+								else selectAttribute(attribute, (value) => (selected[index] = value));
+							});
+						} else {
+							selected = {};
+							const force_nulls = select.forceNulls;
+							for (const attribute of select) {
+								if (attribute === '*')
+									for (const key in record) {
+										selected[key] = record[key];
+									}
+								else
+									selectAttribute(attribute, (value, attribute_name) => {
+										if (value === undefined && force_nulls) value = null;
+										selected[attribute_name] = value;
+									});
+							}
+						}
+					} else throw new ClientError('Invalid select' + select);
+					if (promises) {
+						return Promise.all(promises).then(() => selected);
+					}
+					return selected;
+				}
+				return record;
+			};
+			return transform;
+		}
+
 		async subscribe(request: SubscriptionRequest) {
 			if (!audit_store) throw new Error('Can not subscribe to a table without an audit log');
 			if (!audit) {
 				table({ table: table_name, database: database_name, schemaDefined: schema_defined, attributes, audit: true });
 			}
 			if (!request) request = {};
+			const get_full_record = !request.rawEvents;
 			const subscription = addSubscription(
 				TableResource,
 				this[ID_PROPERTY] ?? null, // treat undefined and null as the root
 				function (id, audit_record, timestamp, begin_txn) {
 					try {
-						const value = audit_record.getValue?.(primary_store);
+						let value = audit_record.getValue?.(primary_store, get_full_record);
+						if (!value && audit_record.type === 'patch' && get_full_record) {
+							// we don't have the full record, need to get it
+							const entry = primary_store.getEntry(id);
+							// if the current record matches the timestamp, we can use that
+							if (entry?.version === audit_record.version) {
+								value = entry.value;
+							} else {
+								// otherwise try to go back in the audit log
+								value = audit_record.getValue?.(primary_store, true, timestamp);
+							}
+							audit_record.type = 'put';
+						}
 						this.send({
 							id,
 							timestamp,
@@ -1099,9 +1658,13 @@ export function makeTable(options) {
 						harper_logger.error(error);
 					}
 				},
-				request.startTime,
+				request.startTime || 0,
 				this[IS_COLLECTION]
 			);
+			if (this[IS_COLLECTION]) {
+				subscription.includeDescendants = true;
+				if (request.onlyChildren) subscription.onlyChildren = true;
+			}
 			if (request.crossThreads === false) subscription.crossThreads = false;
 			if (request.supportsTransactions) subscription.supportsTransactions = true;
 			const this_id = this[ID_PROPERTY];
@@ -1118,7 +1681,7 @@ export function makeTable(options) {
 						start: start_time,
 						exclusiveStart: true,
 					})) {
-						const audit_record = readAuditEntry(audit_entry, primary_store);
+						const audit_record = readAuditEntry(audit_entry);
 						if (audit_record.tableId !== table_id) continue;
 						const id = audit_record.recordId;
 						if (this_id == null || isDescendantId(this_id, id))
@@ -1136,7 +1699,7 @@ export function makeTable(options) {
 							if (audit_record.tableId !== table_id) continue;
 							const id = audit_record.recordId;
 							if (this_id == null || isDescendantId(this_id, id)) {
-								const value = audit_record.getValue(primary_store);
+								const value = audit_record.getValue(primary_store, get_full_record, key);
 								history.push({ id, timestamp: key, value, version: audit_record.version, type: audit_record.type });
 								if (--count <= 0) break;
 							}
@@ -1162,8 +1725,16 @@ export function makeTable(options) {
 				}
 			} else {
 				if (count && !start_time) start_time = 0;
-				const local_time = this[ENTRY_PROPERTY]?.localTime;
-				harper_logger.trace('Subscription from', start_time, 'from', this_id);
+				let local_time = this[ENTRY_PROPERTY]?.localTime;
+				if (local_time === PENDING_LOCAL_TIME) {
+					// we can't use the pending commit because it doesn't have the local audit time yet,
+					// so try to retrieve the previous/committed record
+					primary_store.cache?.delete(this_id);
+					this[ENTRY_PROPERTY] = primary_store.getEntry(this_id);
+					harper_logger.trace('re-retrieved record', local_time, this[ENTRY_PROPERTY]?.localTime);
+					local_time = this[ENTRY_PROPERTY]?.localTime;
+				}
+				harper_logger.trace('Subscription from', start_time, 'from', this_id, local_time);
 				if (start_time < local_time) {
 					// start time specified, get the audit history for this record
 					const history = [];
@@ -1175,7 +1746,8 @@ export function makeTable(options) {
 						if (audit_entry) {
 							request.omitCurrent = true; // we are sending the current version from history, so don't double send
 							const audit_record = readAuditEntry(audit_entry);
-							const value = audit_record.getValue(primary_store);
+							const value = audit_record.getValue(primary_store, get_full_record, next_time);
+							if (get_full_record) audit_record.type = 'put';
 							history.push({ id: this_id, value, timestamp: next_time, ...audit_record });
 							next_time = audit_record.previousLocalTime;
 						} else break;
@@ -1191,7 +1763,7 @@ export function makeTable(options) {
 					subscription.send({
 						id: this_id,
 						version: this[VERSION_PROPERTY],
-						timestamp: this[ENTRY_PROPERTY]?.localTime,
+						timestamp: local_time,
 						value: this,
 					});
 				}
@@ -1200,7 +1772,7 @@ export function makeTable(options) {
 			return subscription;
 		}
 		doesExist() {
-			return Boolean(this[RECORD_PROPERTY] || this[IS_SAVING]);
+			return Boolean(this[RECORD_PROPERTY] || this[SAVE_MODE]);
 		}
 
 		/**
@@ -1210,7 +1782,7 @@ export function makeTable(options) {
 		 * @param message
 		 * @param options
 		 */
-		async publish(message, options?) {
+		publish(message, options?) {
 			this._writePublish(message, options);
 		}
 		_writePublish(message, options?: any) {
@@ -1254,10 +1826,11 @@ export function makeTable(options) {
 				},
 			});
 		}
-		validate(record) {
+		validate(record, patch?) {
 			let validation_errors;
 			const validateValue = (value, attribute, name) => {
 				if (attribute.type && value != null) {
+					if (patch && value.__op__) value = value.value;
 					if (attribute.properties) {
 						if (typeof value !== 'object') {
 							(validation_errors || (validation_errors = [])).push(
@@ -1313,6 +1886,13 @@ export function makeTable(options) {
 									else (validation_errors || (validation_errors = [])).push(`Property ${name} must be a Date`);
 								}
 								break;
+							case 'BigInt':
+								if (typeof value !== 'bigint') {
+									// do coercion because otherwise it is rather difficult to get numbers to consistently be bigints
+									if (typeof value === 'string' || typeof value === 'number') return BigInt(value);
+									(validation_errors || (validation_errors = [])).push(`Property ${name} must be a bigint`);
+								}
+								break;
 							case 'Bytes':
 								if (!(value instanceof Uint8Array))
 									(validation_errors || (validation_errors = [])).push(
@@ -1345,8 +1925,11 @@ export function makeTable(options) {
 			};
 			for (let i = 0, l = attributes.length; i < l; i++) {
 				const attribute = attributes[i];
-				const updated = validateValue(record[attribute.name], attribute, attribute.name);
-				if (updated) record[attribute.name] = updated;
+				if (attribute.relationship) continue;
+				if (!patch || attribute.name in record) {
+					const updated = validateValue(record[attribute.name], attribute, attribute.name);
+					if (updated) record[attribute.name] = updated;
+				}
 			}
 
 			if (validation_errors) {
@@ -1430,6 +2013,97 @@ export function makeTable(options) {
 		 * When attributes have been changed, we update the accessors that are assigned to this table
 		 */
 		static updatedAttributes() {
+			property_resolvers = this.propertyResolvers = {
+				$id: (object, context, entry) => ({ value: entry.key }),
+				$updatedtime: (object, context, entry) => entry.version,
+				$record: (object, context, entry) => (entry ? { value: object } : object),
+			};
+			for (const attribute of this.attributes) {
+				attribute.resolve = null; // reset this
+				const relationship = attribute.relationship;
+				if (relationship) {
+					has_relationships = true;
+					if (relationship.to) {
+						if (attribute.elements?.definition) {
+							property_resolvers[attribute.name] = attribute.resolve = (object, context, direct_entry?) => {
+								// TODO: Get raw record/entry?
+								const id = object[relationship.from ? relationship.from : primary_key];
+								const related_table = attribute.elements.definition.tableClass;
+								if (direct_entry) {
+									return searchByIndex(
+										{ attribute: relationship.to, value: id },
+										txnForContext(context).getReadTxn(),
+										false,
+										related_table
+									).asArray;
+								}
+								return related_table.search([{ attribute: relationship.to, value: id }], context).asArray;
+							};
+							attribute.set = () => {
+								throw new Error('Setting a one-to-many relationship property is not supported');
+							};
+							attribute.resolve.definition = attribute.elements.definition;
+							if (relationship.from) attribute.resolve.from = relationship.from;
+						} else
+							console.error(
+								`The one-to-many/many-to-many relationship property "${attribute.name}" in table "${table_name}" must have an array type referencing a table as the elements`
+							);
+					} else if (relationship.from) {
+						const definition = attribute.definition || attribute.elements?.definition;
+						if (definition) {
+							property_resolvers[attribute.name] = attribute.resolve = (object, context, direct_entry?) => {
+								const ids = object[relationship.from];
+								if (ids === undefined) return undefined;
+								if (attribute.elements) {
+									let has_promises;
+									const results = ids.map((id) => {
+										const value = direct_entry
+											? definition.tableClass.primaryStore.getEntry(id, {
+													transaction: txnForContext(context).getReadTxn(),
+											  })
+											: definition.tableClass.get(id, context);
+										if (value?.then) has_promises = true;
+										return value;
+									});
+									return relationship.filterMissing
+										? has_promises
+											? Promise.all(results).then((results) => results.filter(exists))
+											: results.filter(exists)
+										: has_promises
+										? Promise.all(results)
+										: results;
+								}
+								return direct_entry
+									? definition.tableClass.primaryStore.getEntry(ids, {
+											transaction: txnForContext(context).getReadTxn(),
+									  })
+									: definition.tableClass.get(ids, context);
+							};
+							attribute.set = (object, related) => {
+								if (Array.isArray(related)) {
+									const target_ids = related.map(
+										(related) => related[ID_PROPERTY] || related[definition.tableClass.primaryKey]
+									);
+									object[relationship.from] = target_ids;
+								} else {
+									const target_id = related[ID_PROPERTY] || related[definition.tableClass.primaryKey];
+									object[relationship.from] = target_id;
+								}
+							};
+							attribute.resolve.definition = attribute.definition || attribute.elements?.definition;
+							attribute.resolve.from = relationship.from;
+						} else {
+							console.error(
+								`The relationship property "${attribute.name}" in table "${table_name}" must be a type that references a table`
+							);
+						}
+					} else {
+						console.error(
+							`The relationship directive on "${attribute.name}" in table "${table_name}" must use either "from" or "to" arguments`
+						);
+					}
+				}
+			}
 			assignTrackedAccessors(this, this);
 		}
 		static async deleteHistory(end_time = 0) {
@@ -1458,16 +2132,18 @@ export function makeTable(options) {
 					localTime: key,
 					version: audit_record.version,
 					type: audit_record.type,
-					value: audit_record.getValue(primary_store),
+					value: audit_record.getValue(primary_store, true, key),
 					user: audit_record.user,
 				};
 			}
 		}
 		static async getHistoryOfRecord(id) {
 			const history = [];
+			if (id == undefined) throw new Error('An id is required');
 			const entry = primary_store.getEntry(id);
 			if (!entry) return history;
 			let next_local_time = entry.localTime;
+			if (!next_local_time) throw new Error('The entry does not have a local audit time');
 			const count = 0;
 			do {
 				await rest(); // yield to other async operations
@@ -1481,7 +2157,7 @@ export function makeTable(options) {
 						localTime: next_local_time,
 						version: audit_record.version,
 						type: audit_record.type,
-						value: audit_record.getValue(primary_store),
+						value: audit_record.getValue(primary_store, true, next_local_time),
 						user: audit_record.user,
 					});
 					next_local_time = audit_record.previousLocalTime;
@@ -1514,8 +2190,9 @@ export function makeTable(options) {
 				continue;
 			}
 			has_changes = true;
+			const index_nulls = index.indexNulls;
 			//if the update cleared out the attribute value we need to delete it from the index
-			let values = getIndexedValues(existing_value);
+			let values = getIndexedValues(existing_value, index_nulls);
 			if (values) {
 				if (LMDB_PREFETCH_WRITES)
 					index.prefetch(
@@ -1526,7 +2203,7 @@ export function makeTable(options) {
 					index.remove(values[i], id);
 				}
 			}
-			values = getIndexedValues(value);
+			values = getIndexedValues(value, index_nulls);
 			if (values) {
 				if (LMDB_PREFETCH_WRITES)
 					index.prefetch(
@@ -1554,6 +2231,9 @@ export function makeTable(options) {
 				break; // otherwise we have to test it, in this range, unicode characters could put it over the limit
 			case 'object':
 				if (id === null) return true;
+				break; // otherwise we have to test it
+			case 'bigint':
+				if (id < 2n ** 64n && id > -(2n ** 64n)) return true;
 				break; // otherwise we have to test it
 			default:
 				throw new Error('Invalid primary key type: ' + typeof id);
@@ -1655,6 +2335,19 @@ export function makeTable(options) {
 			}
 		});
 	}
+	function getTablePermissions(user) {
+		if (!user?.role) return;
+		const permission = user.role.permission;
+		if (permission.super_user) return FULL_PERMISSIONS;
+		const db_permission = permission[database_name];
+		let table,
+			tables = db_permission?.tables;
+		if (tables) {
+			return tables[table_name];
+		} else if (database_name === 'data' && (table = permission[table_name]) && !table.tables) {
+			return table;
+		}
+	}
 
 	function ensureLoadedFromSource(id, entry, context, resource?) {
 		if (has_source_get) {
@@ -1693,9 +2386,6 @@ export function makeTable(options) {
 	function txnForContext(context: Context) {
 		let transaction = context?.transaction;
 		if (transaction) {
-			if (!transaction.open) {
-				throw new Error('Can not use a transaction that is not open');
-			}
 			if (!transaction.lmdbDb) {
 				// this is an uninitialized DatabaseTransaction, we can claim it
 				transaction.lmdbDb = primary_store;
@@ -1718,6 +2408,78 @@ export function makeTable(options) {
 			return new ImmediateTransaction();
 		}
 	}
+	function getAttributeValue(entry, attribute_name, context) {
+		if (!entry) {
+			return;
+		}
+		last_entry = entry;
+		const record = entry.value || entry.deref?.() || (last_entry = primary_store.getEntry(entry.key))?.value;
+		if (typeof attribute_name === 'object') {
+			// attribute_name is an array of attributes, pointing to nested attribute
+			let resolvers = property_resolvers;
+			let value = record;
+			for (let i = 0, l = attribute_name.length; i < l; i++) {
+				const attribute = attribute_name[i];
+				const resolver = resolvers?.[attribute];
+				value = resolver && value ? resolver(value, context, true)?.value : value?.[attribute];
+				resolvers = resolver?.definition?.tableClass?.propertyResolvers;
+			}
+			return value;
+		}
+		const resolver = property_resolvers[attribute_name];
+		return resolver ? resolver(record, context) : record[attribute_name];
+	}
+	function transformToEntries(ids, select, context, filters?) {
+		const read_txn = txnForContext(context).getReadTxn();
+		// TODO: Test and ensure that we break out of these loops when a connection is lost
+		const filters_length = filters?.length;
+		const load_options = {
+			transaction: read_txn,
+			lazy: filters_length > 0 || typeof select === 'string' || select?.length < 4,
+			alwaysPrefetch: true,
+		};
+		let id_filters_applied;
+		// for filter operations, we intentionally use async and yield the event turn so that scanning queries
+		// do not hog resources and give more processing opportunity for more efficient index-driven queries.
+		// this also gives an opportunity to prefetch and ensure any page faults happen in a different thread
+		function processEntry(entry, id?) {
+			const record = entry?.value;
+			if (!record) return SKIP;
+			// apply the record-level filters
+			for (let i = 0; i < filters_length; i++) {
+				if (id_filters_applied?.includes(i)) continue; // already applied
+				if (!filters[i](record, entry)) return SKIP; // didn't match filters
+			}
+			if (id !== undefined) entry.key = id;
+			return entry;
+		}
+		if (filters_length > 0 || !ids.hasEntries) {
+			let results = ids.map((id_or_entry) => {
+				id_filters_applied = null;
+				if (typeof id_or_entry === 'object' && id_or_entry.key !== undefined)
+					return filters_length > 0 ? processEntry(id_or_entry) : id_or_entry; // already an entry
+				if (id_or_entry == undefined) {
+					return SKIP;
+				}
+				// it is an id, so we can try to use id any filters that are available (note that these can come into existence later, during the query)
+				for (let i = 0; i < filters_length; i++) {
+					const filter = filters[i];
+					const idFilter = filter.idFilter;
+					if (idFilter) {
+						if (!idFilter(id_or_entry)) return SKIP; // didn't match filters
+						if (!id_filters_applied) id_filters_applied = [];
+						id_filters_applied.push(i);
+					}
+				}
+				return loadLocalRecord(id_or_entry, context, load_options, false, processEntry);
+			});
+			if (Array.isArray(ids)) results = results.filter((entry) => entry !== SKIP);
+			results.hasEntries = true;
+			return results;
+		}
+		return ids;
+	}
+
 	/**
 	 * This is used to record that a retrieve a record from source
 	 */
@@ -1926,6 +2688,9 @@ export function makeTable(options) {
 								clearTimeout(cleanup_timer);
 								return;
 							}
+							const MAX_CLEANUP_CONCURRENCY = 50;
+							const outstanding_cleanup_operations = new Array(MAX_CLEANUP_CONCURRENCY);
+							let cleanup_index = 0;
 							harper_logger.trace(`Starting cleanup scan for ${table_name}`);
 							try {
 								let count = 0;
@@ -1938,13 +2703,21 @@ export function makeTable(options) {
 								})) {
 									// if there is no auditing and we are tracking deletion, need to do cleanup of
 									// these deletion entries (audit has its own scheduled job for this)
+									let resolution;
 									if (record === null && !audit && version + DELETED_RECORD_EXPIRATION < Date.now()) {
 										// make sure it is still deleted when we do the removal
-										primary_store.remove(key, version);
+										resolution = primary_store.remove(key, version);
 									} else if (expiresAt && expiresAt + eviction_ms < Date.now()) {
 										// evict!
-										TableResource.evict(key, record, version);
+										resolution = TableResource.evict(key, record, version);
 										count++;
+									}
+									if (resolution) {
+										await outstanding_cleanup_operations[cleanup_index];
+										outstanding_cleanup_operations[cleanup_index] = resolution.catch((error) => {
+											harper_logger.error('Cleanup error', error);
+										});
+										if (++cleanup_index >= MAX_CLEANUP_CONCURRENCY) cleanup_index = 0;
 									}
 									await rest();
 								}
@@ -2029,15 +2802,17 @@ export function coerceType(value, attribute) {
 	//if a type is String is it safe to execute a .toString() on the value and return? Does not work for Array/Object so we would need to detect if is either of those first
 	if (value === null) {
 		return value;
-	} else if (type === 'Int' || type === 'Long') return parseInt(value);
-	else if (type === 'Float') return parseFloat(value);
+	} else if (type === 'Int' || type === 'Long') return value === 'null' ? null : parseInt(value);
+	else if (type === 'Float') return value === 'null' ? null : parseFloat(value);
+	else if (type === 'BigInt') return value === 'null' ? null : BigInt(value);
 	else if (type === 'Date') {
 		//if the value is not an integer (to handle epoch values) and does not end in a timezone we suffiz with 'Z' tom make sure the Date is GMT timezone
 		if (typeof value !== 'number' && !ENDS_WITH_TIMEZONE.test(value)) {
 			value += 'Z';
 		}
+		if (value === 'null') return null;
 		return new Date(value);
-	} else if (!type) {
+	} else if (!type || type === 'Any') {
 		return autoCast(value);
 	}
 	return value;
@@ -2070,4 +2845,8 @@ export function updateResource(resource, entry) {
 	resource[ENTRY_PROPERTY] = entry;
 	resource[RECORD_PROPERTY] = entry?.value ?? null;
 	resource[VERSION_PROPERTY] = entry?.version;
+}
+// for filtering
+function exists(value) {
+	return value != null;
 }

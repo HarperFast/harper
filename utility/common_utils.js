@@ -18,7 +18,8 @@ const https = require('https');
 const http = require('http');
 const { hdb_errors } = require('./errors/hdbError');
 
-const ISO_DATE = /^((\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d\.\d+([+-][0-2]\d:[0-5]\d|Z))|(\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d([+-][0-2]\d:[0-5]\d|Z))|(\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d([+-][0-2]\d:[0-5]\d|Z)))$/;
+const ISO_DATE =
+	/^((\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d\.\d+([+-][0-2]\d:[0-5]\d|Z))|(\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d([+-][0-2]\d:[0-5]\d|Z))|(\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d([+-][0-2]\d:[0-5]\d|Z)))$/;
 
 const async_set_timeout = require('util').promisify(setTimeout);
 const HDB_PROC_START_TIMEOUT = 100;
@@ -239,8 +240,7 @@ function autoCast(data) {
 		return Number(data);
 	}
 
-	if(ISO_DATE.test(data))
-		return new Date(data);
+	if (ISO_DATE.test(data)) return new Date(data);
 
 	return data;
 }
@@ -904,7 +904,6 @@ function transformReq(req) {
 	}
 	if (req.database) req.schema = req.database;
 }
-
 
 function convertToMS(interval) {
 	let seconds = 0;

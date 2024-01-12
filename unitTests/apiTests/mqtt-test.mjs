@@ -1,11 +1,14 @@
 'use strict';
 
 import { assert, expect } from 'chai';
-import axios from 'axios';
 import { decode, encode, DecoderStream } from 'cbor-x';
 import { getVariables, callOperation } from './utility.js';
 import { setupTestApp } from './setupTestApp.mjs';
+import { get as env_get } from '../../utility/environment/environmentManager.js';
 import { connect } from 'mqtt';
+import { readFileSync } from 'fs';
+import { start as startMQTT } from '../../ts-build/server/mqtt.js';
+import axios from 'axios';
 import {
 	setNATSReplicator,
 	setPublishToStream,
@@ -47,11 +50,9 @@ describe('test MQTT connections and commands', () => {
 		});
 		await new Promise((resolve, reject) => {
 			client2.on('connect', (connack) => {
-				console.log(connack);
 				resolve();
 			});
 			client2.on('error', (error) => {
-				console.error(error);
 				reject(error);
 			});
 		});
@@ -61,7 +62,6 @@ describe('test MQTT connections and commands', () => {
 		let path = 'VariedProps/' + available_records[1];
 		await new Promise((resolve, reject) => {
 			client.subscribe(path, function (err) {
-				//console.log('subscribed', err);
 				if (err) reject(err);
 				else {
 					//	client.publish('VariedProps/' + available_records[2], 'Hello mqtt')
@@ -69,11 +69,29 @@ describe('test MQTT connections and commands', () => {
 			});
 			client.once('message', (topic, payload, packet) => {
 				let record = decode(payload);
-				console.log(topic, record);
 				resolve();
 			});
 		});
 	});
+	it('subscribe to retained/persisted record but with retain handling disabling retain messages', async function () {
+		let path = 'VariedProps/' + available_records[1];
+		await new Promise((resolve, reject) => {
+			client2.subscribe(path, { rh: 2 }, function (err) {
+				if (err) reject(err);
+			});
+			const onMessage = (topic, payload, packet) => {
+				let record = decode(payload);
+				console.log(topic, record);
+				reject(new Error('Should not receive any retained messages'));
+			};
+			client2.once('message', onMessage);
+			setTimeout(() => {
+				client2.off('message', onMessage);
+				resolve();
+			}, 50);
+		});
+	});
+
 	it('can repeatedly publish', async () => {
 		const vus = 5;
 		const tableName = 'SimpleRecord';
@@ -92,25 +110,26 @@ describe('test MQTT connections and commands', () => {
 				protocol: 'mqtt',
 			});
 			clients.push(client);
-			subscriptions.push(new Promise((resolve) => {
-				client.on('connect', function (connack) {
-					client.subscribe(topic, function (err) {
-						console.error(err);
-						if (!err) {
-							resolve();
-							intervals.push(
-								setInterval(() => {
-									published++;
-									client.publish(topic, JSON.stringify({name: 'radbot 9000', pub_time: Date.now()}), {
-										qos: 1,
-										retain: false,
-									});
-								}, 1)
-							);
-						}
+			subscriptions.push(
+				new Promise((resolve) => {
+					client.on('connect', function (connack) {
+						client.subscribe(topic, function (err) {
+							if (!err) {
+								resolve();
+								intervals.push(
+									setInterval(() => {
+										published++;
+										client.publish(topic, JSON.stringify({ name: 'radbot 9000', pub_time: Date.now() }), {
+											qos: 1,
+											retain: false,
+										});
+									}, 1)
+								);
+							}
+						});
 					});
-				});
-			}));
+				})
+			);
 
 			client.on('message', function (topic, message) {
 				let now = Date.now();
@@ -135,6 +154,81 @@ describe('test MQTT connections and commands', () => {
 		assert(replicated_published_messages.length > 10);
 	});
 
+	it('last will should be published on connection loss', async () => {
+		const topic = `SimpleRecord/52`;
+		const client_to_die = connect({
+			host: 'localhost',
+			clean: true,
+			will: {
+				topic,
+				payload: JSON.stringify({ name: 'last will and testimony' }),
+				qos: 1,
+				retain: false,
+			},
+		});
+		await new Promise((resolve, reject) => {
+			client_to_die.on('connect', function (connack) {
+				resolve(connack);
+			});
+			client_to_die.on('error', reject);
+		});
+		await new Promise((resolve, reject) => {
+			client.subscribe(topic, function (err) {
+				if (err) reject(err);
+			});
+
+			client.once('message', function (topic, message) {
+				try {
+					let data = decode(message);
+					// message is Buffer
+					assert.deepEqual(data, { name: 'last will and testimony' });
+					resolve();
+				} catch (error) {
+					reject(error);
+				}
+			});
+			client_to_die.end(true); // this closes the connection without a disconnect packet
+		});
+	});
+
+	it('last will should not be published on explicit disconnect', async () => {
+		const topic = `SimpleRecord/53`;
+		const client_to_die = connect({
+			host: 'localhost',
+			clean: true,
+			will: {
+				topic,
+				payload: JSON.stringify({ name: 'last will and testimony' }),
+				qos: 1,
+				retain: false,
+			},
+		});
+		let onMessage;
+		await new Promise((resolve, reject) => {
+			client_to_die.on('connect', function (connack) {
+				resolve(connack);
+			});
+			client_to_die.on('error', reject);
+		});
+		await new Promise((resolve, reject) => {
+			client.subscribe(topic, function (err) {
+				if (err) reject(err);
+			});
+			onMessage = function (topic, message) {
+				try {
+					reject('Should not get a message on topic ' + topic);
+				} catch (error) {
+					reject(error);
+				}
+			};
+			client.once('message', onMessage);
+			setTimeout(resolve, 50);
+			client_to_die.end(); // this closes the connection with a disconnect packet
+		});
+
+		client.off('message', onMessage);
+	});
+
 	it('can publish non-JSON', async () => {
 		const topic = `SimpleRecord/51`;
 		const client = connect({
@@ -143,11 +237,11 @@ describe('test MQTT connections and commands', () => {
 			connectTimeout: 2000,
 			protocol: 'mqtt',
 		});
-		await new Promise(resolve => {
+		await new Promise((resolve) => {
 			client.on('connect', function (connack) {
 				client.subscribe(topic, function (err) {
 					console.error(err);
-					client.publish(topic, Buffer.from([1,2,3,4,5]), {
+					client.publish(topic, Buffer.from([1, 2, 3, 4, 5]), {
 						qos: 1,
 						retain: false,
 					});
@@ -157,7 +251,7 @@ describe('test MQTT connections and commands', () => {
 			client.on('message', function (topic, message) {
 				let now = Date.now();
 				// message is Buffer
-				assert.deepEqual(Array.from(message), [1,2,3,4,5]);
+				assert.deepEqual(Array.from(message), [1, 2, 3, 4, 5]);
 				resolve();
 			});
 
@@ -166,6 +260,49 @@ describe('test MQTT connections and commands', () => {
 				console.error(error);
 			});
 		});
+	});
+	it('publish and subscribe are restricted', async () => {
+		const topic = `SimpleRecord/51`;
+		const client_authorized = connect({
+			host: 'localhost',
+			clean: true,
+			connectTimeout: 2000,
+			protocol: 'mqtt',
+		});
+		const client = connect({
+			host: 'localhost',
+			clean: true,
+			connectTimeout: 2000,
+			protocol: 'mqtt',
+			username: 'restricted',
+			password: 'restricted',
+		});
+		let published_messages = [];
+		await new Promise((resolve) => {
+			client.on('connect', function () {
+				client.subscribe(topic, function (err, subscriptions) {
+					assert.equal(subscriptions[0].qos, 128);
+					client_authorized.subscribe(topic, function (err, subscriptions) {
+						console.log(err);
+						client.publish(topic, JSON.stringify({ name: 'should not be published ' }), {
+							qos: 1,
+							retain: false,
+						});
+						setTimeout(resolve, 50);
+					});
+				});
+			});
+
+			client_authorized.on('message', function (topic, message) {
+				published_messages.push(topic);
+			});
+
+			client.on('error', function (error) {
+				// message is Buffer
+				console.error(error);
+			});
+		});
+		assert.equal(published_messages.length, 0);
 	});
 	it('subscribe to retained record with upsert operation', async function () {
 		let path = 'SimpleRecord/77';
@@ -212,6 +349,90 @@ describe('test MQTT connections and commands', () => {
 				}
 			);
 		});
+		client.end();
+	});
+	it('subscribe to retained record with patch operations', async function () {
+		let path = 'SimpleRecord/78';
+		let client;
+		await new Promise((resolve, reject) => {
+			client = connect('mqtt://localhost:1883', {
+				clean: false,
+				clientId: 'with-patches',
+			});
+			client.on('connect', resolve);
+			client.on('error', reject);
+		});
+		let headers = {
+			'Content-Type': 'application/json',
+		};
+
+		await new Promise(async (resolve, reject) => {
+			let messages = [];
+			client.subscribe(path, { qos: 1 }, function (err) {
+				if (err) reject(err);
+			});
+			const onMessage = (topic, payload, packet) => {
+				let record = JSON.parse(payload);
+				messages.push(record);
+				if (messages.length == 2) {
+					assert.equal(messages[0].name, 'a starting point');
+					assert.equal(messages[0].count, 2);
+					assert.equal(messages[1].count, 3);
+					assert.equal(messages[1].name, 'an updated name');
+					assert.equal(messages[1].newProperty, 'new value');
+					resolve();
+					client.off('message', onMessage);
+				}
+			};
+			client.on('message', onMessage);
+			await axios.put('http://localhost:9926/SimpleRecord/78', { name: 'a starting point', count: 2 }, { headers });
+			await axios.patch(
+				'http://localhost:9926/SimpleRecord/78',
+				{ name: 'an updated name', newProperty: 'new value', count: { __op__: 'add', value: 1 } },
+				{ headers }
+			);
+			console.log('finished patch');
+		});
+		await new Promise((resolve) => client.end(resolve));
+		await delay(10);
+		await axios.patch(
+			'http://localhost:9926/SimpleRecord/78',
+			{ name: 'update 2', newProperty: 'newer value', count: { __op__: 'add', value: 1 } },
+			{ headers }
+		);
+		await axios.patch(
+			'http://localhost:9926/SimpleRecord/78',
+			{ name: 'update 3', count: { __op__: 'add', value: 1 } },
+			{ headers }
+		);
+		await new Promise(async (resolve, reject) => {
+			let messages = [];
+			client = connect('mqtt://localhost:1883', {
+				clean: false,
+				clientId: 'with-patches',
+			});
+			client.on('error', reject);
+			client.on('message', (topic, payload, packet) => {
+				let record = JSON.parse(payload);
+				messages.push(record);
+				if (messages.length == 3) {
+					assert.equal(messages[0].name, 'update 2');
+					assert.equal(messages[0].count, 4);
+					assert.equal(messages[1].newProperty, 'newer value');
+					assert.equal(messages[1].name, 'update 3');
+					assert.equal(messages[1].count, 5);
+					assert.equal(messages[2].name, 'update 4');
+					assert.equal(messages[2].count, 6);
+					resolve();
+				}
+			});
+			await axios.patch(
+				'http://localhost:9926/SimpleRecord/78',
+				{ name: 'update 4', count: { __op__: 'add', value: 1 } },
+				{ headers }
+			);
+		});
+
 		client.end();
 	});
 	it('subscribe twice', async function () {
@@ -264,12 +485,37 @@ describe('test MQTT connections and commands', () => {
 		});
 		client.end();
 	});
-	it('subscribe and unsubscribe', async function () {
-		let client = connect('mqtt://localhost:1883', {
+	it('subscribe and unsubscribe with mTLS', async function () {
+		let server;
+		await new Promise((resolve, reject) => {
+			server = startMQTT({
+				server: global.server,
+				securePort: 8884,
+				network: { mtls: { user: 'HDB_ADMIN', required: true } },
+			}).listen(8884, resolve);
+			server.on('error', reject);
+		});
+		let bad_client = connect('mqtts://localhost:8884', {
+			clientId: 'test-bad-mtls',
+		});
+
+		const private_key_path = env_get('tls_privateKey');
+		const certificate_path = env_get('tls_certificate');
+		const certificate_authority_path = env_get('tls_certificateAuthority');
+		let client = connect('mqtts://localhost:8884', {
+			key: readFileSync(private_key_path),
+			// if they have a CA, we append it, so it is included
+			cert:
+				readFileSync(certificate_path) +
+				(certificate_authority_path ? '\n\n' + readFileSync(certificate_authority_path) : ''),
+			ca: certificate_authority_path && readFileSync(certificate_authority_path),
 			clean: true,
-			clientId: 'test-client-sub2',
+			clientId: 'test-client-mtls',
 		});
 		await new Promise((resolve, reject) => {
+			bad_client.on('connect', () => {
+				reject('Client should not be able to connect to mTLS without a certificate');
+			});
 			client.on('connect', resolve);
 			client.on('error', reject);
 		});
@@ -309,26 +555,144 @@ describe('test MQTT connections and commands', () => {
 		});
 		client.end();
 	});
-	it('subscribe to wildcard/full table', async function () {
+	it('subscribe to bad topic', async function () {
 		await new Promise((resolve, reject) => {
-			client2.subscribe('SimpleRecord/+', function (err) {
+			client2.subscribe('DoesNotExist/+', function (err, granted) {
 				console.log('subscribed', err);
 				if (err) reject(err);
 				else {
-					resolve();
+					resolve(assert.equal(granted[0].qos, 0x8f));
 				}
 			});
 		});
-		let message_count = 0;
-		await new Promise((resolve, reject) => {
-			client2.on('message', (topic, payload, packet) => {
-				let record = JSON.parse(payload);
-				if (++message_count == 3) resolve();
+	});
+	it('subscribe to single-level wildcard/full table', async function () {
+		const topic_expectations = {
+			'SimpleRecord/+': ['SimpleRecord/', 'SimpleRecord/44', 'SimpleRecord/47'],
+			'SimpleRecord/+/33': ['SimpleRecord/sub/33'],
+			'SimpleRecord/sub/+': ['SimpleRecord/sub/33'],
+			'SimpleRecord/sub/+/33': ['SimpleRecord/sub/sub2/33'],
+			'SimpleRecord/+/+/+': ['SimpleRecord/sub/sub2/33'],
+			'SimpleRecord/+/sub2/+': ['SimpleRecord/sub/sub2/33'],
+			'SimpleRecord/+/+': ['SimpleRecord/sub/33'],
+			'SimpleRecord/sub/#': ['SimpleRecord/sub/33', 'SimpleRecord/sub/sub2/33'],
+			'SimpleRecord/+/sub2/#': ['SimpleRecord/sub/sub2/33'],
+		};
+		for (const subscription_topic in topic_expectations) {
+			let expected_topics = topic_expectations[subscription_topic];
+			await new Promise((resolve, reject) => {
+				client2.subscribe(subscription_topic, function (err) {
+					if (err) reject(err);
+					else {
+						resolve();
+					}
+				});
 			});
+			let message_count = 0;
+			let message_listener;
+			await new Promise((resolve, reject) => {
+				client2.on(
+					'message',
+					(message_listener = (topic, payload, packet) => {
+						assert(expected_topics.includes(topic));
+						let record = JSON.parse(payload);
+						assert(record.name);
+						if (++message_count == expected_topics.length) resolve();
+					})
+				);
+				client2.publish(
+					'SimpleRecord/44',
+					JSON.stringify({
+						name: 'This is a test 1',
+					}),
+					{
+						retain: false,
+						qos: 1,
+					}
+				);
+				client2.publish(
+					'SimpleRecord/sub/33',
+					JSON.stringify({
+						name: 'This is a test to a sub-topic',
+					}),
+					{
+						retain: false,
+						qos: 1,
+					}
+				);
+				client2.publish(
+					'SimpleRecord/sub/sub2/33',
+					JSON.stringify({
+						name: 'This is a test to a deeper sub-topic',
+					}),
+					{
+						retain: false,
+						qos: 1,
+					}
+				);
+
+				client.publish(
+					'SimpleRecord/47',
+					JSON.stringify({
+						name: 'This is a test 2',
+					}),
+					{
+						retain: true,
+						qos: 1,
+					}
+				);
+
+				client.publish(
+					'SimpleRecord/',
+					JSON.stringify({
+						name: 'This is a test to the generic table topic',
+					}),
+					{
+						qos: 1,
+					}
+				);
+			});
+			client2.off('message', message_listener);
+			await new Promise((resolve, reject) => {
+				client2.unsubscribe(subscription_topic, function (err) {
+					if (err) reject(err);
+					else resolve();
+				});
+			});
+		}
+	});
+	it('subscribe to multi-level wildcard/full table', async function () {
+		await new Promise((resolve, reject) => {
+			client2.subscribe('SimpleRecord/#', function (err) {
+				if (err) reject(err);
+				else resolve();
+			});
+		});
+		let message_count = 0;
+		let message_listener;
+		await new Promise((resolve, reject) => {
+			client2.on(
+				'message',
+				(message_listener = (topic, payload, packet) => {
+					let record = JSON.parse(payload);
+					assert(record.name);
+					if (++message_count == 4) resolve();
+				})
+			);
 			client2.publish(
 				'SimpleRecord/44',
 				JSON.stringify({
 					name: 'This is a test 1',
+				}),
+				{
+					retain: false,
+					qos: 1,
+				}
+			);
+			client2.publish(
+				'SimpleRecord/sub/33',
+				JSON.stringify({
+					name: 'This is a test to a sub-topic', // should go to multi-level wildcard
 				}),
 				{
 					retain: false,
@@ -356,6 +720,31 @@ describe('test MQTT connections and commands', () => {
 					qos: 1,
 				}
 			);
+		});
+		client2.off('message', message_listener);
+		await new Promise((resolve, reject) => {
+			client2.unsubscribe('SimpleRecord/#', function (err) {
+				if (err) reject(err);
+				else resolve();
+			});
+		});
+	});
+	it('subscribe to wildcards we do not support', async function () {
+		await new Promise((resolve, reject) => {
+			client2.subscribe('SimpleRecord/+test', function (err, granted) {
+				if (err) resolve(err);
+				else {
+					resolve(assert.equal(granted[0].qos, 128)); // assert that the subscription was rejected
+				}
+			});
+		});
+		await new Promise((resolve, reject) => {
+			client2.subscribe('+/SimpleRecord/test', function (err, granted) {
+				if (err) reject(err);
+				else {
+					resolve(assert.equal(granted[0].qos, 0x8f)); // assert that the subscription was rejected
+				}
+			});
 		});
 	});
 	it('subscribe with QoS=1 and reconnect with non-clean session', async function () {
@@ -439,15 +828,18 @@ describe('test MQTT connections and commands', () => {
 				qos: 1,
 			}
 		);
-		await new Promise((resolve) => client2.publish(
-			'SimpleRecord/42',
-			JSON.stringify({
-				name: 'This is a test of publishing to a disconnected durable session 3',
-			}),
-			{
-				qos: 1,
-			}, resolve
-		));
+		await new Promise((resolve) =>
+			client2.publish(
+				'SimpleRecord/42',
+				JSON.stringify({
+					name: 'This is a test of publishing to a disconnected durable session 3',
+				}),
+				{
+					qos: 1,
+				},
+				resolve
+			)
+		);
 		await delay(10);
 		client = connect('mqtt://localhost:1883', {
 			clean: false,
@@ -460,17 +852,17 @@ describe('test MQTT connections and commands', () => {
 				const message = packet.payload;
 				messages.push(message.toString());
 				done();
-				if (message.toString().includes('session 2')) {// skip the first one to trigger out of order acking
+				if (message.toString().includes('session 2')) {
+					// skip the first one to trigger out of order acking
 					return;
 				}
-				client._sendPacket({cmd: 'puback', messageId: packet.messageId, reasonCode: 0}, () => {});
+				client._sendPacket({ cmd: 'puback', messageId: packet.messageId, reasonCode: 0 }, () => {});
 				if (message.toString().includes('session 3')) resolve();
 			};
 		});
 		await delay(50);
 		client.end();
-		if (messages.length !== 3)
-			console.error('Incorrect messages', {messages});
+		if (messages.length !== 3) console.error('Incorrect messages', { messages });
 		assert(messages.length === 3);
 		messages = [];
 		client = connect('mqtt://localhost:1883', {
@@ -509,7 +901,6 @@ describe('test MQTT connections and commands', () => {
 					qos: 2,
 				},
 				function (err) {
-					console.log('subscribed', err);
 					if (err) reject(err);
 					else {
 						resolve();
@@ -566,7 +957,7 @@ describe('test MQTT connections and commands', () => {
 		const { FourPropWithHistory } = await import('../testApp/resources.js');
 		assert.equal(messages.length, 20);
 		assert.equal(FourPropWithHistory.acknowledgements, 10);
-		await FourPropWithHistory.put('something new', {name: 'something new'});
+		await FourPropWithHistory.put('something new', { name: 'something new' });
 		await delay(50);
 		assert.equal(messages.length, 22);
 		assert.equal(FourPropWithHistory.acknowledgements, 11);
@@ -606,8 +997,8 @@ describe('test MQTT connections and commands', () => {
 		assert.equal(FourPropWithHistory.acknowledgements, 2);
 	});
 	after(() => {
-		client.end();
-		client2.end();
+		client?.end();
+		client2?.end();
 	});
 });
 function delay(ms) {

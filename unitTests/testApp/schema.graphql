@@ -14,6 +14,17 @@ type FourProp @table(audit: "1d", replicated: false) {
 	title: String
 	birthday: Date @indexed
 }
+type Related @table @export {
+	id: ID @primaryKey
+	name: String @indexed
+	otherTable: [SubObject] @relationship(to: relatedId)
+}
+type ManyToMany @table @export {
+	id: ID @primaryKey
+	name: String @indexed
+	subObjectIds: [ID] @indexed
+	subObjects: [SubObject] @relationship(from: "subObjectIds")
+}
 
 type HasTimeStampsNoPK @table @export {
 	created: Float @createdTime
@@ -27,6 +38,9 @@ type SubObject @table(audit: false) {
 	subObject: SomeObject
 	subArray: [SomeObject]
 	any: Any
+	relatedId: ID @indexed
+	related: Related @relationship(from: "relatedId")
+	manyToMany: [ManyToMany] @relationship(to: subObjectIds)
 }
 type SimpleCache @table {
 	id: ID @primaryKey
@@ -36,4 +50,10 @@ type Query {
 	VariedProps: VariedProps
 	SimpleRecord: SimpleRecord
 	FourProp: FourProp
+}
+
+type HasBigInt @table @export {
+	id: BigInt @primaryKey
+	name: String @indexed
+	anotherBigint: BigInt
 }

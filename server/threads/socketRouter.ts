@@ -4,7 +4,8 @@ import * as hdb_terms from '../../utility/hdbTerms';
 import * as harper_logger from '../../utility/logging/harper_logger';
 import { unlinkSync, existsSync } from 'fs';
 import { recordAction } from '../../resources/analytics';
-const { isMainThread } = require('worker_threads');
+import { isMainThread } from 'worker_threads';
+import { checkMemoryLimit } from '../../utility/registration/hdb_license';
 const workers = [];
 let queued_sockets = [];
 const handle_socket = [];
@@ -21,6 +22,7 @@ if (isMainThread) {
 	});
 }
 
+const LICENSE_NAG_PERIOD = 600000; // ten minutes
 export async function startHTTPThreads(thread_count = 2, dynamic_threads?: boolean) {
 	if (dynamic_threads) {
 		startHTTPWorker(0, 1, true);
@@ -32,6 +34,13 @@ export async function startHTTPThreads(thread_count = 2, dynamic_threads?: boole
 			return Promise.resolve([]);
 		}
 		await loadRootComponents();
+	}
+	const license_warning = checkMemoryLimit();
+	if (license_warning && !process.env.DEV_MODE) {
+		console.error(license_warning);
+		setInterval(() => {
+			harper_logger.notify(license_warning);
+		}, LICENSE_NAG_PERIOD).unref();
 	}
 	for (let i = 0; i < thread_count; i++) {
 		startHTTPWorker(i, thread_count);

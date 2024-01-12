@@ -35,6 +35,12 @@ export class ResourceBridge extends LMDBBridge {
 	}
 
 	async searchByConditions(search_object) {
+		if (search_object.select !== undefined) search_object.get_attributes = search_object.select;
+		for (const condition of search_object.conditions || []) {
+			if (condition?.attribute !== undefined) condition.search_attribute = condition.attribute;
+			if (condition?.comparator !== undefined) condition.search_type = condition.comparator;
+			if (condition?.value !== undefined) condition.search_value = condition.value;
+		}
 		const validation_error = search_validator(search_object, 'conditions');
 		if (validation_error) {
 			throw handleHDBError(validation_error, validation_error.message, 400, undefined, undefined, true);
@@ -44,11 +50,18 @@ export class ResourceBridge extends LMDBBridge {
 			throw new ClientError(`Table ${search_object.table} not found`);
 		}
 
-		const conditions = search_object.conditions.map((condition) => ({
-			attribute: condition.search_attribute,
-			comparator: condition.search_type,
-			value: condition.search_value,
-		}));
+		const conditions = search_object.conditions.map(mapCondition);
+		function mapCondition(condition) {
+			if (condition.conditions) {
+				condition.conditions = condition.conditions.map(mapCondition);
+				return condition;
+			} else
+				return {
+					attribute: condition.search_attribute ?? condition.attribute,
+					comparator: condition.search_type ?? condition.comparator,
+					value: condition.search_value !== undefined ? condition.search_value : condition.value, // null is valid value
+				};
+		}
 
 		return table.search({
 			conditions,
@@ -58,7 +71,8 @@ export class ResourceBridge extends LMDBBridge {
 			offset: search_object.offset,
 			reverse: search_object.reverse,
 			select: getSelect(search_object, table),
-			allowFullScan: true,
+			sort: search_object.sort,
+			allowFullScan: true, // operations API can do full scans by default, but REST is more cautious about what it allows
 		});
 	}
 	/**
@@ -317,6 +331,7 @@ export class ResourceBridge extends LMDBBridge {
 	 * @param {SearchByHashObject} search_object
 	 */
 	searchByHash(search_object) {
+		if (search_object.select !== undefined) search_object.get_attributes = search_object.select;
 		const validation_error = search_validator(search_object, 'hashes');
 		if (validation_error) {
 			throw validation_error;
@@ -341,6 +356,10 @@ export class ResourceBridge extends LMDBBridge {
 		if (comparator && VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[comparator] === undefined) {
 			throw new Error(`Value search comparator - ${comparator} - is not valid`);
 		}
+		if (search_object.select !== undefined) search_object.get_attributes = search_object.select;
+		if (search_object.attribute !== undefined) search_object.search_attribute = condition.attribute;
+		if (search_object.value !== undefined) search_object.search_value = condition.value;
+
 		const validation_error = search_validator(search_object, 'value');
 		if (validation_error) {
 			throw validation_error;

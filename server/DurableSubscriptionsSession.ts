@@ -3,6 +3,10 @@ import { keyArrayToString, resources } from '../resources/Resources';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { warn, trace } from '../utility/logging/harper_logger';
 import { transaction } from '../resources/transaction';
+import { getWorkerIndex } from '../server/threads/manageThreads';
+import { when_components_loaded } from '../server/threads/threadServer';
+import { server } from '../server/Server';
+
 const DurableSession = table({
 	database: 'system',
 	table: 'hdb_durable_session',
@@ -17,6 +21,36 @@ const DurableSession = table({
 		},
 	],
 });
+const LastWill = table({
+	database: 'system',
+	table: 'hdb_session_will',
+	attributes: [
+		{ name: 'id', isPrimaryKey: true },
+		{ name: 'topic', type: 'string' },
+		{ name: 'data' },
+		{ name: 'qos', type: 'number' },
+		{ name: 'retain', type: 'boolean' },
+		{ name: 'user', type: 'any' },
+	],
+});
+if (getWorkerIndex() === 0) {
+	(async () => {
+		await when_components_loaded;
+		await new Promise((resolve) => setTimeout(resolve, 2000));
+		for await (const will of LastWill.search({})) {
+			const data = will.data;
+			const message = Object.assign({}, will);
+			if (message.user?.username) message.user = await server.getUser(message.user.username);
+			transaction(message, () => {
+				try {
+					publish(message, data);
+				} finally {
+					LastWill.delete(will.id, message);
+				}
+			});
+		}
+	})();
+}
 
 /**
  * This is used for durable sessions, that is sessions in MQTT that are not "clean" sessions (and with QoS >= 1
@@ -47,8 +81,8 @@ const DurableSession = table({
 export async function getSession({
 	clientId: session_id,
 	user,
-	listener,
 	clean: non_durable,
+	will,
 }: {
 	clientId;
 	user;
@@ -67,6 +101,11 @@ export async function getSession({
 			if (session_resource) session_resource.delete();
 		}
 		session = new SubscriptionsSession(session_id, user);
+	}
+	if (will) {
+		will.id = session_id;
+		will.user = { username: user?.username };
+		LastWill.put(will);
 	}
 	return session;
 }
@@ -89,7 +128,7 @@ class SubscriptionsSession {
 		this.user = user;
 	}
 	async addSubscription(subscription_request, needs_ack, filter?) {
-		const { topic, omitCurrent: rh, startTime: start_time } = subscription_request;
+		const { topic, rh: retain_handling, startTime: start_time } = subscription_request;
 		const search_index = topic.indexOf('?');
 		let search, path;
 		if (search_index > -1) {
@@ -97,49 +136,103 @@ class SubscriptionsSession {
 			path = topic.slice(0, search_index);
 		} else path = topic;
 		if (!path) throw new Error('No topic provided');
-		let is_collection = false;
-		let is_shallow_wildcard;
-		if (path.endsWith('+') || path.endsWith('#')) {
-			is_collection = true;
-			if (path.endsWith('+')) is_shallow_wildcard = true;
-			// handle wildcard
-			path = path.slice(0, path.length - 1);
-		}
-
 		if (path.indexOf('.') > -1) throw new Error('Dots are not allowed in topic names');
-		if (path.indexOf('#') > -1 || path.indexOf('+') > -1) throw new Error('Only trailing wildcards are supported');
 		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
 		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
+		let omit_current;
 		if (existing_subscription) {
+			omit_current = retain_handling > 0;
 			existing_subscription.end();
 			this.subscriptions.splice(this.subscriptions.indexOf(existing_subscription), 1);
+		} else {
+			omit_current = retain_handling === 2;
 		}
 		const request = {
 			search,
 			async: true,
+			authorize: true,
 			user: this.user,
 			startTime: start_time,
-			omitCurrent: rh,
-			isCollection: is_collection,
-			shallowWildcard: is_shallow_wildcard,
+			omitCurrent: omit_current,
 			url: '',
 		};
 		if (start_time) trace('Resuming subscription from', topic, 'from', start_time);
 		const entry = resources.getMatch(path);
-		if (!entry) throw new Error(`The topic ${topic} does not exist, no resource has been defined to handle this topic`);
+		if (!entry) {
+			const not_found_error = new Error(
+				`The topic ${topic} does not exist, no resource has been defined to handle this topic`
+			);
+			not_found_error.statusCode = 404;
+			throw not_found_error;
+		}
 		request.url = entry.relativeURL;
+		if (request.url.indexOf('+') > -1 || request.url.indexOf('#') > -1) {
+			const path = request.url.slice(1); // remove leading slash
+			if (path.indexOf('#') > -1 && path.indexOf('#') !== path.length - 1)
+				throw new Error('Multi-level wildcards can only be used at the end of a topic');
+			// treat as a collection to get all children, but we will need to filter out any that are not direct children or matching the pattern
+			request.isCollection = true;
+			if (path.indexOf('+') === path.length - 1) {
+				// if it is only a trailing single-level wildcard, we can treat it as a shallow wildcard
+				// and use the optimized onlyChildren option, which will be faster, and does not require any filtering
+				request.onlyChildren = true;
+				request.url = '/' + path.slice(0, path.length - 1);
+			} else {
+				// otherwise we have a potentially complex wildcard, so we will need to filter out any that are not direct children or matching the pattern
+				const matching_path = path.split('/');
+				let needs_filter;
+				for (let i = 0; i < matching_path.length; i++) {
+					if (matching_path[i].indexOf('+') > -1) {
+						if (matching_path[i] === '+') needs_filter = true;
+						else throw new Error('Single-level wildcards can only be used as a topic level (between or after slashes)');
+					}
+				}
+				if (filter && needs_filter) throw new Error('Filters can not be combined');
+
+				let must_match_length = true;
+				if (matching_path[matching_path.length - 1] === '#') {
+					// only for any extra topic levels beyond the matching path
+					matching_path.length--;
+					must_match_length = false;
+				}
+				if (needs_filter) {
+					filter = (update) => {
+						const update_path = update.id;
+						if (!Array.isArray(update_path)) return false;
+						if (must_match_length && update_path.length !== matching_path.length) return false;
+						for (let i = 0; i < matching_path.length; i++) {
+							if (matching_path[i] !== '+' && matching_path[i] !== update_path[i]) return false;
+						}
+						return true;
+					};
+				}
+				const first_wildcard = matching_path.indexOf('+');
+				request.url =
+					'/' + (first_wildcard > -1 ? matching_path.slice(0, first_wildcard) : matching_path).concat('').join('/');
+			}
+		}
+
 		const resource_path = entry.path;
 		const resource = entry.Resource;
 		const subscription = await transaction(request, async () => {
 			const subscription = await resource.subscribe(request);
-			if (!subscription) throw new Error(`No subscription was returned from subscribe for topic ${topic}`);
+			if (!subscription) {
+				throw new Error(`No subscription was returned from subscribe for topic ${topic}`);
+			}
 			if (!subscription[Symbol.asyncIterator])
 				throw new Error(`Subscription is not (async) iterable for topic ${topic}`);
 			(async () => {
 				for await (const update of subscription) {
 					try {
 						let message_id;
-						if (update.type && update.type !== 'put' && update.type !== 'delete' && update.type !== 'message') continue;
+						if (
+							update.type &&
+							update.type !== 'put' &&
+							update.type !== 'delete' &&
+							update.type !== 'message' &&
+							update.type !== 'patch'
+						)
+							continue;
 						if (filter && !filter(update)) continue;
 						if (needs_ack) {
 							update.topic = topic;
@@ -188,38 +281,58 @@ class SubscriptionsSession {
 	async removeSubscription(topic) {
 		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
 		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
-		if (existing_subscription) existing_subscription.end();
+		if (existing_subscription) {
+			existing_subscription.end();
+			return true;
+		}
 	}
 	async publish(message, data) {
-		const { topic, retain } = message;
-		message.data = data;
 		message.user = this.user;
-		message.async = true;
-		const entry = resources.getMatch(topic);
-		if (!entry)
-			throw new Error(
-				`Can not publish to topic ${topic} as it does not exist, no resource has been defined to handle this topic`
-			);
-		message.url = entry.relativeURL;
-		const resource = entry.Resource;
-
-		return transaction(message, () => {
-			return retain
-				? data === undefined
-					? resource.delete(message, message)
-					: resource.put(message, message.data, message)
-				: resource.publish(message, message.data, message);
-		});
+		return publish(message, data);
 	}
 	setListener(listener: (message) => any) {
 		this.listener = listener;
 	}
-	disconnect() {
+	disconnect(client_terminated) {
+		const context = {};
+		transaction(context, async () => {
+			if (!client_terminated) {
+				const will = await LastWill.get(this.sessionId, context);
+				if (will?.doesExist()) {
+					await publish(will, will.data, context);
+				}
+			}
+			await LastWill.delete(this.sessionId, context);
+		}).catch((error) => {
+			warn(`Error publishing MQTT will for ${this.sessionId}`, error);
+		});
+
 		for (const subscription of this.subscriptions) {
 			subscription.end();
 		}
 		this.subscriptions = [];
 	}
+}
+function publish(message, data, context = message) {
+	const { topic, retain } = message;
+	message.data = data;
+	message.async = true;
+	message.authorize = true;
+	const entry = resources.getMatch(topic);
+	if (!entry)
+		throw new Error(
+			`Can not publish to topic ${topic} as it does not exist, no resource has been defined to handle this topic`
+		);
+	message.url = entry.relativeURL;
+	const resource = entry.Resource;
+
+	return transaction(context, () => {
+		return retain
+			? data === undefined
+				? resource.delete(message, context)
+				: resource.put(message, message.data, context)
+			: resource.publish(message, message.data, context);
+	});
 }
 export class DurableSubscriptionsSession extends SubscriptionsSession {
 	sessionRecord: any;

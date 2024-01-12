@@ -194,6 +194,7 @@ const INSTALL_PROMPTS = {
 	CLUSTERING_NODENAME: 'CLUSTERING_NODENAME',
 	CLUSTERING_ENABLED: 'CLUSTERING_ENABLED',
 	HDB_CONFIG: 'HDB_CONFIG',
+	OPERATIONSAPI_NETWORK_SECUREPORT: 'OPERATIONSAPI_NETWORK_SECUREPORT',
 	// Prompts below are pre 4.0.0 release
 	CLUSTERING_PORT: 'CLUSTERING_PORT',
 	HDB_ROOT: 'HDB_ROOT',
@@ -454,6 +455,8 @@ const SERVICE_ACTIONS_ENUM = {
 	UPGRADE: 'upgrade',
 	HELP: 'help',
 	STATUS: 'status',
+	OPERATION: 'operation',
+	RENEWCERTS: 'renew-certs',
 };
 
 //describes the Geo Conversion types
@@ -571,6 +574,7 @@ const CONFIG_PARAMS = {
 	CLUSTERING_DATABASELEVEL: 'clustering_databaseLevel',
 	CUSTOMFUNCTIONS_NETWORK_HTTPS: 'customFunctions_network_https',
 	THREADS: 'threads',
+	MAXHEAPMEMORY: 'maxHeapMemory',
 	HTTP_SESSIONAFFINITY: 'http_sessionAffinity',
 	HTTP_COMPRESSIONTHRESHOLD: 'http_compressionThreshold',
 	HTTP_CORS: 'http_cors',
@@ -600,12 +604,14 @@ const CONFIG_PARAMS = {
 	OPERATIONSAPI_NETWORK_HTTPS: 'operationsApi_network_https',
 	OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT: 'operationsApi_network_keepAliveTimeout',
 	OPERATIONSAPI_NETWORK_PORT: 'operationsApi_network_port',
+	OPERATIONSAPI_NETWORK_DOMAINSOCKET: 'operationsApi_network_domainSocket',
 	OPERATIONSAPI_NETWORK_SECUREPORT: 'operationsApi_network_securePort',
 	OPERATIONSAPI_TLS_CERTIFICATE: 'operationsApi_tls_certificate',
 	OPERATIONSAPI_TLS_PRIVATEKEY: 'operationsApi_tls_privateKey',
 	OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY: 'operationsApi_tls_certificateAuthority',
 	OPERATIONSAPI_NETWORK_TIMEOUT: 'operationsApi_network_timeout',
 	ROOTPATH: 'rootPath',
+	SERIALIZATION_BIGINT: 'serialization_bigInt',
 	STORAGE_WRITEASYNC: 'storage_writeAsync',
 	STORAGE_OVERLAPPINGSYNC: 'storage_overlappingSync',
 	STORAGE_CACHING: 'storage_caching',
@@ -620,11 +626,15 @@ const CONFIG_PARAMS = {
 	MQTT_NETWORK_PORT: 'mqtt_network_port',
 	MQTT_WEBSOCKET: 'mqtt_webSocket',
 	MQTT_NETWORK_SECUREPORT: 'mqtt_network_securePort',
+	MQTT_NETWORK_MTLS: 'mqtt_network_mtls',
+	MQTT_NETWORK_MTLS_CERTIFICATEAUTHORITY: 'mqtt_network_mtls_certificateAuthority',
+	MQTT_NETWORK_MTLS_USER: 'mqtt_network_mtls_user',
 	MQTT_REQUIREAUTHENTICATION: 'mqtt_requireAuthentication',
 	COMPONENTSROOT: 'componentsRoot',
 	TLS_CERTIFICATE: 'tls_certificate',
 	TLS_PRIVATEKEY: 'tls_privateKey',
 	TLS_CERTIFICATEAUTHORITY: 'tls_certificateAuthority',
+	TLS_CIPHERS: 'tls_ciphers',
 };
 
 const CONFIG_PARAM_MAP = {
@@ -711,6 +721,7 @@ const CONFIG_PARAM_MAP = {
 	customfunctions_network_timeout: CONFIG_PARAMS.HTTP_TIMEOUT,
 	http_threads: CONFIG_PARAMS.THREADS,
 	threads: CONFIG_PARAMS.THREADS,
+	maxheapmemory: CONFIG_PARAMS.MAXHEAPMEMORY,
 	http_session_affinity: CONFIG_PARAMS.HTTP_SESSIONAFFINITY,
 	http_compressionthreshold: CONFIG_PARAMS.HTTP_COMPRESSIONTHRESHOLD,
 	http_cors: CONFIG_PARAMS.HTTP_CORS,
@@ -744,6 +755,7 @@ const CONFIG_PARAM_MAP = {
 	operationsapi_network_https: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_HTTPS,
 	operationsapi_network_keepalivetimeout: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT,
 	operationsapi_network_port: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT,
+	operationsapi_network_domainsocket: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET,
 	operationsapi_network_secureport: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT,
 	operationsapi_tls_certificate: CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATE,
 	operationsapi_tls_privatekey: CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY,
@@ -756,6 +768,9 @@ const CONFIG_PARAM_MAP = {
 	mqtt_network_port: CONFIG_PARAMS.MQTT_NETWORK_PORT,
 	mqtt_websocket: CONFIG_PARAMS.MQTT_WEBSOCKET,
 	mqtt_network_secureport: CONFIG_PARAMS.MQTT_NETWORK_SECUREPORT,
+	mqtt_network_mtls: CONFIG_PARAMS.MQTT_NETWORK_MTLS,
+	mqtt_network_mtls_certificateAuthority: CONFIG_PARAMS.MQTT_NETWORK_MTLS_CERTIFICATEAUTHORITY,
+	mqtt_network_mtls_user: CONFIG_PARAMS.MQTT_NETWORK_MTLS_USER,
 	mqtt_requireauthentication: CONFIG_PARAMS.MQTT_REQUIREAUTHENTICATION,
 	analytics_aggregatePeriod: CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD,
 	authentication_authorizelocal: CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL,
@@ -767,6 +782,7 @@ const CONFIG_PARAM_MAP = {
 	tls_certificate: CONFIG_PARAMS.TLS_CERTIFICATE,
 	tls_privatekey: CONFIG_PARAMS.TLS_PRIVATEKEY,
 	tls_certificateauthority: CONFIG_PARAMS.TLS_CERTIFICATEAUTHORITY,
+	tls_ciphers: CONFIG_PARAMS.TLS_CIPHERS,
 };
 for (let key in CONFIG_PARAMS) {
 	let name = CONFIG_PARAMS[key];
