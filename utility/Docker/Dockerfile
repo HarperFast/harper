@@ -35,8 +35,7 @@ RUN apt-get update && apt-get install -y procps git
 
 # add Licensing files
 RUN mkdir /licenses
-#COPY utility/Docker/licenses/* /licenses/.
-COPY licenses/* /licenses/.
+COPY utility/Docker/licenses/* /licenses/.
 
 #Change node user and group to harperdb
 RUN usermod -d /home/harperdb -l harperdb node && \
@@ -76,9 +75,7 @@ USER harperdb
 WORKDIR /home/harperdb/
 
 #Install HarperDB package and clean up tarball
-RUN npm cache clean --force && \
-    npm install -g npm@latest && \
-    npm install -g $HARPERDB_TARBALL && \
+RUN npm install -g $HARPERDB_TARBALL && \
     npm cache clean --force && \
     rm -f $HARPERDB_TARBALL
 

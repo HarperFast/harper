@@ -16,7 +16,7 @@ jobs:
   build:
     uses: ./.github/workflows/build.yaml
   getLicenses:
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
     - uses: actions/checkout@v3
@@ -50,7 +50,7 @@ jobs:
     needs:
       - build
       - getLicenses
-    runs-on: ubuntu-latest-8-cores
+    runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
     - uses: actions/checkout@v3
@@ -81,18 +81,5 @@ jobs:
         PUBLISH: "private"
         GITHUB_RUN_NUMBER: ${{ vars.GITHUB_RUN_NUMBER }}
         TAG_LATEST: "${{ inputs.tag_latest }}"
-      #run: ./.github/scripts/docker-publish.sh
-      uses: docker/build-push-action@v5
-      with:
-        context: utility/Docker
-        platforms: linux/amd64,linux/arm64
-        tags: | 
-          "harperdb/private:${{ env.TAG_LATEST == 'true' && 'latest' || 'next' }}"
-          "harperdb/private:${{ env.HARPERDB_VERSION }}-${{ env.GITHUB_RUN_NUMBER }}"
-        build-args: |
-          NODE_VERSION=${{ env.NODE_VERSION }}
-          HARPERDB_VERSION=${{ env.HARPERDB_VERSION }}
-          HARPERDB_TARBALL=harperdb-${{ env.HARPERDB_VERSION }}.tgz
-          VCS_REF=${{ github.sha }}
-          BUILD_DATE=`date -u +%FT%T`
+      run: ./.github/scripts/docker-publish.sh
       timeout-minutes: 30
