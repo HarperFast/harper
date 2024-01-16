@@ -1,4 +1,4 @@
-import { databases, getDatabases, onUpdatedTable } from '../../resources/databases';
+import { databases, table as defineTable, getDatabases, onUpdatedTable } from '../../resources/databases';
 import { ID_PROPERTY, Resource } from '../../resources/Resource';
 import { IterableEventQueue } from '../../resources/IterableEventQueue';
 import { getWorkerIndex } from '../threads/manageThreads';
@@ -6,10 +6,10 @@ import env from '../../utility/environment/environmentManager';
 import hdb_terms from '../../utility/hdbTerms';
 import * as harper_logger from '../../utility/logging/harper_logger';
 import { Context } from '../../resources/ResourceInterface';
-import { readAuditEntry } from '../../resources/auditStore';
+import { readAuditEntry, Decoder } from '../../resources/auditStore';
 import { readKey, writeKey } from 'ordered-binary';
 import { addSubscription } from '../../resources/transactionBroadcast';
-import { decode, encode } from 'msgpackr';
+import { decode, encode, Packr } from 'msgpackr';
 import { WebSocket } from 'ws';
 import { server } from '../Server';
 
@@ -23,6 +23,7 @@ export function start(options) {
 	if (!options?.manualAssignment) assignReplicationSource();
 	server.ws(
 		(ws, request, ready) => {
+			console.log('registering', options);
 			ws.on('message', (body) => {
 				const action = body[0];
 
@@ -31,6 +32,7 @@ export function start(options) {
 				const database_name = body.toString('utf8', 2, db_length + 2);
 				const start_time = decoder.getFloat64(2 + db_length);
 				const database = (options.databases || databases)[database_name];
+				console.log('receive subscription request', database_name, options);
 				let first_table;
 				const table_by_id = [];
 				for (const key in database) {
@@ -45,36 +47,48 @@ export function start(options) {
 					null,
 					function (audit_record, local_time) {
 						if (!audit_record) {
+							console.log('No audit record, sending queued txn', current_transaction.txnTime);
 							if (current_transaction.txnTime) ws.send(encoding_buffer.subarray(encoding_start, position));
 							current_transaction.txnTime = 0;
 							return; // end of transaction, nothing more to do
 						}
 						const table_id = audit_record.tableId;
-						const record_id_binary = audit_record.getBinaryRecordId();
 						const txn_time = audit_record.version;
+						const encoded = audit_record.encoded;
 						if (current_transaction.txnTime !== txn_time) {
 							// send the queued transaction
-							if (current_transaction.txnTime) ws.send(encoding_buffer.subarray(encoding_start, position));
+							if (current_transaction.txnTime) {
+								console.log('new txn time, sending queued txn', current_transaction.txnTime);
+								ws.send(encoding_buffer.subarray(encoding_start, position));
+							}
 							current_transaction.txnTime = txn_time;
 							encoding_start = position;
 							writeFloat64(txn_time);
-						}
+						} /*
+						TODO: At some point we may want some fancier logic to elide the version (which is the same as txn_time)
+						 and username from subsequent audit entries in multiple entry transactions*/
+						/*
 						writeInt(table_id);
-						const key_length = record_id_binary.length - 12;
+						const key_length = record_id_binary.length;
 						writeInt(key_length);
 						writeBytes(record_id_binary);
 						const encoded_record = audit_record.getBinaryValue();
 						writeInt(encoded_record.length);
 						writeBytes(encoded_record);
+						*/
+						// directly write the audit record. If it starts with the previous local time, we omit that
+						writeBytes(audit_record.encoded, audit_record.encoded[0] === 66 ? 8 : 0); //
 						const table_entry = table_by_id[table_id];
 						if (!table_entry.sentName) {
 							table_entry.sentName = true;
+							console.log('send table name', table_entry.table.tableName);
 							ws.send(encode([SEND_TABLE_NAME, table_id, table_entry.table.tableName]));
 						}
 						const typed_structs = table_entry.table.primaryStore.encoder.typedStructs;
 						if (typed_structs.length != table_entry.typed_length) {
 							table_entry.typed_length = typed_structs.length;
-							ws.send(encode([SEND_TABLE_FIXED_STRUCTURE, typed_structs]));
+							console.log('send table struct', typed_structs);
+							ws.send(encode([SEND_TABLE_FIXED_STRUCTURE, table_id, typed_structs]));
 						}
 					},
 					start_time,
@@ -102,7 +116,7 @@ let position = 0;
 let data_view = new DataView(encoding_buffer.buffer, 0, 1024);
 function writeInt(number) {
 	if (number < 128) {
-		encoding_buffer[position++] = 0;
+		encoding_buffer[position++] = number;
 	} else if (number < 0x4000) {
 		data_view.setUint16(position, number | 0x7fff);
 		position += 2;
@@ -143,28 +157,6 @@ function writeFloat64(number) {
 
 class Encoder {
 	constructor() {}
-}
-class Decoder extends DataView {
-	position: number;
-	readInt() {
-		let number = this.getUint8(this.position++);
-		if (number >= 0x80) {
-			if (number >= 0xc0) {
-				if (number === 0xff) {
-					number = this.getUint32(this.position - 1) & 0xcfffffff;
-					this.position += 4;
-					return number;
-				}
-				number = this.getUint32(this.position - 1) & 0xcfffffff;
-				this.position += 3;
-				return number;
-			}
-			number = this.getUint16(this.position - 1) & 0x7fff;
-			this.position++;
-			return number;
-		}
-		return number;
-	}
 }
 export function disableReplication(disabled = true) {
 	replication_disabled = disabled;
@@ -287,6 +279,7 @@ class NodeSubscriptionConnection {
 			subscription_message.writeDoubleBE(this.startTime, position);
 			position += 8;
 			this.socket.send(subscription_message.subarray(0, position));
+			console.log('sent subscription', this.url, this.databaseName);
 		});
 		this.socket.on('error', (error) => {
 			console.log('Error in connection to ' + this.url, error);
@@ -302,29 +295,34 @@ class NodeSubscriptionConnection {
 			// routing plan id (id for the route from source node to all receiving nodes)
 
 			const decoder = (body.dataView = new Decoder(body.buffer, body.byteOffset, body.byteLength));
-			const txn_time = data_view.getFloat64(0);
-
+			const txn_time = decoder.getFloat64(0);
+			console.log('received message on', this.url, 'txn time', txn_time);
 			if (txn_time < 0) {
 				// not a transaction, special message
 				const message = decode(body);
 				const [command, table_id, data] = message;
-				if (!tables[table_id]) tables[table_id] = {};
-				switch (message[0]) {
+				let table_connector;
+				switch (command) {
 					case SEND_TABLE_NAME:
-						tables[table_id].name = data;
+						tables[table_id] = {
+							name: data,
+							encoder: new Packr({ useBigIntExtension: true, randomAccessStructure: true, freezeData: true }),
+						};
 						break;
 					case SEND_TABLE_FIXED_STRUCTURE:
-						tables[table_id].encoder.structures.typed.push(data);
+						table_connector = tables[table_id];
+						if (!table_connector.encoder.typedStructs) table_connector.encoder.typedStructs = [];
+						table_connector.encoder.typedStructs.push(data);
 						break;
 				}
 				return;
 			}
 			decoder.position = 8;
 			do {
-				const table_id = decoder.readInt();
+				/*const table_id = decoder.readInt();
 				const key_length = decoder.readInt();
-				const record_key = readKey(body, decoder.position, (decoder.position += key_length));
-				const audit_record = readAuditEntry(body, table_decoders[table_id].decoder);
+				const record_key = readKey(body, decoder.position, (decoder.position += key_length));*/
+				const audit_record = readAuditEntry(body);
 				this.localQueue.send(audit_record);
 				// TODO: Once it is committed, also record the localtime in the table with symbol metadata, so we can resume from that point
 			} while (decoder.position < body.byteLength);

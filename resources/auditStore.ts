@@ -243,6 +243,7 @@ export function readAuditEntry(buffer) {
 			get user() {
 				return username_end > username_start ? readKeySafely(buffer, username_start, username_end) : undefined;
 			},
+			encoded: buffer,
 			getValue(store, full_record?, audit_time?) {
 				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !full_record))
 					return store.decoder.decode(buffer.subarray(decoder.position));
@@ -251,7 +252,7 @@ export function readAuditEntry(buffer) {
 				} // TODO: If we store a partial and full record, may need to read both sequentially
 			},
 			getBinaryValue() {
-				return action & HAS_FULL_RECORD ? buffer.subarray(decoder.position) : undefined;
+				return action & (HAS_RECORD | HAS_PARTIAL_RECORD) ? buffer.subarray(decoder.position) : undefined;
 			},
 		};
 	} catch (error) {
@@ -260,7 +261,7 @@ export function readAuditEntry(buffer) {
 	}
 }
 
-class Decoder extends DataView {
+export class Decoder extends DataView {
 	position = 0;
 	readInt() {
 		let number = this.getUint8(this.position++);

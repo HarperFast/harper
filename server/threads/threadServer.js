@@ -62,8 +62,8 @@ server.http = httpServer;
 server.request = onRequest;
 server.socket = onSocket;
 server.ws = onWebSocket;
-let ws_listeners = [],
-	ws_servers = [],
+let ws_listeners = {},
+	ws_servers = {},
 	ws_chain;
 let http_servers = {},
 	http_chain = {},
@@ -574,18 +574,27 @@ function onWebSocket(listener, options) {
 					let request = new Request(node_request);
 					request.isWebSocket = true;
 					let chain_completion = http_chain[port_num](request);
-					let protocol = node_request.headers['sec-websocket-protocol'] || '';
-					// TODO: select listener by protocol
-					for (let i = 0; i < ws_listeners.length; i++) {
-						let handler = ws_listeners[i];
-						if (handler.protocol) {
-							// if we have a handler for a specific protocol, allow it to select on that protocol
-							// to the exclusion of other handlers
+					let protocol = node_request.headers['sec-websocket-protocol'];
+					let ws_listeners_for_port = ws_listeners[port_num];
+					if (protocol) {
+						// first we try to match on WS handlers that match the specified protocol
+						let found_protocol_handler;
+						for (let i = 0; i < ws_listeners_for_port.length; i++) {
+							let handler = ws_listeners_for_port[i];
 							if (handler.protocol === protocol) {
+								// if we have a handler for a specific protocol, allow it to select on that protocol
+								// to the exclusion of other handlers
+								found_protocol_handler = true;
 								handler.listener(ws, request, chain_completion);
-								break;
 							}
-						} else {
+						}
+						if (found_protocol_handler) return;
+					}
+					// now let generic WS handlers handle the connection
+					for (let i = 0; i < ws_listeners_for_port.length; i++) {
+						let handler = ws_listeners_for_port[i];
+						if (!handler.protocol) {
+							// generic handlers don't have a protocol
 							handler.listener(ws, request, chain_completion);
 						}
 					}
@@ -599,7 +608,9 @@ function onWebSocket(listener, options) {
 			});
 		}
 		let protocol = options?.subProtocol || '';
-		ws_listeners.push({ listener, protocol });
+		let ws_listeners_for_port = ws_listeners[port_num];
+		if (!ws_listeners_for_port) ws_listeners_for_port = ws_listeners[port_num] = [];
+		ws_listeners_for_port.push({ listener, protocol });
 		http_chain[port_num] = makeCallbackChain(http_responders, port_num);
 	}
 }

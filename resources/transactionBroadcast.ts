@@ -18,7 +18,7 @@ const test = Buffer.alloc(4096);
  * @param key
  * @param listener
  */
-export function addSubscription(table, key, listener?: (key) => any, start_time: number) {
+export function addSubscription(table, key, listener?: (key) => any, start_time: number, scope) {
 	const path = table.primaryStore.env.path;
 	const table_id = table.primaryStore.tableId;
 	// set up the subscriptions map. We want to just use a single map (per table) for efficient delegation
@@ -31,13 +31,13 @@ export function addSubscription(table, key, listener?: (key) => any, start_time:
 	}
 	const database_subscriptions = all_subscriptions[path] || (all_subscriptions[path] = []);
 	database_subscriptions.auditStore = table.auditStore;
-	if (subscription.includeDescendants === 'full-database') {
+	if (database_subscriptions.lastTxnTime == null) {
+		database_subscriptions.lastTxnTime = Date.now();
+	}
+	if (scope === 'full-database') {
 		database_subscriptions.allTables = database_subscriptions.allTables || [];
 		database_subscriptions.allTables.push({ listener });
 		return;
-	}
-	if (database_subscriptions.lastTxnTime == null) {
-		database_subscriptions.lastTxnTime = Date.now();
 	}
 	let table_subscriptions = database_subscriptions[table_id];
 	if (!table_subscriptions) {
