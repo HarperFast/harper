@@ -235,6 +235,8 @@ function trackObject(source_object, type_def) {
 				if (!(TrackedObject = type_def.TrackedObject)) {
 					type_def.TrackedObject = TrackedObject = class {
 						constructor(source_object) {
+							if (source_object?.[RECORD_PROPERTY])
+								throw new Error('Can not track an already tracked object, check for circular references');
 							this[RECORD_PROPERTY] = source_object;
 						}
 					};
@@ -260,6 +262,8 @@ function trackObject(source_object, type_def) {
 }
 class GenericTrackedObject {
 	constructor(source_object) {
+		if (source_object?.[RECORD_PROPERTY])
+			throw new Error('Can not track an already tracked object, check for circular references');
 		this[RECORD_PROPERTY] = source_object;
 	}
 }

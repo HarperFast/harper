@@ -890,6 +890,8 @@ export function makeTable(options) {
 						if (context && existing_entry?.version > (context.lastModified || 0))
 							context.lastModified = existing_entry.version;
 						this[ENTRY_PROPERTY] = existing_entry;
+						if (existing_entry?.value?.[RECORD_PROPERTY])
+							throw new Error('Can not assign a record to a record, check for circular references');
 						if (!full_update) this[RECORD_PROPERTY] = existing_entry?.value ?? null;
 					}
 					this[OWN_DATA] = record_update;
@@ -932,6 +934,8 @@ export function makeTable(options) {
 						}
 					}
 					const record_to_store = deepFreeze(this, update_to_apply);
+					if (record_to_store?.[RECORD_PROPERTY])
+						throw new Error('Can not assign a record to a record, check for circular references');
 					this[RECORD_PROPERTY] = record_to_store;
 					let audit_record;
 					if (!full_update) {
