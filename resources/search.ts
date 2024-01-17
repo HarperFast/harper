@@ -649,7 +649,9 @@ export function filterByType(search_condition, Table, context, filtered, is_prim
 					(++misses / filtered_so_far) * (estimated_incoming_count - filtered_so_far) > threshold_remaining_misses
 				) {
 					// if we have missed too many times, we need to switch to indexed retrieval
-					const matching_ids = searchByIndex(search_condition, context.transaction, false, Table).map(flattenKey);
+					const matching_ids = searchByIndex(search_condition, context.transaction.getReadTxn(), false, Table).map(
+						flattenKey
+					);
 					// now generate a hash set that we can efficiently check primary keys against
 					// TODO: Do this asynchronously
 					const id_set = new Set(matching_ids);
