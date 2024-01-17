@@ -22,32 +22,29 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 	let server_instance;
 	const mtls = network?.mtls;
 	if (webSocket)
-		server_instance = server.ws(
-			(ws, request, chain_completion) => {
-				if (ws.protocol === 'mqtt') {
-					const { onMessage, onClose } = onSocket(
-						ws,
-						(message, allow_backpressure) => {
-							ws.send(message);
-							// This can be used for back-pressure. Most of the time with real-time data, it is probably more
-							// efficient to immediately deliver and let the buffers queue the data, but when iterating through
-							// a database/audit log, we could employ back-pressure to do this with less memory pressure
-							if (allow_backpressure && ws._socket.writableNeedDrain)
-								return new Promise((resolve) => this._socket.once('drain', resolve));
-						},
-						request,
-						Promise.resolve(chain_completion).then(() => request?.user),
-						mqtt_settings
-					);
-					ws.on('message', onMessage);
-					ws.on('close', onClose);
-					ws.on('error', (error) => {
-						info('WebSocket error', error);
-					});
-				}
-			},
-			{ subProtocol: 'mqtt' }
-		); // if there is no port, we are piggy-backing off of default app http server
+		server_instance = server.ws((ws, request, chain_completion) => {
+			if (ws.protocol === 'mqtt') {
+				const { onMessage, onClose } = onSocket(
+					ws,
+					(message, allow_backpressure) => {
+						ws.send(message);
+						// This can be used for back-pressure. Most of the time with real-time data, it is probably more
+						// efficient to immediately deliver and let the buffers queue the data, but when iterating through
+						// a database/audit log, we could employ back-pressure to do this with less memory pressure
+						if (allow_backpressure && ws._socket.writableNeedDrain)
+							return new Promise((resolve) => this._socket.once('drain', resolve));
+					},
+					request,
+					Promise.resolve(chain_completion).then(() => request?.user),
+					mqtt_settings
+				);
+				ws.on('message', onMessage);
+				ws.on('close', onClose);
+				ws.on('error', (error) => {
+					info('WebSocket error', error);
+				});
+			}
+		}, Object.assign({ subProtocol: 'mqtt' }, webSocket)); // if there is no port, we are piggy-backing off of default app http server
 	// standard TCP socket
 	if (port || securePort) {
 		server_instance = server.socket(
@@ -57,7 +54,7 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 					if (socket.authorized) {
 						try {
 							let username = mtls.user;
-							if (user !== null) {
+							if (username !== null) {
 								// null means no user is defined from certificate, need regular authentication as well
 								if (username === undefined || username === 'Common Name' || username === 'CN')
 									username = socket.getPeerCertificate().subject.CN;

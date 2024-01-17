@@ -104,10 +104,20 @@ export async function authentication(request, next_handler) {
 			if (status === AUTH_AUDIT_STATUS.SUCCESS) auth_event_log.notify(log);
 			else auth_event_log.error(log);
 		};
-		// TODO: If we have mTLS enabled, we need to verify the socket, and potentially get user name from the certificate
+		if (request.mtlsConfig && request.authorized) {
+			let username = request.mtlsConfig.user;
+			if (username !== null) {
+				// null means no user is defined from certificate, need regular authentication as well
+				if (username === undefined || username === 'Common Name' || username === 'CN')
+					username = request.peerCertificate.subject.CN;
+				request.user = await server.getUser(username, null, null);
+			}
+		}
 
 		let new_user;
-		if (authorization) {
+		if (request.user) {
+			// already authenticated
+		} else if (authorization) {
 			new_user = authorization_cache.get(authorization);
 			if (!new_user) {
 				const [strategy, credentials] = authorization.split(' ');

@@ -60,8 +60,8 @@ server.http = httpServer;
 server.request = onRequest;
 server.socket = onSocket;
 server.ws = onWebSocket;
-let ws_listeners = [],
-	ws_servers = [],
+let ws_listeners = {},
+	ws_servers = {},
 	ws_chain;
 let http_servers = {},
 	http_chain = {},
@@ -338,6 +338,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 			requestTimeout: env.get(server_prefix + '_timeout'),
 		};
 		let mtls = env.get(server_prefix + '_mtls');
+		let mtls_required = env.get(server_prefix + '_mtls_required');
 		if (secure) {
 			server_prefix = is_operations_server ? 'operationsApi_' : '';
 			const private_key = env.get(server_prefix + 'tls_privateKey');
@@ -353,6 +354,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 				ciphers: env.get('tls_ciphers'),
 				cert: readFileSync(certificate),
 				ca: certificate_authority && readFileSync(certificate_authority),
+				rejectUnauthorized: Boolean(mtls_required),
 				requestCert: Boolean(mtls),
 				ticketKeys: getTicketKeys(),
 			});
@@ -466,6 +468,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 				} else harper_logger.error(error);
 			}
 		});
+		if (mtls) http_servers[port].mtlsConfig = mtls;
 		/* Should we use HTTP2 on upgrade?:
 		http_servers[port].on('upgrade', function upgrade(request, socket, head) {
 			wss.handleUpgrade(request, socket, head, function done(ws) {
@@ -559,26 +562,36 @@ Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
 	set(v) {},
 });
 function onWebSocket(listener, options) {
+	let http_server;
 	for (let { port: port_num, secure } of getPorts(options)) {
 		if (!ws_servers[port_num]) {
-			ws_servers[port_num] = new WebSocketServer({ server: getHTTPServer(port_num, secure) });
+			ws_servers[port_num] = new WebSocketServer({ server: (http_server = getHTTPServer(port_num, secure)) });
 			ws_servers[port_num].on('connection', async (ws, node_request) => {
 				try {
 					let request = new Request(node_request);
 					request.isWebSocket = true;
 					let chain_completion = http_chain[port_num](request);
 					let protocol = node_request.headers['sec-websocket-protocol'] || '';
-					// TODO: select listener by protocol
-					for (let i = 0; i < ws_listeners.length; i++) {
-						let handler = ws_listeners[i];
-						if (handler.protocol) {
-							// if we have a handler for a specific protocol, allow it to select on that protocol
-							// to the exclusion of other handlers
+					let ws_listeners_for_port = ws_listeners[port_num];
+					if (protocol) {
+						// first we try to match on WS handlers that match the specified protocol
+						let found_protocol_handler;
+						for (let i = 0; i < ws_listeners_for_port.length; i++) {
+							let handler = ws_listeners_for_port[i];
 							if (handler.protocol === protocol) {
+								// if we have a handler for a specific protocol, allow it to select on that protocol
+								// to the exclusion of other handlers
+								found_protocol_handler = true;
 								handler.listener(ws, request, chain_completion);
-								break;
 							}
-						} else {
+						}
+						if (found_protocol_handler) return;
+					}
+					// now let generic WS handlers handle the connection
+					for (let i = 0; i < ws_listeners_for_port.length; i++) {
+						let handler = ws_listeners_for_port[i];
+						if (!handler.protocol) {
+							// generic handlers don't have a protocol
 							handler.listener(ws, request, chain_completion);
 						}
 					}
@@ -592,9 +605,12 @@ function onWebSocket(listener, options) {
 			});
 		}
 		let protocol = options?.subProtocol || '';
-		ws_listeners.push({ listener, protocol });
+		let ws_listeners_for_port = ws_listeners[port_num];
+		if (!ws_listeners_for_port) ws_listeners_for_port = ws_listeners[port_num] = [];
+		ws_listeners_for_port.push({ listener, protocol });
 		http_chain[port_num] = makeCallbackChain(http_responders, port_num);
 	}
+	return http_server;
 }
 function defaultNotFound(request, response) {
 	response.writeHead(404);
