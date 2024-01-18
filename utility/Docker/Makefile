@@ -77,6 +77,21 @@ run-standard: clean-image-standard
 		--name harperdb-standard \
 		harperdb/harperdb:${HDB_VERSION}
 
+run-private-arm64:
+	docker rm -f harperdb-standard
+	docker run -d \
+		-v $(HDB_DIRECTORY_PREFIX)-standard:/home/harperdb/hdb \
+        -e HDB_ADMIN_USERNAME=HDB_ADMIN \
+		-e HDB_ADMIN_PASSWORD=password \
+		-e HARPERDB_FINGERPRINT="4sADRM2e7dd501d7db58bb02d35bd0745146423a1" \
+		-e HARPERDB_LICENSE='{"license_key":"1373969b4cabd39e8b29c3c16e419c6abef4437d48168b4721e575610dcf656cf57016bd037cf1107f8232a1e94b7352c05b7c069560ac0e54ca156d3babc966289c664e5fb163e3429158a2f57afd39854ca51fa885abbca62f7e063a334498cd5ef0a038cbea80c6e063d174bbcc189a81dc4f2771ad90c9022cf20a322043ec4213fdef1d1e9eba36117c865acb6a13be3be218513ee80385e78bda0b9e27e7ec6532ac6e5416bc020f4f4be91cf6mofi25eYMW6aiRf6bd3d9b691699749569f6acd34a93e61","company":"harperdb.io"}' \
+		-p 9925:9925 \
+		-p 9926:9926 \
+		-p 9932:9932 \
+		--name harperdb-private \
+		--platform linux/arm64 \
+		harperdb/private:${HDB_VERSION}-119
+
 run-openshift: clean-image-openshift
 	docker run -d \
 		-v $(HDB_DIRECTORY_PREFIX)-openshift:/home/harperdb/hdb \
