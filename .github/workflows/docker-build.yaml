@@ -18,7 +18,7 @@ on:
 name: "Docker Build"
 jobs:
   dockerBuild:
-    runs-on: gha-runner-scale-set
+    runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
     - uses: actions/checkout@v3
