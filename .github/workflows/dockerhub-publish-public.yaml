@@ -16,7 +16,7 @@ jobs:
   build:
     uses: ./.github/workflows/build.yaml
   getLicenses:
-    runs-on: gha-runner-scale-set
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
     - uses: actions/checkout@v3
