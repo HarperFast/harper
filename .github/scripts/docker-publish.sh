@@ -24,9 +24,8 @@ if [[ "${PUBLISH}" == "fabric" ]]; then
   docker_image="harperdb/fabric"
 fi
 
+# linux/arm64 currently probably only works on self-hosted runners; use `runs-on: gha-runner-scale-set` in the workflow
 docker_platform="linux/amd64,linux/arm64"
-# disabling arm64 because github + azure + node can't even: https://github.com/docker/build-push-action/issues/471
-#docker_platform="linux/amd64"
 docker_output="type=registry"
 
 # docker type output can only support a single arch.
