@@ -146,14 +146,6 @@ export function start({ ensureTable }) {
 				else resources.set(dirname(url_path) + '/' + (type_def.export.name || type_def.type), type_def.tableClass);
 			}
 		}
-		// and if there was a `type Query` definition, we use that to created exported resources
-		if (query) {
-			for (const property of query.properties) {
-				const type_def = types.get(property.type);
-				if (!type_def) throw new Error(`${property.type} was not found as a Query export`);
-				resources.set(dirname(url_path) + '/' + property.name, type_def.tableClass);
-			}
-		}
 	}
 }
 
