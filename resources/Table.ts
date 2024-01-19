@@ -310,6 +310,10 @@ export function makeTable(options) {
 								}
 								event.source = source;
 								if (txn_in_progress) {
+									if (event.type === 'end_txn') {
+										txn_in_progress.resolve();
+										continue;
+									}
 									if (event.beginTxn) {
 										// if we are starting a new transaction, finish the existing one
 										txn_in_progress.resolve();
@@ -319,7 +323,6 @@ export function makeTable(options) {
 										continue;
 									}
 								}
-								if (event.type === 'end_txn') continue;
 								const commit_resolution = transaction(event, () => {
 									if (event.type === 'transaction') {
 										// if it is a transaction, we need to individually iterate through each write event

@@ -38,6 +38,7 @@ describe('Replication', () => {
 					test: { TestTable },
 				},
 				manualAssignment: true,
+				nodeId: index + 10,
 			});
 
 			setReplicator('test', 'TestTable', TestTable, {

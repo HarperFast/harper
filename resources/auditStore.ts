@@ -215,7 +215,7 @@ export function readAuditEntry(buffer) {
 		const decoder =
 			buffer.dataView || (buffer.dataView = new Decoder(buffer.buffer, buffer.byteOffset, buffer.byteLength));
 		let previous_local_time;
-		if (buffer[0] == 66) {
+		if (buffer[decoder.position] == 66) {
 			// 66 is the first byte in a date double.
 			previous_local_time = decoder.readFloat64();
 		}
@@ -232,6 +232,7 @@ export function readAuditEntry(buffer) {
 		return {
 			type: EVENT_TYPES[action & 7],
 			tableId: table_id,
+			nodeId: node_id,
 			get recordId() {
 				return readKeySafely(buffer, record_id_start, record_id_end);
 			},
