@@ -92,4 +92,10 @@ jobs:
         file: utility/Docker/Dockerfile
         platforms: linux/amd64,linux/arm64
         push: true
-        tags: "harperdb/private:4.3.0-beta.2-CORE-2320"
+        tags: "harperdb/private:4.3.0-beta.2-${{ vars.GITHUB_RUN_NUMBER }}"
+        build-args: |
+          "NODE_VERSION=${{ env.NODE_VERSION }}"
+          "HARPERDB_VERSION=${{ env.HARPERDB_VERSION }}"
+          "HARPERDB_TARBALL=harperdb-${{ env.HARPERDB_VERSION }}.tgz"
+          "VCS_REF=`git rev-parse HEAD`"
+          "BUILD_DATE=`date -u +%FT%T"
