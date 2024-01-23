@@ -1162,7 +1162,7 @@ export function makeTable(options) {
 								404
 							);
 
-						order_aligned_condition = { attribute: attribute_name };
+						order_aligned_condition = { attribute: attribute_name, comparator: 'sort' };
 						conditions.push(order_aligned_condition);
 					}
 					order_aligned_condition.descending = Boolean(sort.descending);
@@ -1214,20 +1214,19 @@ export function makeTable(options) {
 				(results, filters) => transformToEntries(results, select, context, filters),
 				filtered
 			);
-			if (request.offset || request.limit !== undefined)
-				entries = entries.slice(
-					request.offset,
-					request.limit !== undefined ? (request.offset || 0) + request.limit : undefined
-				);
 			const ensure_loaded = request.ensureLoaded !== false;
+			if (!post_ordering) entries = applyOffset(entries); // if there is no post ordering, we can apply the offset now
 			const transformToRecord = TableResource.transformEntryForSelect(select, context, filtered, ensure_loaded, true);
-			const results = TableResource.transformToOrderedSelect(
-				entries,
-				select,
-				post_ordering,
-				context,
-				transformToRecord
-			);
+			let results = TableResource.transformToOrderedSelect(entries, select, post_ordering, context, transformToRecord);
+			function applyOffset(entries) {
+				if (request.offset || request.limit !== undefined)
+					return entries.slice(
+						request.offset,
+						request.limit !== undefined ? (request.offset || 0) + request.limit : undefined
+					);
+				return entries;
+			}
+			if (post_ordering) results = applyOffset(results); // if there is post ordering, we have to apply the offset after sorting
 			results.onDone = () => {
 				results.onDone = null; // ensure that it isn't called twice
 				txn.doneReadTxn();
@@ -1981,6 +1980,11 @@ export function makeTable(options) {
 				attribute.resolve = null; // reset this
 				const relationship = attribute.relationship;
 				if (relationship) {
+					if (attribute.indexed) {
+						console.error(
+							`A relationship property can not be directly indexed, (but you may want to index the foreign key attribute)`
+						);
+					}
 					has_relationships = true;
 					if (relationship.to) {
 						if (attribute.elements?.definition) {

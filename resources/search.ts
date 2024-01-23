@@ -222,9 +222,11 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 				exclusiveStart = true;
 				break;
 			}
+		case 'sort': // this is a special case for when we want to get all records for sorting
 		case 'contains':
 		case 'ends_with':
 			// we have to revert to full table scan here
+			start = true;
 			need_full_scan = true;
 			break;
 		default:
@@ -240,38 +242,26 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 	}
 	const is_primary_key = attribute_name === Table.primaryKey || attribute_name == null;
 	const index = is_primary_key ? Table.primaryStore : Table.indices[attribute_name];
-
+	let filter;
 	if (!index || index.isIndexing || need_full_scan || (value === null && !index.indexNulls)) {
 		// no indexed searching available, need a full scan
 		if (!allow_full_scan)
 			throw new ClientError(
-				`"${attribute_name}" is not indexed${
-					value === null && !index.indexNulls
-						? ' for nulls, index needs to be rebuilt to search for nulls'
-						: index?.isIndexing
-						? ' yet'
-						: ''
-				}, can not search for this attribute`,
+				need_full_scan
+					? `Can not use ${comparator} operator without combining with a condition that uses an index`
+					: `"${attribute_name}" is not indexed${
+							value === null && !index.indexNulls
+								? ' for nulls, index needs to be rebuilt to search for nulls'
+								: index?.isIndexing
+								? ' yet'
+								: ''
+					  }, can not search for this attribute`,
 				404
 			);
-		const filter = filterByType(search_condition);
+		filter = filterByType(search_condition);
 		if (!filter) {
 			throw new ClientError(`Unknown search operator ${search_condition.comparator}`);
 		}
-		// for filter operations, we intentionally yield the event turn so that scanning queries
-		// do not hog resources
-		return Table.primaryStore.getRange({ start: true, transaction, reverse }).map(
-			({ key, value }) =>
-				new Promise((resolve, reject) =>
-					setImmediate(() => {
-						try {
-							resolve(value && filter(value) ? key : SKIP);
-						} catch (error) {
-							reject(error);
-						}
-					})
-				)
-		);
 	}
 	const range_options = {
 		start,
@@ -284,14 +274,57 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 		reverse,
 	};
 	if (is_primary_key) {
-		const results = index.getRange(range_options).map((entry) => {
-			if (entry.value == null) return SKIP;
-			return entry;
-		});
+		const results = index.getRange(range_options).map(
+			filter
+				? // for filter operations, we intentionally yield the event turn so that scanning queries
+				  // do not hog resources
+				  ({ key, value }) =>
+						new Promise((resolve, reject) =>
+							setImmediate(() => {
+								try {
+									resolve(value && filter(value) ? key : SKIP);
+								} catch (error) {
+									reject(error);
+								}
+							})
+						)
+				: (entry) => {
+						if (entry.value == null) return SKIP;
+						return entry;
+				  }
+		);
 		results.hasEntries = true;
 		return results;
+	} else if (index) {
+		return index.getRange(range_options).map(
+			filter
+				? ({ key, value }) =>
+						new Promise((resolve, reject) =>
+							setImmediate(() => {
+								try {
+									resolve(filter({ [attribute_name]: key }) ? value : SKIP);
+								} catch (error) {
+									reject(error);
+								}
+							})
+						)
+				: ({ value }) => value
+		);
 	} else {
-		return index.getRange(range_options).map(({ value }) => value);
+		return Table.primaryStore
+			.getRange(reverse ? { end: true, transaction, reverse: true } : { start: true, transaction })
+			.map(
+				({ key, value }) =>
+					new Promise((resolve, reject) =>
+						setImmediate(() => {
+							try {
+								resolve(value && filter(value) ? key : SKIP);
+							} catch (error) {
+								reject(error);
+							}
+						})
+					)
+			);
 	}
 }
 
@@ -611,6 +644,8 @@ export function filterByType(search_condition, Table, context, filtered, is_prim
 			return attributeComparator(attribute, (record_value) => compareKeys(record_value, value) <= 0);
 		case 'ne':
 			return attributeComparator(attribute, (record_value) => compareKeys(record_value, value) !== 0);
+		case 'sort':
+			return () => true;
 		default:
 			throw new ClientError(`Unknown query comparator "${comparator}"`);
 	}
@@ -730,10 +765,12 @@ export function estimateCondition(table) {
 				condition.estimated_count = STARTS_WITH_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
 			else if (search_type === 'between')
 				condition.estimated_count = BETWEEN_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
+			else if (search_type === 'sort')
+				condition.estimated_count = estimatedEntryCount(table.primaryStore) + 1; // only used by sort
 			// for the search types that use the broadest range, try do them last
 			else condition.estimated_count = OPEN_RANGE_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
 			// we give a condition significantly more weight/preference if we will be ordering by it
-			if (typeof condition.descending === 'boolean') condition.estimated_count /= 4;
+			if (typeof condition.descending === 'boolean') condition.estimated_count /= 2;
 		}
 		return condition.estimated_count; // use cached count
 	}
