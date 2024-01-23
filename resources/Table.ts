@@ -1421,7 +1421,7 @@ export function makeTable(options) {
 			let transform_cache;
 			const transform = (entry) => {
 				let record;
-				if (entry) {
+				if (entry != undefined) {
 					// TODO: remove this:
 					last_entry = entry;
 					record = entry.value || entry.deref?.();
@@ -2768,6 +2768,7 @@ export function coerceType(value, attribute) {
 	} else if (type === 'Int' || type === 'Long') return value === 'null' ? null : parseInt(value);
 	else if (type === 'Float') return value === 'null' ? null : parseFloat(value);
 	else if (type === 'BigInt') return value === 'null' ? null : BigInt(value);
+	else if (type === 'Boolean') return value === 'true' ? true : value === 'false' ? false : value;
 	else if (type === 'Date') {
 		//if the value is not an integer (to handle epoch values) and does not end in a timezone we suffiz with 'Z' tom make sure the Date is GMT timezone
 		if (typeof value !== 'number' && !ENDS_WITH_TIMEZONE.test(value)) {

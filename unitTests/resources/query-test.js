@@ -46,6 +46,7 @@ describe('Querying through Resource API', () => {
 			database: 'test',
 			attributes: [
 				{ name: 'id', isPrimaryKey: true, type: 'Int' },
+				{ name: 'aFlag', type: 'Boolean', indexed: true },
 				{ name: 'name', indexed: true },
 				{
 					name: 'relatedToMany',
@@ -87,7 +88,7 @@ describe('Querying through Resource API', () => {
 		many_to_many_attribute.elements.definition.tableClass = ManyToMany;
 
 		for (let i = 0; i < 5; i++) {
-			RelatedTable.put({ id: i, name: 'related name ' + i });
+			RelatedTable.put({ id: i, name: 'related name ' + i, aFlag: i % 3 === 0 });
 		}
 		for (let i = 0; i < 25; i++) {
 			ManyToMany.put({ id: i, name: 'many-to-many entry ' + i });
@@ -381,10 +382,10 @@ describe('Querying through Resource API', () => {
 			})) {
 				results.push(record);
 			}
-			assert.equal(results.length, 4);
+			assert.equal(results.length, 5);
 			let related = await results[0].relatedToMany;
 			assert.equal(related.length, 2);
-			assert.equal(related[0].name, 'name-21');
+			assert.equal(related[0].name, 'name-20');
 		});
 		it('Query by join with many-to-many (forward)', async function () {
 			let results = [];
@@ -505,14 +506,14 @@ describe('Querying through Resource API', () => {
 				results.push(record);
 			}
 			let related_count = 0;
-			assert.equal(results.length, 24);
+			assert.equal(results.length, 25);
 			assert(
 				results.every((record) => {
 					related_count += record.reverseManyToMany.length;
 					return record.reverseManyToMany.every((record) => record.relatedId === 3);
 				})
 			);
-			assert.equal(related_count, 51);
+			assert.equal(related_count, 53);
 		});
 
 		it('Query data in a table with join, returning primary key and do not load records', async function () {
@@ -1115,6 +1116,30 @@ describe('Querying through Resource API', () => {
 		assert.equal(results.length, 17);
 		for (let result of results) {
 			assert(result.sparse !== null);
+		}
+	});
+	it('Parsed query with boolean equal to true', async function () {
+		let results = [];
+		for await (let record of RelatedTable.search({
+			url: '?aFlag==true',
+		})) {
+			results.push(record);
+		}
+		assert.equal(results.length, 2);
+		for (let result of results) {
+			assert(result.aFlag);
+		}
+	});
+	it('Parsed query with boolean equal to false', async function () {
+		let results = [];
+		for await (let record of RelatedTable.search({
+			url: '?aFlag==false',
+		})) {
+			results.push(record);
+		}
+		assert.equal(results.length, 3);
+		for (let result of results) {
+			assert(!result.aFlag);
 		}
 	});
 
