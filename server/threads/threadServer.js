@@ -93,13 +93,29 @@ function startServers() {
 								// Here we attempt to gracefully close all outstanding keep-alive connections,
 								// repeatedly closing any connections that are idle. This allows any active requests
 								// to finish sending their response, then we close their connections.
-								setInterval(() => {
-									server.closeIdleConnections();
+								let symbols = Object.getOwnPropertySymbols(server);
+								let connections_symbol = symbols.find((symbol) => symbol.description.includes('connections'));
+								let close_attempts = 0;
+								let timer = setInterval(() => {
+									close_attempts++;
+									const force_close = close_attempts >= 100;
+									let connections = server[connections_symbol][force_close ? 'all' : 'idle']();
+									if (connections.length === 0) {
+										if (force_close) clearInterval(timer);
+										return;
+									}
+									if (close_attempts === 1) harper_logger.info(`Closing ${connections.length} idle connections`);
+									else if (force_close)
+										harper_logger.warn(`Forcefully closing ${connections.length} active connections`);
+									for (let i = 0, l = connections.length; i < l; i++) {
+										const socket = connections[i].socket;
+										if (socket._httpMessage && !socket._httpMessage.finished && !force_close) {
+											continue;
+										}
+										if (force_close) socket.destroySoon();
+										else socket.end('HTTP/1.1 408 Request Timeout\r\nConnection: close\r\n\r\n');
+									}
 								}, 25).unref();
-								setTimeout(() => {
-									server.closeAllConnections();
-									harper_logger.info('Closed all http connections', port, threadId);
-								}, 4000).unref();
 							}
 							// And we tell the server not to accept any more incoming connections
 							server.close?.(() => {

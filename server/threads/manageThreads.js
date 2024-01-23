@@ -68,6 +68,7 @@ function getWorkerCount() {
 function setMainIsWorker(isWorker) {
 	isMainWorker = isWorker;
 }
+let worker_count = 1; // should be assigned when workers are created
 let ticket_keys;
 function getTicketKeys() {
 	if (ticket_keys) return ticket_keys;
@@ -142,7 +143,7 @@ function startWorker(path, options = {}) {
 					addPorts: ports_to_send,
 					addThreadIds: channels_to_connect.map((channel) => channel.existingPort.threadId),
 					workerIndex: options.workerIndex,
-					workerCount: options.threadCount,
+					workerCount: (worker_count = options.threadCount),
 					name: options.name,
 					restartNumber: module.exports.restartNumber,
 					ticketKeys: getTicketKeys(),
@@ -210,7 +211,11 @@ const OVERLAPPING_RESTART_TYPES = [hdb_terms.THREAD_TYPES.HTTP];
  * @returns {Promise<void>}
  */
 
-async function restartWorkers(name = null, max_workers_down = 2, start_replacement_threads = true) {
+async function restartWorkers(
+	name = null,
+	max_workers_down = Math.max(worker_count > 3, 1), // restart 1/8 of the threads at a time, but at least 1
+	start_replacement_threads = true
+) {
 	if (isMainThread) {
 		// This is here to prevent circular dependencies
 		if (start_replacement_threads) {
