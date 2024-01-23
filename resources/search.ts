@@ -87,8 +87,8 @@ export function executeConditions(conditions, operator, table, txn, request, con
 					// this is a group of conditions, we need to combine them
 					const union = condition.operator === 'or';
 					const filters = mapConditionsToFilters(condition.conditions, !union, estimated_incoming_count);
-					if (union) return (record) => filters.some((filter) => filter(record));
-					else return (record) => filters.every((filter) => filter(record));
+					if (union) return (record, entry) => filters.some((filter) => filter(record, entry));
+					else return (record, entry) => filters.every((filter) => filter(record, entry));
 				}
 				const is_primary_key = (condition.attribute || condition[0]) === table.primaryKey;
 				const filter = filterByType(condition, table, context, filtered, is_primary_key, estimated_incoming_count);
