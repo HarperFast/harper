@@ -342,6 +342,29 @@ describe('Querying through Resource API', () => {
 			assert.equal(results.length, 1);
 			assert(QueryTable.primaryStore.readCount - start_count < 3);
 		});
+		it('Query by standard condition and two joined conditions in union', async function () {
+			let results = [];
+			for await (let record of QueryTable.search({
+				conditions: [
+					{ attribute: 'id', comparator: 'ge', value: 'id-93' },
+					{
+						operator: 'or',
+						conditions: [
+							{ attribute: ['related', 'name'], comparator: 'equals', value: 'related name 3' },
+							{ attribute: ['related', 'name'], comparator: 'equals', value: 'related name 1' },
+						],
+					},
+				],
+				select: ['id', 'relatedId', 'name'],
+			})) {
+				results.push(record);
+			}
+			assert.equal(results.length, 3);
+			for (let result of results) {
+				assert(result.relatedId === 1 || result.relatedId === 3);
+			}
+		});
+
 		it('Query by joined condition with many-to-one and multiple joined condition', async function () {
 			let results = [];
 			let start_count = RelatedTable.primaryStore.readCount;
