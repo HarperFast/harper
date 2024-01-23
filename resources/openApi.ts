@@ -3,7 +3,6 @@ import { version } from '../bin/version';
 const OPENAPI_VERSION = '3.0.3';
 // Maps graphql primitive types to open api types
 const DATA_TYPES = {
-	ID: 'string',
 	Int: 'integer',
 	Float: 'number',
 	Long: 'integer',
@@ -11,8 +10,8 @@ const DATA_TYPES = {
 	Boolean: 'boolean',
 	Date: 'string',
 	Bytes: 'string',
-	Any: 'string',
 	BigInt: 'integer',
+	array: 'array',
 };
 
 const SCHEMA_COMP_REF = '#/components/schemas/';
@@ -53,36 +52,73 @@ export function generateJsonApi(resources) {
 		if (!resource.path) continue;
 
 		const { path } = resource;
+		const stripped_path = path.split('/').slice(-1); // strip any namespace from path
 		let { attributes, primaryKey, prototype } = resource.Resource;
 		primaryKey = primaryKey ?? 'id';
 		if (!primaryKey) continue;
 		const props = {};
 		const query_params_array = [];
 		if (attributes) {
-			for (const { type, name } of attributes) {
-				props[name] = new Type(DATA_TYPES[type], type);
+			for (const { type, name, elements, relationship, definition } of attributes) {
+				if (relationship) {
+					if (type === 'array') {
+						props[name] = { type: 'array', items: { $ref: SCHEMA_COMP_REF + elements.type } };
+					} else {
+						props[name] = { $ref: SCHEMA_COMP_REF + type };
+					}
+				} else {
+					const def = definition ?? elements?.definition;
+					if (def) {
+						if (!api.components.schemas[def.type]) {
+							const def_props = {};
+							def.properties.forEach((prop) => {
+								def_props[prop.name] = new Type(DATA_TYPES[prop.type], prop.type);
+							});
+
+							api.components.schemas[def.type] = new ResourceSchema(def_props);
+						}
+
+						if (type === 'array') {
+							props[name] = { type: 'array', items: { $ref: SCHEMA_COMP_REF + def.type } };
+						} else {
+							props[name] = { $ref: SCHEMA_COMP_REF + def.type };
+						}
+					} else {
+						if (type === 'array') {
+							if (elements.type === 'Any' || elements.type == 'ID') {
+								props[name] = { type: 'array', items: { format: elements.type } };
+							} else {
+								props[name] = { type: 'array', items: new Type(DATA_TYPES[elements.type], elements.type) };
+							}
+						} else if (type === 'Any' || type == 'ID') {
+							props[name] = { format: type };
+						} else {
+							props[name] = new Type(DATA_TYPES[type], type);
+						}
+					}
+				}
 				query_params_array.push(new Parameter(name, 'query', props[name]));
 			}
 		}
 
 		const props_array = Object.keys(props);
-		const primary_key_param = new Parameter(primaryKey, 'path', new Type(DATA_TYPES.ID, 'ID'));
+		const primary_key_param = new Parameter(primaryKey, 'path', { format: 'ID' });
 		primary_key_param.required = true;
 		primary_key_param.description = 'primary key of record';
 		const property_param_path = new Parameter('property', 'path', { enum: props_array });
 		property_param_path.required = true;
-		api.components.schemas[path] = new ResourceSchema(props);
+		api.components.schemas[stripped_path] = new ResourceSchema(props);
 
 		const has_post = prototype.post !== Resource.prototype.post || prototype.update;
-		const has_put = prototype.hasOwnProperty('put');
-		const has_get = prototype.hasOwnProperty('get');
-		const has_delete = prototype.hasOwnProperty('delete');
+		const has_put = typeof prototype.put === 'function';
+		const has_get = typeof prototype.get === 'function';
+		const has_delete = typeof prototype.delete === 'function';
 
 		// API for path structure /my-resource/
 		let url = '/' + path + '/';
 		if (has_post) {
 			api.paths[url] = {};
-			api.paths[url].post = new Post(path, security, 'create a new record auto-assigning a primary key');
+			api.paths[url].post = new Post(stripped_path, security, 'create a new record auto-assigning a primary key');
 		}
 
 		if (has_get) {
@@ -90,8 +126,8 @@ export function generateJsonApi(resources) {
 			api.paths[url].get = new Get(
 				query_params_array,
 				security,
-				{ '200': new Response200({ $ref: SCHEMA_COMP_REF + path }) },
-				'search for records by the specified property name and value'
+				{ '200': new Response200({ $ref: SCHEMA_COMP_REF + stripped_path }) },
+				'search for records by the specified property name and value pairs'
 			);
 		}
 
@@ -114,7 +150,7 @@ export function generateJsonApi(resources) {
 			api.paths[url].get = new Get(
 				[primary_key_param],
 				security,
-				{ '200': new Response200({ $ref: SCHEMA_COMP_REF + path }) },
+				{ '200': new Response200({ $ref: SCHEMA_COMP_REF + stripped_path }) },
 				'retrieve a record by its primary key'
 			);
 		}
@@ -124,7 +160,7 @@ export function generateJsonApi(resources) {
 			api.paths[url].put = new Put(
 				[primary_key_param],
 				security,
-				path,
+				stripped_path,
 				"create or update the record with the URL path that maps to the record's primary key"
 			);
 		}
