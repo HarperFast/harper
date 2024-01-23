@@ -50,7 +50,7 @@ jobs:
     needs:
       - build
       - getLicenses
-    runs-on: fabric-dev-runner
+    runs-on: fabric-dev-runner-dind
     timeout-minutes: 35
     steps:
     - uses: actions/checkout@v3
