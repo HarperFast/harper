@@ -9,7 +9,8 @@ on:
 name: Build
 jobs:
   getNodeVersion:
-    runs-on: ubuntu-latest
+    #runs-on: ubuntu-latest
+    runs-on: fabric-dev-runner
     outputs:
       nodeVersion: ${{ steps.getNode.outputs.NODE_VERSION }}
       harperdbVersion: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
@@ -26,7 +27,8 @@ jobs:
         echo "NODE_VERSION=$NODE_VERSION" >> $GITHUB_OUTPUT
         echo "HARPERDB_VERSION=$HARPERDB_VERSION" >> $GITHUB_OUTPUT
   build:
-    runs-on: ubuntu-latest
+    #runs-on: ubuntu-latest
+    runs-on: fabric-dev-runner
     needs: getNodeVersion
     timeout-minutes: 10
     steps:
