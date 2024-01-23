@@ -278,5 +278,25 @@
         "attribute":"id"
       }
     ]
+  },
+  "hdb_durable_session":{
+    "hash_attribute": "id",
+    "name": "hdb_durable_session",
+    "schema": "system",
+    "attributes":[
+      {
+        "attribute":"id"
+      }
+    ]
+  },
+  "hdb_session_will":{
+    "hash_attribute": "id",
+    "name": "hdb_session_will",
+    "schema": "system",
+    "attributes":[
+      {
+        "attribute":"id"
+      }
+    ]
   }
 }
