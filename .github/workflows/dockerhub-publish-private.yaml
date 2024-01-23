@@ -16,7 +16,8 @@ jobs:
   build:
     uses: ./.github/workflows/build.yaml
   getLicenses:
-    runs-on: fabric-dev-runner
+    runs-on: ubuntu-latest
+    #runs-on: fabric-dev-runner
     timeout-minutes: 20
     steps:
     - uses: actions/checkout@v3
@@ -50,10 +51,11 @@ jobs:
     needs:
       - build
       - getLicenses
-    runs-on: fabric-dev-runner-dind
+    runs-on: ubuntu-latest
+    #runs-on: fabric-dev-runner-dind
     timeout-minutes: 35
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
     - name: "Setup Docker buildx"
@@ -81,5 +83,13 @@ jobs:
         PUBLISH: "private"
         GITHUB_RUN_NUMBER: ${{ vars.GITHUB_RUN_NUMBER }}
         TAG_LATEST: "${{ inputs.tag_latest }}"
-      run: ./.github/scripts/docker-publish.sh
+      #run: ./.github/scripts/docker-publish.sh
       timeout-minutes: 30
+      # new stuff
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: utility/Docker/Dockerfile
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: "harperdb/private:4.3.0-beta.2-CORE-2320"
