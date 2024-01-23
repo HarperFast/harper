@@ -903,13 +903,13 @@ export function makeTable(options) {
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
-					if (existing_entry?.version > txn_time) {
+					if (existing_entry?.version >= txn_time) {
 						// TODO: can the previous version be older, by a prior version be newer?
 						if (audit) {
 							// incremental CRDT updates are only available with audit logging on
 							let local_time = existing_entry.localTime;
 							let audited_version = existing_entry.version;
-							while (update_to_apply && (local_time > txn_time || (audited_version > txn_time && local_time > 0))) {
+							while (update_to_apply && (local_time > txn_time || (audited_version >= txn_time && local_time > 0))) {
 								const audit_entry = audit_store.get(local_time);
 								const audit_record = readAuditEntry(audit_entry);
 								audited_version = audit_record.version;
@@ -919,24 +919,36 @@ export function makeTable(options) {
 										update_to_apply = rebuildUpdateBefore(update_to_apply, newer_update);
 									} else if (audit_record.type === 'put' || audit_record.type === 'delete') {
 										// There is newer full record update, so this incremental update is completely superseded
-										update_to_apply = null;
+										// TODO: We should still store the audit record for historical purposes
+										return;
 									}
+								} else if (audited_version === txn_time) {
+									// if there is an exact match in txn time, we assume this a duplicate update, and we can ignore it
+									// TODO: Once we have node ids, we can check if this is a duplicate update from the same node
+									// (otherwise we can break ties by the node id)
+									return;
 								}
 								local_time = audit_record.previousLocalTime;
 							}
 						} else if (full_update) {
 							// if no audit, we can't accurately do incremental updates, so we just assume the last update
 							// was the same type. Assuming a full update this record update loses and there are no changes
-							update_to_apply = null;
+							// TODO: We should still store the audit record for historical purposes
+							return;
 						} else {
 							// no audit, assume updates are overwritten except CRDT operations or properties that didn't exist
 							update_to_apply = rebuildUpdateBefore(update_to_apply, existing_record);
 						}
 					}
-					const record_to_store = deepFreeze(this, update_to_apply);
+					let record_to_store;
+					if (full_update) record_to_store = update_to_apply;
+					else {
+						this[RECORD_PROPERTY] = existing_record;
+						record_to_store = full_update ? update_to_apply : deepFreeze(this, update_to_apply);
+					}
+					this[RECORD_PROPERTY] = record_to_store;
 					if (record_to_store?.[RECORD_PROPERTY])
 						throw new Error('Can not assign a record to a record, check for circular references');
-					this[RECORD_PROPERTY] = record_to_store;
 					let audit_record;
 					if (!full_update) {
 						// that is a CRDT, we use our own data as the basis for the audit record, which will include information about the incremental updates

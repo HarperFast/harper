@@ -99,18 +99,19 @@ describe('Transactions', () => {
 				TxnTest.put(45, { name: 'a counter', count: 1 }, context);
 			});
 			assert.equal((await TxnTest.get(45)).name, 'a counter');
-			await transaction((txn) => {
-				let counter = TxnTest.get(45, txn);
+			await transaction(async (txn) => {
+				let counter = await TxnTest.get(45, txn);
 				counter.addTo('count', 1);
 			});
 			let entity = await TxnTest.get(45);
 			assert.equal(entity.count, 2);
+			assert.equal(entity.get('propertyA'), undefined);
 			// concurrently, to ensure the incrementation is really correct:
 			let promises = [];
 			for (let i = 0; i < 3; i++) {
 				promises.push(
 					transaction(async (txn) => {
-						let counter = TxnTest.get(45, txn);
+						let counter = await TxnTest.get(45, txn);
 						await new Promise((resolve) => setTimeout(resolve, 1));
 						counter.addTo('count', 3);
 						counter.set('new prop ' + i, 'new value ' + i);
@@ -185,7 +186,24 @@ describe('Transactions', () => {
 				});
 			});
 			entity = await TxnTest.get(45);
-			// all three properties should be added even though no single update did this
+			// Should have incrementation and correct property values
+			assert.equal(entity.count, 5);
+			assert.equal(entity.get('propertyA'), 'valueA');
+			assert.equal(entity.get('propertyB'), 'valueB');
+
+			await new Promise((resolve) => {
+				// send an update with a duplicate timestamp, this should be ignored
+				test_subscription.send({
+					type: 'patch',
+					id: 45,
+					timestamp: published_messages[0].__origin.timestamp - 10,
+					table: 'TxnTest',
+					value: { count: { __op__: 'add', value: 2 }, propertyA: 'should not change', propertyB: 'valueB' },
+					onCommit: resolve,
+				});
+			});
+			entity = await TxnTest.get(45);
+			// nothing should have changed
 			assert.equal(entity.count, 5);
 			assert.equal(entity.get('propertyA'), 'valueA');
 			assert.equal(entity.get('propertyB'), 'valueB');
