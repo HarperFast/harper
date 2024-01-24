@@ -23,7 +23,8 @@ USER harperdb
 WORKDIR /home/harperdb/
 
 #Install HarperDB package and clean up tarball
-RUN npm install --omit=dev -g $HARPERDB_TARBALL && \
+RUN npm install -g npm@latest && \
+    npm install --omit=dev -g $HARPERDB_TARBALL && \
     npm cache clean --force && \
     rm -f $HARPERDB_TARBALL
 
