@@ -34,6 +34,7 @@ build-image-standard: build-harperdb generate-fake-licenses
 		--progress auto \
 		--output=type=docker \
 		--file Dockerfile \
+		--platform "linux/amd64,linux/arm64" \
 		--tag harperdb/harperdb:${HDB_VERSION} .
 	@echo $(WARNING)
 
