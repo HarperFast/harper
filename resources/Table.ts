@@ -2769,6 +2769,8 @@ export function coerceType(value, attribute) {
 	//if a type is String is it safe to execute a .toString() on the value and return? Does not work for Array/Object so we would need to detect if is either of those first
 	if (value === null) {
 		return value;
+	} else if (value === '' && type && type !== 'String' && type !== 'Any') {
+		return null;
 	} else if (type === 'Int' || type === 'Long') return value === 'null' ? null : parseInt(value);
 	else if (type === 'Float') return value === 'null' ? null : parseFloat(value);
 	else if (type === 'BigInt') return value === 'null' ? null : BigInt(value);
