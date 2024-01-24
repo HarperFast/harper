@@ -4,7 +4,7 @@ import { assert, expect } from 'chai';
 import { decode, encode, DecoderStream } from 'cbor-x';
 import { getVariables, callOperation } from './utility.js';
 import { setupTestApp } from './setupTestApp.mjs';
-import { get as env_get } from '../../utility/environment/environmentManager.js';
+import { get as env_get, setProperty } from '../../utility/environment/environmentManager.js';
 import { connect } from 'mqtt';
 import { readFileSync } from 'fs';
 import { start as startMQTT } from '../../ts-build/server/mqtt.js';
@@ -555,6 +555,84 @@ describe('test MQTT connections and commands', () => {
 		});
 		client.end();
 	});
+	it('subscribe and unsubscribe with WSS mTLS', async function () {
+		let server;
+		try {
+			await new Promise((resolve, reject) => {
+				setProperty('http_mtls', { user: 'HDB_ADMIN', required: true });
+				server = startMQTT({
+					server: global.server,
+					webSocket: {
+						securePort: 8885,
+						network: { mtls: { user: 'HDB_ADMIN', required: true } },
+					},
+				}).listen(8885, resolve);
+				server.on('error', reject);
+			});
+			let bad_client = connect('wss://localhost:8885', {
+				clientId: 'test-bad-mtls',
+			});
+
+			const private_key_path = env_get('tls_privateKey');
+			const certificate_path = env_get('tls_certificate');
+			const certificate_authority_path = env_get('tls_certificateAuthority');
+			let client = connect('wss://localhost:8885', {
+				key: readFileSync(private_key_path),
+				// if they have a CA, we append it, so it is included
+				cert:
+					readFileSync(certificate_path) +
+					(certificate_authority_path ? '\n\n' + readFileSync(certificate_authority_path) : ''),
+				ca: certificate_authority_path && readFileSync(certificate_authority_path),
+				clean: true,
+				clientId: 'test-client-mtls',
+			});
+			await new Promise((resolve, reject) => {
+				bad_client.on('connect', () => {
+					reject('Client should not be able to connect to mTLS without a certificate');
+				});
+				client.on('connect', resolve);
+				client.on('error', reject);
+			});
+			await new Promise((resolve, reject) => {
+				client.subscribe(
+					'SimpleRecord/23',
+					{
+						qos: 1,
+					},
+					function (err) {
+						if (err) reject(err);
+						else {
+							client.unsubscribe('SimpleRecord/23', function (err) {
+								if (err) reject(err);
+								else resolve();
+							});
+						}
+					}
+				);
+			});
+			await new Promise((resolve, reject) => {
+				client.on('message', (topic, payload, packet) => {
+					let record = JSON.parse(payload);
+					reject('Should not receive a message that we are unsubscribed to');
+				});
+				client.publish(
+					'SimpleRecord/23',
+					JSON.stringify({
+						name: 'This is a test again',
+					}),
+					{
+						retain: false,
+						qos: 1,
+					}
+				);
+				setTimeout(resolve, 50);
+			});
+			client.end();
+		} finally {
+			setProperty('http_mtls', false);
+		}
+	});
+
 	it('subscribe to bad topic', async function () {
 		await new Promise((resolve, reject) => {
 			client2.subscribe('DoesNotExist/+', function (err, granted) {

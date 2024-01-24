@@ -8,6 +8,7 @@ http:
   keepAliveTimeout: 30000
   port: 9926
   securePort: null
+  mtls: false
   timeout: 120000
 threads: null
 authentication:

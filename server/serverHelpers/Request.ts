@@ -32,6 +32,15 @@ export class Request {
 	get ip() {
 		return this._nodeRequest.socket.remoteAddress;
 	}
+	get authorized() {
+		return this._nodeRequest.socket.authorized;
+	}
+	get peerCertificate() {
+		return this._nodeRequest.socket.getPeerCertificate();
+	}
+	get mtlsConfig() {
+		return this._nodeRequest.socket.server.mtlsConfig;
+	}
 	get body() {
 		return this.#body || (this.#body = new RequestBody(this._nodeRequest));
 	}

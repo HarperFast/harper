@@ -517,9 +517,9 @@ function flattenConfig(obj) {
 
 					result[key] = flat_obj[x];
 				}
-			} else {
-				result[i.toLowerCase()] = obj[i];
 			}
+			if (obj[i] !== undefined)
+				result[i.toLowerCase()] = obj[i];
 		}
 		return result;
 	}

@@ -26771,7 +26771,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"offset\": 3,\n\t\"limit\": 3,\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"ends_with\",\n\t\t\t\"search_value\": \"CO\"\n\t\t}\n\t]\n}"
+							"raw": "{\n\t\"operation\": \"search_by_conditions\",\n\t\"schema\": \"dev\",\n\t\"table\": \"dog_conditions\",\n\t\"get_attributes\": [\n\t\t\"id\", \"age\", \"location\", \"group\"\n\t],\n\t\"offset\": 3,\n\t\"limit\": 3,\n\t\"conditions\": [\n\t\t{\n\t\t\t\"search_attribute\": \"location\",\n\t\t\t\"search_type\": \"ends_with\",\n\t\t\t\"search_value\": \"CO\"\n\t\t}\n\t],\n\"sort\":{\"attribute\":\"id\"}\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",

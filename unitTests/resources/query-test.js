@@ -35,6 +35,7 @@ describe('Querying through Resource API', () => {
 				{ name: 'name', indexed: true },
 				{ name: 'sparse', indexed: true },
 				{ name: 'relatedId', indexed: true },
+				{ name: 'notIndexed' },
 				{ name: 'manyToManyIds', elements: { type: 'ID' }, indexed: true },
 				relationship_attribute,
 				many_to_many_attribute,
@@ -45,6 +46,7 @@ describe('Querying through Resource API', () => {
 			database: 'test',
 			attributes: [
 				{ name: 'id', isPrimaryKey: true, type: 'Int' },
+				{ name: 'aFlag', type: 'Boolean', indexed: true },
 				{ name: 'name', indexed: true },
 				{
 					name: 'relatedToMany',
@@ -86,7 +88,7 @@ describe('Querying through Resource API', () => {
 		many_to_many_attribute.elements.definition.tableClass = ManyToMany;
 
 		for (let i = 0; i < 5; i++) {
-			RelatedTable.put({ id: i, name: 'related name ' + i });
+			RelatedTable.put({ id: i, name: 'related name ' + i, aFlag: i % 3 === 0 });
 		}
 		for (let i = 0; i < 25; i++) {
 			ManyToMany.put({ id: i, name: 'many-to-many entry ' + i });
@@ -103,6 +105,7 @@ describe('Querying through Resource API', () => {
 				relatedId: i % 5,
 				sparse: i % 6 === 2 ? i : null,
 				manyToManyIds: many_ids,
+				notIndexed: 'not indexed ' + i,
 				nestedData: [{ id: 'nested-' + i, name: 'nested name ' + i }],
 			});
 		}
@@ -119,6 +122,16 @@ describe('Querying through Resource API', () => {
 			results.push(record);
 		}
 		assert.equal(results.length, 1);
+	});
+	it('Query data in a table with non-indexed property', async function () {
+		let results = [];
+		for await (let record of QueryTable.search({
+			allowFullScan: true,
+			conditions: [{ attribute: 'notIndexed', comparator: 'less_than_equal', value: 'not indexed 4' }],
+		})) {
+			results.push(record);
+		}
+		assert.equal(results.length, 35);
 	});
 	it('Query sparse property in a table with null', async function () {
 		let results = [];
@@ -255,7 +268,35 @@ describe('Querying through Resource API', () => {
 			assert.equal(results[0].id, 'id-3');
 			assert.equal(results[2].relatedId, 2);
 		});
-
+		it('Query by simple join in more nested condition using parser', async function () {
+			let results = [];
+			for await (let record of QueryTable.search(
+				parseQuery('id!=null&[[id=id-32|id=gt=id-4]&related.name=related name 2]')
+			)) {
+				results.push(record);
+			}
+			assert.equal(results.length, 14);
+			assert.equal(results[0].id, 'id-32');
+			assert.equal(results[2].relatedId, 2);
+		});
+		it('Query by simple join in other nested condition using parser', async function () {
+			let results = [];
+			for await (let record of QueryTable.search(
+				parseQuery('related.name=lt=related name 2|[id=gt=id-3&[id=lt=id-4|[sparse==null&id=id-89]]]')
+			)) {
+				results.push(record);
+			}
+			assert.equal(results.length, 47);
+		});
+		it('Query by simple join in nested condition with non-matching condition using parser', async function () {
+			let results = [];
+			for await (let record of QueryTable.search(
+				parseQuery('sparse==null&[[name=none|id=lt=id-2]&related.name=ge=related name 4]')
+			)) {
+				results.push(record);
+			}
+			assert.equal(results.length, 1);
+		});
 		it('Query by two joined conditions with many-to-one', async function () {
 			let results = [];
 			for await (let record of QueryTable.search({
@@ -301,6 +342,29 @@ describe('Querying through Resource API', () => {
 			assert.equal(results.length, 1);
 			assert(QueryTable.primaryStore.readCount - start_count < 3);
 		});
+		it('Query by standard condition and two joined conditions in union', async function () {
+			let results = [];
+			for await (let record of QueryTable.search({
+				conditions: [
+					{ attribute: 'id', comparator: 'ge', value: 'id-93' },
+					{
+						operator: 'or',
+						conditions: [
+							{ attribute: ['related', 'name'], comparator: 'equals', value: 'related name 3' },
+							{ attribute: ['related', 'name'], comparator: 'equals', value: 'related name 1' },
+						],
+					},
+				],
+				select: ['id', 'relatedId', 'name'],
+			})) {
+				results.push(record);
+			}
+			assert.equal(results.length, 3);
+			for (let result of results) {
+				assert(result.relatedId === 1 || result.relatedId === 3);
+			}
+		});
+
 		it('Query by joined condition with many-to-one and multiple joined condition', async function () {
 			let results = [];
 			let start_count = RelatedTable.primaryStore.readCount;
@@ -341,10 +405,10 @@ describe('Querying through Resource API', () => {
 			})) {
 				results.push(record);
 			}
-			assert.equal(results.length, 4);
+			assert.equal(results.length, 5);
 			let related = await results[0].relatedToMany;
 			assert.equal(related.length, 2);
-			assert.equal(related[0].name, 'name-21');
+			assert.equal(related[0].name, 'name-20');
 		});
 		it('Query by join with many-to-many (forward)', async function () {
 			let results = [];
@@ -465,14 +529,14 @@ describe('Querying through Resource API', () => {
 				results.push(record);
 			}
 			let related_count = 0;
-			assert.equal(results.length, 24);
+			assert.equal(results.length, 25);
 			assert(
 				results.every((record) => {
 					related_count += record.reverseManyToMany.length;
 					return record.reverseManyToMany.every((record) => record.relatedId === 3);
 				})
 			);
-			assert.equal(related_count, 51);
+			assert.equal(related_count, 53);
 		});
 
 		it('Query data in a table with join, returning primary key and do not load records', async function () {
@@ -543,8 +607,9 @@ describe('Querying through Resource API', () => {
 			assert.equal(results[0].id, 'id-99');
 			assert.equal(results[1].id, 'id-98');
 		});
-		it('Query data in a table with narrow constraint sorting on different property', async function () {
+		it('Query data in a table with narrow constraint sorting on primary key property', async function () {
 			let results = [];
+			let start_count = QueryTable.primaryStore.readCount;
 			for await (let record of QueryTable.search({
 				conditions: [{ attribute: 'id', comparator: 'between', value: ['id-90', 'id-95'] }],
 				sort: { attribute: 'name', descending: true },
@@ -554,6 +619,21 @@ describe('Querying through Resource API', () => {
 			assert.equal(results.length, 6);
 			assert.equal(results[0].id, 'id-95');
 			assert.equal(results[1].id, 'id-94');
+			assert(QueryTable.primaryStore.readCount - start_count < 25);
+		});
+		it('Query data in a table with narrow constraint sorting on different property', async function () {
+			let results = [];
+			let start_count = QueryTable.primaryStore.readCount;
+			for await (let record of QueryTable.search({
+				conditions: [{ attribute: 'relatedId', value: 3 }],
+				sort: { attribute: 'name', descending: true },
+			})) {
+				results.push(record);
+			}
+			assert.equal(results.length, 20);
+			assert(QueryTable.primaryStore.readCount - start_count < 25);
+			assert.equal(results[0].id, 'id-98');
+			assert.equal(results[1].id, 'id-93');
 		});
 		it('Query data in a table with narrow constraint with multiple sorting on different properties', async function () {
 			let results = [];
@@ -574,6 +654,7 @@ describe('Querying through Resource API', () => {
 		it('Query data in a table with no constraint with multiple sorting on different properties', async function () {
 			let results = [];
 			for await (let record of QueryTable.search({
+				allowFullScan: true,
 				sort: { attribute: 'relatedId', next: { attribute: 'name', descending: true } },
 			})) {
 				results.push(record);
@@ -582,6 +663,20 @@ describe('Querying through Resource API', () => {
 			assert.equal(results[0].id, 'id-95');
 			assert.equal(results[1].id, 'id-90');
 			assert.equal(results[2].id, 'id-85');
+		});
+		it('Query data in a table with contains filter and sorting on same property', async function () {
+			let results = [];
+			for await (let record of QueryTable.search({
+				allowFullScan: true,
+				conditions: [{ attribute: 'name', comparator: 'contains', value: 'ame' }],
+				sort: { attribute: 'name', descending: true },
+			})) {
+				results.push(record);
+			}
+			assert.equal(results.length, 99);
+			assert.equal(results[0].id, 'id-99');
+			assert.equal(results[1].id, 'id-98');
+			assert.equal(results[2].id, 'id-97');
 		});
 		it('Query data in a table with constraint same attribute as first sorting order', async function () {
 			let results = [];
@@ -596,6 +691,32 @@ describe('Querying through Resource API', () => {
 			assert.equal(results[1].id, 'id-19');
 			assert.equal(results[20].id, 'id-13');
 			assert.equal(results[21].id, 'id-18');
+		});
+		it('Query data in a table with constraint same non-indexed attribute as first sorting order', async function () {
+			let results = [];
+			for await (let record of QueryTable.search({
+				allowFullScan: true,
+				conditions: [{ attribute: 'notIndexed', comparator: 'greater_than', value: 'not indexed 9' }],
+				sort: { attribute: 'notIndexed', descending: true },
+			})) {
+				results.push(record);
+			}
+			assert.equal(results.length, 10);
+			assert.equal(results[0].id, 'id-99');
+			assert.equal(results[1].id, 'id-98');
+		});
+		it('Sort on joined attribute', async function () {
+			let results = [];
+			for await (let record of QueryTable.search({
+				allowFullScan: true,
+				sort: { attribute: ['related', 'name'], descending: true },
+			})) {
+				results.push(record);
+			}
+			assert.equal(results.length, 100);
+			assert.equal(results[0].id, 'id-99');
+			assert.equal(results[0].relatedId, 4);
+			assert.equal(results[1].id, 'id-94');
 		});
 		it('Explain query with constraint same attribute as first sorting order', async function () {
 			const explanation = QueryTable.search({
@@ -1018,6 +1139,30 @@ describe('Querying through Resource API', () => {
 		assert.equal(results.length, 17);
 		for (let result of results) {
 			assert(result.sparse !== null);
+		}
+	});
+	it('Parsed query with boolean equal to true', async function () {
+		let results = [];
+		for await (let record of RelatedTable.search({
+			url: '?aFlag==true',
+		})) {
+			results.push(record);
+		}
+		assert.equal(results.length, 2);
+		for (let result of results) {
+			assert(result.aFlag);
+		}
+	});
+	it('Parsed query with boolean equal to false', async function () {
+		let results = [];
+		for await (let record of RelatedTable.search({
+			url: '?aFlag==false',
+		})) {
+			results.push(record);
+		}
+		assert.equal(results.length, 3);
+		for (let result of results) {
+			assert(!result.aFlag);
 		}
 	});
 

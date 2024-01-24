@@ -25,6 +25,7 @@ import {
 	flattenKey,
 	intersectionEstimate,
 	COERCIBLE_OPERATORS,
+	executeConditions,
 } from './search';
 import * as harper_logger from '../utility/logging/harper_logger';
 import { Addition, assignTrackedAccessors, deepFreeze, hasChanges, OWN_DATA } from './tracked';
@@ -893,6 +894,8 @@ export function makeTable(options) {
 						if (context && existing_entry?.version > (context.lastModified || 0))
 							context.lastModified = existing_entry.version;
 						this[ENTRY_PROPERTY] = existing_entry;
+						if (existing_entry?.value?.[RECORD_PROPERTY])
+							throw new Error('Can not assign a record to a record, check for circular references');
 						if (!full_update) this[RECORD_PROPERTY] = existing_entry?.value ?? null;
 					}
 					this[OWN_DATA] = record_update;
@@ -904,13 +907,13 @@ export function makeTable(options) {
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
-					if (existing_entry?.version > txn_time) {
+					if (existing_entry?.version >= txn_time) {
 						// TODO: can the previous version be older, by a prior version be newer?
 						if (audit) {
 							// incremental CRDT updates are only available with audit logging on
 							let local_time = existing_entry.localTime;
 							let audited_version = existing_entry.version;
-							while (update_to_apply && (local_time > txn_time || (audited_version > txn_time && local_time > 0))) {
+							while (update_to_apply && (local_time > txn_time || (audited_version >= txn_time && local_time > 0))) {
 								const audit_entry = audit_store.get(local_time);
 								const audit_record = readAuditEntry(audit_entry);
 								audited_version = audit_record.version;
@@ -920,22 +923,36 @@ export function makeTable(options) {
 										update_to_apply = rebuildUpdateBefore(update_to_apply, newer_update);
 									} else if (audit_record.type === 'put' || audit_record.type === 'delete') {
 										// There is newer full record update, so this incremental update is completely superseded
-										update_to_apply = null;
+										// TODO: We should still store the audit record for historical purposes
+										return;
 									}
+								} else if (audited_version === txn_time) {
+									// if there is an exact match in txn time, we assume this a duplicate update, and we can ignore it
+									// TODO: Once we have node ids, we can check if this is a duplicate update from the same node
+									// (otherwise we can break ties by the node id)
+									return;
 								}
 								local_time = audit_record.previousLocalTime;
 							}
 						} else if (full_update) {
 							// if no audit, we can't accurately do incremental updates, so we just assume the last update
 							// was the same type. Assuming a full update this record update loses and there are no changes
-							update_to_apply = null;
+							// TODO: We should still store the audit record for historical purposes
+							return;
 						} else {
 							// no audit, assume updates are overwritten except CRDT operations or properties that didn't exist
 							update_to_apply = rebuildUpdateBefore(update_to_apply, existing_record);
 						}
 					}
-					const record_to_store = deepFreeze(this, update_to_apply);
+					let record_to_store;
+					if (full_update) record_to_store = update_to_apply;
+					else {
+						this[RECORD_PROPERTY] = existing_record;
+						record_to_store = full_update ? update_to_apply : deepFreeze(this, update_to_apply);
+					}
 					this[RECORD_PROPERTY] = record_to_store;
+					if (record_to_store?.[RECORD_PROPERTY])
+						throw new Error('Can not assign a record to a record, check for circular references');
 					let audit_record;
 					if (!full_update) {
 						// that is a CRDT, we use our own data as the basis for the audit record, which will include information about the incremental updates
@@ -1149,7 +1166,7 @@ export function makeTable(options) {
 								404
 							);
 
-						order_aligned_condition = { attribute: attribute_name };
+						order_aligned_condition = { attribute: attribute_name, comparator: 'sort' };
 						conditions.push(order_aligned_condition);
 					}
 					order_aligned_condition.descending = Boolean(sort.descending);
@@ -1174,72 +1191,6 @@ export function makeTable(options) {
 					post_ordering = sort;
 				}
 			}
-			function executeConditions(conditions, operator) {
-				const first_search = conditions[0];
-				// both AND and OR start by getting an iterator for the ids for first condition
-				// and then things diverge...
-				if (operator === 'or') {
-					let results = executeCondition(first_search);
-					//get the union of ids from all condition searches
-					for (let i = 1; i < conditions.length; i++) {
-						const condition = conditions[i];
-						// might want to lazily execute this after getting to this point in the iteration
-						const next_results = executeCondition(condition);
-						results = results.concat(next_results);
-					}
-					const returned_ids = new Set();
-					return results.filter((entry) => {
-						const id = entry.key ?? entry;
-						if (returned_ids.has(id))
-							// skip duplicate ids
-							return false;
-						returned_ids.add(id);
-						return true;
-					});
-				} else {
-					// AND
-					const results = executeCondition(first_search);
-					// get the intersection of condition searches by using the indexed query for the first condition
-					// and then filtering by all subsequent conditions.
-					// now apply filters that require looking up records
-					let estimated_incoming_count = first_search.estimated_count;
-					const filters = conditions
-						.slice(1)
-						.map((condition, index) => {
-							const is_primary_key = (condition.attribute || condition[0]) === primary_key;
-							const filter = filterByType(
-								condition,
-								TableResource,
-								context,
-								filtered,
-								is_primary_key,
-								estimated_incoming_count
-							);
-							if (index < conditions.length - 2 && estimated_incoming_count) {
-								estimated_incoming_count = intersectionEstimate(
-									primary_store,
-									condition.estimated_count,
-									estimated_incoming_count
-								);
-							}
-							return filter;
-						})
-						.filter(Boolean);
-					return filters.length > 0 ? transformToEntries(results, select, context, filters) : results;
-				}
-			}
-			const reverse = request.reverse === true;
-			function executeCondition(condition) {
-				if (condition.conditions) return executeConditions(condition.conditions, condition.operator);
-				return searchByIndex(
-					condition,
-					txn,
-					condition.descending || reverse,
-					TableResource,
-					request.allowFullScan,
-					filtered
-				);
-			}
 			// we mark the read transaction as in use (necessary for a stable read
 			// transaction, and we really don't care if the
 			// counts are done in the same read transaction because they are just estimates) until the search
@@ -1257,21 +1208,29 @@ export function makeTable(options) {
 				};
 			}
 			const read_txn = txn.useReadTxn();
-			let entries = executeConditions(conditions, operator);
-			if (request.offset || request.limit !== undefined)
-				entries = entries.slice(
-					request.offset,
-					request.limit !== undefined ? (request.offset || 0) + request.limit : undefined
-				);
-			const ensure_loaded = request.ensureLoaded !== false;
-			const transformToRecord = TableResource.transformEntryForSelect(select, context, filtered, ensure_loaded, true);
-			let results = TableResource.transformToOrderedSelect(
-				entries,
-				select,
-				post_ordering,
+			let entries = executeConditions(
+				conditions,
+				operator,
+				TableResource,
+				read_txn,
+				request,
 				context,
-				transformToRecord
+				(results, filters) => transformToEntries(results, select, context, filters),
+				filtered
 			);
+			const ensure_loaded = request.ensureLoaded !== false;
+			if (!post_ordering) entries = applyOffset(entries); // if there is no post ordering, we can apply the offset now
+			const transformToRecord = TableResource.transformEntryForSelect(select, context, filtered, ensure_loaded, true);
+			let results = TableResource.transformToOrderedSelect(entries, select, post_ordering, context, transformToRecord);
+			function applyOffset(entries) {
+				if (request.offset || request.limit !== undefined)
+					return entries.slice(
+						request.offset,
+						request.limit !== undefined ? (request.offset || 0) + request.limit : undefined
+					);
+				return entries;
+			}
+			if (post_ordering) results = applyOffset(results); // if there is post ordering, we have to apply the offset after sorting
 			results.onDone = () => {
 				results.onDone = null; // ensure that it isn't called twice
 				txn.doneReadTxn();
@@ -1466,7 +1425,7 @@ export function makeTable(options) {
 			let transform_cache;
 			const transform = (entry) => {
 				let record;
-				if (entry) {
+				if (entry != undefined) {
 					// TODO: remove this:
 					last_entry = entry;
 					record = entry.value || entry.deref?.();
@@ -2025,6 +1984,11 @@ export function makeTable(options) {
 				attribute.resolve = null; // reset this
 				const relationship = attribute.relationship;
 				if (relationship) {
+					if (attribute.indexed) {
+						console.error(
+							`A relationship property can not be directly indexed, (but you may want to index the foreign key attribute)`
+						);
+					}
 					has_relationships = true;
 					if (relationship.to) {
 						if (attribute.elements?.definition) {
@@ -2808,6 +2772,7 @@ export function coerceType(value, attribute) {
 	} else if (type === 'Int' || type === 'Long') return value === 'null' ? null : parseInt(value);
 	else if (type === 'Float') return value === 'null' ? null : parseFloat(value);
 	else if (type === 'BigInt') return value === 'null' ? null : BigInt(value);
+	else if (type === 'Boolean') return value === 'true' ? true : value === 'false' ? false : value;
 	else if (type === 'Date') {
 		//if the value is not an integer (to handle epoch values) and does not end in a timezone we suffiz with 'Z' tom make sure the Date is GMT timezone
 		if (typeof value !== 'number' && !ENDS_WITH_TIMEZONE.test(value)) {

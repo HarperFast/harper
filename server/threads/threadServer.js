@@ -95,13 +95,29 @@ function startServers() {
 								// Here we attempt to gracefully close all outstanding keep-alive connections,
 								// repeatedly closing any connections that are idle. This allows any active requests
 								// to finish sending their response, then we close their connections.
-								setInterval(() => {
-									server.closeIdleConnections();
+								let symbols = Object.getOwnPropertySymbols(server);
+								let connections_symbol = symbols.find((symbol) => symbol.description.includes('connections'));
+								let close_attempts = 0;
+								let timer = setInterval(() => {
+									close_attempts++;
+									const force_close = close_attempts >= 100;
+									let connections = server[connections_symbol][force_close ? 'all' : 'idle']();
+									if (connections.length === 0) {
+										if (force_close) clearInterval(timer);
+										return;
+									}
+									if (close_attempts === 1) harper_logger.info(`Closing ${connections.length} idle connections`);
+									else if (force_close)
+										harper_logger.warn(`Forcefully closing ${connections.length} active connections`);
+									for (let i = 0, l = connections.length; i < l; i++) {
+										const socket = connections[i].socket;
+										if (socket._httpMessage && !socket._httpMessage.finished && !force_close) {
+											continue;
+										}
+										if (force_close) socket.destroySoon();
+										else socket.end('HTTP/1.1 408 Request Timeout\r\nConnection: close\r\n\r\n');
+									}
 								}, 25).unref();
-								setTimeout(() => {
-									server.closeAllConnections();
-									harper_logger.info('Closed all http connections', port, threadId);
-								}, 4000).unref();
 							}
 							// And we tell the server not to accept any more incoming connections
 							server.close?.(() => {
@@ -345,6 +361,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 			requestTimeout: env.get(server_prefix + '_timeout'),
 		};
 		let mtls = env.get(server_prefix + '_mtls');
+		let mtls_required = env.get(server_prefix + '_mtls_required');
 		if (secure) {
 			server_prefix = is_operations_server ? 'operationsApi_' : '';
 			const private_key = env.get(server_prefix + 'tls_privateKey');
@@ -360,6 +377,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 				ciphers: env.get('tls_ciphers'),
 				cert: readFileSync(certificate),
 				ca: certificate_authority && readFileSync(certificate_authority),
+				rejectUnauthorized: Boolean(mtls_required),
 				requestCert: Boolean(mtls),
 				ticketKeys: getTicketKeys(),
 			});
@@ -473,6 +491,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 				} else harper_logger.error(error);
 			}
 		});
+		if (mtls) http_servers[port].mtlsConfig = mtls;
 		/* Should we use HTTP2 on upgrade?:
 		http_servers[port].on('upgrade', function upgrade(request, socket, head) {
 			wss.handleUpgrade(request, socket, head, function done(ws) {
@@ -566,9 +585,10 @@ Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
 	set(v) {},
 });
 function onWebSocket(listener, options) {
+	let http_server;
 	for (let { port: port_num, secure } of getPorts(options)) {
 		if (!ws_servers[port_num]) {
-			ws_servers[port_num] = new WebSocketServer({ server: getHTTPServer(port_num, secure) });
+			ws_servers[port_num] = new WebSocketServer({ server: (http_server = getHTTPServer(port_num, secure)) });
 			ws_servers[port_num].on('connection', async (ws, node_request) => {
 				try {
 					let request = new Request(node_request);
@@ -613,6 +633,7 @@ function onWebSocket(listener, options) {
 		ws_listeners_for_port.push({ listener, protocol });
 		http_chain[port_num] = makeCallbackChain(http_responders, port_num);
 	}
+	return http_server;
 }
 function defaultNotFound(request, response) {
 	response.writeHead(404);

@@ -143,20 +143,6 @@ function postValidateChecks(object, validate_res) {
 				}
 				return handleHDBError(err);
 			}
-
-			try {
-				let file_size = fs.statSync(object.file_path).size;
-				if (file_size > MAX_FILE_SIZE) {
-					return handleHDBError(
-						new Error(),
-						HDB_ERROR_MSGS.MAX_FILE_SIZE_ERR(file_size, MAX_FILE_SIZE),
-						HTTP_STATUS_CODES.BAD_REQUEST
-					);
-				}
-			} catch (err) {
-				log.error(err);
-				console.error(err);
-			}
 		}
 	}
 	return validate_res;

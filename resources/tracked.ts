@@ -235,6 +235,8 @@ function trackObject(source_object, type_def) {
 				if (!(TrackedObject = type_def.TrackedObject)) {
 					type_def.TrackedObject = TrackedObject = class {
 						constructor(source_object) {
+							if (source_object?.[RECORD_PROPERTY])
+								throw new Error('Can not track an already tracked object, check for circular references');
 							this[RECORD_PROPERTY] = source_object;
 						}
 					};
@@ -260,6 +262,8 @@ function trackObject(source_object, type_def) {
 }
 class GenericTrackedObject {
 	constructor(source_object) {
+		if (source_object?.[RECORD_PROPERTY])
+			throw new Error('Can not track an already tracked object, check for circular references');
 		this[RECORD_PROPERTY] = source_object;
 	}
 }
@@ -292,6 +296,7 @@ export function collapseData(target) {
 	}
 	return copied_source || target[RECORD_PROPERTY];
 }
+const hasOwnProperty = Object.prototype.hasOwnProperty;
 /**
  * Collapse the changed data and source/record data into single object
  * that is frozen and suitable for storage and caching
@@ -300,7 +305,7 @@ export function collapseData(target) {
  */
 export function deepFreeze(target, changes = target[OWN_DATA]) {
 	let copied_source;
-	if (target[RECORD_PROPERTY] && target.constructor === Array && !Object.isFrozen(target)) {
+	if (hasOwnProperty.call(target, RECORD_PROPERTY) && target.constructor === Array && !Object.isFrozen(target)) {
 		// a tracked array, by default we can freeze the tracked array itself
 		copied_source = target;
 		for (let i = 0, l = target.length; i < l; i++) {
@@ -332,7 +337,11 @@ export function deepFreeze(target, changes = target[OWN_DATA]) {
 		}
 		copied_source[key] = value;
 	}
-	return copied_source ? Object.freeze(copied_source) : target[RECORD_PROPERTY] || target;
+	return copied_source
+		? Object.freeze(copied_source)
+		: hasOwnProperty.call(target, RECORD_PROPERTY)
+		? target[RECORD_PROPERTY]
+		: target;
 }
 /**
  * Determine if any changes have been made to this tracked object

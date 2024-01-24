@@ -3,11 +3,11 @@ type VariedProps @table @export {
 	name: String @indexed
 }
 
-type SimpleRecord @table {
+type SimpleRecord @table @export {
 	id: ID @primaryKey
 	name: String @indexed
 }
-type FourProp @table(audit: "1d", replicated: false) {
+type FourProp @table(audit: "1d", replicated: false) @export {
 	id: ID @primaryKey
 	name: String @indexed
 	age: Int @indexed
@@ -44,12 +44,6 @@ type SubObject @table(audit: false) {
 }
 type SimpleCache @table {
 	id: ID @primaryKey
-}
-
-type Query {
-	VariedProps: VariedProps
-	SimpleRecord: SimpleRecord
-	FourProp: FourProp
 }
 
 type HasBigInt @table @export {

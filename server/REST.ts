@@ -64,7 +64,11 @@ async function http(request, next_handler) {
 			request.authorize = true;
 
 			if (url === OPENAPI_DOMAIN && method === 'GET') {
-				return generateJsonApi(resources);
+				if (request?.user?.role?.permission?.super_user) {
+					return generateJsonApi(resources);
+				} else {
+					throw new ServerError(`Forbidden`, 403);
+				}
 			}
 
 			switch (method) {

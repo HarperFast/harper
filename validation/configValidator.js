@@ -197,6 +197,11 @@ function configValidator(config_json) {
 			headersTimeout: number.min(1).optional(),
 			port: number.min(0).optional().empty(null),
 			securePort: number.min(0).optional().empty(null),
+			mtls: Joi.alternatives([boolean.optional(), Joi.object({
+				user: string.optional(),
+				certificateAuthority: pem_file_constraints,
+				required: boolean.optional(),
+			})])
 		}).required(),
 		threads: threads_constraints.optional(),
 		maxHeapMemory: number.min(0).optional(),

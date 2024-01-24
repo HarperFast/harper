@@ -359,6 +359,7 @@ describe('Test configUtils module', () => {
 						domainSocket: 'hdb/operations-server',
 						headersTimeout: 60001,
 						https: true,
+						mtls: false,
 						keepAliveTimeout: 5001,
 						timeout: 120001,
 					},
@@ -377,6 +378,7 @@ describe('Test configUtils module', () => {
 					securePort: null,
 					timeout: 119999,
 					headersTimeout: 59999,
+					mtls: false,
 				},
 				threads: 4,
 				rootPath: path.join(DIRNAME, '/yaml'),
@@ -459,6 +461,7 @@ describe('Test configUtils module', () => {
 				http_keepalivetimeout: 4999,
 				http_port: 9936,
 				http_secureport: null,
+				http_mtls: false,
 				threads: 4,
 				http_timeout: 119999,
 				http_headerstimeout: 59999,
@@ -476,6 +479,7 @@ describe('Test configUtils module', () => {
 				operationsapi_tls_certificate: TEST_CERT,
 				operationsapi_tls_privatekey: TEST_PRIVATE_KEY,
 				operationsapi_tls_certificateauthority: null,
+				operationsapi_network_mtls: false,
 			};
 
 			config_utils_rw.createConfigFile(TEST_ARGS);
@@ -485,7 +489,17 @@ describe('Test configUtils module', () => {
 			const test_flat_config_obj = config_utils_rw.flattenConfig(config_json);
 
 			expect(config_json).to.eql(expected_config);
-			expect(test_flat_config_obj).to.eql(expected_flat_config);
+			const non_object_flat_test_config_obj = Object.assign({}, test_flat_config_obj);
+			for (let key in non_object_flat_test_config_obj) {
+				if (
+					typeof non_object_flat_test_config_obj[key] === 'object' &&
+					non_object_flat_test_config_obj[key] &&
+					!Array.isArray(non_object_flat_test_config_obj[key])
+				)
+					delete non_object_flat_test_config_obj[key];
+			}
+
+			expect(non_object_flat_test_config_obj).to.eql(expected_flat_config);
 		});
 	});
 
@@ -525,6 +539,7 @@ describe('Test configUtils module', () => {
 			http_port: 9926,
 			http_secureport: null,
 			http_timeout: 120000,
+			http_mtls: false,
 			componentsroot: null,
 			tls_certificate: null,
 			tls_certificateauthority: null,
@@ -556,6 +571,7 @@ describe('Test configUtils module', () => {
 			operationsapi_network_port: 9925,
 			operationsapi_network_secureport: null,
 			operationsapi_network_timeout: 120000,
+			operationsapi_network_mtls: false,
 			operationsapi_tls_certificate: null,
 			operationsapi_tls_certificateauthority: null,
 			operationsapi_tls_privatekey: null,
@@ -581,7 +597,16 @@ describe('Test configUtils module', () => {
 			const flat_default_config_obj = config_utils_rw.__get__('flat_default_config_obj');
 
 			expect(value).to.be.false;
-			expect(flat_default_config_obj).to.eql(expected_flat_default_config_obj);
+			const non_object_flat_default_config_obj = Object.assign({}, flat_default_config_obj);
+			for (let key in non_object_flat_default_config_obj) {
+				if (
+					typeof non_object_flat_default_config_obj[key] === 'object' &&
+					non_object_flat_default_config_obj[key] &&
+					!Array.isArray(non_object_flat_default_config_obj[key])
+				)
+					delete non_object_flat_default_config_obj[key];
+			}
+			expect(non_object_flat_default_config_obj).to.eql(expected_flat_default_config_obj);
 		});
 
 		it('Test that if the in-memory object exists, the correct default value is returned', () => {

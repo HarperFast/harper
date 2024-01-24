@@ -286,34 +286,6 @@ describe('Test fileLoadValidator module', () => {
 			expect(result).to.be.instanceOf(Error);
 			expect(check_glob_schema_stub).to.have.been.calledOnce;
 		});
-
-		it('should throw an error from fs.statSync file size', () => {
-			let fake_file_size = max_csv_file_size_rewire + 100;
-			fs_access_stub = sinon.stub(fs, 'accessSync').resolves('');
-			file_size_stub.returns({ size: fake_file_size });
-			let result = post_validate_checks(file_object, validate_result);
-
-			expect(result.http_resp_msg).to.equal(
-				`File size is ${fake_file_size} bytes, which exceeded the maximum size allowed of: ${max_csv_file_size_rewire} bytes`
-			);
-			expect(result).to.be.instanceOf(Error);
-			expect(check_glob_schema_stub).to.have.been.calledOnce;
-			expect(fs_access_stub).to.have.been.calledOnce;
-			expect(file_size_stub).to.have.been.calledOnce;
-		});
-
-		it('should catch thrown error from fs.statSync', () => {
-			let console_error_stub = sinon.stub(console, 'error');
-			let fs_stat_sync_err = 'File dose not exist';
-			fs_access_stub.resolves('');
-			file_size_stub.throws(new Error(fs_stat_sync_err));
-			post_validate_checks(file_object, validate_result);
-
-			expect(logger_stub).to.have.been.calledOnce;
-			expect(console_error_stub).to.have.been.calledOnce;
-
-			console_error_stub.restore();
-		});
 	});
 
 	/**

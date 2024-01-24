@@ -28,6 +28,82 @@ export const COERCIBLE_OPERATORS = {
 	ne: true,
 	eq: true,
 };
+export function executeConditions(conditions, operator, table, txn, request, context, transformToEntries, filtered) {
+	const first_search = conditions[0];
+	// both AND and OR start by getting an iterator for the ids for first condition
+	// and then things diverge...
+	if (operator === 'or') {
+		let results = executeCondition(first_search);
+		//get the union of ids from all condition searches
+		for (let i = 1; i < conditions.length; i++) {
+			const condition = conditions[i];
+			// might want to lazily execute this after getting to this point in the iteration
+			const next_results = executeCondition(condition);
+			results = results.concat(next_results);
+		}
+		const returned_ids = new Set();
+		return results.filter((entry) => {
+			const id = entry.key ?? entry;
+			if (returned_ids.has(id))
+				// skip duplicate ids
+				return false;
+			returned_ids.add(id);
+			return true;
+		});
+	} else {
+		// AND
+		const results = executeCondition(first_search);
+		// get the intersection of condition searches by using the indexed query for the first condition
+		// and then filtering by all subsequent conditions.
+		// now apply filters that require looking up records
+		const filters = mapConditionsToFilters(conditions.slice(1), true, first_search.estimated_count);
+		return filters.length > 0 ? transformToEntries(results, filters) : results;
+	}
+	function executeCondition(condition) {
+		if (condition.conditions)
+			return executeConditions(
+				condition.conditions,
+				condition.operator,
+				table,
+				txn,
+				request,
+				context,
+				transformToEntries,
+				filtered
+			);
+		return searchByIndex(
+			condition,
+			txn,
+			condition.descending || request.reverse === true,
+			table,
+			request.allowFullScan,
+			filtered
+		);
+	}
+	function mapConditionsToFilters(conditions, intersection, estimated_incoming_count) {
+		return conditions
+			.map((condition, index) => {
+				if (condition.conditions) {
+					// this is a group of conditions, we need to combine them
+					const union = condition.operator === 'or';
+					const filters = mapConditionsToFilters(condition.conditions, !union, estimated_incoming_count);
+					if (union) return (record, entry) => filters.some((filter) => filter(record, entry));
+					else return (record, entry) => filters.every((filter) => filter(record, entry));
+				}
+				const is_primary_key = (condition.attribute || condition[0]) === table.primaryKey;
+				const filter = filterByType(condition, table, context, filtered, is_primary_key, estimated_incoming_count);
+				if (intersection && index < conditions.length - 1 && estimated_incoming_count) {
+					estimated_incoming_count = intersectionEstimate(
+						table.primaryStore,
+						condition.estimated_count,
+						estimated_incoming_count
+					);
+				}
+				return filter;
+			})
+			.filter(Boolean);
+	}
+}
 
 export function searchByIndex(search_condition, transaction, reverse, Table, allow_full_scan?, filtered?) {
 	let attribute_name = search_condition[0] ?? search_condition.attribute;
@@ -146,9 +222,11 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 				exclusiveStart = true;
 				break;
 			}
+		case 'sort': // this is a special case for when we want to get all records for sorting
 		case 'contains':
 		case 'ends_with':
 			// we have to revert to full table scan here
+			start = true;
 			need_full_scan = true;
 			break;
 		default:
@@ -164,38 +242,26 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 	}
 	const is_primary_key = attribute_name === Table.primaryKey || attribute_name == null;
 	const index = is_primary_key ? Table.primaryStore : Table.indices[attribute_name];
-
+	let filter;
 	if (!index || index.isIndexing || need_full_scan || (value === null && !index.indexNulls)) {
 		// no indexed searching available, need a full scan
 		if (!allow_full_scan)
 			throw new ClientError(
-				`"${attribute_name}" is not indexed${
-					value === null && !index.indexNulls
-						? ' for nulls, index needs to be rebuilt to search for nulls'
-						: index?.isIndexing
-						? ' yet'
-						: ''
-				}, can not search for this attribute`,
+				need_full_scan
+					? `Can not use ${comparator} operator without combining with a condition that uses an index`
+					: `"${attribute_name}" is not indexed${
+							value === null && !index.indexNulls
+								? ' for nulls, index needs to be rebuilt to search for nulls'
+								: index?.isIndexing
+								? ' yet'
+								: ''
+					  }, can not search for this attribute`,
 				404
 			);
-		const filter = filterByType(search_condition);
+		filter = filterByType(search_condition);
 		if (!filter) {
 			throw new ClientError(`Unknown search operator ${search_condition.comparator}`);
 		}
-		// for filter operations, we intentionally yield the event turn so that scanning queries
-		// do not hog resources
-		return Table.primaryStore.getRange({ start: true, transaction, reverse }).map(
-			({ key, value }) =>
-				new Promise((resolve, reject) =>
-					setImmediate(() => {
-						try {
-							resolve(value && filter(value) ? key : SKIP);
-						} catch (error) {
-							reject(error);
-						}
-					})
-				)
-		);
 	}
 	const range_options = {
 		start,
@@ -208,14 +274,57 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 		reverse,
 	};
 	if (is_primary_key) {
-		const results = index.getRange(range_options).map((entry) => {
-			if (entry.value == null) return SKIP;
-			return entry;
-		});
+		const results = index.getRange(range_options).map(
+			filter
+				? // for filter operations, we intentionally yield the event turn so that scanning queries
+				  // do not hog resources
+				  ({ key, value }) =>
+						new Promise((resolve, reject) =>
+							setImmediate(() => {
+								try {
+									resolve(value && filter(value) ? key : SKIP);
+								} catch (error) {
+									reject(error);
+								}
+							})
+						)
+				: (entry) => {
+						if (entry.value == null) return SKIP;
+						return entry;
+				  }
+		);
 		results.hasEntries = true;
 		return results;
+	} else if (index) {
+		return index.getRange(range_options).map(
+			filter
+				? ({ key, value }) =>
+						new Promise((resolve, reject) =>
+							setImmediate(() => {
+								try {
+									resolve(filter({ [attribute_name]: key }) ? value : SKIP);
+								} catch (error) {
+									reject(error);
+								}
+							})
+						)
+				: ({ value }) => value
+		);
 	} else {
-		return index.getRange(range_options).map(({ value }) => value);
+		return Table.primaryStore
+			.getRange(reverse ? { end: true, transaction, reverse: true } : { start: true, transaction })
+			.map(
+				({ key, value }) =>
+					new Promise((resolve, reject) =>
+						setImmediate(() => {
+							try {
+								resolve(value && filter(value) ? key : SKIP);
+							} catch (error) {
+								reject(error);
+							}
+						})
+					)
+			);
 	}
 }
 
@@ -417,15 +526,6 @@ const ALTERNATE_COMPARATOR_NAMES = {
  * @returns {({}) => boolean}
  */
 export function filterByType(search_condition, Table, context, filtered, is_primary_key?, estimated_incoming_count?) {
-	if (search_condition.conditions) {
-		// this is a group of conditions, we need to combine them
-		const conditions = search_condition.conditions.map(filterByType);
-		if (search_condition.operator === 'or') {
-			return (record) => conditions.some((condition) => condition(record));
-		} else {
-			return (record) => conditions.every((condition) => condition(record));
-		}
-	}
 	const comparator = search_condition.comparator;
 	let attribute = search_condition[0] ?? search_condition.attribute;
 	let value = search_condition[1] ?? search_condition.value;
@@ -544,6 +644,8 @@ export function filterByType(search_condition, Table, context, filtered, is_prim
 			return attributeComparator(attribute, (record_value) => compareKeys(record_value, value) <= 0);
 		case 'ne':
 			return attributeComparator(attribute, (record_value) => compareKeys(record_value, value) !== 0);
+		case 'sort':
+			return () => true;
 		default:
 			throw new ClientError(`Unknown query comparator "${comparator}"`);
 	}
@@ -582,7 +684,9 @@ export function filterByType(search_condition, Table, context, filtered, is_prim
 					(++misses / filtered_so_far) * (estimated_incoming_count - filtered_so_far) > threshold_remaining_misses
 				) {
 					// if we have missed too many times, we need to switch to indexed retrieval
-					const matching_ids = searchByIndex(search_condition, context.transaction, false, Table).map(flattenKey);
+					const matching_ids = searchByIndex(search_condition, context.transaction.getReadTxn(), false, Table).map(
+						flattenKey
+					);
 					// now generate a hash set that we can efficiently check primary keys against
 					// TODO: Do this asynchronously
 					const id_set = new Set(matching_ids);
@@ -661,10 +765,12 @@ export function estimateCondition(table) {
 				condition.estimated_count = STARTS_WITH_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
 			else if (search_type === 'between')
 				condition.estimated_count = BETWEEN_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
+			else if (search_type === 'sort')
+				condition.estimated_count = estimatedEntryCount(table.primaryStore) + 1; // only used by sort
 			// for the search types that use the broadest range, try do them last
 			else condition.estimated_count = OPEN_RANGE_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
 			// we give a condition significantly more weight/preference if we will be ordering by it
-			if (typeof condition.descending === 'boolean') condition.estimated_count /= 4;
+			if (typeof condition.descending === 'boolean') condition.estimated_count /= 2;
 		}
 		return condition.estimated_count; // use cached count
 	}
@@ -706,6 +812,7 @@ function parseBlock(query, expected_end) {
 	let match;
 	let attribute, comparator, expecting_delimiter, expecting_value;
 	let valueDecoder = decodeURIComponent;
+	let last_binary_operator;
 	while ((match = parser.exec(query_string))) {
 		last_index = parser.lastIndex;
 		const [, value, operator] = match;
@@ -746,11 +853,9 @@ function parseBlock(query, expected_end) {
 				attribute = decodeProperty(value);
 				break;
 			case '|':
-				query.operator = 'or';
-			// fall through
+			case '&':
 			case '':
 			case undefined:
-			case '&':
 				if (attribute == null) {
 					if (attribute === undefined) {
 						if (expected_end)
@@ -771,8 +876,11 @@ function parseBlock(query, expected_end) {
 						value: valueDecoder(value),
 					};
 					if (comparator === 'eq') wildcardDecoding(condition, value);
+					assignOperator(query, last_binary_operator);
 					query.conditions.push(condition);
 				}
+				if (operator === '&') last_binary_operator = 'and';
+				if (operator === '|') last_binary_operator = 'or';
 				attribute = undefined;
 				break;
 			case ',':
@@ -789,6 +897,7 @@ function parseBlock(query, expected_end) {
 				const args = parseBlock(value ? [] : new Query(), ')');
 				switch (value) {
 					case '': // nested/grouped condition
+						assignOperator(query, last_binary_operator);
 						query.conditions.push(args);
 						break;
 					case 'limit':
@@ -848,6 +957,7 @@ function parseBlock(query, expected_end) {
 					entry = parseBlock(query.conditions ? new Query() : [], ']');
 				}
 				if (query.conditions) {
+					assignOperator(query, last_binary_operator);
 					query.conditions.push(entry);
 					attribute = null;
 				} else query.push(entry);
@@ -869,6 +979,7 @@ function parseBlock(query, expected_end) {
 								value: valueDecoder(value),
 							};
 							if (comparator === 'eq') wildcardDecoding(condition, value);
+							assignOperator(query, last_binary_operator);
 							query.conditions.push(condition);
 						} else if (value) {
 							throw new SyntaxError('no attribute or comparison specified');
@@ -890,7 +1001,14 @@ function parseBlock(query, expected_end) {
 	}
 	if (expected_end) throw new SyntaxError(`expected '${expected_end}', but encountered end of string`);
 }
-
+function assignOperator(query, last_binary_operator) {
+	if (query.conditions.length > 0) {
+		if (query.operator) {
+			if (query.operator !== last_binary_operator)
+				throw new SyntaxError('Can not mix operators within a condition grouping');
+		} else query.operator = last_binary_operator;
+	}
+}
 function decodeProperty(name) {
 	if (name.indexOf('.') > -1) {
 		return name.split('.').map(decodeProperty);
