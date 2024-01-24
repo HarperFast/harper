@@ -23,10 +23,10 @@ USER harperdb
 WORKDIR /home/harperdb/
 
 #Install HarperDB package and clean up tarball
-RUN npm install -g npm@latest && \
-    npm install --omit=dev -g $HARPERDB_TARBALL && \
-    npm cache clean --force && \
-    rm -f $HARPERDB_TARBALL
+RUN npm install -g npm@latest
+RUN npm install --omit=dev -g $HARPERDB_TARBALL
+RUN npm cache clean --force
+RUN rm -f $HARPERDB_TARBALL
 
 # Second stage
 FROM node:$NODE_VERSION-bullseye-slim
