@@ -1,39 +1,10 @@
 ARG NODE_VERSION
-FROM node:$NODE_VERSION-bullseye-slim as builder
+FROM node:$NODE_VERSION-bullseye-slim
 
 ARG HARPERDB_TARBALL
 ARG HARPERDB_VERSION
 
-#Change node user and group to harperdb
-RUN usermod -d /home/harperdb -l harperdb node && \
-    groupmod -n harperdb node && \
-    rm -rf /home/node
-
-#Copy HarperDB tarball
-COPY --chown=harperdb:harperdb ./$HARPERDB_TARBALL /home/harperdb/$HARPERDB_TARBALL
-
-#Set npm global directory
-ENV NPM_CONFIG_PREFIX=/home/harperdb/.npm-global
-ENV PATH=/home/harperdb/.npm-global/bin:$PATH
-
-#Set the user for the below instructions (respected by RUN, CMD, ENTRYPOINT only)
-USER harperdb
-
-#Set the  working directory for the below instructions
-WORKDIR /home/harperdb/
-
-#Install HarperDB package and clean up tarball
-RUN npm install -g npm@latest
-RUN npm install --omit=dev -g $HARPERDB_TARBALL
-RUN npm cache clean --force
-RUN rm -f $HARPERDB_TARBALL
-
-# Second stage
-FROM node:$NODE_VERSION-bullseye-slim
-COPY --from=builder $HOME $HOME
-
 # metadata for labels
-ARG HARPERDB_VERSION
 ARG BUILD_DATE
 ARG VCS_REF
 ARG VCS_TYPE=git
@@ -54,25 +25,40 @@ LABEL help="https://docs.harperdb.io/"
 LABEL url="https://hub.docker.com/r/harperdb/harperdb"
 LABEL usage="https://hub.docker.com/r/harperdb/harperdb"
 
-# add Licensing files
-RUN mkdir /licenses
-COPY utility/Docker/licenses/* /licenses/.
-
-##Change node user and group to harperdb
-#RUN usermod -d /home/harperdb -l harperdb node && \
-#    groupmod -n harperdb node && \
-#    rm -rf /home/node
+#Expose HarperDB ports
+EXPOSE 9925
+EXPOSE 9926
+EXPOSE 9932
 
 # Install ps
 RUN apt-get update && apt-get install -y procps git
 
-# Create installation directory, .harperdb directory and hdb_boot_properties.file
+# add Licensing files
+RUN mkdir /licenses
+COPY utility/Docker/licenses/* /licenses/.
+
+#Change node user and group to harperdb
+RUN usermod -d /home/harperdb -l harperdb node && \
+    groupmod -n harperdb node && \
+    rm -rf /home/node
+
+#Copy HarperDB tarball
+COPY --chown=harperdb:harperdb ./$HARPERDB_TARBALL /home/harperdb/$HARPERDB_TARBALL
+
+#Create installation directory, .harperdb directory and hdb_boot_properties.file
 RUN mkdir -p /home/harperdb/hdb && \
   chown -R harperdb:harperdb /home/harperdb/hdb && \
   mkdir /home/harperdb/.harperdb && \
   touch /home/harperdb/.harperdb/hdb_boot_properties.file && \
   echo 'settings_path = /home/harperdb/hdb/harperdb-config.yaml\ninstall_user = harperdb' > /home/harperdb/.harperdb/hdb_boot_properties.file && \
   chown -R harperdb:harperdb /home/harperdb/.harperdb
+
+#Create mount point
+VOLUME /home/harperdb/hdb
+
+#Set npm global directory
+ENV NPM_CONFIG_PREFIX=/home/harperdb/.npm-global
+ENV PATH=/home/harperdb/.npm-global/bin:$PATH
 
 #Set HarperDB installation parameters
 ENV TC_AGREEMENT=yes
@@ -82,23 +68,16 @@ ENV HDB_ADMIN_USERNAME=HDB_ADMIN
 ENV HDB_ADMIN_PASSWORD=password
 ENV LOGGING_STDSTREAMS=true
 
-#Create mount point
-VOLUME /home/harperdb/hdb
-
-#Set npm global directory
-ENV NPM_CONFIG_PREFIX=/home/harperdb/.npm-global
-ENV PATH=/home/harperdb/.npm-global/bin:$PATH
-
 #Set the user for the below instructions (respected by RUN, CMD, ENTRYPOINT only)
 USER harperdb
 
 #Set the  working directory for the below instructions
 WORKDIR /home/harperdb/
 
-#Expose HarperDB ports
-EXPOSE 9925
-EXPOSE 9926
-EXPOSE 9932
+#Install HarperDB package and clean up tarball
+RUN npm install -g $HARPERDB_TARBALL
+RUN npm cache clean --force
+RUN rm -f $HARPERDB_TARBALL
 
 #If no arguments are passed to docker run, execute HarperDB
 CMD ["harperdb"]
