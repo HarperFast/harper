@@ -14,7 +14,7 @@ ENV NPM_CONFIG_PREFIX=/home/harperdb/.npm-global
 ENV PATH=/home/harperdb/.npm-global/bin:$PATH
 
 #Copy cache from builder
-COPY --chown=harperdb:harperdb ./.npm /home/harperdb/.npm
+COPY --chown=harperdb:harperdb ~/.npm /home/harperdb/.npm
 
 #Copy HarperDB tarball
 COPY --chown=harperdb:harperdb ./$HARPERDB_TARBALL /home/harperdb/$HARPERDB_TARBALL
