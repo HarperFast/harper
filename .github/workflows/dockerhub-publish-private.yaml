@@ -99,3 +99,5 @@ jobs:
           "HARPERDB_TARBALL=harperdb-${{ env.HARPERDB_VERSION }}.tgz"
           "VCS_REF=`git rev-parse HEAD`"
           "BUILD_DATE=`date -u +%FT%T"
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
