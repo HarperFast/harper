@@ -105,7 +105,7 @@ jobs:
       with:
         context: .
         file: utility/Docker/Dockerfile
-        platforms: linux/amd64,linux/arm64
+        platforms: linux/arm64
         push: true
         tags: "harperdb/private:4.3.0-beta.2-${{ vars.GITHUB_RUN_NUMBER }}"
         build-args: |
