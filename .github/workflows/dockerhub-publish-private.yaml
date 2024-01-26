@@ -20,7 +20,7 @@ jobs:
     #runs-on: fabric-dev-runner
     timeout-minutes: 20
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: "Get Latest License Files"
       run: .github/scripts/get-license-files.sh
     - name: "Get HarperDB/harperdb_open_source_license_generator.git"
@@ -54,8 +54,23 @@ jobs:
     runs-on: ubuntu-latest
     #runs-on: fabric-dev-runner-dind
     timeout-minutes: 35
+    outputs:
+      nodeVersion: ${{ steps.getNode.outputs.NODE_VERSION }}
+      harperdbVersion: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
     steps:
     - uses: actions/checkout@v4
+    - uses: actions/setup-node@v4
+      with:
+        node-version: 18
+    - id: getnode
+      name: Get node version
+      run: |
+        pwd
+        NODE_VERSION="$(node --version)"
+        NODE_VERSION="${NODE_VERSION:1}"
+        HARPERDB_VERSION=$(cat package.json | jq -r '.version')
+        echo "NODE_VERSION=$NODE_VERSION" >> $GITHUB_OUTPUT
+        echo "HARPERDB_VERSION=$HARPERDB_VERSION" >> $GITHUB_OUTPUT
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
     - name: "Setup Docker buildx"
@@ -78,8 +93,8 @@ jobs:
         path: "utility/Docker/licenses/"
     - name: "Publish harperdb/private to Dockerhub"
       env:
-        HARPERDB_VERSION: ${{ needs.build.outputs.harperdbVersion }}
-        NODE_VERSION: ${{ needs.build.outputs.nodeVersion }}
+        HARPERDB_VERSION: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
+        NODE_VERSION: ${{ steps.getNode.outputs.NODE_VERSION }}
         PUBLISH: "private"
         GITHUB_RUN_NUMBER: ${{ vars.GITHUB_RUN_NUMBER }}
         TAG_LATEST: "${{ inputs.tag_latest }}"
