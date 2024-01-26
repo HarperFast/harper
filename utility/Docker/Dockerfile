@@ -13,11 +13,8 @@ RUN usermod -d /home/harperdb -l harperdb node && \
 ENV NPM_CONFIG_PREFIX=/home/harperdb/.npm-global
 ENV PATH=/home/harperdb/.npm-global/bin:$PATH
 
-#Copy cache from builder
-COPY --chown=harperdb:harperdb ~/.npm /home/harperdb/.npm
-
 #Copy HarperDB tarball
-COPY --chown=harperdb:harperdb ./$HARPERDB_TARBALL /home/harperdb/$HARPERDB_TARBALL
+#COPY --chown=harperdb:harperdb ./$HARPERDB_TARBALL /home/harperdb/$HARPERDB_TARBALL
 
 #Set the user for the below instructions (respected by RUN, CMD, ENTRYPOINT only)
 USER harperdb
@@ -27,10 +24,10 @@ WORKDIR /home/harperdb/
 
 #Install HarperDB package and clean up tarball
 ENV NPM_CONFIG_LOGLEVEL info
-RUN npm install -g npm@latest
-RUN npm install --omit=dev -g $HARPERDB_TARBALL
-RUN npm cache clean --force
-RUN rm -f $HARPERDB_TARBALL
+#RUN npm install --omit=dev -g $HARPERDB_TARBALL && \
+  npm install --omit=dev -g harperdb@$HARPERDB_VERSION && \
+  npm cache clean --force
+#  rm -f $HARPERDB_TARBALL
 
 # Second stage
 FROM node:$NODE_VERSION-slim
