@@ -25,7 +25,7 @@ WORKDIR /home/harperdb/
 #Install HarperDB package and clean up tarball
 ENV NPM_CONFIG_LOGLEVEL info
 #RUN npm install --omit=dev -g $HARPERDB_TARBALL && \
-  npm install --omit=dev -g harperdb@$HARPERDB_VERSION && \
+RUN npm install --omit=dev -g harperdb@$HARPERDB_VERSION && \
   npm cache clean --force
 #  rm -f $HARPERDB_TARBALL
 
