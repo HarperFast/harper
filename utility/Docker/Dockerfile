@@ -57,7 +57,7 @@ LABEL usage="https://hub.docker.com/r/harperdb/harperdb"
 
 # add Licensing files
 RUN mkdir /licenses
-COPY utility/Docker/licenses/* /licenses/.
+#COPY utility/Docker/licenses/* /licenses/.
 
 ##Change node user and group to harperdb
 #RUN usermod -d /home/harperdb -l harperdb node && \
