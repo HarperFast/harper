@@ -80,7 +80,7 @@ WORKDIR /home/harperdb/
 
 #Install HarperDB package and clean up tarball
 #RUN npm install -g $HARPERDB_TARBALL && \
-RUN npm install --prefer-offline --no-audit -g harperdb@$HARPERDB_VERSION && \
+RUN npm ci --prefer-offline --no-audit harperdb@$HARPERDB_VERSION && \
     npm cache clean --force #&& \
 #    rm -f $HARPERDB_TARBALL
 

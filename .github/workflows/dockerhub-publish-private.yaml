@@ -62,16 +62,16 @@ jobs:
 
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
-#    - name: "Setup Docker buildx"
-#      uses: docker/setup-buildx-action@v3
-#      with:
-#        driver_opts: |
-#          network=host
-#    - name: Log in to Docker Hub
-#      uses: docker/login-action@v3
-#      with:
-#        username: ${{ secrets.DOCKER_USERNAME }}
-#        password: ${{ secrets.DOCKER_PASSWORD }}
+    - name: "Setup Docker buildx"
+      uses: docker/setup-buildx-action@v3
+      with:
+        driver_opts: |
+          network=host
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
 #    - uses: actions/download-artifact@v3
 #      with:
 #        name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
@@ -81,17 +81,15 @@ jobs:
 #        name: "licenses"
 #        path: "utility/Docker/licenses/"
 
-    - name: "Build harperdb/private image with buildah"
+    - name: "Build and push harperdb/private"
       id: build-image
       timeout-minutes: 30
-      uses: redhat-actions/buildah-build@v2
+      uses: docker/build-push-action@v4
       with:
         context: .
-        containerfiles: |
-          ./utility/Docker/Dockerfile
+        file: ./utility/Docker/Dockerfile
         platforms: linux/arm64, linux/amd64
-        image: "harperdb/private"
-        tags: "4.3.0-beta.2-${{ github.run_number }} ${{ env.tag_latest && 'latest' || '' }}"
+        tags: "harperdb/private:4.3.0-beta.2-${{ github.run_number }}"
         build-args: |
           NODE_VERSION=18.19.0
           HARPERDB_VERSION=${{ env.HARPERDB_VERSION }}
@@ -102,12 +100,3 @@ jobs:
         NODE_VERSION: ${{ steps.getNode.outputs.NODE_VERSION }}
         PUBLISH: "private"
         TAG_LATEST: "${{ inputs.tag_latest && 'latest' || '' }}"
-
-    - name: Push to Dockerhub
-      uses: redhat-actions/push-to-registry@v2
-      with:
-        image: ${{ steps.build-image.outputs.image }}
-        tags: ${{ steps.build-image.outputs.tags }}
-        registry: docker.io
-        username: ${{ secrets.DOCKER_USERNAME }}
-        password: ${{ secrets.DOCKER_PASSWORD }}
