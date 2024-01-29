@@ -30,7 +30,7 @@ RUN npm install --omit=dev -g harperdb@$HARPERDB_VERSION && \
 #  rm -f $HARPERDB_TARBALL
 
 # Second stage
-FROM node:$NODE_VERSION-slim
+FROM node:$NODE_VERSION-bookworm-slim
 COPY --from=builder $HOME $HOME
 
 # metadata for labels
