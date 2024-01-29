@@ -16,8 +16,6 @@ ENV PATH=/home/harperdb/.npm-global/bin:$PATH
 #Copy HarperDB tarball
 #COPY --chown=harperdb:harperdb ./$HARPERDB_TARBALL /home/harperdb/$HARPERDB_TARBALL
 
-RUN chown -R harperdb: /home/harperdb/
-
 #Set the user for the below instructions (respected by RUN, CMD, ENTRYPOINT only)
 USER harperdb
 
