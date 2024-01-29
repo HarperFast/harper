@@ -89,9 +89,10 @@ jobs:
         context: .
         file: ./utility/Docker/Dockerfile-openshift
         platforms: linux/arm64, linux/amd64
+        push: true
         tags: "harperdb/private:4.3.0-beta.2-${{ github.run_number }}"
         build-args: |
-          NODE_VERSION=18.19.0
+          NODE_VERSION=20
           HARPERDB_VERSION=${{ env.HARPERDB_VERSION }}
           VCS_REF=`git rev-parse HEAD`
           BUILD_DATE=`date -u +%FT%T
