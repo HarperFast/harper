@@ -128,7 +128,7 @@ jobs:
     - name: Push to Dockerhub
       uses: redhat-actions/push-to-registry@v2
       with:
-        image: ${{ steps.build-image.outputs.image
+        image: ${{ steps.build-image.outputs.image }}
         tags: ${{ steps.build-image.outputs.tags }}
         registry: docker.io
         username: ${{ secrets.DOCKER_USERNAME }}
