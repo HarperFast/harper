@@ -44,4 +44,20 @@ describe('Update Schema', () => {
 		}
 		assert.equal(records.length, 21);
 	});
+	it('Schema change', async function () {
+		await loadGQLSchema(`
+		type SchemaChanges @table {
+			id: Int @primaryKey
+			state: String! @indexed
+			city: String! @indexed
+		}`);
+		await loadGQLSchema(`
+		type SchemaChanges @table {
+			id: Int @primaryKey
+			state: String @indexed
+			city: String @indexed
+		}`);
+		const state_attribute = tables.SchemaChanges.attributes.find(a => a.name === 'state');
+		assert(state_attribute.nullable !== false);
+	});
 });

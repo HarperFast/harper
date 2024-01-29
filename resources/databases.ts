@@ -615,6 +615,7 @@ export function table({
 				!attribute_descriptor ||
 				attribute_descriptor.type !== attribute.type ||
 				attribute_descriptor.indexed !== attribute.indexed ||
+				attribute_descriptor.nullable !== attribute.nullable ||
 				JSON.stringify(attribute_descriptor.attributes) !== JSON.stringify(attribute.attributes) ||
 				JSON.stringify(attribute_descriptor.elements) !== JSON.stringify(attribute.elements);
 			if (attribute.indexed) {
