@@ -1,6 +1,7 @@
 FROM registry.access.redhat.com/ubi9/nodejs-18:latest as builder
 
-ARG HARPERDB_TARBALL
+#ARG HARPERDB_TARBALL
+ARG HARPERDB_VERSION
 
 # for install only
 USER 0
@@ -9,7 +10,7 @@ USER 0
 RUN ln -s ${HOME} /home/harperdb && chmod -R u=rwx /home/harperdb
 
 #Copy HarperDB tarball
-COPY $HARPERDB_TARBALL .
+#COPY $HARPERDB_TARBALL .
 
 #Create installation directory, .harperdb directory and hdb_boot_properties.file
 RUN mkdir -p /home/harperdb/hdb && \
@@ -27,9 +28,10 @@ USER 1001
 WORKDIR /home/harperdb/
 
 #Install HarperDB package and clean up tarball
-RUN npm install $HARPERDB_TARBALL && \
-    npm cache clean --force && \
-    rm -f $HARPERDB_TARBALL
+#RUN npm install $HARPERDB_TARBALL && \
+RUN npm install harperdb@$HARPERDB_VERSION && \
+    npm cache clean --force # && \
+#    rm -f $HARPERDB_TARBALL
 
 # Second stage
 FROM registry.access.redhat.com/ubi9/nodejs-18-minimal:latest
@@ -99,7 +101,7 @@ RUN microdnf install --assumeyes --nodocs --refresh hostname git procps && micro
 
 # RHCC Licensing files
 RUN mkdir /licenses
-COPY utility/Docker/licenses/* /licenses/.
+#COPY utility/Docker/licenses/* /licenses/.
 
 #Create mount point
 VOLUME /home/harperdb/hdb
