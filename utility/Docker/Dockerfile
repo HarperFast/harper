@@ -73,7 +73,7 @@ RUN mkdir -p /home/harperdb/hdb && \
   mkdir /home/harperdb/.harperdb && \
   touch /home/harperdb/.harperdb/hdb_boot_properties.file && \
   echo 'settings_path = /home/harperdb/hdb/harperdb-config.yaml\ninstall_user = harperdb' > /home/harperdb/.harperdb/hdb_boot_properties.file && \
-  chown -R harperdb:harperdb /home/harperdb/.harperdb
+  chown -R harperdb:harperdb /home/harperdb/
 
 #Set HarperDB installation parameters
 ENV TC_AGREEMENT=yes
