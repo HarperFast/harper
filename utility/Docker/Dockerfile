@@ -30,6 +30,8 @@ EXPOSE 9925
 EXPOSE 9926
 EXPOSE 9932
 
+USER root
+
 # Install ps
 RUN apt-get update && apt-get install -y procps git
 
@@ -68,7 +70,7 @@ ENV HDB_ADMIN_USERNAME=HDB_ADMIN
 ENV HDB_ADMIN_PASSWORD=password
 ENV LOGGING_STDSTREAMS=true
 
-RUN mkdir /home/harperdb/.npm-global && chown -R harperdb:harperdb /home/harperdb/.npm-global && chown -R 1000:1000 "/home/harperdb/.npm"
+RUN mkdir /home/harperdb/.npm-global && mkdir /home/harperdb/.npm && chown -R harperdb:harperdb /home/harperdb/.npm-global && chown -R 1000:1000 "/home/harperdb/.npm"
 
 #Set the user for the below instructions (respected by RUN, CMD, ENTRYPOINT only)
 USER harperdb
