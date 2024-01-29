@@ -120,11 +120,11 @@ jobs:
         image: "harperdb/private"
         tags: "4.3.0-beta.2-${{ vars.GITHUB_RUN_NUMBER }}"
         build-args: |
-          "NODE_VERSION=${{ env.NODE_VERSION }}"
-          "HARPERDB_VERSION=${{ env.HARPERDB_VERSION }}"
-          "HARPERDB_TARBALL=harperdb-${{ env.HARPERDB_VERSION }}.tgz"
-          "VCS_REF=`git rev-parse HEAD`"
-          "BUILD_DATE=`date -u +%FT%T"
+          NODE_VERSION=${{ env.NODE_VERSION }}
+          HARPERDB_VERSION=${{ env.HARPERDB_VERSION }}
+          HARPERDB_TARBALL=harperdb-${{ env.HARPERDB_VERSION }}.tgz
+          VCS_REF=`git rev-parse HEAD`
+          BUILD_DATE=`date -u +%FT%T
     - name: Push to Dockerhub
       uses: redhat-actions/push-to-registry@v2
       with:
