@@ -77,10 +77,6 @@ jobs:
       with:
         path: "buildah-build"
 
-    - name: Install latest buildah
-      if: matrix.install_latest
-      run: |
-        bash buildah-build/.github/install_latest_buildah.sh
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
 #    - name: "Setup Docker buildx"
