@@ -1,4 +1,4 @@
-name: Dockerhub Publish Single Image
+name: Dockerhub Publish
 
 on:
   workflow_dispatch:

@@ -24,7 +24,7 @@ jobs:
 #    - name: "Get Latest License Files"
 #      run: .github/scripts/get-license-files.sh
 #    - name: "Get HarperDB/harperdb_open_source_license_generator.git"
-#      uses: actions/checkout@v3
+#      uses: actions/checkout@v4
 #      with:
 #        repository: "HarperDB/harperdb_open_source_license_generator.git"
 #        path: "harperdb_open_source_license_generator"
@@ -59,23 +59,6 @@ jobs:
       harperdbVersion: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
     steps:
     - uses: actions/checkout@v4
-#    - uses: actions/setup-node@v4
-#      with:
-#        node-version: 18
-#    - id: getnode
-#      name: Get node version
-#      run: |
-#        pwd
-#        NODE_VERSION="$(node --version)"
-#        NODE_VERSION="${NODE_VERSION:1}"
-#        HARPERDB_VERSION=$(cat package.json | jq -r '.version')
-#        echo "NODE_VERSION=$NODE_VERSION" >> $GITHUB_OUTPUT
-#        echo "HARPERDB_VERSION=$HARPERDB_VERSION" >> $GITHUB_OUTPUT
-    # Checkout buildah action github repository
-    - name: Checkout Buildah action
-      uses: actions/checkout@v3
-      with:
-        path: "buildah-build"
 
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v3
@@ -100,12 +83,6 @@ jobs:
 
     - name: "Build harperdb/private image with buildah"
       id: build-image
-      env:
-        HARPERDB_VERSION: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
-        NODE_VERSION: ${{ steps.getNode.outputs.NODE_VERSION }}
-        PUBLISH: "private"
-        GITHUB_RUN_NUMBER: ${{ vars.GITHUB_RUN_NUMBER }}
-        TAG_LATEST: "${{ inputs.tag_latest }}"
       timeout-minutes: 30
       uses: redhat-actions/buildah-build@v2
       with:
@@ -114,13 +91,18 @@ jobs:
           ./utility/Docker/Dockerfile
         platforms: linux/arm64, linux/amd64
         image: "harperdb/private"
-        tags: "4.3.0-beta.2-${{ vars.GITHUB_RUN_NUMBER }}"
+        tags: "4.3.0-beta.2-${{ github.run_number }} ${{ env.tag_latest && 'latest' || '' }}"
         build-args: |
           NODE_VERSION=18.19.0
           HARPERDB_VERSION=${{ env.HARPERDB_VERSION }}
-          HARPERDB_TARBALL=harperdb-${{ env.HARPERDB_VERSION }}.tgz
           VCS_REF=`git rev-parse HEAD`
           BUILD_DATE=`date -u +%FT%T
+      env:
+        HARPERDB_VERSION: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
+        NODE_VERSION: ${{ steps.getNode.outputs.NODE_VERSION }}
+        PUBLISH: "private"
+        TAG_LATEST: "${{ inputs.tag_latest && 'latest' || '' }}"
+
     - name: Push to Dockerhub
       uses: redhat-actions/push-to-registry@v2
       with:
@@ -129,28 +111,3 @@ jobs:
         registry: docker.io
         username: ${{ secrets.DOCKER_USERNAME }}
         password: ${{ secrets.DOCKER_PASSWORD }}
-#    - name: "Publish harperdb/private to Dockerhub"
-#      env:
-#        HARPERDB_VERSION: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
-#        NODE_VERSION: ${{ steps.getNode.outputs.NODE_VERSION }}
-#        PUBLISH: "private"
-#        GITHUB_RUN_NUMBER: ${{ vars.GITHUB_RUN_NUMBER }}
-#        TAG_LATEST: "${{ inputs.tag_latest }}"
-#      #run: ./.github/scripts/docker-publish.sh
-#      timeout-minutes: 30
-#      # new stuff
-#      uses: docker/build-push-action@v5
-#      with:
-#        context: .
-#        file: utility/Docker/Dockerfile
-#        platforms: linux/arm64
-#        push: true
-#        tags: "harperdb/private:4.3.0-beta.2-${{ vars.GITHUB_RUN_NUMBER }}"
-#        build-args: |
-#          "NODE_VERSION=${{ env.NODE_VERSION }}"
-#          "HARPERDB_VERSION=${{ env.HARPERDB_VERSION }}"
-#          "HARPERDB_TARBALL=harperdb-${{ env.HARPERDB_VERSION }}.tgz"
-#          "VCS_REF=`git rev-parse HEAD`"
-#          "BUILD_DATE=`date -u +%FT%T"
-#        cache-from: type=gha
-#        cache-to: type=gha,mode=max
