@@ -68,7 +68,7 @@ ENV HDB_ADMIN_USERNAME=HDB_ADMIN
 ENV HDB_ADMIN_PASSWORD=password
 ENV LOGGING_STDSTREAMS=true
 
-RUN mkdir /home/harperdb/.npm-global && chown -r harperdb:harperdb /home/harperdb/.npm-global
+RUN mkdir /home/harperdb/.npm-global && chown -R harperdb:harperdb /home/harperdb/.npm-global
 
 
 #Set the user for the below instructions (respected by RUN, CMD, ENTRYPOINT only)
