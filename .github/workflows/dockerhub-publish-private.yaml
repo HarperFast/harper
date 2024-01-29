@@ -15,42 +15,42 @@ on:
 jobs:
 #  build:
 #    uses: ./.github/workflows/build.yaml
-  getLicenses:
-    runs-on: ubuntu-latest
-    #runs-on: fabric-dev-runner
-    timeout-minutes: 20
-    steps:
-    - uses: actions/checkout@v4
-    - name: "Get Latest License Files"
-      run: .github/scripts/get-license-files.sh
-    - name: "Get HarperDB/harperdb_open_source_license_generator.git"
-      uses: actions/checkout@v3
-      with:
-        repository: "HarperDB/harperdb_open_source_license_generator.git"
-        path: "harperdb_open_source_license_generator"
-        ref: "master"
-    - uses: actions/setup-node@v3
-    - name: "Generate license file"
-      env:
-        project_path: "."
-        output_file: "utility/Docker/licenses/open-source-licenses-notices.md"
-        template_file: "harperdb_open_source_license_generator/template.txt"
-      run: |
-        #!/usr/bin/env bash
-        cd harperdb_open_source_license_generator
-        npm install --omit=dev 
-        cd -
-        node harperdb_open_source_license_generator/index.js
-    - name: 'Upload Artifact'
-      uses: actions/upload-artifact@v3
-      with:
-        name: "licenses"
-        path: "utility/Docker/licenses/"
-        retention-days: 1
+#  getLicenses:
+#    runs-on: ubuntu-latest
+#    #runs-on: fabric-dev-runner
+#    timeout-minutes: 20
+#    steps:
+#    - uses: actions/checkout@v4
+#    - name: "Get Latest License Files"
+#      run: .github/scripts/get-license-files.sh
+#    - name: "Get HarperDB/harperdb_open_source_license_generator.git"
+#      uses: actions/checkout@v3
+#      with:
+#        repository: "HarperDB/harperdb_open_source_license_generator.git"
+#        path: "harperdb_open_source_license_generator"
+#        ref: "master"
+#    - uses: actions/setup-node@v3
+#    - name: "Generate license file"
+#      env:
+#        project_path: "."
+#        output_file: "utility/Docker/licenses/open-source-licenses-notices.md"
+#        template_file: "harperdb_open_source_license_generator/template.txt"
+#      run: |
+#        #!/usr/bin/env bash
+#        cd harperdb_open_source_license_generator
+#        npm install --omit=dev
+#        cd -
+#        node harperdb_open_source_license_generator/index.js
+#    - name: 'Upload Artifact'
+#      uses: actions/upload-artifact@v3
+#      with:
+#        name: "licenses"
+#        path: "utility/Docker/licenses/"
+#        retention-days: 1
   build-container-harperdb:
-    needs:
+#    needs:
 #      - build
-      - getLicenses
+#      - getLicenses
     runs-on: ubuntu-latest
     #runs-on: fabric-dev-runner-dind
     timeout-minutes: 35
@@ -59,18 +59,18 @@ jobs:
       harperdbVersion: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
     steps:
     - uses: actions/checkout@v4
-    - uses: actions/setup-node@v4
-      with:
-        node-version: 18
-    - id: getnode
-      name: Get node version
-      run: |
-        pwd
-        NODE_VERSION="$(node --version)"
-        NODE_VERSION="${NODE_VERSION:1}"
-        HARPERDB_VERSION=$(cat package.json | jq -r '.version')
-        echo "NODE_VERSION=$NODE_VERSION" >> $GITHUB_OUTPUT
-        echo "HARPERDB_VERSION=$HARPERDB_VERSION" >> $GITHUB_OUTPUT
+#    - uses: actions/setup-node@v4
+#      with:
+#        node-version: 18
+#    - id: getnode
+#      name: Get node version
+#      run: |
+#        pwd
+#        NODE_VERSION="$(node --version)"
+#        NODE_VERSION="${NODE_VERSION:1}"
+#        HARPERDB_VERSION=$(cat package.json | jq -r '.version')
+#        echo "NODE_VERSION=$NODE_VERSION" >> $GITHUB_OUTPUT
+#        echo "HARPERDB_VERSION=$HARPERDB_VERSION" >> $GITHUB_OUTPUT
     # Checkout buildah action github repository
     - name: Checkout Buildah action
       uses: actions/checkout@v3
@@ -97,10 +97,10 @@ jobs:
 #      with:
 #        name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
 #        path: ./
-    - uses: actions/download-artifact@v3
-      with:
-        name: "licenses"
-        path: "utility/Docker/licenses/"
+#    - uses: actions/download-artifact@v3
+#      with:
+#        name: "licenses"
+#        path: "utility/Docker/licenses/"
     - name: "Build harperdb/private image with buildah"
       id: build-image
       env:
@@ -116,11 +116,10 @@ jobs:
         containerfiles: |
           ./utility/Docker/Dockerfile
         platforms: linux/arm64, linux/amd64
-        push: true
         image: "harperdb/private"
         tags: "4.3.0-beta.2-${{ vars.GITHUB_RUN_NUMBER }}"
         build-args: |
-          NODE_VERSION=${{ env.NODE_VERSION }}
+          NODE_VERSION=18.19.0
           HARPERDB_VERSION=${{ env.HARPERDB_VERSION }}
           HARPERDB_TARBALL=harperdb-${{ env.HARPERDB_VERSION }}.tgz
           VCS_REF=`git rev-parse HEAD`
