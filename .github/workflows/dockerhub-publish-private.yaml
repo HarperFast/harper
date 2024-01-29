@@ -95,6 +95,8 @@ jobs:
           HARPERDB_VERSION=${{ env.HARPERDB_VERSION }}
           VCS_REF=`git rev-parse HEAD`
           BUILD_DATE=`date -u +%FT%T
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
       env:
         HARPERDB_VERSION: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
         NODE_VERSION: ${{ steps.getNode.outputs.NODE_VERSION }}

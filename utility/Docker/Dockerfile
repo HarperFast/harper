@@ -80,9 +80,9 @@ WORKDIR /home/harperdb/
 
 #Install HarperDB package and clean up tarball
 #RUN npm install -g $HARPERDB_TARBALL && \
-RUN npm install -g --prefer-offline --no-audit harperdb@$HARPERDB_VERSION && \
-    npm cache clean --force
-    #&& \
+#RUN npm install -g --prefer-offline --no-audit harperdb@$HARPERDB_VERSION && \
+RUN npm ci --omit dev harperdb@$HARPERDB_VERSION
+#    npm cache clean --force && \
 #    rm -f $HARPERDB_TARBALL
 
 #If no arguments are passed to docker run, execute HarperDB
