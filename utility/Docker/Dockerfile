@@ -25,7 +25,7 @@ WORKDIR /home/harperdb/
 #Install HarperDB package and clean up tarball
 ENV NPM_CONFIG_LOGLEVEL info
 #RUN npm install --omit=dev -g $HARPERDB_TARBALL && \
-RUN npm install --omit=dev -g harperdb@$HARPERDB_VERSION && \
+RUN chown -R harperdb: /home/harperdb/.npm &&  npm install --omit=dev -g harperdb@$HARPERDB_VERSION && \
   npm cache clean --force
 #  rm -f $HARPERDB_TARBALL
 
@@ -73,7 +73,7 @@ RUN mkdir -p /home/harperdb/hdb && \
   mkdir /home/harperdb/.harperdb && \
   touch /home/harperdb/.harperdb/hdb_boot_properties.file && \
   echo 'settings_path = /home/harperdb/hdb/harperdb-config.yaml\ninstall_user = harperdb' > /home/harperdb/.harperdb/hdb_boot_properties.file && \
-  chown -R harperdb:harperdb /home/harperdb/
+  chown -R harperdb:harperdb /home/harperdb/.harperdb
 
 #Set HarperDB installation parameters
 ENV TC_AGREEMENT=yes
