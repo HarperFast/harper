@@ -4,33 +4,49 @@ on:
   workflow_dispatch:
     inputs:
       publish:
-        description: 'Which registry do we want to publish to, public, private, or tar'
-        default: 'private'
+        description: 'Which publish target do we want, harperdb/private, harperdb/harperdb, harperdb/fabric, harperdb/openshift, tar, or all 3 public (harperdb, fabric, and openshift)'
+        default: 'harperdb/private'
         required: false
         type: choice
         options:
-          - 'public'
-          - 'private'
+          - 'harperdb/private'
+          - 'harperdb/harperdb'
+          - 'harperdb/fabric'
+          - 'harperdb/openshift'
           - 'tar'
+          - 'public'
       dockerfile:
-        description: 'Which dockerfile to use for this build'
+        description: 'Which dockerfile to use for this build. ignored except when harperdb/private, or tar.'
         default: 'utility/Docker/Dockerfile'
         required: false
         type: string
-      docker_image:
-        description: 'name of the docker image for this build'
-        default: 'harperdb/harperdb'
-        required: false
-        type: string
-      tag_latest:
+      latest:
         description: 'tag this build as latest in registry'
         default: 'false'
         required: false
-        type: string
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      platforms:
+        description: 'Which platform(s) to build for'
+        default: "linux/arm64,linux/amd64"
+        required: false
+        type: choice
+        options:
+          - "linux/arm64,linux/amd64"
+          - "linux/amd64"
+          - "linux/arm64"
+      push:
+        description: 'push the resultant image to dockerhub. ignored when tar'
+        default: false
+        required: false
+        type: boolean
 
 jobs:
   build:
     uses: ./.github/workflows/build.yaml
+
   getLicenses:
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -62,11 +78,26 @@ jobs:
         name: "licenses"
         path: "utility/Docker/licenses/"
         retention-days: 1
-  build-container-harperdb:
+
+  publish_public:
+    if: inputs.public == 'public'
+    strategy:
+      matrix:
+        container:
+          - 'harperdb/harperdb'
+          - 'harperdb/fabric'
+          - 'harperdb/openshift'
+        include:
+          - container: 'harperdb/harperdb'
+            file: ./utility/Docker/Dockerfile
+          - container: 'harperdb/fabric'
+            file: ./utility/Docker/Dockerfile-fabric
+          - container: 'harperdb/openshift'
+            file: ./utility/Docker/Dockerfile-openshift
     needs:
       - build
       - getLicenses
-    runs-on: gha-runner-scale-set
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
     - uses: actions/checkout@v3
@@ -87,14 +118,37 @@ jobs:
       with:
         name: "licenses"
         path: "utility/Docker/licenses/"
-    - name: "Publish ${{ inputs.docker_image }} as ${{ inputs.publish }}"
-      env:
-        HARPERDB_VERSION: "${{ needs.build.outputs.harperdbVersion }}"
-        NODE_VERSION: "${{ needs.build.outputs.nodeVersion }}"
-        PUBLISH: "${{ inputs.publish }}"
-        GITHUB_RUN_NUMBER: "${{ vars.GITHUB_RUN_NUMBER }}"
-        DOCKERFILE: "${{ inputs.dockerfile }}"
-        DOCKER_IMAGE: "${{ inputs.docker_image }}"
-        TAG_LATEST: "${{ inputs.tag_latest }}"
-      run: ./.github/scripts/docker-publish.sh
+
+    # generate tags for containers
+    - name: Docker meta
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        # list of Docker images to use as base name for tags
+        images: ${{ matrix.container }}
+        # generate Docker tags based on the following events/attributes
+        tags: |
+          type=raw,value=${{ steps.getNode.outputs.HARPERDB_VERSION }}
+          type=raw,value=latest,enable=${{ inputs.latest }}
+
+    # build and publish containers
+    - name: "Publish ${{ matrix.container }}:${{ needs.build.outputs.harperdbVersion }}"
+      id: build-image-public
       timeout-minutes: 30
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        file: ${{ matrix.file }}
+        platforms: ${{ inputs.platforms }}
+        push: ${{ inputs.push }}
+        tags: ${{ steps.meta.outputs.tags }}
+        build-args: |
+          NODE_VERSION=${{ env.NDDE_VERSION }}
+          HARPERDB_VERSION=${{ env.HARPERDB_VERSION }}
+          VCS_REF=`git rev-parse HEAD`
+          BUILD_DATE=`date -u +%FT%T
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+      env:
+        HARPERDB_VERSION: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
+        NODE_VERSION: ${{ steps.getNode.outputs.NODE_VERSION }}
