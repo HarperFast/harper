@@ -24,7 +24,7 @@ if [[ "${PUBLISH}" == "fabric" ]]; then
   docker_image="harperdb/fabric"
 fi
 
-# linux/arm64 currently probably only works on self-hosted runners; use `runs-on: gha-runner-scale-set` in the workflow
+# linux/arm64
 docker_platform="linux/amd64,linux/arm64"
 docker_output="type=registry"
 
