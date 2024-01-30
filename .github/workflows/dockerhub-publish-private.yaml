@@ -87,7 +87,7 @@ jobs:
       uses: docker/build-push-action@v4
       with:
         context: .
-        file: ./utility/Docker/Dockerfile-openshift
+        file: ./utility/Docker/Dockerfile
         platforms: linux/arm64, linux/amd64
         push: true
         tags: "harperdb/private:4.3.0-beta.2-${{ github.run_number }}"
