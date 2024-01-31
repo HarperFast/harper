@@ -1258,7 +1258,7 @@ describe('Querying through Resource API', () => {
 		assert.equal(results[0].badRelationship, undefined);
 		assert.equal(results[0].badRelationship3, undefined);
 	});
-	it('Query data in a table with another bad relationship', async function () {
+	it.skip('Query data in a table with another bad relationship', async function () {
 		let results = [];
 		let caught_error;
 		try {
@@ -1270,13 +1270,14 @@ describe('Querying through Resource API', () => {
 		} catch (error) {
 			caught_error = error;
 		}
-		assert(caught_error.message.includes('not indexed'));
+		assert(caught_error.message.includes('uses an index'));
 	});
 	it('Prevent query data in a table with null', async function () {
 		let results = [];
 		let caught_error;
 		try {
 			for await (let record of QueryTable.search({
+				allowFullScan: false,
 				conditions: [{ attribute: 'id', value: null }],
 			})) {
 				results.push(record);

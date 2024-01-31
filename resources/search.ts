@@ -1,4 +1,4 @@
-import { ClientError } from '../utility/errors/hdbError';
+import { ClientError, ServerError } from '../utility/errors/hdbError';
 import * as lmdb_terms from '../utility/lmdb/terms';
 import { compareKeys, MAXIMUM_KEY } from 'ordered-binary';
 import { RangeIterable, SKIP } from 'lmdb';
@@ -245,18 +245,19 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 	let filter;
 	if (!index || index.isIndexing || need_full_scan || (value === null && !index.indexNulls)) {
 		// no indexed searching available, need a full scan
-		if (!allow_full_scan)
+		if (allow_full_scan === false && (need_full_scan || !index))
 			throw new ClientError(
-				need_full_scan
-					? `Can not use ${comparator} operator without combining with a condition that uses an index`
-					: `"${attribute_name}" is not indexed${
-							value === null && !index.indexNulls
-								? ' for nulls, index needs to be rebuilt to search for nulls'
-								: index?.isIndexing
-								? ' yet'
-								: ''
-					  }, can not search for this attribute`,
-				404
+				`Can not use ${
+					comparator || 'equal'
+				} operator without combining with a condition that uses an index, can not search for attribute ${attribute_name}`,
+				403
+			);
+		if (index?.isIndexing)
+			throw new ServerError(`"${attribute_name}" is not indexed yet, can not search for this attribute`, 503);
+		if (value === null && !index.indexNulls)
+			throw new ClientError(
+				`"${attribute_name}" is not indexed for nulls, index needs to be rebuilt to search for nulls, can not search for this attribute`,
+				400
 			);
 		filter = filterByType(search_condition);
 		if (!filter) {
