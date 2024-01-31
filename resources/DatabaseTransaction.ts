@@ -6,6 +6,11 @@ import { fromResource } from './RecordEncoder';
 
 const MAX_OPTIMISTIC_SIZE = 100;
 const tracked_txns = new Set<DatabaseTransaction>();
+export enum TRANSACTION_STATE {
+	OPEN, // the transaction is open and can be used for reads and writes
+	LINGERING, // the transaction has completed a read, but can be used for immediate writes
+	CLOSED, // the transaction has been committed or aborted and can no longer be used for writes (if read txn is active, it can be used for reads)
+}
 export class DatabaseTransaction implements Transaction {
 	writes = []; // the set of writes to commit if the conditions are met
 	lmdbDb: RootDatabase;
@@ -16,7 +21,7 @@ export class DatabaseTransaction implements Transaction {
 	timestamp = 0;
 	declare next: DatabaseTransaction;
 	declare stale: boolean;
-	open = true;
+	open = TRANSACTION_STATE.OPEN;
 	getReadTxn(): LMDBTransaction | void {
 		// used optimistically
 		this.readTxnRefCount = (this.readTxnRefCount || 0) + 1;
@@ -25,7 +30,7 @@ export class DatabaseTransaction implements Transaction {
 			if (this.readTxn.openTimer) this.readTxn.openTimer = 0;
 			return this.readTxn;
 		}
-		if (!this.open) throw new Error('Can not start a read on a transaction that is no longer open');
+		if (this.open !== TRANSACTION_STATE.OPEN) return; // can not start a new read transaction as there is no future commit that will take place, just have to allow the read to latest database state
 		this.readTxnsUsed = 1;
 		fromResource(() => {
 			this.readTxn = this.lmdbDb.useReadTransaction();
@@ -56,11 +61,10 @@ export class DatabaseTransaction implements Transaction {
 		}
 	}
 	addWrite(operation) {
-		if (!this.open && !this.autoCommitMode) {
-			throw new Error('Can not use a transaction that is no longer open');
-		}
+		if (this.open === TRANSACTION_STATE.CLOSED) throw new Error('Can not use a transaction that is no longer open');
+		// else
 		this.writes.push(operation);
-		if (this.autoCommitMode) this.commit();
+		if (this.open === TRANSACTION_STATE.LINGERING) this.commit(); // there is no future commit that will take place, so we commit immediately
 	}
 	removeWrite(operation) {
 		const index = this.writes.indexOf(operation);
@@ -70,7 +74,7 @@ export class DatabaseTransaction implements Transaction {
 	/**
 	 * Resolves with information on the timestamp and success of the commit
 	 */
-	commit(options: { close?: boolean; timestamp?: number } = {}): Promise<CommitResolution> {
+	commit(options: { letItLinger?: boolean; timestamp?: number } = {}): Promise<CommitResolution> {
 		let txn_time = this.timestamp;
 		if (!txn_time) txn_time = this.timestamp = options.timestamp = options.timestamp || getNextMonotonicTime();
 		const retries = options.retries || 0;
@@ -130,8 +134,7 @@ export class DatabaseTransaction implements Transaction {
 		}
 		// release the read snapshot so we don't keep it open longer than necessary
 		if (!retries) this.doneReadTxn();
-		options?.prepared?.();
-		this.open = false;
+		this.open = options?.letItLinger ? TRANSACTION_STATE.LINGERING : TRANSACTION_STATE.CLOSED;
 		let resolution;
 		const completions = [];
 		let write_index = 0;
@@ -212,7 +215,7 @@ export class DatabaseTransaction implements Transaction {
 	}
 	abort(): void {
 		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
-		this.open = false;
+		this.open = TRANSACTION_STATE.CLOSED;
 		// reset the transaction
 		this.writes = [];
 	}

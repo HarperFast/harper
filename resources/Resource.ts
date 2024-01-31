@@ -67,7 +67,7 @@ export class Resource implements ResourceInterface {
 		{
 			type: 'read',
 			// allows context to reset/remove transaction after completion so it can be used in immediate mode:
-			resetTransaction: true,
+			letItLinger: true,
 			ensureLoaded: true, // load from source by default
 			async: true, // use async by default
 		}
@@ -528,12 +528,11 @@ function transactional(action, options) {
 			if (query?.async) resource_options.async = query.async;
 			if (is_collection) resource_options.isCollection = true;
 		} else resource_options = options;
-		if (context.transaction?.open) {
+		if (context.transaction) {
 			// we are already in a transaction, proceed
 			const resource = this.getResource(id, context, resource_options);
 			return resource.then ? resource.then(authorizeActionOnResource) : authorizeActionOnResource(resource);
 		} else {
-			if (context.transaction && options.type !== 'read') throw new Error('Attempt to write to a closed transaction');
 			// start a transaction
 			return transaction(
 				context,

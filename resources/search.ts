@@ -276,10 +276,11 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 	if (is_primary_key) {
 		const results = index.getRange(range_options).map(
 			filter
-				? // for filter operations, we intentionally yield the event turn so that scanning queries
-				  // do not hog resources
-				  ({ key, value }) =>
-						new Promise((resolve, reject) =>
+				? function ({ key, value }) {
+						if (this.isSync) return value && filter(value) ? key : SKIP;
+						// for filter operations, we intentionally yield the event turn so that scanning queries
+						// do not hog resources
+						return new Promise((resolve, reject) =>
 							setImmediate(() => {
 								try {
 									resolve(value && filter(value) ? key : SKIP);
@@ -287,7 +288,8 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 									reject(error);
 								}
 							})
-						)
+						);
+				  }
 				: (entry) => {
 						if (entry.value == null) return SKIP;
 						return entry;
@@ -298,8 +300,11 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 	} else if (index) {
 		return index.getRange(range_options).map(
 			filter
-				? ({ key, value }) =>
-						new Promise((resolve, reject) =>
+				? function ({ key, value }) {
+						if (this.isSync) return filter({ [attribute_name]: key }) ? value : SKIP;
+						// for filter operations, we intentionally yield the event turn so that scanning queries
+						// do not hog resources
+						return new Promise((resolve, reject) =>
 							setImmediate(() => {
 								try {
 									resolve(filter({ [attribute_name]: key }) ? value : SKIP);
@@ -307,24 +312,27 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 									reject(error);
 								}
 							})
-						)
+						);
+				  }
 				: ({ value }) => value
 		);
 	} else {
 		return Table.primaryStore
 			.getRange(reverse ? { end: true, transaction, reverse: true } : { start: true, transaction })
-			.map(
-				({ key, value }) =>
-					new Promise((resolve, reject) =>
-						setImmediate(() => {
-							try {
-								resolve(value && filter(value) ? key : SKIP);
-							} catch (error) {
-								reject(error);
-							}
-						})
-					)
-			);
+			.map(function ({ key, value }) {
+				if (this.isSync) return value && filter(value) ? key : SKIP;
+				// for filter operations, we intentionally yield the event turn so that scanning queries
+				// do not hog resources
+				return new Promise((resolve, reject) =>
+					setImmediate(() => {
+						try {
+							resolve(value && filter(value) ? key : SKIP);
+						} catch (error) {
+							reject(error);
+						}
+					})
+				);
+			});
 	}
 }
 
@@ -362,43 +370,42 @@ function joinTo(right_iterable, attribute, store, is_many_to_many, joined: Map<a
 				next() {
 					if (!joined_iterator) {
 						const right_property = attribute.relationship.to;
-						return (async () => {
-							const add_entry = (key, entry) => {
-								let flat_key = key;
-								if (Array.isArray(key)) {
-									flat_key = flattenKey(key);
-									has_multi_part_keys = true;
-								}
-								let entries_for_key = joined.get(flat_key);
-								if (entries_for_key) entries_for_key.push(entry);
-								else joined.set(flat_key, (entries_for_key = [entry]));
-								if (key !== flat_key) entries_for_key.key = key;
-							};
-							let i = 0;
-							// get all the ids of the related records
-							// TODO: May consider manually iterating so that we don't need to do an await on every iteration
-							for await (const entry of right_iterable) {
-								const record = entry.value ?? store.get(entry.key ?? entry);
-								const left_key = record?.[right_property];
-								if (left_key == null) continue;
-								if (joined.filters?.some((filter) => !filter(record))) continue;
-								if (is_many_to_many) {
-									for (let i = 0; i < left_key.length; i++) {
-										add_entry(left_key[i], entry);
-									}
-								} else {
-									add_entry(left_key, entry);
-								}
-								if (i++ > 100) {
-									// yield the event turn every 100 ids. See below for more explanation
-									await new Promise(setImmediate);
-									i = 0;
-								}
+						const add_entry = (key, entry) => {
+							let flat_key = key;
+							if (Array.isArray(key)) {
+								flat_key = flattenKey(key);
+								has_multi_part_keys = true;
 							}
-							// if there are multi-part keys, we need to be able to get the original key from the key property on the entry array
-							joined_iterator = (has_multi_part_keys ? joined : joined.keys())[Symbol.iterator]();
-							return this.next();
-						})();
+							let entries_for_key = joined.get(flat_key);
+							if (entries_for_key) entries_for_key.push(entry);
+							else joined.set(flat_key, (entries_for_key = [entry]));
+							if (key !== flat_key) entries_for_key.key = key;
+						};
+						//let i = 0;
+						// get all the ids of the related records
+						for (const entry of right_iterable) {
+							const record = entry.value ?? store.get(entry.key ?? entry);
+							const left_key = record?.[right_property];
+							if (left_key == null) continue;
+							if (joined.filters?.some((filter) => !filter(record))) continue;
+							if (is_many_to_many) {
+								for (let i = 0; i < left_key.length; i++) {
+									add_entry(left_key[i], entry);
+								}
+							} else {
+								add_entry(left_key, entry);
+							}
+							// TODO: Enable this with async iterator manually iterating so that we don't need to do an await on every iteration
+							/*
+							if (i++ > 100) {
+								// yield the event turn every 100 ids. See below for more explanation
+								await new Promise(setImmediate);
+								i = 0;
+							}*/
+						}
+						// if there are multi-part keys, we need to be able to get the original key from the key property on the entry array
+						joined_iterator = (has_multi_part_keys ? joined : joined.keys())[Symbol.iterator]();
+						return this.next();
 					}
 					const joined_entry = joined_iterator.next();
 					if (joined_entry.done) return joined_entry;
@@ -441,41 +448,40 @@ function joinFrom(right_iterable, attribute, store, joined: Map<any, any[]>, sea
 						}
 					}
 					if (!id_iterator) {
-						return (async () => {
-							// get the ids of the related records as a Set so we can quickly check if it is in the set
-							// when are iterating through the results
-							const ids = new Map();
-							// Define the fromRecord function so that we can use it to filter the related records
-							// that are in the select(), to only those that are in this set of ids
-							joined.fromRecord = (record) => {
-								// TODO: Sort based on order ids
-								return record[attribute.relationship.from]?.filter?.((id) => ids.has(flattenKey(id)));
-							};
-							let i = 0;
-							// get all the ids of the related records
-							// TODO: May consider manually iterating so that we don't need to do an await on every iteration
-							for await (const id of right_iterable) {
-								if (joined.filters) {
-									// if additional filters are defined, we need to check them
-									const record = store.get(id);
-									if (joined.filters.some((filter) => !filter(record))) continue;
-								}
-								ids.set(flattenKey(id), id);
-								if (i++ > 100) {
-									// yield the event turn every 100 ids. We don't want to monopolize the
-									// event loop, give others a chance to run. However, we are much more aggressive
-									// about running here than in simple filter operations, because we are
-									// executing a very minimal range iteration and because this is consuming
-									// memory (so we want to get it over with) and the user isn't getting any
-									// results until we finish
-									await new Promise(setImmediate);
-									i = 0;
-								}
+						// get the ids of the related records as a Set so we can quickly check if it is in the set
+						// when are iterating through the results
+						const ids = new Map();
+						// Define the fromRecord function so that we can use it to filter the related records
+						// that are in the select(), to only those that are in this set of ids
+						joined.fromRecord = (record) => {
+							// TODO: Sort based on order ids
+							return record[attribute.relationship.from]?.filter?.((id) => ids.has(flattenKey(id)));
+						};
+						//let i = 0;
+						// get all the ids of the related records
+						for (const id of right_iterable) {
+							if (joined.filters) {
+								// if additional filters are defined, we need to check them
+								const record = store.get(id);
+								if (joined.filters.some((filter) => !filter(record))) continue;
 							}
-							// and now start iterating through the ids
-							id_iterator = ids.values()[Symbol.iterator]();
-							return this.next();
-						})();
+							ids.set(flattenKey(id), id);
+							// TODO: Re-enable this when async iteration is used, and do so with manually iterating so that we don't need to do an await on every iteration
+							/*
+							if (i++ > 100) {
+								// yield the event turn every 100 ids. We don't want to monopolize the
+								// event loop, give others a chance to run. However, we are much more aggressive
+								// about running here than in simple filter operations, because we are
+								// executing a very minimal range iteration and because this is consuming
+								// memory (so we want to get it over with) and the user isn't getting any
+								// results until we finish
+								await new Promise(setImmediate);
+								i = 0;
+							}*/
+						}
+						// and now start iterating through the ids
+						id_iterator = ids.values()[Symbol.iterator]();
+						return this.next();
 					}
 					do {
 						const id_entry = id_iterator.next();
