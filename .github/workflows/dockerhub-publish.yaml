@@ -4,15 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       target:
-        description: 'Which publish target do we want, harperdb/private, harperdb/harperdb, harperdb/fabric, harperdb/openshift, tar, or all 3 public (harperdb, fabric, and openshift)'
+        description: 'Which publish target do we want, harperdb/private, harperdb/harperdb, harperdb/fabric, harperdb/openshift, tar, or public for both harperdb and openshift'
         default: 'harperdb/private'
         required: false
         type: choice
         options:
           - 'harperdb/private'
           - 'harperdb/harperdb'
-          - 'harperdb/harperdb-fabric'
           - 'harperdb/harperdb-openshift'
+          - 'harperdb/fabric'
           - 'tar'
           - 'public'
       file:
@@ -92,7 +92,6 @@ jobs:
             container=[
               "harperdb/harperdb",
               "harperdb/harperdb-openshift",
-              "harperdb/harperdb-fabric"
             ]
           EOF
           else
