@@ -1211,13 +1211,27 @@ export function makeTable(options) {
 				read_txn,
 				request,
 				context,
-				(results, filters) => transformToEntries(results, select, context, filters),
+				(results, filters) => transformToEntries(results, select, context, read_txn, filters),
 				filtered
 			);
 			const ensure_loaded = request.ensureLoaded !== false;
 			if (!post_ordering) entries = applyOffset(entries); // if there is no post ordering, we can apply the offset now
-			const transformToRecord = TableResource.transformEntryForSelect(select, context, filtered, ensure_loaded, true);
-			let results = TableResource.transformToOrderedSelect(entries, select, post_ordering, context, transformToRecord);
+			const transformToRecord = TableResource.transformEntryForSelect(
+				select,
+				context,
+				read_txn,
+				filtered,
+				ensure_loaded,
+				true
+			);
+			let results = TableResource.transformToOrderedSelect(
+				entries,
+				select,
+				post_ordering,
+				read_txn,
+				context,
+				transformToRecord
+			);
 			function applyOffset(entries) {
 				if (request.offset || request.limit !== undefined)
 					return entries.slice(
@@ -1254,11 +1268,11 @@ export function makeTable(options) {
 		 * @param can_skip
 		 * @returns
 		 */
-		static transformToOrderedSelect(entries, select, sort, context, transformToRecord) {
+		static transformToOrderedSelect(entries, select, sort, context, read_txn, transformToRecord) {
 			let results = new RangeIterable();
 			if (sort) {
 				// there might be some situations where we don't need to transform to entries for sorting, not sure
-				entries = transformToEntries(entries, select, context, null);
+				entries = transformToEntries(entries, select, context, read_txn, null);
 				let ordered;
 				// if we are doing post-ordering, we need to get records first, then sort them
 				results.iterate = function () {
@@ -1295,7 +1309,7 @@ export function makeTable(options) {
 									}
 								} else
 									return {
-										value: await transformToRecord(iteration.value),
+										value: await transformToRecord.call(this, iteration.value),
 									};
 							}
 							ordered = [];
@@ -1338,7 +1352,7 @@ export function makeTable(options) {
 							iteration = sorted_array_iterator.next();
 							if (!iteration.done)
 								return {
-									value: await transformToRecord(iteration.value),
+									value: await transformToRecord.call(this, iteration.value),
 								};
 							if (results.onDone) results.onDone();
 							return iteration;
@@ -1392,7 +1406,7 @@ export function makeTable(options) {
 		 * @param can_skip
 		 * @returns
 		 */
-		static transformEntryForSelect(select, context, filtered, ensure_loaded?, can_skip?) {
+		static transformEntryForSelect(select, context, read_txn, filtered, ensure_loaded?, can_skip?) {
 			if (select && (select === primary_key || (select?.length === 1 && select[0] === primary_key))) {
 				// fast path if only the primary key is selected, so we don't have to load records
 				const transform = (entry) => {
@@ -1419,7 +1433,7 @@ export function makeTable(options) {
 				check_loaded = true;
 			}
 			let transform_cache;
-			const transform = (entry) => {
+			const transform = function (entry) {
 				let record;
 				if (entry != undefined) {
 					// TODO: remove this:
@@ -1432,13 +1446,13 @@ export function makeTable(options) {
 							entry.key ?? entry,
 							context,
 							{
-								transaction: txnForContext(context).getReadTxn(),
+								transaction: read_txn,
 								lazy: select?.length < 4,
 							},
-							false,
+							this.isSync,
 							(entry) => entry
 						);
-						if (entry?.then) return entry.then(transform);
+						if (entry?.then) return entry.then(transform.bind(this));
 						record = entry?.value;
 					}
 					if (
@@ -1489,6 +1503,7 @@ export function makeTable(options) {
 												? null
 												: attribute.select || (Array.isArray(attribute) ? attribute : null),
 											context,
+											read_txn,
 											filter_map,
 											ensure_loaded
 										));
@@ -1500,9 +1515,10 @@ export function makeTable(options) {
 												attribute.select,
 												typeof attribute.sort === 'object' && attribute.sort,
 												context,
+												read_txn,
 												transform
 											)
-											[Symbol.asyncIterator]();
+											[this.isSync ? Symbol.iterator : Symbol.asyncIterator]();
 										const nextValue = (iteration) => {
 											while (!iteration.done) {
 												if (iteration?.then) return iteration.then(nextValue);
@@ -1518,7 +1534,7 @@ export function makeTable(options) {
 										}
 										return;
 									} else {
-										value = transform(value);
+										value = transform.call(this, value);
 										if (value?.then) {
 											if (!promises) promises = [];
 											promises.push(value.then((value) => callback(value, attribute_name)));
@@ -1536,7 +1552,12 @@ export function makeTable(options) {
 						} else {
 							value = record[attribute_name];
 							if (value && typeof value === 'object' && attribute_name !== attribute) {
-								value = this.transformEntryForSelect(attribute.select || attribute, context, null)({ value });
+								value = TableResource.transformEntryForSelect(
+									attribute.select || attribute,
+									context,
+									read_txn,
+									null
+								)({ value });
 							}
 						}
 						callback(value, attribute_name);
@@ -2392,8 +2413,7 @@ export function makeTable(options) {
 		const resolver = property_resolvers[attribute_name];
 		return resolver ? resolver(record, context) : record[attribute_name];
 	}
-	function transformToEntries(ids, select, context, filters?) {
-		const read_txn = txnForContext(context).getReadTxn();
+	function transformToEntries(ids, select, context, read_txn, filters?) {
 		// TODO: Test and ensure that we break out of these loops when a connection is lost
 		const filters_length = filters?.length;
 		const load_options = {

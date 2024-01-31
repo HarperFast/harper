@@ -44,9 +44,10 @@ if (getWorkerIndex() === 0) {
 			transaction(message, () => {
 				try {
 					publish(message, data);
-				} finally {
-					LastWill.delete(will.id, message);
+				} catch (error) {
+					warn('Failed to publish will', data);
 				}
+				LastWill.delete(will.id, message);
 			});
 		}
 	})();
