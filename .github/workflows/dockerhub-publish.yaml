@@ -22,12 +22,9 @@ on:
         type: string
       latest:
         description: 'tag this build as latest in registry'
-        default: 'false'
+        default: false
         required: false
-        type: choice
-        options:
-          - 'false'
-          - 'true'
+        type: boolean
       platforms:
         description: 'Which platform(s) to build for'
         default: "linux/arm64,linux/amd64"
