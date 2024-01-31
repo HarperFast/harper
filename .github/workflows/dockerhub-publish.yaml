@@ -90,12 +90,14 @@ jobs:
     needs:
       - build
       - getLicenses
-    uses: ./.github/workflows/build.yaml
+    uses: ./.github/workflows/docker-build.yaml
     with:
+      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      nodeVersion: ${{ needs.build.outputs.nodeVersion }}
       container: ${{ inputs.container }}
       file: ${{ inputs.file }}
       latest: ${{ inputs.latest }}
-      platform: ${{ inputs.platform }}
+      platforms: ${{ inputs.platforms }}
       push: ${{ inputs.push }}
 
   publish_public_containers:
@@ -113,10 +115,12 @@ jobs:
             file: 'utility/Docker/Dockerfile'
           - container: 'harperdb/harperdb-openshift'
             file: 'utility/Docker/Dockerfile-openshift'
-    uses: ./.github/workflows/build.yaml
+    uses: ./.github/workflows/docker-build.yaml
     with:
+      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      nodeVersion: ${{ needs.build.outputs.nodeVersion }}
       container: ${{ inputs.container }}
       file: ${{ inputs.file }}
       latest: ${{ inputs.latest }}
-      platform: ${{ inputs.platform }}
+      platforms: ${{ inputs.platforms }}
       push: ${{ inputs.push }}
