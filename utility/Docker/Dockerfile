@@ -31,7 +31,7 @@ USER 1000
 WORKDIR /home/harperdb/
 
 #Install HarperDB package and clean up tarball
-RUN npm --omit=dev install --force $HARPERDB_TARBALL && \
+RUN npm install --force $HARPERDB_TARBALL && \
     npm cache clean --force  && \
     rm -f $HARPERDB_TARBALL
 
