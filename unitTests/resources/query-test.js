@@ -426,6 +426,23 @@ describe('Querying through Resource API', () => {
 			assert.equal(related.length, 1);
 			assert.equal(related[0].name, 'many-to-many entry 13');
 		});
+		it('Query by join with many-to-many sync iteration', async function () {
+			let results = [];
+			for (let record of QueryTable.search({
+				conditions: [{ attribute: ['manyToMany', 'name'], value: 'many-to-many entry 13' }],
+				select: ['id', 'manyToMany', 'manyToManyIds', 'name'],
+			})) {
+				results.push(record);
+			}
+			assert.equal(results.length, 8);
+			let related = results[0].manyToMany;
+			assert.equal(related.length, 1);
+			assert.equal(related[0].name, 'many-to-many entry 13');
+			related = results[1].manyToMany;
+			assert.equal(related.length, 1);
+			assert.equal(related[0].name, 'many-to-many entry 13');
+		});
+
 		it('Query by joined condition with many-to-many and multiple joined condition', async function () {
 			let results = [];
 			for await (let record of QueryTable.search({
@@ -580,6 +597,11 @@ describe('Querying through Resource API', () => {
 			});
 			assert.equal(explanation.conditions[0].attribute[0], 'related');
 			assert(explanation.conditions[0].estimated_count < 1000);
+		});
+		it('Get and later access related data', async function () {
+			let instance = await QueryTable.get('id-1');
+			let related = await instance.related;
+			assert.equal(related.name, 'related name 1');
 		});
 	});
 	describe('Sorting', function () {
