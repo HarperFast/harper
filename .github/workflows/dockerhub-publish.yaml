@@ -3,7 +3,7 @@ name: Dockerhub Publish
 on:
   workflow_dispatch:
     inputs:
-      publish:
+      target:
         description: 'Which publish target do we want, harperdb/private, harperdb/harperdb, harperdb/fabric, harperdb/openshift, tar, or all 3 public (harperdb, fabric, and openshift)'
         default: 'harperdb/private'
         required: false
@@ -11,11 +11,11 @@ on:
         options:
           - 'harperdb/private'
           - 'harperdb/harperdb'
-          - 'harperdb/fabric'
-          - 'harperdb/openshift'
+          - 'harperdb/harperdb-fabric'
+          - 'harperdb/harperdb-openshift'
           - 'tar'
           - 'public'
-      dockerfile:
+      file:
         description: 'Which dockerfile to use for this build. ignored except when harperdb/private, or tar.'
         default: 'utility/Docker/Dockerfile'
         required: false
@@ -79,14 +79,36 @@ jobs:
         path: "utility/Docker/licenses/"
         retention-days: 1
 
-  publish_public:
-    if: inputs.public == 'public'
+  # creates matrix for next job
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - id: set-matrix-container
+        run: |
+          if [[ ${target} == 'public' ]]; then
+            cat <<EOF >> $GITHUB_OUTPUT
+            container=[
+              "harperdb/harperdb",
+              "harperdb/harperdb-openshift",
+              "harperdb/harperdb-fabric"
+            ]
+          EOF
+          else
+            echo "container=[\"${target}\"]" >> $GITHUB_OUTPUT
+          fi
+        env:
+          target: "${{ inputs.target }}"
+
+  target_public:
+    needs:
+      - build
+      - getLicenses
+      - meta
     strategy:
       matrix:
-        container:
-          - 'harperdb/harperdb'
-          - 'harperdb/fabric'
-          - 'harperdb/openshift'
+        container: ${{ fromJSON(needs.meta.outputs.container) }}
         include:
           - container: 'harperdb/harperdb'
             file: ./utility/Docker/Dockerfile
@@ -94,61 +116,91 @@ jobs:
             file: ./utility/Docker/Dockerfile-fabric
           - container: 'harperdb/openshift'
             file: ./utility/Docker/Dockerfile-openshift
-    needs:
-      - build
-      - getLicenses
+          - container: 'harperdb/private'
+            file: ${{ inputs.file }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-    - uses: actions/checkout@v3
-    - name: Set up QEMU
-      uses: docker/setup-qemu-action@v3
-    - name: "Setup Docker buildx"
-      uses: docker/setup-buildx-action@v2
-    - name: Log in to Docker Hub
-      uses: docker/login-action@v3
-      with:
-        username: ${{ secrets.DOCKER_USERNAME }}
-        password: ${{ secrets.DOCKER_PASSWORD }}
-    - uses: actions/download-artifact@v3
-      with:
-        name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
-        path: ./
-    - uses: actions/download-artifact@v3
-      with:
-        name: "licenses"
-        path: "utility/Docker/licenses/"
+      - uses: actions/checkout@v3
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: "Setup Docker buildx"
+        uses: docker/setup-buildx-action@v2
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      - uses: actions/download-artifact@v3
+        with:
+          name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
+          path: ./
+      - uses: actions/download-artifact@v3
+        with:
+          name: "licenses"
+          path: "utility/Docker/licenses/"
 
-    # generate tags for containers
-    - name: Docker meta
-      id: meta
-      uses: docker/metadata-action@v5
-      with:
-        # list of Docker images to use as base name for tags
-        images: ${{ matrix.container }}
-        # generate Docker tags based on the following events/attributes
-        tags: |
-          type=raw,value=${{ steps.getNode.outputs.HARPERDB_VERSION }}
-          type=raw,value=latest,enable=${{ inputs.latest }}
+      # generate tags for containers
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          # list of Docker images to use as base name for tags
+          images: ${{ matrix.container }}
+          # generate Docker tags based on the following events/attributes
+          tags: |
+            type=raw,value=${{ steps.getNode.outputs.HARPERDB_VERSION }}${{ matrix.container == 'harperdb/private' && '-'github.run_number' }}
+            type=raw,value=latest,enable=${{ inputs.latest }}
 
-    # build and publish containers
-    - name: "Publish ${{ matrix.container }}:${{ needs.build.outputs.harperdbVersion }}"
-      id: build-image-public
-      timeout-minutes: 30
-      uses: docker/build-push-action@v4
-      with:
-        context: .
-        file: ${{ matrix.file }}
-        platforms: ${{ inputs.platforms }}
-        push: ${{ inputs.push }}
-        tags: ${{ steps.meta.outputs.tags }}
-        build-args: |
-          NODE_VERSION=${{ env.NDDE_VERSION }}
-          HARPERDB_VERSION=${{ env.HARPERDB_VERSION }}
-          VCS_REF=`git rev-parse HEAD`
-          BUILD_DATE=`date -u +%FT%T
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
-      env:
-        HARPERDB_VERSION: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
-        NODE_VERSION: ${{ steps.getNode.outputs.NODE_VERSION }}
+      # build and publish containers
+      - name: "Publish ${{ matrix.container }}:${{ needs.build.outputs.harperdbVersion }}"
+        if: matrix.container != 'tar'
+        id: build-image
+        timeout-minutes: 30
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ${{ matrix.file }}
+          platforms: ${{ inputs.platforms }}
+          push: ${{ inputs.push }}
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            NODE_VERSION=${{ env.NDDE_VERSION }}
+            HARPERDB_VERSION=${{ env.HARPERDB_VERSION }}
+            VCS_REF=`git rev-parse HEAD`
+            BUILD_DATE=`date -u +%FT%T
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+        env:
+          HARPERDB_VERSION: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
+          NODE_VERSION: ${{ steps.getNode.outputs.NODE_VERSION }}
+
+      - name: "Create container tar"
+        id: build-image-tar
+        if: matrix.container == 'tar'
+        timeout-minutes: 30
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ${{ inputs.file }}
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          outputs: type-docker,dest=docker-harperdb-${{ steps.getNode.outputs.HARPERDB_VERSION }}-${{ github.run_number }}.tar
+          build-args: |
+            NODE_VERSION=${{ env.NDDE_VERSION }}
+            HARPERDB_VERSION=${{ env.HARPERDB_VERSION }}
+            VCS_REF=`git rev-parse HEAD`
+            BUILD_DATE=`date -u +%FT%T
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+        env:
+          HARPERDB_VERSION: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
+          NODE_VERSION: ${{ steps.getNode.outputs.NODE_VERSION }}
+
+      - name: 'Upload Artifact'
+        if: matrix.container == 'tar'
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-harperdb-${{ steps.getNode.outputs.HARPERDB_VERSION }}-${{ github.run_number }}.tar
+          path: docker-harperdb-${{ steps.getNode.outputs.HARPERDB_VERSION }}-${{ github.run_number }}.tar
+          retention-days: 1
