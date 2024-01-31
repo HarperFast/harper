@@ -103,6 +103,7 @@ jobs:
               "container":["${target}"],
               "include":[{"container":"${target}","file":"${file}"}]
             }
+          EOF
           fi
         env:
           target: ${{ inputs.target }}
