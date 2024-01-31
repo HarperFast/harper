@@ -83,11 +83,11 @@ jobs:
   meta:
     runs-on: ubuntu-latest
     outputs:
-      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      container: ${{ steps.set-matrix-container.outputs.container }}
     steps:
       - id: set-matrix-container
         run: |
-          if [[ ${target} == 'public' ]]; then
+          if [[ "${target}" == 'public' ]]; then
             cat <<EOF >> $GITHUB_OUTPUT
             container=[
               "harperdb/harperdb",
@@ -149,7 +149,8 @@ jobs:
           images: ${{ matrix.container }}
           # generate Docker tags based on the following events/attributes
           tags: |
-            type=raw,value=${{ steps.getNode.outputs.HARPERDB_VERSION }}${{ matrix.container == 'harperdb/private' && '-'github.run_number' }}
+            type=raw,enable=${{ matrix.container != 'harperdb/private'}},value=${{ needs.build.outputs.harperdbVersion }}
+            type=raw,enable=${{ matrix.container == 'harperdb/private'}},value=${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}
             type=raw,value=latest,enable=${{ inputs.latest }}
 
       # build and publish containers
@@ -165,15 +166,12 @@ jobs:
           push: ${{ inputs.push }}
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |
-            NODE_VERSION=${{ env.NDDE_VERSION }}
-            HARPERDB_VERSION=${{ env.HARPERDB_VERSION }}
+            NODE_VERSION=${{ needs.build.outputs.nodeVersion }}
+            HARPERDB_VERSION=${{ needs.build.outputs.harperdbVersion }}
             VCS_REF=`git rev-parse HEAD`
             BUILD_DATE=`date -u +%FT%T
           cache-from: type=gha
           cache-to: type=gha,mode=max
-        env:
-          HARPERDB_VERSION: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
-          NODE_VERSION: ${{ steps.getNode.outputs.NODE_VERSION }}
 
       - name: "Create container tar"
         id: build-image-tar
@@ -185,22 +183,19 @@ jobs:
           file: ${{ inputs.file }}
           push: false
           tags: ${{ steps.meta.outputs.tags }}
-          outputs: type-docker,dest=docker-harperdb-${{ steps.getNode.outputs.HARPERDB_VERSION }}-${{ github.run_number }}.tar
+          outputs: type-docker,dest=docker-harperdb-${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}.tar
           build-args: |
-            NODE_VERSION=${{ env.NDDE_VERSION }}
-            HARPERDB_VERSION=${{ env.HARPERDB_VERSION }}
+            NODE_VERSION=${{ needs.build.outputs.nodeVersion }}
+            HARPERDB_VERSION=${{ needs.build.outputs.harperdbVersion }}
             VCS_REF=`git rev-parse HEAD`
             BUILD_DATE=`date -u +%FT%T
           cache-from: type=gha
           cache-to: type=gha,mode=max
-        env:
-          HARPERDB_VERSION: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
-          NODE_VERSION: ${{ steps.getNode.outputs.NODE_VERSION }}
 
       - name: 'Upload Artifact'
         if: matrix.container == 'tar'
         uses: actions/upload-artifact@v4
         with:
-          name: docker-harperdb-${{ steps.getNode.outputs.HARPERDB_VERSION }}-${{ github.run_number }}.tar
-          path: docker-harperdb-${{ steps.getNode.outputs.HARPERDB_VERSION }}-${{ github.run_number }}.tar
+          name: docker-harperdb-${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}.tar
+          path: docker-harperdb-${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}.tar
           retention-days: 1
