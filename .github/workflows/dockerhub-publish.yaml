@@ -80,7 +80,7 @@ jobs:
   meta:
     runs-on: ubuntu-latest
     outputs:
-      container: ${{ steps.set-matrix.outputs.container }}
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
       - id: set-matrix
         run: |
@@ -115,15 +115,7 @@ jobs:
       - getLicenses
       - meta
     strategy:
-      matrix:
-        container: ${{ fromJSON(needs.meta.outputs.matrix) }}
-        include:
-          - container: 'harperdb/harperdb'
-            file: ./utility/Docker/Dockerfile
-          - container: 'harperdb/openshift'
-            file: ./utility/Docker/Dockerfile-openshift
-          - container: 'harperdb/private'
-            file: ${{ inputs.file }}
+      matrix: ${{ fromJSON(needs.meta.outputs.matrix) }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
