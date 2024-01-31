@@ -5,7 +5,7 @@ jobs:
   publishProductionStudio:
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Write Studio config file
       run: |
         #!/bin/bash
@@ -56,7 +56,7 @@ jobs:
         }
         EOF
     - name: Setup Node
-      uses: actions/setup-node@v3
+      uses: actions/setup-node@v4
       with:
         node-version: 18.16.0
     - name: Build Studio

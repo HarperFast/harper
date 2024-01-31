@@ -54,16 +54,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: "Get Latest License Files"
       run: .github/scripts/get-license-files.sh
     - name: "Get HarperDB/harperdb_open_source_license_generator.git"
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4
       with:
         repository: "HarperDB/harperdb_open_source_license_generator.git"
         path: "harperdb_open_source_license_generator"
         ref: "master"
-    - uses: actions/setup-node@v3
+    - uses: actions/setup-node@v4
     - name: "Generate license file"
       env:
         project_path: "."
@@ -76,7 +76,7 @@ jobs:
         cd -
         node harperdb_open_source_license_generator/index.js
     - name: 'Upload Artifact'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: "licenses"
         path: "utility/Docker/licenses/"

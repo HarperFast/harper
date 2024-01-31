@@ -26,12 +26,12 @@ jobs:
       - build
     timeout-minutes: 20
     steps:
-    - uses: actions/checkout@v3
-    - uses: actions/download-artifact@v3
+    - uses: actions/checkout@v4
+    - uses: actions/download-artifact@v4
       with:
         name: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}.tar
         path: utility/Docker
-    - uses: actions/setup-node@v3
+    - uses: actions/setup-node@v4
       with:
         node-version: ${{ needs.build.outputs.nodeVersion }}
     - name: Run Tests
@@ -77,7 +77,7 @@ jobs:
         cp integrationTests/newman/report.html artifact
         cp integrationTests/newman/extra_report.html artifact
     - name: 'Upload Artifact'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: logs
         path: artifact

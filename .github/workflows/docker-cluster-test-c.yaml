@@ -39,8 +39,8 @@ jobs:
       - createInstances
     timeout-minutes: 25
     steps:
-    - uses: actions/checkout@v3
-    - uses: actions/download-artifact@v3
+    - uses: actions/checkout@v4
+    - uses: actions/download-artifact@v4
       with:
         name: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}.tar
         path: utility/Docker
@@ -67,7 +67,7 @@ jobs:
         public_dns_name="${public_dns_names[0]}"
         scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/artifact" "logs-artifact/"
     - name: 'Upload Artifact'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: logs

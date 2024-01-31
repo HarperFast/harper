@@ -14,7 +14,7 @@ jobs:
       nodeVersion: ${{ steps.getNode.outputs.NODE_VERSION }}
       harperdbVersion: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - uses: actions/setup-node@v4
       with:
         node-version: 18
@@ -32,8 +32,8 @@ jobs:
     needs: getNodeVersion
     timeout-minutes: 10
     steps:
-    - uses: actions/checkout@v3
-    - uses: actions/setup-node@v3
+    - uses: actions/checkout@v4
+    - uses: actions/setup-node@v4
       with:
         node-version: ${{ needs.getNodeVersion.outputs.nodeVersion }}
 
@@ -42,7 +42,7 @@ jobs:
         #!/bin/bash
         ./utility/devops/build/build.sh
     - name: 'Upload Artifact'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: harperdb-${{ needs.getNodeVersion.outputs.harperdbVersion }}.tgz
         path: harperdb-${{ needs.getNodeVersion.outputs.harperdbVersion }}.tgz
