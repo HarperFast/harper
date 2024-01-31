@@ -99,6 +99,9 @@ jobs:
       latest: ${{ inputs.latest }}
       platforms: ${{ inputs.platforms }}
       push: ${{ inputs.push }}
+    secrets:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
 
   publish_public_containers:
     if: inputs.container == 'public'
@@ -124,3 +127,6 @@ jobs:
       latest: ${{ inputs.latest }}
       platforms: ${{ inputs.platforms }}
       push: ${{ inputs.push }}
+    secrets:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
