@@ -1192,10 +1192,6 @@ export function makeTable(options) {
 					post_ordering = sort;
 				}
 			}
-			// we mark the read transaction as in use (necessary for a stable read
-			// transaction, and we really don't care if the
-			// counts are done in the same read transaction because they are just estimates) until the search
-			// results have been iterated and finished.
 			const select = request.select;
 			if (conditions.length === 0) {
 				conditions = [{ attribute: primary_key, comparator: 'greater_than', value: true }];
@@ -1208,6 +1204,10 @@ export function makeTable(options) {
 					selectApplied: Boolean(select),
 				};
 			}
+			// we mark the read transaction as in use (necessary for a stable read
+			// transaction, and we really don't care if the
+			// counts are done in the same read transaction because they are just estimates) until the search
+			// results have been iterated and finished.
 			const read_txn = txn.useReadTxn();
 			let entries = executeConditions(
 				conditions,
