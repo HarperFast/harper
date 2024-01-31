@@ -80,22 +80,33 @@ jobs:
   meta:
     runs-on: ubuntu-latest
     outputs:
-      container: ${{ steps.set-matrix-container.outputs.container }}
+      container: ${{ steps.set-matrix.outputs.container }}
     steps:
-      - id: set-matrix-container
+      - id: set-matrix
         run: |
           if [[ "${target}" == 'public' ]]; then
             cat <<EOF >> $GITHUB_OUTPUT
-            container=[
-              "harperdb/harperdb",
-              "harperdb/harperdb-openshift",
-            ]
+            matrix={
+              "container":[
+                "harperdb/harperdb",
+                "harperdb/harperdb-openshift"
+              ],
+              "include":[
+                {"container":"harperdb/harperdb","file":"./utility/Docker/Dockerfile"},
+                {"container":"harperdb/harperdb-openshift","file":"./utility/Docker/Dockerfile-openshift"}
+              ]
+            }
           EOF
           else
-            echo "container=[\"${target}\"]" >> $GITHUB_OUTPUT
+            cat <<EOF >> $GITHUB_OUTPUT
+            matrix={
+              "container":["${target}"],
+              "include":[{"container":"${target}","file":"${file}"}]
+            }
           fi
         env:
-          target: "${{ inputs.target }}"
+          target: ${{ inputs.target }}
+          file: ${{ inputs.file }}
 
   target_public:
     needs:
@@ -104,12 +115,10 @@ jobs:
       - meta
     strategy:
       matrix:
-        container: ${{ fromJSON(needs.meta.outputs.container) }}
+        container: ${{ fromJSON(needs.meta.outputs.matrix) }}
         include:
           - container: 'harperdb/harperdb'
             file: ./utility/Docker/Dockerfile
-          - container: 'harperdb/fabric'
-            file: ./utility/Docker/Dockerfile-fabric
           - container: 'harperdb/openshift'
             file: ./utility/Docker/Dockerfile-openshift
           - container: 'harperdb/private'
