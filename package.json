@@ -152,6 +152,7 @@
     "mock-require": "3.0.3",
     "mock-stdin": "1.0.0",
     "mqtt": "~4.3.7",
+    "newman": "5.3.2",
     "node-fetch": "2.6.7",
     "nyc": "15.1.0",
     "prettier": "2.8.4",
