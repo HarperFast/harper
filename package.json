@@ -152,7 +152,7 @@
     "mock-require": "3.0.3",
     "mock-stdin": "1.0.0",
     "mqtt": "~4.3.7",
-    "newman": "5.3.2",
+    "newman": "6.1.0",
     "newman-reporter-html": "1.0.5",
     "newman-reporter-htmlextra": "^1.22.11",
     "newman-reporter-teamcity": "^0.1.12",
@@ -170,9 +170,6 @@
   "overrides": {
     "eslint-plugin-radar": {
       "eslint": "8.22.0"
-    },
-    "newman-reporter-html": {
-      "newman": "5.3.2"
     },
     "alasql": {
       "xlsx": "0.18.5"
