@@ -14,8 +14,15 @@ on:
   workflow_dispatch:
 
 jobs:
+  ####################
+  #  Build HarperDB
+  ####################
   build:
     uses: ./.github/workflows/build.yaml
+
+  ##########################
+  #  Build Container Image
+  ##########################
   dockerBuild:
     needs:
       - build
@@ -23,6 +30,14 @@ jobs:
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       nodeVersion: ${{ needs.build.outputs.nodeVersion }}
+      container: 'tar'
+      file: 'utility/Docker/Dockerfile'
+      platforms: 'linux/amd64'
+      get_dummy_licenses: true
+
+  #############
+  #  Run Tests
+  #############
   runTests:
     runs-on: ubuntu-latest
     needs:
@@ -84,6 +99,10 @@ jobs:
         name: logs
         path: artifact
         retention-days: 1
+
+  ######################
+  #  Send Slack Message
+  ######################
   sendSlackMessage:
     uses: ./.github/workflows/post-to-slack-channel.yaml
     if: ${{ failure() && (github.event_name == 'schedule' || github.event_name == 'push') }}
