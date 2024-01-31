@@ -41,7 +41,7 @@ export function transaction<T>(
 	return onComplete(result);
 	// when the transaction function completes, run this to commit the transaction
 	function onComplete(result) {
-		const committed = transaction.commit(options);
+		const committed = transaction.commit({ letItLinger: options?.letItLinger });
 		if (committed.then) {
 			return committed.then(() => {
 				return result;
