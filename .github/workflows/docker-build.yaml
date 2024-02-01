@@ -134,8 +134,8 @@ jobs:
             HARPERDB_VERSION=${{ inputs.harperdbVersion }}
             VCS_REF=`git rev-parse HEAD`
             BUILD_DATE=`date -u +%FT%T
-          #cache-from: type=gha
-          #cache-to: type=gha,mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: "Create container tarball"
         id: build-image-tar
@@ -147,14 +147,14 @@ jobs:
           file: ${{ inputs.file }}
           push: false
           tags: ${{ steps.meta.outputs.tags }}
-          outputs: type-docker,dest=docker-harperdb-${{ inputs.harperdbVersion }}-${{ github.run_number }}.tar
+          outputs: type=docker,dest=docker-harperdb-${{ inputs.harperdbVersion }}-${{ github.run_number }}.tar
           build-args: |
             NODE_VERSION=${{ inputs.nodeVersion }}
             HARPERDB_VERSION=${{ inputs.harperdbVersion }}
             VCS_REF=`git rev-parse HEAD`
             BUILD_DATE=`date -u +%FT%T
-          #cache-from: type=gha
-          #cache-to: type=gha,mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: 'Upload Artifact'
         if: inputs.container == 'tar'
