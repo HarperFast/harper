@@ -49,6 +49,11 @@ on:
         default: false
         required: false
         type: boolean
+      artifact_output:
+        description: 'name of the output when an artifact is created. used only with tar'
+        default: ''
+        required: false
+        type: string
     secrets:
       DOCKER_USERNAME:
         required: false
