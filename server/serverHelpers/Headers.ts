@@ -1,7 +1,7 @@
 /**
  * Fast implementation of standard Headers
  */
-export class Headers extends Map<string, { name: string; value: string }> {
+export class Headers extends Map<string, string | string[]> {
 	set(name, value) {
 		if (typeof name !== 'string') name = '' + name;
 		if (typeof value !== 'string') value = '' + value;
@@ -31,11 +31,34 @@ export class Headers extends Map<string, { name: string; value: string }> {
 			if (comma_delimited)
 				value = (typeof existing_value === 'string' ? existing_value : existing_value.join(', ')) + ', ' + value;
 			else if (typeof existing_value === 'string') value = [existing_value, value];
-			else existing_value.push(value);
+			else {
+				existing_value.push(value);
+				return;
+			}
 		}
 		return super.set(lower_name, [name, value]);
 	}
 	[Symbol.iterator]() {
 		return super.values()[Symbol.iterator]();
+	}
+}
+
+export function appendHeader(headers, name, value, comma_delimited) {
+	if (headers.append) {
+		headers.append(name, value, comma_delimited);
+	} else if (headers.set) {
+		const existing_value = headers.get(name);
+		if (existing_value) {
+			if (comma_delimited)
+				value = (typeof existing_value === 'string' ? existing_value : existing_value.join(', ')) + ', ' + value;
+			else if (typeof existing_value === 'string') value = [existing_value, value];
+			else {
+				existing_value.push(value);
+				return;
+			}
+		}
+		return headers.set(name, value);
+	} else {
+		headers[name] = (headers[name] ? headers[name] + ', ' : '') + value;
 	}
 }

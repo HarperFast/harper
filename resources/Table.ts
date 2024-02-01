@@ -37,6 +37,7 @@ import { autoCast, convertToMS } from '../utility/common_utils';
 import { getUpdateRecord, PENDING_LOCAL_TIME } from './RecordEncoder';
 import { recordAction, recordActionBinary } from './analytics';
 import { rebuildUpdateBefore } from './crdt';
+import { appendHeader } from '../server/serverHelpers/Headers';
 
 const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
@@ -2521,9 +2522,8 @@ export function makeTable(options) {
 						if (!version) version = getNextMonotonicTime();
 						const resolve_duration = performance.now() - start;
 						recordAction(resolve_duration, 'cache-resolution', table_name);
-						if (response_headers) {
-							response_headers.append('Server-Timing', `cache-resolve;dur=${resolve_duration.toFixed(2)}`);
-						}
+						if (response_headers)
+							appendHeader(response_headers, 'Server-Timing', `cache-resolve;dur=${resolve_duration.toFixed(2)}`, true);
 						txn.timestamp = version;
 						if (expiration_ms && !source_context.expiresAt) source_context.expiresAt = Date.now() + expiration_ms;
 						if (updated_record) {

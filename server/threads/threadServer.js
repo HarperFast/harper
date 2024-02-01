@@ -12,7 +12,7 @@ const { server } = require('../Server');
 const { WebSocketServer } = require('ws');
 const { createServer: createSecureSocketServer } = require('tls');
 const { getTicketKeys, restartNumber, getWorkerIndex } = require('./manageThreads');
-const { Headers } = require('../serverHelpers/Headers');
+const { Headers, appendHeader } = require('../serverHelpers/Headers');
 const { recordAction, recordActionBinary } = require('../../resources/analytics');
 const { Request, createReuseportFd } = require('../serverHelpers/Request');
 const { checkMemoryLimit } = require('../../utility/registration/hdb_license');
@@ -430,13 +430,11 @@ function getHTTPServer(port, secure, is_operations_server) {
 						else headers.set('Content-Length', body.length);
 						sent_body = true;
 					}
-					if (headers.append) {
-						let server_timing = `hdb;dur=${execution_time.toFixed(2)}`;
-						if (response.wasCacheMiss) {
-							server_timing += ', miss';
-						}
-						headers.append('Server-Timing', server_timing, true);
+					let server_timing = `hdb;dur=${execution_time.toFixed(2)}`;
+					if (response.wasCacheMiss) {
+						server_timing += ', miss';
 					}
+					appendHeader(headers, 'Server-Timing', server_timing, true);
 					node_response.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
 					if (sent_body) node_response.end(body);
 				}
