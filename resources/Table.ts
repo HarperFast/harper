@@ -1814,7 +1814,9 @@ export function makeTable(options) {
 					if (attribute.properties) {
 						if (typeof value !== 'object') {
 							(validation_errors || (validation_errors = [])).push(
-								`Property ${name} must be an object${attribute.type ? ' (' + attribute.type + ')' : ''}`
+								`Value ${stringify(value)} in property ${name} must be an object${
+									attribute.type ? ' (' + attribute.type + ')' : ''
+								}`
 							);
 						}
 						const properties = attribute.properties;
@@ -1828,18 +1830,22 @@ export function makeTable(options) {
 							case 'Int':
 								if (typeof value !== 'number' || value >> 0 !== value)
 									(validation_errors || (validation_errors = [])).push(
-										`Property ${name} must be an integer (from -2147483648 to 2147483647)`
+										`Value ${stringify(value)} in property ${name} must be an integer (from -2147483648 to 2147483647)`
 									);
 								break;
 							case 'Long':
 								if (typeof value !== 'number' || !(Math.floor(value) === value && Math.abs(value) <= 9007199254740992))
 									(validation_errors || (validation_errors = [])).push(
-										`Property ${name} must be an integer (from -9007199254740992 to 9007199254740992)`
+										`Value ${stringify(
+											value
+										)} in property ${name} must be an integer (from -9007199254740992 to 9007199254740992)`
 									);
 								break;
 							case 'Float':
 								if (typeof value !== 'number')
-									(validation_errors || (validation_errors = [])).push(`Property ${name} must be a number`);
+									(validation_errors || (validation_errors = [])).push(
+										`Value ${stringify(value)} in property ${name} must be a number`
+									);
 								break;
 							case 'ID':
 								if (
@@ -1849,34 +1855,43 @@ export function makeTable(options) {
 									)
 								)
 									(validation_errors || (validation_errors = [])).push(
-										`Property ${name} must be a string, or an array of strings`
+										`Value ${stringify(value)} in property ${name} must be a string, or an array of strings`
 									);
 								break;
 							case 'String':
 								if (typeof value !== 'string')
-									(validation_errors || (validation_errors = [])).push(`Property ${name} must be a string`);
+									(validation_errors || (validation_errors = [])).push(
+										`Value ${stringify(value)} in property ${name} must be a string`
+									);
 								break;
 							case 'Boolean':
 								if (typeof value !== 'boolean')
-									(validation_errors || (validation_errors = [])).push(`Property ${name} must be a boolean`);
+									(validation_errors || (validation_errors = [])).push(
+										`Value ${stringify(value)} in property ${name} must be a boolean`
+									);
 								break;
 							case 'Date':
 								if (!(value instanceof Date)) {
 									if (typeof value === 'string' || typeof value === 'number') return new Date(value);
-									else (validation_errors || (validation_errors = [])).push(`Property ${name} must be a Date`);
+									else
+										(validation_errors || (validation_errors = [])).push(
+											`Value ${stringify(value)} in property ${name} must be a Date`
+										);
 								}
 								break;
 							case 'BigInt':
 								if (typeof value !== 'bigint') {
 									// do coercion because otherwise it is rather difficult to get numbers to consistently be bigints
 									if (typeof value === 'string' || typeof value === 'number') return BigInt(value);
-									(validation_errors || (validation_errors = [])).push(`Property ${name} must be a bigint`);
+									(validation_errors || (validation_errors = [])).push(
+										`Value ${stringify(value)} in property ${name} must be a bigint`
+									);
 								}
 								break;
 							case 'Bytes':
 								if (!(value instanceof Uint8Array))
 									(validation_errors || (validation_errors = [])).push(
-										`Property ${name} must be a Buffer or Uint8Array`
+										`Value ${stringify(value)} in property ${name} must be a Buffer or Uint8Array`
 									);
 								break;
 							case 'array':
@@ -1890,7 +1905,7 @@ export function makeTable(options) {
 									}
 								} else
 									(validation_errors || (validation_errors = [])).push(
-										`Property ${name} must be a Buffer or Uint8Array`
+										`Value ${stringify(value)} in property ${name} must be a Buffer or Uint8Array`
 									);
 
 								break;
@@ -2836,4 +2851,12 @@ export function updateResource(resource, entry) {
 // for filtering
 function exists(value) {
 	return value != null;
+}
+
+function stringify(value) {
+	try {
+		return JSON.stringify(value);
+	} catch (err) {
+		return value;
+	}
 }
