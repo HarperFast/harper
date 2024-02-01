@@ -8,6 +8,13 @@ name: "Docker Build"
 #
 #  licenses                                    -- either built from HarperDB/harperdb_open_source_license_generator.git
 #                                                 or setting 'get_dummy_licenses' to 'true'
+#
+# Outputs
+#---------------
+# Artifact for container == 'tar' --
+#   docker-harperdb_${{ inputs.harperdbVersion }}-${{ github.run_number }}${{ contains(inputs.file, 'openshift') && '-openshift' || '' }}${{ inputs.platform == 'linux/arm64' && '-arm64' || '-amd64' }}.tar
+#   ex: docker-harperdb_4.3.0-beta.4-934-amd64.tar
+#
 #################################################################################################################################
 
 on:
@@ -49,11 +56,7 @@ on:
         default: false
         required: false
         type: boolean
-      artifact_output:
-        description: 'name of the output when an artifact is created. used only with tar'
-        default: ''
-        required: false
-        type: string
+
     secrets:
       DOCKER_USERNAME:
         required: false
