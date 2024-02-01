@@ -27,6 +27,16 @@ jobs:
     needs:
       - build
     uses: ./.github/workflows/docker-build.yaml
+    strategy:
+      matrix:
+        platform:
+          - 'linux/amd64'
+          - 'linux/arm64'
+        include:
+          - platform: 'linux/amd64'
+            instance_type: 'c7i.2xlarge'
+          - platform: 'linux/arm64'
+            instance_type: 'c7gn.2xlarge'
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       nodeVersion: ${{ needs.build.outputs.nodeVersion }}
@@ -44,6 +54,16 @@ jobs:
       - dockerBuild
       - build
     timeout-minutes: 20
+    strategy:
+      matrix:
+        platform:
+          - 'linux/amd64'
+          - 'linux/arm64'
+        include:
+          - platform: 'linux/amd64'
+            instance_type: 'c7i.2xlarge'
+          - platform: 'linux/arm64'
+            instance_type: 'c7gn.2xlarge'
     steps:
     - uses: actions/checkout@v4
     - uses: actions/download-artifact@v4
