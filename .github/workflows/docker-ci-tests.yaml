@@ -48,7 +48,7 @@ jobs:
     - uses: actions/checkout@v4
     - uses: actions/download-artifact@v4
       with:
-        name: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}${{ contains(inputs.file, 'openshift') && '-openshift' }}.tar
+        name: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}${{ contains(inputs.file, 'openshift') && '-openshift' || '' }}.tar
         path: utility/Docker
     - uses: actions/setup-node@v4
       with:
