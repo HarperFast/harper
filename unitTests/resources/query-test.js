@@ -799,7 +799,7 @@ describe('Querying through Resource API', () => {
 		});
 	});
 	describe('Query optimizations', function () {
-		let Bigger;
+		let Bigger, BiggerRelated;
 		before(async function () {
 			Bigger = table({
 				table: 'Bigger',
@@ -826,6 +826,21 @@ describe('Querying through Resource API', () => {
 					},
 				],
 			});
+			BiggerRelated = table({
+				table: 'BiggerRelated',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: '20values', type: 'Int', indexed: true },
+					{ name: 'biggerId', indexed: true },
+					{
+						name: 'bigger',
+						type: 'Bigger',
+						relationship: { from: 'biggerId' },
+						definition: { tableClass: Bigger },
+					},
+				],
+			});
 			let last;
 			for (let i = 0; i < 1000; i++) {
 				last = Bigger.put({
@@ -837,6 +852,13 @@ describe('Querying through Resource API', () => {
 					'100values': random(100),
 					'relatedId': random(5),
 					'relatedName': 'related name ' + (i % 7),
+				});
+			}
+			for (let i = 0; i < 100; i++) {
+				last = BiggerRelated.put({
+					'id': i,
+					'20values': random(20),
+					'biggerId': [0, random(256)],
 				});
 			}
 			await last;
@@ -1022,6 +1044,28 @@ describe('Querying through Resource API', () => {
 				assert.equal(result.relatedId, 2);
 			}
 			assert(RelatedTable.primaryStore.readCount - start_related_count < 3);
+			assert(Bigger.primaryStore.readCount - start_read_count < 20);
+		});
+		it('Combine condition with larger join', async function () {
+			let results = [];
+			let start_read_count = Bigger.primaryStore.readCount;
+			let start_related_count = BiggerRelated.primaryStore.readCount;
+			for await (let record of BiggerRelated.search({
+				conditions: [
+					{ attribute: '20values', value: 12 },
+					{ attribute: ['bigger', '20values'], value: 12 },
+				],
+				select: ['*', 'bigger'],
+			})) {
+				results.push(record);
+			}
+			//results = results.filter((r) => r.bigger['20values'] === 12);
+			assert.equal(results.length, 3);
+			for (let result of results) {
+				assert.equal(result['20values'], 12);
+				assert.equal(result.bigger['20values'], 12);
+			}
+			assert(BiggerRelated.primaryStore.readCount - start_related_count < 20);
 			assert(Bigger.primaryStore.readCount - start_read_count < 20);
 		});
 	});

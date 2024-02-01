@@ -583,9 +583,9 @@ export function filterByType(search_condition, Table, context, filtered, is_prim
 										value: id,
 									};
 								}
-								// indicate that we can use an index for this
-								sub_id_filter = attributeComparator(resolver.from, next_filter.idFilter, true);
-							} else sub_id_filter = attributeComparator(resolver.from, next_filter.idFilter, false);
+								// indicate that we can use an index for this. also we indicate that we allow object matching to allow array ids to directly tested
+								sub_id_filter = attributeComparator(resolver.from, next_filter.idFilter, true, true);
+							} else sub_id_filter = attributeComparator(resolver.from, next_filter.idFilter, false, true);
 						}
 						const matches = sub_id_filter(record);
 						if (sub_id_filter.idFilter) recordFilter.idFilter = sub_id_filter.idFilter;
@@ -657,7 +657,7 @@ export function filterByType(search_condition, Table, context, filtered, is_prim
 			throw new ClientError(`Unknown query comparator "${comparator}"`);
 	}
 	/** Create a comparison function that can take the record and check the attribute's value with the filter function */
-	function attributeComparator(attribute, filter, can_use_index?) {
+	function attributeComparator(attribute, filter, can_use_index?, allow_object_matching?) {
 		let threshold_remaining_misses;
 		can_use_index =
 			can_use_index && // is it a comparator that makes sense to use index
@@ -676,7 +676,7 @@ export function filterByType(search_condition, Table, context, filtered, is_prim
 		function recordFilter(record) {
 			const value = record[attribute];
 			let matches;
-			if (typeof value !== 'object' || !value) matches = filter(value);
+			if (typeof value !== 'object' || !value || allow_object_matching) matches = filter(value);
 			else if (Array.isArray(value)) matches = value.some(filter);
 			else if (value instanceof Date) matches = filter(value.getTime());
 			//else matches = false;
@@ -751,9 +751,14 @@ export function estimateCondition(table) {
 							attribute: attribute_name.length > 2 ? attribute_name.slice(1) : attribute_name[1],
 							comparator: 'equals',
 						});
+						const from_index = table.indices[attribute.relationship.from];
+						// the estimated count is sum of the estimate of the related table and the estimate of the index
 						condition.estimated_count =
-							(estimate * estimatedEntryCount(table.indices[attribute.relationship.from] || table.primaryStore)) /
-							(estimatedEntryCount(related_table.primaryStore) || 1);
+							estimate +
+							(from_index
+								? (estimate * estimatedEntryCount(table.indices[attribute.relationship.from])) /
+								  (estimatedEntryCount(related_table.primaryStore) || 1)
+								: estimate);
 					} else {
 						// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
 						const index = table.indices[attribute_name];
