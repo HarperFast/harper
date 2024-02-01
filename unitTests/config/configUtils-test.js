@@ -48,7 +48,8 @@ const TEST_ARGS = {
 	TLS_PRIVATEKEY: TEST_PRIVATE_KEY,
 	HTTP_TIMEOUT: '119999',
 	COMPONENTSROOT: path.join(DIRNAME, 'test_custom_functions'),
-	THREADS: '4',
+	THREADS_COUNT: '4',
+	THREADS_DEBUG: false,
 	HTTP_REMOTE_ADDRESS_AFFINITY: false,
 	LOCALSTUDIO_ENABLED: true,
 	LOGGING_FILE: false,
@@ -380,7 +381,10 @@ describe('Test configUtils module', () => {
 					headersTimeout: 59999,
 					mtls: false,
 				},
-				threads: 4,
+				threads: {
+					count: 4,
+					debug: false,
+				},
 				rootPath: path.join(DIRNAME, '/yaml'),
 				storage: {
 					writeAsync: true,
@@ -462,7 +466,8 @@ describe('Test configUtils module', () => {
 				http_port: 9936,
 				http_secureport: null,
 				http_mtls: false,
-				threads: 4,
+				threads_count: 4,
+				threads_debug: false,
 				http_timeout: 119999,
 				http_headerstimeout: 59999,
 				rootpath: path.join(DIRNAME, '/yaml'),
@@ -544,7 +549,8 @@ describe('Test configUtils module', () => {
 			tls_certificate: null,
 			tls_certificateauthority: null,
 			tls_privatekey: null,
-			threads: null,
+			threads_count: null,
+			threads_debug: false,
 			localstudio_enabled: false,
 			logging_auditauthevents_logfailed: false,
 			logging_auditauthevents_logsuccessful: false,
@@ -809,7 +815,10 @@ describe('Test configUtils module', () => {
 							path: 'path/for/rotated/logs',
 						},
 					},
-					threads: 12,
+					threads: {
+						count: 12,
+						debug: false,
+					},
 					http: {
 						remoteAddressAffinity: false,
 					},
@@ -838,7 +847,7 @@ describe('Test configUtils module', () => {
 
 			expect(error).to.not.exist;
 			expect(config_validator_stub.called).to.be.true;
-			expect(set_in_stub.firstCall.args[0]).to.eql(['threads']);
+			expect(set_in_stub.firstCall.args[0]).to.eql(['threads', 'count']);
 			expect(set_in_stub.firstCall.args[1]).to.equal(12);
 			expect(set_in_stub.secondCall.args[0]).to.eql(['componentsRoot']);
 			expect(set_in_stub.args[2][0]).to.eql(['logging', 'root']);
@@ -1384,7 +1393,7 @@ describe('Test configUtils module', () => {
 			logging_level: 'error',
 			logging_root: path.join(__dirname, '../../log'),
 			clustering_enabled: false,
-			threads: 12,
+			threads_count: 12,
 			operationsapi_network_timeout: 120000,
 			operationsapi_network_keepalivetimeout: 5000,
 			operationsapi_network_headerstimeout: 60000,

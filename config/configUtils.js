@@ -310,7 +310,7 @@ function validateConfig(config_doc) {
 	// Config might have some legacy values that will be modified by validator. We need to set old to new here before
 	// validator sets any defaults
 	config_json.componentsRoot = config_json.componentsRoot ?? config_json?.customFunctions?.root;
-	config_json.threads = config_json.threads ?? config_json?.http?.threads;
+	if (config_json?.http?.threads) config_json.threads = config_json?.http?.threads;
 
 	const validation = configValidator(config_json);
 	if (validation.error) {
@@ -319,7 +319,9 @@ function validateConfig(config_doc) {
 
 	// These parameters can be set by the validator if they arent provided by user,
 	// for this reason we need to update the config yaml doc after the validator has run.
-	config_doc.setIn(['threads'], validation.value.threads);
+	if (typeof validation.value.threads === 'object')
+		config_doc.setIn(['threads', 'count'], validation.value.threads.count);
+	else config_doc.setIn(['threads'], validation.value.threads);
 	config_doc.setIn(['componentsRoot'], validation.value.componentsRoot); // TODO: check this works with old config
 	config_doc.setIn(['logging', 'root'], validation.value.logging.root);
 	config_doc.setIn(['storage', 'path'], validation.value.storage.path);

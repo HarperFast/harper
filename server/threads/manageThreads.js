@@ -108,7 +108,7 @@ function startWorker(path, options = {}) {
 	// and lower than total memory
 	available_memory = Math.min(available_memory, totalmem(), 20000 * MB);
 	const max_old_memory =
-		env_mgr.get(hdb_terms.CONFIG_PARAMS.MAXHEAPMEMORY) ??
+		env_mgr.get(hdb_terms.CONFIG_PARAMS.THREADS_MAXHEAPMEMORY) ??
 		Math.max(Math.floor(available_memory / MB / (10 + (options.threadCount || 1) / 4)), 512);
 	// Max young memory space (semi-space for scavenger) is 1/128 of max memory (limited to 16-64). For most of our m5
 	// machines this will be 64MB (less for t3's). This is based on recommendations from:

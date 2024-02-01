@@ -538,9 +538,7 @@ async function isServiceRegistered(service) {
 async function reloadStopStart(service_name) {
 	// Check to see if there has been an update to the max process setting value. If there has been we need to stop the service and start it again.
 	const setting_process_count =
-		service_name === hdb_terms.PROCESS_DESCRIPTORS.HDB
-			? env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES)
-			: env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES);
+		env_mangr.get(hdb_terms.CONFIG_PARAMS.THREADS_COUNT) ?? env_mangr.get(hdb_terms.CONFIG_PARAMS.THREADS);
 	const current_process = await describe(service_name);
 	const current_process_count = hdb_utils.isEmptyOrZeroLength(current_process) ? 0 : current_process.length;
 	if (setting_process_count !== current_process_count) {

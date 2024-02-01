@@ -530,7 +530,7 @@ describe('Test processManagement utilityFunctions module', () => {
 		it('Test service is stopped and started if there is a change in max process setting', async () => {
 			const env_stub = sandbox.stub();
 			const env_rw = utility_functions.__set__('env_mangr.initSync', env_stub);
-			env_mngr.setProperty('THREADS', 2);
+			env_mngr.setProperty('THREADS_COUNT', 2);
 			await utility_functions.reloadStopStart('HarperDB');
 			env_rw();
 			env_mngr.initTestEnvironment();
@@ -542,7 +542,7 @@ describe('Test processManagement utilityFunctions module', () => {
 			const env_stub = sandbox.stub();
 			const env_rw = utility_functions.__set__('env_mangr.initSync', env_stub);
 			describe_stub.resolves([1, 2]);
-			env_mngr.setProperty('THREADS', 2);
+			env_mngr.setProperty('THREADS_COUNT', 2);
 			await utility_functions.reloadStopStart('Clustering Leaf-7715');
 			env_rw();
 			env_mngr.initTestEnvironment();
@@ -553,7 +553,7 @@ describe('Test processManagement utilityFunctions module', () => {
 			const env_stub = sandbox.stub();
 			const env_rw = utility_functions.__set__('env_mangr.initSync', env_stub);
 			describe_stub.resolves([1, 2]);
-			env_mngr.setProperty('THREADS', 2);
+			env_mngr.setProperty('THREADS_COUNT', 2);
 			await utility_functions.reloadStopStart('HarperDB');
 			env_rw();
 			env_mngr.initTestEnvironment();

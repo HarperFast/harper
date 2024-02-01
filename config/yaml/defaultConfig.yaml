@@ -10,7 +10,9 @@ http:
   securePort: null
   mtls: false
   timeout: 120000
-threads: null
+threads:
+  count: null
+  debug: false
 authentication:
   cacheTTL: 30000
   enableSessions: true

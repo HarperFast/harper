@@ -34,7 +34,15 @@ tls.createSecureContext = function (options) {
 	return ctx;
 };
 
-if (process.env.DEV_MODE) {
+const debug_threads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
+if (debug_threads) {
+	const port = (typeof debug_threads === 'number' ? debug_threads : 9229) + (getWorkerIndex() ?? -1) + 1;
+	try {
+		require('inspector').open(port);
+	} catch (error) {
+		harper_logger.trace(`Could not start debugging on port ${port}, you may already be debugging:`, error.message);
+	}
+} else if (process.env.DEV_MODE) {
 	try {
 		require('inspector').open(9229);
 	} catch (error) {
@@ -42,6 +50,7 @@ if (process.env.DEV_MODE) {
 			harper_logger.trace('Could not start debugging on port 9229, you may already be debugging:', error.message);
 	}
 }
+
 process.on('uncaughtException', (error) => {
 	if (error.code === 'ECONNRESET') return; // that's what network connections do
 	if (error.message === 'write EIO') return; // that means the terminal is closed
