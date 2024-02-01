@@ -210,7 +210,11 @@ async function main(called_by_install = false) {
 			if (!is_scripted) await pm_utils.startClusteringProcesses();
 			await pm_utils.startClusteringThreads();
 		}
-		await startHTTPThreads(process.env.DEV_MODE ? 1 : env.get(hdb_terms.CONFIG_PARAMS.THREADS));
+		await startHTTPThreads(
+			process.env.DEV_MODE
+				? 1
+				: env.get(hdb_terms.CONFIG_PARAMS.THREADS_COUNT) ?? env.get(hdb_terms.CONFIG_PARAMS.THREADS)
+		);
 
 		if (env.get(terms.CONFIG_PARAMS.LOGGING_ROTATION_ENABLED)) await log_rotator();
 		if (!is_scripted) started();

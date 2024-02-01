@@ -203,7 +203,11 @@ function configValidator(config_json) {
 				required: boolean.optional(),
 			})])
 		}).required(),
-		threads: threads_constraints.optional(),
+		threads: Joi.alternatives(threads_constraints.optional(),
+			Joi.object({
+				count: threads_constraints.optional(),
+				debug: boolean.optional(),
+			})),
 		maxHeapMemory: number.min(0).optional(),
 		storage: Joi.object({
 			writeAsync: boolean.required(),
