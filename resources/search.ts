@@ -245,7 +245,9 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 	let filter;
 	if (!index || index.isIndexing || need_full_scan || (value === null && !index.indexNulls)) {
 		// no indexed searching available, need a full scan
-		if (allow_full_scan === false && (need_full_scan || !index))
+		if (allow_full_scan === false && !index)
+			throw new ClientError(`"${attribute_name}" is not indexed, can not search for this attribute`, 404);
+		if (allow_full_scan === false && need_full_scan)
 			throw new ClientError(
 				`Can not use ${
 					comparator || 'equal'
