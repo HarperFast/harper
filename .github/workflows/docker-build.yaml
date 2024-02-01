@@ -147,7 +147,7 @@ jobs:
           file: ${{ inputs.file }}
           push: false
           tags: ${{ steps.meta.outputs.tags }}
-          outputs: type=docker,dest=docker-harperdb-${{ inputs.harperdbVersion }}-${{ github.run_number }}${{ contains(inputs.file, 'openshift') && '-openshift' || '' }}${{ inputs.platform == 'linux/arm64' && '-arm64' || '-amd64' }}.tar
+          outputs: type=docker,dest=docker_harperdb-${{ inputs.harperdbVersion }}-${{ github.run_number }}${{ contains(inputs.file, 'openshift') && '-openshift' || '' }}${{ inputs.platform == 'linux/arm64' && '-arm64' || '-amd64' }}.tar
           build-args: |
             NODE_VERSION=${{ inputs.nodeVersion }}
             HARPERDB_VERSION=${{ inputs.harperdbVersion }}
@@ -160,6 +160,6 @@ jobs:
         if: inputs.container == 'tar'
         uses: actions/upload-artifact@v4
         with:
-          name: docker-harperdb-${{ inputs.harperdbVersion }}-${{ github.run_number }}${{ contains(inputs.file, 'openshift') && '-openshift' || '' }}${{ inputs.platform == 'linux/arm64' && '-arm64' || '-amd64' }}.tar
-          path: docker-harperdb-${{ inputs.harperdbVersion }}-${{ github.run_number }}${{ contains(inputs.file, 'openshift') && '-openshift' || '' }}${{ inputs.platform == 'linux/arm64' && '-arm64' || '-amd64' }}.tar
+          name: docker-harperdb_${{ inputs.harperdbVersion }}-${{ github.run_number }}${{ contains(inputs.file, 'openshift') && '-openshift' || '' }}${{ inputs.platform == 'linux/arm64' && '-arm64' || '-amd64' }}.tar
+          path: docker-harperdb_${{ inputs.harperdbVersion }}-${{ github.run_number }}${{ contains(inputs.file, 'openshift') && '-openshift' || '' }}${{ inputs.platform == 'linux/arm64' && '-arm64' || '-amd64' }}.tar
           retention-days: 1
