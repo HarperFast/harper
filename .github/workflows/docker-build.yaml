@@ -56,27 +56,6 @@ on:
         required: false
 
 jobs:
-  ###########################
-  #  Generate dummy licenses
-  ###########################
-  getDummyLicenses:
-    if: inputs.get_dummy_licenses
-    runs-on: ubuntu-latest
-    timeout-minutes: 35
-    steps:
-      - name: "Generate dummy license file"
-        run: |
-          #!/usr/bin/env bash
-          mkdir -p utility/Docker/licenses/
-          echo "[terms-of-use](https://www.harperdb.io/legal/terms-of-use)" > utility/Docker/licenses/terms-of-use.md
-      - name: 'Upload Artifact'
-        uses: actions/upload-artifact@v4
-        with:
-          name: "licenses"
-          path: "utility/Docker/licenses/"
-          retention-days: 1
-
-
   ##########################
   #  Build Container Images
   ##########################
@@ -99,7 +78,24 @@ jobs:
         with:
           name: harperdb-${{ inputs.harperdbVersion }}.tgz
           path: ./
+
+      # generate dummy license file if needed
+      - name: "Generate dummy license file"
+        if: inputs.get_dummy_licenses
+        run: |
+          #!/usr/bin/env bash
+          mkdir -p utility/Docker/licenses/
+          echo "[terms-of-use](https://www.harperdb.io/legal/terms-of-use)" > utility/Docker/licenses/terms-of-use.md
+#      - name: 'Upload Artifact'
+#        if: inputs.get_dummy_licenses
+#        uses: actions/upload-artifact@v4
+#        with:
+#          name: "licenses"
+#          path: "utility/Docker/licenses"
+#          retention-days: 1
+
       - uses: actions/download-artifact@v4
+        if: inputs.get_dummy_licenses == false
         with:
           name: "licenses"
           path: "utility/Docker/licenses/"

@@ -32,17 +32,12 @@ jobs:
         platform:
           - 'linux/amd64'
           - 'linux/arm64'
-        include:
-          - platform: 'linux/amd64'
-            instance_type: 'c7i.2xlarge'
-          - platform: 'linux/arm64'
-            instance_type: 'c7gn.2xlarge'
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       nodeVersion: ${{ needs.build.outputs.nodeVersion }}
       container: 'tar'
       file: 'utility/Docker/Dockerfile'
-      platforms: 'linux/amd64'
+      platforms: ${{ matrix.platform }}
       get_dummy_licenses: true
 
   #############
