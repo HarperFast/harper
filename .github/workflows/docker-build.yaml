@@ -130,8 +130,9 @@ jobs:
           build-args: |
             NODE_VERSION=${{ inputs.nodeVersion }}
             HARPERDB_VERSION=${{ inputs.harperdbVersion }}
+            HARPERDB_TARBALL=harperdb-${{ inputs.harperdbVersion }}.tgz
             VCS_REF=`git rev-parse HEAD`
-            BUILD_DATE=`date -u +%FT%T
+            BUILD_DATE=`date -u +%FT%T`
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -149,6 +150,7 @@ jobs:
           build-args: |
             NODE_VERSION=${{ inputs.nodeVersion }}
             HARPERDB_VERSION=${{ inputs.harperdbVersion }}
+            HARPERDB_TARBALL=harperdb-${{ inputs.harperdbVersion }}.tgz
             VCS_REF=`git rev-parse HEAD`
             BUILD_DATE=`date -u +%FT%T`
           cache-from: type=gha
