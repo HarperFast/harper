@@ -426,6 +426,23 @@ describe('Querying through Resource API', () => {
 			assert.equal(related.length, 1);
 			assert.equal(related[0].name, 'many-to-many entry 13');
 		});
+		it('Query by join with many-to-many sync iteration', async function () {
+			let results = [];
+			for (let record of QueryTable.search({
+				conditions: [{ attribute: ['manyToMany', 'name'], value: 'many-to-many entry 13' }],
+				select: ['id', 'manyToMany', 'manyToManyIds', 'name'],
+			})) {
+				results.push(record);
+			}
+			assert.equal(results.length, 8);
+			let related = results[0].manyToMany;
+			assert.equal(related.length, 1);
+			assert.equal(related[0].name, 'many-to-many entry 13');
+			related = results[1].manyToMany;
+			assert.equal(related.length, 1);
+			assert.equal(related[0].name, 'many-to-many entry 13');
+		});
+
 		it('Query by joined condition with many-to-many and multiple joined condition', async function () {
 			let results = [];
 			for await (let record of QueryTable.search({
@@ -580,6 +597,11 @@ describe('Querying through Resource API', () => {
 			});
 			assert.equal(explanation.conditions[0].attribute[0], 'related');
 			assert(explanation.conditions[0].estimated_count < 1000);
+		});
+		it('Get and later access related data', async function () {
+			let instance = await QueryTable.get('id-1');
+			let related = await instance.related;
+			assert.equal(related.name, 'related name 1');
 		});
 	});
 	describe('Sorting', function () {
@@ -777,7 +799,7 @@ describe('Querying through Resource API', () => {
 		});
 	});
 	describe('Query optimizations', function () {
-		let Bigger;
+		let Bigger, BiggerRelated;
 		before(async function () {
 			Bigger = table({
 				table: 'Bigger',
@@ -804,6 +826,21 @@ describe('Querying through Resource API', () => {
 					},
 				],
 			});
+			BiggerRelated = table({
+				table: 'BiggerRelated',
+				database: 'test',
+				attributes: [
+					{ name: 'id', isPrimaryKey: true },
+					{ name: '20values', type: 'Int', indexed: true },
+					{ name: 'biggerId', indexed: true },
+					{
+						name: 'bigger',
+						type: 'Bigger',
+						relationship: { from: 'biggerId' },
+						definition: { tableClass: Bigger },
+					},
+				],
+			});
 			let last;
 			for (let i = 0; i < 1000; i++) {
 				last = Bigger.put({
@@ -815,6 +852,13 @@ describe('Querying through Resource API', () => {
 					'100values': random(100),
 					'relatedId': random(5),
 					'relatedName': 'related name ' + (i % 7),
+				});
+			}
+			for (let i = 0; i < 100; i++) {
+				last = BiggerRelated.put({
+					'id': i,
+					'20values': random(20),
+					'biggerId': [0, random(256)],
 				});
 			}
 			await last;
@@ -1000,6 +1044,28 @@ describe('Querying through Resource API', () => {
 				assert.equal(result.relatedId, 2);
 			}
 			assert(RelatedTable.primaryStore.readCount - start_related_count < 3);
+			assert(Bigger.primaryStore.readCount - start_read_count < 20);
+		});
+		it('Combine condition with larger join', async function () {
+			let results = [];
+			let start_read_count = Bigger.primaryStore.readCount;
+			let start_related_count = BiggerRelated.primaryStore.readCount;
+			for await (let record of BiggerRelated.search({
+				conditions: [
+					{ attribute: '20values', value: 12 },
+					{ attribute: ['bigger', '20values'], value: 12 },
+				],
+				select: ['*', 'bigger'],
+			})) {
+				results.push(record);
+			}
+			//results = results.filter((r) => r.bigger['20values'] === 12);
+			assert.equal(results.length, 3);
+			for (let result of results) {
+				assert.equal(result['20values'], 12);
+				assert.equal(result.bigger['20values'], 12);
+			}
+			assert(BiggerRelated.primaryStore.readCount - start_related_count < 20);
 			assert(Bigger.primaryStore.readCount - start_read_count < 20);
 		});
 	});
@@ -1255,6 +1321,7 @@ describe('Querying through Resource API', () => {
 		let caught_error;
 		try {
 			for await (let record of QueryTable.search({
+				allowFullScan: false,
 				conditions: [{ attribute: 'id', value: null }],
 			})) {
 				results.push(record);

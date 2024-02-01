@@ -1,4 +1,4 @@
-import { ClientError } from '../utility/errors/hdbError';
+import { ClientError, ServerError } from '../utility/errors/hdbError';
 import * as lmdb_terms from '../utility/lmdb/terms';
 import { compareKeys, MAXIMUM_KEY } from 'ordered-binary';
 import { RangeIterable, SKIP } from 'lmdb';
@@ -245,18 +245,21 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 	let filter;
 	if (!index || index.isIndexing || need_full_scan || (value === null && !index.indexNulls)) {
 		// no indexed searching available, need a full scan
-		if (!allow_full_scan)
+		if (allow_full_scan === false && !index)
+			throw new ClientError(`"${attribute_name}" is not indexed, can not search for this attribute`, 404);
+		if (allow_full_scan === false && need_full_scan)
 			throw new ClientError(
-				need_full_scan
-					? `Can not use ${comparator} operator without combining with a condition that uses an index`
-					: `"${attribute_name}" is not indexed${
-							value === null && !index.indexNulls
-								? ' for nulls, index needs to be rebuilt to search for nulls'
-								: index?.isIndexing
-								? ' yet'
-								: ''
-					  }, can not search for this attribute`,
-				404
+				`Can not use ${
+					comparator || 'equal'
+				} operator without combining with a condition that uses an index, can not search for attribute ${attribute_name}`,
+				403
+			);
+		if (index?.isIndexing)
+			throw new ServerError(`"${attribute_name}" is not indexed yet, can not search for this attribute`, 503);
+		if (value === null && !index.indexNulls)
+			throw new ClientError(
+				`"${attribute_name}" is not indexed for nulls, index needs to be rebuilt to search for nulls, can not search for this attribute`,
+				400
 			);
 		filter = filterByType(search_condition);
 		if (!filter) {
@@ -276,10 +279,11 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 	if (is_primary_key) {
 		const results = index.getRange(range_options).map(
 			filter
-				? // for filter operations, we intentionally yield the event turn so that scanning queries
-				  // do not hog resources
-				  ({ key, value }) =>
-						new Promise((resolve, reject) =>
+				? function ({ key, value }) {
+						if (this.isSync) return value && filter(value) ? key : SKIP;
+						// for filter operations, we intentionally yield the event turn so that scanning queries
+						// do not hog resources
+						return new Promise((resolve, reject) =>
 							setImmediate(() => {
 								try {
 									resolve(value && filter(value) ? key : SKIP);
@@ -287,7 +291,8 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 									reject(error);
 								}
 							})
-						)
+						);
+				  }
 				: (entry) => {
 						if (entry.value == null) return SKIP;
 						return entry;
@@ -298,8 +303,11 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 	} else if (index) {
 		return index.getRange(range_options).map(
 			filter
-				? ({ key, value }) =>
-						new Promise((resolve, reject) =>
+				? function ({ key, value }) {
+						if (this.isSync) return filter({ [attribute_name]: key }) ? value : SKIP;
+						// for filter operations, we intentionally yield the event turn so that scanning queries
+						// do not hog resources
+						return new Promise((resolve, reject) =>
 							setImmediate(() => {
 								try {
 									resolve(filter({ [attribute_name]: key }) ? value : SKIP);
@@ -307,24 +315,27 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 									reject(error);
 								}
 							})
-						)
+						);
+				  }
 				: ({ value }) => value
 		);
 	} else {
 		return Table.primaryStore
 			.getRange(reverse ? { end: true, transaction, reverse: true } : { start: true, transaction })
-			.map(
-				({ key, value }) =>
-					new Promise((resolve, reject) =>
-						setImmediate(() => {
-							try {
-								resolve(value && filter(value) ? key : SKIP);
-							} catch (error) {
-								reject(error);
-							}
-						})
-					)
-			);
+			.map(function ({ key, value }) {
+				if (this.isSync) return value && filter(value) ? key : SKIP;
+				// for filter operations, we intentionally yield the event turn so that scanning queries
+				// do not hog resources
+				return new Promise((resolve, reject) =>
+					setImmediate(() => {
+						try {
+							resolve(value && filter(value) ? key : SKIP);
+						} catch (error) {
+							reject(error);
+						}
+					})
+				);
+			});
 	}
 }
 
@@ -362,43 +373,42 @@ function joinTo(right_iterable, attribute, store, is_many_to_many, joined: Map<a
 				next() {
 					if (!joined_iterator) {
 						const right_property = attribute.relationship.to;
-						return (async () => {
-							const add_entry = (key, entry) => {
-								let flat_key = key;
-								if (Array.isArray(key)) {
-									flat_key = flattenKey(key);
-									has_multi_part_keys = true;
-								}
-								let entries_for_key = joined.get(flat_key);
-								if (entries_for_key) entries_for_key.push(entry);
-								else joined.set(flat_key, (entries_for_key = [entry]));
-								if (key !== flat_key) entries_for_key.key = key;
-							};
-							let i = 0;
-							// get all the ids of the related records
-							// TODO: May consider manually iterating so that we don't need to do an await on every iteration
-							for await (const entry of right_iterable) {
-								const record = entry.value ?? store.get(entry.key ?? entry);
-								const left_key = record?.[right_property];
-								if (left_key == null) continue;
-								if (joined.filters?.some((filter) => !filter(record))) continue;
-								if (is_many_to_many) {
-									for (let i = 0; i < left_key.length; i++) {
-										add_entry(left_key[i], entry);
-									}
-								} else {
-									add_entry(left_key, entry);
-								}
-								if (i++ > 100) {
-									// yield the event turn every 100 ids. See below for more explanation
-									await new Promise(setImmediate);
-									i = 0;
-								}
+						const add_entry = (key, entry) => {
+							let flat_key = key;
+							if (Array.isArray(key)) {
+								flat_key = flattenKey(key);
+								has_multi_part_keys = true;
 							}
-							// if there are multi-part keys, we need to be able to get the original key from the key property on the entry array
-							joined_iterator = (has_multi_part_keys ? joined : joined.keys())[Symbol.iterator]();
-							return this.next();
-						})();
+							let entries_for_key = joined.get(flat_key);
+							if (entries_for_key) entries_for_key.push(entry);
+							else joined.set(flat_key, (entries_for_key = [entry]));
+							if (key !== flat_key) entries_for_key.key = key;
+						};
+						//let i = 0;
+						// get all the ids of the related records
+						for (const entry of right_iterable) {
+							const record = entry.value ?? store.get(entry.key ?? entry);
+							const left_key = record?.[right_property];
+							if (left_key == null) continue;
+							if (joined.filters?.some((filter) => !filter(record))) continue;
+							if (is_many_to_many) {
+								for (let i = 0; i < left_key.length; i++) {
+									add_entry(left_key[i], entry);
+								}
+							} else {
+								add_entry(left_key, entry);
+							}
+							// TODO: Enable this with async iterator manually iterating so that we don't need to do an await on every iteration
+							/*
+							if (i++ > 100) {
+								// yield the event turn every 100 ids. See below for more explanation
+								await new Promise(setImmediate);
+								i = 0;
+							}*/
+						}
+						// if there are multi-part keys, we need to be able to get the original key from the key property on the entry array
+						joined_iterator = (has_multi_part_keys ? joined : joined.keys())[Symbol.iterator]();
+						return this.next();
 					}
 					const joined_entry = joined_iterator.next();
 					if (joined_entry.done) return joined_entry;
@@ -441,41 +451,40 @@ function joinFrom(right_iterable, attribute, store, joined: Map<any, any[]>, sea
 						}
 					}
 					if (!id_iterator) {
-						return (async () => {
-							// get the ids of the related records as a Set so we can quickly check if it is in the set
-							// when are iterating through the results
-							const ids = new Map();
-							// Define the fromRecord function so that we can use it to filter the related records
-							// that are in the select(), to only those that are in this set of ids
-							joined.fromRecord = (record) => {
-								// TODO: Sort based on order ids
-								return record[attribute.relationship.from]?.filter?.((id) => ids.has(flattenKey(id)));
-							};
-							let i = 0;
-							// get all the ids of the related records
-							// TODO: May consider manually iterating so that we don't need to do an await on every iteration
-							for await (const id of right_iterable) {
-								if (joined.filters) {
-									// if additional filters are defined, we need to check them
-									const record = store.get(id);
-									if (joined.filters.some((filter) => !filter(record))) continue;
-								}
-								ids.set(flattenKey(id), id);
-								if (i++ > 100) {
-									// yield the event turn every 100 ids. We don't want to monopolize the
-									// event loop, give others a chance to run. However, we are much more aggressive
-									// about running here than in simple filter operations, because we are
-									// executing a very minimal range iteration and because this is consuming
-									// memory (so we want to get it over with) and the user isn't getting any
-									// results until we finish
-									await new Promise(setImmediate);
-									i = 0;
-								}
+						// get the ids of the related records as a Set so we can quickly check if it is in the set
+						// when are iterating through the results
+						const ids = new Map();
+						// Define the fromRecord function so that we can use it to filter the related records
+						// that are in the select(), to only those that are in this set of ids
+						joined.fromRecord = (record) => {
+							// TODO: Sort based on order ids
+							return record[attribute.relationship.from]?.filter?.((id) => ids.has(flattenKey(id)));
+						};
+						//let i = 0;
+						// get all the ids of the related records
+						for (const id of right_iterable) {
+							if (joined.filters) {
+								// if additional filters are defined, we need to check them
+								const record = store.get(id);
+								if (joined.filters.some((filter) => !filter(record))) continue;
 							}
-							// and now start iterating through the ids
-							id_iterator = ids.values()[Symbol.iterator]();
-							return this.next();
-						})();
+							ids.set(flattenKey(id), id);
+							// TODO: Re-enable this when async iteration is used, and do so with manually iterating so that we don't need to do an await on every iteration
+							/*
+							if (i++ > 100) {
+								// yield the event turn every 100 ids. We don't want to monopolize the
+								// event loop, give others a chance to run. However, we are much more aggressive
+								// about running here than in simple filter operations, because we are
+								// executing a very minimal range iteration and because this is consuming
+								// memory (so we want to get it over with) and the user isn't getting any
+								// results until we finish
+								await new Promise(setImmediate);
+								i = 0;
+							}*/
+						}
+						// and now start iterating through the ids
+						id_iterator = ids.values()[Symbol.iterator]();
+						return this.next();
 					}
 					do {
 						const id_entry = id_iterator.next();
@@ -576,9 +585,9 @@ export function filterByType(search_condition, Table, context, filtered, is_prim
 										value: id,
 									};
 								}
-								// indicate that we can use an index for this
-								sub_id_filter = attributeComparator(resolver.from, next_filter.idFilter, true);
-							} else sub_id_filter = attributeComparator(resolver.from, next_filter.idFilter, false);
+								// indicate that we can use an index for this. also we indicate that we allow object matching to allow array ids to directly tested
+								sub_id_filter = attributeComparator(resolver.from, next_filter.idFilter, true, true);
+							} else sub_id_filter = attributeComparator(resolver.from, next_filter.idFilter, false, true);
 						}
 						const matches = sub_id_filter(record);
 						if (sub_id_filter.idFilter) recordFilter.idFilter = sub_id_filter.idFilter;
@@ -650,7 +659,7 @@ export function filterByType(search_condition, Table, context, filtered, is_prim
 			throw new ClientError(`Unknown query comparator "${comparator}"`);
 	}
 	/** Create a comparison function that can take the record and check the attribute's value with the filter function */
-	function attributeComparator(attribute, filter, can_use_index?) {
+	function attributeComparator(attribute, filter, can_use_index?, allow_object_matching?) {
 		let threshold_remaining_misses;
 		can_use_index =
 			can_use_index && // is it a comparator that makes sense to use index
@@ -669,7 +678,7 @@ export function filterByType(search_condition, Table, context, filtered, is_prim
 		function recordFilter(record) {
 			const value = record[attribute];
 			let matches;
-			if (typeof value !== 'object' || !value) matches = filter(value);
+			if (typeof value !== 'object' || !value || allow_object_matching) matches = filter(value);
 			else if (Array.isArray(value)) matches = value.some(filter);
 			else if (value instanceof Date) matches = filter(value.getTime());
 			//else matches = false;
@@ -744,9 +753,14 @@ export function estimateCondition(table) {
 							attribute: attribute_name.length > 2 ? attribute_name.slice(1) : attribute_name[1],
 							comparator: 'equals',
 						});
+						const from_index = table.indices[attribute.relationship.from];
+						// the estimated count is sum of the estimate of the related table and the estimate of the index
 						condition.estimated_count =
-							(estimate * estimatedEntryCount(table.indices[attribute.relationship.from] || table.primaryStore)) /
-							(estimatedEntryCount(related_table.primaryStore) || 1);
+							estimate +
+							(from_index
+								? (estimate * estimatedEntryCount(table.indices[attribute.relationship.from])) /
+								  (estimatedEntryCount(related_table.primaryStore) || 1)
+								: estimate);
 					} else {
 						// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
 						const index = table.indices[attribute_name];

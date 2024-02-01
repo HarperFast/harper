@@ -67,7 +67,7 @@ export class Resource implements ResourceInterface {
 		{
 			type: 'read',
 			// allows context to reset/remove transaction after completion so it can be used in immediate mode:
-			resetTransaction: true,
+			letItLinger: true,
 			ensureLoaded: true, // load from source by default
 			async: true, // use async by default
 		}
@@ -533,7 +533,6 @@ function transactional(action, options) {
 			const resource = this.getResource(id, context, resource_options);
 			return resource.then ? resource.then(authorizeActionOnResource) : authorizeActionOnResource(resource);
 		} else {
-			resource_options.resetTransaction = true;
 			// start a transaction
 			return transaction(
 				context,
