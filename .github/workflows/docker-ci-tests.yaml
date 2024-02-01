@@ -48,7 +48,7 @@ jobs:
     - uses: actions/checkout@v4
     - uses: actions/download-artifact@v4
       with:
-        name: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}.tar
+        name: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}${{ contains(inputs.file, 'openshift') && '-openshift' }}.tar
         path: utility/Docker
     - uses: actions/setup-node@v4
       with:
@@ -100,9 +100,9 @@ jobs:
         path: artifact
         retention-days: 1
 
-  ######################
-  #  Send Slack Message
-  ######################
+  #################################
+  #  Send Slack Message on failure
+  #################################
   sendSlackMessage:
     uses: ./.github/workflows/post-to-slack-channel.yaml
     if: ${{ failure() && (github.event_name == 'schedule' || github.event_name == 'push') }}

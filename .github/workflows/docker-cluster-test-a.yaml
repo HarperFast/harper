@@ -11,8 +11,15 @@ on:
   workflow_call:
 
 jobs:
+  ####################
+  #  Build HarperDB
+  ####################
   build:
     uses: ./.github/workflows/build.yaml
+
+  ##########################
+  #  Build Container Image
+  ##########################
   dockerBuild:
     needs:
       - build
@@ -20,6 +27,14 @@ jobs:
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       nodeVersion: ${{ needs.build.outputs.nodeVersion }}
+      container: 'tar'
+      file: 'utility/Docker/Dockerfile'
+      platforms: 'linux/amd64'
+      get_dummy_licenses: true
+
+  ##############################
+  #  Create Instances for tests
+  ##############################
   createInstances:
     needs:
       - build
@@ -31,6 +46,10 @@ jobs:
       installType: "docker"
       callingWorkflow: ${{ github.workflow }}
     secrets: inherit
+
+  #############
+  #  Run Tests
+  ############
   runTests:
     runs-on: ubuntu-latest
     needs:
