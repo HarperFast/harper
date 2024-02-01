@@ -2023,7 +2023,8 @@ export function makeTable(options) {
 										{ attribute: relationship.to, value: id },
 										txnForContext(context).getReadTxn(),
 										false,
-										related_table
+										related_table,
+										false
 									).asArray;
 								}
 								return related_table.search([{ attribute: relationship.to, value: id }], context).asArray;

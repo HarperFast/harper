@@ -19,7 +19,10 @@ describe('Update Schema', () => {
 		});
 		let caught_error;
 		try {
-			tables.SchemaChanges.search({ conditions: [{ attribute: 'state', value: 'UT' }] });
+			tables.SchemaChanges.search({
+				allowFullScan: false,
+				conditions: [{ attribute: 'state', value: 'UT' }],
+			});
 		} catch (error) {
 			caught_error = error;
 		}
@@ -57,7 +60,7 @@ describe('Update Schema', () => {
 			state: String @indexed
 			city: String @indexed
 		}`);
-		const state_attribute = tables.SchemaChanges.attributes.find(a => a.name === 'state');
+		const state_attribute = tables.SchemaChanges.attributes.find((a) => a.name === 'state');
 		assert(state_attribute.nullable !== false);
 	});
 });
