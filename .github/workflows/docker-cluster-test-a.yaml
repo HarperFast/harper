@@ -87,11 +87,9 @@ jobs:
         includes:
           - platform: 'amd64'
             instanceType: 'c7i.2xlarge'
-            tfstateArtifact: 'tfstate-amd64'
             publicDnsNames: ${{ needs.createInstances-amd64.outputs.publicDnsNames }}
           - platform: 'arm64'
             instanceType: 'c7gn.2xlarge'
-            tfstateArtifact: 'tfstate-arm64'
             publicDnsNames: ${{ needs.createInstances-arm64.outputs.publicDnsNames }}
     steps:
     - uses: actions/checkout@v4
@@ -144,14 +142,15 @@ jobs:
         includes:
           - platform: 'amd64'
             instanceType: 'c7i.2xlarge'
-            tfstateArtifact: 'tfstate-amd64'
+            tfstateArtifactName: 'tfstate-amd64'
           - platform: 'arm64'
             instanceType: 'c7gn.2xlarge'
-            tfstateArtifact: 'tfstate-arm64'
+            stfstateArtifactName: 'tfstate-arm64'
     with:
       instanceCount: "1"
       callingWorkflow: ${{ github.workflow }}
       instanceType: ${{ matrix.instanceType }}
+      tfstateArtifactName: ${{ matrix.tfstateArtifactName }}
     secrets: inherit
 
   #################################

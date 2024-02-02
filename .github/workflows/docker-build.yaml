@@ -136,6 +136,21 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: 'Set tar name'
+        id: set-tar-name
+        if: inputs.container == 'tar'
+        env:
+          harperdbVersion: ${{ inputs.harperdbVersion }}
+          runNumber: ${{ github.run_number }}
+          containerFile: ${{ inputs.file }}
+          platform: ${{ inputs.platform }}
+        run: |
+          #!/usr/bin/env bash
+          base="docker-harperdb_${harperdbVersion}-"
+          [[ "${containerFile}" == *"-openshift" ]] && flavor='-openshift' || flavor=''
+          arch="-${platform##*/}"
+          echo "tarName=${base}${runNumber}${flavor}${arch}.tar" >> $GITHUB_OUTPUT
+
       - name: "Create container tarball"
         id: build-image-tar
         if: inputs.container == 'tar'
@@ -146,7 +161,7 @@ jobs:
           file: ${{ inputs.file }}
           push: false
           tags: ${{ steps.meta.outputs.tags }}
-          outputs: type=docker,dest=docker-harperdb_${{ inputs.harperdbVersion }}-${{ github.run_number }}${{ contains(inputs.file, 'openshift') && '-openshift' || '' }}${{ inputs.platform == 'linux/arm64' && '-arm64' || '-amd64' }}.tar
+          outputs: type=docker,dest=${{ steps.set-tar-name.outputs.tarName }}
           build-args: |
             NODE_VERSION=${{ inputs.nodeVersion }}
             HARPERDB_VERSION=${{ inputs.harperdbVersion }}
@@ -160,6 +175,6 @@ jobs:
         if: inputs.container == 'tar'
         uses: actions/upload-artifact@v4
         with:
-          name: docker-harperdb_${{ inputs.harperdbVersion }}-${{ github.run_number }}${{ contains(inputs.file, 'openshift') && '-openshift' || '' }}${{ inputs.platform == 'linux/arm64' && '-arm64' || '-amd64' }}.tar
-          path: docker-harperdb_${{ inputs.harperdbVersion }}-${{ github.run_number }}${{ contains(inputs.file, 'openshift') && '-openshift' || '' }}${{ inputs.platform == 'linux/arm64' && '-arm64' || '-amd64' }}.tar
+          name: ${{ steps.set-tar-name.outputs.tarName }}
+          path: ${{ steps.set-tar-name.outputs.tarName }}
           retention-days: 1
