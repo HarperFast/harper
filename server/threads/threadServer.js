@@ -36,11 +36,30 @@ tls.createSecureContext = function (options) {
 
 const debug_threads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
 if (debug_threads) {
-	const port = (typeof debug_threads === 'number' ? debug_threads : 9229) + (getWorkerIndex() ?? -1) + 1;
-	try {
-		require('inspector').open(port);
-	} catch (error) {
-		harper_logger.trace(`Could not start debugging on port ${port}, you may already be debugging:`, error.message);
+	let port;
+	if (isMainThread) {
+		port = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_PORT) ?? 9229;
+		process.on(['SIGINT', 'SIGTERM', 'SIGQUIT', 'exit'], () => {
+			try {
+				require('inspector').close();
+			} catch (error) {
+				harper_logger.info('Could not close debugger', error);
+			}
+		});
+	} else {
+		const starting_port = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_STARTINGPORT);
+		if (starting_port && getWorkerIndex() >= 0) {
+			port = starting_port + getWorkerIndex();
+		}
+	}
+	if (port) {
+		const host = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_HOST);
+		const wait_for_debugger = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_WAITFORDEBUGGER);
+		try {
+			require('inspector').open(port, host, wait_for_debugger);
+		} catch (error) {
+			harper_logger.trace(`Could not start debugging on port ${port}, you may already be debugging:`, error.message);
+		}
 	}
 } else if (process.env.DEV_MODE) {
 	try {
@@ -144,11 +163,11 @@ function startServers() {
 								}, 5000).unref();
 							});
 						}
-						if (process.env.DEV_MODE) {
+						if (debug_threads || process.env.DEV_MODE) {
 							try {
 								require('inspector').close();
 							} catch (error) {
-								console.error('Could not close debugger', error);
+								harper_logger.info('Could not close debugger', error);
 							}
 						}
 					}
