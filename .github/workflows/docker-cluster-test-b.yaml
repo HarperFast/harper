@@ -165,6 +165,7 @@ jobs:
     needs:
       - destroyInstances
       - runTests
-      - createInstances
+      - createInstances-amd64
+      - createInstances-arm64
       - dockerBuild
       - build
