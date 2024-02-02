@@ -92,7 +92,7 @@ export async function getSession({
 }) {
 	let session;
 	if (session_id && !non_durable) {
-		const session_resource = await DurableSession.getResource(session_id, {});
+		const session_resource = await DurableSession.get(session_id, { returnNonexistent: true });
 		session = new DurableSubscriptionsSession(session_id, user, session_resource);
 		if (session_resource) session.sessionWasPresent = true;
 	} else {
