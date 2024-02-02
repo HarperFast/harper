@@ -86,7 +86,7 @@ jobs:
         platform:
           - 'amd64'
           - 'arm64'
-        includes:
+        include:
           - platform: 'amd64'
             instanceType: 'c7i.2xlarge'
             publicDnsNames: ${{ needs.createInstances-amd64.outputs.publicDnsNames }}
@@ -141,7 +141,7 @@ jobs:
         platform:
           - 'amd64'
           - 'arm64'
-        includes:
+        include:
           - platform: 'amd64'
             instanceType: 'c7i.2xlarge'
             tfstateArtifactName: 'tfstate-amd64'
