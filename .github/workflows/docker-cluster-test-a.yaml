@@ -40,34 +40,31 @@ jobs:
   ##############################
   #  Create Instances for tests
   ##############################
-  createInstances-amd64:
+  createInstances:
     needs:
       - build
       - dockerBuild
     uses: ./.github/workflows/create-instances.yaml
+    strategy:
+      matrix:
+        platform:
+          - 'amd64'
+          - 'arm64'
+        includes:
+          - platform: 'amd64'
+            instanceType: 'c7i.2xlarge'
+            containerTarball: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-amd64.tar
+          - platform: 'arm64'
+            instanceType: 'c7gn.2xlarge'
+            containerTarball: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-arm64.tar
     with:
       instanceCount: "1"
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       installType: "docker"
       callingWorkflow: ${{ github.workflow }}
-      instanceType: 'c7i.2xlarge'
-      tfstateArtifactName: 'tfstate-amd64'
-      containerTarball: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-amd64.tar
-    secrets: inherit
-
-  createInstances-arm64:
-    needs:
-      - build
-      - dockerBuild
-    uses: ./.github/workflows/create-instances.yaml
-    with:
-      instanceCount: "1"
-      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-      installType: "docker"
-      callingWorkflow: ${{ github.workflow }}
-      instanceType: 'c7gn.2xlarge'
-      tfstateArtifactName: 'tfstate-arm64'
-      containerTarball: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-arm64.tar
+      instanceType: ${{ matrix.instanceType }}
+      tfstateArtifactName: "tfstate-${{ matrix.platform }}"
+      containerTarball: ${{ containerTarball }}
     secrets: inherit
 
   #############
