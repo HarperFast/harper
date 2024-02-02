@@ -126,7 +126,7 @@ jobs:
       if: always()
       with:
         name: logs-artifact-${{ matrix.platform }}
-        path: logs
+        path: logs-artifact
         retention-days: 1
 
   ###############################
