@@ -206,9 +206,14 @@ function configValidator(config_json) {
 		threads: Joi.alternatives(threads_constraints.optional(),
 			Joi.object({
 				count: threads_constraints.optional(),
-				debug: boolean.optional(),
+				debug: Joi.alternatives(boolean.optional(),
+					Joi.object({
+						startingPort: number.min(1).optional(),
+						host: string.optional(),
+						waitForDebugger: boolean.optional(),
+					})),
+				maxHeapMemory: number.min(0).optional(),
 			})),
-		maxHeapMemory: number.min(0).optional(),
 		storage: Joi.object({
 			writeAsync: boolean.required(),
 			overlappingSync: boolean.optional(),

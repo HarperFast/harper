@@ -36,9 +36,12 @@ tls.createSecureContext = function (options) {
 
 const debug_threads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
 if (debug_threads) {
-	const port = (typeof debug_threads === 'number' ? debug_threads : 9229) + (getWorkerIndex() ?? -1) + 1;
+	const starting_port = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_STARTINGPORT) ?? 9229;
+	const host = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_HOST);
+	const wait_for_debugger = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_WAITFORDEBUGGER);
+	const port = starting_port + (getWorkerIndex() ?? -1) + 1;
 	try {
-		require('inspector').open(port);
+		require('inspector').open(port, host, wait_for_debugger);
 	} catch (error) {
 		harper_logger.trace(`Could not start debugging on port ${port}, you may already be debugging:`, error.message);
 	}
