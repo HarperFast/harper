@@ -125,8 +125,8 @@ jobs:
       uses: actions/upload-artifact@v4
       if: always()
       with:
-        name: logs
-        path: logs-artifact-${{ matrix.platform }}
+        name: logs-artifact-${{ matrix.platform }}
+        path: logs
         retention-days: 1
 
   ###############################
