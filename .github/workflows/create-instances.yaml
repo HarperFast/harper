@@ -31,7 +31,7 @@ on:
         default: 'tfstate'
         type: string
       containerTarball:
-        description: "name of conatiner tarball to use. default '' uses old docker-harperdb_${{ inputs.harperdbVersion }}.tar"
+        description: 'name of conatiner tarball to use. default '' uses old docker-harperdb_${{ inputs.harperdbVersion }}.tar'
         default: ''
         type: string
     outputs:
