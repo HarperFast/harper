@@ -1,3 +1,5 @@
+name: Create Ec2 Instances
+
 on:
   workflow_call:
     inputs:
@@ -25,6 +27,9 @@ on:
       securityGroupId:
         default: "sg-01b1c378328f897d1"
         type: string
+      tfstateArtifactName:
+        default: 'tfstate'
+        type: string
     outputs: 
       publicDnsNames:
         value: ${{jobs.createInstances.outputs.publicDnsNames}}
@@ -34,8 +39,11 @@ on:
         value: ${{jobs.createInstances.outputs.privateDnsNames}}
       privateIps:
         value: ${{jobs.createInstances.outputs.privateIps}}
-name: Create Ec2 Instances
+
 jobs:
+  ####################
+  # Create Instances
+  ####################
   createInstances:
     outputs:
       publicDnsNames: ${{ steps.createInstances.outputs.PUBLIC_DNS_NAMES}}
@@ -122,7 +130,7 @@ jobs:
     - name: 'Upload TFState'
       uses: actions/upload-artifact@v4
       with:
-        name: tfstate
+        name: ${{ inputs.tfstateArtifactName }}
         path: tfstate/
         retention-days: 1
     - name: 'Destroy Instances'

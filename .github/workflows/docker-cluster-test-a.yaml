@@ -24,18 +24,23 @@ jobs:
     needs:
       - build
     uses: ./.github/workflows/docker-build.yaml
+    strategy:
+      matrix:
+        platform:
+          - 'linux/amd64'
+          - 'linux/arm64'
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       nodeVersion: ${{ needs.build.outputs.nodeVersion }}
       container: 'tar'
       file: 'utility/Docker/Dockerfile'
-      platforms: 'linux/amd64'
+      platforms: matrix.platform
       get_dummy_licenses: true
 
   ##############################
   #  Create Instances for tests
   ##############################
-  createInstances:
+  createInstances-amd64:
     needs:
       - build
       - dockerBuild
@@ -45,6 +50,22 @@ jobs:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       installType: "docker"
       callingWorkflow: ${{ github.workflow }}
+      instanceType: 'c7i.2xlarge'
+      tfstateArtifactName: 'tfstate-amd64'
+    secrets: inherit
+
+  createInstances-arm64:
+    needs:
+      - build
+      - dockerBuild
+    uses: ./.github/workflows/create-instances.yaml
+    with:
+      instanceCount: "1"
+      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      installType: "docker"
+      callingWorkflow: ${{ github.workflow }}
+      instanceType: 'c7gn.2xlarge'
+      tfstateArtifactName: 'tfstate-arm64'
     secrets: inherit
 
   #############
@@ -55,13 +76,28 @@ jobs:
     needs:
       - dockerBuild
       - build
-      - createInstances
+      - createInstances-amd64
+      - createInstances-arm64
     timeout-minutes: 20
+    strategy:
+      matrix:
+        platform:
+          - 'amd64'
+          - 'arm64'
+        includes:
+          - platform: 'amd64'
+            instanceType: 'c7i.2xlarge'
+            tfstateArtifact: 'tfstate-amd64'
+            publicDnsNames: ${{ needs.createInstances-amd64.outputs.publicDnsNames }}
+          - platform: 'arm64'
+            instanceType: 'c7gn.2xlarge'
+            tfstateArtifact: 'tfstate-arm64'
+            publicDnsNames: ${{ needs.createInstances-arm64.outputs.publicDnsNames }}
     steps:
     - uses: actions/checkout@v4
     - uses: actions/download-artifact@v4
       with:
-        name: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}.tar
+        name: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-${{ matrix.platform }}.tar
         path: utility/Docker
     - name: Run Tests
       env:
@@ -69,7 +105,7 @@ jobs:
       run: |
         #!/bin/bash
         echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
-        public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
+        public_dns_names=${{ matrix.publicDnsNames }}
         public_dns_names=($public_dns_names)
         public_dns_name="${public_dns_names[0]}"
         
@@ -81,7 +117,7 @@ jobs:
       if: always()
       run: |
         #!/bin/bash
-        public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
+        public_dns_names=${{ matrix.publicDnsNames }}
         public_dns_names=($public_dns_names)
         public_dns_name="${public_dns_names[0]}"
         scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/artifact" "logs-artifact/"
@@ -90,16 +126,36 @@ jobs:
       if: always()
       with:
         name: logs
-        path: logs-artifact
+        path: logs-artifact-${{ matrix.platform }}
         retention-days: 1
+
+  ###############################
+  #  Cleanup (destroy instances)
+  ###############################
   destroyInstances:
     if: always()
     needs: runTests
     uses: ./.github/workflows/destroy-instances.yaml
+    strategy:
+      matrix:
+        platform:
+          - 'amd64'
+          - 'arm64'
+        includes:
+          - platform: 'amd64'
+            instanceType: 'c7i.2xlarge'
+            tfstateArtifact: 'tfstate-amd64'
+          - platform: 'arm64'
+            instanceType: 'c7gn.2xlarge'
+            tfstateArtifact: 'tfstate-arm64'
     with:
       instanceCount: "1"
       callingWorkflow: ${{ github.workflow }}
     secrets: inherit
+
+  #################################
+  #  Send Slack Message on failure
+  #################################
   sendSlackMessage:
     uses: ./.github/workflows/post-to-slack-channel.yaml
     if: ${{ failure() && (github.event_name == 'schedule' || github.event_name == 'push') }}
@@ -107,6 +163,7 @@ jobs:
     needs:
       - destroyInstances
       - runTests
-      - createInstances
+      - createInstances-amd64
+      - createInstances-arm64
       - dockerBuild
       - build
