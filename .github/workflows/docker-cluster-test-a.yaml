@@ -151,6 +151,7 @@ jobs:
     with:
       instanceCount: "1"
       callingWorkflow: ${{ github.workflow }}
+      instanceType: ${{ matrix.instanceType }}
     secrets: inherit
 
   #################################
