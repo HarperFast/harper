@@ -425,6 +425,14 @@ function updateConfigValue(
 				schemas_args = parsed_args[arg];
 				continue;
 			}
+			if (config_param.startsWith('threads_')) {
+				// if threads was a number, recreate the threads object
+				const thread_count = config_doc.getIn(['threads']);
+				if (thread_count >= 0) {
+					config_doc.deleteIn(['threads']);
+					config_doc.setIn(['threads', 'count'], thread_count);
+				}
+			}
 
 			if (!config_param && arg.endsWith('_package')) {
 				config_param = arg;
