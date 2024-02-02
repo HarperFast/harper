@@ -52,6 +52,7 @@ jobs:
       callingWorkflow: ${{ github.workflow }}
       instanceType: 'c7i.2xlarge'
       tfstateArtifactName: 'tfstate-amd64'
+      containerTarball: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-amd64.tar
     secrets: inherit
 
   createInstances-arm64:
@@ -66,6 +67,7 @@ jobs:
       callingWorkflow: ${{ github.workflow }}
       instanceType: 'c7gn.2xlarge'
       tfstateArtifactName: 'tfstate-arm64'
+      containerTarball: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-arm64.tar
     secrets: inherit
 
   #############

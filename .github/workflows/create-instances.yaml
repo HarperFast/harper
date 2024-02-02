@@ -30,7 +30,11 @@ on:
       tfstateArtifactName:
         default: 'tfstate'
         type: string
-    outputs: 
+      containerTarball:
+        description: "name of conatiner tarball to use. default '' uses old docker-harperdb_${{ inputs.harperdbVersion }}.tar"
+        default: ''
+        type: string
+    outputs:
       publicDnsNames:
         value: ${{jobs.createInstances.outputs.publicDnsNames}}
       publicIps:
@@ -66,7 +70,7 @@ jobs:
     - uses: actions/download-artifact@v4
       if: inputs.installType == 'docker'
       with:
-        name: docker-harperdb_${{ inputs.harperdbVersion }}.tar
+        name: inputs.containerTarball == '' && 'docker-harperdb_${{ inputs.harperdbVersion }}.tar' || inputs.containerTarball
         path: ../artifact/
     - name: Create Instances
       id: createInstances
