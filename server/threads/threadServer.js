@@ -144,7 +144,7 @@ function startServers() {
 								}, 5000).unref();
 							});
 						}
-						if (process.env.DEV_MODE) {
+						if (debug_threads || process.env.DEV_MODE) {
 							try {
 								require('inspector').close();
 							} catch (error) {
