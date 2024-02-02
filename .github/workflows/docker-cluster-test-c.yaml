@@ -35,7 +35,7 @@ jobs:
       container: 'tar'
       file: 'utility/Docker/Dockerfile'
       platforms: ${{ matrix.platform }}
-      get_dummy_licenses: tru
+      get_dummy_licenses: true
 
   ##############################
   #  Create Instances for tests
