@@ -1668,8 +1668,10 @@ export function makeTable(options) {
 						const audit_record = readAuditEntry(audit_entry);
 						if (audit_record.tableId !== table_id) continue;
 						const id = audit_record.recordId;
-						if (this_id == null || isDescendantId(this_id, id))
-							subscription.send({ id, timestamp: key, ...audit_record });
+						if (this_id == null || isDescendantId(this_id, id)) {
+							const value = audit_record.getValue(primary_store, get_full_record, key);
+							subscription.send({ id, timestamp: key, value, version: audit_record.version, type: audit_record.type });
+						}
 						// TODO: Would like to do this asynchronously, but would need to catch up on anything published during iteration
 						//await rest(); // yield for fairness
 						subscription.startTime = key; // update so don't double send
@@ -1704,7 +1706,7 @@ export function makeTable(options) {
 						versions: true,
 					})) {
 						if (!value) continue;
-						subscription.send({ id, version, timestamp: localTime, value });
+						subscription.send({ id, timestamp: localTime, value, version, type: 'put' });
 					}
 				}
 			} else {
@@ -1746,9 +1748,10 @@ export function makeTable(options) {
 					// if retain and it exists, send the current value first
 					subscription.send({
 						id: this_id,
-						version: this[VERSION_PROPERTY],
 						timestamp: local_time,
 						value: this,
+						version: this[VERSION_PROPERTY],
+						type: 'put',
 					});
 				}
 			}

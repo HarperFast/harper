@@ -61,10 +61,16 @@ export class DatabaseTransaction implements Transaction {
 		}
 	}
 	addWrite(operation) {
-		if (this.open === TRANSACTION_STATE.CLOSED) throw new Error('Can not use a transaction that is no longer open');
+		if (this.open === TRANSACTION_STATE.CLOSED) {
+			throw new Error('Can not use a transaction that is no longer open');
+		}
 		// else
-		this.writes.push(operation);
-		if (this.open === TRANSACTION_STATE.LINGERING) this.commit(); // there is no future commit that will take place, so we commit immediately
+		if (this.open === TRANSACTION_STATE.LINGERING) {
+			// if the transaction is lingering, it is already committed, so we need to commit the write immediately
+			const immediate_txn = new DatabaseTransaction();
+			immediate_txn.addWrite(operation);
+			return immediate_txn.commit({});
+		} else this.writes.push(operation); // standard path, add to current transaction
 	}
 	removeWrite(operation) {
 		const index = this.writes.indexOf(operation);
