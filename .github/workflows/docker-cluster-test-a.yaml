@@ -34,7 +34,7 @@ jobs:
       nodeVersion: ${{ needs.build.outputs.nodeVersion }}
       container: 'tar'
       file: 'utility/Docker/Dockerfile'
-      platforms: matrix.platform
+      platforms: ${{ matrix.platform }}
       get_dummy_licenses: true
 
   ##############################
@@ -145,7 +145,7 @@ jobs:
             tfstateArtifactName: 'tfstate-amd64'
           - platform: 'arm64'
             instanceType: 'c7gn.2xlarge'
-            stfstateArtifactName: 'tfstate-arm64'
+            tfstateArtifactName: 'tfstate-arm64'
     with:
       instanceCount: "1"
       callingWorkflow: ${{ github.workflow }}
