@@ -143,7 +143,7 @@ jobs:
           harperdbVersion: ${{ inputs.harperdbVersion }}
           runNumber: ${{ github.run_number }}
           containerFile: ${{ inputs.file }}
-          platform: ${{ inputs.platform }}
+          platform: ${{ inputs.platforms }}
         run: |
           #!/usr/bin/env bash
           base="docker-harperdb_${harperdbVersion}-"
