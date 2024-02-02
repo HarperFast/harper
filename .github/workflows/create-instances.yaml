@@ -78,6 +78,7 @@ jobs:
         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
+        containerTarball: ${{ inputs.containerTarball == '' && 'docker-harperdb_${{ inputs.harperdbVersion }}.tar' || inputs.containerTarball }}
       run: |
         #!/bin/bash
         set -x
@@ -96,7 +97,7 @@ jobs:
 
         if [ "${{ inputs.installType }}" == "docker" ];
         then
-          mv ../artifact/docker-harperdb_${{ inputs.harperdbVersion }}.tar ./upload/
+          mv ../artifact/${containerTarball} ./upload/
         fi
         
         cp -r ../harperdb/ ./upload/
