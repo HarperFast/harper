@@ -1,7 +1,7 @@
 # HarperDB configuration file. Refer to https://harperdb.io/docs/reference/configuration-file/
 ---
 http:
-  compressionThreshold: 1200
+  compressionThreshold: 0
   cors: false
   corsAccessList:
     - null
