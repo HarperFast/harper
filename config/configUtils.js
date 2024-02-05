@@ -425,7 +425,7 @@ function updateConfigValue(
 				schemas_args = parsed_args[arg];
 				continue;
 			}
-			if (config_param.startsWith('threads_')) {
+			if (config_param?.startsWith('threads_')) {
 				// if threads was a number, recreate the threads object
 				const thread_count = config_doc.getIn(['threads']);
 				if (thread_count >= 0) {
