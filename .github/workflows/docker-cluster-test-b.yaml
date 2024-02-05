@@ -102,6 +102,7 @@ jobs:
     - name: Run Tests
       env:
         CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
+        container_tarball: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-${{ matrix.platform }}.tar
       run: |
         #!/bin/bash
         echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key

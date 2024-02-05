@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 docker_image="${DOCKER_IMAGE:-harperdb/harperdb}"
+container_tarball="${CONTAINER_TARBALL:-docker-harperdb_${harperdb_version}.tar}"
 
 # Install and start docker
 export DEBIAN_FRONTEND=noninteractive
