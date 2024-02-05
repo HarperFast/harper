@@ -159,6 +159,7 @@ jobs:
         with:
           context: .
           file: ${{ inputs.file }}
+          platform: ${{ inputs.platforms }}
           push: false
           tags: ${{ steps.meta.outputs.tags }}
           outputs: type=docker,dest=${{ steps.set-tar-name.outputs.tarName }}
