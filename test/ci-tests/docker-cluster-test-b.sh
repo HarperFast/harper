@@ -13,7 +13,7 @@ sleep 25
 
 cd /home/ubuntu
 harperdb_version=$1
-sudo docker load -i docker-harperdb_${harperdb_version}.tar 
+sudo docker load -i ${container_tarball}
 
 cd harperdb
 
