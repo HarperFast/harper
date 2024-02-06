@@ -112,7 +112,7 @@ jobs:
         mkdir logs-artifact
 
         ssh -i private_key -o ConnectTimeout=10 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
-          "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/docker-cluster-test-c.sh && /home/ubuntu/harperdb/test/ci-tests/docker-cluster-test-c.sh ${{ needs.build.outputs.harperdbVersion }}"
+          "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/docker-cluster-test-c.sh && CONTAINER_TARBALL="${CONTAINER_TARBALL}" /home/ubuntu/harperdb/test/ci-tests/docker-cluster-test-c.sh ${{ needs.build.outputs.harperdbVersion }}"
     - name: 'Download Logs'
       if: always()
       run: |
