@@ -51,7 +51,7 @@ ENV SUMMARY="HarperDB is a globally-distributed edge application platform."
 ENV DESCRIPTION="HarperDB is a globally-distributed edge application platform comprised of an edge database, streaming broker, and user-defined applications delivering near-zero latency, huge cost savings, and a superior developer experience."
 
 # useful metadata
-LABEL name="harperdb/harperdb-openshift"
+LABEL name="harperdb/harperdb"
 LABEL vendor="HarperDB"
 LABEL version=${HARPERDB_VERSION}
 LABEL release=${HARPERDB_VERSION}
@@ -59,8 +59,8 @@ LABEL maintainer="support@harperdb.io"
 LABEL summary="${SUMMARY}"
 LABEL description="${DESCRIPTION}"
 LABEL help="https://docs.harperdb.io/"
-LABEL url="https://hub.docker.com/r/harperdb/harperdb-openshift"
-LABEL usage="https://hub.docker.com/r/harperdb/harperdb-openshift"
+LABEL url="https://hub.docker.com/r/harperdb/harperdb"
+LABEL usage="https://hub.docker.com/r/harperdb/harperdb"
 
 # pull from gha build
 LABEL build-date="${BUILD_DATE}"
