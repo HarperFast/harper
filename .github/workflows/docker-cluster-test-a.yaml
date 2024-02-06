@@ -82,6 +82,7 @@ jobs:
       - createInstances-arm64
     timeout-minutes: 20
     strategy:
+      fail-fast: false
       matrix:
         platform:
           - 'amd64'
