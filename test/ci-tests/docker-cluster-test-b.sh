@@ -40,9 +40,9 @@ docker_args="-d --restart no --network ClstrTestB -e HDB_ADMIN_USERNAME=admin -e
 
 # launch test containers
 sudo docker run --name ClstrTestB1 -e NODE_NAME=ClstrTestB1 -v `pwd`/integrationTests/:/home/harperdb/harperdb -v `pwd`/$artifact_dir/newman/:/home/harperdb/harperdb/integrationTests/newman -v `pwd`/$artifact_dir/ClstrTestB1/log:/home/harperdb/hdb/log ${docker_args}
-sudo docker run --name ClstrTestB2 -e NODE_NAME=ClstrTestB2 -v `pwd`/test/:/home/harperdb/harperdb/test -v `pwd`/$artifact_dir/ClstrTestB2/log:/home/harperdb/hdb/log ${docker_args}
-sudo docker run --name ClstrTestB3 -e NODE_NAME=ClstrTestB3 -v `pwd`/test/:/home/harperdb/harperdb/test -v `pwd`/$artifact_dir/ClstrTestB2/log:/home/harperdb/hdb/log ${docker_args}
-sudo docker run --name ClstrTestB4 -e NODE_NAME=ClstrTestB4 -v `pwd`/test/:/home/harperdb/harperdb/test -v `pwd`/$artifact_dir/ClstrTestB2/log:/home/harperdb/hdb/log ${docker_args}
+sudo docker run --name ClstrTestB2 -e NODE_NAME=ClstrTestB2 -v `pwd`/test/:/home/harperdb/harperdb/test:z -v `pwd`/$artifact_dir/ClstrTestB2/log:/home/harperdb/hdb/log ${docker_args}
+sudo docker run --name ClstrTestB3 -e NODE_NAME=ClstrTestB3 -v `pwd`/test/:/home/harperdb/harperdb/test:z -v `pwd`/$artifact_dir/ClstrTestB3/log:/home/harperdb/hdb/log ${docker_args}
+sudo docker run --name ClstrTestB4 -e NODE_NAME=ClstrTestB4 -v `pwd`/test/:/home/harperdb/harperdb/test:z -v `pwd`/$artifact_dir/ClstrTestB4/log:/home/harperdb/hdb/log ${docker_args}
 
 sleep 30s
 
