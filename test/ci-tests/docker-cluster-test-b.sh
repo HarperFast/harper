@@ -32,6 +32,9 @@ mkdir -p $artifact_dir/ClstrTestB2/
 mkdir -p $artifact_dir/ClstrTestB3/
 mkdir -p $artifact_dir/ClstrTestB4/
 
+# Chown so we can scp
+sudo chown -R ubuntu:ubuntu $artifact_dir
+
 # create network
 sudo docker network create ClstrTestB
 
@@ -66,8 +69,5 @@ sudo docker cp --follow-link ClstrTestB1:/home/harperdb/hdb/harperdb-config.yaml
 sudo docker cp --follow-link ClstrTestB2:/home/harperdb/hdb/harperdb-config.yaml $artifact_dir/ClstrTestB2/
 sudo docker cp --follow-link ClstrTestB3:/home/harperdb/hdb/harperdb-config.yaml $artifact_dir/ClstrTestB3/
 sudo docker cp --follow-link ClstrTestB4:/home/harperdb/hdb/harperdb-config.yaml $artifact_dir/ClstrTestB4/
-
-# Chown so we can scp
-sudo chown -R ubuntu:ubuntu $artifact_dir 
 
 exit $test_status
