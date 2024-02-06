@@ -27,10 +27,10 @@ sed -in "s/ubuntu/harperdb/" integrationTests/clusterTests/clusterTestB/Four_Nod
 
 # create output directories for test
 artifact_dir="artifact"
-mkdir -p $artifact_dir/ClstrTestB1/newman
-mkdir -p $artifact_dir/ClstrTestB2/
-mkdir -p $artifact_dir/ClstrTestB3/
-mkdir -p $artifact_dir/ClstrTestB4/
+mkdir --mode a+rx -p $artifact_dir/ClstrTestB1/newman
+mkdir --mode a+rx -p $artifact_dir/ClstrTestB2/
+mkdir --mode a+rx -p $artifact_dir/ClstrTestB3/
+mkdir --mode a+rx -p $artifact_dir/ClstrTestB4/
 
 # Chown so we can scp
 sudo chown -R ubuntu:ubuntu $artifact_dir
