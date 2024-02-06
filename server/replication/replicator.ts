@@ -13,15 +13,19 @@ import { decode, encode, Packr } from 'msgpackr';
 import { WebSocket } from 'ws';
 import { server } from '../Server';
 import { readFileSync } from 'fs';
+import { active_subscriptions, addNodeSubscription } from './activeSubscriptions';
+import { exportIdMapping, getNodeName, shortNodeIdMapping } from './nodeIdMapping';
 
 const SUBSCRIBE_CODE = 129;
 const SEND_NODE_ID = 140;
+const SEND_ID_MAPPING = 141;
 const SEND_TABLE_NAME = 130;
 const SEND_TABLE_STRUCTURE = 131;
 const SEND_TABLE_FIXED_STRUCTURE = 132;
 const table_update_listeners = new Map();
 let replication_disabled;
-let node_id, node_id_map;
+let node_id;
+let node_id_map: Map<string, Map<number, number>>;
 export function start(options) {
 	if (options?.manualAssignment) {
 		node_id = options.nodeId;
@@ -47,8 +51,12 @@ export function start(options) {
 function replicateOverWS(ws, options) {
 	console.log('registering', options);
 	let database_name = options.database;
-	ws.send(encode([SEND_NODE_ID, node_id, node_id_map, database_name]));
+	let audit_store;
+	if (database_name) registerDatabase(database_name);
 	const table_decoders = [];
+	let remote_node_name;
+	const remote_full_id_to_local_id = new Map();
+	let remote_short_id_to_local_id: Map<number, number>;
 	ws.on('message', (body) => {
 		// A replication header should consist of:
 		// transaction timestamp
@@ -72,29 +80,11 @@ function replicateOverWS(ws, options) {
 				case SEND_NODE_ID: {
 					// table_id is the remote node's id
 					// data is the map of its mapping of node guids to short ids
-					const remote_node_id = message[1];
-					const omitted_node_ids = [remote_node_id]; // TODO: This should be an array of all the node ids we will omit (should be ignored in the subscription)
-					database_name = database_name || data;
-					const database = (options.databases || databases)[database_name];
-					if (!database) {
-						console.error('No database named ' + database_name);
-						return;
-					}
-					let audit_store;
-					for (let table_name in database) {
-						const table = database[table_name];
-						audit_store = table.auditStore;
-						if (audit_store) break;
-					}
-					// once we have received the node id, and we know the database name that this connection is for,
-					// we can send a subscription request, if no other threads have subscribed. We use lmdb-js's locks to do this
-					if (audit_store.attemptLock('subscription', remote_node_id, async () => {
-						this.socket.send(encode([SUBSCRIBE_CODE, database_name, this.startTime, [], omitted_node_ids]));
-						console.log('sent subscription after it being released from another thread', this.url, database_name);
-					})) {
-						this.socket.send(encode([SUBSCRIBE_CODE, database_name, this.startTime, [], omitted_node_ids]));
-						console.log('sent subscription', this.url, database_name);
-					}
+					remote_node_name = message[1];
+					const omitted_node_ids = [remote_node_name]; // TODO: This should be an array of all the node ids we will omit (should be ignored in the subscription)
+					if (!database_name) registerDatabase(database_name = message[2]);
+					sendSubscriptionRequestUpdate();
+					// TODO: Listen to adc
 					break;
 				}
 				case SEND_TABLE_NAME:
@@ -106,6 +96,9 @@ function replicateOverWS(ws, options) {
 				case SEND_TABLE_FIXED_STRUCTURE:
 					table_connector = tables[table_id];
 					table_connector.decoder.typedStructs = data;
+					break;
+				case SEND_ID_MAPPING:
+					remote_short_id_to_local_id = shortNodeIdMapping(remote_node_name, data, audit_store);
 					break;
 				case SUBSCRIBE_CODE:
 					const [action, start_time, table_ids, remote_omitted_node_ids] = decode(body);
@@ -122,6 +115,7 @@ function replicateOverWS(ws, options) {
 						first_table = first_table || table;
 						table_by_id[table.tableId] = { table };
 					}
+					ws.send(encode([SEND_ID_MAPPING, exportIdMapping(remote_node_name, first_table.auditStore)]));
 					const encoder = new Encoder();
 					const current_transaction = { txnTime: 0 };
 					addSubscription(
@@ -203,6 +197,7 @@ function replicateOverWS(ws, options) {
 				table: tables[audit_record.tableId].name,
 				id: audit_record.recordId,
 				type: audit_record.type,
+				nodeId: remote_short_id_to_local_id.get(audit_record.nodeId),
 				timestamp: audit_record.version,
 				value: audit_record.getValue(tables[audit_record.tableId]),
 				user: audit_record.user,
@@ -215,7 +210,43 @@ function replicateOverWS(ws, options) {
 		} while (decoder.position < body.byteLength);
 		this.localQueue.send({ type: 'end_txn' });
 	});
+	function sendSubscriptionRequestUpdate() {
+		// once we have received the node id, and we know the database name that this connection is for,
+		// we can send a subscription request, if no other threads have subscribed.
+		let node_subscriptions = active_subscriptions.get(database_name);
+		if (!node_subscriptions) active_subscriptions.set(database_name, (node_subscriptions = new Map()));
+		if (!node_subscriptions.has(remote_node_name)) {
+			const omitted_node_ids = [];
+			for (const [node_id, ] of node_subscriptions) {
+				if (node_id !== remote_node_name) omitted_node_ids.push(node_id);
+			}
+			addNodeSubscription(database_name, remote_node_name, () => {
+				// TODO: The subscription list has changed, we either need to unsubscribe if another thread has taken over
+				// or add a node id to our list of omitted node ids
+			});
+			ws.send(encode([SUBSCRIBE_CODE, database_name, options.startTime, [], omitted_node_ids]));
+			console.log('sent subscription', options.url, database_name);
+		}
+	}
+	function registerDatabase(database_name) {
+		const database = (options.databases || databases)[database_name];
+		if (!database) {
+			console.error('No database named ' + database_name);
+			return;
+		}
+		for (let table_name in database) {
+			const table = database[table_name];
+			audit_store = table.auditStore;
+			if (audit_store) break;
+		}
+		if (!audit_store) {
+			console.error('No audit store found in ' + database_name);
+			return;
+		}
 
+		let this_node_name = getNodeName(audit_store);
+		ws.send(encode([SEND_NODE_ID, this_node_name, database_name]));
+	}
 }
 let encoding_start = 0;
 let encoding_buffer = Buffer.allocUnsafeSlow(1024);
