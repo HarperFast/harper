@@ -780,7 +780,7 @@ export function makeTable(options) {
 					return updateRecord(id, partial_record, entry, existing_version, EVICTED, null, null, 0, null, true);
 				}
 			}
-			primary_store.ifVersion(existing_version, () => {
+			primary_store.ifVersion(id, existing_version, () => {
 				updateIndices(id, existing_record, null);
 			});
 			if (audit) {
@@ -2755,14 +2755,18 @@ export function makeTable(options) {
 					const expires_at_name = expires_at_property.name;
 					const index = indices[expires_at_name];
 					if (!index) throw new Error(`expiresAt attribute ${expires_at_property} must be indexed`);
-					for (const { value: id } of index.getRange({
+					for (const { key, value: id } of index.getRange({
 						start: true,
 						end: Date.now(),
 						versions: true,
 						snapshot: false,
 					})) {
 						const record_entry = primary_store.getEntry(id);
-						if (record_entry?.value?.[expires_at_name] < Date.now()) {
+						if (!record_entry?.value) {
+							// cleanup the index if the record is gone
+							primary_store.ifVersion(id, record_entry?.version, () =>
+								index.remove(key, id));
+						} else if (record_entry.value[expires_at_name] < Date.now()) {
 							// make sure the record hasn't changed and won't change while removing
 							TableResource.evict(id, record_entry.value, record_entry.version);
 						}
