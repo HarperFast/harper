@@ -27,10 +27,10 @@ sed -in "s/ubuntu/harperdb/" integrationTests/clusterTests/clusterTestB/Four_Nod
 
 # create output directories for test
 artifact_dir="artifact"
-mkdir --mode a+rx -p $artifact_dir/ClstrTestB1/newman
-mkdir --mode a+rx -p $artifact_dir/ClstrTestB2/
-mkdir --mode a+rx -p $artifact_dir/ClstrTestB3/
-mkdir --mode a+rx -p $artifact_dir/ClstrTestB4/
+mkdir --mode a+rwx -p $artifact_dir/ClstrTestB1/newman
+mkdir --mode a+rwx -p $artifact_dir/ClstrTestB2/
+mkdir --mode a+rwx -p $artifact_dir/ClstrTestB3/
+mkdir --mode a+rwx -p $artifact_dir/ClstrTestB4/
 
 # create network
 sudo docker network create ClstrTestB
