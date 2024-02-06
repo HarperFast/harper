@@ -7,7 +7,7 @@ import { fromResource } from './RecordEncoder';
 
 const MAX_OPTIMISTIC_SIZE = 100;
 const tracked_txns = new Set<DatabaseTransaction>();
-const MAX_OUTSTANDING_TXN_DURATION = 1500; // Allow write transactions to be queued for up to 15 seconds before we start rejecting them
+const MAX_OUTSTANDING_TXN_DURATION = 25000; // Allow write transactions to be queued for up to 25 seconds before we start rejecting them
 export enum TRANSACTION_STATE {
 	CLOSED, // the transaction has been committed or aborted and can no longer be used for writes (if read txn is active, it can be used for reads)
 	OPEN, // the transaction is open and can be used for reads and writes
