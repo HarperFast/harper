@@ -80,7 +80,7 @@ jobs:
       - build
       - createInstances-amd64
       - createInstances-arm64
-    timeout-minutes: 20
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
