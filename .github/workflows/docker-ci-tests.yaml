@@ -51,13 +51,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        file:
-          - 'utility/Docker/Dockerfile'
-          - 'utility/Docker/Dockerfile-openshift'
+        name:
+          - 'standard'
+          - 'openshift'
         include:
-          - file: 'utility/Docker/Dockerfile'
+          - name: 'standard'
+            file: 'utility/Docker/Dockerfile'
             tarName: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-amd64.tar
-          - file: 'utility/Docker/Dockerfile-openshift'
+          - name: 'openshift'
+            file: 'utility/Docker/Dockerfile-openshift'
             tarName: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-openshift-amd64.tar
     steps:
     - uses: actions/checkout@v4
@@ -111,7 +113,7 @@ jobs:
     - name: 'Upload Artifact'
       uses: actions/upload-artifact@v4
       with:
-        name: logs
+        name: logs-${{ matrix.name }}
         path: artifact
         retention-days: 1
 
