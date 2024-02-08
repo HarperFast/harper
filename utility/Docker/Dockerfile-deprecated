@@ -1,7 +1,7 @@
 ARG NODE_VERSION
-FROM node:$NODE_VERSION-bullseye-slim
+FROM docker.io/node:$NODE_VERSION-bullseye-slim
 
-#ARG HARPERDB_TARBALL
+ARG HARPERDB_TARBALL
 ARG HARPERDB_VERSION
 
 # metadata for labels
@@ -29,8 +29,6 @@ LABEL usage="https://hub.docker.com/r/harperdb/harperdb"
 EXPOSE 9925
 EXPOSE 9926
 EXPOSE 9932
-
-USER root
 
 # Install ps
 RUN apt-get update && apt-get install -y procps git
@@ -69,8 +67,6 @@ ENV OPERATIONSAPI_NETWORK_PORT=9925
 ENV HDB_ADMIN_USERNAME=HDB_ADMIN
 ENV HDB_ADMIN_PASSWORD=password
 ENV LOGGING_STDSTREAMS=true
-
-RUN mkdir /home/harperdb/.npm-global && mkdir /home/harperdb/.npm && chown -R harperdb:harperdb /home/harperdb/.npm-global && chown -R 1000:1000 "/home/harperdb/.npm"
 
 #Set the user for the below instructions (respected by RUN, CMD, ENTRYPOINT only)
 USER harperdb

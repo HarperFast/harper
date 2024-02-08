@@ -33,7 +33,7 @@ jobs:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       nodeVersion: ${{ needs.build.outputs.nodeVersion }}
       container: 'tar'
-      file: 'utility/Docker/Dockerfile'
+      file: 'utility/Docker/Dockerfile-backup'
       platforms: ${{ matrix.platform }}
       get_dummy_licenses: true
 
@@ -113,7 +113,7 @@ jobs:
         
         mkdir logs-artifact
 
-        ssh -i private_key -o ConnectTimeout=30 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
+        ssh -i private_key -o ServerAliveInterval=3600 -o ConnectTimeout=30 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
           "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/docker-cluster-test-b.sh && CONTAINER_TARBALL="${CONTAINER_TARBALL}" /home/ubuntu/harperdb/test/ci-tests/docker-cluster-test-b.sh ${{ needs.build.outputs.harperdbVersion }}"
     - name: 'Download Logs'
       if: always()
