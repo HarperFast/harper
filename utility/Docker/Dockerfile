@@ -1,47 +1,10 @@
-FROM registry.access.redhat.com/ubi9/nodejs-18:latest as builder
+ARG NODE_VERSION
+FROM node:$NODE_VERSION-bullseye-slim
 
 ARG HARPERDB_TARBALL
 ARG HARPERDB_VERSION
 
-# for install only
-USER 0
-
-# Change UID and create symlink for compatibility
-#   we will do another chown in a few steps
-RUN usermod -u 1000 default && \
-    ln -s ${HOME} /home/harperdb && \
-    chmod -R u=rwx /home/harperdb
-
-#Copy HarperDB tarball
-COPY $HARPERDB_TARBALL .
-
-#Create installation directory, .harperdb directory and hdb_boot_properties.file
-RUN mkdir -p /home/harperdb/hdb && \
-    mkdir /home/harperdb/.harperdb && \
-    touch /home/harperdb/.harperdb/hdb_boot_properties.file && \
-    echo $'settings_path = /home/harperdb/hdb/harperdb-config.yaml\ninstall_user = default' > /home/harperdb/.harperdb/hdb_boot_properties.file
-
-# fix permissions -- requires root group
-RUN chown -R 1000:0 /home/harperdb /home/harperdb/.harperdb /home/harperdb/hdb
-
-#Set the user for the below instructions (respected by RUN, CMD, ENTRYPOINT only)
-USER 1000
-
-#Set the  working directory for the below instructions
-WORKDIR /home/harperdb/
-
-#Install HarperDB package and clean up tarball
-RUN npm install $HARPERDB_TARBALL && \
-    npm cache clean --force  && \
-    rm -f $HARPERDB_TARBALL
-
-# Runtime stage
-FROM registry.access.redhat.com/ubi9/nodejs-18-minimal:latest as runtime
-COPY --from=builder $HOME $HOME
-COPY --from=builder /etc/passwd /etc/passwd
-
 # metadata for labels
-ARG HARPERDB_VERSION
 ARG BUILD_DATE
 ARG VCS_REF
 ARG VCS_TYPE=git
@@ -62,29 +25,40 @@ LABEL help="https://docs.harperdb.io/"
 LABEL url="https://hub.docker.com/r/harperdb/harperdb"
 LABEL usage="https://hub.docker.com/r/harperdb/harperdb"
 
-# pull from gha build
-LABEL build-date="${BUILD_DATE}"
-LABEL vcs-ref="${VCS_REF}"
-LABEL vcs-type="${VCS_TYPE}"
+#Expose HarperDB ports
+EXPOSE 9925
+EXPOSE 9926
+EXPOSE 9932
 
-# inherited labels we need to overwrite
-LABEL io.k8s.description="${DESCRIPTION}"
-LABEL io.k8s.display-name="HarperDB"
-LABEL io.openshift.expose-services="9925:HTTP,9926:HTTP,9932:TCP"
-LABEL io.openshift.tags="harperdb"
-LABEL com.redhat.component="harperdb-container"
+# Install ps
+RUN apt-get update && apt-get install -y procps git
 
-# redhat labels we are allowing throug (except dev-mode.port)
-LABEL com.redhat.dev-mode.port="DEBUG_PORT:NA"
-# LABEL com.redhat.deployments-dir=""
-# LABEL com.redhat.dev-mode=""
-# LABEL com.redhat.license_terms=""
+# add Licensing files
+RUN mkdir /licenses
+COPY utility/Docker/licenses/* /licenses/.
 
-# labels we don't want
-LABEL io.buildah.version=""
-LABEL io.buildpacks.stack.id=""
-LABEL io.openshift.s2i.scripts-url=""
-LABEL io.s2i.scripts-url=""
+#Change node user and group to harperdb
+RUN usermod -d /home/harperdb -l harperdb node && \
+    groupmod -n harperdb node && \
+    rm -rf /home/node
+
+#Copy HarperDB tarball
+COPY --chown=harperdb:harperdb ./$HARPERDB_TARBALL /home/harperdb/$HARPERDB_TARBALL
+
+#Create installation directory, .harperdb directory and hdb_boot_properties.file
+RUN mkdir -p /home/harperdb/hdb && \
+  chown -R harperdb:harperdb /home/harperdb/hdb && \
+  mkdir /home/harperdb/.harperdb && \
+  touch /home/harperdb/.harperdb/hdb_boot_properties.file && \
+  echo 'settings_path = /home/harperdb/hdb/harperdb-config.yaml\ninstall_user = harperdb' > /home/harperdb/.harperdb/hdb_boot_properties.file && \
+  chown -R harperdb:harperdb /home/harperdb/.harperdb
+
+#Create mount point
+VOLUME /home/harperdb/hdb
+
+#Set npm global directory
+ENV NPM_CONFIG_PREFIX=/home/harperdb/.npm-global
+ENV PATH=/home/harperdb/.npm-global/bin:$PATH
 
 #Set HarperDB installation parameters
 ENV TC_AGREEMENT=yes
@@ -94,27 +68,16 @@ ENV HDB_ADMIN_USERNAME=HDB_ADMIN
 ENV HDB_ADMIN_PASSWORD=password
 ENV LOGGING_STDSTREAMS=true
 
-USER 0
-
-# re-create symlink for compatibility
-# install deps
-# RHCC Licensing files
-RUN ln -sf ${HOME} /home/harperdb && chmod -R u=rwx /home/harperdb && \
-    microdnf install --assumeyes --nodocs --refresh hostname git procps && microdnf clean all && \
-    mkdir /licenses
-
-COPY utility/Docker/licenses/* /licenses/.
-
-#Create mount point
-VOLUME /home/harperdb/hdb
-
-#Expose HarperDB ports
-EXPOSE 9925
-EXPOSE 9926
-EXPOSE 9932
-
 #Set the user for the below instructions (respected by RUN, CMD, ENTRYPOINT only)
-USER 1000
+USER harperdb
+
+#Set the  working directory for the below instructions
+WORKDIR /home/harperdb/
+
+#Install HarperDB package and clean up tarball
+RUN npm install -g $HARPERDB_TARBALL && \
+    npm cache clean --force && \
+    rm -f $HARPERDB_TARBALL
 
 #If no arguments are passed to docker run, execute HarperDB
 CMD ["harperdb"]
