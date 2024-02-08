@@ -36,7 +36,7 @@ jobs:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       nodeVersion: ${{ needs.build.outputs.nodeVersion }}
       container: 'tar'
-      file: 'utility/Docker/Dockerfile'
+      file: ${{ matrix.file }}
       get_dummy_licenses: true
 
   #############
