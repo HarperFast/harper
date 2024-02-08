@@ -1,5 +1,6 @@
 ARG NODE_VERSION
-FROM docker.io/node:$NODE_VERSION-bullseye-slim
+#FROM docker.io/node:$NODE_VERSION-bullseye-slim
+FROM docker.io/node:lts
 
 ARG HARPERDB_TARBALL
 ARG HARPERDB_VERSION
