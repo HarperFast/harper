@@ -61,6 +61,7 @@ jobs:
       - dockerBuild
     uses: ./.github/workflows/create-instances.yaml
     with:
+      file: 'utility/Docker/Dockerfile-deprecated'
       instanceCount: "1"
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       installType: "docker"
