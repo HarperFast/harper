@@ -33,7 +33,7 @@ jobs:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       nodeVersion: ${{ needs.build.outputs.nodeVersion }}
       container: 'tar'
-      file: 'utility/Docker/Dockerfile-backup'
+      file: 'utility/Docker/Dockerfile-deprecated'
       platforms: ${{ matrix.platform }}
       get_dummy_licenses: true
 
