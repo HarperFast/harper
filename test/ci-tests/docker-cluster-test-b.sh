@@ -56,7 +56,7 @@ sudo docker exec ClstrTestB1 /bin/bash -c 'npm install -g newman newman-reporter
 
 # Run cluster tests from first container
 sudo docker exec --user root ClstrTestB1 /bin/bash -c 'mkdir -p ~/harperdb/integrationTests/newman && chmod 777 ~/harperdb/integrationTests/newman'
-sudo docker exec ClstrTestB1 /bin/bash -c 'cd ~/harperdb/integrationTests/ && newman run clusterTests/clusterTestB/Four_Node_Cluster_Tests.postman_collection.json -e clusterTests/clusterTestB/Four_Node_Cluster_Tests_Env_vars.postman_environment.json --reporters teamcity,cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html  --delay-request 1000 --insecure --reporter-cli-show-timestamps'
+sudo docker exec ClstrTestB1 /bin/bash -c 'cd ~/harperdb/integrationTests/ && newman run clusterTests/clusterTestB/Four_Node_Cluster_Tests.postman_collection.json -e clusterTests/clusterTestB/Four_Node_Cluster_Tests_Env_vars.postman_environment.json --reporters teamcity,cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html --delay-request 5000 --insecure --reporter-cli-show-timestamps'
 test_status=$?
 
 # Capture sudo docker logs
