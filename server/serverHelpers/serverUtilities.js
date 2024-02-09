@@ -43,6 +43,7 @@ const { CONTEXT } = require('../../resources/Resource');
 const { _assignPackageExport } = require('../../index');
 const { transformReq } = require('../../utility/common_utils');
 const { server } = require('../../server/Server');
+const operation_log = harper_logger.loggerWithTag('operation');
 
 const operation_function_caller = require(`../../utility/OperationFunctionCaller`);
 
@@ -83,10 +84,10 @@ async function processLocalTransaction(req, operation_function) {
 			// the logging is actually going to happen.
 			// eslint-disable-next-line no-unused-vars
 			const { hdb_user, hdb_auth_header, password, ...clean_body } = req.body;
-			harper_logger.info(clean_body);
+			operation_log.info(clean_body);
 		}
 	} catch (e) {
-		harper_logger.error(e);
+		operation_log.error(e);
 	}
 
 	let data = await operation_function_caller.callOperationFunctionAsAwait(operation_function, req.body, null);
@@ -100,7 +101,7 @@ async function processLocalTransaction(req, operation_function) {
 	if (GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM[req.body.operation]) {
 		global_schema.setSchemaDataToGlobal((err) => {
 			if (err) {
-				harper_logger.error(err);
+				operation_log.error(err);
 			}
 		});
 	}
@@ -124,7 +125,7 @@ function chooseOperation(json) {
 	try {
 		getOpResult = getOperationFunction(json);
 	} catch (err) {
-		harper_logger.error(`Error when selecting operation function - ${err}`);
+		operation_log.error(`Error when selecting operation function - ${err}`);
 		throw err;
 	}
 
@@ -140,8 +141,8 @@ function chooseOperation(json) {
 			if (!json.bypass_auth) {
 				let ast_perm_check = sql.checkASTPermissions(json, parsed_sql_object);
 				if (ast_perm_check) {
-					harper_logger.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
-					harper_logger.warn(`User '${json.hdb_user.username}' is not permitted to ${json.operation}`);
+					operation_log.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
+					operation_log.warn(`User '${json.hdb_user.username}' is not permitted to ${json.operation}`);
 					throw handleHDBError(
 						new Error(),
 						ast_perm_check,
@@ -168,8 +169,8 @@ function chooseOperation(json) {
 			let verify_perms_result = op_auth.verifyPerms(operation_json, function_to_check);
 
 			if (verify_perms_result) {
-				harper_logger.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
-				harper_logger.warn(
+				operation_log.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
+				operation_log.warn(
 					`User '${operation_json.hdb_user.username}' is not permitted to ${operation_json.operation}`
 				);
 				throw handleHDBError(
@@ -189,7 +190,7 @@ function chooseOperation(json) {
 }
 
 function getOperationFunction(json) {
-	harper_logger.trace(`getOperationFunction with operation: ${json.operation}`);
+	operation_log.trace(`getOperationFunction with operation: ${json.operation}`);
 
 	if (OPERATION_FUNCTION_MAP.has(json.operation)) {
 		return OPERATION_FUNCTION_MAP.get(json.operation);
@@ -219,7 +220,7 @@ function operation(operation, authorize) {
 	return processLocalTransaction({ body: operation }, operation_function);
 }
 async function catchup(req) {
-	harper_logger.trace('In serverUtils.catchup');
+	operation_log.trace('In serverUtils.catchup');
 	let catchup_object = req.transaction;
 	let split_channel = catchup_object.channel.split(':');
 
@@ -245,14 +246,14 @@ async function catchup(req) {
 					result = await delete_.deleteRecord(transaction);
 					break;
 				default:
-					harper_logger.warn('invalid operation in catchup');
+					operation_log.warn('invalid operation in catchup');
 					break;
 			}
 
 			await transact_to_clustering_utils.postOperationHandler(transaction, result, req);
 		} catch (e) {
-			harper_logger.info('Invalid operation in transaction');
-			harper_logger.error(e);
+			operation_log.info('Invalid operation in transaction');
+			operation_log.error(e);
 		}
 	}
 }
@@ -265,7 +266,7 @@ async function executeJob(json) {
 	try {
 		result = await jobs.addJob(json);
 		new_job_object = result.createdJob;
-		harper_logger.info('addJob result', result);
+		operation_log.info('addJob result', result);
 		let job_runner_message = new job_runner.RunnerMessage(new_job_object, json);
 		await job_runner.parseMessage(job_runner_message);
 
@@ -275,7 +276,7 @@ async function executeJob(json) {
 		};
 	} catch (err) {
 		let message = `There was an error executing job: ${err.http_resp_msg ? err.http_resp_msg : err}`;
-		harper_logger.error(message);
+		operation_log.error(message);
 		throw handleHDBError(err, message);
 	}
 }

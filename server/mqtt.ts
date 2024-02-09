@@ -8,8 +8,9 @@ import { recordAction, addAnalyticsListener, recordActionBinary } from '../resou
 import { server } from '../server/Server';
 import { get } from '../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms';
-import { loggerWithTag, error as log_error, warn, info } from '../utility/logging/harper_logger.js';
+import { loggerWithTag } from '../utility/logging/harper_logger.js';
 const auth_event_log = loggerWithTag('auth-event');
+const mqtt_log = loggerWithTag('mqtt');
 
 let AUTHORIZE_LOCAL = get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? process.env.DEV_MODE;
 export function bypassAuth() {
@@ -24,6 +25,7 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 	if (webSocket)
 		server_instance = server.ws((ws, request, chain_completion) => {
 			if (ws.protocol === 'mqtt') {
+				mqtt_log.debug('Received WSS connection for MQTT from', ws._socket.remoteAddress);
 				const { onMessage, onClose } = onSocket(
 					ws,
 					(message, allow_backpressure) => {
@@ -41,7 +43,7 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 				ws.on('message', onMessage);
 				ws.on('close', onClose);
 				ws.on('error', (error) => {
-					info('WebSocket error', error);
+					mqtt_log.info('WebSocket error', error);
 				});
 			}
 		}, Object.assign({ subProtocol: 'mqtt' }, webSocket)); // if there is no port, we are piggy-backing off of default app http server
@@ -50,6 +52,7 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 		server_instance = server.socket(
 			async (socket) => {
 				let user;
+				mqtt_log.debug('Received connection for MQTT from', socket.remoteAddress);
 				if (mtls) {
 					if (socket.authorized) {
 						try {
@@ -59,12 +62,27 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 								if (username === undefined || username === 'Common Name' || username === 'CN')
 									username = socket.getPeerCertificate().subject.CN;
 								user = await server.getUser(username, null, null);
+								if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL)) {
+									auth_event_log.notify({
+										username: user.username,
+										status: AUTH_AUDIT_STATUS.SUCCESS,
+										type: AUTH_AUDIT_TYPES.AUTHENTICATION,
+										auth_strategy: 'MQTT mTLS',
+										remote_address: socket.remoteAddress,
+									});
+								}
+							} else {
+								mqtt_log.debug(
+									'MQTT mTLS authorized connection (mTLS did not authorize a user)',
+									'from',
+									socket.remoteAddress
+								);
 							}
 						} catch (error) {
-							log_error(error);
+							mqtt_log.error(error);
 						}
 					} else if (mtls.required) {
-						info(
+						mqtt_log.info(
 							`Unauthorized connection attempt, no authorized client certificate provided, error: ${socket.authorizationError}`
 						);
 						return socket.end();
@@ -72,13 +90,14 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 				}
 				if (!user && AUTHORIZE_LOCAL && socket.remoteAddress.includes('127.0.0.1')) {
 					user = await getSuperUser();
+					mqtt_log.debug('Auto-authorizing local connection', user?.username);
 				}
 
 				const { onMessage, onClose } = onSocket(socket, (message) => socket.write(message), null, user, mqtt_settings);
 				socket.on('data', onMessage);
 				socket.on('close', onClose);
 				socket.on('error', (error) => {
-					info('Socket error', error);
+					mqtt_log.info('Socket error', error);
 				});
 			},
 			{ port, securePort, mtls }
@@ -182,7 +201,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 						session = await session;
 						mqtt_settings.sessions.add(session);
 					} catch (error) {
-						log_error(error);
+						mqtt_log.error(error);
 						recordActionBinary(false, 'connection', 'mqtt', 'connect');
 						return sendPacket({
 							// Send a connection acknowledgment with indication of auth failure
@@ -214,7 +233,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 								general_topic
 							);
 						} catch (error) {
-							log_error(error);
+							mqtt_log.error(error);
 							session?.disconnect();
 							mqtt_settings.sessions.delete(session);
 						}
@@ -228,7 +247,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 						try {
 							granted_qos = (await session.addSubscription(subscription, subscription.qos >= 1)).qos || 0;
 						} catch (error) {
-							log_error(error);
+							mqtt_log.error(error);
 							granted_qos =
 								mqtt_options.protocolVersion < 5
 									? 0x80 // the only error code in v3.1.1
@@ -279,7 +298,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					try {
 						published = await session.publish(packet, data);
 					} catch (error) {
-						warn(error);
+						mqtt_log.warn(error);
 						if (packet.qos > 0) {
 							sendPacket(
 								{
@@ -333,7 +352,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					break;
 			}
 		} catch (error) {
-			log_error(error);
+			mqtt_log.error(error);
 			sendPacket({
 				// Send a subscription acknowledgment
 				cmd: 'disconnect',
