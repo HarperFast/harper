@@ -12,16 +12,6 @@ on:
   schedule:
     - cron: '0 13 * * 1-5'
   workflow_dispatch:
-    inputs:
-      containerName:
-        description: 'comma separated list of container image to test: "standard","openshift"'
-        default: '"standard","openshift"'
-        type: choice
-        options:
-          - '"standard"'
-          - '"openshift"'
-          - '"standard","openshift"'
-        required: false
 
 jobs:
   ####################
@@ -39,7 +29,9 @@ jobs:
     uses: ./.github/workflows/docker-build.yaml
     strategy:
       matrix:
-        name: ${{ fromJSON(format('[{0}]', inputs.containerName || '"standard","openshift"')) }}
+        name:
+          - 'standard'
+          - 'openshift'
         include:
           - name: 'standard'
             file: 'utility/Docker/Dockerfile'
@@ -63,7 +55,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        name: ${{ fromJSON(format('[{0}]', inputs.containerName || '"standard","openshift"')) }}
+        name:
+          - 'standard'
+          - 'openshift'
         include:
           - name: 'standard'
             file: 'utility/Docker/Dockerfile'
