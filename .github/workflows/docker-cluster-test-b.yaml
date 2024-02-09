@@ -26,9 +26,17 @@ jobs:
     uses: ./.github/workflows/docker-build.yaml
     strategy:
       matrix:
+        container:
+          - 'harperdb/harperdb'
+          - 'harperdb/harperdb-openshift'
         platform:
           - 'linux/amd64'
           - 'linux/arm64'
+        include:
+          - container: 'harperdb/harperdb'
+            file: 'utility/Docker/Dockerfile'
+          - container: 'harperdb/harperdb-openshift'
+            file: 'utility/Docker/Dockerfile-openshift'
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       container: 'tar'
