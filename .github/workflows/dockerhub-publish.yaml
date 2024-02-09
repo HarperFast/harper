@@ -93,7 +93,6 @@ jobs:
     uses: ./.github/workflows/docker-build.yaml
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-      nodeVersion: ${{ needs.build.outputs.nodeVersion }}
       container: ${{ inputs.container }}
       file: ${{ inputs.file }}
       latest: ${{ inputs.latest }}
@@ -121,7 +120,6 @@ jobs:
     uses: ./.github/workflows/docker-build.yaml
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-      nodeVersion: ${{ needs.build.outputs.nodeVersion }}
       container: ${{ inputs.container }}
       file: ${{ inputs.file }}
       latest: ${{ inputs.latest }}

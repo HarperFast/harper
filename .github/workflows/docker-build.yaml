@@ -23,9 +23,6 @@ on:
       harperdbVersion:
         required: true
         type: string
-      nodeVersion:
-        required: true
-        type: string
       container:
         description: 'Which container to build, harperdb/private, harperdb/harperdb, harperdb/fabric, harperdb/openshift, tar, or public for both harperdb and openshift'
         default: 'tar'
@@ -128,7 +125,6 @@ jobs:
           push: ${{ inputs.push }}
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |
-            NODE_VERSION=${{ inputs.nodeVersion }}
             HARPERDB_VERSION=${{ inputs.harperdbVersion }}
             HARPERDB_TARBALL=harperdb-${{ inputs.harperdbVersion }}.tgz
             VCS_REF=`git rev-parse HEAD`
@@ -164,7 +160,6 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           outputs: type=docker,dest=${{ steps.set-tar-name.outputs.tarName }}
           build-args: |
-            NODE_VERSION=${{ inputs.nodeVersion }}
             HARPERDB_VERSION=${{ inputs.harperdbVersion }}
             HARPERDB_TARBALL=harperdb-${{ inputs.harperdbVersion }}.tgz
             VCS_REF=`git rev-parse HEAD`

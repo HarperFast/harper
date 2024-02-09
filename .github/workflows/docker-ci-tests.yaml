@@ -12,6 +12,10 @@ on:
   schedule:
     - cron: '0 13 * * 1-5'
   workflow_dispatch:
+    inputs:
+      containerNames:
+        description: 'comma separated list of container image to test: "standard","openshift"'
+        default: '"standard","openshift"'
 
 jobs:
   ####################
@@ -29,12 +33,12 @@ jobs:
     uses: ./.github/workflows/docker-build.yaml
     strategy:
       matrix:
+        name: ${{ fromJSON(format('[{0}]', inputs.containerNames || '"standard","openshift"')) }}
         file:
           - 'utility/Docker/Dockerfile'
           - 'utility/Docker/Dockerfile-openshift'
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-      nodeVersion: ${{ needs.build.outputs.nodeVersion }}
       container: 'tar'
       file: ${{ matrix.file }}
       get_dummy_licenses: true

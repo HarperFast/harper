@@ -31,7 +31,6 @@ jobs:
           - 'linux/arm64'
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-      nodeVersion: ${{ needs.build.outputs.nodeVersion }}
       container: 'tar'
       file: 'utility/Docker/Dockerfile'
       platforms: ${{ matrix.platform }}
