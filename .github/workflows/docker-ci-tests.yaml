@@ -34,15 +34,12 @@ jobs:
     uses: ./.github/workflows/docker-build.yaml
     strategy:
       matrix:
-        name:
-          - 'standard'
-          - 'openshift'
+        name: ${{ fromJSON(format('[{0}]', inputs.containerName || '"standard","openshift"')) }}
         include:
           - name: 'standard'
             file: 'utility/Docker/Dockerfile'
           - name: 'openshift'
             file: 'utility/Docker/Dockerfile-openshift'
-    if: ${{ github.event_name != "workflow_dispatch" || contains( inputs.containerName, matrix.name ) }}
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       container: 'tar'
@@ -61,9 +58,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        name:
-          - 'standard'
-          - 'openshift'
+        name: ${{ fromJSON(format('[{0}]', inputs.containerName || '"standard","openshift"')) }}
         include:
           - name: 'standard'
             file: 'utility/Docker/Dockerfile'
@@ -71,7 +66,6 @@ jobs:
           - name: 'openshift'
             file: 'utility/Docker/Dockerfile-openshift'
             tarName: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-openshift-amd64.tar
-    if: ${{ github.event_name != "workflow_dispatch" || contains( inputs.containerName, matrix.name ) }}
     steps:
     - uses: actions/checkout@v4
     - uses: actions/download-artifact@v4
