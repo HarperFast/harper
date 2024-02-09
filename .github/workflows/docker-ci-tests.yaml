@@ -13,7 +13,7 @@ on:
     - cron: '0 13 * * 1-5'
   workflow_dispatch:
     inputs:
-      containerNames:
+      containerName:
         description: 'comma separated list of container image to test: "standard","openshift"'
         default: '"standard","openshift"'
         required: false
@@ -42,7 +42,7 @@ jobs:
             file: 'utility/Docker/Dockerfile'
           - name: 'openshift'
             file: 'utility/Docker/Dockerfile-openshift'
-    if: github.event_name != "workflow_dispatch" || contains( inputs.containerNames, matrix.name )
+    if: ${{ github.event_name != "workflow_dispatch" || contains( inputs.containerName, matrix.name ) }}
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       container: 'tar'
@@ -71,7 +71,7 @@ jobs:
           - name: 'openshift'
             file: 'utility/Docker/Dockerfile-openshift'
             tarName: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-openshift-amd64.tar
-    if: github.event_name != "workflow_dispatch" || contains( inputs.containerNames, matrix.name )
+    if: ${{ github.event_name != "workflow_dispatch" || contains( inputs.containerName, matrix.name ) }}
     steps:
     - uses: actions/checkout@v4
     - uses: actions/download-artifact@v4
