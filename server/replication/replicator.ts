@@ -107,7 +107,7 @@ function replicateOverWS(ws, options) {
 					const database_name = body.toString('utf8', 2, db_length + 2);
 					const start_time = decoder.getFloat64(2 + db_length);*/
 					const database = (options.databases || databases)[database_name];
-					console.log('receive subscription request', database_name, start_time, table_ids, omitted_node_ids, options);
+					console.log('receive subscription request', database_name, start_time, table_ids, options);
 					let first_table;
 					const table_by_id = [];
 					for (const key in database) {
