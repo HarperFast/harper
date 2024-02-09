@@ -16,6 +16,11 @@ on:
       containerName:
         description: 'comma separated list of container image to test: "standard","openshift"'
         default: '"standard","openshift"'
+        type: choice
+        options:
+          - '"standard"'
+          - '"openshift"'
+          - '"standard","openshift"'
         required: false
 
 jobs:
