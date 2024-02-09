@@ -34,9 +34,11 @@ jobs:
     strategy:
       matrix:
         name: ${{ fromJSON(format('[{0}]', inputs.containerNames || '"standard","openshift"')) }}
-        file:
-          - 'utility/Docker/Dockerfile'
-          - 'utility/Docker/Dockerfile-openshift'
+        include:
+          - name: "standard"
+            file: 'utility/Docker/Dockerfile'
+          - name: "openshift"
+            file: 'utility/Docker/Dockerfile-openshift'
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       container: 'tar'
@@ -55,9 +57,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        name:
-          - 'standard'
-          - 'openshift'
+        name: ${{ fromJSON(format('[{0}]', inputs.containerNames || '"standard","openshift"')) }}
         include:
           - name: 'standard'
             file: 'utility/Docker/Dockerfile'
