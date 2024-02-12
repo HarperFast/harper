@@ -9,14 +9,14 @@ on:
     - cron: '10 13 * * 1-5'
   workflow_dispatch:
     inputs:
-      containers:
-        description: 'list of containers to test'
-        default: '["harperdb/harperdb","harperdb/harperdb-openshift"]'
+      files:
+        description: 'list of container files to test'
+        default: '["utility/Docker/Dockerfile","utility/Docker/Dockerfile-openshift"]'
         type: choice
         options:
-          - '["harperdb/harperdb","harperdb/harperdb-openshift"]'
-          - '["harperdb/harperdb"]'
-          - '["harperdb/harperdb-openshift"]'
+          - '["utility/Docker/Dockerfile","utility/Docker/Dockerfile-openshift"]'
+          - '["utility/Docker/Dockerfile"]'
+          - '["utility/Docker/Dockerfile-openshift"]'
       platforms:
         description: 'list of platforms to test'
         default: '["linux/amd64","linux/arm64"]'
@@ -27,9 +27,9 @@ on:
           - '["linux/arm64"]'
   workflow_call:
     inputs:
-      containers:
-        description: 'list of containers to test'
-        default: '["harperdb/harperdb","harperdb/harperdb-openshift"]'
+      files:
+        description: 'list of container files to test'
+        default: '["utility/Docker/Dockerfile","utility/Docker/Dockerfile-openshift"]'
         type: string
       platforms:
         description: 'list of platforms to test'
@@ -53,15 +53,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        container: ${{ fromJSON(inputs.containers) }}
+        file: ${{ fromJSON(inputs.files) }}
         platform: ${{ fromJSON(inputs.platforms) }}
-        include:
-          - container: 'harperdb/harperdb'
-            file: 'utility/Docker/Dockerfile'
-          - container: 'harperdb/harperdb-openshift'
-            file: 'utility/Docker/Dockerfile-openshift'
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       file: ${{ matrix.file }}
       platform: ${{ matrix.platform }}
       clusterTest: 'test/ci-tests/docker-cluster-test-b.sh'
+    secrets: inherit
