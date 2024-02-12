@@ -67,7 +67,7 @@ jobs:
       callingWorkflow: ${{ github.workflow }}
       instanceType: ${{ inputs.platform == 'arm' && 'c7i.2xlarge' || 'c7gn.2xlarge' }}
       tfstateArtifactName: "tfstate-${{ needs.getSuffix.outputs.suffix }}"
-      containerTarball: docker-harperdb_$${{ inputs.harperdbVersion }}-${{ needs.getSuffix.outputs.suffix }}.tar
+      containerTarball: docker-harperdb_${{ inputs.harperdbVersion }}-${{ needs.getSuffix.outputs.suffix }}.tar
     secrets: inherit
 
   #############
