@@ -12,8 +12,8 @@ on:
         required: false
         type: string
       platform:
-        description: 'Which platform(s) to build for: amd64 or arm64'
-        default: "amd64"
+        description: 'Which platform(s) to build for: linux/amd64 or linux/arm64'
+        default: "linux/amd64"
         required: false
         type: string
       clusterTest:
@@ -68,7 +68,7 @@ jobs:
       harperdbVersion: ${{ inputs.harperdbVersion }}
       installType: "docker"
       callingWorkflow: ${{ github.workflow }}
-      instanceType: ${{ inputs.platform == 'arm' && 'c7i.2xlarge' || 'c7gn.2xlarge' }}
+      instanceType: ${{ inputs.platform == 'linux/arm64' && 'c7i.2xlarge' || 'c7gn.2xlarge' }}
       tfstateArtifactName: "tfstate-${{ needs.getSuffix.outputs.suffix }}"
       containerTarball: docker-harperdb_${{ inputs.harperdbVersion }}-${{ needs.getSuffix.outputs.suffix }}
     secrets: inherit
@@ -132,7 +132,7 @@ jobs:
     with:
       instanceCount: "1"
       callingWorkflow: ${{ github.workflow }}
-      instanceType: ${{ inputs.platform == 'arm' && 'c7i.2xlarge' || 'c7gn.2xlarge' }}
+      instanceType: ${{ inputs.platform == 'linux/arm64' && 'c7i.2xlarge' || 'c7gn.2xlarge' }}
       tfstateArtifactName: "tfstate-${{ needs.getSuffix.outputs.suffix }}"
     secrets: inherit
 

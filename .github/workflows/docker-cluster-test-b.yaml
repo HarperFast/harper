@@ -13,12 +13,12 @@ on:
           - '["utility/Docker/Dockerfile-openshift"]'
       platforms:
         description: 'list of platforms to test'
-        default: '["amd64","arm64"]'
+        default: '["linux/amd64","linux/arm64"]'
         type: choice
         options:
-          - '["amd64","arm64"]'
-          - '["amd64"]'
-          - '["arm64"]'
+          - '["linux/amd64","linux/arm64"]'
+          - '["linux/amd64"]'
+          - '["linux/arm64"]'
   workflow_call:
     inputs:
       files:
@@ -27,7 +27,7 @@ on:
         type: string
       platforms:
         description: 'list of platforms to test'
-        default: '["amd64","arm64"]'
+        default: '["linux/amd64","linux/arm64"]'
         type: string
 
 jobs:

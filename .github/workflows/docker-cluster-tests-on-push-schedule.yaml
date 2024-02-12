@@ -6,6 +6,7 @@ on:
       - "release_*"
   schedule:
     - cron: '8 13 * * 1-5'
+  workflow_dispatch:
 
 jobs:
   ####################
@@ -29,8 +30,8 @@ jobs:
           - 'utility/Docker/Dockerfile'
           - 'utility/Docker/Dockerfile-openshift'
         platform:
-          - 'amd64'
-          - 'arm64'
+          - 'linux/amd64'
+          - 'linux/arm64'
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       file: ${{ matrix.file }}
