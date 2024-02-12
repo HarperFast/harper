@@ -1,14 +1,34 @@
 name: "Run Docker Cluster Tests A"
 
 on:
-  push:
-    branches:
-      - main
-      - "release_*"
-  schedule:
-    - cron: '8 13 * * 1-5'
   workflow_dispatch:
+    inputs:
+      files:
+        description: 'list of container files to test'
+        default: '["utility/Docker/Dockerfile","utility/Docker/Dockerfile-openshift"]'
+        type: choice
+        options:
+          - '["utility/Docker/Dockerfile","utility/Docker/Dockerfile-openshift"]'
+          - '["utility/Docker/Dockerfile"]'
+          - '["utility/Docker/Dockerfile-openshift"]'
+      platforms:
+        description: 'list of platforms to test'
+        default: '["linux/amd64","linux/arm64"]'
+        type: choice
+        options:
+          - '["linux/amd64","linux/arm64"]'
+          - '["linux/amd64"]'
+          - '["linux/arm64"]'
   workflow_call:
+    inputs:
+      files:
+        description: 'list of container files to test'
+        default: '["utility/Docker/Dockerfile","utility/Docker/Dockerfile-openshift"]'
+        type: string
+      platforms:
+        description: 'list of platforms to test'
+        default: '["linux/amd64","linux/arm64"]'
+        type: string
 
 jobs:
   ####################
@@ -17,156 +37,22 @@ jobs:
   build:
     uses: ./.github/workflows/build.yaml
 
-  ##########################
-  #  Build Container Image
-  ##########################
-  dockerBuild:
-    needs:
-      - build
-    uses: ./.github/workflows/docker-build.yaml
-    strategy:
-      matrix:
-        platform:
-          - 'linux/amd64'
-          - 'linux/arm64'
-    with:
-      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-      container: 'tar'
-      file: 'utility/Docker/Dockerfile'
-      platforms: ${{ matrix.platform }}
-      get_dummy_licenses: true
-
   ##############################
-  #  Create Instances for tests
-  ##############################
-  createInstances-amd64:
+  #  Call Docker Test template
+  #    cluster test a
+  #############################
+  cluster-test-a:
     needs:
       - build
-      - dockerBuild
-    uses: ./.github/workflows/create-instances.yaml
-    with:
-      instanceCount: "1"
-      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-      installType: "docker"
-      callingWorkflow: ${{ github.workflow }}
-      instanceType: 'c7i.2xlarge'
-      tfstateArtifactName: "tfstate-amd64"
-      containerTarball: "docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-amd64.tar"
-    secrets: inherit
-
-  createInstances-arm64:
-    needs:
-      - build
-      - dockerBuild
-    uses: ./.github/workflows/create-instances.yaml
-    with:
-      instanceCount: "1"
-      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-      installType: "docker"
-      callingWorkflow: ${{ github.workflow }}
-      instanceType: 'c7gn.2xlarge'
-      tfstateArtifactName: "tfstate-arm64"
-      containerTarball: "docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-arm64.tar"
-    secrets: inherit
-
-  #############
-  #  Run Tests
-  ############
-  runTests:
-    runs-on: ubuntu-latest
-    needs:
-      - dockerBuild
-      - build
-      - createInstances-amd64
-      - createInstances-arm64
-    timeout-minutes: 20
+    uses: ./.github/workflows/docker-cluster-test.yaml
     strategy:
       fail-fast: false
       matrix:
-        platform:
-          - 'amd64'
-          - 'arm64'
-        include:
-          - platform: 'amd64'
-            instanceType: 'c7i.2xlarge'
-            publicDnsNames: ${{ needs.createInstances-amd64.outputs.publicDnsNames }}
-          - platform: 'arm64'
-            instanceType: 'c7gn.2xlarge'
-            publicDnsNames: ${{ needs.createInstances-arm64.outputs.publicDnsNames }}
-    steps:
-    - uses: actions/checkout@v4
-    - uses: actions/download-artifact@v4
-      with:
-        name: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-${{ matrix.platform }}.tar
-        path: utility/Docker
-    - name: Run Tests
-      env:
-        CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
-        CONTAINER_TARBALL: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-${{ matrix.platform }}.tar
-      run: |
-        #!/bin/bash
-        echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
-        public_dns_names=${{ matrix.publicDnsNames }}
-        public_dns_names=($public_dns_names)
-        public_dns_name="${public_dns_names[0]}"
-        
-        mkdir logs-artifact
-
-        ssh -i private_key -o ConnectTimeout=10 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
-          "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/docker-cluster-test-a.sh && CONTAINER_TARBALL="${CONTAINER_TARBALL}" /home/ubuntu/harperdb/test/ci-tests/docker-cluster-test-a.sh ${{ needs.build.outputs.harperdbVersion }}"
-    - name: 'Download Logs'
-      if: always()
-      run: |
-        #!/bin/bash
-        public_dns_names=${{ matrix.publicDnsNames }}
-        public_dns_names=($public_dns_names)
-        public_dns_name="${public_dns_names[0]}"
-        scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/artifact" "logs-artifact/"
-    - name: 'Upload Artifact'
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: logs-artifact-${{ matrix.platform }}
-        path: logs-artifact
-        retention-days: 1
-
-  ###############################
-  #  Cleanup (destroy instances)
-  ###############################
-  destroyInstances:
-    if: always()
-    needs: runTests
-    uses: ./.github/workflows/destroy-instances.yaml
-    strategy:
-      matrix:
-        platform:
-          - 'amd64'
-          - 'arm64'
-        include:
-          - platform: 'amd64'
-            instanceType: 'c7i.2xlarge'
-            tfstateArtifactName: 'tfstate-amd64'
-          - platform: 'arm64'
-            instanceType: 'c7gn.2xlarge'
-            tfstateArtifactName: 'tfstate-arm64'
+        file: ${{ fromJSON(inputs.files) || '["utility/Docker/Dockerfile","utility/Docker/Dockerfile-openshift"]'}}
+        platform: ${{ fromJSON(inputs.platforms) }}
     with:
-      instanceCount: "1"
-      callingWorkflow: ${{ github.workflow }}
-      instanceType: ${{ matrix.instanceType }}
-      tfstateArtifactName: ${{ matrix.tfstateArtifactName }}
+      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      file: ${{ matrix.file }}
+      platform: ${{ matrix.platform }}
+      clusterTest: 'test/ci-tests/docker-cluster-test-a.sh'
     secrets: inherit
-
-  #################################
-  #  Send Slack Message on failure
-  #################################
-  sendSlackMessage:
-    uses: ./.github/workflows/post-to-slack-channel.yaml
-    if: ${{ failure() && (github.event_name == 'schedule' || github.event_name == 'push') }}
-    secrets: inherit
-    needs:
-      - destroyInstances
-      - runTests
-      - createInstances-amd64
-      - createInstances-arm64
-      - dockerBuild
-      - build

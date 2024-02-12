@@ -1,12 +1,6 @@
 name: "Run Docker Cluster Tests B"
 
 on:
-  push:
-    branches:
-      - main
-      - "release_*"
-  schedule:
-    - cron: '10 13 * * 1-5'
   workflow_dispatch:
     inputs:
       files:
@@ -45,15 +39,16 @@ jobs:
 
   ##############################
   #  Call Docker Test template
+  #    cluster test b
   #############################
-  dockerBuild:
+  cluster-test-b:
     needs:
       - build
     uses: ./.github/workflows/docker-cluster-test.yaml
     strategy:
       fail-fast: false
       matrix:
-        file: ${{ fromJSON(inputs.files) }}
+        file: ${{ fromJSON(inputs.files) || '["utility/Docker/Dockerfile","utility/Docker/Dockerfile-openshift"]'}}
         platform: ${{ fromJSON(inputs.platforms) }}
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
