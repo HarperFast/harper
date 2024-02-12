@@ -8,7 +8,33 @@ on:
   schedule:
     - cron: '10 13 * * 1-5'
   workflow_dispatch:
+    inputs:
+      files:
+        description: 'list of container files to test'
+        default: '["harperdb/harperdb","harperdb/harperdb-openshift"]'
+        type: choice
+        options:
+          - '["harperdb/harperdb","harperdb/harperdb-openshift"]'
+          - '["harperdb/harperdb"]'
+          - '["harperdb/harperdb-openshift"]'
+      platforms:
+        description: 'list of platforms to test'
+        default: '["linux/amd64","linux/arm64"]'
+        type: choice
+        options:
+          - '["linux/amd64","linux/arm64"]'
+          - '["linux/amd64"]'
+          - '["linux/arm64"]'
   workflow_call:
+    inputs:
+      files:
+        description: 'list of container files to test'
+        default: '["harperdb/harperdb","harperdb/harperdb-openshift"]'
+        type: string
+      platforms:
+        description: 'list of platforms to test'
+        default: '["linux/amd64","linux/arm64"]'
+        type: string
 
 jobs:
   ####################
