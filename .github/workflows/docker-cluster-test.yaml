@@ -92,7 +92,7 @@ jobs:
     - name: Run Tests
       env:
         CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
-        CONTAINER_TARBALL: docker-harperdb_$${{ inputs.harperdbVersion }}-${{ needs.getSuffix.outputs.suffix }}
+        CONTAINER_TARBALL: docker-harperdb_${{ inputs.harperdbVersion }}-${{ needs.getSuffix.outputs.suffix }}
       run: |
         #!/bin/bash
         echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
