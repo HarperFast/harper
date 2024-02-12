@@ -13,12 +13,12 @@ on:
           - '["utility/Docker/Dockerfile-openshift"]'
       platforms:
         description: 'list of platforms to test'
-        default: '["linux/amd64","linux/arm64"]'
+        default: '["amd64","arm64"]'
         type: choice
         options:
-          - '["linux/amd64","linux/arm64"]'
-          - '["linux/amd64"]'
-          - '["linux/arm64"]'
+          - '["amd64","arm64"]'
+          - '["amd64"]'
+          - '["arm64"]'
   workflow_call:
     inputs:
       files:
@@ -27,7 +27,7 @@ on:
         type: string
       platforms:
         description: 'list of platforms to test'
-        default: '["linux/amd64","linux/arm64"]'
+        default: '["amd64","arm64"]'
         type: string
 
 jobs:
@@ -48,7 +48,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        file: ${{ fromJSON(inputs.files) || '["utility/Docker/Dockerfile","utility/Docker/Dockerfile-openshift"]'}}
+        file: ${{ fromJSON(inputs.files) }}
         platform: ${{ fromJSON(inputs.platforms) }}
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
