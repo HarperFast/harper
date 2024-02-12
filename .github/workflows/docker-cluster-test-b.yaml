@@ -9,8 +9,8 @@ on:
     - cron: '10 13 * * 1-5'
   workflow_dispatch:
     inputs:
-      files:
-        description: 'list of container files to test'
+      containers:
+        description: 'list of containers to test'
         default: '["harperdb/harperdb","harperdb/harperdb-openshift"]'
         type: choice
         options:
@@ -27,8 +27,8 @@ on:
           - '["linux/arm64"]'
   workflow_call:
     inputs:
-      files:
-        description: 'list of container files to test'
+      containers:
+        description: 'list of containers to test'
         default: '["harperdb/harperdb","harperdb/harperdb-openshift"]'
         type: string
       platforms:
@@ -53,12 +53,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        container:
-          - 'harperdb/harperdb'
-          - 'harperdb/harperdb-openshift'
-        platform:
-          - 'linux/amd64'
-          - 'linux/arm64'
+        container: ${{ fromJSON(inputs.containers) }}
+        platform: ${{ fromJSON(inputs.platforms) }}
         include:
           - container: 'harperdb/harperdb'
             file: 'utility/Docker/Dockerfile'

@@ -34,6 +34,9 @@ jobs:
       platforms: ${{ inputs.platform }}
       get_dummy_licenses: true
 
+  #################################
+  #  Generate suffix for artifacts
+  ################################
   getSuffix:
     runs-on: ubuntu-latest
     outputs:
@@ -67,7 +70,7 @@ jobs:
       callingWorkflow: ${{ github.workflow }}
       instanceType: ${{ inputs.platform == 'arm' && 'c7i.2xlarge' || 'c7gn.2xlarge' }}
       tfstateArtifactName: "tfstate-${{ needs.getSuffix.outputs.suffix }}"
-      containerTarball: docker-harperdb_${{ inputs.harperdbVersion }}-${{ needs.getSuffix.outputs.suffix }}.tar
+      containerTarball: docker-harperdb_${{ inputs.harperdbVersion }}-${{ needs.getSuffix.outputs.suffix }}
     secrets: inherit
 
   #############
@@ -84,12 +87,12 @@ jobs:
     - uses: actions/checkout@v4
     - uses: actions/download-artifact@v4
       with:
-        name: docker-harperdb_$${{ inputs.harperdbVersion }}-${{ needs.getSuffix.outputs.suffix }}.tar
+        name: docker-harperdb_$${{ inputs.harperdbVersion }}-${{ needs.getSuffix.outputs.suffix }}
         path: utility/Docker
     - name: Run Tests
       env:
         CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
-        CONTAINER_TARBALL: docker-harperdb_$${{ inputs.harperdbVersion }}-${{ needs.getSuffix.outputs.suffix }}.tar
+        CONTAINER_TARBALL: docker-harperdb_$${{ inputs.harperdbVersion }}-${{ needs.getSuffix.outputs.suffix }}
       run: |
         #!/bin/bash
         echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
