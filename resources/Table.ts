@@ -838,8 +838,9 @@ export function makeTable(options) {
 				validate: (txn_time) => {
 					if (!record_update) record_update = this[OWN_DATA];
 					if (full_update || (record_update && hasChanges(record_update))) {
-						this.validate(record_update, !full_update);
 						if (!context?.source) {
+							transaction.checkOverloaded();
+							this.validate(record_update, !full_update);
 							if (updated_time_property) {
 								record_update[updated_time_property.name] =
 									updated_time_property.type === 'Date'
@@ -1780,7 +1781,10 @@ export function makeTable(options) {
 				entry: this[ENTRY_PROPERTY],
 				nodeName: context?.nodeName,
 				validate: () => {
-					this.validate(message);
+					if (!context?.source) {
+						transaction.checkOverloaded();
+						this.validate(message);
+					}
 				},
 				before: apply_to_sources.publish?.bind(this, context, id, message),
 				beforeIntermediate: apply_to_sources_intermediate.publish?.bind(this, context, id, message),

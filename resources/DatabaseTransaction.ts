@@ -64,14 +64,16 @@ export class DatabaseTransaction implements Transaction {
 			this.doneReadTxn();
 		}
 	}
+	checkOverloaded() {
+		if (outstanding_commit && performance.now() - outstanding_commit_start > MAX_OUTSTANDING_TXN_DURATION) {
+			throw new ServerError('Outstanding write transactions have too long of queue, please try again later', 503);
+		}
+	}
 	addWrite(operation) {
 		if (this.open === TRANSACTION_STATE.CLOSED) {
 			throw new Error('Can not use a transaction that is no longer open');
 		}
 		// else
-		if (outstanding_commit && performance.now() - outstanding_commit_start > MAX_OUTSTANDING_TXN_DURATION) {
-			throw new ServerError('Outstanding write transactions have too long of queue, please try again later', 503);
-		}
 		if (this.open === TRANSACTION_STATE.LINGERING) {
 			// if the transaction is lingering, it is already committed, so we need to commit the write immediately
 			const immediate_txn = new DatabaseTransaction();
