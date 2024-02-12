@@ -102,6 +102,7 @@ export function makeTable(options) {
 		auditStore: audit_store,
 		schemaDefined: schema_defined,
 		dbisDB: dbis_db,
+		sealed,
 	} = options;
 	let { expirationMS: expiration_ms, evictionMS: eviction_ms, audit, trackDeletes: track_deletes } = options;
 	let { attributes } = options;
@@ -1828,6 +1829,15 @@ export function makeTable(options) {
 							const updated = validateValue(value[attribute.name], attribute, name + '.' + attribute.name);
 							if (updated) value[attribute.name] = updated;
 						}
+						if (attribute.sealed && value != null && typeof value === 'object') {
+							for (const key in value) {
+								if (!properties.find((property) => property.name === key)) {
+									(validation_errors || (validation_errors = [])).push(
+										`Property ${key} is not allowed within object in property ${name}`
+									);
+								}
+							}
+						}
 					} else {
 						switch (attribute.type) {
 							case 'Int':
@@ -1927,6 +1937,13 @@ export function makeTable(options) {
 				if (!patch || attribute.name in record) {
 					const updated = validateValue(record[attribute.name], attribute, attribute.name);
 					if (updated) record[attribute.name] = updated;
+				}
+			}
+			if (sealed) {
+				for (const key in record) {
+					if (!attributes.find((attribute) => attribute.name === key)) {
+						(validation_errors || (validation_errors = [])).push(`Property ${key} is not allowed`);
+					}
 				}
 			}
 

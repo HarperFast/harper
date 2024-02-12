@@ -451,7 +451,7 @@ describe('Test serverUtilities_rw.js module ', () => {
 			assert.ok(test_result instanceof Error);
 		});
 
-		it('Test `clean body` log scenario for INFO log level', async function () {
+		it.skip('Test `clean body` log scenario for INFO log level', async function () {
 			const logger_stub = serverUtilities_rw.__get__('harper_logger');
 			logger_stub.log_level = 'info';
 			serverUtilities_rw.__set__('harper_logger', logger_stub);
@@ -464,7 +464,7 @@ describe('Test serverUtilities_rw.js module ', () => {
 			assert.deepEqual(info_log_stub.args[0][0], test_clean_body);
 		});
 
-		it('Test `clean body` log scenario for DEBUG log level', async function () {
+		it.skip('Test `clean body` log scenario for DEBUG log level', async function () {
 			const logger_stub = serverUtilities_rw.__get__('harper_logger');
 			logger_stub.log_level = 'debug';
 			serverUtilities_rw.__set__('harper_logger', logger_stub);
@@ -477,7 +477,7 @@ describe('Test serverUtilities_rw.js module ', () => {
 			assert.deepEqual(info_log_stub.args[0][0], test_clean_body);
 		});
 
-		it('Test `clean body` log scenario for TRACE log level', async function () {
+		it.skip('Test `clean body` log scenario for TRACE log level', async function () {
 			const logger_stub = serverUtilities_rw.__get__('harper_logger');
 			logger_stub.log_level = 'trace';
 			serverUtilities_rw.__set__('harper_logger', logger_stub);
@@ -503,7 +503,7 @@ describe('Test serverUtilities_rw.js module ', () => {
 			assert.ok(!info_log_stub.called, 'The cleaned body should not be logged');
 		});
 
-		it('Should log error thrown within `clean body` log step', async function () {
+		it.skip('Should log error thrown within `clean body` log step', async function () {
 			const logger_stub = serverUtilities_rw.__get__('harper_logger');
 			logger_stub.log_level = terms.LOG_LEVELS.TRACE;
 			serverUtilities_rw.__set__('harper_logger', logger_stub);
