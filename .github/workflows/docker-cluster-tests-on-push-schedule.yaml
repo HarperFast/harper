@@ -6,6 +6,7 @@ on:
       - "release_*"
   schedule:
     - cron: '8 13 * * 1-5'
+  pull_request:
   workflow_dispatch:
 
 jobs:
