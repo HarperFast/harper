@@ -68,7 +68,7 @@ jobs:
       harperdbVersion: ${{ inputs.harperdbVersion }}
       installType: "docker"
       callingWorkflow: ${{ github.workflow }}
-      instanceType: ${{ inputs.platform == 'linux/arm64' && 'c7i.2xlarge' || 'c7gn.2xlarge' }}
+      instanceType: ${{ inputs.platform == 'linux/arm64' && 'c7gn.2xlarge' || 'c7i.2xlarge' }}
       tfstateArtifactName: "tfstate-${{ needs.getSuffix.outputs.suffix }}"
       containerTarball: docker-harperdb_${{ inputs.harperdbVersion }}-${{ needs.getSuffix.outputs.suffix }}
     secrets: inherit
