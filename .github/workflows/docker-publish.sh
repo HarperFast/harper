@@ -1,4 +1,4 @@
-name: Dockerhub Publish
+name: Docker Publish
 
 on:
   workflow_dispatch:
@@ -35,7 +35,7 @@ on:
           - "linux/amd64"
           - "linux/arm64"
       push:
-        description: 'push the resultant image to dockerhub. ignored when tar'
+        description: 'push the created image to dockerhub. ignored when tar'
         default: false
         required: false
         type: boolean
