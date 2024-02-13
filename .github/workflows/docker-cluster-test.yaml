@@ -55,8 +55,11 @@ jobs:
           [[ "${containerFile}" == *"-openshift" ]] && flavor='-openshift' || flavor=''
           arch="-${platform##*/}"
           echo "suffix=${runNumber}${flavor}${arch}.tar" >> $GITHUB_OUTPUT
-          [[ "${arch}" == "amd64" ]] && echo "instanceType=c7i.2xlarge" >> $GITHUB_OUTPUT
-          [[ "${arch}" == "arm64" ]] && echo "instanceType=c7gn.2xlarge" >> $GITHUB_OUTPUT
+          if [[ "${arch}" == "amd64" ]]; then
+            echo "instanceType=c7i.2xlarge" >> $GITHUB_OUTPUT
+          elif [[ "${arch}" == "arm64" ]]; then
+            echo "instanceType=c7gn.2xlarge" >> $GITHUB_OUTPUT
+          fi
 
   ##############################
   #  Create Instances for tests
