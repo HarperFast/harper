@@ -43,7 +43,7 @@ jobs:
       suffix: ${{ steps.get-values.outputs.suffix }}
       instanceType: ${{ steps.get-values.outputs.instanceType }}
     steps:
-      - name: 'Get suffix'
+      - name: 'Get values'
         id: get-values
         env:
           harperdbVersion: ${{ inputs.harperdbVersion }}
@@ -55,9 +55,9 @@ jobs:
           [[ "${containerFile}" == *"-openshift" ]] && flavor='-openshift' || flavor=''
           arch="-${platform##*/}"
           echo "suffix=${runNumber}${flavor}${arch}.tar" >> $GITHUB_OUTPUT
-          if [[ "${arch}" == "amd64" ]]; then
+          if [[ "${platform##*/}" == "amd64" ]]; then
             echo "instanceType=c7i.2xlarge" >> $GITHUB_OUTPUT
-          elif [[ "${arch}" == "arm64" ]]; then
+          elif [[ "${platform##*/}" == "arm64" ]]; then
             echo "instanceType=c7gn.2xlarge" >> $GITHUB_OUTPUT
           fi
 
