@@ -37,13 +37,14 @@ jobs:
   #################################
   #  Generate suffix for artifacts
   ################################
-  getSuffix:
+  getValues:
     runs-on: ubuntu-latest
     outputs:
-      suffix: ${{ steps.get-suffix.outputs.suffix }}
+      suffix: ${{ steps.get-values.outputs.suffix }}
+      instanceType: ${{ steps.get-values.outputs.instanceType }}
     steps:
       - name: 'Get suffix'
-        id: get-suffix
+        id: get-values
         env:
           harperdbVersion: ${{ inputs.harperdbVersion }}
           runNumber: ${{ github.run_number }}
@@ -54,6 +55,8 @@ jobs:
           [[ "${containerFile}" == *"-openshift" ]] && flavor='-openshift' || flavor=''
           arch="-${platform##*/}"
           echo "suffix=${runNumber}${flavor}${arch}.tar" >> $GITHUB_OUTPUT
+          [[ "${arch}" == "amd64" ]] && echo "instanceType=c7i.2xlarge" >> $GITHUB_OUTPUT
+          [[ "${arch}" == "arm64" ]] && echo "instanceType=c7gn.2xlarge" >> $GITHUB_OUTPUT
 
   ##############################
   #  Create Instances for tests
@@ -61,16 +64,16 @@ jobs:
   createInstances:
     needs:
       - dockerBuild
-      - getSuffix
+      - getValues
     uses: ./.github/workflows/create-instances.yaml
     with:
       instanceCount: "1"
       harperdbVersion: ${{ inputs.harperdbVersion }}
       installType: "docker"
       callingWorkflow: ${{ github.workflow }}
-      instanceType: ${{ inputs.platform != 'linux/arm64' && 'c7gn.2xlarge' || 'c7i.2xlarge' }}
-      tfstateArtifactName: "tfstate-${{ needs.getSuffix.outputs.suffix }}"
-      containerTarball: docker-harperdb_${{ inputs.harperdbVersion }}-${{ needs.getSuffix.outputs.suffix }}
+      instanceType: ${{ needs.getValues.outputs.instanceType }}
+      tfstateArtifactName: "tfstate-${{ needs.getValues.outputs.suffix }}"
+      containerTarball: docker-harperdb_${{ inputs.harperdbVersion }}-${{ needs.getValues.outputs.suffix }}
     secrets: inherit
 
   #############
@@ -81,18 +84,18 @@ jobs:
     needs:
       - dockerBuild
       - createInstances
-      - getSuffix
+      - getValues
     timeout-minutes: 40
     steps:
     - uses: actions/checkout@v4
     - uses: actions/download-artifact@v4
       with:
-        name: docker-harperdb_${{ inputs.harperdbVersion }}-${{ needs.getSuffix.outputs.suffix }}
+        name: docker-harperdb_${{ inputs.harperdbVersion }}-${{ needs.getValues.outputs.suffix }}
         path: utility/Docker
     - name: Run Tests
       env:
         CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
-        CONTAINER_TARBALL: docker-harperdb_${{ inputs.harperdbVersion }}-${{ needs.getSuffix.outputs.suffix }}
+        CONTAINER_TARBALL: docker-harperdb_${{ inputs.harperdbVersion }}-${{ needs.getValues.outputs.suffix }}
       run: |
         #!/bin/bash
         echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
@@ -116,7 +119,7 @@ jobs:
       uses: actions/upload-artifact@v4
       if: always()
       with:
-        name: logs-artifact-${{ needs.getSuffix.outputs.suffix }}
+        name: logs-artifact-${{ needs.getValues.outputs.suffix }}
         path: logs-artifact
         retention-days: 1
 
@@ -127,13 +130,13 @@ jobs:
     if: always()
     needs:
       - runTests
-      - getSuffix
+      - getValues
     uses: ./.github/workflows/destroy-instances.yaml
     with:
       instanceCount: "1"
       callingWorkflow: ${{ github.workflow }}
-      instanceType: ${{ inputs.platform != 'linux/arm64' && 'c7gn.2xlarge' || 'c7i.2xlarge' }}
-      tfstateArtifactName: "tfstate-${{ needs.getSuffix.outputs.suffix }}"
+      instanceType: ${{ needs.getValues.outputs.instanceType }}
+      tfstateArtifactName: "tfstate-${{ needs.getValues.outputs.suffix }}"
     secrets: inherit
 
   #################################
