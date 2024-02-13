@@ -1,6 +1,5 @@
 name: "Run All Docker Cluster Tests"
 on:
-  pull_request:
   push:
     branches:
       - main
