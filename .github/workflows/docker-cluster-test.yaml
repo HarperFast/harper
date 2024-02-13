@@ -108,7 +108,7 @@ jobs:
         
         mkdir logs-artifact
 
-        ssh -i private_key -o ServerAliveInterval=3600 -o ConnectTimeout=30 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
+        ssh -i private_key -o ServerAliveInterval=60 -o TCPKeepAlive=no -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
           "sudo chmod +x /home/ubuntu/harperdb/${{ inputs.clusterTest }} && CONTAINER_TARBALL="${CONTAINER_TARBALL}" /home/ubuntu/harperdb/${{ inputs.clusterTest }} ${{ inputs.harperdbVersion }}"
     - name: 'Download Logs'
       if: always()
