@@ -149,8 +149,6 @@ jobs:
     uses: ./.github/workflows/post-to-slack-channel.yaml
     if: ${{ failure() && (github.event_name == 'schedule' || github.event_name == 'push') }}
     secrets: inherit
-    with:
-      slack_message: "this is a test: ${{ github.workflow }}/${{ github.job }} Failed.\nSee logs here: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
     needs:
       - destroyInstances
       - runTests
