@@ -35,6 +35,7 @@ jobs:
   #  Build HarperDB
   ####################
   build:
+    if: ${{ 'a' == 'b' }}
     uses: ./.github/workflows/build.yaml
 
   ##############################
