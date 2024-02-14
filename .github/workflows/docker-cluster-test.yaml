@@ -151,7 +151,7 @@ jobs:
     #if: ${{ failure() && (github.event_name == 'schedule' || github.event_name == 'push') }}
     secrets: inherit
     with:
-      slack-message: "${{ github.workflow }} ${{ github.job }} Failed.\nSee logs here: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      slack_message: "${{ github.workflow }} ${{ github.job }} Failed.\nSee logs here: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
     needs:
       - destroyInstances
       - runTests
