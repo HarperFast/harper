@@ -26,6 +26,7 @@ jobs:
   #  Build Container Image
   ##########################
   dockerBuild:
+    if: false
     uses: ./.github/workflows/docker-build.yaml
     with:
       harperdbVersion: ${{ inputs.harperdbVersion }}
@@ -65,6 +66,7 @@ jobs:
   #  Create Instances for tests
   ##############################
   createInstances:
+    if: false
     needs:
       - dockerBuild
       - getValues
@@ -83,6 +85,7 @@ jobs:
   #  Run Tests
   ############
   runTests:
+    if: false
     runs-on: ubuntu-latest
     needs:
       - dockerBuild
@@ -147,11 +150,10 @@ jobs:
   #################################
   sendSlackMessage:
     uses: ./.github/workflows/post-to-slack-channel.yaml
-    if: ${{ failure() }}
     #if: ${{ failure() && (github.event_name == 'schedule' || github.event_name == 'push') }}
     secrets: inherit
     with:
-      slack_message: "${{ github.workflow }} ${{ github.job }} Failed.\nSee logs here: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      slack_message: "this is a test: ${{ github.workflow }}/${{ github.job }} Failed.\nSee logs here: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
     needs:
       - destroyInstances
       - runTests
