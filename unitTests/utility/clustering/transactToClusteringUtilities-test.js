@@ -6,17 +6,12 @@ const { expect } = chai;
 const rewire = require('rewire');
 const env_manager = require('../../../utility/environment/environmentManager');
 const nats_utils = require('../../../server/nats/utility/natsUtils');
-const nats_terms = require('../../../server/nats/utility/natsTerms');
 const InsertObject = require('../../../dataLayer/InsertObject');
 const UpdateObject = require('../../../dataLayer/UpdateObject');
 const UpsertObject = require('../../../dataLayer/UpsertObject');
 const DeleteObject = require('../../../dataLayer/DeleteObject');
-const CreateTableObject = require('../../../dataLayer/CreateTableObject');
 const CreateAttributeObject = require('../../../dataLayer/CreateAttributeObject');
 const transactToClusteringUtilities = rewire('../../../utility/clustering/transactToClusteringUtilities');
-
-const HDB_SCHEMA_STREAM_NAME = nats_terms.SCHEMA_QUEUE_CONSUMER_NAMES.stream_name;
-const HDB_SCHEMA_SUBJECT_NAME = nats_terms.SCHEMA_QUEUE_CONSUMER_NAMES.deliver_subject;
 
 const USER = {
 	username: 'HDB_ADMIN',

@@ -78,6 +78,15 @@ async function addNode(req, skip_validation = false) {
 		await clustering_utils.getSystemInfo()
 	);
 
+	let subs_for_record = [];
+	for (let i = 0, sub_length = added.length; i < sub_length; i++) {
+		const added_sub = added[i];
+		if (added[i].start_time === undefined) delete added[i].start_time;
+		subs_for_record.push(
+			new NodeSubscription(added_sub.schema, added_sub.table, added_sub.publish, added_sub.subscribe)
+		);
+	}
+
 	hdb_logger.trace('addNode sending remote payload:', remote_payload);
 	let reply;
 	try {
@@ -85,6 +94,15 @@ async function addNode(req, skip_validation = false) {
 		reply = await nats_utils.request(`${remote_node_name}.${nats_terms.REQUEST_SUFFIX}`, remote_payload);
 	} catch (req_err) {
 		hdb_logger.error(`addNode received error from request: ${req_err}`);
+
+		// If an error occurs during the request to remote node, undo any consumers that might have been added on tihs node
+		for (let i = 0, sub_length = added.length; i < sub_length; i++) {
+			const added_sub = added[i];
+			added_sub.publish = false;
+			added_sub.subscribe = false;
+			await nats_utils.updateRemoteConsumer(added_sub, remote_node_name);
+		}
+
 		const error_msg = nats_utils.requestErrorHandler(req_err, 'add_node', remote_node_name);
 		throw handleHDBError(new Error(), error_msg, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR, 'error', error_msg);
 	}
@@ -97,17 +115,14 @@ async function addNode(req, skip_validation = false) {
 
 	hdb_logger.trace(reply);
 
-	// The request above is sent before the stream update and upsert in case an error occurs and request is rejected.
-	// Update the work queue stream with the new subscriptions.
-	let subs_for_record = [];
+	// If this node is subscribed to the other node we create a consumer on the other node
+	// and then init a msg iterator on this node for the newly created consumer.
 	for (let i = 0, sub_length = added.length; i < sub_length; i++) {
 		const added_sub = added[i];
-		hdb_logger.trace('Add node updating work stream for node:', remote_node_name, 'subscriptions:', added_sub);
-		await nats_utils.updateWorkStream(added_sub, remote_node_name);
-		if (added[i].start_time === undefined) delete added[i].start_time;
-		subs_for_record.push(
-			new NodeSubscription(added_sub.schema, added_sub.table, added_sub.publish, added_sub.subscribe)
-		);
+		await nats_utils.updateRemoteConsumer(added_sub, remote_node_name);
+		if (added_sub.subscribe === true) {
+			await nats_utils.updateConsumerIterator(added_sub.schema, added_sub.table, remote_node_name, 'start');
+		}
 	}
 
 	// Add new node record to hdb_nodes table.

@@ -25,7 +25,8 @@ async function getRemoteSourceConfig(req) {
 
 		const response = new ConfigResponseObject(
 			env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT),
-			env_mgr.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT),
+			env_mgr.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT) ??
+				env_mgr.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT),
 			time_elapsed,
 			await clustering_utils.getSystemInfo()
 		);

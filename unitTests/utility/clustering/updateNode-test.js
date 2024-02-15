@@ -18,8 +18,9 @@ describe('Test updateNode module', () => {
 	let request_stub;
 	let upsert_node_record_stub;
 	let hdb_log_error_stub;
-	let update_work_stream_stub;
 	let create_table_streams_stub;
+	let update_remote_consumer_stub;
+	let update_consumer_iterator_stub;
 	let review_subs_stub = sandbox.stub();
 	const test_request = {
 		operation: 'update_node',
@@ -85,8 +86,9 @@ describe('Test updateNode module', () => {
 		request_stub = sandbox.stub(nats_utils, 'request').resolves(fake_reply);
 		upsert_node_record_stub = sandbox.stub(clustering_utils, 'upsertNodeRecord').resolves();
 		hdb_log_error_stub = sandbox.stub(hdb_logger, 'error');
-		update_work_stream_stub = sandbox.stub(nats_utils, 'updateWorkStream');
 		create_table_streams_stub = sandbox.stub(nats_utils, 'createTableStreams');
+		update_remote_consumer_stub = sandbox.stub(nats_utils, 'updateRemoteConsumer');
+		update_consumer_iterator_stub = sandbox.stub(nats_utils, 'updateConsumerIterator');
 		env_mgr.setProperty('clustering_enabled', true);
 	});
 
@@ -176,12 +178,34 @@ describe('Test updateNode module', () => {
 		const result = await updateNode(test_request);
 		expect(request_stub.args[0][0]).to.eql('remote_node_test.__request__');
 		expect(request_stub.args[0][1]).to.eql(expected_payload);
-		expect(update_work_stream_stub.getCall(0).args[0]).to.eql(test_request.subscriptions[0]);
-		expect(update_work_stream_stub.getCall(0).args[1]).to.eql('remote_node_test');
-		expect(update_work_stream_stub.getCall(1).args[0]).to.eql(test_request.subscriptions[1]);
-		expect(update_work_stream_stub.getCall(1).args[1]).to.eql('remote_node_test');
-		expect(update_work_stream_stub.callCount).to.equal(2);
 		expect(upsert_node_record_stub.args[0][0]).to.eql(expected_node_record);
+		expect(update_remote_consumer_stub.callCount).to.equal(2);
+		expect(update_remote_consumer_stub.args).to.eql([
+			[
+				{
+					schema: 'country',
+					table: 'england',
+					subscribe: true,
+					publish: false,
+					start_time: '2022-08-26T18:26:58.514Z',
+				},
+				'remote_node_test',
+			],
+			[
+				{
+					schema: 'dog',
+					table: 'poodle',
+					subscribe: true,
+					publish: true,
+				},
+				'remote_node_test',
+			],
+		]);
+		expect(update_consumer_iterator_stub.args).to.eql([
+			['country', 'england', 'remote_node_test', 'start'],
+			['dog', 'poodle', 'remote_node_test', 'start'],
+		]);
+
 		expect(result).to.eql({
 			message: "Successfully updated 'remote_node_test'",
 			skipped: [],
@@ -212,7 +236,6 @@ describe('Test updateNode module', () => {
 			test_utils.generateHDBError('Error returned from remote node remote_node_test: Error from remote node', 500)
 		);
 		expect(upsert_node_record_stub.called).to.be.false;
-		expect(update_work_stream_stub.called).to.be.false;
 	});
 
 	it('Test error is handled correctly if no remote nodes listening', async () => {
@@ -225,6 +248,5 @@ describe('Test updateNode module', () => {
 			test_utils.generateHDBError("Unable to update_node, node 'remote_node_test' is not listening.", 500)
 		);
 		expect(upsert_node_record_stub.called).to.be.false;
-		expect(update_work_stream_stub.called).to.be.false;
 	});
 });

@@ -19,8 +19,8 @@
   },
   "engines": {
     "minimum-node": "16.0.0",
-    "go-lang": "1.21.1",
-    "nats-server": "2.10.1"
+    "go-lang": "1.21.6",
+    "nats-server": "2.10.10"
   },
   "exports": {
     ".": "./index.js"
@@ -101,7 +101,7 @@
     "moment": "2.29.4",
     "mqtt-packet": "~8.2.1",
     "msgpackr": "1.10.1",
-    "nats": "2.17.0",
+    "nats": "2.19.0",
     "needle": "3.2.0",
     "node-stream-zip": "1.15.0",
     "node-unix-socket": "0.2.5",
@@ -154,8 +154,8 @@
     "mqtt": "~4.3.7",
     "newman": "5.3.2",
     "newman-reporter-html": "1.0.5",
-    "newman-reporter-htmlextra": "^1.22.11",
-    "newman-reporter-teamcity": "^0.1.12",
+    "newman-reporter-htmlextra": "1.22.11",
+    "newman-reporter-teamcity": "0.1.12",
     "node-fetch": "2.6.7",
     "nyc": "15.1.0",
     "prettier": "2.8.4",

@@ -573,8 +573,12 @@ async function startClusteringThreads() {
 	replyWorker = startWorker(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_REPLY_SERVICE, {
 		name: hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_REPLY_SERVICE,
 	});
-	await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
-	await nats_utils.updateIngestStreamConsumer();
+
+	// There was an update to our nats logic where we stopped using the work queue stream.
+	// This code is here to delete it if it still exists.
+	try {
+		await nats_utils.deleteLocalStream('__HARPERDB_WORK_QUEUE__');
+	} catch (err) {}
 
 	// Check to see if the node name or purge config has been updated,
 	// if it has we need to change config on any local streams.

@@ -12,7 +12,6 @@ const removeRemoteSource = rewire('../../../utility/clustering/removeRemoteSourc
 describe('Test removeRemoteSource module', () => {
 	const sandbox = sinon.createSandbox();
 	let get_node_record_stub;
-	let update_work_stream_stub;
 	let delete_stub;
 	const test_node_name = 'nodeAbc-test';
 	const test_payload = {
@@ -40,12 +39,15 @@ describe('Test removeRemoteSource module', () => {
 			],
 		},
 	];
+	let update_remote_consumer_stub;
+	let update_consumer_iterator_stub;
 
 	before(() => {
 		removeRemoteSource.__set__('node_name', 'local_test_node');
 		get_node_record_stub = sandbox.stub(clustering_utils, 'getNodeRecord').resolves(fake_record);
-		update_work_stream_stub = sandbox.stub(nats_utils, 'updateWorkStream');
 		delete_stub = sandbox.stub(_delete, 'deleteRecord').resolves();
+		update_remote_consumer_stub = sandbox.stub(nats_utils, 'updateRemoteConsumer');
+		update_consumer_iterator_stub = sandbox.stub(nats_utils, 'updateConsumerIterator');
 	});
 
 	after(() => {
@@ -59,20 +61,6 @@ describe('Test removeRemoteSource module', () => {
 	it('Test removeRemoteSource function call all the things successfully for happy path', async () => {
 		const result = await removeRemoteSource(test_payload);
 		expect(get_node_record_stub.args[0][0]).to.equal(test_node_name);
-		expect(update_work_stream_stub.getCall(0).args[0]).to.eql({
-			schema: 'country',
-			table: 'england',
-			publish: false,
-			subscribe: false,
-		});
-		expect(update_work_stream_stub.getCall(0).args[1]).to.eql(test_node_name);
-		expect(update_work_stream_stub.getCall(1).args[0]).to.eql({
-			schema: 'sheep',
-			table: 'name',
-			publish: false,
-			subscribe: false,
-		});
-		expect(update_work_stream_stub.getCall(1).args[1]).to.eql(test_node_name);
 		expect(delete_stub.args[0][0]).to.eql({
 			operation: 'delete',
 			schema: 'system',
@@ -85,6 +73,32 @@ describe('Test removeRemoteSource module', () => {
 			status: 'success',
 			system_info: undefined,
 		});
+		expect(update_remote_consumer_stub.callCount).to.equal(2);
+		expect(update_remote_consumer_stub.args).to.eql([
+			[
+				{
+					schema: 'country',
+					table: 'england',
+					publish: false,
+					subscribe: false,
+				},
+				'nodeAbc-test',
+			],
+			[
+				{
+					schema: 'sheep',
+					table: 'name',
+					publish: false,
+					subscribe: false,
+				},
+				'nodeAbc-test',
+			],
+		]);
+		expect(update_consumer_iterator_stub.callCount).to.equal(2);
+		expect(update_consumer_iterator_stub.args).to.eql([
+			['country', 'england', 'nodeAbc-test', 'stop'],
+			['sheep', 'name', 'nodeAbc-test', 'stop'],
+		]);
 	});
 
 	it('Test record not found error returned if no record found', async () => {

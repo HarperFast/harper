@@ -52,7 +52,8 @@ async function removeRemoteSource(req) {
 			);
 
 			const false_sub = new NodeSubscription(subscription.schema, subscription.table, false, false);
-			await nats_utils.updateWorkStream(false_sub, remote_node);
+			await nats_utils.updateConsumerIterator(subscription.schema, subscription.table, remote_node, 'stop');
+			await nats_utils.updateRemoteConsumer(false_sub, remote_node);
 		}
 
 		// Delete nodes record from hdb_nodes table

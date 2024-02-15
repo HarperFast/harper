@@ -562,6 +562,8 @@ const CONFIG_PARAMS = {
 	CLUSTERING_LEAFSERVER_STREAMS_MAXAGE: 'clustering_leafServer_streams_maxAge',
 	CLUSTERING_LEAFSERVER_STREAMS_MAXBYTES: 'clustering_leafServer_streams_maxBytes',
 	CLUSTERING_LEAFSERVER_STREAMS_MAXMSGS: 'clustering_leafServer_streams_maxMsgs',
+	CLUSTERING_LEAFSERVER_STREAMS_MAXCONSUMEMSGS: 'clustering_leafServer_streams_maxConsumeMsgs',
+	CLUSTERING_LEAFSERVER_STREAMS_MAXINGESTTHREADS: 'clustering_leafServer_streams_maxIngestThreads',
 	CLUSTERING_LEAFSERVER_STREAMS_PATH: 'clustering_leafServer_streams_path',
 	CLUSTERING_NODENAME: 'clustering_nodeName',
 	CLUSTERING_TLS_CERTIFICATE: 'clustering_tls_certificate',
@@ -708,6 +710,8 @@ const CONFIG_PARAM_MAP = {
 	clustering_leafserver_network_routes: CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_ROUTES,
 	clustering_leafserver_streams_maxage: CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXAGE,
 	clustering_leafserver_streams_maxbytes: CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXBYTES,
+	clustering_leafserver_streams_maxconsumemsgs: CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXCONSUMEMSGS,
+	clustering_leafserver_streams_maxingestthreads: CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXINGESTTHREADS,
 	clustering_leafserver_streams_maxmsgs: CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXMSGS,
 	clustering_leafserver_streams_path: CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_PATH,
 	clustering_nodename: CONFIG_PARAMS.CLUSTERING_NODENAME,
@@ -985,6 +989,7 @@ const ITC_EVENT_TYPES = {
 	METRICS: 'metrics',
 	GET_METRICS: 'get_metrics',
 	RESTART: 'restart',
+	NATS_CONSUMER_UPDATE: 'nats_consumer_update',
 };
 
 const SERVICES = {

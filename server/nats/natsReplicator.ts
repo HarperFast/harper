@@ -126,7 +126,10 @@ export function setNATSReplicator(table_name, db_name, Table) {
 				return subscription;
 			}
 			static subscribeOnThisThread(worker_index) {
-				return worker_index < MAX_INGEST_THREADS;
+				return (
+					worker_index <
+					(env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXINGESTTHREADS) ?? MAX_INGEST_THREADS)
+				);
 			}
 			static isEqual(source) {
 				return source.isNATSReplicator;

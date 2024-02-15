@@ -19,7 +19,7 @@ const hdb_logger = require('../../../utility/logging/harper_logger');
 const crypto_hash = require('../../../security/cryptoHash');
 const transaction = require('../../../dataLayer/transaction');
 const config_utils = require('../../../config/configUtils');
-const { onMessageByType } = require('../../threads/manageThreads');
+const { broadcast, onMessageByType, getWorkerIndex } = require('../../threads/manageThreads');
 const { isMainThread } = require('worker_threads');
 const { Encoder, decode } = require('msgpackr');
 const encoder = new Encoder(); // use default encoder options
@@ -29,6 +29,10 @@ const user = require('../../../security/user');
 
 const INGEST_MAX_MSG_AGE = 48 * 3600000000000; // nanoseconds
 const INGEST_MAX_BYTES = 5000000000;
+const MAX_INGEST_THREADS = 2; // This can also be set in harperdb-config
+
+// Max delay between attempts to connect to remote node
+const MAX_REMOTE_CON_RETRY_DELAY = 10000;
 
 if (isMainThread) {
 	onMessageByType(hdb_terms.ITC_EVENT_TYPES.RESTART, () => {
@@ -91,16 +95,12 @@ module.exports = {
 	viewStream,
 	viewStreamIterator,
 	publishToStream,
-	createWorkQueueStream,
-	addSourceToWorkStream,
 	request,
-	removeSourceFromWorkStream,
 	reloadNATS,
 	reloadNATSHub,
 	reloadNATSLeaf,
 	extractServerName,
 	requestErrorHandler,
-	updateWorkStream,
 	createLocalTableStream,
 	createTableStreams,
 	purgeTableStream,
@@ -110,8 +110,10 @@ module.exports = {
 	closeConnection,
 	getJsmServerName,
 	addNatsMsgHeader,
-	updateIngestStreamConsumer,
 	clearClientCache,
+	updateRemoteConsumer,
+	createConsumer,
+	updateConsumerIterator,
 };
 
 /**
@@ -186,6 +188,7 @@ async function createConnection(port, username, password, wait_on_first_connect 
 			rejectUnauthorized: false,
 		},
 	});
+
 	c.protocol.transport.socket.unref();
 	hdb_logger.trace(`create connection established a nats client connection with id`, c?.info?.client_id);
 
@@ -634,145 +637,37 @@ function getServerConfig(process_name) {
 }
 
 /**
- * creates a stream intended to act as a work queue & it's related consumer
- * @param {Object} CONSUMER_NAMES
+ * Creates a consumer, the typical use case is to create a consumer to be used by a remote node for replicated data ingest.
+ * @param jsm
+ * @param stream_name
+ * @param durable_name
+ * @param start_time
  * @returns {Promise<void>}
  */
-async function createWorkQueueStream(CONSUMER_NAMES) {
-	const { jsm } = await getNATSReferences();
-	const server_name = await getJsmServerName();
+async function createConsumer(jsm, stream_name, durable_name, start_time) {
 	try {
-		// create the stream
-		await jsm.streams.add({
-			name: CONSUMER_NAMES.stream_name,
-			storage: StorageType.File,
-			retention: RetentionPolicy.Limits,
-			max_age: INGEST_MAX_MSG_AGE,
-			max_bytes: INGEST_MAX_BYTES,
-			subjects: [`${nats_terms.SUBJECT_PREFIXES.TXN}.${CONSUMER_NAMES.stream_name}.${server_name}`],
+		await jsm.consumers.add(stream_name, {
+			ack_policy: AckPolicy.Explicit,
+			durable_name: durable_name,
+			deliver_policy: DeliverPolicy.StartTime,
+			opt_start_time: start_time,
 		});
-	} catch (err) {
-		// If the stream already exists ignore error that is thrown.
-		if (err.code !== '400') {
-			throw err;
-		}
-	}
-
-	//check if the consumer exists, if not create a pull based consumer.
-	try {
-		await jsm.consumers.info(CONSUMER_NAMES.stream_name, CONSUMER_NAMES.durable_name);
 	} catch (e) {
-		if (e.code.toString() === '404') {
-			await jsm.consumers.add(CONSUMER_NAMES.stream_name, {
-				ack_policy: AckPolicy.Explicit,
-				durable_name: CONSUMER_NAMES.durable_name,
-				deliver_policy: DeliverPolicy.All,
-				max_ack_pending: 10000,
-			});
-		} else {
+		if (e.message !== 'consumer already exists') {
 			throw e;
 		}
 	}
 }
 
 /**
- * 4.2 ingest stream got a new type of consumer.
- * This function will facilitate the consumer update, if it is required.
+ * deletes a consumer
+ * @param jsm
+ * @param stream_name
+ * @param durable_name
  * @returns {Promise<void>}
  */
-async function updateIngestStreamConsumer() {
-	const { jsm } = await getNATSReferences();
-	const consumer_info = await jsm.consumers.info(
-		nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-		nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name
-	);
-
-	if (consumer_info.config.deliver_subject) {
-		hdb_logger.info('Removing old nats push consumer from ingest stream');
-		await jsm.consumers.delete(
-			nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-			nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name
-		);
-
-		hdb_logger.info('Adding pull consumer to ingest stream');
-		await jsm.consumers.add(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, {
-			ack_policy: AckPolicy.Explicit,
-			durable_name: nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name,
-			deliver_policy: DeliverPolicy.All,
-			max_ack_pending: 10000,
-		});
-	}
-}
-
-/**
- * sources the message from remote node's stream to a local stream
- * @param {String} node - name of node to derive source from
- * @param {String} work_queue_name - name of local stream to add source to
- * @param {object} subscription - an object that contains the schema/table and pub/sub relationship between source and work stream
- * @returns {Promise<void>}
- */
-async function addSourceToWorkStream(node, work_queue_name, subscription) {
-	const { jsm } = await getNATSReferences();
-	const w_q_stream = await jsm.streams.info(work_queue_name);
-	const server_name = extractServerName(jsm.prefix);
-	// When (how far back) to start sourcing transaction from the source being added to stream in format YYYY-MM-DDTHH:mm:ss.sssZ
-	const start_time = subscription.start_time ? subscription.start_time : new Date(Date.now()).toISOString();
-	const { schema, table } = subscription;
-	// Name of remote stream to source from
-	const stream_name = crypto_hash.createNatsTableStreamName(schema, table);
-	// Check to see if the source is being added to a local stream. Local streams require a slightly different config.
-	const is_local_stream = server_name === node;
-
-	let source;
-	let source_index;
-	let found = false;
-	if (!Array.isArray(w_q_stream.config.sources) || w_q_stream.config.sources.length === 0) {
-		w_q_stream.config.sources = [];
-	} else {
-		for (let x = 0, length = w_q_stream.config.sources.length; x < length; x++) {
-			source = w_q_stream.config.sources[x];
-			source_index = x;
-			if (
-				(is_local_stream && source.name === stream_name) ||
-				(!is_local_stream &&
-					source.name === stream_name &&
-					source.external &&
-					source.external.api === `$JS.${node}.API`)
-			) {
-				found = true;
-				break;
-			}
-		}
-	}
-
-	if (found === true) {
-		// If the source already exists in the work stream and there is no change to the start time, do nothing.
-		if (source.opt_start_time === start_time) return;
-		const subject = `txn.${schema}.${table}.${node}`;
-		await jsm.streams.purge(work_queue_name, { filter: subject });
-
-		// When updating an exising source that source first needs to be removed from the work stream.
-		w_q_stream.config.sources.splice(source_index, 1);
-		await jsm.streams.update(work_queue_name, w_q_stream.config);
-	}
-
-	let new_source = {
-		name: stream_name,
-		opt_start_time: start_time,
-		// TODO: Once NATS add support for multiple sourced subjects, we will enable filtering by table with:
-		// filter_subject: table && env_mgr.get(CONFIG_PARAMS.CLUSTERING_DATABASELEVEL) ? `${nats_terms.SUBJECT_PREFIXES.TXN}.${schema}.${table}.>` : `${nats_terms.SUBJECT_PREFIXES.TXN}.>`,
-		filter_subject: `${nats_terms.SUBJECT_PREFIXES.TXN}.>`,
-	};
-
-	if (!is_local_stream) {
-		new_source.external = {
-			api: `$JS.${node}.API`,
-			deliver: '',
-		};
-	}
-
-	w_q_stream.config.sources.push(new_source);
-	await jsm.streams.update(work_queue_name, w_q_stream.config);
+async function removeConsumer(jsm, stream_name, durable_name) {
+	await jsm.consumers.delete(stream_name, durable_name);
 }
 
 /**
@@ -783,40 +678,6 @@ async function addSourceToWorkStream(node, work_queue_name, subscription) {
  */
 function extractServerName(api_prefix) {
 	return api_prefix.split('.')[1];
-}
-
-/**
- * Removes a remote node's stream from the source on the local stream
- * @param node - name of node
- * @param work_queue_name - name of local stream to remove source from
- * @param subscription - the subscription that makes up the source
- * @returns {Promise<void>}
- */
-async function removeSourceFromWorkStream(node, work_queue_name, subscription) {
-	const { jsm } = await getNATSReferences();
-	const { schema, table } = subscription;
-	const subject = `txn.${schema}.${table}.${node}`;
-	await jsm.streams.purge(work_queue_name, { filter: subject });
-
-	// Name of remote stream to no longer source from
-	const stream_name = crypto_hash.createNatsTableStreamName(schema, table);
-
-	const w_q_stream = await jsm.streams.info(work_queue_name);
-	if (!Array.isArray(w_q_stream.config.sources) || w_q_stream.config.sources.length === 0) {
-		return;
-	}
-
-	let i = w_q_stream.config.sources.length;
-	let source;
-	while (i--) {
-		source = w_q_stream.config.sources[i];
-		if (source.name === stream_name && source.external.api === `$JS.${node}.API`) {
-			w_q_stream.config.sources.splice(i, 1);
-			break;
-		}
-	}
-
-	await jsm.streams.update(work_queue_name, w_q_stream.config);
 }
 
 /**
@@ -924,29 +785,61 @@ function requestErrorHandler(err, operation, remote_node) {
 }
 
 /**
- * Adds or removes a remote stream sourcing from the work queue stream.
+ * Adds or removes a consumer for a remote node to access
  * @param subscription - a node subscription object
  * @param node_name - name of remote node being added to the work stream
  * @returns {Promise<void>}
  */
-async function updateWorkStream(subscription, node_name) {
+async function updateRemoteConsumer(subscription, node_name) {
 	const node_domain_name = node_name + nats_terms.SERVER_SUFFIX.LEAF;
+	const { connection } = await getNATSReferences();
+	const { jsm } = await connectToRemoteJS(node_domain_name);
+	const { schema, table } = subscription;
+	const stream_name = crypto_hash.createNatsTableStreamName(schema, table);
+	const start_time = subscription.start_time ? subscription.start_time : new Date(Date.now()).toISOString();
 
-	// Nats has trouble concurrently updating a work stream. This code uses transaction locking to ensure that
-	// all updateWorkStream calls run synchronously.
+	// Nats has trouble concurrently updating a stream. This code uses transaction locking to ensure that
+	// all updateRemoteConsumer calls run synchronously.
 	await exclusiveLock(async () => {
-		// The connection between nodes can only be a "pull" relationship. This means we only care about the subscribe param.
-		// If a node is publishing to another node that publishing relationship is setup by have the opposite node subscribe to the node that is publishing.
+		// Create a consumer that the remote node will use to consumer msgs from this nodes table stream.
 		if (subscription.subscribe === true) {
-			await addSourceToWorkStream(node_domain_name, nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, subscription);
+			await createConsumer(jsm, stream_name, connection.info.server_name, start_time);
 		} else {
-			await removeSourceFromWorkStream(
-				node_domain_name,
-				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				subscription
-			);
+			// There might not be a consumer for stream on this node, so we squash error.
+			try {
+				await removeConsumer(jsm, stream_name, connection.info.server_name);
+			} catch (err) {
+				hdb_logger.trace(err);
+			}
 		}
 	});
+}
+
+async function updateConsumerIterator(database, table, node_name, status) {
+	const stream_name = crypto_hash.createNatsTableStreamName(database, table);
+	const node_domain_name = node_name + nats_terms.SERVER_SUFFIX.LEAF;
+	const message = {
+		type: hdb_terms.ITC_EVENT_TYPES.NATS_CONSUMER_UPDATE,
+		status,
+		stream_name,
+		node_domain_name,
+	};
+
+	// If the thread calling this is also an ingest thread, it will need to update its own consumer setup
+	if (
+		!isMainThread &&
+		(getWorkerIndex() < env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXINGESTTHREADS) ??
+			MAX_INGEST_THREADS)
+	) {
+		const { updateConsumer } = require('../natsIngestService');
+		await updateConsumer(message);
+	}
+
+	await broadcast(message);
+
+	if (status === 'stop') {
+		await hdb_utils.async_set_timeout(1000);
+	}
 }
 
 function exclusiveLock(callback) {
@@ -988,16 +881,12 @@ async function createTableStreams(subscriptions) {
  * @param table
  * @returns {Promise<void>}
  */
-async function purgeTableStream(schema, table, purge_ingest = false) {
+async function purgeTableStream(schema, table) {
 	if (env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
 		try {
 			const stream_name = crypto_hash.createNatsTableStreamName(schema, table);
 			const { jsm } = await getNATSReferences();
-			if (purge_ingest) {
-				await jsm.streams.purge(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
-			} else {
-				await jsm.streams.purge(stream_name);
-			}
+			await jsm.streams.purge(stream_name);
 		} catch (err) {
 			if (err.message === 'stream not found') {
 				// There can be situations where we are trying to purge a stream that doesn't exist.
@@ -1079,22 +968,14 @@ async function updateLocalStreams() {
 		const subject_server_name = stream_subject_array[stream_subject_array.length - 1];
 		if (subject_server_name === server_name && !limit_updated) continue;
 
+		if (stream_config.name === '__HARPERDB_WORK_QUEUE__') continue;
+
 		// Build the new subject name and replace existing one with it.
-		if (stream_config.name === nats_terms.SCHEMA_QUEUE_CONSUMER_NAMES.stream_name) {
-			const new_subject_name = `${nats_terms.SCHEMA_QUEUE_CONSUMER_NAMES.deliver_subject}.${server_name}`;
-			hdb_logger.trace(`Updating stream subject name from: ${stream_subject} to: ${new_subject_name}`);
-			stream_config.subjects[0] = new_subject_name;
-		} else if (stream_config.name === nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name) {
-			const new_subject_name = `${nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name}.${server_name}`;
-			hdb_logger.trace(`Updating stream subject name from: ${stream_subject} to: ${new_subject_name}`);
-			stream_config.subjects[0] = new_subject_name;
-		} else {
-			const subject_array = stream_subject.split('.');
-			subject_array[subject_array.length - 1] = server_name;
-			const new_subject_name = subject_array.join('.');
-			hdb_logger.trace(`Updating stream subject name from: ${stream_subject} to: ${new_subject_name}`);
-			stream_config.subjects[0] = new_subject_name;
-		}
+		const subject_array = stream_subject.split('.');
+		subject_array[subject_array.length - 1] = server_name;
+		const new_subject_name = subject_array.join('.');
+		hdb_logger.trace(`Updating stream subject name from: ${stream_subject} to: ${new_subject_name}`);
+		stream_config.subjects[0] = new_subject_name;
 
 		await jsm.streams.update(stream_config.name, stream_config);
 	}
@@ -1109,12 +990,6 @@ async function updateLocalStreams() {
 function updateStreamLimits(stream) {
 	const { config } = stream;
 	let update = false;
-	if (
-		config.name === nats_terms.SCHEMA_QUEUE_CONSUMER_NAMES.stream_name ||
-		config.name === nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name
-	)
-		return update;
-
 	let max_age = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXAGE);
 	// We don't store the default (unlimited) values in our config, so we must update for comparison to work.
 	// We use seconds for max age, nats uses nanoseconds. This is why we are doing the conversion.
@@ -1140,4 +1015,22 @@ function updateStreamLimits(stream) {
 	}
 
 	return update;
+}
+
+/**
+ * connects to a remote nodes jetstream
+ * @param domain
+ * @returns {Promise<{jsm: undefined, js}>}
+ */
+async function connectToRemoteJS(domain) {
+	let js, jsm;
+	try {
+		js = await nats_connection.jetstream({ domain, timeout: 60000 });
+		jsm = await nats_connection.jetstreamManager({ domain, timeout: 60000 });
+	} catch (err) {
+		hdb_logger.error('Unable to connect to:', domain);
+		throw err;
+	}
+
+	return { js, jsm };
 }
