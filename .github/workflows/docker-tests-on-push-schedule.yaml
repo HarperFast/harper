@@ -1,4 +1,5 @@
 name: "Run All Docker Cluster Tests"
+
 on:
   push:
     branches:
