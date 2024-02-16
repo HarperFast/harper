@@ -175,23 +175,6 @@ async function restartService(req) {
 }
 
 /**
- * Posts a dummy msg in the Nats work queue as a workaround for Nats bug.
- * There is a bug where on restart the most recent msg processed by the message
- * processor in the ingest service shows up again. Ref CORE-2018
- * @returns {Promise<void>}
- */
-async function postDummyNatsMsg() {
-	await nats_utils.publishToStream(
-		`${nats_terms.SUBJECT_PREFIXES.TXN}.${nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name}`,
-		nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-		nats_utils.addNatsMsgHeader({ operation: 'dummy_msg' }, undefined),
-		{
-			operation: 'dummy_msg',
-		}
-	);
-}
-
-/**
  * Will use PM2 module to restart processes its managing.
  * @returns {Promise<void>}
  */
@@ -232,7 +215,6 @@ async function restartClustering() {
 		// Close the connection to the nats-server so that if stop/restart called from CLI process will exit.
 		if (called_from_cli) await nats_utils.closeConnection();
 	} else {
-		await postDummyNatsMsg();
 		await nats_config.generateNatsConfig(true);
 
 		if (pm2_mode) {

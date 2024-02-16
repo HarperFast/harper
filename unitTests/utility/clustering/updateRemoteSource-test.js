@@ -18,11 +18,12 @@ describe('Test updateRemoteSource module', () => {
 	const sandbox = sinon.createSandbox();
 	let create_schema_stub;
 	let create_table_stub;
-	let update_work_stream_stub;
 	let upsert_node_record_stub;
 	let get_node_record_stub;
 	let get_table_hash_stub;
 	let log_error_stub;
+	let update_remote_consumer_stub;
+	let update_consumer_iterator_stub;
 	let create_local_table_streams_stub;
 	const test_node_name = 'unit_test_node';
 	const test_sys_info = {
@@ -66,11 +67,12 @@ describe('Test updateRemoteSource module', () => {
 		create_local_table_streams_stub = sandbox.stub(nats_utils, 'createLocalTableStream').resolves();
 		create_table_stub = sandbox.stub();
 		updateRemoteSource.__set__('schema_mod.createTable', create_table_stub);
-		update_work_stream_stub = sandbox.stub(nats_utils, 'updateWorkStream');
 		upsert_node_record_stub = sandbox.stub(cluster_utils, 'upsertNodeRecord');
 		get_node_record_stub = sandbox.stub(cluster_utils, 'getNodeRecord').resolves([]);
 		get_table_hash_stub = sandbox.stub(hdb_utils, 'getTableHashAttribute');
 		log_error_stub = sandbox.stub(hdb_logger, 'error');
+		update_remote_consumer_stub = sandbox.stub(nats_utils, 'updateRemoteConsumer');
+		update_consumer_iterator_stub = sandbox.stub(nats_utils, 'updateConsumerIterator');
 		get_table_hash_stub.onCall(0).returns('name');
 		get_table_hash_stub.onCall(1).returns('id');
 		get_table_hash_stub.onCall(2).returns('number');
@@ -134,32 +136,47 @@ describe('Test updateRemoteSource module', () => {
 		expect(create_table_stub.getCall(1).args[0].table).to.equal('england');
 		expect(create_local_table_streams_stub.getCall(0).args).to.eql(['breed', 'beagle']);
 		expect(create_local_table_streams_stub.getCall(1).args).to.eql(['country', 'england']);
-		expect(update_work_stream_stub.getCall(0).args[0]).to.eql({
-			schema: 'breed',
-			table: 'beagle',
-			hash_attribute: 'name',
-			publish: true,
-			subscribe: true,
-		});
-		expect(update_work_stream_stub.getCall(0).args[1]).to.equal('cowabunga');
-		expect(update_work_stream_stub.getCall(1).args[0]).to.eql({
-			schema: 'country',
-			table: 'england',
-			hash_attribute: 'id',
-			publish: true,
-			subscribe: false,
-		});
-		expect(update_work_stream_stub.getCall(1).args[1]).to.equal('cowabunga');
-		expect(update_work_stream_stub.getCall(2).args[0]).to.eql({
-			schema: 'dog',
-			table: 'poodle',
-			hash_attribute: 'number',
-			publish: false,
-			subscribe: true,
-		});
-		expect(update_work_stream_stub.getCall(2).args[1]).to.equal('cowabunga');
-		expect(update_work_stream_stub.callCount).to.equal(3);
 		expect(upsert_node_record_stub.args[0]).to.eql(expected_node_record);
+		expect(update_remote_consumer_stub.callCount).to.equal(3);
+		expect(update_remote_consumer_stub.args).to.eql([
+			[
+				{
+					schema: 'breed',
+					table: 'beagle',
+					hash_attribute: 'name',
+					publish: true,
+					subscribe: true,
+				},
+				'cowabunga',
+			],
+			[
+				{
+					schema: 'country',
+					table: 'england',
+					hash_attribute: 'id',
+					publish: true,
+					subscribe: false,
+				},
+				'cowabunga',
+			],
+			[
+				{
+					schema: 'dog',
+					table: 'poodle',
+					hash_attribute: 'number',
+					publish: false,
+					subscribe: true,
+				},
+				'cowabunga',
+			],
+		]);
+		expect(update_consumer_iterator_stub.callCount).to.eql(3);
+		expect(update_consumer_iterator_stub.args).to.eql([
+			['breed', 'beagle', 'cowabunga', 'start'],
+			['country', 'england', 'cowabunga', 'stop'],
+			['dog', 'poodle', 'cowabunga', 'start'],
+		]);
+
 		expect(result).to.eql({
 			message: 'Node unit_test_node successfully updated remote source',
 			status: 'success',
@@ -240,33 +257,50 @@ describe('Test updateRemoteSource module', () => {
 		]);
 		const result = await updateRemoteSource(test_payload);
 		expect(create_schema_stub.callCount).to.equal(1);
-		expect(update_work_stream_stub.getCall(0).args[0]).to.eql({
-			schema: 'breed',
-			table: 'beagle',
-			hash_attribute: 'name',
-			publish: true,
-			subscribe: true,
-		});
-		expect(update_work_stream_stub.getCall(0).args[1]).to.equal('cowabunga');
-		expect(update_work_stream_stub.getCall(1).args[0]).to.eql({
-			schema: 'country',
-			table: 'england',
-			hash_attribute: 'id',
-			publish: true,
-			subscribe: false,
-		});
-		expect(update_work_stream_stub.getCall(1).args[1]).to.equal('cowabunga');
-		expect(update_work_stream_stub.getCall(2).args[0]).to.eql({
-			schema: 'dog',
-			table: 'poodle',
-			hash_attribute: 'number',
-			publish: false,
-			subscribe: true,
-		});
-		expect(update_work_stream_stub.getCall(2).args[1]).to.equal('cowabunga');
-		expect(update_work_stream_stub.callCount).to.equal(3);
 		expect(upsert_node_record_stub.args[0][0]).to.eql(expected_node_record);
 		expect(upsert_node_record_stub.callCount).to.equal(1);
+		expect(update_remote_consumer_stub.callCount).to.equal(3);
+		expect(update_remote_consumer_stub.callCount).to.equal(3);
+		expect(update_remote_consumer_stub.args).to.eql([
+			[
+				{
+					schema: 'breed',
+					table: 'beagle',
+					hash_attribute: 'name',
+					publish: true,
+					subscribe: true,
+				},
+				'cowabunga',
+			],
+			[
+				{
+					schema: 'country',
+					table: 'england',
+					hash_attribute: 'id',
+					publish: true,
+					subscribe: false,
+				},
+				'cowabunga',
+			],
+			[
+				{
+					schema: 'dog',
+					table: 'poodle',
+					hash_attribute: 'number',
+					publish: false,
+					subscribe: true,
+				},
+				'cowabunga',
+			],
+		]);
+		expect(update_consumer_iterator_stub.callCount).to.eql(5);
+		expect(update_consumer_iterator_stub.args).to.eql([
+			['breed', 'beagle', 'cowabunga', 'stop'],
+			['breed', 'beagle', 'cowabunga', 'start'],
+			['country', 'england', 'cowabunga', 'stop'],
+			['dog', 'poodle', 'cowabunga', 'stop'],
+			['dog', 'poodle', 'cowabunga', 'start'],
+		]);
 		expect(result).to.eql({
 			message: 'Node unit_test_node successfully updated remote source',
 			status: 'success',

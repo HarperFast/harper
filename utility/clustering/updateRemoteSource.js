@@ -83,8 +83,23 @@ async function updateRemoteSource(request) {
 				await nats_utils.createLocalTableStream(schema, table);
 			}
 
-			// Add or remove remote source from the work queue stream.
-			await nats_utils.updateWorkStream(sub, node_name);
+			// Will either remove/add consumer for this node on the other node. After that it will
+			// either stop/start a msg iterator on this node for the consumer.
+			if (update_record) {
+				// Stop any existing iterators for sub before updating
+				await nats_utils.updateConsumerIterator(schema, table, node_name, 'stop');
+				await nats_utils.updateRemoteConsumer(sub, node_name);
+				if (sub.subscribe === true) {
+					await nats_utils.updateConsumerIterator(schema, table, node_name, 'start');
+				}
+			} else {
+				await nats_utils.updateRemoteConsumer(sub, node_name);
+				if (sub.subscribe === true) {
+					await nats_utils.updateConsumerIterator(schema, table, node_name, 'start');
+				} else {
+					await nats_utils.updateConsumerIterator(schema, table, node_name, 'stop');
+				}
+			}
 
 			// If a record for remote node already exists in hdb_nodes table we update the subscriptions in it.
 			if (update_record) {

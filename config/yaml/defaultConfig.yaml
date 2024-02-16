@@ -41,6 +41,8 @@ clustering:
       maxAge: null
       maxBytes: null
       maxMsgs: null
+      maxConsumeMsgs: 100
+      maxIngestThreads: 2
       path: null
   logLevel: info
   nodeName: null

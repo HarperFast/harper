@@ -122,7 +122,6 @@ describe('Test restart module', () => {
 
 	describe('Test restartClustering function', () => {
 		const restart_clustering = restart.__get__('restartClustering');
-		const post_dummy_msg_stub = sandbox.stub();
 		let generate_nats_config_stub;
 		let update_local_stream_stub;
 		let close_connection_stub;
@@ -137,7 +136,6 @@ describe('Test restart module', () => {
 			get_hdb_process_stub = sandbox.stub(sys_info, 'getHDBProcessInfo').resolves({ clustering: [{ pid: 12345 }] });
 			start_clustering_process_stub = sandbox.stub(process_man, 'startClusteringProcesses');
 			start_clustering_threads_stub = sandbox.stub(process_man, 'startClusteringThreads');
-			restart.__set__('postDummyNatsMsg', post_dummy_msg_stub);
 		});
 
 		beforeEach(() => {

@@ -596,205 +596,6 @@ describe('Test natsUtils module', () => {
 			await nats_utils.deleteLocalStream('dev_giraffe');
 		}).timeout(TEST_TIMEOUT);
 
-		it('Test createWorkQueueStream creates a work queue and a consumer', async () => {
-			await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
-			const streams = await nats_utils.listStreams();
-			const { jsm } = await nats_utils.getNATSReferences();
-			const consumer = await jsm.consumers.info(
-				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name
-			);
-
-			expect(streams[0].config.name).to.equal('__HARPERDB_WORK_QUEUE__');
-			expect(consumer.name).to.equal('HDB_WORK_QUEUE');
-
-			await jsm.consumers.delete('__HARPERDB_WORK_QUEUE__', 'HDB_WORK_QUEUE');
-			await nats_utils.deleteLocalStream('__HARPERDB_WORK_QUEUE__');
-		}).timeout(TEST_TIMEOUT);
-
-		it('Test addSourceToWorkStream adds a node to work queue', async () => {
-			const test_sub = {
-				schema: TEST_SCHEMA,
-				table: TEST_TABLE1,
-				publish: true,
-				subscribe: true,
-			};
-			await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
-			await nats_utils.addSourceToWorkStream(
-				'unit_test_node',
-				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				test_sub
-			);
-
-			const { jsm } = await nats_utils.getNATSReferences();
-			const wq_stream = await jsm.streams.info('__HARPERDB_WORK_QUEUE__');
-
-			expect(wq_stream.config.sources[0].name).to.equal(TEST_STREAM_NAME);
-			expect(wq_stream.config.sources[0].external.api).to.equal('$JS.unit_test_node.API');
-			expect(wq_stream.config.sources[0].external.deliver).to.equal('');
-			expect(wq_stream.config.sources[0].opt_start_time).to.not.be.undefined;
-			expect(wq_stream.config.sources[0].filter_subject).to.equal('txn.>');
-
-			await jsm.consumers.delete('__HARPERDB_WORK_QUEUE__', 'HDB_WORK_QUEUE');
-			await nats_utils.deleteLocalStream('__HARPERDB_WORK_QUEUE__');
-		}).timeout(TEST_TIMEOUT);
-
-		it.skip('Test concurrently calling updateWorkStream', async () => {
-			// TODO: This is creating a database level subscription, and probably shouldn't
-			const test_schema = 'tx_lock_test_schema';
-			const test_table = 'tx_lock_test_table';
-			const { jsm } = await nats_utils.getNATSReferences();
-			env_manager.setHdbBasePath(test_utils.getMockTestPath());
-
-			const test_env = await test_utils.createMockDB('name', test_schema, test_table, []);
-			await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
-
-			const schema_rw = nats_utils.__set__('hdb_terms.SYSTEM_SCHEMA_NAME', test_schema);
-			const table_rw = nats_utils.__set__('hdb_terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME', test_table);
-
-			let add_source_promises = [];
-			for (let x = 0; x < 3; x++) {
-				const test_sub = {
-					schema: TEST_SCHEMA,
-					table: x,
-					publish: true,
-					subscribe: true,
-				};
-
-				add_source_promises.push(nats_utils.updateWorkStream(test_sub, 'unit_test_node'));
-			}
-
-			await Promise.all(add_source_promises);
-
-			const wq_stream = await jsm.streams.info('__HARPERDB_WORK_QUEUE__');
-			expect(wq_stream.config.sources.length).to.equal(3);
-
-			let remove_source_promises = [];
-			for (let x = 0; x < 3; x++) {
-				const test_sub = {
-					schema: TEST_SCHEMA,
-					table: x,
-					publish: false,
-					subscribe: false,
-				};
-
-				remove_source_promises.push(nats_utils.updateWorkStream(test_sub, 'unit_test_node'));
-			}
-
-			await Promise.all(remove_source_promises);
-			schema_rw();
-			table_rw();
-
-			const wq_stream_remove = await jsm.streams.info('__HARPERDB_WORK_QUEUE__');
-			expect(wq_stream_remove.config.sources).to.be.undefined;
-
-			await jsm.consumers.delete('__HARPERDB_WORK_QUEUE__', 'HDB_WORK_QUEUE');
-			await nats_utils.deleteLocalStream('__HARPERDB_WORK_QUEUE__');
-			await test_utils.tearDownMockDB(test_env);
-		}).timeout(TEST_TIMEOUT);
-
-		it.skip('Test concurrently adding removing updateWorkStream', async () => {
-			// TODO: This is creating a database level subscription, and probably shouldn't
-			const test_schema = 'tx_lock_test_schema';
-			const test_table = 'tx_lock_test_table';
-			const { jsm } = await nats_utils.getNATSReferences();
-			env_manager.setHdbBasePath(test_utils.getMockTestPath());
-
-			const test_env = await test_utils.createMockDB('name', test_schema, test_table, []);
-			await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
-
-			const schema_rw = nats_utils.__set__('hdb_terms.SYSTEM_SCHEMA_NAME', test_schema);
-			const table_rw = nats_utils.__set__('hdb_terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME', test_table);
-
-			let update_source_promises = [];
-			for (let x = 0; x < 3; x++) {
-				const test_sub = {
-					schema: TEST_SCHEMA,
-					table: x,
-					publish: true,
-					subscribe: true,
-				};
-
-				update_source_promises.push(nats_utils.updateWorkStream(test_sub, 'unit_test_node'));
-			}
-
-			for (let x = 0; x < 3; x++) {
-				const test_sub = {
-					schema: TEST_SCHEMA,
-					table: x,
-					publish: false,
-					subscribe: false,
-				};
-
-				update_source_promises.push(nats_utils.updateWorkStream(test_sub, 'unit_test_node'));
-			}
-
-			await Promise.all(update_source_promises);
-			schema_rw();
-			table_rw();
-
-			const wq_stream_remove = await jsm.streams.info('__HARPERDB_WORK_QUEUE__');
-			expect(wq_stream_remove.config.sources).to.be.undefined;
-
-			await jsm.consumers.delete('__HARPERDB_WORK_QUEUE__', 'HDB_WORK_QUEUE');
-			await nats_utils.deleteLocalStream('__HARPERDB_WORK_QUEUE__');
-			await test_utils.tearDownMockDB(test_env);
-		}).timeout(TEST_TIMEOUT);
-
-		it.skip('Test addSourceToWorkStream where start_time is before one message in source', async () => {
-			// Create local stream
-			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
-			// Publish a message to stream
-			await nats_utils.publishToStream(
-				'txn.devTest.capybara',
-				TEST_STREAM_NAME_2,
-				TEST_HEADERS,
-				new CreateStreamMessage('insert', 'devTest', 'capybara', [{ id: 1 }])
-			);
-			// Wait half a second
-			await hdb_utils.async_set_timeout(500);
-			// Get the time now
-			const test_start_date = new Date(Date.now()).toISOString();
-			// Publish another message to the stream
-
-			await nats_utils.publishToStream(
-				'txn.devTest.capybara',
-				TEST_STREAM_NAME_2,
-				TEST_HEADERS,
-				new CreateStreamMessage('insert', 'devTest', 'capybara', [{ id: 2 }])
-			);
-			// Create a work queue stream
-			await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
-
-			const test_sub = {
-				schema: TEST_SCHEMA,
-				table: TEST_TABLE2,
-				publish: true,
-				subscribe: true,
-				start_time: test_start_date,
-			};
-
-			// Add the test local stream as a source to the work queue stream, pass the start date that was generated between the two inserts.
-			await nats_utils.addSourceToWorkStream(
-				'testLeafServer-leaf',
-				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				test_sub
-			);
-			const { jsm } = await nats_utils.getNATSReferences();
-			// Get the work queue stream info and make sure there is just one message in the stream to prove that start date filter is working.
-			const wq_stream = await jsm.streams.info(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
-			expect(wq_stream.state.messages).to.equal(1);
-			// Get the one message from the work queue and make sure it is the one that was published after the start date
-			const msg = await jsm.streams.getMessage(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, {
-				seq: wq_stream.state.first_seq,
-			});
-			expect(decode(msg.data).records[0].id).to.equal(2);
-
-			await jsm.consumers.delete(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, 'HDB_WORK_QUEUE');
-			await nats_utils.deleteLocalStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
-			await nats_utils.deleteLocalStream(TEST_STREAM_NAME_2);
-		}).timeout(TEST_TIMEOUT);
-
 		it('Test addNatsMsgHeader creates header and adds ID and origin', async () => {
 			const addNatsMsgHeader = nats_utils.__get__('addNatsMsgHeader');
 			const result = addNatsMsgHeader({ operation: 'insert', schema: 'pet', table: 'dragon' });
@@ -802,166 +603,6 @@ describe('Test natsUtils module', () => {
 			expect(typeof result).to.equal('object');
 			expect(result.has('origin')).to.be.true;
 		});
-
-		it('Test addSourceToWorkStream using default start_time', async () => {
-			const test_sub = {
-				schema: TEST_SCHEMA,
-				table: TEST_TABLE2,
-				publish: true,
-				subscribe: true,
-			};
-
-			// Create local stream
-			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
-			// Publish a message to stream
-			await nats_utils.publishToStream(
-				'txn.devTest.capybara',
-				TEST_STREAM_NAME_2,
-				undefined,
-				new CreateStreamMessage('insert', 'devTest', 'capybara', [{ id: 1 }])
-			);
-			// Publish another message to the stream
-			await nats_utils.publishToStream(
-				'txn.devTest.capybara',
-				TEST_STREAM_NAME_2,
-				undefined,
-				new CreateStreamMessage('insert', 'devTest', 'capybara', [{ id: 2 }])
-			);
-			// Create a work queue stream
-			await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
-			// Add the test local stream as a source to the work queue stream, pass the start date that was generated between the two inserts.
-			await nats_utils.addSourceToWorkStream(
-				'testLeafServer-leaf',
-				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				test_sub
-			);
-			const { jsm } = await nats_utils.getNATSReferences();
-			// Get the work queue stream info and make sure there are no messaged in there.
-			const wq_stream = await jsm.streams.info(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
-			expect(wq_stream.state.messages).to.equal(0);
-
-			await jsm.consumers.delete(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, 'HDB_WORK_QUEUE');
-			await nats_utils.deleteLocalStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
-			await nats_utils.deleteLocalStream(TEST_STREAM_NAME_2);
-		}).timeout(TEST_TIMEOUT);
-
-		it('Test addSourceToWorkStream that already exists in work stream', async () => {
-			const test_sub = {
-				schema: TEST_SCHEMA,
-				table: TEST_TABLE1,
-				publish: true,
-				subscribe: true,
-			};
-			await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
-			await nats_utils.addSourceToWorkStream(
-				'unit_test_node',
-				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				test_sub
-			);
-
-			const { jsm } = await nats_utils.getNATSReferences();
-			let wq_stream = await jsm.streams.info('__HARPERDB_WORK_QUEUE__');
-
-			expect(wq_stream.config.sources[0].name).to.equal(TEST_STREAM_NAME);
-			expect(wq_stream.config.sources[0].external.api).to.equal('$JS.unit_test_node.API');
-			expect(wq_stream.config.sources[0].external.deliver).to.equal('');
-			expect(wq_stream.config.sources[0].opt_start_time).to.not.be.undefined;
-
-			test_sub.start_time = '2022-09-02T20:06:35.993Z';
-
-			await nats_utils.addSourceToWorkStream(
-				'unit_test_node',
-				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				test_sub
-			);
-
-			wq_stream = await jsm.streams.info('__HARPERDB_WORK_QUEUE__');
-			expect(wq_stream.config.sources[0].name).to.equal(TEST_STREAM_NAME);
-			expect(wq_stream.config.sources[0].external.api).to.equal('$JS.unit_test_node.API');
-			expect(wq_stream.config.sources[0].external.deliver).to.equal('');
-			expect(wq_stream.config.sources[0].opt_start_time).to.equal('2022-09-02T20:06:35.993Z');
-		}).timeout(TEST_TIMEOUT);
-
-		it('Test removeSourceFromWorkStream removes a node from work stream', async () => {
-			const test_sub = {
-				schema: TEST_SCHEMA,
-				table: TEST_TABLE1,
-				publish: true,
-				subscribe: true,
-			};
-
-			const test_sub2 = {
-				schema: 'dev',
-				table: 'horse',
-				publish: true,
-				subscribe: true,
-			};
-
-			await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
-			await nats_utils.addSourceToWorkStream(
-				'unit_test_node',
-				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				test_sub
-			);
-
-			await nats_utils.addSourceToWorkStream(
-				'unit_test_node',
-				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				test_sub2
-			);
-
-			await nats_utils.removeSourceFromWorkStream(
-				'unit_test_node',
-				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				test_sub
-			);
-
-			const jsm = await nats_utils.getJetStreamManager();
-			const wq_stream = await jsm.streams.info(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
-			await nats_utils.removeSourceFromWorkStream(
-				'unit_test_node',
-				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				test_sub2
-			);
-
-			expect(wq_stream.config.sources.length).to.equal(1);
-			expect(wq_stream.config.sources[0].name).to.equal('7016c5a324d59667522d62b145fd2e54');
-		}).timeout(TEST_TIMEOUT);
-
-		it('Test removeSourceFromWorkStream removes last node from work stream', async () => {
-			const test_sub = {
-				schema: TEST_SCHEMA,
-				table: TEST_TABLE1,
-				publish: true,
-				subscribe: true,
-			};
-
-			const jsm = await nats_utils.getJetStreamManager();
-			await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
-			await jsm.streams.purge(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
-			await nats_utils.addSourceToWorkStream(
-				'unit_test_node',
-				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				test_sub
-			);
-
-			await nats_utils.removeSourceFromWorkStream(
-				'unit_test_node',
-				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				test_sub
-			);
-
-			const wq_stream = await jsm.streams.info(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
-			expect(wq_stream.config.sources).to.be.undefined;
-
-			const work_queue_inf_file = path.resolve(
-				__dirname,
-				'../tempTestDir/clustering/leaf/jetstream/HDB/streams/__HARPERDB_WORK_QUEUE__/meta.inf'
-			);
-
-			const inf_json = await fs.readJson(work_queue_inf_file);
-			expect(inf_json.sources).to.be.undefined;
-		}).timeout(TEST_TIMEOUT);
 
 		it('Test getJsmServerName returns correct name', async () => {
 			const getJsmServerName = nats_utils.__get__('getJsmServerName');
@@ -975,39 +616,58 @@ describe('Test natsUtils module', () => {
 			expect(res).to.equal('txn.unit.test.nats');
 		});
 
-		it.skip('Test updateLocalStreams updates subject name', async () => {
+		it('Test updateLocalStreams updates subject name', async () => {
 			// Create local stream
 			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
-			// Create a work queue stream
-			await nats_utils.createWorkQueueStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES);
-
 			const get_jsm_server_name_rw = nats_utils.__set__(
 				'getJsmServerName',
 				sandbox.stub().resolves('chicken_leg-leaf')
 			);
 
 			await nats_utils.updateLocalStreams();
-
 			const { jsm } = await nats_utils.getNATSReferences();
-
-			// Test that the work queue stream subject is updated
-			const wq_stream = await jsm.streams.info(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
-			expect(wq_stream.config.subjects[0]).to.equal('__HARPERDB_WORK_QUEUE__.chicken_leg-leaf');
-
-			// Test that the consumer of the work queue is updated
-			const wq_consumer = await jsm.consumers.info(
-				nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-				nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name
-			);
-			expect(wq_consumer.config.deliver_subject).to.equal('__HDB__.WORKQUEUE.chicken_leg-leaf');
-
 			// Test that the regular good old stream is updated
 			const test_stream = await jsm.streams.info(TEST_STREAM_NAME_2);
 			expect(test_stream.config.subjects[0]).to.equal('txn.devTest.capybara.chicken_leg-leaf');
 
 			get_jsm_server_name_rw();
-			await jsm.consumers.delete(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name, 'HDB_WORK_QUEUE');
-			await nats_utils.deleteLocalStream(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
+			await nats_utils.deleteLocalStream(TEST_STREAM_NAME_2);
+		}).timeout(TEST_TIMEOUT);
+
+		it('Test updateRemoteConsumer can add a consumer a stream and then remove it', async () => {
+			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
+			await nats_utils.updateRemoteConsumer(
+				{
+					schema: TEST_SCHEMA,
+					table: TEST_TABLE2,
+					subscribe: true,
+					publish: true,
+					start_time: '2022-08-26T18:26:58.514Z',
+				},
+				'testLeafServer'
+			);
+
+			const { jsm } = await nats_utils.getNATSReferences();
+			const test_consumer = await jsm.consumers.info(TEST_STREAM_NAME_2, 'testLeafServer-leaf');
+			let test_stream = await jsm.streams.info(TEST_STREAM_NAME_2);
+			expect(test_consumer.stream_name).to.equal(TEST_STREAM_NAME_2);
+			expect(test_stream.state.consumer_count).to.equal(1);
+
+			await new Promise((resolve) => setTimeout(resolve, 2000));
+
+			await nats_utils.updateRemoteConsumer(
+				{
+					schema: TEST_SCHEMA,
+					table: TEST_TABLE2,
+					subscribe: false,
+					publish: true,
+					start_time: '2022-08-26T18:26:58.514Z',
+				},
+				'testLeafServer'
+			);
+			test_stream = await jsm.streams.info(TEST_STREAM_NAME_2);
+			expect(test_stream.state.consumer_count).to.equal(0);
+
 			await nats_utils.deleteLocalStream(TEST_STREAM_NAME_2);
 		}).timeout(TEST_TIMEOUT);
 

@@ -67,6 +67,13 @@ async function updateNode(req) {
 		await clustering_utils.getSystemInfo()
 	);
 
+	for (let i = 0, sub_length = added.length; i < sub_length; i++) {
+		// The remote node reply has an array called 'successful' that contains all the subs its was able to establish.
+		const sub = added[i];
+		hdb_logger.trace(`updateNode updating work stream for node: ${remote_node_name} subscription:`, sub);
+		if (added[i].start_time === undefined) delete added[i].start_time;
+	}
+
 	hdb_logger.trace('updateNode sending remote payload:', remote_payload);
 	let reply;
 	try {
@@ -86,14 +93,17 @@ async function updateNode(req) {
 
 	hdb_logger.trace(reply);
 
-	// The request above is sent before the stream update and upsert in case an error occurs and request is rejected.
-	// Update the work queue stream with the new subscriptions.
+	// The call to updateRemoteConsumer will, depending on subs, either add/remove a consumer for this node on
+	// the remote node. If consumer is added, a msg iterator will be init for that consumer. Conversely, if a
+	// consumer is removed, anu existing msg iterator will e stopped.
 	for (let i = 0, sub_length = added.length; i < sub_length; i++) {
-		// The remote node reply has an array called 'successful' that contains all the subs its was able to establish.
-		const sub = added[i];
-		hdb_logger.trace(`updateNode updating work stream for node: ${remote_node_name} subscription:`, sub);
-		await nats_utils.updateWorkStream(sub, remote_node_name);
-		if (added[i].start_time === undefined) delete added[i].start_time;
+		const added_sub = added[i];
+		await nats_utils.updateRemoteConsumer(added_sub, remote_node_name);
+		if (added_sub.subscribe === true) {
+			await nats_utils.updateConsumerIterator(added_sub.schema, added_sub.table, remote_node_name, 'start');
+		} else {
+			await nats_utils.updateConsumerIterator(added_sub.schema, added_sub.table, remote_node_name, 'stop');
+		}
 	}
 
 	if (!record) record = [new Node(remote_node_name, [], reply.system_info)];

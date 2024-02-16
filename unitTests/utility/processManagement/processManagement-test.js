@@ -122,24 +122,21 @@ describe('Test processManagement utilityFunctions module', () => {
 	const sandbox = sinon.createSandbox();
 	const test_err = 'Utility functions test error';
 	let os_cpus_stub;
-	let create_work_stream_stub;
 	let remove_nats_config_stub;
 	let get_all_node_records_stub;
 	let update_node_name_stub;
-	let ingest_stream_update_stub;
 	utility_functions.enterPM2Mode();
 
 	before(() => {
 		fs.mkdirpSync(path.resolve(__dirname, '../../envDir/clustering'));
 		os_cpus_stub = sandbox.stub(os, 'cpus').returns([1, 2, 3, 4, 5, 6]);
-		create_work_stream_stub = sandbox.stub(nats_utils, 'createWorkQueueStream').resolves();
 		env_mngr.initTestEnvironment();
 		sandbox.stub(user, 'listUsers').resolves(FAKE_USER_LIST);
 		sandbox.stub(user, 'getClusterUser').resolves(fake_cluster_user);
 		remove_nats_config_stub = sandbox.stub(nats_config, 'removeNatsConfig');
 		get_all_node_records_stub = sandbox.stub(clustering_utils, 'getAllNodeRecords').resolves([]);
 		update_node_name_stub = sandbox.stub(nats_utils, 'updateLocalStreams');
-		ingest_stream_update_stub = sandbox.stub(nats_utils, 'updateIngestStreamConsumer');
+		sandbox.stub(nats_utils, 'deleteLocalStream');
 		env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_USER, FAKE_CLUSTER_USER1);
 		env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT, 7711);
 		env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME, 'unitTestNodeName');
@@ -633,16 +630,13 @@ describe('Test processManagement utilityFunctions module', () => {
 	it('Test startClusteringProcesses functions calls startService for all the clustering services', async () => {
 		const start_service_stub = sandbox.stub();
 		const start_worker_stub = sandbox.stub();
-		const create_queue_stub = sandbox.stub();
 		const start_service_rw = utility_functions.__set__('startService', start_service_stub);
 		const start_worker_rw = utility_functions.__set__('startWorker', start_worker_stub);
-		const create_queue_rw = utility_functions.__set__('nats_utils.createWorkQueueStream', create_queue_stub);
 		get_all_node_records_stub.resolves([{ system_info: { hdb_version: '3.x.x' } }]);
 		await utility_functions.startClusteringProcesses();
 		expect(start_service_stub.getCall(0).args[0]).to.equal('Clustering Hub');
 		expect(start_service_stub.getCall(1).args[0]).to.equal('Clustering Leaf');
 		start_service_rw();
-		create_queue_rw();
 		get_all_node_records_stub.resolves([]);
 	});
 
