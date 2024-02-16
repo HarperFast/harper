@@ -1,3 +1,5 @@
+name: "Destroy Instances"
+
 on:
   workflow_call:
     inputs:
@@ -13,22 +15,25 @@ on:
       callingWorkflow:
         required: true
         type: string
-name: "Destroy Instances"
+      tfstateArtifactName:
+        default: 'tfstate'
+        type: string
+
 jobs:
   destroyInstances:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-    - uses: actions/download-artifact@v3
+    - uses: actions/download-artifact@v4
       if: always()
       with:
-        name: tfstate
+        name: ${{ inputs.tfstateArtifactName }}
         path: ../tfstate/
     - name: Setup Terraform
       if: always()
       with:
         terraform_wrapper: false
-      uses: hashicorp/setup-terraform@v2
+      uses: hashicorp/setup-terraform@v3
     - name: Destroy Instances
       if: always()
       env:

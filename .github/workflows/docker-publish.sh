@@ -1,0 +1,130 @@
+name: Docker Publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      container:
+        description: 'Which container to build, harperdb/private, harperdb/harperdb, harperdb/harperdb-fabric, harperdb/harperdb-openshift, tar, or public for both harperdb and openshift'
+        default: 'harperdb/private'
+        required: false
+        type: choice
+        options:
+          - 'harperdb/private'
+          - 'harperdb/harperdb'
+          - 'harperdb/harperdb-openshift'
+          - 'harperdb/fabric'
+          - 'tar'
+          - 'public'
+      file:
+        description: 'Which dockerfile to use for this build. ignored except when harperdb/private, or tar.'
+        default: 'utility/Docker/Dockerfile'
+        required: false
+        type: string
+      latest:
+        description: 'tag this build as latest in registry'
+        default: false
+        required: false
+        type: boolean
+      platforms:
+        description: 'Which platform(s) to build for'
+        default: "linux/arm64,linux/amd64"
+        required: false
+        type: choice
+        options:
+          - "linux/arm64,linux/amd64"
+          - "linux/amd64"
+          - "linux/arm64"
+      push:
+        description: 'push the created image to dockerhub. ignored when tar'
+        default: false
+        required: false
+        type: boolean
+
+jobs:
+  ####################
+  #  Build HarperDB
+  ####################
+  build:
+    uses: ./.github/workflows/build.yaml
+
+  ####################################
+  #  Get License Files for Container
+  ####################################
+  getLicenses:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+    - uses: actions/checkout@v4
+    - name: "Get Latest License Files"
+      run: .github/scripts/get-license-files.sh
+    - name: "Get HarperDB/harperdb_open_source_license_generator.git"
+      uses: actions/checkout@v4
+      with:
+        repository: "HarperDB/harperdb_open_source_license_generator.git"
+        path: "harperdb_open_source_license_generator"
+        ref: "master"
+    - uses: actions/setup-node@v4
+    - name: "Generate license file"
+      env:
+        project_path: "."
+        output_file: "utility/Docker/licenses/open-source-licenses-notices.md"
+        template_file: "harperdb_open_source_license_generator/template.txt"
+      run: |
+        #!/usr/bin/env bash
+        cd harperdb_open_source_license_generator
+        npm install --omit=dev 
+        cd -
+        node harperdb_open_source_license_generator/index.js
+    - name: 'Upload Artifact'
+      uses: actions/upload-artifact@v4
+      with:
+        name: "licenses"
+        path: "utility/Docker/licenses/"
+        retention-days: 1
+
+  ############################
+  #  Build Container Image(s)
+  ############################
+  publish_container:
+    if: inputs.container != 'public'
+    needs:
+      - build
+      - getLicenses
+    uses: ./.github/workflows/docker-build.yaml
+    with:
+      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      container: ${{ inputs.container }}
+      file: ${{ inputs.file }}
+      latest: ${{ inputs.latest }}
+      platforms: ${{ inputs.platforms }}
+      push: ${{ inputs.push }}
+    secrets:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+
+  publish_public_containers:
+    if: inputs.container == 'public'
+    needs:
+      - build
+      - getLicenses
+    strategy:
+      matrix:
+        container:
+          - 'harperdb/harperdb'
+          - 'harperdb/harperdb-openshift'
+        includes:
+          - container: 'harperdb/harperdb'
+            file: 'utility/Docker/Dockerfile'
+          - container: 'harperdb/harperdb-openshift'
+            file: 'utility/Docker/Dockerfile-openshift'
+    uses: ./.github/workflows/docker-build.yaml
+    with:
+      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      container: ${{ inputs.container }}
+      file: ${{ inputs.file }}
+      latest: ${{ inputs.latest }}
+      platforms: ${{ inputs.platforms }}
+      push: ${{ inputs.push }}
+    secrets:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}

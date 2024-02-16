@@ -1,93 +1,58 @@
 name: "Run Docker Cluster Tests A"
 
 on:
-  push:
-    branches:
-      - main
-      - "release_*"
-  schedule:
-    - cron: '8 13 * * 1-5'
   workflow_dispatch:
+    inputs:
+      files:
+        description: 'list of container files to test'
+        default: '["utility/Docker/Dockerfile","utility/Docker/Dockerfile-openshift"]'
+        type: choice
+        options:
+          - '["utility/Docker/Dockerfile","utility/Docker/Dockerfile-openshift"]'
+          - '["utility/Docker/Dockerfile"]'
+          - '["utility/Docker/Dockerfile-openshift"]'
+      platforms:
+        description: 'list of platforms to test'
+        default: '["linux/amd64","linux/arm64"]'
+        type: choice
+        options:
+          - '["linux/amd64","linux/arm64"]'
+          - '["linux/amd64"]'
+          - '["linux/arm64"]'
   workflow_call:
+    inputs:
+      files:
+        description: 'list of container files to test'
+        default: '["utility/Docker/Dockerfile","utility/Docker/Dockerfile-openshift"]'
+        type: string
+      platforms:
+        description: 'list of platforms to test'
+        default: '["linux/amd64","linux/arm64"]'
+        type: string
 
 jobs:
+  ####################
+  #  Build HarperDB
+  ####################
   build:
     uses: ./.github/workflows/build.yaml
-  dockerBuild:
-    needs:
-      - build
-    uses: ./.github/workflows/docker-build.yaml
-    with:
-      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-      nodeVersion: ${{ needs.build.outputs.nodeVersion }}
-  createInstances:
-    needs:
-      - build
-      - dockerBuild
-    uses: ./.github/workflows/create-instances.yaml
-    with:
-      instanceCount: "1"
-      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-      installType: "docker"
-      callingWorkflow: ${{ github.workflow }}
-    secrets: inherit
-  runTests:
-    runs-on: ubuntu-latest
-    needs:
-      - dockerBuild
-      - build
-      - createInstances
-    timeout-minutes: 20
-    steps:
-    - uses: actions/checkout@v3
-    - uses: actions/download-artifact@v3
-      with:
-        name: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}.tar
-        path: utility/Docker
-    - name: Run Tests
-      env:
-        CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
-      run: |
-        #!/bin/bash
-        echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
-        public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
-        public_dns_names=($public_dns_names)
-        public_dns_name="${public_dns_names[0]}"
-        
-        mkdir logs-artifact
 
-        ssh -i private_key -o ConnectTimeout=10 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
-          "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/docker-cluster-test-a.sh && /home/ubuntu/harperdb/test/ci-tests/docker-cluster-test-a.sh ${{ needs.build.outputs.harperdbVersion }}"
-    - name: 'Download Logs'
-      if: always()
-      run: |
-        #!/bin/bash
-        public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
-        public_dns_names=($public_dns_names)
-        public_dns_name="${public_dns_names[0]}"
-        scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/artifact" "logs-artifact/"
-    - name: 'Upload Artifact'
-      uses: actions/upload-artifact@v3
-      if: always()
-      with:
-        name: logs
-        path: logs-artifact
-        retention-days: 1
-  destroyInstances:
-    if: always()
-    needs: runTests
-    uses: ./.github/workflows/destroy-instances.yaml
-    with:
-      instanceCount: "1"
-      callingWorkflow: ${{ github.workflow }}
-    secrets: inherit
-  sendSlackMessage:
-    uses: ./.github/workflows/post-to-slack-channel.yaml
-    if: ${{ failure() && (github.event_name == 'schedule' || github.event_name == 'push') }}
-    secrets: inherit
+  ##############################
+  #  Call Docker Test template
+  #    cluster test a
+  #############################
+  cluster-test-a:
     needs:
-      - destroyInstances
-      - runTests
-      - createInstances
-      - dockerBuild
       - build
+    uses: ./.github/workflows/docker-cluster-test.yaml
+    strategy:
+      fail-fast: false
+      matrix:
+        file: ${{ fromJSON(inputs.files) }}
+        platform: ${{ fromJSON(inputs.platforms) }}
+    with:
+      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      file: ${{ matrix.file }}
+      platform: ${{ matrix.platform }}
+      clusterTest: 'test/ci-tests/docker-cluster-test-a.sh'
+    secrets: inherit

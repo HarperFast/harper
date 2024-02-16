@@ -64,7 +64,7 @@ jobs:
         mv k6-logs harperdb
       shell: bash
     - name: 'Upload Log Artifact'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: k6-logs
         path: k6-logs/

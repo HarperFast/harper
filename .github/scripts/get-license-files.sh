@@ -4,7 +4,7 @@ set -eou pipefail
 
 LICENSES_DIR="${LICENSES_DIR:-utility/Docker/licenses}"
 
-dependencies=(curl pandoc)
+dependencies=(curl pandoc jq)
 
 # check for missing dependencies
 missing_packages=""

@@ -36,7 +36,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - uses: webfactory/ssh-agent@v0.7.0
       with:
         ssh-private-key: ${{ secrets.K6_LOADTESTS_KEY }}
@@ -48,13 +48,13 @@ jobs:
     - name: Setup Terraform
       with:
         terraform_wrapper: false
-      uses: hashicorp/setup-terraform@v2
-    - uses: actions/download-artifact@v3
+      uses: hashicorp/setup-terraform@v3
+    - uses: actions/download-artifact@v4
       if: inputs.installType == 'buildPackage'
       with:
         name: harperdb-${{ inputs.harperdbVersion }}.tgz
         path: ../artifact/
-    - uses: actions/download-artifact@v3
+    - uses: actions/download-artifact@v4
       if: inputs.installType == 'docker'
       with:
         name: docker-harperdb_${{ inputs.harperdbVersion }}.tar
@@ -116,7 +116,7 @@ jobs:
         mv .terraform.lock.hcl ../harperdb/tfstate/
         mv instance.tf ../harperdb/tfstate/
     - name: 'Upload TFState'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: tfstate
         path: tfstate/

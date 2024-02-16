@@ -171,9 +171,6 @@
     "eslint-plugin-radar": {
       "eslint": "8.22.0"
     },
-    "newman-reporter-html": {
-      "newman": "5.3.2"
-    },
     "alasql": {
       "xlsx": "0.18.5"
     }
