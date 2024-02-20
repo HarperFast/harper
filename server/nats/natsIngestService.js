@@ -348,6 +348,7 @@ async function messageProcessor(msg) {
 		}
 		if (operation === 'define_schema') {
 			entry.type = operation;
+			entry.onCommit = onCommit;
 			subscription.send(entry);
 		} else if (records.length === 1 && !next_write)
 			// with a single record update, we can send this directly as a single event to our subscriber (the table
