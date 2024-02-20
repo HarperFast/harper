@@ -22,21 +22,9 @@ on:
         type: string
 
 jobs:
-  ##########################
-  #  Build Container Image
-  ##########################
-  dockerBuild:
-    uses: ./.github/workflows/docker-build.yaml
-    with:
-      harperdbVersion: ${{ inputs.harperdbVersion }}
-      container: 'tar'
-      file: ${{ inputs.file }}
-      platforms: ${{ inputs.platform }}
-      get_dummy_licenses: true
-
   #################################
   #  Generate suffix for artifacts
-  ################################
+  #################################
   getValues:
     runs-on: ubuntu-latest
     outputs:
@@ -54,12 +42,26 @@ jobs:
           #!/usr/bin/env bash
           [[ "${containerFile}" == *"-openshift" ]] && flavor='-openshift' || flavor=''
           arch="-${platform##*/}"
-          echo "suffix=${runNumber}${flavor}${arch}.tar" >> $GITHUB_OUTPUT
+          echo "suffix=${runNumber}${flavor}${arch}-$(uuidgen | cut -c1-8).tar" >> $GITHUB_OUTPUT
           if [[ "${platform##*/}" == "amd64" ]]; then
             echo "instanceType=c7i.2xlarge" >> $GITHUB_OUTPUT
           elif [[ "${platform##*/}" == "arm64" ]]; then
             echo "instanceType=c7gn.2xlarge" >> $GITHUB_OUTPUT
           fi
+
+  ##########################
+  #  Build Container Image
+  ##########################
+  dockerBuild:
+    needs: getValues
+    uses: ./.github/workflows/docker-build.yaml
+    with:
+      harperdbVersion: ${{ inputs.harperdbVersion }}
+      container: 'tar'
+      containerTarball: docker-harperdb_${{ inputs.harperdbVersion }}-${{ needs.getValues.outputs.suffix }}
+      file: ${{ inputs.file }}
+      platforms: ${{ inputs.platform }}
+      get_dummy_licenses: true
 
   ##############################
   #  Create Instances for tests
@@ -141,16 +143,3 @@ jobs:
       instanceType: ${{ needs.getValues.outputs.instanceType }}
       tfstateArtifactName: "tfstate-${{ needs.getValues.outputs.suffix }}"
     secrets: inherit
-
-  #################################
-  #  Send Slack Message on failure
-  #################################
-  sendSlackMessage:
-    uses: ./.github/workflows/post-to-slack-channel.yaml
-    if: ${{ failure() && (github.event_name == 'schedule' || github.event_name == 'push') }}
-    secrets: inherit
-    needs:
-      - destroyInstances
-      - runTests
-      - createInstances
-      - dockerBuild

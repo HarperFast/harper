@@ -53,6 +53,10 @@ on:
         default: false
         required: false
         type: boolean
+      containerTarball:
+        description: 'override name for tarball created when container is tar: "default" tries to create a good name'
+        default: 'default'
+        type: string
 
     secrets:
       DOCKER_USERNAME:
@@ -140,12 +144,17 @@ jobs:
           runNumber: ${{ github.run_number }}
           containerFile: ${{ inputs.file }}
           platform: ${{ inputs.platforms }}
+          containerTarball: ${{ inputs.containerTarball }}
         run: |
           #!/usr/bin/env bash
-          base="docker-harperdb_${harperdbVersion}-"
-          [[ "${containerFile}" == *"-openshift" ]] && flavor='-openshift' || flavor=''
-          arch="-${platform##*/}"
-          echo "tarName=${base}${runNumber}${flavor}${arch}.tar" >> $GITHUB_OUTPUT
+          if [[ "${containerTarball}" == "default" ]]; then
+            base="docker-harperdb_${harperdbVersion}-"
+            [[ "${containerFile}" == *"-openshift" ]] && flavor='-openshift' || flavor=''
+            arch="-${platform##*/}"
+            echo "tarName=${base}${runNumber}${flavor}${arch}.tar" >> $GITHUB_OUTPUT
+          else
+            echo "tarName=${containerTarball}" >> $GITHUB_OUTPUT
+          fi
 
       - name: "Create container tarball"
         id: build-image-tar

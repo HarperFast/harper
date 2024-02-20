@@ -87,3 +87,16 @@ jobs:
       platform: ${{ matrix.platform }}
       clusterTest: 'test/ci-tests/docker-cluster-test-c.sh'
     secrets: inherit
+
+  #################################
+  #  Send Slack Message on failure
+  #################################
+  sendSlackMessage:
+    uses: ./.github/workflows/post-to-slack-channel.yaml
+    if: ${{ failure() && (github.event_name == 'schedule' || github.event_name == 'push') }}
+    secrets: inherit
+    needs:
+      - destroyInstances
+      - runTests
+      - createInstances
+      - dockerBuild
