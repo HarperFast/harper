@@ -18,7 +18,7 @@ jobs:
     steps:
     - name: Post to a Slack channel
       id: slack
-      uses: slackapi/slack-github-action@v1.24.0
+      uses: slackapi/slack-github-action@v1.25.0
       with:
         channel-id: "${{ inputs.channel_id }}"
         slack-message: "${{ inputs.slack_message }}"

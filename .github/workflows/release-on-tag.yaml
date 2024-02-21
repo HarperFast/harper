@@ -1,0 +1,293 @@
+name: "Release HarperDB"
+
+on:
+  push:
+    tags:
+      - release_*
+
+jobs:
+  ########
+  #  Meta
+  ########
+  meta:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get-values.outputs.version }}
+      version_major: ${{ steps.get-values.outputs.version_major }}
+      version_minor: ${{ steps.get-values.outputs.version_minor }}
+      version_patch: ${{ steps.get-values.outputs.version_patch }}
+      release_type: ${{ steps.get-values.outputs.release_type }}
+      prerelease_version: ${{ steps.get-values.outputs.prerelease_version }}
+      npm_extra_tags: ${{ steps.get-values.outputs.npm_tags }}
+      dockerhub_tag_latest: ${{ steps.get-values.outputs.dockerhub_tag_latest }}
+    steps:
+      - name: 'Get values'
+        id: get-values
+        run: |
+          #!/usr/bin/env bash
+
+          VERSION=${GITHUB_REF#refs/*/release_}
+          RELEASE_TYPE='stable'
+          PRERELEASE_VERSION=''
+          if [[ "${VERSION}" == *"-"* ]]; then
+            PRERELEASE_VERSION_STRING="${VERSION##*-}"
+            PRERELEASE_VERSION="${PRERELEASE_VERSION_STRING##*.}"
+            RELEASE_TYPE="${PRERELEASE_VERSION_STRING%%.*}"
+          fi
+          
+          VERSION="${VERSION%%-*}"
+          VERSION="${VERSION#[vV]}"
+          VERSION_MAJOR="${VERSION%%\.*}"
+          VERSION_MINOR="${VERSION#*.}"
+          VERSION_MINOR="${VERSION_MINOR%.*}"
+          VERSION_PATCH="${VERSION##*.}"
+        
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "version_major${VERSION_MAJOR}" >> $GITHUB_OUTPUT
+          echo "version_minor=${VERSION_MINOR}" >> $GITHUB_OUTPUT
+          echo "version_patch=${VERSION_PATCH}" >> $GITHUB_OUTPUT
+          echo "release_type=${RELEASE_TYPE}" >> $GITHUB_OUTPUT
+          
+          if [[ "${RELEASE_TYPE}" == @(alpha|beta|rc) ]]; then
+            echo "prerelease_version=${PRERELEASE_VERSION}" >> $GITHUB_OUTPUT
+            echo "npm_extra_tags=next" >> $GITHUB_OUTPUT
+            echo "dockerhub_tag_latest=false" >> $GITHUB_OUTPUT
+          else
+            echo "prerelease_version='' >> $GITHUB_OUTPUT
+            echo "npm_extra_tags=latest+stable" >> $GITHUB_OUTPUT
+            echo "dockerhub_tag_latest=true" >> $GITHUB_OUTPUT
+          fi
+
+  ####################################
+  #  Get License Files for Container
+  ####################################
+  getLicenses:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: "Get Latest License Files"
+        run: .github/scripts/get-license-files.sh
+      - name: "Get HarperDB/harperdb_open_source_license_generator.git"
+        uses: actions/checkout@v4
+        with:
+          repository: "HarperDB/harperdb_open_source_license_generator.git"
+          path: "harperdb_open_source_license_generator"
+          ref: "master"
+      - uses: actions/setup-node@v4
+      - name: "Generate license file"
+        env:
+          project_path: "."
+          output_file: "utility/Docker/licenses/open-source-licenses-notices.md"
+          template_file: "harperdb_open_source_license_generator/template.txt"
+        run: |
+          #!/usr/bin/env bash
+          cd harperdb_open_source_license_generator
+          npm install --omit=dev 
+          cd -
+          node harperdb_open_source_license_generator/index.js
+      - name: 'Upload Artifact'
+        uses: actions/upload-artifact@v4
+        with:
+          name: "licenses"
+          path: "utility/Docker/licenses/"
+          retention-days: 1
+
+  ####################
+  #  Build HarperDB
+  ####################
+  build:
+    uses: ./.github/workflows/build.yaml
+
+  ##############################################
+  #  Release to Private NPM harperdb/@harperdb
+  ##############################################
+  npmPrivateRelease:
+    needs:
+      - build
+      - meta
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '${{needs.build.outputs.nodeVersion}}'
+          registry-url: 'https://registry.npmjs.org'
+      - name: "npm Publish"
+        env:
+          NODE_AUTH_TOKEN: "${{ secrets.NPM_ACCESS_KEY }}"
+          HARPERDB_VERSION:  "${{ needs.build.outputs.harperdbVersion }}"
+          PUBLISH_DESTINATION: 'private'
+          EXTRA_TAGS: "${{ needs.meta.outputs.npm_extra_tags }}"
+          DRYRUN: true
+        run: ./.github/scripts/npm-publish.sh
+
+  #########################################
+  #  Release to dockerhub harperdb/private
+  #########################################
+  dockerhubPrivateRelease:
+    needs:
+      - build
+      - getLicenses
+      - meta
+    uses: ./.github/workflows/docker-build.yaml
+    with:
+      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      container: 'harperdb/private'
+      latest: ${{ needs.meta.outputs.dockerhub_tag_latest }}
+      platforms: 'linux/amd64,linux/arm64'
+      push: false
+    secrets:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+
+  ############################################
+  #  Send Slack Message on 'Ready to Deploy'
+  ############################################
+  sendSlackMessageReadyToDeploy:
+    uses: ./.github/workflows/post-to-slack-channel.yaml
+    if: ${{ success() }}
+    secrets: inherit
+    with:
+      channel_id: "@mat"
+      slack_message: "Ready to Release: : ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+    needs:
+      - meta
+      - getLicenses
+      - build
+      - npmPrivateRelease
+      - dockerhubPrivateRelease
+
+  ###################################
+  #  Release to Public NPM harperdb
+  #  Release to Public Dockerhub
+  #    harperdb/harperdb
+  #    harperdb/harperdb-openshift
+  ###################################
+  publicRelease:
+    environment: production
+    needs:
+      - build
+      - meta
+      - npmPrivateRelease
+      - getLicenses
+      - dockerhubPrivateRelease
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      # setup for both publishing both to npm and dockerhub
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
+
+      # setup and publishing to npm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '${{needs.build.outputs.nodeVersion}}'
+          registry-url: 'https://registry.npmjs.org'
+      - name: "npm Publish"
+        env:
+          NODE_AUTH_TOKEN: "${{ secrets.NPM_ACCESS_KEY }}"
+          HARPERDB_VERSION:  "${{ needs.build.outputs.harperdbVersion }}"
+          PUBLISH_DESTINATION: 'public'
+          EXTRA_TAGS: "${{ needs.meta.outputs.npm_extra_tags }}"
+          DRYRUN: true
+        run: ./.github/scripts/npm-publish.sh
+
+      # start docker setup and build
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: "Setup Docker buildx"
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: "licenses"
+          path: "utility/Docker/licenses/"
+
+      # generate tags for containers
+      - name: Docker Meta Standard
+        id: meta-standard
+        uses: docker/metadata-action@v5
+        with:
+          # list of Docker images to use as base name for tags
+          images: 'harperdb/harperdb'
+          # generate Docker tags based on the following events/attributes
+          tags: |
+            type=raw,enable=${{ needs.build.outputs.harperdbVersion }}
+            type=raw,value=latest,enable=${{ needs.meta.outputs.dockerhub_tag_latest }}
+
+      - name: Docker Meta Openshift
+        id: meta-openshift
+        uses: docker/metadata-action@v5
+        with:
+          # list of Docker images to use as base name for tags
+          images: 'harperdb/harperdb-openshift'
+          # generate Docker tags based on the following events/attributes
+          tags: |
+            type=raw,enable=${{ needs.build.outputs.harperdbVersion }}
+            type=raw,value=latest,enable=${{ needs.meta.outputs.dockerhub_tag_latest }}
+
+      # standard container
+      - name: "Publish harperdb:${{ needs.build.outputs.harperdbVersion }}"
+        id: build-image-standard
+        timeout-minutes: 30
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: 'utility/Docker/Dockerfile'
+          platforms: 'linux/amd64,linux/arm64'
+          push: false
+          tags: ${{ steps.meta-standard.outputs.tags }}
+          build-args: |
+            HARPERDB_VERSION=${{ needs.build.outputs.harperdbVersion }}
+            HARPERDB_TARBALL=harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
+            VCS_REF=`git rev-parse HEAD`
+            BUILD_DATE=`date -u +%FT%T`
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # openshift container
+      - name: "Publish harperdb-openshift:${{ needs.build.outputs.harperdbVersion }}"
+        id: build-image-openshift
+        timeout-minutes: 30
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: 'utility/Docker/Dockerfile-openshift'
+          platforms: 'linux/amd64,linux/arm64'
+          push: false
+          tags: ${{ steps.meta-openshift.outputs.tags }}
+          build-args: |
+            HARPERDB_VERSION=${{ needs.build.outputs.harperdbVersion }}
+            HARPERDB_TARBALL=harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
+            VCS_REF=`git rev-parse HEAD`
+            BUILD_DATE=`date -u +%FT%T`
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  #################################
+  #  Send Slack Message on failure
+  #################################
+  sendSlackMessage:
+    uses: ./.github/workflows/post-to-slack-channel.yaml
+    if: ${{ failure() && !cancelled() }}
+    secrets: inherit
+    with:
+      channel_id: "@mat"
+    needs:
+      - meta
+      - getLicenses
+      - build
+      - npmPrivateRelease
+      - dockerhubPrivateRelease
+      - publicRelease
