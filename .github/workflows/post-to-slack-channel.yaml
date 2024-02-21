@@ -8,7 +8,7 @@ on:
         required: false
         type: string
       slack_message:
-        default: "${{ github.workflow }} Failed.\nSee logs here: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        default: ":x: ${{ github.workflow }} Failed.\nSee logs here: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
         required: false
         type: string
 
