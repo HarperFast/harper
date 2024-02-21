@@ -7,16 +7,44 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  # dm to mat
+  slack_channel_id: "U0512LGPYSE"
+  # development-ci
+  #slack_channel_id: "C05PLHLQFQA"
+
 jobs:
   ############################################
   #  Send Slack Message for start of Release
   ############################################
   sendSlackMessageRealeaseStarted:
-    uses: ./.github/workflows/post-to-slack-channel.yaml
-    secrets: inherit
-    with:
-      channel_id: "U0512LGPYSE"
-      slack_message: ":deployparrot: Preparing to Release: : ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+    runs-on: ubuntu-latest
+    outputs:
+      ts: ${{ steps.slack-message.outputs.ts }}
+    steps:
+    - uses: slackapi/slack-github-action@v1.25.0
+      id: slack-message
+      with:
+        channel_id: ${{ env.slack_channel_id }}
+        payload: |
+          {
+            "text": ":deployparrot: Release started (In Progress)",
+            "attachments": [
+              {
+                "pretext": "Release started",
+                "color": "dbab09",
+                "fields": [
+                  {
+                    "title": "Status",
+                    "short": true,
+                    "value": "In Progress"
+                  }
+                ]
+              }
+            ]
+          }
+      env:
+        SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
 
   ####################
   #  Build HarperDB
@@ -89,7 +117,42 @@ jobs:
           EOF
             exit 1
           fi
-          
+
+  ############################################
+  #  Send Slack Message: add version to message
+  ##############################################
+  sendSlackMessageRealeaseVersion:
+    runs-on: ubuntu-latest
+    outputs:
+      ts: ${{ steps.slack-message.outputs.ts }}
+    needs:
+      - sendSlackMessageRealeaseStarted
+      - meta
+    steps:
+      - uses: slackapi/slack-github-action@v1.25.0
+        id: slack-message
+        with:
+          channel_id: ${{ env.slack_channel_id }}
+          update-ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
+          payload: |
+            {
+              "text": ":deployparrot: Release ${{ needs.meta.outputs.version }} started (In Progress)",
+              "attachments": [
+                {
+                  "pretext": "Release started",
+                  "color": "dbab09",
+                  "fields": [
+                    {
+                      "title": "Status",
+                      "short": true,
+                      "value": "In Progress"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
 
   ####################################
   #  Get License Files for Container
@@ -217,17 +280,45 @@ jobs:
   #  Send Slack Message on 'Ready to Deploy'
   ############################################
   sendSlackMessageReadyToDeploy:
-    uses: ./.github/workflows/post-to-slack-channel.yaml
     if: ${{ needs.meta.outputs.release_type == 'stable' }}
+    runs-on: ubuntu-latest
+    outputs:
+      ts: ${{ steps.slack-message.outputs.ts }}
     needs:
       - meta
       - getLicenses
       - npmPrivateRelease
       - dockerhubPrivateRelease
-    secrets: inherit
-    with:
-      channel_id: "U0512LGPYSE"
-      slack_message: ":deployparrot: Ready to Release: : ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - sendSlackMessageRealeaseVersion
+    steps:
+      - uses: slackapi/slack-github-action@v1.25.0
+        id: slack-message
+        with:
+          channel_id: ${{ env.slack_channel_id }}
+          update-ts: ${{ needs.sendSlackMessageRealeaseVersion.outputs.ts }}
+          payload: |
+            {
+              "text": ":deployparrot: Release ${{ needs.meta.outputs.version }} started (In Progress)",
+              "attachments": [
+                {
+                  "pretext": "Release started",
+                  "color": "dbab09",
+                  "fields": [
+                    {
+                      "title": "Status",
+                      "short": true,
+                      "value": "In Progress"
+                    },
+                    {
+                      "title": "Review Required",
+                      "value": "[click here to review](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
 
   ###################################
   #  Release to Public NPM harperdb
@@ -346,29 +437,52 @@ jobs:
   #  Send Slack Message on success
   #################################
   sendSlackMessageParty:
-    uses: ./.github/workflows/post-to-slack-channel.yaml
     if: ${{ !failure() && !cancelled() }}
-    secrets: inherit
-    with:
-      channel_id: "U0512LGPYSE"
-      slack_message: ":white_check_mark: ${{ github.workflow }}\nVersion ${{ needs.meta.outputs.version }} deployed as ${{ needs.meta.outputs.release_type }} successfully\nSee logs here: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+    runs-on: ubuntu-latest
+    outputs:
+      ts: ${{ steps.slack-message.outputs.ts }}
     needs:
-      - meta
-      - getLicenses
-      - build
-      - npmPrivateRelease
-      - dockerhubPrivateRelease
-      - publicRelease
+    - meta
+    - getLicenses
+    - build
+    - npmPrivateRelease
+    - dockerhubPrivateRelease
+    - publicRelease
+    - sendSlackMessageReadyToDeploy
+    steps:
+      - uses: slackapi/slack-github-action@v1.25.0
+        id: slack-message
+        with:
+          channel_id: ${{ env.slack_channel_id }}
+          update-ts: ${{ needs.sendSlackMessageReadyToDeploy.outputs.ts }}
+          payload: |
+            {
+              "text": ":white_check_mark: Release Finished: ${{ needs.meta.outputs.version }} (Completed)",
+              "attachments": [
+                {
+                  "pretext": "Release finished",
+                  "color": "28a745",
+                  "fields": [
+                    {
+                      "title": "Status",
+                      "short": true,
+                      "value": "Completed"
+                    }
+                  ]
+                }
+              ]
+            }
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
 
   #################################
   #  Send Slack Message on failure
   #################################
   sendSlackMessage:
-    uses: ./.github/workflows/post-to-slack-channel.yaml
     if: ${{ failure() && !cancelled() }}
-    secrets: inherit
-    with:
-      channel_id: "U0512LGPYSE"
+    runs-on: ubuntu-latest
+    outputs:
+      ts: ${{ steps.slack-message.outputs.ts }}
     needs:
       - meta
       - getLicenses
@@ -376,3 +490,33 @@ jobs:
       - npmPrivateRelease
       - dockerhubPrivateRelease
       - publicRelease
+      - sendSlackMessageRealeaseStarted
+    steps:
+      - uses: slackapi/slack-github-action@v1.25.0
+        id: slack-message
+        with:
+          channel_id: ${{ env.slack_channel_id }}
+          update-ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
+          payload: |
+            {
+              "text": ":x: Release Failed: ${{ needs.meta.outputs.version }} (Failure)",
+              "attachments": [
+                {
+                  "pretext": "Release failed",
+                  "color": "db0d04",
+                  "fields": [
+                    {
+                      "title": "Status",
+                      "short": true,
+                      "value": "Failed"
+                    },
+                    {
+                      "title": "Job Status",
+                      "value": "[Link to Github Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+                    }
+                  ]
+                }
+              ]
+                }
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
