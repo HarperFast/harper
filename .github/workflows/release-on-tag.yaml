@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - release_*
+  pull_request:
+  workflow_dispatch:
 
 jobs:
   ########
@@ -169,7 +171,7 @@ jobs:
   #    harperdb/harperdb-openshift
   ###################################
   publicRelease:
-    environment: production
+    environment: ${{ needs.meta.outputs.release_type == 'stable' && 'production' || 'pre-release' }}
     needs:
       - build
       - meta
