@@ -58,7 +58,7 @@ jobs:
             echo "npm_extra_tags=next" >> $GITHUB_OUTPUT
             echo "dockerhub_tag_latest=false" >> $GITHUB_OUTPUT
           else
-            echo "prerelease_version='' >> $GITHUB_OUTPUT
+            echo "prerelease_version=''" >> $GITHUB_OUTPUT
             echo "npm_extra_tags=latest+stable" >> $GITHUB_OUTPUT
             echo "dockerhub_tag_latest=true" >> $GITHUB_OUTPUT
           fi
