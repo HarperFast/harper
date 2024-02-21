@@ -76,6 +76,9 @@ jobs:
             cat <<EOF >> $GITHUB_SUMMARY
           > [!WARNING]
           > Failing job as the tag (${tag}) does not match harperdbVersion (${harperdbVersion})
+          EOF
+            exit 1
+          fi
           
 
   ####################################
@@ -338,7 +341,7 @@ jobs:
     secrets: inherit
     with:
       channel_id: "U0512LGPYSE"
-      slack_message: ":white_check_mark: Version ${{ needs.meta.outputs.version }} deployed as ${{ needs.meta.outputs.release_type }} successfully\n${{ github.workflow }}\nSee logs here: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      slack_message: ":white_check_mark: ${{ github.workflow }}\nVersion ${{ needs.meta.outputs.version }} deployed as ${{ needs.meta.outputs.release_type }} successfully\nSee logs here: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
     needs:
       - meta
       - getLicenses
