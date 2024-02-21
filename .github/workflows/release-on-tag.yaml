@@ -27,7 +27,7 @@ jobs:
         id: get-values
         env:
           #tag: ${{ github.ref }}
-          tag: 'refs/heads/release_4.3.0-beta.9'
+          tag: 'refs/heads/release_1.3.0'
         run: |
           #!/usr/bin/env bash
 
@@ -279,6 +279,24 @@ jobs:
             BUILD_DATE=`date -u +%FT%T`
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  #################################
+  #  Send Slack Message on success
+  #################################
+  sendSlackMessageParty:
+    uses: ./.github/workflows/post-to-slack-channel.yaml
+    if: ${{ !failure() && !cancelled() }}
+    secrets: inherit
+    with:
+      channel_id: "U0512LGPYSE"
+      slack_message: ":white_check_mark: Version ${{ needs.meta.outputs.version }} deployed as ${{ needs.meta.outputs.release_type }} successfully\n${{ github.workflow }}\nSee logs here: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n:deployparrot:"
+    needs:
+      - meta
+      - getLicenses
+      - build
+      - npmPrivateRelease
+      - dockerhubPrivateRelease
+      - publicRelease
 
   #################################
   #  Send Slack Message on failure
