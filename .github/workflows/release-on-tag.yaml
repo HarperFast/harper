@@ -239,7 +239,7 @@ jobs:
           images: 'harperdb/harperdb-openshift'
           # generate Docker tags based on the following events/attributes
           tags: |
-            type=raw,enable=${{ needs.build.outputs.harperdbVersion }}
+            type=raw,value=${{ needs.build.outputs.harperdbVersion }}
             type=raw,value=latest,enable=${{ needs.meta.outputs.dockerhub_tag_latest }}
 
       # standard container
