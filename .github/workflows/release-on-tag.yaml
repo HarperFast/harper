@@ -158,7 +158,7 @@ jobs:
     if: ${{ success() }}
     secrets: inherit
     with:
-      channel_id: "@mat"
+      channel_id: "U0512LGPYSE"
       slack_message: "Ready to Release: : ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
     needs:
       - meta
@@ -228,7 +228,7 @@ jobs:
           images: 'harperdb/harperdb'
           # generate Docker tags based on the following events/attributes
           tags: |
-            type=raw,enable=${{ needs.build.outputs.harperdbVersion }}
+            type=raw,value=${{ needs.build.outputs.harperdbVersion }}
             type=raw,value=latest,enable=${{ needs.meta.outputs.dockerhub_tag_latest }}
 
       - name: Docker Meta Openshift
@@ -288,7 +288,7 @@ jobs:
     if: ${{ failure() && !cancelled() }}
     secrets: inherit
     with:
-      channel_id: "@mat"
+      channel_id: "U0512LGPYSE"
     needs:
       - meta
       - getLicenses
