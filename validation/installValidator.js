@@ -22,7 +22,7 @@ function installValidator(param) {
 
 	const install_schema = Joi.object({
 		[hdb_terms.INSTALL_PROMPTS.ROOTPATH]: Joi.custom(validateRootAvailable),
-		[hdb_terms.INSTALL_PROMPTS.OPERATIONSAPI_NETWORK_PORT]: number.min(0),
+		[hdb_terms.INSTALL_PROMPTS.OPERATIONSAPI_NETWORK_PORT]: number.min(0).allow('null', null),
 		[hdb_terms.INSTALL_PROMPTS.TC_AGREEMENT]: string.valid('yes', 'YES', 'Yes'),
 		[hdb_terms.INSTALL_PROMPTS.CLUSTERING_NODENAME]: nats_term_constraints,
 		[hdb_terms.INSTALL_PROMPTS.CLUSTERING_ENABLED]: boolean,

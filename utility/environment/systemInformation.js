@@ -273,27 +273,32 @@ async function getMetrics() {
 
 async function getNatsStreamInfo() {
 	if (env.get(terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
-		const { js, jsm } = await nats_utils.getNATSReferences();
-		const ingest_info = await jsm.streams.info(nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name);
-		const ingest_consumer = await js.consumers.get(
-			nats_terms.WORK_QUEUE_CONSUMER_NAMES.stream_name,
-			nats_terms.WORK_QUEUE_CONSUMER_NAMES.durable_name
-		);
+		const { jsm } = await nats_utils.getNATSReferences();
+		const streams = await nats_utils.listStreams();
+		const res = [];
+		for (const stream of streams) {
+			const consumers = [];
+			const cons = await jsm.consumers.list(stream.config.name);
+			for await (const c of cons) {
+				consumers.push({
+					name: c.name,
+					created: c.created,
+					num_ack_pending: c.num_ack_pending,
+					num_redelivered: c.num_redelivered,
+					num_waiting: c.num_waiting,
+					num_pending: c.num_pending,
+				});
+			}
 
-		const res = {
-			ingest: {
-				stream: { ...ingest_info.state },
-				consumer: {
-					num_ack_pending: ingest_consumer._info.num_ack_pending,
-					num_redelivered: ingest_consumer._info.num_redelivered,
-					num_waiting: ingest_consumer._info.num_waiting,
-					num_pending: ingest_consumer._info.num_pending,
-				},
-			},
-		};
+			const stream_info = {
+				stream_name: stream.config.name,
+				database: stream.config.subjects[0].split('.')[1],
+				table: stream.config.subjects[0].split('.')[2],
+				state: stream.state,
+				consumers,
+			};
 
-		if (ingest_info.sources) {
-			res.ingest.stream.sources = ingest_info.sources;
+			res.push(stream_info);
 		}
 
 		return res;

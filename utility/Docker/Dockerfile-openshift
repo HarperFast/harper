@@ -1,6 +1,7 @@
 FROM registry.access.redhat.com/ubi9/nodejs-18:latest as builder
 
 ARG HARPERDB_TARBALL
+ARG HARPERDB_VERSION
 
 # for install only
 USER 0
@@ -28,11 +29,11 @@ WORKDIR /home/harperdb/
 
 #Install HarperDB package and clean up tarball
 RUN npm install $HARPERDB_TARBALL && \
-    npm cache clean --force && \
+    npm cache clean --force  && \
     rm -f $HARPERDB_TARBALL
 
-# Second stage
-FROM registry.access.redhat.com/ubi9/nodejs-18-minimal:latest
+# Runtime stage
+FROM registry.access.redhat.com/ubi9/nodejs-18-minimal:latest as runtime
 COPY --from=builder $HOME $HOME
 
 # metadata for labels

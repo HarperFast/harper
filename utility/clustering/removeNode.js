@@ -14,7 +14,7 @@ const { RemotePayloadObject } = require('./RemotePayloadObject');
 const { NodeSubscription } = require('./NodeObject');
 const DeleteObject = require('../../dataLayer/DeleteObject');
 const _delete = require('../../dataLayer/delete');
-const {broadcast} = require('../../server/threads/manageThreads');
+const { broadcast } = require('../../server/threads/manageThreads');
 
 const node_name = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 
@@ -50,6 +50,24 @@ async function removeNode(req) {
 	const remote_payload = new RemotePayloadObject(hdb_terms.OPERATIONS_ENUM.REMOVE_NODE, node_name, []);
 	let reply;
 	let remote_node_error = false;
+
+	for (let i = 0, sub_length = record.subscriptions.length; i < sub_length; i++) {
+		const subscription = record.subscriptions[i];
+		if (subscription.subscribe === true) {
+			await nats_utils.updateConsumerIterator(subscription.schema, subscription.table, remote_node_name, 'stop');
+		}
+
+		try {
+			await nats_utils.updateRemoteConsumer(
+				new NodeSubscription(subscription.schema, subscription.table, false, false),
+				remote_node_name
+			);
+		} catch (err) {
+			// Not throwing err so that if remote node is unreachable it doesn't stop it from being removed from this node
+			hdb_logger.error(err);
+		}
+	}
+
 	try {
 		// Send remove node request to remote node.
 		reply = await nats_utils.request(`${remote_node_name}.${nats_terms.REQUEST_SUFFIX}`, remote_payload);
@@ -57,17 +75,6 @@ async function removeNode(req) {
 	} catch (req_err) {
 		hdb_logger.error('removeNode received error from request:', req_err);
 		remote_node_error = true;
-	}
-
-	for (let i = 0, sub_length = record.subscriptions.length; i < sub_length; i++) {
-		const subscription = record.subscriptions[i];
-		hdb_logger.trace(
-			`Remove node removing subscription: ${subscription.schema}.${subscription.table} for node: ${remote_node_name}`
-		);
-
-		// Get the schema/table from the sub but set both publish and subscribe to false so that all streams are removed from work queue.
-		const false_sub = new NodeSubscription(subscription.schema, subscription.table, false, false);
-		await nats_utils.updateWorkStream(false_sub, remote_node_name);
 	}
 
 	// Delete nodes record from hdb_nodes table

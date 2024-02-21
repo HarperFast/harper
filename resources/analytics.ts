@@ -1,7 +1,7 @@
 import { isMainThread, parentPort, threadId } from 'worker_threads';
 import { setChildListenerByType, getThreadInfo } from '../server/threads/manageThreads';
 import { table } from './databases';
-import { getLogFilePath } from '../utility/logging/harper_logger';
+import { getLogFilePath, warn } from '../utility/logging/harper_logger';
 import { dirname, join } from 'path';
 import { open, stat, appendFile, readFile, writeFile } from 'fs/promises';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
@@ -167,6 +167,19 @@ function sendAnalytics() {
 async function aggregation(from_period, to_period = 60000) {
 	const raw_analytics_table = getRawAnalyticsTable();
 	const analytics_table = getAnalyticsTable();
+	const task_queue_latency = new Promise((resolve) => {
+		let start = performance.now();
+		setImmediate(() => {
+			const now = performance.now();
+			if (now - start > 5000) warn('Unusually high event queue latency on the main thread of ' + Math.round(now - start) + 'ms');
+			start = performance.now(); // We use this start time to measure the time it actually takes to on the task queue, minus the time on the event queu
+		});
+		analytics_table.primaryStore.prefetch([1], () => {
+			const now = performance.now();
+			if (now - start > 5000) warn('Unusually high task queue latency on the main thread of ' + Math.round(now - start) + 'ms');
+			resolve(now - start);
+		});
+	});
 	let last_for_period;
 	// find the last entry for this period
 	for (const entry of analytics_table.primaryStore.getRange({
@@ -312,6 +325,7 @@ async function aggregation(from_period, to_period = 60000) {
 			metric: 'main-thread-utilization',
 			idle: idle - last_idle,
 			active: active - last_active,
+			taskQueueLatency: await task_queue_latency,
 			time: now,
 			...process.memoryUsage(),
 		};

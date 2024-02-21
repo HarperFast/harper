@@ -537,7 +537,7 @@ async function clusterTables(background) {
 		subscriptions
 	);
 	let config_cluster_res;
-	if (fully_connected === 'true' && leader_cluster_status.connections.length > 0) {
+	if (fully_connected && leader_cluster_status.connections.length > 0) {
 		// Fully connected logic
 		const configure_cluster = require('../clustering/configureCluster');
 		const config_cluster_cons = [

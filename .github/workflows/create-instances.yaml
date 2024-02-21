@@ -1,3 +1,5 @@
+name: Create Ec2 Instances
+
 on:
   workflow_call:
     inputs:
@@ -25,7 +27,14 @@ on:
       securityGroupId:
         default: "sg-01b1c378328f897d1"
         type: string
-    outputs: 
+      tfstateArtifactName:
+        default: 'tfstate'
+        type: string
+      containerTarball:
+        description: 'name of conatiner tarball to use. default '' uses old docker-harperdb_<harperdbVersion>.tar'
+        default: ''
+        type: string
+    outputs:
       publicDnsNames:
         value: ${{jobs.createInstances.outputs.publicDnsNames}}
       publicIps:
@@ -34,8 +43,11 @@ on:
         value: ${{jobs.createInstances.outputs.privateDnsNames}}
       privateIps:
         value: ${{jobs.createInstances.outputs.privateIps}}
-name: Create Ec2 Instances
+
 jobs:
+  ####################
+  # Create Instances
+  ####################
   createInstances:
     outputs:
       publicDnsNames: ${{ steps.createInstances.outputs.PUBLIC_DNS_NAMES}}
@@ -45,20 +57,20 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Setup Terraform
       with:
         terraform_wrapper: false
-      uses: hashicorp/setup-terraform@v2
-    - uses: actions/download-artifact@v3
+      uses: hashicorp/setup-terraform@v3
+    - uses: actions/download-artifact@v4
       if: inputs.installType == 'buildPackage'
       with:
         name: harperdb-${{ inputs.harperdbVersion }}.tgz
         path: ../artifact/
-    - uses: actions/download-artifact@v3
+    - uses: actions/download-artifact@v4
       if: inputs.installType == 'docker'
       with:
-        name: docker-harperdb_${{ inputs.harperdbVersion }}.tar
+        name: ${{ inputs.containerTarball == '' && 'docker-harperdb_${{ inputs.harperdbVersion }}.tar' || inputs.containerTarball }}
         path: ../artifact/
     - name: Create Instances
       id: createInstances
@@ -66,6 +78,7 @@ jobs:
         AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
         AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
         CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
+        containerTarball: ${{ inputs.containerTarball == '' && 'docker-harperdb_${{ inputs.harperdbVersion }}.tar' || inputs.containerTarball }}
       run: |
         #!/bin/bash
         set -x
@@ -84,7 +97,7 @@ jobs:
 
         if [ "${{ inputs.installType }}" == "docker" ];
         then
-          mv ../artifact/docker-harperdb_${{ inputs.harperdbVersion }}.tar ./upload/
+          mv ../artifact/${containerTarball} ./upload/
         fi
         
         cp -r ../harperdb/ ./upload/
@@ -120,9 +133,9 @@ jobs:
         mv .terraform.lock.hcl ../harperdb/tfstate/
         mv instance.tf ../harperdb/tfstate/
     - name: 'Upload TFState'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
-        name: tfstate
+        name: ${{ inputs.tfstateArtifactName }}
         path: tfstate/
         retention-days: 1
     - name: 'Destroy Instances'

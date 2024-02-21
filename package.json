@@ -1,6 +1,6 @@
 {
   "name": "harperdb",
-  "version": "4.3.0-beta.6",
+  "version": "4.3.0-beta.9",
   "description": "HarperDB is a distributed SQL & NoSQL data platform focused on speed, flexibility, and ease of use.",
   "keywords": [
     "database",
@@ -19,8 +19,8 @@
   },
   "engines": {
     "minimum-node": "16.0.0",
-    "go-lang": "1.21.1",
-    "nats-server": "2.10.1"
+    "go-lang": "1.21.7",
+    "nats-server": "2.10.11"
   },
   "exports": {
     ".": "./index.js"
@@ -93,7 +93,7 @@
     "json2csv": "5.0.7",
     "jsonata": "1.8.6",
     "jsonwebtoken": "9.0.2",
-    "lmdb": "2.10.0-beta.2",
+    "lmdb": "2.10.0-beta.5",
     "lodash": "4.17.21",
     "mathjs": "11.11.2",
     "minimist": "1.2.8",
@@ -101,7 +101,7 @@
     "moment": "2.29.4",
     "mqtt-packet": "~8.2.1",
     "msgpackr": "1.10.1",
-    "nats": "2.17.0",
+    "nats": "2.19.0",
     "needle": "3.2.0",
     "node-stream-zip": "1.15.0",
     "node-unix-socket": "0.2.5",
@@ -154,8 +154,8 @@
     "mqtt": "~4.3.7",
     "newman": "5.3.2",
     "newman-reporter-html": "1.0.5",
-    "newman-reporter-htmlextra": "^1.22.11",
-    "newman-reporter-teamcity": "^0.1.12",
+    "newman-reporter-htmlextra": "1.22.11",
+    "newman-reporter-teamcity": "0.1.12",
     "node-fetch": "2.6.7",
     "nyc": "15.1.0",
     "prettier": "2.8.4",
@@ -170,9 +170,6 @@
   "overrides": {
     "eslint-plugin-radar": {
       "eslint": "8.22.0"
-    },
-    "newman-reporter-html": {
-      "newman": "5.3.2"
     },
     "alasql": {
       "xlsx": "0.18.5"

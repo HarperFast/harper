@@ -14,6 +14,7 @@ describe('Types Validation', () => {
 		ValidationTest = table({
 			table: 'ValidationTest',
 			database: 'test',
+			sealed: true,
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'str', type: 'String' },
@@ -23,7 +24,12 @@ describe('Types Validation', () => {
 				{ name: 'bool', type: 'Boolean' },
 				{ name: 'bytes', type: 'Bytes' },
 				{ name: 'arrayOfStrings', type: 'array', elements: { type: 'String' } },
-				{ name: 'subObject', type: 'SubObject', properties: [{ name: 'name', type: 'String', nullable: false }] },
+				{
+					name: 'subObject',
+					type: 'SubObject',
+					sealed: true,
+					properties: [{ name: 'name', type: 'String', nullable: false }],
+				},
 			],
 		});
 	});
@@ -97,7 +103,25 @@ describe('Types Validation', () => {
 		);
 		assert.throws(() =>
 			ValidationTest.put(42, {
+				subObject: {},
+			})
+		);
+		assert.throws(() =>
+			ValidationTest.put(42, {
 				arrayOfStrings: [32],
+			})
+		);
+		assert.throws(() =>
+			ValidationTest.put(42, {
+				undeclaredProperty: 33, // not allowed because it is sealed
+			})
+		);
+		assert.throws(() =>
+			ValidationTest.put(42, {
+				subObject: {
+					name: 'valid',
+					undeclaredSubProperty: 33, // not allowed because it is sealed
+				},
 			})
 		);
 	});

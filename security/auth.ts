@@ -6,7 +6,7 @@ import { table } from '../resources/databases';
 import { v4 as uuid } from 'uuid';
 import * as env from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms';
-import { loggerWithTag, AuthAuditLog } from '../utility/logging/harper_logger.js';
+import { loggerWithTag, AuthAuditLog, debug } from '../utility/logging/harper_logger.js';
 import { user } from '../server/itc/serverHandlers';
 import { Headers } from '../server/serverHelpers/Headers';
 const auth_event_log = loggerWithTag('auth-event');
@@ -111,6 +111,9 @@ export async function authentication(request, next_handler) {
 				if (username === undefined || username === 'Common Name' || username === 'CN')
 					username = request.peerCertificate.subject.CN;
 				request.user = await server.getUser(username, null, null);
+				authAuditLog(username, AUTH_AUDIT_STATUS.SUCCESS, 'mTLS');
+			} else {
+				debug('HTTPS/WSS mTLS authorized connection (mTLS did not authorize a user)', 'from', request.ip);
 			}
 		}
 

@@ -18,15 +18,23 @@ provider "aws" {
   region  = var.region
 }
 
+data "aws_ec2_instance_type" "ubuntu" {
+  instance_type = var.instance_type
+}
+
 data "aws_ami" "ubuntu" {
   most_recent = true
   filter {
     name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
+    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-*-server-*"]
   }
   filter {
     name   = "virtualization-type"
     values = ["hvm"]
+  }
+  filter {
+    name = "architecture"
+    values = data.aws_ec2_instance_type.ubuntu.supported_architectures
   }
   owners = ["099720109477"] # Canonical
 }

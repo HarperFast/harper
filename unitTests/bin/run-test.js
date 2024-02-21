@@ -378,7 +378,9 @@ describe('Test run module', () => {
 			expect(open_create_trans_env_stub.getCall(9).args).to.eql(['system', 'hdb_analytics']);
 			expect(open_create_trans_env_stub.getCall(10).args).to.eql(['system', 'hdb_raw_analytics']);
 			expect(open_create_trans_env_stub.getCall(11).args).to.eql(['system', 'hdb_temp']);
-			expect(open_create_trans_env_stub.getCall(12).args).to.eql(['northnwd', 'customers']);
+			expect(open_create_trans_env_stub.getCall(12).args).to.eql(['system', 'hdb_durable_session']);
+			expect(open_create_trans_env_stub.getCall(13).args).to.eql(['system', 'hdb_session_will']);
+			expect(open_create_trans_env_stub.getCall(14).args).to.eql(['northnwd', 'customers']);
 			expect(log_info_stub.getCall(0).firstArg).to.equal('Checking Transaction Audit Environments exist');
 			expect(log_info_stub.getCall(1).firstArg).to.equal('Finished checking Transaction Audit Environments exist');
 		});

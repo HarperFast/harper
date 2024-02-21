@@ -96,17 +96,4 @@ function validateHash(record, hash_attribute, operation) {
 			true
 		);
 	}
-
-	//keep this validation as we cannot allow forward slashes for hdb fs
-	if (isNaN(record[hash_attribute]) && record[hash_attribute].includes('/')) {
-		log.error(record);
-		throw handleHDBError(
-			new Error(),
-			HDB_ERROR_MSGS.INVALID_FORWARD_SLASH_IN_HASH_ERR,
-			HTTP_STATUS_CODES.BAD_REQUEST,
-			undefined,
-			undefined,
-			true
-		);
-	}
 }

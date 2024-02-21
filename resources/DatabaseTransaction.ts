@@ -1,16 +1,20 @@
 import { RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
+import { ServerError } from '../utility/errors/hdbError';
 import * as harper_logger from '../utility/logging/harper_logger';
 import { CONTEXT } from './Resource';
 import { fromResource } from './RecordEncoder';
 
 const MAX_OPTIMISTIC_SIZE = 100;
 const tracked_txns = new Set<DatabaseTransaction>();
+const MAX_OUTSTANDING_TXN_DURATION = 25000; // Allow write transactions to be queued for up to 25 seconds before we start rejecting them
 export enum TRANSACTION_STATE {
+	CLOSED, // the transaction has been committed or aborted and can no longer be used for writes (if read txn is active, it can be used for reads)
 	OPEN, // the transaction is open and can be used for reads and writes
 	LINGERING, // the transaction has completed a read, but can be used for immediate writes
-	CLOSED, // the transaction has been committed or aborted and can no longer be used for writes (if read txn is active, it can be used for reads)
 }
+let outstanding_commit, outstanding_commit_start;
+
 export class DatabaseTransaction implements Transaction {
 	writes = []; // the set of writes to commit if the conditions are met
 	lmdbDb: RootDatabase;
@@ -58,6 +62,11 @@ export class DatabaseTransaction implements Transaction {
 	disregardReadTxn(): void {
 		if (--this.readTxnRefCount === 0 && this.readTxnsUsed === 1) {
 			this.doneReadTxn();
+		}
+	}
+	checkOverloaded() {
+		if (outstanding_commit && performance.now() - outstanding_commit_start > MAX_OUTSTANDING_TXN_DURATION) {
+			throw new ServerError('Outstanding write transactions have too long of queue, please try again later', 503);
 		}
 	}
 	addWrite(operation) {
@@ -181,6 +190,14 @@ export class DatabaseTransaction implements Transaction {
 		}
 
 		if (resolution) {
+			if (!outstanding_commit) {
+				outstanding_commit = resolution;
+				outstanding_commit_start = performance.now();
+				outstanding_commit.then(() => {
+					outstanding_commit = null;
+				});
+			}
+
 			return resolution.then((resolution) => {
 				if (resolution) {
 					if (this.next) {

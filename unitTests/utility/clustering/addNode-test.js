@@ -18,9 +18,10 @@ describe('Test addNode module', () => {
 	let request_stub;
 	let upsert_node_record_stub;
 	let hdb_log_error_stub;
-	let update_work_stream_stub;
 	let create_table_streams_stub;
 	let get_sys_info_sub;
+	let update_remote_consumer_stub;
+	let update_consumer_iterator_stub;
 	let review_subs_stub = sandbox.stub();
 	const test_sys_info = {
 		hdb_version: '4.0.0test',
@@ -66,8 +67,9 @@ describe('Test addNode module', () => {
 		request_stub = sandbox.stub(nats_utils, 'request').resolves(fake_reply);
 		upsert_node_record_stub = sandbox.stub(clustering_utils, 'upsertNodeRecord').resolves();
 		hdb_log_error_stub = sandbox.stub(hdb_logger, 'error');
-		update_work_stream_stub = sandbox.stub(nats_utils, 'updateWorkStream');
 		create_table_streams_stub = sandbox.stub(nats_utils, 'createTableStreams');
+		update_remote_consumer_stub = sandbox.stub(nats_utils, 'updateRemoteConsumer');
+		update_consumer_iterator_stub = sandbox.stub(nats_utils, 'updateConsumerIterator');
 		env_mgr.setProperty('clustering_enabled', true);
 	});
 
@@ -174,25 +176,45 @@ describe('Test addNode module', () => {
 		const result = await addNode(test_request);
 		expect(request_stub.args[0][0]).to.eql('remote_node.__request__');
 		expect(request_stub.args[0][1]).to.eql(expected_payload);
-		expect(update_work_stream_stub.getCall(0).args[0]).to.eql({
-			schema: 'breed',
-			table: 'beagle',
-			subscribe: true,
-			publish: true,
-			start_time: '2022-08-26T18:26:58.514Z',
-		});
-		expect(update_work_stream_stub.getCall(0).args[1]).to.eql('remote_node');
-		expect(update_work_stream_stub.getCall(1).args[0]).to.eql({
-			schema: 'country',
-			table: 'england',
-			subscribe: true,
-			publish: false,
-			start_time: '2022-08-26T18:26:58.514Z',
-		});
-		expect(update_work_stream_stub.getCall(1).args[1]).to.eql('remote_node');
-		expect(update_work_stream_stub.getCall(2).args[0]).to.eql(expected_node_record.subscriptions[2]);
-		expect(update_work_stream_stub.getCall(2).args[1]).to.eql('remote_node');
 		expect(upsert_node_record_stub.args[0][0]).to.eql(expected_node_record);
+		expect(update_remote_consumer_stub.callCount).to.equal(3);
+		expect(update_remote_consumer_stub.args).to.eql([
+			[
+				{
+					schema: 'breed',
+					table: 'beagle',
+					subscribe: true,
+					publish: true,
+					start_time: '2022-08-26T18:26:58.514Z',
+				},
+				'remote_node',
+			],
+			[
+				{
+					schema: 'country',
+					table: 'england',
+					subscribe: true,
+					publish: false,
+					start_time: '2022-08-26T18:26:58.514Z',
+				},
+				'remote_node',
+			],
+			[
+				{
+					schema: 'dog',
+					table: 'poodle',
+					subscribe: false,
+					publish: true,
+				},
+				'remote_node',
+			],
+		]);
+
+		expect(update_consumer_iterator_stub.callCount).to.equal(2);
+		expect(update_consumer_iterator_stub.args).to.eql([
+			['breed', 'beagle', 'remote_node', 'start'],
+			['country', 'england', 'remote_node', 'start'],
+		]);
 		expect(result).to.eql({
 			message: "Successfully added 'remote_node' to manifest",
 			added: [
@@ -230,7 +252,6 @@ describe('Test addNode module', () => {
 			test_utils.generateHDBError('Error returned from remote node remote_node: Error from remote node', 500)
 		);
 		expect(upsert_node_record_stub.called).to.be.false;
-		expect(update_work_stream_stub.called).to.be.false;
 	});
 
 	it('Test error is handled correctly if request times out', async () => {
@@ -243,7 +264,6 @@ describe('Test addNode module', () => {
 			test_utils.generateHDBError("Unable to add_node, node 'remote_node' is listening but did not respond.", 500)
 		);
 		expect(upsert_node_record_stub.called).to.be.false;
-		expect(update_work_stream_stub.called).to.be.false;
 	});
 
 	it('Test error is thrown if the node record already exists', async () => {

@@ -34,27 +34,6 @@ const SERVER_SUFFIX = {
 	ADMIN: '-admin',
 };
 
-const WORK_QUEUE_CONSUMER_NAMES = {
-	stream_name: '__HARPERDB_WORK_QUEUE__',
-	durable_name: 'HDB_WORK_QUEUE',
-	deliver_group: DELIVER_GROUP,
-	deliver_subject: '__HDB__.WORKQUEUE',
-};
-
-const SCHEMA_QUEUE_CONSUMER_NAMES = {
-	stream_name: '__HARPERDB_SCHEMA_QUEUE__',
-	durable_name: 'HDB_SCHEMA_QUEUE',
-	deliver_group: DELIVER_GROUP,
-	deliver_subject: 'HDB.SCHEMAQUEUE',
-};
-
-const USER_QUEUE_CONSUMER_NAMES = {
-	stream_name: '__HARPERDB_USER_QUEUE__',
-	durable_name: 'HDB_USER_QUEUE',
-	deliver_group: DELIVER_GROUP,
-	deliver_subject: 'HDB.USERQUEUE',
-};
-
 const UPDATE_REMOTE_RESPONSE_STATUSES = {
 	SUCCESS: 'success',
 	ERROR: 'error',
@@ -100,9 +79,6 @@ module.exports = {
 	PID_FILES,
 	NATS_CONFIG_FILES,
 	SERVER_SUFFIX,
-	WORK_QUEUE_CONSUMER_NAMES,
-	SCHEMA_QUEUE_CONSUMER_NAMES,
-	USER_QUEUE_CONSUMER_NAMES,
 	NATS_TERM_CONSTRAINTS_RX,
 	REQUEST_SUFFIX,
 	UPDATE_REMOTE_RESPONSE_STATUSES,

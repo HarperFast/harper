@@ -1,0 +1,102 @@
+name: "Run All Docker Cluster Tests"
+
+on:
+  push:
+    branches:
+      - main
+      - "release_*"
+  schedule:
+    - cron: '8 13 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  ####################
+  #  Build HarperDB
+  ####################
+  build:
+    uses: ./.github/workflows/build.yaml
+
+  ##############################
+  #  Call Docker Test template
+  #    cluster test a
+  #############################
+  cluster-test-a:
+    needs:
+      - build
+    uses: ./.github/workflows/docker-cluster-test.yaml
+    strategy:
+      fail-fast: false
+      matrix:
+        file:
+          - 'utility/Docker/Dockerfile'
+          - 'utility/Docker/Dockerfile-openshift'
+        platform:
+          - 'linux/amd64'
+          - 'linux/arm64'
+    with:
+      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      file: ${{ matrix.file }}
+      platform: ${{ matrix.platform }}
+      clusterTest: 'test/ci-tests/docker-cluster-test-a.sh'
+    secrets: inherit
+
+  ##############################
+  #  Call Docker Test template
+  #    cluster test b
+  #############################
+  cluster-test-b:
+    needs:
+      - build
+    uses: ./.github/workflows/docker-cluster-test.yaml
+    strategy:
+      fail-fast: false
+      matrix:
+        file:
+          - 'utility/Docker/Dockerfile'
+          - 'utility/Docker/Dockerfile-openshift'
+        platform:
+          - 'linux/amd64'
+          - 'linux/arm64'
+    with:
+      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      file: ${{ matrix.file }}
+      platform: ${{ matrix.platform }}
+      clusterTest: 'test/ci-tests/docker-cluster-test-b.sh'
+    secrets: inherit
+
+  ##############################
+  #  Call Docker Test template
+  #    cluster test c
+  #############################
+  cluster-test-c:
+    needs:
+      - build
+    uses: ./.github/workflows/docker-cluster-test.yaml
+    strategy:
+      fail-fast: false
+      matrix:
+        file:
+          - 'utility/Docker/Dockerfile'
+          - 'utility/Docker/Dockerfile-openshift'
+        platform:
+          - 'linux/amd64'
+          - 'linux/arm64'
+    with:
+      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      file: ${{ matrix.file }}
+      platform: ${{ matrix.platform }}
+      clusterTest: 'test/ci-tests/docker-cluster-test-c.sh'
+    secrets: inherit
+
+  #################################
+  #  Send Slack Message on failure
+  #################################
+  sendSlackMessage:
+    uses: ./.github/workflows/post-to-slack-channel.yaml
+    if: ${{ failure() && (github.event_name == 'schedule' || github.event_name == 'push') }}
+    secrets: inherit
+    needs:
+      - destroyInstances
+      - runTests
+      - createInstances
+      - dockerBuild

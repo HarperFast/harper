@@ -102,6 +102,7 @@ export function makeTable(options) {
 		auditStore: audit_store,
 		schemaDefined: schema_defined,
 		dbisDB: dbis_db,
+		sealed,
 	} = options;
 	let { expirationMS: expiration_ms, evictionMS: eviction_ms, audit, trackDeletes: track_deletes } = options;
 	let { attributes } = options;
@@ -784,7 +785,7 @@ export function makeTable(options) {
 					return updateRecord(id, partial_record, entry, existing_version, EVICTED, null, null, 0, null, true);
 				}
 			}
-			primary_store.ifVersion(existing_version, () => {
+			primary_store.ifVersion(id, existing_version, () => {
 				updateIndices(id, existing_record, null);
 			});
 			if (audit) {
@@ -841,8 +842,9 @@ export function makeTable(options) {
 				validate: (txn_time) => {
 					if (!record_update) record_update = this[OWN_DATA];
 					if (full_update || (record_update && hasChanges(record_update))) {
-						this.validate(record_update, !full_update);
 						if (!context?.source) {
+							transaction.checkOverloaded();
+							this.validate(record_update, !full_update);
 							if (updated_time_property) {
 								record_update[updated_time_property.name] =
 									updated_time_property.type === 'Date'
@@ -1783,7 +1785,10 @@ export function makeTable(options) {
 				entry: this[ENTRY_PROPERTY],
 				nodeName: context?.nodeName,
 				validate: () => {
-					this.validate(message);
+					if (!context?.source) {
+						transaction.checkOverloaded();
+						this.validate(message);
+					}
 				},
 				before: apply_to_sources.publish?.bind(this, context, id, message),
 				beforeIntermediate: apply_to_sources_intermediate.publish?.bind(this, context, id, message),
@@ -1831,6 +1836,15 @@ export function makeTable(options) {
 							const attribute = properties[i];
 							const updated = validateValue(value[attribute.name], attribute, name + '.' + attribute.name);
 							if (updated) value[attribute.name] = updated;
+						}
+						if (attribute.sealed && value != null && typeof value === 'object') {
+							for (const key in value) {
+								if (!properties.find((property) => property.name === key)) {
+									(validation_errors || (validation_errors = [])).push(
+										`Property ${key} is not allowed within object in property ${name}`
+									);
+								}
+							}
 						}
 					} else {
 						switch (attribute.type) {
@@ -1931,6 +1945,13 @@ export function makeTable(options) {
 				if (!patch || attribute.name in record) {
 					const updated = validateValue(record[attribute.name], attribute, attribute.name);
 					if (updated) record[attribute.name] = updated;
+				}
+			}
+			if (sealed) {
+				for (const key in record) {
+					if (!attributes.find((attribute) => attribute.name === key)) {
+						(validation_errors || (validation_errors = [])).push(`Property ${key} is not allowed`);
+					}
 				}
 			}
 
@@ -2759,14 +2780,18 @@ export function makeTable(options) {
 					const expires_at_name = expires_at_property.name;
 					const index = indices[expires_at_name];
 					if (!index) throw new Error(`expiresAt attribute ${expires_at_property} must be indexed`);
-					for (const { value: id } of index.getRange({
+					for (const { key, value: id } of index.getRange({
 						start: true,
 						end: Date.now(),
 						versions: true,
 						snapshot: false,
 					})) {
 						const record_entry = primary_store.getEntry(id);
-						if (record_entry?.value?.[expires_at_name] < Date.now()) {
+						if (!record_entry?.value) {
+							// cleanup the index if the record is gone
+							primary_store.ifVersion(id, record_entry?.version, () =>
+								index.remove(key, id));
+						} else if (record_entry.value[expires_at_name] < Date.now()) {
 							// make sure the record hasn't changed and won't change while removing
 							TableResource.evict(id, record_entry.value, record_entry.version);
 						}

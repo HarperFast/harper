@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 
+harperdb_version=$1
 docker_image="${DOCKER_IMAGE:-harperdb/harperdb}"
+container_tarball="${CONTAINER_TARBALL:-docker-harperdb_${harperdb_version}.tar}"
 
 # Install and start docker
 export DEBIAN_FRONTEND=noninteractive
@@ -11,12 +13,15 @@ sudo systemctl start docker
 sleep 25
 
 cd /home/ubuntu
-harperdb_version=$1
-sudo docker load -i docker-harperdb_${harperdb_version}.tar 
+
+sudo docker load -i ${container_tarball}
 
 cd harperdb
 
 sudo docker network create ClstrTestC
+
+# docker inspect makes sure the image was imported correctly. we only need to check once. exit 1 if it's not here
+sudo docker image inspect ${docker_image}:${harperdb_version} > /dev/null || exit 1
 
 sudo docker run -d --restart no --network ClstrTestC --name ClstrTestC1 -e HDB_ADMIN_USERNAME=admin -e HDB_ADMIN_PASSWORD=Abc1234! -e NODE_NAME=ClstrTestC1 -e CLUSTERING_PORT=12345 -e CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT=12345 -e CLUSTERING_USER=cluster_user -e CLUSTERING_PASSWORD=Abc1234! -e CLUSTERING=true -e HARPERDB_FINGERPRINT="4sADRM2e7dd501d7db58bb02d35bd0745146423a1" -e HARPERDB_LICENSE='{"license_key":"1373969b4cabd39e8b29c3c16e419c6abef4437d48168b4721e575610dcf656cf57016bd037cf1107f8232a1e94b7352c05b7c069560ac0e54ca156d3babc966289c664e5fb163e3429158a2f57afd39854ca51fa885abbca62f7e063a334498cd5ef0a038cbea80c6e063d174bbcc189a81dc4f2771ad90c9022cf20a322043ec4213fdef1d1e9eba36117c865acb6a13be3be218513ee80385e78bda0b9e27e7ec6532ac6e5416bc020f4f4be91cf6mofi25eYMW6aiRf6bd3d9b691699749569f6acd34a93e61","company":"harperdb.io"}' -e LOG_TO_STDSTREAMS=true -e LOGGING_LEVEL=trace -e LOG_TO_FILE=true -e CLUSTERING_REPUBLISHMESSAGES=true -e CLUSTERING_LOGLEVEL=info ${docker_image}:${harperdb_version}
 sudo docker run -d --restart no --network ClstrTestC --name ClstrTestC2 -e HDB_ADMIN_USERNAME=admin -e HDB_ADMIN_PASSWORD=Abc1234! -e NODE_NAME=ClstrTestC2 -e CLUSTERING_PORT=12345 -e CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT=12345 -e CLUSTERING_USER=cluster_user -e CLUSTERING_PASSWORD=Abc1234! -e CLUSTERING=true -e HARPERDB_FINGERPRINT="4sADRM2e7dd501d7db58bb02d35bd0745146423a1" -e HARPERDB_LICENSE='{"license_key":"1373969b4cabd39e8b29c3c16e419c6abef4437d48168b4721e575610dcf656cf57016bd037cf1107f8232a1e94b7352c05b7c069560ac0e54ca156d3babc966289c664e5fb163e3429158a2f57afd39854ca51fa885abbca62f7e063a334498cd5ef0a038cbea80c6e063d174bbcc189a81dc4f2771ad90c9022cf20a322043ec4213fdef1d1e9eba36117c865acb6a13be3be218513ee80385e78bda0b9e27e7ec6532ac6e5416bc020f4f4be91cf6mofi25eYMW6aiRf6bd3d9b691699749569f6acd34a93e61","company":"harperdb.io"}' -e LOG_TO_STDSTREAMS=true -e LOGGING_LEVEL=trace -e LOG_TO_FILE=true -e CLUSTERING_REPUBLISHMESSAGES=true -e CLUSTERING_LOGLEVEL=info ${docker_image}:${harperdb_version}
@@ -57,7 +62,7 @@ sudo docker cp test/ ClstrTestC4:/home/harperdb/harperdb/
 
 # Run cluster tests from first container
 sudo docker exec --user root ClstrTestC1 /bin/bash -c 'mkdir -p ~/harperdb/integrationTests/newman && chmod 777 ~/harperdb/integrationTests/newman'
-sudo docker exec ClstrTestC1 /bin/bash -c 'cd ~/harperdb/integrationTests/ && newman run clusterTests/clusterTestC/cluster_test_c.json -e clusterTests/clusterTestC/cluster_test_c_env.json --reporters cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html  --delay-request 1000 --insecure --reporter-cli-show-timestamps'
+sudo docker exec ClstrTestC1 /bin/bash -c 'cd ~/harperdb/integrationTests/ && newman run clusterTests/clusterTestC/cluster_test_c.json -e clusterTests/clusterTestC/cluster_test_c_env.json --reporters cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html  --delay-request 2000 --insecure --reporter-cli-show-timestamps'
 test_status=$?
 
 artifact_dir="artifact"
