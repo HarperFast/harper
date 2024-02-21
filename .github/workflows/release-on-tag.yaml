@@ -68,7 +68,7 @@ jobs:
   ####################################
   getLicenses:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - name: "Get Latest License Files"
@@ -155,7 +155,7 @@ jobs:
   ############################################
   sendSlackMessageReadyToDeploy:
     uses: ./.github/workflows/post-to-slack-channel.yaml
-    if: ${{ success() }}
+    if: ${{ needs.meta.outputs.release_type == 'stable' }}
     secrets: inherit
     with:
       channel_id: "U0512LGPYSE"
@@ -182,7 +182,7 @@ jobs:
       - getLicenses
       - dockerhubPrivateRelease
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 30
     steps:
       # setup for both publishing both to npm and dockerhub
       - uses: actions/checkout@v4
