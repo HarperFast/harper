@@ -13,7 +13,7 @@ describe('Replication', () => {
 	before(async () => {
 		const NODE_COUNT = 2;
 		async function createNode(index) {
-			let nodes = []
+			let nodes = [];
 			for (let i = 0; i < NODE_COUNT; i++) {
 				if (i === index) continue;
 				nodes.push({

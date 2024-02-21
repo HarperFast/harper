@@ -1,3 +1,14 @@
+/**
+ * This module is responsible for replicating data between nodes. It is a source for tables that are replicated
+ * A typical exchange should look like:
+ * 1. Node A connects to node B, and sends its node name and the database name (and the mapping of its node id to short ids?)
+ * 2. Node B sends back its node name and the mapping of its node id to short ids
+ * 3. Node A sends a subscription request to node B
+ * 3a. Node B may also send a subscription request to node A
+ * 4. Node B sends back the table names and structures
+ * 5. Node B sends back the audit records
+ */
+
 import { databases, table as defineTable, getDatabases, onUpdatedTable } from '../../resources/databases';
 import { ID_PROPERTY, Resource } from '../../resources/Resource';
 import { IterableEventQueue } from '../../resources/IterableEventQueue';
@@ -79,9 +90,9 @@ function replicateOverWS(ws, options) {
 			switch (command) {
 				case SEND_NODE_ID: {
 					// table_id is the remote node's id
-					// data is the map of its mapping of node guids to short ids
+					// data is the map of its mapping of node name/guid to short ids
 					remote_node_name = message[1];
-					const omitted_node_ids = [remote_node_name]; // TODO: This should be an array of all the node ids we will omit (should be ignored in the subscription)
+					const omitted_node_ids = [remote_node_name]; // TODO: This should be an array of all the node names we will omit (should be ignored in the subscription)
 					if (!database_name) registerDatabase(database_name = message[2]);
 					sendSubscriptionRequestUpdate();
 					// TODO: Listen to adc
@@ -101,7 +112,7 @@ function replicateOverWS(ws, options) {
 					remote_short_id_to_local_id = shortNodeIdMapping(remote_node_name, data, audit_store);
 					break;
 				case SUBSCRIBE_CODE:
-					const [action, start_time, table_ids, remote_omitted_node_ids] = decode(body);
+					const [action, start_time, table_ids, remote_omitted_node_ids] = message;
 					/*const decoder = (body.dataView = new Decoder(body.buffer, body.byteOffset, body.byteLength));
 					const db_length = body[1];
 					const database_name = body.toString('utf8', 2, db_length + 2);
@@ -211,7 +222,7 @@ function replicateOverWS(ws, options) {
 		this.localQueue.send({ type: 'end_txn' });
 	});
 	function sendSubscriptionRequestUpdate() {
-		// once we have received the node id, and we know the database name that this connection is for,
+		// once we have received the node name, and we know the database name that this connection is for,
 		// we can send a subscription request, if no other threads have subscribed.
 		let node_subscriptions = active_subscriptions.get(database_name);
 		if (!node_subscriptions) active_subscriptions.set(database_name, (node_subscriptions = new Map()));
