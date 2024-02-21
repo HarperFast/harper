@@ -143,7 +143,7 @@ jobs:
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       container: 'harperdb/private'
-      latest: "${{ needs.meta.outputs.dockerhub_tag_latest }}"
+      latest: ${{ needs.meta.outputs.dockerhub_tag_latest == 'true' && true || false }}
       platforms: 'linux/amd64,linux/arm64'
       push: false
     secrets:
@@ -174,7 +174,7 @@ jobs:
   #    harperdb/harperdb-openshift
   ###################################
   publicRelease:
-    environment: ${{ needs.meta.outputs.release_type == 'stable' && 'production' || 'pre-release' }}
+    environment: ${{ needs.meta.outputs.release_type == 'stable' && 'release' || 'pre-release' }}
     needs:
       - build
       - meta
