@@ -20,7 +20,7 @@ jobs:
       version_patch: ${{ steps.get-values.outputs.version_patch }}
       release_type: ${{ steps.get-values.outputs.release_type }}
       prerelease_version: ${{ steps.get-values.outputs.prerelease_version }}
-      npm_extra_tags: ${{ steps.get-values.outputs.npm_tags }}
+      npm_extra_tags: ${{ steps.get-values.outputs.npm_extra_tags }}
       dockerhub_tag_latest: ${{ steps.get-values.outputs.dockerhub_tag_latest }}
     steps:
       - name: 'Get values'
@@ -151,6 +151,45 @@ jobs:
       DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
 
   ############################################
+  #  Output Summary
+  ############################################
+  createSummary:
+    runs-on: ubuntu-latest
+    needs:
+      - build
+      - meta
+    steps:
+      - name: summary
+        id: summary
+        env:
+          harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+          version: ${{ needs.meta.outputs.version }}
+          version_major: ${{ needs.meta.outputs.version_major }}
+          version_minor: ${{ needs.meta.outputs.version_minor }}
+          version_patch: ${{ needs.meta.outputs.version_patch }}
+          release_type: ${{ needs.meta.outputs.release_type }}
+          prerelease_version: ${{ needs.meta.outputs.prerelease_version }}
+          npm_extra_tags: ${{ needs.meta.outputs.npm_extra_tags }}
+          dockerhub_tag_latest: ${{ needs.meta.outputs.dockerhub_tag_latest }}
+        run: |
+          cat <<EOF >> $GITHUB_STEP_SUMMARY
+          == Release ${version} ==
+          harperdbVersion:  ${harperdbVersion}
+          version from tag: ${version}
+          
+          release type:         ${release_type}
+          npm tag:              ${npm_extra_tags}
+          dockerhub latest tag: ${dockerhub_tag_latest}
+          ---
+          
+          major: ${version_major}
+          minor: ${version_minor}
+          patch: ${version_patch}
+          
+          pre-release version: ${prerelease_version:-N/A}
+          EOF
+
+  ############################################
   #  Send Slack Message on 'Ready to Deploy'
   ############################################
   sendSlackMessageReadyToDeploy:
@@ -159,7 +198,7 @@ jobs:
     secrets: inherit
     with:
       channel_id: "U0512LGPYSE"
-      slack_message: "Ready to Release: : ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      slack_message: ":deployparrot: Ready to Release: : ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
     needs:
       - meta
       - getLicenses
@@ -289,7 +328,7 @@ jobs:
     secrets: inherit
     with:
       channel_id: "U0512LGPYSE"
-      slack_message: ":white_check_mark: Version ${{ needs.meta.outputs.version }} deployed as ${{ needs.meta.outputs.release_type }} successfully\n${{ github.workflow }}\nSee logs here: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n:deployparrot:"
+      slack_message: ":white_check_mark: Version ${{ needs.meta.outputs.version }} deployed as ${{ needs.meta.outputs.release_type }} successfully\n${{ github.workflow }}\nSee logs here: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
     needs:
       - meta
       - getLicenses
