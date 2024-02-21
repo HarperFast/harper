@@ -25,10 +25,13 @@ jobs:
     steps:
       - name: 'Get values'
         id: get-values
+        env:
+          #tag: ${{ github.ref }}
+          tag: 'refs/heads/release_4.3.0-beta.9'
         run: |
           #!/usr/bin/env bash
 
-          VERSION=${GITHUB_REF#refs/*/release_}
+          VERSION=${tag#refs/*/release_}
           RELEASE_TYPE='stable'
           PRERELEASE_VERSION=''
           if [[ "${VERSION}" == *"-"* ]]; then
@@ -45,7 +48,7 @@ jobs:
           VERSION_PATCH="${VERSION##*.}"
         
           echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "version_major${VERSION_MAJOR}" >> $GITHUB_OUTPUT
+          echo "version_major=${VERSION_MAJOR}" >> $GITHUB_OUTPUT
           echo "version_minor=${VERSION_MINOR}" >> $GITHUB_OUTPUT
           echo "version_patch=${VERSION_PATCH}" >> $GITHUB_OUTPUT
           echo "release_type=${RELEASE_TYPE}" >> $GITHUB_OUTPUT
