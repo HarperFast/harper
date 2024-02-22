@@ -66,7 +66,6 @@ jobs:
     needs:
       - build
     outputs:
-      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       version: ${{ steps.get-values.outputs.version }}
       version_major: ${{ steps.get-values.outputs.version_major }}
       version_minor: ${{ steps.get-values.outputs.version_minor }}
@@ -115,7 +114,7 @@ jobs:
             npm_extra_tags='next'
             dockerhub_tag_latest=false
           else
-            npm_extra_tags='latest+stable'"
+            npm_extra_tags='latest+stable'
             dockerhub_tag_latest=true
           fi
           
