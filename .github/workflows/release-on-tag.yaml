@@ -75,7 +75,7 @@ jobs:
         id: get-values
         env:
           #tag: ${{ github.ref }}
-          tag: 'refs/heads/release_1.3.0'
+          tag: 'refs/heads/release_4.3.0-beta.8'
           harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
         run: |
           #!/usr/bin/env bash

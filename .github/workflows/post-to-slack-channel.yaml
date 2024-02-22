@@ -45,17 +45,6 @@ jobs:
 
     steps:
 
-      # use this step if we want a new message (update_ts == '')
-      - name: Post to a Slack channel
-        if: ${{ inputs.update_ts == '' }}
-        id: send-slack
-        uses: slackapi/slack-github-action@v1.25.0
-        with:
-          channel-id: "${{ inputs.channel_id }}"
-          payload: "${{ inputs.payload }}"
-        env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
-
       # use this step if we want update a message (update_ts != '')
       - name: Post to a Slack channel
         if: ${{ inputs.update_ts != '' }}
@@ -65,6 +54,17 @@ jobs:
           channel-id: "${{ inputs.channel_id }}"
           payload: "${{ inputs.payload }}"
           update-ts: "${{ inputs.update_ts }}"
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
+
+      # use this step if we want a new message (update_ts == '')
+      - name: Post to a Slack channel
+        if: ${{ inputs.update_ts == '' || steps.update-slack.outcome == 'failure' }}
+        id: send-slack
+        uses: slackapi/slack-github-action@v1.25.0
+        with:
+          channel-id: "${{ inputs.channel_id }}"
+          payload: "${{ inputs.payload }}"
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
 
