@@ -10,7 +10,7 @@ on:
 env:
   # dm to mat
   slack_channel_id: "U0512LGPYSE"
-  # development-ci
+  # development-ci channel_id
   #slack_channel_id: "C05PLHLQFQA"
 
 jobs:
@@ -25,7 +25,7 @@ jobs:
     - uses: slackapi/slack-github-action@v1.25.0
       id: slack-message
       with:
-        channel_id: ${{ env.slack_channel_id }}
+        channel-id: ${{ env.slack_channel_id }}
         payload: |
           {
             "text": ":deployparrot: Release started (In Progress)",
@@ -113,7 +113,7 @@ jobs:
           if [[ "${VERSION}" != "${harperdbVersion}" ]]; then
             cat <<EOF >> $GITHUB_STEP_SUMMARY
           > [!WARNING]
-          > Failing job as the tag (${tag}) does not match harperdbVersion (${harperdbVersion})
+          > Terminating job as the tag (${tag}) does not match harperdbVersion (${harperdbVersion})
           EOF
             exit 1
           fi
@@ -132,7 +132,7 @@ jobs:
       - uses: slackapi/slack-github-action@v1.25.0
         id: slack-message
         with:
-          channel_id: ${{ env.slack_channel_id }}
+          channel-id: ${{ env.slack_channel_id }}
           update-ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
           payload: |
             {
@@ -294,7 +294,7 @@ jobs:
       - uses: slackapi/slack-github-action@v1.25.0
         id: slack-message
         with:
-          channel_id: ${{ env.slack_channel_id }}
+          channel-id: ${{ env.slack_channel_id }}
           update-ts: ${{ needs.sendSlackMessageRealeaseVersion.outputs.ts }}
           payload: |
             {
@@ -453,7 +453,7 @@ jobs:
       - uses: slackapi/slack-github-action@v1.25.0
         id: slack-message
         with:
-          channel_id: ${{ env.slack_channel_id }}
+          channel-id: ${{ env.slack_channel_id }}
           update-ts: ${{ needs.sendSlackMessageReadyToDeploy.outputs.ts }}
           payload: |
             {
@@ -495,7 +495,7 @@ jobs:
       - uses: slackapi/slack-github-action@v1.25.0
         id: slack-message
         with:
-          channel_id: ${{ env.slack_channel_id }}
+          channel-id: ${{ env.slack_channel_id }}
           update-ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
           payload: |
             {
@@ -517,6 +517,6 @@ jobs:
                   ]
                 }
               ]
-                }
+            }
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
