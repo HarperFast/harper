@@ -140,6 +140,7 @@ module.exports = function (search_object, type) {
 				attribute !== '*' &&
 				attribute.attribute !== '*' && // skip check for asterik attribute
 				!Array.isArray(attribute) &&
+				!attribute.name && // nested attribute
 				!_.some(
 					all_table_attributes,
 					(
