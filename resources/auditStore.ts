@@ -249,7 +249,7 @@ export function readAuditEntry(buffer) {
 			},
 		};
 	} catch (error) {
-		harper_logger.error('Reading audit entry error', buffer);
+		harper_logger.error('Reading audit entry error', error, buffer);
 		return {};
 	}
 }
