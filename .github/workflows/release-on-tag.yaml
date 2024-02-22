@@ -517,8 +517,8 @@ jobs:
       - publicRelease
       - sendSlackMessageRealeaseStarted
     with:
-      channel-id: U0512LGPYSE
-#          update-ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
+      channel_id: U0512LGPYSE
+#          update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
 #          payload: |
 #            {
 #              "text": ":x: Release Failed: ${{ needs.meta.outputs.version }} (Failure)",
