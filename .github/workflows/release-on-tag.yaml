@@ -83,6 +83,7 @@ jobs:
           harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
         run: |
           #!/usr/bin/env bash
+          set -x
           
           VERSION=${tag#refs/*/release_}
           RELEASE_TYPE='stable'
@@ -119,7 +120,7 @@ jobs:
           if [[ "${VERSION}" != "${harperdbVersion}" ]]; then
             cat <<EOF >> $GITHUB_STEP_SUMMARY
           > [!WARNING]
-          > Terminating job as the tag (${tag}) does not match harperdbVersion (${harperdbVersion})
+          > Terminating job as the version from the tag (${tag}, derived version ${version}) does not match harperdbVersion (${harperdbVersion})
           EOF
             exit 1
           fi
