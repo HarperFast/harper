@@ -13,14 +13,31 @@ on:
         description: "JSON message payload: https://api.slack.com/reference/messaging/payload"
         default: |
           {
-            "text": ":x: ${{ github.workflow }} Failed.",
+            "text": "",
             "blocks": [
               {
-                "type": "section",
+                "type": "header",
                 "text": {
-                  "type": "mrkdwn",
-                  "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|See Logs Here>"
+                  "type": "plain_text",
+                  "text": "${{ github.workflow }} Failed."
                 }
+              },
+              {
+                "type": "context",
+                "elements": [
+                  {
+                    "type": "mrkdwn",
+                    "text": "*Status*"
+                  },
+                  {
+                    "type": "mrkdwn",
+                    "text": ":x:"
+                  },
+                  {
+                    "type": "mrkdwn",
+                    "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|See Logs Here>"
+                  }
+                ]
               }
             ]
           }

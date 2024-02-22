@@ -122,7 +122,7 @@ jobs:
           echo "npm_extra_tags=${npm_extra_tags}" >> $GITHUB_OUTPUT
           echo "dockerhub_tag_latest=${dockerhub_tag_latest}" >> $GITHUB_OUTPUT
           
-          if [[ "${release_type}" == "stable" && "${version}" != "${harperdbVersion}" ]] || [[ "${version}-${release_type}.${prerelease_version} ]]; then
+          if [[ "${release_type}" == "stable" && "${version}" != "${harperdbVersion}" ]] || [[ "${version}-${release_type}.${prerelease_version}" != "${harperdbVersion}" ]]; then
             cat <<EOF >> $GITHUB_STEP_SUMMARY
           > [!WARNING]
           > Terminating job as the version from the tag (${tag}, derived version ${version}) does not match harperdbVersion (${harperdbVersion})
