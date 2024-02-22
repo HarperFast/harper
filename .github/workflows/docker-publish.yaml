@@ -120,7 +120,7 @@ jobs:
     uses: ./.github/workflows/docker-build.yaml
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-      container: ${{ inputs.container }}
+      container: ${{ matrix.container }}
       file: ${{ matrix.file }}
       latest: ${{ inputs.latest }}
       platforms: ${{ inputs.platforms }}
