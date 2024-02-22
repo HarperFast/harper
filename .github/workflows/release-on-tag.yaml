@@ -317,6 +317,22 @@ jobs:
               }
             },
             {
+              "type": "section",
+              "text": {
+                "type": "mrkdwn",
+                "text": "*Review(s) Required*"
+              },
+              "accessory": {
+                "type": "button",
+                "text": {
+                  "type": "plain_text",
+                  "text": "Review Release"
+                },
+                "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+                "style": "primary"
+              }
+            },
+            {
               "type": "context",
               "elements": [
                 {
@@ -332,22 +348,6 @@ jobs:
                   "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>"
                 }
               ]
-            },
-            {
-              "type": "section",
-              "text": {
-                "type": "mrkdwn",
-                "text": "*Review(s) Required*"
-              },
-              "accessory": {
-                "type": "button",
-                "text": {
-                  "type": "plain_text",
-                  "text": "Review Release"
-                },
-                "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
-                "style": "primary"
-              }
             }
           ]
         }
@@ -539,6 +539,8 @@ jobs:
         id: slack-message
         with:
           channel-id: ${{ env.slack_channel_id }}
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
 #          update-ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
 #          payload: |
 #            {
