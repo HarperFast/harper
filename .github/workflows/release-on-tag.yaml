@@ -42,6 +42,10 @@ jobs:
                 {
                   "type": "mrkdwn",
                   "text": "Initiated"
+                },
+                {
+                  "type": "mrkdwn",
+                  "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>"
                 }
               ]
             }
@@ -152,6 +156,10 @@ jobs:
                 {
                   "type": "mrkdwn",
                   "text": "In Progress"
+                },
+                {
+                  "type": "mrkdwn",
+                  "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>"
                 }
               ]
             }
@@ -316,7 +324,11 @@ jobs:
                 },
                 {
                   "type": "mrkdwn",
-                  "text": "Initiated"
+                  "text": "In progress"
+                },
+                {
+                  "type": "mrkdwn",
+                  "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>"
                 }
               ]
             },
@@ -490,6 +502,10 @@ jobs:
                 {
                   "type": "mrkdwn",
                   "text": "Complete"
+                },
+                {
+                  "type": "mrkdwn",
+                  "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>"
                 },
                 {
                   "type": "mrkdwn",
