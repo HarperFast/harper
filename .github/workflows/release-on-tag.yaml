@@ -85,32 +85,32 @@ jobs:
           #!/usr/bin/env bash
           set -x
           
-          VERSION=${tag#refs/*/release_}
-          RELEASE_TYPE='stable'
-          PRERELEASE_VERSION=''
-          if [[ "${VERSION}" == *"-"* ]]; then
-            PRERELEASE_VERSION_STRING="${VERSION##*-}"
-            PRERELEASE_VERSION="${PRERELEASE_VERSION_STRING##*.}"
-            RELEASE_TYPE="${PRERELEASE_VERSION_STRING%%.*}"
+          version=${tag#refs/*/release_}
+          release_type='stable'
+          prerelease_version=''
+          if [[ "${version}" == *"-"* ]]; then
+            prerelease_version_string="${version##*-}"
+            prerelease_version="${prerelease_version_string##*.}"
+            release_type="${prerelease_version_string%%.*}"
           fi
           
-          VERSION="${VERSION%%-*}"
-          VERSION="${VERSION#[vV]}"
-          VERSION_MAJOR="${VERSION%%\.*}"
-          VERSION_MINOR="${VERSION#*.}"
-          VERSION_MINOR="${VERSION_MINOR%.*}"
-          VERSION_PATCH="${VERSION##*.}"
+          version="${version%%-*}"
+          version="${version#[vV]}"
+          version_major="${version%%\.*}"
+          version_minor="${version#*.}"
+          version_minor="${version_minor%.*}"
+          version_patch="${version##*.}"
           
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "version_major=${VERSION_MAJOR}" >> $GITHUB_OUTPUT
-          echo "version_minor=${VERSION_MINOR}" >> $GITHUB_OUTPUT
-          echo "version_patch=${VERSION_PATCH}" >> $GITHUB_OUTPUT
-          echo "release_type=${RELEASE_TYPE}" >> $GITHUB_OUTPUT
+          echo "version=${version}" >> $GITHUB_OUTPUT
+          echo "version_major=${version_major}" >> $GITHUB_OUTPUT
+          echo "version_minor=${version_minor}" >> $GITHUB_OUTPUT
+          echo "version_patch=${version_patch}" >> $GITHUB_OUTPUT
+          echo "release_type=${release_type}" >> $GITHUB_OUTPUT
           
           npm_extra_tags=''
           dockerhub_tag_latest=''
           
-          if [[ "${RELEASE_TYPE}" == @(alpha|beta|rc) ]]; then
+          if [[ "${release_type}" == @(alpha|beta|rc) ]]; then
             npm_extra_tags='next'
             dockerhub_tag_latest=false
           else
@@ -118,11 +118,11 @@ jobs:
             dockerhub_tag_latest=true
           fi
           
-          echo "prerelease_version=${PRERELEASE_VERSION}" >> $GITHUB_OUTPUT
+          echo "prerelease_version=${prerelease_version}" >> $GITHUB_OUTPUT
           echo "npm_extra_tags=${npm_extra_tags}" >> $GITHUB_OUTPUT
           echo "dockerhub_tag_latest=${dockerhub_tag_latest}" >> $GITHUB_OUTPUT
           
-          if [[ "${VERSION}" != "${harperdbVersion}" ]]; then
+          if [[ "${release_type}" == "stable" && "${version}" != "${harperdbVersion}" ]] || [[ "${version}-${release_type}.${prerelease_version} ]]; then
             cat <<EOF >> $GITHUB_STEP_SUMMARY
           > [!WARNING]
           > Terminating job as the version from the tag (${tag}, derived version ${version}) does not match harperdbVersion (${harperdbVersion})
@@ -506,9 +506,8 @@ jobs:
   #################################
   sendSlackMessage:
     if: ${{ failure() && !cancelled() }}
-    runs-on: ubuntu-latest
-    outputs:
-      ts: ${{ steps.slack-message.outputs.ts }}
+    uses: ./.github/workflows/post-to-slack-channel.yaml
+    secrets: inherit
     needs:
       - meta
       - getLicenses
@@ -517,13 +516,8 @@ jobs:
       - dockerhubPrivateRelease
       - publicRelease
       - sendSlackMessageRealeaseStarted
-    steps:
-      - uses: slackapi/slack-github-action@v1.25.0
-        id: slack-message
-        with:
-          channel-id: ${{ env.slack_channel_id }}
-        env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
+    with:
+      channel-id: ${{ env.slack_channel_id }}
 #          update-ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
 #          payload: |
 #            {
