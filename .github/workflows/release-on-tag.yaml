@@ -517,7 +517,7 @@ jobs:
       - publicRelease
       - sendSlackMessageRealeaseStarted
     with:
-      channel-id: ${{ env.slack_channel_id }}
+      channel-id: U0512LGPYSE
 #          update-ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
 #          payload: |
 #            {
