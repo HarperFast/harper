@@ -112,7 +112,7 @@ jobs:
         container:
           - 'harperdb/harperdb'
           - 'harperdb/harperdb-openshift'
-        includes:
+        include:
           - container: 'harperdb/harperdb'
             file: 'utility/Docker/Dockerfile'
           - container: 'harperdb/harperdb-openshift'
@@ -121,7 +121,7 @@ jobs:
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       container: ${{ inputs.container }}
-      file: ${{ inputs.file }}
+      file: ${{ matrix.file }}
       latest: ${{ inputs.latest }}
       platforms: ${{ inputs.platforms }}
       push: ${{ inputs.push }}
