@@ -126,7 +126,7 @@ jobs:
           cat <<EOF >> $GITHUB_STEP_SUMMARY
           ## Release ${version} ##
           harperdbVersion:  ${harperdbVersion}
-          version from tag: ${version}
+          version from tag: ${full_version}
           
           > release type:         ${release_type}
           > npm tag:              ${npm_extra_tags}
@@ -140,10 +140,10 @@ jobs:
           EOF
           [[ "${release_type}" == "stable" ]] && echo "pre-release version: ${release_type}.${prerelease_version:-}" >> $GITHUB_STEP_SUMMARY
           
-          if [[ "${release_type}" == "stable" && "${version}" != "${harperdbVersion}" ]] || [[ "${release_type}" != "stable" && "${version}-${release_type}.${prerelease_version}" != "${harperdbVersion}" ]]; then
+          if [[ "${full_version}" != "${harperdbVersion}" ]]; then
             cat <<EOF >> $GITHUB_STEP_SUMMARY
           > [!WARNING]
-          > Terminating job as the version from the tag (${tag}, derived version ${version}) does not match harperdbVersion (${harperdbVersion})
+          > Terminating job as the version from the tag (${tag}, derived version ${full_version}) does not match harperdbVersion (${harperdbVersion})
           EOF
             exit 1
           fi
@@ -548,7 +548,7 @@ jobs:
   #################################
   #  Send Slack Message on failure
   #################################
-  sendSlackMessage:
+  sendSlackMessageFailure:
     if: ${{ failure() && !cancelled() }}
     uses: ./.github/workflows/post-to-slack-channel.yaml
     secrets: inherit
@@ -560,6 +560,8 @@ jobs:
 #      - dockerhubPrivateRelease
 #      - publicRelease
       - sendSlackMessageRealeaseStarted
+      - sendSlackMessageReadyToDeploy
+      - sendSlackMessageParty
     with:
       channel_id: U0512LGPYSE
       update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
