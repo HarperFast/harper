@@ -3,7 +3,6 @@ import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { ServerError } from '../utility/errors/hdbError';
 import * as harper_logger from '../utility/logging/harper_logger';
 import { CONTEXT } from './Resource';
-import { fromResource } from './RecordEncoder';
 
 const MAX_OPTIMISTIC_SIZE = 100;
 const tracked_txns = new Set<DatabaseTransaction>();
@@ -36,18 +35,14 @@ export class DatabaseTransaction implements Transaction {
 		}
 		if (this.open !== TRANSACTION_STATE.OPEN) return; // can not start a new read transaction as there is no future commit that will take place, just have to allow the read to latest database state
 		this.readTxnsUsed = 1;
-		fromResource(() => {
-			this.readTxn = this.lmdbDb.useReadTransaction();
-			if (this.readTxn.openTimer) this.readTxn.openTimer = 0;
-		});
+		this.readTxn = this.lmdbDb.useReadTransaction();
+		if (this.readTxn.openTimer) this.readTxn.openTimer = 0;
 		tracked_txns.add(this);
 		return this.readTxn;
 	}
 	useReadTxn() {
 		this.getReadTxn();
-		fromResource(() => {
-			this.readTxn.use();
-		});
+		this.readTxn.use();
 		this.readTxnsUsed++;
 		return this.readTxn;
 	}

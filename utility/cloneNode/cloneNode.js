@@ -129,8 +129,7 @@ async function cloneConfig() {
 	let config_update = { [CONFIG_PARAMS.ROOTPATH]: root_path };
 
 	// If clustering is enabled on leader node, clone clustering config
-	if (leader_clustering_enabled && clone_node_config?.clustering?.enabled !== false) {
-		if (clustering_host == null) throw new Error(`'HDB_LEADER_CLUSTERING_HOST' must be defined`);
+	if (clustering_host && leader_clustering_enabled && clone_node_config?.clustering?.enabled !== false) {
 		config_update[CONFIG_PARAMS.CLUSTERING_ENABLED] = true;
 
 		const leader_routes = leader_config?.clustering?.hubServer?.cluster?.network?.routes;
@@ -475,7 +474,7 @@ async function cloneComponents() {
 
 async function clusterTables(background) {
 	// If clustering is not enabled on leader do not cluster tables.
-	if (!leader_clustering_enabled) return;
+	if (!leader_clustering_enabled || !clustering_host) return;
 
 	const hdb_proc = await sys_info.getHDBProcessInfo();
 	if (hdb_proc.clustering.length === 0 || hdb_proc.core.length === 0) {

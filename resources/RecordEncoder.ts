@@ -133,17 +133,6 @@ function getTimestamp() {
 	TIMESTAMP_HOLDER[0] = TIMESTAMP_HOLDER[0] ^ 0x40; // restore the first byte, we xor to differentiate the first byte from structures
 	return TIMESTAMP_VIEW.getFloat64(0);
 }
-const mapGet = Map.prototype.get;
-
-let in_resource;
-export function fromResource(callback) {
-	in_resource = true;
-	try {
-		return callback();
-	} finally {
-		in_resource = false;
-	}
-}
 
 export function handleLocalTimeForGets(store) {
 	const storeGetEntry = store.getEntry;
@@ -202,13 +191,6 @@ export function handleLocalTimeForGets(store) {
 			if (!this.timerTracked) {
 				this.timerTracked = true;
 				tracked_txns.push(new WeakRef(this));
-			}
-			if (!in_resource) {
-				try {
-					throw new Error('Read transaction used outside of resource');
-				} catch (error) {
-					this.readStack = error.stack;
-				}
 			}
 			use.call(this);
 		};
