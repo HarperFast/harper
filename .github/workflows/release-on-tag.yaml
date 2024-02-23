@@ -22,35 +22,7 @@ jobs:
     secrets: inherit
     with:
       channel_id: U0512LGPYSE
-      payload: |
-        {
-          "blocks": [
-            {
-              "type": "header",
-              "text": {
-                "type": "plain_text",
-                "text": "HarperDB Release"
-              }
-            },
-            {
-              "type": "context",
-              "elements": [
-                {
-                  "type": "mrkdwn",
-                  "text": "*Status*"
-                },
-                {
-                  "type": "mrkdwn",
-                  "text": "Initiated"
-                },
-                {
-                  "type": "mrkdwn",
-                  "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>"
-                }
-              ]
-            }
-          ]
-        }
+      payload: "{ \"blocks\": [ { \"type\": \"header\", \"text\": { \"type\": \"plain_text\", \"text\": \"HarperDB Release\" } }, { \"type\": \"context\", \"elements\": [ { \"type\": \"mrkdwn\", \"text\": \"*Status*\" }, { \"type\": \"mrkdwn\", \"text\": \"Initiated\" }, { \"type\": \"mrkdwn\", \"text\": \"<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>\" } ] } ] }"
 
   ####################
   #  Build HarperDB
@@ -159,36 +131,7 @@ jobs:
     with:
       channel_id: U0512LGPYSE
       update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
-      payload: |
-        {
-          "blocks": [
-            {
-              "type": "header",
-              "text": {
-                "type": "plain_text",
-                "text": "HarperDB Release ${{ needs.meta.outputs.version }}"
-              }
-            },
-            {
-              "type": "context",
-              "elements": [
-                {
-                  "type": "mrkdwn",
-                  "text": "*Status*"
-                },
-                {
-                  "type": "mrkdwn",
-                  "text": "In Progress"
-                },
-                {
-                  "type": "mrkdwn",
-                  "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>"
-                }
-              ]
-            }
-          ]
-        }
-
+      payload: "{ \"blocks\": [ { \"type\": \"header\", \"text\": { \"type\": \"plain_text\", \"text\": \"HarperDB Release ${{ needs.meta.outputs.version }}\" } }, { \"type\": \"context\", \"elements\": [ { \"type\": \"mrkdwn\", \"text\": \"*Status*\" }, { \"type\": \"mrkdwn\", \"text\": \"In Progress\" }, { \"type\": \"mrkdwn\", \"text\": \"<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>\" } ] } ] }"
 
   ####################################
   #  Get License Files for Container
@@ -329,51 +272,7 @@ jobs:
     with:
       channel_id: U0512LGPYSE
       update_ts: ${{ needs.sendSlackMessageRealeaseVersion.outputs.ts }}
-      payload: |
-        {
-          "blocks": [
-            {
-              "type": "header",
-              "text": {
-                "type": "plain_text",
-                "text": "HarperDB Release ${{ needs.meta.outputs.version }}"
-              }
-            },
-            {
-              "type": "section",
-              "text": {
-                "type": "mrkdwn",
-                "text": "*Review(s) Required*"
-              },
-              "accessory": {
-                "type": "button",
-                "text": {
-                  "type": "plain_text",
-                  "text": "Review Release"
-                },
-                "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
-                "style": "primary"
-              }
-            },
-            {
-              "type": "context",
-              "elements": [
-                {
-                  "type": "mrkdwn",
-                  "text": "*Status*"
-                },
-                {
-                  "type": "mrkdwn",
-                  "text": "In progress"
-                },
-                {
-                  "type": "mrkdwn",
-                  "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>"
-                }
-              ]
-            }
-          ]
-        }
+      payload: "{ \"blocks\": [ { \"type\": \"header\", \"text\": { \"type\": \"plain_text\", \"text\": \"HarperDB Release ${{ needs.meta.outputs.version }}\" } }, { \"type\": \"section\", \"text\": { \"type\": \"mrkdwn\", \"text\": \"*Review(s) Required*\" }, \"accessory\": { \"type\": \"button\", \"text\": { \"type\": \"plain_text\", \"text\": \"Review Release\" }, \"url\": \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\", \"style\": \"primary\" } }, { \"type\": \"context\", \"elements\": [ { \"type\": \"mrkdwn\", \"text\": \"*Status*\" }, { \"type\": \"mrkdwn\", \"text\": \"In progress\" }, { \"type\": \"mrkdwn\", \"text\": \"<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>\" } ] } ] }"
 
   ###################################
   #  Release to Public NPM harperdb
@@ -505,40 +404,7 @@ jobs:
     with:
       channel_id: U0512LGPYSE
       update_ts: ${{ needs.sendSlackMessageReadyToDeploy.outputs.ts }}
-      payload: |
-        {
-          "blocks": [
-            {
-              "type": "header",
-              "text": {
-                "type": "plain_text",
-                "text": "HarperDB Released ${{ needs.meta.outputs.version }}"
-              }
-            },
-            {
-              "type": "context",
-              "elements": [
-                {
-                  "type": "mrkdwn",
-                  "text": "*Status*"
-                },
-                {
-                  "type": "mrkdwn",
-                  "text": "Complete"
-                },
-                {
-                  "type": "mrkdwn",
-                  "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>"
-                },
-                {
-                  "type": "mrkdwn",
-                  "text": ":white_check_mark:"
-                }
-              ]
-            }
-          ]
-        }
-
+      payload: "{ \"blocks\": [ { \"type\": \"header\", \"text\": { \"type\": \"plain_text\", \"text\": \"HarperDB Released ${{ needs.meta.outputs.version }}\" } }, { \"type\": \"context\", \"elements\": [ { \"type\": \"mrkdwn\", \"text\": \"*Status*\" }, { \"type\": \"mrkdwn\", \"text\": \"Complete\" }, { \"type\": \"mrkdwn\", \"text\": \"<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>\" }, { \"type\": \"mrkdwn\", \"text\": \":white_check_mark:\" } ] } ] }"
 
   #################################
   #  Send Slack Message on failure
@@ -558,36 +424,4 @@ jobs:
     with:
       channel_id: U0512LGPYSE
       update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
-      payload: |
-        {
-          "blocks": [
-            {
-              "type": "header",
-              "text": {
-                "type": "plain_text",
-                "text": "HarperDB Released ${{ needs.meta.outputs.version }} Failed"
-              }
-            },
-            {
-              "type": "context",
-              "elements": [
-                {
-                  "type": "mrkdwn",
-                  "text": "*Status*"
-                },
-                {
-                  "type": "mrkdwn",
-                  "text": ":x:"
-                },
-                {
-                  "type": "mrkdwn",
-                  "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>"
-                },
-                {
-                  "type": "mrkdwn",
-                  "text": ":dumpster-fire:"
-                }
-              ]
-            }
-          ]
-        }
+      payload: "{ \"blocks\": [ { \"type\": \"header\", \"text\": { \"type\": \"plain_text\", \"text\": \"HarperDB Released ${{ needs.meta.outputs.version }} Failed\" } }, { \"type\": \"context\", \"elements\": [ { \"type\": \"mrkdwn\", \"text\": \"*Status*\" }, { \"type\": \"mrkdwn\", \"text\": \":x:\" }, { \"type\": \"mrkdwn\", \"text\": \"<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>\" }, { \"type\": \"mrkdwn\", \"text\": \":dumpster-fire:\" } ] } ] }"
