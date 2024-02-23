@@ -13,7 +13,6 @@ on:
         description: "JSON message payload: https://api.slack.com/reference/messaging/payload"
         default: |
           {
-            "text": "${{ github.run_id }}",
             "blocks": [
               {
                 "type": "header",
@@ -63,7 +62,7 @@ jobs:
     steps:
 
       # use this step if we want update a message (update_ts != '')
-      - name: Post to a Slack channel
+      - name: Update a Slack Message
         if: ${{ inputs.update_ts != '' }}
         id: update-slack
         uses: slackapi/slack-github-action@v1.25.0
@@ -71,6 +70,7 @@ jobs:
           channel-id: "${{ inputs.channel_id }}"
           payload: "${{ inputs.payload }}"
           update-ts: "${{ inputs.update_ts }}"
+          slack-message: "${{ github.run_id }}",
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
 
@@ -82,6 +82,7 @@ jobs:
         with:
           channel-id: "${{ inputs.channel_id }}"
           payload: "${{ inputs.payload }}"
+          slack-message: "${{ github.run_id }}",
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
 

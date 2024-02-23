@@ -24,7 +24,6 @@ jobs:
       channel_id: U0512LGPYSE
       payload: |
         {
-          "text": "${{ github.run_id }}",
           "blocks": [
             {
               "type": "header",
@@ -145,8 +144,8 @@ jobs:
           minor: ${version_minor}
           patch: ${version_patch}
           
-          pre-release version: ${prerelease_version:-N/A}
           EOF
+          [[ "${release_type}" == "stable" ]] && echo "pre-release version: ${release_type}.${prerelease_version:-}" >> $GITHUB_STEP_SUMMARY
 
   ############################################
   #  Send Slack Message: add version to message
@@ -162,7 +161,6 @@ jobs:
       update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
       payload: |
         {
-          "text": "${{ github.run_id }}",
           "blocks": [
             {
               "type": "header",
@@ -293,7 +291,6 @@ jobs:
       update_ts: ${{ needs.sendSlackMessageRealeaseVersion.outputs.ts }}
       payload: |
         {
-          "text": "${{ github.run_id }}",
           "blocks": [
             {
               "type": "header",
@@ -470,7 +467,6 @@ jobs:
       update_ts: ${{ needs.sendSlackMessageReadyToDeploy.outputs.ts }}
       payload: |
         {
-          "text": "${{ github.run_id }}",
           "blocks": [
             {
               "type": "header",
