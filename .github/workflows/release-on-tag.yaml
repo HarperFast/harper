@@ -24,7 +24,7 @@ jobs:
       channel_id: U0512LGPYSE
       payload: |
         {
-       	  "text": "${{ github.run_id }}",
+          "text": "${{ github.run_id }}",
           "blocks": [
             {
               "type": "header",
