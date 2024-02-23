@@ -35,7 +35,7 @@ on:
                   },
                   {
                     "type": "mrkdwn",
-                    "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|See Logs Here>"
+                    "text": "See logs here: <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|${{ github.run_id }}>"
                   }
                 ]
               }
@@ -59,7 +59,6 @@ jobs:
     timeout-minutes: 4
     outputs:
       ts: ${{ inputs.update_ts == '' && steps.send-slack.outputs.ts || steps.update-slack.outputs.ts }}
-
     steps:
 
       # use this step if we want update a message (update_ts != '')

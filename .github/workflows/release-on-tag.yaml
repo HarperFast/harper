@@ -69,7 +69,7 @@ jobs:
         id: get-values
         env:
           #tag: ${{ github.ref }}
-          tag: 'release_4.3.0-beta.8'
+          tag: 'refs/tags/release_4.3.0-beta.8'
         run: |
           #!/usr/bin/env bash
           
