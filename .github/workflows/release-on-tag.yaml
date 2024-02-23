@@ -517,25 +517,37 @@ jobs:
       - sendSlackMessageRealeaseStarted
     with:
       channel_id: U0512LGPYSE
-#          update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
-#          payload: |
-#            {
-#              "text": ":x: Release Failed: ${{ needs.meta.outputs.version }} (Failure)",
-#              "attachments": [
-#                {
-#                  "pretext": "Release failed",
-#                  "color": "db0d04",
-#                  "fields": [
-#                    {
-#                      "title": "Status",
-#                      "short": true,
-#                      "value": "Failed"
-#                    },
-#                    {
-#                      "title": "Job Status",
-#                      "value": "[Link to Github Run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
-#                    }
-#                  ]
-#                }
-#              ]
-#            }
+      update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
+      payload: |
+        {
+          "blocks": [
+            {
+              "type": "header",
+              "text": {
+                "type": "plain_text",
+                "text": "HarperDB Released ${{ needs.meta.outputs.version }}"
+              }
+            },
+            {
+              "type": "context",
+              "elements": [
+                {
+                  "type": "mrkdwn",
+                  "text": "*Status*"
+                },
+                {
+                  "type": "mrkdwn",
+                  "text": ":x:"
+                },
+                {
+                  "type": "mrkdwn",
+                  "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>"
+                },
+                {
+                  "type": "mrkdwn",
+                  "text": ":dumpster-fire:"
+                }
+              ]
+            }
+          ]
+        }
