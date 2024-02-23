@@ -141,7 +141,7 @@ jobs:
           EOF
           [[ "${release_type}" == "stable" ]] && echo "pre-release version: ${release_type}.${prerelease_version:-}" >> $GITHUB_STEP_SUMMARY
           
-          if [[ "${full_version}" != "${harperdbVersion}" ]]; then
+          if [[ "${full_version}" == "${harperdbVersion}" ]]; then
             cat <<EOF >> $GITHUB_STEP_SUMMARY
           > [!WARNING]
           > Terminating job as the version from the tag (${tag}, derived version ${full_version}) does not match harperdbVersion (${harperdbVersion})
@@ -515,7 +515,6 @@ jobs:
       - sendSlackMessageReadyToDeploy
     with:
       channel_id: C06LRD9EWM7
-      #update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
       update_ts: ${{ needs.meta.outputs.release_type == 'stable' && needs.sendSlackMessageReadyToDeploy.outputs.ts || needs.sendSlackMessageRealeaseVersion.outputs.ts }}
       payload: |
         {
