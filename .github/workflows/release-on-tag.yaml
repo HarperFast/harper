@@ -257,6 +257,46 @@ jobs:
   #########################################
   #  Release to dockerhub harperdb/private
   #########################################
+  buildCotainerImages:
+    uses: ./.github/workflows/docker-build.yaml
+    needs:
+      - meta
+      - getLicenses
+      - build
+    strategy:
+      matrix:
+        container:
+          - 'harperdb/harperdb'
+          - 'harperdb/harperdb-openshift'
+        platform:
+          - 'linux/amd64'
+          - 'linux/arm64'
+        include:
+          - container: 'harperdb/harperdb'
+            file: 'utility/Docker/Dockerfile'
+            flavor: 'standard'
+          - container: 'harperdb/harperdb-openshift'
+            file: 'utility/Docker/Dockerfile-openshift'
+            flavor: 'openshift'
+          - platform: 'linux/amd64'
+            arch: 'amd64'
+          - platform: 'linux/arm64'
+            arch: 'arm64'
+    with:
+      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      container: 'tar'
+      file: ${{ matrix.file }}
+      platforms: ${{ matrix.platform }}
+      latest: ${{ needs.meta.outputs.dockerhub_tag_latest == 'true' && true || false }}
+      containerTarball: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ matrix.flavor }}-${{ matrix.arch }}.tar
+      push: false
+    secrets:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+
+  #########################################
+  #  Release to dockerhub harperdb/private
+  #########################################
   dockerhubPrivateRelease:
     needs:
       - meta
