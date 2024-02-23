@@ -24,6 +24,7 @@ jobs:
       channel_id: U0512LGPYSE
       payload: |
         {
+          "text": "${{ github.run_id }} Release Initiated.",
           "blocks": [
             {
               "type": "header",
@@ -162,6 +163,7 @@ jobs:
       update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
       payload: |
         {
+          "text": "${{ github.run_id }} Release ${{ needs.meta.outputs.version }} In Progress.",
           "blocks": [
             {
               "type": "header",
@@ -335,6 +337,7 @@ jobs:
       update_ts: ${{ needs.sendSlackMessageRealeaseVersion.outputs.ts }}
       payload: |
         {
+          "text": "${{ github.run_id }} Release ${{ needs.meta.outputs.version }} requires review.",
           "blocks": [
             {
               "type": "header",
@@ -512,6 +515,7 @@ jobs:
       update_ts: ${{ needs.sendSlackMessageReadyToDeploy.outputs.ts }}
       payload: |
         {
+          "text": "${{ github.run_id }} Release ${{ needs.meta.outputs.version }} Complete.",
           "blocks": [
             {
               "type": "header",
@@ -567,6 +571,7 @@ jobs:
       update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
       payload: |
         {
+          "text": "${{ github.run_id }} Release ${{ needs.meta.outputs.version }} Failed.",
           "blocks": [
             {
               "type": "header",
