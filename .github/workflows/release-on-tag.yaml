@@ -63,7 +63,7 @@ jobs:
   ########
   meta:
     runs-on: ubuntu-latest
-    needs:
+#    needs:
 #      - build
     outputs:
       version: ${{ steps.get-values.outputs.version }}
@@ -554,11 +554,11 @@ jobs:
     secrets: inherit
     needs:
       - meta
-      - getLicenses
-      - build
-      - npmPrivateRelease
-      - dockerhubPrivateRelease
-      - publicRelease
+#      - getLicenses
+#      - build
+#      - npmPrivateRelease
+#      - dockerhubPrivateRelease
+#      - publicRelease
       - sendSlackMessageRealeaseStarted
     with:
       channel_id: U0512LGPYSE
