@@ -250,7 +250,7 @@ jobs:
           HARPERDB_VERSION:  "${{ needs.build.outputs.harperdbVersion }}"
           PUBLISH_DESTINATION: 'private'
           EXTRA_TAGS: "${{ needs.meta.outputs.npm_extra_tags }}"
-          DRYRUN: true
+          DRYRUN: false
         run: ./.github/scripts/npm-publish.sh
 
   #########################################
@@ -267,7 +267,7 @@ jobs:
       container: 'harperdb/private'
       latest: ${{ needs.meta.outputs.dockerhub_tag_latest == 'true' && true || false }}
       platforms: 'linux/amd64,linux/arm64'
-      push: false
+      push: true
     secrets:
       DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
       DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
@@ -370,7 +370,7 @@ jobs:
           HARPERDB_VERSION:  "${{ needs.build.outputs.harperdbVersion }}"
           PUBLISH_DESTINATION: 'public'
           EXTRA_TAGS: "${{ needs.meta.outputs.npm_extra_tags }}"
-          DRYRUN: true
+          DRYRUN: false
         run: ./.github/scripts/npm-publish.sh
 
       # start docker setup and build
@@ -420,7 +420,7 @@ jobs:
           context: .
           file: 'utility/Docker/Dockerfile'
           platforms: 'linux/amd64,linux/arm64'
-          push: false
+          push: true
           tags: ${{ steps.meta-standard.outputs.tags }}
           build-args: |
             HARPERDB_VERSION=${{ needs.build.outputs.harperdbVersion }}
@@ -439,7 +439,7 @@ jobs:
           context: .
           file: 'utility/Docker/Dockerfile-openshift'
           platforms: 'linux/amd64,linux/arm64'
-          push: false
+          push: true
           tags: ${{ steps.meta-openshift.outputs.tags }}
           build-args: |
             HARPERDB_VERSION=${{ needs.build.outputs.harperdbVersion }}

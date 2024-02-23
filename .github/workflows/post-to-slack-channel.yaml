@@ -5,7 +5,7 @@ on:
     inputs:
       channel_id:
         description: "Channel ID"
-        # 'C05PLHLQFQA' -> #development-ci
+        # development-ci -> 'C05PLHLQFQA'
         default:  'C05PLHLQFQA'
         required: false
         type: string
