@@ -323,7 +323,7 @@ jobs:
   #  Send Slack Message on 'Ready to Deploy'
   ############################################
   sendSlackMessageReadyToDeploy:
-    if: ${{ needs.meta.outputs.release_type == 'stable' }}
+#    if: ${{ needs.meta.outputs.release_type == 'stable' }}
     uses: ./.github/workflows/post-to-slack-channel.yaml
     secrets: inherit
     needs:
