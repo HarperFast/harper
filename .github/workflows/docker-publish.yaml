@@ -20,11 +20,6 @@ on:
         default: 'utility/Docker/Dockerfile'
         required: false
         type: string
-      latest:
-        description: 'tag this build as latest in registry'
-        default: false
-        required: false
-        type: boolean
       platforms:
         description: 'Which platform(s) to build for'
         default: "linux/arm64,linux/amd64"
@@ -36,6 +31,11 @@ on:
           - "linux/arm64"
       push:
         description: 'push the created image to dockerhub. ignored when tar'
+        default: false
+        required: false
+        type: boolean
+      latest:
+        description: 'tag as latest in registry'
         default: false
         required: false
         type: boolean
@@ -112,7 +112,7 @@ jobs:
         container:
           - 'harperdb/harperdb'
           - 'harperdb/harperdb-openshift'
-        includes:
+        include:
           - container: 'harperdb/harperdb'
             file: 'utility/Docker/Dockerfile'
           - container: 'harperdb/harperdb-openshift'
@@ -120,8 +120,8 @@ jobs:
     uses: ./.github/workflows/docker-build.yaml
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-      container: ${{ inputs.container }}
-      file: ${{ inputs.file }}
+      container: ${{ matrix.container }}
+      file: ${{ matrix.file }}
       latest: ${{ inputs.latest }}
       platforms: ${{ inputs.platforms }}
       push: ${{ inputs.push }}
