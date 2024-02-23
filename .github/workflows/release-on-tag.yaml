@@ -257,7 +257,7 @@ jobs:
   #########################################
   #  Release to dockerhub harperdb/private
   #########################################
-  buildCotainerImages:
+  buildContainerImages:
     uses: ./.github/workflows/docker-build.yaml
     needs:
       - meta
@@ -302,6 +302,7 @@ jobs:
       - meta
       - getLicenses
       - build
+      - buildContainerImages
     uses: ./.github/workflows/docker-build.yaml
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
@@ -388,6 +389,7 @@ jobs:
       - meta
       - npmPrivateRelease
       - getLicenses
+      - buildContainerImages
       - dockerhubPrivateRelease
     runs-on: ubuntu-latest
     timeout-minutes: 30
