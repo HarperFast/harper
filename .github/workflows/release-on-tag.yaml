@@ -68,6 +68,7 @@ jobs:
       - build
     outputs:
       version: ${{ steps.get-values.outputs.version }}
+      full_version: ${{ steps.get-values.outputs.full_version }}
       version_major: ${{ steps.get-values.outputs.version_major }}
       version_minor: ${{ steps.get-values.outputs.version_minor }}
       version_patch: ${{ steps.get-values.outputs.version_patch }}
@@ -80,7 +81,8 @@ jobs:
         id: get-values
         env:
           #tag: ${{ github.ref }}
-          tag: 'refs/heads/release_4.3.0-beta.8'
+          #tag: 'refs/heads/release_4.3.0-beta.8'
+          tag: 'refs/heads/release_4.3.0'
           harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
         run: |
           #!/usr/bin/env bash
@@ -103,6 +105,7 @@ jobs:
           version_patch="${version##*.}"
           
           echo "version=${version}" >> $GITHUB_OUTPUT
+          echo "full_version=${full_version}" >> $GITHUB_OUTPUT
           echo "version_major=${version_major}" >> $GITHUB_OUTPUT
           echo "version_minor=${version_minor}" >> $GITHUB_OUTPUT
           echo "version_patch=${version_patch}" >> $GITHUB_OUTPUT
@@ -162,13 +165,13 @@ jobs:
       update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
       payload: |
         {
-          "text": "${{ github.run_id }} Release ${{ needs.meta.outputs.version }} In Progress.",
+          "text": "${{ github.run_id }} Release ${{ needs.meta.outputs.full_version }} In Progress.",
           "blocks": [
             {
               "type": "header",
               "text": {
                 "type": "plain_text",
-                "text": "HarperDB Release ${{ needs.meta.outputs.version }}"
+                "text": "HarperDB Release ${{ needs.meta.outputs.full_version }}"
               }
             },
             {
@@ -256,48 +259,6 @@ jobs:
           DRYRUN: true
         run: ./.github/scripts/npm-publish.sh
 
-
-# this may slow everything down
-  #########################################
-  #  Release to dockerhub harperdb/private
-  #########################################
-#  buildContainerImages:
-#    uses: ./.github/workflows/docker-build.yaml
-#    needs:
-#      - meta
-#      - getLicenses
-#      - build
-#    strategy:
-#      matrix:
-#        container:
-#          - 'harperdb/harperdb'
-#          - 'harperdb/harperdb-openshift'
-#        platform:
-#          - 'linux/amd64'
-#          - 'linux/arm64'
-#        include:
-#          - container: 'harperdb/harperdb'
-#            file: 'utility/Docker/Dockerfile'
-#            flavor: 'standard'
-#          - container: 'harperdb/harperdb-openshift'
-#            file: 'utility/Docker/Dockerfile-openshift'
-#            flavor: 'openshift'
-#          - platform: 'linux/amd64'
-#            arch: 'amd64'
-#          - platform: 'linux/arm64'
-#            arch: 'arm64'
-#    with:
-#      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-#      container: 'tar'
-#      file: ${{ matrix.file }}
-#      platforms: ${{ matrix.platform }}
-#      latest: ${{ needs.meta.outputs.dockerhub_tag_latest == 'true' && true || false }}
-#      containerTarball: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ matrix.flavor }}-${{ matrix.arch }}.tar
-#      push: false
-#    secrets:
-#      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-#      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-
   #########################################
   #  Release to dockerhub harperdb/private
   #########################################
@@ -337,13 +298,13 @@ jobs:
       update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
       payload: |
         {
-          "text": "${{ github.run_id }} Release ${{ needs.meta.outputs.version }} requires review.",
+          "text": "${{ github.run_id }} Release ${{ needs.meta.outputs.full_version }} requires review.",
           "blocks": [
             {
               "type": "header",
               "text": {
                 "type": "plain_text",
-                "text": "HarperDB Release ${{ needs.meta.outputs.version }}"
+                "text": "HarperDB Release ${{ needs.meta.outputs.full_version }}"
               }
             },
             {
@@ -514,13 +475,13 @@ jobs:
       update_ts: ${{ needs.meta.outputs.release_type == 'stable' && needs.sendSlackMessageReadyToDeploy.outputs.ts || needs.sendSlackMessageRealeaseVersion.outputs.ts }}
       payload: |
         {
-          "text": "${{ github.run_id }} Release ${{ needs.meta.outputs.version }} Complete.",
+          "text": "${{ github.run_id }} Release ${{ needs.meta.outputs.full_version }} Complete.",
           "blocks": [
             {
               "type": "header",
               "text": {
                 "type": "plain_text",
-                "text": "HarperDB Release ${{ needs.meta.outputs.version }}"
+                "text": "HarperDB Release ${{ needs.meta.outputs.full_version }}"
               }
             },
             {
@@ -570,13 +531,13 @@ jobs:
       update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
       payload: |
         {
-          "text": "${{ github.run_id }} Release ${{ needs.meta.outputs.version }} Failed.",
+          "text": "${{ github.run_id }} Release ${{ needs.meta.outputs.full_version }} Failed.",
           "blocks": [
             {
               "type": "header",
               "text": {
                 "type": "plain_text",
-                "text": "HarperDB Release ${{ needs.meta.outputs.version }} Failed"
+                "text": "HarperDB Release ${{ needs.meta.outputs.full_version }} Failed"
               }
             },
             {
