@@ -501,13 +501,10 @@ jobs:
   #################################
   sendSlackMessageParty:
     uses: ./.github/workflows/post-to-slack-channel.yaml
+    if: ${{ !cancelled() && !failure() && needs.publicRelease.result == 'success' }}
     secrets: inherit
     needs:
       - meta
-      - getLicenses
-      - build
-      - npmPrivateRelease
-      - dockerhubPrivateRelease
       - publicRelease
       - sendSlackMessageRealeaseStarted
       - sendSlackMessageRealeaseVersion
