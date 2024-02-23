@@ -13,17 +13,18 @@ describe('Replication', () => {
 	before(async () => {
 		const NODE_COUNT = 2;
 		async function createNode(index) {
-			let nodes = [];
+			let routes = [];
 			for (let i = 0; i < NODE_COUNT; i++) {
 				if (i === index) continue;
-				nodes.push({
-					id: 'node-' + i,
+				routes.push({
+					id: 'route-' + i,
 					url: 'ws://localhost:' + (9325 + i),
 				});
 			}
+			const database_name = 'test-replication-' + index;
 			TestTable = table({
 				table: 'TestTable',
-				database: 'test-replication-' + index,
+				database: database_name,
 				attributes: [
 					{ name: 'id', isPrimaryKey: true },
 					{ name: 'name', indexed: true },
@@ -31,18 +32,18 @@ describe('Replication', () => {
 			});
 			TestTable.databaseName = 'test'; // make them all look like the same database so they replicate
 			test_tables.push(TestTable);
-
+			const database_subscriptions = new Map(); // each node gets its own set of subscriptions
 			start({
 				port: 9325 + index,
-				databases: {
-					test: { TestTable },
-				},
+				tables: { TestTable },
+				databaseSubscriptions: database_subscriptions,
 				manualAssignment: true,
-				nodeId: index + 10,
+				nodeName: index + 10,
 			});
 
-			setReplicator('test', 'TestTable', TestTable, {
-				nodes,
+			setReplicator('test', TestTable, {
+				routes,
+				databaseSubscriptions: database_subscriptions,
 			});
 		}
 		for (let i = 0; i < NODE_COUNT; i++) await createNode(i);
@@ -58,7 +59,8 @@ describe('Replication', () => {
 			id: '1',
 			name: 'name1',
 		});
-		await new Promise((resolve) => setTimeout(resolve, 10000));
-		test_tables[1].get('1');
+		await new Promise((resolve) => setTimeout(resolve, 1000));
+		let result = test_tables[1].get('1');
+		assert.equal(result.name, 'name1');
 	});
 });

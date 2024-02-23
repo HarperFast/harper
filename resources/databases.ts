@@ -169,6 +169,7 @@ export function resetDatabases() {
 		if (store.needsDeletion && !path.endsWith('system.mdb')) {
 			store.close();
 			database_envs.delete(path);
+			delete databases[store.databaseName];
 		}
 	}
 	return databases;
@@ -286,6 +287,7 @@ export function readMetaDb(
 				}
 				const dbi_init = new OpenDBIObject(!primary_attribute.is_hash_attribute, primary_attribute.is_hash_attribute);
 				primary_store = handleLocalTimeForGets(root_store.openDB(primary_attribute.key, dbi_init));
+				root_store.databaseName = database_name;
 				primary_store.rootStore = root_store;
 				primary_store.tableId = table_id;
 			}
@@ -419,7 +421,7 @@ export function database({ database: database_name, table: table_name }) {
 		(existsSync(database_path) ? database_path : join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME));
 	const path = join(database_path, (table_path ? table_name : database_name) + '.mdb');
 	let root_store = database_envs.get(path);
-	if (!root_store) {
+	if (!root_store || root_store.status === 'closed') {
 		// TODO: validate database name
 		const env_init = new OpenEnvironmentObject(path, false);
 		root_store = open(env_init);
@@ -530,6 +532,7 @@ export function table({
 		const dbi_init = new OpenDBIObject(false, true);
 		const dbi_name = table_name + '/';
 		const primary_store = handleLocalTimeForGets(root_store.openDB(dbi_name, dbi_init));
+		root_store.databaseName = database_name;
 		primary_store.rootStore = root_store;
 		attributes_dbi = root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
 		primary_store.tableId = attributes_dbi.get(NEXT_TABLE_ID);

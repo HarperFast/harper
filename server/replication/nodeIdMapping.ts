@@ -1,51 +1,58 @@
 import { hostname } from 'os';
 import env from '../../utility/environment/environmentManager';
+import { pack, unpack } from 'msgpackr';
 
-export function getNodeName(audit_store) {
-
-}
-export function exportIdMapping(remote_node_name, audit_store) {
-	let id_mapping_record = audit_store.idMapping || (audit_store.idMapping = audit_store.get([Symbol.for('remote-ids'), remote_node_name]));
+function getIdMappingRecord(audit_store) {
+	let id_mapping_record = audit_store.idMapping;
+	if (!id_mapping_record) {
+		const id_mapping_record_buffer = audit_store.get(Symbol.for('remote-ids'));
+		audit_store.idMapping = id_mapping_record = id_mapping_record_buffer ? unpack(id_mapping_record_buffer) : null;
+	}
 	if (!id_mapping_record) {
 		id_mapping_record = {
-			nodeName: env.get('clustering_nodename') || hostname(),
-			map: new Map(),
+			nodeName: (env.get('clustering_nodename') || hostname()) + '-' + Math.random().toString(36).substring(2, 6),
+			remoteNameToId: {},
 		};
-		audit_store.putSync([Symbol.for('remote-ids'), remote_node_name], id_mapping_record);
+		audit_store.putSync(Symbol.for('remote-ids'), pack(id_mapping_record));
 	}
-	let has_changes = false;
-	let id_mapping = id_mapping_record.map.get(remote_node_name);
-	if (!id_mapping) {
-		let next_id = 1;
-		for (const [, id_mapping] of id_mapping_record.map) {
-			if (id_mapping.get(0) > next_id) {
-				next_id = id_mapping.get(0);
-			}
-		}
-		id_mapping = new Map();
-		id_mapping_record.map.set(remote_node_name, id_mapping);
-		id_mapping.set(0, next_id);
-		has_changes = true;
-	}
-	if (has_changes) {
-		audit_store.putSync([Symbol.for('remote-ids'), remote_node_name], id_mapping_record);
-	}
-	const remote_full_id_to_local_short_id = new Map();
-	for (const [key, value] of id_mapping) {
-		remote_full_id_to_local_short_id.set(key, value.get(0));
-	}
-	return remote_full_id_to_local_short_id;
+	console.log('id_mapping_record', audit_store.path, id_mapping_record.nodeName);
+	return id_mapping_record;
+}
+export function getNodeName(audit_store) {
+	return getIdMappingRecord(audit_store).nodeName;
+}
+export function exportIdMapping(audit_store) {
+	return getIdMappingRecord(audit_store).remoteNameToId;
 }
 
 /**
  * Take the remote node's long id to short id mapping and create a map from the remote node's short id to the local node short id.
  */
-export function shortNodeIdMapping(remote_node_id, remote_mapping, audit_store) {
-	if (!audit_store.idMapping) exportIdMapping(remote_node_id, audit_store);
-	const short_mapping = new Map();
-	for (const [remote_id, remove_short_id] of remote_mapping) {
-		const local_short_id = audit_store.idMapping.map.set(remote_id)?.get(0);
-		short_mapping.set(local_short_id, remove_short_id);
+export function remoteToLocalNodeId(remote_node_name, remote_mapping, audit_store) {
+	const id_mapping_record = getIdMappingRecord(audit_store);
+	const name_to_id = id_mapping_record.remoteNameToId;
+	const remote_to_local_id = new Map();
+	let has_changes = false;
+	remote_mapping[remote_node_name] = 0; // Self-originating writes are always 0
+	for (const remote_node_name in remote_mapping) {
+		const remote_id = remote_mapping[remote_node_name];
+		let local_id = name_to_id[remote_node_name];
+		if (!local_id) {
+			let last_id = 0;
+			for (const name in name_to_id) {
+				const id = name_to_id[name];
+				if (id > last_id) {
+					last_id = id;
+				}
+			}
+			local_id = last_id + 1;
+			name_to_id[remote_node_name] = local_id;
+			has_changes = true;
+		}
+		remote_to_local_id.set(remote_id, local_id);
 	}
-	return short_mapping;
+	if (has_changes) {
+		audit_store.putSync(Symbol.for('remote-ids'), pack(id_mapping_record));
+	}
+	return remote_to_local_id;
 }
