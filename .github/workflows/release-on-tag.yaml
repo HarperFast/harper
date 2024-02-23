@@ -4,14 +4,7 @@ on:
   push:
     tags:
       - release_*
-  pull_request:
   workflow_dispatch:
-
-env:
-  # mat-workflow-scratch
-  slack_channel_id: "C06LRD9EWM7"
-  # development-ci channel_id
-  #slack_channel_id: "C05PLHLQFQA"
 
 jobs:
   ############################################
@@ -53,20 +46,14 @@ jobs:
           ]
         }
 
-  ####################
-  #  Build HarperDB
-  ####################
-  build:
-    uses: ./.github/workflows/build.yaml
 
   ########
   #  Meta
   ########
   meta:
     runs-on: ubuntu-latest
-    needs:
-      - build
     outputs:
+      harperdbVersion: ${{ steps.get-values.outputs.harperdbVersion }}
       version: ${{ steps.get-values.outputs.version }}
       full_version: ${{ steps.get-values.outputs.full_version }}
       version_major: ${{ steps.get-values.outputs.version_major }}
@@ -77,16 +64,16 @@ jobs:
       npm_extra_tags: ${{ steps.get-values.outputs.npm_extra_tags }}
       dockerhub_tag_latest: ${{ steps.get-values.outputs.dockerhub_tag_latest }}
     steps:
+      - uses: actions/checkout@v4
       - name: 'Get values'
         id: get-values
         env:
-          #tag: ${{ github.ref }}
-          #tag: 'refs/heads/release_4.3.0-beta.8'
-          tag: 'refs/heads/release_4.3.0'
-          harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+          tag: ${{ github.ref }}
         run: |
           #!/usr/bin/env bash
-          set -x
+          
+          harperdbVersion=$(cat package.json | jq -r '.version')
+          echo "harperdbVersion=${harperdbVersion}" >> $GITHUB_OUTPUT
           
           full_version=${tag#refs/*/release_}
           release_type='stable'
@@ -194,6 +181,13 @@ jobs:
           ]
         }
 
+  ####################
+  #  Build HarperDB
+  ####################
+  build:
+    needs:
+      - meta
+    uses: ./.github/workflows/build.yaml
 
   ####################################
   #  Get License Files for Container
@@ -267,7 +261,6 @@ jobs:
       - meta
       - getLicenses
       - build
-      #- buildContainerImages
     uses: ./.github/workflows/docker-build.yaml
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
@@ -356,7 +349,6 @@ jobs:
       - meta
       - npmPrivateRelease
       - getLicenses
-      #- buildContainerImages
       - dockerhubPrivateRelease
     runs-on: ubuntu-latest
     timeout-minutes: 30
