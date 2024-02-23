@@ -525,7 +525,7 @@ jobs:
               "type": "header",
               "text": {
                 "type": "plain_text",
-                "text": "HarperDB Released ${{ needs.meta.outputs.version }}"
+                "text": "HarperDB Released ${{ needs.meta.outputs.version }} Failed"
               }
             },
             {
