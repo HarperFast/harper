@@ -72,6 +72,7 @@ jobs:
           update-ts: "${{ inputs.update_ts }}"
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
+        continue-on-error: true
 
       # use this step if we want a new message (update_ts == '')
       - name: Post to a Slack channel
