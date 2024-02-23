@@ -13,6 +13,7 @@ on:
         description: "JSON message payload: https://api.slack.com/reference/messaging/payload"
         default: |
           {
+            "text": "${{ github.run_id }} Failed.",
             "blocks": [
               {
                 "type": "header",
@@ -84,26 +85,3 @@ jobs:
           payload: "${{ inputs.payload }}"
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
-
-#  getTS:
-#    if: ${{ !cancelled() }}
-#    needs:
-#      - sendSlackMessage
-#      - updateSlackMessage
-#    outputs:
-#      ts: ${{ steps.get_ts.outputs.ts }}
-#    runs-on: ubuntu-latest
-#    timeout-minutes: 2
-#    steps:
-#      - name: get ts
-#        id: get_ts
-#        env:
-#          input_ts: ${{ inputs.update_ts }}
-#          send_ts: ${{ needs.sendSlackMessage.outputs.ts }}
-#          update_ts: ${{ needs.updateSlackMessage.outputs.ts }}
-#        run: |
-#          if [[ "${input_ts}" == '' ]]; then
-#            echo "ts=${send_ts}" >> $GITHUB_OUTPUT
-#          else
-#            echo "ts=${update_ts}" >> $GITHUB_OUTPUT
-#          fi

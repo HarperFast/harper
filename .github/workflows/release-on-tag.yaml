@@ -73,6 +73,8 @@ jobs:
         run: |
           #!/usr/bin/env bash
           
+          set -x
+          
           harperdbVersion=$(cat package.json | jq -r '.version')
           echo "harperdbVersion=${harperdbVersion}" >> $GITHUB_OUTPUT
           
