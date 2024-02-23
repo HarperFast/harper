@@ -27,6 +27,7 @@ class HubConfigObject {
 		this.server_name = node_name + nats_terms.SERVER_SUFFIX.HUB;
 		this.pid_file = pid_file;
 		this.max_payload = 67108864;
+		this.reconnect_error_reports = 100;
 		this.jetstream = {
 			enabled: false,
 		};

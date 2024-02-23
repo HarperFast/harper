@@ -62382,7 +62382,7 @@
 									"});",
 									"",
 									"// This timeout is here to give HDB time to restart before the next text is ran.",
-									"setTimeout(() => {}, 20000)"
+									"setTimeout(() => {}, 60000)"
 								],
 								"type": "text/javascript"
 							}

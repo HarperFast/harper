@@ -104,10 +104,15 @@ async function accessConsumers() {
 
 	for await (const connection of connections) {
 		const domain = connection.name + nats_terms.SERVER_SUFFIX.LEAF;
-		const { js, jsm } = await connectToRemoteJS(domain);
-		if (!jsm) continue;
+		let js, jsm;
 		for (const sub of connection.subscriptions) {
 			if (sub.subscribe === true) {
+				if (!js) {
+					({ js, jsm } = await connectToRemoteJS(domain));
+					if (!js) {
+						break;
+					}
+				}
 				const { schema, table } = sub;
 				// Name of remote stream to source from
 				const stream_name = crypto_hash.createNatsTableStreamName(schema, table);
@@ -127,8 +132,8 @@ async function connectToRemoteJS(domain) {
 	let x = 1;
 	while (!jsm) {
 		try {
-			js = await nats_connection.jetstream({ domain, timeout: 60000 });
-			jsm = await nats_connection.jetstreamManager({ domain, timeout: 60000 });
+			js = await nats_connection.jetstream({ domain });
+			jsm = await nats_connection.jetstreamManager({ domain });
 		} catch (err) {
 			if (connection_status.get(domain) === 'close') break;
 
@@ -197,16 +202,6 @@ async function ingestConsumer(stream_name, js, jsm, domain) {
 
 	let shutdown = false;
 	let messages;
-	parentPort?.on('message', async (message) => {
-		const { type } = message;
-		if (type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
-			shutdown = true;
-			if (messages && messages.close?.()) {
-				messages.close();
-			}
-		}
-	});
-
 	while (!shutdown) {
 		if (consumer_msgs.get(stream_name + domain) === 'close' || connection_status.get(domain) === 'close') {
 			consumer_msgs.delete(stream_name + domain);
