@@ -78,8 +78,8 @@ jobs:
       - name: 'Get values'
         id: get-values
         env:
-          #tag: ${{ github.ref }}
-          tag: 'refs/heads/release_4.3.0-beta.8'
+          tag: ${{ github.ref }}
+          #tag: 'refs/heads/release_4.3.0-beta.8'
           harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
         run: |
           #!/usr/bin/env bash
@@ -121,23 +121,15 @@ jobs:
           echo "prerelease_version=${prerelease_version}" >> $GITHUB_OUTPUT
           echo "npm_extra_tags=${npm_extra_tags}" >> $GITHUB_OUTPUT
           echo "dockerhub_tag_latest=${dockerhub_tag_latest}" >> $GITHUB_OUTPUT
-          
-          if [[ "${release_type}" == "stable" && "${version}" != "${harperdbVersion}" ]] || [[ "${version}-${release_type}.${prerelease_version}" != "${harperdbVersion}" ]]; then
-            cat <<EOF >> $GITHUB_STEP_SUMMARY
-          > [!WARNING]
-          > Terminating job as the version from the tag (${tag}, derived version ${version}) does not match harperdbVersion (${harperdbVersion})
-          EOF
-            exit 1
-          fi
-          
+         
           cat <<EOF >> $GITHUB_STEP_SUMMARY
           ## Release ${version} ##
           harperdbVersion:  ${harperdbVersion}
           version from tag: ${version}
           
-          release type:         ${release_type}
-          npm tag:              ${npm_extra_tags}
-          dockerhub latest tag: ${dockerhub_tag_latest}
+          > release type:         ${release_type}
+          > npm tag:              ${npm_extra_tags}
+          > dockerhub latest tag: ${dockerhub_tag_latest}
           ---
           
           major: ${version_major}
@@ -146,6 +138,14 @@ jobs:
           
           EOF
           [[ "${release_type}" == "stable" ]] && echo "pre-release version: ${release_type}.${prerelease_version:-}" >> $GITHUB_STEP_SUMMARY
+          
+          if [[ "${release_type}" == "stable" && "${version}" != "${harperdbVersion}" ]] || [[ "${release_type}" != "stable" && "${version}-${release_type}.${prerelease_version}" != "${harperdbVersion}" ]]; then
+            cat <<EOF >> $GITHUB_STEP_SUMMARY
+          > [!WARNING]
+          > Terminating job as the version from the tag (${tag}, derived version ${version}) does not match harperdbVersion (${harperdbVersion})
+          EOF
+            exit 1
+          fi
 
   ############################################
   #  Send Slack Message: add version to message

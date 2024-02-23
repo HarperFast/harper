@@ -70,7 +70,6 @@ jobs:
           channel-id: "${{ inputs.channel_id }}"
           payload: "${{ inputs.payload }}"
           update-ts: "${{ inputs.update_ts }}"
-          slack-message: "${{ github.run_id }}"
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
 
@@ -82,7 +81,6 @@ jobs:
         with:
           channel-id: "${{ inputs.channel_id }}"
           payload: "${{ inputs.payload }}"
-          slack-message: "${{ github.run_id }}"
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
 
