@@ -8,8 +8,8 @@ on:
   workflow_dispatch:
 
 env:
-  # dm to mat
-  slack_channel_id: "U0512LGPYSE"
+  # mat-workflow-scratch
+  slack_channel_id: "C06LRD9EWM7"
   # development-ci channel_id
   #slack_channel_id: "C05PLHLQFQA"
 
@@ -21,7 +21,7 @@ jobs:
     uses: ./.github/workflows/post-to-slack-channel.yaml
     secrets: inherit
     with:
-      channel_id: U0512LGPYSE
+      channel_id: C06LRD9EWM7
       payload: |
         {
           "text": "${{ github.run_id }} Release Initiated.",
@@ -159,7 +159,7 @@ jobs:
       - sendSlackMessageRealeaseStarted
       - meta
     with:
-      channel_id: U0512LGPYSE
+      channel_id: C06LRD9EWM7
       update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
       payload: |
         {
@@ -333,7 +333,7 @@ jobs:
 #      - dockerhubPrivateRelease
       - sendSlackMessageRealeaseVersion
     with:
-      channel_id: U0512LGPYSE
+      channel_id: C06LRD9EWM7
       update_ts: ${{ needs.sendSlackMessageRealeaseVersion.outputs.ts }}
       payload: |
         {
@@ -511,7 +511,7 @@ jobs:
 #      - publicRelease
       - sendSlackMessageReadyToDeploy
     with:
-      channel_id: U0512LGPYSE
+      channel_id: C06LRD9EWM7
       update_ts: ${{ needs.sendSlackMessageReadyToDeploy.outputs.ts }}
       payload: |
         {
@@ -567,7 +567,7 @@ jobs:
       - sendSlackMessageReadyToDeploy
       - sendSlackMessageParty
     with:
-      channel_id: U0512LGPYSE
+      channel_id: C06LRD9EWM7
       update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
       payload: |
         {
