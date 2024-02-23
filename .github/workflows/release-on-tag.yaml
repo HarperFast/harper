@@ -509,7 +509,6 @@ jobs:
 #      - npmPrivateRelease
 #      - dockerhubPrivateRelease
 #      - publicRelease
-      - sendSlackMessageReadyToDeploy
     with:
       channel_id: C06LRD9EWM7
       update_ts: ${{ needs.sendSlackMessageReadyToDeploy.outputs.ts }}
