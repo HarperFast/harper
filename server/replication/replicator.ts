@@ -25,7 +25,7 @@ import { WebSocket } from 'ws';
 import { server } from '../Server';
 import { readFileSync } from 'fs';
 import { active_subscriptions, addNodeSubscription } from './activeSubscriptions';
-import { exportIdMapping, getNodeName, remoteToLocalNodeId } from './nodeIdMapping';
+import { exportIdMapping, getNodeName, remoteToLocalNodeId, getIdOfRemoteNode } from './nodeIdMapping';
 
 const SUBSCRIBE_CODE = 129;
 const SEND_NODE_ID = 140;
@@ -94,10 +94,8 @@ function replicateOverWS(ws, options) {
 				const [command, data, table_id] = message;
 				switch (command) {
 					case SEND_NODE_ID: {
-						// table_id is the remote node's id
 						// data is the map of its mapping of node name/guid to short ids
 						remote_node_name = message[1];
-						omitted_node_ids = [remote_node_name]; // TODO: This should be an array of all the node names we will omit (should be ignored in the subscription)
 						if (!database_name) setDatabase((database_name = message[2]));
 						sendSubscriptionRequestUpdate();
 						// TODO: Listen to adc
@@ -128,7 +126,7 @@ function replicateOverWS(ws, options) {
 						remote_short_id_to_local_id = remoteToLocalNodeId(remote_node_name, data, audit_store);
 						break;
 					case SUBSCRIBE_CODE:
-						const [action, start_time, table_ids, remote_omitted_node_ids] = message;
+						const [action, start_time, table_ids, remote_omitted_node_names] = message;
 						/*const decoder = (body.dataView = new Decoder(body.buffer, body.byteOffset, body.byteLength));
 						const db_length = body[1];
 						const database_name = body.toString('utf8', 2, db_length + 2);
@@ -148,6 +146,11 @@ function replicateOverWS(ws, options) {
 						const table_by_id = incoming_subscription.tableById.map((table) => {
 							first_table = table;
 							return { table };
+						});
+						const omitted_node_ids = [getIdOfRemoteNode(remote_node_name, audit_store)]; // we always omit the node that we are receiving from, don't want to echo
+						// and we also omit any other nodes that they indicate that we should omit (that they are already subscribed to)
+						remote_omitted_node_names.map((node_name) => {
+							omitted_node_ids.push(getIdOfRemoteNode(node_name, audit_store));
 						});
 						ws.send(encode([SEND_ID_MAPPING, exportIdMapping(incoming_subscription.auditStore)]));
 						const encoder = new Encoder();
@@ -253,15 +256,15 @@ function replicateOverWS(ws, options) {
 		let node_subscriptions = active_subscriptions.get(database_name);
 		if (!node_subscriptions) active_subscriptions.set(database_name, (node_subscriptions = new Map()));
 		if (!node_subscriptions.has(remote_node_name)) {
-			const omitted_node_ids = [];
-			for (const [node_id] of node_subscriptions) {
-				if (node_id !== remote_node_name) omitted_node_ids.push(node_id);
+			const omitted_node_names = [];
+			for (const [node_name] of node_subscriptions) {
+				if (node_name !== remote_node_name) omitted_node_names.push(node_name);
 			}
 			addNodeSubscription(database_name, remote_node_name, () => {
 				// TODO: The subscription list has changed, we either need to unsubscribe if another thread has taken over
 				// or add a node id to our list of omitted node ids
 			});
-			ws.send(encode([SUBSCRIBE_CODE, database_name, options.startTime, [], omitted_node_ids]));
+			ws.send(encode([SUBSCRIBE_CODE, database_name, options.startTime, [], omitted_node_names]));
 			console.log('sent subscription', options.url, database_name);
 		}
 	}
@@ -333,7 +336,7 @@ class Encoder {
 export function disableReplication(disabled = true) {
 	replication_disabled = disabled;
 }
-const MAX_INGEST_THREADS = 1;
+const MAX_INGEST_THREADS = 2;
 let immediateNATSTransaction, subscribed_to_nodes;
 /**
  * Replication functions by acting as a "source" for tables. With replicated tables, the local tables are considered
@@ -396,21 +399,25 @@ export function setReplicator(db_name, table, options) {
 				subscription.tableById = table_by_id;
 				subscription.auditStore = table.auditStore;
 				subscription.databaseName = db_name;
-				for (const node of options.routes) {
-					try {
-						const url = node.url;
-						// TODO: Do we need to have another way to determine URL?
-						// Node subscription also needs to be aware of other nodes that will be excluded from the current subscription
-						const connection = new NodeSubscriptionConnection(url, subscription, table.databaseName);
-						connection.connect();
-					} catch (error) {
-						console.error(error);
+				if (getWorkerIndex() < MAX_INGEST_THREADS) {
+					for (const node of options.routes) {
+						try {
+							const url = node.url;
+							// TODO: Do we need to have another way to determine URL?
+							// Node subscription also needs to be aware of other nodes that will be excluded from the current subscription
+							const connection = new NodeSubscriptionConnection(url, subscription, table.databaseName);
+							connection.connect();
+						} catch (error) {
+							console.error(error);
+						}
 					}
 				}
 				return subscription;
 			}
 			static subscribeOnThisThread(worker_index, total_workers) {
-				return worker_index < MAX_INGEST_THREADS;
+				// we need a subscription on every thread because we could make subscription requests from any
+				// incoming TCP connection
+				return true;
 			}
 
 			connections: NodeSubscriptionConnection[];

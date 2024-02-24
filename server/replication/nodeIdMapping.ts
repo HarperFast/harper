@@ -56,3 +56,22 @@ export function remoteToLocalNodeId(remote_node_name, remote_mapping, audit_stor
 	}
 	return remote_to_local_id;
 }
+
+export function getIdOfRemoteNode(remote_node_name, audit_store) {
+	const id_mapping_record = getIdMappingRecord(audit_store);
+	const name_to_id = id_mapping_record.remoteNameToId;
+	let id = name_to_id[remote_node_name];
+	if (!id) {
+		let last_id = 0;
+		for (const name in name_to_id) {
+			const id = name_to_id[name];
+			if (id > last_id) {
+				last_id = id;
+			}
+		}
+		id = last_id + 1;
+		name_to_id[remote_node_name] = id;
+		audit_store.putSync(Symbol.for('remote-ids'), pack(id_mapping_record));
+	}
+	return id;
+}

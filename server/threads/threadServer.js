@@ -1,6 +1,6 @@
 'use strict';
 
-const { isMainThread, parentPort, threadId } = require('worker_threads');
+const { isMainThread, parentPort, threadId, workerData } = require('worker_threads');
 const { Socket, createServer: createSocketServer } = require('net');
 const { createServer, IncomingMessage } = require('http');
 const { createServer: createSecureServer } = require('https');
@@ -227,7 +227,7 @@ function listenOnPorts() {
 	}
 	return Promise.all(listening);
 }
-if (!isMainThread) {
+if (!isMainThread && !workerData.noServerStart) {
 	startServers();
 }
 

@@ -293,7 +293,16 @@ export function getUpdateRecord(store, table_id, audit_store) {
 						const previous_local_time = readAuditEntry(replacing_entry).previousLocalTime;
 						audit_store.put(
 							replacing_id,
-							createAuditEntry(new_version, table_id, id, previous_local_time, username, type, last_value_encoding),
+							createAuditEntry(
+								new_version,
+								table_id,
+								id,
+								previous_local_time,
+								context?.nodeId || 0,
+								username,
+								type,
+								last_value_encoding
+							),
 							{ ifVersion }
 						);
 						return result;
@@ -306,6 +315,7 @@ export function getUpdateRecord(store, table_id, audit_store) {
 						table_id,
 						id,
 						existing_entry?.localTime ? 1 : 0,
+						context?.nodeId || 0,
 						username,
 						type,
 						last_value_encoding

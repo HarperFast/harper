@@ -437,7 +437,7 @@ function startMonitoring() {
 }
 const REPORTING_INTERVAL = 1000;
 
-if (parentPort) {
+if (parentPort && workerData.addPorts) {
 	addPort(parentPort);
 	for (let i = 0, l = workerData.addPorts.length; i < l; i++) {
 		let port = workerData.addPorts[i];

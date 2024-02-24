@@ -148,7 +148,7 @@ const EVENT_TYPES = {
 	patch: PATCH | HAS_PARTIAL_RECORD,
 	[PATCH]: 'patch',
 };
-export function createAuditEntry(txn_time, table_id, record_id, previous_local_time, username, type, encoded_record) {
+export function createAuditEntry(txn_time, table_id, record_id, previous_local_time, node_id, username, type, encoded_record) {
 	const action = EVENT_TYPES[type];
 	if (!action) throw new Error(`Invalid audit entry type ${type}`);
 	let position = 1;
@@ -158,7 +158,6 @@ export function createAuditEntry(txn_time, table_id, record_id, previous_local_t
 		position = 9;
 	}
 
-	const node_id = 0;
 	writeInt(node_id);
 	writeInt(table_id);
 	writeValue(record_id);
