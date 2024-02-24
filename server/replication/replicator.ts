@@ -24,7 +24,7 @@ import { decode, encode, Packr } from 'msgpackr';
 import { WebSocket } from 'ws';
 import { server } from '../Server';
 import { readFileSync } from 'fs';
-import { active_subscriptions, addNodeSubscription } from './activeSubscriptions';
+import { active_subscriptions, addNodeSubscription, removeNodeSubscription } from './activeSubscriptions';
 import { exportIdMapping, getNodeName, remoteToLocalNodeId, getIdOfRemoteNode } from './nodeIdMapping';
 
 const SUBSCRIBE_CODE = 129;
@@ -72,7 +72,8 @@ function replicateOverWS(ws, options) {
 	let tables = options.tables || getDatabases()[database_name] || {};
 	if (database_name) setDatabase(database_name);
 	const table_decoders = [];
-	let omitted_node_ids = [];
+	const omitted_node_ids = [];
+	let subscription_request, audit_subscription;
 	let remote_node_name;
 	let remote_short_id_to_local_id: Map<number, number>;
 	ws.on('message', (body) => {
@@ -155,66 +156,78 @@ function replicateOverWS(ws, options) {
 						ws.send(encode([SEND_ID_MAPPING, exportIdMapping(incoming_subscription.auditStore)]));
 						const encoder = new Encoder();
 						const current_transaction = { txnTime: 0 };
-						addSubscription(
-							first_table,
-							null,
-							function (audit_record, local_time) {
-								if (!audit_record) {
-									console.log('No audit record, sending queued txn', current_transaction.txnTime);
-									if (current_transaction.txnTime) ws.send(encoding_buffer.subarray(encoding_start, position));
-									current_transaction.txnTime = 0;
-									return; // end of transaction, nothing more to do
+						const sendAuditRecord = (audit_record, local_time) => {
+							if (!audit_record) {
+								console.log('No audit record, sending queued txn', current_transaction.txnTime);
+								if (current_transaction.txnTime) ws.send(encoding_buffer.subarray(encoding_start, position));
+								current_transaction.txnTime = 0;
+								return; // end of transaction, nothing more to do
+							}
+							const node_id = audit_record.nodeId;
+							if (omitted_node_ids.includes(node_id)) return;
+							const table_id = audit_record.tableId;
+							const txn_time = audit_record.version;
+							const encoded = audit_record.encoded;
+							if (current_transaction.txnTime !== txn_time) {
+								// send the queued transaction
+								if (current_transaction.txnTime) {
+									console.log('new txn time, sending queued txn', current_transaction.txnTime);
+									ws.send(encoding_buffer.subarray(encoding_start, position));
 								}
-								const node_id = audit_record.nodeId;
-								if (omitted_node_ids.includes(node_id)) return;
-								const table_id = audit_record.tableId;
-								const txn_time = audit_record.version;
-								const encoded = audit_record.encoded;
-								if (current_transaction.txnTime !== txn_time) {
-									// send the queued transaction
-									if (current_transaction.txnTime) {
-										console.log('new txn time, sending queued txn', current_transaction.txnTime);
-										ws.send(encoding_buffer.subarray(encoding_start, position));
-									}
-									current_transaction.txnTime = txn_time;
-									encoding_start = position;
-									writeFloat64(txn_time);
-								} /*
-								TODO: At some point we may want some fancier logic to elide the version (which is the same as txn_time)
-								and username from subsequent audit entries in multiple entry transactions*/
-								/*
-								writeInt(table_id);
-								const key_length = record_id_binary.length;
-								writeInt(key_length);
-								writeBytes(record_id_binary);
-								const encoded_record = audit_record.getBinaryValue();
-								writeInt(encoded_record.length);
-								writeBytes(encoded_record);
-								*/
-								// directly write the audit record. If it starts with the previous local time, we omit that
-								const start = audit_record.encoded[0] === 66 ? 8 : 0;
-								writeInt(audit_record.encoded.length - start);
-								writeBytes(audit_record.encoded, start);
-								const table_entry = table_by_id[table_id];
-								const typed_structs = table_entry.table.primaryStore.encoder.typedStructs;
-								if (typed_structs.length != table_entry.typed_length) {
-									table_entry.typed_length = typed_structs.length;
-									console.log('send table struct', typed_structs);
-									if (!table_entry.sentName) {
-										// TODO: only send the table name once
-										table_entry.sentName = true;
-									}
-									ws.send(encode([SEND_TABLE_FIXED_STRUCTURE, typed_structs, table_id, table_entry.table.tableName]));
+								current_transaction.txnTime = txn_time;
+								encoding_start = position;
+								writeFloat64(txn_time);
+							} /*
+							TODO: At some point we may want some fancier logic to elide the version (which is the same as txn_time)
+							and username from subsequent audit entries in multiple entry transactions*/
+							/*
+							writeInt(table_id);
+							const key_length = record_id_binary.length;
+							writeInt(key_length);
+							writeBytes(record_id_binary);
+							const encoded_record = audit_record.getBinaryValue();
+							writeInt(encoded_record.length);
+							writeBytes(encoded_record);
+							*/
+							// directly write the audit record. If it starts with the previous local time, we omit that
+							const start = audit_record.encoded[0] === 66 ? 8 : 0;
+							writeInt(audit_record.encoded.length - start);
+							writeBytes(audit_record.encoded, start);
+							const table_entry = table_by_id[table_id];
+							const typed_structs = table_entry.table.primaryStore.encoder.typedStructs;
+							if (typed_structs.length != table_entry.typed_length) {
+								table_entry.typed_length = typed_structs.length;
+								console.log('send table struct', typed_structs);
+								if (!table_entry.sentName) {
+									// TODO: only send the table name once
+									table_entry.sentName = true;
 								}
-							},
-							start_time,
-							'full-database'
-						);
+								ws.send(encode([SEND_TABLE_FIXED_STRUCTURE, typed_structs, table_id, table_entry.table.tableName]));
+							}
+						};
+
+						audit_subscription = addSubscription(first_table, null, sendAuditRecord, start_time, 'full-database');
 						let listeners = table_update_listeners.get(first_table);
 						if (!listeners) table_update_listeners.set(first_table, (listeners = []));
 						listeners.push((table) => {
 							// TODO: send table update
 						});
+						let closed;
+						audit_subscription.on('close', () => {
+							closed = true;
+						});
+						for (const { key, value: audit_entry } of audit_store.getRange({
+							start: start_time,
+							exclusiveStart: true,
+							snapshot: false, // don't want to use a snapshot, and we want to see new entries
+						})) {
+							if (closed) return;
+							const audit_record = readAuditEntry(audit_entry);
+							sendAuditRecord(audit_record, key);
+							// TODO: Need to do this with back-pressure, but would need to catch up on anything published during iteration
+							//await rest(); // yield for fairness
+							audit_subscription.startTime = key; // update so don't double send
+						}
 						break;
 				}
 				return;
@@ -266,6 +279,11 @@ function replicateOverWS(ws, options) {
 			});
 			ws.send(encode([SUBSCRIBE_CODE, database_name, options.startTime, [], omitted_node_names]));
 			console.log('sent subscription', options.url, database_name);
+			subscription_request = {
+				end() {
+					removeNodeSubscription(database_name, remote_node_name);
+				},
+			};
 		}
 	}
 	function setDatabase(database_name) {
@@ -284,6 +302,13 @@ function replicateOverWS(ws, options) {
 		const this_node_name = getNodeName(audit_store);
 		ws.send(encode([SEND_NODE_ID, this_node_name, database_name]));
 	}
+	return {
+		end() {
+			// cleanup
+			if (subscription_request) subscription_request.end();
+			if (audit_subscription) audit_subscription.emit('close');
+		},
+	};
 }
 let encoding_start = 0;
 let encoding_buffer = Buffer.allocUnsafeSlow(1024);
@@ -415,15 +440,11 @@ export function setReplicator(db_name, table, options) {
 				return subscription;
 			}
 			static subscribeOnThisThread(worker_index, total_workers) {
-				// we need a subscription on every thread because we could make subscription requests from any
+				// we need a subscription on every thread because we could get subscription requests from any
 				// incoming TCP connection
 				return true;
 			}
 
-			connections: NodeSubscriptionConnection[];
-			addNode(node_url) {
-				this.connections.push(new NodeSubscriptionConnection(node_url, this.subscription));
-			}
 			static isNATSReplicator = true;
 		},
 		{ intermediateSource: true }
@@ -468,9 +489,10 @@ class NodeSubscriptionConnection {
 			cert: readFileSync(certificate),
 			ca: certificate_authority && readFileSync(certificate_authority),
 		});
+		let replicator;
 		this.socket.on('open', () => {
 			console.log('connected to ' + this.url);
-			replicateOverWS(this.socket, { database: this.databaseName, subscription: this.subscription, url: this.url });
+			replicator = replicateOverWS(this.socket, { database: this.databaseName, subscription: this.subscription, url: this.url });
 		});
 		this.socket.on('error', (error) => {
 			console.log('Error in connection to ' + this.url, error);
@@ -478,6 +500,8 @@ class NodeSubscriptionConnection {
 
 		this.socket.on('close', () => {
 			console.log('disconnected from ' + this.url);
+			replicator?.end();
+
 			// try to reconnect
 			setTimeout(() => {
 				this.connect();

@@ -36,8 +36,10 @@ export function addSubscription(table, key, listener?: (key) => any, start_time:
 	}
 	if (scope === 'full-database') {
 		database_subscriptions.allTables = database_subscriptions.allTables || [];
-		database_subscriptions.allTables.push({ listener });
-		return;
+		const subscription = new Subscription(listener);
+		database_subscriptions.allTables.push(subscription);
+		subscription.subscriptions = database_subscriptions.allTables;
+		return subscription;
 	}
 	let table_subscriptions = database_subscriptions[table_id];
 	if (!table_subscriptions) {
@@ -81,13 +83,15 @@ class Subscription extends IterableEventQueue {
 		this.subscriptions.splice(this.subscriptions.indexOf(this), 1);
 		if (this.subscriptions.length === 0) {
 			const table_subscriptions = this.subscriptions.tables;
-			// TODO: Handle cleanup of wildcard
-			const key = this.subscriptions.key;
-			table_subscriptions.delete(key);
-			if (table_subscriptions.size === 0) {
-				const env_subscriptions = table_subscriptions.envs;
-				const dbi = table_subscriptions.dbi;
-				delete env_subscriptions[dbi];
+			if (table_subscriptions) {
+				// TODO: Handle cleanup of wildcard
+				const key = this.subscriptions.key;
+				table_subscriptions.delete(key);
+				if (table_subscriptions.size === 0) {
+					const env_subscriptions = table_subscriptions.envs;
+					const dbi = table_subscriptions.dbi;
+					delete env_subscriptions[dbi];
+				}
 			}
 		}
 		this.subscriptions = null;
