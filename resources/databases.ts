@@ -644,13 +644,15 @@ export function table({
 						attribute_descriptor.restartNumber < workerData?.restartNumber
 					) {
 						has_changes = true;
-						attribute.lastIndexedKey = attribute_descriptor?.lastIndexedKey || false;
-						attribute.indexingPID = process.pid;
-						dbi.isIndexing = true;
-						Object.defineProperty(attribute, 'dbi', { value: dbi });
-						// we only set indexing nulls to true if new or reindexing, we can't have partial indexing of null
 						if (attribute.indexNulls === undefined) attribute.indexNulls = true;
-						attributes_to_index.push(attribute);
+						if (Table.primaryStore.getStats().entryCount > 0) {
+							attribute.lastIndexedKey = attribute_descriptor?.lastIndexedKey || false;
+							attribute.indexingPID = process.pid;
+							dbi.isIndexing = true;
+							Object.defineProperty(attribute, 'dbi', { value: dbi });
+							// we only set indexing nulls to true if new or reindexing, we can't have partial indexing of null
+							attributes_to_index.push(attribute);
+						}
 					}
 					attributes_dbi.put(dbi_key, attribute);
 				}
