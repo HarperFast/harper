@@ -128,7 +128,7 @@ jobs:
           patch: ${version_patch}
           
           EOF
-          [[ "${release_type}" == "stable" ]] && echo "pre-release version: ${release_type}.${prerelease_version:-}" >> $GITHUB_STEP_SUMMARY
+          [[ "${release_type}" == "stable" ]] || echo "pre-release version: ${release_type}.${prerelease_version:-}" >> $GITHUB_STEP_SUMMARY
           
           if [[ "${full_version}" != "${harperdbVersion}" ]]; then
             cat <<EOF >> $GITHUB_STEP_SUMMARY
