@@ -96,7 +96,7 @@ jobs:
     if: ${{ failure() && (github.event_name == 'schedule' || github.event_name == 'push') }}
     secrets: inherit
     needs:
-      - destroyInstances
-      - runTests
-      - createInstances
-      - dockerBuild
+      - build
+      - cluster_test_a
+      - cluster_test_b
+      - cluster_test_c
