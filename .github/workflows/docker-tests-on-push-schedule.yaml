@@ -97,6 +97,6 @@ jobs:
     secrets: inherit
     needs:
       - build
-      - cluster_test_a
-      - cluster_test_b
-      - cluster_test_c
+      - cluster-test-a
+      - cluster-test-b
+      - cluster-test-c
