@@ -914,6 +914,7 @@ export function makeTable(options) {
 							let audited_version = existing_entry.version;
 							while (update_to_apply && (local_time > txn_time || (audited_version >= txn_time && local_time > 0))) {
 								const audit_entry = audit_store.get(local_time);
+								if (!audit_entry) break;
 								const audit_record = readAuditEntry(audit_entry);
 								audited_version = audit_record.version;
 								if (audited_version > txn_time) {
