@@ -14,7 +14,7 @@ jobs:
     uses: ./.github/workflows/post-to-slack-channel.yaml
     secrets: inherit
     with:
-      channel_id: C06LRD9EWM7
+      channel_id: C05PLHLQFQA
       payload: |
         {
           "text": "${{ github.run_id }} Release Initiated.",
@@ -128,7 +128,7 @@ jobs:
           patch: ${version_patch}
           
           EOF
-          [[ "${release_type}" == "stable" ]] && echo "pre-release version: ${release_type}.${prerelease_version:-}" >> $GITHUB_STEP_SUMMARY
+          [[ "${release_type}" != "stable" ]] && echo "pre-release version: ${release_type}.${prerelease_version:-}" >> $GITHUB_STEP_SUMMARY
           
           if [[ "${full_version}" != "${harperdbVersion}" ]]; then
             cat <<EOF >> $GITHUB_STEP_SUMMARY
@@ -148,7 +148,7 @@ jobs:
       - sendSlackMessageRealeaseStarted
       - meta
     with:
-      channel_id: C06LRD9EWM7
+      channel_id: C05PLHLQFQA
       update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
       payload: |
         {
@@ -287,7 +287,7 @@ jobs:
       - sendSlackMessageRealeaseStarted
       - sendSlackMessageRealeaseVersion
     with:
-      channel_id: C06LRD9EWM7
+      channel_id: C05PLHLQFQA
       update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
       payload: |
         {
@@ -463,7 +463,7 @@ jobs:
       - sendSlackMessageRealeaseVersion
       - sendSlackMessageReadyToDeploy
     with:
-      channel_id: C06LRD9EWM7
+      channel_id: C05PLHLQFQA
       update_ts: ${{ needs.meta.outputs.release_type == 'stable' && needs.sendSlackMessageReadyToDeploy.outputs.ts || needs.sendSlackMessageRealeaseVersion.outputs.ts }}
       payload: |
         {
@@ -518,7 +518,7 @@ jobs:
       - sendSlackMessageReadyToDeploy
       - sendSlackMessageParty
     with:
-      channel_id: C06LRD9EWM7
+      channel_id: C05PLHLQFQA
       update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
       payload: |
         {
