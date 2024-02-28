@@ -1,12 +1,12 @@
 name: "Run All Docker Cluster Tests"
 
 on:
-  push:
-    branches:
-      - main
-      - "release_*"
-  schedule:
-    - cron: '8 13 * * 1-5'
+#  push:
+#    branches:
+#      - main
+#      - "release_*"
+#  schedule:
+#    - cron: '8 13 * * 1-5'
   workflow_dispatch:
 
 jobs:
