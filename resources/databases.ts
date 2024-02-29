@@ -285,6 +285,11 @@ export function readMetaDb(
 					dbis_store.putSync(primary_attribute.key, primary_attribute);
 				}
 				const dbi_init = new OpenDBIObject(!primary_attribute.is_hash_attribute, primary_attribute.is_hash_attribute);
+				dbi_init.compression = primary_attribute.compression;
+				const compression_threshold = env_get(CONFIG_PARAMS.STORAGE_COMPRESSION_THRESHOLD); // this is the only thing that can change;
+				if (dbi_init.compression && compression_threshold) {
+					dbi_init.compression.threshold = compression_threshold;
+				}
 				primary_store = handleLocalTimeForGets(root_store.openDB(primary_attribute.key, dbi_init));
 				primary_store.rootStore = root_store;
 				primary_store.tableId = table_id;
@@ -517,6 +522,8 @@ export function table({
 		primary_key = primary_key_attribute.name;
 		primary_key_attribute.is_hash_attribute = true;
 		primary_key_attribute.schemaDefined = schema_defined;
+		// can't change compression after the fact (except threshold), so save only when we create the table
+		primary_key_attribute.compression = getDefaultCompression();
 		if (track_deletes) primary_key_attribute.trackDeletes = true;
 		audit = primary_key_attribute.audit = typeof audit === 'boolean' ? audit : env_get(CONFIG_PARAMS.LOGGING_AUDITLOG);
 		if (expiration) primary_key_attribute.expiration = expiration;
@@ -528,6 +535,7 @@ export function table({
 		}
 		harper_logger.trace(`${table_name} table loading, opening primary store`);
 		const dbi_init = new OpenDBIObject(false, true);
+		dbi_init.compression = primary_key_attribute.compression;
 		const dbi_name = table_name + '/';
 		const primary_store = handleLocalTimeForGets(root_store.openDB(dbi_name, dbi_init));
 		primary_store.rootStore = root_store;
@@ -812,4 +820,15 @@ export function dropTableMeta({ table: table_name, database: database_name }) {
 
 export function onUpdatedTable(listener) {
 	table_listeners.push(listener);
+}
+
+export function getDefaultCompression() {
+	const LMDB_COMPRESSION = env_get(CONFIG_PARAMS.STORAGE_COMPRESSION);
+	const STORAGE_COMPRESSION_DICTIONARY = env_get(CONFIG_PARAMS.STORAGE_COMPRESSION_DICTIONARY);
+	const STORAGE_COMPRESSION_THRESHOLD = env_get(CONFIG_PARAMS.STORAGE_COMPRESSION_THRESHOLD);
+	const LMDB_COMPRESSION_OPTS = { startingOffset: 32 };
+	if (STORAGE_COMPRESSION_DICTIONARY)
+		LMDB_COMPRESSION_OPTS['dictionary'] = fs.readFileSync(STORAGE_COMPRESSION_DICTIONARY);
+	if (STORAGE_COMPRESSION_THRESHOLD) LMDB_COMPRESSION_OPTS['threshold'] = STORAGE_COMPRESSION_THRESHOLD;
+	return LMDB_COMPRESSION && LMDB_COMPRESSION_OPTS;
 }

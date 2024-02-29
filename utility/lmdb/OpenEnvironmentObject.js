@@ -22,7 +22,7 @@ class OpenEnvironmentObject {
 			env_mngr.get(terms.CONFIG_PARAMS.STORAGE_WRITEASYNC) === true ||
 			env_mngr.get(terms.CONFIG_PARAMS.STORAGE_WRITEASYNC) === 'true' ||
 			env_mngr.get(terms.CONFIG_PARAMS.STORAGE_WRITEASYNC) === 'TRUE';
-		this.noFSAccess = true;
+		//this.noFSAccess = true; // we might re-enable this if we want secure JS environments
 		// otherwise overlappingSync uses lmdb-js default, which is enabled on linux/mac, disabled on windows
 		if (env_mngr.get(terms.CONFIG_PARAMS.STORAGE_OVERLAPPINGSYNC) !== undefined)
 			this.overlappingSync = env_mngr.get(terms.CONFIG_PARAMS.STORAGE_OVERLAPPINGSYNC);

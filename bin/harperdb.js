@@ -167,6 +167,11 @@ function harperDBService() {
 						console.error(err);
 					});
 				break;
+			case SERVICE_ACTIONS_ENUM.COPYDB:
+				let source_db = process.argv[3];
+				let target_db_path = process.argv[4];
+				require('./copyDb').copyDb(source_db, target_db_path);
+				break;
 			case undefined:
 				if (process.env.HDB_LEADER_URL || process.argv.includes('--HDB_LEADER_URL')) {
 					const clone_node = require('../utility/cloneNode/cloneNode');
