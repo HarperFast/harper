@@ -2,7 +2,8 @@ import { getDatabases } from '../resources/databases';
 import { open } from 'lmdb';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject';
 import OpenDBIObject from '../utility/lmdb/OpenDBIObject';
-import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms';
+import { INTERNAL_DBIS_NAME, AUDIT_STORE_NAME } from '../utility/lmdb/terms';
+import { AUDIT_STORE_OPTIONS } from '../resources/auditStore';
 
 export async function copyDb(source_database: string, target_database_path: string) {
 	console.log('copyDb start');
@@ -14,6 +15,7 @@ export async function copyDb(source_database: string, target_database_path: stri
 	}
 	// this contains the list of all the dbis
 	const source_dbis_db = root_store.dbisDb;
+	let source_audit_store = root_store.auditStore;
 	const target_env = open(new OpenEnvironmentObject(target_database_path));
 	const target_dbis_db = target_env.openDB(INTERNAL_DBIS_NAME);
 	let written;
@@ -32,6 +34,12 @@ export async function copyDb(source_database: string, target_database_path: stri
 		const target_dbi = target_env.openDB(key, dbi_init);
 		target_dbi.encoder = null;
 		console.log('copying', key, 'from', source_database, 'to', target_database_path);
+		await copyDbi(source_dbi, target_dbi, is_primary);
+	}
+	const target_audit_store = root_store.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS);
+	console.log('copying audit log');
+	copyDbi(source_audit_store, target_audit_store, false);
+	async function copyDbi(source_dbi, target_dbi, is_primary) {
 		let records_copied = 0;
 		let bytes_copied = 0;
 		for (const { key, value, version } of source_dbi.getRange({ start: null, versions: is_primary })) {
