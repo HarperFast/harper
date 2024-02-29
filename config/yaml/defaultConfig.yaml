@@ -94,7 +94,7 @@ storage:
   writeAsync: false
   caching: true
   compression: true
-  noReadAhead: true
+  noReadAhead: false
   path: null
   prefetchWrites: true
 tls:

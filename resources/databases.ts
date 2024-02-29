@@ -286,7 +286,10 @@ export function readMetaDb(
 				}
 				const dbi_init = new OpenDBIObject(!primary_attribute.is_hash_attribute, primary_attribute.is_hash_attribute);
 				dbi_init.compression = primary_attribute.compression;
-				if (dbi_init.compression) dbi_init.compression.threshold = env_get(CONFIG_PARAMS.STORAGE_COMPRESSION_THRESHOLD); // this is the only thing that can change
+				const compression_threshold = env_get(CONFIG_PARAMS.STORAGE_COMPRESSION_THRESHOLD); // this is the only thing that can change;
+				if (dbi_init.compression && compression_threshold) {
+					dbi_init.compression.threshold = compression_threshold;
+				}
 				primary_store = handleLocalTimeForGets(root_store.openDB(primary_attribute.key, dbi_init));
 				primary_store.rootStore = root_store;
 				primary_store.tableId = table_id;

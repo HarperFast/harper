@@ -15,23 +15,36 @@ export async function copyDb(source_database: string, target_database_path: stri
 	}
 	// this contains the list of all the dbis
 	const source_dbis_db = root_store.dbisDb;
-	let source_audit_store = root_store.auditStore;
+	const source_audit_store = root_store.auditStore;
 	const target_env = open(new OpenEnvironmentObject(target_database_path));
 	const target_dbis_db = target_env.openDB(INTERNAL_DBIS_NAME);
 	let written;
 	let outstanding_writes = 0;
 	for (const { key, value: attribute } of source_dbis_db.getRange({})) {
-		target_dbis_db.put(key, attribute);
 		const is_primary = attribute.is_hash_attribute || attribute.isPrimaryKey;
+		let existing_compression, new_compression;
+		if (is_primary) {
+			existing_compression = attribute.compression;
+			new_compression = getDefaultCompression();
+			if (new_compression) attribute.compression = new_compression;
+			else delete attribute.compression;
+			if (existing_compression?.dictionary?.toString() === new_compression?.dictionary?.toString()) {
+				// no need to change the compression, it's the same, so we can, and should, skip decompressing and recompressing
+				existing_compression = null;
+				new_compression = null;
+			}
+		}
+		target_dbis_db.put(key, attribute);
 		if (!(is_primary || attribute.indexed)) continue;
 		const dbi_init = new OpenDBIObject(!is_primary, is_primary);
 		// we want to directly copy bytes so we don't have the overhead of
 		// encoding and decoding
 		dbi_init.encoding = 'binary';
+		dbi_init.compression = existing_compression;
 		//dbi_init.keyEncoding = 'binary';
 		const source_dbi = root_store.openDB(key, dbi_init);
 		source_dbi.decoder = null;
-		if (is_primary) dbi_init.compression = getDefaultCompression();
+		dbi_init.compression = new_compression;
 		const target_dbi = target_env.openDB(key, dbi_init);
 		target_dbi.encoder = null;
 		console.log('copying', key, 'from', source_database, 'to', target_database_path);
