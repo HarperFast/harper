@@ -635,6 +635,8 @@ const CONFIG_PARAMS = {
 	STORAGE_AUDIT_PATH: 'storage_audit_path',
 	STORAGE_MAXFREESPACETOLOAD: 'storage_maxFreeSpaceToLoad',
 	STORAGE_MAXFREESPACETORETAIN: 'storage_maxFreeSpaceToRetain',
+	STORAGE_COMPRESSION_DICTIONARY: 'storage_compression_dictionary',
+	STORAGE_COMPRESSION_THRESHOLD: 'storage_compression_threshold',
 	DATABASES: 'databases',
 	IGNORE_SCRIPTS: 'ignoreScripts',
 	MQTT_NETWORK_PORT: 'mqtt_network_port',
