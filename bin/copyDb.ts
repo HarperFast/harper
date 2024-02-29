@@ -31,9 +31,9 @@ export async function copyDb(source_database: string, target_database_path: stri
 		//dbi_init.keyEncoding = 'binary';
 		const source_dbi = root_store.openDB(key, dbi_init);
 		source_dbi.decoder = null;
+		if (is_primary) dbi_init.compression = getDefaultCompression();
 		const target_dbi = target_env.openDB(key, dbi_init);
 		target_dbi.encoder = null;
-		target_dbi.compression = getDefaultCompression();
 		console.log('copying', key, 'from', source_database, 'to', target_database_path);
 		await copyDbi(source_dbi, target_dbi, is_primary);
 	}
@@ -56,7 +56,6 @@ export async function copyDb(source_database: string, target_database_path: stri
 		console.log('finish copying, copied', records_copied, 'entries', bytes_copied, 'bytes');
 	}
 	await written;
-	console.log('copied all dbis', JSON.stringify(target_env.getStats(), null, 2));
 	target_env.close();
-	console.log('copyDb end');
+	console.log('copied database ' + source_database + ' to ' + target_database_path);
 }

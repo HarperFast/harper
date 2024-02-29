@@ -93,7 +93,7 @@ rootPath: null
 storage:
   writeAsync: false
   caching: true
-  compression: false
+  compression: true
   noReadAhead: true
   path: null
   prefetchWrites: true
