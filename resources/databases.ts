@@ -285,6 +285,7 @@ export function readMetaDb(
 					dbis_store.putSync(primary_attribute.key, primary_attribute);
 				}
 				const dbi_init = new OpenDBIObject(!primary_attribute.is_hash_attribute, primary_attribute.is_hash_attribute);
+				dbi_init.compression = primary_attribute.compression;
 				primary_store = handleLocalTimeForGets(root_store.openDB(primary_attribute.key, dbi_init));
 				primary_store.rootStore = root_store;
 				primary_store.tableId = table_id;
@@ -517,6 +518,8 @@ export function table({
 		primary_key = primary_key_attribute.name;
 		primary_key_attribute.is_hash_attribute = true;
 		primary_key_attribute.schemaDefined = schema_defined;
+		// can't change compression after the fact (except threshold), so save only when we create the table
+		primary_key_attribute.compression = env_get(CONFIG_PARAMS.STORAGE_COMPRESSION);
 		if (track_deletes) primary_key_attribute.trackDeletes = true;
 		audit = primary_key_attribute.audit = typeof audit === 'boolean' ? audit : env_get(CONFIG_PARAMS.LOGGING_AUDITLOG);
 		if (expiration) primary_key_attribute.expiration = expiration;
@@ -528,6 +531,7 @@ export function table({
 		}
 		harper_logger.trace(`${table_name} table loading, opening primary store`);
 		const dbi_init = new OpenDBIObject(false, true);
+		dbi_init.compression = primary_key_attribute.compression;
 		const dbi_name = table_name + '/';
 		const primary_store = handleLocalTimeForGets(root_store.openDB(dbi_name, dbi_init));
 		primary_store.rootStore = root_store;
@@ -812,4 +816,8 @@ export function dropTableMeta({ table: table_name, database: database_name }) {
 
 export function onUpdatedTable(listener) {
 	table_listeners.push(listener);
+}
+
+export function getDefaultCompression() {
+	return env_get(CONFIG_PARAMS.STORAGE_COMPRESSION);
 }

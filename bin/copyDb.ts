@@ -1,4 +1,4 @@
-import { getDatabases } from '../resources/databases';
+import { getDatabases, getDefaultCompression } from '../resources/databases';
 import { open } from 'lmdb';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject';
 import OpenDBIObject from '../utility/lmdb/OpenDBIObject';
@@ -33,6 +33,7 @@ export async function copyDb(source_database: string, target_database_path: stri
 		source_dbi.decoder = null;
 		const target_dbi = target_env.openDB(key, dbi_init);
 		target_dbi.encoder = null;
+		target_dbi.compression = getDefaultCompression();
 		console.log('copying', key, 'from', source_database, 'to', target_database_path);
 		await copyDbi(source_dbi, target_dbi, is_primary);
 	}
