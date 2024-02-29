@@ -229,10 +229,15 @@ function configValidator(config_json) {
 			writeAsync: boolean.required(),
 			overlappingSync: boolean.optional(),
 			caching: boolean.optional(),
-			compression: boolean.optional(),
+			compression: Joi.alternatives([
+				boolean.optional(),
+				Joi.object({ dictionary: string.optional(), threshold: number.optional() }),
+			]),
 			noReadAhead: boolean.optional(),
 			path: storage_path_constraints,
 			prefetchWrites: boolean.optional(),
+			maxFreeSpaceToLoad: number.optional(),
+			maxFreeSpaceToRetain: number.optional(),
 		}).required(),
 		ignoreScripts: boolean.optional(),
 		tls: Joi.object({
