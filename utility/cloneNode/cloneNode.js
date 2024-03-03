@@ -39,6 +39,7 @@ const CLONE_VARS = {
 	HDB_LEADER_CLUSTERING_PORT: 'HDB_LEADER_CLUSTERING_PORT',
 	HDB_FULLY_CONNECTED: 'HDB_FULLY_CONNECTED',
 	HDB_CLONE_OVERTOP: 'HDB_CLONE_OVERTOP',
+	CLUSTERING_NODENAME: 'CLUSTERING_NODENAME',
 };
 
 const cli_args = minimist(process.argv);
@@ -52,6 +53,7 @@ const leader_clustering_port =
 let fully_connected =
 	(cli_args[CLONE_VARS.HDB_FULLY_CONNECTED] ?? process.env[CLONE_VARS.HDB_FULLY_CONNECTED]) === 'true'; // optional var - will connect the clone node to the leader AND all the nodes the leader is connected to
 const clone_overtop = (cli_args[CLONE_VARS.HDB_CLONE_OVERTOP] ?? process.env[CLONE_VARS.HDB_CLONE_OVERTOP]) === 'true'; // optional var - will allow clone to work overtop of an existing HDB install
+const nodename_arg = cli_args[CLONE_VARS.CLUSTERING_NODENAME] ?? process.env[CLONE_VARS.CLUSTERING_NODENAME];
 
 let leader_clustering_enabled;
 let clone_node_config;
@@ -103,7 +105,12 @@ module.exports = async function cloneNode(background = false) {
 		console.info(clone_config_path + ' not found, using default config values.');
 	}
 
-	clone_node_name = clone_node_config?.clustering?.nodeName ?? hri.random();
+	if (nodename_arg) {
+		clone_node_name = nodename_arg;
+	} else {
+		clone_node_name = clone_node_config?.clustering?.nodeName ?? hri.random();
+	}
+
 	leader_config = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_CONFIGURATION });
 	leader_config = await JSON.parse(leader_config.body);
 
