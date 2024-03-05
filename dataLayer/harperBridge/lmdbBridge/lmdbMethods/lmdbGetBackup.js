@@ -41,6 +41,7 @@ async function getBackup(get_backup_obj) {
 			let backup_store = backup_root.openDB(store_name, options);
 			let source_store = attribute_store.openDB(store_name, options);
 			for (let { key, version, value } of source_store.getRange({
+				start: null,
 				transaction: read_txn,
 				versions: source_store.useVersions,
 			})) {
