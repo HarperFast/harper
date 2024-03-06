@@ -21,7 +21,7 @@ on:
         default: 'test/ci-tests/docker-cluster-test-a.sh'
         type: string
       artifactSuffix:
-        description: 'suffix to avoid artifact conflicts (i.e. -standard-amd64-${{ github.run_number }})'
+        description: 'suffix to avoid artifact conflicts (i.e. -standard-amd64-<github.run_number>)'
         default: ''
         type: string
 
