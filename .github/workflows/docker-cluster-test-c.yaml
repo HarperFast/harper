@@ -77,5 +77,5 @@ jobs:
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       clusterTest: 'test/ci-tests/docker-cluster-test-a.sh'
-      artifactSuffix: "${{ matrix.flavor }}-${{ matrix.platform }}-${{ github.run_number }}"
+      dockerArtifactSuffix: "${{ matrix.flavor }}-${{ matrix.platform }}-${{ github.run_number }}"
     secrets: inherit
