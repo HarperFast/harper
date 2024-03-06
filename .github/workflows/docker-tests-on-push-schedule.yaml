@@ -16,6 +16,39 @@ jobs:
   build:
     uses: ./.github/workflows/build.yaml
 
+  ##########################
+  #  Build Container Image
+  ##########################
+  dockerBuild:
+    needs: build
+    uses: ./.github/workflows/docker-build.yaml
+    strategy:
+      fail-fast: false
+      matrix:
+        file:
+          - 'utility/Docker/Dockerfile'
+          - 'utility/Docker/Dockerfile-openshift'
+        include:
+          - file: 'utility/Docker/Dockerfile'
+            platform: 'linux/amd64'
+            containerTarball: docker-harperdb_${{ inputs.harperdbVersion }}-standard-amd64-${{ github.run_number }}.tar
+          - file: 'utility/Docker/Dockerfile'
+            platform: 'linux/arm64'
+            containerTarball: docker-harperdb_${{ inputs.harperdbVersion }}-standard-arm64-${{ github.run_number }}.tar
+          - file: 'utility/Docker/Dockerfile-openshift'
+            platform: 'linux/amd64'
+            containerTarball: docker-harperdb_${{ inputs.harperdbVersion }}-openshift-amd64-${{ github.run_number }}.tar
+          - file: 'utility/Docker/Dockerfile-openshift'
+            platform: 'linux/arm64'
+            containerTarball: docker-harperdb_${{ inputs.harperdbVersion }}-openshift-arm64-${{ github.run_number }}.tar
+    with:
+      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      container: 'tar'
+      containerTarball: ${{ matrtix.containerTarball }}
+      file: ${{ matrix.file }}
+      platforms: ${{ matrix.platform }}
+      get_dummy_licenses: true
+
   ##############################
   #  Call Docker Test template
   #    cluster test a
@@ -23,16 +56,16 @@ jobs:
   cluster-test-a:
     needs:
       - build
+      - dockerBuild
     uses: ./.github/workflows/docker-cluster-test.yaml
     strategy:
       fail-fast: false
       matrix:
-        file:
-          - 'utility/Docker/Dockerfile'
-          - 'utility/Docker/Dockerfile-openshift'
-        platform:
-          - 'linux/amd64'
-          - 'linux/arm64'
+        artifactSuffix:
+          - '-standard-amd64-${{ github.run_number }}'
+          - '-standard-arm64-${{ github.run_number }}'
+          - '-openshift-amd64-${{ github.run_number }}'
+          - '-openshift-arm64-${{ github.run_number }}'
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       file: ${{ matrix.file }}
@@ -47,16 +80,16 @@ jobs:
   cluster-test-b:
     needs:
       - build
+      - dockerBuild
     uses: ./.github/workflows/docker-cluster-test.yaml
     strategy:
       fail-fast: false
       matrix:
-        file:
-          - 'utility/Docker/Dockerfile'
-          - 'utility/Docker/Dockerfile-openshift'
-        platform:
-          - 'linux/amd64'
-          - 'linux/arm64'
+        artifactSuffix:
+          - '-standard-amd64-${{ github.run_number }}'
+          - '-standard-arm64-${{ github.run_number }}'
+          - '-openshift-amd64-${{ github.run_number }}'
+          - '-openshift-arm64-${{ github.run_number }}'
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       file: ${{ matrix.file }}
@@ -71,16 +104,16 @@ jobs:
   cluster-test-c:
     needs:
       - build
+      - dockerBuild
     uses: ./.github/workflows/docker-cluster-test.yaml
     strategy:
       fail-fast: false
       matrix:
-        file:
-          - 'utility/Docker/Dockerfile'
-          - 'utility/Docker/Dockerfile-openshift'
-        platform:
-          - 'linux/amd64'
-          - 'linux/arm64'
+        artifactSuffix:
+          - '-standard-amd64-${{ github.run_number }}'
+          - '-standard-arm64-${{ github.run_number }}'
+          - '-openshift-amd64-${{ github.run_number }}'
+          - '-openshift-arm64-${{ github.run_number }}'
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       file: ${{ matrix.file }}

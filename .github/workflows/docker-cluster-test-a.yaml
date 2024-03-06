@@ -3,31 +3,31 @@ name: "Run Docker Cluster Tests A"
 on:
   workflow_dispatch:
     inputs:
-      files:
-        description: 'list of container files to test'
-        default: '["utility/Docker/Dockerfile","utility/Docker/Dockerfile-openshift"]'
+      flavors:
+        description: 'list of containers to test'
+        default: '["standard","openshift"]'
         type: choice
         options:
-          - '["utility/Docker/Dockerfile","utility/Docker/Dockerfile-openshift"]'
-          - '["utility/Docker/Dockerfile"]'
-          - '["utility/Docker/Dockerfile-openshift"]'
+          - '["standard","openshift"]'
+          - '["standard"]'
+          - '["openshift"]'
       platforms:
         description: 'list of platforms to test'
-        default: '["linux/amd64","linux/arm64"]'
+        default: '["amd64","arm64"]'
         type: choice
         options:
-          - '["linux/amd64","linux/arm64"]'
-          - '["linux/amd64"]'
-          - '["linux/arm64"]'
+          - '["amd64","arm64"]'
+          - '["amd64"]'
+          - '["arm64"]'
   workflow_call:
     inputs:
-      files:
-        description: 'list of container files to test'
-        default: '["utility/Docker/Dockerfile","utility/Docker/Dockerfile-openshift"]'
+      flavors:
+        description: 'list of containers to test'
+        default: '["standard","openshift"]'
         type: string
       platforms:
         description: 'list of platforms to test'
-        default: '["linux/amd64","linux/arm64"]'
+        default: '["amd64","arm64"]'
         type: string
 
 jobs:
@@ -36,6 +36,30 @@ jobs:
   ####################
   build:
     uses: ./.github/workflows/build.yaml
+
+  ##########################
+  #  Build Container Image
+  ##########################
+  dockerBuild:
+    needs: getValues
+    uses: ./.github/workflows/docker-build.yaml
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: ${{ fromJSON(inputs.flavors) }}
+        platform: ${{ fromJSON(inputs.platforms) }}
+        include:
+          - flavor: 'standard'
+            file: 'utility/Docker/Dockerfile'
+          - flavor: 'openshift'
+            file: 'utility/Docker/Dockerfile-openshift'
+    with:
+      harperdbVersion: ${{ inputs.harperdbVersion }}
+      container: 'tar'
+      containerTarball: docker-harperdb_${{ inputs.harperdbVersion }}-${{ matrix.flavor }}-${{ matrix.platform }}-${{ github.run_number }}.tar
+      file: ${{ matrix.file }}
+      platforms: "linux/${{ matrix.platform }}"
+      get_dummy_licenses: true
 
   ##############################
   #  Call Docker Test template
@@ -48,11 +72,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        file: ${{ fromJSON(inputs.files) }}
+        flavor: ${{ fromJSON(inputs.flavors) }}
         platform: ${{ fromJSON(inputs.platforms) }}
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-      file: ${{ matrix.file }}
-      platform: ${{ matrix.platform }}
       clusterTest: 'test/ci-tests/docker-cluster-test-a.sh'
+      artifactSuffix: "-${{ matrix.flavor }}-${{ matrix.platform }}-${{ github.run_number }}"
     secrets: inherit
