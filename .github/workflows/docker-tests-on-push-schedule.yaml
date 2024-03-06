@@ -66,7 +66,7 @@ jobs:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       dockerArtifactSuffix: "${{ matrix.flavor }}-${{ matrix.platform}}-${{ github.run_number }}"
       clusterTest: 'test/ci-tests/docker-cluster-test-a.sh'
-      tfstateArtifactName: '-test-a'
+      tfArtifactSuffix: '-test-a'
     secrets: inherit
 
   ##############################
@@ -91,7 +91,7 @@ jobs:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       dockerArtifactSuffix: "${{ matrix.flavor }}-${{ matrix.platform}}-${{ github.run_number }}"
       clusterTest: 'test/ci-tests/docker-cluster-test-b.sh'
-      tfstateArtifactName: '-test-b'
+      tfArtifactSuffix: '-test-b'
     secrets: inherit
 
   ##############################
@@ -116,7 +116,7 @@ jobs:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       dockerArtifactSuffix: "${{ matrix.flavor }}-${{ matrix.platform}}-${{ github.run_number }}"
       clusterTest: 'test/ci-tests/docker-cluster-test-c.sh'
-      tfstateArtifactName: '-test-c'
+      tfArtifactSuffix: '-test-c'
     secrets: inherit
 
   #################################
