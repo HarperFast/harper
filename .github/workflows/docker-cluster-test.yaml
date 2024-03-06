@@ -26,33 +26,24 @@ on:
         type: string
 
 jobs:
-#  #################################
-#  #  Generate suffix for artifacts
-#  #################################
-#  getValues:
-#    runs-on: ubuntu-latest
-#    outputs:
-#      suffix: ${{ steps.get-values.outputs.suffix }}
-#      instanceType: ${{ steps.get-values.outputs.instanceType }}
-#    steps:
-#      - name: 'Get values'
-#        id: get-values
-#        env:
-#          harperdbVersion: ${{ inputs.harperdbVersion }}
-#          runNumber: ${{ github.run_number }}
-#          containerFile: ${{ inputs.file }}
-#          platform: ${{ inputs.platform }}
-#        run: |
-#          #!/usr/bin/env bash
-#          [[ "${containerFile}" == *"-openshift" ]] && flavor='-openshift' || flavor=''
-#          arch="-${platform##*/}"
-#          echo "suffix=${runNumber}${flavor}${arch}-$(uuidgen | cut -c1-8).tar" >> $GITHUB_OUTPUT
-#          if [[ "${platform##*/}" == "amd64" ]]; then
-#            echo "instanceType=c7i.2xlarge" >> $GITHUB_OUTPUT
-#          elif [[ "${platform##*/}" == "arm64" ]]; then
-#            echo "instanceType=c7gn.2xlarge" >> $GITHUB_OUTPUT
-#          fi
-#
+  #################################
+  #  Generate suffix for artifacts
+  #################################
+  getValues:
+    runs-on: ubuntu-latest
+    outputs:
+      instanceType: ${{ steps.get-values.outputs.instanceType }}
+    steps:
+      - name: 'Get values'
+        id: get-values
+        env:
+          harperdbVersion: ${{ inputs.harperdbVersion }}
+          artifactSuffix: ${{ inputs.artifactSuffix }}
+        run: |
+          #!/usr/bin/env bash
+          [[ "${artifactSuffix}" == *"amd64"* ]] && echo "instanceType=c7i.2xlarge" >> $GITHUB_OUTPUT
+          [[ "${artifactSuffix}" == *"arm64"* ]] && echo "instanceType=c7gn.2xlarge" >> $GITHUB_OUTPUT
+
 #  ##########################
 #  #  Build Container Image
 #  ##########################
@@ -72,7 +63,7 @@ jobs:
   ##############################
   createInstances:
     needs:
-      - dockerBuild
+#      - dockerBuild
       - getValues
     uses: ./.github/workflows/create-instances.yaml
     with:
@@ -91,7 +82,7 @@ jobs:
   runTests:
     runs-on: ubuntu-latest
     needs:
-      - dockerBuild
+#      - dockerBuild
       - createInstances
       - getValues
     timeout-minutes: 40

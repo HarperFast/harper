@@ -41,7 +41,7 @@ jobs:
   #  Build Container Image
   ##########################
   dockerBuild:
-    needs: getValues
+    needs: build
     uses: ./.github/workflows/docker-build.yaml
     strategy:
       fail-fast: false
@@ -54,9 +54,9 @@ jobs:
           - flavor: 'openshift'
             file: 'utility/Docker/Dockerfile-openshift'
     with:
-      harperdbVersion: ${{ inputs.harperdbVersion }}
+      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       container: 'tar'
-      containerTarball: docker-harperdb_${{ inputs.harperdbVersion }}-${{ matrix.flavor }}-${{ matrix.platform }}-${{ github.run_number }}.tar
+      containerTarball: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ matrix.flavor }}-${{ matrix.platform }}-${{ github.run_number }}.tar
       file: ${{ matrix.file }}
       platforms: "linux/${{ matrix.platform }}"
       get_dummy_licenses: true
