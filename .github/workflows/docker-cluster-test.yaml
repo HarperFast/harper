@@ -41,9 +41,9 @@ jobs:
         run: |
           #!/usr/bin/env bash
           if [[ "${artifactSuffix}" == *"amd64"* ]];then
-            instanceType="c7i.2xlarge" >> $GITHUB_OUTPUT
+            echo "instanceType=c7i.2xlarge" >> $GITHUB_OUTPUT
           elif [[ "${artifactSuffix}" == *"arm64"* ]]; then
-            instanceType="c7gn.2xlarge" >> $GITHUB_OUTPUT
+            echo "instanceType=c7gn.2xlarge" >> $GITHUB_OUTPUT
           else
             exit 1
           fi
