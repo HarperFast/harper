@@ -6,16 +6,6 @@ on:
       harperdbVersion:
         required: true
         type: string
-#      file:
-#        description: 'Which dockerfile to use for this build. ignored except when harperdb/private, or tar.'
-#        default: 'utility/Docker/Dockerfile'
-#        required: false
-#        type: string
-#      platform:
-#        description: 'Which platform(s) to build for: linux/amd64 or linux/arm64'
-#        default: "linux/amd64"
-#        required: false
-#        type: string
       clusterTest:
         description: 'Path to cluster test to run'
         default: 'test/ci-tests/docker-cluster-test-a.sh'
@@ -47,20 +37,6 @@ jobs:
           else
             exit 1
           fi
-
-#  ##########################
-#  #  Build Container Image
-#  ##########################
-#  dockerBuild:
-#    needs: getValues
-#    uses: ./.github/workflows/docker-build.yaml
-#    with:
-#      harperdbVersion: ${{ inputs.harperdbVersion }}
-#      container: 'tar'
-#      containerTarball: docker-harperdb_${{ inputs.harperdbVersion }}-${{ inputs.artifactSuffix }}
-#      file: ${{ inputs.file }}
-#      platforms: ${{ inputs.platform }}
-#      get_dummy_licenses: true
 
   ##############################
   #  Create Instances for tests
