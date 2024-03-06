@@ -37,13 +37,16 @@ jobs:
       - name: 'Get values'
         id: get-values
         env:
-          harperdbVersion: ${{ inputs.harperdbVersion }}
           artifactSuffix: ${{ inputs.artifactSuffix }}
         run: |
           #!/usr/bin/env bash
-          set -x
-          [[ "${artifactSuffix}" == *"amd64"* ]] && echo "instanceType=c7i.2xlarge" >> $GITHUB_OUTPUT
-          [[ "${artifactSuffix}" == *"arm64"* ]] && echo "instanceType=c7gn.2xlarge" >> $GITHUB_OUTPUT
+          if [[ "${artifactSuffix}" == *"amd64"* ]];then
+            instanceType="c7i.2xlarge" >> $GITHUB_OUTPUT
+          elif [[ "${artifactSuffix}" == *"arm64"* ]]; then
+            instanceType="c7gn.2xlarge" >> $GITHUB_OUTPUT
+          else
+            exit 1
+          fi
 
 #  ##########################
 #  #  Build Container Image
