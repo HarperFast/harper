@@ -24,7 +24,7 @@ import { handleLocalTimeForGets } from './RecordEncoder';
 
 const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
-const DEFAULT_COMPRESSION_THRESHOLD = 4050; // larger than this requires multiple pages
+const DEFAULT_COMPRESSION_THRESHOLD = (env_get(CONFIG_PARAMS.STORAGE_PAGESIZE) || 4096) - 60; // larger than this requires multiple pages
 initSync();
 
 interface Tables {
