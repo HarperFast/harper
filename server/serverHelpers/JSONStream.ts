@@ -242,7 +242,7 @@ function jsStringify(value) {
 	}
 	return value.toString(); // this handles bigint, number, boolean, undefined, symbol
 }
-const HAS_BIG_NUMBER = /-?\d{16,}/;
+const HAS_BIG_NUMBER = /[[,:]\s*-?\d{16,}/;
 export function parse(json) {
 	// we use JSONbig if there is a big number in the JSON, otherwise we use the native JSON parser
 	// because JSONbig is much slower (about 4x slower)
