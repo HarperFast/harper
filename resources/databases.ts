@@ -24,6 +24,7 @@ import { handleLocalTimeForGets } from './RecordEncoder';
 
 const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
+const DEFAULT_COMPRESSION_THRESHOLD = 4050; // larger than this requires multiple pages
 initSync();
 
 interface Tables {
@@ -286,8 +287,8 @@ export function readMetaDb(
 				}
 				const dbi_init = new OpenDBIObject(!primary_attribute.is_hash_attribute, primary_attribute.is_hash_attribute);
 				dbi_init.compression = primary_attribute.compression;
-				const compression_threshold = env_get(CONFIG_PARAMS.STORAGE_COMPRESSION_THRESHOLD); // this is the only thing that can change;
-				if (dbi_init.compression && compression_threshold) {
+				if (dbi_init.compression) {
+					const compression_threshold = env_get(CONFIG_PARAMS.STORAGE_COMPRESSION_THRESHOLD) || DEFAULT_COMPRESSION_THRESHOLD; // this is the only thing that can change;
 					dbi_init.compression.threshold = compression_threshold;
 				}
 				primary_store = handleLocalTimeForGets(root_store.openDB(primary_attribute.key, dbi_init));
@@ -825,7 +826,7 @@ export function onUpdatedTable(listener) {
 export function getDefaultCompression() {
 	const LMDB_COMPRESSION = env_get(CONFIG_PARAMS.STORAGE_COMPRESSION);
 	const STORAGE_COMPRESSION_DICTIONARY = env_get(CONFIG_PARAMS.STORAGE_COMPRESSION_DICTIONARY);
-	const STORAGE_COMPRESSION_THRESHOLD = env_get(CONFIG_PARAMS.STORAGE_COMPRESSION_THRESHOLD);
+	const STORAGE_COMPRESSION_THRESHOLD = env_get(CONFIG_PARAMS.STORAGE_COMPRESSION_THRESHOLD) || DEFAULT_COMPRESSION_THRESHOLD;
 	const LMDB_COMPRESSION_OPTS = { startingOffset: 32 };
 	if (STORAGE_COMPRESSION_DICTIONARY)
 		LMDB_COMPRESSION_OPTS['dictionary'] = fs.readFileSync(STORAGE_COMPRESSION_DICTIONARY);
