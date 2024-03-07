@@ -101,7 +101,7 @@ jobs:
       uses: actions/upload-artifact@v4
       if: always()
       with:
-        name: logs-artifact-${{ inputs.dockerArtifactSuffix }}
+        name: logs-artifact-${{ inputs.dockerArtifactSuffix }}${{ inputs.tfArtifactSuffix }}
         path: logs-artifact
         retention-days: 1
 
@@ -118,5 +118,5 @@ jobs:
       instanceCount: "1"
       callingWorkflow: ${{ github.workflow }}
       instanceType: ${{ needs.getValues.outputs.instanceType }}
-      tfstateArtifactName: "tfstate-${{ inputs.dockerArtifactSuffix }}${{ inputs.tfArtifactSuffix }}"
+      tfstateArtifactName: tfstate-${{ inputs.dockerArtifactSuffix }}${{ inputs.tfArtifactSuffix }}
     secrets: inherit
