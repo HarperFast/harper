@@ -171,11 +171,11 @@ async function initialize(called_by_install = false, called_by_main = false) {
 	} catch (err) {
 		if (upgrade_vers) {
 			console.error(
-				`Got an error while trying to upgrade your HarperDB instance to version ${upgrade_vers}.  Exiting HarperDB.`
+				`Got an error while trying to upgrade your HarperDB instance to version ${upgrade_vers}.  Exiting HarperDB.`, err
 			);
 			hdb_logger.error(err);
 		} else {
-			console.error(UPGRADE_ERR);
+			console.error(UPGRADE_ERR, err);
 			hdb_logger.error(err);
 		}
 		process.exit(1);
