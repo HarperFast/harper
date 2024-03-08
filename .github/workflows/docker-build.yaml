@@ -11,9 +11,9 @@ name: "Docker Build"
 #
 # Outputs
 #---------------
-# Artifact for container == 'tar' -- (this is just pseudocode)
-#   docker-harperdb_${{ inputs.harperdbVersion }}-${{ github.run_number }}${{ contains(inputs.file, 'openshift') && '-openshift' || '' }}${{ inputs.platform == 'linux/arm64' && '-arm64' || '-amd64' }}.tar
-#   ex: docker-harperdb_4.3.0-beta.4-934-amd64.tar
+# Artifact for container == 'tar'
+#   docker-harperdb_${{ inputs.harperdbVersion }}-<standard|openshift>-<amd64|arm64>-${{ github.run_number }}.tar
+#   ex: docker-harperdb_4.3.0-beta.4-standard-amd64-934.tar
 #
 #################################################################################################################################
 
