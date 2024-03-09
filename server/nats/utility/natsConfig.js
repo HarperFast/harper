@@ -19,7 +19,7 @@ const nats_utils = require('./natsUtils');
 
 const HDB_CLUSTERING_FOLDER = 'clustering';
 const ZERO_WRITE_COUNT = 10000;
-const MAX_SERVER_CONNECTION_RETRY = 5;
+const MAX_SERVER_CONNECTION_RETRY = 500;
 
 module.exports = {
 	generateNatsConfig,
