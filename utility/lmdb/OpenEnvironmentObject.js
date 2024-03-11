@@ -9,14 +9,6 @@ const env_mngr = require('../environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 env_mngr.initSync();
 
-const LMDB_NOSYNC =
-	env_mngr.get(terms.CONFIG_PARAMS.STORAGE_WRITEASYNC) === true ||
-	env_mngr.get(terms.CONFIG_PARAMS.STORAGE_WRITEASYNC) === 'true' ||
-	env_mngr.get(terms.CONFIG_PARAMS.STORAGE_WRITEASYNC) === 'TRUE';
-
-const LMDB_OVERLAPPING_SYNC = env_mngr.get(terms.CONFIG_PARAMS.STORAGE_OVERLAPPINGSYNC);
-const LMDB_NOREADAHEAD = env_mngr.get(terms.CONFIG_PARAMS.STORAGE_NOREADAHEAD);
-
 class OpenEnvironmentObject {
 	constructor(path, read_only = false) {
 		this.path = path;
@@ -26,11 +18,21 @@ class OpenEnvironmentObject {
 		this.sharedStructuresKey = Symbol.for('structures');
 		this.readOnly = read_only;
 		this.trackMetrics = true;
-		this.noSync = LMDB_NOSYNC;
-		this.noFSAccess = true;
+		this.noSync =
+			env_mngr.get(terms.CONFIG_PARAMS.STORAGE_WRITEASYNC) === true ||
+			env_mngr.get(terms.CONFIG_PARAMS.STORAGE_WRITEASYNC) === 'true' ||
+			env_mngr.get(terms.CONFIG_PARAMS.STORAGE_WRITEASYNC) === 'TRUE';
+		//this.noFSAccess = true; // we might re-enable this if we want secure JS environments
 		// otherwise overlappingSync uses lmdb-js default, which is enabled on linux/mac, disabled on windows
-		if (LMDB_OVERLAPPING_SYNC !== undefined) this.overlappingSync = LMDB_OVERLAPPING_SYNC;
-		this.noReadAhead = LMDB_NOREADAHEAD;
+		if (env_mngr.get(terms.CONFIG_PARAMS.STORAGE_OVERLAPPINGSYNC) !== undefined)
+			this.overlappingSync = env_mngr.get(terms.CONFIG_PARAMS.STORAGE_OVERLAPPINGSYNC);
+		if (env_mngr.get(terms.CONFIG_PARAMS.STORAGE_MAXFREESPACETOLOAD))
+			this.maxFreeSpaceToLoad = env_mngr.get(terms.CONFIG_PARAMS.STORAGE_MAXFREESPACETOLOAD);
+		if (env_mngr.get(terms.CONFIG_PARAMS.STORAGE_MAXFREESPACETORETAIN))
+			this.maxFreeSpaceToRetain = env_mngr.get(terms.CONFIG_PARAMS.STORAGE_MAXFREESPACETORETAIN);
+		if (env_mngr.get(terms.CONFIG_PARAMS.STORAGE_PAGESIZE))
+			this.pageSize = env_mngr.get(terms.CONFIG_PARAMS.STORAGE_PAGESIZE);
+		this.noReadAhead = env_mngr.get(terms.CONFIG_PARAMS.STORAGE_NOREADAHEAD);
 	}
 }
 

@@ -4,23 +4,83 @@ on:
   workflow_call:
     inputs:
       channel_id:
-        default:  'development-ci'
+        description: "Channel ID"
+        # development-ci -> 'C05PLHLQFQA'
+        default:  'C05PLHLQFQA'
         required: false
         type: string
-      slack_message:
-        default: "${{ github.workflow }} Failed.\nSee logs here: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      payload:
+        description: "JSON message payload: https://api.slack.com/reference/messaging/payload"
+        default: |
+          {
+            "text": "${{ github.run_id }} Failed.",
+            "blocks": [
+              {
+                "type": "header",
+                "text": {
+                  "type": "plain_text",
+                  "text": "${{ github.workflow }} Failed."
+                }
+              },
+              {
+                "type": "context",
+                "elements": [
+                  {
+                    "type": "mrkdwn",
+                    "text": "*Status*"
+                  },
+                  {
+                    "type": "mrkdwn",
+                    "text": ":x:"
+                  },
+                  {
+                    "type": "mrkdwn",
+                    "text": "See logs here: <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|${{ github.run_id }}>"
+                  }
+                ]
+              }
+            ]
+          }
         required: false
         type: string
+      update_ts:
+        description: "ts from previous message if we are updating it. leave/set blank send new message."
+        default: ''
+        required: false
+        type: string
+    outputs:
+      ts:
+        description: "timestamp from post, used to update messages"
+        value: ${{ jobs.sendSlackMessage.outputs.ts }}
 
 jobs:
   sendSlackMessage:
     runs-on: ubuntu-latest
+    timeout-minutes: 4
+    outputs:
+      ts: ${{ inputs.update_ts == '' && steps.send-slack.outputs.ts || steps.update-slack.outputs.ts }}
     steps:
-    - name: Post to a Slack channel
-      id: slack
-      uses: slackapi/slack-github-action@v1.24.0
-      with:
-        channel-id: "${{ inputs.channel_id }}"
-        slack-message: "${{ inputs.slack_message }}"
-      env:
-        SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
+
+      # use this step if we want update a message (update_ts != '')
+      - name: Update a Slack Message
+        if: ${{ inputs.update_ts != '' }}
+        id: update-slack
+        uses: slackapi/slack-github-action@v1.25.0
+        with:
+          channel-id: "${{ inputs.channel_id }}"
+          payload: "${{ inputs.payload }}"
+          update-ts: "${{ inputs.update_ts }}"
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
+        continue-on-error: true
+
+      # use this step if we want a new message (update_ts == '')
+      - name: Post to a Slack channel
+        if: ${{ inputs.update_ts == '' || steps.update-slack.outcome == 'failure' }}
+        id: send-slack
+        uses: slackapi/slack-github-action@v1.25.0
+        with:
+          channel-id: "${{ inputs.channel_id }}"
+          payload: "${{ inputs.payload }}"
+        env:
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}

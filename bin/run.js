@@ -92,6 +92,16 @@ async function initialize(called_by_install = false, called_by_main = false) {
 		}
 	}
 
+	// The called by install check is here because if cmd/env args are passed to install (which calls run when done)
+	// we do not need to update/backup the config file on run.
+	if (!called_by_install) {
+		// If run is called with cmd/env vars we create a backup of config and update config file.
+		const parsed_args = assignCMDENVVariables(Object.keys(terms.CONFIG_PARAM_MAP), true);
+		if (!hdb_utils.isEmpty(parsed_args) && !hdb_utils.isEmptyOrZeroLength(Object.keys(parsed_args))) {
+			config_utils.updateConfigValue(undefined, undefined, parsed_args, true, true);
+		}
+	}
+
 	// Check to see if HarperDB is already running by checking for a pid file
 	// If found confirm it matches a currently running processes
 	let is_hdb_running;
@@ -169,16 +179,6 @@ async function initialize(called_by_install = false, called_by_main = false) {
 			hdb_logger.error(err);
 		}
 		process.exit(1);
-	}
-
-	// The called by install check is here because if cmd/env args are passed to install (which calls run when done)
-	// we do not need to update/backup the config file on run.
-	if (!called_by_install) {
-		// If run is called with cmd/env vars we create a backup of config and update config file.
-		const parsed_args = assignCMDENVVariables(Object.keys(terms.CONFIG_PARAM_MAP), true);
-		if (!hdb_utils.isEmpty(parsed_args) && !hdb_utils.isEmptyOrZeroLength(Object.keys(parsed_args))) {
-			config_utils.updateConfigValue(undefined, undefined, parsed_args, true, true);
-		}
 	}
 
 	check_jwt_tokens();

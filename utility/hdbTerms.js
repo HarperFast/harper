@@ -457,6 +457,7 @@ const SERVICE_ACTIONS_ENUM = {
 	STATUS: 'status',
 	OPERATION: 'operation',
 	RENEWCERTS: 'renew-certs',
+	COPYDB: 'copy-db',
 };
 
 //describes the Geo Conversion types
@@ -595,6 +596,7 @@ const CONFIG_PARAMS = {
 	HTTP_MTLS: 'http_mtls',
 	HTTP_MTLS_REQUIRED: 'http_mtls_required',
 	HTTP_MTLS_USER: 'http_mtls_user',
+	HTTP_MAXHEADERSIZE: 'http_maxHeaderSize',
 	LOCALSTUDIO_ENABLED: 'localStudio_enabled',
 	LOGGING_FILE: 'logging_file',
 	LOGGING_LEVEL: 'logging_level',
@@ -632,6 +634,11 @@ const CONFIG_PARAMS = {
 	STORAGE_ENCRYPTION: 'storage_encryption',
 	STORAGE_PATH: 'storage_path',
 	STORAGE_AUDIT_PATH: 'storage_audit_path',
+	STORAGE_MAXFREESPACETOLOAD: 'storage_maxFreeSpaceToLoad',
+	STORAGE_MAXFREESPACETORETAIN: 'storage_maxFreeSpaceToRetain',
+	STORAGE_PAGESIZE: 'storage_pageSize',
+	STORAGE_COMPRESSION_DICTIONARY: 'storage_compression_dictionary',
+	STORAGE_COMPRESSION_THRESHOLD: 'storage_compression_threshold',
 	DATABASES: 'databases',
 	IGNORE_SCRIPTS: 'ignoreScripts',
 	MQTT_NETWORK_PORT: 'mqtt_network_port',

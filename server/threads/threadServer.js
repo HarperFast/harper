@@ -408,6 +408,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 				rejectUnauthorized: Boolean(mtls_required),
 				requestCert: Boolean(mtls),
 				ticketKeys: getTicketKeys(),
+				maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
 			});
 		}
 		let license_warning = checkMemoryLimit();

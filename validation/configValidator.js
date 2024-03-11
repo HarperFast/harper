@@ -181,11 +181,14 @@ function configValidator(config_json) {
 			network: Joi.object({
 				port: port_constraints,
 				securePort: port_constraints,
-				mtls: Joi.alternatives([boolean.optional(), Joi.object({
-					user: string.optional(),
-					certificateAuthority: pem_file_constraints,
-					required: boolean.optional(),
-				})])
+				mtls: Joi.alternatives([
+					boolean.optional(),
+					Joi.object({
+						user: string.optional(),
+						certificateAuthority: pem_file_constraints,
+						required: boolean.optional(),
+					}),
+				]),
 			}).required(),
 			webSocket: boolean.optional(),
 			requireAuthentication: boolean.optional(),
@@ -197,31 +200,44 @@ function configValidator(config_json) {
 			headersTimeout: number.min(1).optional(),
 			port: number.min(0).optional().empty(null),
 			securePort: number.min(0).optional().empty(null),
-			mtls: Joi.alternatives([boolean.optional(), Joi.object({
-				user: string.optional(),
-				certificateAuthority: pem_file_constraints,
-				required: boolean.optional(),
-			})])
+			maxHeaderSize: number.optional(),
+			mtls: Joi.alternatives([
+				boolean.optional(),
+				Joi.object({
+					user: string.optional(),
+					certificateAuthority: pem_file_constraints,
+					required: boolean.optional(),
+				}),
+			]),
 		}).required(),
-		threads: Joi.alternatives(threads_constraints.optional(),
+		threads: Joi.alternatives(
+			threads_constraints.optional(),
 			Joi.object({
 				count: threads_constraints.optional(),
-				debug: Joi.alternatives(boolean.optional(),
+				debug: Joi.alternatives(
+					boolean.optional(),
 					Joi.object({
 						startingPort: number.min(1).optional(),
 						host: string.optional(),
 						waitForDebugger: boolean.optional(),
-					})),
+					})
+				),
 				maxHeapMemory: number.min(0).optional(),
-			})),
+			})
+		),
 		storage: Joi.object({
 			writeAsync: boolean.required(),
 			overlappingSync: boolean.optional(),
 			caching: boolean.optional(),
-			compression: boolean.optional(),
+			compression: Joi.alternatives([
+				boolean.optional(),
+				Joi.object({ dictionary: string.optional(), threshold: number.optional() }),
+			]),
 			noReadAhead: boolean.optional(),
 			path: storage_path_constraints,
 			prefetchWrites: boolean.optional(),
+			maxFreeSpaceToLoad: number.optional(),
+			maxFreeSpaceToRetain: number.optional(),
 		}).required(),
 		ignoreScripts: boolean.optional(),
 		tls: Joi.object({

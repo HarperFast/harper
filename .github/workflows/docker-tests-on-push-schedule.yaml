@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+    tags:
       - "release_*"
   schedule:
     - cron: '8 13 * * 1-5'
@@ -16,6 +17,34 @@ jobs:
   build:
     uses: ./.github/workflows/build.yaml
 
+  ##########################
+  #  Build Container Image
+  ##########################
+  dockerBuild:
+    needs: build
+    uses: ./.github/workflows/docker-build.yaml
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor:
+          - 'standard'
+          - 'openshift'
+        platform:
+          - 'amd64'
+          - 'arm64'
+        include:
+          - flavor: 'standard'
+            file: 'utility/Docker/Dockerfile'
+          - flavor: 'openshift'
+            file: 'utility/Docker/Dockerfile-openshift'
+    with:
+      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      container: 'tar'
+      containerTarball: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ matrix.flavor }}-${{ matrix.platform }}-${{ github.run_number }}.tar
+      file: ${{ matrix.file }}
+      platforms: "linux/${{ matrix.platform }}"
+      get_dummy_licenses: true
+
   ##############################
   #  Call Docker Test template
   #    cluster test a
@@ -23,21 +52,22 @@ jobs:
   cluster-test-a:
     needs:
       - build
+      - dockerBuild
     uses: ./.github/workflows/docker-cluster-test.yaml
     strategy:
       fail-fast: false
       matrix:
-        file:
-          - 'utility/Docker/Dockerfile'
-          - 'utility/Docker/Dockerfile-openshift'
+        flavor:
+          - 'standard'
+          - 'openshift'
         platform:
-          - 'linux/amd64'
-          - 'linux/arm64'
+          - 'amd64'
+          - 'arm64'
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-      file: ${{ matrix.file }}
-      platform: ${{ matrix.platform }}
+      dockerArtifactSuffix: "${{ matrix.flavor }}-${{ matrix.platform}}-${{ github.run_number }}"
       clusterTest: 'test/ci-tests/docker-cluster-test-a.sh'
+      tfArtifactSuffix: '-test-a'
     secrets: inherit
 
   ##############################
@@ -47,21 +77,22 @@ jobs:
   cluster-test-b:
     needs:
       - build
+      - dockerBuild
     uses: ./.github/workflows/docker-cluster-test.yaml
     strategy:
       fail-fast: false
       matrix:
-        file:
-          - 'utility/Docker/Dockerfile'
-          - 'utility/Docker/Dockerfile-openshift'
+        flavor:
+          - 'standard'
+          - 'openshift'
         platform:
-          - 'linux/amd64'
-          - 'linux/arm64'
+          - 'amd64'
+          - 'arm64'
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-      file: ${{ matrix.file }}
-      platform: ${{ matrix.platform }}
+      dockerArtifactSuffix: "${{ matrix.flavor }}-${{ matrix.platform}}-${{ github.run_number }}"
       clusterTest: 'test/ci-tests/docker-cluster-test-b.sh'
+      tfArtifactSuffix: '-test-b'
     secrets: inherit
 
   ##############################
@@ -71,21 +102,22 @@ jobs:
   cluster-test-c:
     needs:
       - build
+      - dockerBuild
     uses: ./.github/workflows/docker-cluster-test.yaml
     strategy:
       fail-fast: false
       matrix:
-        file:
-          - 'utility/Docker/Dockerfile'
-          - 'utility/Docker/Dockerfile-openshift'
+        flavor:
+          - 'standard'
+          - 'openshift'
         platform:
-          - 'linux/amd64'
-          - 'linux/arm64'
+          - 'amd64'
+          - 'arm64'
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-      file: ${{ matrix.file }}
-      platform: ${{ matrix.platform }}
+      dockerArtifactSuffix: "${{ matrix.flavor }}-${{ matrix.platform}}-${{ github.run_number }}"
       clusterTest: 'test/ci-tests/docker-cluster-test-c.sh'
+      tfArtifactSuffix: '-test-c'
     secrets: inherit
 
   #################################
@@ -96,7 +128,7 @@ jobs:
     if: ${{ failure() && (github.event_name == 'schedule' || github.event_name == 'push') }}
     secrets: inherit
     needs:
-      - destroyInstances
-      - runTests
-      - createInstances
-      - dockerBuild
+      - build
+      - cluster-test-a
+      - cluster-test-b
+      - cluster-test-c

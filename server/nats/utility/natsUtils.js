@@ -1025,8 +1025,8 @@ function updateStreamLimits(stream) {
 async function connectToRemoteJS(domain) {
 	let js, jsm;
 	try {
-		js = await nats_connection.jetstream({ domain, timeout: 60000 });
-		jsm = await nats_connection.jetstreamManager({ domain, timeout: 60000 });
+		js = await nats_connection.jetstream({ domain });
+		jsm = await nats_connection.jetstreamManager({ domain });
 	} catch (err) {
 		hdb_logger.error('Unable to connect to:', domain);
 		throw err;
