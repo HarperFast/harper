@@ -77,24 +77,21 @@ export async function compactOnStart() {
 	}
 
 	// Clean up backups
-	if (!get(CONFIG_PARAMS.STORAGE_COMPACTONSTARTKEEPBACKUP)) {
-		for (const [db, { backup_dest, record_count }] of compacted_db) {
-			const compact_record_count = await getTotalDBRecordCount(db);
-			console.log('Database', db, 'after compact has a total record count of', compact_record_count);
+	for (const [db, { backup_dest, record_count }] of compacted_db) {
+		let remove_backup = true;
+		const compact_record_count = await getTotalDBRecordCount(db);
+		console.log('Database', db, 'after compact has a total record count of', compact_record_count);
 
-			if (record_count !== compact_record_count) {
-				const err_msg = `There is a discrepancy between pre and post compact record count for database ${db}. 
-					Total record count before compaction: ${record_count}, total after: ${compact_record_count}. 
-					Database backup has not been removed and can be found here: ${backup_dest}`;
-
-				hdb_logger.error(err_msg);
-				console.error(err_msg);
-				continue;
-			}
-
-			console.log('Removing backup', backup_dest);
-			await remove(backup_dest);
+		if (record_count !== compact_record_count) {
+			remove_backup = false;
+			const err_msg = `There is a discrepancy between pre and post compact record count for database ${db}.\nTotal record count before compaction: ${record_count}, total after: ${compact_record_count}.\nDatabase backup has not been removed and can be found here: ${backup_dest}`;
+			hdb_logger.error(err_msg);
+			console.error(err_msg);
 		}
+
+		if (get(CONFIG_PARAMS.STORAGE_COMPACTONSTARTKEEPBACKUP) === true || remove_backup === false) continue;
+		console.log('Removing backup', backup_dest);
+		await remove(backup_dest);
 	}
 
 	updateConfigValue(CONFIG_PARAMS.STORAGE_COMPACTONSTART, false);
