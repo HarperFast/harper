@@ -20,6 +20,7 @@ const assignCMDENVVariables = require('../utility/assignCmdEnvVariables');
 const nats_config = require('../server/nats/utility/natsConfig');
 const upgrade = require('./upgrade');
 const log_rotator = require('../utility/logging/logRotator');
+const { compactOnStart } = require('./copyDb');
 const minimist = require('minimist');
 const { PACKAGE_ROOT } = require('../utility/hdbTerms');
 const {
@@ -203,6 +204,8 @@ async function main(called_by_install = false) {
 			config_utils.updateConfigObject('settings_path', path.join(cmd_args.ROOTPATH, terms.HDB_CONFIG_FILE));
 		}
 		await initialize(called_by_install, true);
+
+		if (env.get(terms.CONFIG_PARAMS.STORAGE_COMPACTONSTART)) await compactOnStart();
 
 		const is_scripted = process.env.IS_SCRIPTED_SERVICE && !cmd_args.service;
 

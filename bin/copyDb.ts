@@ -1,9 +1,114 @@
-import { getDatabases, getDefaultCompression } from '../resources/databases';
+import { getDatabases, getDefaultCompression, resetDatabases } from '../resources/databases';
 import { open } from 'lmdb';
+import { join } from 'path';
+import { move, remove } from 'fs-extra';
+import { get } from '../utility/environment/environmentManager';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject';
 import OpenDBIObject from '../utility/lmdb/OpenDBIObject';
 import { INTERNAL_DBIS_NAME, AUDIT_STORE_NAME } from '../utility/lmdb/terms';
+import { CONFIG_PARAMS, DATABASES_DIR_NAME } from '../utility/hdbTerms';
 import { AUDIT_STORE_OPTIONS } from '../resources/auditStore';
+import { describeSchema } from '../dataLayer/schemaDescribe';
+import { updateConfigValue } from '../config/configUtils';
+import * as hdb_logger from '../utility/logging/harper_logger';
+
+export async function compactOnStart() {
+	hdb_logger.notify('Running compact on start');
+	console.log('Running compact on start');
+
+	// Create compact copy and backup
+	const root_path = get(CONFIG_PARAMS.ROOTPATH);
+	const compacted_db = new Map();
+	const databases = getDatabases();
+
+	try {
+		for (const database_name in databases) {
+			if (database_name === 'system') continue;
+			let db_path;
+			for (const table_name in databases[database_name]) {
+				db_path = databases[database_name][table_name].primaryStore.path;
+				break;
+			}
+
+			const backup_dest = join(root_path, 'backup', database_name + '.mdb');
+			const copy_dest = join(root_path, DATABASES_DIR_NAME, database_name + '-copy.mdb');
+			const record_count = await getTotalDBRecordCount(database_name);
+			console.log('Database', database_name, 'before compact has a total record count of', record_count);
+			compacted_db.set(database_name, {
+				db_path,
+				copy_dest,
+				backup_dest,
+				record_count,
+			});
+
+			await copyDb(database_name, copy_dest);
+
+			console.log('Backing up', database_name, 'to', backup_dest);
+			await move(db_path, backup_dest, { overwrite: true });
+		}
+
+		resetDatabases();
+
+		// Move compacted DB to back to original DB path
+		for (const [db, { db_path, copy_dest }] of compacted_db) {
+			console.log('Moving copy compacted', db, 'to', db_path);
+			await move(copy_dest, db_path, { overwrite: true });
+			await remove(join(root_path, DATABASES_DIR_NAME, `${db}-copy.mdb-lock`));
+		}
+
+		resetDatabases();
+	} catch (err) {
+		hdb_logger.error('Error compacting database, rolling back operation', err);
+		console.error('Error compacting database, rolling back operation', err);
+
+		updateConfigValue(CONFIG_PARAMS.STORAGE_COMPACTONSTART, false);
+
+		for (const [db, { db_path, backup_dest }] of compacted_db) {
+			console.error('Moving backup database', backup_dest, 'back to', db_path);
+			try {
+				await move(backup_dest, db_path, { overwrite: true });
+			} catch (err) {
+				console.error(err);
+			}
+		}
+		resetDatabases();
+
+		throw err;
+	}
+
+	// Clean up backups
+	if (!get(CONFIG_PARAMS.STORAGE_COMPACTONSTARTKEEPBACKUP)) {
+		for (const [db, { backup_dest, record_count }] of compacted_db) {
+			const compact_record_count = await getTotalDBRecordCount(db);
+			console.log('Database', db, 'after compact has a total record count of', compact_record_count);
+
+			if (record_count !== compact_record_count) {
+				const err_msg = `There is a discrepancy between pre and post compact record count for database ${db}. 
+					Total record count before compaction: ${record_count}, total after: ${compact_record_count}. 
+					Database backup has not been removed and can be found here: ${backup_dest}`;
+
+				hdb_logger.error(err_msg);
+				console.error(err_msg);
+				continue;
+			}
+
+			console.log('Removing backup', backup_dest);
+			await remove(backup_dest);
+		}
+	}
+
+	updateConfigValue(CONFIG_PARAMS.STORAGE_COMPACTONSTART, false);
+}
+
+async function getTotalDBRecordCount(database: string) {
+	const db_describe = await describeSchema({ database });
+	let total = 0;
+	for (const table in db_describe) {
+		total += db_describe[table].record_count;
+	}
+
+	return total;
+}
 
 export async function copyDb(source_database: string, target_database_path: string) {
 	console.log('copyDb start');

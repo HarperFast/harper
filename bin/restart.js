@@ -12,6 +12,7 @@ const nats_terms = require('../server/nats/utility/natsTerms');
 const config_utils = require('../config/configUtils');
 const process_man = require('../utility/processManagement/processManagement');
 const sys_info = require('../utility/environment/systemInformation');
+const { compactOnStart } = require('./copyDb');
 const assignCMDENVVariables = require('../utility/assignCmdEnvVariables');
 const { restartWorkers, onMessageByType } = require('../server/threads/manageThreads');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
@@ -81,6 +82,8 @@ async function restart(req) {
 
 	if (isMainThread) {
 		hdb_logger.notify(RESTART_RESPONSE);
+
+		if (env_mgr.get(hdb_terms.CONFIG_PARAMS.STORAGE_COMPACTONSTART)) await compactOnStart();
 
 		setTimeout(() => {
 			restartWorkers();
