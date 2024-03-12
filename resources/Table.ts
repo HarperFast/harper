@@ -134,6 +134,7 @@ export function makeTable(options) {
 	let property_resolvers;
 	let has_relationships = false;
 	let last_entry;
+	let running_record_expiration;
 	const RangeIterable = primary_store.getRange({ start: false, end: false }).constructor;
 	const MAX_PREFETCH_SEQUENCE = 10;
 	const MAX_PREFETCH_BUNDLE = 6;
@@ -2217,27 +2218,36 @@ export function makeTable(options) {
 			}
 			has_changes = true;
 			const index_nulls = index.indexNulls;
-			//if the update cleared out the attribute value we need to delete it from the index
-			let values = getIndexedValues(existing_value, index_nulls);
-			if (values) {
-				if (LMDB_PREFETCH_WRITES)
-					index.prefetch(
-						values.map((v) => ({ key: v, value: id })),
-						noop
-					);
-				for (let i = 0, l = values.length; i < l; i++) {
-					index.remove(values[i], id);
+			// determine what index values need to be removed and added
+			let values_to_add = getIndexedValues(value, index_nulls);
+			let values_to_remove = getIndexedValues(existing_value, index_nulls);
+			if (values_to_remove?.length > 0) { // put this in a conditional so we can do a faster version for new records
+				// determine the changes/diff from new values and old values
+				const set_to_remove = new Set(values_to_remove);
+				values_to_add = values_to_add ? values_to_add.filter((value) => {
+					if (set_to_remove.has(value)) { // if the value is retained, we don't need to remove or add it, so remove it from the set
+						set_to_remove.delete(value);
+					} else { // keep in the list of values to add to index
+						return true;
+					}
+				}) : [];
+				values_to_remove = Array.from(set_to_remove);
+				if ((values_to_remove.length > 0 || values_to_add.length > 0) && LMDB_PREFETCH_WRITES) {
+					// prefetch any values that have been removed or added
+					const values_to_prefetch = values_to_remove.concat(values_to_add).map((v) => ({key: v, value: id}));
+					index.prefetch(values_to_prefetch, noop);
 				}
+				//if the update cleared out the attribute value we need to delete it from the index
+				for (let i = 0, l = values_to_remove.length; i < l; i++) {
+					index.remove(values_to_remove[i], id);
+				}
+			} else if (values_to_add?.length > 0 && LMDB_PREFETCH_WRITES) {
+				// no old values, just new
+				index.prefetch(values_to_add.map((v) => ({key: v, value: id})), noop);
 			}
-			values = getIndexedValues(value, index_nulls);
-			if (values) {
-				if (LMDB_PREFETCH_WRITES)
-					index.prefetch(
-						values.map((v) => ({ key: v, value: id })),
-						noop
-					);
-				for (let i = 0, l = values.length; i < l; i++) {
-					index.put(values[i], id);
+			if (values_to_add) {
+				for (let i = 0, l = values_to_add.length; i < l; i++) {
+					index.put(values_to_add[i], id);
 				}
 			}
 		}
@@ -2765,7 +2775,6 @@ export function makeTable(options) {
 			}
 		});
 	}
-
 	function runRecordExpirationEviction() {
 		// Periodically evict expired records, searching for records who expiresAt timestamp is before now
 		if (getWorkerIndex() === 0) {
@@ -2773,29 +2782,34 @@ export function makeTable(options) {
 			setInterval(async () => {
 				// go through each database and table and then search for expired entries
 				// find any entries that are set to expire before now
+				if (running_record_expiration) return;
+				running_record_expiration = true;
 				try {
 					const expires_at_name = expires_at_property.name;
 					const index = indices[expires_at_name];
 					if (!index) throw new Error(`expiresAt attribute ${expires_at_property} must be indexed`);
-					for (const { key, value: id } of index.getRange({
+					for (const key of index.getRange({
 						start: true,
+						values: false,
 						end: Date.now(),
-						versions: true,
 						snapshot: false,
 					})) {
-						const record_entry = primary_store.getEntry(id);
-						if (!record_entry?.value) {
-							// cleanup the index if the record is gone
-							primary_store.ifVersion(id, record_entry?.version, () =>
-								index.remove(key, id));
-						} else if (record_entry.value[expires_at_name] < Date.now()) {
-							// make sure the record hasn't changed and won't change while removing
-							TableResource.evict(id, record_entry.value, record_entry.version);
+						for (const id of index.getValues(key)) {
+							const record_entry = primary_store.getEntry(id);
+							if (!record_entry?.value) {
+								// cleanup the index if the record is gone
+								primary_store.ifVersion(id, record_entry?.version, () => index.remove(key, id));
+							} else if (record_entry.value[expires_at_name] < Date.now()) {
+								// make sure the record hasn't changed and won't change while removing
+								TableResource.evict(id, record_entry.value, record_entry.version);
+							}
 						}
 						await rest();
 					}
 				} catch (error) {
 					harper_logger.error('Error in evicting old records', error);
+				} finally {
+					running_record_expiration = false;
 				}
 			}, RECORD_PRUNING_INTERVAL).unref();
 		}
