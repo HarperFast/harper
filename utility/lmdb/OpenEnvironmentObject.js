@@ -18,6 +18,7 @@ class OpenEnvironmentObject {
 		this.sharedStructuresKey = Symbol.for('structures');
 		this.readOnly = read_only;
 		this.trackMetrics = true;
+		this.eventTurnBatching = false; // event turn batching is not needed in HarperDB
 		this.noSync =
 			env_mngr.get(terms.CONFIG_PARAMS.STORAGE_WRITEASYNC) === true ||
 			env_mngr.get(terms.CONFIG_PARAMS.STORAGE_WRITEASYNC) === 'true' ||
