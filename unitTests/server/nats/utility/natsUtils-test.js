@@ -276,9 +276,11 @@ describe('Test natsUtils module', () => {
 		});
 
 		after(async () => {
-			await test_utils.stopTestLeafServer();
-			test_utils.unsetFakeClusterUser();
-			await nats_utils.closeConnection();
+			try {
+				await test_utils.stopTestLeafServer();
+				test_utils.unsetFakeClusterUser();
+				await nats_utils.closeConnection();
+			} catch (err) {}
 		});
 
 		it('Test createConnection connects to a leaf server', async () => {

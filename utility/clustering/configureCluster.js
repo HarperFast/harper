@@ -34,31 +34,29 @@ async function configureCluster(request) {
 
 	// Configure cluster supersedes any existing clustering setup, for this reason we get all existing nodes and remove them.
 	const all_nodes = await clustering_utils.getAllNodeRecords();
-	let remove_node_promises = [];
+	let remove_result = [];
 	for (let i = 0, nodes_length = all_nodes.length; i < nodes_length; i++) {
-		remove_node_promises.push(
-			functionWrapper(
-				remove_node,
-				{ operation: hdb_terms.OPERATIONS_ENUM.REMOVE_NODE, node_name: all_nodes[i].name },
-				all_nodes[i].name
-			)
+		const response = await functionWrapper(
+			remove_node,
+			{ operation: hdb_terms.OPERATIONS_ENUM.REMOVE_NODE, node_name: all_nodes[i].name },
+			all_nodes[i].name
 		);
+		remove_result.push(response);
 	}
-	const remove_result = await Promise.allSettled(remove_node_promises);
+
 	hdb_logger.trace(`All results from configure_cluster remove node:`, remove_result);
 
-	// For each connection in the request, call add node
-	let add_node_promises = [];
+	// // For each connection in the request, call add node
+	let add_result = [];
 	const con_length = request.connections.length;
 	for (let x = 0; x < con_length; x++) {
 		const connection = request.connections[x];
-		add_node_promises.push(functionWrapper(add_node, connection, connection.node_name));
+		const response = await functionWrapper(add_node, connection, connection.node_name);
+		add_result.push(response);
 	}
 
-	const add_result = await Promise.allSettled(add_node_promises);
 	hdb_logger.trace('All results from configure_cluster add node:', add_result);
 
-	// Promise.allSettled will return an array with all the result from promises it called.
 	// We loop through that array to find if any operations have errored, if they have we log and track them
 	// so that we can return the failed node names to api.
 	let failed_nodes = [];
@@ -68,26 +66,26 @@ async function configureCluster(request) {
 	for (let j = 0, res_length = results.length; j < res_length; j++) {
 		const result = results[j];
 		if (result.status === 'rejected') {
-			hdb_logger.error(result.reason);
-			if (!failed_nodes.includes(result.reason.node_name)) {
-				failed_nodes.push(result.reason.node_name);
+			hdb_logger.error(result);
+			if (!failed_nodes.includes(result.node_name)) {
+				failed_nodes.push(result.node_name);
 			}
 		}
 
 		// If at lease one of the results was successful track it so we use partial success msg
-		if (result.status === 'fulfilled') success = true;
-		const config_result = result?.value?.result;
+		if (result?.result?.message?.includes?.('Successfully') || result?.result?.includes?.('Successfully'))
+			success = true;
 
 		// results array can include remove node results, do not include those results in response
 		if (
-			(typeof config_result === 'string' && config_result.includes('Successfully removed')) ||
+			(typeof result.result === 'string' && result.result.includes('Successfully removed')) ||
 			result.status === 'rejected'
 		)
 			continue;
 
 		connection_results.push({
-			node_name: result?.value?.node_name,
-			subscriptions: result?.value?.result,
+			node_name: result?.node_name,
+			subscriptions: result?.result,
 		});
 	}
 
@@ -121,6 +119,6 @@ async function functionWrapper(func, param, node_name) {
 			result: await func(param),
 		};
 	} catch (error) {
-		throw { node_name, error };
+		return { node_name, error, status: 'rejected' };
 	}
 }

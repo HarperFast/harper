@@ -64,10 +64,14 @@ describe('Test natsIngestService module', () => {
 
 	after(async function () {
 		this.timeout(TEST_TIMEOUT);
-		test_utils.unsetFakeClusterUser();
-		await test_utils.stopTestLeafServer();
+		try {
+			test_utils.unsetFakeClusterUser();
+			await test_utils.stopTestLeafServer();
+		} catch (err) {}
+
 		sub_restore();
 		sandbox.restore();
+		rewire('../../../server/nats/natsIngestService');
 	});
 
 	afterEach(() => {
