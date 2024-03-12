@@ -2241,14 +2241,14 @@ export function makeTable(options) {
 				for (let i = 0, l = values_to_remove.length; i < l; i++) {
 					index.remove(values_to_remove[i], id);
 				}
-			} else {
+			} else if (values_to_add?.length > 0 && LMDB_PREFETCH_WRITES) {
 				// no old values, just new
-				if (values_to_add.length > 0 && LMDB_PREFETCH_WRITES) {
-					index.prefetch(values_to_add.map((v) => ({key: v, value: id})), noop);
-				}
+				index.prefetch(values_to_add.map((v) => ({key: v, value: id})), noop);
 			}
-			for (let i = 0, l = values_to_add.length; i < l; i++) {
-				index.put(values_to_add[i], id);
+			if (values_to_add) {
+				for (let i = 0, l = values_to_add.length; i < l; i++) {
+					index.put(values_to_add[i], id);
+				}
 			}
 		}
 		return has_changes;
