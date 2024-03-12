@@ -19,7 +19,7 @@ const nats_utils = require('./natsUtils');
 
 const HDB_CLUSTERING_FOLDER = 'clustering';
 const ZERO_WRITE_COUNT = 10000;
-const MAX_SERVER_CONNECTION_RETRY = 5;
+const MAX_SERVER_CONNECTION_RETRY = 50;
 
 module.exports = {
 	generateNatsConfig,
@@ -210,7 +210,12 @@ async function removeNatsConfig(process_name) {
 			);
 		}
 
-		await hdb_utils.async_set_timeout(wait_time * (count * 2));
+		let timeout_time = wait_time * (count * 2);
+		if (timeout_time > 30000)
+			hdb_logger.notify(
+				'Operations API waiting for Nats server connection. This could be caused by large Nats streams or incorrect clustering config.'
+			);
+		await hdb_utils.async_set_timeout(timeout_time);
 	}
 
 	// We write a bunch of zeros over the existing config file so that any trace of the previous config is completely removed from disk.
