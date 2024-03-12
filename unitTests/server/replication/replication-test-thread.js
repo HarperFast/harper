@@ -5,6 +5,9 @@ const { table } = require('../../../resources/databases');
 const { setMainIsWorker } = require('../../../server/threads/manageThreads');
 const { listenOnPorts } = require('../../../server/threads/threadServer');
 const { workerData, parentPort } = require('worker_threads');
+const env = require('../../..//utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('../../../utility/hdbTerms');
+
 async function createNode(index, node_count) {
 	try {
 	let routes = [];
@@ -15,10 +18,11 @@ async function createNode(index, node_count) {
 			url: 'ws://localhost:' + (9325 + i),
 		});
 	}
-	const database_name = 'test-replication-' + index;
+	env.setProperty(CONFIG_PARAMS.DATABASES, { test: { path: workerData.databasePath }});
+	const database_name = 'test';
 	const TestTable = table({
 		table: 'TestTable',
-		database: database_name,
+		database: 'test',
 		attributes: [
 			{ name: 'id', isPrimaryKey: true },
 			{ name: 'name', indexed: true },

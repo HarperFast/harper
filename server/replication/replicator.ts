@@ -9,7 +9,7 @@
  * 5. Node B sends back the audit records
  */
 
-import { table as defineTable, getDatabases, onUpdatedTable } from '../../resources/databases';
+import { database, table as defineTable, getDatabases, onUpdatedTable } from '../../resources/databases';
 import { ID_PROPERTY, Resource } from '../../resources/Resource';
 import { IterableEventQueue } from '../../resources/IterableEventQueue';
 import { getWorkerIndex } from '../threads/manageThreads';
@@ -26,6 +26,7 @@ import { server } from '../Server';
 import { readFileSync } from 'fs';
 import { active_subscriptions, addNodeSubscription, removeNodeSubscription } from './activeSubscriptions';
 import { exportIdMapping, getNodeName, remoteToLocalNodeId, getIdOfRemoteNode } from './nodeIdMapping';
+import { threadId } from 'worker_threads';
 
 const SUBSCRIBE_CODE = 129;
 const SEND_NODE_ID = 140;
@@ -62,14 +63,15 @@ export function start(options) {
  * This handles both incoming and outgoing WS allowing either one to issue a subscription and get replication and/or handle subscription requests
  */
 function replicateOverWS(ws, options) {
-	console.log('registering', options);
+	const connection_id = options.url ? 'c:' + options.url.slice(-4) : 's:' + options.port;
+	console.log(connection_id, 'registering', options);
 	let database_name = options.database;
 	const db_subscriptions = options.databaseSubscriptions || database_subscriptions;
 	let audit_store;
 	// this is the subscription that the local table makes to this replicator, and incoming messages
 	// are sent to this subscription queue:
 	let incoming_subscription = options.subscription;
-	let tables = options.tables || getDatabases()[database_name] || {};
+	let tables = options.tables || (database_name && getDatabases()[database_name]);
 	if (database_name) setDatabase(database_name);
 	const table_decoders = [];
 	const omitted_node_ids = [];
@@ -88,7 +90,7 @@ function replicateOverWS(ws, options) {
 		// otherwise it a MessagePack encoded message
 		try {
 			const decoder = (body.dataView = new Decoder(body.buffer, body.byteOffset, body.byteLength));
-			console.log('received message on', options.url, 'txn time', body[0]);
+			console.log(threadId, connection_id, 'received message on', options.url, 'txn time', body[0]);
 			if (body[0] > 127) {
 				// not a transaction, special message
 				const message = decode(body);
@@ -97,17 +99,23 @@ function replicateOverWS(ws, options) {
 					case SEND_NODE_ID: {
 						// data is the map of its mapping of node name/guid to short ids
 						remote_node_name = message[1];
+						console.log(connection_id, 'received node id', remote_node_name, database_name);
 						if (!database_name) setDatabase((database_name = message[2]));
+						console.log(connection_id, 'setDatabase', database_name, tables && Object.keys(tables));
 						sendSubscriptionRequestUpdate();
 						// TODO: Listen to adc
 						break;
 					}
 					case SEND_TABLE_FIXED_STRUCTURE:
 						const table_name = message[3];
+						if (!tables) {
+							if (database_name) console.error(connection_id, 'No tables found for', database_name);
+							else console.error(connection_id, 'Database name never received');
+						}
 						const table = tables[table_name];
 						if (!table) {
 							// TODO: We may want to create a table on the fly
-							console.error('Table not found', table_name);
+							console.error(connection_id, 'Table not found', table_name);
 						}
 						table_decoders[table_id] = {
 							name: table_name,
@@ -142,7 +150,7 @@ function replicateOverWS(ws, options) {
 								return;
 							}
 						} else incoming_subscription = db_subscriptions.get(database_name);
-						console.log('receive subscription request', database_name, start_time, table_ids, options);
+						console.log(connection_id, 'receive subscription request', database_name, start_time, table_ids, options);
 						let first_table;
 						const table_by_id = incoming_subscription.tableById.map((table) => {
 							first_table = table;
@@ -158,7 +166,7 @@ function replicateOverWS(ws, options) {
 						const current_transaction = { txnTime: 0 };
 						const sendAuditRecord = (audit_record, local_time) => {
 							if (!audit_record) {
-								console.log('No audit record, sending queued txn', current_transaction.txnTime);
+								console.log(connection_id, 'No audit record, sending queued txn', current_transaction.txnTime);
 								if (current_transaction.txnTime) ws.send(encoding_buffer.subarray(encoding_start, position));
 								current_transaction.txnTime = 0;
 								return; // end of transaction, nothing more to do
@@ -197,7 +205,7 @@ function replicateOverWS(ws, options) {
 							const typed_structs = table_entry.table.primaryStore.encoder.typedStructs;
 							if (typed_structs.length != table_entry.typed_length) {
 								table_entry.typed_length = typed_structs.length;
-								console.log('send table struct', typed_structs);
+								console.log(connection_id, 'send table struct', typed_structs);
 								if (!table_entry.sentName) {
 									// TODO: only send the table name once
 									table_entry.sentName = true;
@@ -233,6 +241,7 @@ function replicateOverWS(ws, options) {
 				return;
 			}
 			// else we are handling a replication message
+			console.log(connection_id, 'received replication message', body.byteLength);
 			decoder.position = 8;
 			let begin_txn = true;
 			//const txn_time = decoder.getFloat64(0);
@@ -260,7 +269,7 @@ function replicateOverWS(ws, options) {
 			} while (decoder.position < body.byteLength);
 			incoming_subscription.send({ type: 'end_txn' });
 		} catch (error) {
-			console.error('Error handling incoming replication message', error);
+			console.error(threadId, 'Error handling incoming replication message', error);
 		}
 	});
 	function sendSubscriptionRequestUpdate() {
@@ -284,6 +293,8 @@ function replicateOverWS(ws, options) {
 					removeNodeSubscription(database_name, remote_node_name);
 				},
 			};
+		} else {
+			console.log(connection_id, 'already subscribed to', database_name, remote_node_name);
 		}
 	}
 	function setDatabase(database_name) {
@@ -492,10 +503,14 @@ class NodeSubscriptionConnection {
 		let replicator;
 		this.socket.on('open', () => {
 			console.log('connected to ' + this.url);
-			replicator = replicateOverWS(this.socket, { database: this.databaseName, subscription: this.subscription, url: this.url });
+			replicator = replicateOverWS(this.socket, {
+				database: this.databaseName,
+				subscription: this.subscription,
+				url: this.url,
+			});
 		});
 		this.socket.on('error', (error) => {
-			console.log('Error in connection to ' + this.url, error);
+			console.log('Error in connection to ' + this.url, error.message);
 		});
 
 		this.socket.on('close', () => {
