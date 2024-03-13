@@ -76,7 +76,7 @@ jobs:
         cd harperdb_open_source_license_generator
         npm install --omit=dev 
         cd -
-        node harperdb_open_source_license_generator/index.js
+        node inspect harperdb_open_source_license_generator/index.js
         find . -name open-source-licenses-notices.md
         wc -l utility/Docker/licenses/open-source-licenses-notices.md
     - name: 'Upload Artifact'
