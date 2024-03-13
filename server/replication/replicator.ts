@@ -63,8 +63,8 @@ export function start(options) {
  * This handles both incoming and outgoing WS allowing either one to issue a subscription and get replication and/or handle subscription requests
  */
 function replicateOverWS(ws, options) {
-	const connection_id = options.url ? 'c:' + options.url.slice(-4) : 's:' + options.port;
-	console.log(connection_id, 'registering', options);
+	const connection_id = threadId + (options.url ? 'c:' + options.url.slice(-4) : 's:' + options.port);
+	console.log(connection_id, 'registering');
 	let database_name = options.database;
 	const db_subscriptions = options.databaseSubscriptions || database_subscriptions;
 	let audit_store;
@@ -205,7 +205,7 @@ function replicateOverWS(ws, options) {
 							const typed_structs = table_entry.table.primaryStore.encoder.typedStructs;
 							if (typed_structs.length != table_entry.typed_length) {
 								table_entry.typed_length = typed_structs.length;
-								console.log(connection_id, 'send table struct', typed_structs);
+								console.log(connection_id, 'send table struct');
 								if (!table_entry.sentName) {
 									// TODO: only send the table name once
 									table_entry.sentName = true;
@@ -287,7 +287,7 @@ function replicateOverWS(ws, options) {
 				// or add a node id to our list of omitted node ids
 			});
 			ws.send(encode([SUBSCRIBE_CODE, database_name, options.startTime, [], omitted_node_names]));
-			console.log('sent subscription', options.url, database_name);
+			console.log(connection_id, 'sent subscription', database_name);
 			subscription_request = {
 				end() {
 					removeNodeSubscription(database_name, remote_node_name);
