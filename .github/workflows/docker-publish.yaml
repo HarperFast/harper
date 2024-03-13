@@ -64,6 +64,8 @@ jobs:
         path: "harperdb_open_source_license_generator"
         ref: "master"
     - uses: actions/setup-node@v4
+      with:
+        node-version: 'latest'
     - name: "Generate license file"
       env:
         project_path: "."
