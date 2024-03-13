@@ -39,25 +39,22 @@ echo "Using ${LICENSES_DIR}"
 echo "copying LICENSE as end-user-license-agreement.md"
 cp LICENSE ${LICENSES_DIR}/end-user-license-agreement.md
 
-# the following can be scraped from our website
-docs=(
-  terms-of-use
-#  open-source-licenses-notices < now created in gha
+# get terms-of-use from the website
+doc='terms-of-use'
 )
 
-for doc in ${docs[@]}; do
-  echo "downloading ${doc} as ${doc}.md"
-  curl \
+echo "downloading ${doc} as ${doc}.md"
+curl \
   -sL \
   "https://www.harperdb.io/legal/${doc}" \
-  | sed -rn 's@(^.*)(<div class="section-21 wf-section">.*)@\2@p' \
-  | sed -rn 's@(^.*)(<div class="footer wf-section">.*)@\1@p' \
-  | pandoc \
-    -f html \
-    -t commonmark-raw_html \
-    --wrap none \
-  > ${LICENSES_DIR}/${doc}.md
-done
+| pandoc \
+  -f html \
+  -t commonmark-raw_html \
+  --wrap none \
+| sed -n '/^# Terms of Use$/,$p' \
+| sed '/^!\[\].*$/,$d' \
+| grep -v '^\[\](#)$'
+> ${LICENSES_DIR}/${doc}.md
 
 # pull the privacy policy directly from iubenda.com
 # privacy policy
