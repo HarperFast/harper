@@ -73,11 +73,11 @@ jobs:
         template_file: "harperdb_open_source_license_generator/template.txt"
       run: |
         #!/usr/bin/env bash
-        set -x 
         cd harperdb_open_source_license_generator
         npm install --omit=dev 
         cd -
-        project_path="${project_path}" output_file="${output_file}" template_file="${template_file}" node harperdb_open_source_license_generator/index.js
+        node harperdb_open_source_license_generator/index.js
+        find . -name open-source-licenses-notices.md
         wc -l utility/Docker/licenses/open-source-licenses-notices.md
     - name: 'Upload Artifact'
       uses: actions/upload-artifact@v4
