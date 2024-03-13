@@ -4,23 +4,23 @@ set -eou pipefail
 
 LICENSES_DIR="${LICENSES_DIR:-utility/Docker/licenses}"
 
-dependencies=(curl pandoc jq)
+declare -a dependencies=(curl pandoc jq)
 
 # check for missing dependencies
-missing_packages=""
+declare -a missing_packages
 for dependency in "${dependencies[@]}"; do
   if ! command -v "${dependency}" &> /dev/null; then
-    missing_packages="${dependency} ${missing_packages}"
+    missing_packages+=("${dependency}")
   fi
 done
 
 # attempt to install dependencies if we are in debian/ubuntu
 if command -v apt-get &> /dev/null; then
   set -x
-  echo "installing ${missing_packages}"
+  echo "installing ${missing_packages[*]}"
   sudo apt-get -qq update
-  sudo apt search "${missing_packages}"
-  sudo apt-get -qq -y install "${missing_packages}"
+  sudo apt search "${missing_packages[@]}"
+  sudo apt-get -qq -y install "${missing_packages[@]}"
   set +x
 fi
 
