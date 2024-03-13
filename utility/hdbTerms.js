@@ -639,6 +639,8 @@ const CONFIG_PARAMS = {
 	STORAGE_PAGESIZE: 'storage_pageSize',
 	STORAGE_COMPRESSION_DICTIONARY: 'storage_compression_dictionary',
 	STORAGE_COMPRESSION_THRESHOLD: 'storage_compression_threshold',
+	STORAGE_COMPACTONSTART: 'storage_compactOnStart',
+	STORAGE_COMPACTONSTARTKEEPBACKUP: 'storage_compactOnStartKeepBackup',
 	DATABASES: 'databases',
 	IGNORE_SCRIPTS: 'ignoreScripts',
 	MQTT_NETWORK_PORT: 'mqtt_network_port',

@@ -17,7 +17,7 @@ env.initSync();
 const SystemInformationObject = require('./SystemInformationObject');
 const { openEnvironment } = require('../lmdb/environmentUtility');
 const { getSchemaPath } = require('../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
-const { database } = require('../../resources/databases');
+const { database, databases } = require('../../resources/databases');
 
 //this will hold the system_information which is static to improve performance
 let system_information_cache = undefined;
@@ -247,11 +247,10 @@ async function getTableSize() {
 	return table_sizes;
 }
 async function getMetrics() {
-	let schemas = await schema_describe.describeAll();
 	let schema_stats = {};
-	for (let schema_name in schemas) {
+	for (let schema_name in databases) {
 		let table_stats = (schema_stats[schema_name] = {});
-		for (let table_name in schemas[schema_name]) {
+		for (let table_name in databases[schema_name]) {
 			try {
 				let env = database({ database: schema_name, table: table_name });
 				const stats = env.getStats();

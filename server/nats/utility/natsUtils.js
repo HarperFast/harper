@@ -1026,7 +1026,7 @@ async function connectToRemoteJS(domain) {
 	let js, jsm;
 	try {
 		js = await nats_connection.jetstream({ domain });
-		jsm = await nats_connection.jetstreamManager({ domain });
+		jsm = await nats_connection.jetstreamManager({ domain, checkAPI: false });
 	} catch (err) {
 		hdb_logger.error('Unable to connect to:', domain);
 		throw err;

@@ -61,6 +61,9 @@ class RequestBody {
 		this.#node_request.on(event, listener);
 		return this;
 	}
+	pipe(destination, options) {
+		return this.#node_request.pipe(destination, options);
+	}
 }
 
 class Headers {

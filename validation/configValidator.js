@@ -233,6 +233,8 @@ function configValidator(config_json) {
 				boolean.optional(),
 				Joi.object({ dictionary: string.optional(), threshold: number.optional() }),
 			]),
+			compactOnStart: boolean.optional(),
+			compactOnStartKeepBackup: boolean.optional(),
 			noReadAhead: boolean.optional(),
 			path: storage_path_constraints,
 			prefetchWrites: boolean.optional(),

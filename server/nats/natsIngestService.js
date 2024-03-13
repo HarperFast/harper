@@ -133,7 +133,7 @@ async function connectToRemoteJS(domain) {
 	while (!jsm) {
 		try {
 			js = await nats_connection.jetstream({ domain });
-			jsm = await nats_connection.jetstreamManager({ domain });
+			jsm = await nats_connection.jetstreamManager({ domain, checkAPI: false });
 		} catch (err) {
 			if (connection_status.get(domain) === 'close') break;
 
@@ -219,6 +219,11 @@ async function ingestConsumer(stream_name, js, jsm, domain) {
 		// watch the to see if the consume operation misses heartbeats
 		(async () => {
 			for await (const s of await messages.status()) {
+				if (s.type === ConsumerEvents.ConsumerDeleted) {
+					await messages.close();
+					shutdown = true;
+				}
+
 				if (s.type === ConsumerEvents.HeartbeatsMissed) {
 					// you can decide how many heartbeats you are willing to miss
 					const n = s.data;

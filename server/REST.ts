@@ -56,7 +56,7 @@ async function http(request, next_handler) {
 			if (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'QUERY') {
 				// TODO: Support cancellation (if the request otherwise fails or takes too many bytes)
 				try {
-					request.data = getDeserializer(headers_object['content-type'], true)(request.body);
+					request.data = getDeserializer(headers_object['content-type'], true)(request.body, request.headers);
 				} catch (error) {
 					throw new ClientError(error, 400);
 				}
