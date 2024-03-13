@@ -16,12 +16,9 @@ done
 
 # attempt to install dependencies if we are in debian/ubuntu
 if command -v apt-get &> /dev/null; then
-  set -x
   echo "installing ${missing_packages[*]}"
   sudo apt-get -qq update
-  sudo apt search "${missing_packages[@]}"
   sudo apt-get -qq -y install "${missing_packages[@]}"
-  set +x
 fi
 
 # verify dependencies
