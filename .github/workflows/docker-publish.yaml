@@ -75,8 +75,8 @@ jobs:
         cd harperdb_open_source_license_generator
         npm install --omit=dev 
         cd -
-        NODE_DEBUG="cluster,net,http,fs,tls,module,timers" node harperdb_open_source_license_generator/index.js
-        ls -lah utility/Docker/licenses/
+        project_path="${project_path}" output_file="${output_file}" template_file="${template_file}" node harperdb_open_source_license_generator/index.js
+        wc -l utility/Docker/licenses/open-source-licenses-notices.md
     - name: 'Upload Artifact'
       uses: actions/upload-artifact@v4
       with:
