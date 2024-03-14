@@ -47,72 +47,49 @@ jobs:
   build:
     uses: ./.github/workflows/build.yaml
 
-#  ####################################
-#  #  Get License Files for Container
-#  ####################################
-#  getLicenses:
-#    runs-on: ubuntu-latest
-#    timeout-minutes: 5
-#    steps:
-#    - uses: actions/checkout@v4
-#    - name: "Get Latest License Files"
-#      run: .github/scripts/get-license-files.sh
-#    - name: "Generate license files"
-#      continue-on-error: true
-#      uses: apache/skywalking-eyes/dependency@main
-#      with:
-#        mode: 'resolve'
-#        flags: '--output=utility/Docker/licenses/dependencies'
-#    - name: 'Upload Artifact'
-#      uses: actions/upload-artifact@v4
-#      with:
-#        name: "licenses"
-#        path: "utility/Docker/licenses/"
-#        retention-days: 1
+  ############################
+  #  Build Container Image(s)
+  ############################
+  publish_container:
+    if: inputs.container != 'public'
+    needs:
+      - build
+      - getLicenses
+    uses: ./.github/workflows/docker-build.yaml
+    with:
+      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      container: ${{ inputs.container }}
+      file: ${{ inputs.file }}
+      latest: ${{ inputs.latest }}
+      platforms: ${{ inputs.platforms }}
+      push: ${{ inputs.push }}
+    secrets:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
 
-#  ############################
-#  #  Build Container Image(s)
-#  ############################
-#  publish_container:
-#    if: inputs.container != 'public'
-#    needs:
-#      - build
-#      - getLicenses
-#    uses: ./.github/workflows/docker-build.yaml
-#    with:
-#      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-#      container: ${{ inputs.container }}
-#      file: ${{ inputs.file }}
-#      latest: ${{ inputs.latest }}
-#      platforms: ${{ inputs.platforms }}
-#      push: ${{ inputs.push }}
-#    secrets:
-#      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-#      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-#
-#  publish_public_containers:
-#    if: inputs.container == 'public'
-#    needs:
-#      - build
-#      - getLicenses
-#    strategy:
-#      matrix:
-#        container:
-#          - 'harperdb/harperdb'
-#          - 'harperdb/harperdb-openshift'
-#        include:
-#          - container: 'harperdb/harperdb'
-#            file: 'utility/Docker/Dockerfile'
-#          - container: 'harperdb/harperdb-openshift'
-#            file: 'utility/Docker/Dockerfile-openshift'
-#    uses: ./.github/workflows/docker-build.yaml
-#    with:
-#      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-#      container: ${{ matrix.container }}
-#      file: ${{ matrix.file }}
-#      latest: ${{ inputs.latest }}
-#      platforms: ${{ inputs.platforms }}
-#      push: ${{ inputs.push }}
-#    secrets:
-#      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-#      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+  publish_public_containers:
+    if: inputs.container == 'public'
+    needs:
+      - build
+      - getLicenses
+    strategy:
+      matrix:
+        container:
+          - 'harperdb/harperdb'
+          - 'harperdb/harperdb-openshift'
+        include:
+          - container: 'harperdb/harperdb'
+            file: 'utility/Docker/Dockerfile'
+          - container: 'harperdb/harperdb-openshift'
+            file: 'utility/Docker/Dockerfile-openshift'
+    uses: ./.github/workflows/docker-build.yaml
+    with:
+      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      container: ${{ matrix.container }}
+      file: ${{ matrix.file }}
+      latest: ${{ inputs.latest }}
+      platforms: ${{ inputs.platforms }}
+      push: ${{ inputs.push }}
+    secrets:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
