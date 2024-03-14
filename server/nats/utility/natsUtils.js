@@ -879,14 +879,15 @@ async function createTableStreams(subscriptions) {
  * Removes all entries from a local tables stream.
  * @param schema
  * @param table
+ * @param options
  * @returns {Promise<void>}
  */
-async function purgeTableStream(schema, table) {
+async function purgeTableStream(schema, table, options = undefined) {
 	if (env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
 		try {
 			const stream_name = crypto_hash.createNatsTableStreamName(schema, table);
 			const { jsm } = await getNATSReferences();
-			await jsm.streams.purge(stream_name);
+			await jsm.streams.purge(stream_name, options);
 		} catch (err) {
 			if (err.message === 'stream not found') {
 				// There can be situations where we are trying to purge a stream that doesn't exist.

@@ -102,8 +102,11 @@ describe('test REST calls', () => {
 		assert.equal(response.status, 201);
 		assert.equal(typeof response.data, 'string');
 		let id = response.data;
+		response = await axios.get('http://localhost:9926/VariedProps/' + id);
+		assert.equal(response.data.id, id);
 		response = await axios.delete('http://localhost:9926/VariedProps/' + id);
 		assert.equal(response.status, 200);
+		assert.equal(response.data, true);
 	});
 	describe('describe', function () {
 		it('table describe with root url', async () => {

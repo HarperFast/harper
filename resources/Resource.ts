@@ -134,7 +134,7 @@ export class Resource implements ResourceInterface {
 		}
 		return transaction(context, () => {
 			const resource = new this(id, context);
-			const results = resource.update ? resource.update(record) : missingMethod(resource, 'update');
+			const results = resource.update ? resource.update(record, true) : missingMethod(resource, 'update');
 			context.newLocation = id;
 			context.createdResource = true;
 			return results?.then ? results.then(() => id) : id;

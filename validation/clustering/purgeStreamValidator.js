@@ -6,7 +6,8 @@ const { validateSchemaExists, validateTableExists, validateSchemaName } = requir
 
 const schema = Joi.object({
 	operation: Joi.string().valid('purge_stream'),
-	schema: Joi.string().custom(validateSchemaExists).custom(validateSchemaName).required(),
+	schema: Joi.string().custom(validateSchemaExists).custom(validateSchemaName).optional(),
+	database: Joi.string().custom(validateSchemaExists).custom(validateSchemaName).optional(),
 	table: Joi.string().custom(validateTableExists).required(),
 });
 
