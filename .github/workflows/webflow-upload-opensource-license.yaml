@@ -36,6 +36,8 @@ jobs:
           npm install --omit=dev 
           cd -
           node harperdb_open_source_license_generator/index.js
+          ls -lah
+          echo "cat open-source-licenses-notices.md"
           cat open-source-licenses-notices.md
 
       - name: "Push Draft: open-source-licenses-notices"
