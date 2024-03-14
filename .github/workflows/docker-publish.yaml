@@ -41,34 +41,34 @@ on:
         type: boolean
 
 jobs:
-#  ####################
-#  #  Build HarperDB
-#  ####################
-#  build:
-#    uses: ./.github/workflows/build.yaml
+  ####################
+  #  Build HarperDB
+  ####################
+  build:
+    uses: ./.github/workflows/build.yaml
 
-  ####################################
-  #  Get License Files for Container
-  ####################################
-  getLicenses:
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    steps:
-    - uses: actions/checkout@v4
-    - name: "Get Latest License Files"
-      run: .github/scripts/get-license-files.sh
-    - name: "Generate license files"
-      continue-on-error: true
-      uses: apache/skywalking-eyes/dependency@main
-      with:
-        mode: 'resolve'
-        flags: '--output=utility/Docker/licenses/dependencies'
-    - name: 'Upload Artifact'
-      uses: actions/upload-artifact@v4
-      with:
-        name: "licenses"
-        path: "utility/Docker/licenses/"
-        retention-days: 1
+#  ####################################
+#  #  Get License Files for Container
+#  ####################################
+#  getLicenses:
+#    runs-on: ubuntu-latest
+#    timeout-minutes: 5
+#    steps:
+#    - uses: actions/checkout@v4
+#    - name: "Get Latest License Files"
+#      run: .github/scripts/get-license-files.sh
+#    - name: "Generate license files"
+#      continue-on-error: true
+#      uses: apache/skywalking-eyes/dependency@main
+#      with:
+#        mode: 'resolve'
+#        flags: '--output=utility/Docker/licenses/dependencies'
+#    - name: 'Upload Artifact'
+#      uses: actions/upload-artifact@v4
+#      with:
+#        name: "licenses"
+#        path: "utility/Docker/licenses/"
+#        retention-days: 1
 
 #  ############################
 #  #  Build Container Image(s)
