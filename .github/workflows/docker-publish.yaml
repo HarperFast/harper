@@ -54,7 +54,6 @@ jobs:
     if: inputs.container != 'public'
     needs:
       - build
-      - getLicenses
     uses: ./.github/workflows/docker-build.yaml
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
@@ -71,7 +70,6 @@ jobs:
     if: inputs.container == 'public'
     needs:
       - build
-      - getLicenses
     strategy:
       matrix:
         container:

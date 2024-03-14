@@ -222,7 +222,6 @@ jobs:
   dockerhubPrivateRelease:
     needs:
       - meta
-      - getLicenses
       - build
     uses: ./.github/workflows/docker-build.yaml
     with:
@@ -244,7 +243,6 @@ jobs:
     secrets: inherit
     needs:
       - meta
-      - getLicenses
       - npmPrivateRelease
       - dockerhubPrivateRelease
       - sendSlackMessageRealeaseStarted
@@ -311,7 +309,6 @@ jobs:
       - build
       - meta
       - npmPrivateRelease
-      - getLicenses
       - dockerhubPrivateRelease
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -472,7 +469,6 @@ jobs:
     secrets: inherit
     needs:
       - meta
-      - getLicenses
       - build
       - npmPrivateRelease
       - dockerhubPrivateRelease
