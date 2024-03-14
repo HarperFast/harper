@@ -55,6 +55,10 @@ export class SimpleCache extends tables.SimpleCache.sourcedFrom(SimpleCacheSourc
 export class FourPropWithHistory extends tables.FourProp {
 	static acknowledgements = 0;
 	async subscribe(options) {
+		let context = this.getContext();
+		assert(context.session?.subscriptions);
+		assert(context.user);
+		assert(context.socket);
 		options.previousCount = 10;
 		const subscription = await super.subscribe(options);
 		for (let update of subscription.queue) {

@@ -43,7 +43,7 @@ if (getWorkerIndex() === 0) {
 			if (message.user?.username) message.user = await server.getUser(message.user.username);
 			transaction(message, () => {
 				try {
-					publish(message, data);
+					publish(message, data, message);
 				} catch (error) {
 					warn('Failed to publish will', data);
 				}
@@ -121,6 +121,8 @@ class SubscriptionsSession {
 	listener: (message, subscription, timestamp, qos) => any;
 	sessionId: any;
 	user: any;
+	request: any;
+	socket: any;
 	subscriptions = [];
 	awaitingAcks: Map<number, any>;
 	sessionWasPresent: boolean;
@@ -151,7 +153,6 @@ class SubscriptionsSession {
 		const request = {
 			search,
 			async: true,
-			authorize: true,
 			user: this.user,
 			startTime: start_time,
 			omitCurrent: omit_current,
@@ -216,7 +217,7 @@ class SubscriptionsSession {
 		const resource_path = entry.path;
 		const resource = entry.Resource;
 		const subscription = await transaction(request, async () => {
-			const subscription = await resource.subscribe(request);
+			const subscription = await resource.subscribe(request, this.createContext());
 			if (!subscription) {
 				throw new Error(`No subscription was returned from subscribe for topic ${topic}`);
 			}
@@ -288,14 +289,28 @@ class SubscriptionsSession {
 		}
 	}
 	async publish(message, data) {
-		message.user = this.user;
-		return publish(message, data);
+		// each publish gets it own context so that each publish gets it own transaction
+		return publish(message, data, this.createContext());
+	}
+	createContext() {
+		const context = {
+			session: this,
+			socket: this.socket,
+			user: this.user,
+			authorize: true, // authorize each action
+		};
+		if (this.request) {
+			context.request = this.request;
+			context.url = this.request.url;
+			context.headers = this.request.headers;
+		}
+		return context;
 	}
 	setListener(listener: (message) => any) {
 		this.listener = listener;
 	}
 	disconnect(client_terminated) {
-		const context = {};
+		const context = this.createContext();
 		transaction(context, async () => {
 			if (!client_terminated) {
 				const will = await LastWill.get(this.sessionId, context);
@@ -314,11 +329,11 @@ class SubscriptionsSession {
 		this.subscriptions = [];
 	}
 }
-function publish(message, data, context = message) {
+function publish(message, data, context) {
 	const { topic, retain } = message;
 	message.data = data;
 	message.async = true;
-	message.authorize = true;
+	context.authorize = true;
 	const entry = resources.getMatch(topic);
 	if (!entry)
 		throw new Error(
