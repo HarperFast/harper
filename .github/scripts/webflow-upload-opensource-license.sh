@@ -139,8 +139,8 @@ patch_data=$(echo ${patch_data} | jq --arg name "${item_name}" '.fields += {name
 patch_data=$(echo ${patch_data} | jq '.fields += {_archived: false}')
 patch_data=$(echo ${patch_data} | jq '.fields += {_draft: true}')
 
-ls -lah "${directory}/*"
-wc -l "${directory}/*"
+ls -lah "${directory}/"
+wc -l "${directory}/"*
 
 # add files that we have to content fields
 [ -f "${directory}/${prefix}-0" ] && patch_data=$(echo ${patch_data} | jq --rawfile new_content "${directory}/${prefix}-0" '.fields += {"content": $new_content}')
