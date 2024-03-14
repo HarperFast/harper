@@ -48,7 +48,7 @@ jobs:
       - name: "Push Live: open-source-licenses-notices"
         if: github.ref == 'refs/heads/main' || inputs.publish == true
         env:
-          PUBLISH: ${{ github.ref == 'refs/heads/main' && 'true' || 'false' }}
+          PUBLISH: true
           LICENSE_FILE: "open-source-licenses-notices.md"
           TOKEN: "${{ secrets.WEBFLOW_API_TOKEN }}"
         run: .github/scripts/webflow-upload-opensource-license.sh

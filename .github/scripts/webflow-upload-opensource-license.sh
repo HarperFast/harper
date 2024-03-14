@@ -111,7 +111,10 @@ directory="$(mktemp -d licenses-XXXX)"
 prefix="content"
 
 # generate license files
+ls
 mkdir -p "${directory}"
+ls
+
 pandoc --quiet \
   --from markdown \
   --to html \
