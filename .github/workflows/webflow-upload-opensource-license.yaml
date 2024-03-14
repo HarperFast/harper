@@ -29,6 +29,9 @@ jobs:
     uses: ./.github/workflows/build.yaml
 
   generate:
+    if: !cancelled()
+    needs:
+      - build
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
