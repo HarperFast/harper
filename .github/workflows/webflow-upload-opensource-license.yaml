@@ -18,27 +18,34 @@ jobs:
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
-      - name: "Get harperdb/harperdb_open_source_license_generator"
-        uses: actions/checkout@v4
+#      - name: "Get harperdb/harperdb_open_source_license_generator"
+#        uses: actions/checkout@v4
+#        with:
+#          repository: "HarperDB/harperdb_open_source_license_generator.git"
+#          path: "harperdb_open_source_license_generator"
+#          ref: "master"
+#      - uses: actions/setup-node@v4
+#      - name: "Generate license file"
+#        env:
+#          project_path: "."
+#          output_file: "open-source-licenses-notices.md"
+#          template_file: "harperdb_open_source_license_generator/template.txt"
+#        run: |
+#          #!/usr/bin/env bash
+#          cd harperdb_open_source_license_generator
+#          npm install --omit=dev
+#          cd -
+#          node harperdb_open_source_license_generator/index.js
+#          ls -lah
+#          echo "cat open-source-licenses-notices.md"
+#          cat open-source-licenses-notices.md
+
+      - name: "Generate license files"
+        continue-on-error: true
+        uses: apache/skywalking-eyes/dependency@main
         with:
-          repository: "HarperDB/harperdb_open_source_license_generator.git"
-          path: "harperdb_open_source_license_generator"
-          ref: "master"
-      - uses: actions/setup-node@v4
-      - name: "Generate license file"
-        env:
-          project_path: "."
-          output_file: "open-source-licenses-notices.md"
-          template_file: "harperdb_open_source_license_generator/template.txt"
-        run: |
-          #!/usr/bin/env bash
-          cd harperdb_open_source_license_generator
-          npm install --omit=dev 
-          cd -
-          node harperdb_open_source_license_generator/index.js
-          ls -lah
-          echo "cat open-source-licenses-notices.md"
-          cat open-source-licenses-notices.md
+          mode: 'resolve'
+          flags: '--output=licenses'
 
       - name: "Push Draft: open-source-licenses-notices"
         if: inputs.publish == false

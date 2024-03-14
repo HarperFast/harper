@@ -113,20 +113,23 @@ prefix="content"
 # generate license files
 mkdir -p "${directory}"
 
-pandoc --quiet \
+#pandoc --quiet \
+#  --from markdown \
+#  --to html \
+tail -n +1 licenses/* \
+| pandoc --quiet \
   --from markdown \
   --to html \
-  ${license_file} \
-  | csplit \
-    --silent \
-    --keep-files \
-    --elide-empty-files \
-    --prefix=${directory}/${prefix}- \
-    --digits=1 \
-    - \
-    ${lines_per_content} \
-    '{7}' \
-    2>/dev/null || true
+| csplit \
+  --silent \
+  --keep-files \
+  --elide-empty-files \
+  --prefix=${directory}/${prefix}- \
+  --digits=1 \
+  - \
+  ${lines_per_content} \
+  '{7}' \
+  2>/dev/null || true
 
 # patch collection item
 # add json for field to field for patch_data
