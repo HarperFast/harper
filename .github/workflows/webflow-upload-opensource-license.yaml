@@ -36,11 +36,12 @@ jobs:
           npm install --omit=dev 
           cd -
           node harperdb_open_source_license_generator/index.js
+          cat open-source-licenses-notices.md
 
       - name: "Push Draft: open-source-licenses-notices"
         if: inputs.publish == false
         env:
-          PUBLISH: "${{ inputs.publish }}"
+          PUBLISH: false
           LICENSE_FILE: "open-source-licenses-notices.md"
           TOKEN: "${{ secrets.WEBFLOW_API_TOKEN }}"
         run: .github/scripts/webflow-upload-opensource-license.sh

@@ -112,7 +112,6 @@ prefix="content"
 
 # generate license files
 mkdir -p "${directory}"
-ls -l
 
 pandoc --quiet \
   --from markdown \
