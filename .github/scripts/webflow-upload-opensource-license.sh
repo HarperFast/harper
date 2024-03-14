@@ -2,6 +2,8 @@
 
 set -euo pipefail
 
+set -x
+
 ## Info:
 # this script is used to generate, format, then upload to webflow this page: https://www.harperdb.io/legal/open-source-licenses-notices
 # API calls documentation: https://developers.webflow.com/reference/

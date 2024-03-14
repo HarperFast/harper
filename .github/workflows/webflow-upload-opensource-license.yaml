@@ -38,7 +38,7 @@ jobs:
           node harperdb_open_source_license_generator/index.js
 
       - name: "Push Draft: open-source-licenses-notices"
-        if: github.ref != 'refs/heads/main' || inputs.publish == false
+        if: inputs.publish == false
         env:
           PUBLISH: "${{ inputs.publish }}"
           LICENSE_FILE: "open-source-licenses-notices.md"
