@@ -29,7 +29,7 @@ jobs:
     uses: ./.github/workflows/build.yaml
 
   generate:
-    if: !cancelled()
+    if: ${{ !cancelled() }}
     needs:
       - build
     runs-on: ubuntu-latest
