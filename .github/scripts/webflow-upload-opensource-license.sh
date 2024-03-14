@@ -2,8 +2,6 @@
 
 set -euo pipefail
 
-set -x
-
 ## Info:
 # this script is used to generate, format, then upload to webflow this page: https://www.harperdb.io/legal/open-source-licenses-notices
 # API calls documentation: https://developers.webflow.com/reference/
@@ -138,6 +136,9 @@ patch_data=$(echo ${patch_data} | jq --arg slug ${item_slug} '.fields += {slug: 
 patch_data=$(echo ${patch_data} | jq --arg name "${item_name}" '.fields += {name: $name}')
 patch_data=$(echo ${patch_data} | jq '.fields += {_archived: false}')
 patch_data=$(echo ${patch_data} | jq '.fields += {_draft: true}')
+
+ls -lah "${directory}/*"
+wc -l "${directory}/*"
 
 # add files that we have to content fields
 [ -f "${directory}/${prefix}-0" ] && patch_data=$(echo ${patch_data} | jq --rawfile new_content "${directory}/${prefix}-0" '.fields += {"content": $new_content}')
