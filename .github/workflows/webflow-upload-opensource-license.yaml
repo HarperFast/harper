@@ -7,12 +7,10 @@ on:
   workflow_dispatch:
     inputs:
       publish:
+        description: 'Wether to publish the page (true) or leave as draft (false)'
         required: true
-        type: string
+        type: boolean
         default: false
-        options:
-          - true
-          - false
 
 jobs:
   generate:
