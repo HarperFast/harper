@@ -4,48 +4,49 @@ on:
   push:
     branches:
       - main
+  workflow_call:
+    inputs:
+      publish:
+        description: 'Whether to publish the page (true) or leave as draft (false)'
+        required: false
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       publish:
         description: 'Whether to publish the page (true) or leave as draft (false)'
-        required: true
+        required: false
         type: boolean
         default: false
 
 jobs:
+  ####################
+  #  Build HarperDB
+  ####################
+  # only if workflow_dispatch
+  build:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    uses: ./.github/workflows/build.yaml
+
   generate:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
-#      - name: "Get harperdb/harperdb_open_source_license_generator"
-#        uses: actions/checkout@v4
-#        with:
-#          repository: "HarperDB/harperdb_open_source_license_generator.git"
-#          path: "harperdb_open_source_license_generator"
-#          ref: "master"
-#      - uses: actions/setup-node@v4
-#      - name: "Generate license file"
-#        env:
-#          project_path: "."
-#          output_file: "open-source-licenses-notices.md"
-#          template_file: "harperdb_open_source_license_generator/template.txt"
-#        run: |
-#          #!/usr/bin/env bash
-#          cd harperdb_open_source_license_generator
-#          npm install --omit=dev
-#          cd -
-#          node harperdb_open_source_license_generator/index.js
-#          ls -lah
-#          echo "cat open-source-licenses-notices.md"
-#          cat open-source-licenses-notices.md
+
+      - uses: actions/download-artifact@v4
+        if: ${{ github.event_name == 'workflow_call' }}
+        with:
+          name: "licenses"
+          path: "utility/Docker/licenses/"
 
       - name: "Generate license files"
+        if: ${{ github.event_name == 'workflow_dispatch' }}
         continue-on-error: true
         uses: apache/skywalking-eyes/dependency@main
         with:
           mode: 'resolve'
-          flags: '--output=licenses'
+          flags: '--output=utility/Docker/licenses'
 
       - name: "Push Draft: open-source-licenses-notices"
         if: inputs.publish == false

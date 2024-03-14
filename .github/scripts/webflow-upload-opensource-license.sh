@@ -116,7 +116,7 @@ mkdir -p "${directory}"
 #pandoc --quiet \
 #  --from markdown \
 #  --to html \
-tail -n +1 licenses/* \
+tail -n +1 utility/Docker/licenses/* \
 | pandoc --quiet \
   --from markdown \
   --to html \
