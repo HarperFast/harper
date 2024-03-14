@@ -90,7 +90,6 @@ function replicateOverWS(ws, options) {
 		// otherwise it a MessagePack encoded message
 		try {
 			const decoder = (body.dataView = new Decoder(body.buffer, body.byteOffset, body.byteLength));
-			console.log(threadId, connection_id, 'received message on', options.url, 'txn time', body[0]);
 			if (body[0] > 127) {
 				// not a transaction, special message
 				const message = decode(body);
@@ -135,7 +134,7 @@ function replicateOverWS(ws, options) {
 						remote_short_id_to_local_id = remoteToLocalNodeId(remote_node_name, data, audit_store);
 						break;
 					case SUBSCRIBE_CODE:
-						const [action, start_time, table_ids, remote_omitted_node_names] = message;
+						const [action, db, start_time, table_ids, remote_omitted_node_names] = message;
 						/*const decoder = (body.dataView = new Decoder(body.buffer, body.byteOffset, body.byteLength));
 						const db_length = body[1];
 						const database_name = body.toString('utf8', 2, db_length + 2);
@@ -150,7 +149,13 @@ function replicateOverWS(ws, options) {
 								return;
 							}
 						} else incoming_subscription = db_subscriptions.get(database_name);
-						console.log(connection_id, 'receive subscription request', database_name, start_time, table_ids, options);
+						console.log(connection_id, 'received subscription request for', database_name, 'at', start_time, 'omitting', remote_omitted_node_names);
+						if (audit_subscription) {
+							console.log(connection_id, 'stopping previous subscription', database_name, start_time);
+							audit_subscription.emit('close');
+						}
+						if (start_time === Infinity) // use to unsubscribe
+							return;
 						let first_table;
 						const table_by_id = incoming_subscription.tableById.map((table) => {
 							first_table = table;
@@ -166,13 +171,16 @@ function replicateOverWS(ws, options) {
 						const current_transaction = { txnTime: 0 };
 						const sendAuditRecord = (audit_record, local_time) => {
 							if (!audit_record) {
-								console.log(connection_id, 'No audit record, sending queued txn', current_transaction.txnTime);
 								if (current_transaction.txnTime) ws.send(encoding_buffer.subarray(encoding_start, position));
 								current_transaction.txnTime = 0;
 								return; // end of transaction, nothing more to do
 							}
 							const node_id = audit_record.nodeId;
-							if (omitted_node_ids.includes(node_id)) return;
+							if (omitted_node_ids.includes(node_id)) {
+								console.log(connection_id, 'skipping replication update', audit_record.recordId, 'to:', remote_node_name, 'from:', node_id, 'omitted:', omitted_node_ids)
+								return;
+							}
+							console.log(connection_id, 'sending replication update', audit_record.recordId, 'to:', remote_node_name, 'from:', node_id, 'omitted:', omitted_node_ids)
 							const table_id = audit_record.tableId;
 							const txn_time = audit_record.version;
 							const encoded = audit_record.encoded;
@@ -225,7 +233,7 @@ function replicateOverWS(ws, options) {
 							closed = true;
 						});
 						for (const { key, value: audit_entry } of audit_store.getRange({
-							start: start_time,
+							start: start_time || 1,
 							exclusiveStart: true,
 							snapshot: false, // don't want to use a snapshot, and we want to see new entries
 						})) {
@@ -241,7 +249,6 @@ function replicateOverWS(ws, options) {
 				return;
 			}
 			// else we are handling a replication message
-			console.log(connection_id, 'received replication message', body.byteLength);
 			decoder.position = 8;
 			let begin_txn = true;
 			//const txn_time = decoder.getFloat64(0);
@@ -264,37 +271,44 @@ function replicateOverWS(ws, options) {
 				};
 				begin_txn = false;
 				// TODO: Once it is committed, also record the localtime in the table with symbol metadata, so we can resume from that point
+				console.log(connection_id, 'received replication message, id:', event.id, 'version:', audit_record.version, 'nodeId', event.nodeId);
 				incoming_subscription.send(event);
 				decoder.position = start + event_length;
 			} while (decoder.position < body.byteLength);
 			incoming_subscription.send({ type: 'end_txn' });
 		} catch (error) {
-			console.error(threadId, 'Error handling incoming replication message', error);
+			console.error(connection_id, 'Error handling incoming replication message', error);
 		}
 	});
-	function sendSubscriptionRequestUpdate() {
+	function sendSubscriptionRequestUpdate(existing_listener) {
 		// once we have received the node name, and we know the database name that this connection is for,
 		// we can send a subscription request, if no other threads have subscribed.
 		let node_subscriptions = active_subscriptions.get(database_name);
 		if (!node_subscriptions) active_subscriptions.set(database_name, (node_subscriptions = new Map()));
-		if (!node_subscriptions.has(remote_node_name)) {
+		let subscription = node_subscriptions.get(remote_node_name);
+		if (!subscription || subscription.listener === existing_listener) {
 			const omitted_node_names = [];
 			for (const [node_name] of node_subscriptions) {
 				if (node_name !== remote_node_name) omitted_node_names.push(node_name);
 			}
-			addNodeSubscription(database_name, remote_node_name, () => {
-				// TODO: The subscription list has changed, we either need to unsubscribe if another thread has taken over
-				// or add a node id to our list of omitted node ids
-			});
-			ws.send(encode([SUBSCRIBE_CODE, database_name, options.startTime, [], omitted_node_names]));
-			console.log(connection_id, 'sent subscription', database_name);
+			const onSubscriptionUpdate = () => {
+				// The subscription list has changed, we either need to unsubscribe if another thread has taken over
+				// or add a node id to our list of omitted node ids, so we rerun this to recompute our new subscription (or lack thereof)
+				sendSubscriptionRequestUpdate(onSubscriptionUpdate);
+			};
+			if (!subscription)
+				addNodeSubscription(database_name, remote_node_name, onSubscriptionUpdate);
+			ws.send(encode([SUBSCRIBE_CODE, database_name, options.startTime, null, omitted_node_names]));
+			console.log(connection_id, (existing_listener ? 'resent' : 'sent') + ' subscription request to', remote_node_name, 'for', database_name, 'omitting', omitted_node_names);
 			subscription_request = {
 				end() {
 					removeNodeSubscription(database_name, remote_node_name);
 				},
 			};
 		} else {
-			console.log(connection_id, 'already subscribed to', database_name, remote_node_name);
+			if (existing_listener)
+				ws.send(encode([SUBSCRIBE_CODE, database_name, Infinity, null, []]));
+			console.log(connection_id, (existing_listener ? 'removing subscription ' : 'already subscribed to'), database_name, remote_node_name);
 		}
 	}
 	function setDatabase(database_name) {
@@ -441,7 +455,7 @@ export function setReplicator(db_name, table, options) {
 							const url = node.url;
 							// TODO: Do we need to have another way to determine URL?
 							// Node subscription also needs to be aware of other nodes that will be excluded from the current subscription
-							const connection = new NodeSubscriptionConnection(url, subscription, table.databaseName);
+							const connection = new NodeReplicationConnection(url, subscription, table.databaseName);
 							connection.connect();
 						} catch (error) {
 							console.error(error);
@@ -483,7 +497,7 @@ export function setReplicator(db_name, table, options) {
 /**
  * Handles reconnection, and requesting catch-up
  */
-class NodeSubscriptionConnection {
+class NodeReplicationConnection {
 	socket: WebSocket;
 	startTime: number;
 	constructor(public url, public subscription, public databaseName) {}
