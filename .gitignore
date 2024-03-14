@@ -33,4 +33,4 @@ ts-build
 *.heapsnapshot
 
 harperdb-*.tgz
-utility/Docker/licenses
+utility/Docker/licenses/**

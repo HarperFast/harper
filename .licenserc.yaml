@@ -1,0 +1,105 @@
+header:
+  license:
+    content: |
+      
+      ### Evaluation License Agreement for HarperDB Free Software
+      Last Updated: March 14, 2024
+      HARPERDB, INC. ("HARPERDB") LICENSES THIS FREE SOFTWARE PRODUCT FOR EVALUATION PURPOSES (THE "SOFTWARE") TO YOU ("YOU" OR "LICENSEE") SUBJECT TO THE TERMS CONTAINED IN THIS LICENSE AGREEMENT (THIS "AGREEMENT"). READ THE TERMS AND CONDITIONS OF THIS AGREEMENT CAREFULLY BEFORE INSTALLING AND USING THIS SOFTWARE AND THE ACCOMPANYING DOCUMENTATION. THE SOFTWARE IS COPYRIGHTED AND IT IS LICENSED TO YOU UNDER THIS  AGREEMENT, NOT SOLD.
+
+      THIS AGREEMENT IS A LEGALLY BINDING AGREEMENT CONCERNING THE SOFTWARE BETWEEN YOU, AS EITHER AN INDIVIDUAL OR A SINGLE BUSINESS ENTITY, AND HARPERDB. YOU REPRESENT THAT (I) YOU ARE OVER THE AGE OF EIGHTEEN (18) AND (II) IF LICENSEE IS A CORPORATION, GOVERNMENTAL ORGANIZATION, OR OTHER LEGAL ENTITY, YOU HAVE THE RIGHT, POWER, AND AUTHORITY TO ENTER INTO THIS AGREEMENT ON BEHALF OF LICENSEE AND BIND LICENSEE TO THESE TERMS. THIS AGREEMENT SUPERSEDES AND REPLACES ANY PRIOR PROPOSAL, REPRESENTATION, OR UNDERSTANDING YOU MAY HAVE HAD WITH HARPERDB RELATING TO THE SOFTWARE.
+
+      ### Agreement to Be Bound
+
+      By clicking the "I accept" button, typing "yes" to indicate acceptance, or performing any other similar electronic indication of acceptance, or by installing, copying or otherwise using this Software, you agree to be bound by the terms of this Agreement as of the earliest date of such acceptance (the "Effective Date"). If you do not agree with any term or condition of this Agreement, do not download, install or use the Software.
+
+      In the case of inconsistencies between this Agreement and information included in any other materials related to the Software (e.g., promotional materials), this Agreement governs.
+
+      ### Confidentiality
+
+      You agree that, unless otherwise specifically provided herein or agreed by HarperDB in writing, (i) the Software and the Documentation, including the specific design and structure of individual programs and the Software, and any information relating to the Software and Documentation, provided to you by HarperDB, and (ii) any results of your experiences from the use of the Software or Documentation, constitute confidential information of HarperDB. You shall permit only authorized users ("Authorized Users"), who possess rightfully obtained license keys, to use the Software or to view the Documentation. You agree not to transfer, copy, disclose, provide or otherwise make available such confidential information in any form to any third party without the prior written consent of HarperDB. You agree to implement reasonable security measures to protect such confidential information, but in no event, less stringent measures than you would use with your own highly confidential information and without limitation to the foregoing shall use best efforts to maintain the security of the Software provided to you by HarperDB. You will use your best efforts to cooperate with and assist HarperDB in identifying and preventing any unauthorized use, copying, or disclosure of the Software, Documentation, or any portion thereof.
+
+      ### Feedback
+
+      It is expressly understood, acknowledged and agreed that you may provide to HarperDB suggestions, recommendations, comments or feedback regarding the Software, including but not limited to usability, functionality, new features, bug reports and test results (collectively, "Feedback"). If you provide such Feedback to HarperDB, you grant HarperDB a worldwide, non-exclusive, perpetual, irrevocable, royalty free, fully paid up right and license to make, use, copy, modify, sell, distribute, sub-license, and create derivative works of, the Feedback as part of any
+
+      HarperDB product, technology, service, specification or other documentation (individually and collectively, "HarperDB Products"). Further, you warrant that your Feedback is not subject to any license terms that would purport to require HarperDB to comply with any additional obligations with respect to any HarperDB Products that incorporate any feedback. You further agree that we may use any ideas, concepts, know-how, and techniques contained in the Feedback without restriction or accounting.
+
+      ### Additional Responsibilities
+
+      You agree to:
+      1.  Assign a person with overall responsibilities for coordinating activities under this Agreement;
+      2.  Bear the risk of loss related to theft or misappropriation; and
+      3.  Use reasonable care in the use of the Software and advise us of any problems you encounter.
+
+      ### Grant of License
+
+      Subject to the terms and conditions of this Agreement, HarperDB grants to you, during the Evaluation Term (as defined below) a revocable, non-exclusive, non-transferable license (without the right to sublicense): (i) to use the Software in accordance with the Documentation solely for your internal testing and evaluation purposes in order to assist in your decision to purchase a full, commercial subscription or license to the Software, subject to any limitations specified by HarperDB, and (ii) to copy Software for archival or backup purposes as reasonably necessary for the foregoing purpose, provided that all titles and trademarks, copyright, and restricted rights notices are reproduced on such copies. During the Evaluation Term, your use of the Software will be free of charge. You acknowledge that the Software has limited features and functionality and that the license granted under this Section does not apply to HarperDB's paid, production use software programs, which are licensed under, and subject to, a separate agreement.
+
+      ### Restrictions on Grant
+
+      Except as otherwise specifically permitted in this Agreement, you may not: (a) modify or create any derivative works of any Software or documentation, including translation or localization (code written to published APIs (application programming interfaces) for the Software shall not be deemed derivative works); (b) copy the Software except as provided in this Agreement or elsewhere by HarperDB; (c) separate Software, which is licensed as a single product, into its component parts; (d) sublicense or permit simultaneous use of the Software by more than one user; (e) reverse engineer, decompile, or disassemble or otherwise attempt to derive the source code for any Product the Software (except to the extent applicable laws specifically prohibit such restriction); (f) redistribute, encumber, sell, rent, lease, sublicense, use the Software in a timesharing or service bureau arrangement, or otherwise transfer rights to any Software. You may NOT transfer the Software under any circumstances; (g) remove or alter any trademark, logo, copyright or other proprietary notices, legends, symbols or labels in the Product(s); (h) publish any results of benchmark tests run on any Software to a third party without HarperDB prior written consent; (i) use the Software on a system with more CPUs than the number licensed, by more users than have been licensed, on more computers or computing devices than the number licensed, or by more developers than the number licensed, as applicable; or (j) use the Software for a commercial or production use.
+
+      ### Product Support
+
+      HarperDB is under no obligation to provide technical or other support under the terms of this license and provides no assurance, warranty, or representation that any errors or discrepancies in the Software will be corrected.
+
+      ### Ownership and Copyright of Software
+
+      Title to the Software and all copies thereof remain with HarperDB and/or its suppliers. The Software is copyrighted and is protected by United States copyright laws and international treaty provisions. Licensee will not remove copyright notices from the Software. Licensee agrees to prevent any unauthorized copying of the Software. Except as expressly provided, HarperDB: (i) does not grant any express or implied right to you under HarperDB patents, copyrights, trademarks, trade secrets, or other intellectual property rights, and (ii) reserves all rights not expressly granted to you under this Agreement.
+
+      ### Third-Party Products
+
+      The Software may contain certain open source software identified at https://www.harperdb.io/legal/open-source-licenses-notices. Licensee understands and acknowledges this Agreement does not apply to such open-source software, which is licensed separately under its own terms. You shall have only such rights and/or licenses, if any, to use the open-source software as set forth in the licenses referenced at https://www.harperdb.io/legal/open-source-licenses-notices.
+
+      ### Term and Termination
+
+      This Agreement is effective on the Effective Date and continues until: (a) the date specified by HarperDB, (b) HarperDB provides you with written notice of termination or (c) the date you purchase the right to use HarperDB's paid, production use software program, whichever occurs first (the "Term").
+
+      Upon expiration or earlier termination of this Agreement, the license granted hereunder will terminate, and, without limiting your obligations hereunder, you shall cease using and delete, destroy, or return all copies of the Software and Documentation and certify in writing that the Software and Documentation has been deleted or destroyed.
+
+      ### Indemnification
+
+      You shall indemnify, hold harmless, and, at HarperDB's option, defend HarperDB from and against any losses, claims, allegations, damages, costs, and expenses, including attorneys' fees, arising from any claim based on your or any Authorized User's: (i) negligence or willful misconduct; (ii) breach of any provision of this Agreement; (iii) use of the Software or Documentation in violation of any applicable law or industry standard or in a manner not authorized or contemplated by this Agreement; or (iv) use of any version other than the most current version of the Software or Documentation; provided that you may not settle any claim against HarperDB without HarperDB's consent unless such settlement completely and forever releases HarperDB from all liability with respect to such claim or unless HarperDB consents to such settlement, and further provided that HarperDB will have the right, at its option, to defend itself against any such claim or to participate in the defense thereof by counsel of its own choice.
+
+      ### Disclaimer
+
+      THE SOFTWARE AND DOCUMENTATION ARE LICENSED "AS IS", WITHOUT ANY WARRANTIES OF ANY KIND AND HARPERDB DISCLAIMS ANY AND ALL OTHER WARRANTIES, WHETHER EXPRESS OR IMPLIED, INCLUDING, WITHOUT LIMITATION, ANY IMPLIED WARRANTIES OF MERCHANTABILITY, NON-INFRINGEMENT, FITNESS FOR A PARTICULAR PURPOSE, OR COURSE OF DEALING OR COURSE OF PERFORMANCE. USE OF THE SOFTWARE IS ENTIRELY AT YOUR OWN RISK AND THAT YOU ASSUME FULL RESPONSIBILITY FOR ALL COSTS ASSOCIATED WITH ALL NECESSARY SERVICING OR REPAIRS OF ANY EQUIPMENT YOU USE IN CONNECTION WITH YOUR USE OF THE SOFTWARE. WITHOUT LIMITATION OF THE FOREGOING, HARPERDB EXPRESSLY DOES NOT WARRANT THAT THE SOFTWARE WILL MEET YOUR REQUIREMENTS OR THAT OPERATION OF THE SOFTWARE WILL BE UNINTERRUPTED, SECURE, OR ERROR-FREE. YOU SHALL BEAR THE ENTIRE RISK AS TO THE QUALITY, THE SECURITY, AND THE PERFORMANCE OF THE SOFTWARE. YOU ARE ADVISED TO SAFEGUARD IMPORTANT DATA, TO USE CAUTION, AND NOT TO RELY IN ANY WAY ON THE CORRECT FUNCTIONING OR PERFORMANCE OF THE SOFTWARE AND/OR ACCOMPANYING MATERIALS. A FAILURE BY HARPERDB TO ENFORCE ANY RIGHTS UNDER THIS AGREEMENT SHALL NOT OPERATE AS A WAIVER OF SUCH RIGHTS.
+
+      ### Limitation of Liability
+
+      IN NO EVENT WILL HARPERDB BE LIABLE FOR ANY CONSEQUENTIAL, INDIRECT, EXEMPLARY, SPECIAL, OR INCIDENTAL DAMAGES, OR FOR ANY LOST DATA, LOST PROFITS, OR COST OF PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES ARISING FROM OR RELATING TO THIS AGREEMENT OR THE SOFTWARE., HOWEVER CAUSED AND UNDER ANY THEORY OR LIABILITY EVEN IF YOU HAVE BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGES. [CLIENT]'S TOTAL CUMULATIVE LIABILITY IN CONNECTION WITH THIS AGREEMENT OR THE BETA SERVICE, WHETHER IN CONTRACT OR TORT OR
+
+      OTHERWISE, WILL NOT EXCEED THE AMOUNT OF FEES PAID TO [CLIENT] HEREUNDER DURING THE 12 MONTH PERIOD PRECEDING THE EVENTS GIVING RISE TO SUCH LIABILITY. HARPERDB'S WILL NOT BE LIABLE TO YOU OR ANY PARTY RELATED TO YOU FOR ANY LOSS OR DAMAGES ARISING OUT OF OR RELATING TO THIS AGREEMENT, OR INSTALLATION OR USE OF THE SOFTWARE AND DOCUMENTATION,
+
+      UNLESS SUCH EXCLUSION OF LIABILITY IS NOT ENFORCEABLE UNDER APPLICABLE LAW, IN WHICH CASE IN NO EVENT WILL HARPERDB'S LIABILITY ARISING OUT OF OR RELATED TO THIS AGREEMENT OR INSTALLATION OR USE OF THE SOFTWARE AND DOCUMENTATION WILL NOT EXCEED $100. THESE LIMITATIONS APPLY TO ALL CAUSES OF ACTION OR CLAIMS IN THE AGGREGATE, INCLUDING, WITHOUT LIMITATION, BREACH OF CONTRACT, BREACH OF WARRANTY, INDEMNITY, NEGLIGENCE, STRICT LIABILITY, MISREPRESENTATION, AND OTHER TORTS, CLAIMS, OR CAUSES OF ACTION. SOME JURISDICTIONS DO NOT ALLOW THE LIMITATION OR EXCLUSION OF INCIDENTAL, CONSEQUENTIAL OR OTHER TYPES OF DAMAGES, SO SOME OF THE ABOVE LIMITATIONS MAY NOT APPLY TO YOU.
+
+      ### United States Government Restricted Rights
+
+      Each of the Documentation and the Software is a "commercial item" as that term is defined at 48 C.F.R. § 2.101, consisting of "commercial computer software" and "commercial computer software documentation" as such terms are used in 48 C.F.R. § 12.212. Accordingly, if Licensee is an agency of the US Government or any contractor therefore, Licensee only receives those rights with respect to the Software and Documentation as are granted to all other end users under license, in accordance with (a) 48 C.F.R. § 227.7201 through 48 C.F.R. § 227.7204, with respect to the Department of Defense and their contractors, or (b) 48 C.F.R. § 12.212, with respect to all other US Government licensees and their contractors.
+
+      ### Governing Law and Choice of Forum
+
+      The laws of the State of Colorado govern this Agreement and any matters related to this Agreement, without regard to any conflicts of laws principles that would require the application of the laws of a different jurisdiction.. The parties hereby submit to the exclusive jurisdiction of, and waive any venue objections against, state or federal courts sitting in Denver, Colorado in any litigation arising out of this Agreement or the Services
+
+      ### Export and Other Restrictions
+
+      You shall comply with all laws, rules, and regulations applicable to you in connection with your use of the Software. The Software may be subject to US export control laws, including the US Export Administration Act and its associated regulations. Licensee shall not, directly or indirectly, export, re-export, or release the Software to, or make the Software accessible from, any jurisdiction or country to which export, re-export, or release is prohibited by law, rule, or regulation. Licensee shall comply with all applicable laws, regulations, and rules, and complete all required undertakings (including obtaining any necessary export license or other governmental approval), prior to exporting, re-exporting, releasing, or otherwise making the Software available outside the US. Further, Licensee may not (for itself or others) (i) use or permit use of the Software in hazardous environments requiring fail‐safe performance, such as in the operation of nuclear facilities, aircraft navigation or aircraft communications systems, air traffic control, life support systems, human implantation, nuclear facilities or systems or weapons systems, or any other application known to you where product failure would lead to loss of life or catastrophic property damage, in which the failure of the Software could lead directly to death, personal injury, or severe physical or environmental damage; (ii) permit any Software export, re‐export, download, resale or transfer, directly or indirectly: (x) into (or to a national, resident or government of) any prohibited destination (including Cuba, Iran, North Korea, Sudan or Syria or other countries subject to U.S. trade embargoes imposed by the U.S. Department of Treasury's Office of Foreign Assets Control (OFAC) from time to time) or other destination for which specific authorization would otherwise be required under the Export Administration Regulations (EAR) administered by the US Department of Commerce's Bureau of Industry and Security (BIS) or other applicable laws, or (y) to any person identified on the OFAC List of Specially Designated Nationals and Blocked Persons, the BIS Denied Parties List, BIS Entity List or BIS Unverified List (see: http://www.bis.doc.gov/index.php/policy‐guidance/lists‐of‐parties‐of‐concern); or (iii) use the Software for any proliferation or terrorist‐related end‐use. In addition, you acknowledge and agree that you are responsible for compliance with any and all applicable laws relating to the use of the Software, including applicable data privacy laws. Any use in contravention with this provision shall void the license rights granted under this Agreement.
+
+      ### Equitable Relief
+
+      You acknowledge and agree that a breach or threatened breach by you of any of your obligations would cause HarperDB irreparable harm for which monetary damages may not be adequate. Accordingly, you agree that, in the event of such breach or threatened breach, HarperDB will be entitled to equitable relief, including injunctive relief or specific performance, without any requirement to post a bond or other security or to prove actual damages or that monetary damages are not an adequate remedy. Such remedies are not exclusive and are in addition to all other remedies that may be available.
+
+      ### Entire Agreement; Modification
+
+      This Agreement constitutes the complete and exclusive agreement between you and HarperDB with respect to the subject matter hereof and supersedes all prior or contemporaneous oral or written communications, proposals, representations, understandings, or agreements not specifically incorporated herein. This Agreement may not be amended except in a writing duly signed by you and an authorized representative of HarperDB. If any provision of this Agreement is held by a court of competent jurisdiction to be unenforceable for any reason, the remaining provisions of this Agreement will be unimpaired and the invalid or unenforceable provision will be deemed modified so that it is valid and enforceable to the maximum extent permitted by law (unless such modification is not permitted by law, in which case such provision will be disregarded). HarperDB may modify this Agreement at any time. Modifications become effective immediately upon your first access to or use of the Software after the "Last Updated" date at the top of this Agreement. Your continued access to or use of the Software after the modifications have become effective will be deemed your conclusive acceptance of the modified terms. If you do not agree with the modifications, do not use the Software.
+    copyright-owner: HarperDB, Inc.
+    copyright-year: 2017
+
+  paths-ignore:
+    - '**'
+
+  comment: on-failure
+
+dependency:
+  files:
+    - package.json
