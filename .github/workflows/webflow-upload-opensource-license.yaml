@@ -54,7 +54,8 @@ jobs:
         if: inputs.publish == false
         env:
           PUBLISH: false
-          LICENSE_FILE: "open-source-licenses-notices.md"
+          LICENSE_DIR: "utility/Docker/licenses/dependencies/"
+          MARKDOWN_LICENSE_FILE: "licenses.md"
           TOKEN: "${{ secrets.WEBFLOW_API_TOKEN }}"
         run: .github/scripts/webflow-upload-opensource-license.sh
 
@@ -62,6 +63,14 @@ jobs:
         if: github.ref == 'refs/heads/main' || inputs.publish == true
         env:
           PUBLISH: true
-          LICENSE_FILE: "open-source-licenses-notices.md"
+          LICENSE_DIR: "utility/Docker/licenses/dependencies/"
+          MARKDOWN_LICENSE_FILE: "licenses.md"
           TOKEN: "${{ secrets.WEBFLOW_API_TOKEN }}"
         run: .github/scripts/webflow-upload-opensource-license.sh
+
+      - name: 'Upload Artifact'
+        uses: actions/upload-artifact@v4
+        with:
+          name: "licenses.md"
+          path: "licenses.md"
+          retention-days: 1
