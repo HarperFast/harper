@@ -1,7 +1,7 @@
 const assert = require('assert');
 const sinon = require('sinon');
 const { getMockLMDBPath } = require('../../test_utils');
-const { start, setReplicator } = require('../../../server/replication/replicator');
+const { start, setReplicator, servers } = require('../../../server/replication/replicator');
 const { table } = require('../../../resources/databases');
 const { setMainIsWorker } = require('../../../server/threads/manageThreads');
 const { listenOnPorts } = require('../../../server/threads/threadServer');
@@ -145,7 +145,6 @@ describe('Replication', () => {
 			console.log('added worker');
 		});
 		it('A write to the table should replicate to both nodes', async function () {
-			this.timeout(100000);
 			let name = 'name ' + Math.random();
 			await test_tables[0].put({
 				id: '5',
@@ -166,6 +165,40 @@ describe('Replication', () => {
 				}
 				assert.equal(result.name, name);
 				result = await test_tables[2].get('2');
+				assert.equal(result.name, name);
+				assert.equal(result.get('extraProperty'), true);
+				break;
+			} while(true);
+		});
+		it('A write to the table during a broken connection should catch up to both nodes', async function () {
+			let name = 'name ' + Math.random();
+
+			for (let server of servers) {
+				for (let client of server._ws.clients) {
+					client._socket.destroy();
+				}
+			}
+
+			test_tables[0].put({
+				id: '6',
+				name,
+			});
+			await test_tables[0].put({
+				id: '7',
+				name,
+				extraProperty: true,
+			});
+			await new Promise((resolve) => setTimeout(resolve, 1000));
+			let retries = 10;
+			do {
+				await new Promise((resolve) => setTimeout(resolve, 500));
+				let result = await test_tables[2].get('6');
+				if (!result) {
+					assert(--retries > 0);
+					continue;
+				}
+				assert.equal(result.name, name);
+				result = await test_tables[2].get('7');
 				assert.equal(result.name, name);
 				assert.equal(result.get('extraProperty'), true);
 				break;

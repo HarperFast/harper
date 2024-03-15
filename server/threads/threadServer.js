@@ -616,6 +616,7 @@ function onWebSocket(listener, options) {
 	for (let { port: port_num, secure } of getPorts(options)) {
 		if (!ws_servers[port_num]) {
 			ws_servers[port_num] = new WebSocketServer({ server: (http_server = getHTTPServer(port_num, secure)) });
+			http_server._ws = ws_servers[port_num];
 			ws_servers[port_num].on('connection', async (ws, node_request) => {
 				try {
 					let request = new Request(node_request);
