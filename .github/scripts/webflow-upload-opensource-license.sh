@@ -42,8 +42,8 @@ done
 # attempt to install dependencies if we are in debian/ubuntu
 if command -v apt-get &> /dev/null; then
   echo "installing ${missing_packages}"
-  sudo apt-get -qq update
-  sudo apt-get -qq -y install ${missing_packages}
+  sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+  sudo DEBIAN_FRONTEND=noninteractive apt-get install -qq --assume-yes ${missing_packages}
 fi
 
 # verify dependencies
@@ -116,7 +116,7 @@ mkdir -p "${directory}"
 #pandoc --quiet \
 #  --from markdown \
 #  --to html \
-tail -n +1 utility/Docker/licenses/* \
+tail -n +1 utility/Docker/licenses/dependencies/*.txt \
 | pandoc --quiet \
   --from markdown \
   --to html \
@@ -143,6 +143,17 @@ patch_data=$(echo ${patch_data} | jq '.fields += {_draft: true}')
 
 ls -lah "${directory}/"
 wc -l "${directory}/"*
+num_files=$(find "${directory}" -type f | wc -l | xargs)
+
+echo "created ${num_files} in ${directory} for upload" >> $GITHUB_STEP_SUMMARY
+echo "created ${num_files} in ${directory} for upload"
+
+# checking to  make sure we created more than 1 file.
+if [ "${num_files}" -le 1 ]; then
+  echo "There are suspiciously few files created, so we are just going to bail" >> $GITHUB_STEP_SUMMARY
+  echo "There are suspiciously few files created, so we are just going to bail"
+  exit 1
+fi
 
 # add files that we have to content fields
 [ -f "${directory}/${prefix}-0" ] && patch_data=$(echo ${patch_data} | jq --rawfile new_content "${directory}/${prefix}-0" '.fields += {"content": $new_content}')
