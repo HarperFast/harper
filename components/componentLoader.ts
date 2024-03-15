@@ -24,6 +24,7 @@ import { getHdbBasePath } from '../utility/environment/environmentManager';
 import * as operationsServer from '../server/operationsServer';
 import * as auth from '../security/auth';
 import * as natsReplicator from '../server/nats/natsReplicator';
+import * as replication from '../server/replication/replicator';
 import * as mqtt from '../server/mqtt';
 import { getConfigObj } from '../config/configUtils';
 import { createReuseportFd } from '../server/serverHelpers/Request';
@@ -77,6 +78,7 @@ const TRUSTED_RESOURCE_LOADERS = {
 	customFunctions: {},
 	http: {},
 	clustering: natsReplicator,
+	replication,
 	authentication: auth,
 	mqtt,
 	/*
