@@ -41,6 +41,17 @@ describe('Querying through Resource API', () => {
 				many_to_many_attribute,
 			],
 		});
+		const children_of_self_attribute = {
+			name: 'childrenOfSelf',
+			relationship: { to: 'parentId' },
+			elements: { type: 'RelatedTable', definition: {} },
+		};
+		const parent_of_self_attribute = {
+			name: 'parentOfSelf',
+			relationship: { from: 'parentId' },
+			type: 'RelatedTable',
+			definition: {},
+		};
 		RelatedTable = table({
 			table: 'RelatedTable',
 			database: 'test',
@@ -48,11 +59,14 @@ describe('Querying through Resource API', () => {
 				{ name: 'id', isPrimaryKey: true, type: 'Int' },
 				{ name: 'aFlag', type: 'Boolean', indexed: true },
 				{ name: 'name', indexed: true },
+				{ name: 'parentId', indexed: true },
 				{
 					name: 'relatedToMany',
 					relationship: { to: 'relatedId' },
 					elements: { type: 'QueryTable', definition: { tableClass: QueryTable } },
 				},
+				children_of_self_attribute,
+				parent_of_self_attribute,
 				{
 					name: 'badRelationship',
 					relationship: { to: 'relatedId' },
@@ -71,6 +85,8 @@ describe('Querying through Resource API', () => {
 				},
 			],
 		});
+		children_of_self_attribute.elements.definition.tableClass = RelatedTable;
+		parent_of_self_attribute.definition.tableClass = RelatedTable;
 		ManyToMany = table({
 			table: 'ManyToMany',
 			database: 'test',
@@ -88,7 +104,12 @@ describe('Querying through Resource API', () => {
 		many_to_many_attribute.elements.definition.tableClass = ManyToMany;
 
 		for (let i = 0; i < 5; i++) {
-			RelatedTable.put({ id: i, name: 'related name ' + i, aFlag: i % 3 === 0 });
+			RelatedTable.put({
+				id: i,
+				name: 'related name ' + i,
+				aFlag: i % 3 === 0,
+				parentId: i % 2,
+			});
 		}
 		for (let i = 0; i < 25; i++) {
 			ManyToMany.put({ id: i, name: 'many-to-many entry ' + i });
@@ -481,6 +502,56 @@ describe('Querying through Resource API', () => {
 			assert.equal(related[0], undefined);
 			assert.equal(related[1].name, 'many-to-many entry 0');
 		});
+
+		it('Query parent many-to-one self-relationships', async function () {
+			let results = [];
+			for await (let record of RelatedTable.search({
+				conditions: [{ attribute: ['parentOfSelf', 'name'], value: 'related name 1' }],
+				select: ['id', 'name', 'parentId', 'parentOfSelf', 'childrenOfSelf'],
+			})) {
+				results.push(record);
+			}
+			assert.equal(results.length, 2);
+			assert.equal(results[1].parentOfSelf.id, 1);
+			assert.equal(results[0].parentId, 1);
+			assert.equal(results[0].childrenOfSelf.length, 2);
+			assert.equal(results[0].childrenOfSelf[1].parentId, 1);
+			assert.equal(results[1].childrenOfSelf.length, 0);
+		});
+		it('Query children one-to-many self-relationships', async function () {
+			let results = [];
+			for await (let record of RelatedTable.search({
+				conditions: [{ attribute: ['childrenOfSelf', 'id'], comparator: 'between', value: [2,3] }],
+				select: ['id', 'name', 'parentId', 'parentOfSelf', 'childrenOfSelf'],
+			})) {
+				results.push(record);
+			}
+			assert.equal(results.length, 2);
+			assert.equal(results[0].parentId, 0);
+			assert.equal(results[1].parentId, 1);
+			assert.equal(results[0].childrenOfSelf.length, 1);
+			assert.equal(results[0].childrenOfSelf[0].id, 2);
+			assert.equal(results[1].childrenOfSelf.length, 1);
+			assert.equal(results[1].childrenOfSelf[0].id, 3);
+		});
+
+		it('Query children multi-level recursive self-relationships', async function () {
+			let results = [];
+			for await (let record of RelatedTable.search({
+				conditions: [{ attribute: ['childrenOfSelf', 'childrenOfSelf', 'id'], comparator: 'between', value: [2, 4] }],
+				select: ['id', 'name', 'parentId', 'parentOfSelf', {name: 'childrenOfSelf', select: ['id', 'name', 'childrenOfSelf'] } ],
+			})) {
+				results.push(record);
+			}
+			assert.equal(results.length, 2);
+			assert.equal(results[0].parentId, 0);
+			assert.equal(results[1].parentId, 1);
+			assert.equal(results[0].childrenOfSelf.length, 1);
+			assert.equal(results[0].childrenOfSelf[0].childrenOfSelf.length, 2);
+			assert.equal(results[0].childrenOfSelf[0].childrenOfSelf[1].id, 4);
+			assert.equal(results[1].childrenOfSelf[0].childrenOfSelf[0].id, 3);
+		});
+
 		describe('With filterMissing', function () {
 			before(function () {
 				many_to_many_attribute.relationship.filterMissing = true;
