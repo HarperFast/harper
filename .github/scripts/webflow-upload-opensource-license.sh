@@ -144,11 +144,12 @@ done
 
 for checksum in "${!licenses[@]}"; do
 
-  # find all packages that match this checksum
+  # generate header for this section
   echo >> "${markdown_license_file}"
   echo "## Packages" >> "${markdown_license_file}"
   echo >> "${markdown_license_file}"
 
+  # find and list all packages that match this checksum
   for file in "${!files[@]}"; do
     if [[ "${checksum}" == "${files[${file}]}" ]]; then
       echo " - ${packages[${file}]}"
@@ -158,7 +159,9 @@ for checksum in "${!licenses[@]}"; do
   echo >> "${markdown_license_file}"
   echo "### License" >> "${markdown_license_file}"
   echo >> "${markdown_license_file}"
+  echo '>```' >> "${markdown_license_file}"
   cat "${licenses[${checksum}]}" | sed -e 's/^/>/' >> "${markdown_license_file}"
+  echo '>```' >> "${markdown_license_file}"
   echo >> "${markdown_license_file}"
   echo "----------" >> "${markdown_license_file}"
   echo >> "${markdown_license_file}"
