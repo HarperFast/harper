@@ -15,7 +15,6 @@ function getIdMappingRecord(audit_store) {
 		};
 		audit_store.putSync(Symbol.for('remote-ids'), pack(id_mapping_record));
 	}
-	console.log('id_mapping_record', audit_store.path, id_mapping_record.nodeName);
 	return id_mapping_record;
 }
 export function getNodeName(audit_store) {

@@ -13,7 +13,7 @@ import { database, table as defineTable, getDatabases, onUpdatedTable } from '..
 import { ID_PROPERTY, Resource } from '../../resources/Resource';
 import { IterableEventQueue } from '../../resources/IterableEventQueue';
 import { getWorkerIndex } from '../threads/manageThreads';
-import { NodeReplicationConnection, replicateOverWS, database_subscriptions } from './replicationConnection';
+import { NodeReplicationConnection, replicateOverWS, database_subscriptions, table_update_listeners } from './replicationConnection';
 import { server } from '../Server';
 import env from '../../utility/environment/environmentManager';
 

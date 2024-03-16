@@ -4,14 +4,14 @@ import { broadcast, onMessageByType } from '../threads/manageThreads';
 export const active_subscriptions = new Map<string, Map<string, { threadId: number, listener: Function } >>();
 if (isMainThread) {
 	onMessageByType('add-subscription', (message) => {
-		addNodeSubscription(message.database, message.nodeId, message.threadId);
+		addNodeSubscription(message.database, message.nodeId, null, message.threadId);
 	});
 	onMessageByType('remove-subscription', (message) => {
 		removeNodeSubscription(message.database, message.nodeId);
 	});
 } else {
 	onMessageByType('add-subscription', (message) => {
-		addedSubscription(message.database, message.nodeId, message.threadId);
+		addedSubscription(message.database, message.nodeId, null, message.threadId);
 	});
 	onMessageByType('remove-subscription', (message) => {
 		removedNodeSubscription(message.database, message.nodeId);

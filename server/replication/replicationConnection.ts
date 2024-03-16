@@ -20,7 +20,7 @@ const SEND_ID_MAPPING = 141;
 const SEND_TABLE_NAME = 130;
 const SEND_TABLE_STRUCTURE = 131;
 const SEND_TABLE_FIXED_STRUCTURE = 132;
-const table_update_listeners = new Map();
+export const table_update_listeners = new Map();
 export const database_subscriptions = new Map();
 
 
@@ -318,7 +318,7 @@ export function replicateOverWS(ws, options) {
 		let node_subscriptions = active_subscriptions.get(database_name);
 		if (!node_subscriptions) active_subscriptions.set(database_name, (node_subscriptions = new Map()));
 		let subscription = node_subscriptions.get(remote_node_name);
-		if (!subscription || subscription.listener === existing_listener) {
+		if (!subscription || subscription.listener === existing_listener || (subscription.threadId === threadId && !subscription.listener)) {
 			const omitted_node_names = [];
 			for (const [node_name] of node_subscriptions) {
 				if (node_name !== remote_node_name) omitted_node_names.push(node_name);
