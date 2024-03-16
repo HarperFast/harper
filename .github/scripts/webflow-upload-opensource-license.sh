@@ -161,6 +161,7 @@ for checksum in "${!licenses[@]}"; do
   echo >> "${markdown_license_file}"
   echo '>```' >> "${markdown_license_file}"
   cat "${licenses[${checksum}]}" | sed -e 's/^/>/' >> "${markdown_license_file}"
+  echo >> "${markdown_license_file}"
   echo '>```' >> "${markdown_license_file}"
   echo >> "${markdown_license_file}"
   echo "----------" >> "${markdown_license_file}"
