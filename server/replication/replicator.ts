@@ -15,14 +15,17 @@ import { IterableEventQueue } from '../../resources/IterableEventQueue';
 import { getWorkerIndex } from '../threads/manageThreads';
 import { NodeReplicationConnection, replicateOverWS, database_subscriptions } from './replicationConnection';
 import { server } from '../Server';
+import env from '../../utility/environment/environmentManager';
 
 let replication_disabled;
 
 export let servers = [];
 export function start(options) {
+	if (!options.port) options.port = env.get('operationsApi_network_port');
+	if (!options.securePort) options.securePort = env.get('operationsApi_network_securePort');
 	if (options?.manualAssignment) {
 	} else {
-		assignReplicationSource();
+		assignReplicationSource(options);
 		// TODO: node_id should come from the hdb_nodes table
 	}
 	servers.push(server.ws(
@@ -40,7 +43,7 @@ export function start(options) {
 export function disableReplication(disabled = true) {
 	replication_disabled = disabled;
 }
-const MAX_INGEST_THREADS = 2;
+const MAX_INGEST_THREADS = 1;
 let immediateNATSTransaction, subscribed_to_nodes;
 /**
  * Replication functions by acting as a "source" for tables. With replicated tables, the local tables are considered
@@ -106,7 +109,7 @@ export function setReplicator(db_name, table, options) {
 				if (getWorkerIndex() < MAX_INGEST_THREADS) {
 					for (const node of options.routes) {
 						try {
-							const url = node.url;
+							const url = typeof node === 'string' ? node : node.url;
 							// TODO: Do we need to have another way to determine URL?
 							// Node subscription also needs to be aware of other nodes that will be excluded from the current subscription
 							const connection = new NodeReplicationConnection(url, subscription, table.databaseName);

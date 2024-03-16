@@ -30,6 +30,8 @@ export const database_subscriptions = new Map();
 export class NodeReplicationConnection {
 	socket: WebSocket;
 	startTime: number;
+	retryTime = 200;
+	retries = 0;
 	constructor(public url, public subscription, public databaseName) {}
 	connect() {
 		const tables = [];
@@ -47,6 +49,8 @@ export class NodeReplicationConnection {
 		let replicator;
 		this.socket.on('open', () => {
 			console.log('connected to ' + this.url);
+			this.retries = 0;
+			this.retryTime = 200;
 			replicator = replicateOverWS(this.socket, {
 				database: this.databaseName,
 				subscription: this.subscription,
@@ -54,17 +58,20 @@ export class NodeReplicationConnection {
 			});
 		});
 		this.socket.on('error', (error) => {
-			console.log('Error in connection to ' + this.url, error.message);
+			if (error.code !== 'ECONNREFUSED')
+				console.error('Error in connection to ' + this.url, error.message);
 		});
 
 		this.socket.on('close', () => {
-			console.log('disconnected from ' + this.url);
+			if (++this.retries % 20 === 1)
+				console.warn(`disconnected from ${this.url} (db: "${this.databaseName})`);
 			replicator?.end();
 
 			// try to reconnect
 			setTimeout(() => {
 				this.connect();
-			}, 200).unref();
+			}, this.retryTime).unref();
+			this.retryTime += this.retryTime >> 3; // increase by 12% each time
 		});
 	}
 	send(message) {}
@@ -74,8 +81,13 @@ export class NodeReplicationConnection {
  * This handles both incoming and outgoing WS allowing either one to issue a subscription and get replication and/or handle subscription requests
  */
 export function replicateOverWS(ws, options) {
-	const connection_id = threadId + (options.url ? 'c:' + options.url.slice(-4) : 's:' + options.port);
+	const connection_id = threadId + (options.url ? 'c:' + options.url.slice(-4) : 's:' + options.port) + ' ' + Math.random().toString().slice(2,3);
 	console.log(connection_id, 'registering');
+
+	let encoding_start = 0;
+	let encoding_buffer = Buffer.allocUnsafeSlow(1024);
+	let position = 0;
+	let data_view = new DataView(encoding_buffer.buffer, 0, 1024);
 	let database_name = options.database;
 	const db_subscriptions = options.databaseSubscriptions || database_subscriptions;
 	let audit_store;
@@ -182,7 +194,11 @@ export function replicateOverWS(ws, options) {
 						const current_transaction = { txnTime: 0 };
 						const sendAuditRecord = (audit_record, local_time) => {
 							if (!audit_record) {
-								if (current_transaction.txnTime) ws.send(encoding_buffer.subarray(encoding_start, position));
+								if (current_transaction.txnTime) {
+									console.log(connection_id, 'sending replication message', encoding_start, position);
+									ws.send(encoding_buffer.subarray(encoding_start, position));
+								}
+								encoding_start = position;
 								current_transaction.txnTime = 0;
 								return; // end of transaction, nothing more to do
 							}
@@ -191,7 +207,7 @@ export function replicateOverWS(ws, options) {
 								console.log(connection_id, 'skipping replication update', audit_record.recordId, 'to:', remote_node_name, 'from:', node_id, 'omitted:', omitted_node_ids)
 								return;
 							}
-							console.log(connection_id, 'sending replication update', audit_record.recordId, 'to:', remote_node_name, 'from:', node_id, 'omitted:', omitted_node_ids)
+							console.log(connection_id, 'preparing replication update', audit_record.recordId, 'to:', remote_node_name, 'from:', node_id, 'omitted:', omitted_node_ids)
 							const table_id = audit_record.tableId;
 							const txn_time = audit_record.version;
 							const encoded = audit_record.encoded;
@@ -239,21 +255,26 @@ export function replicateOverWS(ws, options) {
 						listeners.push((table) => {
 							// TODO: send table update
 						});
-						let closed;
+						let closed = false;
 						audit_subscription.on('close', () => {
 							closed = true;
 						});
-						for (const { key, value: audit_entry } of audit_store.getRange({
-							start: start_time || 1,
-							exclusiveStart: true,
-							snapshot: false, // don't want to use a snapshot, and we want to see new entries
-						})) {
-							if (closed) return;
-							const audit_record = readAuditEntry(audit_entry);
-							sendAuditRecord(audit_record, key);
-							// TODO: Need to do this with back-pressure, but would need to catch up on anything published during iteration
-							//await rest(); // yield for fairness
-							audit_subscription.startTime = key; // update so don't double send
+						if (start_time) {
+							let sent_records = false;
+							for (const { key, value: audit_entry } of audit_store.getRange({
+								start: start_time || 1,
+								exclusiveStart: true,
+								snapshot: false, // don't want to use a snapshot, and we want to see new entries
+							})) {
+								if (closed) return;
+								const audit_record = readAuditEntry(audit_entry);
+								sendAuditRecord(audit_record, key);
+								sent_records = true;
+								// TODO: Need to do this with back-pressure, but would need to catch up on anything published during iteration
+								//await rest(); // yield for fairness
+								audit_subscription.startTime = key; // update so don't double send
+							}
+							if (sent_records) sendAuditRecord(null, 0);
 						}
 						break;
 				}
@@ -282,7 +303,7 @@ export function replicateOverWS(ws, options) {
 				};
 				begin_txn = false;
 				// TODO: Once it is committed, also record the localtime in the table with symbol metadata, so we can resume from that point
-				console.log(connection_id, 'received replication message, id:', event.id, 'version:', audit_record.version, 'nodeId', event.nodeId);
+				console.log(connection_id, 'received replication message, id:', event.id, 'version:', audit_record.version, 'nodeId', event.nodeId, 'name', event.value.name);
 				incoming_subscription.send(event);
 				decoder.position = start + event_length;
 			} while (decoder.position < body.byteLength);
@@ -345,50 +366,46 @@ export function replicateOverWS(ws, options) {
 			if (audit_subscription) audit_subscription.emit('close');
 		},
 	};
-}
-let encoding_start = 0;
-let encoding_buffer = Buffer.allocUnsafeSlow(1024);
-let position = 0;
-let data_view = new DataView(encoding_buffer.buffer, 0, 1024);
-function writeInt(number) {
-	if (number < 128) {
-		encoding_buffer[position++] = number;
-	} else if (number < 0x4000) {
-		data_view.setUint16(position, number | 0x7fff);
-		position += 2;
-	} else if (number < 0x3f000000) {
-		data_view.setUint32(position, number | 0xcfffffff);
-		position += 4;
-	} else {
-		encoding_buffer[position] = 0xff;
-		data_view.setUint32(position + 1, number);
-		position += 5;
+	function writeInt(number) {
+		if (number < 128) {
+			encoding_buffer[position++] = number;
+		} else if (number < 0x4000) {
+			data_view.setUint16(position, number | 0x7fff);
+			position += 2;
+		} else if (number < 0x3f000000) {
+			data_view.setUint32(position, number | 0xcfffffff);
+			position += 4;
+		} else {
+			encoding_buffer[position] = 0xff;
+			data_view.setUint32(position + 1, number);
+			position += 5;
+		}
 	}
-}
-function writeBytes(src, start = 0, end = src.length) {
-	const length = end - start;
-	if (length + 11 > encoding_buffer.length - position) {
-		const new_buffer = Buffer.allocUnsafeSlow(((length + 4096) >> 10) << 11);
-		encoding_buffer.copy(new_buffer, encoding_start);
-		position = position - encoding_start;
-		encoding_start = 0;
-		encoding_buffer = new_buffer;
-		data_view = new DataView(encoding_buffer, 0, encoding_buffer.length);
+	function writeBytes(src, start = 0, end = src.length) {
+		const length = end - start;
+		if (length + 11 > encoding_buffer.length - position) {
+			const new_buffer = Buffer.allocUnsafeSlow(((length + 4096) >> 10) << 11);
+			encoding_buffer.copy(new_buffer, encoding_start);
+			position = position - encoding_start;
+			encoding_start = 0;
+			encoding_buffer = new_buffer;
+			data_view = new DataView(encoding_buffer.buffer, 0, encoding_buffer.length);
+		}
+		src.copy(encoding_buffer, position, start, end);
+		position += length;
 	}
-	src.copy(encoding_buffer, position, start, end);
-	position += length;
-}
-function writeFloat64(number) {
-	if (8 > encoding_buffer.length - position) {
-		const new_buffer = Buffer.allocUnsafeSlow(((length + 4096) >> 10) << 11);
-		encoding_buffer.copy(new_buffer, encoding_start);
-		position = position - encoding_start;
-		encoding_start = 0;
-		encoding_buffer = new_buffer;
-		data_view = new DataView(encoding_buffer, 0, encoding_buffer.length);
+	function writeFloat64(number) {
+		if (8 > encoding_buffer.length - position) {
+			const new_buffer = Buffer.allocUnsafeSlow(4096);
+			encoding_buffer.copy(new_buffer, encoding_start);
+			position = position - encoding_start;
+			encoding_start = 0;
+			encoding_buffer = new_buffer;
+			data_view = new DataView(encoding_buffer.buffer, 0, encoding_buffer.length);
+		}
+		data_view.setFloat64(position, number);
+		position += 8;
 	}
-	data_view.setFloat64(position, number);
-	position += 8;
 }
 
 class Encoder {

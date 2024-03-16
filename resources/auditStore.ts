@@ -264,7 +264,12 @@ export function readAuditEntry(buffer) {
 export class Decoder extends DataView {
 	position = 0;
 	readInt() {
-		let number = this.getUint8(this.position++);
+		let number;
+		try {
+			number = this.getUint8(this.position++);
+		}catch(error) {
+			throw error;
+		}
 		if (number >= 0x80) {
 			if (number >= 0xc0) {
 				if (number === 0xff) {
