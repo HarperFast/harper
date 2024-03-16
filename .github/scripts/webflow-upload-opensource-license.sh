@@ -12,6 +12,7 @@ set -euo pipefail
 #   API - just the base URL for the webflow api
 #   LICENSE_DIR - path (relative or absolute) to the directory with generated license files. Should be in markdown
 #   MARKDOWN_LICENSE_FILE - name of temporary file containing all licenses in markdown format
+#   WORK_DIR - where we create the content files to upload
 #   PUBLISH - utilizes the 'live' flag in the PATCH call (last api call) to make either a draft or publish the changes
 #   SITE_SHORT_NAME - an account specific unique identifier in webflow that identifies https://harperdb.io
 #   COLLECTION_SLUG - an account specific unique identifier in webflow that identifies the legal collection of pages on https://harperdb.io
@@ -108,7 +109,7 @@ item_id=$(curl --silent \
 echo "found item id for os license item slug as ${item_id}"
 
 # we are going to totally do things on the filesystem
-directory="$(mktemp -d licenses-XXXX)"
+directory=${WORK_DIR:-license-content}
 prefix="content"
 
 mkdir -p "${directory}"
@@ -188,8 +189,6 @@ patch_data=$(echo ${patch_data} | jq --arg name "${item_name}" '.fields += {name
 patch_data=$(echo ${patch_data} | jq '.fields += {_archived: false}')
 patch_data=$(echo ${patch_data} | jq '.fields += {_draft: true}')
 
-ls -lah "${directory}/"
-wc -l "${directory}/"*
 num_files=$(find "${directory}" -type f | wc -l | xargs)
 
 echo "created ${num_files} files in ${directory} for upload" >> $GITHUB_STEP_SUMMARY

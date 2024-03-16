@@ -7,14 +7,14 @@ on:
   workflow_call:
     inputs:
       publish:
-        description: 'Whether to publish the page (true) or leave as draft (false)'
+        description: 'Whether to publish the page (true) or not (false)'
         required: false
         type: boolean
         default: false
   workflow_dispatch:
     inputs:
       publish:
-        description: 'Whether to publish the page (true) or leave as draft (false)'
+        description: 'Whether to publish the page (true) or not (false)'
         required: false
         type: boolean
         default: false
@@ -42,19 +42,12 @@ jobs:
           name: "licenses"
           path: "utility/Docker/licenses/"
 
-#      - name: "Generate license files"
-#        if: ${{ github.event_name == 'workflow_dispatch' }}
-#        continue-on-error: true
-#        uses: apache/skywalking-eyes/dependency@main
-#        with:
-#          mode: 'resolve'
-#          flags: '--output=utility/Docker/licenses'
-
       - name: "Push Draft: open-source-licenses-notices"
         if: inputs.publish == false
         env:
           PUBLISH: false
           LICENSE_DIR: "utility/Docker/licenses/dependencies/"
+          WORK_DIR: "license-content"
           MARKDOWN_LICENSE_FILE: "licenses.md"
           TOKEN: "${{ secrets.WEBFLOW_API_TOKEN }}"
         run: .github/scripts/webflow-upload-opensource-license.sh
@@ -64,13 +57,21 @@ jobs:
         env:
           PUBLISH: true
           LICENSE_DIR: "utility/Docker/licenses/dependencies/"
+          WORK_DIR: "license-content"
           MARKDOWN_LICENSE_FILE: "licenses.md"
           TOKEN: "${{ secrets.WEBFLOW_API_TOKEN }}"
         run: .github/scripts/webflow-upload-opensource-license.sh
 
-      - name: 'Upload Artifact'
+      - name: 'Upload Artifact - license.md'
         uses: actions/upload-artifact@v4
         with:
           name: "licenses.md"
           path: "licenses.md"
+          retention-days: 1
+
+      - name: 'Upload Artifact - content'
+        uses: actions/upload-artifact@v4
+        with:
+          name: "license-content"
+          path: "license-content"
           retention-days: 1
