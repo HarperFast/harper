@@ -83,7 +83,7 @@ jobs:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
         run: >
           curl -F file=@licenses.md
-          -F "Markdown License File"
+          -F "initial_comment=Markdown License File"
           -F channels=${channel_id}
           -H "Authorization: Bearer ${SLACK_BOT_TOKEN}"
           https://slack.com/api/files.upload
