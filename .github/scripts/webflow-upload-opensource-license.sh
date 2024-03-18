@@ -153,8 +153,8 @@ for checksum in "${!licenses[@]}"; do
   if [ ! -s "${licenses[${checksum}]}" ]; then
     echo "Could not find license text for the following">> "${markdown_license_file}"
     echo >> "${markdown_license_file}"
-    echo "Dependency | License | Homepage" >> "${markdown_license_file}"
-    echo "---------- | ------- | --------" >> "${markdown_license_file}"
+#    echo "Dependency | License | Homepage" >> "${markdown_license_file}"
+#    echo "---------- | ------- | --------" >> "${markdown_license_file}"
   fi
 
   # sort keys for file assoc array
@@ -168,8 +168,7 @@ for checksum in "${!licenses[@]}"; do
       else
         license_type=$(npm query "[name='${packages[${file}]}']" | jq -r '.[0] | .license ' || echo -n 'undefined')
         package_homepage=$(npm query "[name='${packages[${file}]}']" | jq -r '.[0] | .homepage' || echo -n 'undefined')
-        echo >> "${markdown_license_file}"
-        echo -n "${packages[${file}]} | ${license_type} | [${packages[${file}]}](${package_homepage})" >> "${markdown_license_file}"
+        echo " - ${license_type} | [${packages[${file}]}](${package_homepage}) | ${license_type}" >> "${markdown_license_file}"
       fi
     fi
   done
