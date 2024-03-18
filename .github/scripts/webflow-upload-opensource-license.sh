@@ -149,20 +149,36 @@ for checksum in "${!licenses[@]}"; do
   echo "## Packages" >> "${markdown_license_file}"
   echo >> "${markdown_license_file}"
 
+  # if the license file is empty, lets build a table instead of a list
+  if [ ! -s "${licenses[${checksum}]}" ]; then
+    echo "Dependency | License | Homepage" | sed -e 's/^/>/' >> "${markdown_license_file}"
+    echo "---------- | ------- | --------" | sed -e 's/^/>/' >> "${markdown_license_file}"
+  fi
+
   # find and list all packages that match this checksum
   for file in "${!files[@]}"; do
     if [[ "${checksum}" == "${files[${file}]}" ]]; then
-      echo " - ${packages[${file}]}"
+      if [ -s "${licenses[${checksum}]}" ]; then
+        echo " - ${packages[${file}]}"
+      else
+        echo $(npm query "[name='${packages[${file}]}']" | jq -r '.[0] | .name + " | " + .license + " | [" + .name + "](" + .homepage + ")"')
+      fi
     fi
   done | sort -h >> "${markdown_license_file}"
 
   echo >> "${markdown_license_file}"
-  echo "### License" >> "${markdown_license_file}"
-  echo >> "${markdown_license_file}"
-  echo '>```' >> "${markdown_license_file}"
-  cat "${licenses[${checksum}]}" | sed -e 's/^/>/' >> "${markdown_license_file}"
-  echo >> "${markdown_license_file}"
-  echo '>```' >> "${markdown_license_file}"
+
+  # make sure the license file has content before we post the 'license' section. otherwise, we are covered in the table
+  if [ -s "${licenses[${checksum}]}" ]; then
+    echo "### License" >> "${markdown_license_file}"
+    echo >> "${markdown_license_file}"
+    echo '>```' >> "${markdown_license_file}"
+    cat "${licenses[${checksum}]}" | sed -e 's/^/>/' >> "${markdown_license_file}"
+    echo >> "${markdown_license_file}"
+    echo '>```' >> "${markdown_license_file}"
+  fi
+
+  # break for next set of dependencies
   echo >> "${markdown_license_file}"
   echo "----------" >> "${markdown_license_file}"
   echo >> "${markdown_license_file}"
