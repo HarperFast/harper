@@ -75,3 +75,27 @@ jobs:
           name: "license-content"
           path: "license-content"
           retention-days: 1
+
+      - name: Upload Markdown to Slack
+        env:
+          # #marketing-licensing-update
+          channel_id: "C06Q74Q12RJ"
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
+        run: >
+          curl -F file=@licenses.md
+          -F "Markdown License File"
+          -F "channels=${channel_id}"
+          -H "Authorization: Bearer ${SLACK_BOT_TOKEN}"
+          https://slack.com/api/files.upload
+          
+
+#      - name: Post Markdown to Slack
+#        id: slack-markdown-message
+#        uses: slackapi/slack-github-action@v1.25.0
+#        with:
+#          # #marketing-licensing-update
+#          channel-id: "C06Q74Q12RJ"
+#          payload: "${{ inputs.payload }}"
+#        env:
+#          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
+#        continue-on-error: true

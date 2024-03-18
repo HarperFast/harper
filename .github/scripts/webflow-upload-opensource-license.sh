@@ -163,7 +163,7 @@ for checksum in "${!licenses[@]}"; do
       if [ -s "${licenses[${checksum}]}" ]; then
         echo " - ${packages[${file}]}"
       else
-        set -x
+        echo npm query "[name='${packages[${file}]}']" | jq -r '.[0] | .name + " | " + .license + " | [" + .name + "](" + .homepage + ")"'
         echo $(npm query "[name='${packages[${file}]}']" | jq -r '.[0] | .name + " | " + .license + " | [" + .name + "](" + .homepage + ")"')
       fi
     fi
