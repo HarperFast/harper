@@ -1,6 +1,9 @@
 name: "Webflow - Update Open Source Licenses Page"
 
 on:
+  push:
+    branches:
+      - main
   workflow_call:
     inputs:
       publish:
@@ -73,17 +76,17 @@ jobs:
           path: "license-content"
           retention-days: 1
 
-      - name: Upload Markdown to Slack
-        env:
-          # #marketing-licensing-update
-          channel_id: "C06Q74Q12RJ"
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
-        run: >
-          curl -F file=@licenses.md
-          -F "initial_comment=Markdown License File"
-          -F channels=${channel_id}
-          -H "Authorization: Bearer ${SLACK_BOT_TOKEN}"
-          https://slack.com/api/files.upload
+#      - name: Upload Markdown to Slack
+#        env:
+#          # #marketing-licensing-update
+#          channel_id: "C06Q74Q12RJ"
+#          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
+#        run: >
+#          curl -F file=@licenses.md
+#          -F "initial_comment=Markdown License File"
+#          -F channels=${channel_id}
+#          -H "Authorization: Bearer ${SLACK_BOT_TOKEN}"
+#          https://slack.com/api/files.upload
           
 
 #      - name: Post Markdown to Slack
