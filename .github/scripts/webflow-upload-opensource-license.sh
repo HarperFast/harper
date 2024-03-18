@@ -166,9 +166,10 @@ for checksum in "${!licenses[@]}"; do
       if [ -s "${licenses[${checksum}]}" ]; then
         echo " - ${packages[${file}]}" >> "${markdown_license_file}"
       else
-        license_type=$(npm query "[name='${packages[${file}]}']" | jq -r '.[0] | .license ' || echo -n 'undefined')
-        package_homepage=$(npm query "[name='${packages[${file}]}']" | jq -r '.[0] | .homepage' || echo -n 'undefined')
-        echo " - ${license_type} | [${packages[${file}]}](${package_homepage}) | ${license_type}" >> "${markdown_license_file}"
+#        license_type=$(npm query "[name='${packages[${file}]}']" | jq -r '.[0] | .license ' || echo -n 'undefined')
+#        package_homepage=$(npm query "[name='${packages[${file}]}']" | jq -r '.[0] | .homepage' || echo -n 'undefined')
+#        echo " - [${packages[${file}]}](${package_homepage}) | ${license_type}" >> "${markdown_license_file}"
+        echo " - ${packages[${file}]}" >> "${markdown_license_file}"
       fi
     fi
   done
