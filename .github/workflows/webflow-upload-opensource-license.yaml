@@ -1,9 +1,6 @@
 name: "Webflow - Update Open Source Licenses Page"
 
 on:
-  push:
-    branches:
-      - main
   workflow_call:
     inputs:
       publish:
