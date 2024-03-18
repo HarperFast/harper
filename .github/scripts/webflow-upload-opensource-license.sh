@@ -235,14 +235,14 @@ fi
 [ -f "${directory}/${prefix}-7" ] && patch_data=$(echo ${patch_data} | jq --rawfile new_content "${directory}/${prefix}-7" '.fields += {"content-8": $new_content}')
 [ -f "${directory}/${prefix}-8" ] && patch_data=$(echo ${patch_data} | jq --rawfile new_content "${directory}/${prefix}-8" '.fields += {"content-9": $new_content}')
 
-if [[ "${publish}" == "false" ]]; then
-  echo "${patch_data}"
-else
-  echo "${patch_data}" | \
-    curl --silent \
-      --request PATCH \
-      --url "${api}/collections/${collection_id}/items/${item_id}?live=${publish}&access_token=${token}" \
-      --header 'accept: application/json' \
-      --header 'content-type: application/json' \
-      --data @-
-fi
+#if [[ "${publish}" == "false" ]]; then
+#  echo "${patch_data}"
+#else
+#  echo "${patch_data}" | \
+#    curl --silent \
+#      --request PATCH \
+#      --url "${api}/collections/${collection_id}/items/${item_id}?live=${publish}&access_token=${token}" \
+#      --header 'accept: application/json' \
+#      --header 'content-type: application/json' \
+#      --data @-
+#fi
