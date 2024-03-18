@@ -151,6 +151,8 @@ for checksum in "${!licenses[@]}"; do
 
   # if the license file is empty, lets build a table instead of a list
   if [ ! -s "${licenses[${checksum}]}" ]; then
+    echo "Could not find license text for the following">> "${markdown_license_file}"
+    echo >> "${markdown_license_file}"
     echo "Dependency | License | Homepage" | sed -e 's/^/>/' >> "${markdown_license_file}"
     echo "---------- | ------- | --------" | sed -e 's/^/>/' >> "${markdown_license_file}"
   fi
@@ -161,6 +163,7 @@ for checksum in "${!licenses[@]}"; do
       if [ -s "${licenses[${checksum}]}" ]; then
         echo " - ${packages[${file}]}"
       else
+        set -x
         echo $(npm query "[name='${packages[${file}]}']" | jq -r '.[0] | .name + " | " + .license + " | [" + .name + "](" + .homepage + ")"')
       fi
     fi
