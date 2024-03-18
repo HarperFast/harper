@@ -153,21 +153,26 @@ for checksum in "${!licenses[@]}"; do
   if [ ! -s "${licenses[${checksum}]}" ]; then
     echo "Could not find license text for the following">> "${markdown_license_file}"
     echo >> "${markdown_license_file}"
-    echo "Dependency | License | Homepage" | sed -e 's/^/>/' >> "${markdown_license_file}"
-    echo "---------- | ------- | --------" | sed -e 's/^/>/' >> "${markdown_license_file}"
+    echo "Dependency | License | Homepage" >> "${markdown_license_file}"
+    echo "---------- | ------- | --------" >> "${markdown_license_file}"
   fi
 
+  # sort keys for file assoc array
+  readarray -td '' files_keys_sorted < <(printf '%s\0' "${!files[@]}" | sort -z)
+
   # find and list all packages that match this checksum
-  for file in "${!files[@]}"; do
+  for file in "${files_keys_sorted[@]}"; do
     if [[ "${checksum}" == "${files[${file}]}" ]]; then
       if [ -s "${licenses[${checksum}]}" ]; then
-        echo " - ${packages[${file}]}"
+        echo " - ${packages[${file}]}" >> "${markdown_license_file}"
       else
-        echo "npm query \"[name='${packages[${file}]}']\" | jq -r '.[0] | .name + \" | \" + .license + \" | [\" + .name + \"](\" + .homepage + \")\"'"
-        echo $(npm query "[name='${packages[${file}]}']" | jq -r '.[0] | .name + " | " + .license + " | [" + .name + "](" + .homepage + ")"')
+        license_type=$(npm query "[name='${packages[${file}]}']" | jq -r '.[0] | .license ' || echo -n 'undefined')
+        package_homepage=$(npm query "[name='${packages[${file}]}']" | jq -r '.[0] | .homepage' || echo -n 'undefined')
+        echo >> "${markdown_license_file}"
+        echo -n "${packages[${file}]} | ${license_type} | [${packages[${file}]}](${package_homepage})" >> "${markdown_license_file}"
       fi
     fi
-  done | sort -h >> "${markdown_license_file}"
+  done
 
   echo >> "${markdown_license_file}"
 
@@ -234,6 +239,8 @@ fi
 [ -f "${directory}/${prefix}-6" ] && patch_data=$(echo ${patch_data} | jq --rawfile new_content "${directory}/${prefix}-6" '.fields += {"content-7": $new_content}')
 [ -f "${directory}/${prefix}-7" ] && patch_data=$(echo ${patch_data} | jq --rawfile new_content "${directory}/${prefix}-7" '.fields += {"content-8": $new_content}')
 [ -f "${directory}/${prefix}-8" ] && patch_data=$(echo ${patch_data} | jq --rawfile new_content "${directory}/${prefix}-8" '.fields += {"content-9": $new_content}')
+
+exit 0
 
 #if [[ "${publish}" == "false" ]]; then
 #  echo "${patch_data}"
