@@ -293,6 +293,25 @@ function checkForUpdatedConfig(config_doc, config_file_path) {
 		update_file = true;
 	}
 
+	if (!config_doc.hasIn(['authentication'])) {
+		config_doc.addIn(['authentication'], {
+			cacheTTL: 30000,
+			enableSessions: true,
+			operationTokenTimeout: config_doc.getIn(['operationsApi', 'authentication', 'operationTokenTimeout']) ?? '1d',
+			refreshTokenTimeout: config_doc.getIn(['operationsApi', 'authentication', 'refreshTokenTimeout']) ?? '30d',
+		});
+
+		update_file = true;
+	}
+
+	if (!config_doc.hasIn(['analytics'])) {
+		config_doc.addIn(['analytics'], {
+			aggregatePeriod: 60,
+		});
+
+		update_file = true;
+	}
+
 	if (update_file) {
 		logger.trace('Updating config file with missing config params');
 		fs.writeFileSync(config_file_path, String(config_doc));
@@ -528,8 +547,7 @@ function flattenConfig(obj) {
 					result[key] = flat_obj[x];
 				}
 			}
-			if (obj[i] !== undefined)
-				result[i.toLowerCase()] = obj[i];
+			if (obj[i] !== undefined) result[i.toLowerCase()] = obj[i];
 		}
 		return result;
 	}
