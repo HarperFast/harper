@@ -199,6 +199,12 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 							...packet,
 						});
 						session = await session;
+						// the session is used in the context, and we want to make sure we can access this
+						session.socket = socket;
+						if (request) {
+							// if there a request, store it in the session so we can use it as part of the context
+							session.request = request;
+						}
 						mqtt_settings.sessions.add(session);
 					} catch (error) {
 						mqtt_log.error(error);
