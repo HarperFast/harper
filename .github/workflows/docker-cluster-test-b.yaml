@@ -59,7 +59,6 @@ jobs:
       containerTarball: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ matrix.flavor }}-${{ matrix.platform }}-${{ github.run_number }}.tar
       file: ${{ matrix.file }}
       platforms: "linux/${{ matrix.platform }}"
-      get_dummy_licenses: true
 
   ##############################
   #  Call Docker Test template

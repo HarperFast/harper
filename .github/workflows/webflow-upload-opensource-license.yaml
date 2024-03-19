@@ -4,51 +4,98 @@ on:
   push:
     branches:
       - main
+  workflow_call:
+    inputs:
+      publish:
+        description: 'Whether to publish the page (true) or not (false)'
+        required: false
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       publish:
-        required: true
-        type: string
+        description: 'Whether to publish the page (true) or not (false)'
+        required: false
+        type: boolean
         default: false
-        options:
-          - true
-          - false
 
 jobs:
-  generate:
+  ####################
+  #  Build HarperDB
+  ####################
+  # only if workflow_dispatch
+  build:
+    if: ${{ github.event_name == 'workflow_dispatch' }}
+    uses: ./.github/workflows/build.yaml
+
+  generate_and_upload:
+    if: ${{ !cancelled() }}
+    needs:
+      - build
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
-      - name: "Get harperdb/harperdb_open_source_license_generator"
-        uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
         with:
-          repository: "HarperDB/harperdb_open_source_license_generator.git"
-          path: "harperdb_open_source_license_generator"
-          ref: "master"
-      - uses: actions/setup-node@v4
-      - name: "Generate license file"
-        env:
-          project_path: "."
-          output_file: "open-source-licenses-notices.md"
-          template_file: "harperdb_open_source_license_generator/template.txt"
-        run: |
-          #!/usr/bin/env bash
-          cd harperdb_open_source_license_generator
-          npm install --omit=dev 
-          cd -
-          node harperdb_open_source_license_generator/index.js
+          name: "licenses"
+          path: "utility/Docker/licenses/"
+
       - name: "Push Draft: open-source-licenses-notices"
-        if: github.ref != 'refs/heads/main' && github.event_name != 'pull_request'
+        if: inputs.publish == false
         env:
-          PUBLISH: "${{ inputs.publish }}"
-          LICENSE_FILE: "open-source-licenses-notices.md"
+          PUBLISH: false
+          LICENSE_DIR: "utility/Docker/licenses/dependencies/"
+          WORK_DIR: "license-content"
+          MARKDOWN_LICENSE_FILE: "licenses.md"
           TOKEN: "${{ secrets.WEBFLOW_API_TOKEN }}"
         run: .github/scripts/webflow-upload-opensource-license.sh
+
       - name: "Push Live: open-source-licenses-notices"
-        if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
+        if: github.ref == 'refs/heads/main' || inputs.publish == true
         env:
-          PUBLISH: ${{ github.ref == 'refs/heads/main' && 'true' || 'false' }}
-          LICENSE_FILE: "open-source-licenses-notices.md"
+          PUBLISH: true
+          LICENSE_DIR: "utility/Docker/licenses/dependencies/"
+          WORK_DIR: "license-content"
+          MARKDOWN_LICENSE_FILE: "licenses.md"
           TOKEN: "${{ secrets.WEBFLOW_API_TOKEN }}"
         run: .github/scripts/webflow-upload-opensource-license.sh
+
+      - name: 'Upload Artifact - license.md'
+        uses: actions/upload-artifact@v4
+        with:
+          name: "licenses.md"
+          path: "licenses.md"
+          retention-days: 1
+
+      - name: 'Upload Artifact - content'
+        uses: actions/upload-artifact@v4
+        with:
+          name: "license-content"
+          path: "license-content"
+          retention-days: 1
+
+#      - name: Upload Markdown to Slack
+#        env:
+#          # #marketing-licensing-update
+#          channel_id: "C06Q74Q12RJ"
+#          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
+#        run: >
+#          curl -F file=@licenses.md
+#          -F "initial_comment=Markdown License File"
+#          -F channels=${channel_id}
+#          -H "Authorization: Bearer ${SLACK_BOT_TOKEN}"
+#          https://slack.com/api/files.upload
+          
+
+#      - name: Post Markdown to Slack
+#        id: slack-markdown-message
+#        uses: slackapi/slack-github-action@v1.25.0
+#        with:
+#          # #marketing-licensing-update
+#          channel-id: "C06Q74Q12RJ"
+#          payload: "${{ inputs.payload }}"
+#        env:
+#          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
+#        continue-on-error: true

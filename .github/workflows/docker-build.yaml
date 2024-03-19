@@ -6,8 +6,7 @@ name: "Docker Build"
 # Artifacts:
 #  harperdb-${{ inputs.harperdbVersion }}.tgz  -- harperdb tarball from build.yaml or NPM
 #
-#  licenses                                    -- either built from HarperDB/harperdb_open_source_license_generator.git
-#                                                 or setting 'get_dummy_licenses' to 'true'
+#  licenses                                    -- 'licenses' artifact generated from build.yaml
 #
 # Outputs
 #---------------
@@ -48,11 +47,6 @@ on:
         default: false
         required: false
         type: boolean
-      get_dummy_licenses:
-        description: 'create dummy license dir -- do not use with dockerhub'
-        default: false
-        required: false
-        type: boolean
       containerTarball:
         description: 'override name for tarball created when container is tar: "default" tries to create a good name'
         default: 'default'
@@ -88,16 +82,7 @@ jobs:
           name: harperdb-${{ inputs.harperdbVersion }}.tgz
           path: ./
 
-      # generate dummy license file if needed
-      - name: "Generate dummy license file"
-        if: inputs.get_dummy_licenses
-        run: |
-          #!/usr/bin/env bash
-          mkdir -p utility/Docker/licenses/
-          echo "[terms-of-use](https://www.harperdb.io/legal/terms-of-use)" > utility/Docker/licenses/terms-of-use.md
-
       - uses: actions/download-artifact@v4
-        if: inputs.get_dummy_licenses == false
         with:
           name: "licenses"
           path: "utility/Docker/licenses/"

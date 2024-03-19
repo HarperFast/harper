@@ -189,43 +189,6 @@ jobs:
       - meta
     uses: ./.github/workflows/build.yaml
 
-  ####################################
-  #  Get License Files for Container
-  ####################################
-  getLicenses:
-    runs-on: ubuntu-latest
-    needs:
-      - meta
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@v4
-      - name: "Get Latest License Files"
-        run: .github/scripts/get-license-files.sh
-      - name: "Get HarperDB/harperdb_open_source_license_generator.git"
-        uses: actions/checkout@v4
-        with:
-          repository: "HarperDB/harperdb_open_source_license_generator.git"
-          path: "harperdb_open_source_license_generator"
-          ref: "master"
-      - uses: actions/setup-node@v4
-      - name: "Generate license file"
-        env:
-          project_path: "."
-          output_file: "utility/Docker/licenses/open-source-licenses-notices.md"
-          template_file: "harperdb_open_source_license_generator/template.txt"
-        run: |
-          #!/usr/bin/env bash
-          cd harperdb_open_source_license_generator
-          npm install --omit=dev
-          cd -
-          node harperdb_open_source_license_generator/index.js
-      - name: 'Upload Artifact'
-        uses: actions/upload-artifact@v4
-        with:
-          name: "licenses"
-          path: "utility/Docker/licenses/"
-          retention-days: 1
-
   ##############################################
   #  Release to Private NPM harperdb/@harperdb
   ##############################################
@@ -259,7 +222,6 @@ jobs:
   dockerhubPrivateRelease:
     needs:
       - meta
-      - getLicenses
       - build
     uses: ./.github/workflows/docker-build.yaml
     with:
@@ -281,7 +243,6 @@ jobs:
     secrets: inherit
     needs:
       - meta
-      - getLicenses
       - npmPrivateRelease
       - dockerhubPrivateRelease
       - sendSlackMessageRealeaseStarted
@@ -348,7 +309,6 @@ jobs:
       - build
       - meta
       - npmPrivateRelease
-      - getLicenses
       - dockerhubPrivateRelease
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -509,7 +469,6 @@ jobs:
     secrets: inherit
     needs:
       - meta
-      - getLicenses
       - build
       - npmPrivateRelease
       - dockerhubPrivateRelease

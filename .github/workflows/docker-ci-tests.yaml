@@ -41,7 +41,6 @@ jobs:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       container: 'tar'
       file: ${{ matrix.file }}
-      get_dummy_licenses: true
 
   #############
   #  Run Tests

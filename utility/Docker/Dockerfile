@@ -34,7 +34,7 @@ RUN apt-get update && apt-get install -y procps git
 
 # add Licensing files
 RUN mkdir /licenses
-COPY utility/Docker/licenses/* /licenses/.
+COPY utility/Docker/licenses /licenses
 
 #Change node user and group to harperdb
 RUN usermod -d /home/harperdb -l harperdb node && \
