@@ -284,7 +284,10 @@ class SubscriptionsSession {
 		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
 		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
 		if (existing_subscription) {
+			// end the subscription, cleanup
 			existing_subscription.end();
+			// remove from our list of subscriptions
+			this.subscriptions.splice(this.subscriptions.indexOf(existing_subscription), 1);
 			return true;
 		}
 	}
@@ -420,19 +423,26 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	async addSubscription(subscription, needs_ack) {
 		await this.resumeSubscription(subscription, needs_ack);
 		const { qos, startTime: start_time } = subscription;
-		if (qos > 0 && !start_time) {
-			this.sessionRecord.subscriptions = this.subscriptions.map((subscription) => {
-				let start_time = subscription.startTime;
-				if (!start_time) start_time = subscription.startTime = getNextMonotonicTime();
-				trace('Added durable subscription', subscription.topic, start_time);
-				return {
-					qos: subscription.qos,
-					topic: subscription.topic,
-					startTime: start_time,
-				};
-			});
-			DurableSession.put(this.sessionRecord);
-		}
+		if (qos > 0 && !start_time) this.saveSubscriptions();
 		return subscription.qos;
+	}
+	removeSubscription(topic) {
+		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
+		let result = super.removeSubscription(topic);
+		if (existing_subscription.qos > 0) this.saveSubscriptions();
+		return result;
+	}
+	saveSubscriptions() {
+		this.sessionRecord.subscriptions = this.subscriptions.map((subscription) => {
+			let start_time = subscription.startTime;
+			if (!start_time) start_time = subscription.startTime = getNextMonotonicTime();
+			trace('Added durable subscription', subscription.topic, start_time);
+			return {
+				qos: subscription.qos,
+				topic: subscription.topic,
+				startTime: start_time,
+			};
+		});
+		DurableSession.put(this.sessionRecord);
 	}
 }
