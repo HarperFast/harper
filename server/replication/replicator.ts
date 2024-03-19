@@ -98,28 +98,35 @@ export function setReplicator(db_name, table, options) {
 			 * of the table classes.
 			 */
 			static async subscribe() {
-				const subscription = (this.subscription = new IterableEventQueue());
 				const db_subscriptions = options.databaseSubscriptions || database_subscriptions;
-				const table_by_id = db_subscriptions.get(db_name)?.tableById || [];
+				let subscription = db_subscriptions.get(db_name);
+				const table_by_id = subscription?.tableById || [];
 				table_by_id[table.tableId] = table;
-				db_subscriptions.set(db_name, subscription);
-				subscription.tableById = table_by_id;
-				subscription.auditStore = table.auditStore;
-				subscription.databaseName = db_name;
-				if (getWorkerIndex() < MAX_INGEST_THREADS) {
-					for (const node of options.routes) {
-						try {
-							const url = typeof node === 'string' ? node : node.url;
-							// TODO: Do we need to have another way to determine URL?
-							// Node subscription also needs to be aware of other nodes that will be excluded from the current subscription
-							const connection = new NodeReplicationConnection(url, subscription, table.databaseName);
-							connection.connect();
-						} catch (error) {
-							console.error(error);
+				if (!subscription) {
+					// if and only if we are the first table for the database, then we set up the subscription.
+					// We only need one subscription for the database
+					// TODO: Eventually would be nice to have a real database subscription that delegated each specific table
+					// event to each table
+					subscription = (this.subscription = new IterableEventQueue());
+					db_subscriptions.set(db_name, subscription);
+					subscription.tableById = table_by_id;
+					subscription.auditStore = table.auditStore;
+					subscription.databaseName = db_name;
+					if (getWorkerIndex() < MAX_INGEST_THREADS) {
+						for (const node of options.routes) {
+							try {
+								const url = typeof node === 'string' ? node : node.url;
+								// TODO: Do we need to have another way to determine URL?
+								// Node subscription also needs to be aware of other nodes that will be excluded from the current subscription
+								const connection = new NodeReplicationConnection(url, subscription, table.databaseName);
+								connection.connect();
+							} catch (error) {
+								console.error(error);
+							}
 						}
 					}
+					return subscription;
 				}
-				return subscription;
 			}
 			static subscribeOnThisThread(worker_index, total_workers) {
 				// we need a subscription on every thread because we could get subscription requests from any

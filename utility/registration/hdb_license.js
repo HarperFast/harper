@@ -219,7 +219,7 @@ function licenseSearch() {
 		licenses = file_licenses.split(terms.NEW_LINE);
 	} catch (e) {
 		if (e.code === 'ENOENT') {
-			log.info('no license file found');
+			log.debug('no license file found');
 		} else {
 			log.error(`could not search for licenses due to: '${e.message}`);
 		}

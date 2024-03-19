@@ -5,6 +5,7 @@ import {addSubscription} from '../../resources/transactionBroadcast';
 import {active_subscriptions, addNodeSubscription, removeNodeSubscription} from './activeSubscriptions';
 import env from '../../utility/environment/environmentManager';
 import { readAuditEntry, Decoder } from '../../resources/auditStore';
+import { HAS_STRUCTURE_UPDATE } from '../../resources/RecordEncoder';
 import { readKey, writeKey } from 'ordered-binary';
 import { addSubscription } from '../../resources/transactionBroadcast';
 import { decode, encode, Packr } from 'msgpackr';
@@ -13,6 +14,7 @@ import { readFileSync } from 'fs';
 import { active_subscriptions, addNodeSubscription, removeNodeSubscription } from './activeSubscriptions';
 import { exportIdMapping, getNodeName, remoteToLocalNodeId, getIdOfRemoteNode } from './nodeIdMapping';
 import { threadId } from 'worker_threads';
+import * as logger from '../../utility/logging/harper_logger';
 
 const SUBSCRIBE_CODE = 129;
 const SEND_NODE_ID = 140;
@@ -48,7 +50,7 @@ export class NodeReplicationConnection {
 		});
 		let replicator;
 		this.socket.on('open', () => {
-			console.log('connected to ' + this.url);
+			logger.info('connected to ' + this.url);
 			this.retries = 0;
 			this.retryTime = 200;
 			replicator = replicateOverWS(this.socket, {
@@ -59,12 +61,12 @@ export class NodeReplicationConnection {
 		});
 		this.socket.on('error', (error) => {
 			if (error.code !== 'ECONNREFUSED')
-				console.error('Error in connection to ' + this.url, error.message);
+				logger.error('Error in connection to ' + this.url, error.message);
 		});
 
 		this.socket.on('close', () => {
 			if (++this.retries % 20 === 1)
-				console.warn(`disconnected from ${this.url} (db: "${this.databaseName})`);
+				logger.warn(`disconnected from ${this.url} (db: "${this.databaseName})`);
 			replicator?.end();
 
 			// try to reconnect
@@ -82,7 +84,7 @@ export class NodeReplicationConnection {
  */
 export function replicateOverWS(ws, options) {
 	const connection_id = threadId + (options.url ? 'c:' + options.url.slice(-4) : 's:' + options.port) + ' ' + Math.random().toString().slice(2,3);
-	console.log(connection_id, 'registering');
+	logger.info(connection_id, 'registering');
 
 	let encoding_start = 0;
 	let encoding_buffer = Buffer.allocUnsafeSlow(1024);
@@ -121,9 +123,9 @@ export function replicateOverWS(ws, options) {
 					case SEND_NODE_ID: {
 						// data is the map of its mapping of node name/guid to short ids
 						remote_node_name = message[1];
-						console.log(connection_id, 'received node id', remote_node_name, database_name);
+						logger.info(connection_id, 'received node id', remote_node_name, database_name);
 						if (!database_name) setDatabase((database_name = message[2]));
-						console.log(connection_id, 'setDatabase', database_name, tables && Object.keys(tables));
+						logger.info(connection_id, 'setDatabase', database_name, tables && Object.keys(tables));
 						sendSubscriptionRequestUpdate();
 						// TODO: Listen to adc
 						break;
@@ -131,13 +133,13 @@ export function replicateOverWS(ws, options) {
 					case SEND_TABLE_FIXED_STRUCTURE:
 						const table_name = message[3];
 						if (!tables) {
-							if (database_name) console.error(connection_id, 'No tables found for', database_name);
-							else console.error(connection_id, 'Database name never received');
+							if (database_name) logger.error(connection_id, 'No tables found for', database_name);
+							else logger.error(connection_id, 'Database name never received');
 						}
 						const table = tables[table_name];
 						if (!table) {
 							// TODO: We may want to create a table on the fly
-							console.error(connection_id, 'Table not found', table_name);
+							logger.error(connection_id, 'Table not found', table_name);
 						}
 						table_decoders[table_id] = {
 							name: table_name,
@@ -164,7 +166,7 @@ export function replicateOverWS(ws, options) {
 						const start_time = decoder.getFloat64(2 + db_length);*/
 						if (incoming_subscription) {
 							if (database_name !== incoming_subscription.databaseName) {
-								console.error(
+								logger.error(
 									'Subscription request for wrong database',
 									database_name,
 									incoming_subscription.databaseName
@@ -172,9 +174,9 @@ export function replicateOverWS(ws, options) {
 								return;
 							}
 						} else incoming_subscription = db_subscriptions.get(database_name);
-						console.log(connection_id, 'received subscription request for', database_name, 'at', start_time, 'omitting', remote_omitted_node_names);
+						logger.info(connection_id, 'received subscription request for', database_name, 'at', start_time, 'omitting', remote_omitted_node_names);
 						if (audit_subscription) {
-							console.log(connection_id, 'stopping previous subscription', database_name, start_time);
+							logger.info(connection_id, 'stopping previous subscription', database_name, start_time);
 							audit_subscription.emit('close');
 						}
 						if (start_time === Infinity) // use to unsubscribe
@@ -195,7 +197,7 @@ export function replicateOverWS(ws, options) {
 						const sendAuditRecord = (audit_record, local_time) => {
 							if (!audit_record) {
 								if (current_transaction.txnTime) {
-									console.log(connection_id, 'sending replication message', encoding_start, position);
+									logger.info(connection_id, 'sending replication message', encoding_start, position);
 									ws.send(encoding_buffer.subarray(encoding_start, position));
 								}
 								encoding_start = position;
@@ -203,18 +205,30 @@ export function replicateOverWS(ws, options) {
 								return; // end of transaction, nothing more to do
 							}
 							const node_id = audit_record.nodeId;
+							const table_id = audit_record.tableId;
+							const table_entry = table_by_id[table_id];
+							if (!table_entry) {
+								return logger.error('Invalid table id', table_id);
+							}
+							let primary_store = table_entry.table.primaryStore;
+							let encoder = primary_store.encoder;
+							if ((audit_record.extendedType & HAS_STRUCTURE_UPDATE) || !encoder.typedStructs) {
+								encoder.typedStructs = [];
+								// there is a structure update, fully load the entire record so it is all loaded into memory
+								const value = audit_record.getValue(primary_store, true);
+								JSON.stringify(value);
+							}
 							if (omitted_node_ids.includes(node_id)) {
-								console.log(connection_id, 'skipping replication update', audit_record.recordId, 'to:', remote_node_name, 'from:', node_id, 'omitted:', omitted_node_ids)
+								logger.info(connection_id, 'skipping replication update', audit_record.recordId, 'to:', remote_node_name, 'from:', node_id, 'omitted:', omitted_node_ids)
 								return;
 							}
-							console.log(connection_id, 'preparing replication update', audit_record.recordId, 'to:', remote_node_name, 'from:', node_id, 'omitted:', omitted_node_ids)
-							const table_id = audit_record.tableId;
+							logger.info(connection_id, 'preparing replication update', audit_record.recordId, 'to:', remote_node_name, 'from:', node_id, 'omitted:', omitted_node_ids)
 							const txn_time = audit_record.version;
 							const encoded = audit_record.encoded;
 							if (current_transaction.txnTime !== txn_time) {
 								// send the queued transaction
 								if (current_transaction.txnTime) {
-									console.log('new txn time, sending queued txn', current_transaction.txnTime);
+									logger.info('new txn time, sending queued txn', current_transaction.txnTime);
 									ws.send(encoding_buffer.subarray(encoding_start, position));
 								}
 								current_transaction.txnTime = txn_time;
@@ -236,11 +250,12 @@ export function replicateOverWS(ws, options) {
 							const start = audit_record.encoded[0] === 66 ? 8 : 0;
 							writeInt(audit_record.encoded.length - start);
 							writeBytes(audit_record.encoded, start);
-							const table_entry = table_by_id[table_id];
-							const typed_structs = table_entry.table.primaryStore.encoder.typedStructs;
-							if (typed_structs.length != table_entry.typed_length) {
-								table_entry.typed_length = typed_structs.length;
-								console.log(connection_id, 'send table struct');
+							const typed_structs = encoder.typedStructs;
+							const structures = encoder.structures;
+							if (typed_structs?.length != table_entry.typed_length || structures?.length != table_entry.structure_length) {
+								table_entry.typed_length = typed_structs?.length;
+								table_entry.structure_length = structures.length;
+								logger.info(connection_id, 'send table struct');
 								if (!table_entry.sentName) {
 									// TODO: only send the table name once
 									table_entry.sentName = true;
@@ -303,13 +318,13 @@ export function replicateOverWS(ws, options) {
 				};
 				begin_txn = false;
 				// TODO: Once it is committed, also record the localtime in the table with symbol metadata, so we can resume from that point
-				console.log(connection_id, 'received replication message, id:', event.id, 'version:', audit_record.version, 'nodeId', event.nodeId, 'name', event.value.name);
+				logger.info(connection_id, 'received replication message, id:', event.id, 'version:', audit_record.version, 'nodeId', event.nodeId, 'name', event.value.name);
 				incoming_subscription.send(event);
 				decoder.position = start + event_length;
 			} while (decoder.position < body.byteLength);
 			incoming_subscription.send({ type: 'end_txn' });
 		} catch (error) {
-			console.error(connection_id, 'Error handling incoming replication message', error);
+			logger.error(connection_id, 'Error handling incoming replication message', error);
 		}
 	});
 	function sendSubscriptionRequestUpdate(existing_listener) {
@@ -330,8 +345,15 @@ export function replicateOverWS(ws, options) {
 			};
 			if (!subscription)
 				addNodeSubscription(database_name, remote_node_name, onSubscriptionUpdate);
+			if (existing_listener && JSON.stringify(existing_listener.omittedNodes) === JSON.stringify(omitted_node_names)) {
+				logger.info(connection_id, 'subscription checked, no changes needed');
+				return; // no changes needed
+			} else if (existing_listener) {
+				logger.info('sub difference', JSON.stringify(existing_listener.omittedNodes), JSON.stringify(omitted_node_names));
+			}
+			onSubscriptionUpdate.omittedNodes = omitted_node_names;
 			ws.send(encode([SUBSCRIBE_CODE, database_name, options.startTime, null, omitted_node_names]));
-			console.log(connection_id, (existing_listener ? 'resent' : 'sent') + ' subscription request to', remote_node_name, 'for', database_name, 'omitting', omitted_node_names);
+			logger.info(connection_id, (existing_listener ? 'resent' : 'sent') + ' subscription request to', remote_node_name, 'for', database_name, 'omitting', omitted_node_names);
 			subscription_request = {
 				end() {
 					removeNodeSubscription(database_name, remote_node_name);
@@ -340,23 +362,24 @@ export function replicateOverWS(ws, options) {
 		} else {
 			if (existing_listener)
 				ws.send(encode([SUBSCRIBE_CODE, database_name, Infinity, null, []]));
-			console.log(connection_id, (existing_listener ? 'removing subscription ' : 'already subscribed to'), database_name, remote_node_name);
+			logger.info(connection_id, (existing_listener ? 'removing subscription ' : 'already subscribed to'), database_name, remote_node_name);
 		}
 	}
 	function setDatabase(database_name) {
 		incoming_subscription = incoming_subscription || db_subscriptions.get(database_name);
 		if (!incoming_subscription) {
-			console.error(`No database named "${database_name}" was declared and registered`);
+			logger.error(`No database named "${database_name}" was declared and registered`);
 			return;
 		}
 		audit_store = incoming_subscription.auditStore;
 		if (!audit_store) {
-			console.error('No audit store found in ' + database_name);
+			logger.error('No audit store found in ' + database_name);
 			return;
 		}
 		if (!tables) tables = (options.database || getDatabases() || {})[database_name];
 
 		const this_node_name = getNodeName(audit_store);
+		logger.info('Sending node name', this_node_name, 'database name', database_name);
 		ws.send(encode([SEND_NODE_ID, this_node_name, database_name]));
 	}
 	return {

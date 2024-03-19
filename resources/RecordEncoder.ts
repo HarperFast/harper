@@ -25,6 +25,8 @@ export const TIMESTAMP_ASSIGN_PREVIOUS = 3;
 export const TIMESTAMP_RECORD_PREVIOUS = 4;
 export const HAS_EXPIRATION = 16;
 export const PENDING_LOCAL_TIME = 1;
+export const HAS_STRUCTURE_UPDATE = 0x100;
+
 
 let last_encoding,
 	last_value_encoding,
@@ -79,6 +81,12 @@ export class RecordEncoder extends Encoder {
 				return encoded;
 			} else return super_encode.call(this, record, options);
 		};
+		const super_saveStructures = this.saveStructures;
+		this.saveStructures = function(structures, isCompatible) {
+			let result = super_saveStructures.call(this, structures, isCompatible);
+			this.hasStructureUpdate = true;
+			return result;
+		}
 	}
 	decode(buffer, options) {
 		const start = options?.start || 0;
@@ -286,6 +294,11 @@ export function getUpdateRecord(store, table_id, audit_store) {
 			if (audit) {
 				const username = context?.user?.username;
 				if (audit_record) last_value_encoding = store.encoder.encode(audit_record);
+				let extended_type = 0;
+				if (store.hasStructureUpdate) {
+					extended_type = HAS_STRUCTURE_UPDATE;
+					store.hasStructureUpdate = false;
+				}
 				if (resolve_record && existing_entry?.localTime) {
 					const replacing_id = existing_entry?.localTime;
 					const replacing_entry = audit_store.get(replacing_id);
@@ -301,7 +314,8 @@ export function getUpdateRecord(store, table_id, audit_store) {
 								context?.nodeId || 0,
 								username,
 								type,
-								last_value_encoding
+								last_value_encoding,
+								extended_type
 							),
 							{ ifVersion }
 						);
@@ -318,7 +332,8 @@ export function getUpdateRecord(store, table_id, audit_store) {
 						context?.nodeId || 0,
 						username,
 						type,
-						last_value_encoding
+						last_value_encoding,
+						extended_type
 					),
 					{
 						append: type !== 'invalidate', // for invalidation, we expect the record to be rewritten, so we don't want to necessarily expect pure sequential writes that create full pages

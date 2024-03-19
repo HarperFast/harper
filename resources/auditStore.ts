@@ -135,7 +135,7 @@ const MESSAGE = 3;
 const INVALIDATE = 4;
 const PATCH = 5;
 const HAS_PREVIOUS_VERSION = 64;
-
+const HAS_EXTENDED_TYPE = 128;
 const EVENT_TYPES = {
 	put: PUT | HAS_RECORD,
 	[PUT]: 'put',
@@ -148,7 +148,7 @@ const EVENT_TYPES = {
 	patch: PATCH | HAS_PARTIAL_RECORD,
 	[PATCH]: 'patch',
 };
-export function createAuditEntry(txn_time, table_id, record_id, previous_local_time, node_id, username, type, encoded_record) {
+export function createAuditEntry(txn_time, table_id, record_id, previous_local_time, node_id, username, type, encoded_record, extended_type) {
 	const action = EVENT_TYPES[type];
 	if (!action) throw new Error(`Invalid audit entry type ${type}`);
 	let position = 1;
@@ -156,6 +156,10 @@ export function createAuditEntry(txn_time, table_id, record_id, previous_local_t
 		if (previous_local_time > 1) ENTRY_DATAVIEW.setFloat64(0, previous_local_time);
 		else ENTRY_HEADER.set(PREVIOUS_TIMESTAMP_PLACEHOLDER);
 		position = 9;
+	}
+	if (extended_type) {
+		if (extended_type & 0xffc0ff) throw new Error('Illegal extended type')
+		position++;
 	}
 
 	writeInt(node_id);
@@ -165,7 +169,10 @@ export function createAuditEntry(txn_time, table_id, record_id, previous_local_t
 	position += 8;
 	if (username) writeValue(username);
 	else ENTRY_HEADER[position++] = 0;
-	ENTRY_HEADER[previous_local_time ? 8 : 0] = action;
+	if (extended_type)
+		ENTRY_DATAVIEW.setUint16(previous_local_time ? 8 : 0, action | extended_type | 0x8000)
+	else
+		ENTRY_HEADER[previous_local_time ? 8 : 0] = action;
 	const header = ENTRY_HEADER.subarray(0, position);
 	if (encoded_record) {
 		return Buffer.concat([header, encoded_record]);
@@ -254,6 +261,7 @@ export function readAuditEntry(buffer) {
 			getBinaryValue() {
 				return action & (HAS_RECORD | HAS_PARTIAL_RECORD) ? buffer.subarray(decoder.position) : undefined;
 			},
+			extendedType: action,
 		};
 	} catch (error) {
 		harper_logger.error('Reading audit entry error', error, buffer);

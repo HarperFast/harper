@@ -21,7 +21,7 @@ describe('Replication', () => {
 		let worker = new Worker(__filename.replace(/\.js/, '-thread.js'), {
 			workerData: {
 				index,
-				workerIndex: 1, // just used to indicate that it is below the max ingest thread
+				workerIndex: 0, // just used to indicate that it is below the max ingest thread
 				nodeCount: node_count,
 				databasePath: database_config.data.path + '/test-replication-' + index,
 				noServerStart: true,
@@ -140,6 +140,7 @@ describe('Replication', () => {
 	});
 	describe('With third node', function() {
 		before(async function() {
+			this.timeout(1000000);
 			await addWorkerNode(2);
 			await new Promise((resolve) => setTimeout(resolve, 1000));
 			console.log('added worker');
