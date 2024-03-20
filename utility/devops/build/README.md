@@ -15,13 +15,14 @@ DevOps process for release.
       * [Build and Release](#build-and-release)
       * [Verification](#verification)
     * [NPM Private Release](#npm-private-release)
-      * [Publish Restricted NPM Package](#publish-restricted-npm-package)
+      * [Publish Restricted NPM Package](#publish-restricted-npm-package-)
     * [Private Docker Hub Release](#private-docker-hub-release)
   * [Prod Release](#prod-release)
-    * [Publish Public NPM Package](#publish-public-npm-package)
-      * [Publishing a GA release version:](#publishing-a-ga-release-version)
-      * [Publishing an alpha/beta/RC version:](#publishing-an-alphabetarc-version)
-    * [Docker Hub Release](#docker-hub-release)
+    * [release-on-tag.yaml workflow](#release-on-tagyaml-workflow)
+      * [Publish Public NPM Package](#publish-public-npm-package)
+        * [Publishing a GA release version:](#publishing-a-ga-release-version)
+        * [Publishing an alpha/beta/RC version:](#publishing-an-alphabetarc-version)
+      * [Docker Hub Release](#docker-hub-release)
     * [Redhat Container Image Release](#redhat-container-image-release)
       * [pre-requisites](#pre-requisites)
       * [process](#process)
@@ -89,7 +90,7 @@ NPM does not allow publishing a package as a version that already exists on NPM,
 good idea to first publish a new version of our restricted package and verify your work 
 before publishing a new version of our public package.
 
-#### Publish Restricted NPM Package
+#### Publish Restricted NPM Package 
 
 Run the `npm Publish Private` 
 ([npm-publish-private.yaml](https://github.com/HarperDB/harperdb/blob/main/.github/workflows/npm-publish-private.yaml))
@@ -118,7 +119,31 @@ by publishing to the private repository first.
 
 ## Prod Release
 
-### Publish Public NPM Package
+### release-on-tag.yaml workflow
+
+This workflow runs anytime a tag is pushed to the 'HarperDB/harperdb' repository matching the pattern: `release_*`, or it is launched directly by a user ('workflow_dispatch').
+The workflow will fail if the tag does not further match the following pattern, even if called manually (through 'workflow_dispatch'):
+```
+release_<version>[-<alpha|beta|rc>.<prerelease-version>]
+```
+such as
+```
+release_4.3.0-beta.16
+ - or -
+release_4.3.0
+```
+
+Updates to the status of the workflow run will be posted to the `#development-ci` channel.
+
+This workflow covers the following in the prod release context:
+- Publish Public NPM Package
+  - both GA or alpha/beta/rc based on the tag 
+- Docker Hub Release
+    - both GA or alpha/beta/rc based on the tag
+  
+The following sections are if you wish to manually handle a release without using tags.
+
+#### Publish Public NPM Package
 
 Run the `npm Publish Public`
 ([npm-publish-public.yaml](https://github.com/HarperDB/harperdb/blob/main/.github/workflows/npm-publish-public.yaml))
@@ -126,7 +151,7 @@ workflow against the release branch/tag
 
 > Setting `dry-run` to `true` as an input does everything publish would do except actually publishing to the registry
 
-#### Publishing a GA release version:
+##### Publishing a GA release version:
 
 Select the following drop-down options on the `npm publish` workflow:
 
@@ -137,7 +162,7 @@ Select the following drop-down options on the `npm publish` workflow:
   
 Verify tags and deprecated version at [harperdb/harperdb](https://www.npmjs.com/package/harperdb/harperdb)
 
-#### Publishing an alpha/beta/RC version:
+##### Publishing an alpha/beta/RC version:
 
 Select the following drop-down options on the `npm publish` workflow:
 
@@ -148,7 +173,7 @@ Select the following drop-down options on the `npm publish` workflow:
 
 Verify tags and deprecated version at [harperdb/harperdb](https://www.npmjs.com/package/harperdb/harperdb)
 
-### Docker Hub Release
+#### Docker Hub Release
 
 Docker Hub allows publishing a new image with tags that match tags of an already published image, so no need to practice 
 by publishing to the private repository first. 
@@ -167,6 +192,8 @@ workflow against the release branch/tag.
 The above step will publish the `harperdb/harperdb-openshift` image to Dockerhub. From here, we need to submit it to 
 Redhat for certification.
 
+This should be rolled up into the `release_on_tag.yaml` workflow soon.
+
 #### pre-requisites
 
 1. podman (or [podman-desktop](https://podman-desktop.io/)) - you can installed this next to docker-desktop. This is needed to generate a docker auth file for Redhat.
@@ -183,13 +210,12 @@ podman login registry.hub.docker.com --authfile ./temp-auth.json
 Next is to push these images to Redhat. You will want to `docker pull` the image first. You will need to have built the `openshift-preflight` utility from above.
 They `pyxis` key can be found in LastPass under the redhat.com harperdb account entry in the notes. 
 
-> You have to run this for each platform we support (currently `amd64` and `arm64`)
+> You no longer have to run this for each platform. Running without the `--platform` option will push the manifest from the docker registry
 ```shell
 preflight check container registry.hub.docker.com/harperdb/harperdb-openshift:[version] \
   --submit \
   --pyxis-api-token=${PYXIS_API_TOKEN} \
   --certification-project-id=64652bdb6c16c68a7fdbe93b \
-  --platform [arm64|amd64] \
   --docker-config ./temp-auth.json
 ```
 
