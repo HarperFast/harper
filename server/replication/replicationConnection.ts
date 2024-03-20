@@ -24,7 +24,7 @@ const SEND_TABLE_STRUCTURE = 131;
 const SEND_TABLE_FIXED_STRUCTURE = 132;
 export const table_update_listeners = new Map();
 export const database_subscriptions = new Map();
-
+const DEBUG_MODE = false;
 
 /**
  * Handles reconnection, and requesting catch-up
@@ -66,7 +66,7 @@ export class NodeReplicationConnection {
 
 		this.socket.on('close', () => {
 			if (++this.retries % 20 === 1)
-				logger.warn(`disconnected from ${this.url} (db: "${this.databaseName})`);
+				logger.warn(`disconnected from ${this.url} (db: "${this.databaseName}")`);
 			replicator?.end();
 
 			// try to reconnect
@@ -197,7 +197,10 @@ export function replicateOverWS(ws, options) {
 						const sendAuditRecord = (audit_record, local_time) => {
 							if (!audit_record) {
 								if (current_transaction.txnTime) {
-									logger.info(connection_id, 'sending replication message', encoding_start, position);
+									if (DEBUG_MODE) logger.info(connection_id, 'sending replication message', encoding_start, position);
+									if (encoding_buffer[encoding_start] !==66) {
+										logger.error('Invalid encoding of message');
+									}
 									ws.send(encoding_buffer.subarray(encoding_start, position));
 								}
 								encoding_start = position;
@@ -219,16 +222,19 @@ export function replicateOverWS(ws, options) {
 								JSON.stringify(value);
 							}
 							if (omitted_node_ids.includes(node_id)) {
-								logger.info(connection_id, 'skipping replication update', audit_record.recordId, 'to:', remote_node_name, 'from:', node_id, 'omitted:', omitted_node_ids)
+								if (DEBUG_MODE) logger.info(connection_id, 'skipping replication update', audit_record.recordId, 'to:', remote_node_name, 'from:', node_id, 'omitted:', omitted_node_ids)
 								return;
 							}
-							logger.info(connection_id, 'preparing replication update', audit_record.recordId, 'to:', remote_node_name, 'from:', node_id, 'omitted:', omitted_node_ids)
+							if (DEBUG_MODE) logger.info(connection_id, 'preparing replication update', audit_record.recordId, 'to:', remote_node_name, 'from:', node_id, 'omitted:', omitted_node_ids)
 							const txn_time = audit_record.version;
 							const encoded = audit_record.encoded;
 							if (current_transaction.txnTime !== txn_time) {
 								// send the queued transaction
 								if (current_transaction.txnTime) {
-									logger.info('new txn time, sending queued txn', current_transaction.txnTime);
+									if (DEBUG_MODE) logger.info('new txn time, sending queued txn', current_transaction.txnTime);
+									if (encoding_buffer[encoding_start] !==66) {
+										logger.error('Invalid encoding of message');
+									}
 									ws.send(encoding_buffer.subarray(encoding_start, position));
 								}
 								current_transaction.txnTime = txn_time;
@@ -306,6 +312,10 @@ export function replicateOverWS(ws, options) {
 				const event_length = decoder.readInt();
 				const start = decoder.position;
 				const audit_record = readAuditEntry(body);
+				const table_decoder = table_decoders[audit_record.tableId];
+				if (!table_decoder) {
+					logger.error(`No table found with an id of ${audit_record.tableId}`);
+				}
 				const event = {
 					table: table_decoders[audit_record.tableId].name,
 					id: audit_record.recordId,
@@ -318,7 +328,7 @@ export function replicateOverWS(ws, options) {
 				};
 				begin_txn = false;
 				// TODO: Once it is committed, also record the localtime in the table with symbol metadata, so we can resume from that point
-				logger.info(connection_id, 'received replication message, id:', event.id, 'version:', audit_record.version, 'nodeId', event.nodeId, 'name', event.value.name);
+				if (DEBUG_MODE) logger.info(connection_id, 'received replication message, id:', event.id, 'version:', audit_record.version, 'nodeId', event.nodeId, 'name', event.value.name);
 				incoming_subscription.send(event);
 				decoder.position = start + event_length;
 			} while (decoder.position < body.byteLength);
@@ -406,9 +416,9 @@ export function replicateOverWS(ws, options) {
 	}
 	function writeBytes(src, start = 0, end = src.length) {
 		const length = end - start;
-		if (length + 11 > encoding_buffer.length - position) {
-			const new_buffer = Buffer.allocUnsafeSlow(((length + 4096) >> 10) << 11);
-			encoding_buffer.copy(new_buffer, encoding_start);
+		if (length + 16 > encoding_buffer.length - position) {
+			const new_buffer = Buffer.allocUnsafeSlow(((length + 0x10000) >> 10) << 11);
+			encoding_buffer.copy(new_buffer, 0, encoding_start, position);
 			position = position - encoding_start;
 			encoding_start = 0;
 			encoding_buffer = new_buffer;
@@ -418,9 +428,9 @@ export function replicateOverWS(ws, options) {
 		position += length;
 	}
 	function writeFloat64(number) {
-		if (8 > encoding_buffer.length - position) {
-			const new_buffer = Buffer.allocUnsafeSlow(4096);
-			encoding_buffer.copy(new_buffer, encoding_start);
+		if (16 > encoding_buffer.length - position) {
+			const new_buffer = Buffer.allocUnsafeSlow(0x10000);
+			encoding_buffer.copy(new_buffer, 0, encoding_start, position);
 			position = position - encoding_start;
 			encoding_start = 0;
 			encoding_buffer = new_buffer;

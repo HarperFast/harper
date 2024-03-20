@@ -553,6 +553,7 @@ export function makeTable(options) {
 					records: './', // an href to the records themselves
 					name: table_name,
 					database: database_name,
+					auditSize: audit_store?.getStats().entryCount,
 					attributes,
 				};
 			}
