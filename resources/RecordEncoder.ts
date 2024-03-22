@@ -295,9 +295,9 @@ export function getUpdateRecord(store, table_id, audit_store) {
 				const username = context?.user?.username;
 				if (audit_record) last_value_encoding = store.encoder.encode(audit_record);
 				let extended_type = 0;
-				if (store.hasStructureUpdate) {
+				if (store.encoder.hasStructureUpdate) {
 					extended_type = HAS_STRUCTURE_UPDATE;
-					store.hasStructureUpdate = false;
+					store.encoder.hasStructureUpdate = false;
 				}
 				if (resolve_record && existing_entry?.localTime) {
 					const replacing_id = existing_entry?.localTime;

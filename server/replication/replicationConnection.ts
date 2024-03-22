@@ -24,7 +24,7 @@ const SEND_TABLE_STRUCTURE = 131;
 const SEND_TABLE_FIXED_STRUCTURE = 132;
 export const table_update_listeners = new Map();
 export const database_subscriptions = new Map();
-const DEBUG_MODE = false;
+const DEBUG_MODE = true;
 
 /**
  * Handles reconnection, and requesting catch-up
@@ -322,7 +322,7 @@ export function replicateOverWS(ws, options) {
 					break;
 				}
 				const start = decoder.position;
-				const audit_record = readAuditEntry(body);
+				const audit_record = readAuditEntry(body.subarray(start, start + event_length));
 				const table_decoder = table_decoders[audit_record.tableId];
 				if (!table_decoder) {
 					logger.error(`No table found with an id of ${audit_record.tableId}`);
