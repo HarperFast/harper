@@ -84,7 +84,7 @@ export function openAuditStore(root_store) {
 			let committed;
 			try {
 				for (const { key, value } of audit_store.getRange({
-					start: 0,
+					start: 1, // must not be zero or it will be interpreted as null and overlap with symbols in search
 					snapshot: false,
 					end: Date.now() - audit_retention,
 				})) {
@@ -134,6 +134,7 @@ const DELETE = 2;
 const MESSAGE = 3;
 const INVALIDATE = 4;
 const PATCH = 5;
+export const REMOTE_SEQUENCE_UPDATE = 11;
 const HAS_PREVIOUS_VERSION = 64;
 const HAS_EXTENDED_TYPE = 128;
 const EVENT_TYPES = {

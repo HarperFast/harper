@@ -248,6 +248,7 @@ export function makeTable(options) {
 			// that we don't re-broadcast these as "requested" changes back to the source.
 			(async () => {
 				let user_role_update = false;
+				let last_sequence_id;
 				// perform the write of an individual write event
 				const writeUpdate = async (event, context) => {
 					const value = event.value;
@@ -316,6 +317,10 @@ export function makeTable(options) {
 								if (txn_in_progress) {
 									if (event.type === 'end_txn') {
 										txn_in_progress.resolve();
+										if (event.localTime && last_sequence_id !== event.localTime) {
+											dbis_db.put([Symbol.for('seq'), event.remoteNode], event.localTime);
+											last_sequence_id = event.localTime;
+										}
 										continue;
 									}
 									if (event.beginTxn) {

@@ -126,7 +126,7 @@ function notifyFromTransactionData(path, same_thread?) {
 						if (!subscribers_with_txns) subscribers_with_txns = [subscriber];
 						else subscribers_with_txns.push(subscriber);
 					}
-					subscriber.listener(audit_entry, local_time);
+					subscriber.listener(null, audit_entry, local_time);
 				} catch (error) {
 					warn('Error database listener', error);
 				}
@@ -136,7 +136,7 @@ function notifyFromTransactionData(path, same_thread?) {
 		if (!table_subscriptions) continue;
 		const record_id = audit_entry.recordId;
 		// TODO: How to handle invalidation
-		let matching_key = keyArrayToString(audit_entry.recordId);
+		let matching_key = keyArrayToString(record_id);
 		let ancestor_level = 0;
 		do {
 			const key_subscriptions = table_subscriptions.get(matching_key);

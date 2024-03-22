@@ -111,6 +111,7 @@ export function setReplicator(db_name, table, options) {
 					db_subscriptions.set(db_name, subscription);
 					subscription.tableById = table_by_id;
 					subscription.auditStore = table.auditStore;
+					subscription.dbisDB = table.dbisDB;
 					subscription.databaseName = db_name;
 					if (getWorkerIndex() < MAX_INGEST_THREADS) {
 						for (const node of options.routes) {
