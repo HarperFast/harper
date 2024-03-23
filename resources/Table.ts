@@ -179,6 +179,8 @@ export function makeTable(options) {
 				source.intermediateSource = true;
 				this.sources.unshift(source);
 			} else {
+				if (this.sources.some((source) => !source.intermediateSource))
+					throw new Error('Can not have multiple canonical (non-intermediate) sources');
 				this.sources.push(source);
 			}
 			has_source_get = source.get && (!source.get.reliesOnPrototype || source.prototype.get);
@@ -187,9 +189,9 @@ export function makeTable(options) {
 			// reject or accept a write. The other sources are "intermediate" sources that can also be
 			// notified of writes and/or fulfill gets.
 			const getApplyToIntermediateSource = (method) => {
-				let sources = this.sources.slice(0, -1);
+				let sources = this.sources;
 				sources = sources.filter(
-					(source) => source[method] && (!source[method].reliesOnPrototype || source.prototype[method])
+					(source) => source.intermediateSource && source[method] && (!source[method].reliesOnPrototype || source.prototype[method])
 				);
 				if (sources.length > 0) {
 					if (sources.length === 1) {
@@ -211,7 +213,8 @@ export function makeTable(options) {
 					}
 				}
 			};
-			const canonical_source = this.sources[this.sources.length - 1];
+			let canonical_source = this.sources[this.sources.length - 1];
+			if (canonical_source.intermediateSource) canonical_source = {}; // don't treat intermediate sources as canonical
 			const getApplyToCanonicalSource = (method) => {
 				if (
 					canonical_source[method] &&
