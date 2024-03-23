@@ -72,16 +72,10 @@ async function updateRemoteSource(request) {
 				} catch (error) {
 					hdb_logger.error(error);
 				}
-
-				// Create a stream for the new table
-				hdb_logger.trace(`Creating local stream for ${schema}.${table}`);
-				await nats_utils.createLocalTableStream(schema, table);
 			}
 
-			// System tables might not have a nats stream, if they want to replicate, they will need one.
-			if (schema === hdb_terms.SYSTEM_SCHEMA_NAME) {
-				await nats_utils.createLocalTableStream(schema, table);
-			}
+			hdb_logger.trace(`Creating local stream for ${schema}.${table}`);
+			await nats_utils.createLocalTableStream(schema, table);
 
 			// Will either remove/add consumer for this node on the other node. After that it will
 			// either stop/start a msg iterator on this node for the consumer.
