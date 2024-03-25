@@ -217,7 +217,10 @@ class SubscriptionsSession {
 		const resource_path = entry.path;
 		const resource = entry.Resource;
 		const subscription = await transaction(request, async () => {
-			const subscription = await resource.subscribe(request, this.createContext());
+			const context = this.createContext();
+			context.topic = topic;
+			context.retainHandling = retain_handling;
+			const subscription = await resource.subscribe(request, context);
 			if (!subscription) {
 				throw new Error(`No subscription was returned from subscribe for topic ${topic}`);
 			}
