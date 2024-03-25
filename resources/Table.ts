@@ -108,7 +108,16 @@ export function makeTable(options) {
 	let { attributes } = options;
 	if (!attributes) attributes = [];
 	listenToCommits(primary_store, audit_store);
-	const updateRecord = getUpdateRecord(primary_store, table_id, audit_store);
+	const updateRecord = getUpdateRecord(primary_store, table_id, audit_store, (record, previous_residency_id) => {
+		let owner_node_ids = TableResource.getResidency(record, () => {
+			return TableResource.getResidencyRecord(previous_residency_id);
+		});
+		if (owner_node_ids) {
+			let residency_id = residency_list_to_id.get(owner_node_ids.join(','));
+			if (residency_id) return residency_id;
+			return owner_node_ids;
+		}
+	});
 	const deletion_count = 0;
 	let deletion_cleanup;
 	let has_source_get;
@@ -135,6 +144,8 @@ export function makeTable(options) {
 	let has_relationships = false;
 	let last_entry;
 	let running_record_expiration;
+	let residency_list_to_id = new Map();
+	let residency_id_to_list = new Map();
 	const RangeIterable = primary_store.getRange({ start: false, end: false }).constructor;
 	const MAX_PREFETCH_SEQUENCE = 10;
 	const MAX_PREFETCH_BUNDLE = 6;
@@ -494,6 +505,14 @@ export function makeTable(options) {
 			// default to one quarter of the total eviction time, and make sure it fits into a 32-bit signed integer
 			cleanup_interval = cleanup_interval || (expiration_ms + eviction_ms) / 4;
 			scheduleCleanup();
+		}
+
+		static getResidencyRecord(id) {
+			return dbis_db.get([Symbol.for('residency'), id]);
+		}
+
+		static getResidency(record, previous_residency_id) {
+			return; // returning undefined will return the default residency of replicating everywhere
 		}
 
 		/**

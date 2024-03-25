@@ -134,9 +134,12 @@ const DELETE = 2;
 const MESSAGE = 3;
 const INVALIDATE = 4;
 const PATCH = 5;
+/** Used to indicate we have received a remote local time update */
 export const REMOTE_SEQUENCE_UPDATE = 11;
 const HAS_PREVIOUS_VERSION = 64;
 const HAS_EXTENDED_TYPE = 128;
+export const HAS_CURRENT_RESIDENCY_ID = 512;
+export const HAS_PREVIOUS_RESIDENCY_ID = 1024;
 const EVENT_TYPES = {
 	put: PUT | HAS_RECORD,
 	[PUT]: 'put',
@@ -149,7 +152,7 @@ const EVENT_TYPES = {
 	patch: PATCH | HAS_PARTIAL_RECORD,
 	[PATCH]: 'patch',
 };
-export function createAuditEntry(txn_time, table_id, record_id, previous_local_time, node_id, username, type, encoded_record, extended_type) {
+export function createAuditEntry(txn_time, table_id, record_id, previous_local_time, node_id, username, type, encoded_record, extended_type, residency_id, previous_residency_id) {
 	const action = EVENT_TYPES[type];
 	if (!action) throw new Error(`Invalid audit entry type ${type}`);
 	let position = 1;
@@ -168,6 +171,9 @@ export function createAuditEntry(txn_time, table_id, record_id, previous_local_t
 	writeValue(record_id);
 	ENTRY_DATAVIEW.setFloat64(position, txn_time);
 	position += 8;
+	if (extended_type & HAS_CURRENT_RESIDENCY_ID) writeInt(residency_id);
+	if (extended_type & HAS_PREVIOUS_RESIDENCY_ID) writeInt(previous_residency_id);
+
 	if (username) writeValue(username);
 	else ENTRY_HEADER[position++] = 0;
 	if (extended_type)
@@ -233,6 +239,13 @@ export function readAuditEntry(buffer) {
 		const record_id_start = decoder.position;
 		const record_id_end = (decoder.position += length);
 		const version = decoder.readFloat64();
+		let residency_id, previous_residency_id;
+		if (action & HAS_CURRENT_RESIDENCY_ID) {
+			residency_id = decoder.readInt();
+		}
+		if (action & HAS_PREVIOUS_RESIDENCY_ID) {
+			previous_residency_id = decoder.readInt();
+		}
 		length = decoder.readInt();
 		const username_start = decoder.position;
 		const username_end = (decoder.position += length);
@@ -263,6 +276,8 @@ export function readAuditEntry(buffer) {
 				return action & (HAS_RECORD | HAS_PARTIAL_RECORD) ? buffer.subarray(decoder.position) : undefined;
 			},
 			extendedType: action,
+			residencyId: residency_id,
+			previousResidencyId: previous_residency_id,
 		};
 	} catch (error) {
 		harper_logger.error('Reading audit entry error', error, buffer);

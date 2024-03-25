@@ -97,6 +97,7 @@ export function setReplicator(db_name, table, options) {
 			 * requests for data changes, so they circumvent the validation and replication layers
 			 * of the table classes.
 			 */
+			static connection: NodeReplicationConnection;
 			static async subscribe() {
 				const db_subscriptions = options.databaseSubscriptions || database_subscriptions;
 				let subscription = db_subscriptions.get(db_name);
@@ -114,13 +115,20 @@ export function setReplicator(db_name, table, options) {
 					subscription.dbisDB = table.dbisDB;
 					subscription.databaseName = db_name;
 					if (getWorkerIndex() < MAX_INGEST_THREADS) {
-						for (const node of options.routes) {
+						for (const route of options.routes) {
 							try {
-								const url = typeof node === 'string' ? node : node.url;
+								let url = typeof route === 'string' ? route : route.url;
+								if (!url) {
+									if (route.host) url = 'wss://' + route.host + ':' + (route.port || 9925);
+									else {
+										console.error('Invalid route, must specify a url or host (with port)');
+										continue;
+									}
+								}
 								// TODO: Do we need to have another way to determine URL?
 								// Node subscription also needs to be aware of other nodes that will be excluded from the current subscription
-								const connection = new NodeReplicationConnection(url, subscription, table.databaseName);
-								connection.connect();
+								this.connection = new NodeReplicationConnection(url, subscription, table.databaseName);
+								this.connection.connect();
 							} catch (error) {
 								console.error(error);
 							}
@@ -134,7 +142,26 @@ export function setReplicator(db_name, table, options) {
 				// incoming TCP connection
 				return true;
 			}
-
+			get(query) {
+				const entry = table.primaryStore.getEntry(this[ID_PROPERTY]);
+				if (entry) {
+					const residency_id = entry.residencyId;
+					if (residency_id) {
+						const residency = table.residencyStore.getEntry(residency_id);
+						for (let node_id in residency) {
+							return new Promise((resolve) => {
+								Replicator.connection.send({
+									type: 'get',
+									table: table.tableName,
+									id: this[ID_PROPERTY],
+									node_id,
+								});
+								Replicator.connection.registerResponse(id, resolve);
+							});
+						}
+					}
+				}
+			}
 			static isReplicator = true;
 		},
 		{ intermediateSource: true }

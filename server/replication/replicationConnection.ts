@@ -100,6 +100,7 @@ export function replicateOverWS(ws, options) {
 	if (database_name) setDatabase(database_name);
 	const table_decoders = [];
 	const omitted_node_ids = [];
+	const residency_map = [];
 	let subscription_request, audit_subscription;
 	let remote_node_name;
 	let last_local_time;
@@ -219,6 +220,27 @@ export function replicateOverWS(ws, options) {
 							if (!table_entry) {
 								return logger.error('Invalid table id', table_id);
 							}
+							const residency_id = audit_record.residencyId;
+							const residency = getResidence(residency_id, table_entry.table);
+							if (audit_record.previousResidencyId) { // or does it have a special type? auditRecord.type === 'residency-change') {
+								// TODO: handle residency change, based on previous residency, we may need to send out full records
+								// to the new owners of the record.
+								// For previous owners, that are no longer owners, we need to send out invalidation messages
+								const previous_residency = getResidence(audit_record.previousResidencyId, table);
+								for (let node_id in previous_residency) {
+									if (residency && !residency[node_id]) {
+										// send out invalidation messages
+									}
+								}
+								if (audit_record.type !== 'put') {
+									for (let node_id in residency) {
+										if (!previous_residency[node_id]) {
+											// send out full record if it is not a put
+										}
+									}
+								}
+							}
+							if (residency && !residency[remote_node_name]) return; // we don't need to send this record to this node, is it doesn't have a copy of it and doesn't own it
 							let primary_store = table_entry.table.primaryStore;
 							let encoder = primary_store.encoder;
 							if ((audit_record.extendedType & HAS_STRUCTURE_UPDATE) || !encoder.typedStructs) {
@@ -392,6 +414,16 @@ export function replicateOverWS(ws, options) {
 				ws.send(encode([SUBSCRIBE_CODE, database_name, Infinity, null, []]));
 			logger.info(connection_id, (existing_listener ? 'removing subscription ' : 'already subscribed to'), database_name, remote_node_name);
 		}
+	}
+	function getResidence(residency_id, table) {
+		if (!residency_id) return;
+		let residency = residency_map[residency_id];
+		if (!residency) {
+			residency = table.getResidencyRecord(residency_id);
+			residency_map[residency_id] = residency;
+			// TODO: Send the residency record
+		}
+		return residency;
 	}
 	function setDatabase(database_name) {
 		incoming_subscription = incoming_subscription || db_subscriptions.get(database_name);
