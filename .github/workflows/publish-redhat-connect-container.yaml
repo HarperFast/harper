@@ -48,8 +48,8 @@ jobs:
           REDHAT_DOCKERCONFIG: ${{ secrets.REDHAT_CONNECT_DOCKERCONFIG_JSON }}
           PYXIS_API_TOKEN: ${{ secrets.REDHAT_PYXIS_KEY }}
           container_registry: 'registry.hub.docker.com'
-          container_image: ${{ inputs.container_image }}
-          container_tag: ${{ inputs.container_tag }}
+          container_image: ${{ github.event_name != 'pull_request' && inputs.container_image || 'harperdb/harperdb-openshift' }}
+          container_tag: ${{ github.event_name != 'pull_request' && inputs.container_tag || '4.3.1' }}
         run: |
           #!/usr/bin/env bash
           set -euo pipefail
