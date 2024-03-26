@@ -36,11 +36,6 @@ jobs:
           source: "github"
           preflight: "latest"
 
-#      - name: Login to Docker Hub
-#        uses: docker/login-action@v3
-#        with:
-#          password: ${{ secrets.REDHAT_DOCKERHUB_PAT_RO }}
-
       - name: Publish ${{ inputs.container_image }}:${{ inputs.container_tag }}
         env:
           CERTIFICATION_PROJECT_ID: ${{ secrets.REDHAT_CERTIFICATION_PROJECT_ID }}
@@ -59,5 +54,5 @@ jobs:
           preflight check container "${container_registry}/${container_image}:${container_tag}" \
             --pyxis-api-token="${PYXIS_API_TOKEN}" \
             --certification-project-id="${CERTIFICATION_PROJECT_ID}" \
-            --docker-config ./docker-config.json
-            #--submit >> "${GITHUB_STEP_SUMMARY}"
+            --docker-config ./docker-config.json \
+            --submit >> "${GITHUB_STEP_SUMMARY}"
