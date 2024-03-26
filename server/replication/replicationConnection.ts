@@ -53,7 +53,7 @@ export class NodeReplicationConnection {
 			logger.info('connected to ' + this.url);
 			this.retries = 0;
 			this.retryTime = 200;
-			replicator = replicateOverWS(this.socket, {
+			replicateOverWS(this.socket, {
 				database: this.databaseName,
 				subscription: this.subscription,
 				url: this.url,
@@ -67,8 +67,6 @@ export class NodeReplicationConnection {
 		this.socket.on('close', () => {
 			if (++this.retries % 20 === 1)
 				logger.warn(`disconnected from ${this.url} (db: "${this.databaseName}")`);
-			replicator?.end();
-
 			// try to reconnect
 			setTimeout(() => {
 				this.connect();
@@ -341,6 +339,7 @@ export function replicateOverWS(ws, options) {
 				if (event_length === 9 && decoder.getUint8(decoder.position) == REMOTE_SEQUENCE_UPDATE) {
 					decoder.position++;
 					last_local_time =	decoder.readFloat64();
+					logger.info('received remote sequence update', last_local_time);
 					break;
 				}
 				const start = decoder.position;
@@ -369,6 +368,11 @@ export function replicateOverWS(ws, options) {
 		} catch (error) {
 			logger.error(connection_id, 'Error handling incoming replication message', error);
 		}
+	});
+	ws.on('close', () => {
+		if (audit_subscription) audit_subscription.emit('close');
+		if (subscription_request) subscription_request.end();
+		logger.info(connection_id, 'closed');
 	});
 	function recordRemoteNodeSequence() {
 
@@ -401,11 +405,13 @@ export function replicateOverWS(ws, options) {
 			onSubscriptionUpdate.omittedNodes = omitted_node_names;
 			if (!last_local_time) {
 				last_local_time = incoming_subscription.dbisDB.get([Symbol.for('seq'), remote_node_name]);
+				logger.info(connection_id, 'requesting to start from', last_local_time, remote_node_name, incoming_subscription.dbisDB.path);
 			}
 			ws.send(encode([SUBSCRIBE_CODE, database_name, last_local_time, null, omitted_node_names]));
 			logger.info(connection_id, (existing_listener ? 'resent' : 'sent') + ' subscription request to', remote_node_name, 'for', database_name, 'omitting', omitted_node_names);
 			subscription_request = {
 				end() {
+					logger.info(connection_id, 'removing subscription', database_name, remote_node_name);
 					removeNodeSubscription(database_name, remote_node_name);
 				},
 			};
@@ -436,7 +442,7 @@ export function replicateOverWS(ws, options) {
 			logger.error('No audit store found in ' + database_name);
 			return;
 		}
-		if (!tables) tables = (options.database || getDatabases() || {})[database_name];
+		if (!tables) tables = getDatabases()?.[database_name];
 
 		const this_node_name = getNodeName(audit_store);
 		logger.info('Sending node name', this_node_name, 'database name', database_name);

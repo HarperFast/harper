@@ -1,6 +1,6 @@
 require('../../test_utils');
 const { start, setReplicator } = require('../../../server/replication/replicator');
-const { table } = require('../../../resources/databases');
+const { table, databases } = require('../../../resources/databases');
 const { setMainIsWorker } = require('../../../server/threads/manageThreads');
 const { listenOnPorts } = require('../../../server/threads/threadServer');
 const { workerData, parentPort } = require('worker_threads');
@@ -17,16 +17,17 @@ async function createNode(index, node_count) {
 				url: 'ws://localhost:' + (9325 + i),
 			});
 		}
-		env.setProperty(CONFIG_PARAMS.DATABASES, { test: { path: workerData.databasePath }});
-		const database_name = 'test';
+		const database_name = 'test-replication-' + index;
+		env.setProperty(CONFIG_PARAMS.DATABASES, { [database_name]: { path: workerData.databasePath }});
 		const TestTable = table({
 			table: 'TestTable',
-			database: 'test',
+			database: database_name,
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'name', indexed: true },
 			],
 		});
+		Object.defineProperty(databases, 'test', { value: databases[database_name] });
 		TestTable.databaseName = 'test'; // make them all look like the same database so they replicate
 		setReplicator('test', TestTable, {
 			routes,

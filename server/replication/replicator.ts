@@ -16,6 +16,7 @@ import { getWorkerIndex } from '../threads/manageThreads';
 import { NodeReplicationConnection, replicateOverWS, database_subscriptions, table_update_listeners } from './replicationConnection';
 import { server } from '../Server';
 import env from '../../utility/environment/environmentManager';
+import * as logger from '../../utility/logging/harper_logger';
 
 let replication_disabled;
 
@@ -29,7 +30,13 @@ export function start(options) {
 		// TODO: node_id should come from the hdb_nodes table
 	}
 	servers.push(server.ws(
-		(ws, request) => replicateOverWS(ws, options),
+		(ws, request) => {
+			replicateOverWS(ws, options);
+			ws.on('error', (error) => {
+				if (error.code !== 'ECONNREFUSED')
+					logger.error('Error in connection to ' + this.url, error.message);
+			});
+		},
 		Object.assign(
 			// We generally expect this to use the operations API ports (9925)
 			{
@@ -127,7 +134,7 @@ export function setReplicator(db_name, table, options) {
 								}
 								// TODO: Do we need to have another way to determine URL?
 								// Node subscription also needs to be aware of other nodes that will be excluded from the current subscription
-								this.connection = new NodeReplicationConnection(url, subscription, table.databaseName);
+								this.connection = new NodeReplicationConnection(url, subscription, db_name);
 								this.connection.connect();
 							} catch (error) {
 								console.error(error);

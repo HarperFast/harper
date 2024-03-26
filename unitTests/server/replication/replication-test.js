@@ -2,7 +2,7 @@ const assert = require('assert');
 const sinon = require('sinon');
 const { getMockLMDBPath } = require('../../test_utils');
 const { start, setReplicator, servers } = require('../../../server/replication/replicator');
-const { table } = require('../../../resources/databases');
+const { table, databases } = require('../../../resources/databases');
 const { setMainIsWorker } = require('../../../server/threads/manageThreads');
 const { listenOnPorts } = require('../../../server/threads/threadServer');
 const { Worker } = require('worker_threads');
@@ -43,7 +43,7 @@ describe('Replication', () => {
 		getMockLMDBPath();
 		database_config = env_get(CONFIG_PARAMS.DATABASES);
 		for (let i = 0; i < db_count; i++) {
-			const database_name = i == 0 ? 'test' : 'test-replication-' + i;
+			const database_name = 'test-replication-' + i;
 			database_config[database_name] = { path: database_config.data.path + '/test-replication-' + i };
 			let TestTable = table({
 				table: 'TestTable',
@@ -56,6 +56,7 @@ describe('Replication', () => {
 			TestTable.databaseName = database_name; // make them all look like the same database so they replicate
 			test_tables.push(TestTable);
 		}
+		Object.defineProperty(databases, 'test', { value: databases['test-replication-0'] });
 		TestTable = test_tables[0];
 
 		async function createServer(index, node_count) {
