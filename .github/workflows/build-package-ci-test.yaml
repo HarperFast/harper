@@ -5,8 +5,8 @@ on:
     branches:
       - main
       - "release_*"
-  pull_request:
-    types: [opened, synchronize, reopened]
+#  pull_request:
+#    types: [opened, synchronize, reopened]
   schedule:
     - cron: '0 13 * * 1-5'
   workflow_dispatch:

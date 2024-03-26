@@ -27,7 +27,6 @@ on:
 
 jobs:
   redhat_connect_publish:
-    if: ${{ github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
