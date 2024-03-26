@@ -1,17 +1,6 @@
 name: "Publish HarperDB Redhat Connect Container"
 
 on:
-  workflow_call:
-    inputs:
-      container_image:
-        description: 'name of container image.'
-        default: 'harperdb/harperdb-openshift'
-        required: false
-        type: string
-      container_tag:
-        description: 'tag of image to release (probably not "latest")'
-        required: true
-        type: string
   workflow_dispatch:
     inputs:
       container_image:
