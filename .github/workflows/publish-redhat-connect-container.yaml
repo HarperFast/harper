@@ -1,0 +1,64 @@
+name: "Publish HarperDB Redhat Connect Container"
+
+on:
+  pull_request:
+  workflow_call:
+    inputs:
+      container_image:
+        description: 'name of container image.'
+        default: 'harperdb/harperdb-openshift'
+        required: false
+        type: string
+      container_tag:
+        description: 'tag of image to release (probably not "latest")'
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      container_image:
+        description: 'name of container image.'
+        default: 'harperdb/harperdb-openshift'
+        required: false
+        type: string
+      container_tag:
+        description: 'tag of image to release (probably not "latest")'
+        required: true
+        type: string
+
+jobs:
+  redhat_connect_publish:
+    if: ${{ github.event_name != 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install Openshift CLI tools
+        uses: redhat-actions/openshift-tools-installer@v1
+        with:
+          source: "github"
+          preflight: "latest"
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          password: ${{ secrets.REDHAT_DOCKERHUB_PAT_RO }}
+
+      - name: Publish ${{ inputs.container_image }}:${{ inputs.container_tag }}
+        env:
+          CERTIFICATION_PROJECT_ID: ${{ secrets.REDHAT_CERTIFICATION_PROJECT_ID }}
+          REDHAT_DOCKERCONFIG: ${{ secrets.REDHAT_CONNECT_DOCKERCONFIG_JSON }}
+          PYXIS_API_TOKEN: ${{ secrets.REDHAT_PYXIS_KEY }}
+          container_registry: 'registry.hub.docker.com'
+          container_image: ${{ inputs.container_image }}
+          container_tag: ${{ inputs.container_tag }}
+        run: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+          
+          echo "writing docker-config.json for submission"
+          echo "${REDHAT_DOCKERCONFIG}" | jq '.' > docker-config.json
+          
+          preflight check container "${container_registry}/${container_image}:${container_tag}" \
+            --pyxis-api-token="${PYXIS_API_TOKEN}" \
+            --certification-project-id="${CERTIFICATION_PROJECT_ID}" \
+            --docker-config ./docker-config.json >> "${GITHUB_STEP_SUMMARY}"
+            #--submit
