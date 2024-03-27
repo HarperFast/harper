@@ -61,7 +61,7 @@ module.exports = {
  * Builds the HarperDB config file using user inputs and default values from defaultConfig.yaml
  * @param args - any args that the user provided.
  */
-function createConfigFile(args) {
+function createConfigFile(args, skip_fs_validation = false) {
 	const config_doc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
 	flat_default_config_obj = flattenConfig(config_doc.toJSON());
 
@@ -72,11 +72,18 @@ function createConfigFile(args) {
 
 		// Schemas config args are handled differently, so if they exist set them to var that will be used by setSchemasConfig
 		if (config_param === CONFIG_PARAMS.DATABASES) {
-			schemas_args = args[arg];
+			if (Array.isArray(args[arg])) {
+				schemas_args = args[arg];
+			} else {
+				schemas_args = Object.keys(args[arg]).map((key) => {
+					return { [key]: args[arg][key] };
+				});
+			}
+
 			continue;
 		}
 
-		if (!config_param && arg.endsWith('_package')) {
+		if (!config_param && (arg.endsWith('_package') || arg.endsWith('_port'))) {
 			config_param = arg;
 		}
 
@@ -95,7 +102,7 @@ function createConfigFile(args) {
 	if (schemas_args) setSchemasConfig(config_doc, schemas_args);
 
 	// Validates config doc and if required sets default values for some parameters.
-	validateConfig(config_doc);
+	validateConfig(config_doc, skip_fs_validation);
 	const config_obj = config_doc.toJSON();
 	flat_config_obj = flattenConfig(config_obj);
 
@@ -323,7 +330,7 @@ function checkForUpdatedConfig(config_doc, config_file_path) {
  * NOTE - If any default values are set in configValidator they also need to be 'setIn' in this function.
  * @param config_doc
  */
-function validateConfig(config_doc) {
+function validateConfig(config_doc, skip_fs_validation = false) {
 	const config_json = config_doc.toJSON();
 
 	// Config might have some legacy values that will be modified by validator. We need to set old to new here before
@@ -331,7 +338,7 @@ function validateConfig(config_doc) {
 	config_json.componentsRoot = config_json.componentsRoot ?? config_json?.customFunctions?.root;
 	if (config_json?.http?.threads) config_json.threads = config_json?.http?.threads;
 
-	const validation = configValidator(config_json);
+	const validation = configValidator(config_json, skip_fs_validation);
 	if (validation.error) {
 		throw HDB_ERROR_MSGS.CONFIG_VALIDATION(validation.error.message);
 	}
@@ -453,7 +460,7 @@ function updateConfigValue(
 				}
 			}
 
-			if (!config_param && arg.endsWith('_package')) {
+			if (!config_param && (arg.endsWith('_package') || arg.endsWith('_port'))) {
 				config_param = arg;
 			}
 

@@ -1,17 +1,20 @@
 #!/usr/bin/env node
 'use strict';
 
-const logger = require('../utility/logging/harper_logger');
-const version = require('./version');
-const hdb_terms = require('../utility/hdbTerms');
+const run_clone = process.env.HDB_LEADER_URL || process.argv.includes('--HDB_LEADER_URL');
+if (run_clone) {
+	const env_mgr = require('../utility/environment/environmentManager');
+	env_mgr.setCloneVar(true);
+}
+
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
-const { PACKAGE_ROOT } = require('../utility/hdbTerms');
-const check_node = require('../launchServiceScripts/utility/checkNodeVersion');
-const socket_router = require('../server/threads/socketRouter');
+const logger = require('../utility/logging/harper_logger');
 const cli_operations = require('./cliOperations');
-const { SERVICE_ACTIONS_ENUM } = hdb_terms;
+const version = require('./version');
+const check_node = require('../launchServiceScripts/utility/checkNodeVersion');
+const hdb_terms = require('../utility/hdbTerms');
+const { SERVICE_ACTIONS_ENUM, PACKAGE_ROOT } = hdb_terms;
 
 harperDBService();
 
@@ -40,8 +43,11 @@ function harperDBService() {
 			service = process.argv[2].toLowerCase();
 		}
 
-		const cli_api_op = cli_operations.buildRequest();
-		if (cli_api_op.operation) service = SERVICE_ACTIONS_ENUM.OPERATION;
+		let cli_api_op;
+		if (!run_clone) {
+			cli_api_op = cli_operations.buildRequest();
+			if (cli_api_op.operation) service = SERVICE_ACTIONS_ENUM.OPERATION;
+		}
 
 		let result = undefined;
 		switch (service) {
@@ -74,7 +80,7 @@ function harperDBService() {
 				require('./run').main();
 				break;
 			case SERVICE_ACTIONS_ENUM.START:
-				if (process.env.HDB_LEADER_URL || process.argv.includes('--HDB_LEADER_URL')) {
+				if (run_clone) {
 					const clone_node = require('../utility/cloneNode/cloneNode');
 					clone_node(true).catch((err) => {
 						console.log(err);
@@ -173,7 +179,7 @@ function harperDBService() {
 				require('./copyDb').copyDb(source_db, target_db_path);
 				break;
 			case undefined:
-				if (process.env.HDB_LEADER_URL || process.argv.includes('--HDB_LEADER_URL')) {
+				if (run_clone) {
 					const clone_node = require('../utility/cloneNode/cloneNode');
 					clone_node().catch((err) => {
 						console.log(err);

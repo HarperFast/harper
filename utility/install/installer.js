@@ -66,12 +66,13 @@ const INSTALL_PROMPTS = {
 const cfg_env = assignCMDENVVariables([hdb_terms.INSTALL_PROMPTS.HDB_CONFIG]);
 let hdb_root = undefined;
 let conditional_rollback = false;
+let ignore_existing = false;
 
 /**
  * This module orchestrates the installation of HarperDB.
  */
 
-module.exports = install;
+module.exports = { install, updateConfigEnv, setIgnoreExisting };
 install.createSuperUser = createSuperUser;
 
 /**
@@ -425,7 +426,7 @@ async function checkForExistingInstall() {
 	// is pointing to an installed HDB
 	if (!boot_file_exists && hdb_utils.noBootFile()) hdb_exists = true;
 
-	if (hdb_exists) {
+	if (hdb_exists && !ignore_existing) {
 		hdb_logger.trace(`Install found existing HDB config at:${boot_prop_path}`);
 		// getVersionUpdateInfo will only return an obj if there is an upgrade directive for the new version.
 		const upgrade_obj = await hdb_info_controller.getVersionUpdateInfo();
@@ -535,8 +536,11 @@ async function createConfigFile(install_params) {
 	Object.assign(args, install_params);
 
 	try {
-		// Create the HarperDB config file.
-		config_utils.createConfigFile(args);
+		if (!cfg_env[hdb_terms.INSTALL_PROMPTS.HDB_CONFIG]) {
+			// Create the HarperDB config file.
+			config_utils.createConfigFile(args);
+		}
+
 		env_manager.initSync();
 	} catch (config_err) {
 		rollbackInstall(config_err);
@@ -679,4 +683,12 @@ async function insertHdbVersionInfo() {
 	} else {
 		throw new Error('The version is missing/removed from HarperDB package.json');
 	}
+}
+
+function updateConfigEnv(value) {
+	cfg_env[hdb_terms.INSTALL_PROMPTS.HDB_CONFIG] = value;
+}
+
+function setIgnoreExisting(value) {
+	ignore_existing = value;
 }

@@ -114,7 +114,10 @@ function initLogSettings(force_init = false) {
 		}
 	} catch (err) {
 		hdb_properties = undefined;
-		if (err.code === hdb_terms.NODE_ERROR_CODES.ENOENT) {
+		if (
+			err.code === hdb_terms.NODE_ERROR_CODES.ENOENT ||
+			err.code === hdb_terms.NODE_ERROR_CODES.ERR_INVALID_ARG_TYPE
+		) {
 			// If the env settings haven't been initialized check cmd/env vars for values. If values not found used default.
 			const cmd_envs = assignCMDENVVariables(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
 			for (const key in cmd_envs) {
