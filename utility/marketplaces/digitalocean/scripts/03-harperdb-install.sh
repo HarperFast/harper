@@ -3,9 +3,9 @@ set -euo pipefail
 
 hdb_system_user="${HDB_SYSTEM_USER:-harperdb}"
 harperdb_version="${HARPERDB_VERSION:-latest}"
-node_version="v${NODE_VERSION:-18.15.0}"
+node_version="v${NODE_VERSION:-lts/iron}"
 hdb_root="${HDB_ROOT:-/opt/hdb}"
-nvm_version="${NVM_VERSION:-v0.39.3}"
+nvm_version="${NVM_VERSION:-v0.39.7}"
 
 # digital Ocean does not provide a non-root user. Creating a user if it doesn't exist
 getent passwd "${hdb_system_user}" > /dev/null 2>&1 || adduser "${hdb_system_user}" --gecos "" --disabled-password
