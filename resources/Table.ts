@@ -2221,20 +2221,25 @@ export function makeTable(options) {
 			// determine what index values need to be removed and added
 			let values_to_add = getIndexedValues(value, index_nulls);
 			let values_to_remove = getIndexedValues(existing_value, index_nulls);
-			if (values_to_remove?.length > 0) { // put this in a conditional so we can do a faster version for new records
+			if (values_to_remove?.length > 0) {
+				// put this in a conditional so we can do a faster version for new records
 				// determine the changes/diff from new values and old values
 				const set_to_remove = new Set(values_to_remove);
-				values_to_add = values_to_add ? values_to_add.filter((value) => {
-					if (set_to_remove.has(value)) { // if the value is retained, we don't need to remove or add it, so remove it from the set
-						set_to_remove.delete(value);
-					} else { // keep in the list of values to add to index
-						return true;
-					}
-				}) : [];
+				values_to_add = values_to_add
+					? values_to_add.filter((value) => {
+							if (set_to_remove.has(value)) {
+								// if the value is retained, we don't need to remove or add it, so remove it from the set
+								set_to_remove.delete(value);
+							} else {
+								// keep in the list of values to add to index
+								return true;
+							}
+					  })
+					: [];
 				values_to_remove = Array.from(set_to_remove);
 				if ((values_to_remove.length > 0 || values_to_add.length > 0) && LMDB_PREFETCH_WRITES) {
 					// prefetch any values that have been removed or added
-					const values_to_prefetch = values_to_remove.concat(values_to_add).map((v) => ({key: v, value: id}));
+					const values_to_prefetch = values_to_remove.concat(values_to_add).map((v) => ({ key: v, value: id }));
 					index.prefetch(values_to_prefetch, noop);
 				}
 				//if the update cleared out the attribute value we need to delete it from the index
@@ -2243,7 +2248,10 @@ export function makeTable(options) {
 				}
 			} else if (values_to_add?.length > 0 && LMDB_PREFETCH_WRITES) {
 				// no old values, just new
-				index.prefetch(values_to_add.map((v) => ({key: v, value: id})), noop);
+				index.prefetch(
+					values_to_add.map((v) => ({ key: v, value: id })),
+					noop
+				);
 			}
 			if (values_to_add) {
 				for (let i = 0, l = values_to_add.length; i < l; i++) {
@@ -2491,7 +2499,7 @@ export function makeTable(options) {
 		if (filters_length > 0 || !ids.hasEntries) {
 			let results = ids.map((id_or_entry) => {
 				id_filters_applied = null;
-				if (typeof id_or_entry === 'object' && id_or_entry.key !== undefined)
+				if (typeof id_or_entry === 'object' && id_or_entry?.key !== undefined)
 					return filters_length > 0 ? processEntry(id_or_entry) : id_or_entry; // already an entry
 				if (id_or_entry == undefined) {
 					return SKIP;
