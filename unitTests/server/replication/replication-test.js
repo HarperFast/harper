@@ -5,9 +5,10 @@ const { start, setReplicator, servers } = require('../../../server/replication/r
 const { table, databases } = require('../../../resources/databases');
 const { setMainIsWorker } = require('../../../server/threads/manageThreads');
 const { listenOnPorts } = require('../../../server/threads/threadServer');
-const { Worker } = require('worker_threads');
+const { Worker, workerData } = require('worker_threads');
 const { CONFIG_PARAMS } = require('../../../utility/hdbTerms');
 const { get: env_get } = require('../../..//utility/environment/environmentManager');
+const env = require('../../../utility/environment/environmentManager');
 
 describe('Replication', () => {
 	let TestTable;
@@ -23,6 +24,7 @@ describe('Replication', () => {
 				index,
 				workerIndex: 0, // just used to indicate that it is below the max ingest thread
 				nodeCount: node_count,
+				nodeName: 'node-' + (index + 1),
 				databasePath: database_config.data.path + '/test-replication-' + index,
 				noServerStart: true,
 			},
@@ -54,8 +56,12 @@ describe('Replication', () => {
 				],
 			});
 			TestTable.databaseName = database_name; // make them all look like the same database so they replicate
+			TestTable.getResidency = (record) => {
+				return record.locations;
+			};
 			test_tables.push(TestTable);
 		}
+		env.setProperty('replication_nodename', 'node-1' );
 		Object.defineProperty(databases, 'test', { value: databases['test-replication-0'] });
 		TestTable = test_tables[0];
 
@@ -157,6 +163,29 @@ describe('Replication', () => {
 				name,
 				extraProperty: true,
 			});
+			let retries = 10;
+			do {
+				await new Promise((resolve) => setTimeout(resolve, 500));
+				let result = await test_tables[2].get('5');
+				if (!result) {
+					assert(--retries > 0);
+					continue;
+				}
+				assert.equal(result.name, name);
+				result = await test_tables[2].get('2');
+				assert.equal(result.name, name);
+				assert.equal(result.get('extraProperty'), true);
+				break;
+			} while(true);
+		});
+		it('A write to the table with sharding defined should replicate to one node', async function () {
+			let name = 'name ' + Math.random();
+			await test_tables[0].put({
+				id: '8',
+				name,
+				locations: ['node-1', 'node-3'],
+			});
+
 			let retries = 10;
 			do {
 				await new Promise((resolve) => setTimeout(resolve, 500));

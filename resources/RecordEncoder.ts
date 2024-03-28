@@ -28,7 +28,6 @@ export const HAS_RESIDENCY_ID = 32;
 export const PENDING_LOCAL_TIME = 1;
 export const HAS_STRUCTURE_UPDATE = 0x100;
 
-
 let last_encoding,
 	last_value_encoding,
 	timestamp_next_encoding = 0,
@@ -96,11 +95,11 @@ export class RecordEncoder extends Encoder {
 			} else return super_encode.call(this, record, options);
 		};
 		const super_saveStructures = this.saveStructures;
-		this.saveStructures = function(structures, isCompatible) {
+		this.saveStructures = function (structures, isCompatible) {
 			let result = super_saveStructures.call(this, structures, isCompatible);
 			this.hasStructureUpdate = true;
 			return result;
-		}
+		};
 	}
 	decode(buffer, options) {
 		const start = options?.start || 0;
@@ -273,7 +272,7 @@ export function getUpdateRecord(store, table_id, audit_store, get_residency) {
 		new_version,
 		assign_metadata = -1, // when positive, this has a set of metadata flags for the record
 		audit?: boolean, // true -> audit this record. false -> do not. null -> retain any audit timestamp
-		context?,
+		options?,
 		expires_at?: number,
 		type = 'put',
 		resolve_record?: boolean, // indicates that we are resolving (from source) record that was previously invalidated
@@ -296,7 +295,7 @@ export function getUpdateRecord(store, table_id, audit_store, get_residency) {
 		expires_at_next_encoding = expires_at;
 		if (existing_entry?.version === new_version && audit === false)
 			throw new Error('Must retain local time if version is not changed');
-		const options = {
+		const put_options = {
 			version: new_version,
 			instructedWrite: timestamp_next_encoding > 0,
 		};
@@ -304,19 +303,19 @@ export function getUpdateRecord(store, table_id, audit_store, get_residency) {
 		let extended_type = 0;
 		try {
 			let previous_residency_id = existing_entry?.residencyId;
-			const residency_id = get_residency(record, previous_residency_id);
+			const residency_id = options?.residencyId; //get_residency(record, previous_residency_id);
 			if (residency_id) {
 				residency_id_at_next_encoding = residency_id;
 				assign_metadata |= HAS_RESIDENCY_ID;
 				extended_type |= HAS_CURRENT_RESIDENCY_ID;
-			}// else residency_id_at_next_encoding = 0;
+			} // else residency_id_at_next_encoding = 0;
 			if (previous_residency_id !== residency_id) {
 				extended_type |= HAS_PREVIOUS_RESIDENCY_ID;
 				if (!previous_residency_id) previous_residency_id = 0;
 			}
 			// we use resolve_record outside of transaction, so must explicitly make it conditional
-			if (resolve_record) options.ifVersion = if_version = existing_entry?.version ?? null;
-			const result = store.put(id, record, options);
+			if (resolve_record) put_options.ifVersion = if_version = existing_entry?.version ?? null;
+			const result = store.put(id, record, put_options);
 
 			/**
 			 TODO: We will need to pass in the node id, whether that is locally generated from node name, or there is a global registory
@@ -326,7 +325,7 @@ export function getUpdateRecord(store, table_id, audit_store, get_residency) {
 			}
 			*/
 			if (audit) {
-				const username = context?.user?.username;
+				const username = options?.user?.username;
 				if (audit_record) last_value_encoding = store.encoder.encode(audit_record);
 				if (store.encoder.hasStructureUpdate) {
 					extended_type |= HAS_STRUCTURE_UPDATE;
@@ -344,13 +343,13 @@ export function getUpdateRecord(store, table_id, audit_store, get_residency) {
 								table_id,
 								id,
 								previous_local_time,
-								context?.nodeId || 0,
+								options?.nodeId || 0,
 								username,
 								type,
 								last_value_encoding,
 								extended_type,
 								residency_id,
-								previous_residency_id,
+								previous_residency_id
 							),
 							{ ifVersion: if_version }
 						);
@@ -364,13 +363,13 @@ export function getUpdateRecord(store, table_id, audit_store, get_residency) {
 						table_id,
 						id,
 						existing_entry?.localTime ? 1 : 0,
-						context?.nodeId || 0,
+						options?.nodeId || 0,
 						username,
 						type,
 						last_value_encoding,
 						extended_type,
 						residency_id,
-						previous_residency_id,
+						previous_residency_id
 					),
 					{
 						append: type !== 'invalidate', // for invalidation, we expect the record to be rewritten, so we don't want to necessarily expect pure sequential writes that create full pages
@@ -381,7 +380,7 @@ export function getUpdateRecord(store, table_id, audit_store, get_residency) {
 			}
 			return result;
 		} catch (error) {
-			error.message += ' id: ' + id + ' options: ' + options;
+			error.message += ' id: ' + id + ' options: ' + put_options;
 			throw error;
 		}
 	};

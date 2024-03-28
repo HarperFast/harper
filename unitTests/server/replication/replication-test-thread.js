@@ -19,6 +19,7 @@ async function createNode(index, node_count) {
 		}
 		const database_name = 'test-replication-' + index;
 		env.setProperty(CONFIG_PARAMS.DATABASES, { [database_name]: { path: workerData.databasePath }});
+		env.setProperty('replication_nodename', workerData.nodeName );
 		const TestTable = table({
 			table: 'TestTable',
 			database: database_name,
@@ -29,6 +30,9 @@ async function createNode(index, node_count) {
 		});
 		Object.defineProperty(databases, 'test', { value: databases[database_name] });
 		TestTable.databaseName = 'test'; // make them all look like the same database so they replicate
+		TestTable.getResidency = (record) => {
+			return record.locations;
+		};
 		setReplicator('test', TestTable, {
 			routes,
 		});

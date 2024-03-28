@@ -10,7 +10,7 @@ function getIdMappingRecord(audit_store) {
 	}
 	if (!id_mapping_record) {
 		id_mapping_record = {
-			nodeName: env.get('clustering_nodename') || (hostname() + '-' + Math.random().toString(36).substring(2, 6)),
+			nodeName: (hostname() + '-' + Math.random().toString(36).substring(2, 6)),
 			remoteNameToId: {},
 		};
 		audit_store.putSync(Symbol.for('remote-ids'), pack(id_mapping_record));
@@ -18,7 +18,7 @@ function getIdMappingRecord(audit_store) {
 	return id_mapping_record;
 }
 export function getNodeName(audit_store) {
-	return getIdMappingRecord(audit_store).nodeName;
+	return env.get('replication_nodename') || getIdMappingRecord(audit_store).nodeName;
 }
 export function exportIdMapping(audit_store) {
 	return getIdMappingRecord(audit_store).remoteNameToId;

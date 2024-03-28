@@ -147,12 +147,24 @@ const EVENT_TYPES = {
 	[DELETE]: 'delete',
 	message: MESSAGE | HAS_RECORD,
 	[MESSAGE]: 'message',
-	invalidate: INVALIDATE,
+	invalidate: INVALIDATE | HAS_PARTIAL_RECORD,
 	[INVALIDATE]: 'invalidate',
 	patch: PATCH | HAS_PARTIAL_RECORD,
 	[PATCH]: 'patch',
 };
-export function createAuditEntry(txn_time, table_id, record_id, previous_local_time, node_id, username, type, encoded_record, extended_type, residency_id, previous_residency_id) {
+export function createAuditEntry(
+	txn_time,
+	table_id,
+	record_id,
+	previous_local_time,
+	node_id,
+	username,
+	type,
+	encoded_record,
+	extended_type,
+	residency_id,
+	previous_residency_id
+) {
 	const action = EVENT_TYPES[type];
 	if (!action) throw new Error(`Invalid audit entry type ${type}`);
 	let position = 1;
@@ -162,7 +174,7 @@ export function createAuditEntry(txn_time, table_id, record_id, previous_local_t
 		position = 9;
 	}
 	if (extended_type) {
-		if (extended_type & 0xffc0ff) throw new Error('Illegal extended type')
+		if (extended_type & 0xffc0ff) throw new Error('Illegal extended type');
 		position++;
 	}
 
@@ -176,10 +188,8 @@ export function createAuditEntry(txn_time, table_id, record_id, previous_local_t
 
 	if (username) writeValue(username);
 	else ENTRY_HEADER[position++] = 0;
-	if (extended_type)
-		ENTRY_DATAVIEW.setUint16(previous_local_time ? 8 : 0, action | extended_type | 0x8000)
-	else
-		ENTRY_HEADER[previous_local_time ? 8 : 0] = action;
+	if (extended_type) ENTRY_DATAVIEW.setUint16(previous_local_time ? 8 : 0, action | extended_type | 0x8000);
+	else ENTRY_HEADER[previous_local_time ? 8 : 0] = action;
 	const header = ENTRY_HEADER.subarray(0, position);
 	if (encoded_record) {
 		return Buffer.concat([header, encoded_record]);
@@ -291,7 +301,7 @@ export class Decoder extends DataView {
 		let number;
 		try {
 			number = this.getUint8(this.position++);
-		}catch(error) {
+		} catch (error) {
 			throw error;
 		}
 		if (number >= 0x80) {

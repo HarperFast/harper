@@ -93,7 +93,7 @@ export function setReplicator(db_name, table, options) {
 	if (!table) {
 		return console.error(`Attempt to replicate non-existent table ${table.name} from database ${db_name}`);
 	}
-	if (table.replicated === false || table.sources?.some((source) => source.isReplicator)) return;
+	if (table.replicate === false || table.sources?.some((source) => source.isReplicator)) return;
 	let source;
 	// We may try to consult this to get the other nodes for back-compat
 	// const { hub_routes } = getClusteringRoutes();

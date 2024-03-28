@@ -103,19 +103,23 @@ export function makeTable(options) {
 		schemaDefined: schema_defined,
 		dbisDB: dbis_db,
 		sealed,
+		replicate,
 	} = options;
 	let { expirationMS: expiration_ms, evictionMS: eviction_ms, audit, trackDeletes: track_deletes } = options;
 	let { attributes } = options;
 	if (!attributes) attributes = [];
 	listenToCommits(primary_store, audit_store);
 	const updateRecord = getUpdateRecord(primary_store, table_id, audit_store, (record, previous_residency_id) => {
-		let owner_node_ids = TableResource.getResidency(record, () => {
+		let owner_node_names = TableResource.getResidency(record, () => {
 			return TableResource.getResidencyRecord(previous_residency_id);
 		});
-		if (owner_node_ids) {
-			let residency_id = residency_list_to_id.get(owner_node_ids.join(','));
+		if (owner_node_names) {
+			let set_key = owner_node_names.join(','); // TODO: Translate this to node ids to create key
+			let residency_id = dbis_db.get([Symbol.for('residency_by_set'), set_key]);
 			if (residency_id) return residency_id;
-			return owner_node_ids;
+			dbis_db.put([Symbol.for('residency_by_set'), set_key], residency_id = Math.floor(Math.random() * 0x7fffffff);
+			dbis_db.put([Symbol.for('residency_by_id'), residency_id], owner_node_names);
+			return residency_id;
 		}
 	});
 	const deletion_count = 0;
@@ -162,6 +166,7 @@ export function makeTable(options) {
 		static databasePath = database_path;
 		static databaseName = database_name;
 		static attributes = attributes;
+		static replicate = replicate;
 		static expirationTimer;
 		static createdTimeProperty = created_time_property;
 		static updatedTimeProperty = updated_time_property;
@@ -278,6 +283,10 @@ export function makeTable(options) {
 						if (event.id === undefined) throw new Error('Replication message without an id ' + JSON.stringify(event));
 					}
 					event.source = source;
+					const options = {
+						residencyId: 0,
+						...NOTIFICATION,
+					};
 					const resource: TableResource = await Table.getResource(event.id, context, NOTIFICATION);
 					switch (event.type) {
 						case 'put':
@@ -289,7 +298,7 @@ export function makeTable(options) {
 						case 'publish':
 							return resource._writePublish(value, NOTIFICATION);
 						case 'invalidate':
-							return resource.invalidate(NOTIFICATION);
+							return resource._writeInvalidate(NOTIFICATION);
 						default:
 							harper_logger.error('Unknown operation', event.type, event.id);
 					}
@@ -508,7 +517,7 @@ export function makeTable(options) {
 		}
 
 		static getResidencyRecord(id) {
-			return dbis_db.get([Symbol.for('residency'), id]);
+			return dbis_db.get([Symbol.for('residency_by_id'), id]);
 		}
 
 		static getResidency(record, previous_residency_id) {
@@ -749,7 +758,10 @@ export function makeTable(options) {
 			}
 		}
 
-		invalidate(options) {
+		invalidate() {
+			this._writeInvalidate();
+		}
+		_writeInvalidate(options) {
 			const context = this[CONTEXT];
 			const id = this[ID_PROPERTY];
 			checkValidId(id);
@@ -778,6 +790,7 @@ export function makeTable(options) {
 						txn_time,
 						INVALIDATED,
 						audit,
+						{ user: context?.user, residencyId: options?.residencyId },
 						this[CONTEXT],
 						0,
 						'invalidate'

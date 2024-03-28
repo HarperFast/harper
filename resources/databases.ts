@@ -272,6 +272,7 @@ export function readMetaDb(
 			const expiration = primary_attribute.expiration;
 			const eviction = primary_attribute.eviction;
 			const sealed = primary_attribute.sealed;
+			const replicate = primary_attribute.replicate;
 			if (table) {
 				indices = table.indices;
 				existing_attributes = table.attributes;
@@ -327,6 +328,7 @@ export function readMetaDb(
 						auditStore: audit_store,
 						audit,
 						sealed,
+						replicate,
 						expirationMS: expiration && expiration * 1000,
 						evictionMS: eviction && eviction * 1000,
 						trackDeletes: track_deletes,
@@ -362,6 +364,7 @@ interface TableDefinition {
 	scanInterval?: number;
 	audit?: boolean;
 	sealed?: boolean;
+	replicate?: boolean;
 	trackDeletes?: boolean;
 	attributes: any[];
 	schemaDefined?: boolean;
@@ -471,6 +474,7 @@ export async function dropDatabase(database_name) {
  * @param attributes
  * @param audit
  * @param sealed
+ * @param replicate
  */
 export function table({
 	table: table_name,
@@ -481,6 +485,7 @@ export function table({
 	attributes,
 	audit,
 	sealed,
+	replicate,
 	trackDeletes: track_deletes,
 	schemaDefined: schema_defined,
 	origin,
@@ -532,6 +537,7 @@ export function table({
 		if (expiration) primary_key_attribute.expiration = expiration;
 		if (eviction) primary_key_attribute.eviction = eviction;
 		if (typeof sealed === 'boolean') primary_key_attribute.sealed = sealed;
+		if (typeof replicate === 'boolean') primary_key_attribute.replicate = replicate;
 		if (origin) {
 			if (!primary_key_attribute.origins) primary_key_attribute.origins = [origin];
 			else if (!primary_key_attribute.origins.includes(origin)) primary_key_attribute.origins.push(origin);
@@ -556,6 +562,7 @@ export function table({
 				auditStore: audit_store,
 				audit,
 				sealed,
+				replicate,
 				trackDeletes: track_deletes,
 				expirationMS: expiration && expiration * 1000,
 				evictionMS: eviction && eviction * 1000,
@@ -611,6 +618,7 @@ export function table({
 				if (
 					audit !== Table.audit ||
 					sealed !== sealed ||
+					replicate !== replicate ||
 					(+expiration || undefined) !== (+attribute_descriptor.expiration || undefined) ||
 					(+eviction || undefined) !== (+attribute_descriptor.eviction || undefined)
 				) {
@@ -622,6 +630,7 @@ export function table({
 					if (expiration) updated_primary_attribute.expiration = +expiration;
 					if (eviction) updated_primary_attribute.eviction = +eviction;
 					if (sealed !== undefined) updated_primary_attribute.sealed = sealed;
+					if (replicate !== undefined) updated_primary_attribute.replicate = replicate;
 					has_changes = true; // send out notification of the change
 					startTxn();
 					attributes_dbi.put(dbi_key, updated_primary_attribute);
