@@ -245,10 +245,16 @@
         "attribute":"id"
       },
       {
-        "attribute":"time"
+        "name":"metric"
       },
       {
-        "attribute":"metric"
+        "name":"path"
+      },
+      {
+        "name":"method"
+      },
+      {
+        "name":"type"
       }
     ]
   },
