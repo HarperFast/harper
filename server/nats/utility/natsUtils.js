@@ -886,7 +886,10 @@ async function purgeTableStream(schema, table, options = undefined) {
 	if (env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
 		try {
 			const stream_name = crypto_hash.createNatsTableStreamName(schema, table);
-			const { jsm } = await getNATSReferences();
+			const { domain } = getServerConfig(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
+			const con = await getConnection();
+			// Purging large streams needs a longer timeout than usual
+			const jsm = await con.jetstreamManager({ domain, timeout: 240000 });
 			await jsm.streams.purge(stream_name, options);
 		} catch (err) {
 			if (err.message === 'stream not found') {

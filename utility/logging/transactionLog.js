@@ -131,7 +131,7 @@ async function deleteTransactionLogsBefore(req) {
 
 	// Nats doesn't have the option to purge streams by timestamp only sequence.
 	// This will purge all messages upto but not including seq.
-	await jsm.streams.purge(stream_name, { seq });
+	await nats_utils.purgeTableStream(schema, table, { seq });
 
 	return response;
 }
