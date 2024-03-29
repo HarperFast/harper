@@ -98,7 +98,7 @@ export function replicateOverWS(ws, options) {
 	let audit_store;
 	// this is the subscription that the local table makes to this replicator, and incoming messages
 	// are sent to this subscription queue:
-	let incoming_subscription = options.subscription;
+	let table_subscription_to_replicator = options.subscription;
 	let tables = options.tables || (database_name && getDatabases()[database_name]);
 	if (database_name) setDatabase(database_name);
 	const table_decoders = [];
@@ -170,16 +170,16 @@ export function replicateOverWS(ws, options) {
 						const db_length = body[1];
 						const database_name = body.toString('utf8', 2, db_length + 2);
 						const start_time = decoder.getFloat64(2 + db_length);*/
-						if (incoming_subscription) {
-							if (database_name !== incoming_subscription.databaseName) {
+						if (table_subscription_to_replicator) {
+							if (database_name !== table_subscription_to_replicator.databaseName) {
 								logger.error(
 									'Subscription request for wrong database',
 									database_name,
-									incoming_subscription.databaseName
+									table_subscription_to_replicator.databaseName
 								);
 								return;
 							}
-						} else incoming_subscription = db_subscriptions.get(database_name);
+						} else table_subscription_to_replicator = db_subscriptions.get(database_name);
 						logger.info(
 							connection_id,
 							'received subscription request for',
@@ -197,7 +197,7 @@ export function replicateOverWS(ws, options) {
 							// use to unsubscribe
 							return;
 						let first_table;
-						const table_by_id = incoming_subscription.tableById.map((table) => {
+						const table_by_id = table_subscription_to_replicator.tableById.map((table) => {
 							first_table = table;
 							return { table };
 						});
@@ -206,7 +206,7 @@ export function replicateOverWS(ws, options) {
 						remote_omitted_node_names.map((node_name) => {
 							omitted_node_ids.push(getIdOfRemoteNode(node_name, audit_store));
 						});
-						ws.send(encode([SEND_ID_MAPPING, exportIdMapping(incoming_subscription.auditStore)]));
+						ws.send(encode([SEND_ID_MAPPING, exportIdMapping(table_subscription_to_replicator.auditStore)]));
 						const encoder = new Encoder();
 						const current_transaction = { txnTime: 0 };
 						const sendAuditRecord = (record_id, audit_record, local_time, begin_txn) => {
@@ -410,11 +410,16 @@ export function replicateOverWS(ws, options) {
 				if (!table_decoder) {
 					logger.error(`No table found with an id of ${audit_record.tableId}`);
 				}
+				let residency_list;
+				if (audit_record.residencyId) {
+					residency_list = remoteResidencyIdToList(audit_record.residencyId);
+				}
 				const event = {
 					table: table_decoders[audit_record.tableId].name,
 					id: audit_record.recordId,
 					type: audit_record.type,
 					nodeId: remote_short_id_to_local_id.get(audit_record.nodeId),
+					residencyList: residency_list,
 					timestamp: audit_record.version,
 					value: audit_record.getValue(table_decoders[audit_record.tableId]),
 					user: audit_record.user,
@@ -434,10 +439,14 @@ export function replicateOverWS(ws, options) {
 						'name',
 						event.value?.name
 					);
-				incoming_subscription.send(event);
+				table_subscription_to_replicator.send(event);
 				decoder.position = start + event_length;
 			} while (decoder.position < body.byteLength);
-			incoming_subscription.send({ type: 'end_txn', localTime: last_local_time, remoteNode: remote_node_name });
+			table_subscription_to_replicator.send({
+				type: 'end_txn',
+				localTime: last_local_time,
+				remoteNode: remote_node_name,
+			});
 		} catch (error) {
 			logger.error(connection_id, 'Error handling incoming replication message', error);
 		}
@@ -483,13 +492,13 @@ export function replicateOverWS(ws, options) {
 			}
 			onSubscriptionUpdate.omittedNodes = omitted_node_names;
 			if (!last_local_time) {
-				last_local_time = incoming_subscription.dbisDB.get([Symbol.for('seq'), remote_node_name]);
+				last_local_time = table_subscription_to_replicator.dbisDB.get([Symbol.for('seq'), remote_node_name]);
 				logger.info(
 					connection_id,
 					'requesting to start from',
 					last_local_time,
 					remote_node_name,
-					incoming_subscription.dbisDB.path
+					table_subscription_to_replicator.dbisDB.path
 				);
 			}
 			ws.send(encode([SUBSCRIBE_CODE, database_name, last_local_time, null, omitted_node_names]));
@@ -531,12 +540,12 @@ export function replicateOverWS(ws, options) {
 	}
 
 	function setDatabase(database_name) {
-		incoming_subscription = incoming_subscription || db_subscriptions.get(database_name);
-		if (!incoming_subscription) {
+		table_subscription_to_replicator = table_subscription_to_replicator || db_subscriptions.get(database_name);
+		if (!table_subscription_to_replicator) {
 			logger.error(`No database named "${database_name}" was declared and registered`);
 			return;
 		}
-		audit_store = incoming_subscription.auditStore;
+		audit_store = table_subscription_to_replicator.auditStore;
 		if (!audit_store) {
 			logger.error('No audit store found in ' + database_name);
 			return;

@@ -264,7 +264,7 @@ setInterval(() => {
 		}
 	}
 }, 15000).unref();
-export function getUpdateRecord(store, table_id, audit_store, get_residency) {
+export function getUpdateRecord(store, table_id, audit_store) {
 	return function (
 		id,
 		record,
@@ -273,7 +273,6 @@ export function getUpdateRecord(store, table_id, audit_store, get_residency) {
 		assign_metadata = -1, // when positive, this has a set of metadata flags for the record
 		audit?: boolean, // true -> audit this record. false -> do not. null -> retain any audit timestamp
 		options?,
-		expires_at?: number,
 		type = 'put',
 		resolve_record?: boolean, // indicates that we are resolving (from source) record that was previously invalidated
 		audit_record?: any
@@ -290,6 +289,7 @@ export function getUpdateRecord(store, table_id, audit_store, get_residency) {
 					? TIMESTAMP_RECORD_PREVIOUS | 0x4000
 					: TIMESTAMP_ASSIGN_NEW | 0x4000 // or just assign a new one
 				: NO_TIMESTAMP;
+		const expires_at = options?.expiresAt;
 		if (expires_at > 0) assign_metadata |= HAS_EXPIRATION;
 		metadata_in_next_encoding = assign_metadata;
 		expires_at_next_encoding = expires_at;

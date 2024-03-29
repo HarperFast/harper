@@ -109,19 +109,7 @@ export function makeTable(options) {
 	let { attributes } = options;
 	if (!attributes) attributes = [];
 	listenToCommits(primary_store, audit_store);
-	const updateRecord = getUpdateRecord(primary_store, table_id, audit_store, (record, previous_residency_id) => {
-		let owner_node_names = TableResource.getResidency(record, () => {
-			return TableResource.getResidencyRecord(previous_residency_id);
-		});
-		if (owner_node_names) {
-			let set_key = owner_node_names.join(','); // TODO: Translate this to node ids to create key
-			let residency_id = dbis_db.get([Symbol.for('residency_by_set'), set_key]);
-			if (residency_id) return residency_id;
-			dbis_db.put([Symbol.for('residency_by_set'), set_key], residency_id = Math.floor(Math.random() * 0x7fffffff);
-			dbis_db.put([Symbol.for('residency_by_id'), residency_id], owner_node_names);
-			return residency_id;
-		}
-	});
+	const updateRecord = getUpdateRecord(primary_store, table_id, audit_store);
 	const deletion_count = 0;
 	let deletion_cleanup;
 	let has_source_get;
@@ -284,21 +272,22 @@ export function makeTable(options) {
 					}
 					event.source = source;
 					const options = {
-						residencyId: 0,
-						...NOTIFICATION,
+						residencyId: getResidencyId(event.residencyList),
+						isNotification: true,
+						ensureLoaded: false
 					};
-					const resource: TableResource = await Table.getResource(event.id, context, NOTIFICATION);
+					const resource: TableResource = await Table.getResource(event.id, context, options);
 					switch (event.type) {
 						case 'put':
-							return resource._writeUpdate(value, true, NOTIFICATION);
+							return resource._writeUpdate(value, true, options);
 						case 'patch':
-							return resource._writeUpdate(value, false, NOTIFICATION);
+							return resource._writeUpdate(value, false, options);
 						case 'delete':
-							return resource._writeDelete(NOTIFICATION);
+							return resource._writeDelete(options);
 						case 'publish':
-							return resource._writePublish(value, NOTIFICATION);
+							return resource._writePublish(value, options);
 						case 'invalidate':
-							return resource._writeInvalidate(NOTIFICATION);
+							return resource._writeInvalidate(options);
 						default:
 							harper_logger.error('Unknown operation', event.type, event.id);
 					}
@@ -771,7 +760,6 @@ export function makeTable(options) {
 				store: primary_store,
 				invalidated: true,
 				entry: this[ENTRY_PROPERTY],
-				nodeName: this[CONTEXT]?.nodeName,
 				before: apply_to_sources.invalidate?.bind(this, context, id),
 				beforeIntermediate: apply_to_sources_intermediate.invalidate?.bind(this, context, id),
 				commit: (txn_time, existing_entry) => {
@@ -791,8 +779,6 @@ export function makeTable(options) {
 						INVALIDATED,
 						audit,
 						{ user: context?.user, residencyId: options?.residencyId },
-						this[CONTEXT],
-						0,
 						'invalidate'
 					);
 					// TODO: record_deletion?
@@ -824,7 +810,7 @@ export function makeTable(options) {
 				// if we are evicting and not deleting, need to preserve the partial record
 				if (partial_record) {
 					// treat this as a record resolution (so previous version is checked) with no audit record
-					return updateRecord(id, partial_record, entry, existing_version, EVICTED, null, null, 0, null, true);
+					return updateRecord(id, partial_record, entry, existing_version, EVICTED, null, null, null, true);
 				}
 			}
 			primary_store.ifVersion(id, existing_version, () => {
@@ -832,7 +818,7 @@ export function makeTable(options) {
 			});
 			if (audit) {
 				// update the record to null it out, maintaining the reference to the audit history
-				return updateRecord(id, null, entry, existing_version, EVICTED, null, null, 0, null, true);
+				return updateRecord(id, null, entry, existing_version, EVICTED, null, null, null, true);
 			}
 			// if no timestamps for audit, just remove
 			else {
@@ -999,7 +985,13 @@ export function makeTable(options) {
 					this[RECORD_PROPERTY] = record_to_store;
 					if (record_to_store?.[RECORD_PROPERTY])
 						throw new Error('Can not assign a record to a record, check for circular references');
-					let audit_record;
+					let audit_record, residency_id;
+					if (options) residency_id = options.residencyId;
+					else {
+						residency_id = getResidencyId(TableResource.getResidency(record_to_store, () => {
+							return TableResource.getResidencyRecord(entry.residencyId);
+						}));
+					}
 					if (!full_update) {
 						// that is a CRDT, we use our own data as the basis for the audit record, which will include information about the incremental updates
 						audit_record = record_update;
@@ -1014,8 +1006,7 @@ export function makeTable(options) {
 						txn_time,
 						0,
 						audit,
-						context,
-						context.expiresAt || (expiration_ms ? expiration_ms + Date.now() : 0),
+						{ user: context?.user, residencyId: residency_id, expiresAt: context?.expiresAt || (expiration_ms ? expiration_ms + Date.now() : 0)},
 						type,
 						false,
 						audit_record
@@ -1065,7 +1056,7 @@ export function makeTable(options) {
 					updateIndices(this[ID_PROPERTY], existing_record);
 					harper_logger.trace(`Write delete entry`, id, txn_time);
 					if (audit || track_deletes) {
-						updateRecord(id, null, this[ENTRY_PROPERTY], txn_time, 0, audit, this[CONTEXT], 0, 'delete');
+						updateRecord(id, null, this[ENTRY_PROPERTY], txn_time, 0, audit, { user: context?.user, residencyId: options?.residencyId }, 'delete');
 						if (!audit) scheduleCleanup();
 					} else {
 						primary_store.remove(this[ID_PROPERTY]);
@@ -1852,8 +1843,7 @@ export function makeTable(options) {
 						existing_entry?.version || txn_time,
 						0,
 						true,
-						context,
-						existing_entry?.expiresAt,
+						{ user: context?.user, residencyId: options?.residencyId, expiresAt: context?.expiresAt},
 						'message',
 						false,
 						message
@@ -2698,8 +2688,7 @@ export function makeTable(options) {
 									txn_time,
 									0,
 									(audit && has_changes) || null,
-									source_context,
-									source_context.expiresAt,
+									{ user: source_context?.user, expiresAt: source_context.expiresAt},
 									'put',
 									Boolean(invalidated)
 								);
@@ -2714,8 +2703,7 @@ export function makeTable(options) {
 										txn_time,
 										0,
 										(audit && has_changes) || null,
-										source_context,
-										0,
+										{ user: source_context?.user },
 										'delete',
 										Boolean(invalidated)
 									);
@@ -2857,6 +2845,16 @@ export function makeTable(options) {
 					running_record_expiration = false;
 				}
 			}, RECORD_PRUNING_INTERVAL).unref();
+		}
+	}
+	function getResidencyId(owner_node_names) {
+		if (owner_node_names) {
+			let set_key = owner_node_names.join(','); // TODO: Translate this to node ids to create key
+			let residency_id = dbis_db.get([Symbol.for('residency_by_set'), set_key]);
+			if (residency_id) return residency_id;
+			dbis_db.put([Symbol.for('residency_by_set'), set_key], residency_id = Math.floor(Math.random() * 0x7fffffff);
+			dbis_db.put([Symbol.for('residency_by_id'), residency_id], owner_node_names);
+			return residency_id;
 		}
 	}
 }

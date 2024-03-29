@@ -166,7 +166,9 @@ export function createAuditEntry(
 	previous_residency_id
 ) {
 	const action = EVENT_TYPES[type];
-	if (!action) throw new Error(`Invalid audit entry type ${type}`);
+	if (!action) {
+		throw new Error(`Invalid audit entry type ${type}`);
+	}
 	let position = 1;
 	if (previous_local_time) {
 		if (previous_local_time > 1) ENTRY_DATAVIEW.setFloat64(0, previous_local_time);
