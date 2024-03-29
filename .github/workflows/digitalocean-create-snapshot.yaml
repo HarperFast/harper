@@ -9,8 +9,7 @@ on:
         type: string
       nodeVersion:
         description: "Version of node to install via NVM"
-        required: false
-        default: 'lts/iron'
+        required: true
         type: string
 
 defaults:
