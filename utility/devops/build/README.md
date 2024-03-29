@@ -139,9 +139,11 @@ This workflow covers the following in the prod release context:
 - Publish Public NPM Package
   - both GA or alpha/beta/rc based on the tag 
 - Docker Hub Release
-    - both GA or alpha/beta/rc based on the tag
+  - both GA or alpha/beta/rc based on the tag
+- Redhat Container Image Release
+  - only GA releases based on tag. We still need to manually publish at [Redhat Connect](https://connect.redhat.com/projects/64652bdb6c16c68a7fdbe93b/images) until we set that to `auto-publish`
   
-The following sections are if you wish to manually handle a release without using tags.
+The following sections are if you wish to manually handle a release without using tags or for steps not yet fully automated (such as [Update DigitalOcean Marketplace](#update-digitalocean-marketplace)).
 
 #### Publish Public NPM Package
 
