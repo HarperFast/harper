@@ -3,7 +3,7 @@ set -euo pipefail
 
 hdb_system_user="${HDB_SYSTEM_USER:-harperdb}"
 harperdb_version="${HARPERDB_VERSION:-latest}"
-node_version="v${NODE_VERSION:-lts/iron}"
+node_version="${NODE_VERSION:-lts/iron}"
 hdb_root="${HDB_ROOT:-/opt/hdb}"
 nvm_version="${NVM_VERSION:-v0.39.7}"
 
