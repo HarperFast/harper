@@ -195,7 +195,10 @@ export function makeTable(options) {
 			const getApplyToIntermediateSource = (method) => {
 				let sources = this.sources;
 				sources = sources.filter(
-					(source) => source.intermediateSource && source[method] && (!source[method].reliesOnPrototype || source.prototype[method])
+					(source) =>
+						source.intermediateSource &&
+						source[method] &&
+						(!source[method].reliesOnPrototype || source.prototype[method])
 				);
 				if (sources.length > 0) {
 					if (sources.length === 1) {
@@ -274,7 +277,7 @@ export function makeTable(options) {
 					const options = {
 						residencyId: getResidencyId(event.residencyList),
 						isNotification: true,
-						ensureLoaded: false
+						ensureLoaded: false,
 					};
 					const resource: TableResource = await Table.getResource(event.id, context, options);
 					switch (event.type) {
@@ -988,9 +991,11 @@ export function makeTable(options) {
 					let audit_record, residency_id;
 					if (options) residency_id = options.residencyId;
 					else {
-						residency_id = getResidencyId(TableResource.getResidency(record_to_store, () => {
-							return TableResource.getResidencyRecord(entry.residencyId);
-						}));
+						residency_id = getResidencyId(
+							TableResource.getResidency(record_to_store, () => {
+								return TableResource.getResidencyRecord(entry.residencyId);
+							})
+						);
 					}
 					if (!full_update) {
 						// that is a CRDT, we use our own data as the basis for the audit record, which will include information about the incremental updates
@@ -1006,7 +1011,11 @@ export function makeTable(options) {
 						txn_time,
 						0,
 						audit,
-						{ user: context?.user, residencyId: residency_id, expiresAt: context?.expiresAt || (expiration_ms ? expiration_ms + Date.now() : 0)},
+						{
+							user: context?.user,
+							residencyId: residency_id,
+							expiresAt: context?.expiresAt || (expiration_ms ? expiration_ms + Date.now() : 0),
+						},
 						type,
 						false,
 						audit_record
@@ -1056,7 +1065,16 @@ export function makeTable(options) {
 					updateIndices(this[ID_PROPERTY], existing_record);
 					harper_logger.trace(`Write delete entry`, id, txn_time);
 					if (audit || track_deletes) {
-						updateRecord(id, null, this[ENTRY_PROPERTY], txn_time, 0, audit, { user: context?.user, residencyId: options?.residencyId }, 'delete');
+						updateRecord(
+							id,
+							null,
+							this[ENTRY_PROPERTY],
+							txn_time,
+							0,
+							audit,
+							{ user: context?.user, residencyId: options?.residencyId },
+							'delete'
+						);
 						if (!audit) scheduleCleanup();
 					} else {
 						primary_store.remove(this[ID_PROPERTY]);
@@ -1843,7 +1861,7 @@ export function makeTable(options) {
 						existing_entry?.version || txn_time,
 						0,
 						true,
-						{ user: context?.user, residencyId: options?.residencyId, expiresAt: context?.expiresAt},
+						{ user: context?.user, residencyId: options?.residencyId, expiresAt: context?.expiresAt },
 						'message',
 						false,
 						message
@@ -2256,20 +2274,25 @@ export function makeTable(options) {
 			// determine what index values need to be removed and added
 			let values_to_add = getIndexedValues(value, index_nulls);
 			let values_to_remove = getIndexedValues(existing_value, index_nulls);
-			if (values_to_remove?.length > 0) { // put this in a conditional so we can do a faster version for new records
+			if (values_to_remove?.length > 0) {
+				// put this in a conditional so we can do a faster version for new records
 				// determine the changes/diff from new values and old values
 				const set_to_remove = new Set(values_to_remove);
-				values_to_add = values_to_add ? values_to_add.filter((value) => {
-					if (set_to_remove.has(value)) { // if the value is retained, we don't need to remove or add it, so remove it from the set
-						set_to_remove.delete(value);
-					} else { // keep in the list of values to add to index
-						return true;
-					}
-				}) : [];
+				values_to_add = values_to_add
+					? values_to_add.filter((value) => {
+							if (set_to_remove.has(value)) {
+								// if the value is retained, we don't need to remove or add it, so remove it from the set
+								set_to_remove.delete(value);
+							} else {
+								// keep in the list of values to add to index
+								return true;
+							}
+					  })
+					: [];
 				values_to_remove = Array.from(set_to_remove);
 				if ((values_to_remove.length > 0 || values_to_add.length > 0) && LMDB_PREFETCH_WRITES) {
 					// prefetch any values that have been removed or added
-					const values_to_prefetch = values_to_remove.concat(values_to_add).map((v) => ({key: v, value: id}));
+					const values_to_prefetch = values_to_remove.concat(values_to_add).map((v) => ({ key: v, value: id }));
 					index.prefetch(values_to_prefetch, noop);
 				}
 				//if the update cleared out the attribute value we need to delete it from the index
@@ -2278,7 +2301,10 @@ export function makeTable(options) {
 				}
 			} else if (values_to_add?.length > 0 && LMDB_PREFETCH_WRITES) {
 				// no old values, just new
-				index.prefetch(values_to_add.map((v) => ({key: v, value: id})), noop);
+				index.prefetch(
+					values_to_add.map((v) => ({ key: v, value: id })),
+					noop
+				);
 			}
 			if (values_to_add) {
 				for (let i = 0, l = values_to_add.length; i < l; i++) {
@@ -2688,7 +2714,7 @@ export function makeTable(options) {
 									txn_time,
 									0,
 									(audit && has_changes) || null,
-									{ user: source_context?.user, expiresAt: source_context.expiresAt},
+									{ user: source_context?.user, expiresAt: source_context.expiresAt },
 									'put',
 									Boolean(invalidated)
 								);
@@ -2852,7 +2878,7 @@ export function makeTable(options) {
 			let set_key = owner_node_names.join(','); // TODO: Translate this to node ids to create key
 			let residency_id = dbis_db.get([Symbol.for('residency_by_set'), set_key]);
 			if (residency_id) return residency_id;
-			dbis_db.put([Symbol.for('residency_by_set'), set_key], residency_id = Math.floor(Math.random() * 0x7fffffff);
+			dbis_db.put([Symbol.for('residency_by_set'), set_key], (residency_id = Math.floor(Math.random() * 0x7fffffff)));
 			dbis_db.put([Symbol.for('residency_by_id'), residency_id], owner_node_names);
 			return residency_id;
 		}

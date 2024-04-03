@@ -1,5 +1,11 @@
 import { getDatabases } from '../../resources/databases';
-import { createAuditEntry, Decoder, readAuditEntry } from '../../resources/auditStore';
+import {
+	createAuditEntry,
+	Decoder,
+	HAS_CURRENT_RESIDENCY_ID,
+	HAS_PREVIOUS_RESIDENCY_ID,
+	readAuditEntry,
+} from '../../resources/auditStore';
 import { exportIdMapping, getIdOfRemoteNode, getNodeName, remoteToLocalNodeId } from './nodeIdMapping';
 import { addSubscription } from '../../resources/transactionBroadcast';
 import { active_subscriptions, addNodeSubscription, removeNodeSubscription } from './activeSubscriptions';
@@ -19,7 +25,7 @@ import * as logger from '../../utility/logging/harper_logger';
 const SUBSCRIBE_CODE = 129;
 const SEND_NODE_ID = 140;
 const SEND_ID_MAPPING = 141;
-const SEND_TABLE_NAME = 130;
+const SEND_RESIDENCY_LIST = 130;
 const SEND_TABLE_STRUCTURE = 131;
 const SEND_TABLE_FIXED_STRUCTURE = 132;
 export const table_update_listeners = new Map();
@@ -104,6 +110,8 @@ export function replicateOverWS(ws, options) {
 	const table_decoders = [];
 	const omitted_node_ids = [];
 	const residency_map = [];
+	const sent_residency_lists = [];
+	const received_residency_lists = [];
 	let subscription_request, audit_subscription;
 	let remote_node_name;
 	let last_local_time;
@@ -163,6 +171,10 @@ export function replicateOverWS(ws, options) {
 						break;
 					case SEND_ID_MAPPING:
 						remote_short_id_to_local_id = remoteToLocalNodeId(remote_node_name, data, audit_store);
+						break;
+					case SEND_RESIDENCY_LIST:
+						const residency_id = table_id;
+						received_residency_lists[residency_id] = data;
 						break;
 					case SUBSCRIBE_CODE:
 						const [action, db, start_time, table_ids, remote_omitted_node_names] = message;
@@ -297,7 +309,10 @@ export function replicateOverWS(ws, options) {
 								) {
 									const record_id = audit_record.recordId;
 									// send out invalidation messages
-									logger.info(connection_id, 'sending invalidation', record_id, remote_node_name);
+									logger.info(connection_id, 'sending invalidation', record_id, remote_node_name, 'from', node_id);
+									let extended_type = 0;
+									if (residency_id) extended_type |= HAS_CURRENT_RESIDENCY_ID;
+									if (audit_record.previousResidencyId) extended_type |= HAS_PREVIOUS_RESIDENCY_ID;
 									const encoded_invalidation_entry = createAuditEntry(
 										audit_record.version,
 										table_id,
@@ -307,7 +322,7 @@ export function replicateOverWS(ws, options) {
 										audit_record.user,
 										'invalidate',
 										encoder.encode({ [table.primaryKey]: record_id }),
-										0,
+										extended_type,
 										residency_id,
 										audit_record.previousResidencyId
 									);
@@ -332,6 +347,10 @@ export function replicateOverWS(ws, options) {
 									table_entry.sentName = true;
 								}
 								ws.send(encode([SEND_TABLE_FIXED_STRUCTURE, typed_structs, table_id, table_entry.table.tableName]));
+							}
+							if (residency_id && !sent_residency_lists[residency_id]) {
+								ws.send(encode([SEND_RESIDENCY_LIST, residency, residency_id]));
+								sent_residency_lists[residency_id] = true;
 							}
 							if (residency && !residency[remote_node_name]) return; // we don't need to send this record to this node, is it doesn't have a copy of it and doesn't own it
 							/*
@@ -412,7 +431,14 @@ export function replicateOverWS(ws, options) {
 				}
 				let residency_list;
 				if (audit_record.residencyId) {
-					residency_list = remoteResidencyIdToList(audit_record.residencyId);
+					residency_list = received_residency_lists[audit_record.residencyId];
+					logger.info(
+						connection_id,
+						'received residency list',
+						residency_list,
+						audit_record.type,
+						audit_record.recordId
+					);
 				}
 				const event = {
 					table: table_decoders[audit_record.tableId].name,
