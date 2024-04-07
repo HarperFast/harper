@@ -781,7 +781,7 @@ export function makeTable(options) {
 						txn_time,
 						INVALIDATED,
 						audit,
-						{ user: context?.user, residencyId: options?.residencyId },
+						{ user: context?.user, residencyId: options?.residencyId, nodeId: options?.nodeId },
 						'invalidate'
 					);
 					// TODO: record_deletion?
@@ -1015,6 +1015,7 @@ export function makeTable(options) {
 							user: context?.user,
 							residencyId: residency_id,
 							expiresAt: context?.expiresAt || (expiration_ms ? expiration_ms + Date.now() : 0),
+							nodeId: options?.nodeId,
 						},
 						type,
 						false,
@@ -1072,7 +1073,7 @@ export function makeTable(options) {
 							txn_time,
 							0,
 							audit,
-							{ user: context?.user, residencyId: options?.residencyId },
+							{ user: context?.user, residencyId: options?.residencyId, nodeId: options?.nodeId },
 							'delete'
 						);
 						if (!audit) scheduleCleanup();
@@ -1861,7 +1862,12 @@ export function makeTable(options) {
 						existing_entry?.version || txn_time,
 						0,
 						true,
-						{ user: context?.user, residencyId: options?.residencyId, expiresAt: context?.expiresAt },
+						{
+							user: context?.user,
+							residencyId: options?.residencyId,
+							expiresAt: context?.expiresAt,
+							nodeId: options?.nodeId,
+						},
 						'message',
 						false,
 						message
