@@ -100,11 +100,42 @@ jobs:
             type=raw,enable=${{ inputs.container == 'harperdb/private'}},value=${{ inputs.harperdbVersion }}-${{ github.run_number }}
             type=raw,enable=${{ inputs.container == 'tar'}},value=${{ inputs.harperdbVersion }}-${{ github.run_number }}
             type=raw,value=latest,enable=${{ inputs.latest }}
+            type=raw,value=${{ github.sha }}
 
-      # build and publish containers
-      - name: "Publish ${{ inputs.container }}:${{ inputs.harperdbVersion }}"
+      # build containers
+      - name: "Build ${{ inputs.container }}:${{ inputs.harperdbVersion }}"
         if: inputs.container != 'tar'
         id: build-image
+        timeout-minutes: 30
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ${{ inputs.file }}
+          load: true
+          platforms: ${{ inputs.platforms }}
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            HARPERDB_VERSION=${{ inputs.harperdbVersion }}
+            HARPERDB_TARBALL=harperdb-${{ inputs.harperdbVersion }}.tgz
+            VCS_REF=`git rev-parse HEAD`
+            BUILD_DATE=`date -u +%FT%T`
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Security scan for container
+      - name: Run Trivy vulnerability scanner
+        if: inputs.container != 'tar'
+        id: scan-image
+        uses: aquasecurity/trivy-action@master
+        with:
+          format: 'github'
+          image-ref: ${{ inputs.container == 'tar' && 'harperdb/harperdb' || inputs.container }}:${{ github.sha }}
+          severity: 'CRITICAL,HIGH'
+
+      # publish containers
+      - name: "Build ${{ inputs.container }}:${{ inputs.harperdbVersion }}"
+        if: inputs.container != 'tar' && inputs.push == true
+        id: publish-image
         timeout-minutes: 30
         uses: docker/build-push-action@v5
         with:
@@ -136,9 +167,9 @@ jobs:
             base="docker-harperdb_${harperdbVersion}-"
             [[ "${containerFile}" == *"-openshift" ]] && flavor='-openshift' || flavor=''
             arch="-${platform##*/}"
-            echo "tarName=${base}${runNumber}${flavor}${arch}.tar" >> $GITHUB_OUTPUT
+            echo "tarName=${base}${runNumber}${flavor}${arch}.tar" >> "${GITHUB_OUTPUT}"
           else
-            echo "tarName=${containerTarball}" >> $GITHUB_OUTPUT
+            echo "tarName=${containerTarball}" >> "${GITHUB_OUTPUT}"
           fi
 
       - name: "Create container tarball"
@@ -160,6 +191,15 @@ jobs:
             BUILD_DATE=`date -u +%FT%T`
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: 'scan container tarball'
+        if: inputs.container == 'tar'
+        id: scan-image-tar
+        uses: aquasecurity/trivy-action@master
+        with:
+          format: 'github'
+          input: ${{ steps.set-tar-name.outputs.tarName }}
+          severity: 'CRITICAL,HIGH'
 
       - name: 'Upload Artifact'
         if: inputs.container == 'tar'
