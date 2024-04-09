@@ -72,9 +72,6 @@ jobs:
       - build
     strategy:
       matrix:
-        container:
-          - 'harperdb/harperdb'
-          - 'harperdb/harperdb-openshift'
         include:
           - container: 'harperdb/harperdb'
             file: 'utility/Docker/Dockerfile'

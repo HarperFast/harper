@@ -29,9 +29,6 @@ jobs:
     uses: ./.github/workflows/docker-build.yaml
     strategy:
       matrix:
-        name:
-          - 'standard'
-          - 'openshift'
         include:
           - name: 'standard'
             file: 'utility/Docker/Dockerfile'
