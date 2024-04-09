@@ -1415,6 +1415,7 @@ export function makeTable(options) {
 			if (select && (select === primary_key || (select?.length === 1 && select[0] === primary_key))) {
 				// fast path if only the primary key is selected, so we don't have to load records
 				const transform = (entry) => {
+					if (context?.transaction?.stale) context.transaction.stale = false;
 					return entry?.key ?? entry;
 				};
 				if (select === primary_key) return transform;
@@ -1440,6 +1441,7 @@ export function makeTable(options) {
 			let transform_cache;
 			const transform = function (entry) {
 				let record;
+				if (context?.transaction?.stale) context.transaction.stale = false;
 				if (entry != undefined) {
 					// TODO: remove this:
 					last_entry = entry;
