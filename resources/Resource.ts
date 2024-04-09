@@ -511,8 +511,8 @@ function transactional(action, options) {
 						} else id = parsed_id;
 					}
 					if (id === undefined) {
-						id = id_or_query.id;
-						if (id === null) is_collection = true;
+						id = id_or_query.id ?? null;
+						if (id == null) is_collection = true;
 					}
 				}
 			} else {
