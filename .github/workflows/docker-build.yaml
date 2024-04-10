@@ -197,33 +197,26 @@ jobs:
         id: scan-image-tar
         uses: aquasecurity/trivy-action@master
         with:
-          #format: 'table'
-          format: 'sarif'
+          format: 'table'
           hide-progress: true
           input: ${{ steps.set-tar-name.outputs.tarName }}
-          output: 'trivy.sarif'
-          #output: trivy.txt
+          output: trivy.txt
           severity: 'CRITICAL,HIGH'
 
-      - name: Upload Trivy scan results to GitHub Security tab
-        uses: github/codeql-action/upload-sarif@v2
-        with:
-          sarif_file: 'trivy.sarif'
-
-#      - name: Publish Trivy Output to Summary
-#        if: inputs.container == 'tar'
-#        run: |
-#          if [[ -s trivy.txt ]]; then
-#            {
-#              echo "### Security Output"
-#              echo "<details><summary>Click to expand</summary>"
-#              echo ""
-#              echo '```terraform'
-#              cat trivy.txt
-#              echo '```'
-#              echo "</details>"
-#            } >> $GITHUB_STEP_SUMMARY
-#          fi
+      - name: Publish Trivy Output to Summary
+        if: inputs.container == 'tar'
+        run: |
+          if [[ -s trivy.txt ]]; then
+            {
+              echo "### Security Output"
+              echo "<details><summary>Click to expand</summary>"
+              echo ""
+              echo '```terraform'
+              cat trivy.txt
+              echo '```'
+              echo "</details>"
+            } >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: 'Upload Artifact'
         if: inputs.container == 'tar'
