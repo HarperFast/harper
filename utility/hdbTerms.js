@@ -659,6 +659,7 @@ const CONFIG_PARAMS = {
 	TLS_PRIVATEKEY: 'tls_privateKey',
 	TLS_CERTIFICATEAUTHORITY: 'tls_certificateAuthority',
 	TLS_CIPHERS: 'tls_ciphers',
+	CLONED: 'cloned',
 };
 
 const CONFIG_PARAM_MAP = {
@@ -924,6 +925,7 @@ const NODE_ERROR_CODES = {
 	ENOENT: 'ENOENT', // No such file or directory.
 	EACCES: 'EACCES', // Permission denied.
 	EEXIST: 'EEXIST', // File already exists.
+	ERR_INVALID_ARG_TYPE: 'ERR_INVALID_ARG_TYPE',
 };
 
 const TIME_STAMP_NAMES_ENUM = {

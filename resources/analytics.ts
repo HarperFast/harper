@@ -171,12 +171,14 @@ async function aggregation(from_period, to_period = 60000) {
 		let start = performance.now();
 		setImmediate(() => {
 			const now = performance.now();
-			if (now - start > 5000) warn('Unusually high event queue latency on the main thread of ' + Math.round(now - start) + 'ms');
+			if (now - start > 5000)
+				warn('Unusually high event queue latency on the main thread of ' + Math.round(now - start) + 'ms');
 			start = performance.now(); // We use this start time to measure the time it actually takes to on the task queue, minus the time on the event queu
 		});
 		analytics_table.primaryStore.prefetch([1], () => {
 			const now = performance.now();
-			if (now - start > 5000) warn('Unusually high task queue latency on the main thread of ' + Math.round(now - start) + 'ms');
+			if (now - start > 5000)
+				warn('Unusually high task queue latency on the main thread of ' + Math.round(now - start) + 'ms');
 			resolve(now - start);
 		});
 	});

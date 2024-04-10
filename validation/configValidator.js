@@ -33,6 +33,7 @@ const route_constraints = array
 	.empty(null);
 
 let hdb_root;
+let skip_fs_val = false;
 
 module.exports = {
 	configValidator,
@@ -40,7 +41,8 @@ module.exports = {
 	route_constraints,
 };
 
-function configValidator(config_json) {
+function configValidator(config_json, skip_fs_validation = false) {
+	skip_fs_val = skip_fs_validation;
 	hdb_root = config_json.rootPath;
 	if (hdb_utils.isEmpty(hdb_root)) {
 		throw UNDEFINED_OPS_API;
@@ -261,6 +263,7 @@ function configValidator(config_json) {
 
 // This function is used to validate existence of paths passed as an argument
 function doesPathExist(path_to_check) {
+	if (skip_fs_val) return null;
 	let exists = fs.existsSync(path_to_check);
 	if (exists) {
 		return null;

@@ -8,11 +8,12 @@ module.exports = fp(
 	function (fastify, opts, done) {
 		// eslint-disable-next-line require-await
 		fastify.addHook('onResponse', async (request, reply) => {
-			reply.getResponseTime();
+			// elapsedTime has to be accessed in onResponse or it won't work
+			let time = reply.elapsedTime;
 		});
 		// eslint-disable-next-line require-await
 		fastify.addHook('onSend', async (request, reply, payload) => {
-			let response_time = reply.getResponseTime();
+			let response_time = reply.elapsedTime;
 			let start_transfer = performance.now();
 			let config = reply.request.routeOptions;
 			let action;

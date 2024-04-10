@@ -790,23 +790,27 @@ describe('Test natsUtils module', () => {
 	});
 
 	it('Test purgeTableStream calls purge with stream name', async () => {
+		const get_server_rw = nats_utils.__set__('getServerConfig', sandbox.stub().returns({ domain: 'test' }));
 		const purge_stub = sandbox.stub().callsFake();
 		const jsm = { streams: { purge: purge_stub } };
-		const get_nats_ref_stub = sandbox.stub().resolves({ jsm });
-		const get_nats_ref_rw = nats_utils.__set__('getNATSReferences', get_nats_ref_stub);
+		const get_con_stub = sandbox.stub().resolves({ jetstreamManager: () => jsm });
+		const get_con_rw = nats_utils.__set__('getConnection', get_con_stub);
 		await nats_utils.purgeTableStream('dev', 'chicken');
 		expect(purge_stub.args[0][0]).to.equal('87a0f14775b2cdab9b437370b79abc4c');
-		get_nats_ref_rw();
+		get_con_rw();
+		get_server_rw();
 	});
 
 	it('Test purgeTableStream handles stream not found error', async () => {
+		const get_server_rw = nats_utils.__set__('getServerConfig', sandbox.stub().returns({ domain: 'test' }));
 		const purge_stub = sandbox.stub().throws(new Error('stream not found'));
 		const jsm = { streams: { purge: purge_stub } };
-		const get_nats_ref_stub = sandbox.stub().resolves({ jsm });
-		const get_nats_ref_rw = nats_utils.__set__('getNATSReferences', get_nats_ref_stub);
+		const get_con_stub = sandbox.stub().resolves({ jetstreamManager: () => jsm });
+		const get_con_rw = nats_utils.__set__('getConnection', get_con_stub);
 		await nats_utils.purgeTableStream('dev', 'chicken');
 		expect(hdb_warn_log_stub.args[0][0].message).to.equal('stream not found');
-		get_nats_ref_rw();
+		get_con_rw();
+		get_server_rw();
 	});
 
 	it('Test purgeSchemaTableStreams calls purge for all tables', async () => {

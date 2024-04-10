@@ -1,3 +1,5 @@
+name: "DigitalOcean Create Snapshot"
+
 on:
   workflow_dispatch:
     inputs:
@@ -9,10 +11,11 @@ on:
         description: "Version of node to install via NVM"
         required: true
         type: string
-name: "DigitalOcean Create Snapshot"
+
 defaults:
   run:
     working-directory: "./utility/marketplaces/digitalocean"
+
 jobs:
   Build:
     runs-on: ubuntu-latest

@@ -1,4 +1,4 @@
-FROM registry.access.redhat.com/ubi9/nodejs-18:latest as builder
+FROM registry.access.redhat.com/ubi9/nodejs-20:latest as builder
 
 ARG HARPERDB_TARBALL
 ARG HARPERDB_VERSION
@@ -33,7 +33,7 @@ RUN npm install $HARPERDB_TARBALL && \
     rm -f $HARPERDB_TARBALL
 
 # Runtime stage
-FROM registry.access.redhat.com/ubi9/nodejs-18-minimal:latest as runtime
+FROM registry.access.redhat.com/ubi9/nodejs-20-minimal:latest as runtime
 COPY --from=builder $HOME $HOME
 
 # metadata for labels
@@ -100,7 +100,7 @@ RUN microdnf install --assumeyes --nodocs --refresh hostname git procps && micro
 
 # RHCC Licensing files
 RUN mkdir /licenses
-COPY utility/Docker/licenses/* /licenses/.
+COPY utility/Docker/licenses /licenses
 
 #Create mount point
 VOLUME /home/harperdb/hdb

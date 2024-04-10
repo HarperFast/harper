@@ -11,7 +11,7 @@ const fs = require('fs-extra');
 const path = require('path');
 const si = require('systeminformation');
 const check_jwt_tokens = require('../utility/install/checkJWTTokensExist');
-const install = require('../utility/install/installer');
+const { install } = require('../utility/install/installer');
 const chalk = require('chalk');
 const pjson = require('../package.json');
 const hdb_utils = require('../utility/common_utils');
@@ -172,7 +172,8 @@ async function initialize(called_by_install = false, called_by_main = false) {
 	} catch (err) {
 		if (upgrade_vers) {
 			console.error(
-				`Got an error while trying to upgrade your HarperDB instance to version ${upgrade_vers}.  Exiting HarperDB.`, err
+				`Got an error while trying to upgrade your HarperDB instance to version ${upgrade_vers}.  Exiting HarperDB.`,
+				err
 			);
 			hdb_logger.error(err);
 		} else {

@@ -2558,7 +2558,7 @@ export function makeTable(options) {
 		if (filters_length > 0 || !ids.hasEntries) {
 			let results = ids.map((id_or_entry) => {
 				id_filters_applied = null;
-				if (typeof id_or_entry === 'object' && id_or_entry.key !== undefined)
+				if (typeof id_or_entry === 'object' && id_or_entry?.key !== undefined)
 					return filters_length > 0 ? processEntry(id_or_entry) : id_or_entry; // already an entry
 				if (id_or_entry == undefined) {
 					return SKIP;

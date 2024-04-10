@@ -25,7 +25,7 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 	if (webSocket)
 		server_instance = server.ws((ws, request, chain_completion) => {
 			if (ws.protocol === 'mqtt') {
-				mqtt_log.debug('Received WSS connection for MQTT from', ws._socket.remoteAddress);
+				mqtt_log.debug('Received WebSocket connection for MQTT from', ws._socket.remoteAddress);
 				const { onMessage, onClose } = onSocket(
 					ws,
 					(message, allow_backpressure) => {
@@ -52,7 +52,9 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 		server_instance = server.socket(
 			async (socket) => {
 				let user;
-				mqtt_log.debug('Received connection for MQTT from', socket.remoteAddress);
+				mqtt_log.debug(
+					`Received ${socket.getCertificate ? 'SSL' : 'TCP'} connection for MQTT from ${socket.remoteAddress}`
+				);
 				if (mtls) {
 					if (socket.authorized) {
 						try {
@@ -61,15 +63,28 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 								// null means no user is defined from certificate, need regular authentication as well
 								if (username === undefined || username === 'Common Name' || username === 'CN')
 									username = socket.getPeerCertificate().subject.CN;
-								user = await server.getUser(username, null, null);
-								if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL)) {
-									auth_event_log.notify({
-										username: user.username,
-										status: AUTH_AUDIT_STATUS.SUCCESS,
-										type: AUTH_AUDIT_TYPES.AUTHENTICATION,
-										auth_strategy: 'MQTT mTLS',
-										remote_address: socket.remoteAddress,
-									});
+								try {
+									user = await server.getUser(username, null, null);
+									if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL)) {
+										auth_event_log.notify({
+											username: user?.username,
+											status: AUTH_AUDIT_STATUS.SUCCESS,
+											type: AUTH_AUDIT_TYPES.AUTHENTICATION,
+											auth_strategy: 'MQTT mTLS',
+											remote_address: socket.remoteAddress,
+										});
+									}
+								} catch (error) {
+									if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED)) {
+										auth_event_log.error({
+											username,
+											status: AUTH_AUDIT_STATUS.FAILURE,
+											type: AUTH_AUDIT_TYPES.AUTHENTICATION,
+											auth_strategy: 'mqtt',
+											remote_address: socket.remoteAddress,
+										});
+									}
+									throw error;
 								}
 							} else {
 								mqtt_log.debug(
@@ -134,6 +149,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 			session?.disconnect();
 			mqtt_settings.sessions.delete(session);
 			recordActionBinary(false, 'connection', 'mqtt', 'disconnect');
+			mqtt_log.debug('MQTT connection was closed', socket.remoteAddress);
 		}
 	}
 
@@ -149,7 +165,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 							user = await server.getUser(packet.username, packet.password.toString(), request);
 							if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL)) {
 								auth_event_log.notify({
-									username: user.username,
+									username: user?.username,
 									status: AUTH_AUDIT_STATUS.SUCCESS,
 									type: AUTH_AUDIT_TYPES.AUTHENTICATION,
 									auth_strategy: 'MQTT',
@@ -159,7 +175,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 						} catch (error) {
 							if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED)) {
 								auth_event_log.error({
-									username: user.username,
+									username: packet.username,
 									status: AUTH_AUDIT_STATUS.FAILURE,
 									type: AUTH_AUDIT_TYPES.AUTHENTICATION,
 									auth_strategy: 'mqtt',
@@ -353,6 +369,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					session?.disconnect(true);
 					mqtt_settings.sessions.delete(session);
 					recordActionBinary(true, 'connection', 'mqtt', 'disconnect');
+					mqtt_log.debug('Received disconnect command, closing MQTT session', socket.remoteAddress);
 					if (socket.close) socket.close();
 					else socket.end();
 					break;
