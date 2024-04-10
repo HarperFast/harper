@@ -217,6 +217,24 @@ jobs:
           cat <<EOF >> "${GITHUB_OUTPUT}"
           summary<<${delimiter}
           ### Security Output
+          
+          \`\`\`terraform
+          ${trivy_results}
+          \`\`\`
+          
+          ${delimiter}
+          EOF
+
+      - name: Post Trivy Step Summary
+        if: inputs.container == 'tar'
+        env:
+          SUMMARY: ${{ steps.trivy_summary.outputs.summary }}
+        run: |
+          trivy_results=$(cat trivy.txt)
+          delimiter="$(openssl rand -hex 8)"
+          cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
+          summary<<${delimiter}
+          ### Security Output
           <details><summary>Click to expand</summary>
           
           \`\`\`terraform
@@ -225,12 +243,6 @@ jobs:
           </details>
           ${delimiter}
           EOF
-
-      - name: Post Trivy Step Summary
-        if: inputs.container == 'tar'
-        env:
-          SUMMARY: ${{ steps.trivy_summary.outputs.summary }}
-        run: echo "$SUMMARY" >> "${GITHUB_STEP_SUMMARY}"
 
       # If changes are detected, create a new issue
       - name: Container Security Issue
@@ -246,7 +258,7 @@ jobs:
           result-encoding: string
           script: |
             const body = `${process.env.SUMMARY}`;
-            const title = '${container} ${platforms} Security Scan';
+            const title = '${process.env.container} ${process.env.platforms} Security Scan';
             const creator = 'github-actions[bot]'
       
             // Look to see if there is an existing drift issue
