@@ -192,12 +192,13 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: 'scan container tarball'
+      - name: Run Trivy vulnerability scanner
         if: inputs.container == 'tar'
         id: scan-image-tar
         uses: aquasecurity/trivy-action@master
         with:
           format: 'github'
+          github-pat: ${{ github.token }}
           input: ${{ steps.set-tar-name.outputs.tarName }}
           severity: 'CRITICAL,HIGH'
 
