@@ -306,7 +306,7 @@ export function getUpdateRecord(store, table_id, audit_store) {
 			const residency_id = options?.residencyId; //get_residency(record, previous_residency_id);
 			if (residency_id) {
 				residency_id_at_next_encoding = residency_id;
-				assign_metadata |= HAS_RESIDENCY_ID;
+				metadata_in_next_encoding |= HAS_RESIDENCY_ID;
 				extended_type |= HAS_CURRENT_RESIDENCY_ID;
 			} // else residency_id_at_next_encoding = 0;
 			if (previous_residency_id !== residency_id) {

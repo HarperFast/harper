@@ -189,17 +189,25 @@ describe('Replication', () => {
 			let retries = 10;
 			do {
 				await new Promise((resolve) => setTimeout(resolve, 500));
-				let result = await test_tables[2].get('5');
+				let result = test_tables[1].primaryStore.getBinary('8');
 				if (!result) {
 					assert(--retries > 0);
 					continue;
 				}
-				assert.equal(result.name, name);
-				result = await test_tables[2].get('2');
-				assert.equal(result.name, name);
-				assert.equal(result.get('extraProperty'), true);
+				// verify that this is a small partial record, and invalidation entry
+				assert(result.length < 40);
+				result = test_tables[2].primaryStore.getBinary('8');
+				if (!result) {
+					assert(--retries > 0);
+					continue;
+				}
+				// verify that this is a full record
+				assert(result.length > 50);
 				break;
 			} while (true);
+			// now verify that the record can be loaded on-demand
+			let result = await test_tables[1].get('8');
+			assert.equal(result.name, name);
 		});
 		it.skip('A write to the table during a broken connection should catch up to both nodes', async function () {
 			let name = 'name ' + Math.random();

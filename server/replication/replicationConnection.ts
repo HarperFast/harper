@@ -303,9 +303,9 @@ export function replicateOverWS(ws, options) {
 								// For previous owners, that are no longer owners, we need to send out invalidation messages
 								const previous_residency = getResidence(audit_record.previousResidencyId, table);
 								if (
-									(!previous_residency || previous_residency[remote_node_name]) &&
+									(!previous_residency || previous_residency.includes(remote_node_name)) &&
 									residency &&
-									!residency[remote_node_name]
+									!residency.includes(remote_node_name)
 								) {
 									const record_id = audit_record.recordId;
 									// send out invalidation messages
@@ -352,7 +352,7 @@ export function replicateOverWS(ws, options) {
 								ws.send(encode([SEND_RESIDENCY_LIST, residency, residency_id]));
 								sent_residency_lists[residency_id] = true;
 							}
-							if (residency && !residency[remote_node_name]) return; // we don't need to send this record to this node, is it doesn't have a copy of it and doesn't own it
+							if (residency && !residency.includes(remote_node_name)) return; // we don't need to send this record to this node, is it doesn't have a copy of it and doesn't own it
 							/*
 							TODO: At some point we may want some fancier logic to elide the version (which is the same as txn_time)
 							and username from subsequent audit entries in multiple entry transactions*/

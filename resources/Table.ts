@@ -278,6 +278,7 @@ export function makeTable(options) {
 						residencyId: getResidencyId(event.residencyList),
 						isNotification: true,
 						ensureLoaded: false,
+						nodeId: event.nodeId,
 					};
 					const resource: TableResource = await Table.getResource(event.id, context, options);
 					switch (event.type) {
