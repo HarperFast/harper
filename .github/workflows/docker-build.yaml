@@ -197,10 +197,26 @@ jobs:
         id: scan-image-tar
         uses: aquasecurity/trivy-action@master
         with:
-          format: 'github'
-          github-pat: ${{ github.token }}
+          #format: 'table'
+          hide-progress: true
           input: ${{ steps.set-tar-name.outputs.tarName }}
+          output: trivy.txt
           severity: 'CRITICAL,HIGH'
+
+      - name: Publish Trivy Output to Summary
+        if: inputs.container == 'tar'
+        run: |
+          if [[ -s trivy.txt ]]; then
+            {
+              echo "### Security Output"
+              echo "<details><summary>Click to expand</summary>"
+              echo ""
+              echo '```terraform'
+              cat trivy.txt
+              echo '```'
+              echo "</details>"
+            } >> $GITHUB_STEP_SUMMARY
+          fi
 
       - name: 'Upload Artifact'
         if: inputs.container == 'tar'
