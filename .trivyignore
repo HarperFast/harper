@@ -1,0 +1,21 @@
+# see https://aquasecurity.github.io/trivy/v0.50/docs/configuration/filtering/#suppression for options and alternatives
+
+######################
+# Accepting the risk
+######################
+
+# perl related packages in debian
+CVE-2023-31484
+
+#############################
+# no impact on our settings
+#############################
+
+# git
+CVE-2023-25652
+CVE-2023-29007
+CVE-2023-25652
+CVE-2023-29007
+
+# libldap
+CVE-2023-2953

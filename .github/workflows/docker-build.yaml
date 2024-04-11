@@ -136,8 +136,9 @@ jobs:
           format: 'table'
           hide-progress: true
           image-ref: ${{ inputs.container }}:${{ github.sha }}
-          severity: 'CRITICAL,HIGH'
           output: trivy.txt
+          severity: 'CRITICAL,HIGH'
+          trivy-config: .github/configs/trivy.conf
 
       # publish containers
       - name: "Build ${{ inputs.container }}:${{ inputs.harperdbVersion }}"
@@ -209,6 +210,7 @@ jobs:
           input: ${{ steps.set-tar-name.outputs.tarName }}
           output: trivy.txt
           severity: 'CRITICAL,HIGH'
+          trivy-config: .github/configs/trivy.conf
 
       - name: 'Upload Artifact'
         if: inputs.container == 'tar'
