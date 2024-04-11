@@ -173,6 +173,7 @@ jobs:
             [[ "${containerFile}" == *"-openshift" ]] && flavor='-openshift' || flavor=''
             arch="-${platform##*/}"
             echo "tarName=${base}${runNumber}${flavor}${arch}.tar" >> "${GITHUB_OUTPUT}"
+            echo "imageName=harperdb${flavor}" >> "${GITHUB_OUTPUT}"
           else
             echo "tarName=${containerTarball}" >> "${GITHUB_OUTPUT}"
           fi
@@ -258,7 +259,7 @@ jobs:
           result-encoding: string
           script: |
             const body = `${process.env.SUMMARY}`;
-            const title = '${{ inputs.container }} ${{ inputs.platforms }} Security Scan';
+            const title = '${{ steps.set-tar-name.outputs.imageName }} ${{ inputs.platforms }} Security Scan';
             const creator = 'github-actions[bot]'
       
             // Look to see if there is an existing drift issue
