@@ -115,7 +115,7 @@ jobs:
       # this build process loads the container locally when done, should only be done if not multi-platform build
       # this is done for security scanning
       - name: "Build and load ${{ inputs.container }}:${{ inputs.harperdbVersion }}"
-        if: inputs.container != 'tar' && !contains(inputs.platforms, ',')
+        if: inputs.container != 'tar' && ! contains(inputs.platforms, ',')
         id: build-image
         timeout-minutes: 30
         uses: docker/build-push-action@v5
@@ -136,7 +136,7 @@ jobs:
 
       # Security scan for container
       - name: Run Trivy vulnerability scanner
-        if: inputs.container != 'tar' && !contains(inputs.platforms, ',')
+        if: inputs.container != 'tar' && ! contains(inputs.platforms, ',')
         id: scan-image
         uses: aquasecurity/trivy-action@master
         with:
@@ -230,7 +230,7 @@ jobs:
       #######################
       - name: Create Trivy Summary Output
         id: trivy_summary
-        if: !contains(inputs.platforms, ',')
+        if: ${{ ! contains(inputs.platforms, ',') }}
         env:
           file: ${{ inputs.file }}
         run: |
@@ -252,7 +252,7 @@ jobs:
           EOF
 
       - name: Post Trivy Step Summary
-        if: !contains(inputs.platforms, ',')
+        if: ${{ ! contains(inputs.platforms, ',') }}
         env:
           SUMMARY: ${{ steps.trivy_summary.outputs.summary }}
         run: |
@@ -273,7 +273,7 @@ jobs:
       # If changes are detected, create a new issue
       - name: Manage Container Image Security Issue
         id: post_trivy_issue
-        if: !contains(inputs.platforms, ',')
+        if: ${{ ! contains(inputs.platforms, ',') }}
         uses: actions/github-script@v7
         env:
           SUMMARY: "${{ steps.trivy_summary.outputs.summary }}"
