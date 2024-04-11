@@ -240,6 +240,7 @@ jobs:
           ${trivy_results}
           \`\`\`
           
+          ${delimiter}
           EOF
 
       - name: Post Trivy Step Summary
