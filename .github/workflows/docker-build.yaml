@@ -108,8 +108,11 @@ jobs:
             type=raw,value=${{ github.sha }}
 
       # build containers
-      - name: "Build ${{ inputs.container }}:${{ inputs.harperdbVersion }}"
-        if: inputs.container != 'tar'
+
+      # this build process loads the container locally when done, should only be done if not multi-platform build
+      # this is done for security scanning
+      - name: "Build and load ${{ inputs.container }}:${{ inputs.harperdbVersion }}"
+        if: inputs.container != 'tar' && !contains(inputs.platforms, ',')
         id: build-image
         timeout-minutes: 30
         uses: docker/build-push-action@v5
@@ -118,6 +121,7 @@ jobs:
           file: ${{ inputs.file }}
           load: true
           platforms: ${{ inputs.platforms }}
+          push: ${{ inputs.push }}
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |
             HARPERDB_VERSION=${{ inputs.harperdbVersion }}
@@ -129,7 +133,7 @@ jobs:
 
       # Security scan for container
       - name: Run Trivy vulnerability scanner
-        if: inputs.container != 'tar'
+        if: inputs.container != 'tar' && !contains(inputs.platforms, ',')
         id: scan-image
         uses: aquasecurity/trivy-action@master
         with:
@@ -141,7 +145,7 @@ jobs:
 
       # publish containers
       - name: "Build ${{ inputs.container }}:${{ inputs.harperdbVersion }}"
-        if: inputs.container != 'tar' && inputs.push == true
+        if: inputs.container != 'tar'
         id: publish-image
         timeout-minutes: 30
         uses: docker/build-push-action@v5
