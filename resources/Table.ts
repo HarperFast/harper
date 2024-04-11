@@ -699,7 +699,7 @@ export function makeTable(options) {
 		}
 
 		addTo(property, value) {
-			if (typeof value === 'number') {
+			if (typeof value === 'number' || typeof value === 'bigint') {
 				if (this[SAVE_MODE] === SAVING_FULL_UPDATE) this.set(property, (+this.getProperty(property) || 0) + value);
 				else {
 					if (!this[SAVE_MODE]) this.update();

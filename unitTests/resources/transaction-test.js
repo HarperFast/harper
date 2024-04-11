@@ -26,7 +26,13 @@ describe('Transactions', () => {
 		TxnTest = table({
 			table: 'TxnTest',
 			database: 'test',
-			attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'name' }, { name: 'count' }],
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name' },
+				{ name: 'count' },
+				{ name: 'countBigInt', type: 'BigInt' },
+				{ name: 'countInt', type: 'Int' },
+			],
 		});
 		setPublishToStream(
 			(subject, stream, header, message) => {
@@ -96,15 +102,19 @@ describe('Transactions', () => {
 		it('Can update with addTo and set', async function () {
 			const context = {};
 			await transaction(context, () => {
-				TxnTest.put(45, { name: 'a counter', count: 1 }, context);
+				TxnTest.put(45, { name: 'a counter', count: 1, countInt: 100, countBigInt: 4611686018427388000n }, context);
 			});
 			assert.equal((await TxnTest.get(45)).name, 'a counter');
 			await transaction(async (txn) => {
 				let counter = await TxnTest.get(45, txn);
 				counter.addTo('count', 1);
+				counter.addTo('countInt', 1);
+				counter.addTo('countBigInt', 1n);
 			});
 			let entity = await TxnTest.get(45);
 			assert.equal(entity.count, 2);
+			assert.equal(entity.countInt, 101);
+			assert.equal(entity.countBigInt, 4611686018427388001n);
 			assert.equal(entity.get('propertyA'), undefined);
 			// concurrently, to ensure the incrementation is really correct:
 			let promises = [];
@@ -114,6 +124,8 @@ describe('Transactions', () => {
 						let counter = await TxnTest.get(45, txn);
 						await new Promise((resolve) => setTimeout(resolve, 1));
 						counter.addTo('count', 3);
+						counter.subtractFrom('countInt', 2);
+						counter.addTo('countBigInt', 5);
 						counter.set('new prop ' + i, 'new value ' + i);
 					})
 				);
@@ -121,6 +133,8 @@ describe('Transactions', () => {
 			await Promise.all(promises);
 			entity = await TxnTest.get(45);
 			assert.equal(entity.count, 11);
+			assert.equal(entity.countInt, 95);
+			assert.equal(entity.countBigInt, 4611686018427388016n);
 			// all three properties should be added even though no single update did this
 			assert.equal(entity.get('new prop 0'), 'new value 0');
 			assert.equal(entity.get('new prop 1'), 'new value 1');
