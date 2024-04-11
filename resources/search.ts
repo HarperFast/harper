@@ -1037,7 +1037,8 @@ function typedDecoding(value) {
 		const [type, value_to_coerce] = value.split(':');
 		if (type === 'number') return +value_to_coerce;
 		else if (type === 'boolean') return value_to_coerce === 'true';
-		else if (type === 'date') return new Date(decodeURIComponent(value_to_coerce));
+		else if (type === 'date')
+			return new Date(isNaN(value_to_coerce) ? decodeURIComponent(value_to_coerce) : +value_to_coerce);
 		else if (type === 'string') return decodeURIComponent(value_to_coerce);
 		else throw new ClientError(`Unknown type ${type}`);
 	}
