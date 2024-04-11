@@ -23,7 +23,7 @@ on:
         required: true
         type: string
       container:
-        description: 'Which container to build, harperdb/private, harperdb/harperdb, harperdb/fabric, harperdb/openshift, tar, or public for both harperdb and openshift'
+        description: 'Which container to build, harperdb/private, harperdb/harperdb, harperdb/fabric, harperdb/harperdb-openshift, tar, or public for both harperdb and openshift'
         default: 'tar'
         required: false
         type: string
@@ -240,7 +240,6 @@ jobs:
           ${trivy_results}
           \`\`\`
           
-          ${delimiter}
           EOF
 
       - name: Post Trivy Step Summary
