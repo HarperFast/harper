@@ -120,6 +120,13 @@ describe('Parsing queries', () => {
 		assert(query.conditions[4].value instanceof Date);
 		assert.equal(query.conditions[5].value, 'number:5');
 	});
+	it('Coerce date', function () {
+		let query = parseQuery('time=lt=date:2024-01-05T20%3A07%3A27.955Z&time=gt=date:1602872124871');
+		assert.equal(query.conditions.length, 2);
+		assert.equal(query.conditions[0].attribute, 'time');
+		assert.equal(query.conditions[0].value.getTime(), new Date('2024-01-05T20:07:27.955Z').getTime());
+		assert.equal(query.conditions[1].value.getTime(), 1602872124871);
+	});
 
 	it('Nested select', function () {
 		let query = parseQuery('select(related{name,otherTable{other_name}},id,name)');
