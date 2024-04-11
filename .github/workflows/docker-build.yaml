@@ -245,20 +245,20 @@ jobs:
           EOF
 
       # If changes are detected, create a new issue
-      - name: Container Security Issue
+      - name: Manage Container Image Security Issue
         if: inputs.container == 'tar'
         id: tar_post_issue
         uses: actions/github-script@v7
         env:
           SUMMARY: "${{ steps.trivy_summary.outputs.summary }}"
-          container: ${{ inputs.container }}
-          platforms: ${{ inputs.platforms }}
+          CONTAINER: "${{ inputs.container }}"
+          PLATFORMS: "${{ inputs.platforms }}"
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           result-encoding: string
           script: |
             const body = `${process.env.SUMMARY}`;
-            const title = '${process.env.container} ${process.env.platforms} Security Scan';
+            const title = '${{ inputs.container }} ${{ inputs.platforms }} Security Scan';
             const creator = 'github-actions[bot]'
       
             // Look to see if there is an existing drift issue
