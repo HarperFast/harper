@@ -63,6 +63,9 @@ permissions:
   id-token: write
   issues: write
 
+env:
+  TRIVY_SEVERITY: 'CRITICAL,HIGH'
+
 jobs:
   ##########################
   #  Build Container Images
@@ -141,7 +144,7 @@ jobs:
           hide-progress: true
           image-ref: ${{ inputs.container }}:${{ github.sha }}
           output: trivy.txt
-          severity: 'CRITICAL,HIGH'
+          severity: ${{ env.TRIVY_SEVERITY }}
 
       # publish containers
       - name: "Build ${{ inputs.container }}:${{ inputs.harperdbVersion }}"
@@ -212,7 +215,7 @@ jobs:
           hide-progress: true
           input: ${{ steps.set-tar-name.outputs.tarName }}
           output: trivy.txt
-          severity: 'CRITICAL,HIGH'
+          severity: ${{ env.TRIVY_SEVERITY }}
 
       - name: 'Upload Artifact'
         if: inputs.container == 'tar'
