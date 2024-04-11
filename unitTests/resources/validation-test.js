@@ -55,6 +55,22 @@ describe('Types Validation', () => {
 			subObject: null,
 		});
 	});
+	it('Rejects without primary key', async function () {
+		assert.throws(() =>
+			ValidationTest.put({
+				str: 'hello',
+				num: 3.14,
+				int: 2147483640,
+				long: 12147483648,
+				bool: true,
+				bytes: Buffer.from([1, 2, 3]),
+				arrayOfStrings: ['hi', 'there'],
+				subObject: {
+					name: 'inside',
+				},
+			})
+		);
+	});
 	it('Rejects incorrect types', async function () {
 		assert.throws(() =>
 			ValidationTest.put(42, {

@@ -451,9 +451,10 @@ function transactional(action, options) {
 			} else {
 				// single argument form, just data
 				data = id_or_query;
-				id = data[ID_PROPERTY] ?? data[this.primaryKey] ?? null;
+				id_or_query = undefined;
+				id = data[ID_PROPERTY] ?? data[this.primaryKey];
 			}
-			if (id == null) is_collection = true;
+			if (id === null) is_collection = true;
 			// otherwise handle methods for get, delete, etc.
 			// first, check to see if it is two argument
 		} else if (data_or_context) {
@@ -515,8 +516,8 @@ function transactional(action, options) {
 					}
 				}
 			} else {
-				id = id_or_query ?? null;
-				if (id == null) is_collection = true;
+				id = id_or_query;
+				if (id === null) is_collection = true;
 			}
 		}
 
