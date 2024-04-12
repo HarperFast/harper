@@ -25,6 +25,7 @@ import * as logger from '../../utility/logging/harper_logger';
 const SUBSCRIBE_CODE = 129;
 const SEND_NODE_NAME = 140;
 const SEND_ID_MAPPING = 141;
+const DISCONNECT = 142;
 const SEND_RESIDENCY_LIST = 130;
 const SEND_TABLE_STRUCTURE = 131;
 const SEND_TABLE_FIXED_STRUCTURE = 132;
@@ -143,6 +144,7 @@ export function replicateOverWS(ws, options) {
 							if (!setDatabase((database_name = message[2]))) {
 								// if this fails, we should close the connection and indicate that we should not reconnect
 								ws.isFinished = true;
+								ws.send(encode([DISCONNECT]));
 								ws.close();
 								return;
 							}
@@ -152,6 +154,10 @@ export function replicateOverWS(ws, options) {
 						// TODO: Listen to adc
 						break;
 					}
+					case DISCONNECT:
+						ws.isFinished = true;
+						ws.close();
+						break;
 					case SEND_TABLE_FIXED_STRUCTURE:
 						const table_name = message[3];
 						if (!tables) {
