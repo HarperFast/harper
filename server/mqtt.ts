@@ -9,6 +9,7 @@ import { server } from '../server/Server';
 import { get } from '../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms';
 import { loggerWithTag } from '../utility/logging/harper_logger.js';
+import { table } from '../resources/databases';
 const auth_event_log = loggerWithTag('auth-event');
 const mqtt_log = loggerWithTag('mqtt');
 

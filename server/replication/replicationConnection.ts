@@ -23,7 +23,7 @@ import { threadId } from 'worker_threads';
 import * as logger from '../../utility/logging/harper_logger';
 
 const SUBSCRIBE_CODE = 129;
-const SEND_NODE_ID = 140;
+const SEND_NODE_NAME = 140;
 const SEND_ID_MAPPING = 141;
 const SEND_RESIDENCY_LIST = 130;
 const SEND_TABLE_STRUCTURE = 131;
@@ -72,6 +72,7 @@ export class NodeReplicationConnection {
 		});
 
 		this.socket.on('close', () => {
+			if (this.socket.isFinished) return;
 			if (++this.retries % 20 === 1) logger.warn(`disconnected from ${this.url} (db: "${this.databaseName}")`);
 			// try to reconnect
 			setTimeout(() => {
@@ -106,6 +107,7 @@ export function replicateOverWS(ws, options) {
 	// are sent to this subscription queue:
 	let table_subscription_to_replicator = options.subscription;
 	let tables = options.tables || (database_name && getDatabases()[database_name]);
+	let remote_node_name;
 	if (database_name) setDatabase(database_name);
 	const table_decoders = [];
 	const omitted_node_ids = [];
@@ -113,7 +115,6 @@ export function replicateOverWS(ws, options) {
 	const sent_residency_lists = [];
 	const received_residency_lists = [];
 	let subscription_request, audit_subscription;
-	let remote_node_name;
 	let last_local_time;
 	let remote_sequence_number;
 	let remote_short_id_to_local_id: Map<number, number>;
@@ -134,11 +135,18 @@ export function replicateOverWS(ws, options) {
 				const message = decode(body);
 				const [command, data, table_id] = message;
 				switch (command) {
-					case SEND_NODE_ID: {
+					case SEND_NODE_NAME: {
 						// data is the map of its mapping of node name/guid to short ids
 						remote_node_name = message[1];
 						logger.info(connection_id, 'received node id', remote_node_name, database_name);
-						if (!database_name) setDatabase((database_name = message[2]));
+						if (!database_name) {
+							if (!setDatabase((database_name = message[2]))) {
+								// if this fails, we should close the connection and indicate that we should not reconnect
+								ws.isFinished = true;
+								ws.close();
+								return;
+							}
+						}
 						logger.info(connection_id, 'setDatabase', database_name, tables && Object.keys(tables));
 						sendSubscriptionRequestUpdate();
 						// TODO: Listen to adc
@@ -569,7 +577,7 @@ export function replicateOverWS(ws, options) {
 		table_subscription_to_replicator = table_subscription_to_replicator || db_subscriptions.get(database_name);
 		if (!table_subscription_to_replicator) {
 			logger.error(`No database named "${database_name}" was declared and registered`);
-			return;
+			return false;
 		}
 		audit_store = table_subscription_to_replicator.auditStore;
 		if (!audit_store) {
@@ -579,8 +587,13 @@ export function replicateOverWS(ws, options) {
 		if (!tables) tables = getDatabases()?.[database_name];
 
 		const this_node_name = getNodeName(audit_store);
+		if (this_node_name === remote_node_name) {
+			logger.error('Should not connect to self', this_node_name);
+			return false;
+		}
 		logger.info('Sending node name', this_node_name, 'database name', database_name);
-		ws.send(encode([SEND_NODE_ID, this_node_name, database_name]));
+		ws.send(encode([SEND_NODE_NAME, this_node_name, database_name]));
+		return true;
 	}
 
 	return {

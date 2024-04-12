@@ -129,7 +129,7 @@ export class Resource implements ResourceInterface {
 		else {
 			// two argument form, shift the arguments
 			id = this.getNewId();
-			context = record;
+			context = record || {};
 			record = id_prefix;
 		}
 		return transaction(context, () => {

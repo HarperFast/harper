@@ -235,6 +235,19 @@
       }
     ]
   },
+  "hdb_node":{
+    "hash_attribute": "url",
+    "name": "hdb_node",
+    "schema": "system",
+    "attributes":[
+      {
+        "attribute":"url"
+      },
+      {
+        "attribute": "routes"
+      }
+    ]
+  },
   "hdb_analytics":{
     "hash_attribute": "id",
     "name": "hdb_analytics",

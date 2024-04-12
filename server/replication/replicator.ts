@@ -9,14 +9,20 @@
  * 5. Node B sends back the audit records
  */
 
-import { database, table as defineTable, getDatabases, onUpdatedTable } from '../../resources/databases';
+import { database, table as defineTable, getDatabases, onUpdatedTable, table } from '../../resources/databases';
 import { ID_PROPERTY, Resource } from '../../resources/Resource';
 import { IterableEventQueue } from '../../resources/IterableEventQueue';
 import { getWorkerIndex } from '../threads/manageThreads';
-import { NodeReplicationConnection, replicateOverWS, database_subscriptions, table_update_listeners } from './replicationConnection';
+import {
+	NodeReplicationConnection,
+	replicateOverWS,
+	database_subscriptions,
+	table_update_listeners,
+} from './replicationConnection';
 import { server } from '../Server';
 import env from '../../utility/environment/environmentManager';
 import * as logger from '../../utility/logging/harper_logger';
+import { ensureNode, forEachNode } from './knownNodes';
 
 let replication_disabled;
 
@@ -29,23 +35,24 @@ export function start(options) {
 		assignReplicationSource(options);
 		// TODO: node_id should come from the hdb_nodes table
 	}
-	servers.push(server.ws(
-		(ws, request) => {
-			replicateOverWS(ws, options);
-			ws.on('error', (error) => {
-				if (error.code !== 'ECONNREFUSED')
-					logger.error('Error in connection to ' + this.url, error.message);
-			});
-		},
-		Object.assign(
-			// We generally expect this to use the operations API ports (9925)
-			{
-				protocol: 'harperdb-replication',
-				mtls: true,
+	servers.push(
+		server.ws(
+			(ws, request) => {
+				replicateOverWS(ws, options);
+				ws.on('error', (error) => {
+					if (error.code !== 'ECONNREFUSED') logger.error('Error in connection to ' + this.url, error.message);
+				});
 			},
-			options
+			Object.assign(
+				// We generally expect this to use the operations API ports (9925)
+				{
+					protocol: 'harperdb-replication',
+					mtls: true,
+				},
+				options
+			)
 		)
-	));
+	);
 }
 export function disableReplication(disabled = true) {
 	replication_disabled = disabled;
@@ -97,6 +104,7 @@ export function setReplicator(db_name, table, options) {
 	let source;
 	// We may try to consult this to get the other nodes for back-compat
 	// const { hub_routes } = getClusteringRoutes();
+	const connections = [];
 	table.sourcedFrom(
 		class Replicator extends Resource {
 			/**
@@ -115,14 +123,16 @@ export function setReplicator(db_name, table, options) {
 					// We only need one subscription for the database
 					// TODO: Eventually would be nice to have a real database subscription that delegated each specific table
 					// event to each table
-					subscription = (this.subscription = new IterableEventQueue());
+					subscription = this.subscription = new IterableEventQueue();
 					db_subscriptions.set(db_name, subscription);
 					subscription.tableById = table_by_id;
 					subscription.auditStore = table.auditStore;
 					subscription.dbisDB = table.dbisDB;
 					subscription.databaseName = db_name;
 					if (getWorkerIndex() < MAX_INGEST_THREADS) {
-						for (const route of options.routes) {
+						// if we have our own URL, we can add it ourselves
+						// ensureNode(this_url, option.routes);
+						route_loop: for (const route of options.routes) {
 							try {
 								let url = typeof route === 'string' ? route : route.url;
 								if (!url) {
@@ -132,14 +142,16 @@ export function setReplicator(db_name, table, options) {
 										continue;
 									}
 								}
-								// TODO: Do we need to have another way to determine URL?
-								// Node subscription also needs to be aware of other nodes that will be excluded from the current subscription
-								this.connection = new NodeReplicationConnection(url, subscription, db_name);
-								this.connection.connect();
+								ensureNode(url);
 							} catch (error) {
 								console.error(error);
 							}
 						}
+						forEachNode((node) => {
+							const connection = new NodeReplicationConnection(node.url, subscription, db_name);
+							connections.push(connection);
+							connection.connect();
+						});
 					}
 					return subscription;
 				}
