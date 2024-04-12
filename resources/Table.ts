@@ -2861,12 +2861,15 @@ export function coerceType(value, attribute) {
 	else if (type === 'BigInt') return value === 'null' ? null : BigInt(value);
 	else if (type === 'Boolean') return value === 'true' ? true : value === 'false' ? false : value;
 	else if (type === 'Date') {
-		//if the value is not an integer (to handle epoch values) and does not end in a timezone we suffiz with 'Z' tom make sure the Date is GMT timezone
-		if (typeof value !== 'number' && !ENDS_WITH_TIMEZONE.test(value)) {
-			value += 'Z';
+		if (isNaN(value)) {
+			if (value === 'null') return null;
+			//if the value is not an integer (to handle epoch values) and does not end in a timezone we suffiz with 'Z' tom make sure the Date is GMT timezone
+			if (!ENDS_WITH_TIMEZONE.test(value)) {
+				value += 'Z';
+			}
+			return new Date(value);
 		}
-		if (value === 'null') return null;
-		return new Date(value);
+		return new Date(+value); // epoch ms number
 	} else if (!type || type === 'Any') {
 		return autoCast(value);
 	}
