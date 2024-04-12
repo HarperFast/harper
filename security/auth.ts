@@ -88,7 +88,6 @@ export async function authentication(request, next_handler) {
 			}
 			request.session = session || (session = {});
 		}
-		request.user = null;
 
 		const authAuditLog = (username, status, strategy) => {
 			const log = new AuthAuditLog(
@@ -264,7 +263,7 @@ export async function authentication(request, next_handler) {
 }
 let started;
 export function start({ server, port }) {
-	server.request(authentication, { port: port || 'all' });
+	server.http(authentication, { port: port || 'all' });
 	// keep it cleaned out periodically
 	if (!started) {
 		started = true;
