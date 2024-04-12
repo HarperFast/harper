@@ -123,12 +123,17 @@ export async function authentication(request, next_handler) {
 		} else if (authorization) {
 			new_user = authorization_cache.get(authorization);
 			if (!new_user) {
-				const [strategy, credentials] = authorization.split(' ');
+				const space_index = authorization.indexOf(' ');
+				const strategy = authorization.slice(0, space_index);
+				const credentials = authorization.slice(space_index + 1);
 				let username, password;
 				try {
 					switch (strategy) {
 						case 'Basic':
-							[username, password] = atob(credentials).split(':');
+							const decoded = atob(credentials);
+							const colon_index = decoded.indexOf(':');
+							username = decoded.slice(0, colon_index);
+							password = decoded.slice(colon_index + 1);
 							// legacy support for passing in blank username and password to indicate no auth
 							new_user = username || password ? await server.getUser(username, password, request) : null;
 							break;

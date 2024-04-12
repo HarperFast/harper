@@ -258,6 +258,19 @@ describe('test REST calls', () => {
 			assert.equal(response.data[0].birthday.slice(0, 4), '1993');
 			assert.equal(response.data[1].birthday.slice(0, 4), '1994');
 		});
+		it('query by typed epoch date', async () => {
+			let response = await axios('http://localhost:9926/FourProp?birthday=gt=date:727660800000&birthday=lt=date:1994-11-22');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.length, 2);
+			assert.equal(response.data[0].birthday.slice(0, 4), '1993');
+			assert.equal(response.data[1].birthday.slice(0, 4), '1994');
+		});
+		it('query by typed date compared with number', async () => {
+			// a little silly, but just verify that a date can be compared with a number in case the number is an epoch date
+			let response = await axios('http://localhost:9926/FourProp?age=lt=date:1994-11-22');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.length, 10);
+		});
 		it('query and return text/csv', async () => {
 			let response = await axios('http://localhost:9926/FourProp?birthday=gt=1993-01-22&birthday=lt=1994-11-22', {
 				headers: { accept: 'text/csv' },

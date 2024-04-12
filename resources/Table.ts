@@ -699,7 +699,7 @@ export function makeTable(options) {
 		}
 
 		addTo(property, value) {
-			if (typeof value === 'number') {
+			if (typeof value === 'number' || typeof value === 'bigint') {
 				if (this[SAVE_MODE] === SAVING_FULL_UPDATE) this.set(property, (+this.getProperty(property) || 0) + value);
 				else {
 					if (!this[SAVE_MODE]) this.update();
@@ -1415,6 +1415,7 @@ export function makeTable(options) {
 			if (select && (select === primary_key || (select?.length === 1 && select[0] === primary_key))) {
 				// fast path if only the primary key is selected, so we don't have to load records
 				const transform = (entry) => {
+					if (context?.transaction?.stale) context.transaction.stale = false;
 					return entry?.key ?? entry;
 				};
 				if (select === primary_key) return transform;
@@ -1440,6 +1441,7 @@ export function makeTable(options) {
 			let transform_cache;
 			const transform = function (entry) {
 				let record;
+				if (context?.transaction?.stale) context.transaction.stale = false;
 				if (entry != undefined) {
 					// TODO: remove this:
 					last_entry = entry;
@@ -2859,12 +2861,15 @@ export function coerceType(value, attribute) {
 	else if (type === 'BigInt') return value === 'null' ? null : BigInt(value);
 	else if (type === 'Boolean') return value === 'true' ? true : value === 'false' ? false : value;
 	else if (type === 'Date') {
-		//if the value is not an integer (to handle epoch values) and does not end in a timezone we suffiz with 'Z' tom make sure the Date is GMT timezone
-		if (typeof value !== 'number' && !ENDS_WITH_TIMEZONE.test(value)) {
-			value += 'Z';
+		if (isNaN(value)) {
+			if (value === 'null') return null;
+			//if the value is not an integer (to handle epoch values) and does not end in a timezone we suffiz with 'Z' tom make sure the Date is GMT timezone
+			if (!ENDS_WITH_TIMEZONE.test(value)) {
+				value += 'Z';
+			}
+			return new Date(value);
 		}
-		if (value === 'null') return null;
-		return new Date(value);
+		return new Date(+value); // epoch ms number
 	} else if (!type || type === 'Any') {
 		return autoCast(value);
 	}
