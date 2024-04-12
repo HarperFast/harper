@@ -229,39 +229,53 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 			incoming_messages.emit('close');
 			if (iterator) iterator.return();
 		});
-		await chain_completion;
-		const url = request.url.slice(1);
-		const entry = resources.getMatch(url);
-		recordActionBinary(Boolean(entry), 'connection', 'ws', 'connect');
-		if (!entry) {
-			ws.send(serializeMessage(`No resource was found to handle ${request.pathname}`, request));
-		} else {
-			request.handlerPath = entry.path;
-			recordAction(
-				(action) => ({
-					count: action.count,
-					total: connection_count,
-				}),
-				'connections',
-				request.handlerPath,
-				'connect',
-				'ws'
-			);
+		try {
+			await chain_completion;
+			const url = request.url.slice(1);
+			const entry = resources.getMatch(url);
+			recordActionBinary(Boolean(entry), 'connection', 'ws', 'connect');
+			if (!entry) {
+				// TODO: Ideally we would like to have a 404 response before upgrading to WebSocket protocol, probably
+				return ws.close(1011, `No resource was found to handle ${request.pathname}`);
+			} else {
+				request.handlerPath = entry.path;
+				recordAction(
+					(action) => ({
+						count: action.count,
+						total: connection_count,
+					}),
+					'connections',
+					request.handlerPath,
+					'connect',
+					'ws'
+				);
+				request.authorize = true;
+				const resource_request = { url: entry.relativeURL, async: true }; // TODO: We don't want to have to remove the forward slash and then re-add it
+				const resource = entry.Resource;
+				const response_stream = await transaction(request, () => {
+					return resource.connect(resource_request, incoming_messages, request);
+				});
+				iterator = response_stream[Symbol.asyncIterator]();
 
-			const resource_request = { url: entry.relativeURL, async: true }; // TODO: We don't want to have to remove the forward slash and then re-add it
-			const resource = entry.Resource;
-			const response_stream = await transaction(request, () => {
-				return resource.connect(resource_request, incoming_messages, request);
-			});
-			iterator = response_stream[Symbol.asyncIterator]();
-
-			let result;
-			while (!(result = await iterator.next()).done) {
-				const message_binary = serializeMessage(result.value, request);
-				ws.send(message_binary);
-				recordAction(message_binary.length, 'bytes-sent', request.handlerPath, 'message', 'ws');
+				let result;
+				while (!(result = await iterator.next()).done) {
+					const message_binary = serializeMessage(result.value, request);
+					ws.send(message_binary);
+					recordAction(message_binary.length, 'bytes-sent', request.handlerPath, 'message', 'ws');
+				}
 			}
+		} catch (error) {
+			ws.close(
+				HTTP_TO_WEBSOCKET_CLOSE_CODES[error.statusCode] || // try to return a helpful code
+					1011, // otherwise generic internal error
+				error.toString()
+			);
+			ws.close('login fialed');
 		}
 		ws.close();
 	});
 }
+const HTTP_TO_WEBSOCKET_CLOSE_CODES = {
+	401: 3000,
+	403: 3003,
+};
