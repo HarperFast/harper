@@ -9,6 +9,7 @@ import { server } from '../server/Server';
 import { get } from '../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms';
 import { loggerWithTag } from '../utility/logging/harper_logger.js';
+import { EventEmitter } from 'events';
 const auth_event_log = loggerWithTag('auth-event');
 const mqtt_log = loggerWithTag('mqtt');
 
@@ -19,12 +20,17 @@ export function bypassAuth() {
 
 export function start({ server, port, network, webSocket, securePort, requireAuthentication }) {
 	// here we basically normalize the different types of sockets to pass to our socket/message handler
-	const mqtt_settings = (server.mqtt = { requireAuthentication, sessions: new Set() });
+	const mqtt_settings = (server.mqtt = server.mqtt || {
+		requireAuthentication,
+		sessions: new Set(),
+		events: new EventEmitter(),
+	});
 	let server_instance;
 	const mtls = network?.mtls;
 	if (webSocket)
 		server_instance = server.ws((ws, request, chain_completion) => {
 			if (ws.protocol === 'mqtt') {
+				mqtt_settings.events.emit('connection', ws);
 				mqtt_log.debug('Received WebSocket connection for MQTT from', ws._socket.remoteAddress);
 				const { onMessage, onClose } = onSocket(
 					ws,
@@ -52,6 +58,7 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 		server_instance = server.socket(
 			async (socket) => {
 				let user;
+				mqtt_settings.events.emit('connection', socket);
 				mqtt_log.debug(
 					`Received ${socket.getCertificate ? 'SSL' : 'TCP'} connection for MQTT from ${socket.remoteAddress}`
 				);
@@ -147,6 +154,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 		if (!disconnected) {
 			disconnected = true;
 			session?.disconnect();
+			mqtt_settings.events.emit('disconnected', session, socket);
 			mqtt_settings.sessions.delete(session);
 			recordActionBinary(false, 'connection', 'mqtt', 'disconnect');
 			mqtt_log.debug('MQTT connection was closed', socket.remoteAddress);
@@ -182,6 +190,8 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 									remote_address: socket.remoteAddress,
 								});
 							}
+							mqtt_settings.events.emit('auth-failed', packet, socket, error);
+							recordActionBinary(false, 'connection', 'mqtt', 'connect');
 							return sendPacket({
 								// Send a connection acknowledgment with indication of auth failure
 								cmd: 'connack',
@@ -191,6 +201,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 						}
 					}
 					if (!user && mqtt_settings.requireAuthentication) {
+						mqtt_settings.events.emit('auth-failed', packet, socket);
 						recordActionBinary(false, 'connection', 'mqtt', 'connect');
 						return sendPacket({
 							// Send a connection acknowledgment with indication of auth failure
@@ -224,6 +235,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 						mqtt_settings.sessions.add(session);
 					} catch (error) {
 						mqtt_log.error(error);
+						mqtt_settings.events.emit('auth-failed', packet, socket, error);
 						recordActionBinary(false, 'connection', 'mqtt', 'connect');
 						return sendPacket({
 							// Send a connection acknowledgment with indication of auth failure
@@ -232,6 +244,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 							returnCode: error.code || 0x80, // generic error
 						});
 					}
+					mqtt_settings.events.emit('connected', session, socket);
 					recordActionBinary(true, 'connection', 'mqtt', 'connect');
 					sendPacket({
 						// Send a connection acknowledgment
@@ -367,6 +380,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 				case 'disconnect':
 					disconnected = true;
 					session?.disconnect(true);
+					mqtt_settings.events.emit('disconnected', session, socket);
 					mqtt_settings.sessions.delete(session);
 					recordActionBinary(true, 'connection', 'mqtt', 'disconnect');
 					mqtt_log.debug('Received disconnect command, closing MQTT session', socket.remoteAddress);
