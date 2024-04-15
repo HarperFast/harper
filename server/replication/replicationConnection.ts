@@ -8,7 +8,12 @@ import {
 } from '../../resources/auditStore';
 import { exportIdMapping, getIdOfRemoteNode, getNodeName, remoteToLocalNodeId } from './nodeIdMapping';
 import { addSubscription } from '../../resources/transactionBroadcast';
-import { active_subscriptions, addNodeSubscription, removeNodeSubscription } from './activeSubscriptions';
+import {
+	active_subscriptions,
+	addNodeSubscription,
+	removeNodeSubscription,
+	updatedRoutingForNode,
+} from './activeSubscriptions';
 import env from '../../utility/environment/environmentManager';
 import { readAuditEntry, Decoder, REMOTE_SEQUENCE_UPDATE } from '../../resources/auditStore';
 import { HAS_STRUCTURE_UPDATE } from '../../resources/RecordEncoder';
@@ -48,21 +53,22 @@ export class NodeReplicationConnection {
 		const tables = [];
 		// TODO: Need to do this specifically for each node
 		const private_key = env.get('tls_privateKey');
-		const certificate = env.get('tls_certificate');
+		const certificate = env.get('tls_certificate'); // this is the client certificate, usually not the same location as the server certificate
 		const certificate_authority = env.get('tls_certificateAuthority');
 		this.socket = new WebSocket(this.url, {
-			protocols: 'harperdb-replication',
+			protocols: 'harperdb-replication-v1',
 			key: readFileSync(private_key),
 			ciphers: env.get('tls_ciphers'),
 			cert: readFileSync(certificate),
 			ca: certificate_authority && readFileSync(certificate_authority),
 		});
+
 		let replicator;
 		this.socket.on('open', () => {
 			logger.info('connected to ' + this.url);
 			this.retries = 0;
 			this.retryTime = 200;
-			replicateOverWS(this.socket, {
+			replicator = replicateOverWS(this.socket, {
 				database: this.databaseName,
 				subscription: this.subscription,
 				url: this.url,
@@ -73,8 +79,14 @@ export class NodeReplicationConnection {
 		});
 
 		this.socket.on('close', () => {
-			if (this.socket.isFinished) return;
-			if (++this.retries % 20 === 1) logger.warn(`disconnected from ${this.url} (db: "${this.databaseName}")`);
+			if (this.socket.isFinished) {
+				replicator.end();
+				return;
+			}
+			replicator.disconnected();
+			if (++this.retries % 20 === 1) {
+				logger.warn(`disconnected from ${this.url} (db: "${this.databaseName}")`);
+			}
 			// try to reconnect
 			setTimeout(() => {
 				this.connect();
@@ -510,9 +522,9 @@ export function replicateOverWS(ws, options) {
 			subscription.listener === existing_listener ||
 			(subscription.threadId === threadId && !subscription.listener)
 		) {
-			const omitted_node_names = [];
+			const additional_node_names = subscription.additionalNodes;
 			for (const [node_name] of node_subscriptions) {
-				if (node_name !== remote_node_name) omitted_node_names.push(node_name);
+				if (node_name !== remote_node_name) additional_node_names.push(node_name);
 			}
 			const onSubscriptionUpdate = () => {
 				// The subscription list has changed, we either need to unsubscribe if another thread has taken over
@@ -520,17 +532,20 @@ export function replicateOverWS(ws, options) {
 				sendSubscriptionRequestUpdate(onSubscriptionUpdate);
 			};
 			if (!subscription) addNodeSubscription(database_name, remote_node_name, onSubscriptionUpdate);
-			if (existing_listener && JSON.stringify(existing_listener.omittedNodes) === JSON.stringify(omitted_node_names)) {
+			if (
+				existing_listener &&
+				JSON.stringify(existing_listener.additionalNodes) === JSON.stringify(additional_node_names)
+			) {
 				logger.info(connection_id, 'subscription checked, no changes needed');
 				return; // no changes needed
 			} else if (existing_listener) {
 				logger.info(
 					'sub difference',
-					JSON.stringify(existing_listener.omittedNodes),
-					JSON.stringify(omitted_node_names)
+					JSON.stringify(existing_listener.additionalNodes),
+					JSON.stringify(additional_node_names)
 				);
 			}
-			onSubscriptionUpdate.omittedNodes = omitted_node_names;
+			onSubscriptionUpdate.additionalNodes = additional_node_names;
 			if (!last_local_time) {
 				last_local_time = table_subscription_to_replicator.dbisDB.get([Symbol.for('seq'), remote_node_name]);
 				logger.info(
@@ -541,7 +556,7 @@ export function replicateOverWS(ws, options) {
 					table_subscription_to_replicator.dbisDB.path
 				);
 			}
-			ws.send(encode([SUBSCRIBE_CODE, database_name, last_local_time, null, omitted_node_names]));
+			ws.send(encode([SUBSCRIBE_CODE, database_name, last_local_time, null, additional_node_names]));
 			logger.info(
 				connection_id,
 				(existing_listener ? 'resent' : 'sent') + ' subscription request to',
@@ -549,7 +564,7 @@ export function replicateOverWS(ws, options) {
 				'for',
 				database_name,
 				'omitting',
-				omitted_node_names
+				additional_node_names
 			);
 			subscription_request = {
 				end() {
@@ -607,6 +622,11 @@ export function replicateOverWS(ws, options) {
 			// cleanup
 			if (subscription_request) subscription_request.end();
 			if (audit_subscription) audit_subscription.emit('close');
+		},
+		disconnected() {
+			// if we get disconnected, we try to reroute through another node
+			updatedRoutingForNode(remote_node_name, database_name);
+			// TODO: When we get reconnected, we need to undo this
 		},
 	};
 

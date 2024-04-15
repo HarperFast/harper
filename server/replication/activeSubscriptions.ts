@@ -1,7 +1,7 @@
-import { isMainThread, parentPort, threadId } from "worker_threads";
+import { isMainThread, parentPort, threadId } from 'worker_threads';
 import { broadcast, onMessageByType } from '../threads/manageThreads';
 
-export const active_subscriptions = new Map<string, Map<string, { threadId: number, listener: Function } >>();
+export const active_subscriptions = new Map<string, Map<string, { threadId: number; listener: Function }>>();
 if (isMainThread) {
 	onMessageByType('add-subscription', (message) => {
 		addNodeSubscription(message.database, message.nodeId, null, message.threadId);
@@ -60,11 +60,31 @@ export function removeNodeSubscription(database: string, node_id: string) {
 		parentPort.postMessage(message);
 	}
 	removedNodeSubscription(database, node_id);
-
 }
 export function removedNodeSubscription(database: string, node_id: string) {
 	const node_id_to_thread_id = active_subscriptions.get(database);
 	if (node_id_to_thread_id) {
 		node_id_to_thread_id.delete(node_id);
+	}
+}
+export function updateRoutingForNode(database: string, node_id: string, replacementNode, additionalNodes: string) {
+	const message = {
+		type: 'set-routing',
+		database,
+		nodeId: node_id,
+		replacementNode,
+		additionalNodes,
+	};
+	if (isMainThread) {
+		broadcast(message);
+	} else {
+		parentPort.postMessage(message);
+	}
+}
+export function updatedRoutingForNode(database: string, node_id: string) {
+	const node_id_to_thread_id = active_subscriptions.get(database);
+	if (node_id_to_thread_id) {
+		const { replacementNode, additionalNodes } = node_id_to_thread_id.get(node_id) || {};
+		additionalNodes.push(additionalNodes);
 	}
 }

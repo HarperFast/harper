@@ -23,13 +23,21 @@ import { server } from '../Server';
 import env from '../../utility/environment/environmentManager';
 import * as logger from '../../utility/logging/harper_logger';
 import { ensureNode, forEachNode } from './knownNodes';
+import { X509Certificate } from 'crypto';
+import { readFileSync } from 'fs';
 
 let replication_disabled;
 
 export let servers = [];
 export function start(options) {
 	if (!options.port) options.port = env.get('operationsApi_network_port');
-	if (!options.securePort) options.securePort = env.get('operationsApi_network_securePort');
+	if (!options.securePort) {
+		options.securePort = env.get('operationsApi_network_securePort');
+		const certificate = env.get('tls_certificate');
+		// we can use this to get the hostname if it isn't provided by config
+		let cert_parsed = new X509Certificate(readFileSync(certificate));
+		let subject = cert_parsed.subject;
+	}
 	if (options?.manualAssignment) {
 	} else {
 		assignReplicationSource(options);
@@ -46,7 +54,7 @@ export function start(options) {
 			Object.assign(
 				// We generally expect this to use the operations API ports (9925)
 				{
-					protocol: 'harperdb-replication',
+					protocol: 'harperdb-replication-v1',
 					mtls: true,
 				},
 				options
