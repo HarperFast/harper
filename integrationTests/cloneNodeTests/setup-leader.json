@@ -1,0 +1,610 @@
+{
+	"info": {
+		"_postman_id": "571c8a17-9a6d-4de4-8549-946cf4bc9e85",
+		"name": "Clone node tests - setup leader",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "7046690"
+	},
+	"item": [
+		{
+			"name": "Create table 'fish' db 'data'",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							""
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"create_table\",\n    \"table\": \"fish\",\n    \"primary_key\": \"id\"\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
+					"protocol": "{{PROTOCOL}}",
+					"host": [
+						"{{LEADER_HOST}}"
+					],
+					"port": "{{LEADER_HDB_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Insert 'fish'",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							""
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"insert\",\n    \"table\": \"fish\",\n    \"records\": [\n        {\n            \"id\": 1,\n            \"name\": \"Mullet\"\n        },\n        {\n            \"id\": 2,\n            \"name\": \"Trout\"\n        },\n        {\n            \"id\": 3,\n            \"name\": \"Grouper\"\n        },\n        {\n            \"id\": 4,\n            \"name\": \"Mackerel\"\n        }\n    ]\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
+					"protocol": "{{PROTOCOL}}",
+					"host": [
+						"{{LEADER_HOST}}"
+					],
+					"port": "{{LEADER_HDB_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Create table 'mammal' db 'data'",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							""
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"create_table\",\n    \"table\": \"mammal\",\n    \"primary_key\": \"id\"\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
+					"protocol": "{{PROTOCOL}}",
+					"host": [
+						"{{LEADER_HOST}}"
+					],
+					"port": "{{LEADER_HDB_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Insert 'mammal'",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							""
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"insert\",\n    \"table\": \"mammal\",\n    \"records\": [\n        {\n            \"id\": 1,\n            \"name\": \"Bat\"\n        },\n        {\n            \"id\": 2,\n            \"name\": \"Giraffe\"\n        },\n        {\n            \"id\": 3,\n            \"name\": \"Human\"\n        },\n        {\n            \"id\": 4,\n            \"name\": \"Rhino\"\n        }\n    ]\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
+					"protocol": "{{PROTOCOL}}",
+					"host": [
+						"{{LEADER_HOST}}"
+					],
+					"port": "{{LEADER_HDB_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Create table 'dog' db 'dev'",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							""
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"create_table\",\n    \"database\": \"dev\",\n    \"table\": \"dog\",\n    \"primary_key\": \"id\"\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
+					"protocol": "{{PROTOCOL}}",
+					"host": [
+						"{{LEADER_HOST}}"
+					],
+					"port": "{{LEADER_HDB_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Insert 'dog'",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							""
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"insert\",\n    \"database\": \"dev\",\n    \"table\": \"dog\",\n    \"records\": [\n        {\n            \"id\": 1,\n            \"name\": \"Poodle\"\n        },\n        {\n            \"id\": 2,\n            \"name\": \"Husky\"\n        },\n        {\n            \"id\": 3,\n            \"name\": \"Dachshund\"\n        },\n        {\n            \"id\": 4,\n            \"name\": \"Beagle\"\n        }\n    ]\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
+					"protocol": "{{PROTOCOL}}",
+					"host": [
+						"{{LEADER_HOST}}"
+					],
+					"port": "{{LEADER_HDB_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Create table 'cat' db 'dev'",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							""
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"create_table\",\n    \"database\": \"dev\",\n    \"table\": \"cat\",\n    \"primary_key\": \"id\"\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
+					"protocol": "{{PROTOCOL}}",
+					"host": [
+						"{{LEADER_HOST}}"
+					],
+					"port": "{{LEADER_HDB_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Insert 'cat'",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							""
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"insert\",\n    \"database\": \"dev\",\n    \"table\": \"cat\",\n    \"records\": [\n        {\n            \"id\": 1,\n            \"name\": \"Siamese\"\n        },\n        {\n            \"id\": 2,\n            \"name\": \"Ragdoll\"\n        },\n        {\n            \"id\": 3,\n            \"name\": \"Persian\"\n        },\n        {\n            \"id\": 4,\n            \"name\": \"Birman\"\n        }\n    ]\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
+					"protocol": "{{PROTOCOL}}",
+					"host": [
+						"{{LEADER_HOST}}"
+					],
+					"port": "{{LEADER_HDB_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Create table 'horse' db 'exclude'",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							""
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"create_table\",\n    \"database\": \"exclude\",\n    \"table\": \"horse\",\n    \"primary_key\": \"id\"\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
+					"protocol": "{{PROTOCOL}}",
+					"host": [
+						"{{LEADER_HOST}}"
+					],
+					"port": "{{LEADER_HDB_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Set config",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							""
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"set_configuration\",\n    \"my-component-1_package\": \"HarperDB/application-template\",\n    \"my-component-2_package\": \"HarperDB/application-template\",\n    \"logging_rotation_compress\": true,\n    \"logging_rotation_interval\": \"1D\",\n    \"logging_rotation_maxSize\": \"100K\"\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
+					"protocol": "{{PROTOCOL}}",
+					"host": [
+						"{{LEADER_HOST}}"
+					],
+					"port": "{{LEADER_HDB_PORT}}"
+				}
+			},
+			"response": []
+		}
+	]
+}

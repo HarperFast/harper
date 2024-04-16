@@ -860,6 +860,7 @@ function noBootFile() {
 	const cli_env_root = getEnvCliRootPath();
 	if (getEnvCliRootPath() && fs.pathExistsSync(path.join(cli_env_root, terms.HDB_CONFIG_FILE))) {
 		no_boot_file = true;
+		return true;
 	}
 }
 

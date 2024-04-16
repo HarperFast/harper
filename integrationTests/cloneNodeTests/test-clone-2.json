@@ -1,0 +1,509 @@
+{
+	"info": {
+		"_postman_id": "8734770b-9175-4310-86a9-c7bfaf01c8a6",
+		"name": "Clone node-2 tests - test clone",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "7046690"
+	},
+	"item": [
+		{
+			"name": "Describe confrim DB - node-2",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test('Test that all DB cloned correctly node-2', () => {",
+							"    const response = pm.response.json();",
+							"    pm.expect(response).to.haveOwnProperty('data');",
+							"    pm.expect(response.data).to.haveOwnProperty('fish');",
+							"    pm.expect(response.data).to.haveOwnProperty('mammal')",
+							"    pm.expect(response).to.haveOwnProperty('dev');",
+							"    pm.expect(response.dev).to.haveOwnProperty('cat');",
+							"    pm.expect(response.dev).to.haveOwnProperty('dog');",
+							"    pm.expect(response.data.fish.record_count).to.equal(6);",
+							"    pm.expect(response.data.mammal.record_count).to.equal(6);",
+							"    pm.expect(response.dev.dog.record_count).to.equal(4);",
+							"    pm.expect(response.dev.cat.record_count).to.equal(4);",
+							"    pm.expect(response.exclude).to.be.undefined",
+							"})"
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"describe_all\"\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{PROTOCOL}}://{{CLONE2_HOST}}:{{CLONE2_HDB_PORT}}",
+					"protocol": "{{PROTOCOL}}",
+					"host": [
+						"{{CLONE2_HOST}}"
+					],
+					"port": "{{CLONE2_HDB_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Get config - node-2",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test('Test that all config cloned correctly node-2', () => {",
+							"    const response = pm.response.json();",
+							"    pm.expect(response.logging.rotation.compress).to.equal(true);",
+							"    pm.expect(response.logging.rotation.interval).to.equal(\"1D\");",
+							"    pm.expect(response.logging.rotation.maxSize).to.equal(\"100K\");",
+							"    pm.expect(response[\"my-component-1\"].package).to.equal(\"HarperDB/application-template\");",
+							"    pm.expect(response[\"my-component-2\"]).to.be.undefined",
+							"    pm.expect(response.cloned).to.equal(true);",
+							"    pm.expect(response.clustering.hubServer.cluster.network.routes.length).to.equal(1)",
+							"    pm.expect(response.logging.level).to.equal('error');",
+							"    pm.expect(response.mqtt.requireAuthentication).to.equal(false);",
+							"    pm.expect(response.localStudio.enabled).to.equal(true);",
+							"    pm.expect(response.clustering.nodeName).to.equal('node-2');",
+							"})",
+							""
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"get_configuration\"\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{PROTOCOL}}://{{CLONE2_HOST}}:{{CLONE2_HDB_PORT}}",
+					"protocol": "{{PROTOCOL}}",
+					"host": [
+						"{{CLONE2_HOST}}"
+					],
+					"port": "{{CLONE2_HDB_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Cluster status - node-2",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test('Test cluster status is correct node-2', () => {",
+							"    const response = pm.response.json();",
+							"    pm.expect(response.connections.length).to.equal(2)",
+							"    pm.expect(response.connections[0].status).to.equal('open')",
+							"    pm.expect(response.connections[1].status).to.equal('open')",
+							"    pm.expect(response.connections[0].subscriptions).to.have.deep.members([",
+							"                {",
+							"                    \"schema\": \"system\",",
+							"                    \"table\": \"hdb_role\",",
+							"                    \"publish\": true,",
+							"                    \"subscribe\": true",
+							"                },",
+							"                {",
+							"                    \"schema\": \"system\",",
+							"                    \"table\": \"hdb_user\",",
+							"                    \"publish\": true,",
+							"                    \"subscribe\": true",
+							"                },",
+							"                {",
+							"                    \"schema\": \"data\",",
+							"                    \"table\": \"fish\",",
+							"                    \"publish\": true,",
+							"                    \"subscribe\": true",
+							"                },",
+							"                {",
+							"                    \"schema\": \"data\",",
+							"                    \"table\": \"mammal\",",
+							"                    \"publish\": true,",
+							"                    \"subscribe\": true",
+							"                },",
+							"                {",
+							"                    \"schema\": \"dev\",",
+							"                    \"table\": \"dog\",",
+							"                    \"publish\": true,",
+							"                    \"subscribe\": true",
+							"                }",
+							"            ])",
+							"        pm.expect(response.connections[1].subscriptions).to.have.deep.members([",
+							"            {",
+							"                \"schema\": \"system\",",
+							"                \"table\": \"hdb_role\",",
+							"                \"publish\": true,",
+							"                \"subscribe\": true",
+							"            },",
+							"            {",
+							"                \"schema\": \"system\",",
+							"                \"table\": \"hdb_user\",",
+							"                \"publish\": true,",
+							"                \"subscribe\": true",
+							"            },",
+							"            {",
+							"                \"schema\": \"data\",",
+							"                \"table\": \"fish\",",
+							"                \"publish\": true,",
+							"                \"subscribe\": true",
+							"            },",
+							"            {",
+							"                \"schema\": \"data\",",
+							"                \"table\": \"mammal\",",
+							"                \"publish\": true,",
+							"                \"subscribe\": true",
+							"            },",
+							"            {",
+							"                \"schema\": \"dev\",",
+							"                \"table\": \"dog\",",
+							"                \"publish\": true,",
+							"                \"subscribe\": true",
+							"            }",
+							"        ])",
+							"",
+							"  ",
+							"})",
+							""
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"cluster_status\"\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{PROTOCOL}}://{{CLONE2_HOST}}:{{CLONE2_HDB_PORT}}",
+					"protocol": "{{PROTOCOL}}",
+					"host": [
+						"{{CLONE2_HOST}}"
+					],
+					"port": "{{CLONE2_HDB_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Insert 'dev.dog' - leader",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							""
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"insert\",\n    \"database\": \"dev\",\n    \"table\": \"dog\",\n    \"records\": [\n        {\n            \"id\": 555,\n            \"name\": \"Hyrax\"\n        },\n        {\n            \"id\": 5555,\n            \"name\": \"Marsupial\"\n        }\n    ]\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
+					"protocol": "{{PROTOCOL}}",
+					"host": [
+						"{{LEADER_HOST}}"
+					],
+					"port": "{{LEADER_HDB_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Insert 'dev.dog' - node-1",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							""
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"insert\",\n    \"database\": \"dev\",\n    \"table\": \"dog\",\n    \"records\": [\n        {\n            \"id\": 888,\n            \"name\": \"Roger\"\n        },\n        {\n            \"id\": 8888,\n            \"name\": \"Barry\"\n        }\n    ]\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{PROTOCOL}}://{{CLONE_HOST}}:{{CLONE_HDB_PORT}}",
+					"protocol": "{{PROTOCOL}}",
+					"host": [
+						"{{CLONE_HOST}}"
+					],
+					"port": "{{CLONE_HDB_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Confirm replication 'dev.dog' - node-2",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test('Test that records are replicated to clone-2', () => {",
+							"    const response = pm.response.json();",
+							"    pm.expect(response).to.have.deep.members([",
+							"    {",
+							"        \"id\": 1,",
+							"        \"name\": \"Poodle\"",
+							"    },",
+							"    {",
+							"        \"id\": 2,",
+							"        \"name\": \"Husky\"",
+							"    },",
+							"    {",
+							"        \"id\": 3,",
+							"        \"name\": \"Dachshund\"",
+							"    },",
+							"    {",
+							"        \"id\": 4,",
+							"        \"name\": \"Beagle\"",
+							"    },",
+							"    {",
+							"        \"id\": 555,",
+							"        \"name\": \"Hyrax\"",
+							"    },",
+							"    {",
+							"        \"id\": 888,",
+							"        \"name\": \"Roger\"",
+							"    },",
+							"    {",
+							"        \"id\": 5555,",
+							"        \"name\": \"Marsupial\"",
+							"    },",
+							"    {",
+							"        \"id\": 8888,",
+							"        \"name\": \"Barry\"",
+							"    }",
+							"])",
+							"});"
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"select id, name from dev.dog\"\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{PROTOCOL}}://{{CLONE2_HOST}}:{{CLONE2_HDB_PORT}}",
+					"protocol": "{{PROTOCOL}}",
+					"host": [
+						"{{CLONE2_HOST}}"
+					],
+					"port": "{{CLONE2_HDB_PORT}}"
+				}
+			},
+			"response": []
+		}
+	]
+}
