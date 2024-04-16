@@ -124,56 +124,62 @@ export async function copyDb(source_database: string, target_database_path: stri
 	let outstanding_writes = 0;
 	// we use a single transaction to get a snapshot, also we can't use snapshot: false on dupsort dbs
 	const transaction = source_dbis_db.useReadTransaction();
-	for (const { key, value: attribute } of source_dbis_db.getRange({ transaction })) {
-		const is_primary = attribute.is_hash_attribute || attribute.isPrimaryKey;
-		let existing_compression, new_compression;
-		if (is_primary) {
-			existing_compression = attribute.compression;
-			new_compression = getDefaultCompression();
-			if (new_compression) attribute.compression = new_compression;
-			else delete attribute.compression;
-			if (existing_compression?.dictionary?.toString() === new_compression?.dictionary?.toString()) {
-				// no need to change the compression, it's the same, so we can, and should, skip decompressing and recompressing
-				existing_compression = null;
-				new_compression = null;
+	try {
+		for (const { key, value: attribute } of source_dbis_db.getRange({ transaction })) {
+			const is_primary = attribute.is_hash_attribute || attribute.isPrimaryKey;
+			let existing_compression, new_compression;
+			if (is_primary) {
+				existing_compression = attribute.compression;
+				new_compression = getDefaultCompression();
+				if (new_compression) attribute.compression = new_compression;
+				else delete attribute.compression;
+				if (existing_compression?.dictionary?.toString() === new_compression?.dictionary?.toString()) {
+					// no need to change the compression, it's the same, so we can, and should, skip decompressing and recompressing
+					existing_compression = null;
+					new_compression = null;
+				}
 			}
+			target_dbis_db.put(key, attribute);
+			if (!(is_primary || attribute.indexed)) continue;
+			const dbi_init = new OpenDBIObject(!is_primary, is_primary);
+			// we want to directly copy bytes so we don't have the overhead of
+			// encoding and decoding
+			dbi_init.encoding = 'binary';
+			dbi_init.compression = existing_compression;
+			//dbi_init.keyEncoding = 'binary';
+			const source_dbi = root_store.openDB(key, dbi_init);
+			source_dbi.decoder = null;
+			dbi_init.compression = new_compression;
+			const target_dbi = target_env.openDB(key, dbi_init);
+			target_dbi.encoder = null;
+			console.log('copying', key, 'from', source_database, 'to', target_database_path);
+			await copyDbi(source_dbi, target_dbi, is_primary, transaction);
 		}
-		target_dbis_db.put(key, attribute);
-		if (!(is_primary || attribute.indexed)) continue;
-		const dbi_init = new OpenDBIObject(!is_primary, is_primary);
-		// we want to directly copy bytes so we don't have the overhead of
-		// encoding and decoding
-		dbi_init.encoding = 'binary';
-		dbi_init.compression = existing_compression;
-		//dbi_init.keyEncoding = 'binary';
-		const source_dbi = root_store.openDB(key, dbi_init);
-		source_dbi.decoder = null;
-		dbi_init.compression = new_compression;
-		const target_dbi = target_env.openDB(key, dbi_init);
-		target_dbi.encoder = null;
-		console.log('copying', key, 'from', source_database, 'to', target_database_path);
-		await copyDbi(source_dbi, target_dbi, is_primary, transaction);
-	}
-	const target_audit_store = root_store.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS);
-	console.log('copying audit log');
-	copyDbi(source_audit_store, target_audit_store, false);
-	async function copyDbi(source_dbi, target_dbi, is_primary, transaction) {
-		let records_copied = 0;
-		let bytes_copied = 0;
-		for (const { key, value, version } of source_dbi.getRange({ start: null, versions: is_primary, transaction })) {
-			written = target_dbi.put(key, value, version);
-			records_copied++;
-			if (transaction.openTimer) transaction.openTimer = 0; // reset the timer, don't want it to time out
-			bytes_copied += (key.length || 10) + value.length;
-			if (outstanding_writes++ > 5000) {
-				await written;
-				console.log('copied', records_copied, 'entries', bytes_copied, 'bytes');
-				outstanding_writes = 0;
+		const target_audit_store = root_store.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS);
+		console.log('copying audit log');
+		copyDbi(source_audit_store, target_audit_store, false);
+
+		async function copyDbi(source_dbi, target_dbi, is_primary, transaction) {
+			let records_copied = 0;
+			let bytes_copied = 0;
+			for (const { key, value, version } of source_dbi.getRange({ start: null, versions: is_primary, transaction })) {
+				written = target_dbi.put(key, value, version);
+				records_copied++;
+				if (transaction.openTimer) transaction.openTimer = 0; // reset the timer, don't want it to time out
+				bytes_copied += (key.length || 10) + value.length;
+				if (outstanding_writes++ > 5000) {
+					await written;
+					console.log('copied', records_copied, 'entries', bytes_copied, 'bytes');
+					outstanding_writes = 0;
+				}
 			}
+			console.log('finish copying, copied', records_copied, 'entries', bytes_copied, 'bytes');
 		}
-		console.log('finish copying, copied', records_copied, 'entries', bytes_copied, 'bytes');
+
+		await written;
+		console.log('copied database ' + source_database + ' to ' + target_database_path);
+	} finally {
+		transaction.done();
+		target_env.close();
 	}
-	await written;
-	target_env.close();
-	console.log('copied database ' + source_database + ' to ' + target_database_path);
 }
