@@ -29,6 +29,10 @@ export async function compactOnStart() {
 				db_path = databases[database_name][table_name].primaryStore.path;
 				break;
 			}
+			if (!db_path) {
+				console.log("Couldn't find any tables in database", database_name);
+				continue;
+			}
 
 			const backup_dest = join(root_path, 'backup', database_name + '.mdb');
 			const copy_dest = join(root_path, DATABASES_DIR_NAME, database_name + '-copy.mdb');
@@ -157,7 +161,7 @@ export async function copyDb(source_database: string, target_database_path: stri
 		}
 		const target_audit_store = root_store.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS);
 		console.log('copying audit log');
-		copyDbi(source_audit_store, target_audit_store, false);
+		copyDbi(source_audit_store, target_audit_store, false, transaction);
 
 		async function copyDbi(source_dbi, target_dbi, is_primary, transaction) {
 			let records_copied = 0;
@@ -166,7 +170,7 @@ export async function copyDb(source_database: string, target_database_path: stri
 				written = target_dbi.put(key, value, version);
 				records_copied++;
 				if (transaction.openTimer) transaction.openTimer = 0; // reset the timer, don't want it to time out
-				bytes_copied += (key.length || 10) + value.length;
+				bytes_copied += (key?.length || 10) + value.length;
 				if (outstanding_writes++ > 5000) {
 					await written;
 					console.log('copied', records_copied, 'entries', bytes_copied, 'bytes');
