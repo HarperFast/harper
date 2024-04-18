@@ -1,5 +1,5 @@
 /**
- * This module is responsible for replicating data between nodes. It is a source for tables that are replicated
+ * This is the entry module is responsible for replicating data between nodes. It is a source for tables that are replicated
  * A typical exchange should look like:
  * 1. Node A connects to node B, and sends its node name and the database name (and the mapping of its node id to short ids?)
  * 2. Node B sends back its node name and the mapping of its node id to short ids
@@ -12,7 +12,7 @@
 import { database, table as defineTable, getDatabases, onUpdatedTable, table } from '../../resources/databases';
 import { ID_PROPERTY, Resource } from '../../resources/Resource';
 import { IterableEventQueue } from '../../resources/IterableEventQueue';
-import { getWorkerIndex } from '../threads/manageThreads';
+import { onMessageByType } from '../threads/manageThreads';
 import {
 	NodeReplicationConnection,
 	replicateOverWS,
@@ -25,6 +25,8 @@ import * as logger from '../../utility/logging/harper_logger';
 import { ensureNode, forEachNode } from './knownNodes';
 import { X509Certificate } from 'crypto';
 import { readFileSync } from 'fs';
+import { EventEmitter } from 'events';
+export { startOnMainThread } from './subscriptionManager';
 
 let replication_disabled;
 
@@ -38,11 +40,7 @@ export function start(options) {
 		let cert_parsed = new X509Certificate(readFileSync(certificate));
 		let subject = cert_parsed.subject;
 	}
-	if (options?.manualAssignment) {
-	} else {
-		assignReplicationSource(options);
-		// TODO: node_id should come from the hdb_nodes table
-	}
+	assignReplicationSource(options);
 	servers.push(
 		server.ws(
 			(ws, request) => {
@@ -65,8 +63,7 @@ export function start(options) {
 export function disableReplication(disabled = true) {
 	replication_disabled = disabled;
 }
-const MAX_INGEST_THREADS = 1;
-let immediateNATSTransaction, subscribed_to_nodes;
+let subscribed_to_nodes;
 /**
  * Replication functions by acting as a "source" for tables. With replicated tables, the local tables are considered
  * a "cache" of the cluster's data. The tables don't resolve gets to the cluster, but they do propagate
@@ -77,7 +74,9 @@ let immediateNATSTransaction, subscribed_to_nodes;
 function assignReplicationSource(options) {
 	if (replication_disabled) return;
 	const databases = getDatabases();
-	for (const database_name in databases) {
+	const enabled_databases = options?.databases ?? databases;
+	for (const database_name in enabled_databases) {
+		if (!enabled_databases[database_name]) continue;
 		const database = databases[database_name];
 		for (const table_name in database) {
 			const Table = database[table_name];
@@ -112,7 +111,6 @@ export function setReplicator(db_name, table, options) {
 	let source;
 	// We may try to consult this to get the other nodes for back-compat
 	// const { hub_routes } = getClusteringRoutes();
-	const connections = [];
 	table.sourcedFrom(
 		class Replicator extends Resource {
 			/**
@@ -121,6 +119,7 @@ export function setReplicator(db_name, table, options) {
 			 * of the table classes.
 			 */
 			static connection: NodeReplicationConnection;
+			static subscription: IterableEventQueue;
 			static async subscribe() {
 				const db_subscriptions = options.databaseSubscriptions || database_subscriptions;
 				let subscription = db_subscriptions.get(db_name);
@@ -137,30 +136,6 @@ export function setReplicator(db_name, table, options) {
 					subscription.auditStore = table.auditStore;
 					subscription.dbisDB = table.dbisDB;
 					subscription.databaseName = db_name;
-					if (getWorkerIndex() < MAX_INGEST_THREADS) {
-						// if we have our own URL, we can add it ourselves
-						// ensureNode(this_url, option.routes);
-						route_loop: for (const route of options.routes) {
-							try {
-								let url = typeof route === 'string' ? route : route.url;
-								if (!url) {
-									if (route.host) url = 'wss://' + route.host + ':' + (route.port || 9925);
-									else {
-										console.error('Invalid route, must specify a url or host (with port)');
-										continue;
-									}
-								}
-								ensureNode(url);
-							} catch (error) {
-								console.error(error);
-							}
-						}
-						forEachNode((node) => {
-							const connection = new NodeReplicationConnection(node.url, subscription, db_name);
-							connections.push(connection);
-							connection.connect();
-						});
-					}
 					return subscription;
 				}
 			}
@@ -176,14 +151,15 @@ export function setReplicator(db_name, table, options) {
 					if (residency_id) {
 						const residency = table.residencyStore.getEntry(residency_id);
 						for (let node_id in residency) {
+							const connection = getConnection(node_id, Replicator.subscription, db_name);
 							return new Promise((resolve) => {
-								Replicator.connection.send({
+								connection.send({
 									type: 'get',
 									table: table.tableName,
 									id: this[ID_PROPERTY],
 									node_id,
 								});
-								Replicator.connection.registerResponse(id, resolve);
+								connection.registerResponse(id, resolve);
 							});
 						}
 					}
@@ -193,4 +169,25 @@ export function setReplicator(db_name, table, options) {
 		},
 		{ intermediateSource: true }
 	);
+}
+const connections = new Map();
+function getConnection(url, subscription, db_name) {
+	let db_connections = connections.get(url);
+	if (!db_connections) {
+		db_connections = new Map();
+	}
+	let connection = db_connections.get(db_name);
+	if (connection) return connection;
+	db_connections.set(db_name, (connection = new NodeReplicationConnection(url, subscription, db_name)));
+	connection.connect();
+	return connection;
+}
+export function subscribeToNode(message) {
+	let subscription_to_table = database_subscriptions.get(message.database);
+	if (!subscription_to_table) {
+		// TODO: Wait for it to be created
+		return console.error('No subscription for database ' + message.database);
+	}
+	let connection = getConnection(message.nodes[0].url, subscription_to_table, message.database);
+	connection.subscribe(message.nodes);
 }

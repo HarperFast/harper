@@ -10,15 +10,15 @@ function getIdMappingRecord(audit_store) {
 	}
 	if (!id_mapping_record) {
 		id_mapping_record = {
-			nodeName: (hostname() + '-' + Math.random().toString(36).substring(2, 6)),
-			remoteNameToId: {},
+			nodeName: getNodeName(),
+			remoteNameToId: { [getNodeName()]: 0 },
 		};
 		audit_store.putSync(Symbol.for('remote-ids'), pack(id_mapping_record));
 	}
 	return id_mapping_record;
 }
-export function getNodeName(audit_store) {
-	return env.get('replication_nodename') || getIdMappingRecord(audit_store).nodeName;
+export function getNodeName() {
+	return env.get('replication_nodename') ?? env.get('replication_url');
 }
 export function exportIdMapping(audit_store) {
 	return getIdMappingRecord(audit_store).remoteNameToId;
@@ -60,7 +60,7 @@ export function getIdOfRemoteNode(remote_node_name, audit_store) {
 	const id_mapping_record = getIdMappingRecord(audit_store);
 	const name_to_id = id_mapping_record.remoteNameToId;
 	let id = name_to_id[remote_node_name];
-	if (!id) {
+	if (id == undefined) {
 		let last_id = 0;
 		for (const name in name_to_id) {
 			const id = name_to_id[name];

@@ -76,10 +76,3 @@ function onNodesChange() {
 		}, 1);
 	}
 }
-
-export function ensureNode(url: string, routes = []) {
-	const table = getHDBNodeTable();
-	if (!table.primaryStore.get(url)) {
-		table.put({ url, routes });
-	}
-}

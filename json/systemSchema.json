@@ -236,10 +236,13 @@
     ]
   },
   "hdb_node":{
-    "hash_attribute": "url",
+    "hash_attribute": "name",
     "name": "hdb_node",
     "schema": "system",
     "attributes":[
+      {
+        "attribute":"name"
+      },
       {
         "attribute":"url"
       },

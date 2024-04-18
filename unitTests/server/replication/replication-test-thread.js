@@ -1,25 +1,24 @@
 require('../../test_utils');
-const { start, setReplicator } = require('../../../server/replication/replicator');
+const { start, setReplicator, startOnMainThread } = require('../../../server/replication/replicator');
 const { table, databases } = require('../../../resources/databases');
 const { setMainIsWorker } = require('../../../server/threads/manageThreads');
 const { listenOnPorts } = require('../../../server/threads/threadServer');
-const { workerData, parentPort } = require('worker_threads');
 const env = require('../../..//utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('../../../utility/hdbTerms');
 
-async function createNode(index, node_count) {
+async function createNode(index, database_path, node_count) {
 	try {
 		let routes = [];
 		for (let i = 0; i < node_count; i++) {
 			if (i === index) continue;
 			routes.push({
-				id: 'route-' + i,
+				name: 'node-' + (i + 1),
 				url: 'ws://localhost:' + (9325 + i),
 			});
 		}
 		const database_name = 'test-replication-' + index;
-		env.setProperty(CONFIG_PARAMS.DATABASES, { [database_name]: { path: workerData.databasePath }});
-		env.setProperty('replication_nodename', workerData.nodeName );
+		env.setProperty(CONFIG_PARAMS.DATABASES, { [database_name]: { path: database_path } });
+		env.setProperty('replication_nodename', 'node' + (1 + index));
 		const TestTable = table({
 			table: 'TestTable',
 			database: database_name,
@@ -33,26 +32,27 @@ async function createNode(index, node_count) {
 		TestTable.getResidency = (record) => {
 			return record.locations;
 		};
-		setReplicator('test', TestTable, {
-			routes,
-		});
-		start({
+		const options = {
 			port: 9325 + index,
-			tables: { TestTable },
-			manualAssignment: true,
-			nodeName: index + 10,
-		});
+			url: 'ws://localhost:' + (9325 + index),
+			routes,
+			databases: {
+				test: true,
+			},
+		};
+		startOnMainThread(options);
+		start(options);
 
 		await listenOnPorts();
 		//await new Promise((resolve) => setTimeout(resolve, 1000));
-		parentPort.postMessage({type: 'replication-started'});
-		parentPort.on('message', (message) => {
+		process.send({ type: 'replication-started' });
+		process.on('message', (message) => {
 			if (message.action === 'put') {
 				TestTable.put(message.data);
 			}
 		});
-	}catch(e){
-		console.error(e)
+	} catch (e) {
+		console.error(e);
 	}
 }
-createNode(workerData.index, workerData.nodeCount);
+createNode(+process.argv[2], process.argv[3], 3);

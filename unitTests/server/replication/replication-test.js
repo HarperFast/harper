@@ -1,7 +1,7 @@
 const assert = require('assert');
 const sinon = require('sinon');
 const { getMockLMDBPath } = require('../../test_utils');
-const { start, setReplicator, servers } = require('../../../server/replication/replicator');
+const { start, setReplicator, servers, startOnMainThread } = require('../../../server/replication/replicator');
 const { table, databases } = require('../../../resources/databases');
 const { setMainIsWorker } = require('../../../server/threads/manageThreads');
 const { listenOnPorts } = require('../../../server/threads/threadServer');
@@ -9,16 +9,23 @@ const { Worker, workerData } = require('worker_threads');
 const { CONFIG_PARAMS } = require('../../../utility/hdbTerms');
 const { get: env_get } = require('../../..//utility/environment/environmentManager');
 const env = require('../../../utility/environment/environmentManager');
+const { fork } = require('node:child_process');
 
 describe('Replication', () => {
 	let TestTable;
 	const test_tables = [];
-	let workers = [];
+	let child_processes = [];
 	let node_count = 2;
 	let db_count = 3;
 	let database_config;
 	setMainIsWorker(true);
 	function addWorkerNode(index) {
+		const child_process = fork(
+			__filename.replace(/\.js/, '-thread.js'),
+			[index, database_config.data.path + '/test-replication-' + index],
+			{}
+		);
+		/*
 		let worker = new Worker(__filename.replace(/\.js/, '-thread.js'), {
 			workerData: {
 				index,
@@ -28,14 +35,14 @@ describe('Replication', () => {
 				databasePath: database_config.data.path + '/test-replication-' + index,
 				noServerStart: true,
 			},
-		});
-		workers.push(worker);
-		worker.on('error', (error) => {
-			console.log('error from worker:', error);
+		});*/
+		child_processes.push(child_process);
+		child_process.on('error', (error) => {
+			console.log('error from child_process:', error);
 		});
 		return new Promise((resolve) => {
-			worker.on('message', (message) => {
-				console.log('message from worker:', message);
+			child_process.on('message', (message) => {
+				console.log('message from child_process:', message);
 				if (message.type === 'replication-started') resolve();
 			});
 		});
@@ -70,33 +77,32 @@ describe('Replication', () => {
 			for (let i = 0; i < node_count; i++) {
 				if (i === index) continue;
 				routes.push({
-					id: 'route-' + i,
+					name: 'node-' + (i + 1),
 					url: 'ws://localhost:' + (9325 + i),
 				});
 			}
 			TestTable = test_tables[index];
-			start({
+			const options = {
 				port: 9325 + index,
-				tables: { TestTable },
-				manualAssignment: true,
-				nodeName: index + 10,
-			});
-
-			setReplicator('test', TestTable, {
+				url: 'ws://localhost:' + (9325 + index),
 				routes,
-			});
+				databases: {
+					test: true,
+				},
+			};
+			startOnMainThread(options);
+			start(options);
 		}
 		await createServer(0, node_count);
 		let started = addWorkerNode(1);
 		await listenOnPorts();
 		await started;
-		await new Promise((resolve) => setTimeout(resolve, 1000));
+		await new Promise((resolve) => setTimeout(resolve, 500));
 	});
 	beforeEach(async () => {
 		//await removeAllSchemas();
 	});
 	it('A write to one table should replicate', async function () {
-		this.timeout(100000);
 		let name = 'name ' + Math.random();
 		await test_tables[0].put({
 			id: '1',
@@ -124,9 +130,8 @@ describe('Replication', () => {
 	});
 
 	it('A write to second table should replicate back', async function () {
-		this.timeout(100000);
 		let name = 'name ' + Math.random();
-		workers[0].postMessage({
+		child_processes[0].send({
 			action: 'put',
 			data: {
 				id: '3',
@@ -147,10 +152,9 @@ describe('Replication', () => {
 	});
 	describe('With third node', function () {
 		before(async function () {
-			this.timeout(1000000);
 			await addWorkerNode(2);
 			await new Promise((resolve) => setTimeout(resolve, 1000));
-			console.log('added worker');
+			console.log('added child_process');
 		});
 		it('A write to the table should replicate to both nodes', async function () {
 			let name = 'name ' + Math.random();
@@ -245,8 +249,8 @@ describe('Replication', () => {
 		});
 	});
 	after(() => {
-		for (const worker of workers) {
-			worker.terminate();
+		for (const child_process of child_processes) {
+			child_process.terminate();
 		}
 	});
 });

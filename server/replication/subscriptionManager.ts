@@ -7,33 +7,11 @@ import { getDatabases, onUpdatedTable, table } from '../../resources/databases';
 import { workers, onMessageByType } from '../threads/manageThreads';
 import { table_update_listeners } from './replicationConnection';
 import { setReplicator, subscribeToNode } from './replicator';
-import { ensureNode } from './knownNodes';
 import { parentPort } from 'worker_threads';
 
+let hdb_node_table;
 export let disconnectedFromNode;
 export function startOnMainThread(options) {
-	let hdb_node_table;
-
-	function getHDBNodeTable() {
-		return (
-			hdb_node_table ||
-			(hdb_node_table = table({
-				table: 'hdb_node_table',
-				database: 'system',
-				audit: true,
-				attributes: [
-					{
-						name: 'url',
-						isPrimaryKey: true,
-					},
-					{
-						name: 'routes',
-					},
-				],
-			}))
-		);
-	}
-
 	let new_node_listeners = [];
 	let all_nodes: any[];
 	let node_replication_map = new Map();
@@ -48,7 +26,7 @@ export function startOnMainThread(options) {
 					continue;
 				}
 			}
-			ensureNode(url);
+			ensureNode(route.name ?? url, url);
 		} catch (error) {
 			console.error(error);
 		}
@@ -87,18 +65,18 @@ export function startOnMainThread(options) {
 		function onDatabase(database_name) {
 			let worker = workers[next_worker_index];
 			next_worker_index = (next_worker_index + 1) % workers.length;
+			let nodes = [node];
 			if (worker) {
 				db_replication_workers.set(database_name, {
 					worker,
-					additionalNodes: [],
+					nodes,
 				});
 				worker.postMessage({
 					type: 'subscribe-to-node',
 					database: database_name,
-					url: node.url,
-					additionalNodes: [],
+					nodes,
 				});
-			} else subscribeToNode({ database: database_name, url: node.url });
+			} else subscribeToNode({ database: database_name, nodes });
 		}
 	}
 	onMessageByType(
@@ -132,4 +110,33 @@ if (parentPort) {
 	onMessageByType('subscribe-to-node', (message) => {
 		subscribeToNode(message);
 	});
+}
+
+export function ensureNode(name: string, url: string, routes = []) {
+	const table = getHDBNodeTable();
+	if (table.primaryStore.get(name)?.url !== url) {
+		table.put({ name, url, routes });
+	}
+}
+function getHDBNodeTable() {
+	return (
+		hdb_node_table ||
+		(hdb_node_table = table({
+			table: 'hdb_node_table',
+			database: 'system',
+			audit: true,
+			attributes: [
+				{
+					name: 'name',
+					isPrimaryKey: true,
+				},
+				{
+					name: 'url',
+				},
+				{
+					name: 'routes',
+				},
+			],
+		}))
+	);
 }
