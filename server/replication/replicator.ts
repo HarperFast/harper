@@ -191,3 +191,10 @@ export function subscribeToNode(message) {
 	let connection = getConnection(message.nodes[0].url, subscription_to_table, message.database);
 	connection.subscribe(message.nodes);
 }
+
+export function getThisNodeName() {
+	return env.get('replication_nodename') ?? env.get('replication_url');
+}
+export function getThisNodeUrl() {
+	return env.get('replication_url');
+}

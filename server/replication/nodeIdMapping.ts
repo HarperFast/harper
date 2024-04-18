@@ -1,5 +1,6 @@
 import { hostname } from 'os';
 import env from '../../utility/environment/environmentManager';
+import { getThisNodeName } from './replicator';
 import { pack, unpack } from 'msgpackr';
 
 function getIdMappingRecord(audit_store) {
@@ -10,15 +11,12 @@ function getIdMappingRecord(audit_store) {
 	}
 	if (!id_mapping_record) {
 		id_mapping_record = {
-			nodeName: getNodeName(),
-			remoteNameToId: { [getNodeName()]: 0 },
+			nodeName: getThisNodeName(),
+			remoteNameToId: { [getThisNodeName()]: 0 },
 		};
 		audit_store.putSync(Symbol.for('remote-ids'), pack(id_mapping_record));
 	}
 	return id_mapping_record;
-}
-export function getNodeName() {
-	return env.get('replication_nodename') ?? env.get('replication_url');
 }
 export function exportIdMapping(audit_store) {
 	return getIdMappingRecord(audit_store).remoteNameToId;
@@ -36,7 +34,7 @@ export function remoteToLocalNodeId(remote_node_name, remote_mapping, audit_stor
 	for (const remote_node_name in remote_mapping) {
 		const remote_id = remote_mapping[remote_node_name];
 		let local_id = name_to_id[remote_node_name];
-		if (!local_id) {
+		if (local_id == undefined) {
 			let last_id = 0;
 			for (const name in name_to_id) {
 				const id = name_to_id[name];

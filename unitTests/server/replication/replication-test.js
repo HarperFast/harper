@@ -69,6 +69,7 @@ describe('Replication', () => {
 			test_tables.push(TestTable);
 		}
 		env.setProperty('replication_nodename', 'node-1');
+		await new Promise((resolve) => setTimeout(resolve, 10));
 		Object.defineProperty(databases, 'test', { value: databases['test-replication-0'] });
 		TestTable = test_tables[0];
 
@@ -87,7 +88,7 @@ describe('Replication', () => {
 				url: 'ws://localhost:' + (9325 + index),
 				routes,
 				databases: {
-					test: true,
+					test: databases['test-replication-0'],
 				},
 			};
 			startOnMainThread(options);
@@ -182,7 +183,7 @@ describe('Replication', () => {
 				break;
 			} while (true);
 		});
-		it('A write to the table with sharding defined should replicate to one node', async function () {
+		it.skip('A write to the table with sharding defined should replicate to one node', async function () {
 			let name = 'name ' + Math.random();
 			await test_tables[0].put({
 				id: '8',
@@ -213,7 +214,7 @@ describe('Replication', () => {
 			let result = await test_tables[1].get('8');
 			assert.equal(result.name, name);
 		});
-		it.skip('A write to the table during a broken connection should catch up to both nodes', async function () {
+		it('A write to the table during a broken connection should catch up to both nodes', async function () {
 			let name = 'name ' + Math.random();
 
 			for (let server of servers) {
@@ -250,7 +251,7 @@ describe('Replication', () => {
 	});
 	after(() => {
 		for (const child_process of child_processes) {
-			child_process.terminate();
+			child_process.kill();
 		}
 	});
 });

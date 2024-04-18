@@ -18,7 +18,7 @@ async function createNode(index, database_path, node_count) {
 		}
 		const database_name = 'test-replication-' + index;
 		env.setProperty(CONFIG_PARAMS.DATABASES, { [database_name]: { path: database_path } });
-		env.setProperty('replication_nodename', 'node' + (1 + index));
+		env.setProperty('replication_nodename', 'node-' + (1 + index));
 		const TestTable = table({
 			table: 'TestTable',
 			database: database_name,
@@ -27,6 +27,8 @@ async function createNode(index, database_path, node_count) {
 				{ name: 'name', indexed: true },
 			],
 		});
+		// wait for the database to be resynced
+		await new Promise((resolve) => setTimeout(resolve, 10));
 		Object.defineProperty(databases, 'test', { value: databases[database_name] });
 		TestTable.databaseName = 'test'; // make them all look like the same database so they replicate
 		TestTable.getResidency = (record) => {
@@ -37,7 +39,7 @@ async function createNode(index, database_path, node_count) {
 			url: 'ws://localhost:' + (9325 + index),
 			routes,
 			databases: {
-				test: true,
+				test: databases[database_name],
 			},
 		};
 		startOnMainThread(options);

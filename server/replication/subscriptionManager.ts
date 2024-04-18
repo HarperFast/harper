@@ -6,7 +6,7 @@
 import { getDatabases, onUpdatedTable, table } from '../../resources/databases';
 import { workers, onMessageByType } from '../threads/manageThreads';
 import { table_update_listeners } from './replicationConnection';
-import { setReplicator, subscribeToNode } from './replicator';
+import { getThisNodeName, getThisNodeUrl, subscribeToNode } from './replicator';
 import { parentPort } from 'worker_threads';
 
 let hdb_node_table;
@@ -42,6 +42,8 @@ export function startOnMainThread(options) {
 			}
 		});
 	function onNewNode(node) {
+		if ((getThisNodeName() && node.name === getThisNodeName()) || (getThisNodeUrl() && node.name === getThisNodeUrl()))
+			return;
 		const databases = getDatabases();
 		let db_replication_workers = node_replication_map.get(node.url);
 		if (!db_replication_workers) {
@@ -50,8 +52,9 @@ export function startOnMainThread(options) {
 		}
 		const enabled_databases = options?.databases ?? databases;
 		for (const database_name in enabled_databases) {
-			if (!enabled_databases[database_name]) continue;
-			const database = databases[database_name];
+			let database = enabled_databases[database_name];
+			if (!database) continue;
+			database = typeof database === 'object' ? database : databases[database_name];
 			for (const table_name in database) {
 				const Table = database[table_name];
 				onDatabase(database_name, Table);
@@ -114,8 +117,10 @@ if (parentPort) {
 
 export function ensureNode(name: string, url: string, routes = []) {
 	const table = getHDBNodeTable();
+	const isTentative = !name;
+	name = name ?? url;
 	if (table.primaryStore.get(name)?.url !== url) {
-		table.put({ name, url, routes });
+		table.put({ name, url, routes, isTentative });
 	}
 }
 function getHDBNodeTable() {

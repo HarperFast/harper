@@ -6,7 +6,7 @@ import {
 	HAS_PREVIOUS_RESIDENCY_ID,
 	readAuditEntry,
 } from '../../resources/auditStore';
-import { exportIdMapping, getIdOfRemoteNode, getNodeName, remoteToLocalNodeId } from './nodeIdMapping';
+import { exportIdMapping, getIdOfRemoteNode, remoteToLocalNodeId } from './nodeIdMapping';
 import { addSubscription } from '../../resources/transactionBroadcast';
 import {
 	active_subscriptions,
@@ -14,6 +14,7 @@ import {
 	removeNodeSubscription,
 	updatedRoutingForNode,
 } from './activeSubscriptions';
+import { getThisNodeName } from './replicator';
 import env from '../../utility/environment/environmentManager';
 import { readAuditEntry, Decoder, REMOTE_SEQUENCE_UPDATE } from '../../resources/auditStore';
 import { HAS_STRUCTURE_UPDATE } from '../../resources/RecordEncoder';
@@ -23,7 +24,6 @@ import { decode, encode, Packr } from 'msgpackr';
 import { WebSocket } from 'ws';
 import { readFileSync } from 'fs';
 import { active_subscriptions, addNodeSubscription, removeNodeSubscription } from './activeSubscriptions';
-import { exportIdMapping, getNodeName, remoteToLocalNodeId, getIdOfRemoteNode } from './nodeIdMapping';
 import { threadId } from 'worker_threads';
 import * as logger from '../../utility/logging/harper_logger';
 import { disconnectedFromNode, ensureNode } from './subscriptionManager';
@@ -141,7 +141,6 @@ export function replicateOverWS(ws, options) {
 		sendSubscriptionRequestUpdate();
 	}
 	const table_decoders = [];
-	const omitted_node_ids = [];
 	const residency_map = [];
 	const sent_residency_lists = [];
 	const received_residency_lists = [];
@@ -171,6 +170,7 @@ export function replicateOverWS(ws, options) {
 						if (url) {
 							// make sure we have a node for this name and url
 							ensureNode(remote_node_name, url);
+							// TODO: If there is an existing node with this URL that has never connected, we should update it
 						}
 						logger.info(connection_id, 'received node id', remote_node_name, database_name);
 						if (!database_name) {
@@ -297,8 +297,8 @@ export function replicateOverWS(ws, options) {
 										remote_node_name,
 										'from:',
 										node_id,
-										'omitted:',
-										omitted_node_ids
+										'subscribed:',
+										subscribed_node_ids
 									);
 								return;
 							}
@@ -311,8 +311,8 @@ export function replicateOverWS(ws, options) {
 									remote_node_name,
 									'from:',
 									node_id,
-									'omitted:',
-									omitted_node_ids
+									'subscribed:',
+									subscribed_node_ids
 								);
 							const txn_time = audit_record.version;
 							if (current_transaction.txnTime !== txn_time) {
@@ -642,7 +642,7 @@ export function replicateOverWS(ws, options) {
 		}
 		if (!tables) tables = getDatabases()?.[database_name];
 
-		const this_node_name = getNodeName(audit_store);
+		const this_node_name = getThisNodeName();
 		if (this_node_name === remote_node_name) {
 			logger.error('Should not connect to self', this_node_name);
 			return false;
