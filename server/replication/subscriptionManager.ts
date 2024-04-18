@@ -10,11 +10,11 @@ import { getThisNodeName, getThisNodeUrl, subscribeToNode } from './replicator';
 import { parentPort } from 'worker_threads';
 
 let hdb_node_table;
-export let disconnectedFromNode;
+let connection_replication_map = new Map();
+let node_map = new Map();
 export function startOnMainThread(options) {
 	let new_node_listeners = [];
 	let all_nodes: any[];
-	let node_replication_map = new Map();
 	let next_worker_index = 0;
 	route_loop: for (const route of options.routes || []) {
 		try {
@@ -43,12 +43,14 @@ export function startOnMainThread(options) {
 		});
 	function onNewNode(node) {
 		if ((getThisNodeName() && node.name === getThisNodeName()) || (getThisNodeUrl() && node.name === getThisNodeUrl()))
+			// this is just this node, we don't need to connect to ourselves
 			return;
+		node_map.set(node.name, node);
 		const databases = getDatabases();
-		let db_replication_workers = node_replication_map.get(node.url);
+		let db_replication_workers = connection_replication_map.get(node.url);
 		if (!db_replication_workers) {
 			db_replication_workers = new Map();
-			node_replication_map.set(node.url, db_replication_workers);
+			connection_replication_map.set(node.url, db_replication_workers);
 		}
 		const enabled_databases = options?.databases ?? databases;
 		for (const database_name in enabled_databases) {
@@ -69,11 +71,11 @@ export function startOnMainThread(options) {
 			let worker = workers[next_worker_index];
 			next_worker_index = (next_worker_index + 1) % workers.length;
 			let nodes = [node];
+			db_replication_workers.set(database_name, {
+				worker,
+				nodes,
+			});
 			if (worker) {
-				db_replication_workers.set(database_name, {
-					worker,
-					nodes,
-				});
 				worker.postMessage({
 					type: 'subscribe-to-node',
 					database: database_name,
@@ -82,28 +84,33 @@ export function startOnMainThread(options) {
 			} else subscribeToNode({ database: database_name, nodes });
 		}
 	}
-	onMessageByType(
-		'disconnected-from-node',
-		(disconnectedFromNode = (message) => {
-			// if a node is disconnected, we need to reassign the subscriptions to another node
-			const sorted_urls = Array.from(node_replication_map.keys()).sort();
-			const index = sorted_urls.indexOf(message.url);
-			const next_index = (index + 1) % sorted_urls.length;
-			const next_url = sorted_urls[next_index];
-			const db_replication_workers = node_replication_map.get(next_url);
-			if (!db_replication_workers) return;
-			for (const [database_name, worker_entry] of db_replication_workers) {
-				worker_entry.additionalNodes.push(message.url);
-				worker_entry.worker.postMessage({
-					type: 'subscribe-to-node',
-					database: database_name,
-					url: message.url,
-					additionalNodes: worker_entry.additionalNodes,
-				});
-			}
-		})
-	);
+	onMessageByType('disconnected-from-node', disconnectedFromNode);
 	onMessageByType('reconnected-to-node', (message) => {});
+}
+
+export function disconnectedFromNode(connection) {
+	// if a node is disconnected, we need to reassign the subscriptions to another node
+	const node_names = Array.from(node_map.keys()).sort();
+	const index = node_names.indexOf(connection.name);
+	let next_index = index;
+	do {
+		next_index = (next_index + 1) % node_names.length;
+		const next_node_name = node_names[next_index];
+		const next_node = node_map.get(next_node_name);
+		const db_replication_workers = connection_replication_map.get(next_node.url);
+		const worker_entry = db_replication_workers?.get(connection.database);
+		if (!worker_entry) continue;
+		const { worker, nodes } = worker_entry;
+		nodes.push(connection);
+		if (worker) {
+			worker.postMessage({
+				type: 'subscribe-to-node',
+				database: connection.database,
+				nodes,
+			});
+		} else subscribeToNode({ database: connection.database, nodes });
+		return;
+	} while (index !== next_index);
 }
 
 if (parentPort) {

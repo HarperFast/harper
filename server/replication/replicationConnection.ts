@@ -661,7 +661,7 @@ export function replicateOverWS(ws, options) {
 		disconnected() {
 			// if we get disconnected, notify subscriptions manager so we can reroute through another node
 			disconnectedFromNode({
-				url: options.url,
+				name: remote_node_name,
 				database: database_name,
 			});
 			// TODO: When we get reconnected, we need to undo this

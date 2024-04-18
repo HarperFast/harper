@@ -174,7 +174,7 @@ const connections = new Map();
 function getConnection(url, subscription, db_name) {
 	let db_connections = connections.get(url);
 	if (!db_connections) {
-		db_connections = new Map();
+		connections.set(url, (db_connections = new Map()));
 	}
 	let connection = db_connections.get(db_name);
 	if (connection) return connection;
