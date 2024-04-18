@@ -64,7 +64,7 @@ media_types.set('text/plain', {
 	deserialize(data) {
 		return data.toString();
 	},
-	q: 0.01,
+	q: 0.2,
 });
 
 media_types.set('text/yaml', {
@@ -137,7 +137,7 @@ const generic_handler = {
 	serializeStream: streamAsJSON,
 	serialize: JSONStringify,
 	deserialize: tryJSONParse,
-	q: 0.8,
+	q: 0.5,
 };
 media_types.set('*/*', generic_handler);
 media_types.set('', generic_handler);

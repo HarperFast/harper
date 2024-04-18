@@ -40,7 +40,7 @@ export async function authentication(request, next_handler) {
 	const headers = request.headers.asObject; // we cheat and use the node headers object since it is a little faster
 	const authorization = headers.authorization;
 	const cookie = headers.cookie;
-	const origin = headers.origin;
+	let origin = headers.origin;
 	let response_headers = [];
 	try {
 		if (origin) {
@@ -74,18 +74,20 @@ export async function authentication(request, next_handler) {
 		if (ENABLE_SESSIONS) {
 			// we prefix the cookie name with the origin so that we can partition/separate session/authentications
 			// host, to protect against CSRF
+			if (!origin) origin = headers.host;
 			const cookie_prefix =
 				(origin ? origin.replace(/^https?:\/\//, '').replace(/\W/, '_') + '-' : '') + 'hdb-session=';
-			const cookie_start = cookie?.indexOf(cookie_prefix);
-			if (cookie_start >= 0) {
-				const end = cookie.indexOf(';', cookie_start);
-				const delimiter = cookie.indexOf('=', cookie_start);
-				session_id = cookie.slice(delimiter + 1, end === -1 ? cookie.length : end);
-				session = await session_table.get(session_id);
+			const cookies = cookie?.split(/;\s+/) || [];
+			for (let cookie of cookies) {
+				if (cookie.startsWith(cookie_prefix)) {
+					const end = cookie.indexOf(';');
+					session_id = cookie.slice(cookie_prefix.length, end === -1 ? cookie.length : end);
+					session = await session_table.get(session_id);
+					break;
+				}
 			}
 			request.session = session || (session = {});
 		}
-		request.user = null;
 
 		const authAuditLog = (username, status, strategy) => {
 			const log = new AuthAuditLog(
@@ -123,12 +125,17 @@ export async function authentication(request, next_handler) {
 		} else if (authorization) {
 			new_user = authorization_cache.get(authorization);
 			if (!new_user) {
-				const [strategy, credentials] = authorization.split(' ');
+				const space_index = authorization.indexOf(' ');
+				const strategy = authorization.slice(0, space_index);
+				const credentials = authorization.slice(space_index + 1);
 				let username, password;
 				try {
 					switch (strategy) {
 						case 'Basic':
-							[username, password] = atob(credentials).split(':');
+							const decoded = atob(credentials);
+							const colon_index = decoded.indexOf(':');
+							username = decoded.slice(0, colon_index);
+							password = decoded.slice(colon_index + 1);
 							// legacy support for passing in blank username and password to indicate no auth
 							new_user = username || password ? await server.getUser(username, password, request) : null;
 							break;
@@ -256,7 +263,7 @@ export async function authentication(request, next_handler) {
 }
 let started;
 export function start({ server, port }) {
-	server.request(authentication, { port: port || 'all' });
+	server.http(authentication, { port: port || 'all' });
 	// keep it cleaned out periodically
 	if (!started) {
 		started = true;

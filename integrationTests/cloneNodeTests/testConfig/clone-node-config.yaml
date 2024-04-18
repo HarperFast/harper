@@ -1,0 +1,10 @@
+databaseConfig:
+  excludeDatabases:
+    - database: exclude
+componentConfig:
+  exclude:
+    - name: my-component-2
+clusteringConfig:
+  excludeTables:
+    - database: dev
+      table: cat

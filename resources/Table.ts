@@ -733,7 +733,7 @@ export function makeTable(options) {
 		}
 
 		addTo(property, value) {
-			if (typeof value === 'number') {
+			if (typeof value === 'number' || typeof value === 'bigint') {
 				if (this[SAVE_MODE] === SAVING_FULL_UPDATE) this.set(property, (+this.getProperty(property) || 0) + value);
 				else {
 					if (!this[SAVE_MODE]) this.update();
@@ -1222,17 +1222,26 @@ export function makeTable(options) {
 								} is not a defined attribute`,
 								404
 							);
-
-						order_aligned_condition = { attribute: attribute_name, comparator: 'sort' };
-						conditions.push(order_aligned_condition);
+						if (attribute.indexed) {
+							// if it is indexed, we add a pseudo-condition to align with the natural sort order of the index
+							order_aligned_condition = { attribute: attribute_name, comparator: 'sort' };
+							conditions.push(order_aligned_condition);
+						} else if (conditions.length === 0 && !request.allowFullScan)
+							throw handleHDBError(
+								new Error(),
+								`${
+									Array.isArray(attribute_name) ? attribute_name.join('.') : attribute_name
+								} is not indexed and not combined with any other conditions`,
+								404
+							);
 					}
-					order_aligned_condition.descending = Boolean(sort.descending);
+					if (order_aligned_condition) order_aligned_condition.descending = Boolean(sort.descending);
 				}
 			}
 			conditions = orderConditions(conditions, operator);
 
 			if (sort) {
-				if (conditions[0] === order_aligned_condition) {
+				if (order_aligned_condition && conditions[0] === order_aligned_condition) {
 					// The db index is providing the order for the first sort, may need post ordering next sort order
 					if (sort.next) {
 						post_ordering = {
@@ -1471,6 +1480,7 @@ export function makeTable(options) {
 			if (select && (select === primary_key || (select?.length === 1 && select[0] === primary_key))) {
 				// fast path if only the primary key is selected, so we don't have to load records
 				const transform = (entry) => {
+					if (context?.transaction?.stale) context.transaction.stale = false;
 					return entry?.key ?? entry;
 				};
 				if (select === primary_key) return transform;
@@ -1496,6 +1506,7 @@ export function makeTable(options) {
 			let transform_cache;
 			const transform = function (entry) {
 				let record;
+				if (context?.transaction?.stale) context.transaction.stale = false;
 				if (entry != undefined) {
 					// TODO: remove this:
 					last_entry = entry;
@@ -1831,7 +1842,7 @@ export function makeTable(options) {
 		_writePublish(message, options?: any) {
 			const transaction = txnForContext(this[CONTEXT]);
 			const id = this[ID_PROPERTY] || null;
-			checkValidId(id);
+			if (id != null) checkValidId(id); // note that we allow the null id for publishing so that you can publish to the root topic
 			const context = this[CONTEXT];
 			transaction.addWrite({
 				key: id,
@@ -2334,7 +2345,7 @@ export function makeTable(options) {
 				// TODO: We could potentially have a faster test here, Buffer.byteLength is close, but we have to handle characters < 4 that are escaped in ordered-binary
 				break; // otherwise we have to test it, in this range, unicode characters could put it over the limit
 			case 'object':
-				if (id === null) return true;
+				if (id === null) throw new Error('Invalid primary key of null');
 				break; // otherwise we have to test it
 			case 'bigint':
 				if (id < 2n ** 64n && id > -(2n ** 64n)) return true;
@@ -2927,12 +2938,15 @@ export function coerceType(value, attribute) {
 	else if (type === 'BigInt') return value === 'null' ? null : BigInt(value);
 	else if (type === 'Boolean') return value === 'true' ? true : value === 'false' ? false : value;
 	else if (type === 'Date') {
-		//if the value is not an integer (to handle epoch values) and does not end in a timezone we suffiz with 'Z' tom make sure the Date is GMT timezone
-		if (typeof value !== 'number' && !ENDS_WITH_TIMEZONE.test(value)) {
-			value += 'Z';
+		if (isNaN(value)) {
+			if (value === 'null') return null;
+			//if the value is not an integer (to handle epoch values) and does not end in a timezone we suffiz with 'Z' tom make sure the Date is GMT timezone
+			if (!ENDS_WITH_TIMEZONE.test(value)) {
+				value += 'Z';
+			}
+			return new Date(value);
 		}
-		if (value === 'null') return null;
-		return new Date(value);
+		return new Date(+value); // epoch ms number
 	} else if (!type || type === 'Any') {
 		return autoCast(value);
 	}

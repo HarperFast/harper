@@ -62,17 +62,21 @@ export function assignTrackedAccessors(Target, type_def) {
 				case 'Float':
 				case 'Number':
 					set = function (value) {
-						if (!(typeof value === 'number' || (value == null && attribute.nullable !== false)))
-							throw new ClientError(`${name} must be a number, attempt to assign ${value}`);
+						const scalar_value = value?.__op__ ? value.value : value;
+						if (!(typeof scalar_value === 'number' || (value == null && attribute.nullable !== false)))
+							throw new ClientError(`${name} must be a number, attempt to assign ${scalar_value}`);
 						getChanges(this)[name] = value;
 					};
 					break;
 				case 'Int':
 					set = function (value) {
-						if (!(value >> 0 === value || (value == null && attribute.nullable !== false))) {
-							if (typeof value === 'number' && Math.abs((value >> 0) - value) <= 1) {
+						let scalar_value = value?.__op__ ? value.value : value;
+						if (!(scalar_value >> 0 === scalar_value || (value == null && attribute.nullable !== false))) {
+							if (typeof scalar_value === 'number' && Math.abs((scalar_value >> 0) - scalar_value) <= 1) {
 								// if it just needs to be rounded, do the conversion without complaining
-								value = Math.round(value);
+								scalar_value = Math.round(scalar_value);
+								if (value?.__op__) value.value = scalar_value;
+								else value = scalar_value;
 							} else
 								throw new ClientError(
 									`${name} must be an integer between -2147483648 and 2147483647, attempt to assign ${value}`
@@ -83,15 +87,18 @@ export function assignTrackedAccessors(Target, type_def) {
 					break;
 				case 'Long':
 					set = function (value) {
+						let scalar_value = value?.__op__ ? value.value : value;
 						if (
 							!(
-								(Math.round(value) === value && Math.abs(value) <= 9007199254740992) ||
+								(Math.round(scalar_value) === value && Math.abs(scalar_value) <= 9007199254740992) ||
 								(value == null && attribute.nullable !== false)
 							)
 						) {
-							if (typeof value === 'number' && Math.abs(value) <= 9007199254740992) {
+							if (typeof scalar_value === 'number' && Math.abs(scalar_value) <= 9007199254740992) {
 								// if it just needs to be rounded, do the conversion without complaining
-								value = Math.round(value);
+								scalar_value = Math.round(scalar_value);
+								if (value?.__op__) value.value = scalar_value;
+								else value = scalar_value;
 							} else
 								throw new ClientError(
 									`${name} must be an integer between -9007199254740992 and 9007199254740992, attempt to assign ${value}`
@@ -102,9 +109,13 @@ export function assignTrackedAccessors(Target, type_def) {
 					break;
 				case 'BigInt':
 					set = function (value) {
-						if (!(typeof value === 'bigint' || (value == null && attribute.nullable !== false))) {
-							if (typeof value === 'string' || typeof value === 'number') value = BigInt(value);
-							else throw new ClientError(`${name} must be a number, attempt to assign ${value}`);
+						let scalar_value = value?.__op__ ? value.value : value;
+						if (!(typeof scalar_value === 'bigint' || (value == null && attribute.nullable !== false))) {
+							if (typeof scalar_value === 'string' || typeof scalar_value === 'number') {
+								scalar_value = BigInt(scalar_value);
+								if (value?.__op__) value.value = scalar_value;
+								else value = scalar_value;
+							} else throw new ClientError(`${name} must be a number, attempt to assign ${value}`);
 						}
 						getChanges(this)[name] = value;
 					};
