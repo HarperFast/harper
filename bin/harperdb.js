@@ -70,6 +70,7 @@ function harperDBService() {
 						console.error(`The path ${app_folder} is not a folder`);
 						process.exit(1);
 					}
+					app_folder = fs.realpathSync(app_folder);
 					if (fs.existsSync(path.join(app_folder, hdb_terms.HDB_CONFIG_FILE))) {
 						// This can be used to run HDB without a boot file
 						process.env.ROOTPATH = app_folder;
