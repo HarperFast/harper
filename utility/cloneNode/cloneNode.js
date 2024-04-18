@@ -63,6 +63,7 @@ const CLONE_VARS = {
 	HDB_LEADER_URL: 'HDB_LEADER_URL',
 	HDB_LEADER_CLUSTERING_HOST: 'HDB_LEADER_CLUSTERING_HOST',
 	HDB_LEADER_CLUSTERING_PORT: 'HDB_LEADER_CLUSTERING_PORT',
+	HDB_CLONE_CLUSTERING_HOST: 'HDB_CLONE_CLUSTERING_HOST',
 	HDB_FULLY_CONNECTED: 'HDB_FULLY_CONNECTED',
 	HDB_CLONE_OVERTOP: 'HDB_CLONE_OVERTOP',
 	CLUSTERING_NODENAME: 'CLUSTERING_NODENAME',
@@ -74,6 +75,8 @@ const password = cli_args[CLONE_VARS.HDB_LEADER_PASSWORD] ?? process.env[CLONE_V
 const leader_url = cli_args[CLONE_VARS.HDB_LEADER_URL] ?? process.env[CLONE_VARS.HDB_LEADER_URL];
 const clustering_host =
 	cli_args[CLONE_VARS.HDB_LEADER_CLUSTERING_HOST] ?? process.env[CLONE_VARS.HDB_LEADER_CLUSTERING_HOST];
+let clone_clustering_host =
+	cli_args[CLONE_VARS.HDB_CLONE_CLUSTERING_HOST] ?? process.env[CLONE_VARS.HDB_CLONE_CLUSTERING_HOST];
 let fully_connected =
 	(cli_args[CLONE_VARS.HDB_FULLY_CONNECTED] ?? process.env[CLONE_VARS.HDB_FULLY_CONNECTED]) === 'true'; // optional var - will connect the clone node to the leader AND all the nodes the leader is connected to
 const clone_overtop = (cli_args[CLONE_VARS.HDB_CLONE_OVERTOP] ?? process.env[CLONE_VARS.HDB_CLONE_OVERTOP]) === 'true'; // optional var - will allow clone to work overtop of an existing HDB install
@@ -145,7 +148,7 @@ module.exports = async function cloneNode(background = false) {
 
 	const hdb_config_path = join(root_path, hdb_terms.HDB_CONFIG_FILE);
 
-	if (!fresh_clone && (await fs.pathExists(hdb_config_path))) {
+	if (await fs.pathExists(hdb_config_path)) {
 		try {
 			hdb_config_json = YAML.parseDocument(await fs.readFile(hdb_config_path, 'utf8'), { simpleKeys: true }).toJSON();
 			hdb_config = config_utils.flattenConfig(hdb_config_json);
@@ -254,6 +257,20 @@ async function cloneConfig() {
 
 	config_utils.createConfigFile(config_update, true);
 	env_mgr.initSync(true);
+
+	// Add this node's route to the leader node
+	if (leader_clustering_enabled && clustering_host && clone_clustering_host) {
+		const route = {
+			host: clone_clustering_host,
+			port: env_mgr.get(CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT),
+		};
+		console.log('Setting clustering route on leader:', route);
+		await leaderHttpReq({
+			operation: 'cluster_set_routes',
+			server: 'hub',
+			routes: [route],
+		});
+	}
 }
 
 /**
@@ -284,6 +301,8 @@ async function installHDB() {
 	process.env.HDB_ADMIN_PASSWORD = password;
 	process.env.OPERATIONSAPI_NETWORK_PORT = env_mgr.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT);
 	updateConfigEnv(path.join(root_path, hdb_terms.HDB_CONFIG_FILE));
+
+	setIgnoreExisting(true);
 
 	await install();
 }

@@ -521,7 +521,7 @@ describe('Querying through Resource API', () => {
 		it('Query children one-to-many self-relationships', async function () {
 			let results = [];
 			for await (let record of RelatedTable.search({
-				conditions: [{ attribute: ['childrenOfSelf', 'id'], comparator: 'between', value: [2,3] }],
+				conditions: [{ attribute: ['childrenOfSelf', 'id'], comparator: 'between', value: [2, 3] }],
 				select: ['id', 'name', 'parentId', 'parentOfSelf', 'childrenOfSelf'],
 			})) {
 				results.push(record);
@@ -539,7 +539,13 @@ describe('Querying through Resource API', () => {
 			let results = [];
 			for await (let record of RelatedTable.search({
 				conditions: [{ attribute: ['childrenOfSelf', 'childrenOfSelf', 'id'], comparator: 'between', value: [2, 4] }],
-				select: ['id', 'name', 'parentId', 'parentOfSelf', {name: 'childrenOfSelf', select: ['id', 'name', 'childrenOfSelf'] } ],
+				select: [
+					'id',
+					'name',
+					'parentId',
+					'parentOfSelf',
+					{ name: 'childrenOfSelf', select: ['id', 'name', 'childrenOfSelf'] },
+				],
 			})) {
 				results.push(record);
 			}
@@ -770,6 +776,23 @@ describe('Querying through Resource API', () => {
 			assert.equal(results[0].id, 'id-99');
 			assert.equal(results[1].id, 'id-98');
 			assert.equal(results[2].id, 'id-97');
+		});
+		it('Sort on non-indexed property', async function () {
+			assert.throws(() => {
+				for (let record of QueryTable.search({
+					sort: { attribute: 'notIndexed', descending: true },
+				})) {
+				}
+			});
+			let results = [];
+			for await (let record of QueryTable.search({
+				allowFullScan: true,
+				sort: { attribute: 'notIndexed', descending: true },
+			})) {
+				results.push(record);
+			}
+			assert.equal(results.length, 100);
+			assert.equal(results[0].notIndexed, 'not indexed 99');
 		});
 		it('Query data in a table with constraint same attribute as first sorting order', async function () {
 			let results = [];

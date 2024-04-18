@@ -1,0 +1,4 @@
+logging:
+  level: error
+mqtt:
+  requireAuthentication: false

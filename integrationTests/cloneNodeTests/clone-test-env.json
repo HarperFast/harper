@@ -1,0 +1,69 @@
+{
+	"id": "f8f83a5b-388e-40e4-8f25-26722d53fbb1",
+	"name": "Clone node tests",
+	"values": [
+		{
+			"key": "USERNAME",
+			"value": "",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "PASSWORD",
+			"value": "",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "PROTOCOL",
+			"value": "https",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "LEADER_HOST",
+			"value": "",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "LEADER_HDB_PORT",
+			"value": "9925",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "CLONE_HOST",
+			"value": "",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "CLONE_HDB_PORT",
+			"value": "9925",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "CLONE_1_NODENAME",
+			"value": "",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "CLONE2_HOST",
+			"value": "",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "CLONE2_HDB_PORT",
+			"value": "9925",
+			"type": "default",
+			"enabled": true
+		}
+	],
+	"_postman_variable_scope": "environment",
+	"_postman_exported_at": "2024-04-01T20:40:59.436Z",
+	"_postman_exported_using": "Postman/10.24.11"
+}

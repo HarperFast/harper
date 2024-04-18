@@ -1166,17 +1166,26 @@ export function makeTable(options) {
 								} is not a defined attribute`,
 								404
 							);
-
-						order_aligned_condition = { attribute: attribute_name, comparator: 'sort' };
-						conditions.push(order_aligned_condition);
+						if (attribute.indexed) {
+							// if it is indexed, we add a pseudo-condition to align with the natural sort order of the index
+							order_aligned_condition = { attribute: attribute_name, comparator: 'sort' };
+							conditions.push(order_aligned_condition);
+						} else if (conditions.length === 0 && !request.allowFullScan)
+							throw handleHDBError(
+								new Error(),
+								`${
+									Array.isArray(attribute_name) ? attribute_name.join('.') : attribute_name
+								} is not indexed and not combined with any other conditions`,
+								404
+							);
 					}
-					order_aligned_condition.descending = Boolean(sort.descending);
+					if (order_aligned_condition) order_aligned_condition.descending = Boolean(sort.descending);
 				}
 			}
 			conditions = orderConditions(conditions, operator);
 
 			if (sort) {
-				if (conditions[0] === order_aligned_condition) {
+				if (order_aligned_condition && conditions[0] === order_aligned_condition) {
 					// The db index is providing the order for the first sort, may need post ordering next sort order
 					if (sort.next) {
 						post_ordering = {

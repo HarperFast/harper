@@ -265,7 +265,11 @@ async function launch(exit = true) {
  * If both are found the values will be written to the fingerprint / license files
  */
 function writeLicenseFromVars() {
-	const LICENSE_PATH = path.join(env.getHdbBasePath(), terms.LICENSE_KEY_DIR_NAME, terms.LICENSE_FILE_NAME);
+	const LICENSE_PATH = path.join(
+		env.get(terms.CONFIG_PARAMS.ROOTPATH),
+		terms.LICENSE_KEY_DIR_NAME,
+		terms.LICENSE_FILE_NAME
+	);
 	const LICENSE_FILE = path.join(LICENSE_PATH, terms.LICENSE_FILE_NAME);
 	const FINGER_PRINT_FILE = path.join(LICENSE_PATH, terms.REG_KEY_FILE_NAME);
 
