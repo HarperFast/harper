@@ -1008,13 +1008,16 @@ describe('test MQTT connections and commands', () => {
 		let events_received = [];
 		server.mqtt.events.on('connection', (a1, a2) => {
 			events_received.push('connection');
-		})
+		});
 		server.mqtt.events.on('connected', (a1, a2) => {
 			events_received.push('connected');
-		})
+		});
 		server.mqtt.events.on('disconnected', (a1, a2) => {
 			events_received.push('disconnected');
-		})
+		});
+		server.mqtt.events.on('error', (a1, a2) => {
+			events_received.push('error');
+		});
 		let client = connect('mqtt://localhost:1883', {
 			clean: true,
 			clientId: 'test-client1',
@@ -1023,6 +1026,7 @@ describe('test MQTT connections and commands', () => {
 			client.on('connect', resolve);
 			client.on('error', reject);
 		});
+		await new Promise((resolve) => client.subscribe('this does not exist', { qos: 1 }, resolve));
 		client.end();
 		await new Promise((resolve, reject) => {
 			setTimeout(resolve, 20);
@@ -1030,6 +1034,7 @@ describe('test MQTT connections and commands', () => {
 		assert(events_received.includes('connection'));
 		assert(events_received.includes('connected'));
 		assert(events_received.includes('disconnected'));
+		assert(events_received.includes('error'));
 	});
 	it('subscribe root with history', async function () {
 		// this first connection is a tear down to remove any previous durable session with this id
