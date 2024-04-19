@@ -22,11 +22,10 @@ import {
 import { server } from '../Server';
 import env from '../../utility/environment/environmentManager';
 import * as logger from '../../utility/logging/harper_logger';
-import { ensureNode, forEachNode } from './knownNodes';
 import { X509Certificate } from 'crypto';
 import { readFileSync } from 'fs';
 import { EventEmitter } from 'events';
-export { startOnMainThread } from './subscriptionManager';
+export { startOnMainThread, subscribeToNodeUpdates } from './subscriptionManager';
 
 let replication_disabled;
 
@@ -41,24 +40,40 @@ export function start(options) {
 		let subject = cert_parsed.subject;
 	}
 	assignReplicationSource(options);
-	servers.push(
-		server.ws(
-			(ws, request) => {
-				replicateOverWS(ws, options);
-				ws.on('error', (error) => {
-					if (error.code !== 'ECONNREFUSED') logger.error('Error in connection to ' + this.url, error.message);
-				});
+	const ws_server = server.ws(
+		(ws, request) => {
+			replicateOverWS(ws, options);
+			ws.on('error', (error) => {
+				if (error.code !== 'ECONNREFUSED') logger.error('Error in connection to ' + this.url, error.message);
+			});
+		},
+		Object.assign(
+			// We generally expect this to use the operations API ports (9925)
+			{
+				protocol: 'harperdb-replication-v1',
+				mtls: true,
+				highWaterMark: 256 * 1024,
 			},
-			Object.assign(
-				// We generally expect this to use the operations API ports (9925)
-				{
-					protocol: 'harperdb-replication-v1',
-					mtls: true,
-				},
-				options
-			)
+			options
 		)
 	);
+	servers.push(ws_server);
+	if (ws_server.setSecureContext) {
+		let certificate_authorities = new Set();
+		let last_ca_count = 0;
+		// we need to stay up-to-date with any CAs that have been replicated across the cluster
+		subscribeToNodeUpdates((node) => {
+			if (node.ca) {
+				// we only care about nodes that have a CA
+				certificate_authorities.add(node.ca);
+				// created a set of all the CAs that have been replicated, if changed, update the secure context
+				if (certificate_authorities.size !== last_ca_count) {
+					last_ca_count = certificate_authorities.size;
+					ws_server.setSecureContext(Object.assign({ ca: Array.from(certificate_authorities) }, options));
+				}
+			}
+		});
+	}
 }
 export function disableReplication(disabled = true) {
 	replication_disabled = disabled;

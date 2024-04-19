@@ -232,7 +232,7 @@ describe('Replication', () => {
 				name,
 				extraProperty: true,
 			});
-			console.log('timeout', this.timeout);
+			console.log('timeout', this.test._timeout);
 			await new Promise((resolve) => setTimeout(resolve, 1000));
 			let retries = 10;
 			do {

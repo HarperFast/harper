@@ -34,15 +34,7 @@ export function startOnMainThread(options) {
 		}
 	}
 
-	getHDBNodeTable()
-		.subscribe({})
-		.then(async (events) => {
-			for await (let event of events) {
-				if (event.type === 'put') {
-					onNewNode(event.value);
-				}
-			}
-		});
+	subscribeToNodeUpdates(onNewNode);
 	function onNewNode(node) {
 		if ((getThisNodeName() && node.name === getThisNodeName()) || (getThisNodeUrl() && node.name === getThisNodeUrl()))
 			// this is just this node, we don't need to connect to ourselves
@@ -185,4 +177,15 @@ function getHDBNodeTable() {
 			],
 		}))
 	);
+}
+export function subscribeToNodeUpdates(listener) {
+	getHDBNodeTable()
+		.subscribe({})
+		.then(async (events) => {
+			for await (let event of events) {
+				if (event.type === 'put') {
+					listener(event.value);
+				}
+			}
+		});
 }
