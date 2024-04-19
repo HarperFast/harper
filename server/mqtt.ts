@@ -20,11 +20,16 @@ export function bypassAuth() {
 
 export function start({ server, port, network, webSocket, securePort, requireAuthentication }) {
 	// here we basically normalize the different types of sockets to pass to our socket/message handler
-	const mqtt_settings = (server.mqtt = server.mqtt || {
-		requireAuthentication,
-		sessions: new Set(),
-		events: new EventEmitter(),
-	});
+	if (!server.mqtt) {
+		server.mqtt = {
+			requireAuthentication,
+			sessions: new Set(),
+			events: new EventEmitter(),
+		};
+		// a no-op error handler to prevent unhandled error events from being rethrown
+		server.mqtt.events.on('error', () => {});
+	}
+	const mqtt_settings = server.mqtt;
 	let server_instance;
 	const mtls = network?.mtls;
 	if (webSocket)

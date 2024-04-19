@@ -278,7 +278,7 @@ describe('test MQTT connections and commands', () => {
 			password: 'restricted',
 		});
 		let published_messages = [];
-		await new Promise((resolve) => {
+		await new Promise((resolve, reject) => {
 			client.on('connect', function () {
 				client.subscribe(topic, function (err, subscriptions) {
 					assert.equal(subscriptions[0].qos, 128);
@@ -299,7 +299,8 @@ describe('test MQTT connections and commands', () => {
 
 			client.on('error', function (error) {
 				// message is Buffer
-				console.error(error);
+				console.error('Error connecting to restricted client', error);
+				reject(error);
 			});
 		});
 		assert.equal(published_messages.length, 0);
