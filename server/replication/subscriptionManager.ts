@@ -11,6 +11,8 @@ import { parentPort } from 'worker_threads';
 
 let hdb_node_table;
 let connection_replication_map = new Map();
+export let disconnectedFromNode;
+export let reconnectedToNode;
 let node_map = new Map();
 export function startOnMainThread(options) {
 	let new_node_listeners = [];
@@ -74,6 +76,7 @@ export function startOnMainThread(options) {
 			db_replication_workers.set(database_name, {
 				worker,
 				nodes,
+				url: node.url,
 			});
 			if (worker) {
 				worker.postMessage({
@@ -84,38 +87,69 @@ export function startOnMainThread(options) {
 			} else subscribeToNode({ database: database_name, nodes });
 		}
 	}
-	onMessageByType('disconnected-from-node', disconnectedFromNode);
-	onMessageByType('reconnected-to-node', (message) => {});
-}
+	// only assign these if we are on the main thread
+	disconnectedFromNode = function (connection) {
+		// if a node is disconnected, we need to reassign the subscriptions to another node
+		// we try to do this in a deterministic way so that we don't end up with a cycle that short circuits
+		// a node that may have more recent updates, so we try to go to the next node in the list, using
+		// a sorted list of node names that all nodes should have and use.
+		const node_names = Array.from(node_map.keys()).sort();
+		const existing_index = Math.max(node_names.indexOf(connection.name), 0);
+		let next_index = existing_index;
+		do {
+			next_index = (next_index + 1) % node_names.length;
+			const next_node_name = node_names[next_index];
+			const next_node = node_map.get(next_node_name);
+			let db_replication_workers = connection_replication_map.get(next_node.url);
+			const failover_worker_entry = db_replication_workers?.get(connection.database);
+			if (!failover_worker_entry) continue;
+			const { worker, nodes } = failover_worker_entry;
+			nodes.push(connection);
+			// record which node we are now redirecting to
+			db_replication_workers = connection_replication_map.get(connection.url);
+			const existing_worker_entry = db_replication_workers?.get(connection.database);
+			existing_worker_entry.redirectingTo = failover_worker_entry;
+			if (worker) {
+				worker.postMessage({
+					type: 'subscribe-to-node',
+					database: connection.database,
+					nodes,
+				});
+			} else subscribeToNode({ database: connection.database, nodes });
+		} while (existing_index !== next_index);
+	};
 
-export function disconnectedFromNode(connection) {
-	// if a node is disconnected, we need to reassign the subscriptions to another node
-	const node_names = Array.from(node_map.keys()).sort();
-	const index = node_names.indexOf(connection.name);
-	let next_index = index;
-	do {
-		next_index = (next_index + 1) % node_names.length;
-		const next_node_name = node_names[next_index];
-		const next_node = node_map.get(next_node_name);
-		const db_replication_workers = connection_replication_map.get(next_node.url);
-		const worker_entry = db_replication_workers?.get(connection.database);
-		if (!worker_entry) continue;
-		const { worker, nodes } = worker_entry;
-		nodes.push(connection);
-		if (worker) {
-			worker.postMessage({
-				type: 'subscribe-to-node',
-				database: connection.database,
-				nodes,
-			});
-		} else subscribeToNode({ database: connection.database, nodes });
-		return;
-	} while (index !== next_index);
+	reconnectedToNode = function (connection) {
+		// Basically undo what we did in disconnectedFromNode
+		const db_replication_workers = connection_replication_map.get(connection.url);
+		const main_worker_entry = db_replication_workers?.get(connection.database);
+		if (main_worker_entry.redirectingTo) {
+			const { worker, nodes } = main_worker_entry.redirectingTo;
+			let subscription_to_remove = nodes.find((node) => node.name === connection.name);
+			main_worker_entry.redirectingTo = null;
+			if (subscription_to_remove) {
+				nodes.splice(nodes.indexOf(subscription_to_remove), 1);
+				if (worker) {
+					worker.postMessage({
+						type: 'subscribe-to-node',
+						database: connection.database,
+						nodes,
+					});
+				} else subscribeToNode({ database: connection.database, nodes });
+			}
+		}
+	};
+
+	onMessageByType('disconnected-from-node', disconnectedFromNode);
+	onMessageByType('reconnected-to-node', reconnectedToNode);
 }
 
 if (parentPort) {
 	disconnectedFromNode = (connection) => {
 		parentPort.postMessage('disconnected-from-node', connection);
+	};
+	reconnectedToNode = (connection) => {
+		parentPort.postMessage('reconnected-to-node', connection);
 	};
 	onMessageByType('subscribe-to-node', (message) => {
 		subscribeToNode(message);
