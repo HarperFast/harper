@@ -288,7 +288,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 						try {
 							granted_qos = (await session.addSubscription(subscription, subscription.qos >= 1)).qos || 0;
 						} catch (error) {
-							mqtt_settings.events.emit('error', error, subscription, session, socket);
+							mqtt_settings.events.emit('error', error, socket, subscription, session);
 							mqtt_log.error(error);
 							granted_qos =
 								mqtt_options.protocolVersion < 5
@@ -340,7 +340,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					try {
 						published = await session.publish(packet, data);
 					} catch (error) {
-						mqtt_settings.events.emit('error', error, packet, session, socket);
+						mqtt_settings.events.emit('error', error, socket, packet, session);
 						mqtt_log.warn(error);
 						if (packet.qos > 0) {
 							sendPacket(
@@ -397,7 +397,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					break;
 			}
 		} catch (error) {
-			mqtt_settings.events.emit('error', error, packet, session, socket);
+			mqtt_settings.events.emit('error', error, socket, packet, session);
 			mqtt_log.error(error);
 			sendPacket({
 				// Send a subscription acknowledgment
