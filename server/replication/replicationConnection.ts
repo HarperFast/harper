@@ -341,7 +341,8 @@ export function replicateOverWS(ws, options) {
 							if (current_transaction.txnTime !== txn_time) {
 								// send the queued transaction
 								if (current_transaction.txnTime) {
-									if (DEBUG_MODE) logger.info('new txn time, sending queued txn', current_transaction.txnTime);
+									if (DEBUG_MODE)
+										logger.info(connection_id, 'new txn time, sending queued txn', current_transaction.txnTime);
 									if (encoding_buffer[encoding_start] !== 66) {
 										logger.error('Invalid encoding of message');
 									}
@@ -432,6 +433,8 @@ export function replicateOverWS(ws, options) {
 						const sendQueuedDataWithBackPressure = () => {
 							// check first if we are overloaded, if so, we send and then go into pull mode so that we can wait for the drain event
 							if (listening_for_overload && ws._socket.writableNeedDrain) {
+								// we are overloaded, so we need to stop sending and wait for the drain event
+								logger.info(connection_id, 'overloaded, will wait for drain');
 								listening_for_overload = false;
 								audit_subscription.end();
 								audit_subscription.emit('overloaded');
@@ -456,7 +459,7 @@ export function replicateOverWS(ws, options) {
 								// and sending them out immediately as we get them. If/when this mode gets overloaded, we switch back to
 								// the catch-up mode.
 								if (isFinite(current_sequence_id)) {
-									let last_sequence = 0;
+									let queued_entries;
 									for (const { key, value: audit_entry } of audit_store.getRange({
 										start: current_sequence_id || 1,
 										exclusiveStart: true,
@@ -469,8 +472,9 @@ export function replicateOverWS(ws, options) {
 										// TODO: Need to do this with back-pressure, but would need to catch up on anything published during iteration
 										//await rest(); // yield for fairness
 										audit_subscription.startTime = key; // update so don't double send
+										queued_entries = true;
 									}
-									if (last_sequence)
+									if (queued_entries)
 										sendAuditRecord(null, {
 											type: 'end_txn',
 											localTime: current_sequence_id,
@@ -586,26 +590,22 @@ export function replicateOverWS(ws, options) {
 			subscribed = true;
 			options.connection.on('subscriptions-updated', sendSubscriptionRequestUpdate);
 		}
-		if (!last_sequence_id_received) {
+		/*		if (!last_sequence_id_received) {
 			last_sequence_id_received =
 				table_subscription_to_replicator.dbisDB.get([Symbol.for('seq'), remote_node_name]) ?? 1;
-			logger.info(
-				connection_id,
-				'requesting to start from',
-				last_sequence_id_received,
-				remote_node_name,
-				table_subscription_to_replicator.dbisDB.path
-			);
-		}
+		}*/
 		const node_subscriptions = options.connection?.nodeSubscriptions.map((node, index) => {
 			return {
 				name: node.name,
-				startTime:
-					index == 0
-						? last_sequence_id_received
-						: (table_subscription_to_replicator.dbisDB.get([Symbol.for('seq'), node.name]) ?? 10001) - 10000,
+				startTime: (table_subscription_to_replicator.dbisDB.get([Symbol.for('seq'), node.name]) ?? 10001) - 10000,
 			};
 		});
+		logger.info(
+			connection_id,
+			'sending subscription request',
+			node_subscriptions,
+			table_subscription_to_replicator.dbisDB.path
+		);
 		ws.send(encode([SUBSCRIBE_CODE, database_name, last_sequence_id_received, null, node_subscriptions]));
 	}
 
