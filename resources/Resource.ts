@@ -123,13 +123,13 @@ export class Resource implements ResourceInterface {
 	static create(record: any, context: Context): Promise<Id>;
 	static create(id_prefix: any, record: any, context?: Context): Promise<Id> {
 		let id;
-		if (id_prefix == null) id = this.getNewId(); //uuid.v4();
+		if (id_prefix == null) id = this.getNewId();
 		else if (Array.isArray(id_prefix) && typeof id_prefix[0] !== 'object') id = [...id_prefix, this.getNewId()];
 		else if (typeof id_prefix !== 'object') id = [id_prefix, this.getNewId()];
 		else {
 			// two argument form, shift the arguments
 			id = this.getNewId();
-			context = record;
+			context = record || {};
 			record = id_prefix;
 		}
 		return transaction(context, () => {
@@ -137,7 +137,7 @@ export class Resource implements ResourceInterface {
 			const results = resource.update ? resource.update(record, true) : missingMethod(resource, 'update');
 			context.newLocation = id;
 			context.createdResource = true;
-			return results?.then ? results.then(() => id) : id;
+			return results?.then ? results.then(() => resource) : resource;
 		});
 	}
 	static invalidate = transactional(
@@ -202,18 +202,21 @@ export class Resource implements ResourceInterface {
 		function (resource: Resource, query?: Map, request: Request, data?: any) {
 			return resource.copy ? resource.copy(data, query) : missingMethod(resource, 'copy');
 		},
-		{ type: 'create' }
+		{ hasContent: true, type: 'create' }
 	);
 
 	static move = transactional(
 		function (resource: Resource, query?: Map, request: Request, data?: any) {
 			return resource.move ? resource.move(data, query) : missingMethod(resource, 'move');
 		},
-		{ type: 'delete' }
+		{ hasContent: true, type: 'delete' }
 	);
 
-	post(new_record) {
-		if (this[IS_COLLECTION]) return this.constructor.create(this[ID_PROPERTY], new_record, this[CONTEXT]);
+	async post(new_record) {
+		if (this[IS_COLLECTION]) {
+			const resource = await this.constructor.create(this[ID_PROPERTY], new_record, this[CONTEXT]);
+			return resource[ID_PROPERTY];
+		}
 		missingMethod(this, 'post');
 	}
 
@@ -389,8 +392,6 @@ function pathToId(path, Resource) {
 			id_was_collection = true;
 			return null;
 		}
-		// special syntax for more compact numeric representations
-		if (path.startsWith('$')) path = parseInt(path, 36);
 		return Resource.coerceId(decodeURIComponent(path));
 	}
 	const string_ids = path.split('/');

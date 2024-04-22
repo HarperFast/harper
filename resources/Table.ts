@@ -42,6 +42,7 @@ import { appendHeader } from '../server/serverHelpers/Headers';
 const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
 let server_utilities;
+let node_name: string;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
 const DELETED_RECORD_EXPIRATION = 86400000; // one day for non-audit records that have been deleted
 env_mngr.initSync();
@@ -135,6 +136,7 @@ export function makeTable(options) {
 	let has_relationships = false;
 	let last_entry;
 	let running_record_expiration;
+	let id_incrementer;
 	const RangeIterable = primary_store.getRange({ start: false, end: false }).constructor;
 	const MAX_PREFETCH_SEQUENCE = 10;
 	const MAX_PREFETCH_BUNDLE = 6;
@@ -460,6 +462,172 @@ export function makeTable(options) {
 				});
 			}
 		}
+		static getNewId(): any {
+			const type = primary_key_attribute?.type;
+			// the default Resource behavior is to return a GUID, but for a table we can return incrementing numeric keys if the type is (or can be) numeric
+			if (type === 'String' || type === 'ID') return super.getNewId();
+			if (!id_incrementer) {
+				// if there is no id incrementer yet, we get or create one
+				let id_allocation_entry = primary_store.getEntry(Symbol.for('id_allocation'));
+				let id_allocation = id_allocation_entry?.value;
+				let last_key;
+				if (
+					id_allocation &&
+					id_allocation.nodeName === getNodeName() &&
+					(!hasOtherProcesses(primary_store) || id_allocation.pid === process.pid)
+				) {
+					// the database has an existing id allocation that we can continue from
+					const starting_id = id_allocation.start;
+					const ending_id = id_allocation.end;
+					last_key = starting_id;
+					// once it is loaded, we need to find the last key in the allocated range and start from there
+					for (const key of primary_store.getKeys({ start: ending_id, end: starting_id, limit: 1, reverse: true })) {
+						last_key = key;
+					}
+				} else {
+					// we need to create a new id allocation
+					id_allocation = createNewAllocation(id_allocation_entry?.version ?? null);
+					last_key = id_allocation.start;
+				}
+				// all threads will use a shared buffer to atomically increment the id
+				// first, we create our proposed incrementer buffer that will be used if we are the first thread to get here
+				// and initialize it with the starting id
+				id_incrementer = new BigInt64Array([BigInt(last_key) + 1n]);
+				// now get the selected incrementer buffer, this is the shared buffer was first registered and that all threads will use
+				id_incrementer = new BigInt64Array(primary_store.getUserSharedBuffer('id', id_incrementer.buffer));
+				// and we set the maximum safe id to the end of the allocated range before we check for conflicting ids again
+				id_incrementer.maxSafeId = id_allocation.end;
+			}
+			// this is where we actually do the atomic incrementation. All the threads should be pointing to the same
+			// memory location of this incrementer, so we can be sure that the id is unique and sequential.
+			let next_id = Number(Atomics.add(id_incrementer, 0, 1n));
+			const async_id_expansion_threshold = type === 'Int' ? 0x200 : 0x100000;
+			if (next_id + async_id_expansion_threshold >= id_incrementer.maxSafeId) {
+				const updateEnd = (in_txn) => {
+					// we update the end of the allocation range after verifying we don't have any conflicting ids in front of us
+					id_incrementer.maxSafeId = next_id + (type === 'Int' ? 0x3ff : 0x3fffff);
+					let id_after = (type === 'Int' ? Math.pow(2, 31) : Math.pow(2, 49)) - 1;
+					let read_txn = in_txn ? undefined : primary_store.useReadTransaction();
+					// get the latest id after the read transaction to make sure we aren't reading any new ids that we assigned from this node
+					let newest_id = Number(id_incrementer[0]);
+					for (const key of primary_store.getKeys({
+						start: newest_id + 1,
+						end: id_after,
+						limit: 1,
+						transaction: read_txn,
+					})) {
+						id_after = key;
+					}
+					read_txn?.done();
+					let { value: updated_id_allocation, version } = primary_store.getEntry(Symbol.for('id_allocation'));
+					if (id_incrementer.maxSafeId < id_after) {
+						// note that this is just a noop/direct callback if we are inside the sync transaction
+						// first check to see if it actually got updated by another thread
+						if (updated_id_allocation.end > id_incrementer.maxSafeId - 100) {
+							// the allocation was already updated by another thread
+							return;
+						}
+						harper_logger.info('New id allocation', next_id, id_incrementer.maxSafeId, version);
+						primary_store.put(
+							Symbol.for('id_allocation'),
+							{
+								start: updated_id_allocation.start,
+								end: id_incrementer.maxSafeId,
+								nodeName: getNodeName(),
+								pid: process.pid,
+							},
+							Date.now(),
+							version
+						);
+					} else {
+						// indicate that we have run out of ids in the allocated range, so we need to allocate a new range
+						harper_logger.warn(
+							`Id conflict detected, starting new id allocation range, attempting to allocate to ${id_incrementer.maxSafeId}, but id of ${id_after} detected`
+						);
+						const id_allocation = createNewAllocation(version);
+						// reassign the incrementer to the new range/starting point
+						if (!id_allocation.alreadyUpdated) Atomics.store(id_incrementer, 0, BigInt(id_allocation.start + 1));
+						// and we set the maximum safe id to the end of the allocated range before we check for conflicting ids again
+						id_incrementer.maxSafeId = id_allocation.end;
+					}
+				};
+				if (next_id + async_id_expansion_threshold === id_incrementer.maxSafeId) {
+					setImmediate(updateEnd); // if we are getting kind of close to the end, we try to update it asynchronously
+				} else if (next_id + 100 >= id_incrementer.maxSafeId) {
+					harper_logger.warn(
+						`Synchronous id allocation required on table ${table_name}${
+							type == 'Int'
+								? ', it is highly recommended that you use Long or Float as the type for auto-incremented primary keys'
+								: ''
+						}`
+					);
+					// if we are very close to the end, synchronously update
+					primary_store.transactionSync(() => updateEnd(true));
+				}
+				//TODO: Add a check to recordUpdate to check if a new id infringes on the allocated id range
+			}
+			return next_id;
+			function createNewAllocation(expected_version) {
+				// there is no id allocation (or it is for the wrong node name or used up), so we need to create one
+				// start by determining the max id for the type
+				const max_id = (type === 'Int' ? Math.pow(2, 31) : Math.pow(2, 49)) - 1;
+				let safe_distance = max_id / 4; // we want to allocate ids in a range that is at least 1/4 of the total id space from ids in either direction
+				let id_before: number, id_after: number;
+				let complained = false;
+				let last_key;
+				let id_allocation;
+				do {
+					// we start with a random id and verify that there is a good gap in the ids to allocate a decent range
+					last_key = Math.floor(Math.random() * max_id);
+					id_allocation = {
+						start: last_key,
+						end: last_key + (type === 'Int' ? 0x400 : 0x400000),
+						nodeName: getNodeName(),
+						pid: process.pid,
+					};
+					id_before = 0;
+					// now find the next id before the last key
+					for (const key of primary_store.getKeys({ start: last_key, limit: 1, reverse: true })) {
+						id_before = key;
+					}
+					id_after = max_id;
+					// and next key after
+					for (const key of primary_store.getKeys({ start: last_key + 1, end: max_id, limit: 1 })) {
+						id_after = key;
+					}
+					safe_distance *= 0.875; // if we fail, we try again with a smaller range, looking for a good gap without really knowing how packed the ids are
+					if (safe_distance < 1000 && !complained) {
+						complained = true;
+						harper_logger.error(
+							`Id allocation in table ${table_name} is very dense, limited safe range of numbers to allocate ids in${
+								type === 'Int'
+									? ', it is highly recommended that you use Long or Float as the type for auto-incremented primary keys'
+									: ''
+							}`,
+							last_key,
+							id_before,
+							id_after,
+							safe_distance
+						);
+					}
+					// see if we maintained an adequate distance from the surrounding ids
+				} while (!(safe_distance < id_after - last_key && (safe_distance < last_key - id_before || id_before === 0)));
+				// we have to ensure that the id allocation is atomic and multiple threads don't set different ids, so we use a sync transaction
+				return primary_store.transactionSync(() => {
+					// first check to see if it actually got set by another thread
+					let updated_id_allocation = primary_store.getEntry(Symbol.for('id_allocation'));
+					if ((updated_id_allocation?.version ?? null) == expected_version) {
+						harper_logger.info('Allocated new id range', id_allocation);
+						primary_store.put(Symbol.for('id_allocation'), id_allocation, Date.now());
+						return id_allocation;
+					} else {
+						harper_logger.debug('Looks like ids were already allocated');
+						return Object.assign({ alreadyUpdated: true }, updated_id_allocation.value);
+					}
+				});
+			}
+		}
+
 		/**
 		 * Set TTL expiration for records in this table. On retrieval, record timestamps are checked for expiration.
 		 * This also informs the scheduling for record eviction.
@@ -2865,8 +3033,10 @@ export function coerceType(value, attribute) {
 		return value;
 	} else if (value === '' && type && type !== 'String' && type !== 'Any') {
 		return null;
-	} else if (type === 'Int' || type === 'Long') return value === 'null' ? null : parseInt(value);
-	else if (type === 'Float') return value === 'null' ? null : parseFloat(value);
+	} else if (type === 'Int' || type === 'Long')
+		// allow $ prefix as special syntax for more compact numeric representations and then use parseInt to force being an integer (might consider Math.floor, which is a little faster, but rounds in a different way with negative numbers).
+		return value[0] === '$' ? parseInt(value.slice(1), 36) : value === 'null' ? null : parseInt(value);
+	else if (type === 'Float') return value === 'null' ? null : +value;
 	else if (type === 'BigInt') return value === 'null' ? null : BigInt(value);
 	else if (type === 'Boolean') return value === 'true' ? true : value === 'false' ? false : value;
 	else if (type === 'Date') {
@@ -2924,4 +3094,17 @@ function stringify(value) {
 	} catch (err) {
 		return value;
 	}
+}
+function getNodeName() {
+	return node_name || (node_name = env_mngr.get(CONFIG_PARAMS.CLUSTERING_NODENAME));
+}
+function hasOtherProcesses(store) {
+	const pid = process.pid;
+	return store.env
+		.readerList()
+		.slice(1)
+		.some((line) => {
+			// if the pid from the reader list is different than ours, must be another process accessing the database
+			return +line.match(/\d+/)?.[0] != pid;
+		});
 }
