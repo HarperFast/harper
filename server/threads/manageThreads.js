@@ -54,6 +54,9 @@ connected_ports.sendToThread = function (thread_id, message) {
 		return true;
 	}
 };
+module.exports.whenThreadsStarted = new Promise((resolve) => {
+	module.exports.threadsHaveStarted = resolve;
+});
 
 let isMainWorker;
 function setTerminateTimeout(new_timeout) {

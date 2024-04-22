@@ -1,4 +1,4 @@
-import { startWorker, setMonitorListener, setMainIsWorker, shutdownWorkers } from './manageThreads';
+import { startWorker, setMonitorListener, setMainIsWorker, shutdownWorkers, threadsHaveStarted } from './manageThreads';
 import { createServer, Socket } from 'net';
 import * as hdb_terms from '../../utility/hdbTerms';
 import * as harper_logger from '../../utility/logging/harper_logger';
@@ -24,28 +24,32 @@ if (isMainThread) {
 
 const LICENSE_NAG_PERIOD = 600000; // ten minutes
 export async function startHTTPThreads(thread_count = 2, dynamic_threads?: boolean) {
-	if (dynamic_threads) {
-		startHTTPWorker(0, 1, true);
-	} else {
-		const { loadRootComponents } = require('../loadRootComponents');
-		if (thread_count === 0) {
-			setMainIsWorker(true);
-			await require('./threadServer').startServers();
-			return Promise.resolve([]);
+	try {
+		if (dynamic_threads) {
+			startHTTPWorker(0, 1, true);
+		} else {
+			const { loadRootComponents } = require('../loadRootComponents');
+			if (thread_count === 0) {
+				setMainIsWorker(true);
+				await require('./threadServer').startServers();
+				return Promise.resolve([]);
+			}
+			await loadRootComponents();
 		}
-		await loadRootComponents();
+		const license_warning = checkMemoryLimit();
+		if (license_warning && !process.env.DEV_MODE) {
+			console.error(license_warning);
+			setInterval(() => {
+				harper_logger.notify(license_warning);
+			}, LICENSE_NAG_PERIOD).unref();
+		}
+		for (let i = 0; i < thread_count; i++) {
+			startHTTPWorker(i, thread_count);
+		}
+		return Promise.all(workers_ready);
+	} finally {
+		threadsHaveStarted();
 	}
-	const license_warning = checkMemoryLimit();
-	if (license_warning && !process.env.DEV_MODE) {
-		console.error(license_warning);
-		setInterval(() => {
-			harper_logger.notify(license_warning);
-		}, LICENSE_NAG_PERIOD).unref();
-	}
-	for (let i = 0; i < thread_count; i++) {
-		startHTTPWorker(i, thread_count);
-	}
-	return Promise.all(workers_ready);
 }
 function startHTTPWorker(index, thread_count = 1, shutdown_when_idle?) {
 	current_thread_count++;

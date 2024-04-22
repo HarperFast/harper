@@ -25,7 +25,8 @@ import * as logger from '../../utility/logging/harper_logger';
 import { X509Certificate } from 'crypto';
 import { readFileSync } from 'fs';
 import { EventEmitter } from 'events';
-export { startOnMainThread, subscribeToNodeUpdates } from './subscriptionManager';
+export { startOnMainThread } from './subscriptionManager';
+import { subscribeToNodeUpdates } from './subscriptionManager';
 
 let replication_disabled;
 
@@ -39,6 +40,8 @@ export function start(options) {
 		let cert_parsed = new X509Certificate(readFileSync(certificate));
 		let subject = cert_parsed.subject;
 	}
+	if (!getThisNodeName())
+		throw new Error('Can not load replication without a node name (see replication.nodeName in the config)');
 	assignReplicationSource(options);
 	const ws_server = server.ws(
 		(ws, request) => {
@@ -52,7 +55,7 @@ export function start(options) {
 			{
 				protocol: 'harperdb-replication-v1',
 				mtls: true,
-				highWaterMark: 256 * 1024,
+				highWaterMark: 256 * 1024, // use a larger high water mark to avoid frequent switching back and forth between push and pull modes
 			},
 			options
 		)

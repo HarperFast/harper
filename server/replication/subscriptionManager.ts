@@ -4,7 +4,7 @@
  * lost and delegating subscriptions through other nodes
  */
 import { getDatabases, onUpdatedTable, table } from '../../resources/databases';
-import { workers, onMessageByType } from '../threads/manageThreads';
+import { workers, onMessageByType, whenThreadsStarted } from '../threads/manageThreads';
 import { table_update_listeners } from './replicationConnection';
 import { getThisNodeName, getThisNodeUrl, subscribeToNode } from './replicator';
 import { parentPort } from 'worker_threads';
@@ -33,8 +33,7 @@ export function startOnMainThread(options) {
 			console.error(error);
 		}
 	}
-
-	subscribeToNodeUpdates(onNewNode);
+	whenThreadsStarted.then(() => subscribeToNodeUpdates(onNewNode));
 	function onNewNode(node) {
 		if ((getThisNodeName() && node.name === getThisNodeName()) || (getThisNodeUrl() && node.name === getThisNodeUrl()))
 			// this is just this node, we don't need to connect to ourselves

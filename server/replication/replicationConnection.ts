@@ -74,7 +74,7 @@ export class NodeReplicationConnection extends EventEmitter {
 
 		let session;
 		this.socket.on('open', () => {
-			logger.info('connected to ' + this.url, this.socket._socket.writableHighWaterMark);
+			logger.info('Connected to ' + this.url, this.socket._socket.writableHighWaterMark);
 			this.retries = 0;
 			this.retryTime = 200;
 			if (this.hasConnected) {
@@ -104,8 +104,11 @@ export class NodeReplicationConnection extends EventEmitter {
 			}
 			session?.disconnected();
 			if (++this.retries % 20 === 1) {
-				logger.warn(`disconnected from ${this.url} (db: "${this.databaseName}")`);
+				logger.warn(
+					`${session ? 'Disconnected from' : 'Failed to connect to'} ${this.url} (db: "${this.databaseName}")`
+				);
 			}
+			session = null;
 			// try to reconnect
 			setTimeout(() => {
 				this.connect();
@@ -125,11 +128,12 @@ export class NodeReplicationConnection extends EventEmitter {
  * This handles both incoming and outgoing WS allowing either one to issue a subscription and get replication and/or handle subscription requests
  */
 export function replicateOverWS(ws, options) {
+	const p = options.port || options.securePort;
 	const connection_id =
 		(process.pid % 1000) +
 		'-' +
 		threadId +
-		(options.port ? 's:' + options.port : 'c:' + options.url.slice(-4)) +
+		(p ? 's:' + p : 'c:' + options.url?.slice(-4)) +
 		' ' +
 		Math.random().toString().slice(2, 3);
 	logger.info(connection_id, 'registering');
@@ -151,7 +155,6 @@ export function replicateOverWS(ws, options) {
 	const this_node_url = env.get('replication_url');
 	if (database_name) {
 		setDatabase(database_name);
-		sendSubscriptionRequestUpdate();
 	}
 	const table_decoders = [];
 	const residency_map = [];
@@ -197,6 +200,7 @@ export function replicateOverWS(ws, options) {
 							}
 						}
 						logger.info(connection_id, 'setDatabase', database_name, tables && Object.keys(tables));
+						sendSubscriptionRequestUpdate();
 						break;
 					}
 					case DISCONNECT:
@@ -253,7 +257,7 @@ export function replicateOverWS(ws, options) {
 						} else table_subscription_to_replicator = db_subscriptions.get(database_name);
 						logger.info(connection_id, 'received subscription request for', database_name, 'at', node_subscriptions);
 						if (!table_subscription_to_replicator) {
-							logger.error('No subscription found for', database_name);
+							logger.error('No database is registered to receive updates for', database_name);
 							return;
 						}
 						if (audit_subscription) {
@@ -583,12 +587,12 @@ export function replicateOverWS(ws, options) {
 	});
 
 	function recordRemoteNodeSequence() {}
-	function sendSubscriptionRequestUpdate(existing_listener) {
+	function sendSubscriptionRequestUpdate() {
 		// once we have received the node name, and we know the database name that this connection is for,
 		// we can send a subscription request, if no other threads have subscribed.
 		if (!subscribed) {
 			subscribed = true;
-			options.connection.on('subscriptions-updated', sendSubscriptionRequestUpdate);
+			options.connection?.on('subscriptions-updated', sendSubscriptionRequestUpdate);
 		}
 		/*		if (!last_sequence_id_received) {
 			last_sequence_id_received =
@@ -606,7 +610,8 @@ export function replicateOverWS(ws, options) {
 			node_subscriptions,
 			table_subscription_to_replicator.dbisDB.path
 		);
-		ws.send(encode([SUBSCRIBE_CODE, database_name, last_sequence_id_received, null, node_subscriptions]));
+		if (node_subscriptions)
+			ws.send(encode([SUBSCRIBE_CODE, database_name, last_sequence_id_received, null, node_subscriptions]));
 	}
 
 	function getResidence(residency_id, table) {
