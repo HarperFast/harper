@@ -378,6 +378,8 @@ const OPERATIONS_ENUM = {
 	AUDIT_NODE_MODULES: 'audit_node_modules',
 	PURGE_STREAM: 'purge_stream',
 	GET_BACKUP: 'get_backup',
+	SIGN_CERTIFICATE: 'sign_certificate',
+	CREATE_CSR: 'create_csr',
 };
 
 // Defines valid file types that we are able to handle in 'import_from_s3' ops

@@ -44,6 +44,7 @@ const { _assignPackageExport } = require('../../index');
 const { transformReq } = require('../../utility/common_utils');
 const { server } = require('../../server/Server');
 const operation_log = harper_logger.loggerWithTag('operation');
+const keys = require('../../security/keys');
 
 const operation_function_caller = require(`../../utility/OperationFunctionCaller`);
 
@@ -333,6 +334,9 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_GET_ROUTES, new OperationFunctionObject(routes.getRoutes));
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_DELETE_ROUTES, new OperationFunctionObject(routes.deleteRoutes));
 	op_func_map.set(terms.OPERATIONS_ENUM.EXPORT_TO_S3, new OperationFunctionObject(executeJob, export_.export_to_s3));
+	op_func_map.set(terms.OPERATIONS_ENUM.CREATE_CSR, new OperationFunctionObject(keys.createCsr));
+	op_func_map.set(terms.OPERATIONS_ENUM.SIGN_CERTIFICATE, new OperationFunctionObject(keys.signCertificate));
+
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE,
 		new OperationFunctionObject(executeJob, delete_.deleteFilesBefore)

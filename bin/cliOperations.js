@@ -60,6 +60,8 @@ const SUPPORTED_OPS = {
 	refresh_operation_token: true,
 	system_information: true,
 	sql: true,
+	create_csr: true,
+	sign_certificate: true,
 };
 
 module.exports = { cliOperations, buildRequest };

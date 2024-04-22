@@ -43,6 +43,7 @@ const functions_operations = require('../components/operations');
 const alasql = require('alasql');
 const transaction_log = require('../utility/logging/transactionLog');
 const npm_utilities = require('./npmUtilities');
+const keys = require('../security/keys');
 
 const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
@@ -150,6 +151,8 @@ required_permissions.set(transaction_log.readTransactionLog.name, new permission
 required_permissions.set(transaction_log.deleteTransactionLogsBefore.name, new permission(true, []));
 required_permissions.set(npm_utilities.installModules.name, new permission(true, []));
 required_permissions.set(npm_utilities.auditModules.name, new permission(true, []));
+required_permissions.set(keys.createCsr.name, new permission(true, []));
+required_permissions.set(keys.signCertificate.name, new permission(true, []));
 
 //this operation must be available to all users so they can create authentication tokens and login
 required_permissions.set(token_authentication.createTokens.name, new permission(false, []));
