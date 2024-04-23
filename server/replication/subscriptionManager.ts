@@ -6,7 +6,7 @@
 import { getDatabases, onUpdatedTable, table } from '../../resources/databases';
 import { workers, onMessageByType, whenThreadsStarted } from '../threads/manageThreads';
 import { table_update_listeners } from './replicationConnection';
-import { getThisNodeName, getThisNodeUrl, subscribeToNode } from './replicator';
+import { getThisNodeName, getThisNodeUrl, subscribeToNode, urlToNodeName } from './replicator';
 import { parentPort } from 'worker_threads';
 
 let hdb_node_table;
@@ -28,7 +28,7 @@ export function startOnMainThread(options) {
 					continue;
 				}
 			}
-			ensureNode(route.name ?? url, url);
+			ensureNode(route.name ?? urlToNodeName(url), url);
 		} catch (error) {
 			console.error(error);
 		}
@@ -50,10 +50,7 @@ export function startOnMainThread(options) {
 			let database = enabled_databases[database_name];
 			if (!database) continue;
 			database = typeof database === 'object' ? database : databases[database_name];
-			for (const table_name in database) {
-				const Table = database[table_name];
-				onDatabase(database_name, Table);
-			}
+			onDatabase(database_name);
 		}
 		onUpdatedTable((Table, is_changed) => {
 			if (is_changed) {
@@ -150,7 +147,7 @@ if (parentPort) {
 export function ensureNode(name: string, url: string, routes = []) {
 	const table = getHDBNodeTable();
 	const isTentative = !name;
-	name = name ?? url;
+	name = name ?? urlToNodeName(url);
 	if (table.primaryStore.get(name)?.url !== url) {
 		table.put({ name, url, routes, isTentative });
 	}

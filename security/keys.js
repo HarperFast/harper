@@ -277,7 +277,7 @@ async function generateKeys() {
 	const keys_path = path.join(hdb_root, hdb_terms.LICENSE_KEY_DIR_NAME);
 
 	let cert = await mkcert.createCert({
-		domains: ['127.0.0.1', 'localhost', '::1'],
+		domains: ['127.0.0.1', '127.0.0.2', '127.0.0.3', '127.0.0.4', '127.0.0.5', 'localhost', '::1'],
 		validityDays: 3650,
 		caKey: certificates_terms.CERTIFICATE_VALUES.key,
 		caCert: certificates_terms.CERTIFICATE_VALUES.cert,

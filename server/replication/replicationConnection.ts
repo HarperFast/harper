@@ -224,7 +224,8 @@ export function replicateOverWS(ws, options) {
 								useBigIntExtension: true,
 								randomAccessStructure: true,
 								freezeData: true,
-								typedStructs: data,
+								typedStructs: data.typedStructs,
+								structures: data.structures,
 							}),
 							getEntry(id) {
 								return table.primaryStore.getEntry(id);
@@ -404,12 +405,19 @@ export function replicateOverWS(ws, options) {
 							) {
 								table_entry.typed_length = typed_structs?.length;
 								table_entry.structure_length = structures.length;
-								logger.info(connection_id, 'send table struct');
+								logger.info(connection_id, 'send table struct', table_entry.typed_length, table_entry.structure_length);
 								if (!table_entry.sentName) {
 									// TODO: only send the table name once
 									table_entry.sentName = true;
 								}
-								ws.send(encode([SEND_TABLE_FIXED_STRUCTURE, typed_structs, table_id, table_entry.table.tableName]));
+								ws.send(
+									encode([
+										SEND_TABLE_FIXED_STRUCTURE,
+										{ typedStructs: typed_structs, structures: structures },
+										table_id,
+										table_entry.table.tableName,
+									])
+								);
 							}
 							if (residency_id && !sent_residency_lists[residency_id]) {
 								ws.send(encode([SEND_RESIDENCY_LIST, residency, residency_id]));
@@ -640,7 +648,8 @@ export function replicateOverWS(ws, options) {
 
 		const this_node_name = getThisNodeName();
 		if (this_node_name === remote_node_name) {
-			logger.error('Should not connect to self', this_node_name);
+			if (!this_node_name) logger.error('Node name not defined');
+			else logger.error('Should not connect to self', this_node_name);
 			return false;
 		}
 		logger.info('Sending node name', this_node_name, 'database name', database_name);
@@ -669,10 +678,10 @@ export function replicateOverWS(ws, options) {
 		if (number < 128) {
 			encoding_buffer[position++] = number;
 		} else if (number < 0x4000) {
-			data_view.setUint16(position, number | 0x7fff);
+			data_view.setUint16(position, number | 0x8000);
 			position += 2;
 		} else if (number < 0x3f000000) {
-			data_view.setUint32(position, number | 0xcfffffff);
+			data_view.setUint32(position, number | 0xc0000000);
 			position += 4;
 		} else {
 			encoding_buffer[position] = 0xff;
