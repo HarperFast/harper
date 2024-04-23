@@ -192,7 +192,7 @@ function listenOnPorts() {
 		const server = SERVERS[port];
 
 		// If server is unix domain socket
-		if (isNaN(port) && getWorkerIndex() == 0) {
+		if (port.includes?.('/') && getWorkerIndex() == 0) {
 			if (existsSync(port)) unlinkSync(port);
 			listening.push(
 				new Promise((resolve, reject) => {
@@ -209,7 +209,11 @@ function listenOnPorts() {
 
 		let fd;
 		try {
-			fd = createReuseportFd(+port, '::');
+			const last_colon = port.lastIndexOf(':');
+			if (last_colon > 0)
+				// if there is a colon, we assume it is a host:port pair
+				fd = createReuseportFd(+port.slice(last_colon + 1), port.slice(0, last_colon));
+			else fd = createReuseportFd(+port, '::');
 		} catch (error) {
 			console.error(`Unable to bind to port ${port}`, error);
 			continue;
@@ -319,9 +323,9 @@ function proxyRequest(message) {
 }
 
 function registerServer(server, port, check_port = true) {
-	if (!+port && port !== env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)) {
+	if (!port) {
 		// if no port is provided, default to custom functions port
-		port = parseInt(env.get(terms.CONFIG_PARAMS.HTTP_PORT), 10);
+		port = env.get(terms.CONFIG_PARAMS.HTTP_PORT);
 	}
 	let existing_server = SERVERS[port];
 	if (existing_server) {
@@ -346,10 +350,10 @@ function registerServer(server, port, check_port = true) {
 }
 function getPorts(options) {
 	let ports = [];
-	let port_num = parseInt(options?.securePort);
-	if (port_num) ports.push({ port: port_num, secure: true });
-	port_num = parseInt(options?.port);
-	if (port_num) ports.push({ port: port_num, secure: false });
+	let port = options?.securePort;
+	if (port) ports.push({ port, secure: true });
+	port = options?.port;
+	if (port) ports.push({ port, secure: false });
 	if (ports.length === 0) {
 		// if no port is provided, default to http port
 		ports = [];
