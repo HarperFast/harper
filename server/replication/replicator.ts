@@ -211,8 +211,16 @@ export function subscribeToNode(message) {
 }
 
 export function getThisNodeName() {
-	return env.get('replication_nodename') ?? env.get('replication_url');
+	return env.get('replication_nodename') ?? urlToNodeName(env.get('replication_url'));
 }
 export function getThisNodeUrl() {
 	return env.get('replication_url');
+}
+export function urlToNodeName(node_url) {
+	if (node_url) {
+		let url = new URL(node_url);
+		// remove the protocol and default port
+		if (url.port === '9925' || !url.port) return url.hostname;
+		else return url.hostname + ':' + url.port;
+	}
 }
