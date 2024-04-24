@@ -43,6 +43,7 @@ jobs:
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       container: 'tar'
+      platforms: ${{ matrix.platform }}
       file: ${{ matrix.file }}
       containerTarball: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-${{ matrix.name }}-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}.tar
 
