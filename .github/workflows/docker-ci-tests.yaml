@@ -32,6 +32,9 @@ jobs:
         platform:
           - 'linux/amd64'
           - 'linux/arm64'
+        name:
+          - 'standard'
+          - 'openshift'
         include:
           - name: 'standard'
             file: 'utility/Docker/Dockerfile'
