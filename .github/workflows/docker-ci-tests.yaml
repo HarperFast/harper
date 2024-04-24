@@ -41,6 +41,7 @@ jobs:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       container: 'tar'
       file: ${{ matrix.file }}
+      containerTarball: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-${{ matrix.name }}-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}.tar
 
   ######################
   #  Run Tests on AMD64
@@ -60,7 +61,7 @@ jobs:
         include:
           - name: 'standard'
             file: 'utility/Docker/Dockerfile'
-            tarName: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-amd64.tar
+            tarName: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-standard-amd64.tar
           - name: 'openshift'
             file: 'utility/Docker/Dockerfile-openshift'
             tarName: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-openshift-amd64.tar
@@ -139,10 +140,10 @@ jobs:
         include:
           - name: 'standard'
             file: 'utility/Docker/Dockerfile'
-            tarName: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-amd64.tar
+            tarName: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-standard-arm64.tar
           - name: 'openshift'
             file: 'utility/Docker/Dockerfile-openshift'
-            tarName: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-openshift-amd64.tar
+            tarName: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-openshift-arm64.tar
     steps:
     - uses: actions/checkout@v4
     - uses: actions/download-artifact@v4
