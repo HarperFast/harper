@@ -107,15 +107,19 @@ export async function authentication(request, next_handler) {
 			else auth_event_log.error(log);
 		};
 		if (request.mtlsConfig && request.authorized) {
-			let username = request.mtlsConfig.user;
-			if (username !== null) {
-				// null means no user is defined from certificate, need regular authentication as well
-				if (username === undefined || username === 'Common Name' || username === 'CN')
-					username = request.peerCertificate.subject.CN;
-				request.user = await server.getUser(username, null, null);
-				authAuditLog(username, AUTH_AUDIT_STATUS.SUCCESS, 'mTLS');
+			if (request.mtlsConfig.authorizedHandler?.(request)) {
+				// this means that it was already handled by a custom config function
 			} else {
-				debug('HTTPS/WSS mTLS authorized connection (mTLS did not authorize a user)', 'from', request.ip);
+				let username = request.mtlsConfig.user;
+				if (username !== null) {
+					// null means no user is defined from certificate, need regular authentication as well
+					if (username === undefined || username === 'Common Name' || username === 'CN')
+						username = request.peerCertificate.subject.CN;
+					request.user = await server.getUser(username, null, null);
+					authAuditLog(username, AUTH_AUDIT_STATUS.SUCCESS, 'mTLS');
+				} else {
+					debug('HTTPS/WSS mTLS authorized connection (mTLS did not authorize a user)', 'from', request.ip);
+				}
 			}
 		}
 
@@ -183,7 +187,7 @@ export async function authentication(request, next_handler) {
 			// or should this be cached in the session?
 			request.user = await server.getUser(session.user, null, request);
 		} else if (
-			(AUTHORIZE_LOCAL && (request.ip?.includes('127.0.0.1') || request.ip == '::1')) ||
+			(AUTHORIZE_LOCAL && (request.ip?.includes('127.0.0.') || request.ip == '::1')) ||
 			(request?._nodeRequest?.socket?.server?._pipeName && request.ip === undefined) // allow socket domain
 		) {
 			request.user = await getSuperUser();

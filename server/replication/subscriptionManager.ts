@@ -18,6 +18,10 @@ export function startOnMainThread(options) {
 	let new_node_listeners = [];
 	let all_nodes: any[];
 	let next_worker_index = 0;
+	// make sure this node exists is in the hdb_nodes table
+	ensureNode(getThisNodeName(), {
+		url: getThisNodeUrl(),
+	});
 	route_loop: for (const route of options.routes || []) {
 		try {
 			let url = typeof route === 'string' ? route : route.url;
@@ -28,7 +32,18 @@ export function startOnMainThread(options) {
 					continue;
 				}
 			}
-			ensureNode(route.name ?? urlToNodeName(url), url);
+			const pub_sub_all = !route.subscriptions;
+			const pub_sub_system = route.trusted !== false;
+			const node = {
+				url,
+				subscription: route.subscriptions,
+				routes: route.routes,
+			};
+			if (pub_sub_all) {
+				node.subscribe = true;
+				node.publish = true;
+			}
+			ensureNode(route.name, node);
 		} catch (error) {
 			console.error(error);
 		}
@@ -38,6 +53,7 @@ export function startOnMainThread(options) {
 		if ((getThisNodeName() && node.name === getThisNodeName()) || (getThisNodeUrl() && node.name === getThisNodeUrl()))
 			// this is just this node, we don't need to connect to ourselves
 			return;
+		if (node.subscribe === false) return; // this node is not to be subscribed to
 		node_map.set(node.name, node);
 		const databases = getDatabases();
 		let db_replication_workers = connection_replication_map.get(node.url);
@@ -45,34 +61,51 @@ export function startOnMainThread(options) {
 			db_replication_workers = new Map();
 			connection_replication_map.set(node.url, db_replication_workers);
 		}
-		const enabled_databases = options?.databases ?? databases;
+		const enabled_databases = !options?.databases || options?.databases === '*' ? databases : options.databases;
 		for (const database_name in enabled_databases) {
 			let database = enabled_databases[database_name];
-			if (!database) continue;
-			database = typeof database === 'object' ? database : databases[database_name];
-			onDatabase(database_name);
+			if (!database) {
+				// this database is not enabled by default, but check to see if there are any explicit subscriptions
+				if (
+					!(
+						// if we can't find any more granular subscriptions, then we skip this database
+						// check to see if we have any explicit node subscriptions
+						(
+							node.subscriptions?.some((sub) => (sub.database || sub.schema) === database_name && sub.subscription) ||
+							// otherwise check if there is explicit table subscriptions
+							hasExplicitlyReplicatedTable(database_name)
+						)
+					)
+				)
+					continue;
+				onDatabase(database_name, false);
+			} else {
+				database = typeof database === 'object' ? database : databases[database_name];
+				onDatabase(database_name, true);
+			}
 		}
 		onUpdatedTable((Table, is_changed) => {
 			if (is_changed) {
-			} else onDatabase(Table.databaseName, Table);
+			} else onDatabase(Table.databaseName);
 		});
 
-		function onDatabase(database_name) {
+		function onDatabase(database_name, tables_replicate_by_default) {
 			let worker = workers[next_worker_index];
 			next_worker_index = (next_worker_index + 1) % workers.length;
-			let nodes = [node];
+			let nodes = [Object.assign({ replicateByDefault: tables_replicate_by_default }, node)];
 			db_replication_workers.set(database_name, {
 				worker,
 				nodes,
 				url: node.url,
 			});
+			const request = {
+				type: 'subscribe-to-node',
+				database: database_name,
+				nodes,
+			};
 			if (worker) {
-				worker.postMessage({
-					type: 'subscribe-to-node',
-					database: database_name,
-					nodes,
-				});
-			} else subscribeToNode({ database: database_name, nodes });
+				worker.postMessage(request);
+			} else subscribeToNode(request);
 		}
 	}
 	// only assign these if we are on the main thread
@@ -144,31 +177,43 @@ if (parentPort) {
 	});
 }
 
-export function ensureNode(name: string, url: string, routes = []) {
+export function ensureNode(name: string, node) {
 	const table = getHDBNodeTable();
 	const isTentative = !name;
-	name = name ?? urlToNodeName(url);
-	if (table.primaryStore.get(name)?.url !== url) {
-		table.put({ name, url, routes, isTentative });
+	name = name ?? urlToNodeName(node.url);
+	node.name = name;
+	if (table.primaryStore.get(name)?.url !== node.url) {
+		table.put(node);
 	}
 }
-function getHDBNodeTable() {
+export function getHDBNodeTable() {
 	return (
 		hdb_node_table ||
 		(hdb_node_table = table({
-			table: 'hdb_node_table',
+			table: 'hdb_nodes',
 			database: 'system',
-			audit: true,
 			attributes: [
 				{
 					name: 'name',
 					isPrimaryKey: true,
 				},
 				{
-					name: 'url',
+					attribute: 'subscriptions',
 				},
 				{
-					name: 'routes',
+					attribute: 'system_info',
+				},
+				{
+					attribute: 'url',
+				},
+				{
+					attribute: 'routes',
+				},
+				{
+					attribute: '__createdtime__',
+				},
+				{
+					attribute: '__updatedtime__',
 				},
 			],
 		}))
@@ -184,4 +229,12 @@ export function subscribeToNodeUpdates(listener) {
 				}
 			}
 		});
+}
+
+function hasExplicitlyReplicatedTable(database_name) {
+	const database = databases[database_name];
+	for (let table_name in database) {
+		const table = database[table_name];
+		if (table.replicate) return true;
+	}
 }

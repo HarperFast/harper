@@ -70,6 +70,7 @@ function getWorkerCount() {
 }
 function setMainIsWorker(isWorker) {
 	isMainWorker = isWorker;
+	module.exports.threadsHaveStarted();
 }
 let worker_count = 1; // should be assigned when workers are created
 let ticket_keys;

@@ -9,7 +9,14 @@
  * 5. Node B sends back the audit records
  */
 
-import { database, table as defineTable, getDatabases, onUpdatedTable, table } from '../../resources/databases';
+import {
+	database,
+	databases,
+	table as defineTable,
+	getDatabases,
+	onUpdatedTable,
+	table,
+} from '../../resources/databases';
 import { ID_PROPERTY, Resource } from '../../resources/Resource';
 import { IterableEventQueue } from '../../resources/IterableEventQueue';
 import { onMessageByType } from '../threads/manageThreads';
@@ -26,7 +33,7 @@ import { X509Certificate } from 'crypto';
 import { readFileSync } from 'fs';
 import { EventEmitter } from 'events';
 export { startOnMainThread } from './subscriptionManager';
-import { subscribeToNodeUpdates } from './subscriptionManager';
+import { subscribeToNodeUpdates, getHDBNodeTable } from './subscriptionManager';
 
 let replication_disabled;
 
@@ -43,9 +50,10 @@ export function start(options) {
 	if (!getThisNodeName())
 		throw new Error('Can not load replication without a node name (see replication.nodeName in the config)');
 	assignReplicationSource(options);
+	// noinspection JSVoidFunctionReturnValueUsed
 	const ws_server = server.ws(
 		(ws, request) => {
-			replicateOverWS(ws, options);
+			replicateOverWS(ws, options, request?.user);
 			ws.on('error', (error) => {
 				if (error.code !== 'ECONNREFUSED') logger.error('Error in connection to ' + this.url, error.message);
 			});
@@ -54,11 +62,26 @@ export function start(options) {
 			// We generally expect this to use the operations API ports (9925)
 			{
 				protocol: 'harperdb-replication-v1',
-				mtls: true,
-				highWaterMark: 256 * 1024, // use a larger high water mark to avoid frequent switching back and forth between push and pull modes
+				mtls: true, // make sure that we request a certificate from the client
+				// we set this very high (16x times the default) because it can be a bit expensive to switch back and forth
+				// between push and pull mode
+				highWaterMark: 256 * 1024,
 			},
 			options
 		)
+	);
+	ws_server.mtlsConfig = Object.assign(
+		{
+			// define a handler for mTLS authorized connections, the primary means of authentication for replication connections
+			authorizedHandler(request) {
+				const node = getHDBNodeTable().primaryStore.get(request.peerCertificate.subject.CN);
+				if (node) {
+					request.user = node;
+				}
+				// fall through to the default auth handler
+			},
+		},
+		ws_server.mtlsConfig
 	);
 	servers.push(ws_server);
 	if (ws_server.setSecureContext) {
@@ -200,14 +223,14 @@ function getConnection(url, subscription, db_name) {
 	connection.connect();
 	return connection;
 }
-export function subscribeToNode(message) {
-	let subscription_to_table = database_subscriptions.get(message.database);
+export function subscribeToNode(request) {
+	let subscription_to_table = database_subscriptions.get(request.database);
 	if (!subscription_to_table) {
 		// TODO: Wait for it to be created
-		return console.error('No subscription for database ' + message.database);
+		return console.error('No subscription for database ' + request.database);
 	}
-	let connection = getConnection(message.nodes[0].url, subscription_to_table, message.database);
-	connection.subscribe(message.nodes);
+	let connection = getConnection(request.nodes[0].url, subscription_to_table, request.database);
+	connection.subscribe(request.nodes, request.replicateByDefault);
 }
 
 export function getThisNodeName() {
@@ -217,10 +240,5 @@ export function getThisNodeUrl() {
 	return env.get('replication_url');
 }
 export function urlToNodeName(node_url) {
-	if (node_url) {
-		let url = new URL(node_url);
-		// remove the protocol and default port
-		if (url.port === '9925' || !url.port) return url.hostname;
-		else return url.hostname + ':' + url.port;
-	}
+	if (node_url) return new URL(node_url).hostname; // this the part of the URL that is the node name, as we want it to match common name in the certificate
 }

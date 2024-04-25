@@ -211,8 +211,9 @@ function listenOnPorts() {
 		try {
 			const last_colon = port.lastIndexOf(':');
 			if (last_colon > 0)
-				// if there is a colon, we assume it is a host:port pair
-				fd = createReuseportFd(+port.slice(last_colon + 1), port.slice(0, last_colon));
+				// if there is a colon, we assume it is a host:port pair, and then strip brackets as that is a common way to
+				// specify an IPv6 address
+				fd = createReuseportFd(+port.slice(last_colon + 1).replace(/[\[\]]/g, ''), port.slice(0, last_colon));
 			else fd = createReuseportFd(+port, '::');
 		} catch (error) {
 			console.error(`Unable to bind to port ${port}`, error);
