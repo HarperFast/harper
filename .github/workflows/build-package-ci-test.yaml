@@ -117,6 +117,7 @@ jobs:
           - arm
     with:
       publicDns: ${{ matrix.arch == 'amd' && needs.createInstances-amd.outputs.publicDnsNames || needs.createInstances-arm.outputs.publicDnsNames }}
+      artifactName: logs-${{ matrix.arch }}
     secrets: inherit
 
   ######################
