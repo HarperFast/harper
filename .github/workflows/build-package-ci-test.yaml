@@ -23,6 +23,8 @@ jobs:
   #  Test workflow call for webflow stuff. I shouldn't be here
   ###################
   webflow-test:
+    needs:
+      - build
     uses: ./.github/workflows/webflow-upload-opensource-license.yaml
 
   #####################
