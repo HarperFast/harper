@@ -11,6 +11,12 @@ on:
         required: false
         type: boolean
         default: false
+      # this will default to false -- being called from another workflow, let that workflow handle building the artifact
+      build:
+        description: 'Do we need to build HarperDB first'
+        required: false
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       publish:
@@ -18,22 +24,19 @@ on:
         required: false
         type: boolean
         default: false
+      # this will default to true -- if we are calling this directly we will need to build to create the artifact
+      build:
+        description: 'Do we need to build HarperDB first'
+        required: false
+        type: boolean
+        default: true
 
 jobs:
-  meta:
-    runs-on: ubuntu-latest
-    env:
-      github_event: ${{ github.event_name }}
-    steps:
-      - name: output
-        run: echo "${github_event}" >> "${GITHUB_STEP_SUMMARY}"
-
   ####################
   #  Build HarperDB
   ####################
-  # don't run this when github.event_name == 'workflow_call'
   build:
-    if: ${{ github.event_name != 'workflow_call' }}
+    if: ${{ inputs.build }}
     uses: ./.github/workflows/build.yaml
 
   generate_and_upload:
