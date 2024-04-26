@@ -8,6 +8,8 @@ import { workers, onMessageByType, whenThreadsStarted } from '../threads/manageT
 import { table_update_listeners } from './replicationConnection';
 import { getThisNodeName, getThisNodeUrl, subscribeToNode, urlToNodeName } from './replicator';
 import { parentPort } from 'worker_threads';
+import env from '../../utility/environment/environmentManager';
+import { readFileSync } from 'fs';
 
 let hdb_node_table;
 let connection_replication_map = new Map();
@@ -18,9 +20,11 @@ export function startOnMainThread(options) {
 	let new_node_listeners = [];
 	let all_nodes: any[];
 	let next_worker_index = 0;
+	const certificate_authority = env.get('tls_certificateAuthority');
 	// make sure this node exists is in the hdb_nodes table
 	ensureNode(getThisNodeName(), {
 		url: getThisNodeUrl(),
+		ca: certificate_authority && readFileSync(certificate_authority),
 	});
 	route_loop: for (const route of options.routes || []) {
 		try {

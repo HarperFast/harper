@@ -285,18 +285,8 @@ function checkForUpdatedConfig(config_doc, config_file_path) {
 		update_file = true;
 	}
 
-	if (!config_doc.hasIn(['clustering', 'leafServer', 'streams', 'path'])) {
-		config_doc.setIn(['clustering', 'leafServer', 'streams', 'path'], path.join(root_path, 'clustering', 'leaf'));
-		update_file = true;
-	}
-
 	if (!config_doc.hasIn(['logging', 'rotation', 'path'])) {
 		config_doc.setIn(['logging', 'rotation', 'path'], path.join(root_path, 'log'));
-		update_file = true;
-	}
-
-	if (!config_doc.hasIn(['clustering', 'tls', 'verify'])) {
-		config_doc.setIn(['clustering', 'tls', 'verify'], true);
 		update_file = true;
 	}
 
@@ -352,10 +342,6 @@ function validateConfig(config_doc, skip_fs_validation = false) {
 	config_doc.setIn(['logging', 'root'], validation.value.logging.root);
 	config_doc.setIn(['storage', 'path'], validation.value.storage.path);
 	config_doc.setIn(['logging', 'rotation', 'path'], validation.value.logging.rotation.path);
-	config_doc.setIn(
-		['clustering', 'leafServer', 'streams', 'path'],
-		validation.value.clustering.leafServer.streams?.path
-	);
 	config_doc.setIn(
 		['operationsApi', 'network', 'domainSocket'],
 		validation.value?.operationsApi?.network?.domainSocket

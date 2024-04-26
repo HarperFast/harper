@@ -48,7 +48,7 @@ function configValidator(config_json, skip_fs_validation = false) {
 		throw UNDEFINED_OPS_API;
 	}
 
-	const enabled_constraints = boolean.required();
+	const enabled_constraints = boolean.optional();
 	const threads_constraints = number.min(0).max(1000).empty(null).default(setDefaultThreads);
 	const root_constraints = string
 		.pattern(/^[\\\/]$|([\\\/][a-zA-Z_0-9\:-]+)+$/, 'directory path')
@@ -64,9 +64,6 @@ function configValidator(config_json, skip_fs_validation = false) {
 	const storage_path_constraints = Joi.custom(validatePath).empty(null).default(setDefaultRoot);
 
 	const clustering_enabled = config_json.clustering?.enabled;
-	if (hdb_utils.isEmpty(clustering_enabled)) {
-		throw UNDEFINED_NATS_ENABLED;
-	}
 
 	// If clustering is enabled validate clustering config
 	let clustering_validation_schema;
@@ -115,7 +112,7 @@ function configValidator(config_json, skip_fs_validation = false) {
 				verify: boolean.optional(),
 			}),
 			user: string.optional().empty(null),
-		}).required();
+		}).optional();
 	} else {
 		clustering_validation_schema = Joi.object({
 			enabled: enabled_constraints,
@@ -124,9 +121,9 @@ function configValidator(config_json, skip_fs_validation = false) {
 				certificate: pem_file_constraints,
 				certificateAuthority: pem_file_constraints,
 				privateKey: pem_file_constraints,
-				insecure: boolean.required(),
+				insecure: boolean.optional(),
 			}),
-		}).required();
+		}).optional();
 	}
 
 	const config_schema = Joi.object({

@@ -263,7 +263,7 @@ export function replicateOverWS(ws, options, authorization) {
 							!(
 								authorization.publish ||
 								authorization.subscriptions?.some(
-									// TODO: Verify the table permissions for each table listed in the subscription
+									// TODO: Verify the table permissions for each table listed in the subscriptions
 									(sub) => (sub.database || sub.schema) === database_name && sub.publish
 								)
 							)
