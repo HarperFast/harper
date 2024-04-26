@@ -75,7 +75,8 @@ export function start(options) {
 			{
 				// define a handler for mTLS authorized connections, the primary means of authentication for replication connections
 				authorizedHandler(request) {
-					const node = getHDBNodeTable().primaryStore.get(request.peerCertificate.subject.CN);
+					const subject = request.peerCertificate.subject;
+					const node = subject && getHDBNodeTable().primaryStore.get(subject.CN);
 					if (node) {
 						request.user = node;
 						return true;

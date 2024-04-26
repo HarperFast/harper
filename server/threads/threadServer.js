@@ -409,7 +409,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 				key: readFileSync(private_key),
 				ciphers: env.get('tls_ciphers'),
 				cert: readFileSync(certificate),
-				ca: certificate_authority && readFileSync(certificate_authority),
+				ca: [certificate_authority && readFileSync(certificate_authority)],
 				rejectUnauthorized: Boolean(mtls_required),
 				requestCert: Boolean(mtls || is_operations_server),
 				ticketKeys: getTicketKeys(),
@@ -417,113 +417,116 @@ function getHTTPServer(port, secure, is_operations_server) {
 			});
 		}
 		let license_warning = checkMemoryLimit();
-		http_servers[port] = (secure ? createSecureServer : createServer)(options, async (node_request, node_response) => {
-			try {
-				let start_time = performance.now();
-				let request = new Request(node_request, node_response);
-				if (is_operations_server) request.isOperationsServer = true;
-				// assign a more WHATWG compliant headers object, this is our real standard interface
-				let response = await http_chain[port](request);
-				if (!response) {
-					// this means that the request was completely handled, presumably through the
-					// node_response and we are actually just done
-					if (request._nodeResponse.statusCode) return;
-					response = unhandled(request);
-				}
+		let server = (http_servers[port] = (secure ? createSecureServer : createServer)(
+			options,
+			async (node_request, node_response) => {
+				try {
+					let start_time = performance.now();
+					let request = new Request(node_request, node_response);
+					if (is_operations_server) request.isOperationsServer = true;
+					// assign a more WHATWG compliant headers object, this is our real standard interface
+					let response = await http_chain[port](request);
+					if (!response) {
+						// this means that the request was completely handled, presumably through the
+						// node_response and we are actually just done
+						if (request._nodeResponse.statusCode) return;
+						response = unhandled(request);
+					}
 
-				if (license_warning)
-					response.headers?.set?.(
-						'Server',
-						'Unlicensed HarperDB, this should only be used for educational and development purposes'
+					if (license_warning)
+						response.headers?.set?.(
+							'Server',
+							'Unlicensed HarperDB, this should only be used for educational and development purposes'
+						);
+					else response.headers?.set?.('Server', 'HarperDB');
+
+					if (response.status === -1) {
+						// This means the HDB stack didn't handle the request, and we can then cascade the request
+						// to the server-level handler, forming the bridge to the slower legacy fastify framework that expects
+						// to interact with a node HTTP server object.
+						for (let header_pair of response.headers || []) {
+							node_response.setHeader(header_pair[0], header_pair[1]);
+						}
+						node_request.baseRequest = request;
+						node_response.baseResponse = response;
+						return http_servers[port].emit('unhandled', node_request, node_response);
+					}
+					const status = response.status || 200;
+					const end_time = performance.now();
+					const execution_time = end_time - start_time;
+					let body = response.body;
+					let sent_body;
+					if (!response.handlesHeaders) {
+						const headers = response.headers || new Headers();
+						if (!body) {
+							headers.set('Content-Length', '0');
+							sent_body = true;
+						} else if (body.length >= 0) {
+							if (typeof body === 'string') headers.set('Content-Length', Buffer.byteLength(body));
+							else headers.set('Content-Length', body.length);
+							sent_body = true;
+						}
+						let server_timing = `hdb;dur=${execution_time.toFixed(2)}`;
+						if (response.wasCacheMiss) {
+							server_timing += ', miss';
+						}
+						appendHeader(headers, 'Server-Timing', server_timing, true);
+						node_response.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
+						if (sent_body) node_response.end(body);
+					}
+					const handler_path = request.handlerPath;
+					const method = request.method;
+					recordAction(
+						execution_time,
+						'duration',
+						handler_path,
+						method,
+						response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
 					);
-				else response.headers?.set?.('Server', 'HarperDB');
-
-				if (response.status === -1) {
-					// This means the HDB stack didn't handle the request, and we can then cascade the request
-					// to the server-level handler, forming the bridge to the slower legacy fastify framework that expects
-					// to interact with a node HTTP server object.
-					for (let header_pair of response.headers || []) {
-						node_response.setHeader(header_pair[0], header_pair[1]);
-					}
-					node_request.baseRequest = request;
-					node_response.baseResponse = response;
-					return http_servers[port].emit('unhandled', node_request, node_response);
-				}
-				const status = response.status || 200;
-				const end_time = performance.now();
-				const execution_time = end_time - start_time;
-				let body = response.body;
-				let sent_body;
-				if (!response.handlesHeaders) {
-					const headers = response.headers || new Headers();
-					if (!body) {
-						headers.set('Content-Length', '0');
-						sent_body = true;
-					} else if (body.length >= 0) {
-						if (typeof body === 'string') headers.set('Content-Length', Buffer.byteLength(body));
-						else headers.set('Content-Length', body.length);
-						sent_body = true;
-					}
-					let server_timing = `hdb;dur=${execution_time.toFixed(2)}`;
-					if (response.wasCacheMiss) {
-						server_timing += ', miss';
-					}
-					appendHeader(headers, 'Server-Timing', server_timing, true);
-					node_response.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
-					if (sent_body) node_response.end(body);
-				}
-				const handler_path = request.handlerPath;
-				const method = request.method;
-				recordAction(
-					execution_time,
-					'duration',
-					handler_path,
-					method,
-					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
-				);
-				recordActionBinary(status < 400, 'success', handler_path, method);
-				if (!sent_body) {
-					// if it is a stream, pipe it
-					if (body?.pipe) {
-						body.pipe(node_response);
-						if (body.destroy)
-							node_response.on('close', () => {
-								body.destroy();
+					recordActionBinary(status < 400, 'success', handler_path, method);
+					if (!sent_body) {
+						// if it is a stream, pipe it
+						if (body?.pipe) {
+							body.pipe(node_response);
+							if (body.destroy)
+								node_response.on('close', () => {
+									body.destroy();
+								});
+							let bytes_sent = 0;
+							body.on('data', (data) => {
+								bytes_sent += data.length;
 							});
-						let bytes_sent = 0;
-						body.on('data', (data) => {
-							bytes_sent += data.length;
-						});
-						body.on('end', () => {
-							recordAction(performance.now() - end_time, 'transfer', handler_path, method);
-							recordAction(bytes_sent, 'bytes-sent', handler_path, method);
-						});
+							body.on('end', () => {
+								recordAction(performance.now() - end_time, 'transfer', handler_path, method);
+								recordAction(bytes_sent, 'bytes-sent', handler_path, method);
+							});
+						}
+						// else just send the buffer/string
+						else if (body?.then)
+							body.then((body) => {
+								node_response.end(body);
+							}, onError);
+						else node_response.end(body);
 					}
-					// else just send the buffer/string
-					else if (body?.then)
-						body.then((body) => {
-							node_response.end(body);
-						}, onError);
-					else node_response.end(body);
+				} catch (error) {
+					onError(error);
 				}
-			} catch (error) {
-				onError(error);
+				function onError(error) {
+					const headers = error.headers;
+					node_response.writeHead(
+						error.statusCode || 500,
+						headers && (headers[Symbol.iterator] ? Array.from(headers) : headers)
+					);
+					node_response.end(error.toString());
+					// a status code is interpreted as an expected error, so just info or warn, otherwise log as error
+					if (error.statusCode) {
+						if (error.statusCode === 500) harper_logger.warn(error);
+						else harper_logger.info(error);
+					} else harper_logger.error(error);
+				}
 			}
-			function onError(error) {
-				const headers = error.headers;
-				node_response.writeHead(
-					error.statusCode || 500,
-					headers && (headers[Symbol.iterator] ? Array.from(headers) : headers)
-				);
-				node_response.end(error.toString());
-				// a status code is interpreted as an expected error, so just info or warn, otherwise log as error
-				if (error.statusCode) {
-					if (error.statusCode === 500) harper_logger.warn(error);
-					else harper_logger.info(error);
-				} else harper_logger.error(error);
-			}
-		});
-		if (mtls) http_servers[port].mtlsConfig = mtls;
+		));
+		if (mtls) server.mtlsConfig = mtls;
 		/* Should we use HTTP2 on upgrade?:
 		http_servers[port].on('upgrade', function upgrade(request, socket, head) {
 			wss.handleUpgrade(request, socket, head, function done(ws) {
@@ -531,13 +534,34 @@ function getHTTPServer(port, secure, is_operations_server) {
 			});
 		});*/
 		if (secure) {
-			http_servers[port].on('secureConnection', (socket) => {
+			const updateCertificates = async () => {
+				let cert;
+				const cas = [];
+				for await (const cert_record of databases.system.hdb_certificate.search([])) {
+					if (
+						cert_record.uses?.includes('https') ||
+						cert_record.uses?.includes('wss') ||
+						(is_operations_server && cert_record.uses?.includes('operations'))
+					) {
+						if (cert_record.is_authority) cas.push(cert_record.certificate);
+						// TODO: support multiple certs and assign the best one (newest, or public one preferred)
+						else cert = cert_record.certificate;
+					}
+				}
+				server.cert = cert;
+				server.ca = cas;
+				server.setSecureContext(server);
+			};
+			databases.system.hdb_certificate.subscribe({
+				listener: updateCertificates,
+			});
+			server.on('secureConnection', (socket) => {
 				if (socket._parent.startTime) recordAction(performance.now() - socket._parent.startTime, 'tls-handshake', port);
 				recordAction(socket.isSessionReused(), 'tls-reused', port);
 			});
-			http_servers[port].isSecure = true;
+			server.isSecure = true;
 		}
-		registerServer(http_servers[port], port);
+		registerServer(server, port);
 	}
 	return http_servers[port];
 }

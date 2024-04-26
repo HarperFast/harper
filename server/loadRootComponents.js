@@ -7,8 +7,7 @@ const config_utils = require('../config/configUtils');
 const { dirname } = require('path');
 const { getConnection } = require('./nats/utility/natsUtils');
 const env_mgr = require('../utility/environment/environmentManager');
-const hdb_terms = require('../utility/hdbTerms');
-const { CONFIG_PARAMS } = require('../utility/environment/environmentManager');
+const { CONFIG_PARAMS } = require('../utility/hdbTerms');
 const { readFileSync } = require('fs');
 
 let loaded_components = new Map();
@@ -42,13 +41,13 @@ async function loadRootComponents(is_worker_thread = false) {
 	}
 	if (all_ready.length > 0) await Promise.all(all_ready);
 }
-const CERTIFICATE_CONFIGS = [
-	CONFIG_PARAMS.TLS_CERTIFICATE,
-	CONFIG_PARAMS.TLS_CERTIFICATEAUTHORITY,
-	CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATE,
-	CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY,
-];
 function loadCertificates() {
+	const CERTIFICATE_CONFIGS = [
+		CONFIG_PARAMS.TLS_CERTIFICATE,
+		CONFIG_PARAMS.TLS_CERTIFICATEAUTHORITY,
+		CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATE,
+		CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY,
+	];
 	const certificate_table = table({
 		table: 'hdb_certificate',
 		database: 'system',
@@ -70,10 +69,11 @@ function loadCertificates() {
 	});
 	let promise;
 	for (let config_key of CERTIFICATE_CONFIGS) {
-		const path = env.get(config_key);
+		const path = env_mgr.get(config_key);
 		if (path) {
 			promise = certificate_table.put({
 				name: config_key,
+				uses: ['https', ...(config_key.includes('operations') ? ['operations'] : [])],
 				certificate: readFileSync(path),
 				is_authority: config_key.includes('uthority'),
 			});
