@@ -23,9 +23,9 @@ jobs:
   ####################
   #  Build HarperDB
   ####################
-  # only if workflow_dispatch
+  # don't run this when github.event_name == 'workflow_call'
   build:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    if: ${{ github.event_name != 'workflow_call' }}
     uses: ./.github/workflows/build.yaml
 
   generate_and_upload:
