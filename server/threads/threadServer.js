@@ -411,6 +411,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 				cert: readFileSync(certificate),
 				ca: certificate_authority && readFileSync(certificate_authority),
 				rejectUnauthorized: Boolean(mtls_required),
+				insecure: true,
 				requestCert: Boolean(mtls),
 				ticketKeys: getTicketKeys(),
 				maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),

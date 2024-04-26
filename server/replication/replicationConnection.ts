@@ -62,6 +62,7 @@ export class NodeReplicationConnection extends EventEmitter {
 			key: readFileSync(private_key),
 			ciphers: env.get('tls_ciphers'),
 			cert: readFileSync(certificate),
+			insecure: true,
 			// for client connections, we can add our certificate authority to the root certificates
 			// to authorize the server certificate (both public valid certificates and privately signed certificates are acceptable)
 			ca: certificate_authority && rootCertificates.concat(readFileSync(certificate_authority)),

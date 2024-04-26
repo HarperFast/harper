@@ -65,8 +65,9 @@ export function startOnMainThread(options) {
 			db_replication_workers = new Map();
 			connection_replication_map.set(node.url, db_replication_workers);
 		}
-		const enabled_databases = !options?.databases || options?.databases === '*' ? databases : options.databases;
-		for (const database_name in enabled_databases) {
+		const all_databases = !options?.databases || options?.databases === '*';
+		const enabled_databases = all_databases ? databases : options.databases;
+		for (const database_name of Object.getOwnPropertyNames(enabled_databases)) {
 			let database = enabled_databases[database_name];
 			if (!database) {
 				// this database is not enabled by default, but check to see if there are any explicit subscriptions

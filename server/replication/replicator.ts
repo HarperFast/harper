@@ -166,7 +166,8 @@ export function setReplicator(db_name, table, options) {
 				let subscription = db_subscriptions.get(db_name);
 				const table_by_id = subscription?.tableById || [];
 				table_by_id[table.tableId] = table;
-				if (!subscription) {
+				const resolve = subscription?.ready;
+				if (!subscription?.auditStore) {
 					// if and only if we are the first table for the database, then we set up the subscription.
 					// We only need one subscription for the database
 					// TODO: Eventually would be nice to have a real database subscription that delegated each specific table
@@ -177,6 +178,7 @@ export function setReplicator(db_name, table, options) {
 					subscription.auditStore = table.auditStore;
 					subscription.dbisDB = table.dbisDB;
 					subscription.databaseName = db_name;
+					if (resolve) resolve(subscription);
 					return subscription;
 				}
 			}
@@ -223,11 +225,14 @@ function getConnection(url, subscription, db_name) {
 	connection.connect();
 	return connection;
 }
-export function subscribeToNode(request) {
+export async function subscribeToNode(request) {
 	let subscription_to_table = database_subscriptions.get(request.database);
 	if (!subscription_to_table) {
-		// TODO: Wait for it to be created
-		return console.error('No subscription for database ' + request.database);
+		// Wait for it to be created
+		subscription_to_table = await new Promise((resolve) => {
+			logger.info('Waiting for subscription to database ' + request.database);
+			database_subscriptions.set(request.database, { ready: resolve });
+		});
 	}
 	let connection = getConnection(request.nodes[0].url, subscription_to_table, request.database);
 	connection.subscribe(request.nodes, request.replicateByDefault);
