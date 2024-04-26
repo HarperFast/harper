@@ -9,7 +9,7 @@ import {
 } from '../../resources/auditStore';
 import { exportIdMapping, getIdOfRemoteNode, remoteToLocalNodeId } from './nodeIdMapping';
 import { addSubscription } from '../../resources/transactionBroadcast';
-import { getThisNodeName } from './replicator';
+import { getThisNodeName, urlToNodeName } from './replicator';
 import env from '../../utility/environment/environmentManager';
 import { readAuditEntry, Decoder, REMOTE_SEQUENCE_UPDATE } from '../../resources/auditStore';
 import { HAS_STRUCTURE_UPDATE } from '../../resources/RecordEncoder';
@@ -31,6 +31,8 @@ const DISCONNECT = 142;
 const SEND_RESIDENCY_LIST = 130;
 const SEND_TABLE_STRUCTURE = 131;
 const SEND_TABLE_FIXED_STRUCTURE = 132;
+const OPERATION_REQUEST = 136;
+const OPERATION_RESPONSE = 137;
 export const table_update_listeners = new Map();
 export const database_subscriptions = new Map();
 const DEBUG_MODE = true;
@@ -49,6 +51,7 @@ export class NodeReplicationConnection extends EventEmitter {
 	nodeName: string;
 	constructor(public url, public subscription, public databaseName) {
 		super();
+		this.nodeName = urlToNodeName(url);
 	}
 
 	connect() {
@@ -62,7 +65,6 @@ export class NodeReplicationConnection extends EventEmitter {
 			key: readFileSync(private_key),
 			ciphers: env.get('tls_ciphers'),
 			cert: readFileSync(certificate),
-			insecure: true,
 			// for client connections, we can add our certificate authority to the root certificates
 			// to authorize the server certificate (both public valid certificates and privately signed certificates are acceptable)
 			ca: certificate_authority && rootCertificates.concat(readFileSync(certificate_authority)),
@@ -218,6 +220,11 @@ export function replicateOverWS(ws, options, authorization) {
 					}
 					case DISCONNECT:
 						close();
+						break;
+					case OPERATION_REQUEST:
+						server.operation(data).then((response) => {
+							ws.send(encode([OPERATION_RESPONSE, response]));
+						});
 						break;
 					case SEND_TABLE_FIXED_STRUCTURE:
 						const table_name = message[3];

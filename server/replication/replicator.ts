@@ -47,8 +47,7 @@ export function start(options) {
 		let cert_parsed = new X509Certificate(readFileSync(certificate));
 		let subject = cert_parsed.subject;
 	}
-	if (!getThisNodeName())
-		throw new Error('Can not load replication without a node name (see replication.nodeName in the config)');
+	if (!getThisNodeName()) throw new Error('Can not load replication without a url (see replication.url in the config)');
 	assignReplicationSource(options);
 	// noinspection JSVoidFunctionReturnValueUsed
 	const ws_server = server.ws(
@@ -63,6 +62,7 @@ export function start(options) {
 			{
 				protocol: 'harperdb-replication-v1',
 				mtls: true, // make sure that we request a certificate from the client
+				isOperationsServer: true, // we default to using the operations server ports
 				// we set this very high (16x times the default) because it can be a bit expensive to switch back and forth
 				// between push and pull mode
 				highWaterMark: 256 * 1024,
@@ -77,6 +77,7 @@ export function start(options) {
 				const node = getHDBNodeTable().primaryStore.get(request.peerCertificate.subject.CN);
 				if (node) {
 					request.user = node;
+					return true;
 				}
 				// fall through to the default auth handler
 			},
@@ -95,7 +96,14 @@ export function start(options) {
 				// created a set of all the CAs that have been replicated, if changed, update the secure context
 				if (certificate_authorities.size !== last_ca_count) {
 					last_ca_count = certificate_authorities.size;
-					ws_server.setSecureContext(Object.assign({ ca: Array.from(certificate_authorities) }, options));
+					/*ws_server.setSecureContext({
+						ca: Array.from(certificate_authorities),
+						requestCert: true,
+						cert: ws_server.cert,
+						key: ws_server.key,
+						ciphers: ws_server.ciphers,
+						ticketKeys: ws_server.ticketKeys,
+					});*/
 				}
 			}
 		});

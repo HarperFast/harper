@@ -411,8 +411,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 				cert: readFileSync(certificate),
 				ca: certificate_authority && readFileSync(certificate_authority),
 				rejectUnauthorized: Boolean(mtls_required),
-				insecure: true,
-				requestCert: Boolean(mtls),
+				requestCert: Boolean(mtls || is_operations_server),
 				ticketKeys: getTicketKeys(),
 				maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
 			});
@@ -621,7 +620,9 @@ function onWebSocket(listener, options) {
 	let http_server;
 	for (let { port: port_num, secure } of getPorts(options)) {
 		if (!ws_servers[port_num]) {
-			ws_servers[port_num] = new WebSocketServer({ server: (http_server = getHTTPServer(port_num, secure)) });
+			ws_servers[port_num] = new WebSocketServer({
+				server: (http_server = getHTTPServer(port_num, secure, options?.isOperationsServer)),
+			});
 			http_server._ws = ws_servers[port_num];
 			ws_servers[port_num].on('connection', async (ws, node_request) => {
 				try {
