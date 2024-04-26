@@ -75,6 +75,7 @@ export interface Table {
 	databaseName: string;
 	attributes: any[];
 	primaryKey: string;
+	replicate?: boolean;
 	subscriptions: Map<any, Function[]>;
 	expirationMS: number;
 	indexingOperations?: Promise<void>;

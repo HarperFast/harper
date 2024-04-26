@@ -1,82 +1,4 @@
 {
-  "hdb_table":{
-    "hash_attribute":"id",
-    "name":"hdb_table",
-    "schema":"system",
-    "residence":["*"],
-    "attributes":[
-      {
-        "attribute":"id"
-      },
-      {
-        "attribute":"name"
-      },
-      {
-        "attribute":"hash_attribute"
-      },
-      {
-        "attribute":"schema"
-      },
-      {
-        "attribute":"residence"
-      },
-      {
-        "attribute":"__createdtime__"
-      },
-      {
-        "attribute": "__updatedtime__"
-      }
-    ]
-  },
-  "hdb_attribute":{
-    "hash_attribute":"id",
-    "name":"hdb_attribute",
-    "schema":"system",
-    "residence":["*"],
-    "attributes": [
-      {
-        "attribute": "id"
-      },
-      {
-        "attribute": "schema"
-      },
-      {
-        "attribute": "table"
-      },
-      {
-        "attribute": "attribute"
-      },
-      {
-        "attribute": "schema_table"
-      },
-      {
-        "attribute":"__createdtime__"
-      },
-      {
-        "attribute": "__updatedtime__"
-      }
-    ]
-  },
-  "hdb_schema":{
-    "hash_attribute":"name",
-    "name":"hdb_schema",
-    "schema":"system",
-    "residence":["*"],
-    "attributes":[
-      {
-        "attribute":"name"
-      },
-      {
-        "attribute":"createddate"
-      },
-      {
-        "attribute":"__createdtime__"
-      },
-      {
-        "attribute": "__updatedtime__"
-      }
-    ]
-  },
   "hdb_user":{
     "hash_attribute":"username",
     "name":"hdb_user",
@@ -228,26 +150,29 @@
         "attribute": "system_info"
       },
       {
-        "attribute":"__createdtime__"
+        "attribute":"url"
       },
       {
-        "attribute": "__updatedtime__"
+        "attribute": "routes"
       }
     ]
   },
-  "hdb_node":{
+  "hdb_certificate":{
     "hash_attribute": "name",
-    "name": "hdb_node",
+    "name": "hdb_nodes",
     "schema": "system",
     "attributes":[
       {
         "attribute":"name"
       },
       {
-        "attribute":"url"
+        "attribute":"uses"
       },
       {
-        "attribute": "routes"
+        "attribute":"certificate"
+      },
+      {
+        "attribute": "is_authority"
       }
     ]
   },

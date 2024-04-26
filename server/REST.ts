@@ -270,7 +270,6 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 					1011, // otherwise generic internal error
 				error.toString()
 			);
-			ws.close('login fialed');
 		}
 		ws.close();
 	});

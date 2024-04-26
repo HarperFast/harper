@@ -70,6 +70,7 @@ function getWorkerCount() {
 }
 function setMainIsWorker(isWorker) {
 	isMainWorker = isWorker;
+	module.exports.threadsHaveStarted();
 }
 let worker_count = 1; // should be assigned when workers are created
 let ticket_keys;
@@ -178,8 +179,7 @@ function startWorker(path, options = {}) {
 	worker.on('error', (error) => {
 		// log errors, and it also important that we catch errors so we can recover if a thread dies (in a recoverable
 		// way)
-		console.error('Worker error:', error); // these should be reported directly to users
-		harper_logger.error('Worker error:', error);
+		harper_logger.error(`Worker index ${options.workerIndex} error:`, error);
 	});
 	worker.on('exit', (code) => {
 		workers.splice(workers.indexOf(worker), 1);

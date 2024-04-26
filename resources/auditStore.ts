@@ -61,9 +61,19 @@ export const AUDIT_STORE_OPTIONS = {
 
 let audit_retention = convertToMS(env_get(CONFIG_PARAMS.LOGGING_AUDITRETENTION)) || 86400 * 3;
 const MAX_DELETES_PER_CLEANUP = 1000;
+const FLOAT_TARGET = new Float64Array(1);
+const FLOAT_BUFFER = new Uint8Array(FLOAT_TARGET.buffer);
 let DEFAULT_AUDIT_CLEANUP_DELAY = 10000; // default delay of 10 seconds
 export function openAuditStore(root_store) {
-	const audit_store = (root_store.auditStore = root_store.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS));
+	let audit_store = (root_store.auditStore = root_store.openDB(
+		AUDIT_STORE_NAME,
+		Object.assign({ create: false }, AUDIT_STORE_OPTIONS)
+	));
+	if (!audit_store) {
+		// this means we are creating a new audit store. Initialize with the last removed timestamp (we don't want to put this in legacy audit logs since we don't know if they have had deletions or not).
+		audit_store = root_store.auditStore = root_store.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS);
+		updateLastRemoved(audit_store, 1);
+	}
 	audit_store.rootStore = root_store;
 	const delete_callbacks = [];
 	audit_store.addDeleteRemovalCallback = function (table_id, callback) {
@@ -82,6 +92,7 @@ export function openAuditStore(root_store) {
 			if (audit_store.rootStore.status === 'closed') return;
 			let deleted = 0;
 			let committed;
+			let last_key;
 			try {
 				for (const { key, value } of audit_store.getRange({
 					start: 1, // must not be zero or it will be interpreted as null and overlap with symbols in search
@@ -96,6 +107,7 @@ export function openAuditStore(root_store) {
 						delete_callbacks[table_id]?.(audit_record.recordId);
 					}
 					committed = audit_store.remove(key);
+					last_key = key;
 					await new Promise(setImmediate);
 					if (++deleted >= MAX_DELETES_PER_CLEANUP) {
 						// limit the amount we cleanup per event turn so we don't use too much memory/CPU
@@ -108,6 +120,9 @@ export function openAuditStore(root_store) {
 				if (deleted === 0) {
 					// if we didn't delete anything, we can increase the delay (double until we get to one tenth of the retention time)
 					audit_cleanup_delay = Math.min(audit_cleanup_delay << 1, audit_retention / 10);
+				} else {
+					// if we did delete something, update our updates since timestamp
+					updateLastRemoved(audit_store, last_key);
 				}
 				scheduleAuditCleanup(audit_cleanup_delay);
 			}
@@ -122,6 +137,18 @@ export function openAuditStore(root_store) {
 	return audit_store;
 }
 
+function updateLastRemoved(audit_store, last_key) {
+	FLOAT_TARGET[0] = last_key;
+	audit_store.put(Symbol.for('last-removed'), FLOAT_BUFFER);
+}
+
+export function getLastRemoved(audit_store) {
+	const last_removed = audit_store.get(Symbol.for('last-removed'));
+	if (last_removed) {
+		FLOAT_BUFFER.set(last_removed);
+		return FLOAT_TARGET[0];
+	}
+}
 export function setAuditRetention(retention_time, default_delay = DEFAULT_AUDIT_CLEANUP_DELAY) {
 	audit_retention = retention_time;
 	DEFAULT_AUDIT_CLEANUP_DELAY = default_delay;

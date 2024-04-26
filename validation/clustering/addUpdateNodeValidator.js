@@ -10,7 +10,7 @@ const env_manager = require('../../utility/environment/environmentManager');
 env_manager.initSync();
 
 const node_name_constraint = string
-	.invalid(env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME))
+	.invalid(env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME) ?? 'node_name')
 	.pattern(nats_terms.NATS_TERM_CONSTRAINTS_RX)
 	.messages({
 		'string.pattern.base': '{:#label} invalid, must not contain ., * or >',

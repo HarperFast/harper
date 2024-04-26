@@ -302,15 +302,6 @@ function updateConfigCert(public_cert, private_cert, ca_cert) {
 	// We check for any CLI of Env args and if they are present we use them instead of default values.
 	const conf = hdb_terms.CONFIG_PARAMS;
 	const new_certs = {
-		[conf.CLUSTERING_TLS_CERTIFICATE]: cli_env_args[conf.CLUSTERING_TLS_CERTIFICATE.toLowerCase()]
-			? cli_env_args[conf.CLUSTERING_TLS_CERTIFICATE]
-			: public_cert,
-		[conf.CLUSTERING_TLS_PRIVATEKEY]: cli_env_args[conf.CLUSTERING_TLS_PRIVATEKEY.toLowerCase()]
-			? cli_env_args[conf.CLUSTERING_TLS_PRIVATEKEY.toLowerCase()]
-			: private_cert,
-		[conf.CLUSTERING_TLS_CERT_AUTH]: cli_env_args[conf.CLUSTERING_TLS_CERT_AUTH.toLowerCase()]
-			? cli_env_args[conf.CLUSTERING_TLS_CERT_AUTH.toLowerCase()]
-			: ca_cert,
 		[conf.TLS_CERTIFICATE]: cli_env_args[conf.TLS_CERTIFICATE.toLowerCase()]
 			? cli_env_args[conf.TLS_CERTIFICATE.toLowerCase()]
 			: public_cert,

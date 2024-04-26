@@ -9,7 +9,14 @@
  * 5. Node B sends back the audit records
  */
 
-import { database, table as defineTable, getDatabases, onUpdatedTable, table } from '../../resources/databases';
+import {
+	database,
+	databases,
+	table as defineTable,
+	getDatabases,
+	onUpdatedTable,
+	table,
+} from '../../resources/databases';
 import { ID_PROPERTY, Resource } from '../../resources/Resource';
 import { IterableEventQueue } from '../../resources/IterableEventQueue';
 import { onMessageByType } from '../threads/manageThreads';
@@ -26,7 +33,7 @@ import { X509Certificate } from 'crypto';
 import { readFileSync } from 'fs';
 import { EventEmitter } from 'events';
 export { startOnMainThread } from './subscriptionManager';
-import { subscribeToNodeUpdates } from './subscriptionManager';
+import { subscribeToNodeUpdates, getHDBNodeTable } from './subscriptionManager';
 
 let replication_disabled;
 
@@ -40,12 +47,12 @@ export function start(options) {
 		let cert_parsed = new X509Certificate(readFileSync(certificate));
 		let subject = cert_parsed.subject;
 	}
-	if (!getThisNodeName())
-		throw new Error('Can not load replication without a node name (see replication.nodeName in the config)');
+	if (!getThisNodeName()) throw new Error('Can not load replication without a url (see replication.url in the config)');
 	assignReplicationSource(options);
-	const ws_server = server.ws(
+	// noinspection JSVoidFunctionReturnValueUsed
+	const ws_servers = server.ws(
 		(ws, request) => {
-			replicateOverWS(ws, options);
+			replicateOverWS(ws, options, request?.user);
 			ws.on('error', (error) => {
 				if (error.code !== 'ECONNREFUSED') logger.error('Error in connection to ' + this.url, error.message);
 			});
@@ -54,28 +61,55 @@ export function start(options) {
 			// We generally expect this to use the operations API ports (9925)
 			{
 				protocol: 'harperdb-replication-v1',
-				mtls: true,
-				highWaterMark: 256 * 1024, // use a larger high water mark to avoid frequent switching back and forth between push and pull modes
+				mtls: true, // make sure that we request a certificate from the client
+				isOperationsServer: true, // we default to using the operations server ports
+				// we set this very high (16x times the default) because it can be a bit expensive to switch back and forth
+				// between push and pull mode
+				highWaterMark: 256 * 1024,
 			},
 			options
 		)
 	);
-	servers.push(ws_server);
-	if (ws_server.setSecureContext) {
-		let certificate_authorities = new Set();
-		let last_ca_count = 0;
-		// we need to stay up-to-date with any CAs that have been replicated across the cluster
-		subscribeToNodeUpdates((node) => {
-			if (node.ca) {
-				// we only care about nodes that have a CA
-				certificate_authorities.add(node.ca);
-				// created a set of all the CAs that have been replicated, if changed, update the secure context
-				if (certificate_authorities.size !== last_ca_count) {
-					last_ca_count = certificate_authorities.size;
-					ws_server.setSecureContext(Object.assign({ ca: Array.from(certificate_authorities) }, options));
+	for (let ws_server of ws_servers) {
+		ws_server.mtlsConfig = Object.assign(
+			{
+				// define a handler for mTLS authorized connections, the primary means of authentication for replication connections
+				authorizedHandler(request) {
+					const subject = request.peerCertificate.subject;
+					const node = subject && getHDBNodeTable().primaryStore.get(subject.CN);
+					if (node) {
+						request.user = node;
+						return true;
+					}
+					// fall through to the default auth handler
+				},
+			},
+			ws_server.mtlsConfig
+		);
+		servers.push(ws_server);
+		if (ws_server.setSecureContext) {
+			let certificate_authorities = new Set();
+			let last_ca_count = 0;
+			// we need to stay up-to-date with any CAs that have been replicated across the cluster
+			subscribeToNodeUpdates((node) => {
+				if (node.ca) {
+					// we only care about nodes that have a CA
+					certificate_authorities.add(node.ca);
+					// created a set of all the CAs that have been replicated, if changed, update the secure context
+					if (certificate_authorities.size !== last_ca_count) {
+						last_ca_count = certificate_authorities.size;
+						/*ws_server.setSecureContext({
+							ca: Array.from(certificate_authorities),
+							requestCert: true,
+							cert: ws_server.cert,
+							key: ws_server.key,
+							ciphers: ws_server.ciphers,
+							ticketKeys: ws_server.ticketKeys,
+						});*/
+					}
 				}
-			}
-		});
+			});
+		}
 	}
 }
 export function disableReplication(disabled = true) {
@@ -143,7 +177,8 @@ export function setReplicator(db_name, table, options) {
 				let subscription = db_subscriptions.get(db_name);
 				const table_by_id = subscription?.tableById || [];
 				table_by_id[table.tableId] = table;
-				if (!subscription) {
+				const resolve = subscription?.ready;
+				if (!subscription?.auditStore) {
 					// if and only if we are the first table for the database, then we set up the subscription.
 					// We only need one subscription for the database
 					// TODO: Eventually would be nice to have a real database subscription that delegated each specific table
@@ -154,6 +189,7 @@ export function setReplicator(db_name, table, options) {
 					subscription.auditStore = table.auditStore;
 					subscription.dbisDB = table.dbisDB;
 					subscription.databaseName = db_name;
+					if (resolve) resolve(subscription);
 					return subscription;
 				}
 			}
@@ -200,14 +236,17 @@ function getConnection(url, subscription, db_name) {
 	connection.connect();
 	return connection;
 }
-export function subscribeToNode(message) {
-	let subscription_to_table = database_subscriptions.get(message.database);
+export async function subscribeToNode(request) {
+	let subscription_to_table = database_subscriptions.get(request.database);
 	if (!subscription_to_table) {
-		// TODO: Wait for it to be created
-		return console.error('No subscription for database ' + message.database);
+		// Wait for it to be created
+		subscription_to_table = await new Promise((resolve) => {
+			logger.info('Waiting for subscription to database ' + request.database);
+			database_subscriptions.set(request.database, { ready: resolve });
+		});
 	}
-	let connection = getConnection(message.nodes[0].url, subscription_to_table, message.database);
-	connection.subscribe(message.nodes);
+	let connection = getConnection(request.nodes[0].url, subscription_to_table, request.database);
+	connection.subscribe(request.nodes, request.replicateByDefault);
 }
 
 export function getThisNodeName() {
@@ -217,10 +256,5 @@ export function getThisNodeUrl() {
 	return env.get('replication_url');
 }
 export function urlToNodeName(node_url) {
-	if (node_url) {
-		let url = new URL(node_url);
-		// remove the protocol and default port
-		if (url.port === '9925' || !url.port) return url.hostname;
-		else return url.hostname + ':' + url.port;
-	}
+	if (node_url) return new URL(node_url).hostname; // this the part of the URL that is the node name, as we want it to match common name in the certificate
 }

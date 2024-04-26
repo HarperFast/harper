@@ -157,6 +157,23 @@ export function getDatabases(): Databases {
 			}
 		}
 	}
+	// I don't know if this is the best place for this, but somewhere we need to specify which tables
+	// replicate by default:
+	const NON_REPLICATING_SYSTEM_TABLES = [
+		'hdb_temp',
+		'hdb_certificate',
+		'hdb_analytics',
+		'hdb_raw_analytics',
+		'hdb_session_will',
+		'hdb_job',
+		'hdb_license',
+		'hdb_info',
+	];
+	if (databases.system) {
+		for (let table_name of NON_REPLICATING_SYSTEM_TABLES) {
+			if (databases.system[table_name]) databases.system[table_name].replicate = false;
+		}
+	}
 	defined_databases = null;
 	return databases;
 }
@@ -290,7 +307,8 @@ export function readMetaDb(
 				const dbi_init = new OpenDBIObject(!primary_attribute.is_hash_attribute, primary_attribute.is_hash_attribute);
 				dbi_init.compression = primary_attribute.compression;
 				if (dbi_init.compression) {
-					const compression_threshold = env_get(CONFIG_PARAMS.STORAGE_COMPRESSION_THRESHOLD) || DEFAULT_COMPRESSION_THRESHOLD; // this is the only thing that can change;
+					const compression_threshold =
+						env_get(CONFIG_PARAMS.STORAGE_COMPRESSION_THRESHOLD) || DEFAULT_COMPRESSION_THRESHOLD; // this is the only thing that can change;
 					dbi_init.compression.threshold = compression_threshold;
 				}
 				primary_store = handleLocalTimeForGets(root_store.openDB(primary_attribute.key, dbi_init));
@@ -838,7 +856,8 @@ export function onUpdatedTable(listener) {
 export function getDefaultCompression() {
 	const LMDB_COMPRESSION = env_get(CONFIG_PARAMS.STORAGE_COMPRESSION);
 	const STORAGE_COMPRESSION_DICTIONARY = env_get(CONFIG_PARAMS.STORAGE_COMPRESSION_DICTIONARY);
-	const STORAGE_COMPRESSION_THRESHOLD = env_get(CONFIG_PARAMS.STORAGE_COMPRESSION_THRESHOLD) || DEFAULT_COMPRESSION_THRESHOLD;
+	const STORAGE_COMPRESSION_THRESHOLD =
+		env_get(CONFIG_PARAMS.STORAGE_COMPRESSION_THRESHOLD) || DEFAULT_COMPRESSION_THRESHOLD;
 	const LMDB_COMPRESSION_OPTS = { startingOffset: 32 };
 	if (STORAGE_COMPRESSION_DICTIONARY)
 		LMDB_COMPRESSION_OPTS['dictionary'] = fs.readFileSync(STORAGE_COMPRESSION_DICTIONARY);

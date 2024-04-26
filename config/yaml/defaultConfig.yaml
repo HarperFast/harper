@@ -20,41 +20,10 @@ authentication:
   refreshTokenTimeout: 30d
 analytics:
   aggregatePeriod: 60
-clustering:
-  enabled: false
-  hubServer:
-    cluster:
-      name: harperdb
-      network:
-        port: 9932
-        routes:
-    leafNodes:
-      network:
-        port: 9931
-    network:
-      port: 9930
-  leafServer:
-    network:
-      port: 9940
-      routes:
-    streams:
-      maxAge: null
-      maxBytes: null
-      maxMsgs: null
-      maxConsumeMsgs: 100
-      maxIngestThreads: 2
-      path: null
-  logLevel: info
-  nodeName: null
-  republishMessages: false
-  databaseLevel: false
-  tls:
-    certificate: null
-    certificateAuthority: null
-    privateKey: null
-    insecure: true
-    verify: true
-  user: null
+replication:
+  url: null
+  databases: "*" # Database name or list of database names to replicate, * defaults to all databases
+  routes:
 componentsRoot: null
 localStudio:
   enabled: false
