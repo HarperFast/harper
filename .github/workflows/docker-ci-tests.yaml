@@ -29,12 +29,6 @@ jobs:
     uses: ./.github/workflows/docker-build.yaml
     strategy:
       matrix:
-        platform:
-          - 'linux/amd64'
-          - 'linux/arm64'
-        name:
-          - 'standard'
-          - 'openshift'
         include:
           - name: 'standard'
             file: 'utility/Docker/Dockerfile'
@@ -43,14 +37,12 @@ jobs:
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       container: 'tar'
-      platforms: ${{ matrix.platform }}
       file: ${{ matrix.file }}
-      containerTarball: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-${{ matrix.name }}-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}.tar
 
-  ######################
-  #  Run Tests on AMD64
-  ######################
-  runTests-amd64:
+  #############
+  #  Run Tests
+  #############
+  runTests:
     runs-on: ubuntu-latest
     needs:
       - dockerBuild
@@ -65,89 +57,10 @@ jobs:
         include:
           - name: 'standard'
             file: 'utility/Docker/Dockerfile'
-            tarName: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-standard-amd64.tar
+            tarName: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-amd64.tar
           - name: 'openshift'
             file: 'utility/Docker/Dockerfile-openshift'
             tarName: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-openshift-amd64.tar
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: ${{ matrix.tarName }}
-          path: utility/Docker
-      - uses: actions/setup-node@v4
-        with:
-          node-version: ${{ needs.build.outputs.nodeVersion }}
-      - name: Run Tests
-        run: |
-          pushd utility/Docker
-          docker load -i ${{ matrix.tarName }}
-          docker image inspect harperdb/harperdb:${{ needs.build.outputs.harperdbVersion }} > /dev/null || exit 1
-          popd
-          containerId=$(docker run -d --restart=no -p 9925:9925 -p 9926:9926 -e HARPERDB_FINGERPRINT="4sADRM2e7dd501d7db58bb02d35bd0745146423a1" -e HARPERDB_LICENSE='{"license_key":"1373969b4cabd39e8b29c3c16e419c6abef4437d48168b4721e575610dcf656cf57016bd037cf1107f8232a1e94b7352c05b7c069560ac0e54ca156d3babc966289c664e5fb163e3429158a2f57afd39854ca51fa885abbca62f7e063a334498cd5ef0a038cbea80c6e063d174bbcc189a81dc4f2771ad90c9022cf20a322043ec4213fdef1d1e9eba36117c865acb6a13be3be218513ee80385e78bda0b9e27e7ec6532ac6e5416bc020f4f4be91cf6mofi25eYMW6aiRf6bd3d9b691699749569f6acd34a93e61","company":"harperdb.io"}' -e CUSTOM_FUNCTIONS=true -e LOG_TO_STDSTREAMS=true -e LOG_TO_FILE=true -e HDB_ADMIN_USERNAME="admin" -e HDB_ADMIN_PASSWORD="Abc1234!" harperdb/harperdb:${{ needs.build.outputs.harperdbVersion }})
-          sleep 30s
-          
-          echo "DEBUG"
-          docker ps -a
-          docker logs $containerId
-          
-          harperdb_running=$(ss -tln | grep 9925 | awk '{print $4}' | cut -f2 -d:)
-          if [ -z $harperdb_running ]; then exit 1; fi
-          
-          npm --loglevel=error install -g newman
-          npm --loglevel=error install -g newman-reporter-html
-          npm --loglevel=error install -g newman-reporter-htmlextra
-          
-          # Run integration tests from the Docker host
-          docker cp test/data/integrationTestsCsvs/ $containerId:/home/harperdb/
-          cd ./integrationTests/
-          newman run HarperDB_Integration_Tests.json -e Int_test_env_var.json --reporters cli,html,htmlextra --reporter-cli-show-timestamps --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html --env-var "files_location=/home/harperdb/integrationTestsCsvs/" --env-var "username=admin" --env-var "password=Abc1234!"
-          cd ../
-          
-          mkdir -p artifact
-          
-          # Capture hdb_log.log from container
-          docker cp $containerId:/home/harperdb/hdb/log/ artifact
-          
-          # Capture harperdb-config.yaml
-          docker cp $containerId:/home/harperdb/hdb/harperdb-config.yaml artifact
-          
-          # Capture docker log
-          docker logs $containerId > artifact/docker_log.log
-          
-          # Capture newman reports
-          cp integrationTests/newman/report.html artifact
-          cp integrationTests/newman/extra_report.html artifact
-
-      - name: 'Upload Artifact'
-        uses: actions/upload-artifact@v4
-        with:
-          name: logs-${{ matrix.name }}-${{ github.run_number }}-${{ matrix.name }}-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
-          path: artifact
-          retention-days: 1
-
-  ######################
-  #  Run Tests on ARM64
-  ######################
-  runTests-arm64:
-    runs-on: linux-arm64
-    needs:
-      - dockerBuild
-      - build
-    timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        name:
-          - 'standard'
-          - 'openshift'
-        include:
-          - name: 'standard'
-            file: 'utility/Docker/Dockerfile'
-            tarName: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-standard-arm64.tar
-          - name: 'openshift'
-            file: 'utility/Docker/Dockerfile-openshift'
-            tarName: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ github.run_number }}-openshift-arm64.tar
     steps:
     - uses: actions/checkout@v4
     - uses: actions/download-artifact@v4
@@ -157,25 +70,6 @@ jobs:
     - uses: actions/setup-node@v4
       with:
         node-version: ${{ needs.build.outputs.nodeVersion }}
-    - name: Install Docker
-      run: |
-        # Add Docker's official GPG key:
-        sudo apt-get update -qq
-        sudo apt-get install -qq -y ca-certificates curl
-        sudo install -m 0755 -d /etc/apt/keyrings
-        sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-        sudo chmod a+r /etc/apt/keyrings/docker.asc
-
-        # Add the repository to Apt sources:
-        echo \
-          "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
-          $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
-          sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-        sudo apt-get update -qq
-        sudo apt-get install -qq -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin acl
-        sudo usermod -aG docker $USER
-        sudo setfacl --modify user:$USER:rw /var/run/docker.sock
-
     - name: Run Tests
       run: |
         pushd utility/Docker
@@ -216,11 +110,10 @@ jobs:
         # Capture newman reports
         cp integrationTests/newman/report.html artifact
         cp integrationTests/newman/extra_report.html artifact
-
     - name: 'Upload Artifact'
       uses: actions/upload-artifact@v4
       with:
-        name: logs-${{ github.run_number }}-${{ matrix.name }}-${{ matrix.platform == 'linux/amd64' && 'amd64' || 'arm64' }}
+        name: logs-${{ matrix.name }}
         path: artifact
         retention-days: 1
 
@@ -232,7 +125,6 @@ jobs:
     if: ${{ failure() && (github.event_name == 'schedule' || github.event_name == 'push') }}
     secrets: inherit
     needs:
-      - runTests-amd64
-      - runTests-arm64
+      - runTests
       - dockerBuild
       - build
