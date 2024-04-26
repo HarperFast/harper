@@ -261,23 +261,11 @@ async function ingestConsumer(stream_name, js, jsm, domain) {
 					'stream:',
 					messages.consumer.stream
 				);
+				await messages.close();
 				shutdown = true;
 			} else {
 				harper_logger.error('Error consuming clustering ingest, restarting consumer', err);
 			}
-		}
-		try {
-			await messages.close();
-			harper_logger.error('Nats consumer closed, restarting consumer for node:', domain, 'stream:', stream_name);
-		} catch (error) {
-			harper_logger.error('Error closing old consumer', error);
-		}
-
-		// Re-init any cached Nats client connections
-		nats_utils.clearClientCache();
-
-		if (!shutdown && called_by_stop) {
-			await initialize();
 		}
 	}
 }
