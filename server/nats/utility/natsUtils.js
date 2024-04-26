@@ -271,7 +271,6 @@ async function getJetStream() {
 	if (isEmpty(nats_connection)) {
 		await getConnection();
 	}
-
 	const { domain } = getServerConfig(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
 	if (isEmpty(domain)) {
 		throw new Error('Error getting JetStream domain. Unable to get JetStream manager.');
