@@ -3,10 +3,13 @@ import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { ServerError } from '../utility/errors/hdbError';
 import * as harper_logger from '../utility/logging/harper_logger';
 import { CONTEXT } from './Resource';
+import * as env_mngr from '../utility/environment/environmentManager';
+import { CONFIG_PARAMS } from '../utility/hdbTerms';
+import { convertToMS } from '../utility/common_utils';
 
 const MAX_OPTIMISTIC_SIZE = 100;
 const tracked_txns = new Set<DatabaseTransaction>();
-const MAX_OUTSTANDING_TXN_DURATION = 25000; // Allow write transactions to be queued for up to 25 seconds before we start rejecting them
+const MAX_OUTSTANDING_TXN_DURATION = convertToMS(env_mngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 25 seconds before we start rejecting them
 export enum TRANSACTION_STATE {
 	CLOSED, // the transaction has been committed or aborted and can no longer be used for writes (if read txn is active, it can be used for reads)
 	OPEN, // the transaction is open and can be used for reads and writes
@@ -24,6 +27,7 @@ export class DatabaseTransaction implements Transaction {
 	timestamp = 0;
 	declare next: DatabaseTransaction;
 	declare stale: boolean;
+	overloadChecked: boolean;
 	open = TRANSACTION_STATE.OPEN;
 	getReadTxn(): LMDBTransaction | void {
 		// used optimistically
@@ -60,9 +64,14 @@ export class DatabaseTransaction implements Transaction {
 		}
 	}
 	checkOverloaded() {
-		if (outstanding_commit && performance.now() - outstanding_commit_start > MAX_OUTSTANDING_TXN_DURATION) {
+		if (
+			outstanding_commit &&
+			!this.overloadChecked &&
+			performance.now() - outstanding_commit_start > MAX_OUTSTANDING_TXN_DURATION
+		) {
 			throw new ServerError('Outstanding write transactions have too long of queue, please try again later', 503);
 		}
+		this.overloadChecked = true; // only check this once, don't interrupt ongoing transactions that have already made writes
 	}
 	addWrite(operation) {
 		if (this.open === TRANSACTION_STATE.CLOSED) {
