@@ -617,13 +617,15 @@ Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
 	set(v) {},
 });
 function onWebSocket(listener, options) {
-	let http_server;
+	let servers = [];
 	for (let { port: port_num, secure } of getPorts(options)) {
 		if (!ws_servers[port_num]) {
+			let http_server;
 			ws_servers[port_num] = new WebSocketServer({
 				server: (http_server = getHTTPServer(port_num, secure, options?.isOperationsServer)),
 			});
 			http_server._ws = ws_servers[port_num];
+			servers.push(http_server);
 			ws_servers[port_num].on('connection', async (ws, node_request) => {
 				try {
 					let request = new Request(node_request);
@@ -668,7 +670,7 @@ function onWebSocket(listener, options) {
 		ws_listeners_for_port.push({ listener, protocol });
 		http_chain[port_num] = makeCallbackChain(http_responders, port_num);
 	}
-	return http_server;
+	return servers;
 }
 function defaultNotFound(request, response) {
 	response.writeHead(404);

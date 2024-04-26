@@ -50,7 +50,7 @@ export function start(options) {
 	if (!getThisNodeName()) throw new Error('Can not load replication without a url (see replication.url in the config)');
 	assignReplicationSource(options);
 	// noinspection JSVoidFunctionReturnValueUsed
-	const ws_server = server.ws(
+	const ws_servers = server.ws(
 		(ws, request) => {
 			replicateOverWS(ws, options, request?.user);
 			ws.on('error', (error) => {
@@ -70,43 +70,45 @@ export function start(options) {
 			options
 		)
 	);
-	ws_server.mtlsConfig = Object.assign(
-		{
-			// define a handler for mTLS authorized connections, the primary means of authentication for replication connections
-			authorizedHandler(request) {
-				const node = getHDBNodeTable().primaryStore.get(request.peerCertificate.subject.CN);
-				if (node) {
-					request.user = node;
-					return true;
-				}
-				// fall through to the default auth handler
+	for (let ws_server of ws_servers) {
+		ws_server.mtlsConfig = Object.assign(
+			{
+				// define a handler for mTLS authorized connections, the primary means of authentication for replication connections
+				authorizedHandler(request) {
+					const node = getHDBNodeTable().primaryStore.get(request.peerCertificate.subject.CN);
+					if (node) {
+						request.user = node;
+						return true;
+					}
+					// fall through to the default auth handler
+				},
 			},
-		},
-		ws_server.mtlsConfig
-	);
-	servers.push(ws_server);
-	if (ws_server.setSecureContext) {
-		let certificate_authorities = new Set();
-		let last_ca_count = 0;
-		// we need to stay up-to-date with any CAs that have been replicated across the cluster
-		subscribeToNodeUpdates((node) => {
-			if (node.ca) {
-				// we only care about nodes that have a CA
-				certificate_authorities.add(node.ca);
-				// created a set of all the CAs that have been replicated, if changed, update the secure context
-				if (certificate_authorities.size !== last_ca_count) {
-					last_ca_count = certificate_authorities.size;
-					/*ws_server.setSecureContext({
-						ca: Array.from(certificate_authorities),
-						requestCert: true,
-						cert: ws_server.cert,
-						key: ws_server.key,
-						ciphers: ws_server.ciphers,
-						ticketKeys: ws_server.ticketKeys,
-					});*/
+			ws_server.mtlsConfig
+		);
+		servers.push(ws_server);
+		if (ws_server.setSecureContext) {
+			let certificate_authorities = new Set();
+			let last_ca_count = 0;
+			// we need to stay up-to-date with any CAs that have been replicated across the cluster
+			subscribeToNodeUpdates((node) => {
+				if (node.ca) {
+					// we only care about nodes that have a CA
+					certificate_authorities.add(node.ca);
+					// created a set of all the CAs that have been replicated, if changed, update the secure context
+					if (certificate_authorities.size !== last_ca_count) {
+						last_ca_count = certificate_authorities.size;
+						/*ws_server.setSecureContext({
+							ca: Array.from(certificate_authorities),
+							requestCert: true,
+							cert: ws_server.cert,
+							key: ws_server.key,
+							ciphers: ws_server.ciphers,
+							ticketKeys: ws_server.ticketKeys,
+						});*/
+					}
 				}
-			}
-		});
+			});
+		}
 	}
 }
 export function disableReplication(disabled = true) {
