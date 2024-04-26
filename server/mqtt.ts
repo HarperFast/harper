@@ -159,7 +159,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 		number_of_connections--;
 		if (!disconnected) {
 			disconnected = true;
-			session?.disconnect();
+			session?.disconnect?.();
 			mqtt_settings.events.emit('disconnected', session, socket);
 			mqtt_settings.sessions.delete(session);
 			recordActionBinary(false, 'connection', 'mqtt', 'disconnect');
@@ -171,6 +171,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 		if (user?.then) user = await user;
 		if (session?.then) await session;
 		try {
+			session?.receivedPacket?.();
 			switch (packet.cmd) {
 				case 'connect':
 					mqtt_options.protocolVersion = packet.protocolVersion;

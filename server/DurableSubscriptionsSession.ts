@@ -84,11 +84,14 @@ export async function getSession({
 	user,
 	clean: non_durable,
 	will,
+	keepalive,
 }: {
 	clientId;
 	user;
 	listener: Function;
 	clean?: boolean;
+	will: any;
+	keepalive?: number;
 }) {
 	let session;
 	if (session_id && !non_durable) {
@@ -108,6 +111,13 @@ export async function getSession({
 		will.user = { username: user?.username };
 		LastWill.put(will);
 	}
+	if (keepalive) {
+		// keep alive is the interval in seconds that the client will send a ping to the server
+		// if the server does not receive a ping within 1.5 times the keep alive interval, it will
+		// disconnect the client
+		session.keepalive = keepalive;
+		session.receivedPacket(); // start the keepalive timer
+	}
 	return session;
 }
 let next_message_id = 1;
@@ -126,6 +136,8 @@ class SubscriptionsSession {
 	subscriptions = [];
 	awaitingAcks: Map<number, any>;
 	sessionWasPresent: boolean;
+	keepalive: number;
+	keepaliveTimer: any;
 	constructor(session_id, user) {
 		this.sessionId = session_id;
 		this.user = user;
@@ -316,6 +328,7 @@ class SubscriptionsSession {
 		this.listener = listener;
 	}
 	disconnect(client_terminated) {
+		if (this.keepaliveTimer) clearTimeout(this.keepaliveTimer);
 		const context = this.createContext();
 		transaction(context, async () => {
 			if (!client_terminated) {
@@ -333,6 +346,14 @@ class SubscriptionsSession {
 			subscription.end();
 		}
 		this.subscriptions = [];
+	}
+	receivedPacket() {
+		if (this.keepalive) {
+			clearTimeout(this.keepaliveTimer);
+			this.keepaliveTimer = setTimeout(() => {
+				this.disconnect(false);
+			}, this.keepalive * 1500);
+		}
 	}
 }
 function publish(message, data, context) {
