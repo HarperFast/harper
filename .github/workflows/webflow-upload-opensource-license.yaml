@@ -27,6 +27,8 @@ jobs:
   build:
     if: ${{ github.event_name != 'workflow_call' }}
     uses: ./.github/workflows/build.yaml
+    with:
+      github_event: ${{ github.event_name }}
 
   generate_and_upload:
     if: ${{ !cancelled() }}
