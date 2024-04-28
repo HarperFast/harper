@@ -2803,7 +2803,7 @@ export function makeTable(options) {
 							const MAX_CLEANUP_CONCURRENCY = 50;
 							const outstanding_cleanup_operations = new Array(MAX_CLEANUP_CONCURRENCY);
 							let cleanup_index = 0;
-							harper_logger.trace(`Starting cleanup scan for ${table_name}`);
+							harper_logger.info(`Starting cleanup scan for ${table_name}`);
 							try {
 								let count = 0;
 								// iterate through all entries to find expired records and deleted records
@@ -2833,9 +2833,9 @@ export function makeTable(options) {
 									}
 									await rest();
 								}
-								harper_logger.trace(`Finished cleanup scan for ${table_name}, evicted ${count} entries`);
+								harper_logger.info(`Finished cleanup scan for ${table_name}, evicted ${count} entries`);
 							} catch (error) {
-								harper_logger.trace(`Error in cleanup scan for ${table_name}:`, error);
+								harper_logger.warn(`Error in cleanup scan for ${table_name}:`, error);
 							}
 						})),
 					Math.min(next_scheduled - Date.now(), 0x7fffffff) // make sure it can fit in 32-bit signed number
