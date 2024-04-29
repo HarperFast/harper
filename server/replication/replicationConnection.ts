@@ -20,7 +20,7 @@ import { WebSocket } from 'ws';
 import { readFileSync } from 'fs';
 import { threadId } from 'worker_threads';
 import * as logger from '../../utility/logging/harper_logger';
-import { disconnectedFromNode, reconnectedToNode, getHDBNodeTable } from './subscriptionManager';
+import { disconnectedFromNode, connectedToNode, getHDBNodeTable } from './subscriptionManager';
 import { EventEmitter } from 'events';
 import { rootCertificates } from 'node:tls';
 
@@ -78,14 +78,12 @@ export class NodeReplicationConnection extends EventEmitter {
 			logger.info('Connected to ' + this.url, this.socket._socket.writableHighWaterMark);
 			this.retries = 0;
 			this.retryTime = 200;
-			if (this.hasConnected) {
-				// if we have already connected, we need to send a reconnected event
-				reconnectedToNode({
-					name: this.nodeName,
-					database: this.databaseName,
-					url: this.url,
-				});
-			}
+			// if we have already connected, we need to send a reconnected event
+			connectedToNode({
+				name: this.nodeName,
+				database: this.databaseName,
+				url: this.url,
+			});
 			this.hasConnected = true;
 			session = replicateOverWS(
 				this.socket,

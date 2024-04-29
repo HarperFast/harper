@@ -15,7 +15,7 @@ import { readFileSync } from 'fs';
 let hdb_node_table;
 let connection_replication_map = new Map();
 export let disconnectedFromNode;
-export let reconnectedToNode;
+export let connectedToNode;
 let node_map = new Map();
 export function startOnMainThread(options) {
 	let new_node_listeners = [];
@@ -131,11 +131,14 @@ export function startOnMainThread(options) {
 			logger.warn('Disconnected node not found in node map', connection.name, node_map.keys());
 			return;
 		}
+		let db_replication_workers = connection_replication_map.get(connection.url);
+		const existing_worker_entry = db_replication_workers?.get(connection.database);
+		existing_worker_entry.connected = false;
 		let next_index = (existing_index + 1) % node_names.length;
 		while (existing_index !== next_index) {
 			const next_node_name = node_names[next_index];
 			const next_node = node_map.get(next_node_name);
-			let db_replication_workers = connection_replication_map.get(next_node.url);
+			db_replication_workers = connection_replication_map.get(next_node.url);
 			const failover_worker_entry = db_replication_workers?.get(connection.database);
 			if (!failover_worker_entry) {
 				next_index = (next_index + 1) % node_names.length;
@@ -143,8 +146,6 @@ export function startOnMainThread(options) {
 			}
 			const { worker, nodes } = failover_worker_entry;
 			// record which node we are now redirecting to
-			db_replication_workers = connection_replication_map.get(connection.url);
-			const existing_worker_entry = db_replication_workers?.get(connection.database);
 			nodes.push(...existing_worker_entry.nodes);
 			existing_worker_entry.redirectingTo = failover_worker_entry;
 			if (worker) {
@@ -158,10 +159,11 @@ export function startOnMainThread(options) {
 		}
 	};
 
-	reconnectedToNode = function (connection) {
+	connectedToNode = function (connection) {
 		// Basically undo what we did in disconnectedFromNode
 		const db_replication_workers = connection_replication_map.get(connection.url);
 		const main_worker_entry = db_replication_workers?.get(connection.database);
+		main_worker_entry.connected = true;
 		if (main_worker_entry.redirectingTo) {
 			const { worker, nodes } = main_worker_entry.redirectingTo;
 			let subscription_to_remove = nodes.find((node) => node.name === connection.name);
@@ -180,15 +182,39 @@ export function startOnMainThread(options) {
 	};
 
 	onMessageByType('disconnected-from-node', disconnectedFromNode);
-	onMessageByType('reconnected-to-node', reconnectedToNode);
+	onMessageByType('connected-to-node', connectedToNode);
+	onMessageByType('request-cluster-status', (message, port) => {
+		const connections = [];
+		for (let [, node] of node_map) {
+			const db_replication_map = connection_replication_map.get(node.url);
+			const databases = [];
+			if (db_replication_map) {
+				for (let [database, { worker, connected, nodes }] of db_replication_map) {
+					databases.push({
+						database,
+						connected,
+						threadId: worker.threadId,
+						nodes: nodes.map((node) => node.name),
+					});
+				}
+			}
+			node = Object.assign({}, node);
+			node.database_sockets = databases;
+			connections.push(node);
+		}
+		port.postMessage({
+			type: 'cluster-status',
+			connections,
+		});
+	});
 }
 
 if (parentPort) {
 	disconnectedFromNode = (connection) => {
-		parentPort.postMessage('disconnected-from-node', connection);
+		parentPort.postMessage(Object.assign({ type: 'disconnected-from-node' }, connection));
 	};
-	reconnectedToNode = (connection) => {
-		parentPort.postMessage('reconnected-to-node', connection);
+	connectedToNode = (connection) => {
+		parentPort.postMessage(Object.assign({ type: 'connected-to-node' }, connection));
 	};
 	onMessageByType('subscribe-to-node', (message) => {
 		subscribeToNode(message);
