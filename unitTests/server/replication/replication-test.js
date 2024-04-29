@@ -10,6 +10,7 @@ const { CONFIG_PARAMS } = require('../../../utility/hdbTerms');
 const { get: env_get } = require('../../..//utility/environment/environmentManager');
 const env = require('../../../utility/environment/environmentManager');
 const { fork } = require('node:child_process');
+const { createTestTable, createNode } = require('./setup-replication');
 
 describe('Replication', () => {
 	let TestTable;
@@ -18,7 +19,6 @@ describe('Replication', () => {
 	let node_count = 2;
 	let db_count = 3;
 	let database_config;
-	setMainIsWorker(true);
 	function addWorkerNode(index) {
 		const child_process = fork(
 			__filename.replace(/\.js/, '-thread.js'),
@@ -52,51 +52,14 @@ describe('Replication', () => {
 		getMockLMDBPath();
 		database_config = env_get(CONFIG_PARAMS.DATABASES);
 		for (let i = 0; i < db_count; i++) {
-			const database_name = 'test-replication-' + i;
-			database_config[database_name] = { path: database_config.data.path + '/test-replication-' + i };
-			let TestTable = table({
-				table: 'TestTable',
-				database: database_name,
-				attributes: [
-					{ name: 'id', isPrimaryKey: true },
-					{ name: 'name', indexed: true },
-				],
-			});
-			TestTable.databaseName = database_name; // make them all look like the same database so they replicate
-			TestTable.getResidency = (record) => {
-				return record.locations;
-			};
-			test_tables.push(TestTable);
+			test_tables.push(await createTestTable(i, database_config.data.path + '/test-replication-' + i));
 		}
-		env.setProperty('replication_nodename', 'node-1');
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		Object.defineProperty(databases, 'test', { value: databases['test-replication-0'] });
 		TestTable = test_tables[0];
 
-		async function createServer(index, node_count) {
-			let routes = [];
-			for (let i = 0; i < node_count; i++) {
-				if (i === index) continue;
-				routes.push({
-					name: 'node-' + (i + 1),
-					url: 'ws://localhost:' + (9325 + i),
-				});
-			}
-			TestTable = test_tables[index];
-			const options = {
-				port: 9325 + index,
-				url: 'ws://localhost:' + (9325 + index),
-				routes,
-				databases: {
-					test: databases['test-replication-0'],
-				},
-			};
-			startOnMainThread(options);
-			start(options);
-		}
-		await createServer(0, node_count);
+		await createNode(0, database_config.data.path, node_count);
 		let started = addWorkerNode(1);
-		await listenOnPorts();
 		await started;
 		await new Promise((resolve) => setTimeout(resolve, 500));
 	});

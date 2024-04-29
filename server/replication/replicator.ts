@@ -237,16 +237,20 @@ function getConnection(url, subscription, db_name) {
 	return connection;
 }
 export async function subscribeToNode(request) {
-	let subscription_to_table = database_subscriptions.get(request.database);
-	if (!subscription_to_table) {
-		// Wait for it to be created
-		subscription_to_table = await new Promise((resolve) => {
-			logger.info('Waiting for subscription to database ' + request.database);
-			database_subscriptions.set(request.database, { ready: resolve });
-		});
+	try {
+		let subscription_to_table = database_subscriptions.get(request.database);
+		if (!subscription_to_table) {
+			// Wait for it to be created
+			subscription_to_table = await new Promise((resolve) => {
+				logger.info('Waiting for subscription to database ' + request.database);
+				database_subscriptions.set(request.database, { ready: resolve });
+			});
+		}
+		let connection = getConnection(request.nodes[0].url, subscription_to_table, request.database);
+		connection.subscribe(request.nodes, request.replicateByDefault);
+	} catch (error) {
+		logger.error('Error in subscription to node', request.nodes[0].url, error.message);
 	}
-	let connection = getConnection(request.nodes[0].url, subscription_to_table, request.database);
-	connection.subscribe(request.nodes, request.replicateByDefault);
 }
 
 export function getThisNodeName() {

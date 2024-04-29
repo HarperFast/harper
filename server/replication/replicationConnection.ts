@@ -20,7 +20,7 @@ import { WebSocket } from 'ws';
 import { readFileSync } from 'fs';
 import { threadId } from 'worker_threads';
 import * as logger from '../../utility/logging/harper_logger';
-import { disconnectedFromNode, reconnectedToNode, getHDBNodeTable } from './subscriptionManager';
+import { disconnectedFromNode, connectedToNode, getHDBNodeTable } from './subscriptionManager';
 import { EventEmitter } from 'events';
 import { rootCertificates } from 'node:tls';
 
@@ -46,7 +46,7 @@ export class NodeReplicationConnection extends EventEmitter {
 	retryTime = 200;
 	retries = 0;
 	hasConnected: boolean;
-	nodeSubscriptions: Map<string, number>;
+	nodeSubscriptions = [];
 	replicateTablesByDefault: boolean;
 	nodeName: string;
 	constructor(public url, public subscription, public databaseName) {
@@ -78,16 +78,13 @@ export class NodeReplicationConnection extends EventEmitter {
 			logger.info('Connected to ' + this.url, this.socket._socket.writableHighWaterMark);
 			this.retries = 0;
 			this.retryTime = 200;
-			if (this.hasConnected) {
-				// if we have already connected, we need to send a reconnected event
-				reconnectedToNode({
-					name: this.nodeName,
-					database: this.databaseName,
-					url: this.url,
-				});
-			}
+			// if we have already connected, we need to send a reconnected event
+			connectedToNode({
+				name: this.nodeName,
+				database: this.databaseName,
+				url: this.url,
+			});
 			this.hasConnected = true;
-			const node_entry = getHDBNodeTable().primaryStore.get(this.nodeName);
 			session = replicateOverWS(
 				this.socket,
 				{
@@ -96,7 +93,7 @@ export class NodeReplicationConnection extends EventEmitter {
 					url: this.url,
 					connection: this,
 				},
-				node_entry
+				{ publish: true } // pre-authorized, but should only make publish: true if we are allowing back subscribes
 			);
 		});
 		this.socket.on('error', (error) => {
@@ -105,7 +102,7 @@ export class NodeReplicationConnection extends EventEmitter {
 
 		this.socket.on('close', () => {
 			if (this.socket.isFinished) {
-				session.end();
+				session?.end();
 				return;
 			}
 			session?.disconnected();
@@ -304,18 +301,16 @@ export function replicateOverWS(ws, options, authorization) {
 							return;
 						let first_table;
 						let first_node = node_subscriptions[0];
-						const table_by_id = table_subscription_to_replicator.tableById
-							.map((table) => {
-								if (
-									first_node.replicateTablesByDefault
-										? !first_node.tables.includes(table.tableName)
-										: first_node.tables.includes(table.tableName)
-								) {
-									first_table = table;
-									return { table };
-								}
-							})
-							.filter((entry) => entry);
+						const table_by_id = table_subscription_to_replicator.tableById.map((table) => {
+							if (
+								first_node.replicateByDefault
+									? !first_node.tables.includes(table.tableName)
+									: first_node.tables.includes(table.tableName)
+							) {
+								first_table = table;
+								return { table };
+							}
+						});
 						const subscribed_node_ids = [];
 						for (let { name, startTime } of node_subscriptions) {
 							const local_id = getIdOfRemoteNode(name, audit_store);
@@ -519,7 +514,7 @@ export function replicateOverWS(ws, options, authorization) {
 									if (is_first) {
 										is_first = false;
 										let last_removed = getLastRemoved(audit_store);
-										if (!(last_removed < current_sequence_id)) {
+										if (!(last_removed <= current_sequence_id)) {
 											// this means the audit log doesn't extend far enough back, so we need to replicate all the tables
 											// TODO: This should only be done on a single node, we don't want full table replication from all the
 											// nodes that are connected to this one.
@@ -680,14 +675,14 @@ export function replicateOverWS(ws, options, authorization) {
 		const node_subscriptions = options.connection?.nodeSubscriptions.map((node, index) => {
 			const table_subs = [];
 			for (let table_name in tables) {
-				if (node.replicateTablesByDefault ? tables[table_name].replicate === false : tables[table_name].replicate)
+				if (node.replicateByDefault ? tables[table_name].replicate === false : tables[table_name].replicate)
 					table_subs.push(table_name);
 			}
 
 			return {
 				name: node.name,
-				replicateTablesByDefault: node.replicateTablesByDefault,
-				tables, // omitted or included based on flag above
+				replicateByDefault: node.replicateByDefault,
+				tables: table_subs, // omitted or included based on flag above
 				startTime: (table_subscription_to_replicator.dbisDB.get([Symbol.for('seq'), node.name]) ?? 10001) - 10000,
 			};
 		});
