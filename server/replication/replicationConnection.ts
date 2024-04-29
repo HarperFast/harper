@@ -46,7 +46,7 @@ export class NodeReplicationConnection extends EventEmitter {
 	retryTime = 200;
 	retries = 0;
 	hasConnected: boolean;
-	nodeSubscriptions: Map<string, number>;
+	nodeSubscriptions = [];
 	replicateTablesByDefault: boolean;
 	nodeName: string;
 	constructor(public url, public subscription, public databaseName) {

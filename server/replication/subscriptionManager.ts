@@ -9,6 +9,7 @@ import { table_update_listeners } from './replicationConnection';
 import { getThisNodeName, getThisNodeUrl, subscribeToNode, urlToNodeName } from './replicator';
 import { parentPort } from 'worker_threads';
 import env from '../../utility/environment/environmentManager';
+import * as logger from '../../utility/logging/harper_logger';
 import { readFileSync } from 'fs';
 
 let hdb_node_table;
@@ -58,6 +59,11 @@ export function startOnMainThread(options) {
 			// this is just this node, we don't need to connect to ourselves
 			return;
 		if (node.subscribe === false) return; // this node is not to be subscribed to
+		if (!node.url) {
+			logger.info(`Node ${node.name} is missing url`);
+			return;
+		}
+		logger.info(`Added node ${node.name} at ${node.url} for process ${getThisNodeName()}`);
 		node_map.set(node.name, node);
 		const databases = getDatabases();
 		let db_replication_workers = connection_replication_map.get(node.url);
@@ -121,19 +127,25 @@ export function startOnMainThread(options) {
 		// a sorted list of node names that all nodes should have and use.
 		const node_names = Array.from(node_map.keys()).sort();
 		const existing_index = Math.max(node_names.indexOf(connection.name), 0);
-		let next_index = existing_index;
-		do {
-			next_index = (next_index + 1) % node_names.length;
+		if (existing_index === -1) {
+			logger.warn('Disconnected node not found in node map', connection.name, node_map.keys());
+			return;
+		}
+		let next_index = (existing_index + 1) % node_names.length;
+		while (existing_index !== next_index) {
 			const next_node_name = node_names[next_index];
 			const next_node = node_map.get(next_node_name);
 			let db_replication_workers = connection_replication_map.get(next_node.url);
 			const failover_worker_entry = db_replication_workers?.get(connection.database);
-			if (!failover_worker_entry) continue;
+			if (!failover_worker_entry) {
+				next_index = (next_index + 1) % node_names.length;
+				continue;
+			}
 			const { worker, nodes } = failover_worker_entry;
-			nodes.push(connection);
 			// record which node we are now redirecting to
 			db_replication_workers = connection_replication_map.get(connection.url);
 			const existing_worker_entry = db_replication_workers?.get(connection.database);
+			nodes.push(...existing_worker_entry.nodes);
 			existing_worker_entry.redirectingTo = failover_worker_entry;
 			if (worker) {
 				worker.postMessage({
@@ -142,7 +154,8 @@ export function startOnMainThread(options) {
 					nodes,
 				});
 			} else subscribeToNode({ database: connection.database, nodes });
-		} while (existing_index !== next_index);
+			break;
+		}
 	};
 
 	reconnectedToNode = function (connection) {
@@ -187,7 +200,9 @@ export function ensureNode(name: string, node) {
 	const isTentative = !name;
 	name = name ?? urlToNodeName(node.url);
 	node.name = name;
-	if (table.primaryStore.get(name)?.url !== node.url) {
+	logger.info(`Ensuring node ${name} at ${node.url}`);
+	if (node.url && table.primaryStore.get(name)?.url !== node.url) {
+		logger.info(`Adding node ${name} at ${node.url}`);
 		table.put(node);
 	}
 }
