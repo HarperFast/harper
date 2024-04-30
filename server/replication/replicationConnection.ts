@@ -1,4 +1,4 @@
-import { getDatabases } from '../../resources/databases';
+import { getDatabases, databases } from '../../resources/databases';
 import {
 	createAuditEntry,
 	Decoder,
@@ -33,9 +33,12 @@ const SEND_TABLE_STRUCTURE = 131;
 const SEND_TABLE_FIXED_STRUCTURE = 132;
 const OPERATION_REQUEST = 136;
 const OPERATION_RESPONSE = 137;
+const PING = 138;
+const PONG = 139;
 export const table_update_listeners = new Map();
 export const database_subscriptions = new Map();
 const DEBUG_MODE = true;
+const PING_INTERVAL = 30000;
 
 /**
  * Handles reconnection, and requesting catch-up
@@ -54,20 +57,30 @@ export class NodeReplicationConnection extends EventEmitter {
 		this.nodeName = urlToNodeName(url);
 	}
 
-	connect() {
+	async connect() {
 		const tables = [];
 		// TODO: Need to do this specifically for each node
 		const private_key = env.get('tls_privateKey');
-		const certificate = env.get('tls_certificate'); // this is the client certificate, usually not the same location as the server certificate
-		const certificate_authority = env.get('tls_certificateAuthority');
+		let certificate_authorities = new Set();
+		let cert;
+		if (this.url.includes('wss://')) {
+			for await (const node of databases.system.hdb_nodes.search([])) {
+				if (node.ca) certificate_authorities.add(node.ca);
+			}
+
+			for await (const node of databases.system.hdb_certificate.search([])) {
+				// TODO: Criteria for the best certificate for the client connection (based on the server CA)
+				cert = node.certificate;
+			}
+		}
 		this.socket = new WebSocket(this.url, {
 			protocols: 'harperdb-replication-v1',
 			key: readFileSync(private_key),
 			ciphers: env.get('tls_ciphers'),
-			cert: readFileSync(certificate),
+			cert,
 			// for client connections, we can add our certificate authority to the root certificates
 			// to authorize the server certificate (both public valid certificates and privately signed certificates are acceptable)
-			ca: certificate_authority && rootCertificates.concat(readFileSync(certificate_authority)),
+			ca: [...rootCertificates, ...certificate_authorities],
 			// we set this very high (16x times the default) because it can be a bit expensive to switch back and forth
 			// between push and pull mode
 			highWaterMark: 256 * 1024,
@@ -93,7 +106,7 @@ export class NodeReplicationConnection extends EventEmitter {
 					url: this.url,
 					connection: this,
 				},
-				{ publish: true } // pre-authorized, but should only make publish: true if we are allowing back subscribes
+				{ publish: true } // pre-authorized, but should only make publish: true if we are allowing reverse subscriptions
 			);
 		});
 		this.socket.on('error', (error) => {
@@ -164,6 +177,15 @@ export function replicateOverWS(ws, options, authorization) {
 	if (remote_node_name && options.connection) options.connection.nodeName = remote_node_name;
 	let last_sequence_id_received;
 	const this_node_url = env.get('replication_url');
+	let ping_interval, last_ping_time;
+	if (options.url) {
+		const send_ping = () => {
+			last_ping_time = performance.now();
+			ws.send(encode([PING]));
+		};
+		ping_interval = setInterval(send_ping, PING_INTERVAL);
+		send_ping(); // send the first ping immediately so we can measure latency
+	}
 	if (database_name) {
 		setDatabase(database_name);
 	}
@@ -217,6 +239,18 @@ export function replicateOverWS(ws, options, authorization) {
 					}
 					case DISCONNECT:
 						close();
+						break;
+					case PING:
+						ws.send(encode([PONG]));
+						break;
+					case PONG:
+						if (options.connection)
+							connectedToNode({
+								name: remote_node_name,
+								database: database_name,
+								url: options.url,
+								latency: performance.now() - last_ping_time,
+							});
 						break;
 					case OPERATION_REQUEST:
 						server.operation(data).then((response) => {
@@ -650,6 +684,7 @@ export function replicateOverWS(ws, options, authorization) {
 		}
 	});
 	ws.on('close', () => {
+		clearInterval(ping_interval);
 		if (audit_subscription) audit_subscription.emit('close');
 		if (subscription_request) subscription_request.end();
 		logger.info(connection_id, 'closed');
