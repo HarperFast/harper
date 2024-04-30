@@ -164,6 +164,7 @@ export function startOnMainThread(options) {
 		const db_replication_workers = connection_replication_map.get(connection.url);
 		const main_worker_entry = db_replication_workers?.get(connection.database);
 		main_worker_entry.connected = true;
+		main_worker_entry.latency = connection.latency;
 		if (main_worker_entry.redirectingTo) {
 			const { worker, nodes } = main_worker_entry.redirectingTo;
 			let subscription_to_remove = nodes.find((node) => node.name === connection.name);
@@ -189,10 +190,11 @@ export function startOnMainThread(options) {
 			const db_replication_map = connection_replication_map.get(node.url);
 			const databases = [];
 			if (db_replication_map) {
-				for (let [database, { worker, connected, nodes }] of db_replication_map) {
+				for (let [database, { worker, connected, nodes, latency }] of db_replication_map) {
 					databases.push({
 						database,
 						connected,
+						latency,
 						threadId: worker.threadId,
 						nodes: nodes.map((node) => node.name),
 					});
