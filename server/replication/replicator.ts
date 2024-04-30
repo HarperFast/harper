@@ -236,6 +236,9 @@ function getConnection(url, subscription, db_name) {
 	connection.connect();
 	return connection;
 }
+export function sendOperationToNode(node) {
+	return getConnection(node.url, null, 'system').sendOperation(node);
+}
 export async function subscribeToNode(request) {
 	try {
 		let subscription_to_table = database_subscriptions.get(request.database);

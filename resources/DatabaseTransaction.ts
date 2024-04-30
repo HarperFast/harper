@@ -2,6 +2,7 @@ import { RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { ServerError } from '../utility/errors/hdbError';
 import * as harper_logger from '../utility/logging/harper_logger';
+import { onMessageByType } from '../server/threads/manageThreads';
 import { CONTEXT } from './Resource';
 
 const MAX_OPTIMISTIC_SIZE = 100;
@@ -13,6 +14,7 @@ export enum TRANSACTION_STATE {
 	LINGERING, // the transaction has completed a read, but can be used for immediate writes
 }
 let outstanding_commit, outstanding_commit_start;
+const commits_awaiting_replication = new Map<string, []>();
 
 export class DatabaseTransaction implements Transaction {
 	writes = []; // the set of writes to commit if the conditions are met
@@ -201,6 +203,24 @@ export class DatabaseTransaction implements Transaction {
 					if (options?.flush) {
 						completions.push(this.writes[0].store.flushed);
 					}
+					if (options?.replicatedConfirmation) {
+						// if we want to wait for replication confirmation, we need to track the transaction times
+						// and when replication notifications come in, we count the number of confirms until we reach the desired number
+						const database_name = this.writes[0].store.databaseName; // TODO: Fix this
+						let awaiting = commits_awaiting_replication.get(database_name);
+						if (!awaiting) commits_awaiting_replication.set(database_name, (awaiting = []));
+						completions.push(
+							new Promise((resolve) => {
+								let count = 0;
+								awaiting.push({
+									txnTime,
+									onConfirm() {
+										if (++count === options?.replicatedConfirmation) resolve();
+									},
+								});
+							})
+						);
+					}
 					// now reset transactions tracking; this transaction be reused and committed again
 					this.writes = [];
 					this.next = null;
@@ -284,3 +304,17 @@ export function setTxnExpiration(ms) {
 	startMonitoringTxns();
 	return tracked_txns;
 }
+
+const last_replication_time = new Map<string, number>();
+onMessageByType('replicated', async (message) => {
+	const { database, nodeName, time: replicated_time } = message;
+	let node_times = last_replication_time.get(database);
+	if (!node_times) last_replication_time.set(database, (node_times = new Map()));
+	const last_time = node_times.get(nodeName) || 0;
+	for (let { txnTime, onConfirm } of commits_awaiting_replication.get(database) || []) {
+		if (txnTime > last_time && txnTime < replicated_time) {
+			commit.resolve();
+		}
+	}
+	node_times.set(nodeName, replicated_time);
+});

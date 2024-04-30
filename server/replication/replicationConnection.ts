@@ -23,6 +23,7 @@ import * as logger from '../../utility/logging/harper_logger';
 import { disconnectedFromNode, connectedToNode, getHDBNodeTable } from './subscriptionManager';
 import { EventEmitter } from 'events';
 import { rootCertificates } from 'node:tls';
+import { broadcast } from '../../server/threads/manageThreads';
 
 const SUBSCRIBE_CODE = 129;
 const SEND_NODE_NAME = 140;
@@ -35,11 +36,13 @@ const OPERATION_REQUEST = 136;
 const OPERATION_RESPONSE = 137;
 const PING = 138;
 const PONG = 139;
+const COMMITTED_UPDATE = 143;
 export const table_update_listeners = new Map();
 export const database_subscriptions = new Map();
 const DEBUG_MODE = true;
 const PING_INTERVAL = 30000;
-
+let next_id = 1; // for request ids
+let awaiting_response = new Map();
 /**
  * Handles reconnection, and requesting catch-up
  */
@@ -136,6 +139,11 @@ export class NodeReplicationConnection extends EventEmitter {
 		this.nodeSubscriptions = node_subscriptions;
 		this.replicateTablesByDefault = replicate_tables_by_default;
 		this.emit('subscriptions-updated', node_subscriptions);
+	}
+	sendOperation(operation) {
+		operation.requestId = next_id++;
+		this.socket.send(encode([OPERATION_REQUEST, operation]));
+		return new Promise((resolve, reject) => awaiting_response.set(operation.requestId, { resolve, reject }));
 	}
 
 	send(message) {}
@@ -254,8 +262,15 @@ export function replicateOverWS(ws, options, authorization) {
 						break;
 					case OPERATION_REQUEST:
 						server.operation(data).then((response) => {
+							response.requestId = data.requestId;
 							ws.send(encode([OPERATION_RESPONSE, response]));
 						});
+						break;
+					case OPERATION_RESPONSE:
+						const { resolve, reject } = awaiting_response.get(data.requestId);
+						if (data.error) reject(data.error);
+						else resolve(data);
+						awaiting_response.delete(data.requestId);
 						break;
 					case SEND_TABLE_FIXED_STRUCTURE:
 						const table_name = message[3];
@@ -290,12 +305,17 @@ export function replicateOverWS(ws, options, authorization) {
 						const residency_id = table_id;
 						received_residency_lists[residency_id] = data;
 						break;
+					case COMMITTED_UPDATE:
+						// we need to record the sequence number that the remote node has received
+						broadcast({
+							type: 'replicated',
+							database: database_name,
+							node: remote_node_name,
+							time: data,
+						});
+						break;
 					case SUBSCRIBE_CODE:
 						const [action, db, , , node_subscriptions] = message;
-						/*const decoder = (body.dataView = new Decoder(body.buffer, body.byteOffset, body.byteLength));
-						const db_length = body[1];
-						const database_name = body.toString('utf8', 2, db_length + 2);
-						const start_time = decoder.getFloat64(2 + db_length);*/
 						// permission check to make sure that this node is allowed to subscribe to this database, that is that
 						// we have publish permission for this node/database
 						if (
@@ -657,6 +677,12 @@ export function replicateOverWS(ws, options, authorization) {
 					user: audit_record.user,
 					beginTxn: begin_txn,
 				};
+				if (begin_txn) {
+					event.onCommit = () => {
+						// we need to wait for the commit message before we can send confirmation
+						audit_record.lo;
+					};
+				}
 				begin_txn = false;
 				// TODO: Once it is committed, also record the localtime in the table with symbol metadata, so we can resume from that point
 				if (DEBUG_MODE)

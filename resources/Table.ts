@@ -398,13 +398,15 @@ export function makeTable(options) {
 										return writeUpdate(event, event);
 									}
 								});
+								if (txn_in_progress) txn_in_progress.resolution = commit_resolution;
 								if (user_role_update) {
 									await commit_resolution;
 									signalling.signalUserChange(new UserEventMsg(process.pid));
 								}
 
 								if (event.onCommit) {
-									if (commit_resolution?.then) commit_resolution.then(event.onCommit);
+									if (commit_resolution) commit_resolution.then(event.onCommit);
+									else if (txn_in_progress) txn_in_progress.resolution.then(event.onCommit);
 									else event.onCommit();
 								}
 							} catch (error) {
