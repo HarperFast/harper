@@ -32,7 +32,7 @@ const DISCONNECT = 142;
 const SEND_RESIDENCY_LIST = 130;
 const SEND_TABLE_STRUCTURE = 131;
 const SEND_TABLE_FIXED_STRUCTURE = 132;
-const OPERATION_REQUEST = 136;
+export const OPERATION_REQUEST = 136;
 const OPERATION_RESPONSE = 137;
 const PING = 138;
 const PONG = 139;
@@ -41,11 +41,43 @@ export const table_update_listeners = new Map();
 export const database_subscriptions = new Map();
 const DEBUG_MODE = true;
 const PING_INTERVAL = 30000;
-let next_id = 1; // for request ids
-let awaiting_response = new Map();
+export let awaiting_response = new Map();
 /**
  * Handles reconnection, and requesting catch-up
  */
+
+export async function createWebSocket(url, authorization) {
+	const private_key = env.get('tls_privateKey');
+	let certificate_authorities = new Set();
+	let cert;
+	if (this.url.includes('wss://')) {
+		for await (const node of databases.system.hdb_nodes.search([])) {
+			if (node.ca) certificate_authorities.add(node.ca);
+		}
+
+		for await (const node of databases.system.hdb_certificate.search([])) {
+			// TODO: Criteria for the best certificate for the client connection (based on the server CA)
+			cert = node.certificate;
+		}
+	}
+	const headers = {};
+	if (authorization) {
+		headers.Authorization = authorization;
+	}
+	this.socket = new WebSocket(this.url, {
+		headers,
+		protocols: 'harperdb-replication-v1',
+		key: readFileSync(private_key),
+		ciphers: env.get('tls_ciphers'),
+		cert,
+		// for client connections, we can add our certificate authority to the root certificates
+		// to authorize the server certificate (both public valid certificates and privately signed certificates are acceptable)
+		ca: [...rootCertificates, ...certificate_authorities],
+		// we set this very high (16x times the default) because it can be a bit expensive to switch back and forth
+		// between push and pull mode
+		highWaterMark: 256 * 1024,
+	});
+}
 export class NodeReplicationConnection extends EventEmitter {
 	socket: WebSocket;
 	startTime: number;
@@ -63,31 +95,7 @@ export class NodeReplicationConnection extends EventEmitter {
 	async connect() {
 		const tables = [];
 		// TODO: Need to do this specifically for each node
-		const private_key = env.get('tls_privateKey');
-		let certificate_authorities = new Set();
-		let cert;
-		if (this.url.includes('wss://')) {
-			for await (const node of databases.system.hdb_nodes.search([])) {
-				if (node.ca) certificate_authorities.add(node.ca);
-			}
-
-			for await (const node of databases.system.hdb_certificate.search([])) {
-				// TODO: Criteria for the best certificate for the client connection (based on the server CA)
-				cert = node.certificate;
-			}
-		}
-		this.socket = new WebSocket(this.url, {
-			protocols: 'harperdb-replication-v1',
-			key: readFileSync(private_key),
-			ciphers: env.get('tls_ciphers'),
-			cert,
-			// for client connections, we can add our certificate authority to the root certificates
-			// to authorize the server certificate (both public valid certificates and privately signed certificates are acceptable)
-			ca: [...rootCertificates, ...certificate_authorities],
-			// we set this very high (16x times the default) because it can be a bit expensive to switch back and forth
-			// between push and pull mode
-			highWaterMark: 256 * 1024,
-		});
+		this.socket = createWebSocket(this.url);
 
 		let session;
 		this.socket.on('open', () => {
@@ -139,11 +147,6 @@ export class NodeReplicationConnection extends EventEmitter {
 		this.nodeSubscriptions = node_subscriptions;
 		this.replicateTablesByDefault = replicate_tables_by_default;
 		this.emit('subscriptions-updated', node_subscriptions);
-	}
-	sendOperation(operation) {
-		operation.requestId = next_id++;
-		this.socket.send(encode([OPERATION_REQUEST, operation]));
-		return new Promise((resolve, reject) => awaiting_response.set(operation.requestId, { resolve, reject }));
 	}
 
 	send(message) {}
