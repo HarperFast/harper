@@ -24,6 +24,7 @@ import { disconnectedFromNode, connectedToNode, getHDBNodeTable } from './subscr
 import { EventEmitter } from 'events';
 import { rootCertificates } from 'node:tls';
 import { broadcast } from '../../server/threads/manageThreads';
+//import { operation } from '../../server/serverHelpers/serverUtilities';
 
 const SUBSCRIBE_CODE = 129;
 const SEND_NODE_NAME = 140;
@@ -50,7 +51,7 @@ export async function createWebSocket(url, authorization) {
 	const private_key = env.get('tls_privateKey');
 	let certificate_authorities = new Set();
 	let cert;
-	if (this.url.includes('wss://')) {
+	if (url.includes('wss://')) {
 		for await (const node of databases.system.hdb_nodes.search([])) {
 			if (node.ca) certificate_authorities.add(node.ca);
 		}
@@ -64,7 +65,7 @@ export async function createWebSocket(url, authorization) {
 	if (authorization) {
 		headers.Authorization = authorization;
 	}
-	this.socket = new WebSocket(this.url, {
+	return new WebSocket(url, {
 		headers,
 		protocols: 'harperdb-replication-v1',
 		key: readFileSync(private_key),
@@ -95,7 +96,7 @@ export class NodeReplicationConnection extends EventEmitter {
 	async connect() {
 		const tables = [];
 		// TODO: Need to do this specifically for each node
-		this.socket = createWebSocket(this.url);
+		this.socket = await createWebSocket(this.url);
 
 		let session;
 		this.socket.on('open', () => {
@@ -264,7 +265,7 @@ export function replicateOverWS(ws, options, authorization) {
 							});
 						break;
 					case OPERATION_REQUEST:
-						server.operation(data).then((response) => {
+						server.operation(data, { user: authorization }, true).then((response) => {
 							response.requestId = data.requestId;
 							ws.send(encode([OPERATION_RESPONSE, response]));
 						});

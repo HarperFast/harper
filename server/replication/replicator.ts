@@ -243,9 +243,15 @@ function getConnection(url, subscription, db_name) {
 }
 export async function sendOperationToNode(node, operation, authorization) {
 	const socket = await createWebSocket(node.url, authorization);
+	replicateOverWS(socket, {}, {});
 	operation.requestId = next_id++;
-	this.socket.send(encode([OPERATION_REQUEST, operation]));
-	return new Promise((resolve, reject) => awaiting_response.set(operation.requestId, { resolve, reject }));
+	return new Promise((resolve, reject) => {
+		socket.on('open', () => {
+			socket.send(encode([OPERATION_REQUEST, operation]));
+			awaiting_response.set(operation.requestId, { resolve, reject });
+		});
+		socket.on('error', reject);
+	});
 }
 export async function subscribeToNode(request) {
 	try {

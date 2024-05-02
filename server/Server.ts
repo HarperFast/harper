@@ -18,7 +18,7 @@ interface Server {
 	): void;
 	contentTypes: Map<string, ContentTypeHandler>;
 	getUser(username: string, password: string | null, request: Request): any;
-	operation(operation: any, authorize?: boolean): Promise<any>;
+	operation(operation: any, context: any, authorize?: boolean): Promise<any>;
 }
 interface ServerOptions {
 	port?: number;

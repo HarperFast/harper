@@ -12,6 +12,7 @@ const { ErrorCode } = require('nats');
 const { parentPort } = require('worker_threads');
 const { onMessageByType } = require('../../server/threads/manageThreads');
 const { getThisNodeName } = require('../../server/replication/replicator');
+const { requestClusterStatus } = require('../../server/replication/subscriptionManager');
 
 const clustering_enabled = env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED);
 const this_node_name = env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
@@ -32,16 +33,22 @@ onMessageByType('cluster-status', async (message) => {
  * @returns {Promise<{is_enabled: *, node_name: *, connections: *[]}>}
  */
 async function clusterStatus() {
-	if (env_mgr.get(hdb_terms.CONFIG_PARAMS.REPLICATION_URL || hdb_terms.CONFIG_PARAMS.REPLICATION_NODENAME)) {
-		parentPort.postMessage({ type: 'request-cluster-status' });
-		const { connections } = await new Promise((resolve) => {
-			cluster_status_resolve = resolve;
-		});
-		return {
-			node_name: getThisNodeName(),
-			is_enabled: true, // if we have replication, replication is enabled
-			connections,
-		};
+	if (
+		env_mgr.get(hdb_terms.CONFIG_PARAMS.REPLICATION_URL) ||
+		env_mgr.get(hdb_terms.CONFIG_PARAMS.REPLICATION_NODENAME)
+	) {
+		let response;
+		if (parentPort) {
+			parentPort.postMessage({ type: 'request-cluster-status' });
+			response = await new Promise((resolve) => {
+				cluster_status_resolve = resolve;
+			});
+		} else {
+			response = await requestClusterStatus();
+		}
+		response.node_name = getThisNodeName();
+		response.is_enabled = true; // if we have replication, replication is enabled
+		return response;
 	}
 	const response = {
 		node_name: this_node_name,
