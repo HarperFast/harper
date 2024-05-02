@@ -11,6 +11,12 @@ on:
         required: false
         type: boolean
         default: false
+      # this will default to false -- being called from another workflow, let that workflow handle building the artifact
+      build:
+        description: 'Do we need to build HarperDB first'
+        required: false
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       publish:
@@ -18,14 +24,19 @@ on:
         required: false
         type: boolean
         default: false
+      # this will default to true -- if we are calling this directly we will need to build to create the artifact
+      build:
+        description: 'Do we need to build HarperDB first'
+        required: false
+        type: boolean
+        default: true
 
 jobs:
   ####################
   #  Build HarperDB
   ####################
-  # only if workflow_dispatch
   build:
-    if: ${{ github.event_name == 'workflow_dispatch' }}
+    if: ${{ inputs.build }}
     uses: ./.github/workflows/build.yaml
 
   generate_and_upload:
