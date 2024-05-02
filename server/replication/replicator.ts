@@ -22,6 +22,9 @@ import { IterableEventQueue } from '../../resources/IterableEventQueue';
 import { onMessageByType } from '../threads/manageThreads';
 import {
 	NodeReplicationConnection,
+	createWebSocket,
+	OPERATION_REQUEST,
+	awaiting_response,
 	replicateOverWS,
 	database_subscriptions,
 	table_update_listeners,
@@ -34,8 +37,10 @@ import { readFileSync } from 'fs';
 import { EventEmitter } from 'events';
 export { startOnMainThread } from './subscriptionManager';
 import { subscribeToNodeUpdates, getHDBNodeTable } from './subscriptionManager';
+import { encode } from 'msgpackr';
 
 let replication_disabled;
+let next_id = 1; // for request ids
 
 export let servers = [];
 export function start(options) {
@@ -235,6 +240,18 @@ function getConnection(url, subscription, db_name) {
 	db_connections.set(db_name, (connection = new NodeReplicationConnection(url, subscription, db_name)));
 	connection.connect();
 	return connection;
+}
+export async function sendOperationToNode(node, operation, authorization) {
+	const socket = await createWebSocket(node.url, authorization);
+	replicateOverWS(socket, {}, {});
+	operation.requestId = next_id++;
+	return new Promise((resolve, reject) => {
+		socket.on('open', () => {
+			socket.send(encode([OPERATION_REQUEST, operation]));
+			awaiting_response.set(operation.requestId, { resolve, reject });
+		});
+		socket.on('error', reject);
+	});
 }
 export async function subscribeToNode(request) {
 	try {

@@ -23,6 +23,8 @@ import * as logger from '../../utility/logging/harper_logger';
 import { disconnectedFromNode, connectedToNode, getHDBNodeTable } from './subscriptionManager';
 import { EventEmitter } from 'events';
 import { rootCertificates } from 'node:tls';
+import { broadcast } from '../../server/threads/manageThreads';
+//import { operation } from '../../server/serverHelpers/serverUtilities';
 
 const SUBSCRIBE_CODE = 129;
 const SEND_NODE_NAME = 140;
@@ -31,18 +33,52 @@ const DISCONNECT = 142;
 const SEND_RESIDENCY_LIST = 130;
 const SEND_TABLE_STRUCTURE = 131;
 const SEND_TABLE_FIXED_STRUCTURE = 132;
-const OPERATION_REQUEST = 136;
+export const OPERATION_REQUEST = 136;
 const OPERATION_RESPONSE = 137;
 const PING = 138;
 const PONG = 139;
+const COMMITTED_UPDATE = 143;
 export const table_update_listeners = new Map();
 export const database_subscriptions = new Map();
 const DEBUG_MODE = true;
 const PING_INTERVAL = 30000;
-
+export let awaiting_response = new Map();
 /**
  * Handles reconnection, and requesting catch-up
  */
+
+export async function createWebSocket(url, authorization) {
+	const private_key = env.get('tls_privateKey');
+	let certificate_authorities = new Set();
+	let cert;
+	if (url.includes('wss://')) {
+		for await (const node of databases.system.hdb_nodes.search([])) {
+			if (node.ca) certificate_authorities.add(node.ca);
+		}
+
+		for await (const node of databases.system.hdb_certificate.search([])) {
+			// TODO: Criteria for the best certificate for the client connection (based on the server CA)
+			cert = node.certificate;
+		}
+	}
+	const headers = {};
+	if (authorization) {
+		headers.Authorization = authorization;
+	}
+	return new WebSocket(url, {
+		headers,
+		protocols: 'harperdb-replication-v1',
+		key: readFileSync(private_key),
+		ciphers: env.get('tls_ciphers'),
+		cert,
+		// for client connections, we can add our certificate authority to the root certificates
+		// to authorize the server certificate (both public valid certificates and privately signed certificates are acceptable)
+		ca: [...rootCertificates, ...certificate_authorities],
+		// we set this very high (16x times the default) because it can be a bit expensive to switch back and forth
+		// between push and pull mode
+		highWaterMark: 256 * 1024,
+	});
+}
 export class NodeReplicationConnection extends EventEmitter {
 	socket: WebSocket;
 	startTime: number;
@@ -60,31 +96,7 @@ export class NodeReplicationConnection extends EventEmitter {
 	async connect() {
 		const tables = [];
 		// TODO: Need to do this specifically for each node
-		const private_key = env.get('tls_privateKey');
-		let certificate_authorities = new Set();
-		let cert;
-		if (this.url.includes('wss://')) {
-			for await (const node of databases.system.hdb_nodes.search([])) {
-				if (node.ca) certificate_authorities.add(node.ca);
-			}
-
-			for await (const node of databases.system.hdb_certificate.search([])) {
-				// TODO: Criteria for the best certificate for the client connection (based on the server CA)
-				cert = node.certificate;
-			}
-		}
-		this.socket = new WebSocket(this.url, {
-			protocols: 'harperdb-replication-v1',
-			key: readFileSync(private_key),
-			ciphers: env.get('tls_ciphers'),
-			cert,
-			// for client connections, we can add our certificate authority to the root certificates
-			// to authorize the server certificate (both public valid certificates and privately signed certificates are acceptable)
-			ca: [...rootCertificates, ...certificate_authorities],
-			// we set this very high (16x times the default) because it can be a bit expensive to switch back and forth
-			// between push and pull mode
-			highWaterMark: 256 * 1024,
-		});
+		this.socket = await createWebSocket(this.url);
 
 		let session;
 		this.socket.on('open', () => {
@@ -253,9 +265,16 @@ export function replicateOverWS(ws, options, authorization) {
 							});
 						break;
 					case OPERATION_REQUEST:
-						server.operation(data).then((response) => {
+						server.operation(data, { user: authorization }, true).then((response) => {
+							response.requestId = data.requestId;
 							ws.send(encode([OPERATION_RESPONSE, response]));
 						});
+						break;
+					case OPERATION_RESPONSE:
+						const { resolve, reject } = awaiting_response.get(data.requestId);
+						if (data.error) reject(data.error);
+						else resolve(data);
+						awaiting_response.delete(data.requestId);
 						break;
 					case SEND_TABLE_FIXED_STRUCTURE:
 						const table_name = message[3];
@@ -290,12 +309,17 @@ export function replicateOverWS(ws, options, authorization) {
 						const residency_id = table_id;
 						received_residency_lists[residency_id] = data;
 						break;
+					case COMMITTED_UPDATE:
+						// we need to record the sequence number that the remote node has received
+						broadcast({
+							type: 'replicated',
+							database: database_name,
+							node: remote_node_name,
+							time: data,
+						});
+						break;
 					case SUBSCRIBE_CODE:
 						const [action, db, , , node_subscriptions] = message;
-						/*const decoder = (body.dataView = new Decoder(body.buffer, body.byteOffset, body.byteLength));
-						const db_length = body[1];
-						const database_name = body.toString('utf8', 2, db_length + 2);
-						const start_time = decoder.getFloat64(2 + db_length);*/
 						// permission check to make sure that this node is allowed to subscribe to this database, that is that
 						// we have publish permission for this node/database
 						if (
@@ -657,6 +681,12 @@ export function replicateOverWS(ws, options, authorization) {
 					user: audit_record.user,
 					beginTxn: begin_txn,
 				};
+				if (begin_txn) {
+					event.onCommit = () => {
+						// we need to wait for the commit message before we can send confirmation
+						audit_record.lo;
+					};
+				}
 				begin_txn = false;
 				// TODO: Once it is committed, also record the localtime in the table with symbol metadata, so we can resume from that point
 				if (DEBUG_MODE)

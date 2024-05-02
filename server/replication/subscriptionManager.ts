@@ -181,34 +181,35 @@ export function startOnMainThread(options) {
 			}
 		}
 	};
-
 	onMessageByType('disconnected-from-node', disconnectedFromNode);
 	onMessageByType('connected-to-node', connectedToNode);
-	onMessageByType('request-cluster-status', (message, port) => {
-		const connections = [];
-		for (let [, node] of node_map) {
-			const db_replication_map = connection_replication_map.get(node.url);
-			const databases = [];
-			if (db_replication_map) {
-				for (let [database, { worker, connected, nodes, latency }] of db_replication_map) {
-					databases.push({
-						database,
-						connected,
-						latency,
-						threadId: worker.threadId,
-						nodes: nodes.map((node) => node.name),
-					});
-				}
+	onMessageByType('request-cluster-status', requestClusterStatus);
+}
+export function requestClusterStatus(message, port) {
+	const connections = [];
+	for (let [, node] of node_map) {
+		const db_replication_map = connection_replication_map.get(node.url);
+		const databases = [];
+		if (db_replication_map) {
+			for (let [database, { worker, connected, nodes, latency }] of db_replication_map) {
+				databases.push({
+					database,
+					connected,
+					latency,
+					threadId: worker?.threadId,
+					nodes: nodes.map((node) => node.name),
+				});
 			}
-			node = Object.assign({}, node);
-			node.database_sockets = databases;
-			connections.push(node);
 		}
-		port.postMessage({
-			type: 'cluster-status',
-			connections,
-		});
+		node = Object.assign({}, node);
+		node.database_sockets = databases;
+		connections.push(node);
+	}
+	port?.postMessage({
+		type: 'cluster-status',
+		connections,
 	});
+	return { connections };
 }
 
 if (parentPort) {

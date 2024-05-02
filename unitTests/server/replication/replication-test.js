@@ -1,7 +1,7 @@
 const assert = require('assert');
 const sinon = require('sinon');
 const { getMockLMDBPath } = require('../../test_utils');
-const { start, setReplicator, servers, startOnMainThread } = require('../../../server/replication/replicator');
+const { start, setReplicator, servers, sendOperationToNode } = require('../../../server/replication/replicator');
 const { table, databases } = require('../../../resources/databases');
 const { setMainIsWorker } = require('../../../server/threads/manageThreads');
 const { listenOnPorts } = require('../../../server/threads/threadServer');
@@ -11,6 +11,7 @@ const { get: env_get } = require('../../..//utility/environment/environmentManag
 const env = require('../../../utility/environment/environmentManager');
 const { fork } = require('node:child_process');
 const { createTestTable, createNode } = require('./setup-replication');
+const { clusterStatus } = require('../../../utility/clustering/clusterStatus');
 
 describe('Replication', () => {
 	let TestTable;
@@ -39,6 +40,9 @@ describe('Replication', () => {
 		child_processes.push(child_process);
 		child_process.on('error', (error) => {
 			console.log('error from child_process:', error);
+		});
+		child_process.on('exit', (error) => {
+			console.log('exit from child_process:', error);
 		});
 		return new Promise((resolve) => {
 			child_process.on('message', (message) => {
@@ -113,6 +117,11 @@ describe('Replication', () => {
 			assert.equal(result.name, name);
 			break;
 		} while (true);
+	});
+	it('Can send operation API over WebSocket with replication protocol', async function () {
+		const cluster_status = await sendOperationToNode({ url: 'ws://localhost:9326' }, { operation: 'cluster_status' });
+		assert(cluster_status.connections.length >= 1);
+		assert.equal(cluster_status.node_name, 'node-2');
 	});
 	describe('With third node', function () {
 		before(async function () {

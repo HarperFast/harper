@@ -1,3 +1,4 @@
+console.error('starintg setup-replication.js', process.pid);
 require('../../test_utils');
 const { start, setReplicator, startOnMainThread } = require('../../../server/replication/replicator');
 const { table, databases } = require('../../../resources/databases');
@@ -6,6 +7,7 @@ const { listenOnPorts } = require('../../../server/threads/threadServer');
 const env = require('../../..//utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('../../../utility/hdbTerms');
 const { get: env_get } = require('../../../utility/environment/environmentManager');
+const { clusterStatus } = require('../../../utility/clustering/clusterStatus');
 
 exports.createTestTable = async function createTestTable(index, database_path) {
 	const database_name = 'test-replication-' + index;
@@ -59,6 +61,12 @@ exports.createNode = async function createNode(index, database_path, node_count)
 	setMainIsWorker(true);
 	startOnMainThread(options);
 	start(options);
-
 	await listenOnPorts();
+	if (!server.operation) {
+		server.operation = (request) => {
+			if (request.operation === 'cluster_status') {
+				return clusterStatus();
+			} else throw new Error('not available');
+		};
+	}
 };

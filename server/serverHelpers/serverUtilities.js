@@ -211,12 +211,14 @@ _assignPackageExport('operation', operation);
 /**
  * Standalone function to execute an operation
  * @param {*} operation
+ * @param {*} context
  * @param {*} authorize?: boolean
  * @returns
  */
-function operation(operation, authorize) {
-	operation.hdb_user = this[CONTEXT]?.user;
-	operation.bypass_auth = !authorize;
+function operation(operation, context, authorize) {
+	operation.hdb_user = context?.user;
+	operation.bypass_auth = !context.authorize;
+	context.authorize = false;
 	const operation_function = chooseOperation(operation);
 	return processLocalTransaction({ body: operation }, operation_function);
 }
