@@ -53,7 +53,7 @@ async function http(request, next_handler) {
 			if (cache_control.includes('must-revalidate')) request.mustRevalidate = true;
 		}
 		let response_data = await transaction(request, () => {
-			if (method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'QUERY') {
+			if (headers_object['content-length'] || headers_object['transfer-encoding']) {
 				// TODO: Support cancellation (if the request otherwise fails or takes too many bytes)
 				try {
 					request.data = getDeserializer(headers_object['content-type'], true)(request.body, request.headers);
