@@ -838,7 +838,7 @@ export function makeTable(options) {
 				nodeName: context?.nodeName,
 				validate: (txn_time) => {
 					if (!record_update) record_update = this[OWN_DATA];
-					if (full_update || (record_update && hasChanges(record_update))) {
+					if (full_update || (record_update && hasChanges(this[OWN_DATA] === record_update ? this : record_update))) {
 						if (!context?.source) {
 							transaction.checkOverloaded();
 							this.validate(record_update, !full_update);
@@ -898,7 +898,7 @@ export function makeTable(options) {
 							throw new Error('Can not assign a record to a record, check for circular references');
 						if (!full_update) this[RECORD_PROPERTY] = existing_entry?.value ?? null;
 					}
-					this[OWN_DATA] = record_update;
+					this[OWN_DATA] = undefined; // once we are committing to write this update, we no longer should track the changes, and want to avoid double application (of any CRDTs)
 					this[VERSION_PROPERTY] = txn_time;
 					const existing_record = existing_entry?.value;
 					let update_to_apply = record_update;

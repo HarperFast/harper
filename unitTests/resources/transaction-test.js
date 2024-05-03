@@ -222,5 +222,21 @@ describe('Transactions', () => {
 			assert.equal(entity.get('propertyA'), 'valueA');
 			assert.equal(entity.get('propertyB'), 'valueB');
 		});
+		it('Can update new object and addTo consecutively replication updates', async function () {
+			class WithCountOnGet extends TxnTest {
+				get() {
+					if (!this.doesExist()) {
+						this.update({ name: 'another counter' });
+					}
+					this.addTo('count', 1);
+					return super.get();
+				}
+			}
+			await WithCountOnGet.delete(67);
+			let instance = await WithCountOnGet.get(67);
+			assert.equal(instance.count, 1);
+			instance = await WithCountOnGet.get(67);
+			assert.equal(instance.count, 2);
+		});
 	});
 });
