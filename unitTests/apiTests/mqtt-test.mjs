@@ -276,6 +276,11 @@ describe('test MQTT connections and commands', () => {
 			protocol: 'mqtt',
 			username: 'restricted',
 			password: 'restricted',
+			will: {
+				topic,
+				payload: JSON.stringify({ name: 'last will and testimony that should not be published' }),
+				qos: 1,
+			}
 		});
 		let published_messages = [];
 		await new Promise((resolve, reject) => {
@@ -303,6 +308,8 @@ describe('test MQTT connections and commands', () => {
 				reject(error);
 			});
 		});
+		client.end(true); // force close to trigger the will message
+		await delay(50);
 		assert.equal(published_messages.length, 0);
 	});
 	it('subscribe to retained record with upsert operation', async function () {

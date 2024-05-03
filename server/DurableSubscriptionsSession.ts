@@ -331,13 +331,16 @@ class SubscriptionsSession {
 		if (this.keepaliveTimer) clearTimeout(this.keepaliveTimer);
 		const context = this.createContext();
 		transaction(context, async () => {
-			if (!client_terminated) {
-				const will = await LastWill.get(this.sessionId);
-				if (will?.doesExist()) {
-					await publish(will, will.data, context);
+			try {
+				if (!client_terminated) {
+					const will = await LastWill.get(this.sessionId);
+					if (will?.doesExist()) {
+						await publish(will, will.data, context);
+					}
 				}
+			} finally {
+				await LastWill.delete(this.sessionId);
 			}
-			await LastWill.delete(this.sessionId);
 		}).catch((error) => {
 			warn(`Error publishing MQTT will for ${this.sessionId}`, error);
 		});
