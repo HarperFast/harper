@@ -693,7 +693,7 @@ export function makeTable(options) {
 					if (own_data) updates = Object.assign(own_data, updates);
 					this[OWN_DATA] = own_data = updates;
 				}
-			}
+			} else if (!this[OWN_DATA]) this[OWN_DATA] = {};
 			this._writeUpdate(this[OWN_DATA], full_update);
 			return this;
 		}
@@ -898,7 +898,7 @@ export function makeTable(options) {
 							throw new Error('Can not assign a record to a record, check for circular references');
 						if (!full_update) this[RECORD_PROPERTY] = existing_entry?.value ?? null;
 					}
-					this[OWN_DATA] = record_update;
+					this[OWN_DATA] = undefined; // once we are committing to write this update, we no longer should track the changes, and want to avoid double application (of any CRDTs)
 					this[VERSION_PROPERTY] = txn_time;
 					const existing_record = existing_entry?.value;
 					let update_to_apply = record_update;
