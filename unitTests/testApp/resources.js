@@ -51,6 +51,10 @@ export class SimpleCache extends tables.SimpleCache.sourcedFrom(SimpleCacheSourc
 	post(data) {
 		if (data.invalidate) this.invalidate();
 	}
+	async delete(query) {
+		tables.SimpleCache.lastDeleteData = await this.getContext()?.data;
+		return super.delete(query);
+	}
 }
 export class FourPropWithHistory extends tables.FourProp {
 	static acknowledgements = 0;

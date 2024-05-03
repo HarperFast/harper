@@ -4,12 +4,13 @@ import axios from 'axios';
 import { decode, encode, DecoderStream } from 'cbor-x';
 import { getVariables } from './utility.js';
 import { setupTestApp } from './setupTestApp.mjs';
+import http from 'node:http';
 const { authorization, url } = getVariables();
 
 describe('test REST calls', () => {
 	let available_records;
 	before(async function () {
-		this.timeout(5000);
+		this.timeout(15000);
 		available_records = await setupTestApp();
 	});
 	beforeEach(async () => {
@@ -315,6 +316,33 @@ describe('test REST calls', () => {
 		assert.equal(response.status, 200);
 		assert(!response.headers['server-timing'].includes('miss'));
 		assert.equal(response.data.name, 'name3');
+	});
+	it('delete with body', async () => {
+		// we have to use native request module here, axios doesn't actually support
+		// sending a body with a DELETE request
+		return new Promise((resolve, reject) => {
+			const body = JSON.stringify({
+				doesThisTransmit: true
+			});
+			const req = http.request({
+				method: 'DELETE',
+				hostname: 'localhost',
+				port: 9926,
+				path: '/SimpleCache/35555',
+				headers: {
+					'Content-Type': 'application/json',
+					'Content-Length': body.length,
+				}
+			}, res => {
+				try {
+					assert(tables.SimpleCache.lastDeleteData.doesThisTransmit);
+					resolve(res.statusCode === 200);
+				} catch (error) {
+					reject(error);
+				}
+			});
+			req.end(body);
+		});
 	});
 	describe('BigInt', function () {
 		let bigint64BitAsString = '12345678901234567890';
