@@ -267,13 +267,6 @@ async function ingestConsumer(stream_name, js, jsm, domain) {
 				harper_logger.error('Error consuming clustering ingest, restarting consumer', err);
 			}
 		}
-
-		// Re-init any cached Nats client connections
-		nats_utils.clearClientCache();
-
-		if (!shutdown && called_by_stop) {
-			await initialize();
-		}
 	}
 }
 

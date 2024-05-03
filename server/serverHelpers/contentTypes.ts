@@ -55,6 +55,11 @@ media_types.set('text/csv', {
 		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
 		return toCsvStream(data, data?.getColumns?.());
 	},
+	serialize(data, response) {
+		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
+		if (data && !data[Symbol.iterator]) data = [data.toJSON ? data.toJSON() : data];
+		return toCsvStream(data, data?.getColumns?.());
+	},
 	q: 0.1,
 });
 media_types.set('text/plain', {

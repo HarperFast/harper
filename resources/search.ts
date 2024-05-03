@@ -1035,8 +1035,10 @@ function typedDecoding(value) {
 	if (value === 'null') return null;
 	if (value.indexOf(':') > -1) {
 		const [type, value_to_coerce] = value.split(':');
-		if (type === 'number') return +value_to_coerce;
-		else if (type === 'boolean') return value_to_coerce === 'true';
+		if (type === 'number') {
+			if (value_to_coerce[0] === '$') return parseInt(value_to_coerce.slice(1), 36);
+			return +value_to_coerce;
+		} else if (type === 'boolean') return value_to_coerce === 'true';
 		else if (type === 'date')
 			return new Date(isNaN(value_to_coerce) ? decodeURIComponent(value_to_coerce) : +value_to_coerce);
 		else if (type === 'string') return decodeURIComponent(value_to_coerce);
