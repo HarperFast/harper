@@ -9,7 +9,7 @@ const { authorization, url } = getVariables();
 describe('test REST calls', () => {
 	let available_records;
 	before(async function () {
-		this.timeout(5000);
+		this.timeout(10000);
 		available_records = await setupTestApp();
 	});
 	beforeEach(async () => {

@@ -693,7 +693,7 @@ export function makeTable(options) {
 					if (own_data) updates = Object.assign(own_data, updates);
 					this[OWN_DATA] = own_data = updates;
 				}
-			} else if (!this[OWN_DATA]) this[OWN_DATA] = {};
+			}
 			this._writeUpdate(this[OWN_DATA], full_update);
 			return this;
 		}
@@ -838,7 +838,7 @@ export function makeTable(options) {
 				nodeName: context?.nodeName,
 				validate: (txn_time) => {
 					if (!record_update) record_update = this[OWN_DATA];
-					if (full_update || (record_update && hasChanges(record_update))) {
+					if (full_update || (record_update && hasChanges(this[OWN_DATA] === record_update ? this : record_update))) {
 						if (!context?.source) {
 							transaction.checkOverloaded();
 							this.validate(record_update, !full_update);
