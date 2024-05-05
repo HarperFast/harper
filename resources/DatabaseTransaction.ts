@@ -179,7 +179,9 @@ export class DatabaseTransaction implements Transaction {
 				}
 			}
 		};
-		if (this.writes.length < MAX_OPTIMISTIC_SIZE >> retries) nextCondition();
+		let lmdb_db = this.lmdbDb;
+		if (lmdb_db?.retryRisk) lmdb_db.retryRisk *= 0.99; // gradually decay the retry risk
+		if (this.writes.length + (lmdb_db?.retryRisk || 0) < MAX_OPTIMISTIC_SIZE >> retries) nextCondition();
 		else {
 			// if it is too big to expect optimistic writes to work, or we have done too many retries we use
 			// a real LMDB transaction to get exclusive access to reading and writing
@@ -219,6 +221,7 @@ export class DatabaseTransaction implements Transaction {
 						};
 					});
 				} else {
+					if (lmdb_db) lmdb_db.retryRisk = (lmdb_db.retryRisk || 0) + MAX_OPTIMISTIC_SIZE / 2;
 					if (options) options.retries = retries + 1;
 					else options = { retries: 1 };
 					return this.commit(options); // try again
