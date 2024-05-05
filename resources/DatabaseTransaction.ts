@@ -180,19 +180,21 @@ export class DatabaseTransaction implements Transaction {
 			}
 		};
 		let lmdb_db = this.lmdbDb;
-		if (lmdb_db?.retryRisk) lmdb_db.retryRisk *= 0.99; // gradually decay the retry risk
-		if (this.writes.length + (lmdb_db?.retryRisk || 0) < MAX_OPTIMISTIC_SIZE >> retries) nextCondition();
-		else {
-			// if it is too big to expect optimistic writes to work, or we have done too many retries we use
-			// a real LMDB transaction to get exclusive access to reading and writing
-			resolution = this.writes[0].store.transaction(() => {
-				for (const write of this.writes) {
-					// we load latest data while in the transaction
-					write.entry = write.store.getEntry(write.key);
-					doWrite(write);
-				}
-				return true; // success. always success
-			});
+		if (this.writes.length > 0) {
+			if (lmdb_db?.retryRisk) lmdb_db.retryRisk *= 0.99; // gradually decay the retry risk
+			if (this.writes.length + (lmdb_db?.retryRisk || 0) < MAX_OPTIMISTIC_SIZE >> retries) nextCondition();
+			else {
+				// if it is too big to expect optimistic writes to work, or we have done too many retries we use
+				// a real LMDB transaction to get exclusive access to reading and writing
+				resolution = this.writes[0].store.transaction(() => {
+					for (const write of this.writes) {
+						// we load latest data while in the transaction
+						write.entry = write.store.getEntry(write.key);
+						doWrite(write);
+					}
+					return true; // success. always success
+				});
+			}
 		}
 
 		if (resolution) {
