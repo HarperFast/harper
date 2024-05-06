@@ -276,9 +276,14 @@ describe('test MQTT connections and commands', () => {
 			protocol: 'mqtt',
 			username: 'restricted',
 			password: 'restricted',
+			will: {
+				topic,
+				payload: JSON.stringify({ name: 'last will and testimony that should not be published' }),
+				qos: 1,
+			}
 		});
 		let published_messages = [];
-		await new Promise((resolve) => {
+		await new Promise((resolve, reject) => {
 			client.on('connect', function () {
 				client.subscribe(topic, function (err, subscriptions) {
 					assert.equal(subscriptions[0].qos, 128);
@@ -299,9 +304,12 @@ describe('test MQTT connections and commands', () => {
 
 			client.on('error', function (error) {
 				// message is Buffer
-				console.error(error);
+				console.error('Error connecting to restricted client', error);
+				reject(error);
 			});
 		});
+		client.end(true); // force close to trigger the will message
+		await delay(50);
 		assert.equal(published_messages.length, 0);
 	});
 	it('subscribe to retained record with upsert operation', async function () {
@@ -1008,13 +1016,16 @@ describe('test MQTT connections and commands', () => {
 		let events_received = [];
 		server.mqtt.events.on('connection', (a1, a2) => {
 			events_received.push('connection');
-		})
+		});
 		server.mqtt.events.on('connected', (a1, a2) => {
 			events_received.push('connected');
-		})
+		});
 		server.mqtt.events.on('disconnected', (a1, a2) => {
 			events_received.push('disconnected');
-		})
+		});
+		server.mqtt.events.on('error', (a1, a2) => {
+			events_received.push('error');
+		});
 		let client = connect('mqtt://localhost:1883', {
 			clean: true,
 			clientId: 'test-client1',
@@ -1023,6 +1034,7 @@ describe('test MQTT connections and commands', () => {
 			client.on('connect', resolve);
 			client.on('error', reject);
 		});
+		await new Promise((resolve) => client.subscribe('this does not exist', { qos: 1 }, resolve));
 		client.end();
 		await new Promise((resolve, reject) => {
 			setTimeout(resolve, 20);
@@ -1030,6 +1042,7 @@ describe('test MQTT connections and commands', () => {
 		assert(events_received.includes('connection'));
 		assert(events_received.includes('connected'));
 		assert(events_received.includes('disconnected'));
+		assert(events_received.includes('error'));
 	});
 	it('subscribe root with history', async function () {
 		// this first connection is a tear down to remove any previous durable session with this id

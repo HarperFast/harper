@@ -20,11 +20,16 @@ export function bypassAuth() {
 
 export function start({ server, port, network, webSocket, securePort, requireAuthentication }) {
 	// here we basically normalize the different types of sockets to pass to our socket/message handler
-	const mqtt_settings = (server.mqtt = server.mqtt || {
-		requireAuthentication,
-		sessions: new Set(),
-		events: new EventEmitter(),
-	});
+	if (!server.mqtt) {
+		server.mqtt = {
+			requireAuthentication,
+			sessions: new Set(),
+			events: new EventEmitter(),
+		};
+		// a no-op error handler to prevent unhandled error events from being rethrown
+		server.mqtt.events.on('error', () => {});
+	}
+	const mqtt_settings = server.mqtt;
 	let server_instance;
 	const mtls = network?.mtls;
 	if (webSocket)
@@ -101,6 +106,7 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 								);
 							}
 						} catch (error) {
+							mqtt_settings.events.emit('error', error, socket);
 							mqtt_log.error(error);
 						}
 					} else if (mtls.required) {
@@ -153,7 +159,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 		number_of_connections--;
 		if (!disconnected) {
 			disconnected = true;
-			session?.disconnect();
+			session?.disconnect?.();
 			mqtt_settings.events.emit('disconnected', session, socket);
 			mqtt_settings.sessions.delete(session);
 			recordActionBinary(false, 'connection', 'mqtt', 'disconnect');
@@ -165,6 +171,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 		if (user?.then) user = await user;
 		if (session?.then) await session;
 		try {
+			session?.receivedPacket?.();
 			switch (packet.cmd) {
 				case 'connect':
 					mqtt_options.protocolVersion = packet.protocolVersion;
@@ -282,6 +289,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 						try {
 							granted_qos = (await session.addSubscription(subscription, subscription.qos >= 1)).qos || 0;
 						} catch (error) {
+							mqtt_settings.events.emit('error', error, socket, subscription, session);
 							mqtt_log.error(error);
 							granted_qos =
 								mqtt_options.protocolVersion < 5
@@ -333,6 +341,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					try {
 						published = await session.publish(packet, data);
 					} catch (error) {
+						mqtt_settings.events.emit('error', error, socket, packet, session);
 						mqtt_log.warn(error);
 						if (packet.qos > 0) {
 							sendPacket(
@@ -389,6 +398,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					break;
 			}
 		} catch (error) {
+			mqtt_settings.events.emit('error', error, socket, packet, session);
 			mqtt_log.error(error);
 			sendPacket({
 				// Send a subscription acknowledgment

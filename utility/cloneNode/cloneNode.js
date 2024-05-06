@@ -223,7 +223,7 @@ async function cloneConfig() {
 
 		if (name.includes('_package') || name.includes('_port')) {
 			// This is here to stop local leader component config from being cloned
-			if (leader_config_flat[name].includes?.('hdb/components')) continue;
+			if (leader_config_flat[name]?.includes?.('hdb/components')) continue;
 
 			if (exclude_comps) {
 				let excluded_comp = false;

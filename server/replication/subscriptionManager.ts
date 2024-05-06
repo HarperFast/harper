@@ -14,10 +14,12 @@ import { readFileSync } from 'fs';
 
 let hdb_node_table;
 let connection_replication_map = new Map();
-export let disconnectedFromNode;
-export let connectedToNode;
-let node_map = new Map();
+export let disconnectedFromNode; // this is set by thread to handle when a node is disconnected (or notify main thread so it can handle)
+export let connectedToNode; // this is set by thread to handle when a node is connected (or notify main thread so it can handle)
+let node_map = new Map(); // this is a map of all nodes that are available to connect to
 export function startOnMainThread(options) {
+	// we do all of the main management of tracking connections and subscriptions on the main thread and delegate
+	// the actual work to the worker threads
 	let new_node_listeners = [];
 	let all_nodes: any[];
 	let next_worker_index = 0;
@@ -54,6 +56,11 @@ export function startOnMainThread(options) {
 		}
 	}
 	whenThreadsStarted.then(() => subscribeToNodeUpdates(onNewNode));
+
+	/**
+	 * This is called when a new node is added to the hdb_nodes table
+	 * @param node
+	 */
 	function onNewNode(node) {
 		if ((getThisNodeName() && node.name === getThisNodeName()) || (getThisNodeUrl() && node.name === getThisNodeUrl()))
 			// this is just this node, we don't need to connect to ourselves
@@ -185,6 +192,13 @@ export function startOnMainThread(options) {
 	onMessageByType('connected-to-node', connectedToNode);
 	onMessageByType('request-cluster-status', requestClusterStatus);
 }
+
+/**
+ * This is called when a request is made to get the cluster status. This should be executed only on the main thread
+ * and will return the status of all replication connections (for each database)
+ * @param message
+ * @param port
+ */
 export function requestClusterStatus(message, port) {
 	const connections = [];
 	for (let [, node] of node_map) {

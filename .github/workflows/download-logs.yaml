@@ -1,11 +1,21 @@
+name: "Download logs from instances"
+
 on:
   workflow_call:
     inputs:
       publicDns:
         required: true
         type: string
-name: "Download logs from instances"
+      artifactName:
+        required: false
+        type: string
+        default: logs
+
 jobs:
+
+  ################
+  # Download Logs
+  ################
   downloadLogs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -42,10 +52,14 @@ jobs:
           echo "Ending work on: $public_dns_name"
         done
         mv logs-artifact harperdb
+
+      ######################
+      # Upload Log Artifact
+      ######################
     - name: 'Upload Log Artifact'
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: logs
+        name: ${{ inputs.artifactName }}
         path: logs-artifact/
         retention-days: 1

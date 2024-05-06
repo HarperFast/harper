@@ -35,8 +35,6 @@ const SEND_TABLE_STRUCTURE = 131;
 const SEND_TABLE_FIXED_STRUCTURE = 132;
 export const OPERATION_REQUEST = 136;
 const OPERATION_RESPONSE = 137;
-const PING = 138;
-const PONG = 139;
 const COMMITTED_UPDATE = 143;
 export const table_update_listeners = new Map();
 export const database_subscriptions = new Map();
@@ -194,14 +192,27 @@ export function replicateOverWS(ws, options, authorization) {
 	if (remote_node_name && options.connection) options.connection.nodeName = remote_node_name;
 	let last_sequence_id_received;
 	const this_node_url = env.get('replication_url');
-	let ping_interval, last_ping_time;
+	let send_ping_interval, receive_ping_timer, last_ping_time;
 	if (options.url) {
 		const send_ping = () => {
-			last_ping_time = performance.now();
-			ws.send(encode([PING]));
+			if (last_ping_time) ws.terminate(); // timeout
+			else {
+				last_ping_time = performance.now();
+				ws.ping();
+			}
 		};
-		ping_interval = setInterval(send_ping, PING_INTERVAL);
+		send_ping_interval = setInterval(send_ping, PING_INTERVAL);
 		send_ping(); // send the first ping immediately so we can measure latency
+	} else {
+		resetPingTimer();
+	}
+	function resetPingTimer() {
+		logger.info(`Resetting ping timer for ${remote_node_name}`);
+		clearTimeout(receive_ping_timer);
+		receive_ping_timer = setTimeout(() => {
+			logger.warn(`Timeout waiting for ping from ${remote_node_name}, terminating connection and reconnecting`);
+			ws.terminate();
+		}, PING_INTERVAL * 2);
 	}
 	if (database_name) {
 		setDatabase(database_name);
@@ -256,18 +267,6 @@ export function replicateOverWS(ws, options, authorization) {
 					}
 					case DISCONNECT:
 						close();
-						break;
-					case PING:
-						ws.send(encode([PONG]));
-						break;
-					case PONG:
-						if (options.connection)
-							connectedToNode({
-								name: remote_node_name,
-								database: database_name,
-								url: options.url,
-								latency: performance.now() - last_ping_time,
-							});
 						break;
 					case OPERATION_REQUEST:
 						server.operation(data, { user: authorization }, true).then((response) => {
@@ -718,8 +717,20 @@ export function replicateOverWS(ws, options, authorization) {
 			logger.error(connection_id, 'Error handling incoming replication message', error);
 		}
 	});
+	ws.on('ping', resetPingTimer);
+	ws.on('pong', () => {
+		logger.info(`Received ping response ${remote_node_name}`);
+		if (options.connection)
+			connectedToNode({
+				name: remote_node_name,
+				database: database_name,
+				url: options.url,
+				latency: performance.now() - last_ping_time,
+			});
+		last_ping_time = null;
+	});
 	ws.on('close', () => {
-		clearInterval(ping_interval);
+		clearInterval(send_ping_interval);
 		if (audit_subscription) audit_subscription.emit('close');
 		if (subscription_request) subscription_request.end();
 		logger.info(connection_id, 'closed');
