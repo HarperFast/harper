@@ -25,7 +25,7 @@ export function startOnMainThread(options) {
 	// make sure this node exists is in the hdb_nodes table
 	ensureNode(getThisNodeName(), {
 		url: getThisNodeUrl(),
-		ca: certificate_authority && readFileSync(certificate_authority),
+		ca: certificate_authority && readFileSync(certificate_authority, 'utf8'),
 	});
 	route_loop: for (const route of options.routes || []) {
 		try {
@@ -232,7 +232,7 @@ export function ensureNode(name: string, node) {
 	logger.info(`Ensuring node ${name} at ${node.url}`);
 	if (node.url && table.primaryStore.get(name)?.url !== node.url) {
 		logger.info(`Adding node ${name} at ${node.url}`);
-		table.put(node);
+		table.patch(node);
 	}
 }
 export function getHDBNodeTable() {
@@ -257,6 +257,15 @@ export function getHDBNodeTable() {
 				},
 				{
 					attribute: 'routes',
+				},
+				{
+					attribute: 'ca',
+				},
+				{
+					attribute: 'publish',
+				},
+				{
+					attribute: 'subscribe',
 				},
 				{
 					attribute: '__createdtime__',

@@ -49,16 +49,21 @@ export let awaiting_response = new Map();
 
 export async function createWebSocket(url, authorization) {
 	const private_key = env.get('tls_privateKey');
-	let certificate_authorities = new Set();
+	const certificate_authorities = new Set();
 	let cert;
 	if (url.includes('wss://')) {
 		for await (const node of databases.system.hdb_nodes.search([])) {
-			if (node.ca) certificate_authorities.add(node.ca);
+			if (node.ca) {
+				certificate_authorities.add(node.ca);
+			}
 		}
 
 		for await (const node of databases.system.hdb_certificate.search([])) {
+			if (node.name === urlToNodeName(url)) {
+				cert = node.certificate;
+				break;
+			}
 			// TODO: Criteria for the best certificate for the client connection (based on the server CA)
-			cert = node.certificate;
 		}
 	}
 	const headers = {};

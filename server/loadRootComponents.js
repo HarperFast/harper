@@ -1,5 +1,5 @@
 const { isMainThread } = require('worker_threads');
-const { getTables, table } = require('../resources/databases');
+const { getTables, getDatabases, table } = require('../resources/databases');
 const { loadComponentDirectories, loadComponent } = require('../components/componentLoader');
 const { resetResources } = require('../resources/Resources');
 const install_components = require('../components/installComponents');
@@ -8,6 +8,7 @@ const { dirname } = require('path');
 const { getConnection } = require('./nats/utility/natsUtils');
 const env_mgr = require('../utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('../utility/hdbTerms');
+const { CERT_CONFIG_NAME_MAP } = require('../utility/terms/certificates');
 const { readFileSync } = require('fs');
 
 let loaded_components = new Map();
@@ -48,37 +49,20 @@ function loadCertificates() {
 		CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATE,
 		CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY,
 	];
-	const certificate_table = table({
-		table: 'hdb_certificate',
-		database: 'system',
-		attributes: [
-			{
-				name: 'name',
-				isPrimaryKey: true,
-			},
-			{
-				attribute: 'uses',
-			},
-			{
-				attribute: 'certificate',
-			},
-			{
-				attribute: 'is_authority',
-			},
-		],
-	});
+	const certificate_table = getDatabases()['system']['hdb_certificate'];
 	let promise;
 	for (let config_key of CERTIFICATE_CONFIGS) {
 		const path = env_mgr.get(config_key);
 		if (path) {
 			promise = certificate_table.put({
-				name: config_key,
+				name: CERT_CONFIG_NAME_MAP[config_key],
 				uses: ['https', ...(config_key.includes('operations') ? ['operations'] : [])],
-				certificate: readFileSync(path),
+				certificate: readFileSync(path, 'utf8'),
 				is_authority: config_key.includes('uthority'),
 			});
 		}
 	}
 	return promise;
 }
+
 module.exports.loadRootComponents = loadRootComponents;

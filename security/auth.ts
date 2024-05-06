@@ -106,6 +106,10 @@ export async function authentication(request, next_handler) {
 			if (status === AUTH_AUDIT_STATUS.SUCCESS) auth_event_log.notify(log);
 			else auth_event_log.error(log);
 		};
+
+		if (!request.authorized && request?._nodeRequest?.socket?.authorizationError)
+			auth_event_log.error('Authorization error:', request._nodeRequest.socket.authorizationError);
+
 		if (request.mtlsConfig && request.authorized && request.peerCertificate.subject) {
 			if (request.mtlsConfig.authorizedHandler?.(request)) {
 				// this means that it was already handled by a custom config function
