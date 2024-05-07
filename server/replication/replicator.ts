@@ -38,20 +38,16 @@ import { EventEmitter } from 'events';
 export { startOnMainThread } from './subscriptionManager';
 import { subscribeToNodeUpdates, getHDBNodeTable } from './subscriptionManager';
 import { encode } from 'msgpackr';
-
+import { CONFIG_PARAMS } from '../../utility/hdbTerms';
+import { WebSocket } from 'ws';
+import * as https from 'node:https';
 let replication_disabled;
 let next_id = 1; // for request ids
 
 export let servers = [];
 export function start(options) {
-	if (!options.port) options.port = env.get('operationsApi_network_port');
-	if (!options.securePort) {
-		options.securePort = env.get('operationsApi_network_securePort');
-		const certificate = env.get('tls_certificate');
-		// we can use this to get the hostname if it isn't provided by config
-		let cert_parsed = new X509Certificate(readFileSync(certificate));
-		let subject = cert_parsed.subject;
-	}
+	if (!options.port) options.port = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT);
+	if (!options.securePort) options.securePort = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT);
 	if (!getThisNodeName()) throw new Error('Can not load replication without a url (see replication.url in the config)');
 	assignReplicationSource(options);
 	// noinspection JSVoidFunctionReturnValueUsed
@@ -121,7 +117,6 @@ export function start(options) {
 export function disableReplication(disabled = true) {
 	replication_disabled = disabled;
 }
-let subscribed_to_nodes;
 /**
  * Replication functions by acting as a "source" for tables. With replicated tables, the local tables are considered
  * a "cache" of the cluster's data. The tables don't resolve gets to the cluster, but they do propagate
@@ -131,33 +126,15 @@ let subscribed_to_nodes;
  */
 function assignReplicationSource(options) {
 	if (replication_disabled) return;
-	const databases = getDatabases();
-	const enabled_databases =
-		options?.databases === undefined || options?.databases === '*'
-			? Object.getOwnPropertyNames(databases)
-			: options.databases;
-	for (const database_name of enabled_databases) {
-		//if (!enabled_databases[database_name]) continue;
-		const database = databases[database_name];
+	getDatabases();
+	forEachReplicatedDatabase(options, (database, database_name) => {
 		for (const table_name in database) {
 			const Table = database[table_name];
 			setReplicator(database_name, Table, options);
-		}
-	}
-	onUpdatedTable((Table, is_changed) => {
-		setReplicator(Table.databaseName, Table, options);
-		if (is_changed) {
 			table_update_listeners.get(Table)?.forEach((listener) => listener(Table));
 		}
 	});
-	if (subscribed_to_nodes) return;
-	subscribed_to_nodes = true;
-} /*
-onMessageFromWorkers((event) => {
-	if (event.type === 'nats_update') {
-		assignReplicationSource();
-	}
-});*/
+}
 
 /**
  * Get/create a replication resource that can be assigned as a source to tables
@@ -208,6 +185,7 @@ export function setReplicator(db_name, table, options) {
 				return true;
 			}
 			get(query) {
+				return;
 				const entry = table.primaryStore.getEntry(this[ID_PROPERTY]);
 				if (entry) {
 					const residency_id = entry.residencyId;
@@ -246,7 +224,31 @@ function getConnection(url, subscription, db_name) {
 	return connection;
 }
 export async function sendOperationToNode(node, operation, options) {
-	const socket = await createWebSocket(node.url, options);
+	const socket = new WebSocket(node.url, {
+		headers: { Authorization: options?.authorization },
+		protocols: 'harperdb-replication-v1',
+		rejectUnauthorized: false,
+	});
+	https
+		.request(
+			{
+				hostname: '127.0.0.1',
+				port: 9925,
+				path: '/',
+				method: 'POST',
+				headers: {
+					Authorization: options?.authorization,
+				},
+				rejectUnauthorized: false,
+			},
+			(res) => {
+				logger.info('Connected to operations API');
+			}
+		)
+		.on('error', (error) => {
+			logger.error('Error connecting to operations API', error);
+		})
+		.end();
 	replicateOverWS(socket, {}, {});
 	operation.requestId = next_id++;
 	return new Promise((resolve, reject) => {
@@ -279,12 +281,45 @@ export async function subscribeToNode(request) {
 	}
 }
 
+let common_name_from_cert: string;
+function getCommonNameFromCert() {
+	if (common_name_from_cert !== undefined) return common_name_from_cert;
+	const certificate_path =
+		env.get(CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATE) || env.get(CONFIG_PARAMS.TLS_CERTIFICATE);
+	if (certificate_path) {
+		// we can use this to get the hostname if it isn't provided by config
+		let cert_parsed = new X509Certificate(readFileSync(certificate_path));
+		let subject = cert_parsed.subject;
+		return (common_name_from_cert = subject.match(/CN=(.*)/)?.[1] ?? null);
+	}
+}
 export function getThisNodeName() {
-	return env.get('replication_nodename') ?? urlToNodeName(env.get('replication_url'));
+	return env.get('replication_nodename') ?? urlToNodeName(env.get('replication_url')) ?? getCommonNameFromCert();
 }
 export function getThisNodeUrl() {
 	return env.get('replication_url');
 }
 export function urlToNodeName(node_url) {
 	if (node_url) return new URL(node_url).hostname; // this the part of the URL that is the node name, as we want it to match common name in the certificate
+}
+export function forEachReplicatedDatabase(options, callback) {
+	for (const database_name of Object.getOwnPropertyNames(databases)) {
+		forDatabase(database_name);
+	}
+	onUpdatedTable((Table, is_changed) => {
+		forDatabase(Table.databaseName);
+	});
+	function forDatabase(database_name) {
+		const database = databases[database_name];
+		if (options?.databases === undefined || options.databases === '*' || options.databases.includes(database_name))
+			callback(database, database_name, true);
+		else if (hasExplicitlyReplicatedTable(database_name)) callback(database, database_name, false);
+	}
+}
+function hasExplicitlyReplicatedTable(database_name) {
+	const database = databases[database_name];
+	for (let table_name in database) {
+		const table = database[table_name];
+		if (table.replicate) return true;
+	}
 }

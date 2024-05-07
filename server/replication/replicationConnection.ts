@@ -1,4 +1,4 @@
-import { getDatabases, databases } from '../../resources/databases';
+import { getDatabases, databases, table as ensureTable } from '../../resources/databases';
 import {
 	createAuditEntry,
 	Decoder,
@@ -41,7 +41,7 @@ const COMMITTED_UPDATE = 143;
 export const table_update_listeners = new Map();
 export const database_subscriptions = new Map();
 const DEBUG_MODE = true;
-const PING_INTERVAL = 30000;
+const PING_INTERVAL = 300000;
 export let awaiting_response = new Map();
 /**
  * Handles reconnection, and requesting catch-up
@@ -98,7 +98,7 @@ export async function createWebSocket(url, options?) {
 export class NodeReplicationConnection extends EventEmitter {
 	socket: WebSocket;
 	startTime: number;
-	retryTime = 200;
+	retryTime = 2000;
 	retries = 0;
 	hasConnected: boolean;
 	nodeSubscriptions = [];
@@ -118,7 +118,7 @@ export class NodeReplicationConnection extends EventEmitter {
 		this.socket.on('open', () => {
 			logger.info('Connected to ' + this.url, this.socket._socket.writableHighWaterMark);
 			this.retries = 0;
-			this.retryTime = 200;
+			this.retryTime = 2000;
 			// if we have already connected, we need to send a reconnected event
 			connectedToNode({
 				name: this.nodeName,
@@ -297,10 +297,11 @@ export function replicateOverWS(ws, options, authorization) {
 							if (database_name) logger.error(connection_id, 'No tables found for', database_name);
 							else logger.error(connection_id, 'Database name never received');
 						}
-						const table = tables[table_name];
+						let table = tables[table_name];
 						if (!table) {
-							// TODO: We may want to create a table on the fly
-							logger.error(connection_id, 'Table not found', table_name);
+							// TODO: Do we need to check if we are replicating everything by default?
+							table = ensureTable({ table: table_name, database: database_name, attributes: data.attributes });
+							logger.error(connection_id, 'Table not found', table_name, 'creating');
 						}
 						table_decoders[table_id] = {
 							name: table_name,
@@ -524,7 +525,7 @@ export function replicateOverWS(ws, options, authorization) {
 								ws.send(
 									encode([
 										SEND_TABLE_FIXED_STRUCTURE,
-										{ typedStructs: typed_structs, structures: structures },
+										{ typedStructs: typed_structs, structures: structures, attributes: table.attributes },
 										table_id,
 										table_entry.table.tableName,
 									])

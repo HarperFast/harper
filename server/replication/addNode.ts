@@ -74,7 +74,7 @@ export async function addNode(req: object) {
 		throw new Error(`Unexpected certificate signature response from node ${url} response: ${JSON.stringify(sign_res)}`);
 	}
 
-	await setCertTable({ name: urlToNodeName(url) + '-ca', certificate: sign_res.ca_certificate });
+	await setCertTable({ name: urlToNodeName(url) + '-ca', certificate: sign_res.ca_certificate, is_authority: true });
 	await setCertTable({
 		name: urlToNodeName(url),
 		uses: ['https', 'operations', 'wss'],

@@ -16,7 +16,7 @@ const { Headers, appendHeader } = require('../serverHelpers/Headers');
 const { recordAction, recordActionBinary } = require('../../resources/analytics');
 const { Request, createReuseportFd } = require('../serverHelpers/Request');
 const { checkMemoryLimit } = require('../../utility/registration/hdb_license');
-
+const { CERT_PREFERENCE_APP } = require('../../utility/terms/certificates');
 // this horifying hack is brought to you by https://github.com/nodejs/node/issues/36655
 const tls = require('tls');
 const { rootCertificates } = require('node:tls');
@@ -400,26 +400,28 @@ function getHTTPServer(port, secure, is_operations_server) {
 		if (secure) {
 			server_prefix = is_operations_server ? 'operationsApi_' : '';
 			const private_key = env.get(server_prefix + 'tls_privateKey');
-			const certificate = env.get(server_prefix + 'tls_certificate');
+			const certificate_path = env.get(server_prefix + 'tls_certificate');
 			const certificate_authority = env.get(server_prefix + 'tls_certificateAuthority');
 			// If we are in secure mode, we use HTTP/2 (createSecureServer from http2), with back-compat support
 			// HTTP/1. We do not use HTTP/2 for insecure mode for a few reasons: browsers do not support insecure
 			// HTTP/2. We have seen slower performance with HTTP/2, when used for directly benchmarking. We have
 			// also seen problems with insecure HTTP/2 clients negotiating properly (Java HttpClient).
-			harper_logger.error('Using CA', readFileSync(certificate_authority, 'utf8').slice(0, 200), 'for', port);
 			// TODO: Add an option to not accept the root certificates, and only use the CA
-			const ca = certificate_authority ? [readFileSync(certificate_authority), ...rootCertificates] : undefined;
+			const ca = certificate_authority ? [readFileSync(certificate_authority, 'utf8'), ...rootCertificates] : undefined;
+			const certificate = readFileSync(certificate_path, 'utf8');
 			Object.assign(options, {
 				allowHTTP1: true,
 				key: readFileSync(private_key),
 				ciphers: env.get('tls_ciphers'),
-				cert: readFileSync(certificate),
+				cert: certificate,
 				ca,
 				rejectUnauthorized: Boolean(mtls_required),
 				requestCert: Boolean(mtls || is_operations_server),
 				ticketKeys: getTicketKeys(),
 				maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
 			});
+			harper_logger.info('Using certificate for server', certificate.toString().slice(0, 100));
+			harper_logger.info('Using CA for server', [0].toString().slice(0, 100));
 		}
 		let license_warning = checkMemoryLimit();
 		let server = (http_servers[port] = (secure ? createSecureServer : createServer)(
@@ -540,22 +542,22 @@ function getHTTPServer(port, secure, is_operations_server) {
 		});*/
 		if (secure) {
 			const updateCertificates = async () => {
-				return;
 				let cert;
-				const cas = [];
+				const cas = new Set();
+				let cert_quality = 0;
 				for await (const cert_record of databases.system.hdb_certificate.search([])) {
-					if (
-						cert_record.uses?.includes('https') ||
-						cert_record.uses?.includes('wss') ||
-						(is_operations_server && cert_record.uses?.includes('operations'))
-					) {
-						if (cert_record.is_authority) cas.push(cert_record.certificate);
-						// TODO: support multiple certs and assign the best one (newest, or public one preferred)
-						else cert = cert_record.certificate;
+					if (cert_record.is_authority) cas.add(cert_record.certificate); // any of them?
+					else {
+						// TODO: use the operations API preference if for operations API
+						let quality = CERT_PREFERENCE_APP[cert_record.name];
+						if (quality > cert_quality) {
+							cert = cert_record;
+						}
 					}
 				}
-				server.cert = cert;
-				server.ca = cas;
+				logger.info('Using certificate for server', cert.name, cert.certificate.slice(-100));
+				server.cert = cert.certificate;
+				server.ca = [...cas, ...rootCertificates];
 				server.setSecureContext(server);
 			};
 			databases.system.hdb_certificate.subscribe({
