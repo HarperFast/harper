@@ -67,13 +67,11 @@ export async function addNode(req: object) {
 		sign_res = await sendOperationToNode({ url }, sign_req, req);
 	} catch (err) {
 		hdb_logger.error(err);
-		return new Error(`Error requesting certificate signature from node: ${url} message: ${err.message}`);
+		throw new Error(`Error requesting certificate signature from node: ${url} message: ${err.message}`);
 	}
 
 	if (!sign_res?.certificate || !sign_res?.certificate?.includes?.('BEGIN CERTIFICATE')) {
-		return new Error(
-			`Unexpected certificate signature response from node ${url} response: ${JSON.stringify(sign_res)}`
-		);
+		throw new Error(`Unexpected certificate signature response from node ${url} response: ${JSON.stringify(sign_res)}`);
 	}
 
 	await setCertTable({ name: urlToNodeName(url) + '-ca', certificate: sign_res.ca_certificate });

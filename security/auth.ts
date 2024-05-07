@@ -107,7 +107,12 @@ export async function authentication(request, next_handler) {
 			else auth_event_log.error(log);
 		};
 
-		if (!request.authorized && request?._nodeRequest?.socket?.authorizationError)
+		if (
+			!request.authorized &&
+			request.mtlsConfig &&
+			request.peerCertificate.subject &&
+			request?._nodeRequest?.socket?.authorizationError
+		)
 			auth_event_log.error('Authorization error:', request._nodeRequest.socket.authorizationError);
 
 		if (request.mtlsConfig && request.authorized && request.peerCertificate.subject) {
