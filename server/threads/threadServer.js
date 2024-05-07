@@ -409,7 +409,6 @@ function getHTTPServer(port, secure, is_operations_server) {
 			harper_logger.error('Using CA', readFileSync(certificate_authority, 'utf8').slice(0, 200), 'for', port);
 			// TODO: Add an option to not accept the root certificates, and only use the CA
 			const ca = certificate_authority ? [readFileSync(certificate_authority), ...rootCertificates] : undefined;
-			verifyCert(readFileSync(certificate, 'utf8'), readFileSync(certificate_authority, 'utf8'));
 			Object.assign(options, {
 				allowHTTP1: true,
 				key: readFileSync(private_key),
