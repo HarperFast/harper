@@ -261,7 +261,7 @@ async function createCertificateTable(cert, ca_cert) {
 
 async function setCertTable(cert_record) {
 	if (!certificate_table) certificate_table = getDatabases()['system']['hdb_certificate'];
-	await certificate_table.patch(cert_record);
+	await certificate_table.put(cert_record);
 }
 
 function verifyCert(cert, ca) {

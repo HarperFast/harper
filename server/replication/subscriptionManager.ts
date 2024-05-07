@@ -6,7 +6,13 @@
 import { getDatabases, onUpdatedTable, table } from '../../resources/databases';
 import { workers, onMessageByType, whenThreadsStarted } from '../threads/manageThreads';
 import { table_update_listeners } from './replicationConnection';
-import { getThisNodeName, getThisNodeUrl, subscribeToNode, urlToNodeName } from './replicator';
+import {
+	getThisNodeName,
+	getThisNodeUrl,
+	subscribeToNode,
+	urlToNodeName,
+	forEachReplicatedDatabase,
+} from './replicator';
 import { parentPort } from 'worker_threads';
 import env from '../../utility/environment/environmentManager';
 import * as logger from '../../utility/logging/harper_logger';
@@ -78,33 +84,29 @@ export function startOnMainThread(options) {
 			db_replication_workers = new Map();
 			connection_replication_map.set(node.url, db_replication_workers);
 		}
-		const all_databases = !options?.databases || options?.databases === '*';
-		const enabled_databases = all_databases ? databases : options.databases;
-		for (const database_name of Object.getOwnPropertyNames(enabled_databases)) {
-			let database = enabled_databases[database_name];
-			if (!database) {
-				// this database is not enabled by default, but check to see if there are any explicit subscriptions
-				if (
-					!(
-						// if we can't find any more granular subscriptions, then we skip this database
-						// check to see if we have any explicit node subscriptions
-						(
-							node.subscriptions?.some((sub) => (sub.database || sub.schema) === database_name && sub.subscription) ||
+		forEachReplicatedDatabase(options, (database, database_name, replicate_by_default) => {
+			if (replicate_by_default) {
+				onDatabase(database_name, true);
+			} else {
+				onDatabase(database_name, false);
+			}
+			/*			// check to see if there are any explicit subscriptions
+			if (node.subscriptions) {
+					// if we can't find any more granular subscriptions, then we skip this database
+					// check to see if we have any explicit node subscriptions
+					if (
+							node.subscriptions.some((sub) => (sub.database || sub.schema) === database_name && sub.subscription) ||
 							// otherwise check if there is explicit table subscriptions
 							hasExplicitlyReplicatedTable(database_name)
 						)
-					)
+						onDatabase(database_name, false);
 				)
 					continue;
-				onDatabase(database_name, false);
+
 			} else {
 				database = typeof database === 'object' ? database : databases[database_name];
 				onDatabase(database_name, true);
-			}
-		}
-		onUpdatedTable((Table, is_changed) => {
-			if (is_changed) {
-			} else onDatabase(Table.databaseName);
+			}*/
 		});
 
 		function onDatabase(database_name, tables_replicate_by_default) {
@@ -248,7 +250,7 @@ export function ensureNode(name: string, node) {
 	if (!existing) {
 		table.put(node);
 	} else {
-		for (let key in existing) {
+		for (let key in node) {
 			if (existing[key] !== node[key]) {
 				logger.info(`Updating node ${name} at ${node.url}`);
 				table.patch(node);
@@ -309,12 +311,4 @@ export function subscribeToNodeUpdates(listener) {
 				}
 			}
 		});
-}
-
-function hasExplicitlyReplicatedTable(database_name) {
-	const database = databases[database_name];
-	for (let table_name in database) {
-		const table = database[table_name];
-		if (table.replicate) return true;
-	}
 }

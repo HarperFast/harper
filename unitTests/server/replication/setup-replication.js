@@ -49,7 +49,7 @@ exports.createNode = async function createNode(index, database_path, node_count)
 		port: 9325 + index,
 		url: 'ws://localhost:' + (9325 + index),
 		routes,
-		databases: [database_name],
+		databases: ['test'],
 	};
 	server.http((request, next_handler) => {
 		request.user = { subscribe: true, publish: true }; // the authorization
