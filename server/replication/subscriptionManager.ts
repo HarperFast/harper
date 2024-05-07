@@ -244,9 +244,17 @@ export function ensureNode(name: string, node) {
 	name = name ?? urlToNodeName(node.url);
 	node.name = name;
 	logger.info(`Ensuring node ${name} at ${node.url}`);
-	if (node.url && table.primaryStore.get(name)?.url !== node.url) {
-		logger.info(`Adding node ${name} at ${node.url}`);
-		table.patch(node);
+	const existing = table.primaryStore.get(name);
+	if (!existing) {
+		table.put(node);
+	} else {
+		for (let key in existing) {
+			if (existing[key] !== node[key]) {
+				logger.info(`Updating node ${name} at ${node.url}`);
+				table.patch(node);
+				break;
+			}
+		}
 	}
 }
 export function getHDBNodeTable() {

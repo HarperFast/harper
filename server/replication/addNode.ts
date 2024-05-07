@@ -8,7 +8,7 @@ import { get } from '../../utility/environment/environmentManager';
 import { OPERATIONS_ENUM, CONFIG_PARAMS, LICENSE_KEY_DIR_NAME } from '../../utility/hdbTerms';
 import { CERTIFICATE_PEM_NAME, CA_PEM_NAME, CERT_NAME } from '../../utility/terms/certificates';
 import { ensureNode } from './subscriptionManager';
-import { urlToNodeName } from './replicator';
+import { sendOperationToNode, urlToNodeName } from './replicator';
 import * as hdb_logger from '../../utility/logging/harper_logger';
 import { handleHDBError, hdb_errors } from '../../utility/errors/hdbError.js';
 const { handleHDBError, hdb_errors } = require('../../utility/errors/hdbError.js');
@@ -64,38 +64,30 @@ export async function addNode(req: object) {
 	};
 	let sign_res;
 	try {
-		sign_res = await needle('post', url, sign_req, {
-			json: true,
-			rejectUnauthorized: false,
-			auth: 'basic',
-			headers: { username: req.username, password: req.password, content_type: 'application/json' },
-		});
+		sign_res = await sendOperationToNode({ url }, sign_req, req);
 	} catch (err) {
 		hdb_logger.error(err);
-		return new Error(`Error requesting certificate signature from node: ${url} message: ${err.message()}`);
+		return new Error(`Error requesting certificate signature from node: ${url} message: ${err.message}`);
 	}
 
-	if (!sign_res?.body?.certificate || !sign_res.body?.certificate?.includes?.('BEGIN CERTIFICATE')) {
+	if (!sign_res?.certificate || !sign_res?.certificate?.includes?.('BEGIN CERTIFICATE')) {
 		return new Error(
-			`Unexpected certificate signature response from node ${url} response: ${JSON.stringify(sign_res.body)}`
+			`Unexpected certificate signature response from node ${url} response: ${JSON.stringify(sign_res)}`
 		);
 	}
 
-	await setCertTable({ name: urlToNodeName(url) + '-ca', certificate: sign_res.body.ca_certificate });
+	await setCertTable({ name: urlToNodeName(url) + '-ca', certificate: sign_res.ca_certificate });
 	await setCertTable({
 		name: urlToNodeName(url),
 		uses: ['https', 'operations', 'wss'],
-		certificate: sign_res.body.certificate,
+		certificate: sign_res.certificate,
 		is_authority: false,
 	});
 
-	await writeFile(
-		join(get(CONFIG_PARAMS.ROOTPATH), LICENSE_KEY_DIR_NAME, CERTIFICATE_PEM_NAME),
-		sign_res.body.certificate
-	);
-	await writeFile(join(get(CONFIG_PARAMS.ROOTPATH), LICENSE_KEY_DIR_NAME, CA_PEM_NAME), sign_res.body.ca_certificate);
+	await writeFile(join(get(CONFIG_PARAMS.ROOTPATH), LICENSE_KEY_DIR_NAME, CERTIFICATE_PEM_NAME), sign_res.certificate);
+	await writeFile(join(get(CONFIG_PARAMS.ROOTPATH), LICENSE_KEY_DIR_NAME, CA_PEM_NAME), sign_res.ca_certificate);
 
-	const node_record = { url, ca: sign_res.body.ca_certificate };
+	const node_record = { url, ca: sign_res.ca_certificate };
 	if (req.node_name) node_record.node_name = req.node_name;
 	if (req.subscriptions) node_record.subscriptions = req.subscriptions;
 	if (req.subscribe) node_record.subscribe = req.subscribe;

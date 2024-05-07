@@ -19,6 +19,8 @@ const { checkMemoryLimit } = require('../../utility/registration/hdb_license');
 
 // this horifying hack is brought to you by https://github.com/nodejs/node/issues/36655
 const tls = require('tls');
+const { rootCertificates } = require('node:tls');
+const { verifyCert } = require('../../security/keys');
 
 const origCreateSecureContext = tls.createSecureContext;
 tls.createSecureContext = function (options) {
@@ -404,12 +406,16 @@ function getHTTPServer(port, secure, is_operations_server) {
 			// HTTP/1. We do not use HTTP/2 for insecure mode for a few reasons: browsers do not support insecure
 			// HTTP/2. We have seen slower performance with HTTP/2, when used for directly benchmarking. We have
 			// also seen problems with insecure HTTP/2 clients negotiating properly (Java HttpClient).
+			harper_logger.error('Using CA', readFileSync(certificate_authority, 'utf8').slice(0, 200), 'for', port);
+			// TODO: Add an option to not accept the root certificates, and only use the CA
+			const ca = certificate_authority ? [readFileSync(certificate_authority), ...rootCertificates] : undefined;
+			verifyCert(readFileSync(certificate, 'utf8'), readFileSync(certificate_authority, 'utf8'));
 			Object.assign(options, {
 				allowHTTP1: true,
 				key: readFileSync(private_key),
 				ciphers: env.get('tls_ciphers'),
 				cert: readFileSync(certificate),
-				ca: [certificate_authority && readFileSync(certificate_authority)],
+				ca,
 				rejectUnauthorized: Boolean(mtls_required),
 				requestCert: Boolean(mtls || is_operations_server),
 				ticketKeys: getTicketKeys(),
@@ -535,6 +541,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 		});*/
 		if (secure) {
 			const updateCertificates = async () => {
+				return;
 				let cert;
 				const cas = [];
 				for await (const cert_record of databases.system.hdb_certificate.search([])) {

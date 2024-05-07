@@ -13,7 +13,7 @@ import { getThisNodeName, urlToNodeName } from './replicator';
 import env from '../../utility/environment/environmentManager';
 import { readAuditEntry, Decoder, REMOTE_SEQUENCE_UPDATE } from '../../resources/auditStore';
 import { HAS_STRUCTURE_UPDATE } from '../../resources/RecordEncoder';
-import { readKey, writeKey } from 'ordered-binary';
+import { CERT_PREFERENCE_REP } from '../../utility/terms/certificates';
 import { addSubscription } from '../../resources/transactionBroadcast';
 import { decode, encode, Packr } from 'msgpackr';
 import { WebSocket } from 'ws';
@@ -24,6 +24,8 @@ import { disconnectedFromNode, connectedToNode, getHDBNodeTable } from './subscr
 import { EventEmitter } from 'events';
 import { rootCertificates } from 'node:tls';
 import { broadcast } from '../../server/threads/manageThreads';
+import * as https from 'node:https';
+import * as tls from 'node:tls';
 //import { operation } from '../../server/serverHelpers/serverUtilities';
 
 const SUBSCRIBE_CODE = 129;
@@ -45,7 +47,8 @@ export let awaiting_response = new Map();
  * Handles reconnection, and requesting catch-up
  */
 
-export async function createWebSocket(url, authorization) {
+export async function createWebSocket(url, options?) {
+	const { authorization, rejectUnauthorized } = options || {};
 	const private_key = env.get('tls_privateKey');
 	const certificate_authorities = new Set();
 	let cert;
@@ -55,24 +58,34 @@ export async function createWebSocket(url, authorization) {
 				certificate_authorities.add(node.ca);
 			}
 		}
-
-		for await (const node of databases.system.hdb_certificate.search([])) {
-			if (node.name === urlToNodeName(url)) {
-				cert = node.certificate;
-				break;
+		let cert_quality = 0;
+		for await (const certificate of databases.system.hdb_certificate.search([])) {
+			let quality = CERT_PREFERENCE_REP[certificate.name];
+			if (quality > cert_quality) {
+				cert = certificate.certificate;
 			}
-			// TODO: Criteria for the best certificate for the client connection (based on the server CA)
+		}
+		if (!cert && rejectUnauthorized !== false) {
+			throw new Error('Unable to find a valid certificate to use for replication to connect to ' + url);
 		}
 	}
 	const headers = {};
 	if (authorization) {
 		headers.Authorization = authorization;
 	}
+	if (rejectUnauthorized === false) {
+		return new WebSocket(url, {
+			headers,
+			protocols: 'harperdb-replication-v1',
+			rejectUnauthorized: false,
+		});
+	}
 	return new WebSocket(url, {
 		headers,
 		protocols: 'harperdb-replication-v1',
 		key: readFileSync(private_key),
 		ciphers: env.get('tls_ciphers'),
+		rejectUnauthorized: true,
 		cert,
 		// for client connections, we can add our certificate authority to the root certificates
 		// to authorize the server certificate (both public valid certificates and privately signed certificates are acceptable)
@@ -127,7 +140,6 @@ export class NodeReplicationConnection extends EventEmitter {
 		this.socket.on('error', (error) => {
 			if (error.code !== 'ECONNREFUSED') logger.error('Error in connection to ' + this.url, error.message);
 		});
-
 		this.socket.on('close', () => {
 			if (this.socket.isFinished) {
 				session?.end();
@@ -184,7 +196,7 @@ export function replicateOverWS(ws, options, authorization) {
 	let tables = options.tables || (database_name && getDatabases()[database_name]);
 	if (!authorization) {
 		logger.error('No authorization provided');
-		ws.send(encode([DISCONNECT]));
+		// don't send disconnect because we want the client to potentially retry
 		close(1008, 'Unauthorized');
 		return;
 	}
@@ -207,7 +219,6 @@ export function replicateOverWS(ws, options, authorization) {
 		resetPingTimer();
 	}
 	function resetPingTimer() {
-		logger.info(`Resetting ping timer for ${remote_node_name}`);
 		clearTimeout(receive_ping_timer);
 		receive_ping_timer = setTimeout(() => {
 			logger.warn(`Timeout waiting for ping from ${remote_node_name}, terminating connection and reconnecting`);
@@ -405,7 +416,7 @@ export function replicateOverWS(ws, options, authorization) {
 							const table_id = audit_record.tableId;
 							const table_entry = table_by_id[table_id];
 							if (!table_entry) {
-								return logger.error('Invalid table id', table_id);
+								return logger.trace('Not subscribed to table', table_id);
 							}
 							const table = table_entry.table;
 							let primary_store = table.primaryStore;
@@ -610,11 +621,13 @@ export function replicateOverWS(ws, options, authorization) {
 										queued_entries = true;
 									}
 									if (queued_entries)
-										sendAuditRecord(null, {
-											type: 'end_txn',
-											localTime: current_sequence_id,
-											remoteNode: remote_node_name,
-										});
+										sendAuditRecord(
+											null,
+											{
+												type: 'end_txn',
+											},
+											current_sequence_id
+										);
 								}
 								listening_for_overload = true;
 								audit_subscription = addSubscription(
@@ -719,7 +732,6 @@ export function replicateOverWS(ws, options, authorization) {
 	});
 	ws.on('ping', resetPingTimer);
 	ws.on('pong', () => {
-		logger.info(`Received ping response ${remote_node_name}`);
 		if (options.connection)
 			connectedToNode({
 				name: remote_node_name,

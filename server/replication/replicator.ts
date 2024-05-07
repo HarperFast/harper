@@ -56,7 +56,8 @@ export function start(options) {
 	assignReplicationSource(options);
 	// noinspection JSVoidFunctionReturnValueUsed
 	const ws_servers = server.ws(
-		(ws, request) => {
+		async (ws, request, chain_completion) => {
+			await chain_completion;
 			replicateOverWS(ws, options, request?.user);
 			ws.on('error', (error) => {
 				if (error.code !== 'ECONNREFUSED') logger.error('Error in connection to ' + this.url, error.message);
@@ -131,9 +132,12 @@ let subscribed_to_nodes;
 function assignReplicationSource(options) {
 	if (replication_disabled) return;
 	const databases = getDatabases();
-	const enabled_databases = options?.databases ?? databases;
-	for (const database_name in enabled_databases) {
-		if (!enabled_databases[database_name]) continue;
+	const enabled_databases =
+		options?.databases === undefined || options?.databases === '*'
+			? Object.getOwnPropertyNames(databases)
+			: options.databases;
+	for (const database_name of enabled_databases) {
+		//if (!enabled_databases[database_name]) continue;
 		const database = databases[database_name];
 		for (const table_name in database) {
 			const Table = database[table_name];
@@ -241,8 +245,8 @@ function getConnection(url, subscription, db_name) {
 	connection.connect();
 	return connection;
 }
-export async function sendOperationToNode(node, operation, authorization) {
-	const socket = await createWebSocket(node.url, authorization);
+export async function sendOperationToNode(node, operation, options) {
+	const socket = await createWebSocket(node.url, options);
 	replicateOverWS(socket, {}, {});
 	operation.requestId = next_id++;
 	return new Promise((resolve, reject) => {
@@ -250,7 +254,12 @@ export async function sendOperationToNode(node, operation, authorization) {
 			socket.send(encode([OPERATION_REQUEST, operation]));
 			awaiting_response.set(operation.requestId, { resolve, reject });
 		});
-		socket.on('error', reject);
+		socket.on('error', (error) => {
+			reject(error);
+		});
+		socket.on('close', (error) => {
+			logger.error('Sending operation connection to ' + node.url + ' closed', error);
+		});
 	});
 }
 export async function subscribeToNode(request) {
