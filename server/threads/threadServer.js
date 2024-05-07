@@ -20,7 +20,7 @@ const { CERT_PREFERENCE_APP } = require('../../utility/terms/certificates');
 // this horifying hack is brought to you by https://github.com/nodejs/node/issues/36655
 const tls = require('tls');
 const { rootCertificates } = require('node:tls');
-const { verifyCert } = require('../../security/keys');
+const { getCertsKeys } = require('../../security/keys');
 
 const origCreateSecureContext = tls.createSecureContext;
 tls.createSecureContext = function (options) {

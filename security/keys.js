@@ -6,12 +6,23 @@ const forge = require('node-forge');
 const net = require('net');
 let { generateKeyPair, X509Certificate, createPrivateKey } = require('crypto');
 const util = require('util');
+const _ = require('lodash');
 generateKeyPair = util.promisify(generateKeyPair);
 const pki = forge.pki;
 const hdb_logger = require('../utility/logging/harper_logger');
 const env_manager = require('../utility/environment/environmentManager');
 const hdb_terms = require('../utility/hdbTerms');
+const { CONFIG_PARAMS } = hdb_terms;
 const certificates_terms = require('../utility/terms/certificates');
+const {
+	CA_CERT_PREFERENCE_APP,
+	CA_CERT_PREFERENCE_OPS,
+	CERT_PREFERENCE_APP,
+	CERT_PREFERENCE_OPS,
+	CERT_PREFERENCE_REP,
+	CERT_CONFIG_NAME_MAP,
+	CERT_NAME,
+} = certificates_terms;
 const assign_cmdenv_vars = require('../utility/assignCmdEnvVariables');
 const config_utils = require('../config/configUtils');
 const { ensureNode } = require('../server/replication/subscriptionManager');
@@ -28,6 +39,7 @@ module.exports = {
 	generateCertsKeys,
 	getCertsKeys,
 	setCertTable,
+	loadCertificates,
 };
 
 const CERT_VALIDITY_DAYS = 3650;
@@ -53,20 +65,104 @@ function getTlsCertsKeys() {
 	};
 }
 
+/*
+* I don't know we need explicit priority attribute, just an order of preference. Maybe we can do this for the name:
+"default" - default certificate that we generate
+"default-ca" - default CA that we generate
+"server" - certificate from tls.certificate
+"ca" - certificate from tls.certificateAuthority
+"operations-api" - certificate from operationsApi.tls.certificate
+"operations-ca" - certificate from operationsApi.tls.certificateAuthority
+When we receive a signed certificate, name it after the server ("some-server.com")
+And the preference for the default/app HTTPS server would be "server", then any other certificate, then "default"
+Preference for the operations API server would be "operations-api", "server",  then any other certificate, then "default"
+Preference for client replication certificate would be certificate for that matches server, then any other certificate, then "operations-api", "server", then "default", I guess.
+*
+* */
 async function getCertsKeys(rep_host = undefined) {
+	await loadCertificates();
 	const app_private_pem = await fs.readFile(env_manager.get(hdb_terms.CONFIG_PARAMS.TLS_PRIVATEKEY), 'utf8');
-	const app_private_key = pki.privateKeyFromPem(app_private_pem);
 	const ops_private_pem = (await fs.exists(env_manager.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY)))
-		? await fs.readFile(env_manager.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY))
-		: app_private_key;
+		? await fs.readFile(env_manager.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY), 'utf8')
+		: app_private_pem;
+
+	let app_cert_quality = 0,
+		ops_cert_quality = 0,
+		rep_cert_quality = 0,
+		ca_app_cert_quality = 0,
+		ca_ops_cert_quality = 0,
+		response = {
+			app_private_key: pki.privateKeyFromPem(app_private_pem),
+			ops_private_key: pki.privateKeyFromPem(ops_private_pem),
+			ca_certs: [],
+		};
 
 	for await (const cert of databases.system.hdb_certificate.search([])) {
+		const { name, certificate } = cert;
+		if (name?.includes?.('ca')) response.ca_certs.push(certificate);
+
+		if (CERT_PREFERENCE_APP[name] && app_cert_quality < CERT_PREFERENCE_APP[name]) {
+			response.app_cert = certificate;
+			app_cert_quality = CERT_PREFERENCE_APP[name];
+		}
+
+		if (CA_CERT_PREFERENCE_APP[name] && ca_app_cert_quality < CA_CERT_PREFERENCE_APP[name]) {
+			response.ca_app_cert = certificate;
+			ca_app_cert_quality = CA_CERT_PREFERENCE_APP[name];
+		}
+
+		if (CERT_PREFERENCE_OPS[name] && ops_cert_quality < CERT_PREFERENCE_OPS[name]) {
+			response.ops_cert = certificate;
+			ops_cert_quality = CERT_PREFERENCE_OPS[name];
+		}
+
+		if (CA_CERT_PREFERENCE_OPS[name] && ca_ops_cert_quality < CA_CERT_PREFERENCE_OPS[name]) {
+			response.ca_ops_cert = certificate;
+			ca_ops_cert_quality = CA_CERT_PREFERENCE_OPS[name];
+		}
+
+		if (name === rep_host) {
+			response.rep_cert = certificate;
+			rep_cert_quality = 100;
+		}
+
+		if (CERT_PREFERENCE_REP[name] && rep_cert_quality < CERT_PREFERENCE_REP[name]) {
+			response.rep_cert = certificate;
+			rep_cert_quality = CERT_PREFERENCE_REP[name];
+		}
+
+		const inverted_cert_name = _.invert(CERT_NAME);
+		if (inverted_cert_name[name] === undefined) {
+			response[name] = certificate;
+		}
 	}
 
-	return {
-		app_private_key: pki.privateKeyFromPem(app_private_pem),
-		ops_private_key: pki.privateKeyFromPem(ops_private_pem),
-	};
+	return response;
+}
+
+function loadCertificates() {
+	const CERTIFICATE_CONFIGS = [
+		CONFIG_PARAMS.TLS_CERTIFICATE,
+		CONFIG_PARAMS.TLS_CERTIFICATEAUTHORITY,
+		CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATE,
+		CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY,
+	];
+
+	if (!certificate_table) certificate_table = getDatabases()['system']['hdb_certificate'];
+
+	let promise;
+	for (let config_key of CERTIFICATE_CONFIGS) {
+		const path = env_manager.get(config_key);
+		if (path && fs.existsSync(path)) {
+			promise = certificate_table.put({
+				name: CERT_CONFIG_NAME_MAP[config_key],
+				uses: ['https', ...(config_key.includes('operations') ? ['operations'] : [])],
+				certificate: fs.readFileSync(path, 'utf8'),
+				is_authority: config_key.includes('uthority'),
+			});
+		}
+	}
+	return promise;
 }
 
 function getHost() {
@@ -80,12 +176,14 @@ function getHost() {
 	return urlToNodeName(rep_url);
 }
 
-//TODO add validation to this two op-api calls
+//TODO add validation to these two op-api calls
 function createCsr() {
-	const { public_cert, private_key } = getTlsCertsKeys();
+	let { app_cert, app_private_key } = getCertsKeys();
+	app_cert = pki.certificateFromPem(app_cert);
+	app_private_key = pki.privateKeyFromPem(app_private_key);
 
 	const csr = pki.createCertificationRequest();
-	csr.publicKey = public_cert.publicKey;
+	csr.publicKey = app_cert.publicKey;
 	const subject = [
 		{
 			name: 'commonName',
@@ -109,7 +207,7 @@ function createCsr() {
 	hdb_logger.info('Creating CSR with attributes', attributes);
 	csr.setAttributes(attributes);
 
-	csr.sign(private_key);
+	csr.sign(app_private_key);
 
 	return forge.pki.certificationRequestToPem(csr);
 }
@@ -151,11 +249,14 @@ function certExtensions() {
 }
 
 function signCertificate(req) {
-	const { private_key, ca_cert } = getTlsCertsKeys();
+	let { app_private_key, ca_app_cert } = getCertsKeys();
+	app_private_key = pki.privateKeyFromPem(app_private_key);
+	ca_app_cert = pki.certificateFromPem(ca_app_cert);
+
 	const adding_node = () => {
 		// If the sign req is coming from add node, add the requesting node to hdb_nodes
 		if (req.add_node) {
-			const node_record = { url: req.add_node.url, ca: pki.certificateToPem(ca_cert) };
+			const node_record = { url: req.add_node.url, ca: pki.certificateToPem(ca_app_cert) };
 			if (req.add_node.subscriptions) node_record.subscriptions = req.add_node.subscriptions;
 			if (req.add_node.hasOwnProperty('subscribe') && req.add_node.hasOwnProperty('publish')) {
 				node_record.subscribe = req.add_node.subscribe;
@@ -205,21 +306,21 @@ function signCertificate(req) {
 	cert.setSubject(csr.subject.attributes);
 
 	// issuer from CA
-	hdb_logger.info('sign cert setting issuer:', ca_cert.subject.attributes);
-	cert.setIssuer(ca_cert.subject.attributes);
+	hdb_logger.info('sign cert setting issuer:', ca_app_cert.subject.attributes);
+	cert.setIssuer(ca_app_cert.subject.attributes);
 
 	const extensions = csr.getAttribute({ name: 'extensionRequest' }).extensions;
 	hdb_logger.info('sign cert adding extensions from CSR:', extensions);
 	cert.setExtensions(extensions);
 
 	cert.publicKey = csr.publicKey;
-	cert.sign(private_key, forge.md.sha256.create());
+	cert.sign(app_private_key, forge.md.sha256.create());
 
 	adding_node();
 
 	return {
 		certificate: pki.certificateToPem(cert),
-		ca_certificate: pki.certificateToPem(ca_cert),
+		ca_certificate: pki.certificateToPem(ca_app_cert),
 	};
 }
 
@@ -261,7 +362,7 @@ async function createCertificateTable(cert, ca_cert) {
 
 async function setCertTable(cert_record) {
 	if (!certificate_table) certificate_table = getDatabases()['system']['hdb_certificate'];
-	await certificate_table.put(cert_record);
+	await certificate_table.patch(cert_record);
 }
 
 function verifyCert(cert, ca) {
@@ -376,12 +477,12 @@ async function generateCertsKeys() {
 	await createCertificateTable(public_cert, pki.certificateToPem(ca_cert));
 	updateConfigCert();
 
-	// TODO: This is temp, the goal is that anything that needs these certs will get it from table
+	/*	// TODO: This is temp, the goal is that anything that needs these certs will get it from table
 	const keys_path = path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME);
 	const cert_path = path.join(keys_path, certificates_terms.CERTIFICATE_PEM_NAME);
 	const ca_path = path.join(keys_path, certificates_terms.CA_PEM_NAME);
 	await fs.writeFile(cert_path, public_cert);
-	await fs.writeFile(ca_path, pki.certificateToPem(ca_cert));
+	await fs.writeFile(ca_path, pki.certificateToPem(ca_cert));*/
 }
 
 // Update the cert config in harperdb-config.yaml
@@ -391,9 +492,9 @@ function updateConfigCert() {
 	const keys_path = path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME);
 	const private_key = path.join(keys_path, certificates_terms.PRIVATEKEY_PEM_NAME);
 
-	// TODO: remove this
-	const cert_path = path.join(keys_path, certificates_terms.CERTIFICATE_PEM_NAME);
-	const ca_path = path.join(keys_path, certificates_terms.CA_PEM_NAME);
+	// // TODO: remove this
+	// const cert_path = path.join(keys_path, certificates_terms.CERTIFICATE_PEM_NAME);
+	// const ca_path = path.join(keys_path, certificates_terms.CA_PEM_NAME);
 
 	// This object is what will be added to the harperdb-config.yaml file.
 	// We check for any CLI of Env args and if they are present we use them instead of default values.
@@ -402,12 +503,12 @@ function updateConfigCert() {
 		[conf.TLS_PRIVATEKEY]: cli_env_args[conf.TLS_PRIVATEKEY.toLowerCase()]
 			? cli_env_args[conf.TLS_PRIVATEKEY.toLowerCase()]
 			: private_key,
-		[conf.TLS_CERTIFICATE]: cli_env_args[conf.TLS_CERTIFICATE.toLowerCase()] // TODO: remove
-			? cli_env_args[conf.TLS_CERTIFICATE.toLowerCase()]
-			: cert_path,
-		[conf.TLS_CERTIFICATEAUTHORITY]: cli_env_args[conf.TLS_CERTIFICATEAUTHORITY.toLowerCase()] // TODO: remove
-			? cli_env_args[conf.TLS_CERTIFICATEAUTHORITY.toLowerCase()]
-			: ca_path,
+		// [conf.TLS_CERTIFICATE]: cli_env_args[conf.TLS_CERTIFICATE.toLowerCase()] // TODO: remove
+		// 	? cli_env_args[conf.TLS_CERTIFICATE.toLowerCase()]
+		// 	: cert_path,
+		// [conf.TLS_CERTIFICATEAUTHORITY]: cli_env_args[conf.TLS_CERTIFICATEAUTHORITY.toLowerCase()] // TODO: remove
+		// 	? cli_env_args[conf.TLS_CERTIFICATEAUTHORITY.toLowerCase()]
+		// 	: ca_path,
 	};
 
 	if (cli_env_args[conf.TLS_CERTIFICATE.toLowerCase()]) {

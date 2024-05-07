@@ -9,7 +9,8 @@ const { getConnection } = require('./nats/utility/natsUtils');
 const env_mgr = require('../utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('../utility/hdbTerms');
 const { CERT_CONFIG_NAME_MAP } = require('../utility/terms/certificates');
-const { readFileSync } = require('fs');
+const { readFileSync, existsSync } = require('fs');
+const { loadCertificates } = require('../security/keys');
 
 let loaded_components = new Map();
 /**
@@ -42,7 +43,7 @@ async function loadRootComponents(is_worker_thread = false) {
 	}
 	if (all_ready.length > 0) await Promise.all(all_ready);
 }
-function loadCertificates() {
+/*function loadCertificates() {
 	const CERTIFICATE_CONFIGS = [
 		CONFIG_PARAMS.TLS_CERTIFICATE,
 		CONFIG_PARAMS.TLS_CERTIFICATEAUTHORITY,
@@ -53,7 +54,7 @@ function loadCertificates() {
 	let promise;
 	for (let config_key of CERTIFICATE_CONFIGS) {
 		const path = env_mgr.get(config_key);
-		if (path) {
+		if (path && existsSync(path)) {
 			promise = certificate_table.put({
 				name: CERT_CONFIG_NAME_MAP[config_key],
 				uses: ['https', ...(config_key.includes('operations') ? ['operations'] : [])],
@@ -63,6 +64,6 @@ function loadCertificates() {
 		}
 	}
 	return promise;
-}
+}*/
 
 module.exports.loadRootComponents = loadRootComponents;

@@ -223,6 +223,8 @@ function getConnection(url, subscription, db_name) {
 	connection.connect();
 	return connection;
 }
+
+// TODO: Can we improve the error handling here when bad params are passed?
 export async function sendOperationToNode(node, operation, options) {
 	const socket = new WebSocket(node.url, {
 		headers: { Authorization: options?.authorization },

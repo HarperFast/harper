@@ -58,7 +58,7 @@ export async function createWebSocket(url, options?) {
 				certificate_authorities.add(node.ca);
 			}
 		}
-		let cert_quality = 0;
+		let cert_quality = 0; //TODO: make this use getCertsKeys in keys
 		for await (const certificate of databases.system.hdb_certificate.search([])) {
 			let quality = CERT_PREFERENCE_REP[certificate.name];
 			if (quality > cert_quality) {
@@ -80,6 +80,7 @@ export async function createWebSocket(url, options?) {
 			rejectUnauthorized: false,
 		});
 	}
+
 	return new WebSocket(url, {
 		headers,
 		protocols: 'harperdb-replication-v1',
