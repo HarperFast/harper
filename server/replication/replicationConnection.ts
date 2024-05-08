@@ -74,15 +74,13 @@ export async function createWebSocket(url, options?) {
 		headers.Authorization = authorization;
 	}
 	if (rejectUnauthorized === false) {
-		return new WebSocket(url, {
+		return new WebSocket(url, 'harperdb-replication-v1', {
 			headers,
-			protocols: 'harperdb-replication-v1',
 			rejectUnauthorized: false,
 		});
 	}
-	return new WebSocket(url, {
+	return new WebSocket(url, 'harperdb-replication-v1', {
 		headers,
-		protocols: 'harperdb-replication-v1',
 		key: readFileSync(private_key),
 		ciphers: env.get('tls_ciphers'),
 		rejectUnauthorized: true,
