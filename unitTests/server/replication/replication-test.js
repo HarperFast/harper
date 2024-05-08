@@ -122,6 +122,13 @@ describe('Replication', () => {
 		const cluster_status = await sendOperationToNode({ url: 'ws://localhost:9326' }, { operation: 'cluster_status' });
 		assert(cluster_status.connections.length >= 1);
 		assert.equal(cluster_status.node_name, 'node-2');
+		let caught_error;
+		try {
+			await sendOperationToNode({ url: 'ws://localhost:9326' }, { operation: 'not_an_operation' });
+		} catch (error) {
+			caught_error = error;
+		}
+		assert(caught_error);
 	});
 	describe('With third node', function () {
 		before(async function () {

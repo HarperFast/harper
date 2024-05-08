@@ -229,13 +229,7 @@ function getConnection(url, subscription, db_name) {
 	return connection;
 }
 export async function sendOperationToNode(node, operation, options) {
-	const socket = new WebSocket(node.url, {
-		headers: {
-			'Authorization': options?.authorization,
-			'Sec-WebSocket-Protocol': 'harperdb-replication-v1',
-		},
-		rejectUnauthorized: false,
-	});
+	const socket = await createWebSocket(node.url, options);
 	replicateOverWS(socket, {}, {});
 	operation.requestId = next_id++;
 	return new Promise((resolve, reject) => {

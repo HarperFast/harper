@@ -278,14 +278,23 @@ export function replicateOverWS(ws, options, authorization) {
 						close();
 						break;
 					case OPERATION_REQUEST:
-						server.operation(data, { user: authorization }, true).then((response) => {
-							response.requestId = data.requestId;
-							ws.send(encode([OPERATION_RESPONSE, response]));
-						});
+						try {
+							server.operation(data, { user: authorization }, true).then(
+								(response) => {
+									response.requestId = data.requestId;
+									ws.send(encode([OPERATION_RESPONSE, response]));
+								},
+								(error) => {
+									ws.send(encode([OPERATION_RESPONSE, { requestId: data.requestId, error: error.toString() }]));
+								}
+							);
+						} catch (error) {
+							ws.send(encode([OPERATION_RESPONSE, { requestId: data.requestId, error: error.toString() }]));
+						}
 						break;
 					case OPERATION_RESPONSE:
 						const { resolve, reject } = awaiting_response.get(data.requestId);
-						if (data.error) reject(data.error);
+						if (data.error) reject(new Error(data.error));
 						else resolve(data);
 						awaiting_response.delete(data.requestId);
 						break;
