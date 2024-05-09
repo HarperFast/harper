@@ -84,6 +84,7 @@ export async function createWebSocket(url, options?) {
 		key: readFileSync(private_key),
 		ciphers: env.get('tls_ciphers'),
 		rejectUnauthorized: true,
+		localAddress: getThisNodeName(),
 		cert,
 		// for client connections, we can add our certificate authority to the root certificates
 		// to authorize the server certificate (both public valid certificates and privately signed certificates are acceptable)

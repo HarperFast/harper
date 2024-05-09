@@ -38,8 +38,6 @@ import { getUpdateRecord, PENDING_LOCAL_TIME } from './RecordEncoder';
 import { recordAction, recordActionBinary } from './analytics';
 import { rebuildUpdateBefore } from './crdt';
 import { appendHeader } from '../server/serverHelpers/Headers';
-import { exportIdMapping } from '../server/replication/nodeIdMapping';
-import { getThisNodeId, getThisNodeName } from '../server/replication/replicator';
 
 const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
@@ -503,7 +501,7 @@ export function makeTable(options) {
 				let last_key;
 				if (
 					id_allocation &&
-					id_allocation.nodeName === getThisNodeName() &&
+					id_allocation.nodeName === server.nodeName &&
 					(!hasOtherProcesses(primary_store) || id_allocation.pid === process.pid)
 				) {
 					// the database has an existing id allocation that we can continue from
@@ -563,7 +561,7 @@ export function makeTable(options) {
 							{
 								start: updated_id_allocation.start,
 								end: id_incrementer.maxSafeId,
-								nodeName: getThisNodeName(),
+								nodeName: server.nodeName,
 								pid: process.pid,
 							},
 							Date.now(),
@@ -612,7 +610,7 @@ export function makeTable(options) {
 					id_allocation = {
 						start: last_key,
 						end: last_key + (type === 'Int' ? 0x400 : 0x400000),
-						nodeName: getThisNodeName(),
+						nodeName: server.nodeName,
 						pid: process.pid,
 					};
 					id_before = 0;
@@ -2767,7 +2765,7 @@ export function makeTable(options) {
 		return ids;
 	}
 
-	function precedesExistingVersion(txn_time, existing_entry, node_id = getThisNodeId(audit_store)) {
+	function precedesExistingVersion(txn_time, existing_entry, node_id = server.getThisNodeId(audit_store)) {
 		if (txn_time <= existing_entry?.version) {
 			if (existing_entry?.version === txn_time && node_id !== undefined) {
 				// if we have a timestamp tie, we break the tie by comparing the node name of the
