@@ -256,7 +256,10 @@ export function replicateOverWS(ws, options, authorization) {
 					case SEND_NODE_NAME: {
 						if (remote_node_name) {
 							if (remote_node_name !== data) {
-								logger.error('Node name mismatch', remote_node_name, data);
+								logger.error(
+									connection_id,
+									`Node name mismatch, expecting to connect to ${remote_node_name}, but server reported name as ${data}, disconnecting`
+								);
 								ws.send(encode([DISCONNECT]));
 								close(1008, 'Node name mismatch');
 								return;
