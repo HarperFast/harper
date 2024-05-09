@@ -24,6 +24,7 @@ import { disconnectedFromNode, connectedToNode, getHDBNodeTable } from './subscr
 import { EventEmitter } from 'events';
 import { rootCertificates } from 'node:tls';
 import { broadcast } from '../../server/threads/manageThreads';
+import { getCertsKeys } from '../../security/keys';
 import * as https from 'node:https';
 import * as tls from 'node:tls';
 //import { operation } from '../../server/serverHelpers/serverUtilities';
@@ -49,7 +50,7 @@ export let awaiting_response = new Map();
 
 export async function createWebSocket(url, options?) {
 	const { authorization, rejectUnauthorized } = options || {};
-	const private_key = env.get('tls_privateKey');
+	const { app_private_key, rep } = await getCertsKeys(new URL(url).hostname);
 	const certificate_authorities = new Set();
 	let cert;
 	if (url.includes('wss://')) {
@@ -58,13 +59,10 @@ export async function createWebSocket(url, options?) {
 				certificate_authorities.add(node.ca);
 			}
 		}
-		let cert_quality = 0; //TODO: make this use getCertsKeys in keys
-		for await (const certificate of databases.system.hdb_certificate.search([])) {
-			let quality = CERT_PREFERENCE_REP[certificate.name];
-			if (quality > cert_quality) {
-				cert = certificate.certificate;
-			}
-		}
+
+		cert = rep.cert;
+
+		logger.info('Creating web socket for URL', url, 'with certificate named:', rep.name);
 		if (!cert && rejectUnauthorized !== false) {
 			throw new Error('Unable to find a valid certificate to use for replication to connect to ' + url);
 		}
@@ -84,7 +82,7 @@ export async function createWebSocket(url, options?) {
 	return new WebSocket(url, {
 		headers,
 		protocols: 'harperdb-replication-v1',
-		key: readFileSync(private_key),
+		key: app_private_key,
 		ciphers: env.get('tls_ciphers'),
 		rejectUnauthorized: true,
 		cert,

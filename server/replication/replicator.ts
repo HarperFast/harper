@@ -295,6 +295,7 @@ function getCommonNameFromCert() {
 		return (common_name_from_cert = subject.match(/CN=(.*)/)?.[1] ?? null);
 	}
 }
+
 export function getThisNodeName() {
 	return env.get('replication_nodename') ?? urlToNodeName(env.get('replication_url')) ?? getCommonNameFromCert();
 }

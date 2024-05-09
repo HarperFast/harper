@@ -43,27 +43,5 @@ async function loadRootComponents(is_worker_thread = false) {
 	}
 	if (all_ready.length > 0) await Promise.all(all_ready);
 }
-/*function loadCertificates() {
-	const CERTIFICATE_CONFIGS = [
-		CONFIG_PARAMS.TLS_CERTIFICATE,
-		CONFIG_PARAMS.TLS_CERTIFICATEAUTHORITY,
-		CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATE,
-		CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY,
-	];
-	const certificate_table = getDatabases()['system']['hdb_certificate'];
-	let promise;
-	for (let config_key of CERTIFICATE_CONFIGS) {
-		const path = env_mgr.get(config_key);
-		if (path && existsSync(path)) {
-			promise = certificate_table.put({
-				name: CERT_CONFIG_NAME_MAP[config_key],
-				uses: ['https', ...(config_key.includes('operations') ? ['operations'] : [])],
-				certificate: readFileSync(path, 'utf8'),
-				is_authority: config_key.includes('uthority'),
-			});
-		}
-	}
-	return promise;
-}*/
 
 module.exports.loadRootComponents = loadRootComponents;

@@ -17,23 +17,24 @@ import { parentPort } from 'worker_threads';
 import env from '../../utility/environment/environmentManager';
 import * as logger from '../../utility/logging/harper_logger';
 import { readFileSync } from 'fs';
+import { getCertsKeys } from '../../security/keys.js';
 
 let hdb_node_table;
 let connection_replication_map = new Map();
 export let disconnectedFromNode; // this is set by thread to handle when a node is disconnected (or notify main thread so it can handle)
 export let connectedToNode; // this is set by thread to handle when a node is connected (or notify main thread so it can handle)
 let node_map = new Map(); // this is a map of all nodes that are available to connect to
-export function startOnMainThread(options) {
+export async function startOnMainThread(options) {
 	// we do all of the main management of tracking connections and subscriptions on the main thread and delegate
 	// the actual work to the worker threads
 	let new_node_listeners = [];
 	let all_nodes: any[];
 	let next_worker_index = 0;
-	const certificate_authority = env.get('tls_certificateAuthority');
+	const { app_ca } = await getCertsKeys();
 	// make sure this node exists is in the hdb_nodes table
-	ensureNode(getThisNodeName(), {
+	await ensureNode(getThisNodeName(), {
 		url: getThisNodeUrl(),
-		ca: certificate_authority && readFileSync(certificate_authority, 'utf8'),
+		ca: app_ca.cert,
 	});
 	route_loop: for (const route of options.routes || []) {
 		try {
@@ -56,7 +57,7 @@ export function startOnMainThread(options) {
 				node.subscribe = true;
 				node.publish = true;
 			}
-			ensureNode(route.name, node);
+			await ensureNode(route.name, node);
 		} catch (error) {
 			console.error(error);
 		}
@@ -240,7 +241,7 @@ if (parentPort) {
 	});
 }
 
-export function ensureNode(name: string, node) {
+export async function ensureNode(name: string, node) {
 	const table = getHDBNodeTable();
 	const isTentative = !name;
 	name = name ?? urlToNodeName(node.url);
@@ -248,12 +249,12 @@ export function ensureNode(name: string, node) {
 	logger.info(`Ensuring node ${name} at ${node.url}`);
 	const existing = table.primaryStore.get(name);
 	if (!existing) {
-		table.put(node);
+		await table.put(node);
 	} else {
 		for (let key in node) {
 			if (existing[key] !== node[key]) {
 				logger.info(`Updating node ${name} at ${node.url}`);
-				table.patch(node);
+				await table.patch(node);
 				break;
 			}
 		}

@@ -25,9 +25,8 @@ const {
 } = certificates_terms;
 const assign_cmdenv_vars = require('../utility/assignCmdEnvVariables');
 const config_utils = require('../config/configUtils');
-const { ensureNode } = require('../server/replication/subscriptionManager');
+
 const { table, getDatabases, databases } = require('../resources/databases');
-const { urlToNodeName } = require('../server/replication/replicator');
 
 let certificate_table;
 
@@ -41,6 +40,9 @@ module.exports = {
 	setCertTable,
 	loadCertificates,
 };
+
+const { urlToNodeName } = require('../server/replication/replicator');
+const { ensureNode } = require('../server/replication/subscriptionManager');
 
 const CERT_VALIDITY_DAYS = 3650;
 const CERT_DOMAINS = ['127.0.0.1', '127.0.0.2', '127.0.0.3', '127.0.0.4', '127.0.0.5', 'localhost', '::1'];
@@ -79,6 +81,12 @@ Preference for the operations API server would be "operations-api", "server",  t
 Preference for client replication certificate would be certificate for that matches server, then any other certificate, then "operations-api", "server", then "default", I guess.
 *
 * */
+
+/**
+ * This function will use preference enums to pick which cert has the highest preference and return that cert.
+ * @param rep_host
+ * @returns {Promise<{app: {name: undefined, cert: undefined}, app_private_key, ca_certs: *[], ops_ca: {name: undefined, cert: undefined}, ops: {name: undefined, cert: undefined}, app_ca: {name: undefined, cert: undefined}, ops_private_key, rep: {name: undefined, cert: undefined}}>}
+ */
 async function getCertsKeys(rep_host = undefined) {
 	await loadCertificates();
 	const app_private_pem = await fs.readFile(env_manager.get(hdb_terms.CONFIG_PARAMS.TLS_PRIVATEKEY), 'utf8');
@@ -92,48 +100,84 @@ async function getCertsKeys(rep_host = undefined) {
 		ca_app_cert_quality = 0,
 		ca_ops_cert_quality = 0,
 		response = {
-			app_private_key: pki.privateKeyFromPem(app_private_pem),
-			ops_private_key: pki.privateKeyFromPem(ops_private_pem),
+			app_private_key: app_private_pem,
+			ops_private_key: ops_private_pem,
+			app: {
+				name: undefined,
+				cert: undefined,
+			},
+			app_ca: {
+				name: undefined,
+				cert: undefined,
+			},
+			ops: {
+				name: undefined,
+				cert: undefined,
+			},
+			ops_ca: {
+				name: undefined,
+				cert: undefined,
+			},
+			rep: {
+				name: undefined,
+				cert: undefined,
+			},
 			ca_certs: [],
+			ca_cert_names: [],
 		};
 
 	for await (const cert of databases.system.hdb_certificate.search([])) {
 		const { name, certificate } = cert;
-		if (name?.includes?.('ca')) response.ca_certs.push(certificate);
+		// A connection can take multiple CAs in an array, so we include them all here
+		if (name?.includes?.('ca')) {
+			response.ca_certs.push(certificate);
+			response.ca_cert_names.push(name);
+		}
 
 		if (CERT_PREFERENCE_APP[name] && app_cert_quality < CERT_PREFERENCE_APP[name]) {
-			response.app_cert = certificate;
+			response.app.cert = certificate;
+			response.app.name = name;
 			app_cert_quality = CERT_PREFERENCE_APP[name];
 		}
 
 		if (CA_CERT_PREFERENCE_APP[name] && ca_app_cert_quality < CA_CERT_PREFERENCE_APP[name]) {
-			response.ca_app_cert = certificate;
+			response.app_ca.cert = certificate;
+			response.app_ca.name = name;
 			ca_app_cert_quality = CA_CERT_PREFERENCE_APP[name];
 		}
 
 		if (CERT_PREFERENCE_OPS[name] && ops_cert_quality < CERT_PREFERENCE_OPS[name]) {
-			response.ops_cert = certificate;
+			response.ops.cert = certificate;
+			response.ops.name = name;
 			ops_cert_quality = CERT_PREFERENCE_OPS[name];
 		}
 
 		if (CA_CERT_PREFERENCE_OPS[name] && ca_ops_cert_quality < CA_CERT_PREFERENCE_OPS[name]) {
-			response.ca_ops_cert = certificate;
+			response.ops_ca.cert = certificate;
+			response.ops_ca.name = name;
 			ca_ops_cert_quality = CA_CERT_PREFERENCE_OPS[name];
 		}
 
 		if (name === rep_host) {
-			response.rep_cert = certificate;
+			response.rep.cert = certificate;
+			response.rep.name = name;
 			rep_cert_quality = 100;
 		}
 
 		if (CERT_PREFERENCE_REP[name] && rep_cert_quality < CERT_PREFERENCE_REP[name]) {
-			response.rep_cert = certificate;
+			response.rep.cert = certificate;
+			response.rep.name = name;
 			rep_cert_quality = CERT_PREFERENCE_REP[name];
 		}
 
 		const inverted_cert_name = _.invert(CERT_NAME);
 		if (inverted_cert_name[name] === undefined) {
 			response[name] = certificate;
+			if (!name.includes('ca')) {
+				response.rep.cert = certificate;
+				response.rep.name = name;
+				rep_cert_quality = 50;
+			}
 		}
 	}
 
@@ -177,10 +221,12 @@ function getHost() {
 }
 
 //TODO add validation to these two op-api calls
-function createCsr() {
-	let { app_cert, app_private_key } = getCertsKeys();
-	app_cert = pki.certificateFromPem(app_cert);
+async function createCsr() {
+	let { app_private_key, app } = await getCertsKeys();
+	const app_cert = pki.certificateFromPem(app.cert);
 	app_private_key = pki.privateKeyFromPem(app_private_key);
+
+	hdb_logger.info('Creating CSR with cert named:', app.name);
 
 	const csr = pki.createCertificationRequest();
 	csr.publicKey = app_cert.publicKey;
@@ -248,12 +294,13 @@ function certExtensions() {
 	];
 }
 
-function signCertificate(req) {
-	let { app_private_key, ca_app_cert } = getCertsKeys();
+async function signCertificate(req) {
+	let { app_private_key, app_ca } = await getCertsKeys();
 	app_private_key = pki.privateKeyFromPem(app_private_key);
-	ca_app_cert = pki.certificateFromPem(ca_app_cert);
+	const ca_app_cert = pki.certificateFromPem(app_ca.cert);
+	hdb_logger.info('Signing CSR with cert named', app_ca.name, 'with cert', app_ca.cert);
 
-	const adding_node = () => {
+	const adding_node = async () => {
 		// If the sign req is coming from add node, add the requesting node to hdb_nodes
 		if (req.add_node) {
 			const node_record = { url: req.add_node.url, ca: pki.certificateToPem(ca_app_cert) };
@@ -263,7 +310,7 @@ function signCertificate(req) {
 				node_record.publish = req.add_node.publish;
 			}
 
-			ensureNode(undefined, node_record);
+			await ensureNode(undefined, node_record);
 		}
 	};
 
@@ -316,7 +363,7 @@ function signCertificate(req) {
 	cert.publicKey = csr.publicKey;
 	cert.sign(app_private_key, forge.md.sha256.create());
 
-	adding_node();
+	await adding_node();
 
 	return {
 		certificate: pki.certificateToPem(cert),
@@ -503,12 +550,6 @@ function updateConfigCert() {
 		[conf.TLS_PRIVATEKEY]: cli_env_args[conf.TLS_PRIVATEKEY.toLowerCase()]
 			? cli_env_args[conf.TLS_PRIVATEKEY.toLowerCase()]
 			: private_key,
-		// [conf.TLS_CERTIFICATE]: cli_env_args[conf.TLS_CERTIFICATE.toLowerCase()] // TODO: remove
-		// 	? cli_env_args[conf.TLS_CERTIFICATE.toLowerCase()]
-		// 	: cert_path,
-		// [conf.TLS_CERTIFICATEAUTHORITY]: cli_env_args[conf.TLS_CERTIFICATEAUTHORITY.toLowerCase()] // TODO: remove
-		// 	? cli_env_args[conf.TLS_CERTIFICATEAUTHORITY.toLowerCase()]
-		// 	: ca_path,
 	};
 
 	if (cli_env_args[conf.TLS_CERTIFICATE.toLowerCase()]) {
