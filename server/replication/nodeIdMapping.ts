@@ -10,6 +10,9 @@ function getIdMappingRecord(audit_store) {
 		audit_store.idMapping = id_mapping_record = id_mapping_record_buffer ? unpack(id_mapping_record_buffer) : null;
 	}
 	if (!id_mapping_record) {
+		// this is the default mapping for the local node (id of 0 is used for the first node name assigned to the local node,
+		// although if the node name is changed, which should take place in a clone node operation, we will get a new node name
+		// and node id)
 		id_mapping_record = {
 			nodeName: getThisNodeName(),
 			remoteNameToId: { [getThisNodeName()]: 0 },

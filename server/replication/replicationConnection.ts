@@ -138,15 +138,18 @@ export class NodeReplicationConnection extends EventEmitter {
 		this.socket.on('error', (error) => {
 			if (error.code !== 'ECONNREFUSED') logger.error('Error in connection to ' + this.url, error.message);
 		});
-		this.socket.on('close', () => {
+		this.socket.on('close', (code, reason_buffer) => {
 			if (this.socket.isFinished) {
 				session?.end();
 				return;
 			}
 			session?.disconnected();
 			if (++this.retries % 20 === 1) {
+				const reason = reason_buffer?.toString();
 				logger.warn(
-					`${session ? 'Disconnected from' : 'Failed to connect to'} ${this.url} (db: "${this.databaseName}")`
+					`${session ? 'Disconnected from' : 'Failed to connect to'} ${this.url} (db: "${this.databaseName}"), due to ${
+						reason ? '"' + reason + '" ' : ''
+					}(code: ${code})`
 				);
 			}
 			session = null;
@@ -253,7 +256,10 @@ export function replicateOverWS(ws, options, authorization) {
 					case SEND_NODE_NAME: {
 						if (remote_node_name) {
 							if (remote_node_name !== data) {
-								logger.error('Node name mismatch', remote_node_name, data);
+								logger.error(
+									connection_id,
+									`Node name mismatch, expecting to connect to ${remote_node_name}, but server reported name as ${data}, disconnecting`
+								);
 								ws.send(encode([DISCONNECT]));
 								close(1008, 'Node name mismatch');
 								return;
@@ -749,11 +755,11 @@ export function replicateOverWS(ws, options, authorization) {
 			});
 		last_ping_time = null;
 	});
-	ws.on('close', () => {
+	ws.on('close', (code, reason_buffer) => {
 		clearInterval(send_ping_interval);
 		if (audit_subscription) audit_subscription.emit('close');
 		if (subscription_request) subscription_request.end();
-		logger.info(connection_id, 'closed');
+		logger.info(connection_id, 'closed', code, reason_buffer?.toString());
 	});
 
 	function recordRemoteNodeSequence() {}

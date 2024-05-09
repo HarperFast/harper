@@ -11,7 +11,7 @@ async function startNode() {
 		process.send({ type: 'replication-started' });
 		process.on('message', (message) => {
 			if (message.action === 'put') {
-				TestTable.put(message.data);
+				TestTable.put(message.data, message);
 			}
 		});
 	} catch (e) {

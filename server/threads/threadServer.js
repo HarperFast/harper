@@ -659,19 +659,19 @@ function onWebSocket(listener, options) {
 					let chain_completion = http_chain[port_num](request);
 					let protocol = node_request.headers['sec-websocket-protocol'];
 					let ws_listeners_for_port = ws_listeners[port_num];
+					let found_handler;
 					if (protocol) {
 						// first we try to match on WS handlers that match the specified protocol
-						let found_protocol_handler;
 						for (let i = 0; i < ws_listeners_for_port.length; i++) {
 							let handler = ws_listeners_for_port[i];
 							if (handler.protocol === protocol) {
 								// if we have a handler for a specific protocol, allow it to select on that protocol
 								// to the exclusion of other handlers
-								found_protocol_handler = true;
+								found_handler = true;
 								handler.listener(ws, request, chain_completion);
 							}
 						}
-						if (found_protocol_handler) return;
+						if (found_handler) return;
 					}
 					// now let generic WS handlers handle the connection
 					for (let i = 0; i < ws_listeners_for_port.length; i++) {
@@ -679,7 +679,12 @@ function onWebSocket(listener, options) {
 						if (!handler.protocol) {
 							// generic handlers don't have a protocol
 							handler.listener(ws, request, chain_completion);
+							found_handler = true;
 						}
+					}
+					if (!found_handler) {
+						// if we have no handlers, we close the connection
+						ws.close(1008, 'No handler for protocol');
 					}
 				} catch (error) {
 					harper_logger.warn('Error handling WebSocket connection', error);
