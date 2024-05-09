@@ -38,6 +38,8 @@ import { getUpdateRecord, PENDING_LOCAL_TIME } from './RecordEncoder';
 import { recordAction, recordActionBinary } from './analytics';
 import { rebuildUpdateBefore } from './crdt';
 import { appendHeader } from '../server/serverHelpers/Headers';
+import { exportIdMapping } from '../server/replication/nodeIdMapping';
+import { getThisNodeId, getThisNodeName } from '../server/replication/replicator';
 
 const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
@@ -501,7 +503,7 @@ export function makeTable(options) {
 				let last_key;
 				if (
 					id_allocation &&
-					id_allocation.nodeName === getNodeName() &&
+					id_allocation.nodeName === getThisNodeName() &&
 					(!hasOtherProcesses(primary_store) || id_allocation.pid === process.pid)
 				) {
 					// the database has an existing id allocation that we can continue from
@@ -561,7 +563,7 @@ export function makeTable(options) {
 							{
 								start: updated_id_allocation.start,
 								end: id_incrementer.maxSafeId,
-								nodeName: getNodeName(),
+								nodeName: getThisNodeName(),
 								pid: process.pid,
 							},
 							Date.now(),
@@ -610,7 +612,7 @@ export function makeTable(options) {
 					id_allocation = {
 						start: last_key,
 						end: last_key + (type === 'Int' ? 0x400 : 0x400000),
-						nodeName: getNodeName(),
+						nodeName: getThisNodeName(),
 						pid: process.pid,
 					};
 					id_before = 0;
@@ -938,7 +940,7 @@ export function makeTable(options) {
 				before: apply_to_sources.invalidate?.bind(this, context, id),
 				beforeIntermediate: apply_to_sources_intermediate.invalidate?.bind(this, context, id),
 				commit: (txn_time, existing_entry) => {
-					if (existing_entry?.version > txn_time) return;
+					if (precedesExistingVersion(txn_time, existing_entry, options?.nodeId)) return;
 					let partial_record = null;
 					for (const name in indices) {
 						if (!partial_record) partial_record = {};
@@ -1113,7 +1115,8 @@ export function makeTable(options) {
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
-					if (existing_entry?.version >= txn_time) {
+					let precedes_existing_version = precedesExistingVersion(txn_time, existing_entry, options?.nodeId);
+					if (precedes_existing_version) {
 						// TODO: can the previous version be older, by a prior version be newer?
 						if (audit) {
 							// incremental CRDT updates are only available with audit logging on
@@ -1232,9 +1235,7 @@ export function makeTable(options) {
 							context.lastModified = existing_entry.version;
 						updateResource(this, existing_entry);
 					}
-					if (existing_entry?.version > txn_time)
-						// a newer record exists locally
-						return;
+					if (precedesExistingVersion(txn_time, existing_entry, options?.nodeId)) return; // a newer record exists locally
 					updateIndices(this[ID_PROPERTY], existing_record);
 					harper_logger.trace(`Write delete entry`, id, txn_time);
 					if (audit || track_deletes) {
@@ -2766,6 +2767,33 @@ export function makeTable(options) {
 		return ids;
 	}
 
+	function precedesExistingVersion(txn_time, existing_entry, node_id = getThisNodeId(audit_store)) {
+		if (txn_time <= existing_entry?.version) {
+			if (existing_entry?.version === txn_time && node_id !== undefined) {
+				// if we have a timestamp tie, we break the tie by comparing the node name of the
+				// existing entry to the node name of the update
+				let node_name_to_id = exportIdMapping(audit_store);
+				let local_time = existing_entry.localTime;
+				const audit_entry = audit_store.get(local_time);
+				if (audit_entry) {
+					// existing node id comes from the audit log
+					let updated_node_name, existing_node_name;
+					const audit_record = readAuditEntry(audit_entry);
+					for (let node_name in node_name_to_id) {
+						if (node_name_to_id[node_name] === node_id) updated_node_name = node_name;
+						if (node_name_to_id[node_name] === audit_record.nodeId) existing_node_name = node_name;
+					}
+					if (updated_node_name > existing_node_name)
+						// if the updated node name is greater (alphabetically), it wins (it doesn't precede the existing version)
+						return false;
+				}
+			}
+			// transaction time is older than existing version, so we treat that as an update that loses to the existing record version
+			return true;
+		}
+		return false;
+	}
+
 	/**
 	 * This is used to record that a retrieve a record from source
 	 */
@@ -3166,9 +3194,6 @@ function stringify(value) {
 	} catch (err) {
 		return value;
 	}
-}
-function getNodeName() {
-	return node_name || (node_name = env_mngr.get(CONFIG_PARAMS.CLUSTERING_NODENAME));
 }
 function hasOtherProcesses(store) {
 	const pid = process.pid;

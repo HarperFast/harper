@@ -118,6 +118,34 @@ describe('Replication', () => {
 			break;
 		} while (true);
 	});
+	it('Resolves a transaction time tie', async function () {
+		let name1 = 'name ' + Math.random();
+		let name2 = 'name ' + Math.random();
+		let now = Date.now();
+		let context = { timestamp: now };
+		// write to both tables at with the same timestamp, this should always resolve to node-2 since it is
+		// alphabetically higher than node-1
+		await test_tables[0].put(
+			{
+				id: '3',
+				name: name1,
+			},
+			context
+		);
+		child_processes[0].send({
+			action: 'put',
+			timestamp: now,
+			data: {
+				id: '3',
+				name: name2,
+			},
+		});
+		await new Promise((resolve) => setTimeout(resolve, 500));
+		let result = await test_tables[0].get('3');
+		assert.equal(result.name, name2);
+		result = await test_tables[1].get('3');
+		assert.equal(result.name, name2);
+	});
 	it('Can send operation API over WebSocket with replication protocol', async function () {
 		const cluster_status = await sendOperationToNode({ url: 'ws://localhost:9326' }, { operation: 'cluster_status' });
 		assert(cluster_status.connections.length >= 1);

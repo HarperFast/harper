@@ -41,6 +41,7 @@ import { encode } from 'msgpackr';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms';
 import { WebSocket } from 'ws';
 import * as https from 'node:https';
+import { exportIdMapping } from './nodeIdMapping';
 let replication_disabled;
 let next_id = 1; // for request ids
 
@@ -274,9 +275,23 @@ function getCommonNameFromCert() {
 		return (common_name_from_cert = subject.match(/CN=(.*)/)?.[1] ?? null);
 	}
 }
+let node_name;
 export function getThisNodeName() {
-	return env.get('replication_nodename') ?? urlToNodeName(env.get('replication_url')) ?? getCommonNameFromCert();
+	return (
+		node_name ||
+		(node_name =
+			env.get('replication_nodename') ?? urlToNodeName(env.get('replication_url')) ?? getCommonNameFromCert())
+	);
 }
+Object.defineProperty(server, 'nodeName', {
+	get() {
+		return getThisNodeName();
+	},
+});
+export function getThisNodeId(audit_store: any) {
+	return exportIdMapping(audit_store)?.[getThisNodeName()];
+}
+server.getThisNodeId = getThisNodeId;
 export function getThisNodeUrl() {
 	return env.get('replication_url');
 }

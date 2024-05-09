@@ -138,15 +138,18 @@ export class NodeReplicationConnection extends EventEmitter {
 		this.socket.on('error', (error) => {
 			if (error.code !== 'ECONNREFUSED') logger.error('Error in connection to ' + this.url, error.message);
 		});
-		this.socket.on('close', () => {
+		this.socket.on('close', (code, reason_buffer) => {
 			if (this.socket.isFinished) {
 				session?.end();
 				return;
 			}
 			session?.disconnected();
 			if (++this.retries % 20 === 1) {
+				const reason = reason_buffer?.toString();
 				logger.warn(
-					`${session ? 'Disconnected from' : 'Failed to connect to'} ${this.url} (db: "${this.databaseName}")`
+					`${session ? 'Disconnected from' : 'Failed to connect to'} ${this.url} (db: "${this.databaseName}"), due to ${
+						reason ? '"' + reason + '" ' : ''
+					}(code: ${code})`
 				);
 			}
 			session = null;
@@ -749,11 +752,11 @@ export function replicateOverWS(ws, options, authorization) {
 			});
 		last_ping_time = null;
 	});
-	ws.on('close', () => {
+	ws.on('close', (code, reason_buffer) => {
 		clearInterval(send_ping_interval);
 		if (audit_subscription) audit_subscription.emit('close');
 		if (subscription_request) subscription_request.end();
-		logger.info(connection_id, 'closed');
+		logger.info(connection_id, 'closed', code, reason_buffer?.toString());
 	});
 
 	function recordRemoteNodeSequence() {}
