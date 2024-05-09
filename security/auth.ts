@@ -116,19 +116,15 @@ export async function authentication(request, next_handler) {
 			auth_event_log.error('Authorization error:', request._nodeRequest.socket.authorizationError);
 
 		if (request.mtlsConfig && request.authorized && request.peerCertificate.subject) {
-			if (request.mtlsConfig.authorizedHandler?.(request)) {
-				// this means that it was already handled by a custom config function
+			let username = request.mtlsConfig.user;
+			if (username !== null) {
+				// null means no user is defined from certificate, need regular authentication as well
+				if (username === undefined || username === 'Common Name' || username === 'CN')
+					username = request.peerCertificate.subject.CN;
+				request.user = await server.getUser(username, null, null);
+				authAuditLog(username, AUTH_AUDIT_STATUS.SUCCESS, 'mTLS');
 			} else {
-				let username = request.mtlsConfig.user;
-				if (username !== null) {
-					// null means no user is defined from certificate, need regular authentication as well
-					if (username === undefined || username === 'Common Name' || username === 'CN')
-						username = request.peerCertificate.subject.CN;
-					request.user = await server.getUser(username, null, null);
-					authAuditLog(username, AUTH_AUDIT_STATUS.SUCCESS, 'mTLS');
-				} else {
-					debug('HTTPS/WSS mTLS authorized connection (mTLS did not authorize a user)', 'from', request.ip);
-				}
+				debug('HTTPS/WSS mTLS authorized connection (mTLS did not authorize a user)', 'from', request.ip);
 			}
 		}
 

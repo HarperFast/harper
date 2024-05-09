@@ -50,44 +50,49 @@ export function start(options) {
 	if (!options.securePort) options.securePort = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT);
 	if (!getThisNodeName()) throw new Error('Can not load replication without a url (see replication.url in the config)');
 	assignReplicationSource(options);
-	// noinspection JSVoidFunctionReturnValueUsed
-	const ws_servers = server.ws(
-		async (ws, request, chain_completion) => {
-			await chain_completion;
-			replicateOverWS(ws, options, request?.user);
-			ws.on('error', (error) => {
-				if (error.code !== 'ECONNREFUSED') logger.error('Error in connection to ' + this.url, error.message);
-			});
+	options = Object.assign(
+		// We generally expect this to use the operations API ports (9925)
+		{
+			subProtocol: 'harperdb-replication-v1',
+			mtls: true, // make sure that we request a certificate from the client
+			isOperationsServer: true, // we default to using the operations server ports
+			// we set this very high (16x times the default) because it can be a bit expensive to switch back and forth
+			// between push and pull mode
+			highWaterMark: 256 * 1024,
 		},
-		Object.assign(
-			// We generally expect this to use the operations API ports (9925)
-			{
-				protocol: 'harperdb-replication-v1',
-				mtls: true, // make sure that we request a certificate from the client
-				isOperationsServer: true, // we default to using the operations server ports
-				// we set this very high (16x times the default) because it can be a bit expensive to switch back and forth
-				// between push and pull mode
-				highWaterMark: 256 * 1024,
-			},
-			options
-		)
+		options
 	);
+	// noinspection JSVoidFunctionReturnValueUsed
+	const ws_servers = server.ws(async (ws, request, chain_completion) => {
+		await chain_completion;
+		replicateOverWS(ws, options, request?.user);
+		ws.on('error', (error) => {
+			if (error.code !== 'ECONNREFUSED') logger.error('Error in connection to ' + this.url, error.message);
+		});
+	}, options);
+	options.runFirst = true;
+	// now setup authentication for the replication server, authorizing by certificate
+	// or IP address and then falling back to standard authorization
+	server.http((request, next_handler) => {
+		if (request.isWebSocket && request.headers.get('Sec-WebSocket-Protocol') === 'harperdb-replication-v1') {
+			if (request.authorized && request.peerCertificate.subject) {
+				const subject = request.peerCertificate.subject;
+				const node = subject && getHDBNodeTable().primaryStore.get(subject.CN);
+				if (node) {
+					request.user = node;
+				}
+			} else {
+				// try by IP address
+				const node = getHDBNodeTable().primaryStore.get(request.ip);
+				if (node) {
+					request.user = node;
+				}
+			}
+		}
+		return next_handler(request);
+	}, options);
+
 	for (let ws_server of ws_servers) {
-		ws_server.mtlsConfig = Object.assign(
-			{
-				// define a handler for mTLS authorized connections, the primary means of authentication for replication connections
-				authorizedHandler(request) {
-					const subject = request.peerCertificate.subject;
-					const node = subject && getHDBNodeTable().primaryStore.get(subject.CN);
-					if (node) {
-						request.user = node;
-						return true;
-					}
-					// fall through to the default auth handler
-				},
-			},
-			ws_server.mtlsConfig
-		);
 		servers.push(ws_server);
 		if (ws_server.setSecureContext) {
 			let certificate_authorities = new Set();
@@ -226,31 +231,7 @@ function getConnection(url, subscription, db_name) {
 
 // TODO: Can we improve the error handling here when bad params are passed?
 export async function sendOperationToNode(node, operation, options) {
-	const socket = new WebSocket(node.url, {
-		headers: { Authorization: options?.authorization },
-		protocols: 'harperdb-replication-v1',
-		rejectUnauthorized: false,
-	});
-	https
-		.request(
-			{
-				hostname: '127.0.0.1',
-				port: 9925,
-				path: '/',
-				method: 'POST',
-				headers: {
-					Authorization: options?.authorization,
-				},
-				rejectUnauthorized: false,
-			},
-			(res) => {
-				logger.info('Connected to operations API');
-			}
-		)
-		.on('error', (error) => {
-			logger.error('Error connecting to operations API', error);
-		})
-		.end();
+	const socket = await createWebSocket(node.url, options);
 	replicateOverWS(socket, {}, {});
 	operation.requestId = next_id++;
 	return new Promise((resolve, reject) => {
