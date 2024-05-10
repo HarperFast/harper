@@ -179,18 +179,26 @@ export class DatabaseTransaction implements Transaction {
 				}
 			}
 		};
-		if (this.writes.length < MAX_OPTIMISTIC_SIZE >> retries) nextCondition();
-		else {
-			// if it is too big to expect optimistic writes to work, or we have done too many retries we use
-			// a real LMDB transaction to get exclusive access to reading and writing
-			resolution = this.writes[0].store.transaction(() => {
-				for (const write of this.writes) {
-					// we load latest data while in the transaction
-					write.entry = write.store.getEntry(write.key);
-					doWrite(write);
-				}
-				return true; // success. always success
-			});
+		let lmdb_db = this.lmdbDb;
+		// only commit if there are writes
+		if (this.writes.length > 0) {
+			// we also maintain a retry risk for the transaction, which is a measure of how likely it is that the transaction
+			// will fail and retry due to contention. This is used to determine when to give up on optimistic writes and
+			// use a real (async) transaction to get exclusive access to the data
+			if (lmdb_db?.retryRisk) lmdb_db.retryRisk *= 0.99; // gradually decay the retry risk
+			if (this.writes.length + (lmdb_db?.retryRisk || 0) < MAX_OPTIMISTIC_SIZE >> retries) nextCondition();
+			else {
+				// if it is too big to expect optimistic writes to work, or we have done too many retries we use
+				// a real LMDB transaction to get exclusive access to reading and writing
+				resolution = this.writes[0].store.transaction(() => {
+					for (const write of this.writes) {
+						// we load latest data while in the transaction
+						write.entry = write.store.getEntry(write.key);
+						doWrite(write);
+					}
+					return true; // success. always success
+				});
+			}
 		}
 
 		if (resolution) {
@@ -219,6 +227,9 @@ export class DatabaseTransaction implements Transaction {
 						};
 					});
 				} else {
+					// if the transaction failed, we need to retry. First record this as an increased risk of contention/retry
+					// for future transactions
+					if (lmdb_db) lmdb_db.retryRisk = (lmdb_db.retryRisk || 0) + MAX_OPTIMISTIC_SIZE / 2;
 					if (options) options.retries = retries + 1;
 					else options = { retries: 1 };
 					return this.commit(options); // try again
