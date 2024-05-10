@@ -259,6 +259,8 @@ async function createCsr() {
 }
 
 function certExtensions() {
+	const alt_name = CERT_DOMAINS.includes(getHost()) ? CERT_DOMAINS : [...CERT_DOMAINS, getHost()];
+
 	return [
 		{
 			name: 'basicConstraints',
@@ -283,7 +285,7 @@ function certExtensions() {
 		},
 		{
 			name: 'subjectAltName',
-			altNames: CERT_DOMAINS.map((domain) => {
+			altNames: alt_name.map((domain) => {
 				// types https://git.io/fptng
 				if (net.isIP(domain)) {
 					return { type: 7, ip: domain };
