@@ -59,7 +59,7 @@ export async function addNode(req: object) {
 	const sign_req = {
 		operation: OPERATIONS_ENUM.SIGN_CERTIFICATE,
 		csr,
-		certificate: await readFile(get(CONFIG_PARAMS.TLS_CERTIFICATE), 'utf8'),
+		//certificate: await readFile(get(CONFIG_PARAMS.TLS_CERTIFICATE), 'utf8'), //TODO: what cert should we pass here?
 		add_node: remote_add_node_obj,
 	};
 	let sign_res;
@@ -67,13 +67,11 @@ export async function addNode(req: object) {
 		sign_res = await sendOperationToNode({ url }, sign_req, req);
 	} catch (err) {
 		hdb_logger.error(err);
-		return new Error(`Error requesting certificate signature from node: ${url} message: ${err.message}`);
+		throw new Error(`Error requesting certificate signature from node: ${url} message: ${err.message}`);
 	}
 
 	if (!sign_res?.certificate || !sign_res?.certificate?.includes?.('BEGIN CERTIFICATE')) {
-		return new Error(
-			`Unexpected certificate signature response from node ${url} response: ${JSON.stringify(sign_res)}`
-		);
+		throw new Error(`Unexpected certificate signature response from node ${url} response: ${JSON.stringify(sign_res)}`);
 	}
 
 	await setCertTable({ name: urlToNodeName(url) + '-ca', certificate: sign_res.ca_certificate, is_authority: true });
@@ -84,16 +82,13 @@ export async function addNode(req: object) {
 		is_authority: false,
 	});
 
-	await writeFile(join(get(CONFIG_PARAMS.ROOTPATH), LICENSE_KEY_DIR_NAME, CERTIFICATE_PEM_NAME), sign_res.certificate);
-	await writeFile(join(get(CONFIG_PARAMS.ROOTPATH), LICENSE_KEY_DIR_NAME, CA_PEM_NAME), sign_res.ca_certificate);
-
 	const node_record = { url, ca: sign_res.ca_certificate };
 	if (req.node_name) node_record.node_name = req.node_name;
 	if (req.subscriptions) node_record.subscriptions = req.subscriptions;
 	if (req.subscribe) node_record.subscribe = req.subscribe;
 	if (req.publish) node_record.publish = req.publish;
 
-	ensureNode(undefined, node_record);
+	await ensureNode(undefined, node_record);
 
 	return `Successfully added '${url}' to manifest`;
 }

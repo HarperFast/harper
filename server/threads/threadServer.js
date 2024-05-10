@@ -20,7 +20,7 @@ const { CERT_PREFERENCE_APP } = require('../../utility/terms/certificates');
 // this horifying hack is brought to you by https://github.com/nodejs/node/issues/36655
 const tls = require('tls');
 const { rootCertificates } = require('node:tls');
-const { verifyCert } = require('../../security/keys');
+const { getCertsKeys } = require('../../security/keys');
 
 const origCreateSecureContext = tls.createSecureContext;
 tls.createSecureContext = function (options) {
@@ -400,31 +400,21 @@ function getHTTPServer(port, secure, is_operations_server) {
 		};
 		let mtls = env.get(server_prefix + '_mtls');
 		let mtls_required = env.get(server_prefix + '_mtls_required');
+
 		if (secure) {
-			server_prefix = is_operations_server ? 'operationsApi_' : '';
-			const private_key = env.get(server_prefix + 'tls_privateKey');
-			const certificate_path = env.get(server_prefix + 'tls_certificate');
-			const certificate_authority = env.get(server_prefix + 'tls_certificateAuthority');
 			// If we are in secure mode, we use HTTP/2 (createSecureServer from http2), with back-compat support
 			// HTTP/1. We do not use HTTP/2 for insecure mode for a few reasons: browsers do not support insecure
 			// HTTP/2. We have seen slower performance with HTTP/2, when used for directly benchmarking. We have
 			// also seen problems with insecure HTTP/2 clients negotiating properly (Java HttpClient).
 			// TODO: Add an option to not accept the root certificates, and only use the CA
-			const ca = certificate_authority ? [readFileSync(certificate_authority, 'utf8'), ...rootCertificates] : undefined;
-			const certificate = certificate_path ? readFileSync(certificate_path, 'utf8') : undefined;
 			Object.assign(options, {
 				allowHTTP1: true,
-				key: readFileSync(private_key),
 				ciphers: env.get('tls_ciphers'),
-				cert: certificate,
-				ca,
 				rejectUnauthorized: Boolean(mtls_required),
 				requestCert: Boolean(mtls || is_operations_server),
 				ticketKeys: getTicketKeys(),
 				maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
 			});
-			harper_logger.info('Using certificate for server', certificate?.toString().slice(0, 100));
-			harper_logger.info('Using CA for server', ca?.[0].toString().slice(0, 100));
 		}
 		let license_warning = checkMemoryLimit();
 		let server = (http_servers[port] = (secure ? createSecureServer : createServer)(
@@ -545,22 +535,27 @@ function getHTTPServer(port, secure, is_operations_server) {
 		});*/
 		if (secure) {
 			const updateCertificates = async () => {
-				let cert;
-				const cas = new Set();
-				let cert_quality = 0;
-				for await (const cert_record of databases.system.hdb_certificate.search([])) {
-					if (cert_record.is_authority) cas.add(cert_record.certificate); // any of them?
-					else {
-						// TODO: use the operations API preference if for operations API
-						let quality = CERT_PREFERENCE_APP[cert_record.name];
-						if (quality > cert_quality) {
-							cert = cert_record;
-						}
-					}
-				}
-				logger.info('Using certificate for server', cert.name, cert.certificate.slice(-100));
-				server.cert = cert.certificate;
-				server.ca = [...cas, ...rootCertificates];
+				const { app_private_key, ops_private_key, ca_certs, app, ops, rep, ca_cert_names } = await getCertsKeys();
+				const private_key = is_operations_server ? ops_private_key : app_private_key;
+				const certificate = is_operations_server ? rep.cert : app.cert;
+				const server_name = is_operations_server ? 'operations' : 'http';
+				harper_logger.info(
+					'Setting certificates for',
+					server_name,
+					'server using certificate named:',
+					is_operations_server ? rep.name : app.name
+				);
+				harper_logger.info(
+					'Setting certificates for',
+					server_name,
+					'server using certificate authorities named:',
+					ca_cert_names,
+					'and all root CAs'
+				);
+
+				server.key = private_key;
+				server.cert = certificate;
+				server.ca = [...ca_certs, ...rootCertificates];
 				server.setSecureContext(server);
 			};
 			databases.system.hdb_certificate.subscribe({
@@ -612,20 +607,19 @@ function onRequest(listener, options) {
  * @param listener
  * @param options
  */
-function onSocket(listener, options) {
+async function onSocket(listener, options) {
 	let socket_server;
 	if (options.securePort) {
-		const private_key_path = env.get('tls_privateKey');
-		const certificate_path = env.get('tls_certificate');
-		const certificate_authority_path = options.mtls?.certificateAuthority || env.get('tls_certificateAuthority');
+		const { app_private_key, app, app_ca } = await getCertsKeys();
+		const certificate_authority_path = options.mtls?.certificateAuthority || app_ca.cert;
 
 		socket_server = createSecureSocketServer(
 			{
 				ciphers: env.get('tls_ciphers'),
-				key: readFileSync(private_key_path),
+				key: app_private_key,
 				// if they have a CA, we append it, so it is included
-				cert: readFileSync(certificate_path),
-				ca: certificate_authority_path && readFileSync(certificate_authority_path),
+				cert: app.cert,
+				ca: certificate_authority_path,
 				rejectUnauthorized: Boolean(options.mtls?.required),
 				requestCert: Boolean(options.mtls),
 				noDelay: true,

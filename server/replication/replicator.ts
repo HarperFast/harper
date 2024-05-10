@@ -229,6 +229,7 @@ function getConnection(url, subscription, db_name) {
 	connection.connect();
 	return connection;
 }
+
 export async function sendOperationToNode(node, operation, options) {
 	const socket = await createWebSocket(node.url, options);
 	replicateOverWS(socket, {}, {});
