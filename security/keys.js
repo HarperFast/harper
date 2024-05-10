@@ -53,35 +53,6 @@ const CERT_ATTRIBUTES = [
 	{ name: 'organizationName', value: 'HarperDB, Inc.' },
 ];
 
-function getTlsCertsKeys() {
-	const public_pem = fs.readFileSync(env_manager.get(hdb_terms.CONFIG_PARAMS.TLS_CERTIFICATE), 'utf8');
-	const private_pem = fs.readFileSync(env_manager.get(hdb_terms.CONFIG_PARAMS.TLS_PRIVATEKEY), 'utf8');
-	const ca_pem = fs.readFileSync(env_manager.get(hdb_terms.CONFIG_PARAMS.TLS_CERTIFICATEAUTHORITY), 'utf8');
-
-	const public_cert = pki.certificateFromPem(public_pem);
-	return {
-		public_cert: public_cert,
-		public_key: public_cert.publicKey,
-		private_key: pki.privateKeyFromPem(private_pem),
-		ca_cert: pki.certificateFromPem(ca_pem),
-	};
-}
-
-/*
-* I don't know we need explicit priority attribute, just an order of preference. Maybe we can do this for the name:
-"default" - default certificate that we generate
-"default-ca" - default CA that we generate
-"server" - certificate from tls.certificate
-"ca" - certificate from tls.certificateAuthority
-"operations-api" - certificate from operationsApi.tls.certificate
-"operations-ca" - certificate from operationsApi.tls.certificateAuthority
-When we receive a signed certificate, name it after the server ("some-server.com")
-And the preference for the default/app HTTPS server would be "server", then any other certificate, then "default"
-Preference for the operations API server would be "operations-api", "server",  then any other certificate, then "default"
-Preference for client replication certificate would be certificate for that matches server, then any other certificate, then "operations-api", "server", then "default", I guess.
-*
-* */
-
 /**
  * This function will use preference enums to pick which cert has the highest preference and return that cert.
  * @param rep_host
@@ -538,13 +509,6 @@ async function generateCertsKeys() {
 	const public_cert = await generateCertificates(private_key, public_key, ca_cert);
 	await createCertificateTable(public_cert, pki.certificateToPem(ca_cert));
 	updateConfigCert();
-
-	/*	// TODO: This is temp, the goal is that anything that needs these certs will get it from table
-	const keys_path = path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME);
-	const cert_path = path.join(keys_path, certificates_terms.CERTIFICATE_PEM_NAME);
-	const ca_path = path.join(keys_path, certificates_terms.CA_PEM_NAME);
-	await fs.writeFile(cert_path, public_cert);
-	await fs.writeFile(ca_path, pki.certificateToPem(ca_cert));*/
 }
 
 // Update the cert config in harperdb-config.yaml
@@ -553,10 +517,6 @@ function updateConfigCert() {
 	const cli_env_args = assign_cmdenv_vars(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
 	const keys_path = path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME);
 	const private_key = path.join(keys_path, certificates_terms.PRIVATEKEY_PEM_NAME);
-
-	// // TODO: remove this
-	// const cert_path = path.join(keys_path, certificates_terms.CERTIFICATE_PEM_NAME);
-	// const ca_path = path.join(keys_path, certificates_terms.CA_PEM_NAME);
 
 	// This object is what will be added to the harperdb-config.yaml file.
 	// We check for any CLI of Env args and if they are present we use them instead of default values.
