@@ -45,7 +45,7 @@ const { urlToNodeName } = require('../server/replication/replicator');
 const { ensureNode } = require('../server/replication/subscriptionManager');
 
 const CERT_VALIDITY_DAYS = 3650;
-const CERT_DOMAINS = ['127.0.0.1', '127.0.0.2', '127.0.0.3', '127.0.0.4', '127.0.0.5', 'localhost', '::1'];
+const CERT_DOMAINS = ['127.0.0.*'];
 const CERT_ATTRIBUTES = [
 	{ name: 'countryName', value: 'USA' },
 	{ name: 'stateOrProvinceName', value: 'Colorado' },
@@ -343,7 +343,7 @@ async function signCertificate(req) {
 	}
 
 	const cert = forge.pki.createCertificate();
-	cert.serialNumber = '02';
+	cert.serialNumber = Math.random().toString().slice(2, 10);
 	cert.validity.notBefore = new Date();
 	const not_after = new Date();
 	cert.validity.notAfter = not_after;
@@ -391,6 +391,9 @@ async function createCertificateTable(cert, ca_cert) {
 			{
 				attribute: 'is_authority',
 			},
+			{
+				attribute: 'details',
+			},
 		],
 	});
 
@@ -410,6 +413,16 @@ async function createCertificateTable(cert, ca_cert) {
 }
 
 async function setCertTable(cert_record) {
+	const cert = new X509Certificate(cert_record.certificate);
+	cert_record.details = {
+		issuer: cert.issuer.replace(/\n/g, ' '),
+		subject: cert.subject.replace(/\n/g, ' '),
+		subject_alt_name: cert.subjectAltName,
+		serial_number: cert.serialNumber,
+		valid_from: cert.validFrom,
+		valid_to: cert.validTo,
+	};
+
 	if (!certificate_table) certificate_table = getDatabases()['system']['hdb_certificate'];
 	await certificate_table.patch(cert_record);
 }
@@ -464,7 +477,7 @@ async function generateCertificates(private_key, public_key, ca_cert) {
 	const public_cert = pki.createCertificate();
 
 	public_cert.publicKey = public_key;
-	public_cert.serialNumber = '01';
+	public_cert.serialNumber = Math.random().toString().slice(2, 10);
 	public_cert.validity.notBefore = new Date();
 	const not_after = new Date();
 	public_cert.validity.notAfter = not_after;
@@ -491,7 +504,7 @@ async function generateCertAuthority() {
 	const ca_cert = pki.createCertificate();
 
 	ca_cert.publicKey = public_key;
-	ca_cert.serialNumber = '03'; //TODO: check if we should expand serial numbers
+	ca_cert.serialNumber = Math.random().toString().slice(2, 10);
 	ca_cert.validity.notBefore = new Date();
 	const not_after = new Date();
 	ca_cert.validity.notAfter = not_after;
@@ -500,7 +513,7 @@ async function generateCertAuthority() {
 	const subject = [
 		{
 			name: 'commonName',
-			value: 'HarperDB Certificate Authority',
+			value: 'HarperDB Certificate Authority for ' + getHost(),
 		},
 		...CERT_ATTRIBUTES,
 	];
