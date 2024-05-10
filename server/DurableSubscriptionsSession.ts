@@ -171,7 +171,7 @@ class SubscriptionsSession {
 			url: '',
 		};
 		if (start_time) trace('Resuming subscription from', topic, 'from', start_time);
-		const entry = resources.getMatch(path);
+		const entry = resources.getMatch(path, 'mqtt');
 		if (!entry) {
 			const not_found_error = new Error(
 				`The topic ${topic} does not exist, no resource has been defined to handle this topic`
@@ -364,7 +364,7 @@ function publish(message, data, context) {
 	message.data = data;
 	message.async = true;
 	context.authorize = true;
-	const entry = resources.getMatch(topic);
+	const entry = resources.getMatch(topic, 'mqtt');
 	if (!entry)
 		throw new Error(
 			`Can not publish to topic ${topic} as it does not exist, no resource has been defined to handle this topic`

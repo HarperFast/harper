@@ -303,6 +303,17 @@ describe('test REST calls', () => {
 			assert.equal(response.data[0].name, 'name0');
 			assert.equal(response.data[0].birthday, undefined); // shouldn't be returned
 		});
+		it('query can access table that is not exported for rest', async () => {
+			let response = await axios('http://localhost:9926/ManyToMany/', {
+				headers: {
+					Authorization: 'Basic ' + Buffer.from('test:test').toString('base64'),
+				},
+				validateStatus: function (status) {
+					return true;
+				},
+			});
+			assert.equal(response.status, 404);
+		});
 	});
 	it('invalidate and get from cache and check headers', async () => {
 		let response = await axios.post('http://localhost:9926/SimpleCache/3', {

@@ -54,7 +54,8 @@ export function start({ ensureTable }) {
 						if (directive.name.value === 'export') {
 							type_def.export = true;
 							for (const arg of directive.arguments) {
-								if (arg.name.value === 'name') type_def.export = { name: (arg.value as StringValueNode).value };
+								if (typeof type_def.export !== 'object') type_def.export = {};
+								type_def.export[arg.name.value] = (arg.value as StringValueNode).value;
 							}
 						}
 					}
@@ -142,7 +143,12 @@ export function start({ ensureTable }) {
 			if (type_def.export) {
 				// allow empty string to be used to declare a table on the root path
 				if (type_def.export.name === '') resources.set(dirname(url_path), type_def.tableClass);
-				else resources.set(dirname(url_path) + '/' + (type_def.export.name || type_def.type), type_def.tableClass);
+				else
+					resources.set(
+						dirname(url_path) + '/' + (type_def.export.name || type_def.type),
+						type_def.tableClass,
+						type_def.export
+					);
 			}
 		}
 	}
