@@ -24,7 +24,8 @@ const OPENAPI_DOMAIN = 'openapi';
 
 async function http(request, next_handler) {
 	const headers_object = request.headers.asObject;
-	const method = headers_object.accept === 'text/event-stream' ? 'CONNECT' : request.method;
+	const is_sse = headers_object.accept === 'text/event-stream';
+	const method = is_sse ? 'CONNECT' : request.method;
 	if (request.search) parseQuery(request);
 	const headers = new Headers();
 	try {
@@ -34,7 +35,7 @@ async function http(request, next_handler) {
 		let resource_request;
 		let resource;
 		if (url !== OPENAPI_DOMAIN) {
-			const entry = resources.getMatch(url);
+			const entry = resources.getMatch(url, is_sse ? 'sse' : 'rest');
 			if (!entry) return next_handler(request); // no resource handler found
 			request.handlerPath = entry.path;
 			resource_request = { url: entry.relativeURL, async: true }; // TODO: We don't want to have to remove the forward slash and then re-add it
@@ -232,7 +233,7 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 		try {
 			await chain_completion;
 			const url = request.url.slice(1);
-			const entry = resources.getMatch(url);
+			const entry = resources.getMatch(url, 'ws');
 			recordActionBinary(Boolean(entry), 'connection', 'ws', 'connect');
 			if (!entry) {
 				// TODO: Ideally we would like to have a 404 response before upgrading to WebSocket protocol, probably

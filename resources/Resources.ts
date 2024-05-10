@@ -7,13 +7,13 @@ import { transaction } from './transaction';
 export class Resources extends Map<string, typeof Resource> {
 	isWorker = true;
 	loginPath?: (request) => string;
-	set(path, resource, type?: string, force?: boolean): void {
+	set(path, resource, export_types?: string[], force?: boolean): void {
 		if (!resource) throw new Error('Must provide a resource');
 		if (path.startsWith('/')) path = path.replace(/^\/+/, '');
 		const entry = {
 			Resource: resource,
 			path,
-			type,
+			exportTypes: export_types,
 			hasSubPaths: false,
 			relativeURL: '', // reset after each match
 		};
@@ -42,17 +42,18 @@ export class Resources extends Map<string, typeof Resource> {
 	 * Find the best (longest) match resource path that matches the (beginning of the) provided path, in order to find
 	 * the correct Resource to handle this URL path.
 	 * @param path The URL Path
-	 * @param type Optional request content type, allows layering of resources, specifically for defining HTML handlers
-	 * that can further transform data from the main structured object resources.
+	 * @param export_type Optional request content or protocol type, allows control of which protocols can access a resource
+	 * and future layering of resources (for defining HTML handlers
+	 * that can further transform data from the main structured object resources).
 	 * @return The matched Resource class. Note that the remaining path is "returned" by setting the relativeURL property
 	 */
-	getMatch(url: string, type?: string) {
+	getMatch(url: string, export_type?: string) {
 		let slash_index = 2;
 		let found_entry;
 		while ((slash_index = url.indexOf('/', slash_index)) > -1) {
 			const resource_path = url.slice(0, slash_index);
 			const entry = this.get(resource_path);
-			if (entry) {
+			if (entry && (!export_type || entry.exportTypes?.[export_type] !== false)) {
 				entry.relativeURL = url.slice(slash_index);
 				if (!entry.hasSubPaths) {
 					return entry;
@@ -66,12 +67,12 @@ export class Resources extends Map<string, typeof Resource> {
 		const search_index = url.indexOf('?');
 		const path = search_index > -1 ? url.slice(0, search_index) : url;
 		found_entry = this.get(path);
-		if (found_entry) {
+		if (found_entry && (!export_type || found_entry.exportTypes?.[export_type] !== false)) {
 			found_entry.relativeURL = search_index > -1 ? url.slice(search_index) : '';
 		} else if (!found_entry) {
 			// still not found, see if there is an explicit root path
 			found_entry = this.get('');
-			if (found_entry) {
+			if (found_entry && (!export_type || found_entry.exportTypes?.[export_type] !== false)) {
 				if (url[0] !== '/') url = '/' + url;
 				found_entry.relativeURL = url;
 			}

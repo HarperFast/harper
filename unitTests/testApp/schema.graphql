@@ -14,12 +14,12 @@ type FourProp @table(audit: "1d") @export {
 	title: String
 	birthday: Date @indexed
 }
-type Related @table @export {
+type Related @table @export(rest: true, mqtt: false) {
 	id: ID @primaryKey
 	name: String @indexed
 	otherTable: [SubObject] @relationship(to: relatedId)
 }
-type ManyToMany @table @export {
+type ManyToMany @table @export(mqtt: true, rest: false) {
 	id: ID @primaryKey
 	name: String @indexed
 	subObjectIds: [ID] @indexed

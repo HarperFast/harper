@@ -312,6 +312,22 @@ describe('test MQTT connections and commands', () => {
 		await delay(50);
 		assert.equal(published_messages.length, 0);
 	});
+	it('can not subscribe to resource with mqtt export disabled', async () => {
+		const client = connect({
+			host: 'localhost',
+			clean: true,
+			connectTimeout: 2000,
+		});
+		await new Promise((resolve, reject) => {
+			client.on('connect', function() {
+				client.subscribe('Related/#', function(err, subscriptions) {
+					assert.equal(subscriptions[0].qos, 128);
+					resolve();
+				});
+			});
+		});
+	});
+
 	it('subscribe to retained record with upsert operation', async function () {
 		let path = 'SimpleRecord/77';
 		let client;
