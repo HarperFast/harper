@@ -79,12 +79,14 @@ export async function createWebSocket(url, options?) {
 			rejectUnauthorized: false,
 		});
 	}
+	let node_name = getThisNodeName();
 	return new WebSocket(url, 'harperdb-replication-v1', {
 		headers,
 		key: readFileSync(private_key),
 		ciphers: env.get('tls_ciphers'),
 		rejectUnauthorized: true,
-		localAddress: getThisNodeName(),
+		localAddress: node_name?.startsWith('127.0') ? node_name : undefined,
+		noDelay: true,
 		cert,
 		// for client connections, we can add our certificate authority to the root certificates
 		// to authorize the server certificate (both public valid certificates and privately signed certificates are acceptable)

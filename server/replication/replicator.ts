@@ -291,7 +291,10 @@ Object.defineProperty(server, 'nodeName', {
 export function getThisNodeId(audit_store: any) {
 	return exportIdMapping(audit_store)?.[getThisNodeName()];
 }
-server.getThisNodeId = getThisNodeId;
+server.replication = {
+	getThisNodeId,
+	exportIdMapping,
+};
 export function getThisNodeUrl() {
 	return env.get('replication_url');
 }

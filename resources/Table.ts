@@ -2765,12 +2765,12 @@ export function makeTable(options) {
 		return ids;
 	}
 
-	function precedesExistingVersion(txn_time, existing_entry, node_id = server.getThisNodeId(audit_store)) {
+	function precedesExistingVersion(txn_time, existing_entry, node_id = server.replication?.getThisNodeId(audit_store)) {
 		if (txn_time <= existing_entry?.version) {
 			if (existing_entry?.version === txn_time && node_id !== undefined) {
 				// if we have a timestamp tie, we break the tie by comparing the node name of the
 				// existing entry to the node name of the update
-				let node_name_to_id = exportIdMapping(audit_store);
+				let node_name_to_id = server.replication?.exportIdMapping(audit_store);
 				let local_time = existing_entry.localTime;
 				const audit_entry = audit_store.get(local_time);
 				if (audit_entry) {

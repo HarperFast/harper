@@ -394,6 +394,9 @@ function getHTTPServer(port, secure, is_operations_server) {
 			keepAliveTimeout: env.get(server_prefix + '_keepAliveTimeout'),
 			headersTimeout: env.get(server_prefix + '_headersTimeout'),
 			requestTimeout: env.get(server_prefix + '_timeout'),
+			noDelay: true,
+			keepAlive: true,
+			keepAliveInitialDelay: 600,
 		};
 		let mtls = env.get(server_prefix + '_mtls');
 		let mtls_required = env.get(server_prefix + '_mtls_required');
@@ -408,7 +411,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 			// also seen problems with insecure HTTP/2 clients negotiating properly (Java HttpClient).
 			// TODO: Add an option to not accept the root certificates, and only use the CA
 			const ca = certificate_authority ? [readFileSync(certificate_authority, 'utf8'), ...rootCertificates] : undefined;
-			const certificate = readFileSync(certificate_path, 'utf8');
+			const certificate = certificate_path ? readFileSync(certificate_path, 'utf8') : undefined;
 			Object.assign(options, {
 				allowHTTP1: true,
 				key: readFileSync(private_key),
@@ -420,8 +423,8 @@ function getHTTPServer(port, secure, is_operations_server) {
 				ticketKeys: getTicketKeys(),
 				maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
 			});
-			harper_logger.info('Using certificate for server', certificate.toString().slice(0, 100));
-			harper_logger.info('Using CA for server', [0].toString().slice(0, 100));
+			harper_logger.info('Using certificate for server', certificate?.toString().slice(0, 100));
+			harper_logger.info('Using CA for server', ca?.[0].toString().slice(0, 100));
 		}
 		let license_warning = checkMemoryLimit();
 		let server = (http_servers[port] = (secure ? createSecureServer : createServer)(
@@ -625,13 +628,20 @@ function onSocket(listener, options) {
 				ca: certificate_authority_path && readFileSync(certificate_authority_path),
 				rejectUnauthorized: Boolean(options.mtls?.required),
 				requestCert: Boolean(options.mtls),
+				noDelay: true,
+				keepAlive: true,
+				keepAliveInitialDelay: 600,
 			},
 			listener
 		);
 		SERVERS[options.securePort] = socket_server;
 	}
 	if (options.port) {
-		socket_server = createSocketServer(listener);
+		socket_server = createSocketServer(listener, {
+			noDelay: true,
+			keepAlive: true,
+			keepAliveInitialDelay: 600,
+		});
 		SERVERS[options.port] = socket_server;
 	}
 	return socket_server;
