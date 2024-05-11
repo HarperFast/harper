@@ -12,10 +12,13 @@ const env = require('../../../utility/environment/environmentManager');
 const { fork } = require('node:child_process');
 const { createTestTable, createNode } = require('./setup-replication');
 const { clusterStatus } = require('../../../utility/clustering/clusterStatus');
+const { ResourceBridge } = require('../../../dataLayer/harperBridge/ResourceBridge');
+const { open } = require('lmdb');
+OpenDBIObject = require('../../../utility/lmdb/OpenDBIObject');
 
 describe('Replication', () => {
 	let TestTable;
-	const test_tables = [];
+	const test_stores = [];
 	let child_processes = [];
 	let node_count = 2;
 	let db_count = 3;
@@ -26,17 +29,6 @@ describe('Replication', () => {
 			[index, database_config.data.path + '/test-replication-' + index],
 			{}
 		);
-		/*
-		let worker = new Worker(__filename.replace(/\.js/, '-thread.js'), {
-			workerData: {
-				index,
-				workerIndex: 0, // just used to indicate that it is below the max ingest thread
-				nodeCount: node_count,
-				nodeName: 'node-' + (index + 1),
-				databasePath: database_config.data.path + '/test-replication-' + index,
-				noServerStart: true,
-			},
-		});*/
 		child_processes.push(child_process);
 		child_process.on('error', (error) => {
 			console.log('error from child_process:', error);
@@ -55,12 +47,19 @@ describe('Replication', () => {
 		this.timeout(1000009);
 		getMockLMDBPath();
 		database_config = env_get(CONFIG_PARAMS.DATABASES);
+		TestTable = await createTestTable(database_config.data.path + '/test-replication-0');
+
 		for (let i = 0; i < db_count; i++) {
-			test_tables.push(await createTestTable(i, database_config.data.path + '/test-replication-' + i));
+			test_stores.push(
+				open(
+					database_config.data.path + '/test-replication-' + i + '/test.mdb',
+					Object.assign(new OpenDBIObject(false, true), {
+						name: 'TestTable/',
+					})
+				)
+			);
 		}
 		await new Promise((resolve) => setTimeout(resolve, 10));
-		Object.defineProperty(databases, 'test', { value: databases['test-replication-0'] });
-		TestTable = test_tables[0];
 
 		await createNode(0, database_config.data.path, node_count);
 		let started = addWorkerNode(1);
@@ -72,11 +71,11 @@ describe('Replication', () => {
 	});
 	it('A write to one table should replicate', async function () {
 		let name = 'name ' + Math.random();
-		await test_tables[0].put({
+		await TestTable.put({
 			id: '1',
 			name,
 		});
-		await test_tables[0].put({
+		await TestTable.put({
 			id: '2',
 			name,
 			extraProperty: true,
@@ -84,15 +83,15 @@ describe('Replication', () => {
 		let retries = 10;
 		do {
 			await new Promise((resolve) => setTimeout(resolve, 500));
-			let result = await test_tables[1].get('1');
+			let result = await test_stores[1].get('1')?.value;
 			if (!result) {
 				assert(--retries > 0);
 				continue;
 			}
 			assert.equal(result.name, name);
-			result = await test_tables[1].get('2');
+			result = await test_stores[1].get('2')?.value;
 			assert.equal(result.name, name);
-			assert.equal(result.get('extraProperty'), true);
+			assert.equal(result.extraProperty, true);
 			break;
 		} while (true);
 	});
@@ -109,7 +108,7 @@ describe('Replication', () => {
 		let retries = 10;
 		do {
 			await new Promise((resolve) => setTimeout(resolve, 500));
-			let result = await test_tables[0].get('3');
+			let result = await TestTable.get('3');
 			if (!result) {
 				assert(--retries > 0);
 				continue;
@@ -125,7 +124,7 @@ describe('Replication', () => {
 		let context = { timestamp: now };
 		// write to both tables at with the same timestamp, this should always resolve to node-2 since it is
 		// alphabetically higher than node-1
-		await test_tables[0].put(
+		await TestTable.put(
 			{
 				id: '3',
 				name: name1,
@@ -141,9 +140,9 @@ describe('Replication', () => {
 			},
 		});
 		await new Promise((resolve) => setTimeout(resolve, 500));
-		let result = await test_tables[0].get('3');
+		let result = await TestTable.get('3');
 		assert.equal(result.name, name2);
-		result = await test_tables[1].get('3');
+		result = await test_stores[1].get('3')?.value;
 		assert.equal(result.name, name2);
 	});
 	it('Can send operation API over WebSocket with replication protocol', async function () {
@@ -158,6 +157,25 @@ describe('Replication', () => {
 		}
 		assert(caught_error);
 	});
+	it('Create a new table on node-1 and verify that it is replicated to node-2', async function () {
+		let operation_result = await new ResourceBridge().createTable(null, {
+			operation: 'create_table',
+			table: 'NewTestTable',
+			database: 'test',
+			attributes: [{ name: 'id', isPrimaryKey: true }],
+		});
+		//const NewTestTable = await createTestTable(0, database_config.data.path + '/test-replication-0', 'NewTestTable');
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		let name = 'name ' + Math.random();
+		await databases.test.NewTestTable.put({
+			id: '4',
+			name,
+		});
+		await new Promise((resolve) => setTimeout(resolve, 500));
+		let node2NewTestTable = test_stores[1].openDB('NewTestTable/', new OpenDBIObject(false, true));
+		let result = await node2NewTestTable.get('4').value;
+		assert.equal(result.name, name);
+	});
 	describe('With third node', function () {
 		before(async function () {
 			await addWorkerNode(2);
@@ -166,11 +184,11 @@ describe('Replication', () => {
 		});
 		it('A write to the table should replicate to both nodes', async function () {
 			let name = 'name ' + Math.random();
-			await test_tables[0].put({
+			await TestTable.put({
 				id: '5',
 				name,
 			});
-			await test_tables[0].put({
+			await TestTable.put({
 				id: '2',
 				name,
 				extraProperty: true,
@@ -178,21 +196,21 @@ describe('Replication', () => {
 			let retries = 10;
 			do {
 				await new Promise((resolve) => setTimeout(resolve, 500));
-				let result = await test_tables[2].get('5');
+				let result = await test_stores[2].get('5')?.value;
 				if (!result) {
 					assert(--retries > 0);
 					continue;
 				}
 				assert.equal(result.name, name);
-				result = await test_tables[2].get('2');
+				result = await test_stores[2].get('2')?.value;
 				assert.equal(result.name, name);
-				assert.equal(result.get('extraProperty'), true);
+				assert.equal(result.extraProperty, true);
 				break;
 			} while (true);
 		});
 		it.skip('A write to the table with sharding defined should replicate to one node', async function () {
 			let name = 'name ' + Math.random();
-			await test_tables[0].put({
+			await TestTable.put({
 				id: '8',
 				name,
 				locations: ['node-1', 'node-3'],
@@ -201,14 +219,14 @@ describe('Replication', () => {
 			let retries = 10;
 			do {
 				await new Promise((resolve) => setTimeout(resolve, 500));
-				let result = test_tables[1].primaryStore.getBinary('8');
+				let result = test_stores[1].getBinary('8');
 				if (!result) {
 					assert(--retries > 0);
 					continue;
 				}
 				// verify that this is a small partial record, and invalidation entry
 				assert(result.length < 40);
-				result = test_tables[2].primaryStore.getBinary('8');
+				result = test_stores[2].getBinary('8');
 				if (!result) {
 					assert(--retries > 0);
 					continue;
@@ -218,7 +236,7 @@ describe('Replication', () => {
 				break;
 			} while (true);
 			// now verify that the record can be loaded on-demand
-			let result = await test_tables[1].get('8');
+			let result = test_stores[1].get('8')?.value;
 			assert.equal(result.name, name);
 		});
 		it('A write to the table during a broken connection should catch up to both nodes', async function () {
@@ -230,11 +248,11 @@ describe('Replication', () => {
 				}
 			}
 
-			test_tables[0].put({
+			TestTable.put({
 				id: '6',
 				name,
 			});
-			await test_tables[0].put({
+			await TestTable.put({
 				id: '7',
 				name,
 				extraProperty: true,
@@ -244,15 +262,15 @@ describe('Replication', () => {
 			let retries = 10;
 			do {
 				await new Promise((resolve) => setTimeout(resolve, 500));
-				let result = await test_tables[2].get('6');
+				let result = test_stores[2].get('6')?.value;
 				if (!result) {
 					assert(--retries > 0);
 					continue;
 				}
 				assert.equal(result.name, name);
-				result = await test_tables[2].get('7');
+				result = test_stores[2].get('7')?.value;
 				assert.equal(result.name, name);
-				assert.equal(result.get('extraProperty'), true);
+				assert.equal(result.extraProperty, true);
 				break;
 			} while (true);
 		});

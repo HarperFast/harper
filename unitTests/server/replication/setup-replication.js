@@ -8,17 +8,18 @@ const { CONFIG_PARAMS } = require('../../../utility/hdbTerms');
 const { get: env_get } = require('../../../utility/environment/environmentManager');
 const { clusterStatus } = require('../../../utility/clustering/clusterStatus');
 
-exports.createTestTable = async function createTestTable(index, database_path) {
-	const database_name = 'test-replication-' + index;
+const DATABASE_NAME = 'test';
+
+exports.createTestTable = async function createTestTable(database_path, table_name = 'TestTable') {
 	let database_config = env_get(CONFIG_PARAMS.DATABASES);
 	if (!database_config) {
 		env.setProperty(CONFIG_PARAMS.DATABASES, (database_config = {}));
 	}
-	database_config[database_name] = { path: database_path };
-	databases[database_name] = undefined; // ensure that there is no old database from the wrong path
+	database_config[DATABASE_NAME] = { path: database_path };
+	databases[DATABASE_NAME] = undefined; // ensure that there is no old database from the wrong path
 	const TestTable = table({
-		table: 'TestTable',
-		database: database_name,
+		table: table_name,
+		database: DATABASE_NAME,
 		attributes: [
 			{ name: 'id', isPrimaryKey: true },
 			{ name: 'name', indexed: true },
@@ -26,15 +27,12 @@ exports.createTestTable = async function createTestTable(index, database_path) {
 	});
 	// wait for the database to be resynced
 	await new Promise((resolve) => setTimeout(resolve, 10));
-	Object.defineProperty(databases, 'test', { value: databases[database_name], configurable: true });
-	TestTable.databaseName = 'test'; // make them all look like the same database so they replicate
 	TestTable.getResidency = (record) => {
 		return record.locations;
 	};
 	return TestTable;
 };
 exports.createNode = async function createNode(index, database_path, node_count) {
-	const database_name = 'test-replication-' + index;
 	const node_name = 'node-' + (1 + index);
 	env.setProperty('replication_nodename', node_name);
 	let routes = [];

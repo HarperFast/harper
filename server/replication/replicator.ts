@@ -281,7 +281,10 @@ export function getThisNodeName() {
 	return (
 		node_name ||
 		(node_name =
-			env.get('replication_nodename') ?? urlToNodeName(env.get('replication_url')) ?? getCommonNameFromCert())
+			env.get('replication_nodename') ??
+			urlToNodeName(env.get('replication_url')) ??
+			getCommonNameFromCert() ??
+			'127.0.0.1')
 	);
 }
 Object.defineProperty(server, 'nodeName', {

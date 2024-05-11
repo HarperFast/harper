@@ -500,7 +500,7 @@ async function generateCertAuthority() {
 	const subject = [
 		{
 			name: 'commonName',
-			value: 'HarperDB Certificate Authority',
+			value: 'HarperDB Certificate Authority for ' + getHost(),
 		},
 		...CERT_ATTRIBUTES,
 	];

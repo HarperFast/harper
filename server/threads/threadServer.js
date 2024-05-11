@@ -622,9 +622,9 @@ async function onSocket(listener, options) {
 				ca: certificate_authority_path,
 				rejectUnauthorized: Boolean(options.mtls?.required),
 				requestCert: Boolean(options.mtls),
-				noDelay: true,
+				noDelay: true, // don't delay for Nagle's algorithm, it is a relic of the past that slows things down: https://brooker.co.za/blog/2024/05/09/nagle.html
 				keepAlive: true,
-				keepAliveInitialDelay: 600,
+				keepAliveInitialDelay: 600, // 10 minute keep-alive, want to be proactive about closing unused connections
 			},
 			listener
 		);

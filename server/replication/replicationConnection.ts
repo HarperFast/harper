@@ -137,7 +137,9 @@ export class NodeReplicationConnection extends EventEmitter {
 			);
 		});
 		this.socket.on('error', (error) => {
-			if (error.code !== 'ECONNREFUSED') logger.error('Error in connection to ' + this.url, error.message);
+			if (error.code !== 'ECONNREFUSED') {
+				logger.error('Error in connection to ' + this.url, error.message);
+			}
 		});
 		this.socket.on('close', (code, reason_buffer) => {
 			if (this.socket.isFinished) {
@@ -389,7 +391,7 @@ export function replicateOverWS(ws, options, authorization) {
 							return;
 						let first_table;
 						let first_node = node_subscriptions[0];
-						const table_by_id = table_subscription_to_replicator.tableById.map((table) => {
+						const tableToTableEntry = (table) => {
 							if (
 								first_node.replicateByDefault
 									? !first_node.tables.includes(table.tableName)
@@ -398,7 +400,8 @@ export function replicateOverWS(ws, options, authorization) {
 								first_table = table;
 								return { table };
 							}
-						});
+						};
+						const table_by_id = table_subscription_to_replicator.tableById.map(tableToTableEntry);
 						const subscribed_node_ids = [];
 						for (let { name, startTime } of node_subscriptions) {
 							const local_id = getIdOfRemoteNode(name, audit_store);
@@ -429,9 +432,14 @@ export function replicateOverWS(ws, options, authorization) {
 							}
 							const node_id = audit_record.nodeId;
 							const table_id = audit_record.tableId;
-							const table_entry = table_by_id[table_id];
+							let table_entry = table_by_id[table_id];
 							if (!table_entry) {
-								return logger.trace('Not subscribed to table', table_id);
+								table_entry = table_by_id[table_id] = tableToTableEntry(
+									table_subscription_to_replicator.tableById[table_id]
+								);
+								if (!table_entry) {
+									return logger.trace('Not subscribed to table', table_id);
+								}
 							}
 							const table = table_entry.table;
 							let primary_store = table.primaryStore;
