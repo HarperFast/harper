@@ -223,18 +223,21 @@ export class DatabaseTransaction implements Transaction {
 					if (this.replicatedConfirmation) {
 						// if we want to wait for replication confirmation, we need to track the transaction times
 						// and when replication notifications come in, we count the number of confirms until we reach the desired number
-						const database_name = this.writes[0].store.databaseName; // TODO: Fix this
+						const database_name = this.writes[0].store.rootStore.databaseName;
 						let awaiting = commits_awaiting_replication.get(database_name);
 						if (!awaiting) commits_awaiting_replication.set(database_name, (awaiting = []));
 						completions.push(
 							new Promise((resolve) => {
 								let count = 0;
-								awaiting.push({
-									txnTime,
-									onConfirm() {
-										if (++count === this.replicatedConfirmation) resolve();
-									},
-								});
+								const last_write = this.writes[this.writes.length - 1];
+								if (last_write) {
+									awaiting.push({
+										txnTime: last_write.store.getEntry(last_write.key).localTime,
+										onConfirm: () => {
+											if (++count === this.replicatedConfirmation) resolve();
+										},
+									});
+								} else resolve();
 							})
 						);
 					}
@@ -327,14 +330,14 @@ export function setTxnExpiration(ms) {
 
 const last_replication_time = new Map<string, number>();
 onMessageByType('replicated', async (message) => {
-	const { database, nodeName, time: replicated_time } = message;
+	const { database, node, time: replicated_time } = message;
 	let node_times = last_replication_time.get(database);
 	if (!node_times) last_replication_time.set(database, (node_times = new Map()));
-	const last_time = node_times.get(nodeName) || 0;
+	const last_time = node_times.get(node) || 0;
 	for (let { txnTime, onConfirm } of commits_awaiting_replication.get(database) || []) {
-		if (txnTime > last_time && txnTime < replicated_time) {
-			commit.resolve();
+		if (txnTime > last_time && txnTime <= replicated_time) {
+			onConfirm();
 		}
 	}
-	node_times.set(nodeName, replicated_time);
+	node_times.set(node, replicated_time);
 });

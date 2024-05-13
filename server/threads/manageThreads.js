@@ -320,7 +320,7 @@ function onMessageByType(type, listener) {
 }
 
 const MAX_SYNC_BROADCAST = 10;
-async function broadcast(message) {
+async function broadcast(message, include_self) {
 	let count = 0;
 	for (let port of connected_ports) {
 		try {
@@ -333,6 +333,9 @@ async function broadcast(message) {
 		} catch (error) {
 			harper_logger.error(`Unable to send message to worker`, error);
 		}
+	}
+	if (include_self) {
+		notifyMessageListeners(message, null);
 	}
 }
 
@@ -488,19 +491,7 @@ function addPort(port, keep_ref) {
 					completion();
 				}
 			} else {
-				for (let listener of message_listeners) {
-					listener(message, port);
-				}
-				let listeners = listeners_by_type.get(message.type);
-				if (listeners) {
-					for (let listener of listeners) {
-						try {
-							listener(message, port);
-						} catch (error) {
-							harper_logger.error(error);
-						}
-					}
-				}
+				notifyMessageListeners(message, port);
 			}
 		})
 		.on('close', () => {
@@ -511,6 +502,21 @@ function addPort(port, keep_ref) {
 		});
 	if (keep_ref) port.refCount = 100;
 	else port.unref();
+}
+function notifyMessageListeners(message, port) {
+	for (let listener of message_listeners) {
+		listener(message, port);
+	}
+	let listeners = listeners_by_type.get(message.type);
+	if (listeners) {
+		for (let listener of listeners) {
+			try {
+				listener(message, port);
+			} catch (error) {
+				harper_logger.error(error);
+			}
+		}
+	}
 }
 if (isMainThread) {
 	let before_restart, queued_restart;

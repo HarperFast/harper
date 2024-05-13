@@ -31,11 +31,11 @@ export function addSubscription(table, key, listener?: (key) => any, start_time:
 	}
 	const database_subscriptions = all_subscriptions[path] || (all_subscriptions[path] = []);
 	database_subscriptions.auditStore = table.auditStore;
-	nextTransaction(database_subscriptions.auditStore);
 	if (database_subscriptions.lastTxnTime == null) {
 		database_subscriptions.lastTxnTime = Date.now();
 	}
 	if (scope === 'full-database') {
+		return;
 		database_subscriptions.allTables = database_subscriptions.allTables || [];
 		const subscription = new Subscription(listener);
 		database_subscriptions.allTables.push(subscription);
@@ -226,4 +226,21 @@ function nextTransaction(audit_store) {
 		next_resolve = resolve;
 	});
 	audit_store.nextTransaction.resolve = next_resolve;
+}
+
+export function whenNextTransaction(audit_store) {
+	if (!audit_store.nextTransaction) {
+		addSubscription(
+			{
+				primaryStore: audit_store,
+				auditStore: audit_store,
+			},
+			null,
+			null,
+			0,
+			'full-database'
+		);
+		nextTransaction(audit_store);
+	}
+	return audit_store.nextTransaction;
 }

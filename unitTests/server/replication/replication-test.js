@@ -65,14 +65,12 @@ describe('Replication', () => {
 		await createNode(0, database_config.data.path, node_count);
 		let started = addWorkerNode(1);
 		await started;
-
-		console.error('finished startup');
+		await new Promise((resolve) => setTimeout(resolve, 400));
 	});
 	beforeEach(async () => {
 		//await removeAllSchemas();
 	});
 	it('A write to one table should replicate', async function () {
-		await new Promise((resolve) => setTimeout(resolve, 500));
 		let name = 'name ' + Math.random();
 		await TestTable.put({
 			id: '1',
@@ -85,7 +83,7 @@ describe('Replication', () => {
 		});
 		let retries = 10;
 		do {
-			await new Promise((resolve) => setTimeout(resolve, 500));
+			await new Promise((resolve) => setTimeout(resolve, 200));
 			let result = await test_stores[1].get('1')?.value;
 			if (!result) {
 				assert(--retries > 0);
@@ -102,15 +100,21 @@ describe('Replication', () => {
 		let name = 'name ' + Math.random();
 		let context = { replicatedConfirmation: 1 };
 		await transaction(context, async (transaction) => {
-			TestTable.put({
-				id: '1',
-				name,
-			});
-			TestTable.put({
-				id: '2',
-				name,
-				extraProperty: true,
-			});
+			TestTable.put(
+				{
+					id: '1',
+					name,
+				},
+				context
+			);
+			TestTable.put(
+				{
+					id: '2',
+					name,
+					extraProperty: true,
+				},
+				context
+			);
 		});
 		let result = await test_stores[1].get('1')?.value;
 		assert.equal(result.name, name);

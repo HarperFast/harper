@@ -8,13 +8,12 @@ import {
 	readAuditEntry,
 } from '../../resources/auditStore';
 import { exportIdMapping, getIdOfRemoteNode, remoteToLocalNodeId } from './nodeIdMapping';
-import { addSubscription } from '../../resources/transactionBroadcast';
+import { whenNextTransaction } from '../../resources/transactionBroadcast';
 import { getThisNodeName, urlToNodeName } from './replicator';
 import env from '../../utility/environment/environmentManager';
 import { readAuditEntry, Decoder, REMOTE_SEQUENCE_UPDATE } from '../../resources/auditStore';
 import { HAS_STRUCTURE_UPDATE } from '../../resources/RecordEncoder';
 import { CERT_PREFERENCE_REP } from '../../utility/terms/certificates';
-import { addSubscription } from '../../resources/transactionBroadcast';
 import { decode, encode, Packr } from 'msgpackr';
 import { WebSocket } from 'ws';
 import { readFileSync } from 'fs';
@@ -355,12 +354,15 @@ export function replicateOverWS(ws, options, authorization) {
 						break;
 					case COMMITTED_UPDATE:
 						// we need to record the sequence number that the remote node has received
-						broadcast({
-							type: 'replicated',
-							database: database_name,
-							node: remote_node_name,
-							time: data,
-						});
+						broadcast(
+							{
+								type: 'replicated',
+								database: database_name,
+								node: remote_node_name,
+								time: data,
+							},
+							true
+						);
 						break;
 					case SUBSCRIPTION_REQUEST:
 						const [action, db, , , node_subscriptions] = message;
@@ -498,7 +500,7 @@ export function replicateOverWS(ws, options, authorization) {
 											writeFloat64(current_sequence_id); // send the local time so we know what sequence number to start from next time.
 											sendQueuedDataWithBackPressure();
 										}
-									}, SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY);
+									}, SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY).unref();
 								}
 								return;
 							}
@@ -698,7 +700,9 @@ export function replicateOverWS(ws, options, authorization) {
 								listeners.push((table) => {
 									// TODO: send table update
 								});
-								await audit_store.nextTransaction;
+								logger.info(connection_id, 'Waiting for next transaction');
+								await whenNextTransaction(audit_store);
+								logger.info(connection_id, 'Next transaction is ready');
 							} while (!closed);
 						})();
 						break;
@@ -771,7 +775,8 @@ export function replicateOverWS(ws, options, authorization) {
 				localTime: last_sequence_id_received,
 				remoteNodes: incoming_subscription_nodes,
 				onCommit() {
-					if (!last_sequence_id_committed) {
+					if (!last_sequence_id_committed && sequence_id_received) {
+						logger.info(connection_id, 'queuing confirmation of a commit at', sequence_id_received);
 						setTimeout(() => {
 							ws.send(encode([COMMITTED_UPDATE, last_sequence_id_committed]));
 							logger.info(connection_id, 'sent confirmation of a commit at', last_sequence_id_committed);

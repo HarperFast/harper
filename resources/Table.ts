@@ -341,6 +341,7 @@ export function makeTable(options) {
 												dbis_db.put([Symbol.for('seq'), remote_node], event.localTime);
 											last_sequence_id = event.localTime;
 										}
+										if (event.onCommit) txn_in_progress.committed.then(event.onCommit);
 										continue;
 									}
 									if (event.beginTxn) {
@@ -409,7 +410,6 @@ export function makeTable(options) {
 
 								if (event.onCommit) {
 									if (commit_resolution) commit_resolution.then(event.onCommit);
-									else if (txn_in_progress) txn_in_progress.committed.then(event.onCommit);
 									else event.onCommit();
 								}
 							} catch (error) {
