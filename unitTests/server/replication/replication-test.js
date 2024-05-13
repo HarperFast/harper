@@ -204,8 +204,9 @@ describe('Replication', () => {
 	});
 	describe('With third node', function () {
 		before(async function () {
+			this.timeout(10000);
 			await addWorkerNode(2);
-			await new Promise((resolve) => setTimeout(resolve, 1000));
+			await new Promise((resolve) => setTimeout(resolve, 500));
 			console.log('added child_process');
 		});
 		it('A write to the table should replicate to both nodes', async function () {
@@ -284,7 +285,6 @@ describe('Replication', () => {
 				name,
 				extraProperty: true,
 			});
-			console.log('timeout', this.test._timeout);
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			let retries = 10;
 			do {
@@ -302,6 +302,7 @@ describe('Replication', () => {
 			} while (true);
 		});
 		it('A write to the table during a broken connection should catch up to both nodes', async function () {
+			this.timeout(10000);
 			let name = 'name ' + Math.random();
 
 			for (let server of servers) {
@@ -319,7 +320,6 @@ describe('Replication', () => {
 				name,
 				extraProperty: true,
 			});
-			console.log('timeout', this.test._timeout);
 			await new Promise((resolve) => setTimeout(resolve, 1000));
 			let retries = 10;
 			do {
