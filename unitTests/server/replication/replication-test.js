@@ -14,6 +14,7 @@ const { createTestTable, createNode } = require('./setup-replication');
 const { clusterStatus } = require('../../../utility/clustering/clusterStatus');
 const { ResourceBridge } = require('../../../dataLayer/harperBridge/ResourceBridge');
 const { open } = require('lmdb');
+const { transaction } = require('../../../resources/transaction');
 OpenDBIObject = require('../../../utility/lmdb/OpenDBIObject');
 
 describe('Replication', () => {
@@ -44,7 +45,7 @@ describe('Replication', () => {
 		});
 	}
 	before(async function () {
-		this.timeout(1000009);
+		this.timeout(100000);
 		getMockLMDBPath();
 		database_config = env_get(CONFIG_PARAMS.DATABASES);
 		TestTable = await createTestTable(database_config.data.path + '/test-replication-0');
@@ -64,12 +65,14 @@ describe('Replication', () => {
 		await createNode(0, database_config.data.path, node_count);
 		let started = addWorkerNode(1);
 		await started;
-		await new Promise((resolve) => setTimeout(resolve, 500));
+
+		console.error('finished startup');
 	});
 	beforeEach(async () => {
 		//await removeAllSchemas();
 	});
 	it('A write to one table should replicate', async function () {
+		await new Promise((resolve) => setTimeout(resolve, 500));
 		let name = 'name ' + Math.random();
 		await TestTable.put({
 			id: '1',
@@ -94,6 +97,26 @@ describe('Replication', () => {
 			assert.equal(result.extraProperty, true);
 			break;
 		} while (true);
+	});
+	it('A write to one table with replicated confirmation', async function () {
+		let name = 'name ' + Math.random();
+		let context = { replicatedConfirmation: 1 };
+		await transaction(context, async (transaction) => {
+			TestTable.put({
+				id: '1',
+				name,
+			});
+			TestTable.put({
+				id: '2',
+				name,
+				extraProperty: true,
+			});
+		});
+		let result = await test_stores[1].get('1')?.value;
+		assert.equal(result.name, name);
+		result = await test_stores[1].get('2')?.value;
+		assert.equal(result.name, name);
+		assert.equal(result.extraProperty, true);
 	});
 
 	it('A write to second table should replicate back', async function () {
@@ -164,7 +187,6 @@ describe('Replication', () => {
 			database: 'test',
 			attributes: [{ name: 'id', isPrimaryKey: true }],
 		});
-		//const NewTestTable = await createTestTable(0, database_config.data.path + '/test-replication-0', 'NewTestTable');
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		let name = 'name ' + Math.random();
 		await databases.test.NewTestTable.put({
@@ -239,12 +261,13 @@ describe('Replication', () => {
 			let result = test_stores[1].get('8')?.value;
 			assert.equal(result.name, name);
 		});
-		it('A write to the table during a broken connection should catch up to both nodes', async function () {
+		it('A write to the table during a single broken connection should route through another node', async function () {
 			let name = 'name ' + Math.random();
 
 			for (let server of servers) {
 				for (let client of server._ws.clients) {
 					client._socket.destroy();
+					break; // only the first one
 				}
 			}
 
@@ -258,23 +281,59 @@ describe('Replication', () => {
 				extraProperty: true,
 			});
 			console.log('timeout', this.test._timeout);
-			await new Promise((resolve) => setTimeout(resolve, 1000));
+			await new Promise((resolve) => setTimeout(resolve, 100));
 			let retries = 10;
 			do {
-				await new Promise((resolve) => setTimeout(resolve, 500));
-				let result = test_stores[2].get('6')?.value;
+				await new Promise((resolve) => setTimeout(resolve, 100));
+				let result = test_stores[1].get('6')?.value;
 				if (!result) {
 					assert(--retries > 0);
 					continue;
 				}
 				assert.equal(result.name, name);
-				result = test_stores[2].get('7')?.value;
+				result = test_stores[1].get('7')?.value;
+				assert.equal(result.name, name);
+				assert.equal(result.extraProperty, true);
+				break;
+			} while (true);
+		});
+		it('A write to the table during a broken connection should catch up to both nodes', async function () {
+			let name = 'name ' + Math.random();
+
+			for (let server of servers) {
+				for (let client of server._ws.clients) {
+					client._socket.destroy();
+				}
+			}
+
+			TestTable.put({
+				id: '16',
+				name,
+			});
+			await TestTable.put({
+				id: '17',
+				name,
+				extraProperty: true,
+			});
+			console.log('timeout', this.test._timeout);
+			await new Promise((resolve) => setTimeout(resolve, 1000));
+			let retries = 10;
+			do {
+				await new Promise((resolve) => setTimeout(resolve, 500));
+				let result = test_stores[2].get('16')?.value;
+				if (!result) {
+					assert(--retries > 0);
+					continue;
+				}
+				assert.equal(result.name, name);
+				result = test_stores[2].get('17')?.value;
 				assert.equal(result.name, name);
 				assert.equal(result.extraProperty, true);
 				break;
 			} while (true);
 		});
 	});
+
 	after(() => {
 		for (const child_process of child_processes) {
 			child_process.kill();
