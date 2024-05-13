@@ -220,7 +220,7 @@ export class DatabaseTransaction implements Transaction {
 					if (options?.flush) {
 						completions.push(this.writes[0].store.flushed);
 					}
-					if (options?.replicatedConfirmation) {
+					if (this.replicatedConfirmation) {
 						// if we want to wait for replication confirmation, we need to track the transaction times
 						// and when replication notifications come in, we count the number of confirms until we reach the desired number
 						const database_name = this.writes[0].store.databaseName; // TODO: Fix this
@@ -232,7 +232,7 @@ export class DatabaseTransaction implements Transaction {
 								awaiting.push({
 									txnTime,
 									onConfirm() {
-										if (++count === options?.replicatedConfirmation) resolve();
+										if (++count === this.replicatedConfirmation) resolve();
 									},
 								});
 							})

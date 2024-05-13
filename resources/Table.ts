@@ -337,7 +337,8 @@ export function makeTable(options) {
 									if (event.type === 'end_txn') {
 										txn_in_progress.resolve();
 										if (event.localTime && last_sequence_id !== event.localTime) {
-											dbis_db.put([Symbol.for('seq'), event.remoteNode], event.localTime);
+											for (const remote_node of event.remoteNodes)
+												dbis_db.put([Symbol.for('seq'), remote_node], event.localTime);
 											last_sequence_id = event.localTime;
 										}
 										continue;
@@ -400,7 +401,7 @@ export function makeTable(options) {
 										return writeUpdate(event, event);
 									}
 								});
-								if (txn_in_progress) txn_in_progress.resolution = commit_resolution;
+								if (txn_in_progress) txn_in_progress.committed = commit_resolution;
 								if (user_role_update) {
 									await commit_resolution;
 									signalling.signalUserChange(new UserEventMsg(process.pid));
@@ -408,7 +409,7 @@ export function makeTable(options) {
 
 								if (event.onCommit) {
 									if (commit_resolution) commit_resolution.then(event.onCommit);
-									else if (txn_in_progress) txn_in_progress.resolution.then(event.onCommit);
+									else if (txn_in_progress) txn_in_progress.committed.then(event.onCommit);
 									else event.onCommit();
 								}
 							} catch (error) {
