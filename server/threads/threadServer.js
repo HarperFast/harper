@@ -394,9 +394,12 @@ function getHTTPServer(port, secure, is_operations_server) {
 			keepAliveTimeout: env.get(server_prefix + '_keepAliveTimeout'),
 			headersTimeout: env.get(server_prefix + '_headersTimeout'),
 			requestTimeout: env.get(server_prefix + '_timeout'),
-			noDelay: true,
+			// we set this higher (2x times the default in v22, 8x times the default in v20) because it can help with
+			// performance
+			highWaterMark: 128 * 1024,
+			noDelay: true, // don't delay for Nagle's algorithm, it is a relic of the past that slows things down: https://brooker.co.za/blog/2024/05/09/nagle.html
 			keepAlive: true,
-			keepAliveInitialDelay: 600,
+			keepAliveInitialDelay: 600, // lower the initial delay to 10 minutes, we want to be proactive about closing unused connections
 		};
 		let mtls = env.get(server_prefix + '_mtls');
 		let mtls_required = env.get(server_prefix + '_mtls_required');
@@ -622,9 +625,9 @@ async function onSocket(listener, options) {
 				ca: certificate_authority_path,
 				rejectUnauthorized: Boolean(options.mtls?.required),
 				requestCert: Boolean(options.mtls),
-				noDelay: true,
+				noDelay: true, // don't delay for Nagle's algorithm, it is a relic of the past that slows things down: https://brooker.co.za/blog/2024/05/09/nagle.html
 				keepAlive: true,
-				keepAliveInitialDelay: 600,
+				keepAliveInitialDelay: 600, // 10 minute keep-alive, want to be proactive about closing unused connections
 			},
 			listener
 		);

@@ -26,6 +26,7 @@ export function transaction<T>(
 	if (typeof callback !== 'function') throw new Error('Callback function must be provided to transaction');
 	const transaction = (context.transaction = new DatabaseTransaction());
 	if (context.timestamp) transaction.timestamp = context.timestamp;
+	if (context.replicatedConfirmation) transaction.replicatedConfirmation = context.replicatedConfirmation;
 	transaction[CONTEXT] = context;
 	// create a resource cache so that multiple requests to the same resource return the same resource
 	if (!context.resourceCache) context.resourceCache = [];

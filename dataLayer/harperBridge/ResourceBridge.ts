@@ -104,7 +104,7 @@ export class ResourceBridge extends LMDBBridge {
 			];
 		}
 		table({
-			database: table_create_obj.schema,
+			database: table_create_obj.database ?? table_create_obj.schema,
 			table: table_create_obj.table,
 			attributes,
 			schemaDefined: schema_defined,

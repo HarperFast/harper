@@ -57,9 +57,6 @@ export function start(options) {
 			subProtocol: 'harperdb-replication-v1',
 			mtls: true, // make sure that we request a certificate from the client
 			isOperationsServer: true, // we default to using the operations server ports
-			// we set this very high (16x times the default) because it can be a bit expensive to switch back and forth
-			// between push and pull mode
-			highWaterMark: 256 * 1024,
 		},
 		options
 	);
@@ -284,7 +281,10 @@ export function getThisNodeName() {
 	return (
 		node_name ||
 		(node_name =
-			env.get('replication_nodename') ?? urlToNodeName(env.get('replication_url')) ?? getCommonNameFromCert())
+			env.get('replication_nodename') ??
+			urlToNodeName(env.get('replication_url')) ??
+			getCommonNameFromCert() ??
+			'127.0.0.1')
 	);
 }
 Object.defineProperty(server, 'nodeName', {

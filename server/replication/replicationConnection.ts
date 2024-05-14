@@ -8,13 +8,12 @@ import {
 	readAuditEntry,
 } from '../../resources/auditStore';
 import { exportIdMapping, getIdOfRemoteNode, remoteToLocalNodeId } from './nodeIdMapping';
-import { addSubscription } from '../../resources/transactionBroadcast';
+import { whenNextTransaction } from '../../resources/transactionBroadcast';
 import { getThisNodeName, urlToNodeName } from './replicator';
 import env from '../../utility/environment/environmentManager';
 import { readAuditEntry, Decoder, REMOTE_SEQUENCE_UPDATE } from '../../resources/auditStore';
 import { HAS_STRUCTURE_UPDATE } from '../../resources/RecordEncoder';
 import { CERT_PREFERENCE_REP } from '../../utility/terms/certificates';
-import { addSubscription } from '../../resources/transactionBroadcast';
 import { decode, encode, Packr } from 'msgpackr';
 import { WebSocket } from 'ws';
 import { readFileSync } from 'fs';
@@ -29,19 +28,24 @@ import * as https from 'node:https';
 import * as tls from 'node:tls';
 //import { operation } from '../../server/serverHelpers/serverUtilities';
 
-const SUBSCRIBE_CODE = 129;
-const SEND_NODE_NAME = 140;
-const SEND_ID_MAPPING = 141;
+const SUBSCRIPTION_REQUEST = 129;
+const NODE_NAME = 140;
+const NODE_NAME_TO_ID_MAP = 141;
 const DISCONNECT = 142;
-const SEND_RESIDENCY_LIST = 130;
-const SEND_TABLE_STRUCTURE = 131;
-const SEND_TABLE_FIXED_STRUCTURE = 132;
+const RESIDENCY_LIST = 130;
+const TABLE_STRUCTURE = 131;
+const TABLE_FIXED_STRUCTURE = 132;
 export const OPERATION_REQUEST = 136;
 const OPERATION_RESPONSE = 137;
-const COMMITTED_UPDATE = 143;
+const SEQUENCE_ID_UPDATE = 143;
+const COMMITTED_UPDATE = 144;
 export const table_update_listeners = new Map();
 export const database_subscriptions = new Map();
 const DEBUG_MODE = true;
+const SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY = 300;
+// The amount time to await after a commit before sending out a committed update (and aggregating all updates).
+// We want it be fairly quick so we can let the sending node know that we have received and committed the update.
+const COMMITTED_UPDATE_DELAY = 2;
 const PING_INTERVAL = 300000;
 export let awaiting_response = new Map();
 /**
@@ -89,9 +93,8 @@ export async function createWebSocket(url, options?) {
 		// for client connections, we can add our certificate authority to the root certificates
 		// to authorize the server certificate (both public valid certificates and privately signed certificates are acceptable)
 		ca: [...rootCertificates, ...certificate_authorities],
-		// we set this very high (16x times the default) because it can be a bit expensive to switch back and forth
-		// between push and pull mode
-		highWaterMark: 256 * 1024,
+		// we set this very high (2x times the v22 default) because it performs better
+		highWaterMark: 128 * 1024,
 	});
 }
 export class NodeReplicationConnection extends EventEmitter {
@@ -137,7 +140,9 @@ export class NodeReplicationConnection extends EventEmitter {
 			);
 		});
 		this.socket.on('error', (error) => {
-			if (error.code !== 'ECONNREFUSED') logger.error('Error in connection to ' + this.url, error.message);
+			if (error.code !== 'ECONNREFUSED') {
+				logger.error('Error in connection to ' + this.url, error.message);
+			}
 		});
 		this.socket.on('close', (code, reason_buffer) => {
 			if (this.socket.isFinished) {
@@ -204,9 +209,9 @@ export function replicateOverWS(ws, options, authorization) {
 	}
 	let remote_node_name = authorization.name;
 	if (remote_node_name && options.connection) options.connection.nodeName = remote_node_name;
-	let last_sequence_id_received;
+	let last_sequence_id_received, last_sequence_id_committed;
 	const this_node_url = env.get('replication_url');
-	let send_ping_interval, receive_ping_timer, last_ping_time;
+	let send_ping_interval, receive_ping_timer, last_ping_time, skipped_message_sequence_update_timer;
 	if (options.url) {
 		const send_ping = () => {
 			if (last_ping_time) ws.terminate(); // timeout
@@ -231,9 +236,13 @@ export function replicateOverWS(ws, options, authorization) {
 		setDatabase(database_name);
 	}
 	const table_decoders = [];
+	let incoming_subscription_nodes;
 	const residency_map = [];
 	const sent_residency_lists = [];
 	const received_residency_lists = [];
+	const MAX_OUTSTANDING_COMMITS = 150;
+	let outstanding_commits = 0;
+	let replication_paused;
 	let subscription_request, audit_subscription;
 	let remote_sequence_number;
 	let remote_short_id_to_local_id: Map<number, number>;
@@ -254,7 +263,7 @@ export function replicateOverWS(ws, options, authorization) {
 				const message = decode(body);
 				const [command, data, table_id] = message;
 				switch (command) {
-					case SEND_NODE_NAME: {
+					case NODE_NAME: {
 						if (remote_node_name) {
 							if (remote_node_name !== data) {
 								logger.error(
@@ -270,10 +279,12 @@ export function replicateOverWS(ws, options, authorization) {
 						const url = message[3] ?? this_node_url;
 						logger.info(connection_id, 'received node id', remote_node_name, database_name);
 						if (!database_name) {
-							if (!setDatabase((database_name = message[2]))) {
+							try {
+								setDatabase((database_name = message[2]));
+							} catch (error) {
 								// if this fails, we should close the connection and indicate that we should not reconnect
 								ws.send(encode([DISCONNECT]));
-								close(1008, 'Database name mismatch');
+								close(1008, error.message);
 								return;
 							}
 						}
@@ -305,7 +316,7 @@ export function replicateOverWS(ws, options, authorization) {
 						else resolve(data);
 						awaiting_response.delete(data.requestId);
 						break;
-					case SEND_TABLE_FIXED_STRUCTURE:
+					case TABLE_FIXED_STRUCTURE:
 						const table_name = message[3];
 						if (!tables) {
 							if (database_name) logger.error(connection_id, 'No tables found for', database_name);
@@ -332,23 +343,40 @@ export function replicateOverWS(ws, options, authorization) {
 							rootStore: table.primaryStore.rootStore,
 						};
 						break;
-					case SEND_ID_MAPPING:
+					case NODE_NAME_TO_ID_MAP:
 						remote_short_id_to_local_id = remoteToLocalNodeId(remote_node_name, data, audit_store);
+						incoming_subscription_nodes = message[2];
+						logger.info(
+							connection_id,
+							`Acknowledged subscription request, receiving messages for nodes: ${incoming_subscription_nodes}`
+						);
 						break;
-					case SEND_RESIDENCY_LIST:
+					case RESIDENCY_LIST:
 						const residency_id = table_id;
 						received_residency_lists[residency_id] = data;
 						break;
 					case COMMITTED_UPDATE:
 						// we need to record the sequence number that the remote node has received
-						broadcast({
-							type: 'replicated',
-							database: database_name,
-							node: remote_node_name,
-							time: data,
+						broadcast(
+							{
+								type: 'replicated',
+								database: database_name,
+								node: remote_node_name,
+								time: data,
+							},
+							true
+						);
+						break;
+					case SEQUENCE_ID_UPDATE:
+						// we need to record the sequence number that the remote node has received
+						last_sequence_id_received = data;
+						table_subscription_to_replicator.send({
+							type: 'end_txn',
+							localTime: last_sequence_id_received,
+							remoteNodes: incoming_subscription_nodes,
 						});
 						break;
-					case SUBSCRIBE_CODE:
+					case SUBSCRIPTION_REQUEST:
 						const [action, db, , , node_subscriptions] = message;
 						// permission check to make sure that this node is allowed to subscribe to this database, that is that
 						// we have publish permission for this node/database
@@ -389,7 +417,7 @@ export function replicateOverWS(ws, options, authorization) {
 							return;
 						let first_table;
 						let first_node = node_subscriptions[0];
-						const table_by_id = table_subscription_to_replicator.tableById.map((table) => {
+						const tableToTableEntry = (table) => {
 							if (
 								first_node.replicateByDefault
 									? !first_node.tables.includes(table.tableName)
@@ -398,29 +426,39 @@ export function replicateOverWS(ws, options, authorization) {
 								first_table = table;
 								return { table };
 							}
-						});
+						};
+						const table_by_id = table_subscription_to_replicator.tableById.map(tableToTableEntry);
 						const subscribed_node_ids = [];
 						for (let { name, startTime } of node_subscriptions) {
 							const local_id = getIdOfRemoteNode(name, audit_store);
 							subscribed_node_ids[local_id] = startTime;
 						}
-						ws.send(encode([SEND_ID_MAPPING, exportIdMapping(table_subscription_to_replicator.auditStore)]));
+						// Send a message to the remote node with the node id mapping, indicating how each node name is mapped to a short id
+						// and a list of the node names that are subscribed to this node
+						ws.send(
+							encode([
+								NODE_NAME_TO_ID_MAP,
+								exportIdMapping(table_subscription_to_replicator.auditStore),
+								node_subscriptions.map(({ name }) => name),
+							])
+						);
 						const encoder = new Encoder();
 						const current_transaction = { txnTime: 0 };
 						let listening_for_overload = false;
-						let current_sequence_id = Infinity; // the last sequence number we have sent, set this with a finite number from the subscriptions
+						let current_sequence_id = Infinity; // the last sequence number in the audit log that we have processed, set this with a finite number from the subscriptions
+						let sent_sequence_id; // the last sequence number we have sent
 						const sendAuditRecord = (record_id, audit_record, local_time, begin_txn) => {
 							current_sequence_id = local_time;
 							// TOOD: Use begin_txn instead to find transaction delimiting
 							if (audit_record.type === 'end_txn') {
 								if (current_transaction.txnTime) {
-									if (DEBUG_MODE) logger.info(connection_id, 'sending replication message', encoding_start, position);
+									//if (DEBUG_MODE) logger.info(connection_id, 'sending replication message', encoding_start, position);
 									if (encoding_buffer[encoding_start] !== 66) {
 										logger.error('Invalid encoding of message');
 									}
 									writeInt(9); // replication message of nine bytes long
 									writeInt(REMOTE_SEQUENCE_UPDATE); // action id
-									writeFloat64(local_time); // send the local time so we know what sequence number to start from next time.
+									writeFloat64((sent_sequence_id = local_time)); // send the local time so we know what sequence number to start from next time.
 									sendQueuedDataWithBackPressure();
 								}
 								encoding_start = position;
@@ -429,9 +467,14 @@ export function replicateOverWS(ws, options, authorization) {
 							}
 							const node_id = audit_record.nodeId;
 							const table_id = audit_record.tableId;
-							const table_entry = table_by_id[table_id];
+							let table_entry = table_by_id[table_id];
 							if (!table_entry) {
-								return logger.trace('Not subscribed to table', table_id);
+								table_entry = table_by_id[table_id] = tableToTableEntry(
+									table_subscription_to_replicator.tableById[table_id]
+								);
+								if (!table_entry) {
+									return logger.trace('Not subscribed to table', table_id);
+								}
 							}
 							const table = table_entry.table;
 							let primary_store = table.primaryStore;
@@ -454,6 +497,20 @@ export function replicateOverWS(ws, options, authorization) {
 										'subscribed:',
 										subscribed_node_ids
 									);
+								// we are skipping this message because it is being sent from another node, but we still want to
+								// occasionally send a sequence update so that if we reconnect we don't have to go back to far in the
+								// audit log
+								if (!skipped_message_sequence_update_timer) {
+									skipped_message_sequence_update_timer = setTimeout(() => {
+										skipped_message_sequence_update_timer = null;
+										// check to see if we are too far behind, but if so, send a sequence update
+										if (sent_sequence_id + SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY / 2 < current_sequence_id) {
+											if (DEBUG_MODE)
+												logger.info(connection_id, 'sending skipped sequence update', current_sequence_id);
+											ws.send(encode([SEQUENCE_ID_UPDATE, current_sequence_id]));
+										}
+									}, SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY).unref();
+								}
 								return;
 							}
 							if (DEBUG_MODE)
@@ -538,7 +595,7 @@ export function replicateOverWS(ws, options, authorization) {
 								}
 								ws.send(
 									encode([
-										SEND_TABLE_FIXED_STRUCTURE,
+										TABLE_FIXED_STRUCTURE,
 										{ typedStructs: typed_structs, structures: structures, attributes: table.attributes },
 										table_id,
 										table_entry.table.tableName,
@@ -546,7 +603,7 @@ export function replicateOverWS(ws, options, authorization) {
 								);
 							}
 							if (residency_id && !sent_residency_lists[residency_id]) {
-								ws.send(encode([SEND_RESIDENCY_LIST, residency, residency_id]));
+								ws.send(encode([RESIDENCY_LIST, residency, residency_id]));
 								sent_residency_lists[residency_id] = true;
 							}
 							if (residency && !residency.includes(remote_node_name)) return; // we don't need to send this record to this node, is it doesn't have a copy of it and doesn't own it
@@ -572,7 +629,7 @@ export function replicateOverWS(ws, options, authorization) {
 							// check first if we are overloaded, if so, we send and then go into pull mode so that we can wait for the drain event
 							if (listening_for_overload && ws._socket.writableNeedDrain) {
 								// we are overloaded, so we need to stop sending and wait for the drain event
-								logger.info(connection_id, 'overloaded, will wait for drain');
+								logger.warn(connection_id, 'overloaded, will wait for drain');
 								listening_for_overload = false;
 								audit_subscription.end();
 								audit_subscription.emit('overloaded');
@@ -630,7 +687,9 @@ export function replicateOverWS(ws, options, authorization) {
 										const audit_record = readAuditEntry(audit_entry);
 										sendAuditRecord(null, audit_record, key);
 										// wait if there is back-pressure
-										if (ws._socket.writableNeedDrain) await new Promise((resolve) => ws._socket.once('drain', resolve));
+										if (ws._socket.writableNeedDrain) {
+											await new Promise((resolve) => ws._socket.once('drain', resolve));
+										}
 										//await rest(); // possibly yield occasionally for fairness
 										audit_subscription.startTime = key; // update so don't double send
 										queued_entries = true;
@@ -644,14 +703,6 @@ export function replicateOverWS(ws, options, authorization) {
 											current_sequence_id
 										);
 								}
-								listening_for_overload = true;
-								audit_subscription = addSubscription(
-									first_table,
-									null,
-									sendAuditRecord,
-									current_sequence_id,
-									'full-database'
-								);
 								audit_subscription.on('close', () => {
 									closed = true;
 								});
@@ -660,10 +711,9 @@ export function replicateOverWS(ws, options, authorization) {
 								listeners.push((table) => {
 									// TODO: send table update
 								});
-								await new Promise((resolve) => {
-									// continue loop back to for loop if we encounter too much back-pressure
-									audit_subscription.on('overloaded', resolve);
-								});
+								//logger.info(connection_id, 'Waiting for next transaction');
+								await whenNextTransaction(audit_store);
+								//logger.info(connection_id, 'Next transaction is ready');
 							} while (!closed);
 						})();
 						break;
@@ -674,6 +724,7 @@ export function replicateOverWS(ws, options, authorization) {
 			decoder.position = 8;
 			let begin_txn = true;
 			//const txn_time = decoder.getFloat64(0);
+			let sequence_id_received;
 			do {
 				/*const table_id = decoder.readInt();
 				const key_length = decoder.readInt();
@@ -681,7 +732,7 @@ export function replicateOverWS(ws, options, authorization) {
 				const event_length = decoder.readInt();
 				if (event_length === 9 && decoder.getUint8(decoder.position) == REMOTE_SEQUENCE_UPDATE) {
 					decoder.position++;
-					last_sequence_id_received = decoder.readFloat64();
+					last_sequence_id_received = sequence_id_received = decoder.readFloat64();
 					logger.info('received remote sequence update', last_sequence_id_received);
 					break;
 				}
@@ -713,12 +764,6 @@ export function replicateOverWS(ws, options, authorization) {
 					user: audit_record.user,
 					beginTxn: begin_txn,
 				};
-				if (begin_txn) {
-					event.onCommit = () => {
-						// we need to wait for the commit message before we can send confirmation
-						audit_record.lo;
-					};
-				}
 				begin_txn = false;
 				// TODO: Once it is committed, also record the localtime in the table with symbol metadata, so we can resume from that point
 				if (DEBUG_MODE)
@@ -736,10 +781,31 @@ export function replicateOverWS(ws, options, authorization) {
 				table_subscription_to_replicator.send(event);
 				decoder.position = start + event_length;
 			} while (decoder.position < body.byteLength);
+			outstanding_commits++;
+			if (outstanding_commits > MAX_OUTSTANDING_COMMITS && !replication_paused) {
+				replication_paused = true;
+				ws._socket.pause();
+			}
 			table_subscription_to_replicator.send({
 				type: 'end_txn',
 				localTime: last_sequence_id_received,
-				remoteNode: remote_node_name,
+				remoteNodes: incoming_subscription_nodes,
+				onCommit() {
+					outstanding_commits--;
+					if (replication_paused) {
+						replication_paused = false;
+						ws._socket.resume();
+					}
+					if (!last_sequence_id_committed && sequence_id_received) {
+						logger.info(connection_id, 'queuing confirmation of a commit at', sequence_id_received);
+						setTimeout(() => {
+							ws.send(encode([COMMITTED_UPDATE, last_sequence_id_committed]));
+							logger.info(connection_id, 'sent confirmation of a commit at', last_sequence_id_committed);
+							last_sequence_id_committed = null;
+						}, COMMITTED_UPDATE_DELAY);
+					}
+					last_sequence_id_committed = sequence_id_received;
+				},
 			});
 		} catch (error) {
 			logger.error(connection_id, 'Error handling incoming replication message', error);
@@ -803,7 +869,7 @@ export function replicateOverWS(ws, options, authorization) {
 
 		if (node_subscriptions) {
 			// no nodes means we are unsubscribing
-			ws.send(encode([SUBSCRIBE_CODE, database_name, last_sequence_id_received, null, node_subscriptions]));
+			ws.send(encode([SUBSCRIPTION_REQUEST, database_name, last_sequence_id_received, null, node_subscriptions]));
 		}
 	}
 
@@ -821,24 +887,21 @@ export function replicateOverWS(ws, options, authorization) {
 	function setDatabase(database_name) {
 		table_subscription_to_replicator = table_subscription_to_replicator || db_subscriptions.get(database_name);
 		if (!table_subscription_to_replicator) {
-			logger.error(`No database named "${database_name}" was declared and registered`);
-			return false;
+			throw new Error(`No database named "${database_name}" was declared and registered`);
 		}
 		audit_store = table_subscription_to_replicator.auditStore;
 		if (!audit_store) {
-			logger.error('No audit store found in ' + database_name);
-			return;
+			throw new Error('No audit store found in ' + database_name);
 		}
 		if (!tables) tables = getDatabases()?.[database_name];
 
 		const this_node_name = getThisNodeName();
 		if (this_node_name === remote_node_name) {
-			if (!this_node_name) logger.error('Node name not defined');
-			else logger.error('Should not connect to self', this_node_name);
-			return false;
+			if (!this_node_name) throw new Error('Node name not defined');
+			else throw new Error('Should not connect to self', this_node_name);
 		}
 		logger.info('Sending node name', this_node_name, 'database name', database_name);
-		ws.send(encode([SEND_NODE_NAME, this_node_name, database_name, this_node_url]));
+		ws.send(encode([NODE_NAME, this_node_name, database_name, this_node_url]));
 		return true;
 	}
 

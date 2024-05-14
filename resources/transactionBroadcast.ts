@@ -35,6 +35,7 @@ export function addSubscription(table, key, listener?: (key) => any, start_time:
 		database_subscriptions.lastTxnTime = Date.now();
 	}
 	if (scope === 'full-database') {
+		return;
 		database_subscriptions.allTables = database_subscriptions.allTables || [];
 		const subscription = new Subscription(listener);
 		database_subscriptions.allTables.push(subscription);
@@ -100,7 +101,7 @@ class Subscription extends IterableEventQueue {
 		return { name: 'subscription' };
 	}
 }
-
+export let next_transaction;
 function notifyFromTransactionData(path, same_thread?) {
 	if (!all_subscriptions) return;
 	const subscriptions = all_subscriptions[path];
@@ -111,6 +112,7 @@ function notifyFromTransactionData(path, same_thread?) {
 		error.message += ' in ' + path;
 		throw error;
 	}
+	nextTransaction(subscriptions.auditStore);
 	let subscribers_with_txns;
 	for (const { key: local_time, value: audit_entry_encoded } of subscriptions.auditStore.getRange({
 		start: subscriptions.lastTxnTime,
@@ -194,7 +196,7 @@ function notifyFromTransactionData(path, same_thread?) {
 }
 
 /**
- * Interface with lmdb-js to listen for commits and find the SharedArrayBuffers that hold the transaction log/instructions.
+ * Interface with lmdb-js to listen for commits and traverse the audit log.
  * @param primary_store
  */
 export function listenToCommits(primary_store, audit_store) {
@@ -216,4 +218,29 @@ export function listenToCommits(primary_store, audit_store) {
 			notifyFromTransactionData(path, true);
 		});
 	}
+}
+function nextTransaction(audit_store) {
+	audit_store.nextTransaction?.resolve();
+	let next_resolve;
+	audit_store.nextTransaction = new Promise((resolve) => {
+		next_resolve = resolve;
+	});
+	audit_store.nextTransaction.resolve = next_resolve;
+}
+
+export function whenNextTransaction(audit_store) {
+	if (!audit_store.nextTransaction) {
+		addSubscription(
+			{
+				primaryStore: audit_store,
+				auditStore: audit_store,
+			},
+			null,
+			null,
+			0,
+			'full-database'
+		);
+		nextTransaction(audit_store);
+	}
+	return audit_store.nextTransaction;
 }

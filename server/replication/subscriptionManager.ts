@@ -170,7 +170,7 @@ export async function startOnMainThread(options) {
 	};
 
 	connectedToNode = function (connection) {
-		// Basically undo what we did in disconnectedFromNode
+		// Basically undo what we did in disconnectedFromNode and also update the latency
 		const db_replication_workers = connection_replication_map.get(connection.url);
 		const main_worker_entry = db_replication_workers?.get(connection.database);
 		main_worker_entry.connected = true;
