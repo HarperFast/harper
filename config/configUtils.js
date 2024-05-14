@@ -338,6 +338,19 @@ function validateConfig(config_doc, skip_fs_validation = false) {
 	config_json.componentsRoot = config_json.componentsRoot ?? config_json?.customFunctions?.root;
 	if (config_json?.http?.threads) config_json.threads = config_json?.http?.threads;
 
+	if (config_json.http?.port && config_json.http?.port === config_json.http?.securePort) {
+		throw HDB_ERROR_MSGS.CONFIG_VALIDATION('http.port and http.securePort cannot be the same value');
+	}
+
+	if (
+		config_json.operationsApi?.network?.port &&
+		config_json.operationsApi?.network?.port === config_json.operationsApi?.network?.securePort
+	) {
+		throw HDB_ERROR_MSGS.CONFIG_VALIDATION(
+			'operationsApi.network.port and operationsApi.network.securePort cannot be the same value'
+		);
+	}
+
 	const validation = configValidator(config_json, skip_fs_validation);
 	if (validation.error) {
 		throw HDB_ERROR_MSGS.CONFIG_VALIDATION(validation.error.message);

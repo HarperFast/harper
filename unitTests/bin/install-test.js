@@ -13,7 +13,7 @@ describe('Test install module', () => {
 
 	before(() => {
 		installer_stub = sandbox.stub();
-		install.__set__('installer', installer_stub);
+		install.__set__('installer.install', installer_stub);
 	});
 
 	after(() => {

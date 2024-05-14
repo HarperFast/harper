@@ -6,14 +6,15 @@ http:
   corsAccessList:
     - null
   keepAliveTimeout: 30000
-  port: 9926
-  securePort: null
+  port: null
+  securePort: 9926
   mtls: false
   timeout: 120000
 threads:
   count: null
   debug: false
 authentication:
+  authorizeLocal: false
   cacheTTL: 30000
   enableSessions: true
   operationTokenTimeout: 1d
@@ -87,8 +88,8 @@ operationsApi:
     corsAccessList:
       - "*"
     domainSocket: hdb/operations-server
-    port: 9925
-    securePort: null
+    port: null
+    securePort: 9925
 rootPath: null
 storage:
   writeAsync: false

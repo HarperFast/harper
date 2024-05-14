@@ -29,7 +29,7 @@ describe('Test installValidator module', () => {
 
 		const result = installValidator(test_params);
 		expect(result.message).to.equal(
-			"'i/am/root' is already in use. Please enter a different path.. 'OPERATIONSAPI_NETWORK_PORT' must be a number. 'TC_AGREEMENT' must be one of [yes, YES, Yes]. 'CLUSTERING_NODENAME' invalid, must not contain ., * or >. 'CLUSTERING_ENABLED' must be a boolean"
+			"'i/am/root' is already in use. Please enter a different path.. 'TC_AGREEMENT' must be one of [yes, YES, Yes]. 'CLUSTERING_NODENAME' invalid, must not contain ., * or >. 'CLUSTERING_ENABLED' must be a boolean"
 		);
 	});
 

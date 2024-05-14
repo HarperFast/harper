@@ -4,6 +4,7 @@ import { assert, expect } from 'chai';
 import axios from 'axios';
 import { decode, encode, DecoderStream } from 'cbor-x';
 import { getVariables } from './utility.js';
+import { setProperty } from '../../utility/environment/environmentManager.js';
 import { addThreads, setupTestApp, random } from './setupTestApp.mjs';
 import why_is_node_running from 'why-is-node-still-running';
 import { shutdownWorkers, setTerminateTimeout } from '../../server/threads/manageThreads.js';
@@ -13,7 +14,7 @@ describe('Multi-threaded cache updates', () => {
 	let available_records;
 	before(async function () {
 		this.timeout(500000);
-		process.env.DEV_MODE = true;
+		process.env.AUTHENTICATION_AUTHORIZELOCAL = 'true';
 		available_records = await setupTestApp();
 		await addThreads();
 	});
@@ -24,6 +25,7 @@ describe('Multi-threaded cache updates', () => {
 	});
 	it('Many updates and invalidations', async function () {
 		this.timeout(15000);
+
 		let responses = [];
 		for (let i = 0; i < 1000; i++) {
 			const put_values = [
