@@ -56,6 +56,7 @@ describe('Replication', () => {
 					database_config.data.path + '/test-replication-' + i + '/test.mdb',
 					Object.assign(new OpenDBIObject(false, true), {
 						name: 'TestTable/',
+						compression: { startingOffset: 32 },
 					})
 				)
 			);
@@ -202,6 +203,24 @@ describe('Replication', () => {
 		let result = await node2NewTestTable.get('4').value;
 		assert.equal(result.name, name);
 	});
+	it('Should handle high load', async function () {
+		this.timeout(10000);
+		let big_string = 'this will be expanded to a large string';
+		for (let i = 0; i < 7; i++) big_string += big_string;
+		let name;
+		for (let i = 0; i < 100; i++) {
+			name = 'name ' + Math.random();
+			TestTable.put({
+				id: '14',
+				name,
+				bigString: big_string,
+			});
+		}
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		let result = await test_stores[1].get('14')?.value;
+		assert.equal(result.name, name);
+	});
+
 	describe('With third node', function () {
 		before(async function () {
 			this.timeout(10000);

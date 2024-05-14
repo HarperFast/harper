@@ -333,17 +333,17 @@ export function makeTable(options) {
 									continue;
 								}
 								event.source = source;
-								if (txn_in_progress) {
-									if (event.type === 'end_txn') {
-										txn_in_progress.resolve();
-										if (event.localTime && last_sequence_id !== event.localTime) {
-											for (const remote_node of event.remoteNodes)
-												dbis_db.put([Symbol.for('seq'), remote_node], event.localTime);
-											last_sequence_id = event.localTime;
-										}
-										if (event.onCommit) txn_in_progress.committed.then(event.onCommit);
-										continue;
+								if (event.type === 'end_txn') {
+									txn_in_progress?.resolve();
+									if (event.localTime && last_sequence_id !== event.localTime) {
+										for (const remote_node of event.remoteNodes)
+											dbis_db.put([Symbol.for('seq'), remote_node], event.localTime);
+										last_sequence_id = event.localTime;
 									}
+									if (event.onCommit) txn_in_progress?.committed.then(event.onCommit);
+									continue;
+								}
+								if (txn_in_progress) {
 									if (event.beginTxn) {
 										// if we are starting a new transaction, finish the existing one
 										txn_in_progress.resolve();

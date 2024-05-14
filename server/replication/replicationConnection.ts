@@ -37,7 +37,8 @@ const TABLE_STRUCTURE = 131;
 const TABLE_FIXED_STRUCTURE = 132;
 export const OPERATION_REQUEST = 136;
 const OPERATION_RESPONSE = 137;
-const COMMITTED_UPDATE = 143;
+const SEQUENCE_ID_UPDATE = 143;
+const COMMITTED_UPDATE = 144;
 export const table_update_listeners = new Map();
 export const database_subscriptions = new Map();
 const DEBUG_MODE = true;
@@ -92,9 +93,8 @@ export async function createWebSocket(url, options?) {
 		// for client connections, we can add our certificate authority to the root certificates
 		// to authorize the server certificate (both public valid certificates and privately signed certificates are acceptable)
 		ca: [...rootCertificates, ...certificate_authorities],
-		// we set this very high (16x times the default) because it can be a bit expensive to switch back and forth
-		// between push and pull mode
-		highWaterMark: 256 * 1024,
+		// we set this very high (2x times the v22 default) because it performs better
+		highWaterMark: 128 * 1024,
 	});
 }
 export class NodeReplicationConnection extends EventEmitter {
@@ -240,6 +240,9 @@ export function replicateOverWS(ws, options, authorization) {
 	const residency_map = [];
 	const sent_residency_lists = [];
 	const received_residency_lists = [];
+	const MAX_OUTSTANDING_COMMITS = 150;
+	let outstanding_commits = 0;
+	let replication_paused;
 	let subscription_request, audit_subscription;
 	let remote_sequence_number;
 	let remote_short_id_to_local_id: Map<number, number>;
@@ -364,6 +367,15 @@ export function replicateOverWS(ws, options, authorization) {
 							true
 						);
 						break;
+					case SEQUENCE_ID_UPDATE:
+						// we need to record the sequence number that the remote node has received
+						last_sequence_id_received = data;
+						table_subscription_to_replicator.send({
+							type: 'end_txn',
+							localTime: last_sequence_id_received,
+							remoteNodes: incoming_subscription_nodes,
+						});
+						break;
 					case SUBSCRIPTION_REQUEST:
 						const [action, db, , , node_subscriptions] = message;
 						// permission check to make sure that this node is allowed to subscribe to this database, that is that
@@ -440,7 +452,7 @@ export function replicateOverWS(ws, options, authorization) {
 							// TOOD: Use begin_txn instead to find transaction delimiting
 							if (audit_record.type === 'end_txn') {
 								if (current_transaction.txnTime) {
-									if (DEBUG_MODE) logger.info(connection_id, 'sending replication message', encoding_start, position);
+									//if (DEBUG_MODE) logger.info(connection_id, 'sending replication message', encoding_start, position);
 									if (encoding_buffer[encoding_start] !== 66) {
 										logger.error('Invalid encoding of message');
 									}
@@ -495,10 +507,7 @@ export function replicateOverWS(ws, options, authorization) {
 										if (sent_sequence_id + SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY / 2 < current_sequence_id) {
 											if (DEBUG_MODE)
 												logger.info(connection_id, 'sending skipped sequence update', current_sequence_id);
-											writeInt(9); // replication message of nine bytes long
-											writeInt(REMOTE_SEQUENCE_UPDATE); // action id
-											writeFloat64(current_sequence_id); // send the local time so we know what sequence number to start from next time.
-											sendQueuedDataWithBackPressure();
+											ws.send(encode([SEQUENCE_ID_UPDATE, current_sequence_id]));
 										}
 									}, SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY).unref();
 								}
@@ -620,7 +629,7 @@ export function replicateOverWS(ws, options, authorization) {
 							// check first if we are overloaded, if so, we send and then go into pull mode so that we can wait for the drain event
 							if (listening_for_overload && ws._socket.writableNeedDrain) {
 								// we are overloaded, so we need to stop sending and wait for the drain event
-								logger.info(connection_id, 'overloaded, will wait for drain');
+								logger.warn(connection_id, 'overloaded, will wait for drain');
 								listening_for_overload = false;
 								audit_subscription.end();
 								audit_subscription.emit('overloaded');
@@ -678,7 +687,9 @@ export function replicateOverWS(ws, options, authorization) {
 										const audit_record = readAuditEntry(audit_entry);
 										sendAuditRecord(null, audit_record, key);
 										// wait if there is back-pressure
-										if (ws._socket.writableNeedDrain) await new Promise((resolve) => ws._socket.once('drain', resolve));
+										if (ws._socket.writableNeedDrain) {
+											await new Promise((resolve) => ws._socket.once('drain', resolve));
+										}
 										//await rest(); // possibly yield occasionally for fairness
 										audit_subscription.startTime = key; // update so don't double send
 										queued_entries = true;
@@ -700,9 +711,9 @@ export function replicateOverWS(ws, options, authorization) {
 								listeners.push((table) => {
 									// TODO: send table update
 								});
-								logger.info(connection_id, 'Waiting for next transaction');
+								//logger.info(connection_id, 'Waiting for next transaction');
 								await whenNextTransaction(audit_store);
-								logger.info(connection_id, 'Next transaction is ready');
+								//logger.info(connection_id, 'Next transaction is ready');
 							} while (!closed);
 						})();
 						break;
@@ -770,11 +781,21 @@ export function replicateOverWS(ws, options, authorization) {
 				table_subscription_to_replicator.send(event);
 				decoder.position = start + event_length;
 			} while (decoder.position < body.byteLength);
+			outstanding_commits++;
+			if (outstanding_commits > MAX_OUTSTANDING_COMMITS && !replication_paused) {
+				replication_paused = true;
+				ws._socket.pause();
+			}
 			table_subscription_to_replicator.send({
 				type: 'end_txn',
 				localTime: last_sequence_id_received,
 				remoteNodes: incoming_subscription_nodes,
 				onCommit() {
+					outstanding_commits--;
+					if (replication_paused) {
+						replication_paused = false;
+						ws._socket.resume();
+					}
 					if (!last_sequence_id_committed && sequence_id_received) {
 						logger.info(connection_id, 'queuing confirmation of a commit at', sequence_id_received);
 						setTimeout(() => {
