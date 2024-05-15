@@ -67,6 +67,11 @@ function configValidator(config_json, skip_fs_validation = false) {
 	if (hdb_utils.isEmpty(clustering_enabled)) {
 		throw UNDEFINED_NATS_ENABLED;
 	}
+	const tls_constraints = Joi.object({
+		certificate: pem_file_constraints,
+		certificateAuthority: pem_file_constraints,
+		privateKey: pem_file_constraints,
+	});
 
 	// If clustering is enabled validate clustering config
 	let clustering_validation_schema;
@@ -172,11 +177,7 @@ function configValidator(config_json, skip_fs_validation = false) {
 				securePort: number.optional().empty(null),
 				timeout: number.min(1).optional(),
 			}).optional(),
-			tls: Joi.object({
-				certificate: pem_file_constraints,
-				certificateAuthority: pem_file_constraints,
-				privateKey: pem_file_constraints,
-			}),
+			tls: Joi.alternatives([Joi.array().items(tls_constraints), tls_constraints]),
 		}).required(),
 		rootPath: string.pattern(/^[\\\/]$|([\\\/][a-zA-Z_0-9\:-]+)+$/, 'directory path').required(),
 		mqtt: Joi.object({
@@ -244,12 +245,7 @@ function configValidator(config_json, skip_fs_validation = false) {
 			maxFreeSpaceToRetain: number.optional(),
 		}).required(),
 		ignoreScripts: boolean.optional(),
-		tls: Joi.object({
-			certificate: pem_file_constraints.optional(),
-			certificateAuthority: pem_file_constraints.optional(),
-			privateKey: pem_file_constraints.optional(),
-			ciphers: string.optional(),
-		}),
+		tls: Joi.alternatives([Joi.array().items(tls_constraints), tls_constraints]),
 	});
 
 	// Not using the validation wrapper here because we need the result if validation is successful because

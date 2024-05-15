@@ -9,12 +9,13 @@ const env = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 const { server } = require('../Server');
 const { WebSocketServer } = require('ws');
-const { createServer: createSecureSocketServer } = require('tls');
+const { createSecureContext, createServer: createSecureSocketServer } = require('tls');
 const { getTicketKeys, restartNumber, getWorkerIndex } = require('./manageThreads');
 const { Headers, appendHeader } = require('../serverHelpers/Headers');
 const { recordAction, recordActionBinary } = require('../../resources/analytics');
 const { Request, createReuseportFd } = require('../serverHelpers/Request');
 const { checkMemoryLimit } = require('../../utility/registration/hdb_license');
+const { X509Certificate } = require('crypto');
 
 // this horifying hack is brought to you by https://github.com/nodejs/node/issues/36655
 const tls = require('tls');
@@ -385,23 +386,18 @@ function getHTTPServer(port, secure, is_operations_server) {
 		let mtls_required = env.get(server_prefix + '_mtls_required');
 		if (secure) {
 			server_prefix = is_operations_server ? 'operationsApi_' : '';
-			const private_key = env.get(server_prefix + 'tls_privateKey');
-			const certificate = env.get(server_prefix + 'tls_certificate');
-			const certificate_authority = env.get(server_prefix + 'tls_certificateAuthority');
+			let tls_config = env.get(server_prefix + 'tls');
 			// If we are in secure mode, we use HTTP/2 (createSecureServer from http2), with back-compat support
 			// HTTP/1. We do not use HTTP/2 for insecure mode for a few reasons: browsers do not support insecure
 			// HTTP/2. We have seen slower performance with HTTP/2, when used for directly benchmarking. We have
 			// also seen problems with insecure HTTP/2 clients negotiating properly (Java HttpClient).
 			Object.assign(options, {
 				allowHTTP1: true,
-				key: readFileSync(private_key),
-				ciphers: env.get('tls_ciphers'),
-				cert: readFileSync(certificate),
-				ca: certificate_authority && readFileSync(certificate_authority),
 				rejectUnauthorized: Boolean(mtls_required),
 				requestCert: Boolean(mtls),
 				ticketKeys: getTicketKeys(),
 				maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
+				SNICallback: createSNICallback(tls_config),
 			});
 		}
 		let license_warning = checkMemoryLimit();
@@ -568,19 +564,13 @@ function onRequest(listener, options) {
 function onSocket(listener, options) {
 	let socket_server;
 	if (options.securePort) {
-		const private_key_path = env.get('tls_privateKey');
-		const certificate_path = env.get('tls_certificate');
-		const certificate_authority_path = options.mtls?.certificateAuthority || env.get('tls_certificateAuthority');
-
+		const tls_config = Object.assign({}, env.get('tls'));
+		if (options.mtls?.certificateAuthority) tls_config.certificateAuthority = options.mtls.certificateAuthority;
 		socket_server = createSecureSocketServer(
 			{
-				ciphers: env.get('tls_ciphers'),
-				key: readFileSync(private_key_path),
-				// if they have a CA, we append it, so it is included
-				cert: readFileSync(certificate_path),
-				ca: certificate_authority_path && readFileSync(certificate_authority_path),
 				rejectUnauthorized: Boolean(options.mtls?.required),
 				requestCert: Boolean(options.mtls),
+				SNICallback: createSNICallback(tls_config),
 			},
 			listener
 		);
@@ -658,4 +648,55 @@ function onWebSocket(listener, options) {
 function defaultNotFound(request, response) {
 	response.writeHead(404);
 	response.end('Not found\n');
+}
+
+function readPEM(path) {
+	if (path.startsWith('-----BEGIN')) return path;
+	return readFileSync(path);
+}
+function createSNICallback(tls_config) {
+	let tls_contexts = [];
+	for (let i = 0; tls_config[i]; i++) {
+		tls_contexts.push(tls_config[i]);
+	}
+	if (!tls_contexts.length) tls_contexts.push(tls_config);
+	let secure_contexts = new Map();
+	let first_context;
+	for (let tls of tls_contexts) {
+		const private_key = readPEM(tls.privateKey);
+		const certificate = readPEM(tls.certificate);
+		const certificate_authority = tls.certificateAuthority && readPEM(tls.certificateAuthority);
+		if (!private_key || !certificate) {
+			throw new Error('Missing private key or certificate for secure server');
+		}
+		let secure_context = createSecureContext({
+			key: private_key,
+			ciphers: env.get('tls_ciphers'),
+			cert: certificate,
+			ca: certificate_authority,
+			ticketKeys: getTicketKeys(),
+		});
+		// we store the first 100 bytes of the certificate just for debug logging
+		secure_context.certStart = certificate.subarray(0, 100).toString();
+		if (!first_context) first_context = secure_context;
+		let cert_parsed = new X509Certificate(certificate);
+		const hostname = tls.hostname ?? tls.host ?? cert_parsed.subject.match(/CN=(.*)/)?.[1];
+		if (hostname) {
+			if (!secure_contexts.has(hostname)) secure_contexts.set(hostname, secure_context);
+		} else {
+			harper_logger.error('No hostname found for certificate at', tls.certificate);
+		}
+	}
+	return (servername, cb) => {
+		// find the matching server name
+		let context = secure_contexts.get(servername);
+		if (context) {
+			harper_logger.debug('Found certificate for', servername, context.certStart);
+			cb(null, context);
+		} else {
+			harper_logger.debug('No certificate found to match', servername, 'using the first certificate');
+			// no matches, return the first one
+			cb(null, first_context);
+		}
+	};
 }

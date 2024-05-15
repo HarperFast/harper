@@ -619,6 +619,7 @@ const CONFIG_PARAMS = {
 	OPERATIONSAPI_NETWORK_PORT: 'operationsApi_network_port',
 	OPERATIONSAPI_NETWORK_DOMAINSOCKET: 'operationsApi_network_domainSocket',
 	OPERATIONSAPI_NETWORK_SECUREPORT: 'operationsApi_network_securePort',
+	OPERATIONSAPI_TLS: 'operationsApi_tls',
 	OPERATIONSAPI_TLS_CERTIFICATE: 'operationsApi_tls_certificate',
 	OPERATIONSAPI_TLS_PRIVATEKEY: 'operationsApi_tls_privateKey',
 	OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY: 'operationsApi_tls_certificateAuthority',
@@ -657,6 +658,7 @@ const CONFIG_PARAMS = {
 	TLS_PRIVATEKEY: 'tls_privateKey',
 	TLS_CERTIFICATEAUTHORITY: 'tls_certificateAuthority',
 	TLS_CIPHERS: 'tls_ciphers',
+	TLS: 'tls',
 	CLONED: 'cloned',
 };
 
@@ -791,6 +793,7 @@ const CONFIG_PARAM_MAP = {
 	operationsapi_network_port: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT,
 	operationsapi_network_domainsocket: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET,
 	operationsapi_network_secureport: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT,
+	operationsapi_tls: CONFIG_PARAMS.OPERATIONSAPI_TLS,
 	operationsapi_tls_certificate: CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATE,
 	operationsapi_tls_privatekey: CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY,
 	operationsapi_tls_certificateauthority: CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY,
@@ -815,6 +818,7 @@ const CONFIG_PARAM_MAP = {
 	authentication_operationtokentimeout: CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT,
 	authentication_refreshtokentimeout: CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT,
 	componentsroot: CONFIG_PARAMS.COMPONENTSROOT,
+	tls: CONFIG_PARAMS.TLS,
 	tls_certificate: CONFIG_PARAMS.TLS_CERTIFICATE,
 	tls_privatekey: CONFIG_PARAMS.TLS_PRIVATEKEY,
 	tls_certificateauthority: CONFIG_PARAMS.TLS_CERTIFICATEAUTHORITY,
