@@ -41,6 +41,7 @@ export async function startOnMainThread(options) {
 			let url = typeof route === 'string' ? route : route.url;
 			if (!url) {
 				if (route.host) url = 'wss://' + route.host + ':' + (route.port || 9925);
+				else if (route.hostname) url = 'wss://' + route.hostname + ':' + (route.port || 9925);
 				else {
 					console.error('Invalid route, must specify a url or host (with port)');
 					continue;
