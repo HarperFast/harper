@@ -1,13 +1,10 @@
 import { createCsr, getCertsKeys, setCertTable } from '../../security/keys';
 import { validateBySchema } from '../../validation/validationWrapper';
 import Joi from 'joi';
-import needle from 'needle';
-import { writeFile, readFile } from 'fs/promises';
-import { join } from 'path';
 import { get } from '../../utility/environment/environmentManager';
 import { OPERATIONS_ENUM, CONFIG_PARAMS, LICENSE_KEY_DIR_NAME } from '../../utility/hdbTerms';
 import { CERTIFICATE_PEM_NAME, CA_PEM_NAME, CERT_NAME } from '../../utility/terms/certificates';
-import { ensureNode } from './subscriptionManager';
+import { ensureNode, getHDBNodeTable } from './subscriptionManager';
 import { sendOperationToNode, urlToNodeName } from './replicator';
 import * as hdb_logger from '../../utility/logging/harper_logger';
 import { handleHDBError, hdb_errors } from '../../utility/errors/hdbError.js';
@@ -18,17 +15,29 @@ const validation_schema = Joi.object({
 	url: Joi.string().required(),
 });
 
-export async function addNode(req: object) {
+export async function setNode(req: object) {
 	const validation = validateBySchema(req, validation_schema);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
-
-	// TODO: test adding a node to an instance without previous replication config.
-	// Create the certificate signing request that will be sent to the other node
-	const csr = await createCsr();
 	const { url } = req;
 
+	if (req.operation === 'remove_node') {
+		const node_record_id = req.node_name ?? urlToNodeName(url);
+		const nodes_table = getHDBNodeTable();
+		await nodes_table.delete(node_record_id);
+
+		return `Successfully removed '${node_record_id}' from manifest`;
+	}
+
+	let csr;
+	const { rep } = await getCertsKeys();
+	if (!rep.cert.includes?.('issued by')) {
+		// Create the certificate signing request that will be sent to the other node
+		csr = await createCsr();
+	}
+
+	// TODO: test adding a node to an instance without previous replication config.
 	const this_url = get(CONFIG_PARAMS.REPLICATION_URL);
 	if (this_url == null) {
 		throw new Error('replication url is missing from harperdb-config.yaml');
@@ -64,6 +73,7 @@ export async function addNode(req: object) {
 	};
 	let sign_res;
 	try {
+		// TODO: sendOperationToNode doesnt seem to fail well/at all
 		sign_res = await sendOperationToNode({ url }, sign_req, req);
 	} catch (err) {
 		hdb_logger.error(err);
@@ -79,12 +89,15 @@ export async function addNode(req: object) {
 		certificate: sign_res.ca_certificate,
 		is_authority: true,
 	});
-	await setCertTable({
-		name: `issued by ${urlToNodeName(url)}`,
-		uses: ['https', 'operations', 'wss'],
-		certificate: sign_res.certificate,
-		is_authority: false,
-	});
+
+	if (sign_res.certificate) {
+		await setCertTable({
+			name: `issued by ${urlToNodeName(url)}`,
+			uses: ['https', 'operations', 'wss'],
+			certificate: sign_res.certificate,
+			is_authority: false,
+		});
+	}
 
 	const node_record = { url, ca: sign_res.ca_certificate };
 	if (req.node_name) node_record.node_name = req.node_name;
@@ -93,6 +106,10 @@ export async function addNode(req: object) {
 	if (req.publish) node_record.publish = req.publish;
 
 	await ensureNode(undefined, node_record);
+
+	if (req.operation === 'update_node') {
+		return `Successfully updated '${url}'`;
+	}
 
 	return `Successfully added '${url}' to manifest`;
 }

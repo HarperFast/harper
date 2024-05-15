@@ -22,6 +22,7 @@ const upgrade = require('./upgrade');
 const log_rotator = require('../utility/logging/logRotator');
 const { compactOnStart } = require('./copyDb');
 const minimist = require('minimist');
+const keys = require('../security/keys');
 const { PACKAGE_ROOT } = require('../utility/hdbTerms');
 const {
 	startHTTPThreads,
@@ -205,6 +206,8 @@ async function main(called_by_install = false) {
 			config_utils.updateConfigObject('settings_path', path.join(cmd_args.ROOTPATH, terms.HDB_CONFIG_FILE));
 		}
 		await initialize(called_by_install, true);
+
+		await keys.setDefaultCertsKeys();
 
 		if (env.get(terms.CONFIG_PARAMS.STORAGE_COMPACTONSTART)) await compactOnStart();
 

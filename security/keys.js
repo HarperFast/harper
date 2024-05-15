@@ -39,13 +39,14 @@ module.exports = {
 	getCertsKeys,
 	setCertTable,
 	loadCertificates,
+	setDefaultCertsKeys,
 };
 
 const { urlToNodeName } = require('../server/replication/replicator');
 const { ensureNode } = require('../server/replication/subscriptionManager');
 
 const CERT_VALIDITY_DAYS = 3650;
-const CERT_DOMAINS = ['127.0.0.*'];
+const CERT_DOMAINS = ['127.0.0.1', 'localhost', '::1'];
 const CERT_ATTRIBUTES = [
 	{ name: 'countryName', value: 'USA' },
 	{ name: 'stateOrProvinceName', value: 'Colorado' },
@@ -60,7 +61,9 @@ const CERT_ATTRIBUTES = [
  */
 async function getCertsKeys(rep_host = undefined) {
 	await loadCertificates();
-	const app_private_pem = await fs.readFile(env_manager.get(hdb_terms.CONFIG_PARAMS.TLS_PRIVATEKEY), 'utf8');
+	const app_private_pem = (await fs.exists(env_manager.get(hdb_terms.CONFIG_PARAMS.TLS_PRIVATEKEY)))
+		? await fs.readFile(env_manager.get(hdb_terms.CONFIG_PARAMS.TLS_PRIVATEKEY), 'utf8')
+		: undefined;
 	const ops_private_pem = (await fs.exists(env_manager.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY)))
 		? await fs.readFile(env_manager.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY), 'utf8')
 		: app_private_pem;
@@ -142,6 +145,7 @@ async function getCertsKeys(rep_host = undefined) {
 		}
 
 		const inverted_cert_name = _.invert(CERT_NAME);
+		// TODO: I think this will fail when we start adding more certs to the certs table that arent in CERT_NAME
 		if (inverted_cert_name[name] === undefined) {
 			response[name] = certificate;
 			if (!name.includes('ca')) {
@@ -271,8 +275,6 @@ async function signCertificate(req) {
 	let { app_private_key, app_ca } = await getCertsKeys();
 	app_private_key = pki.privateKeyFromPem(app_private_key);
 	const ca_app_cert = pki.certificateFromPem(app_ca.cert);
-	hdb_logger.info('Signing CSR with cert named', app_ca.name, 'with cert', app_ca.cert);
-
 	const adding_node = async () => {
 		// If the sign req is coming from add node, add the requesting node to hdb_nodes
 		if (req.add_node) {
@@ -286,6 +288,47 @@ async function signCertificate(req) {
 			await ensureNode(undefined, node_record);
 		}
 	};
+
+	let response = {
+		ca_certificate: pki.certificateToPem(ca_app_cert),
+	};
+	if (req.csr) {
+		hdb_logger.info('Signing CSR with cert named', app_ca.name, 'with cert', app_ca.cert);
+		const csr = pki.certificationRequestFromPem(req.csr);
+		try {
+			csr.verify();
+		} catch (err) {
+			hdb_logger.error(err);
+			return new Error(`Error verifying CSR: ` + err.message);
+		}
+
+		const cert = forge.pki.createCertificate();
+		cert.serialNumber = Math.random().toString().slice(2, 10);
+		cert.validity.notBefore = new Date();
+		const not_after = new Date();
+		cert.validity.notAfter = not_after;
+		cert.validity.notAfter.setDate(not_after.getDate() + CERT_VALIDITY_DAYS);
+		hdb_logger.info('sign cert setting validity:', cert.validity);
+
+		// subject from CSR
+		hdb_logger.info('sign cert setting subject from CSR:', csr.subject.attributes);
+		cert.setSubject(csr.subject.attributes);
+
+		// issuer from CA
+		hdb_logger.info('sign cert setting issuer:', ca_app_cert.subject.attributes);
+		cert.setIssuer(ca_app_cert.subject.attributes);
+
+		const extensions = csr.getAttribute({ name: 'extensionRequest' }).extensions;
+		hdb_logger.info('sign cert adding extensions from CSR:', extensions);
+		cert.setExtensions(extensions);
+
+		cert.publicKey = csr.publicKey;
+		cert.sign(app_private_key, forge.md.sha256.create());
+
+		response.certificate = pki.certificateToPem(cert);
+	} else {
+		hdb_logger.info('Sign cert did not receive a CSR from:', req.add_node.url, 'only the CA will be returned');
+	}
 
 	if (req.certificate) {
 		//TODO: uncomment
@@ -305,43 +348,9 @@ async function signCertificate(req) {
 		}*/
 	}
 
-	const csr = pki.certificationRequestFromPem(req.csr);
-	try {
-		csr.verify();
-	} catch (err) {
-		hdb_logger.error(err);
-		return new Error(`Error verifying CSR: ` + err.message);
-	}
-
-	const cert = forge.pki.createCertificate();
-	cert.serialNumber = Math.random().toString().slice(2, 10);
-	cert.validity.notBefore = new Date();
-	const not_after = new Date();
-	cert.validity.notAfter = not_after;
-	cert.validity.notAfter.setDate(not_after.getDate() + CERT_VALIDITY_DAYS);
-	hdb_logger.info('sign cert setting validity:', cert.validity);
-
-	// subject from CSR
-	hdb_logger.info('sign cert setting subject from CSR:', csr.subject.attributes);
-	cert.setSubject(csr.subject.attributes);
-
-	// issuer from CA
-	hdb_logger.info('sign cert setting issuer:', ca_app_cert.subject.attributes);
-	cert.setIssuer(ca_app_cert.subject.attributes);
-
-	const extensions = csr.getAttribute({ name: 'extensionRequest' }).extensions;
-	hdb_logger.info('sign cert adding extensions from CSR:', extensions);
-	cert.setExtensions(extensions);
-
-	cert.publicKey = csr.publicKey;
-	cert.sign(app_private_key, forge.md.sha256.create());
-
 	await adding_node();
 
-	return {
-		certificate: pki.certificateToPem(cert),
-		ca_certificate: pki.certificateToPem(ca_app_cert),
-	};
+	return response;
 }
 
 async function createCertificateTable(cert, ca_cert) {
@@ -509,6 +518,44 @@ async function generateCertsKeys() {
 	const public_cert = await generateCertificates(private_key, public_key, ca_cert);
 	await createCertificateTable(public_cert, pki.certificateToPem(ca_cert));
 	updateConfigCert();
+}
+
+/**
+ * Function does two things:
+ * If there is no app cert, it will create all the default HarperDB certs and private key (which become default certs).
+ * If the default cert common name and altnames array doesn't contain the hostname from replication.url config it
+ * will create a new cert with this hostname value.
+ * @returns {Promise<void>}
+ */
+async function setDefaultCertsKeys() {
+	if (!certificate_table) certificate_table = getDatabases()['system']['hdb_certificate'];
+	const { app, app_private_key, app_ca } = await getCertsKeys();
+	if (!app.name) {
+		await generateCertsKeys();
+	}
+
+	// This block of code is here to check the common name and altnames on the default app cert.
+	// If the cert does not have this nodes hostname it will create a new public cert with the hostname.
+	if (app.name === CERT_NAME.DEFAULT && env_manager.get(CONFIG_PARAMS.REPLICATION_URL)) {
+		const host = getHost();
+		const cert_obj = new X509Certificate(app.cert);
+		if (!cert_obj.subjectAltName.includes(host) || !cert_obj.subject.includes(host)) {
+			hdb_logger.info('Creating a new HarperDB generated public with host:', host);
+			const pc = pki.certificateFromPem(app.cert);
+			const public_cert = await generateCertificates(
+				pki.privateKeyFromPem(app_private_key),
+				pc.publicKey,
+				pki.certificateFromPem(app_ca.cert)
+			);
+
+			await setCertTable({
+				name: certificates_terms.CERT_NAME.DEFAULT,
+				uses: ['https', 'operations', 'wss'],
+				certificate: public_cert,
+				is_authority: false,
+			});
+		}
+	}
 }
 
 // Update the cert config in harperdb-config.yaml
