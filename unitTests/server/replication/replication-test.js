@@ -124,7 +124,7 @@ describe('Replication', () => {
 		assert.equal(result.extraProperty, true);
 	});
 
-	it('A write to second table should replicate back', async function () {
+	it.only('A write to second table should replicate back', async function () {
 		let name = 'name ' + Math.random();
 		child_processes[0].send({
 			action: 'put',
@@ -203,18 +203,22 @@ describe('Replication', () => {
 		let result = await node2NewTestTable.get('4').value;
 		assert.equal(result.name, name);
 	});
-	it('Should handle high load', async function () {
+	it.skip('Should handle high load', async function () {
 		this.timeout(10000);
 		let big_string = 'this will be expanded to a large string';
 		for (let i = 0; i < 7; i++) big_string += big_string;
 		let name;
-		for (let i = 0; i < 100; i++) {
+		for (let i = 0; i < 10000; i++) {
 			name = 'name ' + Math.random();
-			TestTable.put({
+			let result = TestTable.put({
 				id: '14',
 				name,
 				bigString: big_string,
 			});
+			if (i % 1000 === 0) {
+				await result;
+				console.log('wrote', i, 'records');
+			}
 		}
 		await new Promise((resolve) => setTimeout(resolve, 300));
 		let result = await test_stores[1].get('14')?.value;

@@ -36,11 +36,6 @@ export function addSubscription(table, key, listener?: (key) => any, start_time:
 	}
 	if (scope === 'full-database') {
 		return;
-		database_subscriptions.allTables = database_subscriptions.allTables || [];
-		const subscription = new Subscription(listener);
-		database_subscriptions.allTables.push(subscription);
-		subscription.subscriptions = database_subscriptions.allTables;
-		return subscription;
 	}
 	let table_subscriptions = database_subscriptions[table_id];
 	if (!table_subscriptions) {
@@ -101,7 +96,6 @@ class Subscription extends IterableEventQueue {
 		return { name: 'subscription' };
 	}
 }
-export let next_transaction;
 function notifyFromTransactionData(path, same_thread?) {
 	if (!all_subscriptions) return;
 	const subscriptions = all_subscriptions[path];
@@ -120,20 +114,6 @@ function notifyFromTransactionData(path, same_thread?) {
 	})) {
 		subscriptions.lastTxnTime = local_time;
 		const audit_entry = readAuditEntry(audit_entry_encoded);
-		if (subscriptions.allTables) {
-			for (const subscriber of subscriptions.allTables) {
-				try {
-					if (!subscriber.txnInProgress) {
-						subscriber.txnInProgress = local_time;
-						if (!subscribers_with_txns) subscribers_with_txns = [subscriber];
-						else subscribers_with_txns.push(subscriber);
-					}
-					subscriber.listener(null, audit_entry, local_time);
-				} catch (error) {
-					warn('Error database listener', error);
-				}
-			}
-		}
 		const table_subscriptions = subscriptions[audit_entry.tableId];
 		if (!table_subscriptions) continue;
 		const record_id = audit_entry.recordId;

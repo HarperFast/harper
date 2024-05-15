@@ -451,7 +451,7 @@ export function replicateOverWS(ws, options, authorization) {
 									writeInt(9); // replication message of nine bytes long
 									writeInt(REMOTE_SEQUENCE_UPDATE); // action id
 									writeFloat64((sent_sequence_id = local_time)); // send the local time so we know what sequence number to start from next time.
-									sendQueuedDataWithBackPressure();
+									sendQueuedData();
 								}
 								encoding_start = position;
 								current_transaction.txnTime = 0;
@@ -526,7 +526,7 @@ export function replicateOverWS(ws, options, authorization) {
 									if (encoding_buffer[encoding_start] !== 66) {
 										logger.error('Invalid encoding of message');
 									}
-									sendQueuedDataWithBackPressure();
+									sendQueuedData();
 								}
 								current_transaction.txnTime = txn_time;
 								encoding_start = position;
@@ -617,15 +617,7 @@ export function replicateOverWS(ws, options, authorization) {
 							writeInt(encoded.length - start);
 							writeBytes(encoded, start);
 						};
-						const sendQueuedDataWithBackPressure = () => {
-							// check first if we are overloaded, if so, we send and then go into pull mode so that we can wait for the drain event
-							if (listening_for_overload && ws._socket.writableNeedDrain) {
-								// we are overloaded, so we need to stop sending and wait for the drain event
-								logger.warn(connection_id, 'overloaded, will wait for drain');
-								listening_for_overload = false;
-								audit_subscription.end();
-								audit_subscription.emit('overloaded');
-							}
+						const sendQueuedData = () => {
 							ws.send(encoding_buffer.subarray(encoding_start, position));
 						};
 
@@ -776,7 +768,7 @@ export function replicateOverWS(ws, options, authorization) {
 			outstanding_commits++;
 			if (outstanding_commits > MAX_OUTSTANDING_COMMITS && !replication_paused) {
 				replication_paused = true;
-				ws._socket.pause();
+				ws.pause();
 			}
 			table_subscription_to_replicator.send({
 				type: 'end_txn',
@@ -786,7 +778,7 @@ export function replicateOverWS(ws, options, authorization) {
 					outstanding_commits--;
 					if (replication_paused) {
 						replication_paused = false;
-						ws._socket.resume();
+						ws.resume();
 					}
 					if (!last_sequence_id_committed && sequence_id_received) {
 						logger.info(connection_id, 'queuing confirmation of a commit at', sequence_id_received);
