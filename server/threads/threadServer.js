@@ -685,12 +685,15 @@ function createSNICallback(tls_config) {
 			tls.host ??
 			tls.hostnames ??
 			tls.hosts ??
-			cert_parsed.subjectAltName.split(',').map((part) => {
-				// the subject alt names looks like 'IP Address:127.0.0.1, DNS:localhost, IP Address:0:0:0:0:0:0:0:1'
-				// so we split on commas and then use the part after the colon as the host name
-				let colon_index = part.indexOf(':');
-				return part.slice(colon_index + 1);
-			});
+			(cert_parsed.subjectAltName
+				? cert_parsed.subjectAltName.split(',').map((part) => {
+						// the subject alt names looks like 'IP Address:127.0.0.1, DNS:localhost, IP Address:0:0:0:0:0:0:0:1'
+						// so we split on commas and then use the part after the colon as the host name
+						let colon_index = part.indexOf(':');
+						return part.slice(colon_index + 1);
+				  })
+				: // finally we fall back to the common name
+				  [cert_parsed.subject.match(/CN=(.*)/)?.[1]]);
 		if (!Array.isArray(hostnames)) hostnames = [hostnames];
 		for (let hostname of hostnames) {
 			if (hostname) {
