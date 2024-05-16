@@ -54,18 +54,10 @@ export let awaiting_response = new Map();
 
 export async function createWebSocket(url, options?) {
 	const { authorization, rejectUnauthorized } = options || {};
-	const { app_private_key, rep } = await getCertsKeys(new URL(url).hostname);
-	const certificate_authorities = new Set();
+	const { app_private_key, rep, ca_certs } = await getCertsKeys(new URL(url).hostname);
 	let cert;
 	if (url.includes('wss://')) {
-		for await (const node of databases.system.hdb_nodes.search([])) {
-			if (node.ca) {
-				certificate_authorities.add(node.ca);
-			}
-		}
-
 		cert = rep.cert;
-
 		logger.info('Creating web socket for URL', url, 'with certificate named:', rep.name);
 		if (!cert && rejectUnauthorized !== false) {
 			throw new Error('Unable to find a valid certificate to use for replication to connect to ' + url);
@@ -92,7 +84,7 @@ export async function createWebSocket(url, options?) {
 		cert,
 		// for client connections, we can add our certificate authority to the root certificates
 		// to authorize the server certificate (both public valid certificates and privately signed certificates are acceptable)
-		ca: [...rootCertificates, ...certificate_authorities],
+		ca: [...rootCertificates, ...ca_certs],
 		// we set this very high (2x times the v22 default) because it performs better
 		highWaterMark: 128 * 1024,
 	});

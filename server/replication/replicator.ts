@@ -73,6 +73,9 @@ export function start(options) {
 	// or IP address and then falling back to standard authorization
 	server.http((request, next_handler) => {
 		if (request.isWebSocket && request.headers.get('Sec-WebSocket-Protocol') === 'harperdb-replication-v1') {
+			if (!request.authorized && request._nodeRequest.socket.authorizationError) {
+				logger.error(request._nodeRequest.socket.authorizationError);
+			}
 			if (request.authorized && request.peerCertificate.subject) {
 				const subject = request.peerCertificate.subject;
 				const node = subject && getHDBNodeTable().primaryStore.get(subject.CN);

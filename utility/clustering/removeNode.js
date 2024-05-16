@@ -15,6 +15,7 @@ const { NodeSubscription } = require('./NodeObject');
 const DeleteObject = require('../../dataLayer/DeleteObject');
 const _delete = require('../../dataLayer/delete');
 const { broadcast } = require('../../server/threads/manageThreads');
+const { setNode: plexus_set_node } = require('../../server/replication/setNode');
 
 const node_name = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 
@@ -27,6 +28,10 @@ module.exports = removeNode;
  */
 async function removeNode(req) {
 	hdb_logger.trace('removeNode called with:', req);
+	if (env_manager.get(hdb_terms.CONFIG_PARAMS.REPLICATION_URL)) {
+		return plexus_set_node(req);
+	}
+
 	clustering_utils.checkClusteringEnabled();
 	const validation = remove_node_validator(req);
 	if (validation) {

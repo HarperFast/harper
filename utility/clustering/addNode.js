@@ -13,7 +13,7 @@ const env_manager = require('../environment/environmentManager');
 const review_subscriptions = require('./reviewSubscriptions');
 const { Node, NodeSubscription } = require('./NodeObject');
 const { broadcast } = require('../../server/threads/manageThreads');
-const { addNode: plexus_add_node } = require('../../server/replication/addNode');
+const { setNode: plexus_set_node } = require('../../server/replication/setNode');
 
 const UNSUCCESSFUL_MSG =
 	'Unable to create subscriptions due to schema and/or tables not existing on the local or remote node';
@@ -33,7 +33,7 @@ module.exports = addNode;
 async function addNode(req, skip_validation = false) {
 	hdb_logger.trace('addNode called with:', req);
 	if (env_manager.get(hdb_terms.CONFIG_PARAMS.REPLICATION_URL)) {
-		return plexus_add_node(req);
+		return plexus_set_node(req);
 	}
 
 	clustering_utils.checkClusteringEnabled();

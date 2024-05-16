@@ -160,7 +160,7 @@ async function install() {
 	await createClusterUser(install_params);
 
 	// Create cert and private keys and write to file.
-	await keys.generateCertsKeys();
+	await keys.updateConfigCert();
 
 	// Insert current version of HarperDB into versions table.
 	await insertHdbVersionInfo();
