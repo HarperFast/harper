@@ -9,31 +9,13 @@ const env = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 const { server } = require('../Server');
 const { WebSocketServer } = require('ws');
-const { createSecureContext, createServer: createSecureSocketServer } = require('tls');
+let { createSecureContext, createServer: createSecureSocketServer } = require('node:tls');
 const { getTicketKeys, restartNumber, getWorkerIndex } = require('./manageThreads');
 const { Headers, appendHeader } = require('../serverHelpers/Headers');
 const { recordAction, recordActionBinary } = require('../../resources/analytics');
 const { Request, createReuseportFd } = require('../serverHelpers/Request');
 const { checkMemoryLimit } = require('../../utility/registration/hdb_license');
 const { X509Certificate } = require('crypto');
-
-// this horifying hack is brought to you by https://github.com/nodejs/node/issues/36655
-const tls = require('tls');
-
-const origCreateSecureContext = tls.createSecureContext;
-tls.createSecureContext = function (options) {
-	if (!options.cert || !options.key) {
-		return origCreateSecureContext(options);
-	}
-
-	let lessOptions = { ...options };
-	delete lessOptions.key;
-	delete lessOptions.cert;
-	let ctx = origCreateSecureContext(lessOptions);
-	ctx.context.setCert(options.cert);
-	ctx.context.setKey(options.key, undefined);
-	return ctx;
-};
 
 const debug_threads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
 if (debug_threads) {
@@ -670,21 +652,40 @@ function createSNICallback(tls_config) {
 			throw new Error('Missing private key or certificate for secure server');
 		}
 		let secure_context = createSecureContext({
-			key: private_key,
 			ciphers: env.get('tls_ciphers'),
-			cert: certificate,
 			ca: certificate_authority,
 			ticketKeys: getTicketKeys(),
 		});
+		// Due to https://github.com/nodejs/node/issues/36655, we need to ensure that we apply the key and cert
+		// *after* the context is created, so that the ciphers are set and allow for lower security ciphers if needed
+		secure_context.context.setCert(certificate);
+		secure_context.context.setKey(private_key, undefined);
+
 		// we store the first 100 bytes of the certificate just for debug logging
 		secure_context.certStart = certificate.subarray(0, 100).toString();
 		if (!first_context) first_context = secure_context;
 		let cert_parsed = new X509Certificate(certificate);
-		const hostname = tls.hostname ?? tls.host ?? cert_parsed.subject.match(/CN=(.*)/)?.[1];
-		if (hostname) {
-			if (!secure_contexts.has(hostname)) secure_contexts.set(hostname, secure_context);
-		} else {
-			harper_logger.error('No hostname found for certificate at', tls.certificate);
+		let hostnames =
+			tls.hostname ??
+			tls.host ??
+			tls.hostnames ??
+			tls.hosts ??
+			(cert_parsed.subjectAltName
+				? cert_parsed.subjectAltName.split(',').map((part) => {
+						// the subject alt names looks like 'IP Address:127.0.0.1, DNS:localhost, IP Address:0:0:0:0:0:0:0:1'
+						// so we split on commas and then use the part after the colon as the host name
+						let colon_index = part.indexOf(':');
+						return part.slice(colon_index + 1);
+				  })
+				: // finally we fall back to the common name
+				  [cert_parsed.subject.match(/CN=(.*)/)?.[1]]);
+		if (!Array.isArray(hostnames)) hostnames = [hostnames];
+		for (let hostname of hostnames) {
+			if (hostname) {
+				if (!secure_contexts.has(hostname)) secure_contexts.set(hostname, secure_context);
+			} else {
+				harper_logger.error('No hostname found for certificate at', tls.certificate);
+			}
 		}
 	}
 	return (servername, cb) => {
