@@ -14,6 +14,7 @@ const env_manager = require('../utility/environment/environmentManager');
 const hdb_terms = require('../utility/hdbTerms');
 const { CONFIG_PARAMS } = hdb_terms;
 const certificates_terms = require('../utility/terms/certificates');
+const { basename } = require('node:path');
 const {
 	CA_CERT_PREFERENCE_APP,
 	CA_CERT_PREFERENCE_OPS,
@@ -22,6 +23,7 @@ const {
 	CERT_PREFERENCE_REP,
 	CERT_CONFIG_NAME_MAP,
 	CERT_NAME,
+	CERTIFICATE_VALUES,
 } = certificates_terms;
 const assign_cmdenv_vars = require('../utility/assignCmdEnvVariables');
 const config_utils = require('../config/configUtils');
@@ -42,6 +44,12 @@ module.exports = {
 
 const { urlToNodeName } = require('../server/replication/replicator');
 const { ensureNode } = require('../server/replication/subscriptionManager');
+const { readFileSync } = require('fs');
+const { createSecureContext } = require('node:tls');
+const env = require('../utility/environment/environmentManager');
+const { getTicketKeys } = require('../server/threads/manageThreads');
+const harper_logger = require('../utility/logging/harper_logger');
+const terms = require('../utility/hdbTerms');
 
 const CERT_VALIDITY_DAYS = 3650;
 const CERT_DOMAINS = ['127.0.0.1', 'localhost', '::1'];
@@ -66,6 +74,41 @@ function getCertTable() {
  * @param rep_host
  * @returns {Promise<{app: {name: undefined, cert: undefined}, app_private_key, ca_certs: *[], ops_ca: {name: undefined, cert: undefined}, ops: {name: undefined, cert: undefined}, app_ca: {name: undefined, cert: undefined}, ops_private_key, rep: {name: undefined, cert: undefined}}>}
  */
+
+async function getAllCertsKeys(preferred_name) {
+	getCertTable();
+	let preference = ca ? CA_CERT_PREFERENCE_APP : CERT_PREFERENCE_APP;
+	let best_cert, best_quality;
+	let ca_certs = new Set();
+	for await (const cert of certificate_table.search([])) {
+		if (cert.is_authority) ca_certs.add(cert.certificate);
+		else {
+			const { name, certificate } = cert;
+			let quality;
+			if (preferred_name === name) quality = 5;
+			else quality = preference[name] ?? 0;
+			if (quality > best_quality) {
+				best_cert = cert;
+				best_quality = quality;
+			}
+		}
+	}
+
+	// Add any CAs that might exist in hdb_nodes but not hdb_certificate
+	const nodes_table = getDatabases()['system']['hdb_nodes'];
+	for await (const node of nodes_table.search([])) {
+		if (node.ca) {
+			ca_certs.add(node.ca);
+		}
+	}
+
+	return (
+		best_cert && {
+			cas: Array.from(ca_certs),
+			...best_cert,
+		}
+	);
+}
 async function getCertsKeys(rep_host = undefined) {
 	await loadCertificates();
 	const app_private_pem = (await fs.exists(env_manager.get(hdb_terms.CONFIG_PARAMS.TLS_PRIVATEKEY)))
@@ -175,27 +218,57 @@ async function getCertsKeys(rep_host = undefined) {
 
 	return response;
 }
-
+const private_key_paths = new Map();
+/**
+ * This is responsible for loading any certificates that are in the harperdb-config.yaml file and putting them into the hdb_certificate table.
+ * @return {*}
+ */
 function loadCertificates() {
+	// these are the sections of the config to check
 	const CERTIFICATE_CONFIGS = [
-		CONFIG_PARAMS.TLS_CERTIFICATE,
-		CONFIG_PARAMS.TLS_CERTIFICATEAUTHORITY,
-		CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATE,
-		CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY,
+		{ configKey: CONFIG_PARAMS.TLS, ca: false },
+		{ configKey: CONFIG_PARAMS.TLS, ca: true },
+		{ configKey: CONFIG_PARAMS.OPERATIONSAPI_TLS, ca: false },
+		{ configKey: CONFIG_PARAMS.OPERATIONSAPI_TLS, ca: true },
 	];
 
 	getCertTable();
 
+	const root_path = env.get(terms.CONFIG_PARAMS.ROOTPATH); // need to relativize the paths so they aren't exposed
 	let promise;
-	for (let config_key of CERTIFICATE_CONFIGS) {
-		const path = env_manager.get(config_key);
-		if (path && fs.existsSync(path)) {
-			promise = certificate_table.put({
-				name: CERT_CONFIG_NAME_MAP[config_key],
-				uses: ['https', ...(config_key.includes('operations') ? ['operations'] : [])],
-				certificate: fs.readFileSync(path, 'utf8'),
-				is_authority: config_key.includes('uthority'),
-			});
+	for (let { configKey: config_key, ca } of CERTIFICATE_CONFIGS) {
+		let configs = env_manager.get(config_key);
+		if (configs) {
+			// the configs can be an array, so normalize to an array
+			if (!Array.isArray(configs)) {
+				configs = [configs];
+			}
+			for (let config of configs) {
+				let path = config[ca ? 'certificateAuthority' : 'certificate'];
+				if (path) {
+					if (fs.existsSync(path)) {
+						let certificate = readPEM(path);
+						if (CERTIFICATE_VALUES.cert === certificate) {
+							// this is the compromised HarperDB certificate authority, and we do not even want to bother to
+							// load it or tempted to use it anywhere (except NATS can directly load it)
+							continue;
+						}
+						let private_key_name = config.privateKey && basename(config.privateKey);
+						private_key_paths.set(private_key_name, readPEM(config.privateKey)); // don't expose the path, just the name
+
+						promise = certificate_table.put({
+							name: CERT_CONFIG_NAME_MAP[config_key + (ca ? '_certificateAuthority' : '_certificate')],
+							uses: ['https', ...(config_key.includes('operations') ? ['operations'] : [])],
+							ciphers: config.ciphers,
+							certificate: readPEM(path),
+							private_key_name,
+							is_authority: ca,
+						});
+					} else {
+						hdb_logger.error('Certificate file not found:', path);
+					}
+				}
+			}
 		}
 	}
 	return promise;
@@ -611,4 +684,106 @@ function updateConfigCert() {
 	}
 
 	config_utils.updateConfigValue(undefined, undefined, new_certs, false, true);
+}
+
+async function getReplicationCAs() {
+	// Add any CAs that might exist in hdb_nodes
+	let ca_certs = new Set();
+	const nodes_table = getDatabases()['system']['hdb_nodes'];
+	for await (const node of nodes_table.search([])) {
+		if (node.ca) {
+			ca_certs.add(node.ca);
+		}
+	}
+	return ca_certs;
+}
+function readPEM(path) {
+	if (path.startsWith('-----BEGIN')) return path;
+	return readFileSync(path, 'utf8');
+}
+function createSNICallback(type) {
+	let secure_contexts = new Map();
+	let cert_quality = new Map();
+	async function updateTLS() {
+		secure_contexts.clear();
+		cert_quality.clear();
+		let ca_certs = new Set();
+		if (type === 'operations-api') {
+			ca_certs = await getReplicationCAs();
+		}
+		let default_context,
+			best_quality = 0;
+		for await (const cert of certificate_table.search([])) {
+			if (type !== 'operations-api' && cert.name.includes('operations')) continue;
+			if (cert.is_authority) {
+				ca_certs.add(cert.certificate);
+				continue;
+			}
+			let quality;
+			if (type === name) quality = 5;
+			else quality = preference[name] ?? 0;
+			const private_key = private_key_paths.get(cert.private_key_name);
+			const certificate = cert.certificate;
+			const certificate_authority = tls.certificateAuthority && readPEM(tls.certificateAuthority);
+			if (!private_key || !certificate) {
+				throw new Error('Missing private key or certificate for secure server');
+			}
+			let secure_context = createSecureContext({
+				ciphers: env.get('tls_ciphers'),
+				ca: certificate_authority,
+				ticketKeys: getTicketKeys(),
+			});
+			// Due to https://github.com/nodejs/node/issues/36655, we need to ensure that we apply the key and cert
+			// *after* the context is created, so that the ciphers are set and allow for lower security ciphers if needed
+			secure_context.context.setCert(certificate);
+			secure_context.context.setKey(private_key, undefined);
+
+			// we store the first 100 bytes of the certificate just for debug logging
+			secure_context.certStart = certificate.subarray(0, 100).toString();
+			if (quality > best_quality) {
+				default_context = secure_context;
+				best_quality = quality;
+			}
+			let cert_parsed = new X509Certificate(certificate);
+			let hostnames =
+				tls.hostname ??
+				tls.host ??
+				tls.hostnames ??
+				tls.hosts ??
+				(cert_parsed.subjectAltName
+					? cert_parsed.subjectAltName.split(',').map((part) => {
+							// the subject alt names looks like 'IP Address:127.0.0.1, DNS:localhost, IP Address:0:0:0:0:0:0:0:1'
+							// so we split on commas and then use the part after the colon as the host name
+							let colon_index = part.indexOf(':');
+							return part.slice(colon_index + 1);
+					  })
+					: // finally we fall back to the common name
+					  [cert_parsed.subject.match(/CN=(.*)/)?.[1]]);
+			if (!Array.isArray(hostnames)) hostnames = [hostnames];
+			for (let hostname of hostnames) {
+				if (hostname) {
+					// we use this certificate if it has a higher quality than the existing one for this hostname
+					let existing_cert_quality = cert_quality.get(hostname) ?? 0;
+					if (quality > existing_cert_quality) {
+						cert_quality.set(hostname, quality);
+						secure_contexts.set(hostname, secure_context);
+					}
+				} else {
+					harper_logger.error('No hostname found for certificate at', tls.certificate);
+				}
+			}
+		}
+	}
+	return (servername, cb) => {
+		// find the matching server name
+		let context = secure_contexts.get(servername);
+		if (context) {
+			harper_logger.debug('Found certificate for', servername, context.certStart);
+			cb(null, context);
+		} else {
+			harper_logger.debug('No certificate found to match', servername, 'using the first certificate');
+			// no matches, return the first one
+			cb(null, default_context);
+		}
+	};
 }
