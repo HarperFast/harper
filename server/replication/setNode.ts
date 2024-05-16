@@ -15,6 +15,10 @@ const validation_schema = Joi.object({
 	url: Joi.string().required(),
 });
 
+/**
+ * Can add, update or remove a node from replication
+ * @param req
+ */
 export async function setNode(req: object) {
 	const validation = validateBySchema(req, validation_schema);
 	if (validation) {

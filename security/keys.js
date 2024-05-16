@@ -28,8 +28,6 @@ const config_utils = require('../config/configUtils');
 
 const { table, getDatabases, databases } = require('../resources/databases');
 
-let certificate_table;
-
 module.exports = {
 	generateKeys,
 	updateConfigCert,
@@ -53,6 +51,15 @@ const CERT_ATTRIBUTES = [
 	{ name: 'localityName', value: 'Denver' },
 	{ name: 'organizationName', value: 'HarperDB, Inc.' },
 ];
+
+let certificate_table;
+function getCertTable() {
+	if (!certificate_table) {
+		certificate_table = getDatabases()['system']['hdb_certificate'];
+	}
+
+	return certificate_table;
+}
 
 /**
  * This function will use preference enums to pick which cert has the highest preference and return that cert.
@@ -100,7 +107,8 @@ async function getCertsKeys(rep_host = undefined) {
 			ca_cert_names: [],
 		};
 
-	for await (const cert of databases.system.hdb_certificate.search([])) {
+	getCertTable();
+	for await (const cert of certificate_table.search([])) {
 		const { name, certificate } = cert;
 		// A connection can take multiple CAs in an array, so we include them all here
 		if (name?.includes?.('ca')) {
@@ -156,6 +164,15 @@ async function getCertsKeys(rep_host = undefined) {
 		}
 	}
 
+	// Add any CAs that might exist in hdb_nodes but not hdb_certificate
+	const nodes_table = getDatabases()['system']['hdb_nodes'];
+	for await (const node of nodes_table.search([])) {
+		if (node.ca && !response.ca_certs.includes(node.ca)) {
+			response.ca_certs.push(node.ca);
+			response.ca_cert_names.push(node.name);
+		}
+	}
+
 	return response;
 }
 
@@ -167,7 +184,7 @@ function loadCertificates() {
 		CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY,
 	];
 
-	if (!certificate_table) certificate_table = getDatabases()['system']['hdb_certificate'];
+	getCertTable();
 
 	let promise;
 	for (let config_key of CERTIFICATE_CONFIGS) {
@@ -403,7 +420,7 @@ async function setCertTable(cert_record) {
 		valid_to: cert.validTo,
 	};
 
-	if (!certificate_table) certificate_table = getDatabases()['system']['hdb_certificate'];
+	getCertTable();
 	await certificate_table.patch(cert_record);
 }
 
@@ -528,7 +545,7 @@ async function generateCertsKeys() {
  * @returns {Promise<void>}
  */
 async function setDefaultCertsKeys() {
-	if (!certificate_table) certificate_table = getDatabases()['system']['hdb_certificate'];
+	getCertTable();
 	const { app, app_private_key, app_ca } = await getCertsKeys();
 	if (!app.name) {
 		await generateCertsKeys();
