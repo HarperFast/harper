@@ -147,6 +147,7 @@ describe('Test hdbServer module', () => {
 				{
 					certificate: '-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE----- ',
 					privateKey: '-----BEGIN RSA PRIVATE KEY-----\n-----END RSA PRIVATE KEY-----',
+					hostnames: ['localhost', 'localhost2'],
 				},
 			]);
 			test_utils.preTestPrep(test_config_settings);
