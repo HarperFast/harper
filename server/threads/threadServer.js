@@ -680,11 +680,24 @@ function createSNICallback(tls_config) {
 		secure_context.certStart = certificate.subarray(0, 100).toString();
 		if (!first_context) first_context = secure_context;
 		let cert_parsed = new X509Certificate(certificate);
-		const hostname = tls.hostname ?? tls.host ?? cert_parsed.subject.match(/CN=(.*)/)?.[1];
-		if (hostname) {
-			if (!secure_contexts.has(hostname)) secure_contexts.set(hostname, secure_context);
-		} else {
-			harper_logger.error('No hostname found for certificate at', tls.certificate);
+		let hostnames =
+			tls.hostname ??
+			tls.host ??
+			tls.hostnames ??
+			tls.hosts ??
+			cert_parsed.subjectAltName.split(',').map((part) => {
+				// the subject alt names looks like 'IP Address:127.0.0.1, DNS:localhost, IP Address:0:0:0:0:0:0:0:1'
+				// so we split on commas and then use the part after the colon as the host name
+				let colon_index = part.indexOf(':');
+				return part.slice(colon_index + 1);
+			});
+		if (!Array.isArray(hostnames)) hostnames = [hostnames];
+		for (let hostname of hostnames) {
+			if (hostname) {
+				if (!secure_contexts.has(hostname)) secure_contexts.set(hostname, secure_context);
+			} else {
+				harper_logger.error('No hostname found for certificate at', tls.certificate);
+			}
 		}
 	}
 	return (servername, cb) => {
