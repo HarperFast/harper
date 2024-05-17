@@ -17,7 +17,7 @@ const { recordAction, recordActionBinary } = require('../../resources/analytics'
 const { Request, createReuseportFd } = require('../serverHelpers/Request');
 const { checkMemoryLimit } = require('../../utility/registration/hdb_license');
 const { CERT_PREFERENCE_APP } = require('../../utility/terms/certificates');
-const { getCertsKeys } = require('../../security/keys');
+const { getCertsKeys, applyTLS } = require('../../security/keys');
 const { X509Certificate } = require('crypto');
 
 const debug_threads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
@@ -388,8 +388,6 @@ function getHTTPServer(port, secure, is_operations_server) {
 		let mtls_required = env.get(server_prefix + '_mtls_required');
 
 		if (secure) {
-			server_prefix = is_operations_server ? 'operationsApi_' : '';
-			let tls_config = env.get(server_prefix + 'tls');
 			// If we are in secure mode, we use HTTP/2 (createSecureServer from http2), with back-compat support
 			// HTTP/1. We do not use HTTP/2 for insecure mode for a few reasons: browsers do not support insecure
 			// HTTP/2. We have seen slower performance with HTTP/2, when used for directly benchmarking. We have
@@ -401,7 +399,6 @@ function getHTTPServer(port, secure, is_operations_server) {
 				requestCert: Boolean(mtls || is_operations_server),
 				ticketKeys: getTicketKeys(),
 				maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
-				SNICallback: createSNICallback(tls_config),
 			});
 		}
 		let license_warning = checkMemoryLimit();
@@ -514,7 +511,6 @@ function getHTTPServer(port, secure, is_operations_server) {
 				}
 			}
 		));
-		if (mtls) server.mtlsConfig = mtls;
 		/* Should we use HTTP2 on upgrade?:
 		http_servers[port].on('upgrade', function upgrade(request, socket, head) {
 			wss.handleUpgrade(request, socket, head, function done(ws) {
@@ -522,33 +518,8 @@ function getHTTPServer(port, secure, is_operations_server) {
 			});
 		});*/
 		if (secure) {
-			const updateCertificates = async () => {
-				const { app_private_key, ops_private_key, ca_certs, app, ops, rep, ca_cert_names } = await getCertsKeys();
-				const private_key = is_operations_server ? ops_private_key : app_private_key;
-				const certificate = is_operations_server ? rep.cert : app.cert;
-				const server_name = is_operations_server ? 'operations' : 'http';
-				harper_logger.info(
-					'Setting certificates for',
-					server_name,
-					'server using certificate named:',
-					is_operations_server ? rep.name : app.name
-				);
-				harper_logger.info(
-					'Setting certificates for',
-					server_name,
-					'server using certificate authorities named:',
-					ca_cert_names,
-					'and all root CAs'
-				);
-
-				server.key = private_key;
-				server.cert = certificate;
-				server.ca = [...ca_certs, ...rootCertificates];
-				server.setSecureContext(server);
-			};
-			databases.system.hdb_certificate.subscribe({
-				listener: updateCertificates,
-			});
+			applyTLS(is_operations_server ? 'operations-api' : 'server', server);
+			if (mtls) server.mtlsConfig = mtls;
 			server.on('secureConnection', (socket) => {
 				if (socket._parent.startTime) recordAction(performance.now() - socket._parent.startTime, 'tls-handshake', port);
 				recordAction(socket.isSessionReused(), 'tls-reused', port);
@@ -598,7 +569,6 @@ function onRequest(listener, options) {
 async function onSocket(listener, options) {
 	let socket_server;
 	if (options.securePort) {
-		const tls_config = Object.assign({}, await getCertsKeys('app'), options.mtls);
 		socket_server = createSecureSocketServer(
 			{
 				rejectUnauthorized: Boolean(options.mtls?.required),
@@ -606,10 +576,10 @@ async function onSocket(listener, options) {
 				noDelay: true, // don't delay for Nagle's algorithm, it is a relic of the past that slows things down: https://brooker.co.za/blog/2024/05/09/nagle.html
 				keepAlive: true,
 				keepAliveInitialDelay: 600, // 10 minute keep-alive, want to be proactive about closing unused connections
-				SNICallback: createSNICallback(tls_config),
 			},
 			listener
 		);
+		applyTLS('server', socket_server, options.mtls);
 		SERVERS[options.securePort] = socket_server;
 	}
 	if (options.port) {

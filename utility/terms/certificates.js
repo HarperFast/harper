@@ -55,7 +55,7 @@ const CA_CERT_PREFERENCE_APP = {
 	[CERT_NAME['DEFAULT-CA']]: 1,
 };
 
-module.exports = {
+Object.assign(exports, {
 	CERTIFICATE_PEM_NAME,
 	PRIVATEKEY_PEM_NAME,
 	CA_PEM_NAME,
@@ -66,4 +66,5 @@ module.exports = {
 	CERT_PREFERENCE_REP,
 	CA_CERT_PREFERENCE_OPS,
 	CA_CERT_PREFERENCE_APP,
-};
+	CERTIFICATE_VALUES,
+});
