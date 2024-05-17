@@ -74,7 +74,8 @@ jobs:
       - name: 'Get values'
         id: get-values
         env:
-          tag: ${{ github.ref }}
+          #tag: ${{ github.ref }}
+          tag: 'refs/*/release_4.3.13-alpha.1'
         run: |
           #!/usr/bin/env bash
           
