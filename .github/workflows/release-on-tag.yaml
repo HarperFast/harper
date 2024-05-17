@@ -525,7 +525,6 @@ jobs:
           name: offline-harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz
           path: harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz
       - name: Publish to s3
-        if: ${{ inputs.dryrun == false }}
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
