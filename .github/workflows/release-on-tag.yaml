@@ -537,7 +537,7 @@ jobs:
           
           # debug
           file ./harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz
-          ls ./harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz
+          ls -al ./harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz
           
           # if dryrun, just echo out the commands
           aws_cmd='echo aws'
