@@ -446,7 +446,7 @@ jobs:
           context: .
           file: 'utility/Docker/Dockerfile'
           platforms: 'linux/amd64,linux/arm64'
-          push: true
+          push: ${{ inputs.dryrun == false && true || false }}
           tags: ${{ steps.meta-standard.outputs.tags }}
           build-args: |
             HARPERDB_VERSION=${{ needs.build.outputs.harperdbVersion }}
@@ -465,7 +465,7 @@ jobs:
           context: .
           file: 'utility/Docker/Dockerfile-openshift'
           platforms: 'linux/amd64,linux/arm64'
-          push: true
+          push: ${{ inputs.dryrun == false && true || false }}
           tags: ${{ steps.meta-openshift.outputs.tags }}
           build-args: |
             HARPERDB_VERSION=${{ needs.build.outputs.harperdbVersion }}
@@ -490,18 +490,23 @@ jobs:
           container_registry: 'registry.hub.docker.com'
           container_image: 'harperdb/harperdb-openshift'
           container_tag: ${{ needs.build.outputs.harperdbVersion }}
+          dryrun: ${{ inputs.dryrun }}
         run: |
           #!/usr/bin/env bash
-          set -euo pipefail
+          set -xeuo pipefail
 
           echo "writing docker-config.json for submission"
           echo "${REDHAT_DOCKERCONFIG}" | jq '.' > docker-config.json
+          
+          # dryrun is handled by managing the '--submit' flag
+          dryrun=''
+          [ "${dryrun}" == "false" ] && dryrun='--submit'
 
           preflight check container "${container_registry}/${container_image}:${container_tag}" \
             --pyxis-api-token="${PYXIS_API_TOKEN}" \
             --certification-project-id="${CERTIFICATION_PROJECT_ID}" \
             --docker-config ./docker-config.json \
-            --submit >> "${GITHUB_STEP_SUMMARY}"
+            "${dryrun}" >> "${GITHUB_STEP_SUMMARY}"
 
   #############################################################
   #  Release offline installer to
