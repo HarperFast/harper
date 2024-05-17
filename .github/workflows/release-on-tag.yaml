@@ -534,11 +534,6 @@ jobs:
           #!/bin/bash
           set -e
           
-          # debug
-          file ./harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz
-          ls -al ./harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz
-          sha256sum ./harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz
-          
           # if dryrun, just echo out the commands
           aws_cmd='echo aws'
           [ "${dryrun}" == "false" ] && aws_cmd='aws'
