@@ -493,7 +493,7 @@ jobs:
           dryrun: ${{ inputs.dryrun }}
         run: |
           #!/usr/bin/env bash
-          set -xeuo pipefail
+          set -euo pipefail
 
           echo "writing docker-config.json for submission"
           echo "${REDHAT_DOCKERCONFIG}" | jq '.' > docker-config.json
@@ -523,7 +523,6 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: offline-harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz
-          path: harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz
       - name: Publish to s3
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
@@ -538,6 +537,7 @@ jobs:
           # debug
           file ./harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz
           ls -al ./harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz
+          sha256sum ./harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz
           
           # if dryrun, just echo out the commands
           aws_cmd='echo aws'
