@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       dryrun:
-        type: boolean
+        type: string
         description: "Do all the things except for actually publishing"
-        default: true
+        default: "true"
 
 jobs:
   ############################################
