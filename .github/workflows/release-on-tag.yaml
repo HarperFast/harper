@@ -9,7 +9,7 @@ on:
       dryrun:
         type: boolean
         description: "Do all the things except for actually publishing"
-        default: "true"
+        default: true
 
 jobs:
   ############################################
@@ -506,7 +506,7 @@ jobs:
             --pyxis-api-token="${PYXIS_API_TOKEN}" \
             --certification-project-id="${CERTIFICATION_PROJECT_ID}" \
             --docker-config ./docker-config.json \
-            "${dryrun}" >> "${GITHUB_STEP_SUMMARY}"
+            ${submit} >> "${GITHUB_STEP_SUMMARY}"
 
   #############################################################
   #  Release offline installer to
@@ -531,15 +531,24 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: us-east-1
           updateLatest: ${{ needs.meta.outputs.dockerhub_tag_latest }}
+          dryrun: ${{ inputs.dryrun }}
         run: |
           #!/bin/bash
-          set -ex
-          aws s3 cp ./harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz s3://products-harperdb-io
+          set -e
+          
+          # debug
+          file ./harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz
+          
+          # if dryrun, just echo out the commands
+          aws_cmd='echo aws'
+          [ "${dryrun}" == "false" ] && aws_cmd='aws'
+          
+          ${aws_cmd} s3 cp ./harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz s3://products-harperdb-io
 
           if [[ ${updateLatest} == "true" ]]
           then
-            aws s3 rm --recursive s3://products-harperdb-io/latest
-            aws s3 cp ./harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz s3://products-harperdb-io/latest/
+            ${aws_cmd} s3 rm --recursive s3://products-harperdb-io/latest
+            ${aws_cmd} s3 cp ./harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz s3://products-harperdb-io/latest/
           fi
 
   #################################
