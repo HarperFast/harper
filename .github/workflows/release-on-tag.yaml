@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       dryrun:
-        type: string
+        type: boolean
         description: "Do all the things except for actually publishing"
         default: "true"
 
@@ -499,8 +499,8 @@ jobs:
           echo "${REDHAT_DOCKERCONFIG}" | jq '.' > docker-config.json
           
           # dryrun is handled by managing the '--submit' flag
-          dryrun=''
-          [ "${dryrun}" == "false" ] && dryrun='--submit'
+          submit=''
+          [ "${dryrun}" == "false" ] && submit='--submit'
 
           preflight check container "${container_registry}/${container_image}:${container_tag}" \
             --pyxis-api-token="${PYXIS_API_TOKEN}" \
