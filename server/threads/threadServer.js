@@ -172,7 +172,6 @@ function startServers() {
 		}));
 }
 function listenOnPorts() {
-	if (!createReuseportFd) return;
 	const listening = [];
 	for (let port in SERVERS) {
 		const server = SERVERS[port];
@@ -192,15 +191,20 @@ function listenOnPorts() {
 			);
 			continue;
 		}
-
+		let listen_on;
 		let fd;
 		try {
 			const last_colon = port.lastIndexOf(':');
 			if (last_colon > 0)
-				// if there is a colon, we assume it is a host:port pair, and then strip brackets as that is a common way to
-				// specify an IPv6 address
-				fd = createReuseportFd(+port.slice(last_colon + 1).replace(/[\[\]]/g, ''), port.slice(0, last_colon));
-			else fd = createReuseportFd(+port, '::');
+			// if there is a colon, we assume it is a host:port pair, and then strip brackets as that is a common way to
+			// specify an IPv6 address
+				if (createReuseportFd)
+					listen_on = { fd: createReuseportFd(+port.slice(last_colon + 1).replace(/[\[\]]/g, ''), port.slice(0, last_colon)) };
+				else
+					listen_on = { host: +port.slice(last_colon + 1).replace(/[\[\]]/g, ''), port: port.slice(0, last_colon)};
+			else if (createReuseportFd)
+				listen_on = { fd: createReuseportFd(+port, '::') };
+			else listen_on = { port };
 		} catch (error) {
 			console.error(`Unable to bind to port ${port}`, error);
 			continue;
@@ -208,7 +212,7 @@ function listenOnPorts() {
 		listening.push(
 			new Promise((resolve, reject) => {
 				server
-					.listen({ fd }, () => {
+					.listen(listen_on, () => {
 						resolve();
 						harper_logger.trace('Listening on port ' + port, threadId);
 					})
