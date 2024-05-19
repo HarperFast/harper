@@ -280,7 +280,8 @@ function loadCertificates() {
 						}
 						let private_key_name = config.privateKey && basename(config.privateKey);
 						private_keys.set(private_key_name, readPEM(config.privateKey)); // don't expose the path, just the name
-
+						let hostnames = config.hostname ?? config.hostnames ?? config.host ?? config.hosts;
+						if (hostnames && !Array.isArray(hostnames)) hostnames = [hostnames];
 						promise = certificate_table.put({
 							name: CERT_CONFIG_NAME_MAP[config_key + (ca ? '_certificateAuthority' : '_certificate')],
 							uses: ['https', ...(config_key.includes('operations') ? ['operations'] : [])],
@@ -288,6 +289,7 @@ function loadCertificates() {
 							certificate: readPEM(path),
 							private_key_name,
 							is_authority: ca,
+							hostnames,
 						});
 					} else {
 						hdb_logger.error('Certificate file not found:', path);
@@ -750,13 +752,11 @@ function applyTLS(type, server, options) {
 						secure_contexts.default = secure_context;
 						best_quality = quality;
 						if (server) server.setSecureContext(secure_context);
+						harper_logger.info('Applying default TLS', secure_context.name);
 					}
 					let cert_parsed = new X509Certificate(certificate);
 					let hostnames =
-						tls.hostname ??
-						tls.host ??
-						tls.hostnames ??
-						tls.hosts ??
+						cert.hostnames ??
 						(cert_parsed.subjectAltName
 							? cert_parsed.subjectAltName.split(',').map((part) => {
 									// the subject alt names looks like 'IP Address:127.0.0.1, DNS:localhost, IP Address:0:0:0:0:0:0:0:1'
@@ -776,6 +776,7 @@ function applyTLS(type, server, options) {
 									context: secure_context,
 									quality,
 								});
+								harper_logger.info('Applying TLS for host',hostname, secure_context.name);
 								server.addContext(hostname, secure_context);
 							}
 						} else {
