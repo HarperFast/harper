@@ -172,6 +172,7 @@ function startServers() {
 		}));
 }
 function listenOnPorts() {
+	if (!createReuseportFd) return;
 	const listening = [];
 	for (let port in SERVERS) {
 		const server = SERVERS[port];

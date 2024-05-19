@@ -724,11 +724,17 @@ function applyTLS(type, server, options) {
 					if (type !== 'operations-api' && cert.name.includes('operations')) continue;
 					if (cert.is_authority) {
 						ca_certs.add(cert.certificate);
+					}
+				}
+
+				for await (const cert of certificate_table.search([])) {
+					if (type !== 'operations-api' && cert.name.includes('operations')) continue;
+					if (cert.is_authority) {
 						continue;
 					}
 					let quality;
 					if (type === cert.name) quality = 5;
-					else quality = preference[name] ?? 0;
+					else quality = CERT_PREFERENCE_APP[cert.name] ?? 0;
 					const private_key = private_keys.get(cert.private_key_name);
 					const certificate = cert.certificate;
 					if (!private_key || !certificate) {
@@ -751,7 +757,7 @@ function applyTLS(type, server, options) {
 						// we use this certificate as the default if it has a higher quality than the existing one
 						secure_contexts.default = secure_context;
 						best_quality = quality;
-						if (server) server.setSecureContext(secure_context);
+						server?.setSecureContext(secure_context);
 						harper_logger.info('Applying default TLS', secure_context.name);
 					}
 					let cert_parsed = new X509Certificate(certificate);
@@ -777,7 +783,7 @@ function applyTLS(type, server, options) {
 									quality,
 								});
 								harper_logger.info('Applying TLS for host',hostname, secure_context.name);
-								server.addContext(hostname, secure_context);
+								server?.addContext(hostname, secure_context);
 							}
 						} else {
 							harper_logger.error('No hostname found for certificate at', tls.certificate);
