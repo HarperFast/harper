@@ -5,7 +5,7 @@ import { get } from '../../utility/environment/environmentManager';
 import { OPERATIONS_ENUM, CONFIG_PARAMS, LICENSE_KEY_DIR_NAME } from '../../utility/hdbTerms';
 import { CERTIFICATE_PEM_NAME, CA_PEM_NAME, CERT_NAME } from '../../utility/terms/certificates';
 import { ensureNode, getHDBNodeTable } from './subscriptionManager';
-import { sendOperationToNode, urlToNodeName } from './replicator';
+import { getThisNodeUrl, sendOperationToNode, urlToNodeName } from './replicator';
 import * as hdb_logger from '../../utility/logging/harper_logger';
 import { handleHDBError, hdb_errors } from '../../utility/errors/hdbError.js';
 const { handleHDBError, hdb_errors } = require('../../utility/errors/hdbError.js');
@@ -42,7 +42,7 @@ export async function setNode(req: object) {
 	}
 
 	// TODO: test adding a node to an instance without previous replication config.
-	const this_url = get(CONFIG_PARAMS.REPLICATION_URL);
+	const this_url = getThisNodeUrl();
 	if (this_url == null) {
 		throw new Error('replication url is missing from harperdb-config.yaml');
 	}
@@ -99,6 +99,7 @@ export async function setNode(req: object) {
 			name: `issued by ${urlToNodeName(url)}`,
 			uses: ['https', 'operations', 'wss'],
 			certificate: sign_res.certificate,
+			private_key_name: 'privateKey.pem', // TODO: this needs to be the name of the private key file that was used for CSR
 			is_authority: false,
 		});
 	}

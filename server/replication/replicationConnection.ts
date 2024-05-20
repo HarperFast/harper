@@ -23,7 +23,7 @@ import { disconnectedFromNode, connectedToNode, getHDBNodeTable } from './subscr
 import { EventEmitter } from 'events';
 import { rootCertificates } from 'node:tls';
 import { broadcast } from '../../server/threads/manageThreads';
-import { getCertsKeys } from '../../security/keys';
+import { applyTLS } from '../../security/keys';
 import * as https from 'node:https';
 import * as tls from 'node:tls';
 //import { operation } from '../../server/serverHelpers/serverUtilities';
@@ -48,18 +48,20 @@ const SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY = 300;
 const COMMITTED_UPDATE_DELAY = 2;
 const PING_INTERVAL = 300000;
 export let awaiting_response = new Map();
+let secure_contexts;
 /**
  * Handles reconnection, and requesting catch-up
  */
 
 export async function createWebSocket(url, options?) {
 	const { authorization, rejectUnauthorized } = options || {};
-	const { app_private_key, rep, ca_certs } = await getCertsKeys(new URL(url).hostname);
-	let cert;
+	if (!secure_contexts) secure_contexts = await applyTLS('operations-api');
+	let node_name = getThisNodeName();
+	let secure_context;
 	if (url.includes('wss://')) {
-		cert = rep.cert;
-		logger.info('Creating web socket for URL', url, 'with certificate named:', rep.name);
-		if (!cert && rejectUnauthorized !== false) {
+		secure_context = secure_contexts.get(node_name)?.context ?? secure_contexts.default;
+		if (secure_context) logger.info('Creating web socket for URL', url, 'with certificate named:', secure_context.name);
+		if (!secure_context && rejectUnauthorized !== false) {
 			throw new Error('Unable to find a valid certificate to use for replication to connect to ' + url);
 		}
 	}
@@ -73,18 +75,12 @@ export async function createWebSocket(url, options?) {
 			rejectUnauthorized: false,
 		});
 	}
-	let node_name = getThisNodeName();
 	return new WebSocket(url, 'harperdb-replication-v1', {
 		headers,
-		key: app_private_key,
-		ciphers: env.get('tls_ciphers'),
 		rejectUnauthorized: true,
 		localAddress: node_name?.startsWith('127.0') ? node_name : undefined,
 		noDelay: true,
-		cert,
-		// for client connections, we can add our certificate authority to the root certificates
-		// to authorize the server certificate (both public valid certificates and privately signed certificates are acceptable)
-		ca: [...rootCertificates, ...ca_certs],
+		secureContext: secure_context,
 		// we set this very high (2x times the v22 default) because it performs better
 		highWaterMark: 128 * 1024,
 	});
@@ -260,7 +256,7 @@ export function replicateOverWS(ws, options, authorization) {
 							if (remote_node_name !== data) {
 								logger.error(
 									connection_id,
-									`Node name mismatch, expecting to connect to ${remote_node_name}, but server reported name as ${data}, disconnecting`
+									`Node name mismatch, expecting to connect to ${remote_node_name}, but peer reported name as ${data}, disconnecting`
 								);
 								ws.send(encode([DISCONNECT]));
 								close(1008, 'Node name mismatch');

@@ -139,6 +139,23 @@ describe('Test hdbServer module', () => {
 			server.close();
 			env.setProperty('operationsApi_network_securePort', null);
 		});
+		it('should build HTTPS server when https_enabled set to true and multiple tls', async () => {
+			const test_config_settings = { operationsApi_network_securePort: 9927 };
+			env.setProperty('operationsApi_network_securePort', 9927);
+			// invalid certificate and private key, but verify that they are read
+			env.setProperty('operationsApi_tls', [
+				{
+					certificate: '-----BEGIN CERTIFICATE-----\n-----END CERTIFICATE----- ',
+					privateKey: '-----BEGIN RSA PRIVATE KEY-----\n-----END RSA PRIVATE KEY-----',
+					hostnames: ['localhost', 'localhost2'],
+				},
+			]);
+			test_utils.preTestPrep(test_config_settings);
+
+			const hdbServer = await require(HDB_SERVER_PATH);
+			let caught_error;
+			hdbServer.hdbServer({ securePort: 9927 }); // need to use explicit ports
+		});
 
 		it('should build HTTP server when https_enabled set to false', async () => {
 			const test_config_settings = { https_enabled: false };

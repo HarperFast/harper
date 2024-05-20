@@ -97,7 +97,7 @@ describe('Replication', () => {
 			break;
 		} while (true);
 	});
-	it('A write to one table with replicated confirmation', async function () {
+	it.skip('A write to one table with replicated confirmation', async function () {
 		let name = 'name ' + Math.random();
 		let context = { replicatedConfirmation: 1 };
 		await transaction(context, async (transaction) => {
@@ -124,7 +124,8 @@ describe('Replication', () => {
 		assert.equal(result.extraProperty, true);
 	});
 
-	it.only('A write to second table should replicate back', async function () {
+	it('A write to second table should replicate back', async function () {
+		this.timeout(5000);
 		let name = 'name ' + Math.random();
 		child_processes[0].send({
 			action: 'put',

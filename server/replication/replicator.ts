@@ -190,8 +190,10 @@ export function setReplicator(db_name, table, options) {
 				// incoming TCP connection
 				return true;
 			}
+			static available(id) {
+				return false; // conditionally set this is partial records
+			}
 			get(query) {
-				return;
 				const entry = table.primaryStore.getEntry(this[ID_PROPERTY]);
 				if (entry) {
 					const residency_id = entry.residencyId;
@@ -284,6 +286,8 @@ export function getThisNodeName() {
 			env.get('replication_nodename') ??
 			urlToNodeName(env.get('replication_url')) ??
 			getCommonNameFromCert() ??
+			getHostFromListeningPort('operationsapi_network_secureport') ??
+			getHostFromListeningPort('operationsapi_network_port') ??
 			'127.0.0.1')
 	);
 }
@@ -292,6 +296,16 @@ Object.defineProperty(server, 'nodeName', {
 		return getThisNodeName();
 	},
 });
+function getHostFromListeningPort(key) {
+	let port = env.get(key);
+	const last_colon = port?.lastIndexOf(':');
+	if (last_colon > 0) return port.slice(0, last_colon);
+}
+function getPortFromListeningPort(key) {
+	let port = env.get(key);
+	const last_colon = port?.lastIndexOf(':');
+	if (last_colon > 0) return +port.slice(last_colon + 1).replace(/[\[\]]/g, '');
+}
 export function getThisNodeId(audit_store: any) {
 	return exportIdMapping(audit_store)?.[getThisNodeName()];
 }
@@ -300,7 +314,13 @@ server.replication = {
 	exportIdMapping,
 };
 export function getThisNodeUrl() {
-	return env.get('replication_url');
+	let url = env.get('replication_url');
+	if (url) return url;
+	let node_name = getThisNodeName();
+	let port = getPortFromListeningPort('operationsapi_network_port');
+	if (port) return `ws://${node_name}:${port}`;
+	port = getPortFromListeningPort('operationsapi_network_secureport');
+	if (port) return `wss://${node_name}:${port}`;
 }
 export function urlToNodeName(node_url) {
 	if (node_url) return new URL(node_url).hostname; // this the part of the URL that is the node name, as we want it to match common name in the certificate

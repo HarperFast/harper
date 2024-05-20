@@ -10,31 +10,21 @@ const env = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 const { server } = require('../Server');
 const { WebSocketServer } = require('ws');
-const { createServer: createSecureSocketServer } = require('tls');
+let { createSecureContext, createServer: createSecureSocketServer, rootCertificates } = require('node:tls');
 const { getTicketKeys, restartNumber, getWorkerIndex } = require('./manageThreads');
 const { Headers, appendHeader } = require('../serverHelpers/Headers');
 const { recordAction, recordActionBinary } = require('../../resources/analytics');
 const { Request, createReuseportFd } = require('../serverHelpers/Request');
 const { checkMemoryLimit } = require('../../utility/registration/hdb_license');
-const { CERT_PREFERENCE_APP } = require('../../utility/terms/certificates');
+const { CERT_PREFERENCE_APP, CERTIFICATE_VALUES } = require('../../utility/terms/certificates');
+const { getCertsKeys, applyTLS } = require('../../security/keys');
+const { X509Certificate } = require('crypto');
 // this horifying hack is brought to you by https://github.com/nodejs/node/issues/36655
 const tls = require('tls');
-const { rootCertificates } = require('node:tls');
-const { getCertsKeys } = require('../../security/keys');
-
 const origCreateSecureContext = tls.createSecureContext;
 tls.createSecureContext = function (options) {
-	if (!options.cert || !options.key) {
-		return origCreateSecureContext(options);
-	}
-
-	let lessOptions = { ...options };
-	delete lessOptions.key;
-	delete lessOptions.cert;
-	let ctx = origCreateSecureContext(lessOptions);
-	ctx.context.setCert(options.cert);
-	ctx.context.setKey(options.key, undefined);
-	return ctx;
+	if (options.instantiatedContext) return options.instantiatedContext;
+	return origCreateSecureContext(options);
 };
 
 const debug_threads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
@@ -208,15 +198,20 @@ function listenOnPorts() {
 			);
 			continue;
 		}
-
+		let listen_on;
 		let fd;
 		try {
 			const last_colon = port.lastIndexOf(':');
 			if (last_colon > 0)
-				// if there is a colon, we assume it is a host:port pair, and then strip brackets as that is a common way to
-				// specify an IPv6 address
-				fd = createReuseportFd(+port.slice(last_colon + 1).replace(/[\[\]]/g, ''), port.slice(0, last_colon));
-			else fd = createReuseportFd(+port, '::');
+				if (createReuseportFd)
+					// if there is a colon, we assume it is a host:port pair, and then strip brackets as that is a common way to
+					// specify an IPv6 address
+					listen_on = {
+						fd: createReuseportFd(+port.slice(last_colon + 1).replace(/[\[\]]/g, ''), port.slice(0, last_colon)),
+					};
+				else listen_on = { host: +port.slice(last_colon + 1).replace(/[\[\]]/g, ''), port: port.slice(0, last_colon) };
+			else if (createReuseportFd) listen_on = { fd: createReuseportFd(+port, '::') };
+			else listen_on = { port };
 		} catch (error) {
 			console.error(`Unable to bind to port ${port}`, error);
 			continue;
@@ -224,7 +219,7 @@ function listenOnPorts() {
 		listening.push(
 			new Promise((resolve, reject) => {
 				server
-					.listen({ fd }, () => {
+					.listen(listen_on, () => {
 						resolve();
 						harper_logger.trace('Listening on port ' + port, threadId);
 					})
@@ -412,7 +407,6 @@ function getHTTPServer(port, secure, is_operations_server) {
 			// TODO: Add an option to not accept the root certificates, and only use the CA
 			Object.assign(options, {
 				allowHTTP1: true,
-				ciphers: env.get('tls_ciphers'),
 				rejectUnauthorized: Boolean(mtls_required),
 				requestCert: Boolean(mtls || is_operations_server),
 				ticketKeys: getTicketKeys(),
@@ -529,7 +523,6 @@ function getHTTPServer(port, secure, is_operations_server) {
 				}
 			}
 		));
-		if (mtls) server.mtlsConfig = mtls;
 		/* Should we use HTTP2 on upgrade?:
 		http_servers[port].on('upgrade', function upgrade(request, socket, head) {
 			wss.handleUpgrade(request, socket, head, function done(ws) {
@@ -537,33 +530,10 @@ function getHTTPServer(port, secure, is_operations_server) {
 			});
 		});*/
 		if (secure) {
-			const updateCertificates = async () => {
-				const { app_private_key, ops_private_key, ca_certs, app, ops, rep, ca_cert_names } = await getCertsKeys();
-				const private_key = is_operations_server ? ops_private_key : app_private_key;
-				const certificate = is_operations_server ? rep.cert : app.cert;
-				const server_name = is_operations_server ? 'operations' : 'http';
-				harper_logger.info(
-					'Setting certificates for',
-					server_name,
-					'server using certificate named:',
-					is_operations_server ? rep.name : app.name
-				);
-				harper_logger.info(
-					'Setting certificates for',
-					server_name,
-					'server using certificate authorities named:',
-					ca_cert_names,
-					'and all root CAs'
-				);
-
-				server.key = private_key;
-				server.cert = certificate;
-				server.ca = [...ca_certs, ...rootCertificates];
-				server.setSecureContext(server);
-			};
-			databases.system.hdb_certificate.subscribe({
-				listener: updateCertificates,
-			});
+			if (!server.ports) server.ports = [];
+			server.ports.push(port);
+			applyTLS(is_operations_server ? 'operations-api' : 'server', server);
+			if (mtls) server.mtlsConfig = mtls;
 			server.on('secureConnection', (socket) => {
 				if (socket._parent.startTime) recordAction(performance.now() - socket._parent.startTime, 'tls-handshake', port);
 				recordAction(socket.isSessionReused(), 'tls-reused', port);
@@ -613,16 +583,8 @@ function onRequest(listener, options) {
 async function onSocket(listener, options) {
 	let socket_server;
 	if (options.securePort) {
-		const { app_private_key, app, app_ca } = await getCertsKeys();
-		const certificate_authority_path = options.mtls?.certificateAuthority || app_ca.cert;
-
 		socket_server = createSecureSocketServer(
 			{
-				ciphers: env.get('tls_ciphers'),
-				key: app_private_key,
-				// if they have a CA, we append it, so it is included
-				cert: app.cert,
-				ca: certificate_authority_path,
 				rejectUnauthorized: Boolean(options.mtls?.required),
 				requestCert: Boolean(options.mtls),
 				noDelay: true, // don't delay for Nagle's algorithm, it is a relic of the past that slows things down: https://brooker.co.za/blog/2024/05/09/nagle.html
@@ -631,6 +593,7 @@ async function onSocket(listener, options) {
 			},
 			listener
 		);
+		applyTLS('server', socket_server, options.mtls);
 		SERVERS[options.securePort] = socket_server;
 	}
 	if (options.port) {
