@@ -158,6 +158,7 @@ export function makeTable(options) {
 		static databaseName = database_name;
 		static attributes = attributes;
 		static replicate = replicate;
+		static sealed = sealed;
 		static expirationTimer;
 		static createdTimeProperty = created_time_property;
 		static updatedTimeProperty = updated_time_property;
