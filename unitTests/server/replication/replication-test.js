@@ -97,7 +97,7 @@ describe('Replication', () => {
 			break;
 		} while (true);
 	});
-	it.skip('A write to one table with replicated confirmation', async function () {
+	it('A write to one table with replicated confirmation', async function () {
 		let name = 'name ' + Math.random();
 		let context = { replicatedConfirmation: 1 };
 		await transaction(context, async (transaction) => {

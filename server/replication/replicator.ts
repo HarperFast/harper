@@ -298,13 +298,14 @@ Object.defineProperty(server, 'nodeName', {
 });
 function getHostFromListeningPort(key) {
 	let port = env.get(key);
-	const last_colon = port?.lastIndexOf(':');
+	const last_colon = port?.lastIndexOf?.(':');
 	if (last_colon > 0) return port.slice(0, last_colon);
 }
 function getPortFromListeningPort(key) {
 	let port = env.get(key);
-	const last_colon = port?.lastIndexOf(':');
+	const last_colon = port?.lastIndexOf?.(':');
 	if (last_colon > 0) return +port.slice(last_colon + 1).replace(/[\[\]]/g, '');
+	return +port;
 }
 export function getThisNodeId(audit_store: any) {
 	return exportIdMapping(audit_store)?.[getThisNodeName()];
