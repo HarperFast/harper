@@ -43,7 +43,7 @@ Object.assign(exports, {
 	applyTLS,
 });
 
-const { urlToNodeName } = require('../server/replication/replicator');
+const { urlToNodeName, getThisNodeUrl } = require('../server/replication/replicator');
 const { ensureNode } = require('../server/replication/subscriptionManager');
 const { readFileSync } = require('fs');
 const { createSecureContext, rootCertificates } = require('node:tls');
@@ -269,6 +269,10 @@ function loadCertificates() {
 				configs = [configs];
 			}
 			for (let config of configs) {
+				let private_key_name = config.privateKey && basename(config.privateKey);
+				if (private_key_name && fs.existsSync(config.privateKey))
+					private_keys.set(private_key_name, readPEM(config.privateKey)); // don't
+				// expose the path, just the name
 				let path = config[ca ? 'certificateAuthority' : 'certificate'];
 				if (path) {
 					if (fs.existsSync(path)) {
@@ -278,8 +282,6 @@ function loadCertificates() {
 							// load it or tempted to use it anywhere (except NATS can directly load it)
 							continue;
 						}
-						let private_key_name = config.privateKey && basename(config.privateKey);
-						private_keys.set(private_key_name, readPEM(config.privateKey)); // don't expose the path, just the name
 						let hostnames = config.hostname ?? config.hostnames ?? config.host ?? config.hosts;
 						if (hostnames && !Array.isArray(hostnames)) hostnames = [hostnames];
 						promise = certificate_table.put({
@@ -302,7 +304,7 @@ function loadCertificates() {
 }
 
 function getHost() {
-	let rep_url = env_manager.get(hdb_terms.CONFIG_PARAMS.REPLICATION_URL);
+	let rep_url = getThisNodeUrl();
 	if (rep_url == null) {
 		const host = CERT_DOMAINS[0];
 		hdb_logger.info('replication url is missing from harperdb-config.yaml, using default host' + host);
@@ -475,6 +477,7 @@ async function createCertificateTable(cert, ca_cert) {
 		name: certificates_terms.CERT_NAME.DEFAULT,
 		uses: ['https', 'operations', 'wss'],
 		certificate: cert,
+		private_key_name: 'privateKey.pem',
 		is_authority: false,
 	});
 
@@ -482,6 +485,7 @@ async function createCertificateTable(cert, ca_cert) {
 		name: certificates_terms.CERT_NAME.CA,
 		uses: ['https', 'operations', 'wss'],
 		certificate: ca_cert,
+		private_key_name: 'privateKey.pem',
 		is_authority: true,
 	});
 }
@@ -728,37 +732,46 @@ function applyTLS(type, server, options) {
 				}
 
 				for await (const cert of certificate_table.search([])) {
-					if (type !== 'operations-api' && cert.name.includes('operations')) continue;
+					let is_operations = type === 'operations-api';
+					if (!is_operations && cert.name.includes('operations')) continue;
 					if (cert.is_authority) {
 						continue;
 					}
 					let quality;
 					if (type === cert.name) quality = 5;
-					else quality = CERT_PREFERENCE_APP[cert.name] ?? 0;
+					else quality = CERT_PREFERENCE_APP[cert.name] ?? (is_operations ? 4 : 0);
 					const private_key = private_keys.get(cert.private_key_name);
 					const certificate = cert.certificate;
 					if (!private_key || !certificate) {
 						throw new Error('Missing private key or certificate for secure server');
 					}
-					let secure_context = createSecureContext({
+					const secure_options = {
 						ciphers: env.get('tls_ciphers'),
 						ca: [...rootCertificates, ...ca_certs],
 						ticketKeys: getTicketKeys(),
-					});
+					};
+					let secure_context = createSecureContext(secure_options);
 					secure_context.name = cert.name;
 					// Due to https://github.com/nodejs/node/issues/36655, we need to ensure that we apply the key and cert
 					// *after* the context is created, so that the ciphers are set and allow for lower security ciphers if needed
+					// We also maintain the instantiated context because for the default context we need to set it on the server,
+					// but since we have already built the context, we can directly provide it to the server
 					secure_context.context.setCert(certificate);
 					secure_context.context.setKey(private_key, undefined);
+					secure_options.key = private_key;
+					secure_options.cert = certificate;
+					secure_options.instantiatedContext = secure_context;
 
 					// we store the first 100 bytes of the certificate just for debug logging
-					secure_context.certStart = certificate.toString();
+					secure_context.certStart = certificate.toString().slice(0, 100);
 					if (quality > best_quality) {
 						// we use this certificate as the default if it has a higher quality than the existing one
 						secure_contexts.default = secure_context;
 						best_quality = quality;
-						server?.setSecureContext(secure_context);
-						harper_logger.info('Applying default TLS', secure_context.name);
+						if (server) {
+							server.setSecureContext(secure_options);
+							harper_logger.info('Applying default TLS', secure_context.name, 'for', server.ports);
+						}
 					}
 					let cert_parsed = new X509Certificate(certificate);
 					let hostnames =
@@ -782,8 +795,10 @@ function applyTLS(type, server, options) {
 									context: secure_context,
 									quality,
 								});
-								harper_logger.info('Applying TLS for host',hostname, secure_context.name);
-								server?.addContext(hostname, secure_context);
+								if (server) {
+									harper_logger.info('Applying TLS for host', hostname, secure_context.name, 'for', server.ports);
+									//server?.addContext(hostname, secure_context);
+								}
 							}
 						} else {
 							harper_logger.error('No hostname found for certificate at', tls.certificate);

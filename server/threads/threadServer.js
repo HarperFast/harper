@@ -16,9 +16,16 @@ const { Headers, appendHeader } = require('../serverHelpers/Headers');
 const { recordAction, recordActionBinary } = require('../../resources/analytics');
 const { Request, createReuseportFd } = require('../serverHelpers/Request');
 const { checkMemoryLimit } = require('../../utility/registration/hdb_license');
-const { CERT_PREFERENCE_APP } = require('../../utility/terms/certificates');
+const { CERT_PREFERENCE_APP, CERTIFICATE_VALUES } = require('../../utility/terms/certificates');
 const { getCertsKeys, applyTLS } = require('../../security/keys');
 const { X509Certificate } = require('crypto');
+// this horifying hack is brought to you by https://github.com/nodejs/node/issues/36655
+const tls = require('tls');
+const origCreateSecureContext = tls.createSecureContext;
+tls.createSecureContext = function (options) {
+	if (options.instantiatedContext) return options.instantiatedContext;
+	return origCreateSecureContext(options);
+};
 
 const debug_threads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
 if (debug_threads) {
@@ -196,14 +203,14 @@ function listenOnPorts() {
 		try {
 			const last_colon = port.lastIndexOf(':');
 			if (last_colon > 0)
-			// if there is a colon, we assume it is a host:port pair, and then strip brackets as that is a common way to
-			// specify an IPv6 address
 				if (createReuseportFd)
-					listen_on = { fd: createReuseportFd(+port.slice(last_colon + 1).replace(/[\[\]]/g, ''), port.slice(0, last_colon)) };
-				else
-					listen_on = { host: +port.slice(last_colon + 1).replace(/[\[\]]/g, ''), port: port.slice(0, last_colon)};
-			else if (createReuseportFd)
-				listen_on = { fd: createReuseportFd(+port, '::') };
+					// if there is a colon, we assume it is a host:port pair, and then strip brackets as that is a common way to
+					// specify an IPv6 address
+					listen_on = {
+						fd: createReuseportFd(+port.slice(last_colon + 1).replace(/[\[\]]/g, ''), port.slice(0, last_colon)),
+					};
+				else listen_on = { host: +port.slice(last_colon + 1).replace(/[\[\]]/g, ''), port: port.slice(0, last_colon) };
+			else if (createReuseportFd) listen_on = { fd: createReuseportFd(+port, '::') };
 			else listen_on = { port };
 		} catch (error) {
 			console.error(`Unable to bind to port ${port}`, error);
@@ -523,6 +530,8 @@ function getHTTPServer(port, secure, is_operations_server) {
 			});
 		});*/
 		if (secure) {
+			if (!server.ports) server.ports = [];
+			server.ports.push(port);
 			applyTLS(is_operations_server ? 'operations-api' : 'server', server);
 			if (mtls) server.mtlsConfig = mtls;
 			server.on('secureConnection', (socket) => {

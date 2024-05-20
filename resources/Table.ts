@@ -114,7 +114,7 @@ export function makeTable(options) {
 	const updateRecord = getUpdateRecord(primary_store, table_id, audit_store);
 	const deletion_count = 0;
 	let deletion_cleanup;
-	let has_source_get;
+	let has_source_get, has_source_available;
 	let primary_key_attribute = {};
 	let last_eviction_completion: Promise<void> = Promise.resolve();
 	let created_time_property, updated_time_property, expires_at_property;
@@ -190,7 +190,8 @@ export function makeTable(options) {
 					throw new Error('Can not have multiple canonical (non-intermediate) sources');
 				this.sources.push(source);
 			}
-			has_source_get = source.get && (!source.get.reliesOnPrototype || source.prototype.get);
+			has_source_get = has_source_get || (source.get && (!source.get.reliesOnPrototype || source.prototype.get));
+			has_source_available = has_source_available || source.available;
 			// These functions define how write operations are propagate to the sources.
 			// We define the last source in the array as the "canonical" source, the one that can authoritatively
 			// reject or accept a write. The other sources are "intermediate" sources that can also be
@@ -2638,6 +2639,16 @@ export function makeTable(options) {
 
 	function ensureLoadedFromSource(id, entry, context, resource?) {
 		if (has_source_get) {
+			if (has_source_available) {
+				let available;
+				for (const source of TableResource.sources) {
+					if (source.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
+						if (source.available?.(id) === false) continue;
+						available = true;
+					}
+				}
+				if (!available) return;
+			}
 			let needs_source_data;
 			if (context.noCache) needs_source_data = true;
 			else {
