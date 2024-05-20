@@ -5,12 +5,14 @@ const nats_utils = require('../../server/nats/utility/natsUtils');
 const hdb_utils = require('../common_utils');
 const env_mgr = require('../environment/environmentManager');
 const crypto_hash = require('../../security/cryptoHash');
+const log = require('./harper_logger');
 const { handleHDBError, hdb_errors } = require('../errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
 const {
 	readTransactionLogValidator,
 	deleteTransactionLogsBeforeValidator,
 } = require('../../validation/transactionLogValidator');
+const harperBridge = require('../../dataLayer/harperBridge/harperBridge');
 
 const CLUSTERING_DISABLED_MSG = 'This operation relies on clustering and cannot run with it disable.';
 const PARTIAL_DELETE_SUCCESS_MSG = 'Logs successfully deleted from transaction log.';
@@ -21,23 +23,14 @@ module.exports = {
 	deleteTransactionLogsBefore,
 };
 
-/**
- * Queries a tables local Nats (clustering) stream (persistence layer), where all transactions against that table are stored.
- * @param {object} req - {schema, table, to, from, limit}
- * @returns {Promise<*[]>}
- */
-async function* readTransactionLog(req) {
+async function readTransactionLog(req) {
 	const validation = readTransactionLogValidator(req);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 
-	if (!env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
-		throw handleHDBError(new Error(), CLUSTERING_DISABLED_MSG, HTTP_STATUS_CODES.NOT_FOUND, undefined, undefined, true);
-	}
-
-	const { schema, table } = req;
-	const invalid_schema_table_msg = hdb_utils.checkSchemaTableExist(schema, table);
+	req.database = req.database ?? req.schema ?? 'data';
+	const invalid_schema_table_msg = hdb_utils.checkSchemaTableExist(req.database, req.table);
 	if (invalid_schema_table_msg) {
 		throw handleHDBError(
 			new Error(),
@@ -49,7 +42,28 @@ async function* readTransactionLog(req) {
 		);
 	}
 
-	const stream_name = crypto_hash.createNatsTableStreamName(schema, table);
+	if (!env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+		log.info('Reading HarperDB logs used by Plexus');
+
+		if (req.from || req.to) {
+			req.search_type = 'timestamp';
+			req.search_values = [req.from ?? 0];
+			if (req.to) req.search_values[1] = req.to;
+		}
+
+		return harperBridge.readAuditLog(req);
+	} else {
+		await readTransactionLogNats(req);
+	}
+}
+
+/**
+ * Queries a tables local Nats (clustering) stream (persistence layer), where all transactions against that table are stored.
+ * @param {object} req - {schema, table, to, from, limit}
+ * @returns {Promise<*[]>}
+ */
+async function* readTransactionLogNats(req) {
+	const stream_name = crypto_hash.createNatsTableStreamName(req.database, req.table);
 	// Using consumer and sub config we can filter a Nats stream with from date and max messages.
 	const transactions = await nats_utils.viewStreamIterator(stream_name, parseInt(req.from), req.limit);
 
@@ -91,8 +105,9 @@ async function deleteTransactionLogsBefore(req) {
 		throw handleHDBError(new Error(), CLUSTERING_DISABLED_MSG, HTTP_STATUS_CODES.NOT_FOUND, undefined, undefined, true);
 	}
 
-	const { schema, table, timestamp } = req;
-	const invalid_schema_table_msg = hdb_utils.checkSchemaTableExist(schema, table);
+	req.database = req.database ?? req.schema ?? 'data';
+	const { database, table, timestamp } = req;
+	const invalid_schema_table_msg = hdb_utils.checkSchemaTableExist(database, table);
 	if (invalid_schema_table_msg) {
 		throw handleHDBError(
 			new Error(),
@@ -104,7 +119,7 @@ async function deleteTransactionLogsBefore(req) {
 		);
 	}
 
-	const stream_name = crypto_hash.createNatsTableStreamName(schema, table);
+	const stream_name = crypto_hash.createNatsTableStreamName(database, table);
 	const { jsm } = await nats_utils.getNATSReferences();
 	const stream_info = await nats_utils.getStreamInfo(stream_name);
 
@@ -131,7 +146,7 @@ async function deleteTransactionLogsBefore(req) {
 
 	// Nats doesn't have the option to purge streams by timestamp only sequence.
 	// This will purge all messages upto but not including seq.
-	await nats_utils.purgeTableStream(schema, table, { seq });
+	await nats_utils.purgeTableStream(database, table, { seq });
 
 	return response;
 }

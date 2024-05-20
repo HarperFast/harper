@@ -159,7 +159,7 @@
   },
   "hdb_certificate":{
     "hash_attribute": "name",
-    "name": "hdb_nodes",
+    "name": "hdb_certificate",
     "schema": "system",
     "attributes":[
       {

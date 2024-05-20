@@ -464,7 +464,8 @@ export class ResourceBridge extends LMDBBridge {
 				return groupRecordsInHistory(
 					table,
 					read_audit_log_obj.search_values?.[0],
-					read_audit_log_obj.search_values?.[1]
+					read_audit_log_obj.search_values?.[1],
+					read_audit_log_obj.limit
 				);
 		}
 	}
@@ -558,8 +559,9 @@ function createDeleteResponse(deleted, skipped, txn_time) {
 	};
 }
 
-async function* groupRecordsInHistory(table, start?, end?) {
+async function* groupRecordsInHistory(table, start?, end?, limit?) {
 	let enqueued;
+	let count = 0;
 	for await (const entry of table.getHistory(start, end)) {
 		let operation = entry.type;
 		if (operation === 'put') operation = 'upsert';
@@ -577,6 +579,8 @@ async function* groupRecordsInHistory(table, start?, end?) {
 				records: [value],
 			};
 		}
+		count++;
+		if (limit && limit <= count) break;
 	}
 	if (enqueued) yield enqueued;
 }

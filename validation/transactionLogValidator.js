@@ -10,7 +10,8 @@ module.exports = {
 
 function readTransactionLogValidator(req) {
 	const schema = Joi.object({
-		schema: Joi.string().required(),
+		schema: Joi.string(),
+		database: Joi.string(),
 		table: Joi.string().required(),
 		from: Joi.date().timestamp(),
 		to: Joi.date().timestamp(),
@@ -22,7 +23,8 @@ function readTransactionLogValidator(req) {
 
 function deleteTransactionLogsBeforeValidator(req) {
 	const schema = Joi.object({
-		schema: Joi.string().required(),
+		schema: Joi.string(),
+		database: Joi.string(),
 		table: Joi.string().required(),
 		timestamp: Joi.date().timestamp().required(),
 	});
