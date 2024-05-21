@@ -101,11 +101,12 @@ async function deleteTransactionLogsBefore(req) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 
+	req.database = req.database ?? req.schema ?? 'data';
 	if (!env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
-		throw handleHDBError(new Error(), CLUSTERING_DISABLED_MSG, HTTP_STATUS_CODES.NOT_FOUND, undefined, undefined, true);
+		log.info('Delete transaction logs called for Plexus');
+		return harperBridge.deleteAuditLogsBefore(req);
 	}
 
-	req.database = req.database ?? req.schema ?? 'data';
 	const { database, table, timestamp } = req;
 	const invalid_schema_table_msg = hdb_utils.checkSchemaTableExist(database, table);
 	if (invalid_schema_table_msg) {

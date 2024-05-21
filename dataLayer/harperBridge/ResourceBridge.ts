@@ -570,7 +570,14 @@ async function* groupRecordsInHistory(table, start?, end?, limit?) {
 			enqueued.hash_values.push(id);
 			enqueued.records.push(value);
 		} else {
-			if (enqueued) yield enqueued;
+			if (enqueued) {
+				yield enqueued;
+				count++;
+				if (limit && limit <= count) {
+					enqueued = undefined;
+					break;
+				}
+			}
 			enqueued = {
 				operation,
 				user_name: entry.user,
@@ -579,8 +586,6 @@ async function* groupRecordsInHistory(table, start?, end?, limit?) {
 				records: [value],
 			};
 		}
-		count++;
-		if (limit && limit <= count) break;
 	}
 	if (enqueued) yield enqueued;
 }
