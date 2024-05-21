@@ -269,10 +269,11 @@ function loadCertificates() {
 				configs = [configs];
 			}
 			for (let config of configs) {
-				let private_key_name = config.privateKey && basename(config.privateKey);
-				if (private_key_name && fs.existsSync(config.privateKey))
-					private_keys.set(private_key_name, readPEM(config.privateKey)); // don't
-				// expose the path, just the name
+				const private_key_path = config.privateKey;
+				let private_key_name = private_key_path && basename(private_key_path);
+				if (private_key_name && fs.existsSync(private_key_path))
+					// don't expose the path, just the name
+					private_keys.set(private_key_name, readPEM(private_key_path));
 				let path = config[ca ? 'certificateAuthority' : 'certificate'];
 				if (path) {
 					if (fs.existsSync(path)) {

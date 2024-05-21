@@ -9,7 +9,7 @@ import {
 } from '../../resources/auditStore';
 import { exportIdMapping, getIdOfRemoteNode, remoteToLocalNodeId } from './nodeIdMapping';
 import { whenNextTransaction } from '../../resources/transactionBroadcast';
-import { getThisNodeName, urlToNodeName } from './replicator';
+import { forEachReplicatedDatabase, getThisNodeName, urlToNodeName } from './replicator';
 import env from '../../utility/environment/environmentManager';
 import { readAuditEntry, Decoder, REMOTE_SEQUENCE_UPDATE } from '../../resources/auditStore';
 import { HAS_STRUCTURE_UPDATE } from '../../resources/RecordEncoder';
@@ -252,32 +252,48 @@ export function replicateOverWS(ws, options, authorization) {
 				const [command, data, table_id] = message;
 				switch (command) {
 					case NODE_NAME: {
-						if (remote_node_name) {
-							if (remote_node_name !== data) {
-								logger.error(
-									connection_id,
-									`Node name mismatch, expecting to connect to ${remote_node_name}, but peer reported name as ${data}, disconnecting`
-								);
-								ws.send(encode([DISCONNECT]));
-								close(1008, 'Node name mismatch');
-								return;
+						if (data) {
+							// this is the node name
+							if (remote_node_name) {
+								if (remote_node_name !== data) {
+									logger.error(
+										connection_id,
+										`Node name mismatch, expecting to connect to ${remote_node_name}, but peer reported name as ${data}, disconnecting`
+									);
+									ws.send(encode([DISCONNECT]));
+									close(1008, 'Node name mismatch');
+									return;
+								}
+							} else remote_node_name = data;
+							if (options.connection) options.connection.nodeName = remote_node_name;
+							//const url = message[3] ?? this_node_url;
+							logger.info(connection_id, 'received node id', remote_node_name, database_name);
+							if (!database_name) {
+								try {
+									setDatabase((database_name = message[2]));
+									if (database_name === 'system') {
+										forEachReplicatedDatabase(options, (database, database_name) => {
+											sendDatabaseInfo(null, database_name);
+										});
+									}
+								} catch (error) {
+									// if this fails, we should close the connection and indicate that we should not reconnect
+									ws.send(encode([DISCONNECT]));
+									close(1008, error.message);
+									return;
+								}
 							}
-						} else remote_node_name = data;
-						if (options.connection) options.connection.nodeName = remote_node_name;
-						const url = message[3] ?? this_node_url;
-						logger.info(connection_id, 'received node id', remote_node_name, database_name);
-						if (!database_name) {
-							try {
-								setDatabase((database_name = message[2]));
-							} catch (error) {
-								// if this fails, we should close the connection and indicate that we should not reconnect
-								ws.send(encode([DISCONNECT]));
-								close(1008, error.message);
-								return;
+							logger.info(connection_id, 'setDatabase', database_name, tables && Object.keys(tables));
+							sendSubscriptionRequestUpdate();
+						}
+						for (let table_definition of message[3]) {
+							const database_name = message[2];
+							if (!databases[database_name]?.[table_definition.table]) {
+								table_definition.database = database_name;
+								ensureTable(table_definition);
 							}
 						}
-						logger.info(connection_id, 'setDatabase', database_name, tables && Object.keys(tables));
-						sendSubscriptionRequestUpdate();
+
 						break;
 					}
 					case DISCONNECT:
@@ -407,9 +423,10 @@ export function replicateOverWS(ws, options, authorization) {
 						let first_node = node_subscriptions[0];
 						const tableToTableEntry = (table) => {
 							if (
-								first_node.replicateByDefault
+								table &&
+								(first_node.replicateByDefault
 									? !first_node.tables.includes(table.tableName)
-									: first_node.tables.includes(table.tableName)
+									: first_node.tables.includes(table.tableName))
 							) {
 								first_table = table;
 								return { table };
@@ -844,7 +861,7 @@ export function replicateOverWS(ws, options, authorization) {
 			connection_id,
 			'sending subscription request',
 			node_subscriptions,
-			table_subscription_to_replicator.dbisDB.path
+			table_subscription_to_replicator?.dbisDB.path
 		);
 
 		if (node_subscriptions) {
@@ -867,7 +884,7 @@ export function replicateOverWS(ws, options, authorization) {
 	function setDatabase(database_name) {
 		table_subscription_to_replicator = table_subscription_to_replicator || db_subscriptions.get(database_name);
 		if (!table_subscription_to_replicator) {
-			throw new Error(`No database named "${database_name}" was declared and registered`);
+			return logger.warn(`No database named "${database_name}" was declared and registered`);
 		}
 		audit_store = table_subscription_to_replicator.auditStore;
 		if (!audit_store) {
@@ -880,9 +897,25 @@ export function replicateOverWS(ws, options, authorization) {
 			if (!this_node_name) throw new Error('Node name not defined');
 			else throw new Error('Should not connect to self', this_node_name);
 		}
-		logger.info('Sending node name', this_node_name, 'database name', database_name);
-		ws.send(encode([NODE_NAME, this_node_name, database_name, this_node_url]));
+		sendDatabaseInfo(this_node_name, database_name);
 		return true;
+	}
+	function sendDatabaseInfo(this_node_name, database_name) {
+		let database = getDatabases()?.[database_name];
+		let tables = [];
+		for (let table_name in database) {
+			let table = database[table_name];
+			tables.push({
+				table: table_name,
+				attributes: table.attributes.map((attr) => ({
+					name: attr.name,
+					type: attr.type,
+					isPrimaryKey: attr.isPrimaryKey,
+				})),
+			});
+		}
+		logger.info('Sending database info for node', this_node_name, 'database name', database_name, tables);
+		ws.send(encode([NODE_NAME, this_node_name, database_name, tables]));
 	}
 
 	return {

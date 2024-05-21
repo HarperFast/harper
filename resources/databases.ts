@@ -634,9 +634,9 @@ export function table({
 				attribute_descriptor = attribute_descriptor || attributes_dbi.get((dbi_key = table_name + '/')) || {};
 				// primary key can't change indexing, but settings can change
 				if (
-					audit !== Table.audit ||
-					sealed !== sealed ||
-					replicate !== replicate ||
+					(audit !== undefined && audit !== Table.audit) ||
+					(sealed !== undefined && sealed !== Table.sealed) ||
+					(replicate !== undefined && replicate !== Table.replicate) ||
 					(+expiration || undefined) !== (+attribute_descriptor.expiration || undefined) ||
 					(+eviction || undefined) !== (+attribute_descriptor.eviction || undefined)
 				) {
