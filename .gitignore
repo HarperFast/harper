@@ -34,3 +34,4 @@ ts-build
 
 harperdb-*.tgz
 utility/Docker/licenses/**
+license-output.md
