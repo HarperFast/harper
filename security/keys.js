@@ -172,19 +172,11 @@ async function getCertsKeys(rep_host = undefined) {
 				name: undefined,
 				cert: undefined,
 			},
-			ca_certs: [],
-			ca_cert_names: [],
 		};
 
 	getCertTable();
 	for await (const cert of certificate_table.search([])) {
 		const { name, certificate } = cert;
-		// A connection can take multiple CAs in an array, so we include them all here
-		if (name?.includes?.('ca')) {
-			response.ca_certs.push(certificate);
-			response.ca_cert_names.push(name);
-		}
-
 		if (CERT_PREFERENCE_APP[name] && app_cert_quality < CERT_PREFERENCE_APP[name]) {
 			response.app.cert = certificate;
 			response.app.name = name;
@@ -221,24 +213,13 @@ async function getCertsKeys(rep_host = undefined) {
 			rep_cert_quality = CERT_PREFERENCE_REP[name];
 		}
 
-		const inverted_cert_name = _.invert(CERT_NAME);
-		// TODO: I think this will fail when we start adding more certs to the certs table that arent in CERT_NAME
-		if (inverted_cert_name[name] === undefined) {
+		if (name?.includes?.('issued by')) {
 			response[name] = certificate;
 			if (!name.includes('ca')) {
 				response.rep.cert = certificate;
 				response.rep.name = name;
 				rep_cert_quality = 50;
 			}
-		}
-	}
-
-	// Add any CAs that might exist in hdb_nodes but not hdb_certificate
-	const nodes_table = getDatabases()['system']['hdb_nodes'];
-	for await (const node of nodes_table.search([])) {
-		if (node.ca && !response.ca_certs.includes(node.ca)) {
-			response.ca_certs.push(node.ca);
-			response.ca_cert_names.push(node.name);
 		}
 	}
 

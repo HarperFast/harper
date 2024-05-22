@@ -328,7 +328,28 @@ export function replicateOverWS(ws, options, authorization) {
 							else logger.error(connection_id, 'Database name never received');
 						}
 						let table = tables[table_name];
-						if (!table) {
+
+						// Check the attributes in the msg vs the table and if they dont match call ensureTable to create them
+						// TODO: This prob wont be good enough because only some parts of attributes are supposed to replicate (not location or relationship information)
+						let equal_att = true;
+						if (table.attributes.length !== data.attributes.length) {
+							const table_set = new Set(table.attributes.map((att) => att.name));
+							const data_set = new Set(data.attributes.map((att) => att.name));
+							let long_set = data_set;
+							let short_set = table_set;
+							if (table_set.size > data_set.size) {
+								long_set = table_set;
+								short_set = data_set;
+							}
+							for (const a of long_set) {
+								if (!short_set.has(a)) {
+									equal_att = false;
+									break;
+								}
+							}
+						}
+
+						if (!table || !equal_att) {
 							// TODO: Do we need to check if we are replicating everything by default?
 							table = ensureTable({ table: table_name, database: database_name, attributes: data.attributes });
 							logger.error(connection_id, 'Table not found', table_name, 'creating');

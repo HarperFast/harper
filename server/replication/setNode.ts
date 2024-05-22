@@ -12,7 +12,7 @@ const { handleHDBError, hdb_errors } = require('../../utility/errors/hdbError.js
 const { HTTP_STATUS_CODES } = hdb_errors;
 
 const validation_schema = Joi.object({
-	url: Joi.string().required(),
+	url: Joi.string(),
 });
 
 /**
@@ -28,8 +28,8 @@ export async function setNode(req: object) {
 
 	if (req.operation === 'remove_node') {
 		const node_record_id = req.node_name ?? urlToNodeName(url);
-		const nodes_table = getHDBNodeTable();
-		await nodes_table.delete(node_record_id);
+		const hdb_nodes = getHDBNodeTable();
+		await hdb_nodes.patch(node_record_id, { publish: false, subscribe: false, subscriptions: null });
 
 		return `Successfully removed '${node_record_id}' from manifest`;
 	}

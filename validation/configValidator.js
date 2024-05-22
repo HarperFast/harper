@@ -25,12 +25,22 @@ const UNDEFINED_OPS_API = 'rootPath config parameter is undefined';
 const UNDEFINED_NATS_ENABLED = 'clustering.enabled config parameter is undefined';
 
 const port_constraints = Joi.alternatives([number.min(0), string]).required();
-const route_constraints = array
-	.items({
-		host: string.required(),
-		port: port_constraints,
-	})
-	.empty(null);
+const route_constraints = Joi.alternatives([
+	array
+		.items(
+			string,
+			{
+				host: string.required(),
+				port: port_constraints,
+			},
+			{
+				hostname: string.required(),
+				port: port_constraints,
+			}
+		)
+		.empty(null),
+	array.items(string),
+]);
 
 let hdb_root;
 let skip_fs_val = false;

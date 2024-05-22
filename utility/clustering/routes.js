@@ -3,6 +3,7 @@
 const config_utils = require('../../config/configUtils');
 const hdb_utils = require('../common_utils');
 const hdb_terms = require('../hdbTerms');
+const env_mgr = require('../environment/environmentManager');
 const routes_validator = require('../../validation/clustering/routesValidator');
 const { handleHDBError, hdb_errors } = require('../errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
@@ -22,12 +23,7 @@ module.exports = {
  * @param req
  * @returns {{set: *[], message: string, skipped: *[]}}
  */
-function setRoutes(req) {
-	const validation = routes_validator.setRoutesValidator(req);
-	if (validation) {
-		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
-	}
-
+function setRoutesNats(req) {
 	const all_existing_routes = config_utils.getClusteringRoutes();
 	const existing_routes = req.server === 'hub' ? all_existing_routes.hub_routes : all_existing_routes.leaf_routes;
 	const other_server_routes = req.server === 'hub' ? all_existing_routes.leaf_routes : all_existing_routes.hub_routes;
@@ -72,15 +68,92 @@ function setRoutes(req) {
 	};
 }
 
+function setRoutes(req) {
+	const validation = routes_validator.setRoutesValidator(req);
+	if (validation) {
+		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
+	}
+
+	if (env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+		return setRoutesNats(req);
+	}
+
+	let set = [];
+	let skipped = [];
+	const existing_routes = env_mgr.get(hdb_terms.CONFIG_PARAMS.REPLICATION_ROUTES) ?? [];
+	req.routes.forEach((r) => {
+		if (!existsInArray(existing_routes, r)) {
+			existing_routes.push(r);
+			set.push(r);
+		} else {
+			skipped.push(r);
+		}
+	});
+
+	config_utils.updateConfigValue(hdb_terms.CONFIG_PARAMS.REPLICATION_ROUTES, existing_routes);
+
+	return {
+		message: SET_ROUTE_SUCCESS_MSG,
+		set,
+		skipped,
+	};
+}
+
+function existsInArray(array, value) {
+	if (typeof value === 'string') {
+		return array.includes(value);
+	} else if (typeof value === 'object' && value !== null) {
+		return array.some((obj) => (obj.host === value.host || obj.hostname === value.hostname) && obj.port === value.port);
+	}
+	return false;
+}
+
 /**
  * Gets all the hun and leaf servers routes from the harperdb-config.yaml file.
  * @returns {{hub: (*[]|*), leaf: (*[]|*)}}
  */
 function getRoutes() {
-	const all_existing_routes = config_utils.getClusteringRoutes();
+	if (env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+		const all_existing_routes = config_utils.getClusteringRoutes();
+		return {
+			hub: all_existing_routes.hub_routes,
+			leaf: all_existing_routes.leaf_routes,
+		};
+	} else {
+		return env_mgr.get(hdb_terms.CONFIG_PARAMS.REPLICATION_ROUTES) ?? [];
+	}
+}
+
+function deleteRoutes(req) {
+	const validation = routes_validator.deleteRoutesValidator(req);
+	if (validation) {
+		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
+	}
+
+	if (env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+		return deleteRoutesNats(req);
+	}
+
+	let deleted = [];
+	let skipped = [];
+	const existing_routes = env_mgr.get(hdb_terms.CONFIG_PARAMS.REPLICATION_ROUTES) ?? [];
+	let updated_routes = [];
+
+	existing_routes.forEach((r) => {
+		if (existsInArray(req.routes, r)) {
+			deleted.push(r);
+		} else {
+			updated_routes.push(r);
+			skipped.push(r);
+		}
+	});
+
+	config_utils.updateConfigValue(hdb_terms.CONFIG_PARAMS.REPLICATION_ROUTES, updated_routes);
+
 	return {
-		hub: all_existing_routes.hub_routes,
-		leaf: all_existing_routes.leaf_routes,
+		message: DELETE_ROUTE_SUCCESS_MSG,
+		deleted,
+		skipped,
 	};
 }
 
@@ -89,12 +162,7 @@ function getRoutes() {
  * @param req
  * @returns {{deleted: *[], message: string, skipped: *[]}}
  */
-function deleteRoutes(req) {
-	const validation = routes_validator.deleteRoutesValidator(req);
-	if (validation) {
-		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
-	}
-
+function deleteRoutesNats(req) {
 	const all_existing_routes = config_utils.getClusteringRoutes();
 	let hub_routes = all_existing_routes.hub_routes;
 	let leaf_routes = all_existing_routes.leaf_routes;
