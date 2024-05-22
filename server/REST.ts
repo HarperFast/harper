@@ -196,7 +196,7 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 	options.server.http(async (request: Request, next_handler) => {
 		if (request.isWebSocket) return;
 		return http(request, next_handler);
-	});
+	}, options);
 	options.server.ws(async (ws, request, chain_completion) => {
 		connection_count++;
 		const incoming_messages = new IterableEventQueue();
@@ -274,7 +274,7 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 			ws.close('login fialed');
 		}
 		ws.close();
-	});
+	}, options);
 }
 const HTTP_TO_WEBSOCKET_CLOSE_CODES = {
 	401: 3000,

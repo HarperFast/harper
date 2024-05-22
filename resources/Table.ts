@@ -12,7 +12,7 @@ import { Query, ResourceInterface, Request, SubscriptionRequest, Id, Context } f
 import { CONTEXT, ID_PROPERTY, RECORD_PROPERTY, Resource, IS_COLLECTION } from './Resource';
 import { DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction';
 import * as env_mngr from '../utility/environment/environmentManager';
-import { addSubscription, listenToCommits } from './transactionBroadcast';
+import { addSubscription } from './transactionBroadcast';
 import { handleHDBError, ClientError, ServerError } from '../utility/errors/hdbError';
 import * as signalling from '../utility/signalling';
 import { SchemaEventMsg, UserEventMsg } from '../server/threads/itc';
@@ -108,7 +108,6 @@ export function makeTable(options) {
 	let { expirationMS: expiration_ms, evictionMS: eviction_ms, audit, trackDeletes: track_deletes } = options;
 	let { attributes } = options;
 	if (!attributes) attributes = [];
-	listenToCommits(primary_store, audit_store);
 	const updateRecord = getUpdateRecord(primary_store, table_id, audit_store);
 	const deletion_count = 0;
 	let deletion_cleanup;
@@ -1822,13 +1821,12 @@ export function makeTable(options) {
 					}
 				},
 				request.startTime || 0,
-				this[IS_COLLECTION]
+				request
 			);
 			if (this[IS_COLLECTION]) {
 				subscription.includeDescendants = true;
 				if (request.onlyChildren) subscription.onlyChildren = true;
 			}
-			if (request.crossThreads === false) subscription.crossThreads = false;
 			if (request.supportsTransactions) subscription.supportsTransactions = true;
 			const this_id = this[ID_PROPERTY];
 			let count = request.previousCount;
