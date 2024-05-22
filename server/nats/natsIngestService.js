@@ -211,6 +211,7 @@ async function ingestConsumer(stream_name, js, jsm, domain) {
 
 		messages = await consumer.consume({
 			max_messages: env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXCONSUMEMSGS) ?? 100,
+			bind: true,
 		});
 
 		consumer_msgs.set(stream_name + domain, messages);
@@ -230,7 +231,7 @@ async function ingestConsumer(stream_name, js, jsm, domain) {
 					harper_logger.trace(
 						`${n} clustering ingest consumer heartbeats missed, node: ${domain} stream: ${messages.consumer.stream}`
 					);
-					if (n === 2) {
+					if (n === 100) {
 						harper_logger.warn(
 							`Restarting clustering ingest consumer due to missed heartbeat threshold being met, node: ${domain} stream: ${messages.consumer.stream}`
 						);
