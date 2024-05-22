@@ -169,7 +169,9 @@ function initTestEnvironment(test_config_obj = {}) {
 			setProperty(hdb_terms.CONFIG_PARAMS.HTTP_PORT, null);
 		}
 		setProperty(hdb_terms.CONFIG_PARAMS.CUSTOMFUNCTIONS_NETWORK_HTTPS, Boolean(https_enabled));
+		setProperty(hdb_terms.CONFIG_PARAMS.HTTP_PORT, 9926);
 		setProperty(hdb_terms.HDB_SETTINGS_NAMES.SERVER_PORT_KEY, 9925);
+		setProperty(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT, 9925);
 		setProperty(
 			hdb_terms.HDB_SETTINGS_NAMES.CORS_ENABLED_KEY,
 			common_utils.isEmpty(cors_enabled) ? false : cors_enabled

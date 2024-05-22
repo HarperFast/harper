@@ -17,14 +17,6 @@ const { recordAction, recordActionBinary } = require('../../resources/analytics'
 const { Request, createReuseportFd } = require('../serverHelpers/Request');
 const { checkMemoryLimit } = require('../../utility/registration/hdb_license');
 const { applyTLS } = require('../../security/keys');
-// this horifying hack is brought to you by https://github.com/nodejs/node/issues/36655
-const tls = require('tls');
-const origCreateSecureContext = tls.createSecureContext;
-tls.createSecureContext = function (options) {
-	if (options.instantiatedContext) return options.instantiatedContext;
-	return origCreateSecureContext(options);
-};
-
 const debug_threads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
 if (debug_threads) {
 	let port;

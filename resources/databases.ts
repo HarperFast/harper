@@ -523,7 +523,7 @@ export function table({
 	const internal_dbi_init = new OpenDBIObject(false);
 
 	for (const attribute of attributes) {
-		if (attribute.attribute) {
+		if (attribute.attribute && !attribute.name) {
 			// there is some legacy code that calls the attribute's name the attribute's attribute
 			attribute.name = attribute.attribute;
 			attribute.indexed = true;

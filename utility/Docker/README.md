@@ -2,7 +2,7 @@
 
 ## HarperDB Overview
 
-HarperDB is a globally-distributed edge application platform. It reduces complexity, increases performance, and lowers costs by combining user-defined applications, a high-performance database, and an enterprise-grade streaming broker into a single package. The platform offers unlimited horizontal scale at the click of a button, and synchronizes data across all the nodes in a cluster in milliseconds. HarperDB simplifies the process of delivering applications and the data that drives them to the edge, which dramatically improves both the user experience and total cost of ownership for large-scale applications. Deploying HarperDB on global infrastructure enables a CDN-like solution for enterprise data and applications.
+HarperDB is a globally-distributed edge application platform. It reduces complexity, increases performance, and lowers costs by combining user-defined applications, a high-performance database, and an enterprise-grade streaming broker into a single package. The platform offers unlimited horizontal scale at the click of a button, and syncs data across the cluster in milliseconds. HarperDB simplifies the process of delivering applications and the data that drives them to the edge, which dramatically improves both the user experience and total cost of ownership for large-scale applications. Deploying HarperDB on global infrastructure enables a CDN-like solution for enterprise data and applications.
 
 [Learn more about HarperDB](https://harperdb.io/?utm_source=repo&utm_medium=dockerhub)
 
@@ -13,7 +13,7 @@ Every Installation of HarperDB can be administered online using HarperDB Studio.
 
 [HarperDB Studio](https://studio.harperdb.io/sign-up)
 
-### HarperDB APIs
+## HarperDB APIs
 
 The preferred way to interact with HarperDB for typical querying, accessing, and updating data (CRUD) operations is through the REST interface, described in the REST documentation.
 
@@ -32,6 +32,7 @@ The complete [HarperDB Operations API documentation](https://docs.harperdb.io/do
 
 If no environment variables are passed to `docker run`, HarperDB will run with default configuration settings, except for the following:
 - `ROOTPATH=/home/harperdb/hdb`
+- `OPERATIONSAPI_NETWORK_PORT=9925`
 - `HDB_ADMIN_USERNAME=HDB_ADMIN`
 - `HDB_ADMIN_PASSWORD=password`
 - `LOGGING_STDSTREAMS=true`
@@ -60,6 +61,7 @@ docker run -d \
   -e HDB_ADMIN_USERNAME=HDB_ADMIN \
   -e HDB_ADMIN_PASSWORD=password \
   -e THREADS=4 \
+  -e OPERATIONSAPI_NETWORK_PORT=null \
   -e OPERATIONSAPI_NETWORK_SECUREPORT=9925 \
   -e HTTP_SECUREPORT=9926 \
   -e CLUSTERING_ENABLED=true \

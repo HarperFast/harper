@@ -266,6 +266,7 @@ describe('Test configUtils module', () => {
 		it('Test that given args are updated in new config file', () => {
 			const expected_config = {
 				authentication: {
+					authorizeLocal: false,
 					cacheTTL: 30000,
 					enableSessions: true,
 					operationTokenTimeout: '2d',
@@ -358,7 +359,7 @@ describe('Test configUtils module', () => {
 						cors: false,
 						corsAccessList: ['test1', 'test2'],
 						port: 2599,
-						securePort: null,
+						securePort: 9925,
 						domainSocket: 'hdb/operations-server',
 						headersTimeout: 60001,
 						https: true,
@@ -378,7 +379,7 @@ describe('Test configUtils module', () => {
 					corsAccessList: ['test1', 'test2'],
 					keepAliveTimeout: 4999,
 					port: 9936,
-					securePort: null,
+					securePort: 9926,
 					timeout: 119999,
 					headersTimeout: 59999,
 					mtls: false,
@@ -405,6 +406,7 @@ describe('Test configUtils module', () => {
 			};
 			const expected_flat_config = {
 				authentication_cachettl: 30000,
+				authentication_authorizelocal: false,
 				authentication_enablesessions: true,
 				authentication_operationtokentimeout: '2d',
 				authentication_refreshtokentimeout: '31d',
@@ -457,7 +459,7 @@ describe('Test configUtils module', () => {
 				operationsapi_network_cors: false,
 				operationsapi_network_corsaccesslist: ['test1', 'test2'],
 				operationsapi_network_port: 2599,
-				operationsapi_network_secureport: null,
+				operationsapi_network_secureport: 9925,
 				operationsapi_network_domainsocket: 'hdb/operations-server',
 				operationsapi_network_headerstimeout: 60001,
 				operationsapi_network_https: true,
@@ -468,7 +470,7 @@ describe('Test configUtils module', () => {
 				http_corsaccesslist: ['test1', 'test2'],
 				http_keepalivetimeout: 4999,
 				http_port: 9936,
-				http_secureport: null,
+				http_secureport: 9926,
 				http_mtls: false,
 				threads_count: 4,
 				threads_debug: false,
@@ -515,6 +517,7 @@ describe('Test configUtils module', () => {
 	describe('Test getDefaultConfig function', () => {
 		const expected_flat_default_config_obj = {
 			analytics_aggregateperiod: 60,
+			authentication_authorizelocal: false,
 			authentication_cachettl: 30000,
 			authentication_enablesessions: true,
 			authentication_operationtokentimeout: '1d',
@@ -547,8 +550,8 @@ describe('Test configUtils module', () => {
 			http_corsaccesslist: [null],
 			http_compressionthreshold: 0,
 			http_keepalivetimeout: 30000,
-			http_port: 9926,
-			http_secureport: null,
+			http_port: null,
+			http_secureport: 9926,
 			http_timeout: 120000,
 			http_mtls: false,
 			componentsroot: null,
@@ -580,8 +583,8 @@ describe('Test configUtils module', () => {
 			operationsapi_network_corsaccesslist: ['*'],
 			operationsapi_network_domainsocket: 'hdb/operations-server',
 			operationsapi_network_keepalivetimeout: 30000,
-			operationsapi_network_port: 9925,
-			operationsapi_network_secureport: null,
+			operationsapi_network_port: null,
+			operationsapi_network_secureport: 9925,
 			operationsapi_network_timeout: 120000,
 			operationsapi_network_mtls: false,
 			operationsapi_tls_certificate: null,

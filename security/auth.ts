@@ -23,7 +23,11 @@ const session_table = table({
 	attributes: [{ name: 'id', isPrimaryKey: true }, { name: 'user' }],
 });
 const ENABLE_SESSIONS = env.get(CONFIG_PARAMS.AUTHENTICATION_ENABLESESSIONS) ?? true;
-let AUTHORIZE_LOCAL = env.get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? process.env.DEV_MODE;
+// check the environment for a flag to bypass authentication (for testing) since it doesn't necessarily get set on child threads
+let AUTHORIZE_LOCAL =
+	process.env.AUTHENTICATION_AUTHORIZELOCAL ??
+	env.get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ??
+	process.env.DEV_MODE;
 const LOG_AUTH_SUCCESSFUL = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL) ?? false;
 const LOG_AUTH_FAILED = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED) ?? false;
 let authorization_cache = new Map();

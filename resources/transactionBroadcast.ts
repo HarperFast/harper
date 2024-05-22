@@ -7,8 +7,8 @@ import { keyArrayToString } from './Resources';
 import { readAuditEntry } from './auditStore';
 const TRANSACTION_EVENT_TYPE = 'transaction';
 const FAILED_CONDITION = 0x4000000;
-let all_subscriptions;
-const test = Buffer.alloc(4096);
+const all_subscriptions = Object.create(null); // using it as a map that doesn't change much
+const all_same_thread_subscriptions = Object.create(null); // using it as a map that doesn't change much
 /**
  * This module/function is responsible for the main work of tracking subscriptions and listening for new transactions
  * that have occurred on any thread, and then reading through the transaction log to notify listeners. This is
@@ -18,23 +18,31 @@ const test = Buffer.alloc(4096);
  * @param key
  * @param listener
  */
-export function addSubscription(table, key, listener?: (key) => any, start_time: number, scope) {
+export function addSubscription(table, key, listener?: (key) => any, start_time: number, options) {
 	const path = table.primaryStore.env.path;
 	const table_id = table.primaryStore.tableId;
 	// set up the subscriptions map. We want to just use a single map (per table) for efficient delegation
 	// (rather than having every subscriber filter every transaction)
-	if (!all_subscriptions) {
-		onMessageByType(TRANSACTION_EVENT_TYPE, (event) => {
-			notifyFromTransactionData(event.path);
-		});
-		all_subscriptions = Object.create(null); // using it as a map that doesn't change much
+	let base_subscriptions;
+	if (options?.crossThreads === false) {
+		// we are only listening for commits on our own thread, so we use a separate subscriber and sequencer tracker
+		base_subscriptions = all_same_thread_subscriptions;
+		listenToCommits(table.primaryStore, table.auditStore);
+	} else {
+		base_subscriptions = all_subscriptions;
+		if (!table.primaryStore.env.hasSubscriptionCommitListener) {
+			table.primaryStore.env.hasSubscriptionCommitListener = true;
+			table.primaryStore.on('committed', () => {
+				notifyFromTransactionData(all_subscriptions[path]);
+			});
+		}
 	}
-	const database_subscriptions = all_subscriptions[path] || (all_subscriptions[path] = []);
+	const database_subscriptions = base_subscriptions[path] || (base_subscriptions[path] = []);
 	database_subscriptions.auditStore = table.auditStore;
 	if (database_subscriptions.lastTxnTime == null) {
 		database_subscriptions.lastTxnTime = Date.now();
 	}
-	if (scope === 'full-database') {
+	if (options?.scope === 'full-database') {
 		return;
 	}
 	let table_subscriptions = database_subscriptions[table_id];
@@ -96,19 +104,13 @@ class Subscription extends IterableEventQueue {
 		return { name: 'subscription' };
 	}
 }
-function notifyFromTransactionData(path, same_thread?) {
-	if (!all_subscriptions) return;
-	const subscriptions = all_subscriptions[path];
+function notifyFromTransactionData(subscriptions) {
 	if (!subscriptions) return; // if no subscriptions to this env path, don't need to read anything
-	try {
-		subscriptions.auditStore.resetReadTxn();
-	} catch (error) {
-		error.message += ' in ' + path;
-		throw error;
-	}
+	let audit_store = subscriptions.auditStore;
+	audit_store.resetReadTxn();
 	nextTransaction(subscriptions.auditStore);
 	let subscribers_with_txns;
-	for (const { key: local_time, value: audit_entry_encoded } of subscriptions.auditStore.getRange({
+	for (const { key: local_time, value: audit_entry_encoded } of audit_store.getRange({
 		start: subscriptions.lastTxnTime,
 		exclusiveStart: true,
 	})) {
@@ -134,7 +136,6 @@ function notifyFromTransactionData(path, same_thread?) {
 						continue;
 					}
 					try {
-						if (subscription.crossThreads === false && !same_thread) continue;
 						let begin_txn;
 						if (subscription.supportsTransactions && subscription.txnInProgress !== audit_entry.version) {
 							// if the subscriber supports transactions, we mark this as the beginning of a new transaction
@@ -174,7 +175,6 @@ function notifyFromTransactionData(path, same_thread?) {
 		}
 	}
 }
-
 /**
  * Interface with lmdb-js to listen for commits and traverse the audit log.
  * @param primary_store
@@ -182,20 +182,31 @@ function notifyFromTransactionData(path, same_thread?) {
 export function listenToCommits(primary_store, audit_store) {
 	const store = audit_store || primary_store;
 	const lmdb_env = store.env;
-	if (audit_store && !audit_store.cache) audit_store.cache = new Map(); // this is a trick to get the key and store information to pass through after the commit
-	if (!lmdb_env.hasBroadcastListener) {
-		lmdb_env.hasBroadcastListener = true;
+	if (!lmdb_env.hasAfterCommitListener) {
+		lmdb_env.hasAfterCommitListener = true;
 		const path = lmdb_env.path;
-
-		store.on('aftercommit', () => {
-			// after each commit, broadcast the transaction to all threads so subscribers can read the
-			// transactions and find changes of interest.
-			broadcast({
-				type: TRANSACTION_EVENT_TYPE,
-				path,
-			});
-			// and notify on our own thread too
-			notifyFromTransactionData(path, true);
+		store.on('aftercommit', ({ next, last, txnId }) => {
+			const subscriptions = all_same_thread_subscriptions[path]; // there is a different set of subscribers for same-thread subscriptions
+			if (!subscriptions) return;
+			// we want each thread to do this mutually exclusively so that we don't have multiple threads trying to process the same data (the intended purpose of crossThreads=false)
+			const acquiredLock = () => {
+				// we have the lock, so we can now read the last sequence/local write time and continue to read the audit log from there
+				if (!store.threadLocalWrites)
+					// initiate the shared buffer if needed
+					store.threadLocalWrites = new Float64Array(
+						store.getUserSharedBuffer('last-thread-local-write', new ArrayBuffer(8))
+					);
+				subscriptions.txnTime = store.threadLocalWrites[0] || Date.now(); // start from last one
+				try {
+					notifyFromTransactionData(subscriptions);
+				} finally {
+					store.threadLocalWrites[0] = subscriptions.lastTxnTime; // update shared buffer
+					store.unlock('thread-local-writes'); // and release the lock
+				}
+			};
+			// try to get lock or wait for it
+			if (!store.attemptLock('thread-local-writes', acquiredLock)) return;
+			acquiredLock();
 		});
 	}
 }
@@ -218,7 +229,7 @@ export function whenNextTransaction(audit_store) {
 			null,
 			null,
 			0,
-			'full-database'
+			{ scope: 'full-database' }
 		);
 		nextTransaction(audit_store);
 	}

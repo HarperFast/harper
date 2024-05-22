@@ -17,6 +17,7 @@ const assignCMDENVVariables = require('../../utility/assignCmdEnvVariables');
 const hdb_info_controller = require('../../dataLayer/hdbInfoController');
 const version = require('../../bin/version');
 const hdb_terms = require('../hdbTerms');
+const { CONFIG_PARAM_MAP, CONFIG_PARAMS } = hdb_terms;
 const install_validator = require('../../validation/installValidator');
 const mount_hdb = require('../mount_hdb');
 const config_utils = require('../../config/configUtils');
@@ -51,16 +52,30 @@ const DEFAULT_HDB_ROOT = path.join(PROCESS_HOME, hdb_terms.HDB_ROOT_DIR_NAME);
 const DEFAULT_HDB_PORT = 9925;
 const DEFAULT_ADMIN_USERNAME = 'HDB_ADMIN';
 const DEFAULT_CLUSTER_USERNAME = 'CLUSTER_USER';
+const DEFAULT_CONFIG_MODE = 'dev';
+
+const DEV_MODE_CONFIG = {
+	[CONFIG_PARAMS.HTTP_CORS]: true,
+	[CONFIG_PARAMS.HTTP_CORSACCESSLIST]: ['*'],
+	[CONFIG_PARAMS.HTTP_PORT]: 9926,
+	[CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL]: true,
+	[CONFIG_PARAMS.THREADS_COUNT]: 1,
+	[CONFIG_PARAMS.THREADS_DEBUG]: true,
+	[CONFIG_PARAMS.LOGGING_STDSTREAMS]: true,
+	[CONFIG_PARAMS.LOGGING_LEVEL]: 'info',
+	[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT]: 9925,
+	[CONFIG_PARAMS.LOCALSTUDIO_ENABLED]: true,
+};
 
 // Install prompts
 const INSTALL_PROMPTS = {
 	DESTINATION: 'Please enter a destination for HarperDB:',
-	HDB_PORT: 'Please enter a server listening port for HarperDB:',
-	HDB_USERNAME: 'Please enter a username for the HDB_ADMIN:',
-	HDB_PASS: 'Please enter a password for the HDB_ADMIN:',
+	HDB_USERNAME: 'Please enter a username for the administrative user:',
+	HDB_PASS: 'Please enter a password for the administrative user:',
 	NODE_NAME: 'Please enter a unique name for this node:',
 	CLUSTER_USERNAME: 'Please enter a username for the CLUSTER_USER:',
 	CLUSTER_PASS: 'Please enter a password for the CLUSTER_USER:',
+	DEFAULTS_MODE: 'Default Config - dev (easy access/debugging) or prod (security/performance): (dev/prod)',
 };
 
 const cfg_env = assignCMDENVVariables([hdb_terms.INSTALL_PROMPTS.HDB_CONFIG]);
@@ -91,6 +106,15 @@ async function install() {
 	// Check to see if any cmd/env vars are passed that override install prompts.
 	const prompt_override = checkForPromptOverride();
 	Object.assign(prompt_override, config_from_file);
+	// For backwards compatibility for a time before DEFAULTS_MODE assume prod when these args used
+	if (
+		prompt_override[hdb_terms.INSTALL_PROMPTS.TC_AGREEMENT] &&
+		prompt_override[hdb_terms.INSTALL_PROMPTS.ROOTPATH] &&
+		prompt_override[hdb_terms.INSTALL_PROMPTS.HDB_ADMIN_USERNAME] &&
+		prompt_override[hdb_terms.INSTALL_PROMPTS.HDB_ADMIN_PASSWORD]
+	) {
+		prompt_override[hdb_terms.INSTALL_PROMPTS.DEFAULTS_MODE] = 'prod';
+	}
 
 	// Validate any cmd/env params passed to install
 	const validation_error = install_validator(prompt_override);
@@ -106,9 +130,6 @@ async function install() {
 
 	// Prompt the user with params needed for install.
 	const install_params = await installPrompts(prompt_override);
-	if (install_params[hdb_terms.INSTALL_PROMPTS.OPERATIONSAPI_NETWORK_SECUREPORT]) {
-		install_params[hdb_terms.INSTALL_PROMPTS.OPERATIONSAPI_NETWORK_PORT] = null;
-	}
 
 	// HDB root is the one of the first params we need for install.
 	hdb_root = install_params[hdb_terms.INSTALL_PROMPTS.ROOTPATH];
@@ -217,23 +238,6 @@ async function installPrompts(prompt_override) {
 			type: 'input',
 			transformer: PROMPT_ANSWER_TRANSFORMER,
 			when: displayCmdEnvVar(
-				prompt_override[hdb_terms.INSTALL_PROMPTS.OPERATIONSAPI_NETWORK_PORT] ??
-					prompt_override[hdb_terms.INSTALL_PROMPTS.OPERATIONSAPI_NETWORK_SECUREPORT],
-				INSTALL_PROMPTS.HDB_PORT
-			),
-			name: hdb_terms.INSTALL_PROMPTS.OPERATIONSAPI_NETWORK_PORT,
-			prefix: PROMPT_PREFIX,
-			default: DEFAULT_HDB_PORT,
-			validate: (value) => {
-				if (HDB_PORT_REGEX.test(value)) return true;
-				return 'Invalid port.';
-			},
-			message: HDB_PROMPT_MSG(INSTALL_PROMPTS.HDB_PORT),
-		},
-		{
-			type: 'input',
-			transformer: PROMPT_ANSWER_TRANSFORMER,
-			when: displayCmdEnvVar(
 				prompt_override[hdb_terms.INSTALL_PROMPTS.HDB_ADMIN_USERNAME],
 				INSTALL_PROMPTS.HDB_USERNAME
 			),
@@ -258,6 +262,22 @@ async function installPrompts(prompt_override) {
 				return true;
 			},
 			message: HDB_PROMPT_MSG(INSTALL_PROMPTS.HDB_PASS),
+		},
+		{
+			type: 'input',
+			transformer: PROMPT_ANSWER_TRANSFORMER,
+			when: displayCmdEnvVar(prompt_override[hdb_terms.INSTALL_PROMPTS.DEFAULTS_MODE], INSTALL_PROMPTS.DEFAULTS_MODE),
+			name: hdb_terms.INSTALL_PROMPTS.DEFAULTS_MODE,
+			prefix: PROMPT_PREFIX,
+			default: DEFAULT_CONFIG_MODE,
+			validate: (value) => {
+				if (checkForEmptyValue(value)) return checkForEmptyValue(value);
+				if (value !== 'dev' && value !== 'prod') {
+					return `Invalid response '${value}', options are 'dev' or 'prod'.`;
+				}
+				return true;
+			},
+			message: HDB_PROMPT_MSG(INSTALL_PROMPTS.DEFAULTS_MODE),
 		},
 	];
 
@@ -452,7 +472,7 @@ async function checkForExistingInstall() {
  */
 async function termsAgreement(prompt_override) {
 	hdb_logger.info('Asking for terms agreement.');
-	const tc_msg = `Terms & Conditions can be found at ${TERMS_ADDRESS}${LINE_BREAK}and can be viewed by typing or copying and pasting the URL into your web browser.${LINE_BREAK}I Agree to the HarperDB Terms and Conditions. (yes/no)`;
+	const tc_msg = `Terms & Conditions can be found at ${TERMS_ADDRESS}${LINE_BREAK}and can be viewed by typing or copying and pasting the URL into your web browser.${LINE_BREAK}I Agree to the HarperDB Terms and Conditions: (yes/no)`;
 
 	const terms_question = {
 		prefix: PROMPT_PREFIX,
@@ -534,6 +554,41 @@ async function createConfigFile(install_params) {
 	hdb_logger.trace('Creating HarperDB config file');
 	const args = assignCMDENVVariables(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
 	Object.assign(args, install_params);
+
+	// If installing in dev mode set dev config defaults
+	if (install_params[hdb_terms.INSTALL_PROMPTS.DEFAULTS_MODE] === 'dev') {
+		process.env.DEV_MODE = 'true';
+		for (const cfg in DEV_MODE_CONFIG) {
+			// Before setting http.port check that secure port is not being passed
+			if (cfg === CONFIG_PARAMS.HTTP_PORT && args[CONFIG_PARAMS.HTTP_SECUREPORT.toLowerCase()] === undefined) {
+				args[cfg] = args[cfg.toLowerCase()] ?? DEV_MODE_CONFIG[cfg];
+				// set secure port to null to override default
+				args[CONFIG_PARAMS.HTTP_SECUREPORT] = null;
+				continue;
+			} else if (cfg === CONFIG_PARAMS.HTTP_PORT) {
+				continue;
+			}
+
+			// Before setting ops API port check that secure port is not being passed
+			if (
+				cfg === CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT &&
+				args[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT.toLowerCase()] === undefined
+			) {
+				args[cfg] = args[cfg.toLowerCase()] ?? DEV_MODE_CONFIG[cfg];
+				// set secure port to null to override default
+				args[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT] = null;
+				continue;
+			} else if (cfg === CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT) {
+				continue;
+			}
+
+			if (args[cfg.toLowerCase()] === undefined) args[cfg] = DEV_MODE_CONFIG[cfg];
+		}
+	} else {
+		if (args[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT.toLowerCase()])
+			args[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT] = null;
+		if (args[CONFIG_PARAMS.HTTP_PORT.toLowerCase()]) args[CONFIG_PARAMS.HTTP_SECUREPORT] = null;
+	}
 
 	try {
 		if (!cfg_env[hdb_terms.INSTALL_PROMPTS.HDB_CONFIG]) {

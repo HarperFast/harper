@@ -14,6 +14,7 @@ const env_manager = require('../utility/environment/environmentManager');
 const hdb_terms = require('../utility/hdbTerms');
 const { CONFIG_PARAMS } = hdb_terms;
 const certificates_terms = require('../utility/terms/certificates');
+const tls = require('node:tls');
 const { basename } = require('node:path');
 const {
 	CA_CERT_PREFERENCE_APP,
@@ -710,6 +711,14 @@ function readPEM(path) {
 	if (path.startsWith('-----BEGIN')) return path;
 	return readFileSync(path, 'utf8');
 }
+// this horifying hack is brought to you by https://github.com/nodejs/node/issues/36655
+const origCreateSecureContext = tls.createSecureContext;
+let instantiated_context;
+tls.createSecureContext = function (options) {
+	if (instantiated_context) return instantiated_context;
+	return origCreateSecureContext(options);
+};
+
 function applyTLS(type, server, options) {
 	let secure_contexts = new Map();
 	return new Promise((resolve, reject) => {
@@ -761,7 +770,6 @@ function applyTLS(type, server, options) {
 					secure_context.context.setKey(private_key, undefined);
 					secure_options.key = private_key;
 					secure_options.cert = certificate;
-					secure_options.instantiatedContext = secure_context;
 
 					// we store the first 100 bytes of the certificate just for debug logging
 					secure_context.certStart = certificate.toString().slice(0, 100);
@@ -770,7 +778,12 @@ function applyTLS(type, server, options) {
 						secure_contexts.default = secure_context;
 						best_quality = quality;
 						if (server) {
-							server.setSecureContext(secure_options);
+							instantiated_context = secure_context;
+							try {
+								server.setSecureContext(secure_options);
+							} finally {
+								instantiated_context = null;
+							}
 							harper_logger.info('Applying default TLS', secure_context.name, 'for', server.ports);
 						}
 					}
