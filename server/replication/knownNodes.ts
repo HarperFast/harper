@@ -71,15 +71,12 @@ replicationConfirmation((database_name, txnTime, confirmationCount) => {
 	if (!awaiting) commits_awaiting_replication.set(database_name, (awaiting = []));
 	return new Promise((resolve) => {
 		let count = 0;
-		const last_write = this.writes[this.writes.length - 1];
-		if (last_write) {
-			awaiting.push({
-				txnTime: last_write.store.getEntry(last_write.key).localTime,
-				onConfirm: () => {
-					if (++count === this.replicatedConfirmation) resolve();
-				},
-			});
-		} else resolve();
+		awaiting.push({
+			txnTime,
+			onConfirm: () => {
+				if (++count === confirmationCount) resolve();
+			},
+		});
 	});
 });
 function startSubscriptionToReplications() {

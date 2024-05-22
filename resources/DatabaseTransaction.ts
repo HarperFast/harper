@@ -230,7 +230,7 @@ export class DatabaseTransaction implements Transaction {
 						// and when replication notifications come in, we count the number of confirms until we reach the desired number
 						const database_name = this.writes[0].store.rootStore.databaseName;
 						const last_write = this.writes[this.writes.length - 1];
-						if (confirmReplication)
+						if (confirmReplication && last_write)
 							completions.push(
 								confirmReplication(
 									database_name,
