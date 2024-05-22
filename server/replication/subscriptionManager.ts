@@ -14,12 +14,10 @@ import {
 	forEachReplicatedDatabase,
 } from './replicator';
 import { parentPort } from 'worker_threads';
-import env from '../../utility/environment/environmentManager';
+import { subscribeToNodeUpdates, getHDBNodeTable } from './knownNodes';
 import * as logger from '../../utility/logging/harper_logger';
-import { readFileSync } from 'fs';
 import { getCertsKeys } from '../../security/keys.js';
 
-let hdb_node_table;
 let connection_replication_map = new Map();
 export let disconnectedFromNode; // this is set by thread to handle when a node is disconnected (or notify main thread so it can handle)
 export let connectedToNode; // this is set by thread to handle when a node is connected (or notify main thread so it can handle)
@@ -260,57 +258,4 @@ export async function ensureNode(name: string, node) {
 			}
 		}
 	}
-}
-export function getHDBNodeTable() {
-	return (
-		hdb_node_table ||
-		(hdb_node_table = table({
-			table: 'hdb_nodes',
-			database: 'system',
-			attributes: [
-				{
-					name: 'name',
-					isPrimaryKey: true,
-				},
-				{
-					attribute: 'subscriptions',
-				},
-				{
-					attribute: 'system_info',
-				},
-				{
-					attribute: 'url',
-				},
-				{
-					attribute: 'routes',
-				},
-				{
-					attribute: 'ca',
-				},
-				{
-					attribute: 'publish',
-				},
-				{
-					attribute: 'subscribe',
-				},
-				{
-					attribute: '__createdtime__',
-				},
-				{
-					attribute: '__updatedtime__',
-				},
-			],
-		}))
-	);
-}
-export function subscribeToNodeUpdates(listener) {
-	getHDBNodeTable()
-		.subscribe({})
-		.then(async (events) => {
-			for await (let event of events) {
-				if (event.type === 'put') {
-					listener(event.value);
-				}
-			}
-		});
 }

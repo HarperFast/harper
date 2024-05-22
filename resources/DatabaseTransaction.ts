@@ -7,6 +7,8 @@ import { CONTEXT } from './Resource';
 import * as env_mngr from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../utility/hdbTerms';
 import { convertToMS } from '../utility/common_utils';
+import { getHDBNodeTable, subscribeToNodeUpdates } from '../server/replication/subscriptionManager';
+import { forEachReplicatedDatabase } from '../server/replication/replicator';
 
 const MAX_OPTIMISTIC_SIZE = 100;
 const tracked_txns = new Set<DatabaseTransaction>();
@@ -17,7 +19,10 @@ export enum TRANSACTION_STATE {
 	LINGERING, // the transaction has completed a read, but can be used for immediate writes
 }
 let outstanding_commit, outstanding_commit_start;
-const commits_awaiting_replication = new Map<string, []>();
+let confirmReplication;
+export function replicationConfirmation(callback) {
+	confirmReplication = callback;
+}
 
 export class DatabaseTransaction implements Transaction {
 	writes = []; // the set of writes to commit if the conditions are met
@@ -224,22 +229,15 @@ export class DatabaseTransaction implements Transaction {
 						// if we want to wait for replication confirmation, we need to track the transaction times
 						// and when replication notifications come in, we count the number of confirms until we reach the desired number
 						const database_name = this.writes[0].store.rootStore.databaseName;
-						let awaiting = commits_awaiting_replication.get(database_name);
-						if (!awaiting) commits_awaiting_replication.set(database_name, (awaiting = []));
-						completions.push(
-							new Promise((resolve) => {
-								let count = 0;
-								const last_write = this.writes[this.writes.length - 1];
-								if (last_write) {
-									awaiting.push({
-										txnTime: last_write.store.getEntry(last_write.key).localTime,
-										onConfirm: () => {
-											if (++count === this.replicatedConfirmation) resolve();
-										},
-									});
-								} else resolve();
-							})
-						);
+						const last_write = this.writes[this.writes.length - 1];
+						if (confirmReplication)
+							completions.push(
+								confirmReplication(
+									database_name,
+									last_write.store.getEntry(last_write.key).localTime,
+									this.replicatedConfirmation
+								)
+							);
 					}
 					// now reset transactions tracking; this transaction be reused and committed again
 					this.writes = [];
@@ -327,17 +325,3 @@ export function setTxnExpiration(ms) {
 	startMonitoringTxns();
 	return tracked_txns;
 }
-
-const last_replication_time = new Map<string, number>();
-onMessageByType('replicated', async (message) => {
-	const { database, node, time: replicated_time } = message;
-	let node_times = last_replication_time.get(database);
-	if (!node_times) last_replication_time.set(database, (node_times = new Map()));
-	const last_time = node_times.get(node) || 0;
-	for (let { txnTime, onConfirm } of commits_awaiting_replication.get(database) || []) {
-		if (txnTime > last_time && txnTime <= replicated_time) {
-			onConfirm();
-		}
-	}
-	node_times.set(node, replicated_time);
-});

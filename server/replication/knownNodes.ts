@@ -1,78 +1,120 @@
-import { getDatabases, table } from '../../resources/databases';
-import { NodeReplicationConnection } from './replicationConnection';
-
+import { table } from '../../resources/databases';
+import { forEachReplicatedDatabase } from './replicator';
+import { replicationConfirmation } from '../../resources/DatabaseTransaction';
 let hdb_node_table;
-function getHDBNodeTable() {
+
+export function getHDBNodeTable() {
 	return (
 		hdb_node_table ||
 		(hdb_node_table = table({
-			table: 'hdb_node_table',
+			table: 'hdb_nodes',
 			database: 'system',
-			audit: true,
 			attributes: [
 				{
-					name: 'url',
+					name: 'name',
 					isPrimaryKey: true,
 				},
 				{
-					name: 'routes',
+					attribute: 'subscriptions',
+				},
+				{
+					attribute: 'system_info',
+				},
+				{
+					attribute: 'url',
+				},
+				{
+					attribute: 'routes',
+				},
+				{
+					attribute: 'ca',
+				},
+				{
+					attribute: 'publish',
+				},
+				{
+					attribute: 'subscribe',
+				},
+				{
+					attribute: '__createdtime__',
+				},
+				{
+					attribute: '__updatedtime__',
 				},
 			],
 		}))
 	);
 }
-let new_node_listeners = [];
-let all_nodes: any[];
-export function forEachNode(onNewNode: (node: { name: string; url: string }) => { end: () => void }) {
+export function subscribeToNodeUpdates(listener) {
 	getHDBNodeTable()
 		.subscribe({})
 		.then(async (events) => {
 			for await (let event of events) {
 				if (event.type === 'put') {
-					onNewNode(event.value);
+					listener(event.value);
 				}
 			}
 		});
 }
-function initialize() {
-	getHDBNodeTable()
-		.subscribe({})
-		.then(async (events) => {
-			for await (let event of events) {
-				onNodesChange();
-			}
-		});
-	onNodesChange();
-}
-let known_instances = [];
-let enqueued_connect;
 
-function onNodesChange() {
-	let new_known_instances = [];
-	all_nodes = [];
-	for (let node of getHDBNodeTable().search({})) {
-		all_nodes.push(node);
-		if (node.url || node.host) {
-			new_known_instances.push(node.url || 'wss://' + node.host + ':' + (node.port || 9925));
-		}
+const replication_confirmation_float64s = new Map<string, Map<string, Float64Array>>();
+/** Ensure that the shared user buffers are instantiated so we can communicate through them
+ */
+export let commits_awaiting_replication: Map<string, []>;
+
+replicationConfirmation((database_name, txnTime, confirmationCount) => {
+	if (!commits_awaiting_replication) {
+		commits_awaiting_replication = new Map();
+		startSubscriptionToReplications();
 	}
-	if (new_known_instances.toString() !== known_instances.toString()) {
-		known_instances = new_known_instances;
-		clearTimeout(enqueued_connect);
-		enqueued_connect = setTimeout(() => {
-			for (const url of new_known_instances) {
-				if (known_instances.includes(url)) continue;
-				for (let listener of new_node_listeners) {
-					listener({ name: new URL(url).hostname, url });
-				}
-				try {
-					const connection = new NodeReplicationConnection(url, subscription, db_name);
-					connection.connect();
-				} catch (error) {
-					console.error(error);
-				}
+	let awaiting = commits_awaiting_replication.get(database_name);
+	if (!awaiting) commits_awaiting_replication.set(database_name, (awaiting = []));
+	return new Promise((resolve) => {
+		let count = 0;
+		const last_write = this.writes[this.writes.length - 1];
+		if (last_write) {
+			awaiting.push({
+				txnTime: last_write.store.getEntry(last_write.key).localTime,
+				onConfirm: () => {
+					if (++count === this.replicatedConfirmation) resolve();
+				},
+			});
+		} else resolve();
+	});
+});
+function startSubscriptionToReplications() {
+	subscribeToNodeUpdates((node_record) => {
+		forEachReplicatedDatabase({}, (database, database_name) => {
+			let node_name = node_record.name;
+			let confirmations_for_node = replication_confirmation_float64s.get(node_name);
+			if (!confirmations_for_node) {
+				replication_confirmation_float64s.set(node_name, (confirmations_for_node = new Map()));
 			}
-			known_instances = new_known_instances;
-		}, 1);
-	}
+			if (confirmations_for_node.has(database_name)) return;
+			let audit_store;
+			for (let table_name in database) {
+				const table = database[table_name];
+				audit_store = table.auditStore;
+				if (audit_store) break;
+			}
+			if (audit_store) {
+				let replicated_time = new Float64Array(
+					audit_store.getUserSharedBuffer(['replicated', database_name, node_name], new ArrayBuffer(8), {
+						callback: () => {
+							let updated_time = replicated_time[0];
+							let last_time = replicated_time.lastTime;
+							for (let { txnTime, onConfirm } of commits_awaiting_replication.get(database_name) || []) {
+								if (txnTime > last_time && txnTime <= updated_time) {
+									onConfirm();
+								}
+							}
+							replicated_time.lastTime = updated_time;
+						},
+					})
+				);
+				replicated_time.lastTime = 0;
+				confirmations_for_node.set(database_name, replicated_time);
+			}
+		});
+	});
 }

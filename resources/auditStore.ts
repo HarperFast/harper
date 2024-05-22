@@ -133,7 +133,15 @@ export function openAuditStore(root_store) {
 	if (getWorkerIndex() === getWorkerCount() - 1) {
 		scheduleAuditCleanup(DEFAULT_AUDIT_CLEANUP_DELAY);
 	}
-
+	if (getWorkerIndex() === 0) {
+		for (let time of audit_store.getKeys({ reverse: true, limit: true })) {
+			if (time > Date.now()) {
+				harper_logger.error(
+					'The current time is before the last recorded entry in the audit log. Time reversal can undermine the integrity of data tracking and certificate validation and the time must be corrected.'
+				);
+			}
+		}
+	}
 	return audit_store;
 }
 

@@ -36,7 +36,7 @@ import { X509Certificate } from 'crypto';
 import { readFileSync } from 'fs';
 import { EventEmitter } from 'events';
 export { startOnMainThread } from './subscriptionManager';
-import { subscribeToNodeUpdates, getHDBNodeTable } from './subscriptionManager';
+import { subscribeToNodeUpdates, getHDBNodeTable } from './knownNodes';
 import { encode } from 'msgpackr';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms';
 import { WebSocket } from 'ws';

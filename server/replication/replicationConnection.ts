@@ -184,6 +184,7 @@ export function replicateOverWS(ws, options, authorization) {
 	let database_name = options.database;
 	const db_subscriptions = options.databaseSubscriptions || database_subscriptions;
 	let audit_store;
+	let replication_confirmation_float64;
 	// this is the subscription that the local table makes to this replicator, and incoming messages
 	// are sent to this subscription queue:
 	let subscribed = false;
@@ -361,15 +362,14 @@ export function replicateOverWS(ws, options, authorization) {
 						break;
 					case COMMITTED_UPDATE:
 						// we need to record the sequence number that the remote node has received
-						broadcast(
-							{
-								type: 'replicated',
-								database: database_name,
-								node: remote_node_name,
-								time: data,
-							},
-							true
-						);
+						const replication_key = ['replicated', database_name, remote_node_name];
+						if (!replication_confirmation_float64)
+							replication_confirmation_float64 = new Float64Array(
+								audit_store.getUserSharedBuffer(replication_key, new ArrayBuffer(8))
+							);
+						replication_confirmation_float64[0] = data;
+						logger.info(connection_id, 'received and broadcasting committed update', data);
+						replication_confirmation_float64.buffer.notify();
 						break;
 					case SEQUENCE_ID_UPDATE:
 						// we need to record the sequence number that the remote node has received
