@@ -16,7 +16,14 @@ const { recordAction, recordActionBinary } = require('../../resources/analytics'
 const { Request, createReuseportFd } = require('../serverHelpers/Request');
 const { checkMemoryLimit } = require('../../utility/registration/hdb_license');
 const { X509Certificate } = require('crypto');
+const tls = require('tls');
 
+const origCreateSecureContext = tls.createSecureContext;
+let instantiated_context;
+tls.createSecureContext = function (options) {
+	if (instantiated_context) return instantiated_context;
+	return origCreateSecureContext(options);
+};
 const debug_threads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
 if (debug_threads) {
 	let port;
@@ -502,6 +509,14 @@ function getHTTPServer(port, secure, is_operations_server) {
 				recordAction(socket.isSessionReused(), 'tls-reused', port);
 			});
 			http_servers[port].isSecure = true;
+			options.SNICallback(null, (err, context) => {
+				try {
+					instantiated_context = context;
+					if (context) http_servers[port].setSecureContext(context.options);
+				} finally {
+					instantiated_context = null;
+				}
+			});
 		}
 		registerServer(http_servers[port], port);
 	}
@@ -548,14 +563,20 @@ function onSocket(listener, options) {
 	if (options.securePort) {
 		const tls_config = Object.assign({}, env.get('tls'));
 		if (options.mtls?.certificateAuthority) tls_config.certificateAuthority = options.mtls.certificateAuthority;
-		socket_server = createSecureSocketServer(
-			{
-				rejectUnauthorized: Boolean(options.mtls?.required),
-				requestCert: Boolean(options.mtls),
-				SNICallback: createSNICallback(tls_config),
-			},
-			listener
-		);
+		let server_options = {
+			rejectUnauthorized: Boolean(options.mtls?.required),
+			requestCert: Boolean(options.mtls),
+			SNICallback: createSNICallback(tls_config),
+		};
+		socket_server = createSecureSocketServer(server_options, listener);
+		server_options.SNICallback(null, (err, context) => {
+			try {
+				instantiated_context = context;
+				if (context) socket_server.setSecureContext(context.options);
+			} finally {
+				instantiated_context = null;
+			}
+		});
 		SERVERS[options.securePort] = socket_server;
 	}
 	if (options.port) {
@@ -651,15 +672,20 @@ function createSNICallback(tls_config) {
 		if (!private_key || !certificate) {
 			throw new Error('Missing private key or certificate for secure server');
 		}
-		let secure_context = createSecureContext({
+		let options = {
 			ciphers: env.get('tls_ciphers'),
 			ca: certificate_authority,
 			ticketKeys: getTicketKeys(),
-		});
+		};
+		let secure_context = createSecureContext(options);
+		secure_context.options = options;
+		options.instantiatedContext = secure_context;
 		// Due to https://github.com/nodejs/node/issues/36655, we need to ensure that we apply the key and cert
 		// *after* the context is created, so that the ciphers are set and allow for lower security ciphers if needed
 		secure_context.context.setCert(certificate);
 		secure_context.context.setKey(private_key, undefined);
+		options.cert = certificate;
+		options.key = private_key;
 
 		// we store the first 100 bytes of the certificate just for debug logging
 		secure_context.certStart = certificate.subarray(0, 100).toString();
