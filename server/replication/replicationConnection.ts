@@ -291,6 +291,7 @@ export function replicateOverWS(ws, options, authorization) {
 							const database_name = message[2];
 							if (!databases[database_name]?.[table_definition.table]) {
 								table_definition.database = database_name;
+								logger.info(connection_id, 'Received table definition', table_definition);
 								ensureTable(table_definition);
 							}
 						}
@@ -332,7 +333,7 @@ export function replicateOverWS(ws, options, authorization) {
 						// Check the attributes in the msg vs the table and if they dont match call ensureTable to create them
 						// TODO: This prob wont be good enough because only some parts of attributes are supposed to replicate (not location or relationship information)
 						let equal_att = true;
-						if (table.attributes.length !== data.attributes.length) {
+						if (table && table.attributes.length !== data.attributes.length) {
 							const table_set = new Set(table.attributes.map((att) => att.name));
 							const data_set = new Set(data.attributes.map((att) => att.name));
 							let long_set = data_set;
@@ -772,7 +773,7 @@ export function replicateOverWS(ws, options, authorization) {
 					);
 				}
 				const event = {
-					table: table_decoders[audit_record.tableId].name,
+					table: table_decoder.name,
 					id: audit_record.recordId,
 					type: audit_record.type,
 					nodeId: remote_short_id_to_local_id.get(audit_record.nodeId),
