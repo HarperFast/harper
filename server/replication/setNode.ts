@@ -4,11 +4,11 @@ import Joi from 'joi';
 import { get } from '../../utility/environment/environmentManager';
 import { OPERATIONS_ENUM, CONFIG_PARAMS, LICENSE_KEY_DIR_NAME } from '../../utility/hdbTerms';
 import { CERTIFICATE_PEM_NAME, CA_PEM_NAME, CERT_NAME } from '../../utility/terms/certificates';
-import { ensureNode, getHDBNodeTable } from './subscriptionManager';
+import { ensureNode } from './subscriptionManager';
+import { getHDBNodeTable } from './knownNodes';
 import { getThisNodeUrl, sendOperationToNode, urlToNodeName } from './replicator';
 import * as hdb_logger from '../../utility/logging/harper_logger';
 import { handleHDBError, hdb_errors } from '../../utility/errors/hdbError.js';
-const { handleHDBError, hdb_errors } = require('../../utility/errors/hdbError.js');
 const { HTTP_STATUS_CODES } = hdb_errors;
 
 const validation_schema = Joi.object({
