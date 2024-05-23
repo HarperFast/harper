@@ -741,6 +741,7 @@ function applyTLS(type, server, options) {
 						ca: [...rootCertificates, ...ca_certs],
 						ticketKeys: getTicketKeys(),
 					};
+					if (server) secure_options.sessionIdContext = server.sessionIdContext;
 					let secure_context = createSecureContext(secure_options);
 					secure_context.name = cert.name;
 					// Due to https://github.com/nodejs/node/issues/36655, we need to ensure that we apply the key and cert
@@ -792,7 +793,7 @@ function applyTLS(type, server, options) {
 								});
 								if (server) {
 									harper_logger.info('Applying TLS for host', hostname, secure_context.name, 'for', server.ports);
-									//server?.addContext(hostname, secure_context);
+									server?.addContext(hostname, secure_context);
 								}
 							}
 						} else {
