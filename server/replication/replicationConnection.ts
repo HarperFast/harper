@@ -301,7 +301,8 @@ export function replicateOverWS(ws, options, authorization) {
 						break;
 					case OPERATION_REQUEST:
 						try {
-							server.operation(data, { user: authorization }, true).then(
+							let is_authorized_node = authorization?.publish || authorization?.subscribers;
+							server.operation(data, { user: authorization }, !is_authorized_node).then(
 								(response) => {
 									response.requestId = data.requestId;
 									ws.send(encode([OPERATION_RESPONSE, response]));
@@ -384,10 +385,10 @@ export function replicateOverWS(ws, options, authorization) {
 						// we have publish permission for this node/database
 						if (
 							!(
-								authorization.publish ||
+								authorization.publish !== false ||
 								authorization.subscriptions?.some(
 									// TODO: Verify the table permissions for each table listed in the subscriptions
-									(sub) => (sub.database || sub.schema) === database_name && sub.publish
+									(sub) => (sub.database || sub.schema) === database_name && sub.publish !== false
 								)
 							)
 						) {
@@ -842,15 +843,31 @@ export function replicateOverWS(ws, options, authorization) {
 				table_subscription_to_replicator.dbisDB.get([Symbol.for('seq'), remote_node_name]) ?? 1;
 		}*/
 		const node_subscriptions = options.connection?.nodeSubscriptions.map((node, index) => {
-			const table_subs = [];
-			for (let table_name in tables) {
-				if (node.replicateByDefault ? tables[table_name].replicate === false : tables[table_name].replicate)
-					table_subs.push(table_name);
+			let table_subs = [];
+			let { replicateByDefault: replicate_by_default } = node;
+			if (node.subscriptions) {
+				// if the node has explicit subscriptions, we need to use that to determine subscriptions
+				for (let subscription of node.subscriptions) {
+					// if there is an explicit subscription listed
+					if (subscription.subscribe && (subscription.schema || subscription.database) === database_name) {
+						const table_name = subscription.table;
+						if (replicate_by_default ? tables[table_name].replicate !== false : tables[table_name].replicate)
+							// if replication is enabled for this table
+							table_subs.push(table_name);
+					}
+				}
+				replicate_by_default = false; // now turn off the default replication because it was an explicit list of subscriptions
+			} else {
+				// note that if replicateByDefault is enabled, we are listing the *excluded* tables
+				for (let table_name in tables) {
+					if (replicate_by_default ? tables[table_name].replicate === false : tables[table_name].replicate)
+						table_subs.push(table_name);
+				}
 			}
 
 			return {
 				name: node.name,
-				replicateByDefault: node.replicateByDefault,
+				replicateByDefault: replicate_by_default,
 				tables: table_subs, // omitted or included based on flag above
 				startTime: (table_subscription_to_replicator.dbisDB.get([Symbol.for('seq'), node.name]) ?? 10001) - 10000,
 			};

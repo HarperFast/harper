@@ -217,8 +217,7 @@ _assignPackageExport('operation', operation);
  */
 function operation(operation, context, authorize) {
 	operation.hdb_user = context?.user;
-	operation.bypass_auth = !context.authorize;
-	context.authorize = false;
+	operation.bypass_auth = !authorize;
 	const operation_function = chooseOperation(operation);
 	return processLocalTransaction({ body: operation }, operation_function);
 }

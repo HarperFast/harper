@@ -382,11 +382,8 @@ async function signCertificate(req) {
 		if (req.add_node) {
 			const node_record = { url: req.add_node.url, ca: pki.certificateToPem(ca_app_cert) };
 			if (req.add_node.subscriptions) node_record.subscriptions = req.add_node.subscriptions;
-			if (req.add_node.hasOwnProperty('subscribe') && req.add_node.hasOwnProperty('publish')) {
-				node_record.subscribe = req.add_node.subscribe;
-				node_record.publish = req.add_node.publish;
-			}
-
+			if (req.add_node.hasOwnProperty('subscribe')) node_record.publish = req.add_node.publish;
+			if (req.add_node.hasOwnProperty('publish')) node_record.subscribe = req.add_node.subscribe;
 			await ensureNode(undefined, node_record);
 		}
 	};
@@ -737,7 +734,7 @@ function applyTLS(type, server, options) {
 						throw new Error('Missing private key or certificate for secure server');
 					}
 					const secure_options = {
-						ciphers: env.get('tls_ciphers'),
+						ciphers: cert.ciphers,
 						ca: [...rootCertificates, ...ca_certs],
 						ticketKeys: getTicketKeys(),
 					};
@@ -816,4 +813,8 @@ function applyTLS(type, server, options) {
 			});
 		}
 	});
+}
+function reverseSubscription(subscription) {
+	const { subscribe, publish } = subscription;
+	return { ...subscription, subscribe: publish, publish: subscribe };
 }
