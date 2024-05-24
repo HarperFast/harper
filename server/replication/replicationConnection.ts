@@ -301,7 +301,8 @@ export function replicateOverWS(ws, options, authorization) {
 						break;
 					case OPERATION_REQUEST:
 						try {
-							server.operation(data, { user: authorization }, true).then(
+							let is_authorized_node = authorization?.publish || authorization?.subscribers;
+							server.operation(data, { user: authorization }, !is_authorized_node).then(
 								(response) => {
 									response.requestId = data.requestId;
 									ws.send(encode([OPERATION_RESPONSE, response]));
@@ -384,10 +385,10 @@ export function replicateOverWS(ws, options, authorization) {
 						// we have publish permission for this node/database
 						if (
 							!(
-								authorization.publish ||
+								authorization.publish !== false ||
 								authorization.subscriptions?.some(
 									// TODO: Verify the table permissions for each table listed in the subscriptions
-									(sub) => (sub.database || sub.schema) === database_name && sub.publish
+									(sub) => (sub.database || sub.schema) === database_name && sub.publish !== false
 								)
 							)
 						) {
@@ -842,11 +843,20 @@ export function replicateOverWS(ws, options, authorization) {
 				table_subscription_to_replicator.dbisDB.get([Symbol.for('seq'), remote_node_name]) ?? 1;
 		}*/
 		const node_subscriptions = options.connection?.nodeSubscriptions.map((node, index) => {
-			const table_subs = [];
-			for (let table_name in tables) {
-				if (node.replicateByDefault ? tables[table_name].replicate === false : tables[table_name].replicate)
+			let table_subs = [];
+			if (node.subscriptions) {
+				for (let subscription in node.subscriptions) {
+					if (subscription.subscribe && (subscription.schema || subscription.database) === database_name)
+						table_subs.push(subscription.table);
+				}
+			} else {
+				for (let table_name in tables) {
 					table_subs.push(table_name);
+				}
 			}
+			table_subs = table_subs.filter((table_name) => {
+				return node.replicateByDefault ? tables[table_name].replicate === false : tables[table_name].replicate;
+			});
 
 			return {
 				name: node.name,

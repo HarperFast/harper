@@ -54,17 +54,11 @@ export async function setNode(req: object) {
 
 	if (req.node_name) remote_add_node_obj.node_name = req.node_name;
 	if (req.subscriptions) {
-		const cloned_subs = [...req.subscriptions];
-		for (const s of cloned_subs) {
-			const reversed = reverseSubscription(s);
-			s.subscribe = reversed.subscribe;
-			s.publish = reversed.publish;
-		}
-		remote_add_node_obj.subscriptions = cloned_subs;
+		remote_add_node_obj.subscriptions = req.subscriptions.map(reverseSubscription);
 	}
 
-	if (req.hasOwnProperty('subscribe') && req.hasOwnProperty('publish')) {
-		const rev = reverseSubscription({ subscribe: req.subscribe, publish: req.publish });
+	if (req.hasOwnProperty('subscribe') || req.hasOwnProperty('publish')) {
+		const rev = reverseSubscription(req);
 		remote_add_node_obj.subscribe = rev.subscribe;
 		remote_add_node_obj.publish = rev.publish;
 	}
@@ -121,16 +115,5 @@ export async function setNode(req: object) {
 
 function reverseSubscription(subscription) {
 	const { subscribe, publish } = subscription;
-	const result = {};
-	if (subscribe === true && publish === false) {
-		result.subscribe = false;
-		result.publish = true;
-	} else if (subscribe === false && publish === true) {
-		result.subscribe = true;
-		result.publish = false;
-	} else {
-		return subscription;
-	}
-
-	return result;
+	return { ...subscription, subscribe: publish, publish: subscribe };
 }
