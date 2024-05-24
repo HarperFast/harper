@@ -844,23 +844,30 @@ export function replicateOverWS(ws, options, authorization) {
 		}*/
 		const node_subscriptions = options.connection?.nodeSubscriptions.map((node, index) => {
 			let table_subs = [];
+			let { replicateByDefault: replicate_by_default } = node;
 			if (node.subscriptions) {
+				// if the node has explicit subscriptions, we need to use that to determine subscriptions
 				for (let subscription in node.subscriptions) {
-					if (subscription.subscribe && (subscription.schema || subscription.database) === database_name)
-						table_subs.push(subscription.table);
+					// if there is an explicit subscription listed
+					if (subscription.subscribe && (subscription.schema || subscription.database) === database_name) {
+						const table_name = subscription.table;
+						if (replicate_by_default ? tables[table_name].replicate !== false : tables[table_name].replicate)
+							// if replication is enabled for this table
+							table_subs.push(subscription.table);
+					}
 				}
+				replicate_by_default = false; // now turn off the default replication because it was an explicit list of subscriptions
 			} else {
+				// note that if replicateByDefault is enabled, we are listing the *excluded* tables
 				for (let table_name in tables) {
-					table_subs.push(table_name);
+					if (replicate_by_default ? tables[table_name].replicate === false : tables[table_name].replicate)
+						table_subs.push(table_name);
 				}
 			}
-			table_subs = table_subs.filter((table_name) => {
-				return node.replicateByDefault ? tables[table_name].replicate === false : tables[table_name].replicate;
-			});
 
 			return {
 				name: node.name,
-				replicateByDefault: node.replicateByDefault,
+				replicateByDefault: replicate_by_default,
 				tables: table_subs, // omitted or included based on flag above
 				startTime: (table_subscription_to_replicator.dbisDB.get([Symbol.for('seq'), node.name]) ?? 10001) - 10000,
 			};

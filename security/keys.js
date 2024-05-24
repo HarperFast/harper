@@ -42,7 +42,6 @@ Object.assign(exports, {
 	loadCertificates,
 	setDefaultCertsKeys,
 	applyTLS,
-	reverseSubscription,
 });
 
 const { urlToNodeName, getThisNodeUrl } = require('../server/replication/replicator');
@@ -814,4 +813,8 @@ function applyTLS(type, server, options) {
 			});
 		}
 	});
+}
+function reverseSubscription(subscription) {
+	const { subscribe, publish } = subscription;
+	return { ...subscription, subscribe: publish, publish: subscribe };
 }
