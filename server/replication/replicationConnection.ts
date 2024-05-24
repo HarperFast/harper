@@ -308,11 +308,27 @@ export function replicateOverWS(ws, options, authorization) {
 									ws.send(encode([OPERATION_RESPONSE, response]));
 								},
 								(error) => {
-									ws.send(encode([OPERATION_RESPONSE, { requestId: data.requestId, error: error.toString() }]));
+									ws.send(
+										encode([
+											OPERATION_RESPONSE,
+											{
+												requestId: data.requestId,
+												error: typeof error === 'object' ? JSON.stringify(error) : error.toString(),
+											},
+										])
+									);
 								}
 							);
 						} catch (error) {
-							ws.send(encode([OPERATION_RESPONSE, { requestId: data.requestId, error: error.toString() }]));
+							ws.send(
+								encode([
+									OPERATION_RESPONSE,
+									{
+										requestId: data.requestId,
+										error: typeof error === 'object' ? JSON.stringify(error) : error.toString(),
+									},
+								])
+							);
 						}
 						break;
 					case OPERATION_RESPONSE:

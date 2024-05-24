@@ -71,7 +71,6 @@ export async function setNode(req: object) {
 	};
 	let sign_res;
 	try {
-		// TODO: sendOperationToNode doesnt seem to fail well/at all
 		sign_res = await sendOperationToNode({ url }, sign_req, req);
 	} catch (err) {
 		hdb_logger.error(err);
