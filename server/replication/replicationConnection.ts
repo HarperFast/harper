@@ -847,13 +847,13 @@ export function replicateOverWS(ws, options, authorization) {
 			let { replicateByDefault: replicate_by_default } = node;
 			if (node.subscriptions) {
 				// if the node has explicit subscriptions, we need to use that to determine subscriptions
-				for (let subscription in node.subscriptions) {
+				for (let subscription of node.subscriptions) {
 					// if there is an explicit subscription listed
 					if (subscription.subscribe && (subscription.schema || subscription.database) === database_name) {
 						const table_name = subscription.table;
 						if (replicate_by_default ? tables[table_name].replicate !== false : tables[table_name].replicate)
 							// if replication is enabled for this table
-							table_subs.push(subscription.table);
+							table_subs.push(table_name);
 					}
 				}
 				replicate_by_default = false; // now turn off the default replication because it was an explicit list of subscriptions
