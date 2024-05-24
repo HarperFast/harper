@@ -673,7 +673,7 @@ function createSNICallback(tls_config) {
 			throw new Error('Missing private key or certificate for secure server');
 		}
 		let options = {
-			ciphers: env.get('tls_ciphers'),
+			ciphers: tls.ciphers,
 			ca: certificate_authority,
 			ticketKeys: getTicketKeys(),
 		};
