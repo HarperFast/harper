@@ -135,7 +135,7 @@ export async function startOnMainThread(options) {
 		// a node that may have more recent updates, so we try to go to the next node in the list, using
 		// a sorted list of node names that all nodes should have and use.
 		const node_names = Array.from(node_map.keys()).sort();
-		const existing_index = Math.max(node_names.indexOf(connection.name), 0);
+		const existing_index = node_names.indexOf(connection.name || urlToNodeName(connection.url));
 		if (existing_index === -1) {
 			logger.warn('Disconnected node not found in node map', connection.name, node_map.keys());
 			return;
@@ -155,6 +155,13 @@ export async function startOnMainThread(options) {
 			}
 			const { worker, nodes } = failover_worker_entry;
 			// record which node we are now redirecting to
+			for (let node of existing_worker_entry.nodes) {
+				if (nodes.some((n) => n.name === node.name)) {
+					logger.info(`Disconnected node is already failing over to ${next_node_name} for ${connection.database}`);
+					continue;
+				}
+				nodes.push(node);
+			}
 			nodes.push(...existing_worker_entry.nodes);
 			existing_worker_entry.redirectingTo = failover_worker_entry;
 			if (worker) {
