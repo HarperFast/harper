@@ -720,82 +720,86 @@ function applyTLS(type, server, options) {
 				}
 
 				for await (const cert of certificate_table.search([])) {
-					let is_operations = type === 'operations-api';
-					if (!is_operations && cert.name.includes('operations')) continue;
-					if (cert.is_authority) {
-						continue;
-					}
-					let quality;
-					if (type === cert.name) quality = 5;
-					else quality = CERT_PREFERENCE_APP[cert.name] ?? (is_operations ? 4 : 0);
-					const private_key = private_keys.get(cert.private_key_name);
-					const certificate = cert.certificate;
-					if (!private_key || !certificate) {
-						throw new Error('Missing private key or certificate for secure server');
-					}
-					const secure_options = {
-						ciphers: cert.ciphers,
-						ca: [...rootCertificates, ...ca_certs],
-						ticketKeys: getTicketKeys(),
-					};
-					if (server) secure_options.sessionIdContext = server.sessionIdContext;
-					let secure_context = createSecureContext(secure_options);
-					secure_context.name = cert.name;
-					// Due to https://github.com/nodejs/node/issues/36655, we need to ensure that we apply the key and cert
-					// *after* the context is created, so that the ciphers are set and allow for lower security ciphers if needed
-					// We also maintain the instantiated context because for the default context we need to set it on the server,
-					// but since we have already built the context, we can directly provide it to the server
-					secure_context.context.setCert(certificate);
-					secure_context.context.setKey(private_key, undefined);
-					secure_options.key = private_key;
-					secure_options.cert = certificate;
+					try {
+						let is_operations = type === 'operations-api';
+						if (!is_operations && cert.name.includes('operations')) continue;
+						if (cert.is_authority) {
+							continue;
+						}
+						let quality;
+						if (type === cert.name) quality = 5;
+						else quality = CERT_PREFERENCE_APP[cert.name] ?? (is_operations ? 4 : 0);
+						const private_key = private_keys.get(cert.private_key_name);
+						const certificate = cert.certificate;
+						if (!private_key || !certificate) {
+							throw new Error('Missing private key or certificate for secure server');
+						}
+						const secure_options = {
+							ciphers: cert.ciphers,
+							ca: [...(cert.useRootCerts ? rootCertificates : []), ...ca_certs],
+							ticketKeys: getTicketKeys(),
+						};
+						if (server) secure_options.sessionIdContext = server.sessionIdContext;
+						let secure_context = createSecureContext(secure_options);
+						secure_context.name = cert.name;
+						// Due to https://github.com/nodejs/node/issues/36655, we need to ensure that we apply the key and cert
+						// *after* the context is created, so that the ciphers are set and allow for lower security ciphers if needed
+						// We also maintain the instantiated context because for the default context we need to set it on the server,
+						// but since we have already built the context, we can directly provide it to the server
+						secure_context.context.setCert(certificate);
+						secure_context.context.setKey(private_key, undefined);
+						secure_options.key = private_key;
+						secure_options.cert = certificate;
 
-					// we store the first 100 bytes of the certificate just for debug logging
-					secure_context.certStart = certificate.toString().slice(0, 100);
-					if (quality > best_quality) {
-						// we use this certificate as the default if it has a higher quality than the existing one
-						secure_contexts.default = secure_context;
-						best_quality = quality;
-						if (server) {
-							instantiated_context = secure_context;
-							try {
-								server.setSecureContext(secure_options);
-							} finally {
-								instantiated_context = null;
-							}
-							harper_logger.info('Applying default TLS', secure_context.name, 'for', server.ports);
-						}
-					}
-					let cert_parsed = new X509Certificate(certificate);
-					let hostnames =
-						cert.hostnames ??
-						(cert_parsed.subjectAltName
-							? cert_parsed.subjectAltName.split(',').map((part) => {
-									// the subject alt names looks like 'IP Address:127.0.0.1, DNS:localhost, IP Address:0:0:0:0:0:0:0:1'
-									// so we split on commas and then use the part after the colon as the host name
-									let colon_index = part.indexOf(':');
-									return part.slice(colon_index + 1);
-							  })
-							: // finally we fall back to the common name
-							  [cert_parsed.subject.match(/CN=(.*)/)?.[1]]);
-					if (!Array.isArray(hostnames)) hostnames = [hostnames];
-					for (let hostname of hostnames) {
-						if (hostname) {
-							// we use this certificate if it has a higher quality than the existing one for this hostname
-							let existing_cert_quality = secure_contexts.get(hostname)?.quality ?? 0;
-							if (quality > existing_cert_quality) {
-								secure_contexts.set(hostname, {
-									context: secure_context,
-									quality,
-								});
-								if (server) {
-									harper_logger.info('Applying TLS for host', hostname, secure_context.name, 'for', server.ports);
-									server?.addContext(hostname, secure_context);
+						// we store the first 100 bytes of the certificate just for debug logging
+						secure_context.certStart = certificate.toString().slice(0, 100);
+						if (quality > best_quality) {
+							// we use this certificate as the default if it has a higher quality than the existing one
+							secure_contexts.default = secure_context;
+							best_quality = quality;
+							if (server) {
+								instantiated_context = secure_context;
+								try {
+									server.setSecureContext(secure_options);
+								} finally {
+									instantiated_context = null;
 								}
+								harper_logger.info('Applying default TLS', secure_context.name, 'for', server.ports);
 							}
-						} else {
-							harper_logger.error('No hostname found for certificate at', tls.certificate);
 						}
+						let cert_parsed = new X509Certificate(certificate);
+						let hostnames =
+							cert.hostnames ??
+							(cert_parsed.subjectAltName
+								? cert_parsed.subjectAltName.split(',').map((part) => {
+										// the subject alt names looks like 'IP Address:127.0.0.1, DNS:localhost, IP Address:0:0:0:0:0:0:0:1'
+										// so we split on commas and then use the part after the colon as the host name
+										let colon_index = part.indexOf(':');
+										return part.slice(colon_index + 1);
+								  })
+								: // finally we fall back to the common name
+								  [cert_parsed.subject.match(/CN=(.*)/)?.[1]]);
+						if (!Array.isArray(hostnames)) hostnames = [hostnames];
+						for (let hostname of hostnames) {
+							if (hostname) {
+								// we use this certificate if it has a higher quality than the existing one for this hostname
+								let existing_cert_quality = secure_contexts.get(hostname)?.quality ?? 0;
+								if (quality > existing_cert_quality) {
+									secure_contexts.set(hostname, {
+										context: secure_context,
+										quality,
+									});
+									if (server) {
+										harper_logger.info('Applying TLS for host', hostname, secure_context.name, 'for', server.ports);
+										server?.addContext(hostname, secure_context);
+									}
+								}
+							} else {
+								harper_logger.error('No hostname found for certificate at', tls.certificate);
+							}
+						}
+					} catch (error) {
+						harper_logger.error('Error applying TLS for', cert.name, error);
 					}
 				}
 				resolve(secure_contexts);
