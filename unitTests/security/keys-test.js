@@ -8,6 +8,9 @@ const env_mgr = require('../../utility/environment/environmentManager');
 const test_utils = require('../test_utils');
 const keys = require('../../security/keys');
 const config_utils = require('../../config/configUtils');
+const certificates_terms = require('../../utility/terms/certificates');
+const mkcert = require('mkcert');
+const { createSNICallback } = require('../../server/threads/threadServer');
 
 describe('Test keys module', () => {
 	const sandbox = sinon.createSandbox();
@@ -81,5 +84,44 @@ describe('Test keys module', () => {
 		const value = process.argv.indexOf('hi/im/a/private_key.pem');
 		if (command > -1) process.argv.splice(command, 1);
 		if (value > -1) process.argv.splice(value, 1);
+	});
+	it('Test SNI with wildcards', async () => {
+		let cert1 = await mkcert.createCert({
+			domains: ['host-one.com', 'default'],
+			validityDays: 3650,
+			caKey: certificates_terms.CERTIFICATE_VALUES.key,
+			caCert: certificates_terms.CERTIFICATE_VALUES.cert,
+		});
+		let cert2 = await mkcert.createCert({
+			domains: ['*.test-domain.com', '*.test-subdomain.test-domain2.com'],
+			validityDays: 3650,
+			caKey: certificates_terms.CERTIFICATE_VALUES.key,
+			caCert: certificates_terms.CERTIFICATE_VALUES.cert,
+		});
+		let SNICallback = createSNICallback([
+			{
+				certificate: cert1.cert,
+				privateKey: cert1.key,
+			},
+			{
+				certificate: cert2.cert,
+				privateKey: cert2.key,
+			},
+		]);
+		let context;
+		SNICallback('host.test-domain.com', (err, ctx) => {
+			context = ctx;
+		});
+		expect(context.options.cert).to.eql(cert2.cert);
+
+		SNICallback('nomatch.com', (err, ctx) => {
+			context = ctx;
+		});
+		expect(context.options.cert).to.eql(cert1.cert);
+
+		SNICallback('host.test-subdomain.test-domain2.com', (err, ctx) => {
+			context = ctx;
+		});
+		expect(context.options.cert).to.eql(cert2.cert);
 	});
 });
