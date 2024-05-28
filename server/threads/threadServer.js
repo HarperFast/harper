@@ -16,7 +16,7 @@ const { Headers, appendHeader } = require('../serverHelpers/Headers');
 const { recordAction, recordActionBinary } = require('../../resources/analytics');
 const { Request, createReuseportFd } = require('../serverHelpers/Request');
 const { checkMemoryLimit } = require('../../utility/registration/hdb_license');
-const { applyTLS } = require('../../security/keys');
+const { createTLSSelector } = require('../../security/keys');
 const debug_threads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
 if (debug_threads) {
 	let port;
@@ -401,6 +401,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 				requestCert: Boolean(mtls || is_operations_server),
 				ticketKeys: getTicketKeys(),
 				maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
+				SNICallback: createTLSSelector(is_operations_server ? 'operations-api' : 'server', { required: mtls_required }),
 			});
 		}
 		let license_warning = checkMemoryLimit();
@@ -522,7 +523,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 		if (secure) {
 			if (!server.ports) server.ports = [];
 			server.ports.push(port);
-			applyTLS(is_operations_server ? 'operations-api' : 'server', server);
+			options.SNICallback.initialize(server);
 			if (mtls) server.mtlsConfig = mtls;
 			server.on('secureConnection', (socket) => {
 				if (socket._parent.startTime) recordAction(performance.now() - socket._parent.startTime, 'tls-handshake', port);
@@ -573,6 +574,7 @@ function onRequest(listener, options) {
 async function onSocket(listener, options) {
 	let socket_server;
 	if (options.securePort) {
+		let SNICallback = createTLSSelector('server', options.mtls);
 		socket_server = createSecureSocketServer(
 			{
 				rejectUnauthorized: Boolean(options.mtls?.required),
@@ -580,10 +582,11 @@ async function onSocket(listener, options) {
 				noDelay: true, // don't delay for Nagle's algorithm, it is a relic of the past that slows things down: https://brooker.co.za/blog/2024/05/09/nagle.html
 				keepAlive: true,
 				keepAliveInitialDelay: 600, // 10 minute keep-alive, want to be proactive about closing unused connections
+				SNICallback,
 			},
 			listener
 		);
-		applyTLS('server', socket_server, options.mtls);
+		SNICallback.initialize(socket_server);
 		SERVERS[options.securePort] = socket_server;
 	}
 	if (options.port) {

@@ -28,40 +28,45 @@ export async function startOnMainThread(options) {
 	let new_node_listeners = [];
 	let all_nodes: any[];
 	let next_worker_index = 0;
-	const { app_ca } = await getCertsKeys();
+	/*const { app_ca } = await getCertsKeys();
 	// make sure this node exists is in the hdb_nodes table
 	await ensureNode(getThisNodeName(), {
 		url: getThisNodeUrl(),
 		ca: app_ca.cert,
-	});
-	route_loop: for (const route of options.routes || []) {
-		try {
-			let url = typeof route === 'string' ? route : route.url;
-			if (!url) {
-				if (route.host) url = 'wss://' + route.host + ':' + (route.port || 9925);
-				else if (route.hostname) url = 'wss://' + route.hostname + ':' + (route.port || 9925);
-				else {
-					console.error('Invalid route, must specify a url or host (with port)');
-					continue;
+	});*/
+	// we need to wait for the threads to start before we can start adding nodes
+	// but don't await this because this start function has to finish before the threads can start
+	whenThreadsStarted.then(() => {
+		route_loop: for (const route of options.routes || []) {
+			try {
+				let url = typeof route === 'string' ? route : route.url;
+				if (!url) {
+					if (route.host) url = 'wss://' + route.host + ':' + (route.port || 9925);
+					else if (route.hostname) url = 'wss://' + route.hostname + ':' + (route.port || 9925);
+					else {
+						console.error('Invalid route, must specify a url or host (with port)');
+						continue;
+					}
 				}
+				const pub_sub_all = !route.subscriptions;
+				const pub_sub_system = route.trusted !== false;
+				const node = {
+					url,
+					subscription: route.subscriptions,
+					routes: route.routes,
+				};
+				if (pub_sub_all) {
+					node.subscribe = true;
+					node.publish = true;
+				}
+				// just tentatively add this node to the list of nodes in memory
+				onNewNode(node);
+			} catch (error) {
+				console.error(error);
 			}
-			const pub_sub_all = !route.subscriptions;
-			const pub_sub_system = route.trusted !== false;
-			const node = {
-				url,
-				subscription: route.subscriptions,
-				routes: route.routes,
-			};
-			if (pub_sub_all) {
-				node.subscribe = true;
-				node.publish = true;
-			}
-			await ensureNode(route.name, node);
-		} catch (error) {
-			console.error(error);
 		}
-	}
-	whenThreadsStarted.then(() => subscribeToNodeUpdates(onNewNode));
+		subscribeToNodeUpdates(onNewNode);
+	});
 
 	/**
 	 * This is called when a new node is added to the hdb_nodes table
@@ -135,7 +140,7 @@ export async function startOnMainThread(options) {
 		// a node that may have more recent updates, so we try to go to the next node in the list, using
 		// a sorted list of node names that all nodes should have and use.
 		const node_names = Array.from(node_map.keys()).sort();
-		const existing_index = Math.max(node_names.indexOf(connection.name), 0);
+		const existing_index = node_names.indexOf(connection.name || urlToNodeName(connection.url));
 		if (existing_index === -1) {
 			logger.warn('Disconnected node not found in node map', connection.name, node_map.keys());
 			return;
@@ -155,6 +160,13 @@ export async function startOnMainThread(options) {
 			}
 			const { worker, nodes } = failover_worker_entry;
 			// record which node we are now redirecting to
+			for (let node of existing_worker_entry.nodes) {
+				if (nodes.some((n) => n.name === node.name)) {
+					logger.info(`Disconnected node is already failing over to ${next_node_name} for ${connection.database}`);
+					continue;
+				}
+				nodes.push(node);
+			}
 			nodes.push(...existing_worker_entry.nodes);
 			existing_worker_entry.redirectingTo = failover_worker_entry;
 			if (worker) {
