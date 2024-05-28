@@ -74,6 +74,7 @@ exports.httpServer = httpServer;
 exports.deliverSocket = deliverSocket;
 exports.startServers = startServers;
 exports.when_components_loaded = null;
+exports.createSNICallback = createSNICallback;
 server.http = httpServer;
 server.request = onRequest;
 server.socket = onSocket;
@@ -665,6 +666,7 @@ function createSNICallback(tls_config) {
 	if (!tls_contexts.length) tls_contexts.push(tls_config);
 	let secure_contexts = new Map();
 	let first_context;
+	let has_wildcards = false;
 	for (let tls of tls_contexts) {
 		const private_key = readPEM(tls.privateKey);
 		const certificate = readPEM(tls.certificate);
@@ -688,7 +690,7 @@ function createSNICallback(tls_config) {
 		options.key = private_key;
 
 		// we store the first 100 bytes of the certificate just for debug logging
-		secure_context.certStart = certificate.subarray(0, 100).toString();
+		secure_context.certStart = certificate.slice(0, 100).toString();
 		if (!first_context) first_context = secure_context;
 		let cert_parsed = new X509Certificate(certificate);
 		let hostnames =
@@ -708,6 +710,10 @@ function createSNICallback(tls_config) {
 		if (!Array.isArray(hostnames)) hostnames = [hostnames];
 		for (let hostname of hostnames) {
 			if (hostname) {
+				if (hostname[0] === '*') {
+					has_wildcards = true;
+					hostname = hostname.slice(1);
+				}
 				if (!secure_contexts.has(hostname)) secure_contexts.set(hostname, secure_context);
 			} else {
 				harper_logger.error('No hostname found for certificate at', tls.certificate);
@@ -715,15 +721,22 @@ function createSNICallback(tls_config) {
 		}
 	}
 	return (servername, cb) => {
-		// find the matching server name
-		let context = secure_contexts.get(servername);
-		if (context) {
-			harper_logger.debug('Found certificate for', servername, context.certStart);
-			cb(null, context);
-		} else {
-			harper_logger.debug('No certificate found to match', servername, 'using the first certificate');
-			// no matches, return the first one
-			cb(null, first_context);
+		// find the matching server name, substituting wildcards for each part of the domain to find matches
+		let matching_name = servername;
+		while (true) {
+			let context = secure_contexts.get(matching_name);
+			if (context) {
+				harper_logger.debug('Found certificate for', servername, context.certStart);
+				return cb(null, context);
+			}
+			if (has_wildcards && matching_name) {
+				let next_dot = matching_name.indexOf('.', 1);
+				if (next_dot < 0) matching_name = '';
+				else matching_name = matching_name.slice(next_dot);
+			} else break;
 		}
+		harper_logger.debug('No certificate found to match', servername, 'using the first certificate');
+		// no matches, return the first one
+		cb(null, first_context);
 	};
 }
