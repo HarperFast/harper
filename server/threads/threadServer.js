@@ -68,7 +68,6 @@ exports.deliverSocket = deliverSocket;
 exports.startServers = startServers;
 exports.listenOnPorts = listenOnPorts;
 exports.when_components_loaded = null;
-exports.createSNICallback = createSNICallback;
 server.http = httpServer;
 server.request = onRequest;
 server.socket = onSocket;
@@ -524,7 +523,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 		if (secure) {
 			if (!server.ports) server.ports = [];
 			server.ports.push(port);
-			options.SNICallback.applyToServer(server);
+			options.SNICallback.initialize(server);
 			if (mtls) server.mtlsConfig = mtls;
 			server.on('secureConnection', (socket) => {
 				if (socket._parent.startTime) recordAction(performance.now() - socket._parent.startTime, 'tls-handshake', port);
@@ -575,6 +574,7 @@ function onRequest(listener, options) {
 async function onSocket(listener, options) {
 	let socket_server;
 	if (options.securePort) {
+		let SNICallback = createTLSSelector('server', options.mtls);
 		socket_server = createSecureSocketServer(
 			{
 				rejectUnauthorized: Boolean(options.mtls?.required),
@@ -582,11 +582,11 @@ async function onSocket(listener, options) {
 				noDelay: true, // don't delay for Nagle's algorithm, it is a relic of the past that slows things down: https://brooker.co.za/blog/2024/05/09/nagle.html
 				keepAlive: true,
 				keepAliveInitialDelay: 600, // 10 minute keep-alive, want to be proactive about closing unused connections
-				SNICallback: createTLSSelector('server', options.mtls),
+				SNICallback,
 			},
 			listener
 		);
-		options.SNICallback.applyToServer(socket_server);
+		SNICallback.initialize(socket_server);
 		SERVERS[options.securePort] = socket_server;
 	}
 	if (options.port) {

@@ -60,14 +60,14 @@ let SNICallback;
 
 export async function createWebSocket(url, options?) {
 	const { authorization, rejectUnauthorized } = options || {};
-	if (!SNICallback) {
-		SNICallback = createTLSSelector('operations-api');
-	}
-	await SNICallback.ready;
+
 	let node_name = getThisNodeName();
 	let secure_context;
 	if (url.includes('wss://')) {
-		SNICallback(null, (err, ctx) => (secure_context = ctx));
+		if (!SNICallback) {
+			SNICallback = createTLSSelector('operations-api');
+		}
+		secure_context = await SNICallback.initialize();
 		if (secure_context) logger.info('Creating web socket for URL', url, 'with certificate named:', secure_context.name);
 		if (!secure_context && rejectUnauthorized !== false) {
 			throw new Error('Unable to find a valid certificate to use for replication to connect to ' + url);
