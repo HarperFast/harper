@@ -522,7 +522,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 		if (secure) {
 			if (!server.ports) server.ports = [];
 			server.ports.push(port);
-			applyTLS(is_operations_server ? 'operations-api' : 'server', server);
+			applyTLS(is_operations_server ? 'operations-api' : 'server', server, { required: mtls_required });
 			if (mtls) server.mtlsConfig = mtls;
 			server.on('secureConnection', (socket) => {
 				if (socket._parent.startTime) recordAction(performance.now() - socket._parent.startTime, 'tls-handshake', port);

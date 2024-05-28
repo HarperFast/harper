@@ -42,6 +42,8 @@ Object.assign(exports, {
 	loadCertificates,
 	setDefaultCertsKeys,
 	applyTLS,
+	verifyCert,
+	verifyCertAgainstCAs,
 });
 
 const { urlToNodeName, getThisNodeUrl } = require('../server/replication/replicator');
@@ -485,6 +487,11 @@ async function setCertTable(cert_record) {
 	await certificate_table.patch(cert_record);
 }
 
+function rawToCert(raw) {
+	let asn1 = forge.asn1.fromDer(forge.util.createBuffer(raw));
+	return pki.certificateFromAsn1(asn1);
+}
+
 function verifyCert(cert, ca) {
 	try {
 		const ca_store = pki.createCaStore([ca]);
@@ -674,17 +681,6 @@ function updateConfigCert() {
 	config_utils.updateConfigValue(undefined, undefined, new_certs, false, true);
 }
 
-async function getReplicationCAs() {
-	// Add any CAs that might exist in hdb_nodes
-	let ca_certs = new Set();
-	const nodes_table = getDatabases()['system']['hdb_nodes'];
-	for await (const node of nodes_table.search([])) {
-		if (node.ca) {
-			ca_certs.add(node.ca);
-		}
-	}
-	return ca_certs;
-}
 function readPEM(path) {
 	if (path.startsWith('-----BEGIN')) return path;
 	return readFileSync(path, 'utf8');
@@ -697,48 +693,45 @@ tls.createSecureContext = function (options) {
 	return origCreateSecureContext(options);
 };
 
+let ca_certs = new Map();
 function applyTLS(type, server, options) {
 	let secure_contexts = new Map();
 	return new Promise((resolve, reject) => {
 		async function updateTLS() {
 			try {
 				secure_contexts.clear();
-				let ca_certs = new Set();
-				if (type === 'operations-api') {
-					ca_certs = await getReplicationCAs();
-				}
-				if (options?.certificateAuthority) {
-					ca_certs.add(readPEM(options.certificateAuthority));
-				}
+				ca_certs.clear();
 				let default_context,
 					best_quality = 0;
-				for await (const cert of certificate_table.search([])) {
-					if (type !== 'operations-api' && cert.name.includes('operations')) continue;
-					if (cert.is_authority) {
-						ca_certs.add(cert.certificate);
-					}
-				}
 
 				for await (const cert of certificate_table.search([])) {
 					try {
-						let is_operations = type === 'operations-api';
-						if (!is_operations && cert.name.includes('operations')) continue;
+						const certificate = cert.certificate;
+						const cert_parsed = new X509Certificate(certificate);
 						if (cert.is_authority) {
+							cert_parsed.asString = certificate;
+							ca_certs.set(cert_parsed.subject, cert_parsed);
 							continue;
 						}
+						let is_operations = type === 'operations-api';
+						if (!is_operations && cert.name.includes('operations')) continue;
 						let quality;
 						if (type === cert.name) quality = 5;
 						else quality = CERT_PREFERENCE_APP[cert.name] ?? (is_operations ? 4 : 0);
 						const private_key = private_keys.get(cert.private_key_name);
-						const certificate = cert.certificate;
 						if (!private_key || !certificate) {
 							throw new Error('Missing private key or certificate for secure server');
 						}
 						const secure_options = {
 							ciphers: cert.ciphers,
-							ca: [...(cert.useRootCerts ? rootCertificates : []), ...ca_certs],
 							ticketKeys: getTicketKeys(),
 						};
+						if (options?.required) {
+							// we only set the ca if we are rejecting unauthorized connections
+							// otherwise we verify the cert against any CAs later as needed to avoid the
+							// performance hit of loading all CAs (or every connection)
+							secure_options.ca = [...ca_certs.values()].map((cert) => cert.asString);
+						}
 						if (server) secure_options.sessionIdContext = server.sessionIdContext;
 						let secure_context = createSecureContext(secure_options);
 						secure_context.name = cert.name;
@@ -767,7 +760,6 @@ function applyTLS(type, server, options) {
 								harper_logger.info('Applying default TLS', secure_context.name, 'for', server.ports);
 							}
 						}
-						let cert_parsed = new X509Certificate(certificate);
 						let hostnames =
 							cert.hostnames ??
 							(cert_parsed.subjectAltName
@@ -817,6 +809,11 @@ function applyTLS(type, server, options) {
 			});
 		}
 	});
+}
+function verifyCertAgainstCAs(cert) {
+	if (!cert) return false;
+	const ca = ca_certs.get(cert.issuer);
+	return ca && cert.checkIssued(ca);
 }
 function reverseSubscription(subscription) {
 	const { subscribe, publish } = subscription;

@@ -10,6 +10,7 @@ import { get } from '../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms';
 import { loggerWithTag } from '../utility/logging/harper_logger.js';
 import { EventEmitter } from 'events';
+import { ca_certs } from '../security/keys';
 const auth_event_log = loggerWithTag('auth-event');
 const mqtt_log = loggerWithTag('mqtt');
 
@@ -68,6 +69,7 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 					`Received ${socket.getCertificate ? 'SSL' : 'TCP'} connection for MQTT from ${socket.remoteAddress}`
 				);
 				if (mtls) {
+					ca_certs;
 					if (socket.authorized) {
 						try {
 							let username = mtls.user;
