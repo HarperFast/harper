@@ -9,7 +9,12 @@ import {
 } from '../../resources/auditStore';
 import { exportIdMapping, getIdOfRemoteNode, remoteToLocalNodeId } from './nodeIdMapping';
 import { whenNextTransaction } from '../../resources/transactionBroadcast';
-import { forEachReplicatedDatabase, getThisNodeName, urlToNodeName } from './replicator';
+import {
+	cluster_certificate_authorities,
+	forEachReplicatedDatabase,
+	getThisNodeName,
+	urlToNodeName,
+} from './replicator';
 import env from '../../utility/environment/environmentManager';
 import { readAuditEntry, Decoder, REMOTE_SEQUENCE_UPDATE } from '../../resources/auditStore';
 import { HAS_STRUCTURE_UPDATE } from '../../resources/RecordEncoder';
@@ -21,9 +26,9 @@ import { threadId } from 'worker_threads';
 import * as logger from '../../utility/logging/harper_logger';
 import { disconnectedFromNode, connectedToNode, getHDBNodeTable } from './subscriptionManager';
 import { EventEmitter } from 'events';
-import { rootCertificates } from 'node:tls';
+import { createSecureContext } from 'node:tls';
 import { broadcast } from '../../server/threads/manageThreads';
-import { applyTLS } from '../../security/keys';
+import { createTLSSelector } from '../../security/keys';
 import * as https from 'node:https';
 import * as tls from 'node:tls';
 //import { operation } from '../../server/serverHelpers/serverUtilities';
@@ -48,18 +53,21 @@ const SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY = 300;
 const COMMITTED_UPDATE_DELAY = 2;
 const PING_INTERVAL = 300000;
 export let awaiting_response = new Map();
-let secure_contexts;
+let SNICallback;
 /**
  * Handles reconnection, and requesting catch-up
  */
 
 export async function createWebSocket(url, options?) {
 	const { authorization, rejectUnauthorized } = options || {};
-	if (!secure_contexts) secure_contexts = await applyTLS('operations-api');
+	if (!SNICallback) {
+		SNICallback = createTLSSelector('operations-api');
+	}
+	await SNICallback.ready;
 	let node_name = getThisNodeName();
 	let secure_context;
 	if (url.includes('wss://')) {
-		secure_context = secure_contexts.get(node_name)?.context ?? secure_contexts.default;
+		SNICallback(null, (err, ctx) => (secure_context = ctx));
 		if (secure_context) logger.info('Creating web socket for URL', url, 'with certificate named:', secure_context.name);
 		if (!secure_context && rejectUnauthorized !== false) {
 			throw new Error('Unable to find a valid certificate to use for replication to connect to ' + url);
@@ -80,7 +88,13 @@ export async function createWebSocket(url, options?) {
 		rejectUnauthorized: true,
 		localAddress: node_name?.startsWith('127.0') ? node_name : undefined,
 		noDelay: true,
-		secureContext: secure_context,
+		secureContext: createSecureContext(
+			Object.assign({}, secure_context.options, {
+				ca: [...cluster_certificate_authorities.values(), ...secure_context.certificateAuthorities.values()].map(
+					(cert) => cert.asString
+				),
+			})
+		),
 		// we set this very high (2x times the v22 default) because it performs better
 		highWaterMark: 128 * 1024,
 	});

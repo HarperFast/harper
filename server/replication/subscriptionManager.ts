@@ -28,40 +28,45 @@ export async function startOnMainThread(options) {
 	let new_node_listeners = [];
 	let all_nodes: any[];
 	let next_worker_index = 0;
-	const { app_ca } = await getCertsKeys();
+	/*const { app_ca } = await getCertsKeys();
 	// make sure this node exists is in the hdb_nodes table
 	await ensureNode(getThisNodeName(), {
 		url: getThisNodeUrl(),
 		ca: app_ca.cert,
-	});
-	route_loop: for (const route of options.routes || []) {
-		try {
-			let url = typeof route === 'string' ? route : route.url;
-			if (!url) {
-				if (route.host) url = 'wss://' + route.host + ':' + (route.port || 9925);
-				else if (route.hostname) url = 'wss://' + route.hostname + ':' + (route.port || 9925);
-				else {
-					console.error('Invalid route, must specify a url or host (with port)');
-					continue;
+	});*/
+	// we need to wait for the threads to start before we can start adding nodes
+	// but don't await this because this start function has to finish before the threads can start
+	whenThreadsStarted.then(() => {
+		route_loop: for (const route of options.routes || []) {
+			try {
+				let url = typeof route === 'string' ? route : route.url;
+				if (!url) {
+					if (route.host) url = 'wss://' + route.host + ':' + (route.port || 9925);
+					else if (route.hostname) url = 'wss://' + route.hostname + ':' + (route.port || 9925);
+					else {
+						console.error('Invalid route, must specify a url or host (with port)');
+						continue;
+					}
 				}
+				const pub_sub_all = !route.subscriptions;
+				const pub_sub_system = route.trusted !== false;
+				const node = {
+					url,
+					subscription: route.subscriptions,
+					routes: route.routes,
+				};
+				if (pub_sub_all) {
+					node.subscribe = true;
+					node.publish = true;
+				}
+				// just tentatively add this node to the list of nodes in memory
+				onNewNode(node);
+			} catch (error) {
+				console.error(error);
 			}
-			const pub_sub_all = !route.subscriptions;
-			const pub_sub_system = route.trusted !== false;
-			const node = {
-				url,
-				subscription: route.subscriptions,
-				routes: route.routes,
-			};
-			if (pub_sub_all) {
-				node.subscribe = true;
-				node.publish = true;
-			}
-			await ensureNode(route.name, node);
-		} catch (error) {
-			console.error(error);
 		}
-	}
-	whenThreadsStarted.then(() => subscribeToNodeUpdates(onNewNode));
+		subscribeToNodeUpdates(onNewNode);
+	});
 
 	/**
 	 * This is called when a new node is added to the hdb_nodes table

@@ -41,7 +41,7 @@ Object.assign(exports, {
 	setCertTable,
 	loadCertificates,
 	setDefaultCertsKeys,
-	applyTLS,
+	createTLSSelector,
 	verifyCert,
 	verifyCertAgainstCAs,
 });
@@ -694,23 +694,27 @@ tls.createSecureContext = function (options) {
 };
 
 let ca_certs = new Map();
-function applyTLS(type, server, options) {
+function createTLSSelector(type, options) {
 	let secure_contexts = new Map();
-	return new Promise((resolve, reject) => {
+	let default_context;
+	SNICallback.ready = new Promise((resolve, reject) => {
 		async function updateTLS() {
 			try {
 				secure_contexts.clear();
 				ca_certs.clear();
-				let default_context,
-					best_quality = 0;
-
+				let best_quality = 0;
+				for await (const cert of certificate_table.search([])) {
+					if (type !== 'operations-api' && cert.name.includes('operations')) continue;
+					const certificate = cert.certificate;
+					const cert_parsed = new X509Certificate(certificate);
+					if (cert.is_authority) {
+						cert_parsed.asString = certificate;
+						ca_certs.set(cert_parsed.subject, cert_parsed);
+					}
+				}
 				for await (const cert of certificate_table.search([])) {
 					try {
-						const certificate = cert.certificate;
-						const cert_parsed = new X509Certificate(certificate);
 						if (cert.is_authority) {
-							cert_parsed.asString = certificate;
-							ca_certs.set(cert_parsed.subject, cert_parsed);
 							continue;
 						}
 						let is_operations = type === 'operations-api';
@@ -719,6 +723,7 @@ function applyTLS(type, server, options) {
 						if (type === cert.name) quality = 5;
 						else quality = CERT_PREFERENCE_APP[cert.name] ?? (is_operations ? 4 : 0);
 						const private_key = private_keys.get(cert.private_key_name);
+						const certificate = cert.certificate;
 						if (!private_key || !certificate) {
 							throw new Error('Missing private key or certificate for secure server');
 						}
@@ -732,9 +737,10 @@ function applyTLS(type, server, options) {
 							// performance hit of loading all CAs (or every connection)
 							secure_options.ca = [...ca_certs.values()].map((cert) => cert.asString);
 						}
-						if (server) secure_options.sessionIdContext = server.sessionIdContext;
+						//if (server) secure_options.sessionIdContext = server.sessionIdContext;
 						let secure_context = createSecureContext(secure_options);
 						secure_context.name = cert.name;
+						secure_context.options = secure_options;
 						// Due to https://github.com/nodejs/node/issues/36655, we need to ensure that we apply the key and cert
 						// *after* the context is created, so that the ciphers are set and allow for lower security ciphers if needed
 						// We also maintain the instantiated context because for the default context we need to set it on the server,
@@ -743,23 +749,16 @@ function applyTLS(type, server, options) {
 						secure_context.context.setKey(private_key, undefined);
 						secure_options.key = private_key;
 						secure_options.cert = certificate;
+						secure_context.certificateAuthorities = ca_certs;
 
 						// we store the first 100 bytes of the certificate just for debug logging
 						secure_context.certStart = certificate.toString().slice(0, 100);
 						if (quality > best_quality) {
 							// we use this certificate as the default if it has a higher quality than the existing one
-							secure_contexts.default = secure_context;
+							default_context = secure_context;
 							best_quality = quality;
-							if (server) {
-								instantiated_context = secure_context;
-								try {
-									server.setSecureContext(secure_options);
-								} finally {
-									instantiated_context = null;
-								}
-								harper_logger.info('Applying default TLS', secure_context.name, 'for', server.ports);
-							}
 						}
+						const cert_parsed = new X509Certificate(certificate);
 						let hostnames =
 							cert.hostnames ??
 							(cert_parsed.subjectAltName
@@ -803,12 +802,30 @@ function applyTLS(type, server, options) {
 		databases.system.hdb_certificate.subscribe({
 			listener: updateTLS,
 		});
-		if (type === 'operations-api') {
-			databases.system.hdb_nodes.subscribe({
-				listener: updateTLS,
-			});
-		}
 	});
+	SNICallback.applyToServer = async function (server) {
+		await SNICallback.ready;
+		try {
+			instantiated_context = default_context;
+			harper_logger.info('Applying default TLS', default_context.name, 'for', server.ports);
+			if (default_context) server.setSecureContext(default_context.options);
+		} finally {
+			instantiated_context = null;
+		}
+	};
+	return SNICallback;
+	function SNICallback(servername, cb) {
+		// find the matching server name
+		let context = secure_contexts.get(servername);
+		if (context) {
+			harper_logger.debug('Found certificate for', servername, context.certStart);
+			cb(null, context);
+		} else {
+			harper_logger.debug('No certificate found to match', servername, 'using the first certificate');
+			// no matches, return the first one
+			cb(null, default_context);
+		}
+	}
 }
 function verifyCertAgainstCAs(cert) {
 	if (!cert) return false;

@@ -43,7 +43,7 @@ import { exportIdMapping } from './nodeIdMapping';
 import { verifyCertAgainstCAs } from '../../security/keys';
 import { rootCertificates } from 'node:tls';
 
-let cluster_certificate_authorities = new Map();
+export let cluster_certificate_authorities = new Map();
 let replication_disabled;
 let next_id = 1; // for request ids
 
@@ -72,7 +72,7 @@ export function start(options) {
 				let ca = cluster_certificate_authorities.get(cert.issuer);
 				if (ca ? cert.checkIssued(ca) : verifyCertAgainstCAs(cert)) {
 					// TODO: We may also need to verify that the certificate has not expired and other validity checks
-					let common_name = cert.subject.match(/CN=(.*)/)?.[1]];
+					let common_name = cert.subject.match(/CN=(.*)/)?.[1];
 					authorization = common_name && getHDBNodeTable().primaryStore.get(common_name);
 				}
 			} else {
@@ -88,28 +88,24 @@ export function start(options) {
 		});
 	}, options);
 
-	for (let ws_server of ws_servers) {
-		servers.push(ws_server);
-		if (ws_server.setSecureContext) {
-			let last_ca_count = 0;
-			if (!cluster_certificate_authorities.addedRoot) {
-				cluster_certificate_authorities.addedRoot = true;
-				for (let ca of rootCertificates) {
-					let x509 = new X509Certificate(ca);
-					cluster_certificate_authorities.set(x509.subject, x509);
-				}
-			}
-			// we need to stay up-to-date with any CAs that have been replicated across the cluster
-			subscribeToNodeUpdates((node) => {
-				// TODO: handle removal of CAs?
-				if (node.ca) {
-					// we only care about nodes that have a CA
-					let x509 = new X509Certificate(node.ca);
-					cluster_certificate_authorities.set(x509.subject, x509);
-				}
-			});
+	if (!cluster_certificate_authorities.addedRoot) {
+		cluster_certificate_authorities.addedRoot = true;
+		for (let ca of rootCertificates) {
+			let x509 = new X509Certificate(ca);
+			x509.asString = ca;
+			cluster_certificate_authorities.set(x509.subject, x509);
 		}
 	}
+	// we need to stay up-to-date with any CAs that have been replicated across the cluster
+	subscribeToNodeUpdates((node) => {
+		// TODO: handle removal of CAs?
+		if (node.ca) {
+			// we only care about nodes that have a CA
+			let x509 = new X509Certificate(node.ca);
+			x509.asString = node.ca;
+			cluster_certificate_authorities.set(x509.subject, x509);
+		}
+	});
 }
 export function disableReplication(disabled = true) {
 	replication_disabled = disabled;
