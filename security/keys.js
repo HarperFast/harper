@@ -697,6 +697,7 @@ let ca_certs = new Map();
 function createTLSSelector(type, options) {
 	let secure_contexts = new Map();
 	let default_context;
+	let has_wildcards = false;
 	SNICallback.ready = new Promise((resolve, reject) => {
 		async function updateTLS() {
 			try {
@@ -773,6 +774,10 @@ function createTLSSelector(type, options) {
 						if (!Array.isArray(hostnames)) hostnames = [hostnames];
 						for (let hostname of hostnames) {
 							if (hostname) {
+								if (hostname[0] === '*') {
+									has_wildcards = true;
+									hostname = hostname.slice(1);
+								}
 								// we use this certificate if it has a higher quality than the existing one for this hostname
 								let existing_cert_quality = secure_contexts.get(hostname)?.quality ?? 0;
 								if (quality > existing_cert_quality) {
@@ -815,16 +820,23 @@ function createTLSSelector(type, options) {
 	};
 	return SNICallback;
 	function SNICallback(servername, cb) {
-		// find the matching server name
-		let context = secure_contexts.get(servername);
-		if (context) {
-			harper_logger.debug('Found certificate for', servername, context.certStart);
-			cb(null, context);
-		} else {
-			harper_logger.debug('No certificate found to match', servername, 'using the first certificate');
-			// no matches, return the first one
-			cb(null, default_context);
+		// find the matching server name, substituting wildcards for each part of the domain to find matches
+		let matching_name = servername;
+		while (true) {
+			let context = secure_contexts.get(matching_name);
+			if (context) {
+				harper_logger.debug('Found certificate for', servername, context.certStart);
+				return cb(null, context);
+			}
+			if (has_wildcards && matching_name) {
+				let next_dot = matching_name.indexOf('.', 1);
+				if (next_dot < 0) matching_name = '';
+				else matching_name = matching_name.slice(next_dot);
+			} else break;
 		}
+		harper_logger.debug('No certificate found to match', servername, 'using the first certificate');
+		// no matches, return the first one
+		cb(null, default_context);
 	}
 }
 function verifyCertAgainstCAs(cert) {

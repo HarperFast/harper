@@ -68,6 +68,7 @@ exports.deliverSocket = deliverSocket;
 exports.startServers = startServers;
 exports.listenOnPorts = listenOnPorts;
 exports.when_components_loaded = null;
+exports.createSNICallback = createSNICallback;
 server.http = httpServer;
 server.request = onRequest;
 server.socket = onSocket;
