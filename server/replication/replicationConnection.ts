@@ -24,7 +24,7 @@ import { WebSocket } from 'ws';
 import { readFileSync } from 'fs';
 import { threadId } from 'worker_threads';
 import * as logger from '../../utility/logging/harper_logger';
-import { disconnectedFromNode, connectedToNode, getHDBNodeTable } from './subscriptionManager';
+import { disconnectedFromNode, connectedToNode, getHDBNodeTable, ensureNode } from './subscriptionManager';
 import { EventEmitter } from 'events';
 import { createSecureContext } from 'node:tls';
 import { broadcast } from '../../server/threads/manageThreads';
@@ -88,13 +88,15 @@ export async function createWebSocket(url, options?) {
 		rejectUnauthorized: true,
 		localAddress: node_name?.startsWith('127.0') ? node_name : undefined,
 		noDelay: true,
-		secureContext: createSecureContext(
-			Object.assign({}, secure_context.options, {
-				ca: [...cluster_certificate_authorities.values(), ...secure_context.certificateAuthorities.values()].map(
-					(cert) => cert.asString
-				),
-			})
-		),
+		secureContext:
+			secure_context &&
+			createSecureContext(
+				Object.assign({}, secure_context.options, {
+					ca: [...cluster_certificate_authorities.values(), ...secure_context.certificateAuthorities.values()].map(
+						(cert) => cert.asString
+					),
+				})
+			),
 		// we set this very high (2x times the v22 default) because it performs better
 		highWaterMark: 128 * 1024,
 	});
@@ -279,7 +281,16 @@ export function replicateOverWS(ws, options, authorization) {
 									close(1008, 'Node name mismatch');
 									return;
 								}
-							} else remote_node_name = data;
+							} else {
+								remote_node_name = data;
+								if (options.connection?.tentativeNode) {
+									// if this was a tentative node, we need to update the node name
+									const node_to_add = options.connection.tentativeNode;
+									node_to_add.name = remote_node_name;
+									options.connection.tentativeNode = null;
+									ensureNode(remote_node_name, node_to_add);
+								}
+							}
 							if (options.connection) options.connection.nodeName = remote_node_name;
 							//const url = message[3] ?? this_node_url;
 							logger.info(connection_id, 'received node id', remote_node_name, database_name);
@@ -965,6 +976,7 @@ export function replicateOverWS(ws, options, authorization) {
 	};
 
 	function writeInt(number) {
+		checkRoom(5);
 		if (number < 128) {
 			encoding_buffer[position++] = number;
 		} else if (number < 0x4000) {
@@ -982,29 +994,25 @@ export function replicateOverWS(ws, options, authorization) {
 
 	function writeBytes(src, start = 0, end = src.length) {
 		const length = end - start;
-		if (length + 16 > encoding_buffer.length - position) {
-			const new_buffer = Buffer.allocUnsafeSlow(((length + 0x10000) >> 10) << 11);
-			encoding_buffer.copy(new_buffer, 0, encoding_start, position);
-			position = position - encoding_start;
-			encoding_start = 0;
-			encoding_buffer = new_buffer;
-			data_view = new DataView(encoding_buffer.buffer, 0, encoding_buffer.length);
-		}
+		checkRoom(length);
 		src.copy(encoding_buffer, position, start, end);
 		position += length;
 	}
 
 	function writeFloat64(number) {
-		if (16 > encoding_buffer.length - position) {
-			const new_buffer = Buffer.allocUnsafeSlow(0x10000);
+		checkRoom(8);
+		data_view.setFloat64(position, number);
+		position += 8;
+	}
+	function checkRoom(length) {
+		if (length + 16 > encoding_buffer.length - position) {
+			const new_buffer = Buffer.allocUnsafeSlow(((position + length - encoding_start + 0x10000) >> 10) << 11);
 			encoding_buffer.copy(new_buffer, 0, encoding_start, position);
 			position = position - encoding_start;
 			encoding_start = 0;
 			encoding_buffer = new_buffer;
 			data_view = new DataView(encoding_buffer.buffer, 0, encoding_buffer.length);
 		}
-		data_view.setFloat64(position, number);
-		position += 8;
 	}
 }
 
