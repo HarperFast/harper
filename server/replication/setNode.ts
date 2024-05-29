@@ -80,7 +80,7 @@ export async function setNode(req: object) {
 		throw new Error(`Error requesting certificate signature from node: ${url} message: ${err.message}`);
 	}
 
-	if (!sign_res?.certificate || !sign_res?.certificate?.includes?.('BEGIN CERTIFICATE')) {
+	if (csr && (!sign_res?.certificate || !sign_res?.certificate?.includes?.('BEGIN CERTIFICATE'))) {
 		throw new Error(`Unexpected certificate signature response from node ${url} response: ${JSON.stringify(sign_res)}`);
 	}
 
