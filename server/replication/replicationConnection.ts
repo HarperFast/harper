@@ -67,7 +67,8 @@ export async function createWebSocket(url, options?) {
 		if (!SNICallback) {
 			SNICallback = createTLSSelector('operations-api');
 		}
-		secure_context = await SNICallback.initialize();
+		await SNICallback.initialize();
+		secure_context = SNICallback.defaultContext;
 		if (secure_context) logger.info('Creating web socket for URL', url, 'with certificate named:', secure_context.name);
 		if (!secure_context && rejectUnauthorized !== false) {
 			throw new Error('Unable to find a valid certificate to use for replication to connect to ' + url);
@@ -660,7 +661,7 @@ export function replicateOverWS(ws, options, authorization) {
 
 						let closed = false;
 						audit_subscription = new EventEmitter();
-						audit_subscription.on('close', () => {
+						audit_subscription.once('close', () => {
 							closed = true;
 						});
 						for (let { startTime } of node_subscriptions) {

@@ -759,7 +759,7 @@ function createTLSSelector(type, options) {
 							secure_context.certStart = certificate.toString().slice(0, 100);
 							if (quality > best_quality) {
 								// we use this certificate as the default if it has a higher quality than the existing one
-								default_context = secure_context;
+								SNICallback.defaultContext = default_context = secure_context;
 								best_quality = quality;
 								if (server) {
 									instantiated_context = secure_context;
@@ -794,10 +794,6 @@ function createTLSSelector(type, options) {
 									let existing_cert_quality = secure_contexts.get(hostname)?.quality ?? 0;
 									if (quality > existing_cert_quality) {
 										secure_contexts.set(hostname, secure_context);
-										if (server) {
-											harper_logger.info('Applying TLS for host', hostname, secure_context.name, 'for', server.ports);
-											server?.addContext(hostname, secure_context);
-										}
 									}
 								} else {
 									harper_logger.error('No hostname found for certificate at', tls.certificate);
