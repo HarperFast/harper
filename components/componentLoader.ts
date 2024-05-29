@@ -6,6 +6,7 @@ import * as env from '../utility/environment/environmentManager';
 import { PACKAGE_ROOT, CONFIG_PARAMS } from '../utility/hdbTerms';
 import * as graphql_handler from '../resources/graphql';
 import * as graphql_query_handler from '../server/graphqlQuerying';
+import * as roles from '../resources/roles';
 import * as js_handler from '../resources/jsResource';
 import * as login from '../resources/login';
 import * as REST from '../server/REST';
@@ -74,6 +75,7 @@ const TRUSTED_RESOURCE_LOADERS = {
 	rest: REST,
 	graphql: graphql_query_handler,
 	graphqlSchema: graphql_handler,
+	roles,
 	jsResource: js_handler,
 	fastifyRoutes: fastify_routes_handler,
 	login,
@@ -97,6 +99,9 @@ const DEFAULT_CONFIG = {
 	graphqlSchema: {
 		files: '*.graphql',
 		//path: '/', // from root path by default, like http://server/query
+	},
+	roles: {
+		files: 'roles.yaml',
 	},
 	jsResource: {
 		files: 'resources.js',
