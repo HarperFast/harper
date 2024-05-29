@@ -338,7 +338,7 @@ export function replicateOverWS(ws, options, authorization) {
 											OPERATION_RESPONSE,
 											{
 												requestId: data.requestId,
-												error: typeof error === 'object' ? JSON.stringify(error) : error.toString(),
+												error: error instanceof Error ? error.toString() : error,
 											},
 										])
 									);
@@ -350,7 +350,7 @@ export function replicateOverWS(ws, options, authorization) {
 									OPERATION_RESPONSE,
 									{
 										requestId: data.requestId,
-										error: typeof error === 'object' ? JSON.stringify(error) : error.toString(),
+										error: error instanceof Error ? error.toString() : error,
 									},
 								])
 							);
