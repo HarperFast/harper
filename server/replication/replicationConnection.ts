@@ -533,7 +533,7 @@ export function replicateOverWS(ws, options, authorization) {
 									skipped_message_sequence_update_timer = setTimeout(() => {
 										skipped_message_sequence_update_timer = null;
 										// check to see if we are too far behind, but if so, send a sequence update
-										if (sent_sequence_id + SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY / 2 < current_sequence_id) {
+										if ((sent_sequence_id || 0) + SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY / 2 < current_sequence_id) {
 											if (DEBUG_MODE)
 												logger.info(connection_id, 'sending skipped sequence update', current_sequence_id);
 											ws.send(encode([SEQUENCE_ID_UPDATE, current_sequence_id]));
@@ -692,6 +692,7 @@ export function replicateOverWS(ws, options, authorization) {
 												})) {
 													if (entry.localTime >= current_sequence_id) {
 														last_sequence_id = Math.max(entry.localTime, last_sequence_id);
+														queued_entries = true;
 														sendAuditRecord(null, entry, entry.localTime);
 													}
 												}
@@ -754,7 +755,7 @@ export function replicateOverWS(ws, options, authorization) {
 				if (event_length === 9 && decoder.getUint8(decoder.position) == REMOTE_SEQUENCE_UPDATE) {
 					decoder.position++;
 					last_sequence_id_received = sequence_id_received = decoder.readFloat64();
-					logger.info('received remote sequence update', last_sequence_id_received);
+					logger.info('received remote sequence update', last_sequence_id_received, database_name);
 					break;
 				}
 				const start = decoder.position;
@@ -889,12 +890,17 @@ export function replicateOverWS(ws, options, authorization) {
 						table_subs.push(table_name);
 				}
 			}
-
+			let start_time = table_subscription_to_replicator.dbisDB.get([Symbol.for('seq'), node.name]) ?? 1;
+			if (index > 0 && start_time > 1) {
+				// if we are subscribing to secondary nodes to catch up, we aren't guaranteed the same sequence ids
+				// so we go back in time a bit to make sure we get all the records
+				start_time -= 10000;
+			}
 			return {
 				name: node.name,
 				replicateByDefault: replicate_by_default,
 				tables: table_subs, // omitted or included based on flag above
-				startTime: (table_subscription_to_replicator.dbisDB.get([Symbol.for('seq'), node.name]) ?? 10001) - 10000,
+				startTime: start_time,
 			};
 		});
 		logger.info(
