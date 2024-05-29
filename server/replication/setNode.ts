@@ -29,6 +29,8 @@ export async function setNode(req: object) {
 	if (req.operation === 'remove_node') {
 		const node_record_id = req.node_name ?? urlToNodeName(url);
 		const hdb_nodes = getHDBNodeTable();
+		const record = await hdb_nodes.get(node_record_id);
+		if (!record) throw node_record_id + ' does not exist';
 		await hdb_nodes.patch(node_record_id, { publish: false, subscribe: false, subscriptions: null });
 
 		return `Successfully removed '${node_record_id}' from manifest`;
@@ -52,7 +54,7 @@ export async function setNode(req: object) {
 		url: this_url,
 	};
 
-	if (req.node_name) remote_add_node_obj.node_name = req.node_name;
+	if (get(CONFIG_PARAMS.REPLICATION_NODENAME)) remote_add_node_obj.node_name = get(CONFIG_PARAMS.REPLICATION_NODENAME);
 	if (req.subscriptions) {
 		remote_add_node_obj.subscriptions = req.subscriptions.map(reverseSubscription);
 	}
@@ -70,6 +72,11 @@ export async function setNode(req: object) {
 		add_node: remote_add_node_obj,
 	};
 	let sign_res;
+	if (req?.authorization?.username && req?.authorization?.password) {
+		req.authorization =
+			'Basic ' + Buffer.from(req.authorization.username + ':' + req.authorization.password).toString('base64');
+	}
+
 	try {
 		sign_res = await sendOperationToNode({ url }, sign_req, req);
 	} catch (err) {
@@ -103,7 +110,7 @@ export async function setNode(req: object) {
 	if (req.subscribe) node_record.subscribe = req.subscribe;
 	if (req.publish) node_record.publish = req.publish;
 
-	await ensureNode(undefined, node_record);
+	await ensureNode(req.node_name, node_record);
 
 	if (req.operation === 'update_node') {
 		return `Successfully updated '${url}'`;

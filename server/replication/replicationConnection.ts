@@ -315,7 +315,7 @@ export function replicateOverWS(ws, options, authorization) {
 						break;
 					case OPERATION_REQUEST:
 						try {
-							let is_authorized_node = authorization?.publish || authorization?.subscribers;
+							let is_authorized_node = authorization?.publish || authorization?.subscribers || authorization?.name;
 							server.operation(data, { user: authorization }, !is_authorized_node).then(
 								(response) => {
 									response.requestId = data.requestId;

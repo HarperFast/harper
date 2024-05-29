@@ -386,7 +386,7 @@ async function signCertificate(req) {
 			if (req.add_node.subscriptions) node_record.subscriptions = req.add_node.subscriptions;
 			if (req.add_node.hasOwnProperty('subscribe')) node_record.publish = req.add_node.publish;
 			if (req.add_node.hasOwnProperty('publish')) node_record.subscribe = req.add_node.subscribe;
-			await ensureNode(undefined, node_record);
+			await ensureNode(req.add_node.node_name, node_record);
 		}
 	};
 
