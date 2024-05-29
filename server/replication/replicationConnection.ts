@@ -24,7 +24,7 @@ import { WebSocket } from 'ws';
 import { readFileSync } from 'fs';
 import { threadId } from 'worker_threads';
 import * as logger from '../../utility/logging/harper_logger';
-import { disconnectedFromNode, connectedToNode, getHDBNodeTable } from './subscriptionManager';
+import { disconnectedFromNode, connectedToNode, getHDBNodeTable, ensureNode } from './subscriptionManager';
 import { EventEmitter } from 'events';
 import { createSecureContext } from 'node:tls';
 import { broadcast } from '../../server/threads/manageThreads';
@@ -88,13 +88,15 @@ export async function createWebSocket(url, options?) {
 		rejectUnauthorized: true,
 		localAddress: node_name?.startsWith('127.0') ? node_name : undefined,
 		noDelay: true,
-		secureContext: createSecureContext(
-			Object.assign({}, secure_context.options, {
-				ca: [...cluster_certificate_authorities.values(), ...secure_context.certificateAuthorities.values()].map(
-					(cert) => cert.asString
-				),
-			})
-		),
+		secureContext:
+			secure_context &&
+			createSecureContext(
+				Object.assign({}, secure_context.options, {
+					ca: [...cluster_certificate_authorities.values(), ...secure_context.certificateAuthorities.values()].map(
+						(cert) => cert.asString
+					),
+				})
+			),
 		// we set this very high (2x times the v22 default) because it performs better
 		highWaterMark: 128 * 1024,
 	});
@@ -279,7 +281,16 @@ export function replicateOverWS(ws, options, authorization) {
 									close(1008, 'Node name mismatch');
 									return;
 								}
-							} else remote_node_name = data;
+							} else {
+								remote_node_name = data;
+								if (options.connection?.tentativeNode) {
+									// if this was a tentative node, we need to update the node name
+									const node_to_add = options.connection.tentativeNode;
+									node_to_add.name = remote_node_name;
+									options.connection.tentativeNode = null;
+									ensureNode(remote_node_name, node_to_add);
+								}
+							}
 							if (options.connection) options.connection.nodeName = remote_node_name;
 							//const url = message[3] ?? this_node_url;
 							logger.info(connection_id, 'received node id', remote_node_name, database_name);
@@ -538,7 +549,7 @@ export function replicateOverWS(ws, options, authorization) {
 									skipped_message_sequence_update_timer = setTimeout(() => {
 										skipped_message_sequence_update_timer = null;
 										// check to see if we are too far behind, but if so, send a sequence update
-										if (sent_sequence_id + SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY / 2 < current_sequence_id) {
+										if ((sent_sequence_id || 0) + SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY / 2 < current_sequence_id) {
 											if (DEBUG_MODE)
 												logger.info(connection_id, 'sending skipped sequence update', current_sequence_id);
 											ws.send(encode([SEQUENCE_ID_UPDATE, current_sequence_id]));
@@ -697,6 +708,7 @@ export function replicateOverWS(ws, options, authorization) {
 												})) {
 													if (entry.localTime >= current_sequence_id) {
 														last_sequence_id = Math.max(entry.localTime, last_sequence_id);
+														queued_entries = true;
 														sendAuditRecord(null, entry, entry.localTime);
 													}
 												}
@@ -759,7 +771,7 @@ export function replicateOverWS(ws, options, authorization) {
 				if (event_length === 9 && decoder.getUint8(decoder.position) == REMOTE_SEQUENCE_UPDATE) {
 					decoder.position++;
 					last_sequence_id_received = sequence_id_received = decoder.readFloat64();
-					logger.info('received remote sequence update', last_sequence_id_received);
+					logger.info('received remote sequence update', last_sequence_id_received, database_name);
 					break;
 				}
 				const start = decoder.position;
@@ -894,12 +906,17 @@ export function replicateOverWS(ws, options, authorization) {
 						table_subs.push(table_name);
 				}
 			}
-
+			let start_time = table_subscription_to_replicator.dbisDB.get([Symbol.for('seq'), node.name]) ?? 1;
+			if (index > 0 && start_time > 1) {
+				// if we are subscribing to secondary nodes to catch up, we aren't guaranteed the same sequence ids
+				// so we go back in time a bit to make sure we get all the records
+				start_time -= 10000;
+			}
 			return {
 				name: node.name,
 				replicateByDefault: replicate_by_default,
 				tables: table_subs, // omitted or included based on flag above
-				startTime: (table_subscription_to_replicator.dbisDB.get([Symbol.for('seq'), node.name]) ?? 10001) - 10000,
+				startTime: start_time,
 			};
 		});
 		logger.info(
@@ -981,6 +998,7 @@ export function replicateOverWS(ws, options, authorization) {
 	};
 
 	function writeInt(number) {
+		checkRoom(5);
 		if (number < 128) {
 			encoding_buffer[position++] = number;
 		} else if (number < 0x4000) {
@@ -998,29 +1016,25 @@ export function replicateOverWS(ws, options, authorization) {
 
 	function writeBytes(src, start = 0, end = src.length) {
 		const length = end - start;
-		if (length + 16 > encoding_buffer.length - position) {
-			const new_buffer = Buffer.allocUnsafeSlow(((length + 0x10000) >> 10) << 11);
-			encoding_buffer.copy(new_buffer, 0, encoding_start, position);
-			position = position - encoding_start;
-			encoding_start = 0;
-			encoding_buffer = new_buffer;
-			data_view = new DataView(encoding_buffer.buffer, 0, encoding_buffer.length);
-		}
+		checkRoom(length);
 		src.copy(encoding_buffer, position, start, end);
 		position += length;
 	}
 
 	function writeFloat64(number) {
-		if (16 > encoding_buffer.length - position) {
-			const new_buffer = Buffer.allocUnsafeSlow(0x10000);
+		checkRoom(8);
+		data_view.setFloat64(position, number);
+		position += 8;
+	}
+	function checkRoom(length) {
+		if (length + 16 > encoding_buffer.length - position) {
+			const new_buffer = Buffer.allocUnsafeSlow(((position + length - encoding_start + 0x10000) >> 10) << 11);
 			encoding_buffer.copy(new_buffer, 0, encoding_start, position);
 			position = position - encoding_start;
 			encoding_start = 0;
 			encoding_buffer = new_buffer;
 			data_view = new DataView(encoding_buffer.buffer, 0, encoding_buffer.length);
 		}
-		data_view.setFloat64(position, number);
-		position += 8;
 	}
 }
 

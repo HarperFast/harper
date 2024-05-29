@@ -1,6 +1,7 @@
 import { table } from '../../resources/databases';
 import { forEachReplicatedDatabase } from './replicator';
 import { replicationConfirmation } from '../../resources/DatabaseTransaction';
+import { isMainThread } from 'worker_threads';
 let hdb_node_table;
 
 export function getHDBNodeTable() {
@@ -114,4 +115,23 @@ function startSubscriptionToReplications() {
 			}
 		});
 	});
+}
+
+export function* iterateRoutes(options) {
+	for (const route of options.routes || []) {
+		let url = typeof route === 'string' ? route : route.url;
+		if (!url) {
+			if (route.host) url = 'wss://' + route.host + ':' + (route.port || 9925);
+			else if (route.hostname) url = 'wss://' + route.hostname + ':' + (route.port || 9925);
+			else {
+				if (isMainThread) console.error('Invalid route, must specify a url or host (with port)');
+				continue;
+			}
+		}
+		yield {
+			url,
+			subscription: route.subscriptions,
+			routes: route.routes,
+		};
+	}
 }

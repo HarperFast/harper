@@ -37,10 +37,12 @@ export async function setNode(req: object) {
 	}
 
 	let csr;
-	const { rep } = await getCertsKeys();
-	if (!rep.cert.includes?.('issued by')) {
-		// Create the certificate signing request that will be sent to the other node
-		csr = await createCsr();
+	if (url?.startsWith('wss:')) {
+		const { rep } = await getCertsKeys();
+		if (!rep.cert.includes?.('issued by')) {
+			// Create the certificate signing request that will be sent to the other node
+			csr = await createCsr();
+		}
 	}
 
 	// TODO: test adding a node to an instance without previous replication config.

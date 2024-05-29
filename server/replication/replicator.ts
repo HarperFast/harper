@@ -36,7 +36,7 @@ import { X509Certificate } from 'crypto';
 import { readFileSync } from 'fs';
 import { EventEmitter } from 'events';
 export { startOnMainThread } from './subscriptionManager';
-import { subscribeToNodeUpdates, getHDBNodeTable } from './knownNodes';
+import { subscribeToNodeUpdates, getHDBNodeTable, iterateRoutes } from './knownNodes';
 import { encode } from 'msgpackr';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms';
 import { exportIdMapping } from './nodeIdMapping';
@@ -52,6 +52,10 @@ export function start(options) {
 	if (!options.port) options.port = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT);
 	if (!options.securePort) options.securePort = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT);
 	if (!getThisNodeName()) throw new Error('Can not load replication without a url (see replication.url in the config)');
+	let route_by_hostname = new Map();
+	for (let node of iterateRoutes(options)) {
+		route_by_hostname.set(urlToNodeName(node.url), node);
+	}
 	assignReplicationSource(options);
 	options = Object.assign(
 		// We generally expect this to use the operations API ports (9925)
@@ -77,7 +81,7 @@ export function start(options) {
 				}
 			} else {
 				// try by IP address
-				authorization = getHDBNodeTable().primaryStore.get(request.ip);
+				authorization = getHDBNodeTable().primaryStore.get(request.ip) || route_by_hostname.get(request.ip);
 			}
 			if (!authorization && request._nodeRequest.socket.authorizationError)
 				logger.error(request._nodeRequest.socket.authorizationError);
@@ -250,7 +254,11 @@ export async function subscribeToNode(request) {
 			database_subscriptions.set(request.database, subscription_to_table);
 		}
 		let connection = getConnection(request.nodes[0].url, await subscription_to_table, request.database);
-		connection.subscribe(request.nodes, request.replicateByDefault);
+		if (request.nodes[0].name === undefined) connection.tentativeNode = request.nodes[0]; // we don't have the node name yet
+		connection.subscribe(
+			request.nodes.filter((node) => node.name),
+			request.replicateByDefault
+		);
 	} catch (error) {
 		logger.error('Error in subscription to node', request.nodes[0].url, error.message);
 	}

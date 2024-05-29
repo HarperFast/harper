@@ -14,7 +14,7 @@ import {
 	forEachReplicatedDatabase,
 } from './replicator';
 import { parentPort } from 'worker_threads';
-import { subscribeToNodeUpdates, getHDBNodeTable } from './knownNodes';
+import { subscribeToNodeUpdates, getHDBNodeTable, iterateRoutes } from './knownNodes';
 import * as logger from '../../utility/logging/harper_logger';
 import { getCertsKeys } from '../../security/keys.js';
 import { cloneDeep } from 'lodash';
@@ -37,31 +37,22 @@ export async function startOnMainThread(options) {
 	});*/
 	// we need to wait for the threads to start before we can start adding nodes
 	// but don't await this because this start function has to finish before the threads can start
-	whenThreadsStarted.then(() => {
-		route_loop: for (const route of options.routes || []) {
+	whenThreadsStarted.then(async () => {
+		let nodes = [];
+		for await (const node of getDatabases().system.hdb_nodes.search([])) {
+			nodes.push(node);
+		}
+		for (const route of iterateRoutes(options)) {
 			try {
-				let url = typeof route === 'string' ? route : route.url;
-				if (!url) {
-					if (route.host) url = 'wss://' + route.host + ':' + (route.port || 9925);
-					else if (route.hostname) url = 'wss://' + route.hostname + ':' + (route.port || 9925);
-					else {
-						console.error('Invalid route, must specify a url or host (with port)');
-						continue;
-					}
-				}
+				if (nodes.find((node) => node.url === route.url)) continue;
 				const pub_sub_all = !route.subscriptions;
 				const pub_sub_system = route.trusted !== false;
-				const node = {
-					url,
-					subscription: route.subscriptions,
-					routes: route.routes,
-				};
 				if (pub_sub_all) {
-					node.subscribe = true;
-					node.publish = true;
+					route.subscribe = true;
+					route.publish = true;
 				}
 				// just tentatively add this node to the list of nodes in memory
-				onNewNode(node);
+				onNewNode(route);
 			} catch (error) {
 				console.error(error);
 			}
