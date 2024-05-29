@@ -5,6 +5,7 @@ import { parseDocument } from 'yaml';
 import * as env from '../utility/environment/environmentManager';
 import { HDB_SETTINGS_NAMES, CONFIG_PARAMS } from '../utility/hdbTerms';
 import * as graphql_handler from '../resources/graphql';
+import * as roles from '../resources/roles';
 import * as js_handler from '../resources/jsResource';
 import * as login from '../resources/login';
 import * as REST from '../server/REST';
@@ -69,6 +70,7 @@ const TRUSTED_RESOURCE_LOADERS = {
 	REST, // for backwards compatibility with older configs
 	rest: REST,
 	graphqlSchema: graphql_handler,
+	roles,
 	jsResource: js_handler,
 	fastifyRoutes: fastify_routes_handler,
 	login,
@@ -90,6 +92,9 @@ const DEFAULT_CONFIG = {
 	graphqlSchema: {
 		files: '*.graphql',
 		//path: '/', // from root path by default, like http://server/query
+	},
+	roles: {
+		files: 'roles.yaml',
 	},
 	jsResource: {
 		files: 'resources.js',

@@ -3,6 +3,8 @@ REST:
 graphqlSchema:
   files: '*.graphql'
   # path: / # exported queries are on the root path by default
+roles:  # Reads role definitions to define the roles and permissions of users
+  files: 'roles.yaml' # this is the roles file
 jsResource:
   files: resources.js
   # path: / # exported resources are on the root path by default, like http://server/resource-name
