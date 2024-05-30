@@ -48,8 +48,8 @@ export async function startOnMainThread(options) {
 				const pub_sub_all = !route.subscriptions;
 				const pub_sub_system = route.trusted !== false;
 				if (pub_sub_all) {
-					route.subscribe = true;
-					route.publish = true;
+					if (route.sends == undefined) route.sends = true;
+					if (route.receives == undefined) route.receives = true;
 				}
 				// just tentatively add this node to the list of nodes in memory
 				onNewNode(route);
@@ -68,7 +68,7 @@ export async function startOnMainThread(options) {
 		if ((getThisNodeName() && node.name === getThisNodeName()) || (getThisNodeUrl() && node.name === getThisNodeUrl()))
 			// this is just this node, we don't need to connect to ourselves
 			return;
-		if (node.subscribe === false) return; // this node is not to be subscribed to
+		if (!node.sends) return; // this node is not to be subscribed to
 		if (!node.url) {
 			logger.info(`Node ${node.name} is missing url`);
 			return;

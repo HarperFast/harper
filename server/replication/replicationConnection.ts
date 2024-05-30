@@ -331,7 +331,7 @@ export function replicateOverWS(ws, options, authorization) {
 						break;
 					case OPERATION_REQUEST:
 						try {
-							let is_authorized_node = authorization?.publish || authorization?.subscribers || authorization?.name;
+							let is_authorized_node = authorization?.sends || authorization?.subscribers || authorization?.name;
 							server.operation(data, { user: authorization }, !is_authorized_node).then(
 								(response) => {
 									response.requestId = data.requestId;
@@ -431,7 +431,7 @@ export function replicateOverWS(ws, options, authorization) {
 						// we have publish permission for this node/database
 						if (
 							!(
-								authorization.publish !== false ||
+								authorization.receives ||
 								authorization.subscriptions?.some(
 									// TODO: Verify the table permissions for each table listed in the subscriptions
 									(sub) => (sub.database || sub.schema) === database_name && sub.publish !== false

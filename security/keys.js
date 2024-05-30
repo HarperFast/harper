@@ -715,7 +715,7 @@ function createTLSSelector(type, options) {
 					secure_contexts.clear();
 					ca_certs.clear();
 					let best_quality = 0;
-					for await (const cert of certificate_table.search([])) {
+					for await (const cert of databases.system.hdb_certificate.search([])) {
 						if (type !== 'operations-api' && cert.name.includes('operations')) continue;
 						const certificate = cert.certificate;
 						const cert_parsed = new X509Certificate(certificate);
@@ -724,7 +724,7 @@ function createTLSSelector(type, options) {
 							ca_certs.set(cert_parsed.subject, cert_parsed);
 						}
 					}
-					for await (const cert of certificate_table.search([])) {
+					for await (const cert of databases.system.hdb_certificate.search([])) {
 						try {
 							if (cert.is_authority) {
 								continue;
