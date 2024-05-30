@@ -1,0 +1,159 @@
+{
+	"id": "231ded10-76ad-4630-a0de-3293b5efb324",
+	"name": "Cluster Test C env",
+	"values": [
+		{
+			"key": "USERNAME",
+			"value": "admin",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "PASSWORD",
+			"value": "Abc1234!",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "HDB_PORT",
+			"value": "9925",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "NODE1_HOST",
+			"value": "TEST_C_NODE1_HOST",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "NODE1_NAME",
+			"value": "TEST_C_NODE1_NAME",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "NODE2_HOST",
+			"value": "TEST_C_NODE2_HOST",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "NODE2_NAME",
+			"value": "TEST_C_NODE2_NAME",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "NODE3_HOST",
+			"value": "TEST_C_NODE3_HOST",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "NODE3_NAME",
+			"value": "TEST_C_NODE3_NAME",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "NODE4_HOST",
+			"value": "TEST_C_NODE4_HOST",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "NODE4_NAME",
+			"value": "TEST_C_NODE4_NAME",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "JOB_ID",
+			"value": "",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "TX_LOG_TIMESTAMP_0",
+			"value": "",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "TX_LOG_TIMESTAMP_1",
+			"value": "",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "TX_LOG_TIMESTAMP_2",
+			"value": "",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "CLUSTERING_PORT",
+			"value": "12345",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "CSV_BASE_PATH",
+			"value": "/home/ubuntu/harperdb/test/data",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "JOB_STATUS_RETRY_MAX",
+			"value": "30",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "JOB_STATUS_COUNT",
+			"value": "0",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "RESTART_WAIT_MAX",
+			"value": "20",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "RESTART_INTERVAL",
+			"value": "7500",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "S3_KEY",
+			"value": "AKIA25KWWUK6PJNH7FW3",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "S3_SECRET",
+			"value": "1lVX6ECc8hUbVlxToa5rfC+UuH6ZPP4EdFa391nd",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "RETRY_COUNT",
+			"value": "0",
+			"type": "default",
+			"enabled": true
+		},
+		{
+			"key": "RETRY_COUNT_MAX",
+			"value": "5",
+			"type": "default",
+			"enabled": true
+		}
+	],
+	"_postman_variable_scope": "environment",
+	"_postman_exported_at": "2022-09-23T16:55:09.946Z",
+	"_postman_exported_using": "Postman/9.31.9"
+}

@@ -4,11 +4,11 @@ import Joi from 'joi';
 import { get } from '../../utility/environment/environmentManager';
 import { OPERATIONS_ENUM, CONFIG_PARAMS, LICENSE_KEY_DIR_NAME } from '../../utility/hdbTerms';
 import { CERTIFICATE_PEM_NAME, CA_PEM_NAME, CERT_NAME } from '../../utility/terms/certificates';
-import { ensureNode, getHDBNodeTable } from './subscriptionManager';
+import { ensureNode } from './subscriptionManager';
+import { getHDBNodeTable } from './knownNodes';
 import { getThisNodeUrl, sendOperationToNode, urlToNodeName } from './replicator';
 import * as hdb_logger from '../../utility/logging/harper_logger';
 import { handleHDBError, hdb_errors } from '../../utility/errors/hdbError.js';
-const { handleHDBError, hdb_errors } = require('../../utility/errors/hdbError.js');
 const { HTTP_STATUS_CODES } = hdb_errors;
 
 const validation_schema = Joi.object({
@@ -29,6 +29,8 @@ export async function setNode(req: object) {
 	if (req.operation === 'remove_node') {
 		const node_record_id = req.node_name ?? urlToNodeName(url);
 		const hdb_nodes = getHDBNodeTable();
+		const record = await hdb_nodes.get(node_record_id);
+		if (!record) throw node_record_id + ' does not exist';
 		await hdb_nodes.patch(node_record_id, { publish: false, subscribe: false, subscriptions: null });
 
 		return `Successfully removed '${node_record_id}' from manifest`;
@@ -54,7 +56,7 @@ export async function setNode(req: object) {
 		url: this_url,
 	};
 
-	if (req.node_name) remote_add_node_obj.node_name = req.node_name;
+	if (get(CONFIG_PARAMS.REPLICATION_NODENAME)) remote_add_node_obj.node_name = get(CONFIG_PARAMS.REPLICATION_NODENAME);
 	if (req.subscriptions) {
 		remote_add_node_obj.subscriptions = req.subscriptions.map(reverseSubscription);
 	}
@@ -72,8 +74,12 @@ export async function setNode(req: object) {
 		add_node: remote_add_node_obj,
 	};
 	let sign_res;
+	if (req?.authorization?.username && req?.authorization?.password) {
+		req.authorization =
+			'Basic ' + Buffer.from(req.authorization.username + ':' + req.authorization.password).toString('base64');
+	}
+
 	try {
-		// TODO: sendOperationToNode doesnt seem to fail well/at all
 		sign_res = await sendOperationToNode({ url }, sign_req, req);
 	} catch (err) {
 		hdb_logger.error(err);
@@ -106,7 +112,7 @@ export async function setNode(req: object) {
 	if (req.subscribe) node_record.subscribe = req.subscribe;
 	if (req.publish) node_record.publish = req.publish;
 
-	await ensureNode(undefined, node_record);
+	await ensureNode(req.node_name, node_record);
 
 	if (req.operation === 'update_node') {
 		return `Successfully updated '${url}'`;

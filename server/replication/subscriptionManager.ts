@@ -17,6 +17,7 @@ import { parentPort } from 'worker_threads';
 import { subscribeToNodeUpdates, getHDBNodeTable, iterateRoutes } from './knownNodes';
 import * as logger from '../../utility/logging/harper_logger';
 import { getCertsKeys } from '../../security/keys.js';
+import { cloneDeep } from 'lodash';
 
 let connection_replication_map = new Map();
 export let disconnectedFromNode; // this is set by thread to handle when a node is disconnected (or notify main thread so it can handle)
@@ -220,9 +221,13 @@ export function requestClusterStatus(message, port) {
 				});
 			}
 		}
-		node = Object.assign({}, node);
-		node.database_sockets = databases;
-		connections.push(node);
+
+		const res = cloneDeep(node);
+		res.database_sockets = databases;
+		delete res.ca;
+		delete res.node_name;
+		delete res.__updatedtime__;
+		connections.push(res);
 	}
 	port?.postMessage({
 		type: 'cluster-status',

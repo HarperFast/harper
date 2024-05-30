@@ -331,18 +331,34 @@ export function replicateOverWS(ws, options, authorization) {
 						break;
 					case OPERATION_REQUEST:
 						try {
-							let is_authorized_node = authorization?.publish || authorization?.subscribers;
+							let is_authorized_node = authorization?.publish || authorization?.subscribers || authorization?.name;
 							server.operation(data, { user: authorization }, !is_authorized_node).then(
 								(response) => {
 									response.requestId = data.requestId;
 									ws.send(encode([OPERATION_RESPONSE, response]));
 								},
 								(error) => {
-									ws.send(encode([OPERATION_RESPONSE, { requestId: data.requestId, error: error.toString() }]));
+									ws.send(
+										encode([
+											OPERATION_RESPONSE,
+											{
+												requestId: data.requestId,
+												error: error instanceof Error ? error.toString() : error,
+											},
+										])
+									);
 								}
 							);
 						} catch (error) {
-							ws.send(encode([OPERATION_RESPONSE, { requestId: data.requestId, error: error.toString() }]));
+							ws.send(
+								encode([
+									OPERATION_RESPONSE,
+									{
+										requestId: data.requestId,
+										error: error instanceof Error ? error.toString() : error,
+									},
+								])
+							);
 						}
 						break;
 					case OPERATION_RESPONSE:
