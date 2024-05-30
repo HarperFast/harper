@@ -1,6 +1,6 @@
 {
   "name": "harperdb",
-  "version": "4.3.14",
+  "version": "4.3.15",
   "description": "HarperDB is a distributed database, caching service, streaming broker, and application development platform focused on performance and ease of use.",
   "keywords": [
     "database",
