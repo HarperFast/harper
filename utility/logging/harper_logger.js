@@ -11,6 +11,7 @@ const assignCMDENVVariables = require('../assignCmdEnvVariables');
 const os = require('os');
 const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
 const { _assignPackageExport } = require('../../index');
+let native_std_write = process.stdout.write;
 
 const native_console_methods = {};
 for (let key in console) {
@@ -65,7 +66,6 @@ module.exports = {
 	loggerWithTag,
 	suppressLogging,
 	initLogSettings,
-	setupConsoleLogging,
 	logCustomLevel,
 	closeLogFile,
 	getLogFilePath: () => log_file_path,
@@ -73,6 +73,7 @@ module.exports = {
 	AuthAuditLog,
 };
 _assignPackageExport('logger', module.exports);
+
 /**
  * Get the log settings from the settings file.
  * If the settings file doesn't exist (during install) check for command or env vars, if there aren't
@@ -162,23 +163,39 @@ function initLogSettings(force_init = false) {
 		throw err;
 	}
 	if (process.env.DEV_MODE) log_to_stdstreams = true;
-	setupConsoleLogging();
+	stdioLogging();
 }
 let logging_enabled = true;
-
-function setupConsoleLogging() {
-	logConsole('error', error);
-	logConsole('warn', warn);
-	logConsole('log', info);
-	logConsole('info', info);
-	logConsole('debug', debug);
-	logConsole('trace', trace);
-}
-function logConsole(level, logger) {
-	console[level] = function (...args) {
-		if (logging_enabled) logger(...args);
-		if (!/PM2 log:|App \[/.test(args[0])) return native_console_methods[level](...args);
-	};
+function stdioLogging() {
+	if (log_to_file) {
+		process.stdout.write = function (data) {
+			if (
+				typeof data === 'string' && // this is how we identify console output vs redirected output from a worker
+				log_fd &&
+				logging_enabled &&
+				LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['info']
+			) {
+				openLogFile();
+				data = data.toString();
+				if (data[data.length - 1] === '\n') data = data.slice(0, -1);
+				fs.appendFileSync(log_fd, createLogRecord('info', [data]));
+			}
+			return native_std_write.apply(process.stdout, arguments);
+		};
+		process.stderr.write = function (data) {
+			if (
+				typeof data === 'string' && // this is how we identify console output vs redirected output from a worker
+				log_fd &&
+				logging_enabled &&
+				LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['error']
+			) {
+				openLogFile();
+				if (data[data.length - 1] === '\n') data = data.slice(0, -1);
+				fs.appendFileSync(log_fd, createLogRecord('error', [data]));
+			}
+			return native_std_write.apply(process.stderr, arguments);
+		};
+	}
 }
 
 function loggerWithTag(tag) {
