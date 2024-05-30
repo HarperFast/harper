@@ -180,7 +180,7 @@ async function install() {
 	// Create cluster user if clustering params are passed to install.
 	await createClusterUser(install_params);
 
-	// Create cert and private keys and write to file.
+	// Create cert and private keys.
 	await keys.updateConfigCert();
 
 	// Insert current version of HarperDB into versions table.

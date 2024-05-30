@@ -187,6 +187,8 @@ async function initialize(called_by_install = false, called_by_main = false) {
 	check_jwt_tokens();
 	writeLicenseFromVars();
 
+	await keys.setDefaultCertsKeys();
+
 	const clustering_enabled = hdb_utils.autoCastBoolean(env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY));
 	if (clustering_enabled && isMainThread) {
 		await nats_config.generateNatsConfig(called_by_main);
@@ -206,8 +208,6 @@ async function main(called_by_install = false) {
 			config_utils.updateConfigObject('settings_path', path.join(cmd_args.ROOTPATH, terms.HDB_CONFIG_FILE));
 		}
 		await initialize(called_by_install, true);
-
-		await keys.setDefaultCertsKeys();
 
 		if (env.get(terms.CONFIG_PARAMS.STORAGE_COMPACTONSTART)) await compactOnStart();
 

@@ -44,6 +44,7 @@ Object.assign(exports, {
 	createTLSSelector,
 	verifyCert,
 	verifyCertAgainstCAs,
+	writeDefaultCertsToFile,
 });
 
 const { urlToNodeName, getThisNodeUrl } = require('../server/replication/replicator');
@@ -605,6 +606,19 @@ async function generateCertsKeys() {
 	updateConfigCert();
 }
 
+async function writeDefaultCertsToFile() {
+	getCertTable();
+	const keys_path = path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME);
+
+	const pub_cert = await certificate_table.get(certificates_terms.CERT_NAME.DEFAULT);
+	const pub_cert_path = path.join(keys_path, certificates_terms.CERTIFICATE_PEM_NAME);
+	await fs.writeFile(pub_cert_path, pub_cert.certificate);
+
+	const ca_cert = await certificate_table.get(certificates_terms.CERT_NAME.CA);
+	const ca_cert_path = path.join(keys_path, certificates_terms.CA_PEM_NAME);
+	await fs.writeFile(ca_cert_path, ca_cert.certificate);
+}
+
 /**
  * Function does two things:
  * If there is no app cert, it will create all the default HarperDB certs and private key (which become default certs).
@@ -649,6 +663,8 @@ function updateConfigCert() {
 	const cli_env_args = assign_cmdenv_vars(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
 	const keys_path = path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME);
 	const private_key = path.join(keys_path, certificates_terms.PRIVATEKEY_PEM_NAME);
+	const pub_cert = path.join(keys_path, certificates_terms.CERTIFICATE_PEM_NAME);
+	const ca = path.join(keys_path, certificates_terms.CA_PEM_NAME);
 
 	// This object is what will be added to the harperdb-config.yaml file.
 	// We check for any CLI of Env args and if they are present we use them instead of default values.
@@ -676,6 +692,15 @@ function updateConfigCert() {
 	if (cli_env_args[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY.toLowerCase()]) {
 		new_certs[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY] =
 			cli_env_args[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY.toLowerCase()];
+	}
+
+	// Add paths for Nats TLS certs if clustering enabled
+	if (cli_env_args[conf.CLUSTERING_ENABLED.toLowerCase()] || cli_env_args['clustering']) {
+		new_certs[conf.CLUSTERING_TLS_CERTIFICATE] =
+			cli_env_args[conf.CLUSTERING_TLS_CERTIFICATE.toLowerCase()] ?? pub_cert;
+		new_certs[conf.CLUSTERING_TLS_CERT_AUTH] = cli_env_args[conf.CLUSTERING_TLS_CERT_AUTH.toLowerCase()] ?? ca;
+		new_certs[conf.CLUSTERING_TLS_PRIVATEKEY] =
+			cli_env_args[conf.CLUSTERING_TLS_PRIVATEKEY.toLowerCase()] ?? private_key;
 	}
 
 	config_utils.updateConfigValue(undefined, undefined, new_certs, false, true);
