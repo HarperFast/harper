@@ -146,7 +146,11 @@ export class NodeReplicationConnection extends EventEmitter {
 		});
 		this.socket.on('error', (error) => {
 			if (error.code !== 'ECONNREFUSED') {
-				logger.error('Error in connection to ' + this.url, error.message);
+				if (error.code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE')
+					logger.error(
+						`Can not connect to ${this.url}, the certificate is not trusted, this node needs to be added to the cluster, or a certificate authority needs to be added`
+					);
+				else logger.error(`Error in connection to ${this.url} due to ${error.message}`);
 			}
 		});
 		this.socket.on('close', (code, reason_buffer) => {

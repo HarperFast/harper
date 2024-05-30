@@ -84,7 +84,10 @@ export function start(options) {
 				authorization = getHDBNodeTable().primaryStore.get(request.ip) || route_by_hostname.get(request.ip);
 			}
 			if (!authorization && request._nodeRequest.socket.authorizationError)
-				logger.error(request._nodeRequest.socket.authorizationError);
+				logger.error(
+					'Error in authorizing incoming WS client connection',
+					request._nodeRequest.socket.authorizationError
+				);
 		}
 		replicateOverWS(ws, options, authorization);
 		ws.on('error', (error) => {
