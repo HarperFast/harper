@@ -107,7 +107,7 @@ export async function setNode(req: object) {
 	}
 
 	const node_record = { url, ca: sign_res.ca_certificate };
-	if (req.node_name) node_record.node_name = req.node_name;
+	if (req.node_name) node_record.name = req.node_name;
 	if (req.subscriptions) node_record.subscriptions = req.subscriptions;
 	if (req.subscribe) node_record.subscribe = req.subscribe;
 	if (req.publish) node_record.publish = req.publish;

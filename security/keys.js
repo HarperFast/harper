@@ -46,7 +46,7 @@ Object.assign(exports, {
 	verifyCertAgainstCAs,
 });
 
-const { urlToNodeName, getThisNodeUrl } = require('../server/replication/replicator');
+const { urlToNodeName, getThisNodeUrl, getThisNodeName } = require('../server/replication/replicator');
 const { ensureNode } = require('../server/replication/subscriptionManager');
 const { readFileSync } = require('fs');
 const { createSecureContext, rootCertificates } = require('node:tls');
@@ -289,14 +289,23 @@ function loadCertificates() {
 }
 
 function getHost() {
-	let rep_url = getThisNodeUrl();
-	if (rep_url == null) {
+	let url = getThisNodeUrl();
+	if (url == null) {
 		const host = CERT_DOMAINS[0];
 		hdb_logger.info('replication url is missing from harperdb-config.yaml, using default host' + host);
 		return host;
 	}
+	return urlToNodeName(url);
+}
 
-	return urlToNodeName(rep_url);
+function getCommonName() {
+	let node_name = getThisNodeName();
+	if (node_name == null) {
+		const host = CERT_DOMAINS[0];
+		hdb_logger.info('replication url is missing from harperdb-config.yaml, using default host' + host);
+		return host;
+	}
+	return node_name;
 }
 
 //TODO add validation to these two op-api calls
@@ -312,7 +321,7 @@ async function createCsr() {
 	const subject = [
 		{
 			name: 'commonName',
-			value: getHost(),
+			value: getCommonName(),
 		},
 		...CERT_ATTRIBUTES,
 	];
@@ -338,8 +347,8 @@ async function createCsr() {
 }
 
 function certExtensions() {
-	const alt_name = CERT_DOMAINS.includes(getHost()) ? CERT_DOMAINS : [...CERT_DOMAINS, getHost()];
-
+	const alt_name = CERT_DOMAINS.includes(getCommonName()) ? CERT_DOMAINS : [...CERT_DOMAINS, getCommonName()];
+	if (!alt_name.includes(getHost())) alt_name.push(getHost());
 	return [
 		{
 			name: 'basicConstraints',
@@ -551,7 +560,7 @@ async function generateCertificates(private_key, public_key, ca_cert) {
 	const subject = [
 		{
 			name: 'commonName',
-			value: getHost(),
+			value: getCommonName(),
 		},
 		...CERT_ATTRIBUTES,
 	];
@@ -578,7 +587,7 @@ async function generateCertAuthority() {
 	const subject = [
 		{
 			name: 'commonName',
-			value: 'HarperDB Certificate Authority for ' + getHost(),
+			value: 'HarperDB Certificate Authority for ' + getCommonName(),
 		},
 		...CERT_ATTRIBUTES,
 	];
@@ -622,7 +631,7 @@ async function setDefaultCertsKeys() {
 	// This block of code is here to check the common name and altnames on the default app cert.
 	// If the cert does not have this nodes hostname it will create a new public cert with the hostname.
 	if (app.name === CERT_NAME.DEFAULT && env_manager.get(CONFIG_PARAMS.REPLICATION_URL)) {
-		const host = getHost();
+		const host = getCommonName();
 		const cert_obj = new X509Certificate(app.cert);
 		if (!cert_obj.subjectAltName.includes(host) || !cert_obj.subject.includes(host)) {
 			hdb_logger.info('Creating a new HarperDB generated public with host:', host);

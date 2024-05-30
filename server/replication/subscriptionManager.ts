@@ -159,7 +159,6 @@ export async function startOnMainThread(options) {
 				}
 				nodes.push(node);
 			}
-			nodes.push(...existing_worker_entry.nodes);
 			existing_worker_entry.redirectingTo = failover_worker_entry;
 			if (worker) {
 				worker.postMessage({
