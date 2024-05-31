@@ -155,6 +155,7 @@ export function makeTable(options) {
 		static createdTimeProperty = created_time_property;
 		static updatedTimeProperty = updated_time_property;
 		static propertyResolvers;
+		static userResolvers = {};
 		static sources = [];
 		static get expirationMS() {
 			return expiration_ms;
@@ -2116,7 +2117,7 @@ export function makeTable(options) {
 			};
 			for (let i = 0, l = attributes.length; i < l; i++) {
 				const attribute = attributes[i];
-				if (attribute.relationship) continue;
+				if (attribute.relationship || attribute.computed) continue;
 				if (!patch || attribute.name in record) {
 					const updated = validateValue(record[attribute.name], attribute, attribute.name);
 					if (updated) record[attribute.name] = updated;
@@ -2219,6 +2220,7 @@ export function makeTable(options) {
 			for (const attribute of this.attributes) {
 				attribute.resolve = null; // reset this
 				const relationship = attribute.relationship;
+				const computed = attribute.computed;
 				if (relationship) {
 					if (attribute.indexed) {
 						console.error(
@@ -2306,9 +2308,17 @@ export function makeTable(options) {
 							`The relationship directive on "${attribute.name}" in table "${table_name}" must use either "from" or "to" arguments`
 						);
 					}
+				} else if (computed) {
+					property_resolvers[attribute.name] = attribute.resolve = (object, context, entry) => {
+						let value = computed.from ? object[computed.from] : object;
+						this.userResolvers[attribute.name]?.(value, context, entry);
+					};
 				}
 			}
 			assignTrackedAccessors(this, this);
+		}
+		static setComputedAttribute(attribute_name, resolver) {
+			this.userResolvers[attribute_name] = resolver;
 		}
 		static async deleteHistory(end_time = 0) {
 			let completion;
@@ -2388,8 +2398,9 @@ export function makeTable(options) {
 		for (const key in indices) {
 			const index = indices[key];
 			const is_indexing = index.isIndexing;
-			const value = record?.[key];
-			const existing_value = existing_record?.[key];
+			const resolver = property_resolvers[key];
+			const value = record && (resolver ? resolver(record) : record[key]);
+			const existing_value = existing_record && (resolver ? resolver(existing_record) : record[key]);
 			if (value === existing_value && !is_indexing) {
 				continue;
 			}

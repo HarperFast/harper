@@ -4,6 +4,9 @@ import { getWorkerIndex } from '../server/threads/manageThreads';
 
 const PRIMITIVE_TYPES = ['ID', 'Int', 'Float', 'Long', 'String', 'Boolean', 'Date', 'Bytes', 'Any', 'BigInt'];
 
+if (server.knownGraphQLDirectives) {
+	server.knownGraphQLDirectives = ['table', 'sealed', 'export', 'primaryKey', 'indexed', 'computed', 'relationship', 'createdTime', 'updatedTime', 'expiresAt', 'allow'];
+}
 /**
  * This is the entry point for handling GraphQL schemas (and server-side defined queries, eventually). This will be
  * called for schemas, and this will parse the schema (into an AST), and use it to ensure all specified tables and their
@@ -39,7 +42,7 @@ export function start({ ensureTable }) {
 					const type_def = { table: null, database: null, properties };
 					types.set(type_name, type_def);
 					for (const directive of definition.directives) {
-						if (directive.name.value === 'table') {
+						if (directive_name === 'table') {
 							for (const arg of directive.arguments) {
 								type_def[arg.name.value] = (arg.value as StringValueNode).value;
 							}
@@ -49,10 +52,10 @@ export function start({ ensureTable }) {
 							type_def.attributes = type_def.properties;
 							tables.push(type_def);
 						}
-						if (directive.name.value === 'sealed') {
+						if (directive_name === 'sealed') {
 							type_def.sealed = true;
 						}
-						if (directive.name.value === 'export') {
+						if (directive_name === 'export') {
 							type_def.export = true;
 							for (const arg of directive.arguments) {
 								if (typeof type_def.export !== 'object') type_def.export = {};
@@ -83,33 +86,38 @@ export function start({ ensureTable }) {
 						property.name = field.name.value;
 						properties.push(property);
 						for (const directive of field.directives) {
-							if (directive.name.value === 'primaryKey') {
-								if (has_primary_key) console.warn('Can not define two attributes as a primary key');
+							let directive_name = directive.name.value;
+							if (directive_name === 'primaryKey') {
+								if (has_primary_key) console.warn('Can not define two attributes as a primary key at', directive.loc);
 								else {
 									property.isPrimaryKey = true;
 									has_primary_key = true;
 								}
-							} else if (directive.name.value === 'indexed') {
+							} else if (directive_name === 'indexed') {
 								property.indexed = true;
-							} else if (directive.name.value === 'relationship') {
+							} else if (directive_name === 'computed') {
+								property.computed = true;
+							} else if (directive_name === 'relationship') {
 								const relationship_definition = {};
 								for (const arg of directive.arguments) {
 									relationship_definition[arg.name.value] = (arg.value as StringValueNode).value;
 								}
 								property.relationship = relationship_definition;
-							} else if (directive.name.value === 'createdTime') {
+							} else if (directive_name === 'createdTime') {
 								property.assignCreatedTime = true;
-							} else if (directive.name.value === 'updatedTime') {
+							} else if (directive_name === 'updatedTime') {
 								property.assignUpdatedTime = true;
-							} else if (directive.name.value === 'expiresAt') {
+							} else if (directive_name === 'expiresAt') {
 								property.expiresAt = true;
-							} else if (directive.name.value === 'allow') {
+							} else if (directive_name === 'allow') {
 								const authorized_roles = (property.authorizedRoles = []);
 								for (const arg of directive.arguments) {
 									if (arg.name.value === 'role') {
 										authorized_roles.push((arg.value as StringValueNode).value);
 									}
 								}
+							} else if (server.knownGraphQLDirectives.includes(directive_name) {
+								console.warn(`@${directive_name} is an unknown directive, at`, directive.loc);
 							}
 						}
 					}
