@@ -389,17 +389,6 @@ async function signCertificate(req) {
 	let { app_private_key, app_ca } = await getCertsKeys();
 	app_private_key = pki.privateKeyFromPem(app_private_key);
 	const ca_app_cert = pki.certificateFromPem(app_ca.cert);
-	const adding_node = async () => {
-		// If the sign req is coming from add node, add the requesting node to hdb_nodes
-		if (req.add_node) {
-			const node_record = { url: req.add_node.url, ca: pki.certificateToPem(ca_app_cert) };
-			if (req.add_node.subscriptions) node_record.subscriptions = req.add_node.subscriptions;
-			if (req.add_node.hasOwnProperty('subscribe')) node_record.publish = req.add_node.publish;
-			if (req.add_node.hasOwnProperty('publish')) node_record.subscribe = req.add_node.subscribe;
-			await ensureNode(req.add_node.node_name, node_record);
-		}
-	};
-
 	let response = {
 		ca_certificate: pki.certificateToPem(ca_app_cert),
 	};
@@ -458,8 +447,6 @@ async function signCertificate(req) {
 			);
 		}*/
 	}
-
-	await adding_node();
 
 	return response;
 }

@@ -44,9 +44,11 @@ const alasql = require('alasql');
 const transaction_log = require('../utility/logging/transactionLog');
 const npm_utilities = require('./npmUtilities');
 const keys = require('../security/keys');
+const set_node = require('../server/replication/setNode');
 
 const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
+const { addNodeBack, removeNodeBack } = require('../server/replication/setNode');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 const required_permissions = new Map();
@@ -153,6 +155,8 @@ required_permissions.set(npm_utilities.installModules.name, new permission(true,
 required_permissions.set(npm_utilities.auditModules.name, new permission(true, []));
 required_permissions.set(keys.createCsr.name, new permission(true, []));
 required_permissions.set(keys.signCertificate.name, new permission(true, []));
+required_permissions.set(set_node.addNodeBack.name, new permission(true, []));
+required_permissions.set(set_node.removeNodeBack.name, new permission(true, []));
 
 //this operation must be available to all users so they can create authentication tokens and login
 required_permissions.set(token_authentication.createTokens.name, new permission(false, []));
