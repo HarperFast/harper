@@ -155,7 +155,9 @@ export class NodeReplicationConnection extends EventEmitter {
 		});
 		this.socket.on('close', (code, reason_buffer) => {
 			if (this.socket.isFinished) {
+				this.isFinished = true;
 				session?.end();
+				this.emit('finished');
 				return;
 			}
 			session?.disconnected();
@@ -322,11 +324,8 @@ export function replicateOverWS(ws, options, authorization) {
 								try {
 									setDatabase((database_name = message[2]));
 									if (database_name === 'system') {
-										forEachReplicatedDatabase(options, (database, database_name) => {
+										schema_update_listener = forEachReplicatedDatabase(options, (database, database_name) => {
 											sendDatabaseInfo(null, database_name);
-										});
-										schema_update_listener = onUpdatedTable((table) => {
-											sendDatabaseInfo(null, table.databaseName);
 										});
 									}
 								} catch (error) {
@@ -771,7 +770,7 @@ export function replicateOverWS(ws, options, authorization) {
 											current_sequence_id
 										);
 								}
-								audit_subscription.on('close', () => {
+								audit_subscription.once('close', () => {
 									closed = true;
 								});
 								let listeners = table_update_listeners.get(first_table);
@@ -911,6 +910,8 @@ export function replicateOverWS(ws, options, authorization) {
 			subscribed = true;
 			options.connection?.on('subscriptions-updated', sendSubscriptionRequestUpdate);
 		}
+		if (options.connection?.isFinished)
+			throw new Error('Can not make a subscription request on a connection that is already closed');
 		/*		if (!last_sequence_id_received) {
 			last_sequence_id_received =
 				table_subscription_to_replicator.dbisDB.get([Symbol.for('seq'), remote_node_name]) ?? 1;
