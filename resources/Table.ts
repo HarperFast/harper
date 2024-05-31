@@ -1437,7 +1437,9 @@ export function makeTable(options) {
 					}
 					return columns;
 				}
-				return attributes.map((attribute) => attribute.name);
+				return attributes
+					.filter((attribute) => !attribute.computed && !attribute.relationship)
+					.map((attribute) => attribute.name);
 			};
 			return results;
 		}
@@ -2311,7 +2313,15 @@ export function makeTable(options) {
 				} else if (computed) {
 					property_resolvers[attribute.name] = attribute.resolve = (object, context, entry) => {
 						let value = computed.from ? object[computed.from] : object;
-						this.userResolvers[attribute.name]?.(value, context, entry);
+						let user_resolver = this.userResolvers[attribute.name];
+						if (user_resolver) return user_resolver(value, context, entry);
+						else {
+							harper_logger.warn(
+								`Computed attribute "${attribute.name}" does not have a function assigned to it. Please use setComputedAttribute('${attribute.name}', resolver) to assign a resolver function.`
+							);
+							// silence future warnings but just returning undefined
+							this.userResolvers[attribute.name] = () => {};
+						}
 					};
 				}
 			}
@@ -2400,7 +2410,7 @@ export function makeTable(options) {
 			const is_indexing = index.isIndexing;
 			const resolver = property_resolvers[key];
 			const value = record && (resolver ? resolver(record) : record[key]);
-			const existing_value = existing_record && (resolver ? resolver(existing_record) : record[key]);
+			const existing_value = existing_record && (resolver ? resolver(existing_record) : existing_record[key]);
 			if (value === existing_value && !is_indexing) {
 				continue;
 			}

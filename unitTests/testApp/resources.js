@@ -43,6 +43,7 @@ class SubObject extends tables.SubObject {
 		return 'success';
 	}
 }
+tables.FourProp.setComputedAttribute('ageInMonths', (instance) => instance.age * 12);
 export const namespace = {
 	SubObject,
 };

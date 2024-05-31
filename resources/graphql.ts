@@ -42,6 +42,7 @@ export function start({ ensureTable }) {
 					const type_def = { table: null, database: null, properties };
 					types.set(type_name, type_def);
 					for (const directive of definition.directives) {
+						const directive_name = directive.name.value;
 						if (directive_name === 'table') {
 							for (const arg of directive.arguments) {
 								type_def[arg.name.value] = (arg.value as StringValueNode).value;

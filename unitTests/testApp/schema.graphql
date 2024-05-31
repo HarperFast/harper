@@ -13,6 +13,7 @@ type FourProp @table(audit: "1d") @export {
 	age: Int @indexed
 	title: String
 	birthday: Date @indexed
+	ageInMonths: Int @computed @indexed
 }
 type Related @table @export(rest: true, mqtt: false) {
 	id: ID @primaryKey
@@ -41,6 +42,7 @@ type SubObject @table(audit: false) {
 	relatedId: ID @indexed
 	related: Related @relationship(from: "relatedId")
 	manyToMany: [ManyToMany] @relationship(to: subObjectIds)
+	computed: String @computed @indexed
 }
 type SimpleCache @table {
 	id: ID @primaryKey

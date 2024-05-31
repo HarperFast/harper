@@ -114,7 +114,7 @@ describe('test REST calls', () => {
 			let response = await axios('http://localhost:9926/FourProp');
 			assert.equal(response.status, 200);
 			assert(response.data.recordCount >= 10);
-			assert.equal(response.data.attributes.length, 5);
+			assert.equal(response.data.attributes.length, 6);
 			assert.equal(response.data.name, 'FourProp');
 		});
 	});
@@ -207,6 +207,20 @@ describe('test REST calls', () => {
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 3);
 			assert.equal(response.data[2].age, 22);
+		});
+		it('do query by numeric computed index', async () => {
+			let response = await axios('http://localhost:9926/FourProp/?ageInMonths=lt=300');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.length, 5);
+			assert.equal(response.data[4].age, 24);
+			assert.equal(response.data[4].ageInMonths, undefined); // computed property shouldn't be returned by default
+		});
+		it('do query by numeric computed index and return computed property', async () => {
+			let response = await axios('http://localhost:9926/FourProp/?ageInMonths=288&select(id,age,ageInMonths)');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.length, 1);
+			assert.equal(response.data[0].age, 24);
+			assert.equal(response.data[0].ageInMonths, 288);
 		});
 
 		it('by primary key', async () => {
