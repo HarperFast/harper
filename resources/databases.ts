@@ -753,7 +753,9 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 					for (let i = 0; i < attributes_length; i++) {
 						const attribute = attributes[i];
 						const property = attribute.name;
-						const values = getIndexedValues(record[property]);
+						const resolver = attribute.resolve;
+						const value = record && (resolver ? resolver(record) : record[property]);
+						const values = getIndexedValues(value);
 						if (values) {
 							/*					if (LMDB_PREFETCH_WRITES)
 													index.prefetch(
