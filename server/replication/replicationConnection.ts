@@ -711,6 +711,9 @@ export function replicateOverWS(ws, options, authorization) {
 						for (let { startTime } of node_subscriptions) {
 							if (startTime < current_sequence_id) current_sequence_id = startTime;
 						}
+						audit_subscription.once('close', () => {
+							closed = true;
+						});
 						(async () => {
 							let is_first = true;
 							do {
@@ -770,9 +773,6 @@ export function replicateOverWS(ws, options, authorization) {
 											current_sequence_id
 										);
 								}
-								audit_subscription.once('close', () => {
-									closed = true;
-								});
 								let listeners = table_update_listeners.get(first_table);
 								if (!listeners) table_update_listeners.set(first_table, (listeners = []));
 								listeners.push((table) => {
