@@ -510,6 +510,7 @@ function addPort(port, keep_ref) {
 }
 if (isMainThread) {
 	let before_restart, queued_restart;
+	let changed_files = new Set();
 	const watch_dir = async (dir, before_restart_callback) => {
 		if (before_restart_callback) before_restart = before_restart_callback;
 		for (let entry of await readdir(dir, { withFileTypes: true })) {
@@ -517,11 +518,13 @@ if (isMainThread) {
 		}
 		try {
 			for await (let { filename } of watch(dir, { persistent: false })) {
+				changed_files.add(filename);
 				if (queued_restart) clearTimeout(queued_restart);
 				queued_restart = setTimeout(async () => {
 					if (before_restart) await before_restart();
 					await restartWorkers();
-					console.log('Reloaded HarperDB components');
+					console.log('Reloaded HarperDB components, changed files:', Array.from(changed_files));
+					changed_files.clear();
 				}, 100);
 			}
 		} catch (error) {
