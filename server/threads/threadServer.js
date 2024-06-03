@@ -51,7 +51,7 @@ if (debug_threads) {
 			harper_logger.trace(`Could not start debugging on port ${port}, you may already be debugging:`, error.message);
 		}
 	}
-} else if (process.env.DEV_MODE) {
+} else if (process.env.DEV_MODE && isMainThread) {
 	try {
 		require('inspector').open(9229);
 	} catch (error) {
