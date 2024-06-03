@@ -48,12 +48,13 @@ Object.assign(exports, {
 
 const { urlToNodeName, getThisNodeUrl, getThisNodeName } = require('../server/replication/replicator');
 const { ensureNode } = require('../server/replication/subscriptionManager');
-const { readFileSync } = require('fs');
+const { readFileSync, watchFile, statSync } = require('node:fs');
 const { createSecureContext, rootCertificates } = require('node:tls');
 const env = require('../utility/environment/environmentManager');
 const { getTicketKeys } = require('../server/threads/manageThreads');
 const harper_logger = require('../utility/logging/harper_logger');
 const terms = require('../utility/hdbTerms');
+const { isMainThread } = require('worker_threads');
 
 const CERT_VALIDITY_DAYS = 3650;
 const CERT_DOMAINS = ['127.0.0.1', 'localhost', '::1'];
@@ -227,25 +228,23 @@ async function getCertsKeys(rep_host = undefined) {
 
 	return response;
 }
+let configured_certs_loaded;
 const private_keys = new Map();
 /**
  * This is responsible for loading any certificates that are in the harperdb-config.yaml file and putting them into the hdb_certificate table.
  * @return {*}
  */
 function loadCertificates() {
+	if (configured_certs_loaded) return;
+	configured_certs_loaded = true;
 	// these are the sections of the config to check
-	const CERTIFICATE_CONFIGS = [
-		{ configKey: CONFIG_PARAMS.TLS, ca: false },
-		{ configKey: CONFIG_PARAMS.TLS, ca: true },
-		{ configKey: CONFIG_PARAMS.OPERATIONSAPI_TLS, ca: false },
-		{ configKey: CONFIG_PARAMS.OPERATIONSAPI_TLS, ca: true },
-	];
+	const CERTIFICATE_CONFIGS = [{ configKey: CONFIG_PARAMS.TLS }, { configKey: CONFIG_PARAMS.OPERATIONSAPI_TLS }];
 
 	getCertTable();
 
 	const root_path = env.get(terms.CONFIG_PARAMS.ROOTPATH); // need to relativize the paths so they aren't exposed
 	let promise;
-	for (let { configKey: config_key, ca } of CERTIFICATE_CONFIGS) {
+	for (let { configKey: config_key } of CERTIFICATE_CONFIGS) {
 		let configs = env_manager.get(config_key);
 		if (configs) {
 			// the configs can be an array, so normalize to an array
@@ -255,37 +254,72 @@ function loadCertificates() {
 			for (let config of configs) {
 				const private_key_path = config.privateKey;
 				let private_key_name = private_key_path && basename(private_key_path);
-				if (private_key_name && fs.existsSync(private_key_path))
-					// don't expose the path, just the name
-					private_keys.set(private_key_name, readPEM(private_key_path));
-				let path = config[ca ? 'certificateAuthority' : 'certificate'];
-				if (path) {
-					if (fs.existsSync(path)) {
-						let certificate = readPEM(path);
-						if (CERTIFICATE_VALUES.cert === certificate) {
-							// this is the compromised HarperDB certificate authority, and we do not even want to bother to
-							// load it or tempted to use it anywhere (except NATS can directly load it)
-							continue;
-						}
-						let hostnames = config.hostname ?? config.hostnames ?? config.host ?? config.hosts;
-						if (hostnames && !Array.isArray(hostnames)) hostnames = [hostnames];
-						promise = certificate_table.put({
-							name: CERT_CONFIG_NAME_MAP[config_key + (ca ? '_certificateAuthority' : '_certificate')],
-							uses: ['https', ...(config_key.includes('operations') ? ['operations'] : [])],
-							ciphers: config.ciphers,
-							certificate: readPEM(path),
-							private_key_name,
-							is_authority: ca,
-							hostnames,
-						});
-					} else {
-						hdb_logger.error('Certificate file not found:', path);
+				if (private_key_name) {
+					loadAndWatch(
+						private_key_path,
+						(private_key) => {
+							private_keys.set(private_key_name, private_key);
+						},
+						'private key'
+					);
+				}
+				for (let ca of [false, true]) {
+					let path = config[ca ? 'certificateAuthority' : 'certificate'];
+					if (path && isMainThread) {
+						let last_modified;
+						loadAndWatch(
+							path,
+							(certificate) => {
+								if (CERTIFICATE_VALUES.cert === certificate) {
+									// this is the compromised HarperDB certificate authority, and we do not even want to bother to
+									// load it or tempted to use it anywhere (except NATS can directly load it)
+									return;
+								}
+								let hostnames = config.hostname ?? config.hostnames ?? config.host ?? config.hosts;
+								if (hostnames && !Array.isArray(hostnames)) hostnames = [hostnames];
+								promise = certificate_table.put({
+									name: CERT_CONFIG_NAME_MAP[config_key + (ca ? '_certificateAuthority' : '_certificate')],
+									uses: ['https', ...(config_key.includes('operations') ? ['operations'] : [])],
+									ciphers: config.ciphers,
+									certificate: readPEM(path),
+									private_key_name,
+									is_authority: ca,
+									hostnames,
+								});
+							},
+							ca ? 'certificate authority' : 'certificate'
+						);
 					}
 				}
 			}
 		}
 	}
 	return promise;
+}
+
+/**
+ * Load the certificate file and watch for changes and reload with any changes
+ * @param path
+ * @param loadCert
+ * @param type
+ */
+function loadAndWatch(path, loadCert, type) {
+	let last_modified;
+	const loadFile = (stats, reload) => {
+		try {
+			let modified = stats.mtimeMs;
+			if (modified && modified !== last_modified) {
+				if (reload && isMainThread) hdb_logger.warn(`Reloading ${type}:`, path);
+				last_modified = modified;
+				loadCert(readPEM(path));
+			}
+		} catch (error) {
+			hdb_logger.error(`Error loading ${type}:`, path);
+		}
+	};
+	if (fs.existsSync(path)) loadFile(statSync(path));
+	else hdb_logger.error(`${type} file not found:`, path);
+	watchFile(path, { persistent: false }, loadFile);
 }
 
 function getHost() {
