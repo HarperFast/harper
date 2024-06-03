@@ -24,7 +24,7 @@ analytics:
 replication:
   url: null
   databases: "*" # Database name or list of database names to replicate, * defaults to all databases
-  routes:
+  routes: null
 componentsRoot: null
 localStudio:
   enabled: false
