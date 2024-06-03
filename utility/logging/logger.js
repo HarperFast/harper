@@ -7,3 +7,5 @@ for (let level of ['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'notify']
 exports.loggerWithTag = (tag) => {
 	return harper_logger.loggerWithTag(tag, true);
 };
+
+exports.setLogLevel = harper_logger.setLogLevel;
