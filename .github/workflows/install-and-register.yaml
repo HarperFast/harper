@@ -82,7 +82,6 @@ jobs:
 
           echo "HarperDB install..."
           cd /home/ubuntu/harperdb/bin
-#          node harperdb.js start --TC_AGREEMENT yes --HDB_ROOT /home/ubuntu/hdb --HDB_ADMIN_USERNAME $HDB_ADMIN_USERNAME --HDB_ADMIN_PASSWORD $HDB_ADMIN_PASSWORD --NODE_NAME $(echo "$public_dns_name" | cut -d '.' -f 1) --CLUSTERING_PORT 12345 --CLUSTERING_USER $CLUSTERING_USERNAME --CLUSTERING_PASSWORD $CLUSTERING_PASSWORD --CLUSTERING true --OPERATIONSAPI_NETWORK_PORT 9925 --HTTP_PORT 9926 --CUSTOM_FUNCTIONS true --CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT 12345 --LOGGING_LEVEL trace --OPERATIONSAPI_NETWORK_HTTPS ${{ inputs.httpsOn }} --CUSTOMFUNCTIONS_NETWORK_HTTPS ${{ inputs.httpsOn }} --CLUSTERING_REPUBLISHMESSAGES true --CLUSTERING_LOGLEVEL info
           node harperdb.js start --TC_AGREEMENT yes --ROOTPATH /home/ubuntu/hdb --HDB_ADMIN_USERNAME $HDB_ADMIN_USERNAME --HDB_ADMIN_PASSWORD $HDB_ADMIN_PASSWORD --REPLICATION_NODENAME $(echo "$public_dns_name" | cut -d '.' -f 1) --OPERATIONSAPI_NETWORK_PORT 9925 --HTTP_PORT 9926 --CUSTOM_FUNCTIONS true --LOGGING_LEVEL trace --OPERATIONSAPI_NETWORK_HTTPS ${{ inputs.httpsOn }} --CUSTOMFUNCTIONS_NETWORK_HTTPS ${{ inputs.httpsOn }} --REPLICATION_URL wss://$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4):9925
           
           echo "Register HarperDB..."
