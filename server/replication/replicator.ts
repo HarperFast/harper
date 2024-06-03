@@ -264,7 +264,7 @@ export async function subscribeToNode(request) {
 			request.replicateByDefault
 		);
 	} catch (error) {
-		logger.error('Error in subscription to node', request.nodes[0].url, error.message);
+		logger.error('Error in subscription to node', request.nodes[0].url, error);
 	}
 }
 
