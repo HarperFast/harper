@@ -11,7 +11,9 @@ const assignCMDENVVariables = require('../assignCmdEnvVariables');
 const os = require('os');
 const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
 const { _assignPackageExport } = require('../../index');
-let native_std_write = process.stdout.write;
+// store the native write function so we can call it after we write to the log file (and store it on process.stdout
+// because unit tests will create multiple instances of this module)
+let native_std_write = process.stdout.nativeWrite || (process.stdout.nativeWrite = process.stdout.write);
 
 const LOG_LEVEL_HIERARCHY = {
 	notify: 7,
@@ -285,8 +287,18 @@ function createLogRecord(level, args) {
  * @param log
  */
 function logStdOut(log) {
-	if (log_to_file) logToFile(log);
-	if (log_to_stdstreams) process.stdout.write(log);
+	if (log_to_file) {
+		logToFile(log);
+		if (log_to_stdstreams) {
+			logging_enabled = false;
+			try {
+				// if we are writing std streams we don't want to double write to the file through the stdio capture
+				process.stdout.write(log);
+			} finally {
+				logging_enabled = true;
+			}
+		}
+	} else if (log_to_stdstreams) process.stdout.write(log);
 }
 
 /**
@@ -294,8 +306,18 @@ function logStdOut(log) {
  * @param log
  */
 function logStdErr(log) {
-	if (log_to_file) logToFile(log);
-	if (log_to_stdstreams) process.stderr.write(log);
+	if (log_to_file) {
+		logToFile(log);
+		if (log_to_stdstreams) {
+			logging_enabled = false;
+			try {
+				// if we are writing std streams we don't want to double write to the file through the stdio capture
+				process.stderr.write(log);
+			} finally {
+				logging_enabled = true;
+			}
+		}
+	} else if (log_to_stdstreams) process.stderr.write(log);
 }
 
 function logToFile(log) {
