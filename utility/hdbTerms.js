@@ -745,6 +745,7 @@ const CONFIG_PARAM_MAP = {
 	customfunctions_tls_privatekey: CONFIG_PARAMS.TLS_PRIVATEKEY,
 	customfunctions_tls_certificateauthority: CONFIG_PARAMS.TLS_CERTIFICATEAUTHORITY,
 	customfunctions_network_timeout: CONFIG_PARAMS.HTTP_TIMEOUT,
+	customfunctions_tls: CONFIG_PARAMS.TLS,
 	http_threads: CONFIG_PARAMS.THREADS_COUNT,
 	threads: CONFIG_PARAMS.THREADS_COUNT,
 	threads_count: CONFIG_PARAMS.THREADS_COUNT,
