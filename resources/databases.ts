@@ -708,6 +708,7 @@ export function table({
 		if (txn_commit) txn_commit();
 	}
 	if (has_changes) {
+		root_store.auditStore;
 		Table.schemaVersion++;
 		Table.updatedAttributes();
 	}
@@ -851,6 +852,12 @@ export function dropTableMeta({ table: table_name, database: database_name }) {
 
 export function onUpdatedTable(listener) {
 	table_listeners.push(listener);
+	return {
+		remove() {
+			let index = table_listeners.indexOf(listener);
+			if (index > -1) table_listeners.splice(index, 1);
+		},
+	};
 }
 
 export function getDefaultCompression() {

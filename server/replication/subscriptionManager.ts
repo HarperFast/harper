@@ -45,11 +45,10 @@ export async function startOnMainThread(options) {
 		for (const route of iterateRoutes(options)) {
 			try {
 				if (nodes.find((node) => node.url === route.url)) continue;
-				const pub_sub_all = !route.subscriptions;
-				const pub_sub_system = route.trusted !== false;
-				if (pub_sub_all) {
-					route.subscribe = true;
-					route.publish = true;
+				const replicate_all = !route.subscriptions;
+				const replicate_system = route.trusted !== false;
+				if (replicate_all) {
+					if (route.replicates == undefined) route.replicates = true;
 				}
 				// just tentatively add this node to the list of nodes in memory
 				onNewNode(route);
@@ -68,7 +67,7 @@ export async function startOnMainThread(options) {
 		if ((getThisNodeName() && node.name === getThisNodeName()) || (getThisNodeUrl() && node.name === getThisNodeUrl()))
 			// this is just this node, we don't need to connect to ourselves
 			return;
-		if (node.subscribe === false) return; // this node is not to be subscribed to
+		if (!(node.replicates === true || node.replicates?.sends) && !node.subscriptions?.length) return; // this node is not to be subscribed to
 		if (!node.url) {
 			logger.info(`Node ${node.name} is missing url`);
 			return;

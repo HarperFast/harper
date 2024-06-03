@@ -223,6 +223,7 @@ function getConnection(url, subscription, db_name) {
 	if (connection) return connection;
 	db_connections.set(db_name, (connection = new NodeReplicationConnection(url, subscription, db_name)));
 	connection.connect();
+	connection.once('finished', () => db_connections.delete(db_name));
 	return connection;
 }
 
@@ -331,7 +332,7 @@ export function forEachReplicatedDatabase(options, callback) {
 	for (const database_name of Object.getOwnPropertyNames(databases)) {
 		forDatabase(database_name);
 	}
-	onUpdatedTable((Table, is_changed) => {
+	return onUpdatedTable((Table, is_changed) => {
 		forDatabase(Table.databaseName);
 	});
 	function forDatabase(database_name) {
