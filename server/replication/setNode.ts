@@ -53,11 +53,14 @@ export async function setNode(req: object) {
 	}
 
 	let csr;
+	let cert_auth;
 	if (url?.startsWith('wss:')) {
-		const { rep } = await getCertsKeys();
-		if (!rep.cert.includes?.('issued by')) {
+		const { rep, rep_ca } = await getCertsKeys();
+		if (rep.name === 'default') {
 			// Create the certificate signing request that will be sent to the other node
 			csr = await createCsr();
+		} else {
+			cert_auth = rep_ca.cert;
 		}
 	}
 
@@ -68,24 +71,25 @@ export async function setNode(req: object) {
 	}
 
 	// This is the record that will be added to the other nodes hdb_nodes table
-	const remote_add_node_obj = {
+	const target_add_node_obj = {
 		operation: OPERATIONS_ENUM.ADD_NODE_BACK,
 		node_name: get(CONFIG_PARAMS.REPLICATION_NODENAME),
 		target_node_name: req.node_name,
 		url: this_url,
 		csr,
+		cert_auth,
 		//certificate: await readFile(get(CONFIG_PARAMS.TLS_CERTIFICATE), 'utf8'), //TODO: what cert should we pass here?
 	};
 
-	if (get(CONFIG_PARAMS.REPLICATION_NODENAME)) remote_add_node_obj.node_name = get(CONFIG_PARAMS.REPLICATION_NODENAME);
+	if (get(CONFIG_PARAMS.REPLICATION_NODENAME)) target_add_node_obj.node_name = get(CONFIG_PARAMS.REPLICATION_NODENAME);
 	if (req.subscriptions) {
-		remote_add_node_obj.subscriptions = req.subscriptions.map(reverseSubscription);
+		target_add_node_obj.subscriptions = req.subscriptions.map(reverseSubscription);
 	}
 
 	if (req.hasOwnProperty('subscribe') || req.hasOwnProperty('publish')) {
 		const rev = reverseSubscription(req);
-		remote_add_node_obj.subscribe = rev.subscribe;
-		remote_add_node_obj.publish = rev.publish;
+		target_add_node_obj.subscribe = rev.subscribe;
+		target_add_node_obj.publish = rev.publish;
 	}
 
 	if (req?.authorization?.username && req?.authorization?.password) {
@@ -93,43 +97,48 @@ export async function setNode(req: object) {
 			'Basic ' + Buffer.from(req.authorization.username + ':' + req.authorization.password).toString('base64');
 	}
 
-	let remote_response;
+	let target_node_response;
 	try {
-		remote_response = await sendOperationToNode({ url }, remote_add_node_obj, req);
+		target_node_response = await sendOperationToNode({ url }, target_add_node_obj, req);
 	} catch (err) {
 		err.message = `Error returned from ${url}: ` + err.message;
 		throw err;
 	}
 
-	if (csr && (!remote_response?.certificate || !remote_response?.certificate?.includes?.('BEGIN CERTIFICATE'))) {
+	if (
+		csr &&
+		(!target_node_response?.certificate || !target_node_response?.certificate?.includes?.('BEGIN CERTIFICATE'))
+	) {
 		throw new Error(
-			`Unexpected certificate signature response from node ${url} response: ${JSON.stringify(remote_response)}`
+			`Unexpected certificate signature response from node ${url} response: ${JSON.stringify(target_node_response)}`
 		);
 	}
 
-	await setCertTable({
-		name: `issued by ${urlToNodeName(url)}-ca`,
-		certificate: remote_response.ca_certificate,
-		is_authority: true,
-	});
-
-	if (remote_response.certificate) {
+	if (csr) {
 		await setCertTable({
-			name: `issued by ${urlToNodeName(url)}`,
-			uses: ['https', 'operations', 'wss'],
-			certificate: remote_response.certificate,
-			private_key_name: 'privateKey.pem', // TODO: this needs to be the name of the private key file that was used for CSR
-			is_authority: false,
+			name: `issued by ${urlToNodeName(url)}-ca`,
+			certificate: target_node_response.ca_certificate,
+			is_authority: true,
 		});
+
+		if (target_node_response.certificate) {
+			await setCertTable({
+				name: `issued by ${urlToNodeName(url)}`,
+				uses: ['https', 'operations', 'wss'],
+				certificate: target_node_response.certificate,
+				private_key_name: 'privateKey.pem', // TODO: this needs to be the name of the private key file that was used for CSR
+				is_authority: false,
+			});
+		}
 	}
 
-	const node_record = { url, ca: remote_response.ca_certificate };
+	const node_record = { url, ca: target_node_response.ca_certificate };
 	if (req.node_name) node_record.name = req.node_name;
 	if (req.subscriptions) node_record.subscriptions = req.subscriptions;
 	if (req.subscribe) node_record.subscribe = req.subscribe;
 	if (req.publish) node_record.publish = req.publish;
 
-	await ensureNode(remote_response.nodeName, node_record);
+	await ensureNode(target_node_response.nodeName, node_record);
 
 	if (req.operation === 'update_node') {
 		return `Successfully updated '${url}'`;
@@ -149,7 +158,17 @@ export async function addNodeBack(req) {
 	}
 
 	const certs = await signCertificate(req);
-	const node_record = { url: req.url, ca: certs.ca_certificate };
+	// If the add_node req has a CSR attached, return the CA that was used to issue the CSR,
+	// else return whatever CA this node is using for replication
+	let ca;
+	if (!req.csr) {
+		const { rep_ca } = await getCertsKeys();
+		ca = rep_ca.cert;
+	} else {
+		ca = certs.ca_certificate;
+	}
+
+	const node_record = { url: req.url, ca };
 	if (req.subscriptions) node_record.subscriptions = req.subscriptions;
 	if (req.hasOwnProperty('subscribe')) node_record.publish = req.publish;
 	if (req.hasOwnProperty('publish')) node_record.subscribe = req.subscribe;

@@ -25,6 +25,7 @@ const {
 	CERT_CONFIG_NAME_MAP,
 	CERT_NAME,
 	CERTIFICATE_VALUES,
+	CA_CERT_PREFERENCE_REP,
 } = certificates_terms;
 const assign_cmdenv_vars = require('../utility/assignCmdEnvVariables');
 const config_utils = require('../config/configUtils');
@@ -151,6 +152,7 @@ async function getCertsKeys(rep_host = undefined) {
 	let app_cert_quality = 0,
 		ops_cert_quality = 0,
 		rep_cert_quality = 0,
+		ca_rep_cert_quality = 0,
 		ca_app_cert_quality = 0,
 		ca_ops_cert_quality = 0,
 		response = {
@@ -173,6 +175,10 @@ async function getCertsKeys(rep_host = undefined) {
 				cert: undefined,
 			},
 			rep: {
+				name: undefined,
+				cert: undefined,
+			},
+			rep_ca: {
 				name: undefined,
 				cert: undefined,
 			},
@@ -217,9 +223,19 @@ async function getCertsKeys(rep_host = undefined) {
 			rep_cert_quality = CERT_PREFERENCE_REP[name];
 		}
 
+		if (CA_CERT_PREFERENCE_REP[name] && ca_rep_cert_quality < CA_CERT_PREFERENCE_REP[name]) {
+			response.rep_ca.cert = certificate;
+			response.rep_ca.name = name;
+			ca_rep_cert_quality = CA_CERT_PREFERENCE_REP[name];
+		}
+
 		if (name?.includes?.('issued by')) {
 			response[name] = certificate;
-			if (!name.includes('ca')) {
+			if (name.includes('ca')) {
+				response.rep_ca.cert = certificate;
+				response.rep_ca.name = name;
+				ca_rep_cert_quality = 50;
+			} else {
 				response.rep.cert = certificate;
 				response.rep.name = name;
 				rep_cert_quality = 50;
@@ -424,7 +440,7 @@ async function signCertificate(req) {
 	app_private_key = pki.privateKeyFromPem(app_private_key);
 	const ca_app_cert = pki.certificateFromPem(app_ca.cert);
 	let response = {
-		ca_certificate: pki.certificateToPem(ca_app_cert),
+		ca_certificate: app_ca.cert,
 	};
 	if (req.csr) {
 		hdb_logger.info('Signing CSR with cert named', app_ca.name, 'with cert', app_ca.cert);
@@ -461,7 +477,7 @@ async function signCertificate(req) {
 
 		response.certificate = pki.certificateToPem(cert);
 	} else {
-		hdb_logger.info('Sign cert did not receive a CSR from:', req.add_node.url, 'only the CA will be returned');
+		hdb_logger.info('Sign cert did not receive a CSR from:', req.url, 'only the CA will be returned');
 	}
 
 	if (req.certificate) {
