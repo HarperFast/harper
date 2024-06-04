@@ -40,6 +40,7 @@ _assignPackageExport('databases', databases);
 _assignPackageExport('tables', tables);
 const NEXT_TABLE_ID = Symbol.for('next-table-id');
 const table_listeners = [];
+const db_removal_listeners = [];
 let loaded_databases; // indicates if we have loaded databases from the file system yet
 const database_envs = new Map<string, any>();
 // This is used to track all the databases that are found when iterating through the file system so that anything that is missing
@@ -188,6 +189,7 @@ export function resetDatabases() {
 			store.close();
 			database_envs.delete(path);
 			delete databases[store.databaseName];
+			db_removal_listeners.forEach((listener) => listener(store.databaseName));
 		}
 	}
 	return databases;
@@ -479,6 +481,7 @@ export async function dropDatabase(database_name) {
 		delete tables[DEFINED_TABLES];
 	}
 	delete databases[database_name];
+	db_removal_listeners.forEach((listener) => listener(database_name));
 }
 
 /**
@@ -856,6 +859,15 @@ export function onUpdatedTable(listener) {
 		remove() {
 			let index = table_listeners.indexOf(listener);
 			if (index > -1) table_listeners.splice(index, 1);
+		},
+	};
+}
+export function onRemovedDB(listener) {
+	db_removal_listeners.push(listener);
+	return {
+		remove() {
+			let index = db_removal_listeners.indexOf(listener);
+			if (index > -1) db_removal_listeners.splice(index, 1);
 		},
 	};
 }

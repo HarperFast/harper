@@ -1,4 +1,4 @@
-import { getDatabases, databases, table as ensureTable, onUpdatedTable } from '../../resources/databases';
+import { getDatabases, databases, table as ensureTable, onUpdatedTable, onRemovedDB } from '../../resources/databases';
 import {
 	createAuditEntry,
 	Decoder,
@@ -247,7 +247,7 @@ export function replicateOverWS(ws, options, authorization) {
 	if (database_name) {
 		setDatabase(database_name);
 	}
-	let schema_update_listener;
+	let schema_update_listener, db_removal_listener;
 	const table_decoders = [];
 	let incoming_subscription_nodes;
 	const residency_map = [];
@@ -508,12 +508,22 @@ export function replicateOverWS(ws, options, authorization) {
 								node_subscriptions.map(({ name }) => name),
 							])
 						);
-						if (!schema_update_listener)
+						if (!schema_update_listener) {
 							schema_update_listener = onUpdatedTable((table) => {
 								if (table.database === database_name) {
 									sendDatabaseInfo(null, database_name);
 								}
 							});
+							db_removal_listener = onRemovedDB((db) => {
+								// I guess we if a database is removed then we disconnect. This is kind of weird situation for replication,
+								// as the replication system will try to preserve consistency between nodes and their databases, and
+								// it is unclear what to do if a database is removed and what that means for consistency seekingd
+								if (db === database_name) {
+									ws.send(encode([DISCONNECT]));
+									close();
+								}
+							});
+						}
 						const encoder = new Encoder();
 						const current_transaction = { txnTime: 0 };
 						let listening_for_overload = false;
@@ -706,6 +716,7 @@ export function replicateOverWS(ws, options, authorization) {
 						audit_subscription.once('close', () => {
 							closed = true;
 							schema_update_listener.remove();
+							db_removal_listener.remove();
 							schema_update_listener = null;
 						});
 						for (let { startTime } of node_subscriptions) {
