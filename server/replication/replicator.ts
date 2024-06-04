@@ -16,6 +16,7 @@ import {
 	getDatabases,
 	onUpdatedTable,
 	table,
+	onRemovedDB,
 } from '../../resources/databases';
 import { ID_PROPERTY, Resource } from '../../resources/Resource';
 import { IterableEventQueue } from '../../resources/IterableEventQueue';
@@ -128,6 +129,19 @@ function assignReplicationSource(options) {
 	if (replication_disabled) return;
 	getDatabases();
 	forEachReplicatedDatabase(options, (database, database_name) => {
+		if (!database) {
+			// the database was removed
+			const db_subscriptions = options.databaseSubscriptions || database_subscriptions;
+			for (let [url, db_connections] of connections) {
+				let db_connection = db_connections.get(database_name);
+				if (db_connection) {
+					db_connection.subscribe([], false);
+					db_connections.delete(database_name);
+				}
+			}
+			db_subscriptions.delete(database_name);
+			return;
+		}
 		for (const table_name in database) {
 			const Table = database[table_name];
 			setReplicator(database_name, Table, options);
@@ -332,12 +346,20 @@ export function forEachReplicatedDatabase(options, callback) {
 	for (const database_name of Object.getOwnPropertyNames(databases)) {
 		forDatabase(database_name);
 	}
+	onRemovedDB((database_name) => {
+		forDatabase(database_name);
+	});
 	return onUpdatedTable((Table, is_changed) => {
 		forDatabase(Table.databaseName);
 	});
 	function forDatabase(database_name) {
 		const database = databases[database_name];
-		if (options?.databases === undefined || options.databases === '*' || options.databases.includes(database_name))
+		if (
+			options?.databases === undefined ||
+			options.databases === '*' ||
+			options.databases.includes(database_name) ||
+			!database
+		)
 			callback(database, database_name, true);
 		else if (hasExplicitlyReplicatedTable(database_name)) callback(database, database_name, false);
 	}
