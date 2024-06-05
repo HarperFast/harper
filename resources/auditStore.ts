@@ -7,6 +7,7 @@ import { convertToMS } from '../utility/common_utils';
 import { PREVIOUS_TIMESTAMP_PLACEHOLDER, LAST_TIMESTAMP_PLACEHOLDER } from './RecordEncoder';
 import * as harper_logger from '../utility/logging/harper_logger';
 import { getRecordAtTime } from './crdt';
+import { isMainThread } from 'worker_threads';
 
 /**
  * This module is responsible for the binary representation of audit records in an efficient form.
@@ -64,6 +65,7 @@ const MAX_DELETES_PER_CLEANUP = 1000;
 const FLOAT_TARGET = new Float64Array(1);
 const FLOAT_BUFFER = new Uint8Array(FLOAT_TARGET.buffer);
 let DEFAULT_AUDIT_CLEANUP_DELAY = 10000; // default delay of 10 seconds
+let timestamp_errored = false;
 export function openAuditStore(root_store) {
 	let audit_store = (root_store.auditStore = root_store.openDB(
 		AUDIT_STORE_NAME,
@@ -133,9 +135,11 @@ export function openAuditStore(root_store) {
 	if (getWorkerIndex() === getWorkerCount() - 1) {
 		scheduleAuditCleanup(DEFAULT_AUDIT_CLEANUP_DELAY);
 	}
-	if (getWorkerIndex() === 0) {
-		for (let time of audit_store.getKeys({ reverse: true, limit: true })) {
+	if (getWorkerIndex() === 0 && !timestamp_errored) {
+		// make sure the timestamp is valid
+		for (let time of audit_store.getKeys({ reverse: true, limit: 1 })) {
 			if (time > Date.now()) {
+				timestamp_errored = true;
 				harper_logger.error(
 					'The current time is before the last recorded entry in the audit log. Time reversal can undermine the integrity of data tracking and certificate validation and the time must be corrected.'
 				);

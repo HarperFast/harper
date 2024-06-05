@@ -715,8 +715,8 @@ export function replicateOverWS(ws, options, authorization) {
 						audit_subscription = new EventEmitter();
 						audit_subscription.once('close', () => {
 							closed = true;
-							schema_update_listener.remove();
-							db_removal_listener.remove();
+							schema_update_listener?.remove();
+							db_removal_listener?.remove();
 							schema_update_listener = null;
 						});
 						for (let { startTime } of node_subscriptions) {
