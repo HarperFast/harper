@@ -59,8 +59,10 @@ export async function setNode(req: object) {
 		if (rep.name === 'default') {
 			// Create the certificate signing request that will be sent to the other node
 			csr = await createCsr();
+			hdb_logger.info('Sending CSR to target node:', url);
 		} else {
-			cert_auth = rep_ca.cert;
+			cert_auth = rep_ca;
+			hdb_logger.info('Sending CA named', rep_ca.name, 'to target node', url);
 		}
 	}
 
@@ -70,6 +72,7 @@ export async function setNode(req: object) {
 		throw new Error('replication url is missing from harperdb-config.yaml');
 	}
 
+	// TODO: Do we need to replicate CA if in fully replicated mode
 	// TODO: Do we need to do all the cert things for update_node
 	// This is the record that will be added to the other nodes hdb_nodes table
 	const target_add_node_obj = {
@@ -116,6 +119,7 @@ export async function setNode(req: object) {
 	}
 
 	if (csr) {
+		hdb_logger.info('CSR response received from node:', url, 'saving certificate and CA in hdb_certificate');
 		await setCertTable({
 			name: `issued by ${urlToNodeName(url)}-ca`,
 			certificate: target_node_response.ca_certificate,
@@ -161,15 +165,26 @@ export async function addNodeBack(req) {
 	const certs = await signCertificate(req);
 	// If the add_node req has a CSR attached, return the CA that was used to issue the CSR,
 	// else return whatever CA this node is using for replication
-	let ca;
+	let origin_ca;
 	if (!req.csr) {
+		// If there is no CSR in the request there should be a CA, use this CA in the hdb_nodes record for origin node
+		origin_ca = req.cert_auth.cert;
+		hdb_logger.info('addNodeBack received CA name:', req.cert_auth.cert.name, 'from node:', req.url);
+
+		// If there is no CSR, send back to origin node the replication CA for this node.
 		const { rep_ca } = await getCertsKeys();
-		ca = rep_ca.cert;
+		certs.ca_certificate = rep_ca.cert;
+		hdb_logger.info('addNodeBack responding to:', req.url, 'with CA named:', rep_ca.name);
 	} else {
-		ca = certs.ca_certificate;
+		origin_ca = certs.ca_certificate;
+		hdb_logger.info(
+			'addNodeBack received CSR from node:',
+			req.url,
+			'this node will use and respond with CA that was used to issue CSR'
+		);
 	}
 
-	const node_record = { url: req.url, ca };
+	const node_record = { url: req.url, ca: origin_ca };
 	if (req.subscriptions) node_record.subscriptions = req.subscriptions;
 	if (req.hasOwnProperty('subscribe')) node_record.publish = req.publish;
 	if (req.hasOwnProperty('publish')) node_record.subscribe = req.subscribe;
