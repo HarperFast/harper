@@ -390,7 +390,12 @@ export function replicateOverWS(ws, options, authorization) {
 						}
 						let table = tables[table_name];
 						table = ensureTableIfChanged(
-							{ table: table_name, database: database_name, attributes: data.attributes },
+							{
+								table: table_name,
+								database: database_name,
+								attributes: data.attributes,
+								schemaDefined: data.schemaDefined,
+							},
 							table
 						);
 						table_decoders[table_id] = {
@@ -678,7 +683,12 @@ export function replicateOverWS(ws, options, authorization) {
 								ws.send(
 									encode([
 										TABLE_FIXED_STRUCTURE,
-										{ typedStructs: typed_structs, structures: structures, attributes: table.attributes },
+										{
+											typedStructs: typed_structs,
+											structures: structures,
+											attributes: table.attributes,
+											schemaDefined: table.schemaDefined,
+										},
 										table_id,
 										table_entry.table.tableName,
 									])
@@ -1012,6 +1022,7 @@ export function replicateOverWS(ws, options, authorization) {
 			let table = database[table_name];
 			tables.push({
 				table: table_name,
+				schemaDefined: table.schemaDefined,
 				attributes: table.attributes.map((attr) => ({
 					name: attr.name,
 					type: attr.type,
@@ -1106,6 +1117,7 @@ function ensureTableIfChanged(table_definition, existing_table) {
 		return ensureTable({
 			table: table_definition.table,
 			database: table_definition.database,
+			schemaDefined: table_definition.schemaDefined,
 			attributes,
 			...existing_table,
 		});
