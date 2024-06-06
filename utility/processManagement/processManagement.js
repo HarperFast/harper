@@ -66,8 +66,6 @@ function connect() {
 	if (!pm2) pm2 = require('pm2');
 	return new Promise((resolve, reject) => {
 		pm2.connect((err, res) => {
-			// PM2 tries to take over logging. We are not going to be defeated, we are taking it back!
-			hdb_logger.setupConsoleLogging();
 			if (err) {
 				reject(err);
 			}
