@@ -21,6 +21,7 @@ const validation_schema = Joi.object({
  * @param req
  */
 export async function setNode(req: object) {
+	// TODO: improve the validation here
 	const validation = validateBySchema(req, validation_schema);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
@@ -46,7 +47,7 @@ export async function setNode(req: object) {
 			);
 			await hdb_nodes.delete(node_record_id);
 		} else {
-			await hdb_nodes.patch(node_record_id, { publish: false, subscribe: false, subscriptions: null });
+			await hdb_nodes.patch(node_record_id, { replicates: false });
 		}
 
 		return `Successfully removed '${node_record_id}' from manifest`;
@@ -140,8 +141,7 @@ export async function setNode(req: object) {
 	const node_record = { url, ca: target_node_response.ca_certificate };
 	if (req.node_name) node_record.name = req.node_name;
 	if (req.subscriptions) node_record.subscriptions = req.subscriptions;
-	if (req.subscribe) node_record.subscribe = req.subscribe;
-	if (req.publish) node_record.publish = req.publish;
+	else node_record.replicates = true;
 
 	await ensureNode(target_node_response.nodeName, node_record);
 
@@ -186,8 +186,8 @@ export async function addNodeBack(req) {
 
 	const node_record = { url: req.url, ca: origin_ca };
 	if (req.subscriptions) node_record.subscriptions = req.subscriptions;
-	if (req.hasOwnProperty('subscribe')) node_record.publish = req.publish;
-	if (req.hasOwnProperty('publish')) node_record.subscribe = req.subscribe;
+	else node_record.replicates = true;
+
 	await ensureNode(req.node_name, node_record);
 	certs.nodeName = getThisNodeName();
 

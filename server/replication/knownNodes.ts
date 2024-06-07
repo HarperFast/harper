@@ -31,10 +31,7 @@ export function getHDBNodeTable() {
 					attribute: 'ca',
 				},
 				{
-					attribute: 'publish',
-				},
-				{
-					attribute: 'subscribe',
+					attribute: 'replicates',
 				},
 				{
 					attribute: '__createdtime__',

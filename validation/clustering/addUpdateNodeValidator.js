@@ -16,8 +16,7 @@ const node_name_constraint = string
 		'string.pattern.base': '{:#label} invalid, must not contain ., * or >',
 		'any.invalid': "'node_name' cannot be this nodes name",
 	})
-	.empty(null)
-	.required();
+	.empty(null);
 
 const validation_schema = {
 	operation: string.valid('add_node', 'update_node', 'set_node_replication'),
