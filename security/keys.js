@@ -44,6 +44,9 @@ Object.assign(exports, {
 	createTLSSelector,
 	verifyCert,
 	verifyCertAgainstCAs,
+	listCertificates,
+	addCertificate,
+	removeCertificate,
 });
 
 const { urlToNodeName, getThisNodeUrl, getThisNodeName } = require('../server/replication/replicator');
@@ -886,4 +889,19 @@ function verifyCertAgainstCAs(cert) {
 function reverseSubscription(subscription) {
 	const { subscribe, publish } = subscription;
 	return { ...subscription, subscribe: publish, publish: subscribe };
+}
+
+async function listCertificates() {
+	getCertTable();
+	let response = [];
+	for await (const cert of certificate_table.search([])) {
+		response.push(cert);
+	}
+	return response;
+}
+
+async function addCertificate() {}
+
+async function removeCertificate() {
+	getCertTable();
 }

@@ -379,6 +379,9 @@ const OPERATIONS_ENUM = {
 	GET_BACKUP: 'get_backup',
 	SIGN_CERTIFICATE: 'sign_certificate',
 	CREATE_CSR: 'create_csr',
+	LIST_CERTIFICATES: 'list_certificates',
+	ADD_CERTIFICATES: 'add_certificate',
+	REMOVE_CERTIFICATE: 'remove_certificate',
 };
 
 // Defines valid file types that we are able to handle in 'import_from_s3' ops

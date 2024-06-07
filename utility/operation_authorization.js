@@ -153,6 +153,9 @@ required_permissions.set(npm_utilities.installModules.name, new permission(true,
 required_permissions.set(npm_utilities.auditModules.name, new permission(true, []));
 required_permissions.set(keys.createCsr.name, new permission(true, []));
 required_permissions.set(keys.signCertificate.name, new permission(true, []));
+required_permissions.set(keys.listCertificates.name, new permission(true, []));
+required_permissions.set(keys.addCertificate.name, new permission(true, []));
+required_permissions.set(keys.removeCertificate.name, new permission(true, []));
 
 //this operation must be available to all users so they can create authentication tokens and login
 required_permissions.set(token_authentication.createTokens.name, new permission(false, []));

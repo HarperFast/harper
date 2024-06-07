@@ -62,6 +62,9 @@ const SUPPORTED_OPS = {
 	sql: true,
 	create_csr: true,
 	sign_certificate: true,
+	list_certificates: true,
+	add_certificate: true,
+	remove_certificate: true,
 };
 
 module.exports = { cliOperations, buildRequest };

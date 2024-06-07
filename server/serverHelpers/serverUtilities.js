@@ -337,6 +337,9 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.EXPORT_TO_S3, new OperationFunctionObject(executeJob, export_.export_to_s3));
 	op_func_map.set(terms.OPERATIONS_ENUM.CREATE_CSR, new OperationFunctionObject(keys.createCsr));
 	op_func_map.set(terms.OPERATIONS_ENUM.SIGN_CERTIFICATE, new OperationFunctionObject(keys.signCertificate));
+	op_func_map.set(terms.OPERATIONS_ENUM.LIST_CERTIFICATES, new OperationFunctionObject(keys.listCertificates));
+	op_func_map.set(terms.OPERATIONS_ENUM.ADD_CERTIFICATES, new OperationFunctionObject(keys.addCertificate));
+	op_func_map.set(terms.OPERATIONS_ENUM.REMOVE_CERTIFICATE, new OperationFunctionObject(keys.removeCertificate));
 
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE,
