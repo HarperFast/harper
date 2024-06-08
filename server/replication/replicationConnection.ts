@@ -756,9 +756,17 @@ export function replicateOverWS(ws, options, authorization) {
 											let last_sequence_id = current_sequence_id;
 											for (let table_name in tables) {
 												const table = tables[table_name];
-												for (const entry of table.primaryStore({
+												for (const entry of table.primaryStore.getRange({
 													snapshot: false,
 												})) {
+													logger.info(
+														connection_id,
+														'Copying record from',
+														database_name,
+														table_name,
+														entry.key,
+														entry.localTime
+													);
 													if (entry.localTime >= current_sequence_id) {
 														last_sequence_id = Math.max(entry.localTime, last_sequence_id);
 														queued_entries = true;
