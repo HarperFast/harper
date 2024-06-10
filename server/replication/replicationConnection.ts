@@ -454,29 +454,28 @@ export function replicateOverWS(ws, options, authorization) {
 						let closed = false;
 						if (authorization.name) {
 							// TODO: Maybe await?
-							when_subscribed_to_hdb_nodes = getHDBNodeTable()
-								.subscribe(authorization.name)
-								.then(async (subscription) => {
-									subscription_to_hdb_nodes = subscription;
-									for await (let event of subscription_to_hdb_nodes) {
-										let node = event.value;
-										if (
-											!(
-												node?.replicates === true ||
-												node?.replicates?.receives ||
-												node?.subscriptions?.some(
-													// TODO: Verify the table permissions for each table listed in the subscriptions
-													(sub) => (sub.database || sub.schema) === database_name && sub.publish !== false
-												)
+							when_subscribed_to_hdb_nodes = getHDBNodeTable().subscribe(authorization.name);
+							when_subscribed_to_hdb_nodes.then(async (subscription) => {
+								subscription_to_hdb_nodes = subscription;
+								for await (let event of subscription_to_hdb_nodes) {
+									let node = event.value;
+									if (
+										!(
+											node?.replicates === true ||
+											node?.replicates?.receives ||
+											node?.subscriptions?.some(
+												// TODO: Verify the table permissions for each table listed in the subscriptions
+												(sub) => (sub.database || sub.schema) === database_name && sub.publish !== false
 											)
-										) {
-											closed = true;
-											ws.send(encode([DISCONNECT]));
-											close(1008, `Unauthorized database subscription to ${database_name}`);
-											return;
-										}
+										)
+									) {
+										closed = true;
+										ws.send(encode([DISCONNECT]));
+										close(1008, `Unauthorized database subscription to ${database_name}`);
+										return;
 									}
-								});
+								}
+							});
 						} else {
 							if (!(authorization?.permissions?.super_user || authorization.replicates)) {
 								ws.send(encode([DISCONNECT]));

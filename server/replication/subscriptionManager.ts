@@ -111,14 +111,27 @@ export async function startOnMainThread(options) {
 		);
 
 		function onDatabase(database_name, tables_replicate_by_default) {
-			let worker = workers[next_worker_index];
-			next_worker_index = (next_worker_index + 1) % workers.length;
+			const existing_entry = db_replication_workers.get(database_name);
+			let worker;
 			let nodes = [Object.assign({ replicateByDefault: tables_replicate_by_default }, node)];
-			db_replication_workers.set(database_name, {
-				worker,
-				nodes,
-				url: node.url,
-			});
+			if (existing_entry) {
+				worker = existing_entry.worker;
+				existing_entry.nodes = nodes;
+			} else {
+				worker = workers[next_worker_index];
+				next_worker_index = (next_worker_index + 1) % workers.length;
+
+				db_replication_workers.set(database_name, {
+					worker,
+					nodes,
+					url: node.url,
+				});
+				worker.on('exit', () => {
+					// when a worker exits, we need to remove the entry from the map, and then reassign the subscriptions
+					db_replication_workers.delete(database_name);
+					onDatabase(database_name, tables_replicate_by_default);
+				});
+			}
 			const request = {
 				type: 'subscribe-to-node',
 				database: database_name,
